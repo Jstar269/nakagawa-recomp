@@ -35,6 +35,9 @@
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
+#ifndef _CRT_RAND_S
+#define _CRT_RAND_S      /* rand_s(): the console profile's random identity (#1382) */
+#endif
 #ifndef _MSC_EXTENSIONS
 #define _MSC_EXTENSIONS  /* for _Exit on MSVC; harmless under MinGW */
 #endif
@@ -91,6 +94,7 @@
 #include <stdatomic.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>      /* fabsf(), INFINITY for sceFontFindOptimumFont */
 #ifdef _WIN32
 #include <process.h>     /* _exit() */
 #include <windows.h>     /* Sleep() */
@@ -652,7 +656,8 @@ static void user_partition_init(void) {
  * writes malloc chunk metadata at the start of its UserSbrk block. */
 /* `high` marks a High block (sceKernelAllocMemoryBlock placement 1): it lives in the top-down
  * arena the thread stacks share (sched_partition_alloc_high) and goes back there when freed. */
-typedef struct { uint32_t uid, addr, size, slot_size, prev, next; int high; } Block;
+/* `part5` marks a block of partition 5, the volatile region (volatile_part_alloc). */
+typedef struct { uint32_t uid, addr, size, slot_size, prev, next; int high, part5; } Block;
 #define HLE_MAX_PARTITION_BLOCKS 256
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
 
@@ -884,6 +889,7 @@ static uint32_t alloc_block(uint32_t size) {
         s_blocks[slot].prev      = prev;
         s_blocks[slot].next      = next;
         s_blocks[slot].high      = 0;
+        s_blocks[slot].part5     = 0;
     }
 
     return uid;
@@ -937,6 +943,7 @@ static uint32_t alloc_block_high(uint32_t size) {
     s_blocks[slot].prev      = 0xFFFFFFFFu;
     s_blocks[slot].next      = 0u;
     s_blocks[slot].high      = 1;
+    s_blocks[slot].part5     = 0;
     return uid;
 }
 
@@ -1095,6 +1102,7 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     s_blocks[slot].prev      = prev;
     s_blocks[slot].next      = next;
     s_blocks[slot].high      = 0;
+    s_blocks[slot].part5     = 0;
 
     return uid;
 }
@@ -2089,6 +2097,79 @@ static const char *sreg_type_name(uint32_t type) {
     return type == SREG_TYPE_INT ? "int" : type == SREG_TYPE_STR ? "str" : "bin";
 }
 
+/* ---- console profile: the WLAN MAC address and OpenPSID this installation reports (#1382) ----
+ * Both are console-bound values on a PSP (the WLAN chip's address and the per-console ID in
+ * idStorage), so none is ever read from a console, copied from one, or derived from the host's
+ * hardware identifiers or a game. Each installation gets its own: generated once from the host's
+ * random source the first time a game asks, and kept in the per-user registry overlay file's
+ * "console" object, so it is the same on every run. A MAC has the two low bits of its first
+ * octet clear (unicast and universally administered, as a console's own address is: games have
+ * been seen to mishandle the multicast and locally administered bits, which PPSSPP clears for
+ * the same reason); an OpenPSID is 16 bytes, never all zero. The user (or a test)
+ * can set either in the overlay: {"console": {"wlan_mac_hex": "<12 hex>", "open_psid_hex":
+ * "<32 hex>"}}; a malformed console object makes the overlay invalid, as any malformed record does.
+ * The object is not part of the sceReg tree: a PSP's registry holds neither value. */
+typedef struct {
+    int have_identity;
+    uint8_t mac[6];
+    uint8_t psid[16];
+    int wlan_switch_set;     /* the overlay set the switch */
+    uint32_t wlan_switch;
+} PspConsoleProfile;
+static PspConsoleProfile s_console;
+
+static int sreg_hex_bytes(const char *hex, uint8_t *out, size_t bytes);
+
+static int console_identity_ok(const uint8_t mac[6], const uint8_t psid[16]) {
+    int psid_set = 0;
+    for (int i = 0; i < 16; i++) psid_set |= psid[i] != 0u;
+    return (mac[0] & 0x03u) == 0u && psid_set;   /* see PspConsoleProfile */
+}
+
+static int console_profile_apply(const NkJsonNode *console, char *why, size_t why_len) {
+    const NkJsonNode *jmac = nk_json_obj_get(console, "wlan_mac_hex");
+    const NkJsonNode *jpsid = nk_json_obj_get(console, "open_psid_hex");
+    PspConsoleProfile next;
+    memset(&next, 0, sizeof(next));
+    if (!nk_json_is_object(console) || !nk_json_is_string(jmac) || !nk_json_is_string(jpsid) ||
+        !sreg_hex_bytes(nk_json_get_string(jmac), next.mac, sizeof(next.mac)) ||
+        !sreg_hex_bytes(nk_json_get_string(jpsid), next.psid, sizeof(next.psid)) ||
+        !console_identity_ok(next.mac, next.psid)) {
+        snprintf(why, why_len, "its console object does not hold a wlan_mac_hex (12 hex digits, "
+                               "first octet's two low bits clear) and a non-zero open_psid_hex "
+                               "(32 hex digits)");
+        return 0;
+    }
+    next.have_identity = 1;
+    const NkJsonNode *jswitch = nk_json_obj_get(console, "wlan_switch");
+    if (jswitch) {
+        if (!nk_json_get_uint32(jswitch, &next.wlan_switch) || next.wlan_switch > 1u) {
+            snprintf(why, why_len, "its console object's wlan_switch is not 0 or 1");
+            return 0;
+        }
+        next.wlan_switch_set = 1;
+    }
+    s_console = next;
+    return 1;
+}
+
+/* The host's random source: rand_s() (RtlGenRandom) on Windows, /dev/urandom elsewhere. */
+static int console_random_bytes(uint8_t *out, size_t n) {
+#ifdef _WIN32
+    for (size_t i = 0; i < n; i++) {
+        unsigned int r = 0;
+        if (rand_s(&r) != 0) return 0;
+        out[i] = (uint8_t)r;
+    }
+    return 1;
+#else
+    FILE *f = fopen("/dev/urandom", "rb");
+    int ok = f && fread(out, 1u, n, f) == n;
+    if (f) fclose(f);
+    return ok;
+#endif
+}
+
 /* Apply a parsed overlay onto the defaults. Returns 1, or 0 with *why set; the caller discards a
  * partial application and serves the defaults. */
 static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) {
@@ -2187,6 +2268,20 @@ static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) 
         }
         memcpy(s_sreg_nodes[node].value, value, bytes);
     }
+    if (nk_json_obj_get(doc, "console") &&
+        !console_profile_apply(nk_json_obj_get(doc, "console"), why, why_len))
+        return 0;
+    return 1;
+}
+
+/* Exactly `bytes` bytes from 2 * bytes hexadecimal digits. */
+static int sreg_hex_bytes(const char *hex, uint8_t *out, size_t bytes) {
+    if (!hex || strlen(hex) != 2u * bytes) return 0;
+    for (size_t b = 0; b < bytes; b++) {
+        int hi = sreg_hex_nibble(hex[2u * b]), lo = sreg_hex_nibble(hex[2u * b + 1u]);
+        if (hi < 0 || lo < 0) return 0;
+        out[b] = (uint8_t)((hi << 4) | lo);
+    }
     return 1;
 }
 
@@ -2252,6 +2347,7 @@ static void sreg_ensure_loaded(void) {
     if (s_sreg_loaded) return;
     s_sreg_loaded = 1;
     s_sreg_corrupt_on_disk = 0;
+    memset(&s_console, 0, sizeof(s_console));
     sreg_clear_nodes();
     sreg_build_defaults();
     path = sreg_overlay_path();
@@ -2274,6 +2370,7 @@ static void sreg_ensure_loaded(void) {
                         "defaults (the next flush moves it to %s.corrupt)\n", path, why, path);
         sreg_clear_nodes();
         sreg_build_defaults();
+        memset(&s_console, 0, sizeof(s_console));
         s_sreg_corrupt_on_disk = 1;
     }
     s_sreg_dirty = 0;
@@ -2364,7 +2461,25 @@ static void sreg_overlay_render(SregText *t) {
         sreg_text_str(t, "\"}");
         first = 0;
     }
-    sreg_text_str(t, "\n  ]\n}\n");
+    sreg_text_str(t, "\n  ]");
+    if (s_console.have_identity) {
+        static const char digits[] = "0123456789abcdef";
+        sreg_text_str(t, ",\n  \"console\": {\"wlan_mac_hex\": \"");
+        for (size_t b = 0; b < sizeof(s_console.mac); b++) {
+            char pair[2] = { digits[s_console.mac[b] >> 4], digits[s_console.mac[b] & 0x0fu] };
+            sreg_text_add(t, pair, 2u);
+        }
+        sreg_text_str(t, "\", \"open_psid_hex\": \"");
+        for (size_t b = 0; b < sizeof(s_console.psid); b++) {
+            char pair[2] = { digits[s_console.psid[b] >> 4], digits[s_console.psid[b] & 0x0fu] };
+            sreg_text_add(t, pair, 2u);
+        }
+        sreg_text_str(t, "\"");
+        if (s_console.wlan_switch_set)
+            sreg_text_str(t, s_console.wlan_switch ? ", \"wlan_switch\": 1" : ", \"wlan_switch\": 0");
+        sreg_text_str(t, "}");
+    }
+    sreg_text_str(t, "\n}\n");
 }
 
 static int sreg_sync_file(FILE *f) {
@@ -2619,6 +2734,7 @@ static uint32_t h_GetSystemParamString(CpuState *s) {
 /* Drop the live registry and every handle, as a new process starts: the next sceReg call or
  * system-param read loads the defaults and the overlay file again. */
 void sr_hle_test_sysreg_reset(void) {
+    memset(&s_console, 0, sizeof(s_console));
     sreg_clear_nodes();
     memset(s_sreg_reg, 0, sizeof(s_sreg_reg));
     memset(s_sreg_cat, 0, sizeof(s_sreg_cat));
@@ -2943,14 +3059,16 @@ static uint32_t h_ImposeGetLanguageMode(CpuState *s) {
  * argument (issue #1390): the accepted ranges and the two error codes are
  * pinned by PSPAutotests tests/ctrl/sampling and tests/ctrl/sampling2 (.expected
  * files recorded on a PSP), corroborated by PPSSPP Core/HLE/sceCtrl.cpp; there
- * is no project oracle case for them yet. The stored mode and cycle do not yet
- * change what is sampled or how often (also #1390). */
+ * is no project oracle case for them yet. The mode decides whether a sample carries
+ * the stick's position, and the cycle how often samples are taken (sr_ctrl_sample,
+ * ctrl_cycle_set). */
 #define SCE_CTRL_ERROR_INVALID_MODE 0x80000107u  /* SCE_KERNEL_ERROR_INVALID_MODE */
 #define SCE_CTRL_ERROR_INVALID_VALUE 0x800001feu /* SCE_KERNEL_ERROR_INVALID_VALUE */
 static uint32_t s_ctrl_sampling_mode = 0u;
 static uint32_t s_ctrl_sampling_cycle = 0u;
 static uint32_t s_ctrl_idle_reset = 0xFFFFFFFFu;
 static uint32_t s_ctrl_idle_back = 0xFFFFFFFFu;
+static void ctrl_cycle_set(uint32_t cycle);
 /* sceHprmIsRemoteExist(void): 1 when the infrared remote is plugged in, else 0 (PSPSDK
  * psphprm.h). The runtime models the accessory as absent by default, so the answer comes from that
  * modeled state and is 0 until a model attaches a remote. The state is a model, not a measurement. */
@@ -3017,7 +3135,7 @@ static uint32_t h_CtrlSetSamplingMode(CpuState *s) {
 static uint32_t h_CtrlSetSamplingCycle(CpuState *s) {
     if ((A0 > 0u && A0 < 5555u) || A0 > 20000u) return SCE_CTRL_ERROR_INVALID_VALUE;
     uint32_t prev = s_ctrl_sampling_cycle;
-    s_ctrl_sampling_cycle = A0;
+    ctrl_cycle_set(A0);
     return prev;
 }
 /* sceCtrlSetIdleCancelThreshold(idlereset, idleback): store both thresholds.
@@ -3037,6 +3155,7 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_ILLEGAL_ADDR 0x800200d3u     /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
 #define HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE 0x800200d8u /* SCE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE */
 #define HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED 0x800200d9u /* SCE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED */
+#define HLE_KERNEL_ERROR_ILLEGAL_PARTITION 0x800200d6u /* SCE_KERNEL_ERROR_ILLEGAL_PARTITION */
 #define HLE_KERNEL_ERROR_ILLEGAL_SIZE 0x800201bcu   /* SCE_KERNEL_ERROR_ILLEGAL_SIZE */
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
@@ -3114,6 +3233,84 @@ static uint32_t h_CtrlGetSamplingCycle(CpuState *s) {
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* SysMemUserForUser */
+/* Partition 5 is the 4 MiB volatile region [0x08400000, 0x08800000), the memory
+ * sceKernelVolatileMemLock hands out (#1383). It has its own allocator, measured on a PSP by
+ * pspautotests tests/sysmem/volatile.expected at f573fe8c9122a8ff5db4f030d74557bed644b4e0:
+ * Low (0) blocks start at 0x08400000 and High (1) blocks end at 0x08800000 (a 0x100-byte block
+ * at 0x087fff00); sizes round up to 0x100 bytes and the whole 4 MiB can be allocated (0x3fff00
+ * beside a 0x100 block, and no more); an Addr (2) block lies exactly at its address inside the
+ * region (0x08500000), anything else is MEMBLOCK_ALLOC_FAILED, as is size 0 or 0xFFFFFFFF; the
+ * aligned types (3 Low, 4 High) take the alignment in the address argument, which must be a
+ * power of two (0, 3, 6 and 0xFFFFFFFF are ILLEGAL_ALIGNMENT_SIZE), and a High block aligned to
+ * 0x200, 0x400 or 0x800 ends below the top on that boundary; any other type is
+ * ILLEGAL_MEMBLOCKTYPE, which wins over a NULL name and a zero size. The allocations do not
+ * depend on the volatile lock: pspautotests allocates partition 5 with the lock free and creates
+ * pools there while holding it. */
+#define VOLATILE_PART_ID   5u
+#define VOLATILE_PART_BASE 0x08400000u
+#define VOLATILE_PART_END  0x08800000u
+#define HLE_KERNEL_ERROR_ILLEGAL_ALIGNMENT_SIZE 0x800200e4u /* SCE_KERNEL_ERROR_ILLEGAL_ALIGNMENT_SIZE */
+
+/* 1 when [addr, addr + size) lies in the region and overlaps no live partition-5 block. */
+static int volatile_part_range_free(uint64_t addr, uint64_t size) {
+    if (addr < VOLATILE_PART_BASE || addr + size > VOLATILE_PART_END) return 0;
+    for (int i = 0; i < s_nblocks; i++) {
+        const Block *b = &s_blocks[i];
+        if (b->uid && b->part5 && addr < (uint64_t)b->addr + b->slot_size && b->addr < addr + size)
+            return 0;
+    }
+    return 1;
+}
+
+/* A partition-5 block of `size` bytes (type 0-4, `arg` the address or alignment): its UID, or
+ * the measured refusal. A Low block's best start is the region's base or the end of a live
+ * block, a High block's best end the region's top or the start of one, each moved to the
+ * alignment; the lowest (or highest) of those that is free wins. */
+static uint32_t volatile_part_alloc(uint32_t type, uint32_t size, uint32_t arg) {
+    if (size == 0u || size > UINT32_MAX - 0xffu) return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+    uint64_t slot_size = (size + 0xffu) & ~0xffu, align = 0x100u;
+    if (type == 3u || type == 4u) {
+        if (arg == 0u || (arg & (arg - 1u)) != 0u) return HLE_KERNEL_ERROR_ILLEGAL_ALIGNMENT_SIZE;
+        if (arg > align) align = arg;
+    }
+    int slot = -1;
+    for (int i = 0; i < s_nblocks; i++)
+        if (s_blocks[i].uid == 0u) { slot = i; break; }
+    if (slot < 0) {
+        if (s_nblocks >= HLE_MAX_PARTITION_BLOCKS) return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+        slot = s_nblocks;
+    }
+    int found = 0;
+    uint64_t addr = 0u;
+    if (type == 2u) {
+        addr = arg;
+        found = volatile_part_range_free(addr, slot_size);
+    } else {
+        int high = type == 1u || type == 4u;
+        for (int i = -1; i < s_nblocks; i++) {
+            const Block *b = i >= 0 ? &s_blocks[i] : NULL;
+            if (b && (!b->uid || !b->part5)) continue;
+            uint64_t candidate;
+            if (high) {
+                uint64_t end = b ? b->addr : VOLATILE_PART_END;
+                if (end < VOLATILE_PART_BASE + slot_size) continue;
+                candidate = (end - slot_size) & ~(align - 1u);
+            } else {
+                uint64_t start = b ? (uint64_t)b->addr + b->slot_size : VOLATILE_PART_BASE;
+                candidate = (start + align - 1u) & ~(align - 1u);
+            }
+            if (!volatile_part_range_free(candidate, slot_size)) continue;
+            if (!found || (high ? candidate > addr : candidate < addr)) addr = candidate;
+            found = 1;
+        }
+    }
+    if (!found) return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+    if (slot == s_nblocks) s_nblocks++;
+    uint32_t uid = sr_alloc_uid();
+    s_blocks[slot] = (Block){ uid, (uint32_t)addr, size, (uint32_t)slot_size, 0xFFFFFFFFu, 0u, 0, 1 };
+    return uid;
+}
+
 /* sceKernelAllocPartitionMemory(partition, name, type, size, addr): the 5th
  * argument arrives in t0 (r8) under MIPS EABI (see stack_arg), not at sp+16.
  * Type dispatch today:
@@ -3131,11 +3328,22 @@ static int guest_cstr(uint32_t addr, char *out, int max);
  *                   the current OOM path already does).
  *   3 LowAligned / 4 HighAligned -> fall through to the Low path, ignoring the
  *                   alignment argument (pre-existing behaviour, unchanged).
- * The partition argument is ignored: the kernel hands the game one user
- * partition (pre-existing behaviour, unchanged). */
+ * Partitions (pspautotests tests/sysmem/partition.expected at f573fe8c, recorded on a PSP): 2,
+ * 5 and 6 allocate; 1, 3 and 4 answer ILLEGAL_PARTITION (0x800200D6) and every other number
+ * ILLEGAL_ARGUMENT (0x800200D2), and a type past 4 ILLEGAL_MEMBLOCKTYPE. Partition 5 is the
+ * volatile region (volatile_part_alloc), where a NULL name answers 0x80020001 as measured; 2 and 6
+ * are the one user partition this runtime models (where a PSP places a partition-6 block is
+ * UNMEASURED), which still takes a NULL name as no name although the PSP refuses it there too
+ * (partition.expected "NULL name"; existing callers rely on it, #341). */
 static uint32_t h_AllocPartitionMemory(CpuState *s) {
     /* a0=partition, a1=name, a2=type, a3=size, t0(r8)=addr. Returns a block UID. */
     char name[64];
+    uint32_t partition = A0;
+    if (partition == 1u || partition == 3u || partition == 4u) return HLE_KERNEL_ERROR_ILLEGAL_PARTITION;
+    if (partition != 2u && partition != VOLATILE_PART_ID && partition != 6u)
+        return HLE_KERNEL_ERROR_ILLEGAL_ARGUMENT;
+    if (A2 > 4u) return HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE;
+    if (!A1 && partition == VOLATILE_PART_ID) return HLE_KERNEL_ERROR_ERROR;
     if (A1) {
         if (!guest_cstr(A1, name, sizeof(name)))
             return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -3144,12 +3352,17 @@ static uint32_t h_AllocPartitionMemory(CpuState *s) {
     }
     uint32_t type = A2;
     uint32_t size = A3;
+    if (partition == VOLATILE_PART_ID) return volatile_part_alloc(type, size, stack_arg(s, 0));
     uint32_t uid = (type == 2u)
         ? sr_alloc_block_at(stack_arg(s, 0), size, name)
         : alloc_block(size ? size : 16);
     fprintf(stderr, "  -> uid=0x%x addr=0x%08x (heap_bump_now=0x%08x)\n",
             uid, sr_last_alloc_addr, s_heap);
-    return uid;
+    /* A block that cannot be placed is MEMBLOCK_ALLOC_FAILED: an Addr block at 0x08400000,
+     * outside the user partition, measured on a PSP-3000 6.61 by PSP-KERNEL-SEM-001
+     * vmem-alloc-free and vmem-alloc-held (2026-10-31), as partition.expected records for
+     * placements and sizes the partition cannot hold. */
+    return uid == 0xFFFFFFFFu ? HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED : uid;
 }
 static uint32_t h_GetBlockHeadAddr(CpuState *s) { return block_addr(A0); }
 static uint32_t free_block(uint32_t uid) {
@@ -3161,6 +3374,7 @@ static uint32_t free_block(uint32_t uid) {
             uint32_t addr = s_blocks[i].addr;
             uint32_t slot_sz = s_blocks[i].slot_size;
             int high = s_blocks[i].high;
+            int part5 = s_blocks[i].part5;
             s_blocks[i].uid = 0;                  /* slot now free */
             s_blocks[i].addr = 0;
             s_blocks[i].size = 0;
@@ -3168,7 +3382,10 @@ static uint32_t free_block(uint32_t uid) {
             s_blocks[i].prev = 0;
             s_blocks[i].next = 0;
             s_blocks[i].high = 0;
-            if (high) sched_partition_release_high(addr, slot_sz);
+            s_blocks[i].part5 = 0;
+            /* A partition-5 block is only its s_blocks entry (volatile_part_alloc). */
+            if (part5) { /* nothing else to return */ }
+            else if (high) sched_partition_release_high(addr, slot_sz);
             else partition_free_block(addr, slot_sz);
             if (getenv("SR_ALLOC_TRACE")) {
                 fprintf(stderr, "FreePartitionMemory: uid=0x%x addr=0x%08x marked free\n", uid, addr);
@@ -10274,6 +10491,18 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
 /* A new library's fallback character: 0x005F ('_'), pspautotests tests/font/altcharcode.expected
  * "Initial value: 005f" (rev 2ed7c9c5, recorded on a PSP). */
 #define SR_FONT_DEFAULT_ALT_CHAR   0x005fu
+/* A new library's resolution: 128 x 128 (pspautotests tests/font/newlib.expected and
+ * resolution.expected at f573fe8c, recorded on a PSP). */
+#define SR_FONT_DEFAULT_RESOLUTION 128.0f
+/* sceFontNewLib serves at most 9 fonts: a larger count, a negative one included (the field is
+ * read unsigned), gets a 9-font library, and 0 is accepted (pspautotests tests/font/newlib.expected
+ * at f573fe8c: -1, 9, 10 and 100 allocate the same total, 0 allocates the least). */
+#define SR_FONT_MAX_FONTS          9u
+/* An open font answers at most this many sceFontOpen calls before it is closed; the next is
+ * TOO_MANY (pspautotests tests/font/open.expected at f573fe8c: four opens of index 0 in a
+ * 4-font library, then 0x80460009). Whether the limit is the library's font count or a
+ * per-font reference limit is not separated by that test; PPSSPP 7fab97c0 uses 4 per font. */
+#define SR_FONT_MAX_OPENS          4u
 
 /* sceFont uses the same measured index map and served-header values as /DATA/FONT. */
 
@@ -10287,6 +10516,7 @@ typedef struct {
     uint32_t params[11];  /* complete FontNewLibParams (0x2c), retained for callbacks */
     uint32_t allocSize;
     uint16_t altCharCode; /* the fallback character for a missing glyph (sceFontSetAltCharacterCode) */
+    float hRes, vRes;     /* sceFontSetResolution; a new library has 128 x 128 */
 } SrFontLib;
 typedef struct {
     int used;
@@ -10297,6 +10527,7 @@ typedef struct {
     const PGF *pgf;       /* PGF backend this font resolves against */
     PGF *ownedPgf;        /* non-NULL for sceFontOpenUserMemory */
     int index;
+    unsigned opens;       /* sceFontOpen calls this handle answers, not yet closed (at most 4) */
     int has_registry_info;
     SrFontRegistryInfo registry_info;
 } SrFont;
@@ -10463,7 +10694,7 @@ static uint32_t h_FontNewLib(CpuState *s) {
     /* sceFontNewLib(a0=FontNewLibParams*, a1=u32* errorCode). PPSSPP param layout:
      * +0 userData, +4 numFonts, +8 cacheData, +0xc allocFunc, +0x10 freeFunc, ... */
     uint32_t params = A0, errPtr = A1;
-    uint32_t userData = 0, allocFn = 0, freeFn = 0; int numFonts = 0;
+    uint32_t userData = 0, allocFn = 0, freeFn = 0, requestedFonts = 0;
     uint32_t paramsCopy[11] = {0};
     if (params && !sr_guest_span_readable(params, (uint32_t)sizeof(paramsCopy))) {
         /* The whole 0x2c-byte FontNewLibParams block is retained, so all of it must be guest
@@ -10474,15 +10705,16 @@ static uint32_t h_FontNewLib(CpuState *s) {
     if (params) {
         for (int i = 0; i < 11; i++) paramsCopy[i] = MEM_R32(params + (uint32_t)i * 4);
         userData = MEM_R32(params + 0x00);
-        numFonts = (int)MEM_R32(params + 0x04);
+        requestedFonts = MEM_R32(params + 0x04);
         allocFn  = MEM_R32(params + 0x0c);
         freeFn   = MEM_R32(params + 0x10);
     }
-    if (!params || !allocFn || !freeFn || numFonts <= 0) {
+    if (!params || !allocFn || !freeFn) {
         if (errPtr) MEM_W32(errPtr, SR_FONT_ERROR_INVALID_ARG);
         return 0;
     }
-    if (numFonts > 9) numFonts = 9;
+    /* Measured clamp, not a refusal: see SR_FONT_MAX_FONTS. */
+    int numFonts = (int)(requestedFonts > SR_FONT_MAX_FONTS ? SR_FONT_MAX_FONTS : requestedFonts);
     uint32_t allocSize = font_lib_alloc_size(numFonts);
     if (!allocSize) { if (errPtr) MEM_W32(errPtr, SR_FONT_ERROR_OOM); return 0; }
     font_load();
@@ -10513,6 +10745,8 @@ static uint32_t h_FontNewLib(CpuState *s) {
         s_fontlibs[slot].userData = userData; s_fontlibs[slot].numFonts = numFonts;
         s_fontlibs[slot].openCount = 0;
         s_fontlibs[slot].altCharCode = SR_FONT_DEFAULT_ALT_CHAR;
+        s_fontlibs[slot].hRes = SR_FONT_DEFAULT_RESOLUTION;
+        s_fontlibs[slot].vRes = SR_FONT_DEFAULT_RESOLUTION;
         memcpy(s_fontlibs[slot].params, paramsCopy, sizeof(paramsCopy));
         hle_unlock();
     }
@@ -10537,6 +10771,30 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
         if (errPtr) MEM_W32(errPtr, SR_FONT_ERROR_INVALID_DATA);
         if (ownedPgf) pgf_close(ownedPgf);
         return 0;
+    }
+    /* A system font this library already has open answers the same handle again, with no new
+     * allocation, until it has answered SR_FONT_MAX_OPENS opens (pspautotests tests/font/open
+     * at f573fe8c: a second open of index 0 returns the first one's handle, which stays usable
+     * after one of the two is closed, and a further open allocates nothing). User fonts are new
+     * fonts every time. */
+    if (!ownedPgf && registry_info) {
+        uint32_t reopened = 0;
+        int full = 0;
+        hle_lock();
+        for (size_t i = 0; i < sizeof(s_fonts) / sizeof(s_fonts[0]); i++) {
+            SrFont *f = &s_fonts[i];
+            if (f->used == 1 && !f->closing && f->lib == lib && !f->ownedPgf &&
+                f->has_registry_info && f->index == (int)index) {
+                if (f->opens >= SR_FONT_MAX_OPENS) full = 1;
+                else { f->opens++; reopened = f->handle; }
+                break;
+            }
+        }
+        hle_unlock();
+        if (reopened || full) {
+            if (errPtr) MEM_W32(errPtr, reopened ? 0u : SR_FONT_ERROR_TOO_MANY);
+            return reopened;
+        }
     }
     int slot = -1, libslot = -1;
     hle_lock();
@@ -10577,6 +10835,7 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
         s_fonts[slot].handle = fh; s_fonts[slot].lib = lib;
         s_fonts[slot].pgf = pgf; s_fonts[slot].ownedPgf = ownedPgf;
         s_fonts[slot].index = (int)index;
+        s_fonts[slot].opens = 1u;
         s_fonts[slot].has_registry_info = registry_info != NULL;
         if (registry_info) s_fonts[slot].registry_info = *registry_info;
         else memset(&s_fonts[slot].registry_info, 0, sizeof(s_fonts[slot].registry_info));
@@ -10593,7 +10852,17 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
     return fh;
 }
 static uint32_t h_FontOpen(CpuState *s) {
-    /* sceFontOpen(a0=lib, a1=index, a2=mode, a3=u32* errorCode). */
+    /* sceFontOpen(a0=lib, a1=index, a2=mode, a3=u32* errorCode). A NULL library answers
+     * INVALID_LIB, and an index past the system font list (-1 and 50 measured) INVALID_ARG
+     * (pspautotests tests/font/open.expected at f573fe8c, recorded on a PSP). */
+    if (!fontlib_snapshot(A0, NULL)) {
+        if (A3) MEM_W32(A3, SR_FONT_ERROR_INVALID_LIB);
+        return 0;
+    }
+    if (A1 >= SR_FONT_REGISTRY_COUNT) {
+        if (A3) MEM_W32(A3, SR_FONT_ERROR_INVALID_ARG);
+        return 0;
+    }
     SrFontRegistryInfo info;
     SrFontRegistryStatus status = font_registry_info_for_index(A1, &info);
     const PGF *pgf = status == SR_FONT_REGISTRY_PRESENT ? font_pgf_for_index(A1) : NULL;
@@ -10648,6 +10917,12 @@ static uint32_t h_FontClose(CpuState *s) {
     hle_lock();
     for (size_t i = 0; i < sizeof(s_fonts) / sizeof(s_fonts[0]); i++) {
         SrFont *f = &s_fonts[i];
+        if (f->used == 1 && f->handle == A0 && f->opens > 1u) {
+            /* One of several opens of the same font: the handle stays open for the rest. */
+            f->opens--;
+            hle_unlock();
+            return 0;
+        }
         if (f->used == 1 && f->handle == A0) {
             found = 1; lib = f->lib; f->used = 0; f->closing = 1;
             if (f->refs == 0 && f->ownedPgf) { destroy = f->ownedPgf; f->ownedPgf = NULL; f->pgf = NULL; }
@@ -10785,9 +11060,166 @@ uint32_t h_FontGetGlyphImageById(CpuState *s) {
     font_release(f);
     return drawn ? 0 : SR_FONT_ERROR_INVALID_ARG;
 }
+/* sceFontSetResolution(lib, float hRes, float vRes): the library's resolution, which
+ * sceFontFindOptimumFont uses for a style that names none. Measured on a PSP (pspautotests
+ * tests/font/resolution.expected at f573fe8c): 1 and infinity are stored and answer 0; -1, 0,
+ * -1/128 and -infinity answer INVALID_ARG and change nothing; a NULL library answers
+ * INVALID_LIB. The test sets both values alike, so a pair with one bad value is refused whole
+ * here, and NaN, which it does not try, is refused with the non-positive values (UNMEASURED).
+ * The floats arrive in $f12 and $f13 (MIPS EABI). A library that is not live stops by name, as
+ * the other library calls do. */
+static uint32_t h_FontSetResolution(CpuState *s) {
+    float h = s->f[12], v = s->f[13];
+    if (!A0) return SR_FONT_ERROR_INVALID_LIB;
+    if (!fontlib_snapshot(A0, NULL))
+        return hle_unmodelled_stop("sceFontSetResolution",
+                                   "on library 0x%08x, which is not live, is not measured", A0);
+    if (!(h > 0.0f) || !(v > 0.0f)) return SR_FONT_ERROR_INVALID_ARG;
+    hle_lock();
+    for (size_t i = 0; i < sizeof(s_fontlibs) / sizeof(s_fontlibs[0]); i++)
+        if (s_fontlibs[i].used == 1 && s_fontlibs[i].handle == A0) {
+            s_fontlibs[i].hRes = h;
+            s_fontlibs[i].vRes = v;
+            break;
+        }
+    hle_unlock();
+    return 0;
+}
+
+/* One served system font's style, as sceFontFindOptimumFont compares it. */
+typedef struct {
+    float h, v, h_res, v_res;
+    uint16_t family, style, language, country;
+    const char *name, *file_name;
+} SrFontMatchStyle;
+
+/* The requested PGFFontStyle (0xA8 bytes): five floats, then u16 family, style, sub-style,
+ * language, region and country, a 64-byte name and a 64-byte file name. */
+typedef struct {
+    float h, v, h_res, v_res;
+    uint16_t family, style, language, country;
+    char name[64], file_name[64];
+} SrFontStyleRequest;
+
+/* sceFontFindOptimumFont's choice among `count` served fonts, in registry index order: the
+ * first font nearest the requested height when one is given, else the last font every given
+ * field matches, else index 0. A field that is zero (or an empty string) is not compared; any
+ * given field that differs excludes the font. The vertical distance compares the font's
+ * vertical size against the requested HEIGHT (fontH), not fontV, which is what reproduces the
+ * PSP's "V match" answers. Algorithm from PPSSPP 7fab97c0 Core/HLE/sceFont.cpp
+ * (sceFontFindOptimumFont, Font::MatchesStyle; GPL-2.0-or-later, derived-translated); every
+ * answer of pspautotests tests/font/optimum.expected at f573fe8c, recorded on a PSP, follows
+ * from it. `index_of[i]` is the registry index of fonts[i]. */
+static int font_find_optimum_index(const SrFontMatchStyle *fonts, const int *index_of, int count,
+                                   const SrFontStyleRequest *req, float lib_h_res,
+                                   float lib_v_res) {
+    float h_res = req->h_res > 0.0f ? req->h_res : lib_h_res;
+    float v_res = req->v_res > 0.0f ? req->v_res : lib_v_res;
+    int optimum = -1, nearest = -1;
+    float nearest_dist = INFINITY;
+    int given = req->family || req->style || req->language || req->country || req->name[0] ||
+                req->file_name[0];
+    for (int i = 0; i < count; i++) {
+        const SrFontMatchStyle *f = &fonts[i];
+        if ((req->family && req->family != f->family) ||
+            (req->style && req->style != f->style) ||
+            (req->language && req->language != f->language) ||
+            (req->country && req->country != f->country) ||
+            (req->name[0] && strcmp(req->name, f->name ? f->name : "") != 0) ||
+            (req->file_name[0] && strcmp(req->file_name, f->file_name ? f->file_name : "") != 0))
+            continue;
+        if (req->h > 0.0f) {
+            float d = fabsf(f->h_res * f->h - h_res * req->h);
+            if (d < nearest_dist) { nearest_dist = d; nearest = index_of[i]; }
+        }
+        if (req->v > 0.0f) {
+            float d = fabsf(f->v_res * f->v - v_res * req->h);
+            if (d < nearest_dist) { nearest_dist = d; nearest = index_of[i]; }
+        }
+        if (given) optimum = index_of[i];
+    }
+    if (nearest >= 0) optimum = nearest;
+    return optimum >= 0 ? optimum : 0;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only: font_find_optimum_index over a synthetic inventory (sizes: h, v, h_res,
+ * v_res; codes: family, style, language, country) and request. */
+int sr_font_test_find_optimum(const float sizes[][4], const uint16_t codes[][4],
+                              const char *const names[], const char *const files[], int count,
+                              const float req_sizes[4], const uint16_t req_codes[4],
+                              const char *req_name, const char *req_file, float lib_h_res,
+                              float lib_v_res) {
+    SrFontMatchStyle fonts[SR_FONT_REGISTRY_COUNT];
+    int index_of[SR_FONT_REGISTRY_COUNT];
+    SrFontStyleRequest req;
+    if (count < 0 || count > (int)SR_FONT_REGISTRY_COUNT) return -1;
+    memset(&req, 0, sizeof(req));
+    for (int i = 0; i < count; i++) {
+        fonts[i] = (SrFontMatchStyle){ sizes[i][0], sizes[i][1], sizes[i][2], sizes[i][3],
+                                       codes[i][0], codes[i][1], codes[i][2], codes[i][3],
+                                       names[i], files[i] };
+        index_of[i] = i;
+    }
+    req.h = req_sizes[0]; req.v = req_sizes[1]; req.h_res = req_sizes[2]; req.v_res = req_sizes[3];
+    req.family = req_codes[0]; req.style = req_codes[1];
+    req.language = req_codes[2]; req.country = req_codes[3];
+    snprintf(req.name, sizeof(req.name), "%s", req_name ? req_name : "");
+    snprintf(req.file_name, sizeof(req.file_name), "%s", req_file ? req_file : "");
+    return font_find_optimum_index(fonts, index_of, count, &req, lib_h_res, lib_v_res);
+}
+#endif
+
+/* sceFontFindOptimumFont(lib, const SceFontStyle *style, u32 *errorCode): the index of the
+ * served system font that best fits the style (font_find_optimum_index), with *errorCode 0.
+ * Measured on a PSP (pspautotests tests/font/optimum.expected at f573fe8c): a NULL library and
+ * a NULL style both answer 0 with *errorCode INVALID_LIB (0x80460002). Only fonts this runtime
+ * serves are candidates; on a console all 18 are. Not measured, so the run stops by name: a
+ * library that is not live, an unreadable style and an unwritable error pointer (a NULL one
+ * crashes the PSP). */
 static uint32_t h_FontFindOptimumFont(CpuState *s) {
-    if (A2) MEM_W32(A2, 0);            /* *errorCode */
-    return 0;                          /* font index 0 */
+    const uint32_t style_size = 0xa8u;
+    if (!A2 || !sr_guest_span_writable(A2, 4u))
+        return hle_unmodelled_stop("sceFontFindOptimumFont",
+                                   "with an unwritable error pointer 0x%08x is not measured", A2);
+    if (!A0 || !A1) { MEM_W32(A2, SR_FONT_ERROR_INVALID_LIB); return 0; }
+    SrFontLib lib;
+    if (!fontlib_snapshot(A0, &lib))
+        return hle_unmodelled_stop("sceFontFindOptimumFont",
+                                   "on library 0x%08x, which is not live, is not measured", A0);
+    if (!sr_guest_span_readable(A1, style_size))
+        return hle_unmodelled_stop("sceFontFindOptimumFont",
+                                   "with an unreadable style 0x%08x is not measured", A1);
+    SrFontStyleRequest req;
+    memset(&req, 0, sizeof(req));
+    uint32_t w[4];
+    for (int i = 0; i < 4; i++) w[i] = MEM_R32(A1 + (uint32_t)i * 4u);
+    memcpy(&req.h, &w[0], 4); memcpy(&req.v, &w[1], 4);
+    memcpy(&req.h_res, &w[2], 4); memcpy(&req.v_res, &w[3], 4);
+    req.family = MEM_R16(A1 + 0x14u);
+    req.style = MEM_R16(A1 + 0x16u);
+    req.language = MEM_R16(A1 + 0x1au);
+    req.country = MEM_R16(A1 + 0x1eu);
+    for (uint32_t i = 0; i < 63u; i++) {
+        req.name[i] = (char)MEM_R8(A1 + 0x20u + i);
+        req.file_name[i] = (char)MEM_R8(A1 + 0x60u + i);
+    }
+    SrFontRegistryInfo info[SR_FONT_REGISTRY_COUNT];
+    SrFontMatchStyle fonts[SR_FONT_REGISTRY_COUNT];
+    int index_of[SR_FONT_REGISTRY_COUNT], count = 0;
+    for (uint32_t i = 0; i < SR_FONT_REGISTRY_COUNT; i++) {
+        if (font_registry_info_for_index(i, &info[i]) != SR_FONT_REGISTRY_PRESENT) continue;
+        const SrFontRegistryInfo *r = &info[i];
+        fonts[count] = (SrFontMatchStyle){
+            (float)r->h_size / 64.0f, (float)r->v_size / 64.0f,
+            (float)r->h_resolution / 64.0f, (float)r->v_resolution / 64.0f,
+            (uint16_t)r->family_code, (uint16_t)r->style, (uint16_t)r->language_code,
+            (uint16_t)r->country_code, r->font_name, r->file_name };
+        index_of[count++] = (int)i;
+    }
+    int index = font_find_optimum_index(fonts, index_of, count, &req, lib.hRes, lib.vRes);
+    MEM_W32(A2, 0u);
+    return (uint32_t)index;
 }
 /* ---- sceFontGetNumFontList / sceFontGetFontList: the system font list ----------------------
  * Measured on a PSP by pspautotests tests/font/fontlist.expected (rev 2ed7c9c5, the console's
@@ -13776,12 +14208,41 @@ static void hle_register_utility_dialog_handlers(void) {
     sr_hle_register(0xefc6f80f, "sceUtilityGameSharingShutdownStart", h_SharingDialogShutdown);
 }
 
-/* sceWlanGetEtherAddr: 6-byte MAC out through a0. Fixed value so save/profile stamps stay
- * stable across runs. */
+/* The console profile's identity, generated and persisted on first use (see PspConsoleProfile).
+ * Returns 0 only when the host has no random source, which leaves the caller nothing to report. */
+static int console_profile_identity(void) {
+    sreg_ensure_loaded();
+    if (s_console.have_identity) return 1;
+    PspConsoleProfile next;
+    memset(&next, 0, sizeof(next));
+    if (!console_random_bytes(next.mac, sizeof(next.mac)) ||
+        !console_random_bytes(next.psid, sizeof(next.psid)))
+        return 0;
+    next.mac[0] = (uint8_t)(next.mac[0] & 0xfcu);   /* unicast, universally administered */
+    if (!console_identity_ok(next.mac, next.psid)) next.psid[15] = 1u;
+    next.have_identity = 1;
+    s_console = next;
+    s_sreg_dirty = 1;
+    /* A console never fails these calls, so a save that fails does not fail the call: the
+     * identity stays this run's, and the line says it will not be the same next run. */
+    if (sreg_persist("system profile") == 0)
+        fprintf(stderr, "system profile: generated this installation's WLAN MAC address and "
+                        "OpenPSID; kept in the registry overlay\n");
+    else
+        fprintf(stderr, "system profile: generated a WLAN MAC address and OpenPSID for this run "
+                        "only: they could not be saved, so the next run reports different ones\n");
+    return 1;
+}
+
+/* sceWlanGetEtherAddr(u8 *addr): the 6-byte MAC address of the console profile. The whole
+ * output span must be guest memory; NULL or an unwritable span answers ILLEGAL_ADDR and writes
+ * nothing (the PSP's answer is not measured: the console's own address is never read). */
 static uint32_t h_WlanGetEtherAddr(CpuState *s) {
-    static const uint8_t mac[6] = { 0x00, 0x13, 0x37, 0xAC, 0xC5, 0x10 };
-    if (!A0) return 0x80000103u;              /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
-    for (int i = 0; i < 6; i++) MEM_W8(A0 + (uint32_t)i, mac[i]);
+    if (!A0 || !sr_guest_span_writable(A0, 6u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!console_profile_identity())
+        return hle_unmodelled_stop("sceWlanGetEtherAddr", "has no address: the host's random "
+                                   "source is unavailable");
+    for (int i = 0; i < 6; i++) MEM_W8(A0 + (uint32_t)i, s_console.mac[i]);
     return 0;
 }
 /* PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384 models this as a
@@ -13791,18 +14252,24 @@ static uint32_t h_PowerCheckWlanCoexistenceClock(CpuState *s) {
     return 0u;
 }
 
-static uint32_t h_WlanOn(CpuState *s) { (void)s; return 1; }   /* powered on / switch up */
+/* sceWlanGetSwitchState and sceWlanDevIsPowerOn: the console profile's WLAN switch, 1 (on) unless
+ * the overlay's console object sets "wlan_switch": 0. Both answer 1 on the PSP-3000 6.61 oracle
+ * with its switch on (PSP-KERNEL-SEM-001 wlan-state, 2026-10-31); what DevIsPowerOn answers with
+ * the switch off is UNMEASURED, so it follows the switch. */
+static uint32_t h_WlanOn(CpuState *s) {
+    (void)s;
+    sreg_ensure_loaded();
+    return s_console.wlan_switch_set ? s_console.wlan_switch : 1u;
+}
 
+/* sceOpenPSIDGetOpenPSID(SceOpenPSID *psid): the console profile's 16-byte OpenPSID. As with the
+ * MAC address, NULL or an unwritable span answers ILLEGAL_ADDR and writes nothing (UNMEASURED). */
 static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
-    /* sceOpenPSIDGetOpenPSID(SceOpenPSID *psid): writes 16-byte console unique ID.
-     * Zero-fill is fine for boot; the game only checks non-zero to confirm the call worked. */
-    uint32_t ptr = s->r[4];
-    if (ptr && ptr < 0x0c000000u) {
-        MEM_W32(ptr, 0x00000000u);
-        MEM_W32(ptr + 4, 0x00000000u);
-        MEM_W32(ptr + 8, 0x00000000u);
-        MEM_W32(ptr + 12, 0x00000000u);
-    }
+    if (!A0 || !sr_guest_span_writable(A0, 16u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!console_profile_identity())
+        return hle_unmodelled_stop("sceOpenPSIDGetOpenPSID", "has no OpenPSID: the host's random "
+                                   "source is unavailable");
+    for (int i = 0; i < 16; i++) MEM_W8(A0 + (uint32_t)i, s_console.psid[i]);
     return 0;
 }
 
@@ -13826,10 +14293,11 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
  * with 0.
  *
  * Project choices, UNMEASURED on hardware:
- *  - Lock and TryLock accept only type 0. The PSP result for another type is unmeasured, so it is
- *    refused by name with NOT_IMPLEMENTED (0x80020002), before anything else, rather than
- *    answered with a guessed code. Unlock's argument is not checked: Unlock keeps its measured
- *    route.
+ *  - Lock and TryLock accept only type 0: types 1, 2 and -1 answer INVALID_MODE (0x80000107) and
+ *    write neither output, Lock as TryLock, while the lock is free (measured on a PSP-3000 6.61 by
+ *    PSP-KERNEL-SEM-001 vmem-trylock-type-* and vmem-lock-type-1, 2026-10-31, probe 0c3cf0da). The
+ *    type is checked first; its order against the other checks is UNMEASURED. Unlock's argument is
+ *    not checked: Unlock keeps its measured route.
  *  - The lock has no owning thread: Unlock from any thread releases it, as the semaphore overflow
  *    code above suggests (an inference). Terminating or deleting the thread that took the lock
  *    therefore leaves it held. A waiting thread that is terminated, deleted or released by
@@ -13838,7 +14306,11 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
  *  - Output spans are validated before anything is written or queued (ILLEGAL_ADDR for an
  *    unwritable non-NULL span); NULL outputs are tolerated. CAN_NOT_WAIT and ILLEGAL_CONTEXT write
  *    no output. A blocked Lock latches no ReferThreadStatus wait type.
- *  - No guest-memory reservation is recorded for the region while the lock is held. */
+ *
+ * The region is partition 5 of the guest-memory model (volatile_part_alloc), with its own
+ * allocator. The lock does not reserve it against that allocator: pspautotests
+ * tests/sysmem/volatile.expected (f573fe8c, recorded on a PSP) allocates partition-5 blocks with
+ * the lock free and creates pools there while holding it, so neither waits on the other. */
 #define VOLATILE_MEM_BASE      0x08400000u
 #define VOLATILE_MEM_SIZE      0x00400000u
 #define VOLATILE_MEM_WAIT_OBJ  0x564d454du   /* "VMEM": the scheduler object a blocked Lock waits on */
@@ -13854,12 +14326,7 @@ static int s_volatile_locked = 0;
 static VolatileMemWaiter *s_volatile_waiters;    /* FIFO: index 0 is the oldest waiter */
 static size_t s_volatile_wait_count, s_volatile_wait_cap;
 
-static int volatile_mem_type_ok(const char *api, uint32_t type) {
-    if (type == 0u) return 1;
-    fprintf(stderr, "SEMANTIC_BOUNDARY: VOLATILE_MEM_TYPE: %s type %u: the PSP result for a type "
-                    "other than 0 is unmeasured; refusing (0x80020002)\n", api, type);
-    return 0;
-}
+#define VOLATILE_MEM_INVALID_MODE 0x80000107u   /* SCE_KERNEL_ERROR_INVALID_MODE (measured) */
 
 /* Both complete non-NULL output spans are checked before either one is written. */
 static int volatile_mem_outputs_writable(uint32_t addr_out, uint32_t size_out) {
@@ -13928,8 +14395,7 @@ static int volatile_mem_grant_next(void) {
 }
 
 static uint32_t h_VolatileMemLock(CpuState *s) {
-    if (!volatile_mem_type_ok("sceKernelVolatileMemLock", A0))
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;
     if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;   /* L412 */
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;      /* L290-L293 */
     if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -13954,8 +14420,7 @@ static uint32_t h_VolatileMemLock(CpuState *s) {
 }
 
 static uint32_t h_VolatileMemTryLock(CpuState *s) {
-    if (!volatile_mem_type_ok("sceKernelVolatileMemTryLock", A0))
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;
     if (s_volatile_locked) return VOLATILE_MEM_HELD;
     if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     volatile_mem_take(A1, A2);
@@ -14169,17 +14634,49 @@ static void hle_register_umd_callback_handlers(void) {
  * counter on sub-interrupt 0 and its video player another on 1, then releases 1 when the
  * video closes; with a single shared slot that registration replaced the game's handler
  * and the release removed it, so the frame counter stopped and the game waited for it
- * forever. `registered` holds a Register that Release has not cleared; a handler word of 0
- * is still a registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
+ * forever. A slot is registered while its handler word is nonzero: the PSP does not count
+ * a NULL-handler Register as a registration (see the codes below) (#1287). */
 #define SR_VBLANK_SUBINTR_COUNT 16u
-/* PSPSDK pspkerror.h SCE_KERNEL_ERROR_ILLEGAL_INTRCODE, for a sub-interrupt number past 15;
- * the PSP's own answer for these calls is UNMEASURED. */
+/* PSPSDK pspkerror.h names for the interrupt manager's refusals. */
 #define SCE_KERNEL_ERROR_ILLEGAL_INTRCODE 0x80020065u
+#define SCE_KERNEL_ERROR_FOUND_HANDLER    0x80020067u
+#define SCE_KERNEL_ERROR_NOTFOUND_HANDLER 0x80020068u
 typedef struct VblankSubIntr {
     uint32_t handler, arg;
-    int registered, enabled;
+    int enabled;
 } VblankSubIntr;
 static VblankSubIntr g_vbl[SR_VBLANK_SUBINTR_COUNT];
+
+/* Sub-interrupt calls on interrupt lines other than VBLANK (30), measured on a PSP by
+ * pspautotests tests/intr/registersub.expected and releasesub.expected at
+ * f573fe8c9122a8ff5db4f030d74557bed644b4e0 (one Register, then one Release, for sub-interrupt
+ * 0 of every line from -2 to 69). Line 25 (the GE interrupt) also accepts both; every other
+ * line refuses with ILLEGAL_INTRCODE or NOTFOUND_HANDLER, and the two calls disagree on lines
+ * 4, 5, 6 and 21. Bit n of a mask is set when line n answers NOTFOUND_HANDLER; a clear bit
+ * below SUBINTR_LINE_COUNT is ILLEGAL_INTRCODE. Lines from 67 up (67, 68 and 69 measured)
+ * and negative lines answer ILLEGAL_INTRCODE: the PSP has interrupt lines 0 to 66. */
+#define SUBINTR_LINE_COUNT 67u
+#define SUBINTR_LINE_GE 25u
+static const uint64_t s_subintr_register_notfound_lines =
+    0x0000000000006b2full |      /* 0-3, 5, 8, 9, 11, 13, 14 */
+    (0x7ull << 27) |             /* 27-29 */
+    (0xfull << 32) |             /* 32-35 */
+    (0x1fffull << 37) |          /* 37-49 */
+    (0x1full << 51) |            /* 51-55 */
+    (0x3ull << 62);              /* 62, 63 */
+static const uint64_t s_subintr_release_notfound_lines =
+    0x0000000000006b7full |      /* 0-6, 8, 9, 11, 13, 14 */
+    (1ull << 21) | (0x7ull << 27) | (0xfull << 32) | (0x1fffull << 37) | (0x1full << 51) |
+    (0x3ull << 62);
+/* Lines 64 and 66 are past the 64-bit masks; both answer NOTFOUND_HANDLER to both calls,
+ * and line 65 answers ILLEGAL_INTRCODE. */
+static uint32_t subintr_other_line_result(uint32_t intno, uint64_t notfound_lines) {
+    if (intno >= SUBINTR_LINE_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+    if (intno >= 64u)
+        return intno == 65u ? SCE_KERNEL_ERROR_ILLEGAL_INTRCODE : SCE_KERNEL_ERROR_NOTFOUND_HANDLER;
+    return (notfound_lines >> intno) & 1u ? SCE_KERNEL_ERROR_NOTFOUND_HANDLER
+                                          : SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+}
 
 /* Generic PSP callback objects are kernel objects, not a 16-entry subsystem
  * table. Hardware creates at least 1024 of them. Keep an append-only host array:
@@ -14535,52 +15032,98 @@ static uint32_t h_DeleteCallback(CpuState *s) {
 static uint32_t h_DeleteNotifyCallback(CpuState *s) {
     return sr_callback_table_unregister(A0) ? 0u : 0x800201A1u;
 }
+/* VBLANK sub-interrupt numbers 16 to 31 are the system's. A user Register answers
+ * FOUND_HANDLER on 18-20 and 24-26 and ILLEGAL_INTRCODE on the rest, a Release answers
+ * NOTFOUND_HANDLER on all of them, and numbers from 32 up answer ILLEGAL_INTRCODE to both
+ * (pspautotests registersub/releasesub at f573fe8c, sub-interrupts -2 to 69 of line 30). */
+#define VBLANK_SUBINTR_SYSTEM_END 32u
+static int vblank_subintr_system_held(uint32_t no) {
+    return (no >= 18u && no <= 20u) || (no >= 24u && no <= 26u);
+}
+
 static uint32_t h_RegisterSubIntr(CpuState *s) {
     /* a0=intno, a1=no, a2=handler, a3=arg. The handler is later called as handler(no, arg)
      * (PSPSDK pspintrman.h and its vsync sample: `void on_vblank(int sub, void *data)`), so
      * the sub-interrupt number is kept with the handler and its arg. */
-    if (A0 == 30) {
-        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
-        VblankSubIntr *v = &g_vbl[A1];
-        /* Titles re-register the same handler before almost every frame (#1287), so the line
-         * is written only when a registration changes the slot, or always under SR_HLELOG.
-         * The return code is unchanged: duplicate-register codes are UNMEASURED on the PSP. */
-        int changed = !v->registered || v->handler != A2 || v->arg != A3;
-        if (changed || hle_log_on())
-            fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
-        v->handler = A2; v->arg = A3; v->registered = 1;
+    if (A0 == SUBINTR_LINE_GE)
+        return hle_unmodelled_stop("sceKernelRegisterSubIntrHandler",
+                                   "on the GE interrupt (line 25, sub-interrupt %u) is not "
+                                   "delivered by this runtime", A1);
+    if (A0 != 30u) return subintr_other_line_result(A0, s_subintr_register_notfound_lines);
+    if (A1 >= SR_VBLANK_SUBINTR_COUNT) {
+        return A1 < VBLANK_SUBINTR_SYSTEM_END && vblank_subintr_system_held(A1)
+                   ? SCE_KERNEL_ERROR_FOUND_HANDLER : SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
     }
+    VblankSubIntr *v = &g_vbl[A1];
+    /* Measured on a PSP (pspautotests registersub, "handlers"): a NULL handler answers 0 and
+     * registers nothing, so a later non-NULL Register still succeeds; a Register over a
+     * non-NULL handler answers FOUND_HANDLER and keeps the first one, whatever the new handler
+     * is. Titles re-register the same handler before almost every frame (#1287); the slot is
+     * then unchanged, so the line below is written only when a Register takes the slot, or
+     * always under SR_HLELOG. Register leaves the enable state alone: Enable before Register
+     * delivers the handler once it is registered (enablesub "With handler after"). */
+    if (v->handler) {
+        if (hle_log_on())
+            fprintf(stderr, "HLE: VBLANK sub-interrupt %u already holds 0x%08x\n", A1, v->handler);
+        return SCE_KERNEL_ERROR_FOUND_HANDLER;
+    }
+    if (!A2) return 0;
+    fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
+    v->handler = A2; v->arg = A3;
     return 0;
+}
+/* Enable/Disable on a line other than VBLANK: line 70 answers ILLEGAL_INTRCODE (enablesub at
+ * f573fe8c), as every line past 66 does for Register and Release. The lines 0 to 66 other than
+ * 30 have no delivery state here and their answers are not measured, so the run stops by name. */
+static uint32_t subintr_toggle_other_line(const char *api, uint32_t intno, uint32_t no) {
+    if (intno >= SUBINTR_LINE_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+    return hle_unmodelled_stop(api, "on interrupt line %u (sub-interrupt %u) is not measured",
+                               intno, no);
+}
+/* The VBLANK sub-interrupt numbers Enable and Disable accept: 0 to 15. Number 70 answers
+ * ILLEGAL_INTRCODE (measured); the system's numbers 16 to 31 are not measured. */
+static uint32_t vblank_subintr_toggle_check(const char *api, uint32_t no) {
+    if (no < SR_VBLANK_SUBINTR_COUNT) return 0u;
+    if (no >= VBLANK_SUBINTR_SYSTEM_END) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+    return hle_unmodelled_stop(api, "on VBLANK sub-interrupt %u (a system number) is not "
+                               "measured", no);
 }
 /* sceKernelEnableSubIntr(intno, no) and sceKernelDisableSubIntr(intno, no): start or stop
  * delivery of one VBLANK (intno 30) sub-interrupt without unregistering its handler, so a
- * later Enable resumes the same handler. Public behaviour reference: the PSPSDK interrupt
- * manager (pspintrman.h) and PPSSPP Core/HLE/sceIntr.cpp. Only the VBLANK line has
- * retained delivery state here (g_vbl, owned by h_RegisterSubIntr); other lines have no
- * delivery state, so they answer success without effect (UNMEASURED). */
+ * later Enable resumes the same handler. Measured on a PSP (pspautotests enablesub at
+ * f573fe8c): both answer 0 for a registered number, a second time, and for a number with no
+ * handler, and Enable on a number with no handler delivers nothing until one is registered. */
 static uint32_t h_EnableSubIntr(CpuState *s) {
-    if (A0 == 30) {
-        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
-        g_vbl[A1].enabled = 1;
-    }
+    if (A0 != 30u) return subintr_toggle_other_line("sceKernelEnableSubIntr", A0, A1);
+    uint32_t rc = vblank_subintr_toggle_check("sceKernelEnableSubIntr", A1);
+    if (rc != 0u) return rc;
+    g_vbl[A1].enabled = 1;
     return 0;
 }
 static uint32_t h_DisableSubIntr(CpuState *s) {
-    if (A0 == 30) {
-        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
-        g_vbl[A1].enabled = 0;
-    }
+    if (A0 != 30u) return subintr_toggle_other_line("sceKernelDisableSubIntr", A0, A1);
+    uint32_t rc = vblank_subintr_toggle_check("sceKernelDisableSubIntr", A1);
+    if (rc != 0u) return rc;
+    g_vbl[A1].enabled = 0;
     return 0;
 }
 /* sceKernelReleaseSubIntrHandler(intno, no): unregister one VBLANK sub-interrupt handler and
- * stop its delivery; the others keep running. The handler word itself is cleared, so
- * Enable after Release delivers nothing until a fresh Register. Non-VBLANK lines answer
- * success without effect (UNMEASURED), as with Enable/Disable. */
+ * stop its delivery; the others keep running. Measured on a PSP (pspautotests releasesub and
+ * enablesub at f573fe8c): a registered number answers 0, a number with no handler (never
+ * registered, released already, or registered with a NULL handler) answers NOTFOUND_HANDLER,
+ * and Release clears the enable state too, so a handler registered again after a Release of
+ * an enabled number is not delivered until a fresh Enable ("Released while enabled"). */
 static uint32_t h_ReleaseSubIntr(CpuState *s) {
-    if (A0 == 30) {
-        if (A1 >= SR_VBLANK_SUBINTR_COUNT) return SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
-        memset(&g_vbl[A1], 0, sizeof(g_vbl[A1]));
-    }
+    if (A0 == SUBINTR_LINE_GE)
+        return hle_unmodelled_stop("sceKernelReleaseSubIntrHandler",
+                                   "on the GE interrupt (line 25, sub-interrupt %u) is not "
+                                   "delivered by this runtime", A1);
+    if (A0 != 30u) return subintr_other_line_result(A0, s_subintr_release_notfound_lines);
+    if (A1 >= SR_VBLANK_SUBINTR_COUNT)
+        return A1 < VBLANK_SUBINTR_SYSTEM_END ? SCE_KERNEL_ERROR_NOTFOUND_HANDLER
+                                              : SCE_KERNEL_ERROR_ILLEGAL_INTRCODE;
+    if (!g_vbl[A1].handler) return SCE_KERNEL_ERROR_NOTFOUND_HANDLER;
+    memset(&g_vbl[A1], 0, sizeof(g_vbl[A1]));
     return 0;
 }
 /* The scheduler's view of VBLANK sub-interrupt `no`: 1 with its handler and arg when it is
@@ -18235,14 +18778,14 @@ static int data_archive_guest_path_allowed(const char *guest_path) {
             guest_path[4] >= '0' && guest_path[4] <= '9' && guest_path[5] == ':');
 }
 
-/* sceIoOpen with PSP_O_CREAT | PSP_O_EXCL found an existing file (#1380). The PSP-IO-001
- * oracle group never opens with PSP_O_EXCL, so the console's result is unmeasured: the open
- * is refused with the named not-supported code and the file is left untouched. */
-static uint32_t io_open_exclusive_existing_boundary(const char *path) {
-    fprintf(stderr,
-            "SEMANTIC_BOUNDARY: IO_OPEN_EXCL_EXISTING: sceIoOpen with PSP_O_CREAT|PSP_O_EXCL "
-            "names an existing file (%s); the PSP result is unmeasured (0x80010086)\n", path);
-    return 0x80010086u;
+/* sceIoOpen with PSP_O_CREAT | PSP_O_EXCL found an existing file (#1380): EEXIST
+ * (0x80010011), and the file is left as it was (not truncated), measured on a PSP-3000 6.61
+ * Memory Stick by PSP-KERNEL-SEM-001 io-excl-existing (2026-10-31, probe 0c3cf0da), with and
+ * without PSP_O_TRUNC. PSP_O_EXCL without PSP_O_CREAT opens the existing file. */
+static uint32_t io_open_exclusive_existing(const char *path) {
+    if (getenv("SR_IOLOG"))
+        fprintf(stderr, "sceIoOpen: %s exists; PSP_O_CREAT|PSP_O_EXCL answers EEXIST\n", path);
+    return 0x80010011u;
 }
 
 /* Host-serve a guest file from the extracted-XB data root (SR_DATAROOT).
@@ -18358,7 +18901,7 @@ static uint32_t h_io_open_path_stock(const char *path, uint32_t flags, int force
             fp = ms0_fopen_guest_utf8(path, mode, existence, &open_status);
 #endif
         free(hp);
-        if (exclusive_found) return io_open_exclusive_existing_boundary(path);
+        if (exclusive_found) return io_open_exclusive_existing(path);
         if (!fp) {
 #ifndef _WIN32
             if (sr_ms0_classify(path, NULL) == SR_MS0_OWNED &&
@@ -18776,9 +19319,13 @@ static uint32_t h_IoRead(CpuState *s) {
 }
 /* Destination of a seek on a file descriptor (#1380). pspautotests tests/io/file at
  * f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 for a destination before the start
- * and accepts one past the end (a read there returns 0). The descriptor keeps a 32-bit
- * position, so a destination beyond it is the named not-supported boundary. A refused seek
- * leaves the position unchanged. WHENCE is already validated (< 3). */
+ * and accepts one past the end (a read there returns 0). A Memory Stick file's position is
+ * 32 bits wide: a destination of 0xFFFFFFFF is accepted and one past it answers EINVAL
+ * (0x80010016) with the position unchanged, from SEEK_SET and from SEEK_END alike (measured on
+ * a PSP-3000 6.61 by PSP-KERNEL-SEM-001 io-seek64 and io-seek64-rdwr, 2026-10-31, probe
+ * 0c3cf0da). Other devices keep the named not-supported boundary there (UNMEASURED). A refused
+ * seek leaves the position unchanged. WHENCE is already validated (< 3). */
+static int loadexec_ms0_path(const char *path);
 static uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence,
                                     const char *api, uint32_t *position) {
     static atomic_flag reported = ATOMIC_FLAG_INIT;
@@ -18788,6 +19335,7 @@ static uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence
         *position = (uint32_t)(base + offset);
         return 0u;
     }
+    if (f->host && loadexec_ms0_path(f->guest_path)) return 0x80010016u;   /* EINVAL */
     if (!atomic_flag_test_and_set_explicit(&reported, memory_order_acq_rel))
         fprintf(stderr,
                 "SEMANTIC_BOUNDARY: IO_LSEEK_OUT_OF_RANGE: %s to a destination beyond the "
@@ -21151,6 +21699,71 @@ static uint32_t s_ctrl_sample_count = 0u;
 static uint32_t s_latch_prev_btn = 0u;
 static uint32_t s_latch_seen_count = 0u;
 
+/* The input the next sample carries: buttons, stick and scripted-input id, latched once per
+ * VBLANK by sr_ctrl_sample() (the host's input is polled once per frame). */
+static CtrlSample s_ctrl_live = { 0, 0, 128, 128, 0 };
+/* In digital mode (sampling mode 0) every sample reports a centred stick (0x80, 0x80), also
+ * right after analog mode reported it off centre; analog mode (1) reports its live position.
+ * Measured on a PSP-3000 6.61 by PSP-KERNEL-SEM-001 ctrl-mode-digital, ctrl-mode-analog and
+ * ctrl-mode-digital-again (2026-10-31, probe 0c3cf0da, stick at rest: analog read 0x75,0x7c and
+ * 0x83,0x7f, digital 0x80,0x80 before and after). A test build can stand in for the stick. */
+#ifdef SR_HLE_THREAD_SELFTEST
+static int s_ctrl_test_stick = 0;
+static uint8_t s_ctrl_test_lx = 128u, s_ctrl_test_ly = 128u;
+void sr_hle_test_ctrl_stick(uint8_t lx, uint8_t ly) {
+    s_ctrl_test_stick = 1;
+    s_ctrl_test_lx = lx;
+    s_ctrl_test_ly = ly;
+}
+#endif
+/* Sampling cycle (#1390): with cycle 0 the controller is sampled once per VBLANK. With a cycle
+ * of 5555 to 20000 us it is sampled every `cycle` microseconds of guest time instead, and a
+ * VBLANK adds no sample: pspautotests tests/ctrl/sampling2 at f573fe8c (recorded on a PSP)
+ * counts 3 samples per VBLANK at 5555, 2 at 9999 and 1 at 16666 and at 20000. Those samples
+ * are latched lazily: whatever looks at the ring first latches every sample due by the current
+ * guest time, each stamped at its own cycle boundary and carrying s_ctrl_live. A blocked read
+ * sleeps until the next boundary. s_ctrl_cycle_next_us is that boundary, 0 with cycle 0. */
+static uint64_t s_ctrl_cycle_next_us;
+
+static void ctrl_push(const CtrlSample *smp, uint32_t ts) {
+    s_ctrl_ring[s_ctrl_w] = *smp;
+    s_ctrl_ring[s_ctrl_w].ts = ts;
+    s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
+    if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;  /* drop oldest on overflow */
+    s_ctrl_sample_count++;
+}
+
+/* Latch every cycle sample due by now, and wake the blocked readers when one was latched. */
+static void ctrl_cycle_catch_up(void) {
+    if (!s_ctrl_cycle_next_us || !s_ctrl_sampling_cycle) return;
+    uint64_t now = sched_vtime_us();
+    if (s_ctrl_cycle_next_us > now) return;
+    uint64_t due = (now - s_ctrl_cycle_next_us) / s_ctrl_sampling_cycle + 1u;
+    /* Only the newest CTRL_RING samples can still be in the ring: the older ones are counted
+     * (sceCtrlReadLatch reports every cycle since its last read) but never written. */
+    if (due > CTRL_RING) {
+        uint64_t skipped = due - CTRL_RING;
+        s_ctrl_sample_count += (uint32_t)skipped;
+        s_ctrl_cycle_next_us += skipped * s_ctrl_sampling_cycle;
+        due = CTRL_RING;
+    }
+    for (uint64_t i = 0; i < due; i++) {
+        ctrl_push(&s_ctrl_live, (uint32_t)s_ctrl_cycle_next_us);
+        s_ctrl_cycle_next_us += s_ctrl_sampling_cycle;
+    }
+    sched_wake(CTRL_WAIT_OBJ);
+}
+
+/* sceCtrlSetSamplingCycle's effect: the samples due under the old cycle are latched first, then
+ * the first sample of a non-zero cycle is one cycle from now. When on the PSP the first timer
+ * sample follows the call is UNMEASURED; the spacing after it is measured. */
+static void ctrl_cycle_set(uint32_t cycle) {
+    ctrl_cycle_catch_up();
+    s_ctrl_sampling_cycle = cycle;
+    s_ctrl_cycle_next_us = cycle ? sched_vtime_us() + cycle : 0u;
+}
+
+
 /* ---- state-qualified acceptance routes (issue #64) --------------------------------
  *
  * A pad script written as "press CROSS at vblank 8600" is a bet that the guest is on the
@@ -22459,6 +23072,7 @@ void sr_hle_test_ctrl_sampling_reset(void) {
     s_ctrl_sampling_cycle = 0u;
     s_ctrl_idle_reset = 0xFFFFFFFFu;
     s_ctrl_idle_back = 0xFFFFFFFFu;
+    s_ctrl_cycle_next_us = 0u;
 }
 /* Exercise the exact production gate with synthetic key masks (the harness stubs
  * gui_on()/gui_buttons() to neutral, so production keys are always 0 there). */
@@ -22572,8 +23186,13 @@ void sr_ctrl_sample(void) {
      * sample at the request boundary; the first post-resume sample owns that
      * guest-time input transition. */
     if (sched_pause_pending()) return;
-    uint8_t lx = 128, ly = 128;
-    if (gui_on()) gui_analog(&lx, &ly);
+    uint8_t lx = 128u, ly = 128u;
+    if (s_ctrl_sampling_mode == 1u) {
+        if (gui_on()) gui_analog(&lx, &ly);
+#ifdef SR_HLE_THREAD_SELFTEST
+        if (s_ctrl_test_stick) { lx = s_ctrl_test_lx; ly = s_ctrl_test_ly; }
+#endif
+    }
     uint32_t buttons = h_CtrlButtons();
     /* The on-screen keyboard is a system dialog: while it is open the title's pad reads
      * nothing, and the keyboard takes the pad instead. The scripted route reaches it as the
@@ -22602,15 +23221,14 @@ void sr_ctrl_sample(void) {
      * polls the pad on a PSP, so a scripted press it took counts as read and the route moves
      * on; without this the route would wait for a guest read that the keyboard now holds back. */
     if (keyboard_took_sample) (void)sr_input_read(&s_input, input_id);
-    s_ctrl_ring[s_ctrl_w].btn = buttons;
-    s_ctrl_ring[s_ctrl_w].input_id = input_id;
-    s_ctrl_ring[s_ctrl_w].ts = (uint32_t)sched_vtime_us();   /* low 32 bits of guest microsecond clock at latch */
-    s_ctrl_ring[s_ctrl_w].lx = lx;
-    s_ctrl_ring[s_ctrl_w].ly = ly;
+    /* With a sampling cycle the samples due before this VBLANK keep the previous input, and
+     * the VBLANK itself latches none. */
+    if (s_ctrl_sampling_cycle) ctrl_cycle_catch_up();
+    s_ctrl_live = (CtrlSample){ buttons, 0u, lx, ly, input_id };
     if (gui_on()) gui_consume_button_pulses();
-    s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
-    if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;  /* drop oldest on overflow */
-    s_ctrl_sample_count++;
+    if (s_ctrl_sampling_cycle) return;
+    /* Stamped with the low 32 bits of the guest microsecond clock at latch. */
+    ctrl_push(&s_ctrl_live, (uint32_t)sched_vtime_us());
     sched_wake(CTRL_WAIT_OBJ);
 }
 
@@ -22628,21 +23246,39 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
      * which #311 tracks for PSP-SYSTEM-001). PPSSPP and the uOFW reconstruction
      * return 0 here instead. Refusing writes nothing and consumes nothing. */
     if (nbufs == 0) return SCE_CTRL_ERROR_INVALID_SIZE;
-    int avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
-    /* Blocking ReadBuffer waits for at least one fresh sample (delivered each VBLANK). */
-    if (!peek) {
-        int guard = 0;
-        while (avail == 0 && sr_sched_on && guard++ < 4) {
-            sched_block_on(CTRL_WAIT_OBJ);
+    ctrl_cycle_catch_up();
+    int avail;
+    if (peek) {
+        /* A peek reports the newest `nbufs` samples, read before or not, and never blocks:
+         * pspautotests tests/ctrl/sampling and ctrl/vblank at f573fe8c (recorded on a PSP)
+         * answer 64 to a peek of 64, also right after a read and inside a VBLANK handler. */
+        avail = (int)nbufs;
+    } else {
+        /* A read returns the samples latched since the previous read, the newest `nbufs` of
+         * them, and consumes all of them (uOFW _sceCtrlReadBuf and PPSSPP __CtrlReadBuffer;
+         * PSP-KERNEL-SEM-001 ctrl-short-read). With none it waits for the next sample, and
+         * returns it: a read right after a read answers 1 (pspautotests ctrl/sampling and
+         * ctrl/vblank). A read that would wait answers ILLEGAL_CONTEXT in an interrupt handler
+         * and CAN_NOT_WAIT with interrupts or dispatch disabled (pspautotests
+         * tests/intr/waits.expected L222, L223 and L390). */
+        avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
+        if (avail == 0) {
+            if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;
+            if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+        }
+        while (avail == 0) {
+            if (s_ctrl_cycle_next_us) {
+                uint64_t now = sched_vtime_us();
+                uint64_t wait = s_ctrl_cycle_next_us > now ? s_ctrl_cycle_next_us - now : 1u;
+                (void)sched_block_on_timeout(CTRL_WAIT_OBJ, (uint32_t)wait);
+                ctrl_cycle_catch_up();
+            } else {
+                sched_block_on(CTRL_WAIT_OBJ);   /* sr_ctrl_sample() wakes it at the next VBLANK */
+            }
             avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
         }
+        if (avail > (int)nbufs) avail = (int)nbufs;
     }
-    /* Divergence kept deliberately visible rather than quietly changed: PPSSPP
-     * returns 0 here, this runtime hands back one stale sample. That sits on the
-     * per-frame hot path of every run, not on an error path, so retiring it needs
-     * its own evidence rather than riding along with the contract fixes above. */
-    if (avail < 1) avail = 1;                      /* always give at least the latest */
-    if (avail > (int)nbufs) avail = (int)nbufs;
     /* Whole-span preflight with checked arithmetic. The scalar accessors reject an
      * out-of-range store one word at a time, so without this a partially valid
      * destination gets part of the history written -- and a base near the top of
@@ -22714,6 +23350,7 @@ static uint32_t h_CtrlPeekBufferNegative(CpuState *s) {
  * no-input words are make/break/press 0 and release 0xFFFFFFFF. The clear-or-keep distinction is not
  * measured there (the release field stays saturated). */
 static uint32_t ctrl_latch_compute(uint32_t out, int consume) {
+    ctrl_cycle_catch_up();
     uint32_t produced = s_ctrl_sample_count - s_latch_seen_count;
     uint32_t retained = produced < (uint32_t)(CTRL_RING - 1) ? produced : (uint32_t)(CTRL_RING - 1);
     uint32_t prev = s_latch_prev_btn, cur = prev, make = 0u, brk = 0u;
@@ -22745,14 +23382,21 @@ static uint32_t h_CtrlPeekLatch(CpuState *s) { (void)s; return ctrl_latch_comput
 /* Test-build-only: push one sampling cycle with the given button field, as sr_ctrl_sample stores
  * it, without scripted input, the guest-time stamp or the wake. */
 void sr_hle_test_ctrl_push_sample(uint32_t buttons) {
-    s_ctrl_ring[s_ctrl_w].btn = buttons;
-    s_ctrl_ring[s_ctrl_w].input_id = 0u;
-    s_ctrl_ring[s_ctrl_w].ts = 0u;
-    s_ctrl_ring[s_ctrl_w].lx = 128u;
-    s_ctrl_ring[s_ctrl_w].ly = 128u;
-    s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
-    if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;
-    s_ctrl_sample_count++;
+    const CtrlSample smp = { buttons, 0u, 128u, 128u, 0u };
+    ctrl_push(&smp, 0u);
+}
+
+/* Test-build-only: the power-on ring (one neutral sample available, no history), so a test that
+ * needs an empty or a known ring does not depend on what ran before it in the process. */
+void sr_hle_test_ctrl_ring_reset(void) {
+    for (int i = 0; i < CTRL_RING; i++) s_ctrl_ring[i] = (CtrlSample){ 0, 0, 128, 128, 0 };
+    s_ctrl_w = 1;
+    s_ctrl_r = 0;
+    s_ctrl_sample_count = 0u;
+    s_latch_prev_btn = 0u;
+    s_latch_seen_count = 0u;
+    s_ctrl_live = (CtrlSample){ 0, 0, 128, 128, 0 };
+    s_ctrl_cycle_next_us = s_ctrl_sampling_cycle ? sched_vtime_us() + s_ctrl_sampling_cycle : 0u;
 }
 
 /* Test-build-only: start the latch from the current sample count and an all-released state. */
@@ -29547,6 +30191,15 @@ static void hle_register_impose_handlers(void) {
  * mapping and the named media boundaries are reachable from a production-path test. */
 /* sceLibFont: one mapping for the production registry and the executable harness, so the
  * harness dispatches the production handlers (issue #1384). */
+/* The console profile's getters (#1382): one helper for the production registry and the
+ * selftest, so both dispatch the same mapping. */
+static void hle_register_console_profile_handlers(void) {
+    sr_hle_register(0x0c622081, "sceWlanGetEtherAddr", h_WlanGetEtherAddr);
+    sr_hle_register(0x93440b11, "sceWlanDevIsPowerOn", h_WlanOn);
+    sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
+    sr_hle_register(0xc69bebce, "sceOpenPSIDGetOpenPSID", h_OpenPSIDGetOpenPSID);
+}
+
 static void hle_register_font_handlers(void) {
     sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
     sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);
@@ -29555,6 +30208,7 @@ static void hle_register_font_handlers(void) {
     sr_hle_register(0xdcc80c2f, "sceFontGetCharInfo", h_FontGetCharInfo);
     sr_hle_register(0x980f4895, "sceFontGetCharGlyphImage", h_FontGetCharGlyphImage);
     sr_hle_register(0x099ef33c, "sceFontFindOptimumFont", h_FontFindOptimumFont);
+    sr_hle_register(0x48293280, "sceFontSetResolution", h_FontSetResolution);
     sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
     sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
     sr_hle_register(0x57fcb733, "sceFontOpenUserFile", h_FontOpenUserFile);
@@ -29990,6 +30644,7 @@ void sr_hle_init(void) {
     hle_register_utility_module_handlers();
     hle_register_kernel_module_handlers();
     hle_register_font_handlers();
+    hle_register_console_profile_handlers();
     hle_register_msgpipe_handlers();
     hle_register_mbx_handlers();
     /* PSP-B2-01 / PSP-B3-01 cancel/release family: one definition for both
@@ -30064,12 +30719,7 @@ void sr_hle_init(void) {
     hle_register_impose_handlers();
     hle_register_osk_handlers();
     hle_register_utility_dialog_handlers();
-    /* sceWlan: the game stamps saves/profiles with the console's MAC. A stable fake works
-     * (PPSSPP behaviour); low 2 bits of byte 0 must be clear (locally-administered/multicast
-     * OUI bits confuse some games -- PPSSPP masks them too). */
-    sr_hle_register(0x0c622081, "sceWlanGetEtherAddr", h_WlanGetEtherAddr);
-    sr_hle_register(0x93440b11, "sceWlanDevIsPowerOn", h_WlanOn);
-    sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
+    hle_register_console_profile_handlers();
     sr_hle_power_register_callback();
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
@@ -30166,8 +30816,6 @@ void sr_hle_init(void) {
 
     /* The sceReg family and sceUtilityGetSystemParamInt: see hle_register_sysreg_handlers(). */
     hle_register_sysreg_handlers();
-    /* sceOpenPSID: returns 16-byte console unique ID; zero-fill is fine for boot. */
-    sr_hle_register(0xc69bebce, "sceOpenPSIDGetOpenPSID", h_OpenPSIDGetOpenPSID);
 #endif
 
     hle_register_time_handlers();
