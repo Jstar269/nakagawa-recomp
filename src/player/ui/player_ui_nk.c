@@ -179,6 +179,7 @@ struct PlayerUiNk {
     bool rebuild_focus_pending;
     char rebuild_text[256];
     char rebuild_notice[96];
+    char verify_notice[96];     /* the library's disc check line */
     /* A rebuilding card's status word with its progress ("Rebuilding 40%"). */
     char rebuild_word[PLAYER_UI_TITLE_CAP][32];
     /* After a removal the library focuses the tile that took its place. */
@@ -1882,6 +1883,19 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
                : game->is_sample ? "Test program"
                : nk_disc_id_is_non_retail_key(game->disc_id) ? "Beta / unofficial"
                : "Your disc";
+    /* Disc verification: a checked image says how it compares with the user's
+       disc list; the check's progress is the library's heading line, so the
+       badge changes once. A beta's own badge says more than "Unknown dump", and
+       the title page's sentence covers both. */
+    if (!out->is_demo && !game->is_sample && out->art_kind == NK_UI_ART_NONE) {
+        const char *tier = player_disc_tier_badge(game->disc_verification);
+        if (tier != NULL && !(game->disc_verification == NK_DISC_TIER_UNKNOWN &&
+                              nk_disc_id_is_non_retail_key(game->disc_id))) {
+            out->badge = tier;
+        }
+    }
+    out->disc_check_note = out->is_demo || game->is_sample
+        ? NULL : player_disc_tier_note(game->disc_verification);
     /* Disc art is asked for by the screen that shows it
        (player_ui_title_art), not for every title in the library. */
     out->icon = NULL;
@@ -2478,6 +2492,10 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                                                  &model.rebuild_notice_offers_all);
             model.rebuild_notice = player->rebuild_notice;
         }
+        if (player_app_disc_check_line(app, player->verify_notice, sizeof(player->verify_notice),
+                                       &model.verify_offers_cancel)) {
+            model.verify_notice = player->verify_notice;
+        }
         player_ui_library_backdrop(player, app, count, now_s, &model);
         action = player_ui_screen_library(player->ui, &model);
         if (action.kind == PLAYER_UI_ACTION_OPEN_TITLE && action.title_index < count) {
@@ -2670,6 +2688,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             model.has_saves = player->remove_plan.has_saves;
             model.saves_bytes = player->remove_plan.saves_bytes;
             model.delete_saves = player->remove_delete_saves;
+            model.files_shared = player->remove_plan.files_shared;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
             action = player_ui_screen_remove(player->ui, &model);

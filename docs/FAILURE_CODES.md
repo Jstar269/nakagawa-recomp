@@ -43,7 +43,7 @@ The **Where** column of each table names the places a code can appear:
 | `route` | The code a tool stops with and prints, such as `title_codegen_plan.py` (`PackageRouteError`), the import-table reader (`ImportTableError`) and the disc inspector (`IsoInspectionError`). A bring-up report names these through the `report` code they map to. |
 | `staging` | The code a game-file staging run returns (`nk_core.prep_engine`). |
 | `decrypt` | The built-in decryption result: `nk_psp_status_name`, the status word `nk_decrypt` prints, the player's disc check, and `decrypt_step.first_failure_code` in a `library_build` record. |
-| `disc` | A disc image or PlayStation Store package the player or the tools refuse (`nk_disc_expand`, the PBP rules in `nk_iso.c`). |
+| `disc` | A disc image, PlayStation Store package or Redump datafile the player or the tools refuse (`nk_disc_expand`, the PBP rules in `nk_iso.c`, `nk_disc_verify`). |
 | `player` | The `Code:` line of the player's problem report. |
 | `library` | A `tools/library_build.py` or `tools/library_sweep.py` record, beyond the report codes those tools copy. |
 
@@ -51,6 +51,11 @@ The **Where** column of each table names the places a code can appear:
 
 | Code | Where | Meaning |
 | --- | --- | --- |
+| `DISC_DAT_EMPTY` | disc | The Redump datafile lists no disc with a SHA-1 hash. |
+| `DISC_DAT_NOT_DATAFILE` | disc | The file chosen as a Redump datafile has no `<datafile>` element, or is not UTF-8 text. |
+| `DISC_DAT_READ_FAILED` | disc | The Redump datafile could not be read. |
+| `DISC_DAT_TOO_LARGE` | disc | The Redump datafile is larger, or lists more discs, than a datafile can. |
+| `DISC_DAT_WRITE_FAILED` | disc | The imported Redump datafile could not be saved in the data folder. |
 | `DISC_IDENTIFY_FAILED` | library | The disc's title information could not be read, so the library could not identify the disc. The record's `identify_detail` says why. |
 | `DISC_IMAGE_BLOCK_CORRUPT` | disc, player | A compressed disc image has a block that does not decompress. |
 | `DISC_IMAGE_CHD_CD_UNSUPPORTED` | disc, player | The CHD file holds a CD image, not a PSP UMD. |

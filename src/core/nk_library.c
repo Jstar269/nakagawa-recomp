@@ -3,6 +3,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include "nk_disc_verify.h"
 #include "nk_json.h"
 #include "nk_library.h"
 #include "nk_platform.h"
@@ -52,48 +53,221 @@ const NkGameEntry *nk_library_get(const NkLibrary *lib, int index) {
     return &lib->entries[index];
 }
 
-const NkGameEntry *nk_library_find_by_disc_id(const NkLibrary *lib, const char *disc_id) {
-    if (!lib || !disc_id || !*disc_id) return NULL;
+/* The index of the record with disc_id and content_sha1, or -1. An empty or
+   NULL content_sha1 matches the first record with disc_id. */
+static int library_index_of_key(const NkLibrary *lib, const char *disc_id,
+                                const char *content_sha1) {
+    if (!lib || !disc_id || !*disc_id) return -1;
+    bool any = !content_sha1 || !content_sha1[0];
     for (int i = 0; i < lib->count; i++) {
-        if (strcmp(lib->entries[i].disc_id, disc_id) == 0) {
-            return &lib->entries[i];
-        }
+        if (strcmp(lib->entries[i].disc_id, disc_id) != 0) continue;
+        if (any || strcmp(lib->entries[i].content_sha1, content_sha1) == 0) return i;
     }
-    return NULL;
+    return -1;
 }
 
-NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
-    if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
-
+/* The record a disc ID alone picks out: the only one with it (unhashed_only:
+   the only unhashed one), or -1 when there is none or it can't say which. */
+static int library_index_of_disc_id_alone(const NkLibrary *lib, const char *disc_id,
+                                          bool unhashed_only) {
+    int only = -1, count = 0;
     for (int i = 0; i < lib->count; i++) {
-        if (strcmp(lib->entries[i].disc_id, entry->disc_id) == 0) {
-            lib->entries[i] = *entry;
-            return NK_OK;
+        if (strcmp(lib->entries[i].disc_id, disc_id) != 0) continue;
+        if (unhashed_only && lib->entries[i].content_sha1[0]) continue;
+        if (count++ == 0) only = i;
+    }
+    return count == 1 ? only : -1;
+}
+
+/* Whether a record's image file is still there. When it is, an unhashed image
+   of another file is a second image (a fan translation added beside its retail
+   disc), not the same disc moved. */
+static bool library_image_present(const NkGameEntry *record) {
+    return record->iso_path[0] && nk_platform_file_exists(record->iso_path);
+}
+
+/* The record an incoming entry replaces (nk_library.h), or -1 to add it. A
+   record is replaced only when it is the same image as far as the library can
+   tell; when it can't tell, both are kept, so no image's record is lost. */
+static int library_index_for_entry(const NkLibrary *lib, const NkGameEntry *entry) {
+    if (entry->content_sha1[0]) {
+        int same = library_index_of_key(lib, entry->disc_id, entry->content_sha1);
+        if (same >= 0) return same;
+    }
+    /* The record of the same file: this image is what that file holds now
+       (re-added, or a compressed image expanded over the same path). */
+    for (int i = 0; i < lib->count; i++) {
+        if (strcmp(lib->entries[i].disc_id, entry->disc_id) == 0 &&
+            strcmp(lib->entries[i].iso_path, entry->iso_path) == 0) {
+            return i;
         }
     }
+    /* A hashed image of another file is another image, even beside a record
+       written before hashing. An unhashed one replaces the only record of its
+       disc ID when that record was never hashed either and its file is gone:
+       the disc moved, as before hashing. A hashed record is a known image, a
+       record whose file is still there is another image until hashes say
+       otherwise, and beside several records the newcomer can't be told apart,
+       so it is added and nothing is lost. */
+    if (entry->content_sha1[0]) return -1;
+    int only = library_index_of_disc_id_alone(lib, entry->disc_id, false);
+    return only >= 0 && !lib->entries[only].content_sha1[0] &&
+           !library_image_present(&lib->entries[only]) ? only : -1;
+}
 
-    if (lib->count >= NK_MAX_GAMES) {
-        return NK_ERROR_OUT_OF_MEMORY;
+const NkGameEntry *nk_library_find_replaced(const NkLibrary *lib, const NkGameEntry *entry) {
+    if (!lib || !entry || !entry->disc_id[0]) return NULL;
+    int index = library_index_for_entry(lib, entry);
+    return index >= 0 ? &lib->entries[index] : NULL;
+}
+
+const NkGameEntry *nk_library_find_by_disc_id(const NkLibrary *lib, const char *disc_id) {
+    return nk_library_find_by_key(lib, disc_id, NULL);
+}
+
+const NkGameEntry *nk_library_find_by_key(const NkLibrary *lib, const char *disc_id,
+                                          const char *content_sha1) {
+    int index = library_index_of_key(lib, disc_id, content_sha1);
+    return index >= 0 ? &lib->entries[index] : NULL;
+}
+
+bool nk_library_has_verified_disc_id(const NkLibrary *lib, const char *disc_id) {
+    if (!lib || !disc_id || !*disc_id) return false;
+    for (int i = 0; i < lib->count; i++) {
+        if (strcmp(lib->entries[i].disc_id, disc_id) == 0 &&
+            lib->entries[i].disc_verification == NK_DISC_TIER_VERIFIED_RETAIL) {
+            return true;
+        }
     }
+    return false;
+}
 
-    lib->entries[lib->count++] = *entry;
+/* A verified retail record makes its disc ID known retail: the unknown
+   records with it are modified images of that disc. */
+static void library_label_modified(NkLibrary *lib, const char *disc_id) {
+    if (!nk_library_has_verified_disc_id(lib, disc_id)) return;
+    for (int i = 0; i < lib->count; i++) {
+        if (strcmp(lib->entries[i].disc_id, disc_id) == 0 &&
+            lib->entries[i].disc_verification == NK_DISC_TIER_UNKNOWN) {
+            lib->entries[i].disc_verification = NK_DISC_TIER_MODIFIED;
+        }
+    }
+}
+
+/* One file holds one image: the other records of the disc ID that name the
+   file of lib->entries[keep] are stale. That happens when a hashed image takes
+   over its own record from another file (the image moved, then was added
+   again): the record its new file got before it was hashed goes. */
+static void library_drop_stale_records_of_file(NkLibrary *lib, int keep) {
+    char disc_id[sizeof(lib->entries[0].disc_id)];
+    char iso_path[sizeof(lib->entries[0].iso_path)];
+    memcpy(disc_id, lib->entries[keep].disc_id, sizeof(disc_id));
+    memcpy(iso_path, lib->entries[keep].iso_path, sizeof(iso_path));
+    if (!iso_path[0]) return;
+    int kept = 0;
+    for (int i = 0; i < lib->count; i++) {
+        if (i != keep && strcmp(lib->entries[i].disc_id, disc_id) == 0 &&
+            strcmp(lib->entries[i].iso_path, iso_path) == 0) {
+            continue;
+        }
+        if (kept != i) lib->entries[kept] = lib->entries[i];
+        kept++;
+    }
+    if (kept < lib->count) {
+        memset(&lib->entries[kept], 0, (size_t)(lib->count - kept) * sizeof(lib->entries[0]));
+        lib->count = kept;
+    }
+}
+
+/* nk_library_add_or_update, and with fresh set nk_library_add_fresh. */
+static NkResult library_put(NkLibrary *lib, const NkGameEntry *entry, bool fresh) {
+    if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
+
+    int index = library_index_for_entry(lib, entry);
+    if (index >= 0) {
+        NkGameEntry *existing = &lib->entries[index];
+        NkGameEntry merged = *entry;
+        /* An update made without hashing, of the same file (its last-played
+           time, a build's result), keeps the record's hashes and tier, which
+           another writer may have just recorded. A fresh add of the file does
+           not: the file may hold other bytes now, and the player checks it
+           again. A size of 0 is one a writer didn't record, not another file. */
+        if (!fresh && !merged.content_sha1[0] && existing->content_sha1[0] &&
+            strcmp(existing->iso_path, merged.iso_path) == 0 &&
+            (existing->iso_size_bytes == merged.iso_size_bytes ||
+             existing->iso_size_bytes == 0 || merged.iso_size_bytes == 0)) {
+            memcpy(merged.content_sha1, existing->content_sha1, sizeof(merged.content_sha1));
+            memcpy(merged.content_crc32, existing->content_crc32, sizeof(merged.content_crc32));
+            merged.disc_verification = existing->disc_verification;
+        }
+        *existing = merged;
+        if (merged.content_sha1[0]) library_drop_stale_records_of_file(lib, index);
+    } else {
+        if (lib->count >= NK_MAX_GAMES) {
+            return NK_ERROR_OUT_OF_MEMORY;
+        }
+        lib->entries[lib->count++] = *entry;
+    }
+    library_label_modified(lib, entry->disc_id);
     return NK_OK;
 }
 
-NkResult nk_library_remove(NkLibrary *lib, const char *disc_id) {
-    if (!lib || !disc_id || !*disc_id) return NK_ERROR_GENERIC;
+NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
+    return library_put(lib, entry, false);
+}
 
+NkResult nk_library_add_fresh(NkLibrary *lib, const NkGameEntry *entry) {
+    return library_put(lib, entry, true);
+}
+
+NkResult nk_library_remove(NkLibrary *lib, const char *disc_id) {
+    return nk_library_remove_by_key(lib, disc_id, NULL);
+}
+
+NkResult nk_library_remove_by_file(NkLibrary *lib, const char *disc_id, const char *iso_path) {
+    if (!lib || !disc_id || !*disc_id || !iso_path || !*iso_path) return NK_ERROR_GENERIC;
     for (int i = 0; i < lib->count; i++) {
-        if (strcmp(lib->entries[i].disc_id, disc_id) == 0) {
-            for (int j = i; j < lib->count - 1; j++) {
-                lib->entries[j] = lib->entries[j + 1];
-            }
-            lib->count--;
-            memset(&lib->entries[lib->count], 0, sizeof(NkGameEntry));
-            return NK_OK;
+        if (strcmp(lib->entries[i].disc_id, disc_id) != 0 ||
+            strcmp(lib->entries[i].iso_path, iso_path) != 0) {
+            continue;
         }
+        for (int j = i; j < lib->count - 1; j++) lib->entries[j] = lib->entries[j + 1];
+        lib->count--;
+        memset(&lib->entries[lib->count], 0, sizeof(NkGameEntry));
+        return NK_OK;
     }
     return NK_ERROR_FILE_NOT_FOUND;
+}
+
+NkResult nk_library_remove_by_key(NkLibrary *lib, const char *disc_id,
+                                  const char *content_sha1) {
+    if (!lib || !disc_id || !*disc_id) return NK_ERROR_GENERIC;
+
+    int i;
+    if (content_sha1 && content_sha1[0]) {
+        i = library_index_of_key(lib, disc_id, content_sha1);
+    } else {
+        /* Never remove a record the disc ID alone doesn't pick out: with a
+           retail disc and a modified copy, that could be the other one. An
+           empty content_sha1 names the unhashed record. */
+        bool unhashed_only = content_sha1 != NULL;
+        i = library_index_of_disc_id_alone(lib, disc_id, unhashed_only);
+        if (i < 0) {
+            int candidates = 0;
+            for (int j = 0; j < lib->count; j++) {
+                candidates += strcmp(lib->entries[j].disc_id, disc_id) == 0 &&
+                              (!unhashed_only || !lib->entries[j].content_sha1[0]);
+            }
+            if (candidates > 1) return NK_ERROR_AMBIGUOUS;
+        }
+    }
+    if (i < 0) return NK_ERROR_FILE_NOT_FOUND;
+    for (int j = i; j < lib->count - 1; j++) {
+        lib->entries[j] = lib->entries[j + 1];
+    }
+    lib->count--;
+    memset(&lib->entries[lib->count], 0, sizeof(NkGameEntry));
+    return NK_OK;
 }
 
 /* Writes `"key": "value",` with the value escaped for JSON. Every control
@@ -180,6 +354,14 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         write_json_string_field(f, "iso_path", g->iso_path);
         if (g->source_image_path[0]) {
             write_json_string_field(f, "source_image_path", g->source_image_path);
+        }
+        if (g->content_sha1[0]) {
+            write_json_string_field(f, "content_sha1", g->content_sha1);
+            write_json_string_field(f, "content_crc32", g->content_crc32);
+        }
+        if (g->disc_verification != NK_DISC_TIER_NOT_CHECKED) {
+            write_json_string_field(f, "disc_verification",
+                                    nk_disc_tier_name((NkDiscTier)g->disc_verification));
         }
         write_json_string_field(f, "prepared_root", g->prepared_root);
         write_json_string_field(f, "title_id", g->title_id);
@@ -388,6 +570,17 @@ static const char *parse_bool_val(const char *p, bool *out_value) {
     return NULL;
 }
 
+/* Exactly `digits` lowercase or uppercase hex digits, stored lowercase. */
+static bool library_hex_field(char *value, size_t digits) {
+    if (strlen(value) != digits) return false;
+    for (size_t i = 0; i < digits; i++) {
+        char c = value[i];
+        if (c >= 'A' && c <= 'F') value[i] = (char)(c - 'A' + 'a');
+        else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
 static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
     if (!lib || !target) return NK_ERROR_GENERIC;
 
@@ -509,6 +702,30 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                                               sizeof(entry.source_image_path));
                     if (!next_p) { entry_failed = true; break; }
                     p = next_p;
+                } else if (strcmp(key, "content_sha1") == 0 ||
+                           strcmp(key, "content_crc32") == 0) {
+                    bool sha1 = strcmp(key, "content_sha1") == 0;
+                    char *field = sha1 ? entry.content_sha1 : entry.content_crc32;
+                    size_t field_size = sha1 ? sizeof(entry.content_sha1)
+                                             : sizeof(entry.content_crc32);
+                    char value[64];
+                    next_p = parse_string_val(p, value, sizeof(value));
+                    if (!next_p || !library_hex_field(value, field_size - 1u)) {
+                        entry_failed = true;
+                        break;
+                    }
+                    memcpy(field, value, field_size);
+                    p = next_p;
+                } else if (strcmp(key, "disc_verification") == 0) {
+                    /* A tier name this build does not know reads as not
+                       checked, so the next check fills it in again. */
+                    char name[32];
+                    NkDiscTier tier;
+                    next_p = parse_string_val(p, name, sizeof(name));
+                    if (!next_p) { entry_failed = true; break; }
+                    (void)nk_disc_tier_from_name(name, &tier);
+                    entry.disc_verification = (uint32_t)tier;
+                    p = next_p;
                 } else if (strcmp(key, "prepared_root") == 0) {
                     next_p = parse_string_val(p, entry.prepared_root, sizeof(entry.prepared_root));
                     if (!next_p) { entry_failed = true; break; }
@@ -619,6 +836,9 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
             }
         }
 
+        if (!entry_failed && (entry.content_sha1[0] != '\0') != (entry.content_crc32[0] != '\0')) {
+            entry_failed = true; /* one hash without the other is not a record we wrote */
+        }
         if (entry_failed) {
             /* A malformed member invalidates the WHOLE file, not just this
                entry. Skipping to the closing brace and continuing would return
@@ -768,19 +988,28 @@ NkResult nk_library_lock_acquire(NkFileLock *lock, const char *library_path,
    not have (a sample, or one an earlier save could not write) stays, except the
    removed one. view is scratch space of the same size. */
 static void library_adopt(NkLibrary *lib, const NkLibrary *saved, const char *removed,
-                          NkLibrary *view) {
+                          const char *removed_sha1, const char *removed_file,
+                          NkLibrary *view, bool *taken) {
     view->count = 0;
+    memset(taken, 0, (size_t)NK_MAX_GAMES * sizeof(*taken));
+    bool removed_any_image = !removed_sha1 || !removed_sha1[0];
     for (int i = 0; i < lib->count && view->count < NK_MAX_GAMES; i++) {
         const NkGameEntry *own = &lib->entries[i];
-        if (removed && strcmp(own->disc_id, removed) == 0) continue;
-        const NkGameEntry *on_disk = own->is_sample
-            ? NULL : nk_library_find_by_disc_id(saved, own->disc_id);
-        view->entries[view->count++] = on_disk ? *on_disk : *own;
+        /* Its record in the file, by the key add_or_update uses; each record
+           in the file is taken by one own record at most. */
+        int on_disk = own->is_sample ? -1 : library_index_for_entry(saved, own);
+        if (on_disk >= 0 && taken[on_disk]) on_disk = -1;
+        /* The removed record: gone from the file, and named by the removal. */
+        if (on_disk < 0 && removed && !own->is_sample && strcmp(own->disc_id, removed) == 0 &&
+            (removed_file ? strcmp(own->iso_path, removed_file) == 0
+                          : removed_any_image || strcmp(own->content_sha1, removed_sha1) == 0)) {
+            continue;
+        }
+        if (on_disk >= 0) taken[on_disk] = true;
+        view->entries[view->count++] = on_disk >= 0 ? saved->entries[on_disk] : *own;
     }
     for (int i = 0; i < saved->count && view->count < NK_MAX_GAMES; i++) {
-        if (!nk_library_find_by_disc_id(view, saved->entries[i].disc_id)) {
-            view->entries[view->count++] = saved->entries[i];
-        }
+        if (!taken[i]) view->entries[view->count++] = saved->entries[i];
     }
     int previous = lib->count;
     memcpy(lib->entries, view->entries, (size_t)view->count * sizeof(lib->entries[0]));
@@ -791,9 +1020,12 @@ static void library_adopt(NkLibrary *lib, const NkLibrary *saved, const char *re
     lib->count = view->count;
 }
 
-/* Puts entry, or removes disc_id when entry is NULL, in the file under the lock. */
-static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, const char *disc_id,
-                               const char *file_path) {
+/* Puts entry (as a fresh add when fresh is set), or removes disc_id (the record
+   of iso_path when it is given, else the one with content_sha1) when entry is
+   NULL, in the file under the lock. */
+static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, bool fresh,
+                               const char *disc_id, const char *content_sha1,
+                               const char *iso_path, const char *file_path) {
     char target[NK_MAX_PATH];
     if (file_path) {
         snprintf(target, sizeof(target), "%s", file_path);
@@ -809,9 +1041,11 @@ static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, const c
 
     NkLibrary *disk = (NkLibrary *)malloc(sizeof(*disk));
     NkLibrary *view = (NkLibrary *)malloc(sizeof(*view));
-    if (!disk || !view) {
+    bool *taken = (bool *)malloc((size_t)NK_MAX_GAMES * sizeof(*taken));
+    if (!disk || !view || !taken) {
         free(disk);
         free(view);
+        free(taken);
         return NK_ERROR_OUT_OF_MEMORY;
     }
     NkFileLock lock;
@@ -828,17 +1062,21 @@ static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, const c
                        (size_t)lib->count * sizeof(lib->entries[0]));
                 disk->count = lib->count;
             }
-            res = entry ? nk_library_add_or_update(disk, entry)
-                        : nk_library_remove(disk, disc_id);
+            res = entry ? library_put(disk, entry, fresh)
+                  : iso_path ? nk_library_remove_by_file(disk, disc_id, iso_path)
+                             : nk_library_remove_by_key(disk, disc_id, content_sha1);
             if (res == NK_OK) {
                 res = nk_library_save(disk, target);
             } else if (!entry && res == NK_ERROR_FILE_NOT_FOUND) {
                 res = NK_OK;  /* another writer removed it already */
             }
-            if (res == NK_OK) library_adopt(lib, disk, disc_id, view);
+            if (res == NK_OK) {
+                library_adopt(lib, disk, disc_id, content_sha1, iso_path, view, taken);
+            }
         }
         nk_platform_file_lock_release(&lock);
     }
+    free(taken);
     free(view);
     free(disk);
     return res;
@@ -847,11 +1085,28 @@ static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, const c
 NkResult nk_library_commit_entry(NkLibrary *lib, const NkGameEntry *entry,
                                  const char *file_path) {
     if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
-    return library_commit(lib, entry, NULL, file_path);
+    return library_commit(lib, entry, false, NULL, NULL, NULL, file_path);
+}
+
+NkResult nk_library_commit_fresh(NkLibrary *lib, const NkGameEntry *entry,
+                                 const char *file_path) {
+    if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
+    return library_commit(lib, entry, true, NULL, NULL, NULL, file_path);
 }
 
 NkResult nk_library_commit_remove(NkLibrary *lib, const char *disc_id,
                                   const char *file_path) {
+    return nk_library_commit_remove_by_key(lib, disc_id, NULL, file_path);
+}
+
+NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
+                                         const char *content_sha1, const char *file_path) {
     if (!lib || !disc_id || !*disc_id) return NK_ERROR_GENERIC;
-    return library_commit(lib, NULL, disc_id, file_path);
+    return library_commit(lib, NULL, false, disc_id, content_sha1, NULL, file_path);
+}
+
+NkResult nk_library_commit_remove_by_file(NkLibrary *lib, const char *disc_id,
+                                          const char *iso_path, const char *file_path) {
+    if (!lib || !disc_id || !*disc_id || !iso_path || !*iso_path) return NK_ERROR_GENERIC;
+    return library_commit(lib, NULL, false, disc_id, NULL, iso_path, file_path);
 }
