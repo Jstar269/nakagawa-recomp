@@ -1773,9 +1773,11 @@ int      gui_stop_requested(void);
 /* Releases the presenter, the SR_PERF summary first; idempotent. The driver calls it once the
  * scheduler returns, and gui_init registers it with atexit for a run that ends otherwise. */
 void     gui_shutdown(void);
-/* 1 once SR_GE_CAPTURE_EXIT's capture was written (ge.c): a scheduler run stops at its next
- * boundary instead of exiting from inside the GE path. */
+/* 1 once SR_GE_CAPTURE_EXIT's capture was written (ge.c). After
+ * ge_capture_exit_set_deferred(1) (the driver, for a scheduler run that polls it) the run stops
+ * at the scheduler's next boundary; otherwise the capture exit leaves at once through exit(). */
 int      ge_capture_exit_due(void);
+void     ge_capture_exit_set_deferred(int deferred);
 /* Optional stop request polled by sched_run between guest slices and by sr_yield, which
  * returns a lone running thread to the scheduler when it is set, as for a pause. The driver
  * points it at its stop check for a scheduler run (the window's, a GE capture's); NULL (the

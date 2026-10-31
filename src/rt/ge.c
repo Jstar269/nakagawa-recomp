@@ -1364,11 +1364,16 @@ static unsigned long s_capture_min_prims = 1;
 static unsigned long s_capture_total_prims = 0;
 static int s_capture_done = 0;
 static int s_capture_exit = 0;
-static int s_capture_exit_due = 0;   /* SR_GE_CAPTURE_EXIT: the capture was written */
+static int s_capture_exit_due = 0;       /* SR_GE_CAPTURE_EXIT: the capture was written */
+static int s_capture_exit_deferred = 0;  /* a scheduler loop polls ge_capture_exit_due */
 static const char *s_capture_path = NULL;
 
 int ge_capture_exit_due(void) {
     return s_capture_exit_due;
+}
+
+void ge_capture_exit_set_deferred(int deferred) {
+    s_capture_exit_deferred = deferred != 0;
 }
 
 static void ge_capture_configure(void) {
@@ -1778,7 +1783,7 @@ void ge_set_frame(uint32_t frame) {
                  * driver's teardown and every atexit handler run (#1377). With no scheduler
                  * loop to return to, the run ends here, still through exit(). */
                 s_capture_exit_due = 1;
-                if (!sr_sched_stop_requested) {
+                if (!s_capture_exit_deferred) {
                     sr_perf_shutdown();
                     exit(0);
                 }

@@ -230,6 +230,7 @@ void     gui_pause_leave(void) {}
 int      gui_stop_requested(void) { return 0; }
 void     gui_shutdown(void) {}
 int      ge_capture_exit_due(void) { return 0; }
+void     ge_capture_exit_set_deferred(int deferred) { (void)deferred; }
 
 /* --- Extracted-data preparation stub (hle.c seam; the gate never scans) --- */
 int sr_host_data_prepare(void) { return 4; /* SR_DATA_STATE_DISABLED */ }

@@ -673,7 +673,10 @@ have_image:;
     }
     /* An acceptance launch ends the scheduler once its requested frames were presented; a
      * quit or a finished GE capture ends it the same way, at a scheduler boundary. */
-    if (use_sched) sr_sched_stop_requested = driver_stop_requested;
+    if (use_sched) {
+        sr_sched_stop_requested = driver_stop_requested;
+        ge_capture_exit_set_deferred(1);
+    }
     if (gui_pause_presenter()) {
         s_driver_pause_host.enter = gui_pause_enter;
         s_driver_pause_host.frame = gui_pause_frame;
