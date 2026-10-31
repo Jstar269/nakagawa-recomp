@@ -137,3 +137,21 @@ whose exit syscall is at step 0 (a non-semantic probe, never a match), and passe
 the required record count to the comparator. The default two-argument
 invocation keeps its permissive v1 equality behavior for maintained informational
 callers; it is not proof that execution matched.
+
+## Shrinking a divergence
+
+A divergence found in a long run becomes a focused regression with:
+
+```text
+tracediff.py --shrink <trace-a> <trace-b> <out-dir> [--context N]
+```
+
+It writes `a.trace` and `b.trace` to `<out-dir>`: each side's records from `N`
+records before the first divergence (8 by default) through the divergent record,
+renumbered from zero. The two traces agree before the divergence, so the state at
+the window's start is the same on both sides; a `# start-state` comment lists every
+register and memory value the earlier records wrote, registers first and memory by
+address. A fixture that seeds that state and runs the window's instructions
+reproduces the divergence without the original run. The output is a v1 trace, so a
+shrunk stream is a regression seed and never hardware evidence. The exit status is
+1 when a pair was written and 0 when the traces agree (nothing is written).

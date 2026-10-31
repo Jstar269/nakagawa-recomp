@@ -17,6 +17,8 @@
 #     requires an identity header, a positive record count and contiguous indices, and
 #     --expect-steps N additionally requires exactly N records. Equal lengths are not
 #     coverage, so an incomplete stream cannot pass.
+# --shrink <a> <b> <out-dir> cuts a diverging pair to a short window before the first
+# divergence, with the state at the window's start, for a focused regression (shrink()).
 
 import re
 import sys
@@ -406,6 +408,88 @@ def diff(path_a, path_b):
     return None
 
 
+def _header_field(header, name, default):
+    match = re.search(rf"(?:^|\s){re.escape(name)}=(\S+)", header or "")
+    return match.group(1) if match else default
+
+
+def _start_state_tokens(steps, end):
+    """The register and memory values the first `end` records wrote, in token order: what a
+    focused regression must set before it runs from record `end`."""
+    state = {}
+    for _step, _pc, _op, writes in steps[:end]:
+        state.update(writes)
+    registers = [name for name in state if not name.startswith("m")]
+    memory = sorted((name for name in state if name.startswith("m")),
+                    key=lambda name: (name[name.index("[") + 1:], name))
+    return [f"{name}={state[name]}" for name in registers + memory]
+
+
+def shrink(path_a, path_b, out_dir, context=8):
+    """Cut a diverging pair down to the records that matter (#312).
+
+    Both traces agree on every record before the first divergence, so the state at any
+    earlier record is the same on both sides and can be rebuilt from either one. The window
+    keeps `context` agreeing records before the divergence and the divergent record itself;
+    each side is written renumbered from 0 with a `# start-state` comment holding every
+    register and memory value written before the window. A fixture that seeds that state and
+    runs the window's instructions reproduces the divergence without the original run. The
+    output is a v1 trace on purpose: a shrunk stream is a regression seed, never hardware
+    evidence. Returns None when the traces agree, else (step, pc, detail, paths).
+    """
+    import os
+
+    result = diff(path_a, path_b)
+    if result is None:
+        return None
+    step, pc, detail = result
+    header_a, a = load(path_a)
+    header_b, b = load(path_b)
+    start = max(0, step - max(0, int(context)))
+    state = _start_state_tokens(a, start)
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for name, path, header, records in (("a", path_a, header_a, a), ("b", path_b, header_b, b)):
+        window = records[start:step + 1]
+        first_pc = window[0][1] if window else pc
+        out_path = os.path.join(out_dir, f"{name}.trace")
+        with open(out_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"# psp-recomp trace v1 target=shrunk "
+                         f"oracle={_header_field(header, 'oracle', 'shrunk')} "
+                         f"start_pc={first_pc} steps={len(window)}\n")
+            handle.write(f"# shrunk from {path} records {start}..{step} "
+                         f"(first divergence at record {step}, pc {pc}: {detail})\n")
+            handle.write("# start-state" + "".join(f" {token}" for token in state) + "\n")
+            for index, (_step, record_pc, op, writes) in enumerate(window):
+                tokens = " ".join(f"{key}={value}" for key, value in writes.items())
+                handle.write(f"{index} pc={record_pc} op={op}" + (f" {tokens}" if tokens else "") + "\n")
+        written.append(out_path)
+    return step, pc, detail, written
+
+
+def _main_shrink(args):
+    context = 8
+    if len(args) >= 2 and args[-2] == "--context":
+        if not re.fullmatch(r"[0-9]{1,7}", args[-1]):
+            sys.stderr.write("--context must be a decimal record count\n")
+            return 2
+        context = int(args[-1], 10)
+        args = args[:-2]
+    if len(args) != 3:
+        sys.stderr.write(
+            "usage: tracediff.py --shrink <trace-a> <trace-b> <out-dir> [--context N]\n"
+        )
+        return 2
+    result = shrink(args[0], args[1], args[2], context)
+    if result is None:
+        print("OK: traces identical, nothing to shrink")
+        return 0
+    step, pc, detail, written = result
+    print(f"DIVERGENCE at step {step}, pc {pc}: {detail}")
+    print("SHRUNK: " + " ".join(written))
+    return 1
+
+
 def _local_error(path, lineno, message):
     location = f"{path}:{lineno}" if lineno is not None else str(path)
     raise LocalTraceError(f"{location}: {message}")
@@ -552,10 +636,13 @@ def main(argv):
         return 1
     if len(argv) >= 2 and argv[1] == "--strict-local":
         return _main_strict_local(argv[2:])
+    if len(argv) >= 2 and argv[1] == "--shrink":
+        return _main_shrink(argv[2:])
     if len(argv) != 3:
         sys.stderr.write(
             "usage: tracediff.py [--strict-hardware|--strict-local] <trace-a> <trace-b>\n"
             "                            [--expect-steps N]\n"
+            "       tracediff.py --shrink <trace-a> <trace-b> <out-dir> [--context N]\n"
         )
         return 2
     result = diff(argv[1], argv[2])

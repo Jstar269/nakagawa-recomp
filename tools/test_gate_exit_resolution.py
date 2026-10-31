@@ -486,6 +486,66 @@ class TestStrictTraceContract(unittest.TestCase):
                 self.assertIn("usage: tracediff.py --strict-hardware", result.stderr)
                 self.assertNotIn("Traceback", result.stdout + result.stderr)
 
+    def shrink_pair(self, diverge_at, length=40):
+        """Two v1 streams that agree up to record `diverge_at` and differ in r9 there."""
+        def stream(name, wrong):
+            lines = ["# psp-recomp trace v1 target=fixture oracle=interp "
+                     f"start_pc=0x08900100 steps={length}"]
+            for step in range(length):
+                pc = 0x08900100 + 4 * step
+                writes = f" r{8 + step % 3}=0x{step:08x}"
+                if step % 5 == 0:
+                    writes += f" m32[0x{0x09ffff00 + 4 * (step % 4):08x}]=0x{step:08x}"
+                if wrong and step == diverge_at:
+                    writes = " r9=0xdeadbeef"
+                lines.append(f"{step} pc=0x{pc:08x} op=0x25080001{writes}")
+            return self.write_lines(name, lines)
+        return stream("long-a.trace", False), stream("long-b.trace", True)
+
+    def test_shrink_cuts_a_divergence_to_a_window_with_its_start_state(self):
+        path_a, path_b = self.shrink_pair(diverge_at=30)
+        out = self.dir / "shrunk"
+        result = subprocess.run(
+            [sys.executable, "-I", self.TOOL, "--shrink", str(path_a), str(path_b), str(out),
+             "--context", "3"],
+            cwd=os.path.dirname(self.TOOL), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE at step 30, pc 0x08900178", result.stdout)
+        a = (out / "a.trace").read_text(encoding="utf-8").splitlines()
+        b = (out / "b.trace").read_text(encoding="utf-8").splitlines()
+        # Records 27..30, renumbered from 0, starting at record 27's pc.
+        self.assertEqual(a[0], "# psp-recomp trace v1 target=shrunk oracle=interp "
+                               "start_pc=0x0890016c steps=4")
+        self.assertEqual([line.split()[0] for line in a[3:]], ["0", "1", "2", "3"])
+        self.assertEqual(a[3:6], b[3:6])
+        self.assertNotEqual(a[6], b[6])
+        # The state before record 27: the last value of each register and memory word the
+        # first 27 records wrote, registers first, memory by address.
+        self.assertEqual(a[2], b[2])
+        self.assertEqual(
+            a[2],
+            "# start-state r8=0x00000018 r9=0x00000019 r10=0x0000001a "
+            "m32[0x09ffff00]=0x00000014 m32[0x09ffff04]=0x00000019 "
+            "m32[0x09ffff08]=0x0000000a m32[0x09ffff0c]=0x0000000f")
+        # The shrunk pair reproduces the divergence at its last record.
+        self.assertEqual(tracediff.diff(str(out / "a.trace"), str(out / "b.trace"))[0], 3)
+
+    def test_shrink_of_agreeing_traces_writes_nothing(self):
+        path_a, _ = self.shrink_pair(diverge_at=30)
+        out = self.dir / "nothing"
+        self.assertIsNone(tracediff.shrink(str(path_a), str(path_a), str(out)))
+        self.assertFalse(out.exists())
+
+    def test_shrink_near_the_start_keeps_the_whole_prefix(self):
+        path_a, path_b = self.shrink_pair(diverge_at=1)
+        step, _pc, _detail, written = tracediff.shrink(
+            str(path_a), str(path_b), str(self.dir / "early"), context=8)
+        self.assertEqual(step, 1)
+        lines = pathlib.Path(written[0]).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[2], "# start-state")
+        self.assertEqual(len(lines), 3 + 2)
+
 
 class TestVerifyGateEvidence(unittest.TestCase):
     """Source-owned traces exercise verify_gates evidence-tier reporting."""
