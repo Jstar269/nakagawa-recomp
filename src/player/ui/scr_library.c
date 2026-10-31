@@ -883,6 +883,8 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                             tile.status_rgba = title->status_rgba;
                             tile.badge = title->art_kind != NK_UI_ART_NONE && title->badge == NULL
                                 ? "Showcase demo" : title->badge;
+                            /* Ace Mode is in effect for the title (src/rt/ace.h). */
+                            tile.badge_right = title->ace_badge ? "Ace" : NULL;
                             tile.art = (NkUiArtKind)title->art_kind;
                             tile.icon = title->icon;
                             tile.width = tile_width;

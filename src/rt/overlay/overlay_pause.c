@@ -18,6 +18,7 @@
 #define MENU_ID_DISC MENU_ID(0x001003u)
 #define MENU_ID_ACTIONS MENU_ID(0x001004u)
 #define MENU_ID_HEAD MENU_ID(0x001005u)
+#define MENU_ID_ACE MENU_ID(0x001006u)      /* Ace Mode's caption */
 
 #define CONTROLS_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_OVERLAY, (offset))
 #define CONTROLS_ID_EYEBROW CONTROLS_ID(0x003001u)
@@ -59,6 +60,12 @@ NkOverlayAction nk_overlay_page_menu(NkUi *ui, NkOverlayState *state, const NkOv
             }
             if (nonempty(model->disc_id) != NULL) {
                 nk_ui_text_role(ui, MENU_ID_DISC, model->disc_id, NK_UI_TYPE_DATA, theme->muted);
+            }
+            /* Ace Mode is on for this run: what it does, in words. Nothing when authentic. */
+            if (nonempty(model->ace_caption) != NULL) {
+                NkUiTextStyle caption = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
+                nk_ui_text(ui, MENU_ID_ACE,
+                           nk_ui_text_clamp(ui, model->ace_caption, &caption, inner, 1), &caption);
             }
             nk_ui_end_container(ui);
         }

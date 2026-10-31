@@ -1087,6 +1087,8 @@ int player_app_focus_count(const PlayerApp *app) {
             return 4; /* share switch, clear cache, remove tools, back */
         case VIEW_ACCESSIBILITY_SETTINGS:
             return 4; /* interface size, high contrast, reduce motion, back */
+        case VIEW_ACE_SETTINGS:
+            return 6; /* Ace Mode, filtering, crisp text, readout, badge, done */
         case VIEW_ONLINE_SETTINGS:
             /* online switch (+ news, reports while it is on), developer
                switch (+ open log while it is on), back */
@@ -2722,6 +2724,16 @@ void player_app_toggle_ace_notice(PlayerApp *app) {
     if (!app) return;
     app->settings.ace.notice = !app->settings.ace.notice;
     maybe_persist_settings(app);
+}
+
+bool player_app_ace_last_session(const PlayerApp *app, int game_index, char *out, size_t cap) {
+    char user_root[NK_MAX_PATH];
+    if (out && cap) out[0] = '\0';
+    if (!app || game_index < 0 || game_index >= app->game_count ||
+        !player_app_data_root(app, user_root, sizeof(user_root))) {
+        return false;
+    }
+    return player_ace_last_session_line(user_root, app->games[game_index].disc_id, out, cap);
 }
 
 PlayerAceTitleMode player_app_title_ace_mode(const PlayerApp *app, int game_index) {

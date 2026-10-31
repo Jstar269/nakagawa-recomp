@@ -83,6 +83,9 @@ const char *ace_spec_text(void);
 /* A feature this host cannot provide: off for the run, named once on stderr and in the report.
  * The others stay on. */
 void ace_feature_unavailable(AceFeature feature, const char *reason);
+/* The pause menu's live Speed readout switch (Ace on only; a readout this host cannot draw
+ * stays off). */
+void ace_set_readout(int on);
 /* The anisotropy the device gives, at most the requested level (0 = none). */
 void ace_set_af_effective(int af, const char *reason);
 /* The active features in words, joined by " \xC2\xB7 " ("16x filtering \xC2\xB7 crisp keyboard"),

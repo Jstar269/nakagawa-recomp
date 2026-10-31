@@ -211,6 +211,11 @@ void ace_feature_unavailable(AceFeature feature, const char *reason) {
     fprintf(stderr, "ACE_MODE: %s unavailable (%s)\n", k_feature_key[feature], s_unavailable[feature]);
 }
 
+void ace_set_readout(int on) {
+    if (!g_ace_on || s_unavailable[ACE_FEATURE_READOUT][0]) return;
+    s_eff.readout = on ? 1 : 0;
+}
+
 void ace_set_af_effective(int af, const char *reason) {
     if (!g_ace_on || !s_req.af) return;
     if (af <= 0) { ace_feature_unavailable(ACE_FEATURE_AF, reason); return; }

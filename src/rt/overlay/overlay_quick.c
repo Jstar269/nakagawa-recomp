@@ -221,6 +221,26 @@ NkOverlayAction nk_overlay_page_settings(NkUi *ui, NkOverlayState *state,
             } else if (nk_ui_take_activation(ui, NK_OVERLAY_ID_HUD)) {
                 result = nk_overlay_action(NK_OVERLAY_ACT_SET_HUD, model->hud_on ? 0 : 1);
             }
+            /* Ace Mode's speed readout (src/rt/ace.h), in an Ace run that can draw it. */
+            if (model->ace_readout > 0) {
+                bool on = model->ace_readout == 2;
+                focused = nk_ui_button_focused(ui, NK_OVERLAY_ID_READOUT);
+                if (row_begin(ui, NK_OVERLAY_ID_READOUT, 2u, "Speed readout",
+                              "The game's speed and frame rate in a corner, from Ace Mode. "
+                              "Hidden while the HUD shows.", inner - 180.0f)) {
+                    toggle(ui, 2u, on);
+                    nk_ui_end_container(ui);
+                }
+                if (focused && nk_ui_take_event(ui, NK_UI_EV_NAV, &dir)) {
+                    if ((dir == NK_UI_DIR_RIGHT) != on &&
+                        (dir == NK_UI_DIR_LEFT || dir == NK_UI_DIR_RIGHT)) {
+                        result = nk_overlay_action(NK_OVERLAY_ACT_SET_READOUT,
+                                                   dir == NK_UI_DIR_RIGHT);
+                    }
+                } else if (nk_ui_take_activation(ui, NK_OVERLAY_ID_READOUT)) {
+                    result = nk_overlay_action(NK_OVERLAY_ACT_SET_READOUT, on ? 0 : 1);
+                }
+            }
             nk_ui_end_container(ui);
         }
     }

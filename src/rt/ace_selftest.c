@@ -107,6 +107,13 @@ static void cell_switch(void) {
     CHECK(ace_effective()->text == 0 && ace_effective()->notice == 1, "one feature off, the rest on");
     ace_set_af_effective(0, "no samplerAnisotropy");
     CHECK(ace_effective()->af == 0, "no anisotropy turns filtering off");
+    ace_set_readout(1);
+    CHECK(ace_effective()->readout == 1, "the pause menu turns the readout on");
+    ace_set_readout(0);
+    CHECK(ace_effective()->readout == 0, "and off");
+    ace_feature_unavailable(ACE_FEATURE_READOUT, "no window");
+    ace_set_readout(1);
+    CHECK(ace_effective()->readout == 0, "a readout this host cannot draw stays off");
 }
 
 /* ---- C4: the 30 Hz detector ----------------------------------------------------------------- */

@@ -1257,6 +1257,10 @@ static void gui_pause_act(NkOverlayAction action) {
         sdl3vk_hud_set_enabled(action.value != 0);
         s_pause_dirty = 1;
         break;
+    case NK_OVERLAY_ACT_SET_READOUT:
+        ace_set_readout(action.value != 0);
+        s_pause_dirty = 1;
+        break;
     case NK_OVERLAY_ACT_VRAM_VIEW:
         if (sdl3vk_developer_mode()) gui_pause_decode_vram();
         s_pause_dirty = 1;
@@ -1300,6 +1304,19 @@ static int gui_pause_compose(int w, int h, int rgba) {
         model.disc_id = getenv("SR_DISC_ID");
         model.scaling = gui_pause_scaling_to_overlay(sdl3vk_present_scaling());
         model.hud_on = sdl3vk_hud_is_enabled() != 0;
+        /* Ace Mode (ace.h): the menu says what it does; the readout is a live switch while the
+         * in-game UI can draw it. Nothing in an authentic run. */
+        static char ace_caption[200];
+        ace_caption[0] = '\0';
+        if (g_ace_on) {
+            char words[160];
+            if (ace_feature_words(words, sizeof(words)) > 0)
+                snprintf(ace_caption, sizeof(ace_caption), "Ace Mode on: %s", words);
+            else
+                snprintf(ace_caption, sizeof(ace_caption), "Ace Mode on");
+        }
+        model.ace_caption = ace_caption;
+        model.ace_readout = s_ace_ui_ready ? (ace_effective()->readout ? 2 : 1) : 0;
         model.saving = sr_savedata_pause_busy() != 0;
         model.controls = s_pause_controls.rows;
         model.control_count = s_pause_controls.count;

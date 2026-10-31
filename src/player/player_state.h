@@ -53,7 +53,8 @@ typedef enum {
     VIEW_PSP_FONTS,         /* Settings > PSP fonts: import your PSP's own fonts */
     VIEW_UPDATES,           /* Settings > Updates: check for and fetch a newer version */
     VIEW_CONFIRM_FACTORY_RESET, /* Settings > Factory reset: what moves aside */
-    VIEW_ACCESSIBILITY_SETTINGS /* Settings > Accessibility: size, contrast, motion; the last value */
+    VIEW_ACCESSIBILITY_SETTINGS, /* Settings > Accessibility: size, contrast, motion */
+    VIEW_ACE_SETTINGS           /* Settings > Ace Mode (src/rt/ace.h); the last value */
 } PlayerView;
 
 typedef enum {
@@ -1352,6 +1353,9 @@ const char *player_ace_filtering_label(int af);
  * also takes the title's 60 FPS game logic off for as long as it is chosen. */
 void player_app_cycle_title_ace_mode(PlayerApp *app, int game_index);
 PlayerAceTitleMode player_app_title_ace_mode(const PlayerApp *app, int game_index);
+/* The title's "Last session" line from the report under the user data folder; false, with
+ * out empty, when there is none. */
+bool player_app_ace_last_session(const PlayerApp *app, int game_index, char *out, size_t cap);
 void player_app_toggle_share_system_libraries(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
