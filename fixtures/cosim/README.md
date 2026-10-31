@@ -125,6 +125,16 @@ cell cannot degrade into a second all-native run and pass vacuously.
   is in generated code. It is an ordinary PASS, and against the earlier interpreter it
   diverges on `r2` and the handoff target.
 
+* `lj` is **`longjmp` into a live frame**. `lj_f` saves `$sp` and `$ra` with `setjmp`
+  (`lj_set`, reached through `jalr`, which lane MIXED leaves to the interpreter), then calls
+  `lj_g`, which calls `longjmp` (`lj_jmp`). `longjmp` reloads `lj_f`'s `$sp` and `$ra` and
+  returns to the word after the `setjmp` call, a call that returned long before. In the
+  native lanes no live linked call resumes there: the runtime abandons `lj_g`, finds `lj_f`'s
+  frame live inside `lj`'s call (its callee entry `$sp` is above the restored one), and runs
+  the rest of `lj_f` through the interpreter floor as that call's continuation; `lj`'s own
+  continuation then runs once natively. Every lane ends with `v0` = 0x1107 and a balanced
+  `$sp`; the stack census counts the two abandoned frames per native lane as excluded.
+
 `xcall` is also this gate's first worked example of a declared defect retiring itself.
 It was added while the interpreter stopped only at a registered *entry*, so an
 interpreted callee's `jr $ra` landed in the caller's interior and the caller's tail ran

@@ -2060,6 +2060,7 @@ int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
     boundary->call_sp = s->r[29];
     boundary->dispatch_owned = 0u;
     boundary->unwinding = 0u;
+    boundary->resume_sp = 0u;
     sr_aot_return_boundary_top = boundary;
     return 0;
 }
@@ -2131,6 +2132,7 @@ static int sr_aot_return_boundary_resume_live_frame(CpuState *s,
                 sr_aot_return_boundaries[abandoned].unwinding = 1u;
             enclosing->observed_target = UINT64_C(0x100000000) | target;
             enclosing->unwinding = 3u;  /* its callee runs again from the target */
+            enclosing->resume_sp = sp;
             s_aot_return_unwinds++;
             return 1;
         }
@@ -2193,9 +2195,18 @@ int sr_aot_return_boundary_end(CpuState *s) {
         /* The live frame a longjmp returned into (sr_aot_return_boundary_resume_live_frame).
          * Its native body was abandoned mid-way, so the rest of the frame runs as this call's
          * continuation, from the target with the $sp the guest restored, until it returns to
-         * this call's resume PC: a resume body or the interpreter floor runs it. */
+         * this call's resume PC. The interpreter floor runs it: a callable native body at the
+         * target would restore an entry $sp the frame never had; the native calls it makes
+         * run natively as usual. */
         const uint32_t target = (uint32_t)boundary->observed_target;
-        const int result = dispatch_call_try(s, target, boundary->resume_pc);
+        const SrGuestInterpCallBoundary call = { boundary->resume_pc };
+        /* A host wrapper of an abandoned body (the stack census) may have restored its own
+         * entry $sp on the way out; the frame runs on the $sp the guest restored. */
+        s->r[29] = boundary->resume_sp;
+        /* Generated code does not maintain s->pc; the interpreter's is its own. */
+        const uint32_t native_pc = s->pc;
+        const int result = dispatch_run_interp(s, target, &call, SR_DRAIN_CHAIN);
+        if (result >= 0 && s->flow_kind == SR_FLOW_NONE) s->pc = native_pc;
         if (result < 0 && s->flow_kind != SR_FLOW_FATAL) {
             s->flow_kind = SR_FLOW_FATAL;
             s->flow_target = target;

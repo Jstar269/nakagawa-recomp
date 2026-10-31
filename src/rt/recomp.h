@@ -1419,6 +1419,8 @@ typedef struct SrAotReturnBoundary {
     uint32_t call_sp;          /* guest $sp at the call, after its delay slot: the callee's entry $sp */
     uint32_t dispatch_owned;   /* begun by dispatch_call_aot, whose caller ignores the end result */
     uint32_t unwinding;        /* abandoned by a guest return to an enclosing linked call */
+    uint32_t resume_sp;        /* unwinding 3: the guest $sp a longjmp restored, reapplied
+                                * after the abandoned bodies' host returns */
 } SrAotReturnBoundary;
 
 /* The active AOT return stack follows the running guest fiber. Each TCB owns
