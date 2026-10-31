@@ -361,8 +361,10 @@ run in a fixed order:
 | PGF golden vectors | `tools/test_pgf_validate_parity.py --regenerate` | `tests/native/pgf_golden_vectors.h` |
 | provenance controls (last) | `tools/contrib_refresh.py` | `assets/public_provenance_ledger.json`, `PUBLIC_EXPORT.json` |
 
-The provenance refresh runs last because the ledger hashes the staged tree, so
-the tool stages the files it regenerated before it runs. Stage your own changes
+The provenance refresh runs last because it reads the staged tree, so the tool
+stages the files it regenerated before it runs. The committed ledger carries
+claims only (#1673), so for a change to existing files the refresh normally
+changes nothing. Stage your own changes
 first (`git add`); with unstaged edits the refresh refuses with
 `CANDIDATE_INDEX_STALE`. It also refuses a new or removed public path and a
 changed publication profile. Those need maintainer authority, so the tool
@@ -390,15 +392,17 @@ tool does not touch them.
 
 ### The generated control files must be in the commit
 
-Adding a tracked file, or changing one, makes three generated files stale:
+Adding or removing a tracked file makes three generated files stale:
 `assets/public_source_profile.json` (classification),
-`assets/public_provenance_ledger.json` (content hashes) and `PUBLIC_EXPORT.json`
-(policy digest and included-content digest). Regenerating them in the working
-tree is not enough — they have to be **staged and committed** with the change they
-describe (a refresh after merging `main` is its own commit; see `REVIEW.md`), or the
-commit ships a source change without the evidence for its own contents and fails with
-`POLICY_UNCLASSIFIED`, `UNRESOLVED_PUBLIC`, `POLICY_EXPORT_STALE` and
-`PROVENANCE_CONTENT_MISMATCH` together.
+`assets/public_provenance_ledger.json` (the path's claim) and `PUBLIC_EXPORT.json`
+(policy digest). Changing an existing file makes none of them stale: the committed
+ledger carries claims, not content hashes (#1673), and the export's committed control
+omits the tree-derived digests, which are recomputed at verification. Regenerating
+them in the working tree is not enough — they have to be **staged and committed**
+with the change they describe (a refresh after merging `main` is its own commit; see
+`REVIEW.md`), or the commit ships a new path without the evidence for it and fails
+with `POLICY_UNCLASSIFIED`, `UNRESOLVED_PUBLIC`, `POLICY_EXPORT_STALE` and
+`PROVENANCE_MISSING` together.
 
 `make readiness` re-runs the export generator at the end and fails if that
 changes anything, which catches precisely this.
@@ -620,10 +624,13 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   run — which includes `publish_audit --provenance-self-consistency`,
   `policy_sync`, and the Betterleaks scan — executes on every event, so the
   security and publication boundary is never path-gated. This is what makes the
-  cheap paths safe: every tracked file is inside the published surface and the
-  provenance ledger hashes each one, so *any* change invalidates the generated
-  ledger and `PUBLIC_EXPORT.json` until they are refreshed. A docs-only change
-  may therefore skip the Python suite only because the audit still runs here.
+  cheap paths safe: every tracked file is inside the published surface and needs
+  a publication-policy decision and a provenance claim, so a change that adds,
+  removes or reclassifies a path fails the audit here until its controls are
+  regenerated, whatever paths it touches. A file's bytes are bound by the trusted
+  provenance attestation, which regenerates every hash from the private
+  authority (#1673). A docs-only change may therefore skip the Python suite only
+  because the audit still runs here.
   `PublicationCoverageInvariantTests` pins both halves so this cannot regress
   into a path-gated audit.
 - **Only a structurally proven recipe-only `Makefile` edit narrows the build

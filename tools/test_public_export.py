@@ -88,6 +88,25 @@ def _init_synthetic_repo(root: Path, sensitive: bool) -> None:
 _READ_ONLY_EXPORT: tuple[bool, Path] | None = None
 
 
+def _hashed_trusted_ledger(tree: Path, out: Path) -> Path:
+    """Write the hashed trusted ledger a release passes as ``--provenance-ledger``.
+
+    The committed ledger carries claims only (#1673); a release anchors content with the
+    verifier's hashed generation (``public_provenance_ledger.hashed.json``). For an
+    exported tree that is its committed claims plus each published file's digest.
+    """
+    claims = json.loads((tree / "assets" / "public_provenance_ledger.json").read_text(encoding="utf-8"))
+    entries = []
+    for entry in claims["entries"]:
+        entry = dict(entry)
+        if entry["path"] not in ("assets/public_provenance_ledger.json", "PUBLIC_EXPORT.json"):
+            entry["sha256"] = hashlib.sha256((tree / entry["path"]).read_bytes()).hexdigest()
+        entries.append(entry)
+    hashed = dict(claims, schema_version=1, entries=entries)
+    out.write_bytes((json.dumps(hashed, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    return out
+
+
 def _read_only_public_export() -> tuple[bool, Path]:
     """One public-safe export, built on first use, that tests may only read.
 
@@ -345,6 +364,7 @@ class TestCandidateImmutability293(unittest.TestCase):
         )
         # A rejected copy used by the tamper/authority tests, built once so the
         # shared fixtures are never modified in place.
+        cls.trusted_ledger = _hashed_trusted_ledger(cls.export_a, base / "trusted-hashed-ledger.json")
         cls.tampered = base / "export_tampered"
         shutil.copytree(cls.export_a, cls.tampered, ignore=shutil.ignore_patterns(".git"))
         pre_commit = cls.tampered / ".pre-commit-config.yaml"
@@ -364,9 +384,7 @@ class TestCandidateImmutability293(unittest.TestCase):
             ok = export_sanitized_public_tree(
                 target,
                 public_safe_profile=True,
-                audit_candidate=lambda root: run_candidate_audit(
-                    root, trusted_ledger=ROOT / "assets/public_provenance_ledger.json"
-                ),
+                audit_candidate=lambda root: run_candidate_audit(root, trusted_ledger=self.trusted_ledger),
             )
             self.assertTrue(ok)
             self.assertTrue((target / "PUBLIC_EXPORT.json").is_file())
@@ -428,7 +446,7 @@ class TestCandidateImmutability293(unittest.TestCase):
                 "--candidate-root", str(self.tampered),
                 "--candidate-tree",
                 "--public-scope",
-                "--provenance-ledger", "assets/public_provenance_ledger.json",
+                "--provenance-ledger", str(self.trusted_ledger),
             ],
             cwd=ROOT,
             env=isolated_git_env(root=self.tampered),
@@ -522,7 +540,7 @@ class TestCandidateImmutability293(unittest.TestCase):
                 "--candidate-root", str(self.tampered),
                 "--candidate-tree",
                 "--public-scope",
-                "--provenance-ledger", "assets/public_provenance_ledger.json",
+                "--provenance-ledger", str(self.trusted_ledger),
             ],
             cwd=ROOT,
             env=isolated_git_env(root=self.tampered),
