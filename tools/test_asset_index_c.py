@@ -308,7 +308,7 @@ class TestProjectFontAssetCopy(unittest.TestCase):
                             f"preparation must precede {name} (guest execution seam)")
 
         hle = hle_sources.text()
-        lookup_idx = hle.find("static const SrAssetIndexEntry *host_data_lookup")
+        lookup_idx = hle.find("const SrAssetIndexEntry *host_data_lookup")
         self.assertNotEqual(lookup_idx, -1)
         lookup_end = hle.find("\n}\n", lookup_idx)
         lookup_code = hle[lookup_idx:lookup_end]

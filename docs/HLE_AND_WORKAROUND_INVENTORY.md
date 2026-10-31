@@ -91,7 +91,7 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 
 - **`h_Strlen`** (`other`): `strlen` (0x52df196c)
   - Evidence: src/rt/hle_thread_selftest.c:test_sysclib_memory_imports
-  - Evidence: src/rt/hle.c:h_Strlen
+  - Evidence: src/rt/hle_kernel_utils.c:h_Strlen
   - Evidence: public C library contract (strlen)
 - **`h_DisplayGetFramePerSec`** (`sceDisplay`): `sceDisplayGetFramePerSec` (0xdba6c4c4)
   - Evidence: src/rt/hle_thread_selftest.c:test_display_frame_per_sec_float_return
@@ -100,24 +100,24 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_GeEdramGetAddr`** (`sceGe`): `sceGeEdramGetAddr` (0xe47e40e4)
   - Evidence: tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001
   - Evidence: fixtures/psp_oracle/probe_hle_measure.c:hle_run
-  - Evidence: src/rt/hle.c:h_GeEdramGetAddr
+  - Evidence: src/rt/hle_ge.c:h_GeEdramGetAddr
   - Evidence: PSP-HLE-GE-EDRAM-001 cell: edram-addr = 0x04000000
 - **`h_GeEdramGetSize`** (`sceGe`): `sceGeEdramGetSize` (0x1f6752ad)
   - Evidence: tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001
   - Evidence: fixtures/psp_oracle/probe_hle_measure.c:hle_run
-  - Evidence: src/rt/hle.c:h_GeEdramGetSize
+  - Evidence: src/rt/hle_ge.c:h_GeEdramGetSize
   - Evidence: PSP-HLE-GE-EDRAM-001 cell: edram-size = 0x00200000
 - **`h_IoMkdir`** (`sceIo`): `sceIoMkdir` (0x06a70004)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
-  - Evidence: src/rt/hle.c:h_IoMkdir
+  - Evidence: src/rt/hle_io.c:h_IoMkdir
 - **`h_IoRemove`** (`sceIo`): `sceIoRemove` (0xf27a9c51)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
-  - Evidence: src/rt/hle.c:h_IoRemove
+  - Evidence: src/rt/hle_io.c:h_IoRemove
 - **`h_CpuIsIntrEnable`** (`sceKernel`): `sceKernelIsCpuIntrEnable` (0xb55249d2)
   - Evidence: src/rt/hle_thread_selftest.c:test_interrupt_nid_semantics
 - **`h_Memset`** (`sceKernel`): `memset` (0x10f3bb61), `sceKernelMemset` (0xa089eca4)
   - Evidence: src/rt/hle_thread_selftest.c:test_sysclib_memory_imports
-  - Evidence: src/rt/hle.c:h_Memset
+  - Evidence: src/rt/hle_kernel_utils.c:h_Memset
   - Evidence: public C library contract (memset)
 - **`h_SetCompiledSdkVersion`** (`sceKernel`): `sceKernelSetCompiledSdkVersion603_605` (0x1b4217bc), `sceKernelSetCompiledSdkVersion380_390` (0x315ad3a0), `sceKernelSetCompiledSdkVersion370` (0x342061e5), `sceKernelSetCompiledSdkVersion600_602` (0x35669d4c), `sceKernelSetCompiledSdkVersion606` (0x358ca1bb), `sceKernelSetCompiledSdkVersion` (0x7591c7db), `sceKernelSetCompiledSdkVersion500_505` (0x91de343c), `sceKernelSetCompiledSdkVersion395` (0xebd5c3e6), `sceKernelSetCompilerVersion` (0xf77d77cb)
   - Evidence: src/rt/sdkver_selftest.c
@@ -126,19 +126,19 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_RtcGetCurrentClock`** (`sceRtc`): `sceRtcGetCurrentClock` (0x4cfa57b0)
   - Evidence: src/rt/hle_thread_selftest.c:test_time_domains_are_coherent
   - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
-  - Evidence: src/rt/hle.c:h_RtcGetCurrentClock
+  - Evidence: src/rt/hle_rtc.c:h_RtcGetCurrentClock
   - Evidence: public PSPSDK contract (psprtc.h: sceRtcGetCurrentClock, tz is minutes from UTC)
   - Evidence: PSPAutotests tests/rtc/rtc.expected (0/+13/+60/-60/-600000/INT_MAX/-INT_MAX all return 0; -60 is one hour before the UTC baseline)
 - **`h_RtcGetCurrentTick`** (`sceRtc`): `sceRtcGetCurrentTick` (0x3f7ad767)
   - Evidence: src/rt/hle_thread_selftest.c:test_time_domains_are_coherent
   - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
-  - Evidence: src/rt/hle.c:h_RtcGetCurrentTick
+  - Evidence: src/rt/hle_rtc.c:h_RtcGetCurrentTick
   - Evidence: public PSPSDK contract (psprtc.h: sceRtcGetCurrentTick, 0 on success, <0 on error)
   - Evidence: PSPAutotests tests/rtc/rtc.expected (tick advances across a 2 ms delay)
 - **`h_RtcGetTick`** (`sceRtc`): `sceRtcGetTick` (0x6ff40acc)
   - Evidence: src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range
   - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
-  - Evidence: src/rt/hle.c:h_RtcGetTick
+  - Evidence: src/rt/hle_rtc.c:h_RtcGetTick
   - Evidence: public PSPSDK contract (psprtc.h: sceRtcGetTick, pspRtcCheckValidErrors component ranges)
   - Evidence: PSPAutotests tests/rtc/convert.expected (year 0/10000 -> 0x800001fe with output untouched; year 10/9998/9999 exact ticks)
 - **`h_RtcGetTickResolution`** (`sceRtc`): `sceRtcGetTickResolution` (0xc41c2853)
@@ -148,7 +148,7 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_RtcSetTick`** (`sceRtc`): `sceRtcSetTick` (0x7ed29e40)
   - Evidence: src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range
   - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
-  - Evidence: src/rt/hle.c:h_RtcSetTick
+  - Evidence: src/rt/hle_rtc.c:h_RtcSetTick
   - Evidence: public PSPSDK contract (psprtc.h: sceRtcSetTick, 0 on success, <0 on error)
   - Evidence: PSPAutotests tests/rtc/convert.expected (checkSetTick: 835072 -> 0001-01-01, 62135596800000000 -> 1970-01-01)
 

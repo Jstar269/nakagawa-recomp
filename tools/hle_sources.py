@@ -40,12 +40,38 @@ ROOT = Path(__file__).resolve().parents[1]
 #: the order :func:`text` joins them in, and carries no other meaning.
 RUNTIME_HLE_SOURCES: tuple[str, ...] = (
     "src/rt/hle.c",
+    "src/rt/hle_audio.c",
+    "src/rt/hle_audio_codec.c",
+    "src/rt/hle_cache_dma.c",
+    "src/rt/hle_data.c",
+    "src/rt/hle_display.c",
+    "src/rt/hle_font.c",
+    "src/rt/hle_ge.c",
+    "src/rt/hle_host.c",
+    "src/rt/hle_input.c",
+    "src/rt/hle_io.c",
+    "src/rt/hle_kernel_interrupt.c",
+    "src/rt/hle_kernel_memory.c",
+    "src/rt/hle_kernel_module.c",
+    "src/rt/hle_kernel_sync.c",
+    "src/rt/hle_kernel_thread.c",
+    "src/rt/hle_kernel_time.c",
+    "src/rt/hle_kernel_utils.c",
+    "src/rt/hle_mpeg.c",
+    "src/rt/hle_network.c",
+    "src/rt/hle_npdrm.c",
     "src/rt/hle_power.c",
+    "src/rt/hle_route.c",
+    "src/rt/hle_rtc.c",
+    "src/rt/hle_system.c",
+    "src/rt/hle_umd.c",
+    "src/rt/hle_utility.c",
 )
 
 #: Headers private to the runtime HLE files. :func:`text` includes them by default, so a
 #: whole-source scan also covers declarations and inline helpers kept there.
 HLE_PRIVATE_HEADERS: tuple[str, ...] = (
+    "src/rt/hle_internal.h",
     "src/rt/hle_power.h",
 )
 

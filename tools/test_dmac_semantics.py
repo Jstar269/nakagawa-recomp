@@ -44,11 +44,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _dmac_region() -> str:
-    """The sceDmac copy implementation, from its comment block to h_Memset."""
-    text = hle_sources.text()
+    """The sceDmac copy implementation, from its comment block to the end of dmac_transfer.
+
+    The block is one stretch of the file that defines it (since #307, hle_cache_dma.c), so the
+    slice stays inside that file.
+    """
+    text = dict(hle_sources.sources())[hle_sources.defining_file("dmac_transfer")]
     start = text.index("/* ---- sceDmacMemcpy / sceDmacTryMemcpy")
-    end = text.index("static uint32_t h_Memset", start)
-    return text[start:end]
+    transfer = hle_sources.function_text("uint32_t dmac_transfer(CpuState *s, int try_only) {")
+    return text[start:text.index(transfer, start) + len(transfer)]
 
 
 class TestDmacValidationOrder(unittest.TestCase):
@@ -98,8 +102,10 @@ class TestDmacValidationOrder(unittest.TestCase):
     def test_both_copy_nids_register_in_the_shared_bulk_helper(self) -> None:
         """Both NIDs must route through production registration."""
         text = hle_sources.text()
-        start = text.index("static void hle_register_bulk_memory_handlers")
-        registration = text[start : text.index("void sr_hle_init", start)]
+        # The shared helper calls the DMA subsystem's registration run (#307).
+        helper = hle_sources.function_text("static void hle_register_bulk_memory_handlers(void) {")
+        self.assertIn("hle_register_bulk_memory_cache_dma();", helper)
+        registration = hle_sources.function_text("void hle_register_bulk_memory_cache_dma(void) {")
         self.assertIn('sr_hle_register(0x617f3fe6, "sceDmacMemcpy", h_DmacMemcpy)', registration)
         self.assertIn(
             'sr_hle_register(0xd97f94d8, "sceDmacTryMemcpy", h_DmacTryMemcpy)', registration

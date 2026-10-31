@@ -244,13 +244,24 @@ class TestRegistryScope(unittest.TestCase):
         self.assertIsNotNone(init, "sr_hle_init() not found")
         return init.group(1)
 
+    def registration_body(self, name, seen=frozenset()):
+        """The body of registration helper ``name`` with the bodies of the registration helpers it
+        calls appended: since #307 a shared helper calls each subsystem's registration run."""
+        m = re.search(r"(?:static )?void %s\(void\) \{(.*?)\n\}" % re.escape(name), self.src, re.S)
+        if m is None:
+            return None
+        body = m.group(1)
+        for callee in re.findall(r"(hle_register_\w+)\(\);", body):
+            if callee not in seen:
+                inner = self.registration_body(callee, seen | {name})
+                if inner is not None:
+                    body += "\n" + inner
+        return body
+
     def conformance_helper(self):
-        m = re.search(
-            r"static void hle_register_wait_conformance_handlers\(void\) \{(.*?)\n\}",
-            self.src, re.S,
-        )
-        self.assertIsNotNone(m, "hle_register_wait_conformance_handlers() not found")
-        return m.group(1)
+        body = self.registration_body("hle_register_wait_conformance_handlers")
+        self.assertIsNotNone(body, "hle_register_wait_conformance_handlers() not found")
+        return body
 
     def test_helper_covers_the_matrix_nids(self):
         """Every NID the executable matrix dispatches must be registered by the helper
@@ -270,9 +281,9 @@ class TestRegistryScope(unittest.TestCase):
         rows = list(parse_matrix(strip_comments(HEADER.read_text(encoding="utf-8"))))
         reachable = set(helper_nids)
         for name in called:
-            m = re.search(r"static void %s\(void\) \{(.*?)\n\}" % name, self.src, re.S)
-            if m:
-                reachable |= {nid for nid, _, _ in self.triples(m.group(1))}
+            body = self.registration_body(name)
+            if body is not None:
+                reachable |= {nid for nid, _, _ in self.triples(body)}
         for row in rows:
             nid = re.search(r"0x[0-9a-fA-F]+", row["raw"]).group(0).lower()
             self.assertIn(
@@ -292,6 +303,11 @@ class TestRegistryScope(unittest.TestCase):
         thread_selftest = body.index("#ifdef SR_HLE_THREAD_SELFTEST")
         production_start = body.index("#else", thread_selftest)
         production = body[production_start: body.index("#endif", production_start)]
+        # The production branch's own registrations sit in its registration runs since #307
+        # (hle_register_init_<subsystem>()): count them as inline, as they were.
+        for run in re.findall(r"(hle_register_init_\w+)\(\);", production):
+            production += "\n" + (self.registration_body(run) or "")
+        self.assertGreater(len(self.triples(production)), 20, "the production branch's own registrations")
         helper_nids = {nid for nid, _, _ in self.triples(self.conformance_helper())}
         dupes = sorted(helper_nids & {nid for nid, _, _ in self.triples(production)})
         self.assertEqual(

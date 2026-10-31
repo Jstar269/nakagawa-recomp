@@ -737,7 +737,32 @@ set(NK_RUNTIME_SOURCES
     src/rt/ge_capture.c
     src/rt/vfpu_interp.c
     src/rt/hle.c
+    src/rt/hle_audio.c
+    src/rt/hle_audio_codec.c
+    src/rt/hle_cache_dma.c
+    src/rt/hle_data.c
+    src/rt/hle_display.c
+    src/rt/hle_font.c
+    src/rt/hle_ge.c
+    src/rt/hle_host.c
+    src/rt/hle_input.c
+    src/rt/hle_io.c
+    src/rt/hle_kernel_interrupt.c
+    src/rt/hle_kernel_memory.c
+    src/rt/hle_kernel_module.c
+    src/rt/hle_kernel_sync.c
+    src/rt/hle_kernel_thread.c
+    src/rt/hle_kernel_time.c
+    src/rt/hle_kernel_utils.c
+    src/rt/hle_mpeg.c
+    src/rt/hle_network.c
+    src/rt/hle_npdrm.c
     src/rt/hle_power.c
+    src/rt/hle_route.c
+    src/rt/hle_rtc.c
+    src/rt/hle_system.c
+    src/rt/hle_umd.c
+    src/rt/hle_utility.c
     src/rt/audio_resample.c
     src/rt/flash0_font.c
     src/rt/mp3_bridge.c

@@ -286,7 +286,7 @@ class TestStaleCodeWiring(unittest.TestCase):
         # register unconditionally, once, through a helper that the production registry and
         # the executable harness both call; the stale check inside stays behind its gate.
         low = HLE_C.lower()
-        helper = HLE_C.split("static void hle_register_icache_handlers(void) {", 1)[1]
+        helper = HLE_C.split("void hle_register_icache_handlers(void) {", 1)[1]
         helper = helper.split("\n}\n", 1)[0].lower()
         for nid, name in ((0x920F104A, "sceKernelIcacheInvalidateAll"),
                           (0xD8779AC6, "sceKernelIcacheClearAll"),
@@ -303,7 +303,7 @@ class TestStaleCodeWiring(unittest.TestCase):
         # Data-cache range maintenance is routine around DMA (guest middleware calls it),
         # so it registers unconditionally, once, through the shared helper that both the
         # production registry and the executable harness call.
-        helper = HLE_C.split("static void hle_register_dcache_handlers(void) {", 1)[1]
+        helper = HLE_C.split("void hle_register_dcache_handlers(void) {", 1)[1]
         helper = helper.split("\n}\n", 1)[0].lower()
         for nid, name in ((0xBFA98062, "sceKernelDcacheInvalidateRange"),
                           (0x34B9FA9E, "sceKernelDcacheWritebackInvalidateRange")):

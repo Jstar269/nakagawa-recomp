@@ -463,7 +463,7 @@ class Flash0UserRootSourceContractTests(unittest.TestCase):
         """#827 review: Win32 refuses a relative SR_USER_DATA_ROOT inside the wide helper, but POSIX
         resolves it against the working directory. flash0_user_data_root must check absoluteness
         itself, on every host, and name the refusal with the same diagnostic."""
-        signature = "static void flash0_user_data_root(char *dst, size_t capacity) {"
+        signature = "void flash0_user_data_root(char *dst, size_t capacity) {"
         self.assertIn(signature, self.source)
         body = function_body(self.source, signature)
         # sr_wide_is_absolute is the host's own rule: a drive or UNC path on Win32, a leading '/' on POSIX.
@@ -473,7 +473,7 @@ class Flash0UserRootSourceContractTests(unittest.TestCase):
     def test_empty_user_root_is_named_not_treated_as_unset(self) -> None:
         """An empty SR_USER_DATA_ROOT is present, so it is refused by name. Only an absent variable
         takes the platform directory. The launcher relies on this to mask an inherited value."""
-        body = function_body(self.source, "static void flash0_user_data_root(char *dst, size_t capacity) {")
+        body = function_body(self.source, "void flash0_user_data_root(char *dst, size_t capacity) {")
         self.assertIn("configured[0] != L'\\0'", body)
         self.assertIn("if (!configured_present)", body)
 
@@ -487,7 +487,7 @@ class Flash0ConfiguredRootSourceContractTests(unittest.TestCase):
     a different directory from the one the caller configured (#827 review of #1025).
     """
 
-    SIGNATURE = "static int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **out) {"
+    SIGNATURE = "int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **out) {"
 
     def setUp(self) -> None:
         self.source = hle_sources.text()
@@ -523,7 +523,7 @@ class Flash0ConfiguredRootSourceContractTests(unittest.TestCase):
 
     def test_flash0_font_sources_names_a_refused_font_dir(self) -> None:
         """The flash0: device names a refused SR_FONTDIR once, and does not fall back to another root."""
-        body = function_body(self.source, "static void flash0_font_sources(Flash0Sources *out) {")
+        body = function_body(self.source, "void flash0_font_sources(Flash0Sources *out) {")
         self.assertIn('flash0_refuse_font_dir("could not be read")', body)
         self.assertIn('flash0_refuse_font_dir("is configured but is not a valid absolute path")', body)
         self.assertIn("atomic_exchange_explicit(&s_font_dir_refusal_named", self.source)

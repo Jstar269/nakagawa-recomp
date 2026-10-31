@@ -101,8 +101,10 @@ def run_libfont_selftest(make: str, tmp_path: Path, manifest_path: Path,
         command_makefile = tmp_path / f"Makefile.{tag}"
         makefile_text = makefile.read_text(encoding="utf-8")
         relative, text = hle_source
-        hle_srcs = re.search(r"(?m)^HLE_SRCS\s*:=\s*(.*)$", makefile_text)
-        assert hle_srcs is not None and relative in hle_srcs.group(1).split(), relative
+        assert relative in hle_sources.makefile_hle_srcs(makefile_text), relative
+        # The whole assignment, continuation lines included: the mutant replaces one entry in it.
+        hle_srcs = re.search(r"(?m)^HLE_SRCS\s*:=(?:[^\n]*\\\n)*[^\n]*$", makefile_text)
+        assert hle_srcs is not None
         mutant_source = tmp_path / f"{tag}_{Path(relative).name}"
         mutant_source.write_text(text, encoding="utf-8")
         command_makefile.write_text(

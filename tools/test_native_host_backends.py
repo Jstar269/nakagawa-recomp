@@ -388,7 +388,7 @@ class NativeHostBackendTests(unittest.TestCase):
         self.assertNotIn("audio_stat_on()", block, "the SR_AUDIOSTAT gate belongs to the shared block")
         call = block.find("hle_exit_close_audio_dump();")
         self.assertGreater(call, stats, "the dump close must run after the audio statistics")
-        helper_start = hle.index("static void hle_exit_close_audio_dump(void) {")
+        helper_start = hle.index("void hle_exit_close_audio_dump(void) {")
         helper = hle[helper_start:hle.index("\n}\n", helper_start)]
         guard = "#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)\n"
         self.assertIn(guard + "    sr_audio_dump_finish();\n#endif", helper,
@@ -431,9 +431,9 @@ class NativeHostBackendTests(unittest.TestCase):
                            "the audio statistics must print inside the exit branch")
         self.assertLess(stats, body.find("hle_exit_close_audio_dump();"),
                         "the audio statistics must print before the dump is finalised")
-        self.assertEqual(hle.count("static void hle_exit_audio_stats(void) {"), 1,
+        self.assertEqual(hle.count("void hle_exit_audio_stats(void) {"), 1,
                          "the vblank exit and route_fail must share one definition of the stats block")
-        helper_start = hle.index("static void hle_exit_audio_stats(void) {")
+        helper_start = hle.index("void hle_exit_audio_stats(void) {")
         helper = hle[helper_start:hle.index("\n}\n", helper_start)]
         self.assertIn("    if (!audio_stat_on()) return;\n", helper,
                       "the shared stats block must keep the SR_AUDIOSTAT gate")

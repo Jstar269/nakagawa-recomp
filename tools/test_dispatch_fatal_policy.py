@@ -132,7 +132,7 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
         """A handler's unmodelled-shape stop names the import for the player, then exits 7."""
         hle_src = hle_sources.text()
         stop = function_body(
-            hle_src, "static uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...)")
+            hle_src, "uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...)")
         production = stop.split("#else", 1)[1]
         record = production.index("hle_record_unsupported_import_stop(sr_last_nid, import_name);")
         self.assertLess(record, production.index("_Exit(7)"))

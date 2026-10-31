@@ -148,7 +148,27 @@ class LiveListTests(unittest.TestCase):
         self.assertEqual(hle_sources.defining_file("sr_hle_init"), "src/rt/hle.c")
 
     def test_ifdef_arms_in_one_file_count_once(self) -> None:
-        self.assertEqual(hle_sources.definitions()["sr_host_sleep_ms"], ["src/rt/hle.c"])
+        self.assertEqual(hle_sources.definitions()["sr_host_sleep_ms"], ["src/rt/hle_host.c"])
+
+    def test_every_hle_file_carries_the_licence_of_the_file_it_came_from(self) -> None:
+        """Each file split from hle.c keeps hle.c's GPL-2.0-or-later, derived-translated header (#307).
+
+        A new file under src/ gets the project's GPL-3.0-or-later header by default; for code
+        derived from sal063 and PPSSPP that would be a licensing error, so the header is checked here.
+        """
+        licence = "".join((ROOT / "src/rt/hle.c").read_text(encoding="utf-8").splitlines(keepends=True)[:8])
+        self.assertIn("SPDX-License-Identifier: GPL-2.0-or-later", licence)
+        self.assertIn("Derived from PPSSPP", licence)
+        for relative, body in hle_sources.sources(headers=True):
+            with self.subTest(path=relative):
+                self.assertTrue(body.startswith(licence), relative)
+
+    def test_every_hle_source_includes_the_private_header_first(self) -> None:
+        for relative, body in hle_sources.sources():
+            with self.subTest(path=relative):
+                first = re.search(r'(?m)^\s*#\s*include\s+(\S+)', body)
+                self.assertIsNotNone(first)
+                self.assertEqual(first.group(1), '"hle_internal.h"')
 
 
 class FailClosedTests(unittest.TestCase):
