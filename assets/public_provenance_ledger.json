@@ -1846,7 +1846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "95a37463b5fee366b81fe98c01c833be701fefe24213619df53530a1f0565d89"
+      "sha256": "7ff3a32f27891fca7eeb048b39a47ea98025a311b065aab993721ae26c707734"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1951,7 +1951,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ad48e8acb2cc611a616c99ed74c227366faf1d58698850ff1f63524c32cb480d"
+      "sha256": "35c33841b70e9f2c9e8abc203cc1311b4435a25cd48a94a9bcca77baa7de7763"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1960,7 +1960,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "21bf88a65c87f85c85c89047ba1b21147bbe9b28e618039377124a8f646a6aec"
+      "sha256": "025020d2eef1e3fcbe3a839ce48b7f79b8935041cc4e481b321faf069556b64e"
     },
     {
       "path": "docs/SETUP.md",
@@ -14104,7 +14104,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3eca61072fd9823f178c1baf5821ee945628b20c904ca502e8facb14f62cfecf"
+      "sha256": "4129c778449866a186deefd9d2a3e7918c61a9a7fafc590d2d71a70216e6b87e"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -14731,7 +14731,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee98f72691438562e06d62c59cdf802bc52541d1dc2f71abc867d1a4dd09d754"
+      "sha256": "fef485314fbdd5f5afa400afb75b71a1401d77ed22a8249c8e1ca829b7e67e88"
     },
     {
       "path": "tools/soak_audit.py",
@@ -16305,7 +16305,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7f131f086ef73f51005ddc688dae91e51a7f372bc5660aeddfd4a121f7d496af"
+      "sha256": "5218e602219a6ee0630b6f0879b1b4e0d472a8b020b529016c8c0d68929ac711"
     },
     {
       "path": "tools/test_padscript_from_log.py",
@@ -17074,7 +17074,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bf51cabd468856d14296a76b33ea8e29d0b58d811e7484b73f526dc944f4ba68"
+      "sha256": "a4a8f53d73e5294f10774c6f5edb75a51726b2cddd711f52cc7fc246c1935d42"
     },
     {
       "path": "tools/test_site_mobile.py",
