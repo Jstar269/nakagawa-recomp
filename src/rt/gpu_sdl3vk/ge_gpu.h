@@ -245,6 +245,7 @@ typedef struct {
 } GeGpuAceStats;
 void gegpu_ace_stats(GeGpuAceStats *out);
 int gegpu_snapshot_sync_selftest(void);
+int gegpu_ace_af_selftest(void);   /* 1 pass, 0 fail, 77 no anisotropic filtering */
 
 void gegpu_shutdown(void);
 

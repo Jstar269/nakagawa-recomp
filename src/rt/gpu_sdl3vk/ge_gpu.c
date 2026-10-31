@@ -8020,6 +8020,55 @@ int gegpu_coherence_selftest(void) {
  * ordinary presentation remains asynchronous (the pre-fix lag), then asks the same
  * target through gegpu_sync_guest_fb() and verifies that guest VRAM is current before
  * publication. Descriptor rejection and no-target answers are checked too. */
+/* Ace Mode's texture filtering (ace.h), run with SR_ACE asking for 16x on a device that has it
+ * (gpu-ace-selftest). Through-mode draws keep the guest's sampling exactly: the PSP-measured
+ * sample points still hold and no anisotropic sampler is made for them. A transformed draw that
+ * minifies linearly gets one anisotropic sampler, made once and reused; a nearest-filtered
+ * texture, and the same entry drawn in through mode, keep the plain set. */
+int gegpu_ace_af_selftest(void) {
+    if (!s_ace_af) {
+        fprintf(stderr, "gpu ace selftest: SKIP (this device has no anisotropic filtering)\n");
+        return 77;
+    }
+    if (s_tex_pool_sets != 2u * MAX_TEX) {
+        fprintf(stderr, "gpu ace selftest: FAIL texture pool has %u sets, expected %u\n",
+                s_tex_pool_sets, 2u * MAX_TEX);
+        return 0;
+    }
+    if (!coherence_run_psp_sample_points()) return 0;
+    if (s_cnt_af_samplers != 0u) {
+        fprintf(stderr, "gpu ace selftest: FAIL through-mode draws made %llu anisotropic samplers\n",
+                (unsigned long long)s_cnt_af_samplers);
+        return 0;
+    }
+    /* The list left the 32x32 texture bound. Draw it transformed, then nearest, then through. */
+    GeState *g = s_ge;
+    const uint32_t through = 1u << 23;
+    g->vtype &= ~through;
+    g->tex_filter = 0x101u;                                  /* linear min and mag */
+    VkDescriptorSet aniso = tex_get();
+    VkDescriptorSet again = tex_get();
+    int ok = s_cnt_af_samplers == 1u && aniso == again && aniso != s_white_set;
+    if (!ok) fprintf(stderr, "gpu ace selftest: FAIL transformed linear draw: samplers=%llu same=%d\n",
+                     (unsigned long long)s_cnt_af_samplers, aniso == again);
+    g->tex_filter = 0x100u;                                  /* nearest min, linear mag */
+    VkDescriptorSet nearest = tex_get();
+    if (ok && (s_cnt_af_samplers != 1u || nearest == aniso)) {
+        fprintf(stderr, "gpu ace selftest: FAIL nearest minification got anisotropy\n");
+        ok = 0;
+    }
+    g->tex_filter = 0x101u;
+    g->vtype |= through;
+    VkDescriptorSet plain = tex_get();
+    if (ok && (s_cnt_af_samplers != 1u || plain == aniso)) {
+        fprintf(stderr, "gpu ace selftest: FAIL a through-mode draw bound the anisotropic set\n");
+        ok = 0;
+    }
+    if (ok) printf("gpu ace selftest: PASS af=%d through-mode exact, transformed linear filtered, "
+                   "nearest kept\n", s_ace_af);
+    return ok;
+}
+
 int gegpu_snapshot_sync_selftest(void) {
     const uint32_t fba = 0x00140000u;
     const uint32_t base = 0x04000000u | fba;

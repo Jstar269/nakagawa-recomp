@@ -3034,6 +3034,20 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
 # target-scoped synchronization closes the generation gap and rejects unsafe geometry.
+# gpu-ace-selftest - Ace Mode's texture filtering (src/rt/ace.h) on a real device: SR_ACE asks for
+# 16x before the device is made; through-mode draws keep the measured PSP sample points and get
+# no anisotropic sampler, a transformed linear draw gets one, a nearest one does not. Exit 77
+# (SKIP) without Vulkan or without anisotropic filtering.
+gpu-ace-selftest: shader-verify $(RT_GE_O)
+	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_ACE_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		-o $(BUILD_DIR)/gpu_ace_selftest.exe \
+		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+	@rc=0; $(BUILD_DIR)/gpu_ace_selftest.exe || rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "SKIP gpu-ace-selftest (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-ace-selftest (exit $$rc)"; exit $$rc; fi
+
 gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \

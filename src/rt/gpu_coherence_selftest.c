@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
+#include "ace.h"
 #include "gpu_sdl3vk/ge_gpu.h"
 #include "gpu_sdl3vk/sdl3vk.h"
 #include "recomp.h"
@@ -96,6 +97,14 @@ int main(void) {
     if (!arena) return 2;
     g_mem = arena + 0x08000000u;
     sr_perf_init();
+#ifdef SR_GPU_ACE_SELFTEST
+    /* Ace Mode with 16x texture filtering, read before the device is made (src/rt/ace.h). */
+    if (!ace_init_spec("v1;af=16;text=off;readout=off;notice=off;wide=off;smooth=off", NULL)) {
+        fprintf(stderr, "gpu ace selftest: FAIL the Ace line was refused\n");
+        free(arena);
+        return 1;
+    }
+#endif
 
     if (!sdl3vk_init("Nakagawa GPU coherence selftest") || !gegpu_init()) {
         fprintf(stderr, "gpu coherence selftest: SKIP (Vulkan initialization unavailable)\n");
@@ -105,11 +114,20 @@ int main(void) {
     }
 
     int ok;
-#ifdef SR_GPU_SNAPSHOT_SYNC_SELFTEST
+#if defined(SR_GPU_ACE_SELFTEST)
+    ok = gegpu_ace_af_selftest();
+    if (ok == 77) {
+        gegpu_shutdown();
+        sdl3vk_shutdown();
+        free(arena);
+        return 77;
+    }
+#elif defined(SR_GPU_SNAPSHOT_SYNC_SELFTEST)
     ok = gegpu_snapshot_sync_selftest();
 #else
     ok = gegpu_coherence_selftest();
 #endif
+#ifndef SR_GPU_ACE_SELFTEST
     /* Ace Mode off (A2, src/rt/ace.h): every cell above ran with no anisotropic sampler,
      * and the texture pool kept its MAX_TEX sets. */
     {
@@ -124,11 +142,14 @@ int main(void) {
                    ace.tex_pool_sets);
         }
     }
+#endif
     gegpu_shutdown();
     sdl3vk_shutdown();
     free(arena);
     if (!ok) return 1;
-#ifdef SR_GPU_SNAPSHOT_SYNC_SELFTEST
+#if defined(SR_GPU_ACE_SELFTEST)
+    puts("gpu ace selftest: OK");
+#elif defined(SR_GPU_SNAPSHOT_SYNC_SELFTEST)
     puts("gpu snapshot sync selftest: OK");
 #else
     puts("gpu coherence selftest: OK");
