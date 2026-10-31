@@ -367,7 +367,8 @@ checked", "Your disc list could not be read", or "Some disc images were not chec
 and the reason goes to the developer log. The line stays until HIDE; a later check shows its progress meanwhile.
 Neither button is ever the default focus. The progress is a number, not an animation, and it is on that line
 only: the card's badge, YOUR DISC until then, changes once, to VERIFIED RETAIL, MODIFIED DISC or UNKNOWN DUMP (a
-beta's BETA / UNOFFICIAL stays over UNKNOWN DUMP).
+beta's BETA / UNOFFICIAL stays over UNKNOWN DUMP). A disc added again reads YOUR DISC until its new check ends,
+since its file may hold other bytes now.
 
 ### Title detail (C5, built)
 
