@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import ClassVar, TypedDict, cast
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -224,6 +225,11 @@ def create_test_iso_with_executables(
     path.write_bytes(data)
 
 
+class _ModuleFiles(TypedDict):
+    entries: bytes
+    members: dict[str, bytes]
+
+
 def create_test_iso_with_modules(
     path: Path,
     eboot: bytes,
@@ -256,7 +262,7 @@ def create_test_iso_with_modules(
     )
     next_lba = 37
     file_records = []
-    files = [
+    files: list[_ModuleFiles] = [
         {"entries": sysdir_entries, "members": sysdir_modules},
         {"entries": usrdir_entries, "members": usrdir_modules},
     ]
@@ -359,8 +365,8 @@ def create_test_iso_with_module_tree(
         directory_lbas[directory] = next_lba
         next_lba += directory_sizes[directory] // sector_size
 
-    file_lbas = {("PSP_GAME", "PARAM.SFO"): 32}
-    file_sizes = {("PSP_GAME", "PARAM.SFO"): len(sfo)}
+    file_lbas: dict[tuple[str, ...], int] = {("PSP_GAME", "PARAM.SFO"): 32}
+    file_sizes: dict[tuple[str, ...], int] = {("PSP_GAME", "PARAM.SFO"): len(sfo)}
     for file_path, contents in sorted(files.items()):
         if file_path == ("PSP_GAME", "PARAM.SFO"):
             continue
@@ -605,10 +611,16 @@ def build_pbp_package(
 
 
 class IsoParityTests(unittest.TestCase):
+    gcc: ClassVar[str]
+    _build_dir: ClassVar[Path]
+    harness_c: ClassVar[Path]
+    harness_exe: ClassVar[Path]
+    path_limit_exe: ClassVar[Path]
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        cls.gcc = shutil.which("gcc")
+        cls.gcc = cast(str, shutil.which("gcc"))
         if not cls.gcc:
             raise unittest.SkipTest("gcc not available")
 
@@ -618,7 +630,7 @@ class IsoParityTests(unittest.TestCase):
         cls._build_dir = Path(tempfile.mkdtemp(prefix="nk_parity_build_"))
         cls.harness_c = cls._build_dir / "parity_harness.c"
         executable_name = "parity_harness.exe" if sys.platform == "win32" else "parity_harness"
-        cls.exe_path = cls._build_dir / executable_name
+        cls.harness_exe = cls._build_dir / executable_name
         cls.path_limit_exe = cls._build_dir / (
             "parity_path_limit.exe" if sys.platform == "win32" else "parity_path_limit"
         )
@@ -1019,7 +1031,7 @@ int main(int argc, char **argv) {{
             str(cls.harness_c),
         ] + [str(s) for s in core_srcs] + [
             *(["-lshell32", "-lole32", "-luuid"] if sys.platform == "win32" else []),
-            "-o", str(cls.exe_path),
+            "-o", str(cls.harness_exe),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode:
@@ -1034,7 +1046,7 @@ int main(int argc, char **argv) {{
         # Inputs and any application data remain isolated per test even though
         # the immutable native runner is shared by the class.
         self.temp_dir = Path(tempfile.mkdtemp(prefix="nk_parity_test_"))
-        self.exe_path = type(self).exe_path
+        self.exe_path = type(self).harness_exe
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -1076,7 +1088,7 @@ int main(int argc, char **argv) {{
             elif line.startswith("MODULE_PATH:"):
                 paths.append(line.split(":", 1)[1])
         self.assertIsNotNone(status, result.stdout)
-        return status, paths
+        return cast(int, status), paths
 
     def test_module_discovery_covers_usrdir_module_and_nested_paths(self) -> None:
         iso_file = self.temp_dir / "module-tree.iso"
