@@ -448,7 +448,7 @@ int main(void) {
         CHECK(strcmp(rel, "PSP/SAVEDATA/CONSOLE") == 0, "save_rel produced '%s'", rel);
         CHECK(save_rel(rel, sizeof(rel), "CON", "SOLE") == 1,
               "a device-name part inside an ordinary joined name is accepted");
-        CHECK(save_rel(rel, sizeof(rel), "ULUS10000", "AUX") == 1,
+        CHECK(save_rel(rel, sizeof(rel), "ULUS99999", "AUX") == 1,
               "a saveName AUX after a gameName is an ordinary save directory name");
         CHECK(save_rel(rel, sizeof(rel), "", "CON") == 0, "an empty gameName is refused");
 
