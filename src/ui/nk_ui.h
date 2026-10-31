@@ -19,6 +19,35 @@ typedef struct NkUiTheme NkUiTheme;
 typedef struct NkUiDrawList NkUiDrawList;
 typedef uint32_t NkUiId;
 
+/* ---- Element ids: one allocation scheme --------------------------------------
+   An id names one element for one frame, and two elements of one frame must not
+   share one: Clay lays the second out empty. Every id comes from one of three
+   places, which can never collide:
+   - 0x80000000 and up: nk_ui_child_id, a widget's own parts. Never by hand.
+   - A screen's own ids: NK_UI_ID(screen, offset), the screen's byte from the table
+     below in the top 8 bits and a 24-bit offset under it. Each screen's file makes
+     its ids through one macro of its own (`#define PAD_ID(offset) NK_UI_ID(...)`),
+     so a screen's ids are allocated in one place.
+   - Ids that several screens, the router or tests name (PLAYER_UI_ID_* in
+     player_ui_nk.h): screen 0x00.
+   A run of ids made by adding to a base (a row per control, a part per row) is a
+   family: the base's `<NAME>_SPAN` says how many ids it holds, and no other id may
+   fall inside it. test_player_ui.py's PlayerUiIdSourceTests checks the table, the
+   ranges and the spans; the screen tests fail on any duplicate id Clay reports. */
+#define NK_UI_ID(screen, offset) ((NkUiId)(((uint32_t)(screen) << 24) + (uint32_t)(offset)))
+#define NK_UI_ID_SCREEN_SHARED 0x00u        /* PLAYER_UI_ID_*: named across screens */
+#define NK_UI_ID_SCREEN_LIBRARY 0x10u
+#define NK_UI_ID_SCREEN_TITLE 0x20u
+#define NK_UI_ID_SCREEN_ABOUT 0x50u
+#define NK_UI_ID_SCREEN_FLOW 0x60u          /* building, errors and the other one-card flows */
+#define NK_UI_ID_SCREEN_WIZARD 0x61u
+#define NK_UI_ID_SCREEN_DISC 0x62u          /* a disc found: the game-found card */
+#define NK_UI_ID_SCREEN_SETTINGS 0x63u
+#define NK_UI_ID_SCREEN_CONTROLS 0x64u
+#define NK_UI_ID_SCREEN_DEVELOPER_LOG 0x65u
+#define NK_UI_ID_SCREEN_DISC_VERIFY 0x66u   /* reserved: disc verification's own pages */
+#define NK_UI_ID_SCREEN_OVERLAY 0x70u       /* the in-game overlay's pages (src/rt/overlay) */
+
 typedef enum {
     NK_UI_HOST_LAUNCHER = 0,
     NK_UI_HOST_OVERLAY = 1
@@ -204,7 +233,10 @@ typedef struct {
     float display_scale;
     int ui_scale_pct;   /* 0 = automatic (follow display_scale); explicit values: 100, 125, 150, 200.
                            100 forces 1x on a high-DPI display. Anything else is treated as 100. */
-    int text_size_pct;  /* 90, 100, 125 or 150. Anything else is treated as 100. */
+    /* 90, 100, 125 or 150. Anything else is treated as 100. Type only: the text
+       is measured, spaced, given line heights and drawn this much larger, while
+       the density, boxes, gaps and logical size follow ui_scale_pct alone. */
+    int text_size_pct;
     /* The smallest layout the host's screens are designed for, in layout units
        (0 = none). A window smaller than this at the chosen density lowers the
        density, down to NK_UI_MIN_FIT_DENSITY, so the layout keeps this size and
@@ -325,8 +357,11 @@ enum {
     NK_UI_BUTTON_OWNS_HORIZONTAL = 1u << 8
 };
 
-/* Device scale and edge rounding are shared helpers for hosts and tests. */
+/* Device scale and edge rounding are shared helpers for hosts and tests. The
+   density comes from the UI scale alone; the text size is a separate factor on
+   type (1.0 for anything but 90, 125 or 150). */
 NkUiScale nk_ui_scale_for_viewport(const NkUiViewport *viewport);
+float nk_ui_text_scale_for_viewport(const NkUiViewport *viewport);
 NkUiPixelRect nk_ui_round_rect(NkUiRect rect, float density);
 
 NkUi *nk_ui_create(const NkUiConfig *config);
@@ -372,6 +407,25 @@ const char *nk_ui_frame_text(NkUi *ui, const char *text);
    most ten containers per layout, so long names are shortened, not clipped. */
 const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *style,
                              float max_width, int max_lines);
+/* The text size the viewport set (1.0 at 100 %). Layout units are unchanged by
+   it: only type grows, so a screen that reserves room for a run of text in
+   logical px reserves it from the text's own measurements, not a constant. */
+float nk_ui_text_scale(const NkUi *ui);
+/* The width the layout has (NkUiScale.logical_w for the last viewport set). */
+float nk_ui_layout_width(const NkUi *ui);
+/* How wide `text` lays out in `style` on one line, in layout units, at the
+   current text size and after the host's display rules. */
+float nk_ui_text_width(const NkUi *ui, const char *text, const NkUiTextStyle *style);
+/* The logical height one line of `style` lays out in at the current text size,
+   or at `text_scale` (nk_ui_text_scale_for_viewport) for a host that works out a
+   layout before it has a frame. */
+float nk_ui_line_height(const NkUi *ui, const NkUiTextStyle *style);
+float nk_ui_line_height_at(const NkUiTextStyle *style, float text_scale);
+/* The height for a component designed `height` px tall around one line of
+   `style` (a button, chip, badge, tab, bar or row): `height` while the line
+   fits with a quarter of a line free above and below, else that much. At 100 %
+   text and smaller it is always `height`. */
+float nk_ui_line_box(const NkUi *ui, float height, const NkUiTextStyle *style);
 /* An empty element that takes space (a spacer or a fixed gap). */
 void nk_ui_spacer(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height);
 /* Draws the focus ring around element `id` this frame, outside its bounds, with
@@ -399,11 +453,28 @@ void nk_ui_set_prompt_images(NkUi *ui, const struct NkUiPromptImages *images);
    or with an unknown tint_index. rect is in logical UI pixels. */
 bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index);
 
+/* Launcher-only backdrop: `picture` cover-fitted over rect (logical px), drawn over
+   the waves and under the layout, beneath a scrim of the page colour that keeps
+   every text colour at the contrast the waves allow (nk_ui_backdrop_scrim). While
+   `shown` it fades in over NK_UI_MOTION_SLOW, and once not shown it fades out; a
+   different picture starts from nothing. A frame that does not call it drops it.
+   Returns true while it is drawn. Returns false, and draws nothing, on an overlay
+   host, with no open frame, an unusable picture or an empty rect, and under Reduce
+   motion, where the backdrop is left out altogether: it is decoration. */
+struct NkUiImage;
+bool nk_ui_backdrop(NkUi *ui, NkUiId id, NkUiRect rect, const struct NkUiImage *picture,
+                    bool shown);
+/* The scrim alpha the backdrop is drawn under at `fade` (0-1, eased): enough that a
+   white picture, over waves at their brightest, stays as dark as the waves' limit
+   (NK_UI_WAVES_LUMINANCE_MAX), so contrast holds through the fade too. */
+float nk_ui_backdrop_scrim(float fade);
+
 /* Finishes the frame and returns its draw list, or NULL when the frame failed.
    The list is owned by ui and is valid until the next nk_ui_begin or
-   nk_ui_destroy. Render it with nk_ui_vk_render (backend/nk_ui_vk.h) or
-   nk_ui_sdlr_render (backend/nk_ui_sdlr.h); NkUiDrawList itself is defined in
-   nk_ui_draw.h and is opaque to hosts that only forward it. */
+   nk_ui_destroy. Render it with nk_ui_sdlr_render (backend/nk_ui_sdlr.h), or
+   with nk_ui_vk_prepare outside a render pass and nk_ui_vk_render inside one
+   (backend/nk_ui_vk.h); NkUiDrawList itself is defined in nk_ui_draw.h and is
+   opaque to hosts that only forward it. */
 const NkUiDrawList *nk_ui_end(NkUi *ui);
 bool nk_ui_next_wake(const NkUi *ui, double *at_s);
 /* How long a host may wait for input before it draws the next frame, at most

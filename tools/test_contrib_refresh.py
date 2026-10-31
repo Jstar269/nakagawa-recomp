@@ -18,7 +18,6 @@ pattern is one implementation rather than two.
 
 from __future__ import annotations
 
-import hashlib
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 import json
@@ -159,11 +158,30 @@ class ContribRefreshEqualsRealRefreshTests(unittest.TestCase):
         )
         rc = contrib_refresh.main(["--repo", str(self.root), "--base", self.fixture.base])
         self.assertEqual(rc, 0)
-        self.assertEqual((self.root / LEDGER).read_bytes(), reference.generated_ledger_bytes)
+        self.assertEqual((self.root / LEDGER).read_bytes(), reference.committed_ledger_bytes)
         self.assertEqual((self.root / EXPORT).read_bytes(), reference.generated_export_bytes)
-        # And the refreshed ledger carries the new content hash for the changed path.
-        entries = {e["path"]: e for e in json.loads((self.root / LEDGER).read_bytes())["entries"]}
-        self.assertEqual(entries[PATH_B]["sha256"], hashlib.sha256(BETA_EDITED).hexdigest())
+        # The fixture's base still carries the hashed schema-1 ledger; the refresh writes the
+        # committed claims form, which carries no content hash at all (#1673).
+        refreshed = json.loads((self.root / LEDGER).read_bytes())
+        self.assertTrue(contrib_refresh.ledger_tool.is_claims_ledger(refreshed))
+        self.assertFalse(any("sha256" in entry for entry in refreshed["entries"]))
+
+    def test_an_edit_on_a_claims_base_leaves_the_ledger_unchanged(self) -> None:
+        """The point of #1673: once main carries claims, an edit-only change touches no control."""
+        rc = contrib_refresh.main(["--repo", str(self.root), "--base", self.fixture.base])
+        self.assertEqual(rc, 0)
+        claims_base = self.fixture._commit("convert the committed ledger to the claims form")
+        before = self.fixture.controls()
+        self.fixture._write({PATH_B: BETA_EDITED})
+        _git(self.root, "add", PATH_B)
+        buffer = StringIO()
+        with redirect_stdout(buffer):
+            rc = contrib_refresh.main(["--repo", str(self.root), "--base", claims_base])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.fixture.controls(), before)
+        self.assertIn(f"claim kept {PATH_B}", buffer.getvalue())
+        self.assertIn("no control changed", buffer.getvalue())
+        self.assertEqual(_git(self.root, "diff", "--cached", "--name-only").stdout.split(), [PATH_B])
 
     def test_check_writes_nothing_and_names_each_path(self) -> None:
         before = self.fixture.controls()

@@ -91,6 +91,32 @@ static const struct {
 };
 
 static const struct {
+    NkPspStickDir dir;
+    const char *name;
+} kPspStickDirs[] = {
+    { NK_PSP_STICK_UP,    "stick_up" },
+    { NK_PSP_STICK_DOWN,  "stick_down" },
+    { NK_PSP_STICK_LEFT,  "stick_left" },
+    { NK_PSP_STICK_RIGHT, "stick_right" }
+};
+
+/* The keyboard controls are the 14 buttons followed by the 4 stick directions. A key
+ * drives at most one of them, so validation and the JSON parser number them in one
+ * space: 0..NK_PSP_BTN_COUNT-1 are buttons, then the stick directions. */
+#define NK_KEY_CONTROL_COUNT (NK_PSP_BTN_COUNT + NK_PSP_STICK_DIR_COUNT)
+
+static const NkKeyBinding *key_control_binding(const NkInputProfile *profile, int control) {
+    return control < NK_PSP_BTN_COUNT ? &profile->psp_keys[control]
+                                      : &profile->stick_keys[control - NK_PSP_BTN_COUNT];
+}
+
+static const char *key_control_name(int control) {
+    return control < NK_PSP_BTN_COUNT
+               ? nk_psp_button_name((NkPspButton)control)
+               : nk_psp_stick_dir_name((NkPspStickDir)(control - NK_PSP_BTN_COUNT));
+}
+
+static const struct {
     NkPspAxis axis;
     const char *name;
 } kPspAxes[] = {
@@ -230,6 +256,23 @@ NkPspButton nk_psp_button_from_name(const char *name) {
         }
     }
     return (NkPspButton)-1;
+}
+
+const char *nk_psp_stick_dir_name(NkPspStickDir dir) {
+    if ((int)dir >= 0 && (int)dir < NK_PSP_STICK_DIR_COUNT) {
+        return kPspStickDirs[dir].name;
+    }
+    return "unknown";
+}
+
+NkPspStickDir nk_psp_stick_dir_from_name(const char *name) {
+    if (!name) return (NkPspStickDir)-1;
+    for (size_t i = 0; i < sizeof(kPspStickDirs) / sizeof(kPspStickDirs[0]); i++) {
+        if (nk_ascii_casecmp(name, kPspStickDirs[i].name) == 0) {
+            return kPspStickDirs[i].dir;
+        }
+    }
+    return (NkPspStickDir)-1;
 }
 
 const char *nk_psp_axis_name(NkPspAxis axis) {
@@ -456,6 +499,14 @@ bool nk_input_profile_eval_trigger(int16_t raw_trigger, int16_t trigger_threshol
  * Profile Default Initialization
  * -------------------------------------------------------------------------- */
 
+/* The default key of each stick direction, the I/J/K/L diamond. None of them is a
+ * default button key, so the default profile validates; a schema 3 file that binds
+ * one of them to a button keeps its button (migrate_stick_keys). */
+static int default_stick_key(NkPspStickDir dir) {
+    static const char *const kNames[NK_PSP_STICK_DIR_COUNT] = { "i", "k", "j", "l" };
+    return nk_host_key_from_name(kNames[dir]);
+}
+
 void nk_input_profile_init_default(NkInputProfile *profile) {
     if (!profile) return;
     memset(profile, 0, sizeof(*profile));
@@ -546,6 +597,11 @@ void nk_input_profile_init_default(NkInputProfile *profile) {
     profile->psp_keys[NK_PSP_BTN_CIRCLE].primary   = nk_host_key_from_name("z");
     profile->psp_keys[NK_PSP_BTN_CROSS].primary    = nk_host_key_from_name("x");
     profile->psp_keys[NK_PSP_BTN_SQUARE].primary   = nk_host_key_from_name("a");
+
+    /* The analog stick from the keyboard (schema 4): I up, K down, J left, L right. */
+    for (int d = 0; d < NK_PSP_STICK_DIR_COUNT; d++) {
+        profile->stick_keys[d].primary = default_stick_key((NkPspStickDir)d);
+    }
 
     /* Navigation bindings matching player/main.c */
     profile->nav_bindings[NK_NAV_ACTION_CONFIRM].primary.type = NK_BINDING_HOST_BUTTON;
@@ -875,26 +931,29 @@ NkResult nk_input_profile_validate(
     }
 
     /* Keyboard keys: each must be a bindable key, and one key drives at most one
-     * PSP button (a button may list the same key in both slots). */
+     * control across the PSP buttons and the stick directions (a control may list the
+     * same key in both slots). */
     int key_owners[NK_HOST_KEY_LIMIT];
     for (int k = 0; k < NK_HOST_KEY_LIMIT; k++) key_owners[k] = -1;
-    for (int i = 0; i < NK_PSP_BTN_COUNT; i++) {
-        const int slots[2] = { profile->psp_keys[i].primary, profile->psp_keys[i].secondary };
+    for (int i = 0; i < NK_KEY_CONTROL_COUNT; i++) {
+        const NkKeyBinding *binding = key_control_binding(profile, i);
+        const int slots[2] = { binding->primary, binding->secondary };
         for (int s = 0; s < 2; s++) {
             int key = slots[s];
             if (key == NK_HOST_KEY_NONE) continue;
             if (key < 0 || key >= NK_HOST_KEY_LIMIT || !nk_host_key_name(key)) {
                 diag_set(diag_buf, diag_buf_sz,
-                         "PSP button '%s' binds host key code %d, which is not a bindable key",
-                         nk_psp_button_name((NkPspButton)i), key);
+                         "PSP %s '%s' binds host key code %d, which is not a bindable key",
+                         i < NK_PSP_BTN_COUNT ? "button" : "stick direction",
+                         key_control_name(i), key);
                 return NK_ERROR_GENERIC;
             }
             if (key_owners[key] != -1 && key_owners[key] != i) {
                 diag_set(diag_buf, diag_buf_sz,
                          "conflicting keyboard binding: host key '%s' is bound to both '%s' and '%s'",
                          nk_host_key_name(key),
-                         nk_psp_button_name((NkPspButton)key_owners[key]),
-                         nk_psp_button_name((NkPspButton)i));
+                         key_control_name(key_owners[key]),
+                         key_control_name(i));
                 return NK_ERROR_GENERIC;
             }
             key_owners[key] = i;
@@ -914,10 +973,45 @@ static bool parse_binding_source_str(
     char *diag_buf,
     size_t diag_buf_sz
 ) {
+    out_src->threshold = 0;
     if (!str || !*str || nk_ascii_casecmp(str, "none") == 0) {
         out_src->type = NK_BINDING_NONE;
         out_src->index = 0;
         return true;
+    }
+    /* Reserved for #1791 (mouse movement as a source): refused by name, never read as
+       something else. */
+    if (strncmp(str, "mouse:", 6) == 0) {
+        diag_set(diag_buf, diag_buf_sz,
+                 "mouse source '%s' is not supported by this version of Nakagawa", str);
+        return false;
+    }
+    /* A stick direction may carry its own threshold: "+rightx@20000". */
+    if (str[0] == '+' || str[0] == '-') {
+        const char *at = strchr(str, '@');
+        if (at != NULL) {
+            char name[32];
+            char *end = NULL;
+            long value = strtol(at + 1, &end, 10);
+            size_t length = (size_t)(at - (str + 1));
+            if (length == 0 || length >= sizeof(name) || end == at + 1 || *end != '\0' ||
+                value < 1 || value > 32767) {
+                diag_set(diag_buf, diag_buf_sz,
+                         "binding '%s' needs a threshold from 1 to 32767 after '@'", str);
+                return false;
+            }
+            memcpy(name, str + 1, length);
+            name[length] = '\0';
+            NkHostGamepadAxis ax = nk_host_axis_from_name(name);
+            if (ax == NK_HOST_AXIS_INVALID) {
+                diag_set(diag_buf, diag_buf_sz, "unknown host axis '%s'", name);
+                return false;
+            }
+            out_src->type = str[0] == '+' ? NK_BINDING_HOST_AXIS_POS : NK_BINDING_HOST_AXIS_NEG;
+            out_src->index = (int)ax;
+            out_src->threshold = (int16_t)value;
+            return true;
+        }
     }
 
     /* Check prefix "button:" or "axis:" */
@@ -999,10 +1093,14 @@ static void format_binding_source(const NkBindingSource *src, char *out, size_t 
         snprintf(out, out_sz, "%s", nk_host_axis_name((NkHostGamepadAxis)src->index));
         break;
     case NK_BINDING_HOST_AXIS_POS:
-        snprintf(out, out_sz, "+%s", nk_host_axis_name((NkHostGamepadAxis)src->index));
-        break;
     case NK_BINDING_HOST_AXIS_NEG:
-        snprintf(out, out_sz, "-%s", nk_host_axis_name((NkHostGamepadAxis)src->index));
+        if (src->threshold > 0) {
+            snprintf(out, out_sz, "%c%s@%d", src->type == NK_BINDING_HOST_AXIS_POS ? '+' : '-',
+                     nk_host_axis_name((NkHostGamepadAxis)src->index), (int)src->threshold);
+        } else {
+            snprintf(out, out_sz, "%c%s", src->type == NK_BINDING_HOST_AXIS_POS ? '+' : '-',
+                     nk_host_axis_name((NkHostGamepadAxis)src->index));
+        }
         break;
     default:
         snprintf(out, out_sz, "none");
@@ -1222,10 +1320,13 @@ static bool parse_key_slot(
     return true;
 }
 
-/* The optional keyboard_bindings list (schema 3). Like psp_bindings, a present
- * list replaces the defaults and a control it does not name is unbound. */
+/* The optional keyboard_bindings list (schema 3; stick directions from schema 4).
+ * Like psp_bindings, a present list replaces the defaults and a control it does not
+ * name is unbound, stick directions included. `doc_version` is the document's
+ * schema_version: a stick entry in an older document is refused. */
 static bool parse_keyboard_bindings(
     const JsonNode *kb,
+    int doc_version,
     NkInputProfile *out,
     char *diag_buf,
     size_t diag_buf_sz
@@ -1234,11 +1335,15 @@ static bool parse_keyboard_bindings(
         diag_set(diag_buf, diag_buf_sz, "'keyboard_bindings' must be an array");
         return false;
     }
-    bool bound[NK_PSP_BTN_COUNT];
+    bool bound[NK_KEY_CONTROL_COUNT];
     memset(bound, 0, sizeof(bound));
     for (int i = 0; i < NK_PSP_BTN_COUNT; i++) {
         out->psp_keys[i].primary = NK_HOST_KEY_NONE;
         out->psp_keys[i].secondary = NK_HOST_KEY_NONE;
+    }
+    for (int i = 0; i < NK_PSP_STICK_DIR_COUNT; i++) {
+        out->stick_keys[i].primary = NK_HOST_KEY_NONE;
+        out->stick_keys[i].secondary = NK_HOST_KEY_NONE;
     }
     for (size_t i = 0; i < kb->u.arr.count; i++) {
         const JsonNode *item = kb->u.arr.items[i];
@@ -1251,18 +1356,37 @@ static bool parse_keyboard_bindings(
             diag_set(diag_buf, diag_buf_sz, "keyboard_bindings entry %zu missing 'control' name", i);
             return false;
         }
+        /* A button name, else a stick direction; `control` numbers both together. */
+        NkKeyBinding *target = NULL;
+        int control = -1;
         NkPspButton btn = nk_psp_button_from_name(ctrl->u.str_val);
-        if ((int)btn < 0 || (int)btn >= NK_PSP_BTN_COUNT) {
+        if ((int)btn >= 0 && (int)btn < NK_PSP_BTN_COUNT) {
+            control = (int)btn;
+            target = &out->psp_keys[btn];
+        } else {
+            NkPspStickDir dir = nk_psp_stick_dir_from_name(ctrl->u.str_val);
+            if ((int)dir >= 0 && (int)dir < NK_PSP_STICK_DIR_COUNT) {
+                if (doc_version < NK_INPUT_PROFILE_STICK_KEYS_SCHEMA_VERSION) {
+                    diag_set(diag_buf, diag_buf_sz,
+                             "schema_version %d cannot carry stick keys (introduced in %d)",
+                             doc_version, NK_INPUT_PROFILE_STICK_KEYS_SCHEMA_VERSION);
+                    return false;
+                }
+                control = NK_PSP_BTN_COUNT + (int)dir;
+                target = &out->stick_keys[dir];
+            }
+        }
+        if (!target) {
             diag_set(diag_buf, diag_buf_sz, "unknown PSP control '%s' in keyboard_bindings",
                      ctrl->u.str_val);
             return false;
         }
-        if (bound[btn]) {
+        if (bound[control]) {
             diag_set(diag_buf, diag_buf_sz, "duplicate keyboard binding for control '%s'",
                      ctrl->u.str_val);
             return false;
         }
-        bound[btn] = true;
+        bound[control] = true;
 
         JsonNode *pri = obj_get(item, "primary");
         JsonNode *sec = obj_get(item, "secondary");
@@ -1273,15 +1397,38 @@ static bool parse_keyboard_bindings(
             return false;
         }
         if (pri && !parse_key_slot(pri, "primary", ctrl->u.str_val,
-                                   &out->psp_keys[btn].primary, diag_buf, diag_buf_sz)) {
+                                   &target->primary, diag_buf, diag_buf_sz)) {
             return false;
         }
         if (sec && !parse_key_slot(sec, "secondary", ctrl->u.str_val,
-                                   &out->psp_keys[btn].secondary, diag_buf, diag_buf_sz)) {
+                                   &target->secondary, diag_buf, diag_buf_sz)) {
             return false;
         }
     }
     return true;
+}
+
+/* True when `key` drives any PSP button of `profile` (either slot). */
+static bool key_drives_button(const NkInputProfile *profile, int key) {
+    for (int i = 0; i < NK_PSP_BTN_COUNT; i++) {
+        if (profile->psp_keys[i].primary == key || profile->psp_keys[i].secondary == key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Schema 3 -> 4: a schema 3 mapping that has a keyboard_bindings list names no stick
+ * directions, so each gets its default key (default_stick_key) -- except a default
+ * the mapping already binds to a PSP button, which the direction leaves unbound. The
+ * button keys of the file are never changed, and the migrated mapping always
+ * validates. */
+static void migrate_stick_keys(NkInputProfile *profile) {
+    for (int d = 0; d < NK_PSP_STICK_DIR_COUNT; d++) {
+        int key = default_stick_key((NkPspStickDir)d);
+        profile->stick_keys[d].primary = key_drives_button(profile, key) ? NK_HOST_KEY_NONE : key;
+        profile->stick_keys[d].secondary = NK_HOST_KEY_NONE;
+    }
 }
 
 /**
@@ -1480,8 +1627,9 @@ static bool parse_mapping_node(
         }
     }
 
-    /* Keyboard Bindings (schema 3). Absent: the default keys stay, so a schema 1
-     * or 2 file keeps the keyboard map it always had. */
+    /* Keyboard Bindings (schema 3, stick directions from schema 4). Absent: the default
+     * keys stay, so a schema 1 or 2 file keeps the keyboard map it always had, and a
+     * mapping with no list gets the default stick keys too. */
     JsonNode *kb = obj_get(node, "keyboard_bindings");
     if (kb) {
         if (doc_version < NK_INPUT_PROFILE_KEYBOARD_SCHEMA_VERSION) {
@@ -1491,9 +1639,12 @@ static bool parse_mapping_node(
             nk_input_profile_init_default(out);
             return false;
         }
-        if (!parse_keyboard_bindings(kb, out, diag_buf, diag_buf_sz)) {
+        if (!parse_keyboard_bindings(kb, doc_version, out, diag_buf, diag_buf_sz)) {
             nk_input_profile_init_default(out);
             return false;
+        }
+        if (doc_version < NK_INPUT_PROFILE_STICK_KEYS_SCHEMA_VERSION) {
+            migrate_stick_keys(out);
         }
     }
 
@@ -1670,7 +1821,13 @@ NkResult nk_input_profile_file_parse_json(
     /* 1. schema_version. Each older version migrates forward in memory, one step
      *    at a time, as the members it could not carry are read:
      *      v1 -> v2: no per_title map, so every disc uses the global mapping;
-     *      v2 -> v3: no keyboard_bindings, so each mapping keeps the default keys.
+     *      v2 -> v3: no keyboard_bindings, so each mapping keeps the default keys;
+     *      v3 -> v4: no stick directions in keyboard_bindings, so each mapping that has
+     *      a keyboard_bindings list gets the default stick keys (I, K, J, L), except
+     *      that a default key the mapping already binds to a PSP button leaves that
+     *      direction unbound. The button keys of the file are never changed, and the
+     *      migrated mapping always validates (migrate_stick_keys). A mapping with no
+     *      keyboard_bindings list keeps every default key, stick included.
      *    v0.0.1 wrote version 3. The file on disk is rewritten only by the next
      *    save, which keeps the original as <file>.v<n>.bak first. A future version
      *    is never downgraded: it is refused with NK_ERROR_NEWER_SCHEMA, and the
@@ -1909,20 +2066,22 @@ static void write_mapping_body(FILE *f, const NkInputProfile *profile, int inden
     }
     fprintf(f, "%s],\n", pad);
 
-    /* Keyboard bindings (schema 3): every control is written, "none" when unbound. */
+    /* Keyboard bindings (schema 3, stick directions from schema 4): every control is
+     * written, the 14 buttons then the 4 stick directions, "none" when unbound. */
     fprintf(f, "%s\"keyboard_bindings\": [\n", pad);
-    for (int i = 0; i < NK_PSP_BTN_COUNT; i++) {
-        const char *pri = nk_host_key_name(profile->psp_keys[i].primary);
-        const char *sec = nk_host_key_name(profile->psp_keys[i].secondary);
+    for (int i = 0; i < NK_KEY_CONTROL_COUNT; i++) {
+        const NkKeyBinding *binding = key_control_binding(profile, i);
+        const char *pri = nk_host_key_name(binding->primary);
+        const char *sec = nk_host_key_name(binding->secondary);
         fprintf(f, "%s{\n", pad2);
-        fprintf(f, "%s  \"control\": \"%s\",\n", pad2, nk_psp_button_name((NkPspButton)i));
+        fprintf(f, "%s  \"control\": \"%s\",\n", pad2, key_control_name(i));
         fprintf(f, "%s  \"primary\": \"%s\"", pad2, pri ? pri : "none");
         if (sec) {
             fprintf(f, ",\n%s  \"secondary\": \"%s\"\n", pad2, sec);
         } else {
             fprintf(f, "\n");
         }
-        fprintf(f, "%s}%s\n", pad2, (i < NK_PSP_BTN_COUNT - 1) ? "," : "");
+        fprintf(f, "%s}%s\n", pad2, (i < NK_KEY_CONTROL_COUNT - 1) ? "," : "");
     }
     fprintf(f, "%s]\n", pad);
 }
@@ -2210,12 +2369,14 @@ static bool eval_source(
         break;
     case NK_BINDING_HOST_AXIS_POS:
         if (host_axes && src->index >= 0 && src->index < NK_HOST_AXIS_COUNT) {
-            return host_axes[src->index] > trigger_threshold;
+            return host_axes[src->index] > (src->threshold > 0 ? src->threshold
+                                                               : trigger_threshold);
         }
         break;
     case NK_BINDING_HOST_AXIS_NEG:
         if (host_axes && src->index >= 0 && src->index < NK_HOST_AXIS_COUNT) {
-            return host_axes[src->index] < -trigger_threshold;
+            return host_axes[src->index] < -(src->threshold > 0 ? src->threshold
+                                                                : trigger_threshold);
         }
         break;
     default:
@@ -2301,6 +2462,43 @@ uint32_t nk_input_profile_eval_keys(
         }
     }
     return mask;
+}
+
+/* True while a bound key of `binding` is held. */
+static bool key_binding_held(const NkKeyBinding *binding, const bool *key_down, int key_count) {
+    const int slots[2] = { binding->primary, binding->secondary };
+    for (int s = 0; s < 2; s++) {
+        if (slots[s] > NK_HOST_KEY_NONE && slots[s] < key_count && key_down[slots[s]]) return true;
+    }
+    return false;
+}
+
+bool nk_input_profile_eval_key_analog(
+    const NkInputProfile *profile,
+    const bool *key_down,
+    int key_count,
+    uint8_t *lx,
+    uint8_t *ly
+) {
+    if (!profile || !key_down || key_count <= 0) return false;
+    bool moved = false;
+    if (lx) {
+        bool left = key_binding_held(&profile->stick_keys[NK_PSP_STICK_LEFT], key_down, key_count);
+        bool right = key_binding_held(&profile->stick_keys[NK_PSP_STICK_RIGHT], key_down, key_count);
+        if (left != right) {
+            *lx = right ? 255 : 0;
+            moved = true;
+        }
+    }
+    if (ly) {
+        bool up = key_binding_held(&profile->stick_keys[NK_PSP_STICK_UP], key_down, key_count);
+        bool down = key_binding_held(&profile->stick_keys[NK_PSP_STICK_DOWN], key_down, key_count);
+        if (up != down) {
+            *ly = down ? 255 : 0;
+            moved = true;
+        }
+    }
+    return moved;
 }
 
 uint32_t nk_input_profile_key_buttons(const NkInputProfile *profile, int key) {

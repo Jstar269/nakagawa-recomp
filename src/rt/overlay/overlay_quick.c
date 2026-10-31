@@ -12,11 +12,13 @@
 
 #include <string.h>
 
-#define QUICK_ID_EYEBROW 0x70002001u
-#define QUICK_ID_TITLE 0x70002002u
-#define QUICK_ID_ROWS 0x70002003u
-#define QUICK_ID_FOOT 0x70002004u
-#define QUICK_ID_PART 0x70002100u    /* + 0x40 per row, + k per part */
+#define QUICK_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_OVERLAY, (offset))
+#define QUICK_ID_EYEBROW QUICK_ID(0x002001u)
+#define QUICK_ID_TITLE QUICK_ID(0x002002u)
+#define QUICK_ID_ROWS QUICK_ID(0x002003u)
+#define QUICK_ID_FOOT QUICK_ID(0x002004u)
+#define QUICK_ID_PART QUICK_ID(0x002100u)    /* + 0x40 per row, + k per part */
+#define QUICK_ID_PART_SPAN 0x800u
 
 #define QUICK_ROW_HEIGHT 64.0f
 #define QUICK_SEGMENT_HEIGHT 30.0f

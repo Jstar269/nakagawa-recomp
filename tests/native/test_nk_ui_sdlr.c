@@ -565,6 +565,25 @@ static int test_scissor_and_custom(void) {
     CHECK(!nk_ui_sdlr_render(backend, NULL) && !nk_ui_sdlr_render(NULL, &buffer.list),
           "NULL arguments are refused");
     nk_ui_draw_buffer_destroy(&buffer);
+    /* As deep as a draw list may nest its scissors: every one applies (the stack
+       held one fewer, so the deepest list failed to draw). */
+    memset(&buffer, 0, sizeof(buffer));
+    for (int depth = 0; depth < (int)NK_UI_DRAW_CLIP_DEPTH; ++depth) {
+        CHECK(nk_ui_draw_add_scissor(&buffer, true, (NkUiPixelRect){depth, 0, 64, 64}, 7u),
+              "nest a scissor");
+    }
+    CHECK(nk_ui_draw_add_rect(&buffer, (NkUiRect){0.0f, 0.0f, 64.0f, 64.0f}, 1.0f, 0.0f, red, 8u),
+          "a rect inside every scissor");
+    for (int depth = 0; depth < (int)NK_UI_DRAW_CLIP_DEPTH; ++depth) {
+        CHECK(nk_ui_draw_add_scissor(&buffer, false, (NkUiPixelRect){0, 0, 64, 64}, 7u),
+              "close a scissor");
+    }
+    target_clear(&target, black);
+    CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render scissors nested as deep as allowed");
+    CHECK(target_pixel(&target, (int)NK_UI_DRAW_CLIP_DEPTH - 2, 20) == black &&
+              target_pixel(&target, (int)NK_UI_DRAW_CLIP_DEPTH, 20) == red,
+          "the deepest scissor clips");
+    nk_ui_draw_buffer_destroy(&buffer);
     nk_ui_sdlr_destroy(backend);
     target_close(&target);
     return 1;

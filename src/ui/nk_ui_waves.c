@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "nk_ui_waves.h"
+#include "nk_ui.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -116,6 +117,52 @@ float nk_ui_waves_compute_cap(const NkUiWavePalette *palette, uint32_t surface_r
         }
     }
     return low;
+}
+
+/* The launcher backdrop's scrim (nk_ui_backdrop_scrim in nk_ui.h): its worst case is a
+   white picture fading in over waves as bright as their limit allows. */
+static float nk_ui_backdrop_channel(float wave, float surface, float fade, float scrim) {
+    return (wave * (1.0f - fade) + fade) * (1.0f - scrim) + surface * scrim;
+}
+
+float nk_ui_backdrop_scrim(float fade) {
+    float surface[3];
+    float wave = 0.0f;
+    float low;
+    float high;
+    unsigned i;
+    if (!(fade > 0.0f)) return 0.0f;
+    surface[0] = (float)((g_surface_rgba >> 24) & 0xFFu) / 255.0f;
+    surface[1] = (float)((g_surface_rgba >> 16) & 0xFFu) / 255.0f;
+    surface[2] = (float)((g_surface_rgba >> 8) & 0xFFu) / 255.0f;
+    if (fade > 1.0f) fade = 1.0f;
+    /* The grey whose luminance is the limit. */
+    low = 0.0f;
+    high = 1.0f;
+    for (i = 0u; i < 28u; ++i) {
+        float middle = (low + high) * 0.5f;
+        if (nk_ui_luminance(middle, middle, middle) > NK_UI_WAVES_LUMINANCE_MAX) {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    wave = low;
+    /* The least scrim that brings the worst case to the limit. */
+    low = 0.0f;
+    high = 1.0f;
+    for (i = 0u; i < 28u; ++i) {
+        float middle = (low + high) * 0.5f;
+        float l = nk_ui_luminance(nk_ui_backdrop_channel(wave, surface[0], fade, middle),
+                                  nk_ui_backdrop_channel(wave, surface[1], fade, middle),
+                                  nk_ui_backdrop_channel(wave, surface[2], fade, middle));
+        if (l > NK_UI_WAVES_LUMINANCE_MAX) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    return high;
 }
 
 bool nk_ui_waves_contrast_ok(const NkUiWavePalette *palette, uint32_t surface_rgba,

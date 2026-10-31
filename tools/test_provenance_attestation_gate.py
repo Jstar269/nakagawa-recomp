@@ -50,6 +50,7 @@ AUDIT = TOOLS / "publish_audit.py"
 
 sys.path.insert(0, str(TOOLS))
 from nk_core.git_isolation import isolated_git_env, run_git  # noqa: E402
+import provenance_ledger  # noqa: E402
 import publication_policy  # noqa: E402
 from public_export import build_document  # noqa: E402
 
@@ -127,6 +128,11 @@ class _AttestationRepo:
         for rel, text in self.content.items():
             self._write(rel, text)
         self.ledger_entries: list[dict] = []
+        # The committed ledger's form: hashed schema 1 (the default here) or the claims-only
+        # schema 2 the repository commits since #1673. The hashed bytes of the last write are
+        # kept as the release's trusted generation in either case.
+        self.claims_form = False
+        self.hashed_ledger_bytes = b""
         self._baseline_commit: str | None = None
 
     # -- helpers ------------------------------------------------------------
@@ -209,8 +215,11 @@ class _AttestationRepo:
                 continue
             entry["sha256"] = hashlib.sha256((self.repo / path).read_bytes()).hexdigest()
         entries = sorted(self.ledger_entries, key=lambda e: e["path"])
-        self._write("assets/public_provenance_ledger.json",
-                    json.dumps({"schema_version": 1, "entries": entries}, indent=2) + "\n")
+        document = {"schema_version": 1, "entries": entries}
+        self.hashed_ledger_bytes = (json.dumps(document, indent=2) + "\n").encode("utf-8")
+        if self.claims_form:
+            document = provenance_ledger.claims_ledger(document)
+        self._write("assets/public_provenance_ledger.json", json.dumps(document, indent=2) + "\n")
 
     def _classification_for(self, rel: str) -> str:
         if rel.startswith("docs/"):
@@ -285,6 +294,7 @@ class _AttestationRepo:
                 "PROVENANCE_UNVERIFIED", "PROVENANCE_LEDGER_MISMATCH", "PROVENANCE_MISSING",
                 "PROVENANCE_LEDGER_MISSING", "PROVENANCE_CONTENT_MISMATCH",
                 "PROVENANCE_UNRESOLVED", "POLICY_EXPORT_STALE",
+                "PROVENANCE_LEDGER_UNHASHED", "PROVENANCE_CONTENT_UNHASHED", "PROVENANCE_LEDGER_INVALID",
             }:
                 code, _, rest = line.partition(":")
                 parsed.append((code, rest.strip().split(":", 1)[0].strip()))
@@ -529,6 +539,90 @@ class TestSelfConsistencyTripwire(unittest.TestCase):
         rc, findings = repo.audit_result("--provenance-self-consistency")
         self.assertEqual(rc, 0, f"deterministic new paths must pass the tripwire; findings: {findings}")
         self.assertEqual(findings, [])
+
+
+class TestClaimsOnlyLedger(unittest.TestCase):
+    """The committed ledger carries claims only (#1673, schema 2).
+
+    It binds no bytes, so the self-consistency scope checks coverage and claims and makes no
+    content check, and a release must anchor content with the hashed generation. Neither
+    form may skip a content check silently.
+    """
+
+    def _claims_repo(self) -> _AttestationRepo:
+        repo = _AttestationRepo(self)
+        repo.claims_form = True
+        repo.build_baseline()
+        return repo
+
+    def test_tripwire_passes_a_claims_ledger_after_an_edit_without_a_ledger_change(self):
+        repo = self._claims_repo()
+        before = (repo.repo / "assets/public_provenance_ledger.json").read_bytes()
+        repo._write("src/rt/existing.c", SPDX_C + "int edited(void) { return 2; }\n")
+        repo._stage()
+        self.assertEqual((repo.repo / "assets/public_provenance_ledger.json").read_bytes(), before,
+                         "an edit to an existing path changes no claim")
+        rc, findings = repo.audit_result("--provenance-self-consistency")
+        self.assertEqual(rc, 0, findings)
+        self.assertEqual(findings, [])
+
+    def test_a_claims_ledger_that_keeps_one_hash_is_refused(self):
+        repo = _AttestationRepo(self)
+        repo.claims_form = True
+        repo._stage()
+        document = json.loads((repo.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        target = next(entry for entry in document["entries"] if entry["path"] == "src/rt/existing.c")
+        target["sha256"] = repo._sha256("src/rt/existing.c")
+        repo._write("assets/public_provenance_ledger.json", json.dumps(document, indent=2) + "\n")
+        repo._write_export()
+        run_git(["add", "-A"], cwd=repo.repo, check=True, capture_output=True)
+        rc, findings = repo.audit_result("--provenance-self-consistency")
+        self.assertEqual(rc, 1)
+        self.assertIn(("PROVENANCE_LEDGER_INVALID", "src/rt/existing.c"), findings)
+
+    def test_a_hashed_ledger_entry_without_a_hash_is_refused_not_skipped(self):
+        """Failing before #1673 step 2: the content check skipped an entry with no hash."""
+        repo = _AttestationRepo(self)
+        repo._stage()
+        document = json.loads((repo.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
+        target = next(entry for entry in document["entries"] if entry["path"] == "src/rt/existing.c")
+        del target["sha256"]
+        repo._write("assets/public_provenance_ledger.json", json.dumps(document, indent=2) + "\n")
+        repo._write_export()
+        run_git(["add", "-A"], cwd=repo.repo, check=True, capture_output=True)
+        rc, findings = repo.audit_result("--provenance-self-consistency")
+        self.assertEqual(rc, 1)
+        self.assertIn(("PROVENANCE_CONTENT_UNHASHED", "src/rt/existing.c"), findings)
+
+    def test_a_claims_ledger_cannot_be_the_release_anchor(self):
+        repo = self._claims_repo()
+        rc, findings = repo.audit_result("--provenance-ledger", str(repo.trusted_ledger_path()))
+        self.assertEqual(rc, 1)
+        self.assertIn("PROVENANCE_LEDGER_UNHASHED", {code for code, _ in findings})
+
+    def test_the_hashed_anchor_checks_every_file_of_a_claims_tree(self):
+        repo = self._claims_repo()
+        trusted = repo.tmp / "trusted-hashed-ledger.json"
+        trusted.write_bytes(repo.hashed_ledger_bytes)
+        rc, findings = repo.audit_result("--provenance-ledger", str(trusted))
+        self.assertEqual(rc, 0, findings)
+        self.assertEqual(findings, [])
+        repo._write("src/rt/existing.c", SPDX_C + "int tampered(void) { return 1; }\n")
+        repo._stage()
+        rc, findings = repo.audit_result("--provenance-ledger", str(trusted))
+        self.assertEqual(rc, 1)
+        self.assertIn(("PROVENANCE_CONTENT_MISMATCH", "src/rt/existing.c"), findings)
+
+    def test_a_claims_tree_must_match_the_claims_of_its_anchor(self):
+        repo = self._claims_repo()
+        document = json.loads(repo.hashed_ledger_bytes.decode("utf-8"))
+        target = next(entry for entry in document["entries"] if entry["path"] == "docs/guide.md")
+        target["evidence"] = {"source": "a different trusted claim"}
+        trusted = repo.tmp / "trusted-other-claims.json"
+        trusted.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        rc, findings = repo.audit_result("--provenance-ledger", str(trusted))
+        self.assertEqual(rc, 1)
+        self.assertIn("PROVENANCE_LEDGER_MISMATCH", {code for code, _ in findings})
 
 
 class TestCandidateAuditBoundary(unittest.TestCase):
