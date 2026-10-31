@@ -87,6 +87,7 @@
 #include "../recomp.h"
 #include "../ge_shared.h"
 #include "../perf.h"
+#include "../ace.h"   /* Ace Mode: the 30 Hz detector counts draws per target (Ace on only) */
 
 #include <vulkan/vulkan.h>
 #include <SDL3/SDL_timer.h>
@@ -3348,6 +3349,7 @@ static void append(Batch *b, uint32_t first, uint32_t count) {
     if (s_cpu_profile) s_cpu_profile_stats.append_calls++;
     if (b->sw <= 0 || count == 0) return;
     sr_vram_mark_renderer_pending();
+    if (g_ace_on && s_cur) ace_note_target_draw(s_cur->fba);
     if ((((uint32_t)b->pc.cfg[0] >> 8) & F_SHBLEND) && sr_perf_enabled)
         sr_perf_ge_event(SR_PERF_GE_SHBLEND_DRAW, 1);
     const int self_dep = stencil_reads_own_writes(b);
@@ -3701,6 +3703,7 @@ static int hook_point(const GeVtx *A, int persp) {
 
 static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (!s_ready || !bytes) return;
+    if (g_ace_on && is_vram(addr)) ace_note_vram_write(vram_off(addr), bytes);
     /* CPU HLE calls may use any PSP address alias (KSEG mirrors for RAM or the
      * mirrored 0x04xxxxxx VRAM aperture). Compare cache ranges in the same
      * physical namespace before deciding whether a texture is stale. The
@@ -3885,6 +3888,7 @@ static int hook_xfer(uint32_t startdata) {
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_TRANSFER_BLIT)) return 0;
     dst->render_gen++;                       /* content changed (snapshot/present tracking) */
+    if (g_ace_on) ace_note_target_draw(dst->fba);
     sr_vram_mark_renderer_pending();
     dst->lru = s_lru++;
     s_cnt_xferblit++;

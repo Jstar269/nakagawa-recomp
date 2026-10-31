@@ -34,6 +34,9 @@ PAIR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|\S+)')
 # backend uses the same phase with ``backend=offscreen`` and makes no window claim.
 EXPECTED = ("image_loaded", "runtime_registered", "window_ready", "guest_start", "display_flip", "first_frame")
 FAULT_MARKERS = ("ERROR:", "MEM OOR", "Unhandled")
+# An Ace Mode run (src/rt/ace.h) says so on its first line of runtime output. Its pictures are
+# enhanced, so it is never boot evidence, whatever else the log shows.
+ACE_ON_RE = re.compile(r"(?:^|\s)ACE_MODE: on \(")
 
 
 def _parse_nonnegative_int(value: str | None) -> tuple[int, bool]:
@@ -68,6 +71,7 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
     events: list[dict[str, str]] = []
     malformed_paths = 0
     faults: list[str] = []
+    ace_mode = False
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
         for line_number, line in enumerate(handle, 1):
             match = EVENT_RE.search(line)
@@ -79,6 +83,8 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
                 malformed_paths += 1
             if any(marker in line for marker in FAULT_MARKERS):
                 faults.append(line.strip())
+            if ACE_ON_RE.search(line):
+                ace_mode = True
 
     phases = [event.get("phase", "unknown") for event in events]
     reached = {phase: phase in phases for phase in EXPECTED}
@@ -128,6 +134,8 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
         reasons.append("malformed-host-path")
     if not frame_ok:
         reasons.append("frame-content-unvalidated")
+    if ace_mode:
+        reasons.append("ace-mode-run")
 
     ok = not reasons
     last_phase = phases[-1] if phases else "not-started"
@@ -146,6 +154,7 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
         "malformedHostPaths": malformed_paths,
         "faultCount": len(faults),
         "faults": faults[-20:],
+        "aceMode": ace_mode,
         "disqualifyingReasons": reasons,
         "events": events,
         "logPath": os.path.abspath(path),

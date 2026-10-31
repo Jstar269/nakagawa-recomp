@@ -319,6 +319,38 @@ class ComparabilityContractTests(unittest.TestCase):
         reasons = flight_diff._comparability_reasons(left, right)
         self.assertTrue(any("runtime" in reason for reason in reasons))
 
+    ACE_LINE = "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off"
+
+    def test_ace_mode_bundle_is_never_comparable(self):
+        # An Ace Mode run (src/rt/ace.h) carries runtime.enhancements. It is refused
+        # against an authentic bundle and against another, identical Ace bundle (C6).
+        baseline, candidate = self._comparable_pair()
+        self.assertIsNone(flight_diff.diff_bundles(baseline, candidate, "sequence"))
+        ace = copy.deepcopy(candidate)
+        ace["runtime"]["enhancements"] = {"ace": self.ACE_LINE}
+        with self.assertRaises(flight_diff.BundleIncomparable) as caught:
+            flight_diff.diff_bundles(baseline, ace, "sequence")
+        self.assertTrue(any("Ace Mode run" in reason for reason in caught.exception.reasons))
+        twin = copy.deepcopy(ace)
+        with self.assertRaises(flight_diff.BundleIncomparable) as caught:
+            flight_diff.diff_bundles(ace, twin, "sequence")
+        self.assertEqual(
+            sum("Ace Mode run" in reason for reason in caught.exception.reasons), 2)
+        result = self._run_cli(ace, twin)
+        self.assertEqual(result.returncode, flight_diff.EXIT_INCOMPARABLE, result.stdout)
+        self.assertIn("not authentic evidence", result.stdout)
+
+    def test_ace_mode_block_is_schema_valid_and_closed(self):
+        _, candidate = self._comparable_pair()
+        ace = copy.deepcopy(candidate)
+        ace["runtime"]["enhancements"] = {"ace": self.ACE_LINE}
+        flight_diff.validate_bundle(ace)
+        for bad in ({"ace": "off"}, {"ace": self.ACE_LINE, "extra": 1}, {}):
+            broken = copy.deepcopy(candidate)
+            broken["runtime"]["enhancements"] = bad
+            with self.assertRaises(ValueError):
+                flight_diff.validate_bundle(broken)
+
     def test_incomparability_reasons_are_cumulative(self):
         baseline, candidate = self._comparable_pair()
         candidate["recorder"]["enabled_classes"] = ["sched", "hle", "prx"]

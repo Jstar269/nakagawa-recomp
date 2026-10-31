@@ -29,6 +29,7 @@
 #include "title_config.h"   /* optional, validated title bindings (roles + counter words) */
 #include "nested_frames.h"  /* reserved region for nested host->guest call frames */
 #include "flight_recorder.h"
+#include "ace.h"            /* Ace Mode observation counters (Ace on only) */
 
 /* Test-only scheduler liveness instrumentation (#290). Declared here, not in recomp.h, so the
  * CPU-state ABI header (and every title's generated-code build profile) stays unchanged. */
@@ -1642,11 +1643,14 @@ void sr_hle_refresh(void) {
 /* Sleep (host) until the virtual clock reaches target_us. Real-time mode only. */
 static void sleep_until_us(uint64_t target_us) {
     sr_rt_phase = SR_RT_PHASE_HOST_WAIT;
+    /* Ace Mode's speed readout counts host idle in both waits (ace.h); off, nothing is read. */
+    uint64_t ace_from = g_ace_on ? host_now_ns() : 0u;
     for (;;) {
         uint64_t now = host_us();
         if (now >= target_us) break;
         SDL_DelayPrecise((target_us - now) * 1000u);
     }
+    if (g_ace_on) ace_note_host_wait(host_now_ns() - ace_from);
     sr_rt_phase = SR_RT_PHASE_SCHED;
     vtime_refresh();
 }
@@ -1677,8 +1681,11 @@ static void vblank_pace(void) {
         sr_perf_guest_idle_wait(wait_started);
         sr_exec_idle(exec_wait_started);
         sr_rt_phase = SR_RT_PHASE_SCHED;
+        uint64_t waited_from = now;
         now = host_now_ns();
+        if (g_ace_on) ace_note_host_wait(now - waited_from);
     }
+    uint32_t slots = 0u;
     /* 59.94 Hz is 60000/1001 Hz. Carry the fractional nanoseconds so the
      * accumulated deadline has no floating-point or per-frame rounding drift. */
     do {
@@ -1688,8 +1695,10 @@ static void vblank_pace(void) {
             s_vbl_next_ns++;
             s_vbl_period_rem -= 60000u;
         }
+        slots++;
         /* Skip missed presentation slots while retaining the rational phase/carry. */
     } while (now > s_vbl_next_ns);
+    if (g_ace_on && slots > 1u) ace_note_skipped_slots(slots - 1u);
     vtime_refresh();
 }
 

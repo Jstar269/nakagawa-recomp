@@ -31,6 +31,7 @@
 #include "fbcap.h"
 #include "osk_overlay.h"        /* the in-window keyboard: keys in, the frame drawn over */
 #include "osk_overlay_paint.h"
+#include "ace.h"             /* Ace Mode: crisp keyboard; refused by the acceptance checkpoint */
 #ifdef SR_SDL3VK
 #include "gpu_sdl3vk/ge_gpu.h"
 #endif
@@ -83,6 +84,7 @@ static uint64_t s_offscreen_frames;
 static int      s_headless_accept_parsed;
 static int      s_headless_accept_requested;
 static int      s_headless_accept_invalid;
+static int      s_headless_accept_ace;   /* refused: an Ace Mode run (ace.h) */
 static int      s_headless_accept_ready;
 static int      s_headless_accept_complete;
 static uint32_t s_headless_accept_target;
@@ -141,6 +143,13 @@ static void gui_headless_acceptance_parse(void) {
     const char *value = getenv("SR_HEADLESS_ACCEPT_PRESENTED_FRAMES");
     if (!value || !value[0]) return;
     s_headless_accept_requested = 1;
+    /* The checkpoint is evidence, and an Ace Mode run (ace.h) is enhanced: refused, named. */
+    if (g_ace_on) {
+        fprintf(stderr, "ACE_MODE: the acceptance checkpoint needs an authentic run; refused\n");
+        s_headless_accept_invalid = 1;
+        s_headless_accept_ace = 1;
+        return;
+    }
     errno = 0;
     char *end = NULL;
     unsigned long long parsed = strtoull(value, &end, 10);
@@ -363,6 +372,10 @@ void gui_init(const char *title) {
     if (!cleanup_registered && atexit(gui_exit_cleanup) == 0) cleanup_registered = 1;
 #endif
     gui_headless_acceptance_parse();
+    if (s_headless_accept_requested && s_headless_accept_ace) {
+        sr_gui_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=ace_mode");
+        return;
+    }
     if (s_headless_accept_requested && s_headless_accept_invalid) {
         sr_gui_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=invalid_frame_target");
         return;

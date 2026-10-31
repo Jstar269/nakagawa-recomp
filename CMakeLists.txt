@@ -710,6 +710,7 @@ set_tests_properties(nk_ui_sdl_input_test PROPERTIES SKIP_RETURN_CODE 77
 set(NK_RUNTIME_SOURCES
     src/rt/recomp.c
     src/rt/flight_recorder.c
+    src/rt/ace.c
     src/rt/cpu_lle.c
     src/rt/domain_mode.c
     src/rt/nested_frames.c
