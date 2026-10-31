@@ -33,7 +33,7 @@ from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
-    static_coverage,
+    static_coverage, branch_kind, BRANCH_UNCOND,
 )
 from host_stubs import HST_SIMPLE_STUBS
 import codegen_llvm
@@ -2384,6 +2384,22 @@ def is_control(w):
         return True
     return op in (2, 3) or (op == 0 and fn in (0x08, 0x09)) or is_cond_branch(w)
 
+def ends_straight_line(pc, w):
+    """Whether control never continues past the delay slot of the transfer at ``pc``.
+
+    True for `j`, `jr`, `jalr $zero` and the `b` idiom (beq $zero, $zero; the analyzer's
+    BRANCH_UNCOND), unless a guest patch or an enhancement rewrite replaces that `b`: the
+    replacement may fall through, so its not-taken path stays in the body.
+    """
+    op, fn = w >> 26, w & 0x3F
+    if op == 2 or (op == 0 and (fn == 0x08 or (fn == 0x09 and rd(w) == 0))):
+        return True
+    if not is_cond_branch(w) or branch_kind(w) != BRANCH_UNCOND:
+        return False
+    return pc not in GUEST_PATCHES and (pc not in ENHANCEMENT_SITES
+                                        or ADDRESS_SPACE.runtime_module)
+
+
 class _WalkBudgetExceeded(Exception):
     """The unsplit walk of one entry passed REGION_SPLIT_THRESHOLD instructions."""
 
@@ -2431,7 +2447,18 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
     # target that is another entry stays outside the body (the emitter records a TAIL
     # transfer to it), and a not-taken successor that is one is a continuation. TAIL
     # transfers (#855) run a guest loop through such edges in constant host stack.
+    #
+    # The `b` idiom (beq $zero, $zero) is always taken: like `j` it has no not-taken
+    # successor, as the analyzer's CFG says (analyze.branch_kind). The words after its
+    # delay slot join the body only when another edge reaches them; walking on into them
+    # copied the next function's code, never run from this entry, into every body (#1730).
     continuations = {}
+    # Delay slots of transfers that never fall through (j, jr, jalr $zero, `b`). A
+    # branch may also land on such a slot: on that path the slot is an ordinary
+    # instruction and execution continues after it, so a slot reached as a label after
+    # its transfer was walked resumes the walk at slot+4 (a slot reached first as a
+    # label is walked straight through anyway).
+    terminator_slots = set()
 
     def is_entry_boundary(next_pc):
         if next_pc == start:
@@ -2469,6 +2496,12 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
     stack = [start]
     while stack:
         pc = stack.pop()
+        if pc in terminator_slots:
+            terminator_slots.discard(pc)
+            next_pc = pc + 4
+            if stop_at_continuation(pc, next_pc):
+                continue
+            pc = next_pc
         while in_ranges(pc, ranges) and pc not in seen:
             seen.add(pc)
             insns.add(pc)
@@ -2489,11 +2522,13 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
             if op == 0 and fn == 0x09:  # jalr $zero, rs: computed tail transfer
                 insns.add(pc + 4)
                 seen.add(pc + 4)
+                terminator_slots.add(pc + 4)
                 break
             if op == 2:  # j
                 t = jump_target(pc, w)
                 insns.add(pc + 4)
                 seen.add(pc + 4)
+                terminator_slots.add(pc + 4)
                 if t == pc:  # a self-loop is an in-function edge, never a native call to this function
                     labels.add(t)
                 elif not is_jump_boundary(t) and in_ranges(t, ranges):  # intra goto
@@ -2503,6 +2538,7 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
             if op == 0 and fn == 0x08:  # jr: return / computed / tail
                 insns.add(pc + 4)
                 seen.add(pc + 4)
+                terminator_slots.add(pc + 4)
                 break
             if op == 0 and fn == 0x0C:  # syscall: HLE boundary
                 break
@@ -2534,8 +2570,12 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
                     stack.append(t)
                 insns.add(pc + 4)
                 seen.add(pc + 4)
-                # Both successors belong to one native control-flow region.  In
-                # particular, do not turn a loop's not-taken edge into a host call.
+                if ends_straight_line(pc, w):
+                    terminator_slots.add(pc + 4)
+                    break
+                # Both successors of any other conditional branch belong to one native
+                # control-flow region.  In particular, do not turn a loop's not-taken
+                # edge into a host call.
                 pc += 8
                 if split and stop_at_continuation(pc - 8, pc):
                     break
@@ -2997,6 +3037,18 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elf, start, ranges, known, resume_owners=resume_owners,
             dispatch_boundaries=dispatch_boundaries)
     insns, labels, continuations = flow
+    for label in labels:
+        # A label on the delay slot of a transfer that never falls through runs the slot
+        # as an ordinary instruction and continues after it; the walk owns that path
+        # (_walk_body terminator_slots). Without it the label's C would fall into
+        # whatever block the address order puts next.
+        owner_word = read32(elf, label - 4) if label - 4 in insns else None
+        if (owner_word is not None and ends_straight_line(label - 4, owner_word)
+                and label + 4 not in insns and label not in continuations
+                and in_ranges(label + 4, ranges)):
+            raise AssertionError(
+                f"0x{start:08x}: label 0x{label:08x} on the delay slot of 0x{label - 4:08x} "
+                f"has no owned successor")
     # Static verification asserts translation-time constants; a runtime module's
     # relocated immediates and link values are not constants, so it carries none.
     sv_points = ({} if ADDRESS_SPACE.runtime_module

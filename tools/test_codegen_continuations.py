@@ -693,5 +693,232 @@ class EntrySplitTests(unittest.TestCase):
             codegen.REGION_SPLIT_THRESHOLD = saved
 
 
+def addiu(rt, rs, imm):
+    return (0x09 << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+
+JR_RA = 0x03E00008
+JR_T9 = 0x03200008
+NOP = 0
+
+
+def b(pc, target):
+    return beq(0, 0, pc, target)
+
+
+def reachable(words, entry):
+    """Every word the guest runs from ``entry``, as a delay slot or not: the reference model.
+
+    A branch or jump runs its delay slot, then goes to its target (and, if it can fall
+    through, to the word after the slot). Any other word goes to the next word. `j`, `jr`
+    and `b` (beq $zero, $zero) never fall through. A target is entered as an ordinary
+    word, delay slot or not.
+    """
+    entered, slots, work = set(), set(), [entry]
+    while work:
+        pc = work.pop()
+        if pc in entered or pc not in words:
+            continue
+        entered.add(pc)
+        w = words[pc]
+        op, fn = w >> 26, w & 0x3F
+        if op == 2:
+            slots.add(pc + 4)
+            work.append(codegen.jump_target(pc, w))
+        elif op == 0 and fn == 0x08:
+            slots.add(pc + 4)
+        elif op == 4 or op == 5:
+            slots.add(pc + 4)
+            work.append(codegen.branch_target(pc, w))
+            if not (op == 4 and (w >> 16) & 0x3FF == 0):
+                work.append(pc + 8)
+        else:
+            work.append(pc + 4)
+    return {pc for pc in entered | slots if pc in words}
+
+
+class StraightLineEndTests(unittest.TestCase):
+    """#1730: a body owns what its entry can run, and nothing after a transfer that never
+    falls through (`j`, `jr`, `jalr $zero` and the `b` idiom) unless another edge reaches it."""
+
+    def flow(self, words, start=0x1000, known=None):
+        span = (min(words), max(words) + 4)
+        with region_split_threshold(None):
+            return codegen.function_flow(FakeElf(words), start, [span], known or {start})
+
+    def emit(self, words, start=0x1000, known=None):
+        span = (min(words), max(words) + 4)
+        with region_split_threshold(None):
+            return "\n".join(codegen.emit_function(FakeElf(words), start, [span], known or {start}))
+
+    def test_b_has_no_not_taken_successor(self):
+        words = {0x1000: addiu(2, 0, 1), 0x1004: b(0x1004, 0x1014), 0x1008: addiu(2, 2, 2),
+                 0x100C: addiu(2, 2, 0x100), 0x1010: JR_RA,  # the next function's code
+                 0x1014: JR_RA, 0x1018: NOP}
+        insns, labels, continuations = self.flow(words)
+        self.assertEqual(insns, {0x1000, 0x1004, 0x1008, 0x1014, 0x1018})
+        self.assertEqual(labels, {0x1014})
+        self.assertEqual(continuations, {})
+        self.assertNotIn("0x0000100cu", self.emit(words))
+
+    def test_any_other_beq_keeps_its_not_taken_successor(self):
+        for rs, rt in ((0, 5), (5, 0), (5, 5)):
+            with self.subTest(rs=rs, rt=rt):
+                words = {0x1000: beq(rs, rt, 0x1000, 0x1010), 0x1004: NOP,
+                         0x1008: JR_RA, 0x100C: NOP, 0x1010: JR_RA, 0x1014: NOP}
+                insns, _labels, _continuations = self.flow(words)
+                self.assertEqual(insns, set(words))
+
+    def test_word_after_b_reached_by_another_edge_keeps_its_label(self):
+        words = {0x1000: addiu(8, 0, 2), 0x1004: b(0x1004, 0x1018), 0x1008: addiu(2, 2, 1),
+                 0x100C: addiu(2, 2, 0x10),                       # reached from 0x1018 only
+                 0x1010: addiu(8, 8, -1), 0x1014: NOP,
+                 0x1018: bne(8, 0, 0x1018, 0x100C), 0x101C: addiu(2, 2, 0x100),
+                 0x1020: JR_RA, 0x1024: NOP}
+        insns, labels, _continuations = self.flow(words)
+        self.assertEqual(insns, set(words))
+        self.assertIn(0x100C, labels)
+        text = self.emit(words)
+        self.assertLess(text.index("L_0000100c:"), text.index("0x00001010u"))
+
+    def test_branch_into_a_terminator_slot_continues_after_the_slot(self):
+        # The slot runs as an ordinary word on the branch's path, then the next word.
+        # Fails before #1730 for `j` and `jr` (the walk dropped slot+4 after their slot was
+        # seen), and with a `b` rule that does not continue from a slot label.
+        for name, terminator in (("b", lambda pc: b(pc, 0x101C)), ("j", lambda pc: j(0x101C)),
+                                 ("jr", lambda pc: JR_T9)):
+            with self.subTest(terminator=name):
+                words = {0x1000: bne(4, 0, 0x1000, 0x100C), 0x1004: NOP,
+                         0x1008: terminator(0x1008), 0x100C: addiu(2, 2, 1),
+                         0x1010: addiu(2, 2, 0x10), 0x1014: JR_RA, 0x1018: NOP,
+                         0x101C: addiu(2, 2, 0x100), 0x1020: JR_RA, 0x1024: NOP}
+                insns, labels, _continuations = self.flow(words)
+                self.assertEqual(insns, reachable(words, 0x1000))
+                self.assertIn(0x100C, labels)
+                self.assertTrue({0x1010, 0x1014, 0x1018} <= insns)
+                text = self.emit(words)
+                slot_label = text.index("L_0000100c:")
+                self.assertLess(slot_label, text.index("0x00001010u", slot_label))
+                if 0x101C in insns:
+                    self.assertLess(text.index("0x00001010u", slot_label),
+                                    text.index("L_0000101c:"))
+
+    def test_emitter_refuses_a_slot_label_without_its_successor(self):
+        # A walk that lost slot+4 (the pre-#1730 `j` defect) is a generator bug: the
+        # emitter must stop rather than let the label's C fall into the next block.
+        words = {0x1000: bne(4, 0, 0x1000, 0x100C), 0x1004: NOP,
+                 0x1008: j(0x101C), 0x100C: addiu(2, 2, 1),
+                 0x1010: addiu(2, 2, 0x10), 0x1014: JR_RA, 0x1018: NOP,
+                 0x101C: addiu(2, 2, 0x100), 0x1020: JR_RA, 0x1024: NOP}
+        lost = ({0x1000, 0x1004, 0x1008, 0x100C, 0x101C, 0x1020, 0x1024}, {0x100C, 0x101C}, {})
+        with self.assertRaisesRegex(AssertionError, "delay slot of 0x00001008"):
+            codegen.emit_function(FakeElf(words), 0x1000, [(0x1000, 0x1028)], {0x1000}, flow=lost)
+
+    def test_slot_label_walked_before_or_after_its_b_gives_the_same_body(self):
+        tail = {0x2000: b(0x2000, 0x2014), 0x2004: addiu(2, 2, 1), 0x2008: addiu(2, 2, 0x10),
+                0x200C: JR_RA, 0x2010: NOP, 0x2014: JR_RA, 0x2018: NOP}
+        label_first = {0x1000: bne(4, 0, 0x1000, 0x1100), 0x1004: NOP,
+                       0x1008: bne(5, 0, 0x1008, 0x2004), 0x100C: NOP,
+                       0x1010: JR_RA, 0x1014: NOP, 0x1100: j(0x2000), 0x1104: NOP, **tail}
+        b_first = {0x1000: bne(5, 0, 0x1000, 0x2004), 0x1004: NOP,
+                   0x1008: j(0x2000), 0x100C: NOP, **tail}
+        for name, words in (("label first", label_first), ("b first", b_first)):
+            with self.subTest(order=name):
+                insns, _labels, _continuations = self.flow(words)
+                self.assertEqual(insns, reachable(words, 0x1000))
+                self.assertTrue({0x2004, 0x2008, 0x200C, 0x2010} <= insns)
+
+    def test_b_to_its_own_slot_runs_the_slot_again_and_continues(self):
+        words = {0x1000: b(0x1000, 0x1004), 0x1004: addiu(2, 2, 1),
+                 0x1008: addiu(2, 2, 0x10), 0x100C: JR_RA, 0x1010: NOP}
+        insns, labels, _continuations = self.flow(words)
+        self.assertEqual(insns, set(words))
+        self.assertEqual(labels, {0x1004})
+
+    def test_slot_successor_that_is_another_entry_is_a_continuation(self):
+        words = {0x1000: bne(4, 0, 0x1000, 0x100C), 0x1004: NOP,
+                 0x1008: b(0x1008, 0x1018), 0x100C: addiu(2, 2, 1),
+                 0x1010: addiu(2, 2, 0x10), 0x1014: JR_RA,          # 0x1010: another entry
+                 0x1018: JR_RA, 0x101C: NOP}
+        insns, _labels, continuations = self.flow(words, known={0x1000, 0x1010})
+        self.assertNotIn(0x1010, insns)
+        self.assertEqual(continuations, {0x100C: 0x1010})
+        text = self.emit(words, known={0x1000, 0x1010})
+        self.assertIn("goto _sr_cont_00001010;", text)
+
+    def test_patched_b_keeps_its_not_taken_path(self):
+        words = {0x1000: b(0x1000, 0x1010), 0x1004: NOP, 0x1008: JR_RA, 0x100C: NOP,
+                 0x1010: JR_RA, 0x1014: NOP}
+        saved = dict(codegen.GUEST_PATCHES)
+        codegen.GUEST_PATCHES[0x1000] = {"kind": "cond", "value": 0, "why": "test"}
+        try:
+            insns, _labels, _continuations = self.flow(words)
+        finally:
+            codegen.GUEST_PATCHES.clear()
+            codegen.GUEST_PATCHES.update(saved)
+        self.assertEqual(insns, set(words))
+        saved_sites = dict(codegen.ENHANCEMENT_SITES)
+        codegen.ENHANCEMENT_SITES[0x1000] = {"id": "test", "rewrite": {"kind": "word", "word": NOP}}
+        try:
+            insns, _labels, _continuations = self.flow(words)
+        finally:
+            codegen.ENHANCEMENT_SITES.clear()
+            codegen.ENHANCEMENT_SITES.update(saved_sites)
+        self.assertEqual(insns, set(words))
+
+    def test_walk_ends_straight_line_exactly_where_the_analyzer_cfg_does(self):
+        # Every direct conditional-branch encoding the walk takes, with rs/rt zero and
+        # not: pc+8 is owned iff the canonical CFG gives the branch a fall-through edge.
+        import analyze
+        encodings = []
+        for op in (4, 5, 6, 7, 20, 21, 22, 23):
+            for rs in (0, 5):
+                for rt in ((0, 6) if op in (4, 5, 20, 21) else (0,)):
+                    encodings.append((op << 26) | (rs << 21) | (rt << 16))
+        for sel in (0, 1, 2, 3, 0x10, 0x11):
+            for rs in (0, 5):
+                encodings.append((1 << 26) | (rs << 21) | (sel << 16))
+        for op in (0x11, 0x12):
+            for tf in range(4):
+                encodings.append((op << 26) | (8 << 21) | (tf << 16))
+        for base in encodings:
+            word = base | 3                                   # target pc + 16
+            with self.subTest(word=f"0x{word:08x}"):
+                self.assertTrue(codegen.is_cond_branch(word))
+                words = {0x1000: word, 0x1004: NOP, 0x1008: JR_RA, 0x100C: NOP,
+                         0x1010: JR_RA, 0x1014: NOP}
+                insns, _labels, _continuations = self.flow(words)
+                falls_through = analyze.branch_kind(word) != analyze.BRANCH_UNCOND
+                self.assertEqual(0x1008 in insns, falls_through)
+                self.assertEqual(analyze.is_hard_terminator(word), not falls_through)
+
+    def test_random_bodies_own_exactly_what_their_entry_runs(self):
+        # Property test against the reference model above: with no other entries and no
+        # split, a body is exactly the set of words its entry can run.
+        import random
+        rng = random.Random(1730)
+        for case in range(400):
+            n = rng.randrange(6, 40)
+            base = 0x1000
+            words, i = {}, 0
+            while i < n:
+                pc = base + 4 * i
+                kind = rng.choice(("op", "op", "op", "b", "beq", "bne", "j", "jr"))
+                if kind == "op" or i + 1 >= n:
+                    words[pc] = addiu(2, 2, i + 1)
+                    i += 1
+                    continue
+                target = base + 4 * rng.randrange(n)
+                words[pc] = {"b": lambda: b(pc, target), "beq": lambda: beq(4, 5, pc, target),
+                             "bne": lambda: bne(4, 0, pc, target), "j": lambda: j(target),
+                             "jr": lambda: JR_RA}[kind]()
+                words[pc + 4] = addiu(3, 3, i + 1)                 # delay slot: never a transfer
+                i += 2
+            with self.subTest(case=case):
+                insns, _labels, _continuations = self.flow(words, start=base)
+                self.assertEqual(insns, reachable(words, base))
+                self.emit(words, start=base)                       # the slot check holds
+
+
 if __name__ == "__main__":
     unittest.main()

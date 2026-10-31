@@ -597,6 +597,16 @@ runs at the live SP.
 The slot is never live across a yield, syscall, dispatch entry or unwind; each of those refuses a
 live transfer with a named `TAIL_TRANSFER_FAULT`.
 
+**What a body owns.** A body owns exactly the words its entry can run. `j`, `jr`, `jalr $zero` and
+the `b` idiom (`beq $zero, $zero`, which the analyzer's CFG also gives no fall-through) end a
+straight line after their delay slot, so the words after it belong to the body only when another
+edge reaches them (#1730). Walking on past `b` used to copy the next function into every body that
+reached it: on one compilation disc a module of about 100,000 instructions became 2 GB of C. A
+branch may also land on the delay slot of such a transfer; on that path the slot is an ordinary
+instruction, so the body owns the word after it too, whichever the walk meets first. The emitter
+refuses a body whose slot label has no owned successor. `cosim-selftest` covers both (`bjoin`,
+`bslot`, `jslot`, `bself`).
+
 **Entry splitting.** A body owns the code it reaches from its entry. Straight-line fall-through and
 `j` into another entry already leave through TAIL transfers, but a conditional branch, taken or not
 taken, used to carry the body into the other entry's code and translate a copy of it. In a large

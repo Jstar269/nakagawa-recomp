@@ -1594,7 +1594,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "72d4c8ebc74f0c963c656af1ec5f621b9365754771a1e070a2b00bce1449ba91"
+      "sha256": "5b876e0b46e2854e4766e8ae812d48aaadad9bd8a107a9b4123b89ce57fc376d"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -2398,7 +2398,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "0443cb1664b1d71a2b0b71418631955e8ddb6e6ea2646e5496c711ab417e7664"
+      "sha256": "d13ac24bf82cc5d9ff889fc9a362fe9695d7573c579ad9ca2bf3e5054c186bcf"
     },
     {
       "path": "fixtures/cosim/cosim_selftest.c",
@@ -2446,7 +2446,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6b8b5be8c72abdb6231620394de1999ad4ed1872ea06925cbe9a9b39a26516c2"
+      "sha256": "ed05ab5c502ad0c0cb08585e8b822e86068d61d3af29ce7b89b24538c4dac1f0"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -2458,7 +2458,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b3d283192a4d6ab42f54ac4fd27272d7d8ca5c08b1e00d862e7b9252f72d244c"
+      "sha256": "ce52b19691bf0f01e89ba3869f89c72e37e35eda8560c826d698990ae1697c49"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
@@ -13126,7 +13126,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9f8c316671c9d6114a976fa9b3a3134d494d90e868fb2897c650f35dde1abf5c"
+      "sha256": "ce36bff4ba9a72dfc9ecfc957c0552127c3d45cb42650c6cc4636a4c7ad053e0"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -14995,7 +14995,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a6f8f00dff1267cec158664c0079aa275839392d627b7c2ff42abecadc28d9e"
+      "sha256": "a7c6035b4c250c067f122cc00fd7197d206408706699cf53ae03bea6249163aa"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
