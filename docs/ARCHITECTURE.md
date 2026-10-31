@@ -537,10 +537,14 @@ profile dump; a nonzero value means the hotspot ranking is incomplete and must n
 authoritative. `make profiler-selftest` covers the zero-PC and saturated-probe cases without game
 inputs.
 
-The HST manifest adapter requests `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`; direct Make
-and generic manifests remain conservative `-O0/-O0`. Explicit overrides remain fully supported.
-Generated `-O2` is not being adopted; `-O1`'s
-measured build cost is higher but acceptable for HST.
+A package build compiles the runtime at `-O2` and generated code at `-O1` for every title
+(`PACKAGE_RUNTIME_OPT` and `PACKAGE_RECOMP_OPT` in
+[`tools/nk_core/package_cache.py`](../tools/nk_core/package_cache.py)); direct Make stays at
+`-O0/-O0`, and an explicit `RUNTIME_OPT` or `RECOMP_OPT` wins. The level was measured for #1730
+on HST and two other titles: `-O1` ran generated guest code 11-33% faster than `-O0` outside the
+GE, and `-O2` was no faster than `-O1` beyond run-to-run noise while taking up to 3.3 times the
+build CPU time. A body too large for its unit compiles alone at `-O0`
+([packaging](RUNTIME_PACKAGING_ARCHITECTURE.md)).
 Runtime, generated-code, and codegen profile changes have separate content-addressed invalidation
 stamps. C objects emit `-MMD -MP` dependency files so transitive headers participate in freshness.
 The [`Makefile`](../Makefile) is the source of truth for the current optimization split and

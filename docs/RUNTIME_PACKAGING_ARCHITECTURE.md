@@ -35,7 +35,7 @@ A single executable contains the UI launcher, the generic PSP runtime, the AOT r
   * Single binary distribution (`nakagawa.exe` / `nakagawa`).
   * No IPC or child process management.
 * **Disadvantages:**
-  * **Violates title isolation:** Different PSP titles require distinct code chunks, compiler optimization levels (e.g., HST uses `-O1` for massive dynamic recomp chunks to preserve compile time and `-O2` for runtime), and different executable span allocations.
+  * **Violates title isolation:** Different PSP titles require distinct code chunks, per-title build settings and different executable span allocations.
   * **Binary bloat:** Recompiled C for a large PSP game generates tens of megabytes of native machine code. Bundling 10 games into one executable would result in gigabyte-scale binaries.
   * **Crash vulnerability:** A crash in a guest module immediately terminates the entire launcher application, destroying UI state and unsaved player configuration.
   * **LLE/Fidelity violation:** Guest memory arena mappings (e.g. 192 MiB fixed address reservations) would conflict if multiple titles or sessions were managed in the same address space.
@@ -157,7 +157,7 @@ at once.
 
 Only a single body can make its unit larger than the target (#1730). Codegen gives every body
 over `BODY_FALLBACK_BYTES` (4,000,000 bytes of C, the same in every build) a unit of its own
-that compiles at `-O0`: the level every package used before, at gcc's lowest time cost. The
+that compiles at `-O0`: the level most packages used before, at gcc's lowest time cost. The
 level does not bound its memory, which grows with the body at every level (about 170 bytes per
 byte of C, linear up to the 4 MB budget: a generated body chained to 4 MB compiles at `-O2` in
 about a minute and 670 MB). The compile phase therefore budgets each job from the largest

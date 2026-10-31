@@ -2060,30 +2060,28 @@ class ObjectCacheTests(unittest.TestCase):
 
 
 class PackageOptimizationTests(unittest.TestCase):
-    """A package build compiles the runtime at -O2 and generated code at the profile's
-    qualified level unless the caller sets one (#1296); the key names what Make really used."""
+    """A package build compiles the runtime at -O2 and generated code at one measured level
+    for every title unless the caller sets one (#1296, #1730); the key names what Make used."""
 
-    def test_defaults_follow_the_codegen_profile(self):
+    def test_every_title_gets_the_measured_level(self):
+        self.assertEqual(package_cache.PACKAGE_RECOMP_OPT, "-O1")
         self.assertEqual(
-            package_cache.package_optimization("none", {}),
-            {"RUNTIME_OPT": "-O2", "RECOMP_OPT": "-O0"},
-        )
-        self.assertEqual(
-            package_cache.package_optimization("hst", {}),
-            {"RUNTIME_OPT": "-O2", "RECOMP_OPT": "-O1"},
+            package_cache.package_optimization({}),
+            {"RUNTIME_OPT": "-O2", "RECOMP_OPT": package_cache.PACKAGE_RECOMP_OPT},
         )
 
     def test_a_caller_set_value_wins(self):
         self.assertEqual(
-            package_cache.package_optimization("hst", {"RUNTIME_OPT": "-O0", "RECOMP_OPT": "-O0"}),
+            package_cache.package_optimization({"RUNTIME_OPT": "-O0", "RECOMP_OPT": "-O0"}),
             {"RUNTIME_OPT": "-O0", "RECOMP_OPT": "-O0"},
         )
         self.assertEqual(
-            package_cache.package_optimization("none", {"RECOMP_OPT": "-O2"})["RECOMP_OPT"], "-O2"
+            package_cache.package_optimization({"RECOMP_OPT": "-O1"})["RECOMP_OPT"], "-O1"
         )
 
     def test_planner_and_player_keys_name_the_package_optimization(self):
-        for profile, recomp in (("none", "-O0"), ("hst", "-O1")):
+        recomp = package_cache.PACKAGE_RECOMP_OPT
+        for profile in ("none", "hst"):
             with self.subTest(profile=profile):
                 captured = []
                 manifest = {
@@ -2121,6 +2119,13 @@ class PackageOptimizationTests(unittest.TestCase):
                 self.assertEqual(cli_flags, planner_flags)
                 self.assertTrue(cli_flags.startswith("|-O2|"), cli_flags)
                 self.assertIn(f"|{recomp}|", cli_flags)
+
+    def test_the_optimized_cosimulation_lane_runs_the_package_level(self):
+        # cosim-selftest-opt proves AOT/interpreter parity for code built the way packages are.
+        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        lane = re.search(r"^COSIM_OPT_LEVEL \?= (\S+)$", makefile, re.MULTILINE)
+        self.assertIsNotNone(lane)
+        self.assertEqual(lane.group(1), package_cache.PACKAGE_RECOMP_OPT)
 
 
 class PackageChunkingTests(unittest.TestCase):

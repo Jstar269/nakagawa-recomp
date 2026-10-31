@@ -1010,17 +1010,19 @@ def compiler_target(
     return machine
 
 
-# What a package build compiles with when its caller sets no optimization (#1296). The
-# Makefile's -O0 default is for ad-hoc and selftest builds; a package is what a player runs.
-# The runtime is project code and builds at -O2 for every title. Generated guest code stays
-# at -O0 unless the title's codegen profile has a measured, qualified level, because gcc at
-# higher levels on 2,000-function chunks can exhaust memory on an unqualified title.
+# What a package build compiles with when its caller sets no optimization (#1296, #1730).
+# The Makefile's -O0 default is for ad-hoc and selftest builds; a package is what a player runs.
+# The runtime is project code and builds at -O2. Generated guest code builds at one measured
+# level for every title: codegen bounds every unit, a body over its unit budget compiles alone
+# at -O0 (tools/codegen.py BODY_FALLBACK_BYTES), and the compile phase budgets each job's memory
+# from the largest unit, so the level no longer depends on which title it is.
+# Measured for #1730 on HST and two other titles: -O1 runs generated guest code 11-33% faster
+# than -O0; -O2 is no faster than -O1 beyond run-to-run noise and takes up to 3.3x the build CPU.
 PACKAGE_RUNTIME_OPT = "-O2"
-PACKAGE_RECOMP_OPT_BY_PROFILE = {"hst": "-O1"}
+PACKAGE_RECOMP_OPT = "-O1"
 
 
 def package_optimization(
-    codegen_profile: str,
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """``RUNTIME_OPT`` and ``RECOMP_OPT`` for a package build; a value the caller set wins.
@@ -1031,8 +1033,7 @@ def package_optimization(
     env = os.environ if environment is None else environment
     return {
         "RUNTIME_OPT": env.get("RUNTIME_OPT") or PACKAGE_RUNTIME_OPT,
-        "RECOMP_OPT": env.get("RECOMP_OPT")
-        or PACKAGE_RECOMP_OPT_BY_PROFILE.get(codegen_profile, "-O0"),
+        "RECOMP_OPT": env.get("RECOMP_OPT") or PACKAGE_RECOMP_OPT,
     }
 
 

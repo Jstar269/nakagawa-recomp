@@ -1867,7 +1867,7 @@ def _cache_key_for_build(
             public_safe=public_safe,
             environment={
                 **os.environ,
-                **package_cache.package_optimization(plan["codegen_profile"]),
+                **package_cache.package_optimization(),
             },
         ),
         link_flags=os.environ.get("LDFLAGS", ""),
@@ -2237,7 +2237,7 @@ def build_package(
         build_environment = os.environ.copy()
         # The optimization the cache key above names is what Make compiles with.
         build_environment.update(
-            package_cache.package_optimization(plan["codegen_profile"], build_environment)
+            package_cache.package_optimization(build_environment)
         )
         # The chunking the cache key above names is what codegen writes.
         build_environment.update(package_cache.package_chunking(build_environment))

@@ -2296,7 +2296,7 @@ cosim-selftest-split:
 # optimizer must not change what a cell does. TRACE=1 keeps a call between instructions, so
 # this lane proves the per-statement code; production-smoke and platform-ladder at the same
 # level cover release builds without the trace.
-COSIM_OPT_LEVEL ?= -O2
+COSIM_OPT_LEVEL ?= -O1
 cosim-selftest-opt:
 	$(MAKE) cosim-selftest COSIM_DIR=$(BUILD_ROOT)/cosim-opt RECOMP_OPT=$(COSIM_OPT_LEVEL)
 
