@@ -2112,6 +2112,8 @@ typedef struct {
     int have_identity;
     uint8_t mac[6];
     uint8_t psid[16];
+    int wlan_switch_set;     /* the overlay set the switch */
+    uint32_t wlan_switch;
 } PspConsoleProfile;
 static PspConsoleProfile s_console;
 
@@ -2138,6 +2140,14 @@ static int console_profile_apply(const NkJsonNode *console, char *why, size_t wh
         return 0;
     }
     next.have_identity = 1;
+    const NkJsonNode *jswitch = nk_json_obj_get(console, "wlan_switch");
+    if (jswitch) {
+        if (!nk_json_get_uint32(jswitch, &next.wlan_switch) || next.wlan_switch > 1u) {
+            snprintf(why, why_len, "its console object's wlan_switch is not 0 or 1");
+            return 0;
+        }
+        next.wlan_switch_set = 1;
+    }
     s_console = next;
     return 1;
 }
@@ -2463,7 +2473,10 @@ static void sreg_overlay_render(SregText *t) {
             char pair[2] = { digits[s_console.psid[b] >> 4], digits[s_console.psid[b] & 0x0fu] };
             sreg_text_add(t, pair, 2u);
         }
-        sreg_text_str(t, "\"}");
+        sreg_text_str(t, "\"");
+        if (s_console.wlan_switch_set)
+            sreg_text_str(t, s_console.wlan_switch ? ", \"wlan_switch\": 1" : ", \"wlan_switch\": 0");
+        sreg_text_str(t, "}");
     }
     sreg_text_str(t, "\n}\n");
 }
@@ -3344,7 +3357,11 @@ static uint32_t h_AllocPartitionMemory(CpuState *s) {
         : alloc_block(size ? size : 16);
     fprintf(stderr, "  -> uid=0x%x addr=0x%08x (heap_bump_now=0x%08x)\n",
             uid, sr_last_alloc_addr, s_heap);
-    return uid;
+    /* A block that cannot be placed is MEMBLOCK_ALLOC_FAILED: an Addr block at 0x08400000,
+     * outside the user partition, measured on a PSP-3000 6.61 by PSP-KERNEL-SEM-001
+     * vmem-alloc-free and vmem-alloc-held (2026-10-31), as partition.expected records for
+     * placements and sizes the partition cannot hold. */
+    return uid == 0xFFFFFFFFu ? HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED : uid;
 }
 static uint32_t h_GetBlockHeadAddr(CpuState *s) { return block_addr(A0); }
 static uint32_t free_block(uint32_t uid) {
@@ -13989,9 +14006,14 @@ static int console_profile_identity(void) {
     next.have_identity = 1;
     s_console = next;
     s_sreg_dirty = 1;
-    fprintf(stderr, "system profile: generated this installation's WLAN MAC address and OpenPSID; "
-                    "kept in the registry overlay\n");
-    (void)sreg_persist("system profile");
+    /* A console never fails these calls, so a save that fails does not fail the call: the
+     * identity stays this run's, and the line says it will not be the same next run. */
+    if (sreg_persist("system profile") == 0)
+        fprintf(stderr, "system profile: generated this installation's WLAN MAC address and "
+                        "OpenPSID; kept in the registry overlay\n");
+    else
+        fprintf(stderr, "system profile: generated a WLAN MAC address and OpenPSID for this run "
+                        "only: they could not be saved, so the next run reports different ones\n");
     return 1;
 }
 
@@ -14013,7 +14035,15 @@ static uint32_t h_PowerCheckWlanCoexistenceClock(CpuState *s) {
     return 0u;
 }
 
-static uint32_t h_WlanOn(CpuState *s) { (void)s; return 1; }   /* powered on / switch up */
+/* sceWlanGetSwitchState and sceWlanDevIsPowerOn: the console profile's WLAN switch, 1 (on) unless
+ * the overlay's console object sets "wlan_switch": 0. Both answer 1 on the PSP-3000 6.61 oracle
+ * with its switch on (PSP-KERNEL-SEM-001 wlan-state, 2026-10-31); what DevIsPowerOn answers with
+ * the switch off is UNMEASURED, so it follows the switch. */
+static uint32_t h_WlanOn(CpuState *s) {
+    (void)s;
+    sreg_ensure_loaded();
+    return s_console.wlan_switch_set ? s_console.wlan_switch : 1u;
+}
 
 /* sceOpenPSIDGetOpenPSID(SceOpenPSID *psid): the console profile's 16-byte OpenPSID. As with the
  * MAC address, NULL or an unwritable span answers ILLEGAL_ADDR and writes nothing (UNMEASURED). */
@@ -14046,10 +14076,11 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
  * with 0.
  *
  * Project choices, UNMEASURED on hardware:
- *  - Lock and TryLock accept only type 0. The PSP result for another type is unmeasured, so it is
- *    refused by name with NOT_IMPLEMENTED (0x80020002), before anything else, rather than
- *    answered with a guessed code. Unlock's argument is not checked: Unlock keeps its measured
- *    route.
+ *  - Lock and TryLock accept only type 0: types 1, 2 and -1 answer INVALID_MODE (0x80000107) and
+ *    write neither output, Lock as TryLock, while the lock is free (measured on a PSP-3000 6.61 by
+ *    PSP-KERNEL-SEM-001 vmem-trylock-type-* and vmem-lock-type-1, 2026-10-31, probe 0c3cf0da). The
+ *    type is checked first; its order against the other checks is UNMEASURED. Unlock's argument is
+ *    not checked: Unlock keeps its measured route.
  *  - The lock has no owning thread: Unlock from any thread releases it, as the semaphore overflow
  *    code above suggests (an inference). Terminating or deleting the thread that took the lock
  *    therefore leaves it held. A waiting thread that is terminated, deleted or released by
@@ -14078,12 +14109,7 @@ static int s_volatile_locked = 0;
 static VolatileMemWaiter *s_volatile_waiters;    /* FIFO: index 0 is the oldest waiter */
 static size_t s_volatile_wait_count, s_volatile_wait_cap;
 
-static int volatile_mem_type_ok(const char *api, uint32_t type) {
-    if (type == 0u) return 1;
-    fprintf(stderr, "SEMANTIC_BOUNDARY: VOLATILE_MEM_TYPE: %s type %u: the PSP result for a type "
-                    "other than 0 is unmeasured; refusing (0x80020002)\n", api, type);
-    return 0;
-}
+#define VOLATILE_MEM_INVALID_MODE 0x80000107u   /* SCE_KERNEL_ERROR_INVALID_MODE (measured) */
 
 /* Both complete non-NULL output spans are checked before either one is written. */
 static int volatile_mem_outputs_writable(uint32_t addr_out, uint32_t size_out) {
@@ -14152,8 +14178,7 @@ static int volatile_mem_grant_next(void) {
 }
 
 static uint32_t h_VolatileMemLock(CpuState *s) {
-    if (!volatile_mem_type_ok("sceKernelVolatileMemLock", A0))
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;
     if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;   /* L412 */
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;      /* L290-L293 */
     if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -14178,8 +14203,7 @@ static uint32_t h_VolatileMemLock(CpuState *s) {
 }
 
 static uint32_t h_VolatileMemTryLock(CpuState *s) {
-    if (!volatile_mem_type_ok("sceKernelVolatileMemTryLock", A0))
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    if (A0 != 0u) return VOLATILE_MEM_INVALID_MODE;
     if (s_volatile_locked) return VOLATILE_MEM_HELD;
     if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     volatile_mem_take(A1, A2);
@@ -18540,14 +18564,14 @@ static int data_archive_guest_path_allowed(const char *guest_path) {
             guest_path[4] >= '0' && guest_path[4] <= '9' && guest_path[5] == ':');
 }
 
-/* sceIoOpen with PSP_O_CREAT | PSP_O_EXCL found an existing file (#1380). The PSP-IO-001
- * oracle group never opens with PSP_O_EXCL, so the console's result is unmeasured: the open
- * is refused with the named not-supported code and the file is left untouched. */
-static uint32_t io_open_exclusive_existing_boundary(const char *path) {
-    fprintf(stderr,
-            "SEMANTIC_BOUNDARY: IO_OPEN_EXCL_EXISTING: sceIoOpen with PSP_O_CREAT|PSP_O_EXCL "
-            "names an existing file (%s); the PSP result is unmeasured (0x80010086)\n", path);
-    return 0x80010086u;
+/* sceIoOpen with PSP_O_CREAT | PSP_O_EXCL found an existing file (#1380): EEXIST
+ * (0x80010011), and the file is left as it was (not truncated), measured on a PSP-3000 6.61
+ * Memory Stick by PSP-KERNEL-SEM-001 io-excl-existing (2026-10-31, probe 0c3cf0da), with and
+ * without PSP_O_TRUNC. PSP_O_EXCL without PSP_O_CREAT opens the existing file. */
+static uint32_t io_open_exclusive_existing(const char *path) {
+    if (getenv("SR_IOLOG"))
+        fprintf(stderr, "sceIoOpen: %s exists; PSP_O_CREAT|PSP_O_EXCL answers EEXIST\n", path);
+    return 0x80010011u;
 }
 
 /* Host-serve a guest file from the extracted-XB data root (SR_DATAROOT).
@@ -18663,7 +18687,7 @@ static uint32_t h_io_open_path_stock(const char *path, uint32_t flags, int force
             fp = ms0_fopen_guest_utf8(path, mode, existence, &open_status);
 #endif
         free(hp);
-        if (exclusive_found) return io_open_exclusive_existing_boundary(path);
+        if (exclusive_found) return io_open_exclusive_existing(path);
         if (!fp) {
 #ifndef _WIN32
             if (sr_ms0_classify(path, NULL) == SR_MS0_OWNED &&
@@ -19081,9 +19105,13 @@ static uint32_t h_IoRead(CpuState *s) {
 }
 /* Destination of a seek on a file descriptor (#1380). pspautotests tests/io/file at
  * f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 for a destination before the start
- * and accepts one past the end (a read there returns 0). The descriptor keeps a 32-bit
- * position, so a destination beyond it is the named not-supported boundary. A refused seek
- * leaves the position unchanged. WHENCE is already validated (< 3). */
+ * and accepts one past the end (a read there returns 0). A Memory Stick file's position is
+ * 32 bits wide: a destination of 0xFFFFFFFF is accepted and one past it answers EINVAL
+ * (0x80010016) with the position unchanged, from SEEK_SET and from SEEK_END alike (measured on
+ * a PSP-3000 6.61 by PSP-KERNEL-SEM-001 io-seek64 and io-seek64-rdwr, 2026-10-31, probe
+ * 0c3cf0da). Other devices keep the named not-supported boundary there (UNMEASURED). A refused
+ * seek leaves the position unchanged. WHENCE is already validated (< 3). */
+static int loadexec_ms0_path(const char *path);
 static uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence,
                                     const char *api, uint32_t *position) {
     static atomic_flag reported = ATOMIC_FLAG_INIT;
@@ -19093,6 +19121,7 @@ static uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence
         *position = (uint32_t)(base + offset);
         return 0u;
     }
+    if (f->host && loadexec_ms0_path(f->guest_path)) return 0x80010016u;   /* EINVAL */
     if (!atomic_flag_test_and_set_explicit(&reported, memory_order_acq_rel))
         fprintf(stderr,
                 "SEMANTIC_BOUNDARY: IO_LSEEK_OUT_OF_RANGE: %s to a destination beyond the "
@@ -21459,12 +21488,20 @@ static uint32_t s_latch_seen_count = 0u;
 /* The input the next sample carries: buttons, stick and scripted-input id, latched once per
  * VBLANK by sr_ctrl_sample() (the host's input is polled once per frame). */
 static CtrlSample s_ctrl_live = { 0, 0, 128, 128, 0 };
-/* The stick position samples report in digital mode (sampling mode 0): the last position read
- * in analog mode, centred (0x80) until then. The console reads no analog data in digital mode
- * and keeps the last values it had (uOFW src/kd/ctrl/ctrl.c: the digital-only syscon command
- * returns no axes, so g_ctrl.analogX/Y, centred at init, are reused). Measured by
- * PSP-KERNEL-SEM-001 ctrl-mode-digital, ctrl-mode-analog and ctrl-mode-digital-again. */
-static uint8_t s_ctrl_last_lx = 128u, s_ctrl_last_ly = 128u;
+/* In digital mode (sampling mode 0) every sample reports a centred stick (0x80, 0x80), also
+ * right after analog mode reported it off centre; analog mode (1) reports its live position.
+ * Measured on a PSP-3000 6.61 by PSP-KERNEL-SEM-001 ctrl-mode-digital, ctrl-mode-analog and
+ * ctrl-mode-digital-again (2026-10-31, probe 0c3cf0da, stick at rest: analog read 0x75,0x7c and
+ * 0x83,0x7f, digital 0x80,0x80 before and after). A test build can stand in for the stick. */
+#ifdef SR_HLE_THREAD_SELFTEST
+static int s_ctrl_test_stick = 0;
+static uint8_t s_ctrl_test_lx = 128u, s_ctrl_test_ly = 128u;
+void sr_hle_test_ctrl_stick(uint8_t lx, uint8_t ly) {
+    s_ctrl_test_stick = 1;
+    s_ctrl_test_lx = lx;
+    s_ctrl_test_ly = ly;
+}
+#endif
 /* Sampling cycle (#1390): with cycle 0 the controller is sampled once per VBLANK. With a cycle
  * of 5555 to 20000 us it is sampled every `cycle` microseconds of guest time instead, and a
  * VBLANK adds no sample: pspautotests tests/ctrl/sampling2 at f573fe8c (recorded on a PSP)
@@ -22935,12 +22972,12 @@ void sr_ctrl_sample(void) {
      * sample at the request boundary; the first post-resume sample owns that
      * guest-time input transition. */
     if (sched_pause_pending()) return;
-    uint8_t lx = s_ctrl_last_lx, ly = s_ctrl_last_ly;
+    uint8_t lx = 128u, ly = 128u;
     if (s_ctrl_sampling_mode == 1u) {
-        lx = ly = 128u;
         if (gui_on()) gui_analog(&lx, &ly);
-        s_ctrl_last_lx = lx;
-        s_ctrl_last_ly = ly;
+#ifdef SR_HLE_THREAD_SELFTEST
+        if (s_ctrl_test_stick) { lx = s_ctrl_test_lx; ly = s_ctrl_test_ly; }
+#endif
     }
     uint32_t buttons = h_CtrlButtons();
     /* The on-screen keyboard is a system dialog: while it is open the title's pad reads
@@ -23145,7 +23182,6 @@ void sr_hle_test_ctrl_ring_reset(void) {
     s_latch_prev_btn = 0u;
     s_latch_seen_count = 0u;
     s_ctrl_live = (CtrlSample){ 0, 0, 128, 128, 0 };
-    s_ctrl_last_lx = s_ctrl_last_ly = 128u;
     s_ctrl_cycle_next_us = s_ctrl_sampling_cycle ? sched_vtime_us() + s_ctrl_sampling_cycle : 0u;
 }
 

@@ -3510,8 +3510,8 @@ static void test_fd_namespace(void) {
 
     /* PSP_O_CREAT (0x0200) and PSP_O_EXCL (0x0800), #1380. PSP-IO-001 measured only that a
      * read-only open of a missing file fails; a write open without PSP_O_CREAT fails the same
-     * way and creates nothing. An exclusive create of an existing file has no measured
-     * result, so it is refused with the named boundary and the file is left intact. */
+     * way and creates nothing. An exclusive create of an existing file answers EEXIST and leaves
+     * it intact (PSP-KERNEL-SEM-001 io-excl-existing, measured on a PSP-3000 6.61). */
     {
         static const char flags_guest[] = "ms0:/NAKAGAWA_OPEN_FLAGS.TXT";
         static const uint32_t no_create[] = {
@@ -3579,9 +3579,9 @@ static void test_fd_namespace(void) {
                 cpu.r[4] = rc;
                 (void)sr_hle_test_io_close(&cpu);
             }
-            expect(rc == IO_ERROR_FUNCTION_NOT_SUPPORTED &&
+            expect(rc == 0x80010011u &&
                        fd_host_bytes_equal(flags_host, (const uint8_t *)"abc", 3u),
-                   "PSP_O_CREAT|PSP_O_EXCL on an existing file is refused and leaves it intact");
+                   "PSP_O_CREAT|PSP_O_EXCL on an existing file answers EEXIST and leaves it intact");
         }
         /* Without PSP_O_CREAT an existing file still opens, and APPEND and TRUNC apply. */
         fd_set_path(&cpu, path_addr, flags_guest);
@@ -3835,6 +3835,26 @@ static void test_fd_namespace(void) {
     expect(sr_hle_test_io_lseek32(&cpu) == sizeof(payload) - 1u,
            "the reads past the end did not change the file size");
 
+    /* A Memory Stick position is 32 bits wide: past 0xFFFFFFFF a 64-bit seek answers EINVAL
+     * with the position unchanged, from SEEK_SET and SEEK_END (PSP-KERNEL-SEM-001 io-seek64,
+     * measured on a PSP-3000 6.61). */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[6] = 0x10u; cpu.r[7] = 1u; cpu.r[8] = 0u;
+    expect(sr_hle_test_io_lseek(&cpu) == 0x80010016u && cpu.r[3] == 0xffffffffu,
+           "a Memory Stick seek to 0x100000010 answers EINVAL");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[6] = 0u; cpu.r[7] = 1u; cpu.r[8] = 2u;
+    expect(sr_hle_test_io_lseek(&cpu) == 0x80010016u && cpu.r[3] == 0xffffffffu,
+           "a Memory Stick seek to END + 0x100000000 answers EINVAL");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 1u;
+    expect(sr_hle_test_io_lseek32(&cpu) == sizeof(payload) - 1u,
+           "the refused seeks left the position at the end of the file");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[6] = 0xffffffffu; cpu.r[7] = 0u; cpu.r[8] = 0u;
+    expect(sr_hle_test_io_lseek(&cpu) == 0xffffffffu && cpu.r[3] == 0u,
+           "a Memory Stick seek to 0xFFFFFFFF is accepted");
+
     /* A write that would carry the 32-bit position past its range stops at the named
      * boundary and writes nothing. */
     memset(&cpu, 0, sizeof(cpu));
@@ -3888,9 +3908,10 @@ static void test_fd_namespace(void) {
                 rc = sr_hle_test_io_lseek(&cpu);
                 expect(cpu.r[3] == 0xffffffffu, "a refused lseek reports an error high word");
             }
+            /* Past 32 bits a Memory Stick seek answers EINVAL (PSP-KERNEL-SEM-001 io-seek64). */
             int negative = i < sizeof(bad32) / sizeof(bad32[0]) || i == 3u || i == 5u;
-            expect(rc == (negative ? 0xffffffffu : IO_ERROR_FUNCTION_NOT_SUPPORTED),
-                   "a negative or unsupported large seek is refused, not clamped");
+            expect(rc == (negative ? 0xffffffffu : 0x80010016u),
+                   "a negative or too large seek is refused, not clamped");
             memset(&cpu, 0, sizeof(cpu));
             cpu.r[4] = fd;
             cpu.r[5] = 0u;
@@ -5417,6 +5438,18 @@ static void test_console_profile_identity(void) {
     profile_read(mac, psid);
     expect(memcmp(mac, want_mac, 6) == 0 && memcmp(psid, want_psid, 16) == 0,
            "a configured identity in the overlay is the MAC address and OpenPSID reported");
+
+    expect(profile_call(0x93440b11u, 0u) == 1u && profile_call(0xd7763699u, 0u) == 1u,
+           "the WLAN switch and power state read 1 by default (measured with the switch on)");
+    static const char switch_off[] =
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
+        "\"categories\": [], \"keys\": [], \"console\": {\"wlan_mac_hex\": \"00a1b2c3d4e5\", "
+        "\"open_psid_hex\": \"00112233445566778899aabbccddeeff\", \"wlan_switch\": 0}}";
+    expect(sysreg_write_file(SYSREG_SCRATCH_FILE, switch_off, sizeof(switch_off) - 1u),
+           "the switch-off overlay is written");
+    sysreg_restart();
+    expect(profile_call(0x93440b11u, 0u) == 0u && profile_call(0xd7763699u, 0u) == 0u,
+           "the profile's WLAN switch is what both WLAN state calls report");
 
     /* No identity yet: one is generated, persisted and stable. */
     sysreg_scratch_clean();
@@ -29132,7 +29165,7 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     expect(max_free == floor - base0, "sceKernelMaxFreeMemSize stops at the stack");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = (floor - base0) + 0x10000u;
-    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == 0x800200d9u /* MEMBLOCK_ALLOC_FAILED */,
            "an allocation that would cover the live stack fails");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = max_free & ~0xFFu;
@@ -29393,7 +29426,7 @@ static void test_partition_spans_the_whole_user_partition(void) {
            "the reported free memory excludes the runtime's stacks");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = low_free + 0x100u;
-    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == 0x800200d9u /* MEMBLOCK_ALLOC_FAILED */,
            "a block that would cover the runtime's stacks is refused");
 
     /* A fixed reservation above kernel RAM (a late PRX base) returns the skipped span to the
@@ -29559,7 +29592,7 @@ static void test_alloc_block_at_fixed_address(void) {
     heap_before = sr_hle_test_partition_heap_ptr();
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 2u; cpu.r[7] = 0x800u; cpu.r[8] = R2 + 0x400u;
-    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == 0x800200d9u /* MEMBLOCK_ALLOC_FAILED */,
            "type-2 handler rejects an overlapping address");
     expect(sr_hle_test_partition_heap_ptr() == heap_before,
            "rejected type-2 handler call does not move the bump pointer");
@@ -35809,13 +35842,31 @@ static void test_ctrl_sampling_contract(void) {
     expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 1u &&
                MEM_R32(CTRL_OK_BUF) == (uint32_t)s_vtime_us,
            "at cycle 0 a VBLANK latches one sample, stamped at the VBLANK");
+
+    /* Digital mode centres the stick, also right after analog mode reported it off centre
+     * (PSP-KERNEL-SEM-001 ctrl-mode-*, measured on a PSP-3000 6.61). */
+    extern void sr_hle_test_ctrl_stick(uint8_t lx, uint8_t ly);
+    sr_hle_test_ctrl_stick(0x75u, 0x7cu);
+    expect(ctrlc_call(NID_SCE_CTRL_SET_SAMPLING_MODE, 1u, 0u) == 0u, "analog mode is set");
+    s_vtime_us += 5555u;
+    sr_ctrl_sample();
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 1u) == 1u &&
+               MEM_R8(CTRL_OK_BUF + 8u) == 0x75u && MEM_R8(CTRL_OK_BUF + 9u) == 0x7cu,
+           "analog mode reports the stick's position");
+    expect(ctrlc_call(NID_SCE_CTRL_SET_SAMPLING_MODE, 0u, 0u) == 1u, "digital mode is set again");
+    s_vtime_us += 5555u;
+    sr_ctrl_sample();
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 1u) == 1u &&
+               MEM_R8(CTRL_OK_BUF + 8u) == 0x80u && MEM_R8(CTRL_OK_BUF + 9u) == 0x80u,
+           "digital mode reports a centred stick, not the last analog position");
+    sr_hle_test_ctrl_stick(0x80u, 0x80u);
     sr_hle_test_ctrl_sampling_reset();
     sr_hle_test_ctrl_ring_reset();
 }
 
 /* Departures: a deleted waiter and a released waiter leave the queue and are never handed the
  * lock; terminating the thread that holds the lock leaves it held (the lock has no owning
- * thread); a type other than 0 is refused by name and takes nothing. */
+ * thread); a type other than 0 answers INVALID_MODE (measured) and takes nothing. */
 static void test_volatile_mem_lock_departures_and_type(void) {
     reset_fixture();
     sr_hle_init();
@@ -35859,12 +35910,14 @@ static void test_volatile_mem_lock_departures_and_type(void) {
            "another thread's VolatileMemUnlock releases it");
 
     vm_out_fill(VM_PROBE_OUT);
-    expect(vm_call(NID_VM_LOCK, 1u, VM_PROBE_OUT) == 0x80020002u &&
+    /* Measured on a PSP-3000 6.61 (PSP-KERNEL-SEM-001 vmem-*-type-*, 2026-10-31). */
+    expect(vm_call(NID_VM_LOCK, 1u, VM_PROBE_OUT) == 0x80000107u &&
            vm_out_untouched(VM_PROBE_OUT),
-           "VolatileMemLock type 1 is refused by name (unmeasured) and writes nothing");
-    expect(vm_call(NID_VM_TRYLOCK, 2u, VM_PROBE_OUT) == 0x80020002u &&
+           "VolatileMemLock type 1 answers INVALID_MODE and writes nothing");
+    expect(vm_call(NID_VM_TRYLOCK, 2u, VM_PROBE_OUT) == 0x80000107u &&
+           vm_call(NID_VM_TRYLOCK, 0xffffffffu, VM_PROBE_OUT) == 0x80000107u &&
            vm_out_untouched(VM_PROBE_OUT),
-           "VolatileMemTryLock type 2 is refused by name (unmeasured) and writes nothing");
+           "VolatileMemTryLock types 2 and -1 answer INVALID_MODE and write nothing");
     expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0x800201aeu,
            "a refused type took no lock");
 

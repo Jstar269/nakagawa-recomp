@@ -779,6 +779,42 @@ One console is one data point; see §11. Nothing here closes issue #70
     returned, and the next entry came on the original 16.68 ms grid. `DisableSubIntr` and
     `ReleaseSubIntrHandler` returned 0.
 
+- **PSP-3000 single-case run of the `kernel-semantics` probe on commit `0c3cf0da` (2026-10-31)**: firmware 6.6.1
+  (ARK-5.1.0), PSPLink 3.2.1 through Nakagawa Link, operator-declared model PSP-3000, boot 84 (standalone PSPLink,
+  game context). `0c3cf0da` is the commit the PRX was built from (case 126,
+  `fixtures/psp_oracle/probe_kernel_semantics.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 29 records and the done record, all PASS. The probe wrote only inside `ms0:/NKKSEM00`, which
+  it created and removed (`io-cleanup`). It never reads the console's MAC address or OpenPSID. The row cites only
+  the records named in it. The raw envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-31, `0c3cf0da`) |
+  | --- | --- | --- | --- |
+  | `PSP-KERNEL-SEM-001` | `subintr-register`, `subintr-order`, `subintr-times`, `subintr-release`, `ctrl-empty-read`, `ctrl-short-read-peek`, `ctrl-short-read`, `ctrl-short-read-next`, `ctrl-peek-count`, `ctrl-mode-digital`, `ctrl-mode-analog`, `ctrl-mode-digital-again`, `ctrl-cycle-5555`, `ctrl-cycle-wait`, `vmem-trylock-type-1`, `vmem-trylock-type-2`, `vmem-trylock-type-m1`, `vmem-lock-type-1`, `vmem-alloc-free`, `vmem-alloc-held`, `vmem-unlock`, `io-missing-parent`, `io-mkdir`, `io-excl-new`, `io-excl-existing`, `io-seek64`, `io-seek64-rdwr`, `io-cleanup`, `wlan-state`, `kernel-semantics-done` | A held stick or pressed button, a moved WLAN switch, the first sample's phase after `sceCtrlSetSamplingCycle`, writes past a file's end, and devices other than the Memory Stick | MEASURED (`kernel-semantics`) |
+
+  What the records establish, on this console:
+  - *VBLANK sub-interrupts (#1287).* Handlers registered on sub-interrupts 3, 0, 2 and 1 (in that order), all
+    enabled, run on every VBLANK as 0, 1, 2, 3, each with its own (no, arg), within about 11 us of each other and
+    16.68 ms apart. Register, Enable, Disable and Release each answered 0.
+  - *Controller sampling (#1390).* A read of 1 right after a read waits for the next VBLANK sample (about
+    16.6 ms) and returns 1. After 100 ms without a read, a read of 2 returns 2 samples, the newest, and the next
+    read finds only samples newer than them: a read consumes every unread sample, not only those it returns.
+    A peek of 64, 3 and 1 right after a read returns 64, 3 and 1. With the stick at rest, digital mode reports
+    0x80,0x80, analog mode the stick's own position (0x75,0x7c and 0x83,0x7f), and digital mode again 0x80,0x80:
+    digital mode centres the stick. At cycle 5555 a read 50 ms after a drain returns 9 samples 5542 to 5574 us
+    apart, and a blocking read after a drain waits less than one cycle (2755, 5562, 5551 us).
+  - *Volatile memory (#1383).* With the lock free, TryLock types 1, 2 and -1 and Lock type 1 answer 0x80000107
+    and write neither output. A 4 KiB Low block of partition 5 starts at 0x08400000 with the lock free and while
+    this thread holds it; a partition-2 Addr block at 0x08400000 answers 0x800200D9 either way.
+  - *Memory Stick (#1380).* `PSP_O_CREAT|PSP_O_EXCL` and `PSP_O_CREAT` under a missing directory answer
+    0x80010002 and create nothing. On an existing file `PSP_O_CREAT|PSP_O_EXCL`, with or without `PSP_O_TRUNC`,
+    answers 0x80010011 and leaves it as it was; `PSP_O_EXCL` without `PSP_O_CREAT` opens it. `sceIoLseek` to
+    0xFFFFFFFF is accepted (a read there returns 0); to 0x100000010 from the start or 0x100000000 past the end it
+    answers 0x80010016 with 0xFFFFFFFF in the high word and leaves the position where it was, on read-only and
+    read-write descriptors alike.
+  - *WLAN (#1382).* `sceWlanGetSwitchState` and `sceWlanDevIsPowerOn` both answer 1 with the switch on.
+
 - **PSP-3000 single-case run of the `module-start` probe on commit `fd2a75fd` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000. `fd2a75fd` is the commit that adds the probe (case 124,
   `fixtures/psp_oracle/probe_module_start.c`). The case was one runner invocation after the `transport-write`
@@ -2905,6 +2941,7 @@ not expected PSP values.
 | `thread-k0-block` | `PSP-THREAD-K0-001` | `MEASURED` (2026-10-28, PSP-3000 / PSPLink `pspver` 6.6.0; `96cbbf9c`; single launch, not in the campaign queue; acceptance-eligible, 9 of 9 records) | The probe thread's k0, its stack span and k0+4; a new thread's k0, stack span, sp at entry, k0+4, its two lowest stack words and the 64 words from k0; then, for thread attributes 0, NO_FILLSTACK (0x00100000) and CLEAR_STACK (0x00200000), a thread that fills its stack between the lowest 16 words and sp, and its k0+4, with 0xa5a5a5a5 exits and is deleted, and a new thread of the same size and attribute reports its stack base, k0, k0+4 and the surviving fill words. 9 records. Answers whether the kernel hands every new thread a block with k0+4 == 0 (#363, launcher reent ownership). Risk low: user-mode thread calls only; writes stay inside the probe's own threads' stacks. Result: k0 is the top 0x100 bytes of the thread's own stack (the probe's thread, stack 0x40000, and a new 0x4000-byte thread); the probe's main thread, which its module_start created, held [0x09f80000, 0x09fc0000) and the new thread got [0x09ffc000, 0x0a000000): the module-start thread's default 0x40000-byte stack above the main thread had been released when module_start returned, and the new stack was carved from the top of that highest free block, not from below the main thread; the block is zero except the thread UID at +0xc0, the stack base at +0xc8 and 0xffffffff at +0xf8 and +0xfc, so k0+4 is 0. A thread created with the same size and attribute after a thread that dirtied the same memory got the same stack base and again k0+4 == 0 for attribute 0, NO_FILLSTACK (the dirty words below sp survived: no fill) and CLEAR_STACK; only the UID word of the block differed. With attribute 0 the stack below k0 reads 0xff except its lowest word, which holds the UID. An earlier launch of `10114d86` that also overwrote the lowest stack words hung after its sixth record; its first six records match the ones above. |
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
 | `module-start` | `PSP-MODULE-START-001` | `MEASURED` (2026-10-29, `fd2a75fd`; single launch, not in the campaign queue) | Module lifecycle: a module with its own `module_start` records that thread's status, the free memory before and after it returns, whether its UID still answers, and the thread list |
+| `kernel-semantics` | `PSP-KERNEL-SEM-001` | `MEASURED` (2026-10-31, `0c3cf0da`, boot 84; single launch, not in the campaign queue) | #1287, #1390, #1383, #1380, #1382: VBLANK sub-interrupt delivery order, controller read consumption, peek counts, analog by sampling mode and cycle spacing, volatile-lock types and partition-5 allocations, Memory Stick exclusive create and seeks past 4 GiB in a probe-owned directory, WLAN switch and power state; never the MAC or OpenPSID |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
 | `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
 | `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |

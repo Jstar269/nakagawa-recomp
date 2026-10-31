@@ -3118,6 +3118,7 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-VFPU-FORMS2-001",
                 # The 2026-10-29 acceptance-eligible module-start run of fd2a75fd.
                 "PSP-MODULE-START-001",
+                "PSP-KERNEL-SEM-001",
                 # The 2026-10-28 acceptance-eligible ge-sample run of 86e55611 (#282).
                 "PSP-GE-SAMPLE-001",
                 # The 2026-10-29 acceptance-eligible dma-timing runs of 0e40e7d3, 281a21a4 and

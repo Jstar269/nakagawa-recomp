@@ -880,6 +880,7 @@ class LiveManifestTests(unittest.TestCase):
                 "h_IoLseek",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+                    "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-seek64, io-seek64-rdwr)",
                     "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
@@ -888,6 +889,7 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)",
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
+                    "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-missing-parent, io-excl-new, io-excl-existing)",
                     "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
                 ],
             ),
@@ -1716,7 +1718,8 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SYSPARAM-001",
                 "PSP-HLE-TIMER-ORDER-001", "PSP-HLE-VTIMER-001", "PSP-HLE-VTIMER-002",
                 "PSP-HLE-VTIMER-003", "PSP-INTR-CAUSE-001", "PSP-IO-001", "PSP-KERNEL-001",
-                "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-LLSC-001",
+                "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-SEM-001", "PSP-KERNEL-STATUS-001",
+                "PSP-LLSC-001",
                 "PSP-MODULE-START-001", "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
                 "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRACE-001", "PSP-TRANSPORT-001",
                 "PSP-UMDIO-001", "PSP-VFPU-CMP-001", "PSP-VFPU-FORMS-001",
