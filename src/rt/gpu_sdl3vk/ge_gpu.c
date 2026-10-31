@@ -3564,7 +3564,9 @@ static int hook_tnl_prim(const GeTnlPrim *p) {
     state_get(1, 0, &b);
     if (nocull) b.key.cull = VK_CULL_MODE_NONE;
     b.key.tnl = 1;
-    if (!begin_target()) return cpu_profile_hook_leave(1); /* target alloc failed: drop draw */
+    /* Without a target, decline: ge.c's own T&L then reaches hook_tri, which decides the
+     * draw exactly as it does when GPU T&L is off. */
+    if (!begin_target()) return cpu_profile_hook_leave(0);
     if (s_ntnl + nv > MAX_TNL_VERTS || s_ntnlp >= MAX_TNL_PARAMS || s_nbatch >= MAX_BATCH - 1)
         submit_pending();
     const uint32_t pi = s_ntnlp++;

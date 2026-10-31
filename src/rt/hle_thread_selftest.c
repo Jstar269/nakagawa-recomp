@@ -22854,6 +22854,35 @@ static void test_ge_queued_lists_run_in_order(void) {
     ge_tim_teardown();
 }
 
+/* #1374: with the opt-in timing model, a blocking sync whose completion interrupt this caller
+ * cannot wait for (here: no guest thread) stops the run by name rather than report the list
+ * complete before its finish callback ran. Once the completion is delivered, it returns 0. */
+static void test_ge_timing_blocking_sync_cannot_wait(void) {
+    CpuState cpu;
+    ge_tim_setup();
+    sr_hle_test_ge_lists_reset();
+    sr_hle_test_ge_timing(1);
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    s_vtime_us = 1000u;
+    memset(&cpu, 0, sizeof(cpu));
+    const uint32_t qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    const uint32_t stops = sr_hle_test_unmodelled_stops();
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 0u) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == stops + 1u,
+           "GE timing: a blocking sceGeListSync that cannot wait for the completion stops by name");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 0u, 0u) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == stops + 2u,
+           "GE timing: a blocking sceGeDrawSync that cannot wait for the completion stops by name");
+    expect(s_ge_tim_calls == 0u, "GE timing: neither stop ran the finish callback early");
+    s_vtime_us = 1015u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u && ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 0u) == 0u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 0u, 0u) == 0u,
+           "GE timing: once the completion is delivered both blocking forms return 0");
+    sr_hle_test_ge_lists_reset();
+    ge_tim_teardown();
+}
+
 static void test_ge_completion_timing(void) {
     CpuState cpu;
 
@@ -40691,6 +40720,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_completion_timing();
     test_ge_finish_callback_reports();
     test_ge_queued_lists_run_in_order();
+    test_ge_timing_blocking_sync_cannot_wait();
     test_volatile_mem_output_preflight();
     test_osk_parameter_sizes();
     test_osk_update_and_shutdown_init_states();

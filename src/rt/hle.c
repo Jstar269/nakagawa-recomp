@@ -24843,11 +24843,17 @@ static uint32_t h_GeListSync(CpuState *s) {
     if (syncType == 0u) {
         for (;;) {
             if (l->status == GE_LIST_DRAWING) {
-                /* Opt-in timing model: delay until the modelled completion has been delivered. A
-                 * caller that cannot be delayed (interrupt context) returns once the time has
-                 * passed: UNMEASURED. */
+                /* Opt-in timing model: delay until the modelled completion has been delivered.
+                 * A caller that cannot be delayed (interrupt context), or whose completion
+                 * interrupt cannot be delivered (interrupts suspended), would otherwise be told
+                 * the list is done before its finish callback ran; that has no measured result,
+                 * so the run stops by name. */
                 ge_timing_wait(slot);
-                if (l->status == GE_LIST_DRAWING) break;
+                if (l->status == GE_LIST_DRAWING)
+                    return hle_unmodelled_stop(
+                        "sceGeListSync",
+                        "blocking wait for a drawing list whose completion cannot be delivered here "
+                        "has no measured result");
                 continue;
             }
             if (s_ge_list_done_bits & ge_slot_bit(slot)) break;
@@ -24941,6 +24947,12 @@ static uint32_t h_GeDrawSync(CpuState *s) {
         if (s_ge_timing_drawing) {
             if (mode == 1u) return GE_SYNC_DRAWING;
             ge_timing_wait(-1);
+            /* As sceGeListSync: a completion this caller cannot wait for is never reported. */
+            if (s_ge_timing_drawing)
+                return hle_unmodelled_stop(
+                    "sceGeDrawSync",
+                    "blocking wait for drawing lists whose completion cannot be delivered here "
+                    "has no measured result");
         }
         int head = ge_queue_head();
         if (!recorded) {
