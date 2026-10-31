@@ -3572,6 +3572,140 @@ static void test_player_av_presentation_boundary(void) {
     sr_hle_test_psmf_av_enable(0);   /* later tests record nothing */
 }
 
+/* A title that composites the movie (#279): it receives each picture in a texture buffer,
+ * draws it through the GE into a framebuffer and presents that framebuffer, so the picture's
+ * own buffer is never flipped.  The production GE hook (sr_ge_texture_sample_hook, installed
+ * by the measurement at the first picture) carries each textured draw's texture and render
+ * target; the first present of that target is the picture's presentation time.  Each matched
+ * picture is presented PC_LAG_US after its delivery. */
+#define PC_TEX      0x08700000u      /* 512-wide 8888 texture the pictures are delivered into */
+#define PC_TEX_MISS 0x08780000u      /* a texture no picture was delivered into */
+#define PC_LAG_US   10000
+typedef void (*PcTextureHook)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+extern PcTextureHook sr_ge_texture_sample_hook;
+
+static int pc_next_picture(int64_t clock_us) {
+    sr_hle_test_psmf_av_set_clock_us(clock_us);
+    for (int tries = 0; tries < 64; tries++) {
+        MEM_W32(AV_VIDEO + 0, PB_STRIDE);
+        MEM_W32(AV_VIDEO + 4, PC_TEX);
+        uint32_t v = guest_mpeg_import(AV_NID_GET_VIDEO, AV_PLAYER, AV_VIDEO, 0, 0, 0);
+        if (v == 0) return 1;
+        if (v != AV_ERR_NO_DATA) return 0;
+        (void)guest_mpeg_import(AV_NID_GET_AUDIO, AV_PLAYER, AV_AUDIO, 0, 0, 0);
+        (void)guest_mpeg_import(AV_NID_UPDATE, AV_PLAYER, 0, 0, 0, 0);
+    }
+    return 0;
+}
+
+static void pc_draw(uint32_t tex, uint32_t target) {
+    if (sr_ge_texture_sample_hook)
+        sr_ge_texture_sample_hook(tex, PB_STRIDE, 512u, PB_FMT, target, PB_STRIDE, PB_FMT);
+}
+
+static void pc_flip(uint32_t target, int64_t clock_us) {
+    sr_hle_test_psmf_av_set_clock_us(clock_us);
+    CHECK(guest_mpeg_import(PB_NID_SET_FRAMEBUF, target, PB_STRIDE, PB_FMT, 0u, 0) == 0,
+          "psmf-composite: the production display handler accepts the flip");
+}
+
+static void test_player_av_composited_presentation(void) {
+    if (!sr_h264_backend_available()) {
+        fprintf(stderr, "SKIP: composited presentation assertions need an H.264 backend\n");
+        return;
+    }
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "psmf-composite: the A/V container builds"); return; }
+    s_player_image = image;
+    s_player_image_size = size;
+    sr_hle_test_psmf_av_reset();
+    sr_hle_test_psmf_av_enable(1);
+    sr_hle_test_psmf_av_set_window_us(1000000);
+    sr_hle_test_psmf_av_set_clock_us(0);
+    sr_hle_test_psmf_av_set_queue_frames(PB_FRAMES);
+    sr_ge_texture_sample_hook = NULL;   /* an earlier measurement may have installed it */
+    lc_prepare_guest();
+    CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0 &&
+              guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER, AV_PATH, 0, 0, 0) == 0 &&
+              guest_mpeg_import(AV_NID_START, AV_PLAYER, AV_CONFIG, 0, 0, 0) == 0,
+          "psmf-composite: the player is created, opened and started");
+    CHECK(guest_mpeg_import(PB_NID_SET_FRAMEBUF, 0u, PB_STRIDE, PB_FMT, 1u, 0) == 0,
+          "psmf-composite: the display mode is latched");
+    for (int i = 0; i < 3; i++)
+        CHECK(guest_mpeg_import(AV_NID_GET_VIDEO, AV_PLAYER, AV_VIDEO, 0, 0, 0) == AV_ERR_NO_DATA,
+              "psmf-composite: warm-up pictures report NO_DATA");
+
+    /* Picture 1 is drawn into framebuffer A, which is then presented. */
+    int64_t t = 1000000;
+    CHECK(pc_next_picture(t), "psmf-composite: picture 1 is delivered into the texture");
+    CHECK(sr_ge_texture_sample_hook != NULL,
+          "psmf-composite: the measurement installs the GE texture hook at the first picture");
+    pc_draw(PC_TEX_MISS, PB_FB_A);
+    CHECK(pb_counter_is(0, "composited", 0),
+          "psmf-composite: a draw from another texture composites nothing");
+    pc_draw(PC_TEX, PB_FB_A);
+    CHECK(pb_counter_is(0, "composited", 1) && pb_counter_is(0, "matched", 0),
+          "psmf-composite: a draw from the picture's texture composites it, unmatched until the flip");
+    pc_flip(PB_FB_A, t + PC_LAG_US);
+    CHECK(pb_counter_is(0, "matched", 1) && pb_counter_is(0, "composited_matched", 1),
+          "psmf-composite: the flip of the draw's render target presents the composited picture");
+
+    /* Picture 2 is never drawn: the flip of A does not present it, and picture 3, delivered
+     * into the same texture, supersedes it. Picture 3 is drawn into B, so only B's flip
+     * presents it. */
+    t += 100000;
+    CHECK(pc_next_picture(t), "psmf-composite: picture 2 is delivered");
+    pc_flip(PB_FB_A, t + PC_LAG_US);
+    CHECK(pb_counter_is(0, "matched", 1) && pb_counter_is(0, "pending", 1),
+          "psmf-composite: a flip does not present a picture that was never drawn");
+    t += 100000;
+    CHECK(pc_next_picture(t), "psmf-composite: picture 3 is delivered");
+    CHECK(pb_counter_is(0, "superseded", 1),
+          "psmf-composite: a picture overwritten before any draw is counted superseded");
+    pc_draw(PC_TEX, PB_FB_B);
+    pc_flip(PB_FB_A, t + PC_LAG_US / 2);
+    CHECK(pb_counter_is(0, "matched", 1),
+          "psmf-composite: the flip of another framebuffer does not present the composited picture");
+    pc_flip(PB_FB_B, t + PC_LAG_US);
+    CHECK(pb_counter_is(0, "matched", 2) && pb_counter_is(0, "composited_matched", 2),
+          "psmf-composite: the flip of its render target presents the composited picture");
+
+    /* Picture 4 is drawn into A; picture 5 lands in the texture before A is presented. The
+     * drawn picture 4 is not superseded, and A's flip presents picture 4, not 5. */
+    t += 100000;
+    CHECK(pc_next_picture(t), "psmf-composite: picture 4 is delivered");
+    pc_draw(PC_TEX, PB_FB_A);
+    CHECK(pc_next_picture(t + PC_LAG_US / 2), "psmf-composite: picture 5 is delivered");
+    CHECK(pb_counter_is(0, "superseded", 1),
+          "psmf-composite: a delivery into the texture does not supersede a picture already drawn");
+    pc_flip(PB_FB_A, t + PC_LAG_US);
+    CHECK(pb_counter_is(0, "matched", 3) && pb_counter_is(0, "composited_matched", 3) &&
+              pb_counter_is(0, "pending", 1),
+          "psmf-composite: the flip presents the drawn picture and leaves the undrawn one pending");
+
+    unsigned finals_before = sr_hle_test_psmf_av_final_lines();
+    CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0,
+          "psmf-composite: the player is deleted");
+    const char *f = sr_hle_test_psmf_av_last_final();
+    long long vdel = 0, vmatch = 0, vsuper = 0, vpend = 0, vcomp = 0, vcompmatch = 0, vlat = 0, vlatmax = 0;
+    CHECK(sr_hle_test_psmf_av_final_lines() == finals_before + 1u &&
+              av_log_field(f, " vdel=", &vdel) && av_log_field(f, " vmatch=", &vmatch) &&
+              av_log_field(f, " vsuper=", &vsuper) && av_log_field(f, " vpend=", &vpend) &&
+              av_log_field(f, " vcomp=", &vcomp) && av_log_field(f, " vcompmatch=", &vcompmatch) &&
+              vdel == 5 && vmatch == 3 && vsuper == 1 && vpend == 1 && vcomp == 3 && vcompmatch == 3,
+          "psmf-composite: the final summary counts 5 delivered, 3 composited and presented, 1 superseded, 1 pending");
+    CHECK(av_log_field(f, " vlat_mean_us=", &vlat) && vlat == PC_LAG_US &&
+              av_log_field(f, " vlat_max_us=", &vlatmax) && vlatmax == PC_LAG_US,
+          "psmf-composite: a composited picture's delivery-to-present latency is measured at its flip");
+
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
+    sr_hle_test_psmf_av_reset();
+    sr_hle_test_psmf_av_enable(0);
+}
+
 /* The sceMpeg path: a picture decoded by sceMpegAvcDecodeYCbCr carries its access unit's
  * time, and sceMpegAvcCsc is where it lands in guest memory. */
 static void test_mpeg_csc_presentation_boundary(void) {
@@ -3699,6 +3833,7 @@ int main(int argc, char **argv) {
     test_player_av_presentation_timing(AV_LAYOUT_SPLIT);
     test_player_av_presentation_timing(AV_LAYOUT_PACKED);
     test_player_av_presentation_boundary();
+    test_player_av_composited_presentation();
     test_mpeg_csc_presentation_boundary();
     test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);

@@ -6336,11 +6336,18 @@ static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEG
  * offset is video offset - audio offset over a window of guest time, so a constant startup
  * delay common to both streams cancels while a stream running slow shows up as drift.
  *
+ * A title that composites the movie draws the picture through the GE instead of presenting
+ * its buffer.  While the measurement runs, each textured GE_PRIM reports its texture and its
+ * render target (sr_ge_texture_sample_hook, ge.c); a draw whose level-0 texture overlaps a
+ * waiting picture marks that picture composited into the draw's render target, and the first
+ * present of a framebuffer overlapping that target is the picture's presentation time.  A
+ * composited picture is not superseded by a later delivery into its buffer (it was already
+ * drawn); one whose render target is never presented stays pending and is counted.
+ *
  * Nothing here changes behaviour: no guest memory is written, no time advances, and the
  * only host call on a match is one sr_audio_queued() read.  A delivery that is never
  * presented/played (overwritten by a later delivery, pushed out of the ring, or still waiting
- * when the report is made) is counted, never hidden; a title that composites the movie
- * through the GE before presenting it simply shows 0 video matches.
+ * when the report is made) is counted, never hidden.
  *
  * Enabled by SR_MPEGAV (or SR_MPEGLOG).  Output: one PSMF_AV_PRESENT line per window and a
  * PSMF_AV_PRESENT_FINAL summary at scePsmfPlayerDelete and at process exit. */
@@ -6358,12 +6365,15 @@ typedef struct {
     int64_t pts;
     int64_t delivered_us;
     int pts_valid, live;
+    int composited;             /* drawn by the GE into the render target [fb_lo, fb_hi) */
+    uint32_t fb_lo, fb_hi;
 } PsmfAvEntry;
 
 typedef struct {
     PsmfAvEntry pend[PSMF_AV_PENDING];
     uint64_t delivered, matched, unmeasured, superseded, evicted, nospan;
     uint64_t boundary_calls, boundary_hits;
+    uint64_t composited, composited_matched;   /* video only */
     uint64_t lat_sum_us;
     int64_t lat_max_us;
     int64_t win_sum_x9;
@@ -6487,10 +6497,16 @@ static void psmf_av_window_tick(int64_t now_us) {
 
 static void psmf_av_final(const char *reason);
 static void psmf_av_exit_report(void) { psmf_av_final("exit"); }
+extern void (*sr_ge_texture_sample_hook)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+                                         uint32_t, uint32_t);
+static void psmf_av_texture_sampled(uint32_t tex_addr, uint32_t tex_bufw, uint32_t tex_h,
+                                    uint32_t tex_fmt, uint32_t fb_addr, uint32_t fb_stride,
+                                    uint32_t fb_fmt);
 
 static void psmf_av_delivered(int stream, uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
     if (!psmf_av_on()) return;
     if (!s_psmf_av.exit_hooked) { s_psmf_av.exit_hooked = 1; atexit(psmf_av_exit_report); }
+    if (stream == PSMF_AV_VIDEO) sr_ge_texture_sample_hook = psmf_av_texture_sampled;
     PsmfAvStream *st = &s_psmf_av.s[stream];
     st->delivered++;
     uint32_t lo, hi;
@@ -6499,7 +6515,9 @@ static void psmf_av_delivered(int stream, uint32_t first, uint32_t bytes, int64_
     for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
         PsmfAvEntry *e = &st->pend[i];
         if (!e->live) { if (!slot) slot = e; continue; }
-        if (e->lo < hi && lo < e->hi) { e->live = 0; st->superseded++; if (!slot) slot = e; continue; }
+        if (!e->composited && e->lo < hi && lo < e->hi) {
+            e->live = 0; st->superseded++; if (!slot) slot = e; continue;
+        }
         if (!oldest || e->seq < oldest->seq) oldest = e;
     }
     if (!slot) { oldest->live = 0; st->evicted++; slot = oldest; }
@@ -6510,6 +6528,41 @@ static void psmf_av_delivered(int stream, uint32_t first, uint32_t bytes, int64_
     slot->pts_valid = pts_valid;
     slot->delivered_us = psmf_av_now_us();
     slot->live = 1;
+    slot->composited = 0;
+    slot->fb_lo = slot->fb_hi = 0;
+}
+
+/* Bytes of a level-0 texture: bufw texels per row, h rows, at the PSM's texel size.  0 for
+ * the DXT formats, whose block layout is not a picture a movie decoder writes. */
+static uint32_t psmf_av_texture_bytes(uint32_t bufw, uint32_t h, uint32_t fmt) {
+    static const uint8_t bits[8] = {16, 16, 16, 32, 4, 8, 16, 32};
+    uint32_t texels;
+    if (fmt > 7u || !sr_size_mul_ok(bufw, h, &texels) || texels > 0x08000000u) return 0;
+    return (uint32_t)(((uint64_t)texels * bits[fmt] + 7u) / 8u);
+}
+
+/* A textured draw (GE_PRIM) samples [tex_addr, +level-0 bytes) into the render target at
+ * fb_addr (fb_stride pixels, fb_fmt): a waiting picture it overlaps is composited there. */
+static void psmf_av_texture_sampled(uint32_t tex_addr, uint32_t tex_bufw, uint32_t tex_h,
+                                    uint32_t tex_fmt, uint32_t fb_addr, uint32_t fb_stride,
+                                    uint32_t fb_fmt) {
+    if (!psmf_av_on()) return;
+    PsmfAvStream *st = &s_psmf_av.s[PSMF_AV_VIDEO];
+    uint32_t tlo, thi, row, fbytes, flo, fhi;
+    uint32_t tbytes = psmf_av_texture_bytes(tex_bufw, tex_h, tex_fmt);
+    if (!tbytes || !psmf_av_range(tex_addr, tbytes, &tlo, &thi) || fb_fmt > 3u ||
+        !sr_size_mul_ok(fb_stride, fb_fmt == 3u ? 4u : 2u, &row) ||
+        !sr_size_mul_ok(row, PSMF_AV_DISPLAY_ROWS, &fbytes) ||
+        !psmf_av_range(fb_addr, fbytes, &flo, &fhi))
+        return;
+    for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
+        PsmfAvEntry *e = &st->pend[i];
+        if (!e->live || e->composited || !(e->lo < thi && tlo < e->hi)) continue;
+        e->composited = 1;
+        e->fb_lo = flo;
+        e->fb_hi = fhi;
+        st->composited++;
+    }
 }
 
 /* One delivery meets its presentation/play time.  play_ok = 0 means the time itself was not
@@ -6546,10 +6599,14 @@ static void psmf_av_video_presented(uint32_t addr, int32_t stride, int32_t fmt) 
     int hit = 0;
     for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
         PsmfAvEntry *e = &st->pend[i];
-        if (!e->live || !(e->lo < hi && lo < e->hi)) continue;
+        if (!e->live) continue;
+        int own = e->lo < hi && lo < e->hi;
+        int drawn = e->composited && e->fb_lo < hi && lo < e->fb_hi;
+        if (!own && !drawn) continue;
         int64_t now = psmf_av_now_us();
         if (!hit) psmf_av_window_tick(now);
         hit = 1;
+        if (!own) st->composited_matched++;
         psmf_av_match(st, e, now, 1);
     }
     if (hit) st->boundary_hits++;
@@ -6609,6 +6666,7 @@ static void psmf_av_final(const char *reason) {
     int n = snprintf(line, sizeof(line),
         "PSMF_AV_PRESENT_FINAL: reason=%s windows=%u paired=%u"
         " vdel=%llu vmatch=%llu vunmeas=%llu vsuper=%llu vevict=%llu vnospan=%llu vpend=%llu vbnd=%llu vhit=%llu"
+        " vcomp=%llu vcompmatch=%llu"
         " adel=%llu amatch=%llu aunmeas=%llu asuper=%llu aevict=%llu anospan=%llu apend=%llu abnd=%llu ahit=%llu"
         " vlat_mean_us=%s vlat_max_us=%s alat_mean_us=%s alat_max_us=%s"
         " av_min_us=%s av_max_us=%s av_mean_us=%s av_first_us=%s av_last_us=%s drift_us=%s\n",
@@ -6616,6 +6674,7 @@ static void psmf_av_final(const char *reason) {
         (unsigned long long)v->delivered, (unsigned long long)v->matched, (unsigned long long)v->unmeasured,
         (unsigned long long)v->superseded, (unsigned long long)v->evicted, (unsigned long long)v->nospan,
         (unsigned long long)pend[0], (unsigned long long)v->boundary_calls, (unsigned long long)v->boundary_hits,
+        (unsigned long long)v->composited, (unsigned long long)v->composited_matched,
         (unsigned long long)a->delivered, (unsigned long long)a->matched, (unsigned long long)a->unmeasured,
         (unsigned long long)a->superseded, (unsigned long long)a->evicted, (unsigned long long)a->nospan,
         (unsigned long long)pend[1], (unsigned long long)a->boundary_calls, (unsigned long long)a->boundary_hits,
@@ -6665,6 +6724,8 @@ int64_t sr_hle_test_psmf_av_counter(int audio, const char *key) {
     if (!strcmp(key, "nospan")) return (int64_t)st->nospan;
     if (!strcmp(key, "boundary")) return (int64_t)st->boundary_calls;
     if (!strcmp(key, "hits")) return (int64_t)st->boundary_hits;
+    if (!strcmp(key, "composited")) return (int64_t)st->composited;
+    if (!strcmp(key, "composited_matched")) return (int64_t)st->composited_matched;
     if (!strcmp(key, "pending")) {
         int64_t n = 0;
         for (unsigned i = 0; i < PSMF_AV_PENDING; i++) if (st->pend[i].live) n++;

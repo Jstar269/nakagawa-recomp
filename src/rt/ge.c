@@ -1610,6 +1610,13 @@ static void ge_transition_trace_configure(void) {
 }
 
 static uint32_t ge_fb_addr(void);   /* defined with the framebuffer accessors below */
+
+/* Set by hle.c only while its SR_MPEGAV measurement runs (#279): each textured GE_PRIM reports
+ * its level-0 texture and its render target, so a movie picture a title composites through
+ * the GE can be followed to the flip that shows it. NULL otherwise, so a draw pays one test. */
+void (*sr_ge_texture_sample_hook)(uint32_t tex_addr, uint32_t tex_bufw, uint32_t tex_h,
+                                  uint32_t tex_fmt, uint32_t fb_addr, uint32_t fb_stride,
+                                  uint32_t fb_fmt);
 static uint32_t ge_transition_hash_u32(uint32_t h, uint32_t w) {
     for (int i = 0; i < 4; i++) {
         h ^= (w >> (8 * i)) & 0xFFu;
@@ -5682,6 +5689,10 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case GE_PRIM: {
                 uint64_t profile_started = ge_cpu_profile_begin();
                 uint32_t prim_cmd = addr - 4;   /* op word address (addr already advanced) */
+                if (sr_ge_texture_sample_hook && ge.tex_enable && !ge.clear && ge.tex_addr)
+                    sr_ge_texture_sample_hook(ge.tex_addr, ge.tex_bufw, (uint32_t)ge.tex_h,
+                                              ge.tex_fmt & 0xFu, ge_fb_addr(),
+                                              ge.fbw ? ge.fbw : 512u, ge.fbfmt & 3u);
                 if (flight_ge_enabled)
                     sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW,
                                      list_addr, prim_cmd, (op >> 16) & 7u, op & 0xffffu);
