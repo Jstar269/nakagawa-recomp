@@ -1115,6 +1115,7 @@ class NativePlayerUiTests(unittest.TestCase):
         dedicated_data_root: bool = False,
         settings: dict[str, object] | None = None,
         package_built_by: str | None = None,
+        disc_list: str | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1126,6 +1127,12 @@ class NativePlayerUiTests(unittest.TestCase):
             legacy_root = userprofile / "Nakagawa" / "data"
             if legacy_data:
                 legacy_root.mkdir(parents=True)
+            # The player's data folder: a disc list the user imported (nk_disc_verify.h).
+            data_folder = localappdata / "Nakagawa" / "data"
+            if disc_list is not None:
+                (data_folder / "verification").mkdir(parents=True)
+                (data_folder / "verification" / "redump.dat").write_text(disc_list,
+                                                                        encoding="utf-8")
             profile = scratch / "controller-profile.json"
             if invalid_profile:
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
@@ -1433,6 +1440,10 @@ class NativePlayerUiTests(unittest.TestCase):
                     persisted_settings = candidate
                     break
 
+            library_file = data_folder / "library.json"
+            persisted_library = (json.loads(library_file.read_text(encoding="utf-8"))
+                                 if library_file.is_file() else None)
+
             def files_under(folder: Path) -> list[str]:
                 return sorted(path.relative_to(folder).as_posix()
                               for path in folder.rglob("*") if path.is_file())
@@ -1447,6 +1458,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 "legacy_root": legacy_root,
                 "legacy_root_exists": legacy_root.is_dir(),
                 "settings": persisted_settings,
+                "library": persisted_library,
                 "default_profile_files": files_under(localappdata / "Nakagawa"),
                 "dedicated_files": files_under(dedicated),
                 "downloaded_tool_marker_exists": (
@@ -2081,20 +2093,43 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual((card.get("kind"), card.get("add")), ("4", "0"), unsupported["stdout"])
         self.assertEqual(self.screens(unsupported)[-1][0], "library")
 
-    def test_next_ui_hashes_an_added_disc_once_on_a_worker(self) -> None:
+    def test_next_ui_checks_an_added_disc_once_on_a_worker(self) -> None:
         """#1731: a disc added from the game-found card is hashed once after the add, on the
-        disc check worker (never the UI thread), and the frames go on meanwhile. With no
-        disc list imported it is hashed but not checked against one."""
-        added = self.next_ui_run("experimental", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=1500"))
-        frames = added["frames"]
-        stdout = added["stdout"]
-        assert isinstance(frames, list) and isinstance(stdout, str)
-        self.assertEqual(frames[-1]["view"], "library", stdout)
-        self.assertEqual(int(frames[-1]["games"]), int(frames[0]["games"]) + 1, stdout)
-        checks = re.findall(r"^\[PLAYER\] DISC_CHECK disc=(\S+) result=(\S+) tier=(\S+)$",
-                            stdout, re.M)
-        self.assertEqual(len(checks), 1, stdout)
-        self.assertEqual(checks[0][1:], ("HASHED", "NOT_CHECKED"), stdout)
+        disc check worker (never the UI thread), and compared with the disc list the user
+        imported; its library record keeps the hashes and the tier. With no list it is
+        hashed and left unchecked."""
+        with tempfile.TemporaryDirectory(prefix=".disc-check-", dir=ROOT) as tmp:
+            iso_path = Path(tmp) / "synthetic.iso"
+            create_test_iso_with_executables(
+                iso_path, build_plain_mips_elf(), disc_id="TEST00043",
+                title="Synthetic Checked Disc",
+            )
+            iso = iso_path.read_bytes()
+        sha1 = hashlib.sha1(iso).hexdigest()
+        crc = f"{zlib.crc32(iso):08x}"
+        disc_list = ("<?xml version=\"1.0\"?>\n<datafile>\n<header><name>Synthetic</name>"
+                     "<version>1</version></header>\n<game name=\"Synthetic Checked Disc\">"
+                     f"<rom name=\"synthetic.iso\" size=\"{len(iso)}\" crc=\"{crc}\" "
+                     f"sha1=\"{sha1}\"/></game>\n</datafile>\n")
+        events = ("WAIT_VIEW=experimental|unsupported|supported|error,15000", "WAIT_MS=100",
+                  "KEY_RETURN", "WAIT_MS=1500")
+        for listed, tier in ((True, "VERIFIED_RETAIL"), (False, "NOT_CHECKED")):
+            with self.subTest(listed=listed):
+                run = self.next_ui_run("library", events, drop_bytes=("source-owned.iso", iso),
+                                       disc_list=disc_list if listed else None)
+                frames = run["frames"]
+                stdout = run["stdout"]
+                assert isinstance(frames, list) and isinstance(stdout, str)
+                self.assertEqual(frames[-1]["view"], "library", stdout)
+                checks = re.findall(
+                    r"^\[PLAYER\] DISC_CHECK disc=(\S+) result=(\S+) tier=(\S+)$", stdout, re.M)
+                self.assertEqual(checks, [("TEST00043", "HASHED", tier)], stdout)
+                library = run["library"]
+                assert isinstance(library, dict)
+                records = [game for game in library["games"] if game["disc_id"] == "TEST00043"]
+                self.assertEqual(len(records), 1, library)
+                self.assertEqual(records[0].get("content_sha1"), sha1)
+                self.assertEqual(records[0].get("disc_verification", "NOT_CHECKED"), tier)
 
     # The next UI's Settings controls (player_ui_nk.h), as the frame line prints them.
     SETTINGS_FOCUS = {

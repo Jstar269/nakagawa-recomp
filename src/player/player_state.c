@@ -4854,6 +4854,9 @@ static bool player_app_start_package_build_view(PlayerApp *app, int game_index,
     snprintf(app->build_session.enhancement_package_id,
              sizeof(app->build_session.enhancement_package_id), "%s",
              game->enhancement_package_id);
+    /* This card's own image: another one can have the same disc ID. */
+    snprintf(app->build_session.iso_path, sizeof(app->build_session.iso_path), "%s",
+             game->iso_path);
 
     char cli_path[NK_MAX_PATH];
     if (!package_builder_find_cli(app->install_root, cli_path, sizeof(cli_path))) {

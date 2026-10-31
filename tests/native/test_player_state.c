@@ -2706,11 +2706,18 @@ static int player_state_package_builder_child(int argc, char **argv) {
     const char *disc_id = argv[3];
     const char *progress_path = NULL;
     const char *user_root = NULL;
+    const char *iso_path = NULL;
     for (int i = 4; i + 1 < argc; i++) {
         if (strcmp(argv[i], "--progress-json") == 0) progress_path = argv[++i];
         else if (strcmp(argv[i], "--user-data-root") == 0) user_root = argv[++i];
+        else if (strcmp(argv[i], "--iso-path") == 0) iso_path = argv[++i];
     }
     if (!progress_path || !user_root) return 91;
+    /* The build names the card's own image (two images can share a disc ID). */
+    const char *expected_iso = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_ISO_PATH");
+    if (expected_iso && expected_iso[0] && (!iso_path || strcmp(iso_path, expected_iso) != 0)) {
+        return 96;
+    }
 
     const char *mode = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE");
     if (mode && strcmp(mode, "success") == 0) {
@@ -3960,6 +3967,8 @@ static void test_package_build_lifecycle(const char *self_executable) {
     rebuild_app->active_view = VIEW_LIBRARY;
     printf("[PLAYER_STATE_TEST] Linux build tools: a missing make is named, nothing downloads PASS\n");
 #endif
+    assert(rebuild_app->games[0].iso_path[0] != '\0');
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_ISO_PATH", rebuild_app->games[0].iso_path);
     bool rebuild_started = player_app_rebuild_package(rebuild_app, 0);
     if (!rebuild_started) {
         fprintf(stderr, "rebuild action refused: %s: %s\n",
@@ -3970,6 +3979,7 @@ static void test_package_build_lifecycle(const char *self_executable) {
     assert(rebuild_app->active_view == VIEW_BUILDING_PACKAGE);
     poll_player_package_build_to_terminal(rebuild_app);
     assert(rebuild_app->build_session.is_complete);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_ISO_PATH", NULL);
     player_app_runtime_package_cache_invalidate(rebuild_app);
     assert(player_app_validate_runtime_package(
                rebuild_app, &rebuild_app->games[0], NULL,
