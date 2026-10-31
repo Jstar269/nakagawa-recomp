@@ -4551,6 +4551,17 @@ int main(int argc, char *argv[]) {
                          "%s", ui_test_iso_path);
             }
         }
+        /* The library's records name the same image as the cards: the library
+           tells two images of a disc ID apart by their files. */
+        for (int i = 0; i < app.game_count; i++) {
+            for (int j = 0; j < app.library.count; j++) {
+                if (strcmp(app.library.entries[j].disc_id, app.games[i].disc_id) == 0) {
+                    snprintf(app.library.entries[j].iso_path,
+                             sizeof(app.library.entries[j].iso_path), "%s",
+                             app.games[i].iso_path);
+                }
+            }
+        }
     }
     if (ui_test_fake_game_running) {
         /* "1": some game runs. A disc ID names the running game, whose window
@@ -5629,11 +5640,16 @@ int main(int argc, char *argv[]) {
         player_app_poll_package_build(&app, SDL_GetTicks());
         if (app.build_session.is_complete && !build_check_pending &&
             !build_check_session_already_handled) {
-            /* The card of the image built, not another image with its disc ID. */
+            /* The card of the image built, not another image with its disc ID;
+               a card that no longer names that file (added again from another
+               folder meanwhile) is found by its disc ID, as before. */
             int build_game_index = app.build_session.iso_path[0]
                 ? player_app_find_game_by_image(&app, app.build_session.disc_id,
                                                 app.build_session.iso_path)
-                : player_app_find_game_by_disc_id(&app, app.build_session.disc_id);
+                : -1;
+            if (build_game_index < 0) {
+                build_game_index = player_app_find_game_by_disc_id(&app, app.build_session.disc_id);
+            }
             if (build_game_index >= 0 && build_game_index < app.game_count) {
                 /* The build may have bound the executable this entry was
                    saved without; the check validates against that one. */
