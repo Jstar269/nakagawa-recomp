@@ -67,7 +67,6 @@
     "tools/prxload.py": 1,
     "tools/psp_import_table.py": 9,
     "tools/psp_oracle/insn_trace.py": 2,
-    "tools/psp_oracle/oracle_matrix.py": 7,
     "tools/psp_oracle/protocol.py": 11,
     "tools/psp_oracle/user_mode_imports.py": 2,
     "tools/psp_oracle/verify_vfpu_addr.py": 2,
@@ -92,7 +91,6 @@
     "tools/test_callback_correctness.py": 2,
     "tools/test_ci_paths.py": 7,
     "tools/test_ci_required.py": 1,
-    "tools/test_ci_test_shards.py": 30,
     "tools/test_ci_trust_verdict.py": 9,
     "tools/test_codegen_entry_semantics.py": 1,
     "tools/test_codegen_nan_trap.py": 6,
@@ -141,7 +139,6 @@
     "tools/test_nid_name_proof.py": 11,
     "tools/test_nk_cli_progress.py": 1,
     "tools/test_nk_core.py": 15,
-    "tools/test_oracle_matrix.py": 31,
     "tools/test_package_cache.py": 22,
     "tools/test_perf_attribution.py": 1,
     "tools/test_perf_summary_diff.py": 1,
@@ -162,7 +159,6 @@
     "tools/test_provenance_wildcard_regression.py": 1,
     "tools/test_psp_issue_matrix.py": 18,
     "tools/test_psp_threading_oracle.py": 1,
-    "tools/test_pspdev_lock.py": 26,
     "tools/test_public_export.py": 17,
     "tools/test_public_title_isolation.py": 1,
     "tools/test_publication_policy_gate.py": 2,
@@ -176,7 +172,6 @@
     "tools/test_scripted_input.py": 9,
     "tools/test_second_title_ingest.py": 1,
     "tools/test_showcase.py": 1,
-    "tools/test_site_mobile.py": 27,
     "tools/test_soak_audit.py": 1,
     "tools/test_stage_install.py": 1,
     "tools/test_text_write_newlines.py": 1,
@@ -213,5 +208,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 1219
+  "total_errors": 1098
 }
