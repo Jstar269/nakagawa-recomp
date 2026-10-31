@@ -126,7 +126,6 @@
     "tools/test_import_audit.py": 7,
     "tools/test_imports.py": 2,
     "tools/test_incident_regression_private.py": 9,
-    "tools/test_iso_parity.py": 28,
     "tools/test_key_scrub_tools.py": 2,
     "tools/test_library_build.py": 1,
     "tools/test_library_sweep.py": 4,
@@ -135,7 +134,6 @@
     "tools/test_manager_safety.py": 2,
     "tools/test_matrix_report.py": 4,
     "tools/test_native_core_build.py": 11,
-    "tools/test_native_host_backends.py": 22,
     "tools/test_nid_name_proof.py": 11,
     "tools/test_nk_cli_progress.py": 1,
     "tools/test_nk_core.py": 15,
@@ -154,7 +152,6 @@
     "tools/test_provenance_attest_verify.py": 13,
     "tools/test_provenance_attestation_gate.py": 2,
     "tools/test_provenance_control_merge.py": 1,
-    "tools/test_provenance_ledger.py": 50,
     "tools/test_provenance_record_gap.py": 1,
     "tools/test_provenance_wildcard_regression.py": 1,
     "tools/test_psp_issue_matrix.py": 18,
@@ -208,5 +205,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 1098
+  "total_errors": 998
 }
