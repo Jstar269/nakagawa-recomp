@@ -127,9 +127,11 @@ int iso_init(void) {
 /* A title reads a UMD file by its start sector. sceIoGetstat reports the file's starting
  * LBN in st_private[0], and the title opens the raw extent it names as
  * "sce_lbn0x<LBN>_size0x<SIZE>": LBN in hexadecimal 2048-byte sectors and SIZE in
- * hexadecimal bytes. The name is the extent itself, not a directory entry, so it resolves
- * without a directory lookup, but only while an image is open. Only a name of exactly that
- * form is an extent. */
+ * hexadecimal bytes. Either "0x" may be left out ("sce_lbn<LBN>_size<SIZE>", the other
+ * common spelling; behaviour reference: PPSSPP Core/FileSystems/ISOFileSystem.cpp parseLBN),
+ * and a title does write that form. The name is the extent itself, not a directory entry, so
+ * it resolves without a directory lookup, but only while an image is open. Only a name of
+ * exactly that form is an extent. */
 static int iso_hex_field(const char *p, size_t max_digits, const char **end, uint32_t *out) {
     uint32_t value = 0;
     size_t n = 0;
@@ -148,17 +150,21 @@ static int iso_hex_field(const char *p, size_t max_digits, const char **end, uin
     return 1;
 }
 
+static const char *iso_skip_hex_prefix(const char *p) {
+    return p[0] == '0' && p[1] == 'x' ? p + 2 : p;
+}
+
 static int iso_parse_sector_extent(const char *path, uint32_t *out_lba, uint32_t *out_size) {
-    static const char lbn_tag[] = "sce_lbn0x";
-    static const char size_tag[] = "_size0x";
+    static const char lbn_tag[] = "sce_lbn";
+    static const char size_tag[] = "_size";
     const size_t lbn_len = sizeof(lbn_tag) - 1u;
     const size_t size_len = sizeof(size_tag) - 1u;
     if (strncmp(path, lbn_tag, lbn_len) != 0) return 0;
     const char *lbn_end = NULL, *size_end = NULL;
     uint32_t lba = 0, size = 0;
-    if (!iso_hex_field(path + lbn_len, 8u, &lbn_end, &lba)) return 0;
+    if (!iso_hex_field(iso_skip_hex_prefix(path + lbn_len), 8u, &lbn_end, &lba)) return 0;
     if (strncmp(lbn_end, size_tag, size_len) != 0) return 0;
-    if (!iso_hex_field(lbn_end + size_len, 8u, &size_end, &size)) return 0;
+    if (!iso_hex_field(iso_skip_hex_prefix(lbn_end + size_len), 8u, &size_end, &size)) return 0;
     if (*size_end != '\0' || size == 0u) return 0;
     *out_lba = lba;
     *out_size = size;

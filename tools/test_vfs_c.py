@@ -307,12 +307,29 @@ int main(int argc, char **argv) {
         fprintf(stderr, "FAIL: sector-extent name should resolve to its LBN and size\n");
         return 1;
     }
+    /* Either "0x" may be left out: a title writes "sce_lbn<LBN>_size0x<SIZE>". */
+    {
+        static const char *const spellings[] = {
+            "disc0:/sce_lbn25_size1000", "disc0:/sce_lbn025_size0x1000",
+            "disc0:/sce_lbn0x25_size1000",
+        };
+        for (size_t i = 0; i < sizeof(spellings) / sizeof(spellings[0]); i++) {
+            lba = sz = 0;
+            if (iso_lookup(spellings[i], &lba, &sz) != 0 || lba != 37 || sz != 0x1000) {
+                fprintf(stderr, "FAIL: sector-extent spelling %s should resolve\n", spellings[i]);
+                return 1;
+            }
+        }
+    }
     if (iso_lookup("disc0:/sce_lbn0x25", &lba, &sz) == 0 ||
         iso_lookup("disc0:/sce_lbn0x_size0x1000", &lba, &sz) == 0 ||
         iso_lookup("disc0:/sce_lbn0x25_size0x0", &lba, &sz) == 0 ||
         iso_lookup("disc0:/sce_lbn0x25_size0x1000x", &lba, &sz) == 0 ||
         iso_lookup("disc0:/sce_lbn0x25_size0x1000/", &lba, &sz) == 0 ||
-        iso_lookup("disc0:/sce_lbn0x123456789_size0x1", &lba, &sz) == 0) {
+        iso_lookup("disc0:/sce_lbn0x123456789_size0x1", &lba, &sz) == 0 ||
+        iso_lookup("disc0:/sce_lbn_size0x1000", &lba, &sz) == 0 ||
+        iso_lookup("disc0:/sce_lbn25_size", &lba, &sz) == 0 ||
+        iso_lookup("disc0:/sce_lbnx25_size1000", &lba, &sz) == 0) {
         fprintf(stderr, "FAIL: malformed sector-extent name should not resolve\n");
         return 1;
     }
