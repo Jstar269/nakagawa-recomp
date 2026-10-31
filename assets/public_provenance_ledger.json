@@ -9514,7 +9514,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e6d038417a59f6c3c3a1290dab279b00af8f461263a094678b0ae8a694660fb2"
+      "sha256": "bf60e883f02536fdb0d1dc7fc654818c4dec1ebad8c0166ba40b757efbb8ba50"
     },
     {
       "path": "src/rt/heap_selftest.c",
@@ -9539,7 +9539,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "fbe7758f8113ec6fc1421cb860dc7679b211472d424026d82937b670fe661718"
+      "sha256": "ed43b23fb74d1009bb8d877e7f789a7b2f0f40c03f9f5cafe776c17329ee689e"
     },
     {
       "path": "src/rt/hle_evidence.h",
@@ -9737,7 +9737,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e3af6b7b720e113a4c313dd09fcef883e3c0da31ee7b16fff31d40cd9ec26e6d"
+      "sha256": "7c8b39fc09af28dc1ca9e0738d62475b402b4c89ad715aad1df8c3b42aa19fd5"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -10122,7 +10122,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "df1de36336b3b52b643a20268a3209636c1513c469b88cedba8e985f14672ef5"
+      "sha256": "299c62432c2de80eab28db40c5a5282e01f40aefe25f0a899f7c4c886ad5d2d4"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -10306,7 +10306,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5546bdd2eb69be134875f2adfab0f6fb33deeaa6e8db8aa96e942605cfd7eb4b"
+      "sha256": "530794fd4b140be83d708e3668e749c812c3a81857f7c2948d2e633a856b181c"
     },
     {
       "path": "src/rt/stale_code.c",
