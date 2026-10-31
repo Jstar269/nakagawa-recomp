@@ -46,7 +46,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Callable
+from typing import Any, Callable, cast
 
 _PACKAGE_PARENT = str(Path(__file__).resolve().parents[1])
 if _PACKAGE_PARENT not in sys.path:
@@ -412,7 +412,7 @@ def attested_boot(lock: dict[str, object], session_id: str) -> tuple[int | None,
     attestation, status = _runner._validate_device_state_attestation(lock, session_id)
     if attestation is None:
         return None, status
-    return int(attestation["boot_number"]), status
+    return int(cast(int, attestation["boot_number"])), status
 
 
 def note_launch(path: Path, session_id: str, text: str) -> None:
@@ -460,9 +460,12 @@ def _probe_command_report(stdout: str) -> dict[str, object] | None:
 
 
 def _boots(report: dict[str, object] | None) -> list[int]:
-    if report is None or not isinstance(report.get("boots"), list):
+    if report is None:
         return []
-    return [boot for boot in report["boots"] if isinstance(boot, int) and not isinstance(boot, bool)]
+    boots = report.get("boots")
+    if not isinstance(boots, list):
+        return []
+    return [boot for boot in boots if isinstance(boot, int) and not isinstance(boot, bool)]
 
 
 def classify_launch(
@@ -792,7 +795,7 @@ class MatrixRunner:
         )
 
     # -- the whole matrix
-    def execute(self, *, build_only: bool = False) -> tuple[int, dict[str, object]]:
+    def execute(self, *, build_only: bool = False) -> tuple[int, dict[str, Any]]:
         plan = self.plan
         problem = self.source_tree_problem(plan.source_commit)
         if problem:
@@ -813,13 +816,15 @@ class MatrixRunner:
                 "state": "BUILT",
             }
             self._save(state)
-        staged = dict(state["staged"])  # type: ignore[arg-type]
+        staged = dict(cast(dict[str, str], state["staged"]))
         self.verify_staged(staged)
         if build_only:
             return 0, self._report(state, "BUILT")
-        outcomes: list[dict[str, object]] = list(state["outcomes"])  # type: ignore[arg-type]
-        used_boots: list[int] = list(state.get("used_boots") or [])  # type: ignore[arg-type]
-        contained = int(state.get("contained_failures") or 0)  # type: ignore[arg-type]
+        outcomes: list[dict[str, object]] = list(
+            cast(list[dict[str, object]], state["outcomes"])
+        )
+        used_boots: list[int] = list(cast(list[int], state.get("used_boots") or []))
+        contained = int(cast(int, state.get("contained_failures") or 0))
         terminal: str | None = None
         for index in range(len(outcomes), len(plan.cases)):
             case = plan.cases[index]
@@ -870,8 +875,8 @@ class MatrixRunner:
             return 2, report
         return 0, report
 
-    def _report(self, state: dict[str, object], final: str) -> dict[str, object]:
-        outcomes = list(state.get("outcomes") or [])  # type: ignore[arg-type]
+    def _report(self, state: dict[str, object], final: str) -> dict[str, Any]:
+        outcomes = list(cast(list[dict[str, object]], state.get("outcomes") or []))
         done = {item.get("case_id") for item in outcomes if isinstance(item, dict)}
         not_run = [case.case_id for case in self.plan.cases if case.case_id not in done]
         report = {
