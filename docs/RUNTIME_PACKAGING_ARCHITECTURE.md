@@ -35,7 +35,7 @@ A single executable contains the UI launcher, the generic PSP runtime, the AOT r
   * Single binary distribution (`nakagawa.exe` / `nakagawa`).
   * No IPC or child process management.
 * **Disadvantages:**
-  * **Violates title isolation:** Different PSP titles require distinct code chunks, compiler optimization levels (e.g., HST uses `-O1` for massive dynamic recomp chunks to preserve compile time and `-O2` for runtime), and different executable span allocations.
+  * **Violates title isolation:** Different PSP titles require distinct code chunks, per-title build settings and different executable span allocations.
   * **Binary bloat:** Recompiled C for a large PSP game generates tens of megabytes of native machine code. Bundling 10 games into one executable would result in gigabyte-scale binaries.
   * **Crash vulnerability:** A crash in a guest module immediately terminates the entire launcher application, destroying UI state and unsaved player configuration.
   * **LLE/Fidelity violation:** Guest memory arena mappings (e.g. 192 MiB fixed address reservations) would conflict if multiple titles or sessions were managed in the same address space.
@@ -111,11 +111,11 @@ Roadmap items decided with the table:
   expects it. Today the data folders are `Nakagawa` (Windows), `nakagawa-recomp` (Linux) and
   `NakagawaRecomp` (macOS); unify them before a release ships on a second host, with a migration from
   the old Windows folder.
-* **Code signing:** v0.0.1 ships unsigned (maintainer decision, 2026-10-25). SignPath Foundation's
-  free open-source programme declined the project for now because it is not yet widely used; reapply
-  once releases have users. Until a build is signed, each release publishes the ZIP's SHA-256 and
-  GitHub build attestations for every binary, and the release notes explain the SmartScreen prompt.
-  Paid certificates stay a maintainer decision.
+* **Code signing:** v0.0.1 ships unsigned (maintainer decision, 2026-10-25). Until a build is signed, each
+  release publishes the ZIP's SHA-256 and GitHub build attestations for every binary, and the release notes
+  explain the SmartScreen prompt. The signing procedure is prepared
+  ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md#sign-the-windows-binaries-authenticode)) and waits for the
+  maintainer's certificate, which stays a maintainer decision.
 
 ## 5. Local AOT package contract (v2)
 
@@ -154,6 +154,20 @@ helpers into more functions of a smaller unit). Each compile job is then given m
 proportion to the target (256 bytes per byte, at least 1 GiB, at most the 3 GiB that
 count-based chunks need), so a host with little free memory still compiles several chunks
 at once.
+
+Only a single body can make its unit larger than the target (#1730). Codegen gives every body
+over `BODY_FALLBACK_BYTES` (4,000,000 bytes of C, the same in every build) a unit of its own
+that compiles at `-O0`: the level most packages used before, at gcc's lowest time cost. The
+level does not bound its memory, which grows with the body at every level (about 170 bytes per
+byte of C, linear up to the 4 MB budget: a generated body chained to 4 MB compiles at `-O2` in
+about a minute and 670 MB). The compile phase therefore budgets each job from the largest
+generated unit at the same 256 bytes per byte, without the 3 GiB cap, so a host runs fewer jobs
+while such a unit is in the build. The generated `<game>_recomp_opt.mk` sets the unit's level
+after `RECOMP_FLAGS`, so it is in the compile command and the object's cache key. It is a
+required generated-code output, and any line in it other than a comment, a unit row or that
+unit's level refuses the build before Make reads it. `build-report.json` lists each such unit
+under `optimization.fallback_units`, with the level the rest compiled at. These are the only
+compile flags that differ between units.
 Current Make recipes cannot transport whitespace or shell-sensitive characters
 in bound paths. Inputs at such paths are copied byte-for-byte into
 `<output-dir>/staged-inputs/` (hashes are unchanged). When the output directory
@@ -355,7 +369,10 @@ compiles nothing.
 * `<user data>/cache/shared-libraries/` holds the system libraries a disc carries.
   Codegen writes a runtime-placed module that the build carries once to its own
   `nk_lib_<fnv1a64>.c`, named by the module's bytes, with symbols `l<fnv>_<link>` and
-  `sr_l<fnv>_base` and nothing that names the game. Another game with the same module
+  `sr_l<fnv>_base` and nothing that names the game. A module over the library budget
+  (`LIBRARY_UNIT_TARGET_BYTES` of C or `LIBRARY_UNIT_MAX_FUNCS` bodies, fixed in codegen
+  and independent of the build's own chunk settings) is cut into
+  `nk_lib_<fnv1a64>_<n>.c` units instead, each with every declaration (#1730). Another game with the same module
   compiles the identical file, and the build log names each library it reused or
   compiled. Settings > BUILD TOOLS AND CACHE turns this sharing off
   (`build-package --no-shared-libraries`) and clears the folder. A module carried
@@ -601,6 +618,16 @@ time, and the prerequisite tree is unpacked fresh each time), and the player exe
 in its PE `TimeDateStamp` and checksum because its link line lacked `--no-insert-timestamp`.
 Both are fixed; `tools/test_stage_install.py` builds one stage twice in different orders and
 with different file times and compares the bytes.
+
+Measured end to end on 2026-10-31 with the v0.0.1 candidate: the same commit, attested bundle, trusted
+ledger and prerequisite pins, packaged twice into two folders with the whole recipe
+([`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#check-that-the-package-is-reproducible)). The prerequisite source
+archive was identical. The portable ZIPs differed in five files under `source/.git` (the source export leaves
+a one-commit repository whose commit time and index timestamps change on every run), and so in
+`SHA256SUMS.txt`. After removing `source/.git` (the installed `source/` never had one; see the recipe notes), both ZIPs were byte-identical (9,215
+files, 255,540,572 bytes). `--portable-zip` now refuses a stage that has a `.git` entry. Two clean builds of
+`nakagawa_player.exe` from one commit and one checkout path were also byte-identical. Whether two runs of the attestation workflow
+for one commit produce identical binaries was not measured; the check above reuses one bundle.
 
 ### Per-user state (writable)
 

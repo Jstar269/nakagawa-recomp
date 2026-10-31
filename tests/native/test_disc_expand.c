@@ -40,6 +40,7 @@
 #include "native_test_isolation.h"
 #include "nk_disc_chd.h"
 #include "nk_disc_expand.h"
+#include "nk_disc_verify.h"
 #include "nk_iso.h"
 #include "nk_platform.h"
 
@@ -686,8 +687,22 @@ static void expect_expands(const char *label, const Buf *image, const uint8_t *i
     CHECK(progress.monotonic && progress.last_done == iso_len && progress.total == iso_len);
     snprintf(part, sizeof(part), "%s.part", dst);
     CHECK(nk_platform_path_missing(part));
-    printf("PASS expand %s (%s, %zu -> %zu bytes)\n", label, nk_disc_format_extension(format),
-           image->len, iso_len);
+    /* Disc verification hashes the expansion, so a compressed image and the
+       .iso it holds get the same SHA-1, CRC-32 and size (nk_disc_verify.h). */
+    {
+        char plain[NATIVE_TEST_PATH_MAX];
+        NkDiscDigest from_image, from_iso;
+        snprintf(name, sizeof(name), "%s-plain.iso", label);
+        path_in(plain, sizeof(plain), name);
+        write_bytes(plain, iso, iso_len);
+        CHECK(nk_disc_hash_file(dst, NULL, &from_image, &status));
+        CHECK(nk_disc_hash_file(plain, NULL, &from_iso, &status));
+        CHECK(strcmp(from_image.sha1, from_iso.sha1) == 0);
+        CHECK(strcmp(from_image.crc32, from_iso.crc32) == 0);
+        CHECK(from_image.size_bytes == iso_len && from_iso.size_bytes == iso_len);
+    }
+    printf("PASS expand %s (%s, %zu -> %zu bytes, hashes as its .iso)\n", label,
+           nk_disc_format_extension(format), image->len, iso_len);
 }
 
 static void expect_refused(const char *label, const uint8_t *data, size_t len, const char *code) {

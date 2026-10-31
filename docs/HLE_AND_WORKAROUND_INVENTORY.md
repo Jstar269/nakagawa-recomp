@@ -46,16 +46,16 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **659** (dedicated **553**, fake_success **5**, controlled_unsupported **101**).
-Semantic handler census: **532** handlers across **26** API families, covering **559** handler-associated NID registrations.
+Registered NIDs: **661** (dedicated **555**, fake_success **5**, controlled_unsupported **101**).
+Semantic handler census: **534** handlers across **26** API families, covering **561** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 212 | 217 |
+| `partial` | 215 | 220 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 303 | 312 |
+| `unreviewed` | 302 | 311 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -66,14 +66,14 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 | `sceCtrl` | 0 | 6 | 0 | 0 | 6 | 12 | 12 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
-| `sceFont` | 0 | 3 | 0 | 0 | 10 | 13 | 13 |
+| `sceFont` | 0 | 3 | 0 | 0 | 11 | 14 | 14 |
 | `sceGe` | 2 | 8 | 0 | 0 | 4 | 14 | 14 |
 | `sceHprm` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
 | `sceKernel` | 3 | 93 | 0 | 0 | 93 | 189 | 207 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
-| `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
+| `sceMpeg` | 0 | 11 | 0 | 1 | 25 | 37 | 37 |
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
@@ -85,7 +85,7 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 | `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
 | `sceUtility` | 0 | 7 | 0 | 0 | 27 | 34 | 34 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **212** | **1** | **2** | **303** | **532** | **559** |
+| **Total** | **14** | **215** | **1** | **2** | **302** | **534** | **561** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -335,8 +335,9 @@ Semantic handler census: **532** handlers across **26** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoLseek`** (`sceIo`): `sceIoLseek` (0x27eb27b8)
-  - Limitation: PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; pspautotests revision f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 before zero and permits past-EOF seeks; positions beyond 32 bits fail closed with IO_LSEEK_OUT_OF_RANGE (#1380); invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred
+  - Limitation: PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; pspautotests revision f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 before zero and permits past-EOF seeks; PSP-KERNEL-SEM-001 measures a Memory Stick position as 32 bits wide (0xFFFFFFFF accepted, beyond it EINVAL with the position unchanged); other devices keep IO_LSEEK_OUT_OF_RANGE there (#1380); invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-seek64, io-seek64-rdwr)
   - Evidence: src/rt/hle_thread_selftest.c:test_umd_block_device_sectors
 - **`h_IoLseek32Async`** (`sceIo`): `sceIoLseek32Async` (0x1b385d8f)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
@@ -345,9 +346,10 @@ Semantic handler census: **532** handlers across **26** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; 64-bit seek timing and callback ordering are not hardware-measured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoOpen`** (`sceIo`): `sceIoOpen` (0x109f50bc)
-  - Limitation: measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; an open without PSP_O_CREAT never creates a file, and PSP_O_CREAT|PSP_O_EXCL on an existing file fails closed with IO_OPEN_EXCL_EXISTING (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek
+  - Limitation: measured coverage is one host0 file's create/write/read/append/missing-file path, PSP-UMDIO-001's fixed open paths and flags, and PSP-KERNEL-SEM-001's Memory Stick exclusive create; an open without PSP_O_CREAT never creates a file, a create under a missing directory is 0x80010002, and PSP_O_CREAT|PSP_O_EXCL on an existing file is EEXIST with the file unchanged (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-missing-parent, io-excl-new, io-excl-existing)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
 - **`h_IoOpenAsync`** (`sceIo`): `sceIoOpenAsync` (0x89aa9906)
   - Limitation: open runs its host lookup at submission to return the PSP-visible fd, then completes as a pending request on the import-boundary service and notifies the fd's async callback; async timing and callback ordering are synthetic, not hardware-measured, and a failed open returns its error directly instead of an fd carrying it
@@ -687,20 +689,42 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 - **`h_WakeupThread`** (`sceKernel`): `sceKernelWakeupThread` (0xd59ead2f)
   - Limitation: the cited cells cover wakeup-count accumulation and a sleeping target; specific invalid-target errors, repeated wakeup order, and interactions with termination are not all established
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: wakeups accumulate while the target is not sleeping)
+- **`h_MpegAtracDecode`** (`sceMpeg`): `sceMpegAtracDecode` (0x800c44df)
+  - Limitation: decodes the frame the last sceMpegGetAtracAu held with the project's ATRAC3+ bridge into 2048 stereo s16 samples (a mono stream duplicated); refuses with no held frame or an undecodable frame, with unmeasured error values; not measured on this project's PSP
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_atrac_au_decode
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
-  - Limitation: Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)
+  - Limitation: copies the decoded share of every plane and words 0 and 1 through both headers; not measured on the PSP, and overlapping planes are refused (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcCsc`** (`sceMpeg`): `sceMpegAvcCsc` (0x31bd0272)
-  - Limitation: Csc writes the retained decoded picture; guest plane bytes are modeled, not the PSP layout, and range/coherency behavior remains open (#302)
+  - Limitation: converts the guest planes, read through the header's pointers, with the MEASURED PSP matrix and gives the MEASURED range refusals; the destination is written from its first pixel with rows from the top of the picture (one measured sub-range), and the 16-bit pixel modes are not measured (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_csc_swizzled_vram_mirrors
+- **`h_MpegAvcDecodeDetail`** (`sceMpeg`): `sceMpegAvcDecodeDetail` (0x0f6c18d7)
+  - Limitation: the 13 words MEASURED on a PSP-3000 (PSP-MPEG-001): word 0 is 0, words 2 and 3 the header's frame width and height, words 4-7 zero, word 8 the last decode's frame status; word 1 is written as the pictures decoded, which the PSP's is not (0 after 240 pictures), and words 9-12 as 0, one of which holds an unidentified pointer on the PSP (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_avc_decode_detail
 - **`h_MpegAvcDecodeStopYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeStopYCbCr` (0xf2930c9c)
-  - Limitation: Stop clears tracked state, but the firmware buffered-picture status is explicitly unmeasured rather than reported as a guessed frame count (#302)
+  - Limitation: takes the address of the buffer pointer and hands over the picture the decoder still holds with status 1, as MEASURED after the last access unit (PSP-MPEG-001); the PSP decoder runs one access unit behind and this one does not, the decoder is drained only once the whole stream was fed, and a stop in mid-stream is not measured (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcDecodeYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeYCbCr` (0xf0eb1125)
-  - Limitation: Decode marks decoded pictures ready; guest plane bytes remain modeled zeroes, not the PSP layout, while Csc writes the retained decoded picture (#302)
+  - Limitation: writes the decoder's samples into the MEASURED mode-1 strip layout through the header's plane pointers and sets words 0 and 1; a picture larger than its InitYCbCr allocation or than 480x272 is refused as not measured, and the strip length from the decoded height rests on one measured geometry (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcInitYCbCr`** (`sceMpeg`): `sceMpegAvcInitYCbCr` (0x67179b1b)
-  - Limitation: Init zeroes a modeled guest allocation; its plane bytes are not asserted to match the PSP header/plane layout (#302)
+  - Limitation: writes the MEASURED mode-1 header (eight plane pointers into the buffer) and leaves the planes; modes 2 and 3 and an odd number of 16-pixel strips are refused as not measured, and the query's mode-1 limits stand in for Init's own (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcQueryYCbCrSize`** (`sceMpeg`): `sceMpegAvcQueryYCbCrSize` (0x211a057c)
-  - Limitation: the YCbCr size formula, pointer preflight, and guest geometry are source-tested; firmware mode coverage and the hardware-oracle contract remain open (#302)
+  - Limitation: the sizes and refusals MEASURED for modes 0-4 and -1 (PSP-MPEG-001); a mode-3 size wider than 480, which does not follow 1.5 w h on the PSP, is refused as not modeled (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegChangeGetAuMode`** (`sceMpeg`): `sceMpegChangeGetAuMode` (0x9dcfb7ea)
   - Limitation: decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)
+- **`h_MpegGetAtracAu`** (`sceMpeg`): `sceMpegGetAtracAu` (0xe1ce83a7)
+  - Limitation: one ATRAC3+ frame per call from an audio-only demux of the ring bytes the game fed; NO_DATA when none is demultiplexed; the AU clock is the media-engine model (first timestamp + 4180 per decoded block), not the stream's PES time; the ES buffer is a handle, as in PPSSPP, and is not written; not measured on this project's PSP
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_atrac_au_decode
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
 - **`h_NetEtherNtostr`** (`sceNet`): `sceNetEtherNtostr` (0x89360950)

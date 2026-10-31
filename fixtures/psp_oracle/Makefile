@@ -239,6 +239,10 @@ else ifeq ($(CASE),late-prx-target)
 CASE_ID = 110
 else ifeq ($(CASE),at3-decode)
 CASE_ID = 111
+else ifeq ($(CASE),at3-delay-sweep)
+CASE_ID = 150
+else ifeq ($(CASE),mpeg-ycbcr)
+CASE_ID = 151
 else ifeq ($(CASE),fake-success)
 CASE_ID = 112
 else ifeq ($(CASE),font-userpgf)
@@ -277,6 +281,11 @@ CASE_ID = 120
 # that ran module_start, and free its stack, once module_start returns.
 else ifeq ($(CASE),module-start)
 CASE_ID = 124
+# 127: the v0.0.2 kernel semantics cells (probe_kernel_semantics.c): VBLANK sub-interrupt order,
+# controller sampling, volatile-lock types, Memory Stick exclusive create and 64-bit seeks,
+# WLAN state.
+else ifeq ($(CASE),kernel-semantics)
+CASE_ID = 127
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -481,6 +490,12 @@ OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),ge-sample)
 TARGET = $(BUILD_DIR)/ge_sample
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The kernel semantics cells: their own source (they write and remove a Memory Stick
+# directory and allocate partition memory, which the HLE issue cells may not) with the same
+# writer, ThreadManForUser block and module lifecycle.
+else ifeq ($(CASE),kernel-semantics)
+TARGET = $(BUILD_DIR)/kernel_semantics
+OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports.o
 # The DMAC transfer-time cells: their own source with the same writer, ThreadManForUser
 # block and module lifecycle as the HLE issue cells.
 else ifeq ($(CASE),dma-timing)
@@ -528,9 +543,14 @@ LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
 ifneq ($(filter ge-nan vram-mirror ge-timing cpu-timing,$(CASE)),)
 LIBS := -lpspgum -lpspgu $(LIBS)
 endif
-# #1096: the AT3 decode probe links the user-mode ATRAC and utility stubs it calls.
-ifeq ($(CASE),at3-decode)
+# #1096: the AT3 decode probes link the user-mode ATRAC and utility stubs they call.
+ifneq ($(filter at3-decode at3-delay-sweep,$(CASE)),)
 LIBS += -lpspatrac3 -lpsputility
+endif
+# #302: the sceMpeg probe carries its own complete sceMpeg import block (probe.c: PSPSDK's
+# libpspmpeg.a lacks the YCbCr, CSC and decode-detail stubs) and links only the utility stubs.
+ifeq ($(CASE),mpeg-ycbcr)
+LIBS += -lpsputility
 endif
 # #1595: the SAS re-init probe links the user-mode sceSasCore and utility stubs it calls.
 ifeq ($(CASE),sas-init)
@@ -574,6 +594,18 @@ ifeq ($(CASE),hle-intr-cells)
 USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E6961,0xFB8E22EC,0x8A389411
 USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
+# kernel-semantics: exactly the four VBLANK sub-interrupt calls, the six sceCtrl sampling calls,
+# the three volatile-lock calls, and from sceWlanDrv only the switch and power state: the gate
+# refuses sceWlanGetEtherAddr (the console's MAC) and any sceOpenPSID import, so the probe can
+# never read a console-bound value. Nothing from the kernel bridge.
+ifeq ($(CASE),kernel-semantics)
+LIBS += -lpspctrl -lpspwlan
+USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E6961,0xFB8E22EC,0x8A389411
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceCtrl=0x1F803938,0x3A622550,0x1F4011E6,0xDA6B76A1,0x6A2774F3,0x02BAAD91
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceSuspendForUser=0x3E0271D3,0xA14F40B2,0xA569E425
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceWlanDrv=0xD7763699,0x93440B11
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
 endif
 # intr-cause: exactly kuKernelCall from the kernel bridge, the two sceDisplay reads, and from
 # Kernel_Library the suspend/resume pair plus the two LwMutex calls the PSPSDK libc glue
@@ -654,6 +686,10 @@ PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
 # So do the GE sample-point cells (probe_ge_sample.c).
 ifneq ($(filter $(BUILD_DIR)/probe_ge_sample.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
+# And the kernel semantics cells (probe_kernel_semantics.c).
+ifneq ($(filter $(BUILD_DIR)/probe_kernel_semantics.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
 # And the DMAC transfer-time cells (probe_dmac_timing.c).
@@ -745,6 +781,8 @@ $(BUILD_DIR)/probe_insn_trace.o: probe_insn_trace.c insn_trace_fixtures.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_module_start.o: probe_module_start.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/probe_kernel_semantics.o: probe_kernel_semantics.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/insn_trace_tramp.o: insn_trace_tramp.S

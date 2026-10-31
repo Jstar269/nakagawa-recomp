@@ -77,9 +77,14 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include <strings.h>          /* strncasecmp: the ms0:/fatms0: device prefix */
 #include <unistd.h>           /* dup/dup2/fileno/close, getpid, getcwd/chdir, rmdir: POSIX, and
                                  the same names in MinGW's CRT */
+#include <dirent.h>           /* opendir: the savedata cases count bookkeeping files */
+#include <sys/stat.h>         /* stat: a SAVE's modification time */
+#include <time.h>             /* time: the host clock a SAVE's guest time is compared with */
 #ifdef _WIN32
 #include <windows.h>          /* the Win32-only fixtures: CreateProcessW respawn, the FindFirstFileW
                                  error classifier, the junction, GetModuleFileNameA */
+#else
+#include <fcntl.h>            /* AT_FDCWD */
 #endif
 
 /* The fixture path buffers are sized by the Win32 MAX_PATH. POSIX publishes no such
@@ -276,6 +281,7 @@ extern uint32_t sr_hle_test_guest_fault_count(void);
 extern uint32_t sr_hle_test_guest_fault_addr(void);
 extern void sr_hle_test_guest_fault_reset(void);
 int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg);
+extern void sr_hle_test_ctrl_ring_reset(void);
 
 /* The handler the scheduler would deliver for VBLANK sub-interrupt `no` (0 when none), and its
  * arg through *arg when one is delivered. */
@@ -410,6 +416,8 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_ATRAC_SET_DATA 0x0e2a73abu
 #define NID_SCE_ATRAC_SET_DATA_AND_GET_ID 0x7a20e7afu
 #define NID_SCE_ATRAC_GET_ID 0x780f88d1u
+#define NID_SCE_ATRAC_GET_NEXT_SAMPLE 0x36faabfbu
+#define NID_SCE_ATRAC_GET_NEXT_DECODE_POSITION 0xe23e3a35u
 #define NID_SCE_ATRAC_DECODE_DATA 0x6a8c3cd5u
 #define NID_SCE_ATRAC_GET_SOUND_SAMPLE 0xa2bba8beu
 #define NID_SCE_ATRAC_GET_STREAM_DATA_INFO 0x5d268707u
@@ -1799,6 +1807,9 @@ static int write_runtime_module_prx(const char *path, uint8_t flavour) {
 static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
                                           uint32_t export_nid, const char *modname,
                                           uint32_t sdk_version);
+static int write_runtime_module_prx_lib(const char *path, uint8_t flavour, int with_start,
+                                        uint32_t export_nid, const char *modname,
+                                        uint32_t sdk_version, const char *libname);
 
 /* with_start == 0 writes a library module with no start routine: the system library
  * exports only module_stop and the ELF entry is 0xFFFFFFFF. The named library exports
@@ -1815,6 +1826,15 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
 static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
                                           uint32_t export_nid, const char *modname,
                                           uint32_t sdk_version) {
+    return write_runtime_module_prx_lib(path, flavour, with_start, export_nid, modname,
+                                        sdk_version, "RtPlacedLib");
+}
+
+/* The named library is called `libname` (at most 15 characters, as the name slot before the
+ * module_sdk_version word holds). */
+static int write_runtime_module_prx_lib(const char *path, uint8_t flavour, int with_start,
+                                        uint32_t export_nid, const char *modname,
+                                        uint32_t sdk_version, const char *libname) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
     const int sdk_var = !with_start && sdk_version != 0u;
@@ -1826,7 +1846,7 @@ static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int
         with_start ? RT_SYSLIB_TABLE + 8u : sdk_var ? RT_SYSLIB_TABLE + 8u : RT_SYSLIB_TABLE + 4u,
         RT_SYSLIB_TABLE + 12u, RT_LIB_TABLE + 4u, RT_DATA_PTR,
     };
-    if (strlen(modname) >= 27u) return 0;
+    if (strlen(modname) >= 27u || strlen(libname) >= RT_SDK_VERSION_WORD - RT_LIBNAME) return 0;
     uint8_t image[SIZE];
     uint8_t *seg = image + RT_SEG_OFFSET;
     memset(image, 0, sizeof(image));
@@ -1874,7 +1894,7 @@ static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int
     seg[RT_LIBENT + 8] = 4;
     fixture_wr16(seg + RT_LIBENT + 10, 2);
     fixture_wr32(seg + RT_LIBENT + 12, RT_SYSLIB_TABLE);
-    /* Named library "RtPlacedLib": one function. */
+    /* Named library `libname`: one function. */
     fixture_wr32(seg + RT_LIBENT + 16, RT_LIBNAME);
     fixture_wr16(seg + RT_LIBENT + 20, 0x0011);
     fixture_wr16(seg + RT_LIBENT + 22, 0x0001);
@@ -1905,7 +1925,7 @@ static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int
     }
     fixture_wr32(seg + RT_LIB_TABLE + 0, export_nid);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
-    memcpy(seg + RT_LIBNAME, "RtPlacedLib", 12);
+    memcpy(seg + RT_LIBNAME, libname, strlen(libname) + 1u);
     fixture_wr32(seg + RT_DATA_PTR, RT_QUERY);
     for (uint32_t i = 0; i < RT_RELOC_COUNT; i++) {
         fixture_wr32(image + RELOC_OFFSET + 8u * i, sites[i]);
@@ -2055,6 +2075,79 @@ static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
     sr_module_code_reset();
+}
+
+/* A library the guest owns (the SDK's scePsmfPlayer) is the title's own code when its module
+ * is staged and translated (#286): the module is not host-served, so under the shipped
+ * default its start links its exports, and the export takes the NID over from the host
+ * handler that test_runtime_placed_hle_shadow shows keeping it under another library name.
+ * The fixture is start-less, like the SDK player module. The operator kill switch
+ * (SR_REAL_MODULE_START=0) still keeps the host handler. */
+#define RT_OWNED_MARK 0x0A11CE11u
+static uint32_t s_rt_owned_base;
+static void rt_owned_query(CpuState *s) { s->r[2] = RT_OWNED_MARK; }
+static const SrModuleFunc s_rt_owned_funcs[] = {
+    {RT_STOP, 2u, rt_alpha_stop},
+    {RT_QUERY, 2u, rt_owned_query},
+};
+static SrModuleCode s_rt_owned_code = {
+    "rt-nostart.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_owned_base,
+    s_rt_owned_funcs, 2u, s_rt_alpha_spans, 1u, 0u, 0u,
+};
+
+static void test_runtime_placed_guest_owned_library(void) {
+    extern void sr_hle_test_partition_reset(void);
+    static const char owned_guest[] = "disc0:/PSP_GAME/USRDIR/rt-nostart.prx";
+    char owned_path[1024];
+    const char *out;
+    uint32_t base = 0;
+    runtime_module_path(owned_path, sizeof(owned_path), "rt-nostart.prx");
+    expect(write_runtime_module_prx_lib(owned_path, 6u, 0, RT_HLE_SHADOW_NID, "rtowned", 0u,
+                                        "scePsmfPlayer") &&
+               runtime_module_identity(owned_path, &s_rt_owned_code),
+           "guest-owned library: the start-less scePsmfPlayer module fixture is written");
+
+    for (int kill_switch = 0; kill_switch <= 1; kill_switch++) {
+        sr_hle_test_module_reset();
+        sr_hle_test_partition_reset();
+        sr_module_code_reset();
+        sr_module_code_register(&s_rt_owned_code);
+        hle_test_setenv("SR_REAL_MODULE_START", kill_switch ? "0" : NULL);
+        unsigned stops = s_rt_stop_calls;
+        uint32_t uid = rt_load(owned_guest, 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_owned_code, &base) &&
+                   sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+                   rt_shadow_import() == RT_HLE_SHADOW_HOST,
+               "guest-owned library: before start the import reaches host HLE");
+        rt_capture_begin();
+        uint32_t started = rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u);
+        uint32_t answer = rt_shadow_import();
+        out = rt_capture_end();
+        if (!kill_switch) {
+            expect(started == 0u && strstr(out, "host HLE serves") == NULL &&
+                       sr_hle_test_started_export(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+                       answer == RT_OWNED_MARK,
+                   "guest-owned library: by default the module starts and its export runs "
+                   "instead of the host handler");
+        } else {
+            expect(started == 0u && sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+                       answer == RT_HLE_SHADOW_HOST,
+                   "guest-owned library: SR_REAL_MODULE_START=0 keeps the host handler");
+        }
+        expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   s_rt_stop_calls == stops + (kill_switch ? 0u : 1u) &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+                   sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+                   rt_shadow_import() == RT_HLE_SHADOW_HOST,
+               "guest-owned library: unload hands the NID back to host HLE");
+    }
+
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+    remove(owned_path);
 }
 
 static TCB *fixture_thread(uint32_t uid, int state, int priority);
@@ -2595,6 +2688,7 @@ static void test_runtime_placed_modules(void) {
     }
 
     test_runtime_placed_hle_shadow(alpha_guest, alpha_path);
+    test_runtime_placed_guest_owned_library();
 
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
@@ -3587,8 +3681,8 @@ static void test_fd_namespace(void) {
 
     /* PSP_O_CREAT (0x0200) and PSP_O_EXCL (0x0800), #1380. PSP-IO-001 measured only that a
      * read-only open of a missing file fails; a write open without PSP_O_CREAT fails the same
-     * way and creates nothing. An exclusive create of an existing file has no measured
-     * result, so it is refused with the named boundary and the file is left intact. */
+     * way and creates nothing. An exclusive create of an existing file answers EEXIST and leaves
+     * it intact (PSP-KERNEL-SEM-001 io-excl-existing, measured on a PSP-3000 6.61). */
     {
         static const char flags_guest[] = "ms0:/NAKAGAWA_OPEN_FLAGS.TXT";
         static const uint32_t no_create[] = {
@@ -3613,6 +3707,30 @@ static void test_fd_namespace(void) {
                    "an open without PSP_O_CREAT of a missing file fails and creates nothing");
             remove(flags_host);
         }
+        /* Under a missing directory every create, exclusive or not, is not-found and creates
+         * neither the file nor the directory: pspautotests tests/io/open/badparent at f573fe8c
+         * (recorded on a PSP) answers 0x80010002 for PSP_O_CREAT|PSP_O_WRONLY under
+         * ms0:/noexist, and PSP-KERNEL-SEM-001 io-missing-parent for PSP_O_CREAT|PSP_O_EXCL. */
+        {
+            static const char parent_guest[] = "ms0:/NAKAGAWA_NO_PARENT/item.txt";
+            static const uint32_t creates[] = {
+                0x0202u, 0x0203u, 0x0A02u, 0x0A03u, 0x0E02u, 0x0B02u  /* CREAT, +EXCL, +TRUNC, +APPEND */
+            };
+            char dir_host[256];
+            fd_host_path(dir_host, sizeof(dir_host), "ms0:/NAKAGAWA_NO_PARENT");
+            for (size_t i = 0; i < sizeof(creates) / sizeof(creates[0]); i++) {
+                fd_set_path(&cpu, path_addr, parent_guest);
+                cpu.r[5] = creates[i];
+                uint32_t rc = sr_hle_test_io_open(&cpu);
+                if (rc < 64u) {
+                    memset(&cpu, 0, sizeof(cpu));
+                    cpu.r[4] = rc;
+                    (void)sr_hle_test_io_close(&cpu);
+                }
+                expect(rc == 0x80010002u && nk_platform_path_missing(dir_host),
+                       "a create under a missing directory is not-found and creates nothing");
+            }
+        }
         fd_set_path(&cpu, path_addr, flags_guest);
         cpu.r[5] = 0x0A02u;
         uint32_t excl_fd = sr_hle_test_io_open(&cpu);
@@ -3632,9 +3750,9 @@ static void test_fd_namespace(void) {
                 cpu.r[4] = rc;
                 (void)sr_hle_test_io_close(&cpu);
             }
-            expect(rc == IO_ERROR_FUNCTION_NOT_SUPPORTED &&
+            expect(rc == 0x80010011u &&
                        fd_host_bytes_equal(flags_host, (const uint8_t *)"abc", 3u),
-                   "PSP_O_CREAT|PSP_O_EXCL on an existing file is refused and leaves it intact");
+                   "PSP_O_CREAT|PSP_O_EXCL on an existing file answers EEXIST and leaves it intact");
         }
         /* Without PSP_O_CREAT an existing file still opens, and APPEND and TRUNC apply. */
         fd_set_path(&cpu, path_addr, flags_guest);
@@ -3888,6 +4006,26 @@ static void test_fd_namespace(void) {
     expect(sr_hle_test_io_lseek32(&cpu) == sizeof(payload) - 1u,
            "the reads past the end did not change the file size");
 
+    /* A Memory Stick position is 32 bits wide: past 0xFFFFFFFF a 64-bit seek answers EINVAL
+     * with the position unchanged, from SEEK_SET and SEEK_END (PSP-KERNEL-SEM-001 io-seek64,
+     * measured on a PSP-3000 6.61). */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[6] = 0x10u; cpu.r[7] = 1u; cpu.r[8] = 0u;
+    expect(sr_hle_test_io_lseek(&cpu) == 0x80010016u && cpu.r[3] == 0xffffffffu,
+           "a Memory Stick seek to 0x100000010 answers EINVAL");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[6] = 0u; cpu.r[7] = 1u; cpu.r[8] = 2u;
+    expect(sr_hle_test_io_lseek(&cpu) == 0x80010016u && cpu.r[3] == 0xffffffffu,
+           "a Memory Stick seek to END + 0x100000000 answers EINVAL");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 1u;
+    expect(sr_hle_test_io_lseek32(&cpu) == sizeof(payload) - 1u,
+           "the refused seeks left the position at the end of the file");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[6] = 0xffffffffu; cpu.r[7] = 0u; cpu.r[8] = 0u;
+    expect(sr_hle_test_io_lseek(&cpu) == 0xffffffffu && cpu.r[3] == 0u,
+           "a Memory Stick seek to 0xFFFFFFFF is accepted");
+
     /* A write that would carry the 32-bit position past its range stops at the named
      * boundary and writes nothing. */
     memset(&cpu, 0, sizeof(cpu));
@@ -3941,9 +4079,10 @@ static void test_fd_namespace(void) {
                 rc = sr_hle_test_io_lseek(&cpu);
                 expect(cpu.r[3] == 0xffffffffu, "a refused lseek reports an error high word");
             }
+            /* Past 32 bits a Memory Stick seek answers EINVAL (PSP-KERNEL-SEM-001 io-seek64). */
             int negative = i < sizeof(bad32) / sizeof(bad32[0]) || i == 3u || i == 5u;
-            expect(rc == (negative ? 0xffffffffu : IO_ERROR_FUNCTION_NOT_SUPPORTED),
-                   "a negative or unsupported large seek is refused, not clamped");
+            expect(rc == (negative ? 0xffffffffu : 0x80010016u),
+                   "a negative or too large seek is refused, not clamped");
             memset(&cpu, 0, sizeof(cpu));
             cpu.r[4] = fd;
             cpu.r[5] = 0u;
@@ -4955,7 +5094,8 @@ static void test_ms0_unified_namespace(void) {
         expect(nk_platform_mkdir_p(planted), "a directory planted at a temporary's name");
         fd_guest_copy(DATA_ADDR, data, sizeof(data) - 1u);
         MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(data) - 1u));
-        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110381u,
+        /* #1387: a host failure is SAVE_ACCESS_ERROR, never "no Memory Stick" or "full". */
+        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110385u,
                "a SAVE whose PARAM.SFO cannot be staged fails");
         expect(nk_platform_get_file_size(save_host) == (int64_t)(sizeof(shorter) - 1u),
                "a SAVE that failed while staging keeps the previous data file");
@@ -5490,6 +5630,110 @@ static char *sysreg_read_file(const char *path) {
  * defaults and the overlay file. */
 static void sysreg_restart(void) {
     sr_hle_test_sysreg_reset();
+}
+
+/* #1382: the console profile's WLAN MAC address and OpenPSID. A configured identity in the overlay
+ * is what both getters report; without one, an identity is generated once (a unicast, universally
+ * administered MAC and a non-zero OpenPSID), written to the overlay and reported the same after a restart;
+ * a malformed console object makes the overlay invalid; a NULL or unwritable output answers
+ * ILLEGAL_ADDR and writes nothing. No value comes from a console. */
+#define PROFILE_NID_ETHER_ADDR 0x0c622081u
+#define PROFILE_NID_OPEN_PSID  0xc69bebceu
+#define PROFILE_OUT            0x08a40000u
+#define PROFILE_ILLEGAL_ADDR   0x80000103u
+
+static uint32_t profile_call(uint32_t nid, uint32_t out) {
+    CpuState cpu = {0};
+    cpu.r[4] = out;
+    return sr_syscall(&cpu, nid);
+}
+
+static void profile_read(uint8_t mac[6], uint8_t psid[16]) {
+    for (uint32_t i = 0; i < 32u; i++) MEM_W8(PROFILE_OUT + i, 0xa5u);
+    expect(profile_call(PROFILE_NID_ETHER_ADDR, PROFILE_OUT) == 0u &&
+               profile_call(PROFILE_NID_OPEN_PSID, PROFILE_OUT + 16u) == 0u,
+           "both console-profile getters answer 0");
+    for (uint32_t i = 0; i < 6u; i++) mac[i] = MEM_R8(PROFILE_OUT + i);
+    for (uint32_t i = 0; i < 16u; i++) psid[i] = MEM_R8(PROFILE_OUT + 16u + i);
+}
+
+static void test_console_profile_identity(void) {
+    static const char configured[] =
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
+        "\"categories\": [], \"keys\": [], \"console\": {\"wlan_mac_hex\": \"00a1b2c3d4e5\", "
+        "\"open_psid_hex\": \"00112233445566778899aabbccddeeff\"}}";
+    static const uint8_t want_mac[6] = { 0x00, 0xa1, 0xb2, 0xc3, 0xd4, 0xe5 };
+    static const uint8_t want_psid[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+                                           0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff };
+    uint8_t mac[6], psid[16], mac2[6], psid2[16];
+    reset_fixture();
+    sr_hle_init();
+    sysreg_scratch_clean();
+    sysreg_env(SYSREG_SCRATCH_FILE);
+
+    expect(sysreg_write_file(SYSREG_SCRATCH_FILE, configured, sizeof(configured) - 1u),
+           "the configured-identity overlay is written");
+    sysreg_restart();
+    profile_read(mac, psid);
+    expect(memcmp(mac, want_mac, 6) == 0 && memcmp(psid, want_psid, 16) == 0,
+           "a configured identity in the overlay is the MAC address and OpenPSID reported");
+
+    expect(profile_call(0x93440b11u, 0u) == 1u && profile_call(0xd7763699u, 0u) == 1u,
+           "the WLAN switch and power state read 1 by default (measured with the switch on)");
+    static const char switch_off[] =
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
+        "\"categories\": [], \"keys\": [], \"console\": {\"wlan_mac_hex\": \"00a1b2c3d4e5\", "
+        "\"open_psid_hex\": \"00112233445566778899aabbccddeeff\", \"wlan_switch\": 0}}";
+    expect(sysreg_write_file(SYSREG_SCRATCH_FILE, switch_off, sizeof(switch_off) - 1u),
+           "the switch-off overlay is written");
+    sysreg_restart();
+    expect(profile_call(0x93440b11u, 0u) == 0u && profile_call(0xd7763699u, 0u) == 0u,
+           "the profile's WLAN switch is what both WLAN state calls report");
+
+    /* No identity yet: one is generated, persisted and stable. */
+    sysreg_scratch_clean();
+    sysreg_restart();
+    profile_read(mac, psid);
+    int psid_set = 0;
+    for (int i = 0; i < 16; i++) psid_set |= psid[i] != 0u;
+    expect((mac[0] & 0x03u) == 0u && psid_set,
+           "a generated MAC is unicast and universally administered, a generated OpenPSID non-zero");
+    char *text = sysreg_read_file(SYSREG_SCRATCH_FILE);
+    expect(text && strstr(text, "\"console\": {\"wlan_mac_hex\": \""),
+           "the generated identity is written to the overlay's console object");
+    free(text);
+    sysreg_restart();
+    profile_read(mac2, psid2);
+    expect(memcmp(mac, mac2, 6) == 0 && memcmp(psid, psid2, 16) == 0,
+           "the generated identity is the same after a restart");
+
+    /* A malformed console object makes the overlay invalid: it is not served. */
+    static const char multicast[] =
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
+        "\"categories\": [], \"keys\": [], \"console\": {\"wlan_mac_hex\": \"01a1b2c3d4e5\", "
+        "\"open_psid_hex\": \"00112233445566778899aabbccddeeff\"}}";
+    sysreg_scratch_clean();
+    expect(sysreg_write_file(SYSREG_SCRATCH_FILE, multicast, sizeof(multicast) - 1u),
+           "the multicast-MAC overlay is written");
+    sysreg_restart();
+    profile_read(mac, psid);
+    expect(mac[0] != 0x01u && (mac[0] & 0x03u) == 0u,
+           "an overlay with a multicast MAC is refused, and a valid identity is generated instead");
+
+    /* Invalid outputs are refused before anything is written. */
+    MEM_W32(PROFILE_OUT, 0xa5a5a5a5u);
+    expect(profile_call(PROFILE_NID_ETHER_ADDR, 0u) == PROFILE_ILLEGAL_ADDR &&
+               profile_call(PROFILE_NID_OPEN_PSID, 0u) == PROFILE_ILLEGAL_ADDR,
+           "NULL outputs answer ILLEGAL_ADDR");
+    uint32_t tail = 0x0c000000u - 4u;
+    MEM_W32(tail, 0x5a5a5a5au);
+    expect(profile_call(PROFILE_NID_ETHER_ADDR, tail) == PROFILE_ILLEGAL_ADDR &&
+               profile_call(PROFILE_NID_OPEN_PSID, tail) == PROFILE_ILLEGAL_ADDR &&
+               MEM_R32(tail) == 0x5a5a5a5au,
+           "outputs that end past guest memory answer ILLEGAL_ADDR and write nothing");
+
+    sysreg_scratch_clean();   /* the process-wide scratch overlay main() set stays selected */
+    sysreg_restart();
 }
 
 /* Read model against the tree measured on PSP-3000 6.6.1 (2026-10-09, read-only enumeration):
@@ -7372,6 +7616,7 @@ static void test_netconf_parameter_sizes(void) {
 static uint32_t utility_fixture_size(uint32_t init) {
     if (init == NID_GAMEDATA_DIALOG_INIT) return 0x590u;
     if (init == NID_SHARING_DIALOG_INIT) return 0x50u;
+    if (init == NID_MSG_DIALOG_INIT) return 0x2c4u;  /* PSPAutotests utility/dialog/sizes */
     return 0x40u;
 }
 
@@ -7434,7 +7679,7 @@ static void test_utility_dialog_single_slot(void) {
     }
 
     /* The message dialog takes the free slot. */
-    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
     expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
                MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
            "a message InitStart takes the free slot and clears its result");
@@ -7442,7 +7687,7 @@ static void test_utility_dialog_single_slot(void) {
 
     /* Repeated init: a second message InitStart neither restarts the running dialog nor takes
      * its own parameter block. */
-    utility_param_block(UTILITY_MSG2_PARAM_ADDR, 0x40u);
+    utility_param_block(UTILITY_MSG2_PARAM_ADDR, 0x2c4u);
     expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG2_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_MSG2_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
            "a second message InitStart while one is active returns INVALID_STATUS and leaves "
@@ -7481,9 +7726,11 @@ static void test_utility_dialog_single_slot(void) {
            "the finished message dialog accepts ShutdownStart");
     utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
     MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR, 0x601u);
-    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110004u &&
+    /* The busy slot is reported before the size (PSPAutotests tests/utility/dialog/status.expected). */
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
-           "savedata rejects an unknown parameter version without claiming the slot");
+           "savedata InitStart with an unknown parameter version while the message dialog shuts "
+           "down is INVALID_STATUS and claims nothing");
     utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
@@ -7799,7 +8046,7 @@ static void test_utility_dialog_status_sequence(void) {
 
     expect(utility_change_priority(&cpu, 0x20u) == 0u && utility_savedata_start_to_finished(&cpu),
            "savedata reaches FINISHED for a caller at 0x20");
-    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
                utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110001u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
@@ -7843,7 +8090,7 @@ static void test_utility_dialog_status_sequence(void) {
 
     /* The message dialog's shutdown has no such threshold: a caller at 0x6F sees SHUTDOWN and
      * a savedata InitStart right after it is refused. */
-    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
     utility_savedata_block();
     expect(utility_change_priority(&cpu, 0x6fu) == 0u &&
                utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
@@ -8228,6 +8475,780 @@ static void test_savedata_getsize_free_space(void) {
     nk_platform_remove_tree(ms_root, NULL);
     hle_test_setenv("SR_MEMSTICK", old_root);
     free(old_root);
+}
+
+/* ---- savedata (#1387): list selection, deterministic listings, secure saves, the commit -----
+ * Every case runs the production entry point (sr_savedata_execute) over a synthetic Memory Stick
+ * under the build directory. The list rules follow PPSSPP SavedataParam::SetPspParam and
+ * PSPSaveDialog::Init (revision c9e2afb6) as the behaviour reference. */
+extern void sr_savedata_test_fault(int mode, int at);
+extern int sr_savedata_test_fault_ops(void);
+extern uint64_t sr_savedata_guest_rtc_tick(void);
+uint32_t sr_savedata_execute_sized(uint32_t param, uint32_t size);
+enum { SDT_FAULT_OFF = 0, SDT_FAULT_ONCE = 1, SDT_FAULT_FROM = 2, SDT_FAULT_EFFECT = 3 };
+enum {
+    SDT_PARAM   = 0x08803000u,  /* SceUtilitySavedataParam, 0x600 bytes */
+    SDT_NAMES   = 0x08803800u,  /* saveNameList: char[20] entries, "" ends it */
+    SDT_BUF     = 0x08803c00u,  /* dataBuf, 0x100 bytes */
+    SDT_IDLIST  = 0x08803e00u,  /* SceUtilitySavedataIdListInfo: max, result, entries */
+    SDT_IDENT   = 0x08804000u,  /* SceUtilitySavedataIdListEntry, 72 bytes each */
+    SDT_FILELIST = 0x08804800u, /* SceUtilitySavedataFileListInfo, 36 bytes */
+    SDT_FILES   = 0x08804900u,  /* SceUtilitySavedataFileListEntry, 80 bytes each */
+    SDT_BLOBS   = 0x08805000u   /* icon/pic/snd blobs, 0x100 bytes each */
+};
+
+/* SR_MEMSTICK pointed at a fresh synthetic root for one case, and put back after it. */
+static char *sdt_root_begin(const char *root) {
+    const char *old_value = getenv("SR_MEMSTICK");
+    char *old = old_value ? (char *)malloc(strlen(old_value) + 1u) : NULL;
+    if (old) memcpy(old, old_value, strlen(old_value) + 1u);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_remove_tree(root, NULL);
+    nk_platform_mkdir_p(root);
+    expect(hle_test_setenv("SR_MEMSTICK", root), "savedata case selects its synthetic Memory Stick root");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", NULL);
+    sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+    return old;
+}
+
+static void sdt_root_end(const char *root, char *old) {
+    sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", NULL);
+    nk_platform_remove_tree(root, NULL);
+    hle_test_setenv("SR_MEMSTICK", old);
+    free(old);
+}
+
+static int sdt_set_times(const char *path, time_t atime, time_t mtime) {
+#ifdef _WIN32
+    HANDLE h = CreateFileA(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    ULARGE_INTEGER a, m;
+    a.QuadPart = ((uint64_t)atime + 11644473600ull) * 10000000ull;
+    m.QuadPart = ((uint64_t)mtime + 11644473600ull) * 10000000ull;
+    FILETIME fa = { a.LowPart, a.HighPart }, fm = { m.LowPart, m.HighPart };
+    BOOL ok = SetFileTime(h, NULL, &fa, &fm);
+    CloseHandle(h);
+    return ok != 0;
+#else
+    struct timespec times[2] = { { atime, 0 }, { mtime, 0 } };
+    return utimensat(AT_FDCWD, path, times, 0) == 0;
+#endif
+}
+
+static int sdt_write(const char *path, const void *data, size_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    int ok = fwrite(data, 1, n, f) == n;
+    if (fclose(f) != 0) ok = 0;
+    return ok;
+}
+
+/* The file's bytes as a string (0 when it cannot be read). */
+static int sdt_read(const char *path, char *out, size_t cap) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t n = fread(out, 1, cap - 1u, f);
+    fclose(f);
+    out[n] = 0;
+    return 1;
+}
+
+static int sdt_file_has(const char *path, const char *needle) {
+    char buf[8192];
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t n = fread(buf, 1, sizeof(buf), f), len = strlen(needle);
+    fclose(f);
+    for (size_t i = 0; i + len <= n; i++)
+        if (!memcmp(buf + i, needle, len)) return 1;
+    return 0;
+}
+
+/* One save directory <root>/PSP/SAVEDATA/<leaf> holding `file` with `data`. */
+static int sdt_plant(const char *root, const char *leaf, const char *file, const char *data) {
+    char dir[512], path[600];
+    snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/%s", root, leaf);
+    snprintf(path, sizeof(path), "%s/%s", dir, file);
+    nk_platform_mkdir_p(dir);
+    return sdt_write(path, data, strlen(data));
+}
+
+/* Bookkeeping files still under a live name: stage, prev, journal or commit. */
+static int sdt_live_bookkeeping(const char *dir) {
+    int n = 0;
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL)
+        if (!strncmp(de->d_name, ".nakagawa-stage-", 16) || !strncmp(de->d_name, ".nakagawa-prev-", 15) ||
+            !strcmp(de->d_name, ".nakagawa-journal") || !strcmp(de->d_name, ".nakagawa-commit"))
+            n++;
+    closedir(d);
+    return n;
+}
+
+static void sdt_param(uint32_t mode, const char *game, const char *save, const char *file) {
+    memset(g_mem_base + SDT_PARAM, 0, 0x600u);
+    memset(g_mem_base + SDT_BUF, 0, 0x100u);
+    MEM_W32(SDT_PARAM, 0x600u);
+    fd_guest_copy(SDT_PARAM + 0x3cu, game, strlen(game) + 1u);
+    fd_guest_copy(SDT_PARAM + 0x4cu, save, strlen(save) + 1u);
+    fd_guest_copy(SDT_PARAM + 0x64u, file, strlen(file) + 1u);
+    MEM_W32(SDT_PARAM + 0x30u, mode);
+    MEM_W32(SDT_PARAM + 0x74u, SDT_BUF);
+    MEM_W32(SDT_PARAM + 0x78u, 0x100u);
+}
+
+static void sdt_list(uint32_t mode, uint32_t focus, const char *save, const char *const *names) {
+    sdt_param(mode, "NKLIST", save, "DATA.BIN");
+    memset(g_mem_base + SDT_NAMES, 0, 0x400u);
+    MEM_W32(SDT_PARAM + 0x5c8u, focus);
+    if (names) {
+        for (uint32_t i = 0; names[i]; i++)
+            fd_guest_copy(SDT_NAMES + i * 20u, names[i], strlen(names[i]) + 1u);
+        MEM_W32(SDT_PARAM + 0x60u, SDT_NAMES);
+    }
+}
+
+static const char *sdt_loaded(void) {
+    static char text[32];
+    for (uint32_t i = 0; i + 1u < sizeof(text); i++) text[i] = (char)MEM_R8(SDT_BUF + i);
+    text[sizeof(text) - 1u] = 0;
+    return text;
+}
+
+static uint32_t sdt_list_load(uint32_t focus, const char *save, const char *const *names) {
+    sdt_list(4u /* LISTLOAD */, focus, save, names);
+    return sr_savedata_execute(SDT_PARAM);
+}
+
+/* One save NKLIST<save>/DATA.BIN holding `data`, its directory dated `when`. */
+static int sdt_plant_list(const char *root, const char *save, const char *data, time_t when) {
+    char leaf[64], dir[512];
+    snprintf(leaf, sizeof(leaf), "NKLIST%s", save);
+    snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/%s", root, leaf);
+    return sdt_plant(root, leaf, "DATA.BIN", data) && sdt_set_times(dir, when, when);
+}
+
+static void test_savedata_list_selection(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_list";
+    char *old = sdt_root_begin(root);
+    char path[600], text[64];
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    /* Planted out of name order, with the newest save neither first nor last. */
+    expect(sdt_plant_list(root, "SLOT3", "THREE", (time_t)1300000000) &&
+               sdt_plant_list(root, "SLOT1", "ONE", (time_t)1100000000) &&
+               sdt_plant_list(root, "SLOT2", "TWO", (time_t)1500000000) &&
+               sdt_plant_list(root, "EXTRA", "EXTRA", (time_t)1000000000),
+           "four dated list saves can be planted");
+
+    /* SLOT4 has no save: LISTLOAD's rows are SLOT1, SLOT2, SLOT3. */
+    static const char *const listed[] = { "SLOT1", "SLOT4", "SLOT2", "SLOT3", NULL };
+    expect(sdt_list_load(1u, "", listed) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "LISTLOAD focus FIRSTLIST loads the first listed save");
+    expect(sdt_list_load(2u, "", listed) == 0u && !strcmp(sdt_loaded(), "THREE"),
+           "LISTLOAD focus LASTLIST loads the last row, not a missing entry");
+    expect(sdt_list_load(3u, "", listed) == 0u && !strcmp(sdt_loaded(), "TWO"),
+           "LISTLOAD focus LATEST loads the most recently saved save");
+    expect(sdt_list_load(4u, "", listed) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "LISTLOAD focus OLDEST loads the least recently saved save");
+    expect(sdt_list_load(0u, "SLOT3", listed) == 0u && !strcmp(sdt_loaded(), "THREE"),
+           "LISTLOAD focus NAME loads the row saveName names");
+    expect(sdt_list_load(0u, "SLOT4", listed) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "LISTLOAD focus NAME on a name with no row falls back to the first row");
+    expect(sdt_list_load(6u, "", listed) == 0u && !strcmp(sdt_loaded(), "THREE"),
+           "LISTLOAD focus LASTDATA loads the last row that holds a save");
+    expect(sdt_list_load(99u, "", listed) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "LISTLOAD with an unknown focus starts on the first row");
+    static const char *const missing[] = { "SLOT4", "SLOT5", NULL };
+    expect(sdt_list_load(1u, "SLOT1", missing) == 0x80110307u,
+           "LISTLOAD whose listed saves are all missing reports LOAD_NO_DATA, not saveName's save");
+    sdt_list(6u /* LISTDELETE */, 1u, "SLOT1", missing);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110347u,
+           "LISTDELETE whose listed saves are all missing reports DELETE_NO_DATA");
+    static const char *const wild[] = { "SLOT1", "<>", NULL };
+    expect(sdt_list_load(2u, "", wild) == 0u && !strcmp(sdt_loaded(), "EXTRA"),
+           "a \"<>\" list entry is the first unlisted save in sorted name order");
+
+    /* focus starts at 0x5c8, so a 0x5c8-byte block has none: there it reads as NAME. */
+    sdt_list(4u, 2u /* LASTLIST */, "SLOT1", listed);
+    expect(sr_savedata_execute_sized(SDT_PARAM, 0x5c8u) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "a 0x5c8-byte LISTLOAD has no focus field and starts on the saveName row");
+    sdt_list(4u, 2u, "SLOT1", listed);
+    expect(sr_savedata_execute_sized(SDT_PARAM, 0x5dcu) == 0u && !strcmp(sdt_loaded(), "THREE"),
+           "a 0x5dc-byte LISTLOAD reads its focus field");
+
+    /* The test option chooses a row, or cancels; a cancel reads nothing. */
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", "SLOT2");
+    expect(sdt_list_load(1u, "", listed) == 0u && !strcmp(sdt_loaded(), "TWO"),
+           "SR_SAVEDATA_LIST_SELECT=<saveName> chooses that row");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", "CANCEL");
+    expect(sdt_list_load(1u, "", listed) == 1u && sdt_loaded()[0] == 0,
+           "SR_SAVEDATA_LIST_SELECT=CANCEL cancels the dialog (result 1) and loads nothing");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", "SLOT4");
+    expect(sdt_list_load(1u, "", listed) == 1u,
+           "SR_SAVEDATA_LIST_SELECT naming a name that is not a row cancels");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", NULL);
+
+    /* LISTDELETE never deletes a save nobody chose: without the option it cancels. */
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKLISTSLOT2/DATA.BIN", root);
+    sdt_list(6u, 1u, "", listed);
+    expect(sr_savedata_execute(SDT_PARAM) == 1u && nk_platform_file_exists(path),
+           "LISTDELETE with no list UI cancels and deletes nothing");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", "SLOT2");
+    sdt_list(6u, 1u, "", listed);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && !nk_platform_file_exists(path),
+           "LISTDELETE deletes the row SR_SAVEDATA_LIST_SELECT chose");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", NULL);
+
+    /* LISTSAVE keeps the entries that have no save: FIRSTEMPTY picks SLOT4. */
+    static const char *const save_list[] = { "SLOT1", "SLOT4", "SLOT2", NULL };
+    sdt_list(5u /* LISTSAVE */, 7u, "SLOT1", save_list);
+    fd_guest_copy(SDT_BUF, "FOUR", 4u);
+    MEM_W32(SDT_PARAM + 0x7cu, 4u);
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKLISTSLOT4/DATA.BIN", root);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && sdt_read(path, text, sizeof(text)) &&
+               !strcmp(text, "FOUR"),
+           "LISTSAVE focus FIRSTEMPTY saves to the first listed entry with no save");
+    /* An automatic LISTSAVE onto a row that holds a save keeps the version it replaces. */
+    sdt_list(5u, 0u /* NAME */, "SLOT1", save_list);
+    fd_guest_copy(SDT_BUF, "UNO", 3u);
+    MEM_W32(SDT_PARAM + 0x7cu, 3u);
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKLISTSLOT1/DATA.BIN", root);
+    char kept[600];
+    snprintf(kept, sizeof(kept), "%s/PSP/SAVEDATA/NKLISTSLOT1/.nakagawa-kept-0-DATA.BIN", root);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && sdt_read(path, text, sizeof(text)) &&
+               !strcmp(text, "UNO") && sdt_read(kept, text, sizeof(text)) && !strcmp(text, "ONE"),
+           "an automatic LISTSAVE over an existing save keeps the replaced version");
+
+    /* Outside the list modes "<>" is the empty save name, not some existing save. */
+    sdt_list(0u /* AUTOLOAD */, 0u, "<>", listed);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110307u,
+           "AUTOLOAD of saveName \"<>\" reads only the save named by the game name alone");
+    expect(sdt_plant_list(root, "", "BARE", (time_t)1000000000),
+           "a save named by the game name alone can be planted");
+    sdt_list(0u, 0u, "<>", listed);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && !strcmp(sdt_loaded(), "BARE"),
+           "AUTOLOAD of saveName \"<>\" loads that save");
+
+    /* LIST: sorted by name, whatever order the host enumerates. */
+    {
+        static const char *const want[] = { "", "EXTRA", "SLOT1", "SLOT3", "SLOT4" };
+        sdt_list(11u /* LIST */, 0u, "", NULL);
+        memset(g_mem_base + SDT_IDENT, 0, 72u * 8u);
+        MEM_W32(SDT_IDLIST + 0u, 8u);
+        MEM_W32(SDT_IDLIST + 4u, 0u);
+        MEM_W32(SDT_IDLIST + 8u, SDT_IDENT);
+        MEM_W32(SDT_PARAM + 0x5f4u, SDT_IDLIST);
+        int sorted = sr_savedata_execute(SDT_PARAM) == 0u && MEM_R32(SDT_IDLIST + 4u) == 5u;
+        for (uint32_t i = 0; sorted && i < 5u; i++) {
+            char name[21];
+            for (uint32_t j = 0; j < 20u; j++) name[j] = (char)MEM_R8(SDT_IDENT + i * 72u + 52u + j);
+            name[20] = 0;
+            sorted = !strcmp(name, want[i]);
+        }
+        expect(sorted, "LIST returns this game's saves in sorted name order, bookkeeping hidden");
+    }
+    sdt_root_end(root, old);
+}
+
+/* ScePspDateTime fields at `at`: year, month, day, hour, minute, second. */
+static int sdt_date_is(uint32_t at, unsigned y, unsigned mo, unsigned d, unsigned h, unsigned mi,
+                       unsigned s) {
+    return MEM_R16(at) == y && MEM_R16(at + 2u) == mo && MEM_R16(at + 4u) == d &&
+           MEM_R16(at + 6u) == h && MEM_R16(at + 8u) == mi && MEM_R16(at + 10u) == s &&
+           MEM_R32(at + 12u) == 0u;
+}
+
+/* #1387: listing times are the same on every host. A save's time is its PARAM.SFO's
+ * modification time; created, accessed and modified all carry it; and it is shown in the
+ * console's time zone (here +9:00, no daylight saving), never the host's. 1000000000 is
+ * 2001-09-09 01:46:40 UTC, so 10:46:40 local. */
+static void test_savedata_listing_times(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_times";
+    char *old = sdt_root_begin(root);
+    char dir[512], path[600];
+    uint32_t rc;
+    reset_fixture(); sr_hle_init(); sysreg_scratch_clean(); sysreg_restart();
+    sr_hle_test_register_iofilemgr();
+    uint32_t reg = sysreg_open_registry(2u, &rc);
+    uint32_t cat = sysreg_open_category(reg, "/CONFIG/DATE", 2u, &rc);
+    expect(sysreg_set_int(cat, "time_zone_offset", 540u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "the console time zone is set to +9:00 for the listing case");
+    static const char *const slots[] = { "NKTIMESLOTB", "NKTIMESLOTA", "NKTIMESLOTC" };
+    static const time_t when[] = { 1000003600, 1000000000, 1000007200 };
+    int planted = 1;
+    for (int i = 0; i < 3; i++) {
+        snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/%s", root, slots[i]);
+        planted = planted && sdt_plant(root, slots[i], "PARAM.SFO", "SFO") &&
+                  sdt_plant(root, slots[i], "DATA.BIN", "DATA");
+        snprintf(path, sizeof(path), "%s/PARAM.SFO", dir);
+        planted = planted && sdt_set_times(path, (time_t)1500000000, when[i]);
+        snprintf(path, sizeof(path), "%s/DATA.BIN", dir);
+        planted = planted && sdt_set_times(path, (time_t)1500000000, when[i]);
+        planted = planted && sdt_set_times(dir, (time_t)1600000000, (time_t)1600000000);
+    }
+    expect(planted, "three dated saves can be planted, out of name order");
+
+    sdt_param(11u /* LIST */, "NKTIME", "", "");
+    memset(g_mem_base + SDT_IDENT, 0, 72u * 4u);
+    MEM_W32(SDT_IDLIST + 0u, 4u);
+    MEM_W32(SDT_IDLIST + 4u, 0xdeadbeefu);
+    MEM_W32(SDT_IDLIST + 8u, SDT_IDENT);
+    MEM_W32(SDT_PARAM + 0x5f4u, SDT_IDLIST);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && MEM_R32(SDT_IDLIST + 4u) == 3u,
+           "LIST finds the three saves");
+    char first[21];
+    for (uint32_t j = 0; j < 20u; j++) first[j] = (char)MEM_R8(SDT_IDENT + 52u + j);
+    first[20] = 0;
+    expect(!strcmp(first, "SLOTA"), "LIST's first row is SLOTA, in name order");
+    expect(sdt_date_is(SDT_IDENT + 4u, 2001, 9, 9, 10, 46, 40) &&
+               sdt_date_is(SDT_IDENT + 20u, 2001, 9, 9, 10, 46, 40) &&
+               sdt_date_is(SDT_IDENT + 36u, 2001, 9, 9, 10, 46, 40),
+           "a LIST row's created, accessed and modified times are its PARAM.SFO's modification "
+           "time in the console's time zone");
+    expect(sdt_date_is(SDT_IDENT + 72u + 36u, 2001, 9, 9, 11, 46, 40),
+           "the second row carries its own PARAM.SFO time");
+
+    sdt_param(12u /* FILES */, "NKTIME", "SLOTA", "");
+    memset(g_mem_base + SDT_FILES, 0, 80u * 8u);
+    memset(g_mem_base + SDT_FILELIST, 0, 36u);
+    MEM_W32(SDT_FILELIST + 4u, 4u);              /* maxNormal */
+    MEM_W32(SDT_FILELIST + 28u, SDT_FILES);      /* normal entries */
+    MEM_W32(SDT_PARAM + 0x5f8u, SDT_FILELIST);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && MEM_R32(SDT_FILELIST + 16u) == 1u &&
+               sdt_date_is(SDT_FILES + 16u, 2001, 9, 9, 10, 46, 40) &&
+               sdt_date_is(SDT_FILES + 32u, 2001, 9, 9, 10, 46, 40) &&
+               sdt_date_is(SDT_FILES + 48u, 2001, 9, 9, 10, 46, 40),
+           "a FILES entry's three times are the file's modification time in the console's zone");
+
+    /* A SAVE stamps its files with the guest clock: here ten days ahead of the host's. */
+    {
+        const uint64_t saved_vtime = s_vtime_us;
+        sr_hle_test_reset_rtc_epoch();
+        (void)sr_savedata_guest_rtc_tick();
+        s_vtime_us += 10ull * 86400ull * 1000000ull;
+        sdt_param(3u /* SAVE */, "NKCLOCK", "SLOT", "DATA.BIN");
+        fd_guest_copy(SDT_BUF, "CLOCK", 5u);
+        MEM_W32(SDT_PARAM + 0x7cu, 5u);
+        const time_t host_now = time(NULL);
+        uint32_t r = sr_savedata_execute(SDT_PARAM);
+        struct stat st;
+        snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKCLOCKSLOT/PARAM.SFO", root);
+        const int stamped = r == 0u && stat(path, &st) == 0 &&
+                            st.st_mtime >= host_now + 10 * 86400 - 300 &&
+                            st.st_mtime <= host_now + 10 * 86400 + 300;
+        expect(stamped, "a SAVE stamps PARAM.SFO with the guest clock, not the host's");
+        s_vtime_us = saved_vtime;
+        sr_hle_test_reset_rtc_epoch();
+    }
+    sysreg_scratch_clean();
+    sysreg_restart();
+    sdt_root_end(root, old);
+}
+
+/* A PARAM.SFO holding only SAVEDATA_PARAMS, whose first byte is the encryption mode. */
+static int sdt_plant_sfo(const char *root, const char *leaf, uint8_t crypt_mode) {
+    uint8_t b[180];
+    memset(b, 0, sizeof(b));
+    memcpy(b, "\0PSF", 4);
+    b[4] = 0x01; b[5] = 0x01;                 /* version 1.1 */
+    b[8] = 36;                                /* keyStart: 20 + 16 */
+    b[12] = 52;                               /* dataStart */
+    b[16] = 1;                                /* one entry */
+    b[22] = 0x04;                             /* fmt 0x0004: binary */
+    b[24] = 128; b[28] = 128;                 /* len, maxlen */
+    memcpy(b + 36, "SAVEDATA_PARAMS", 16);
+    b[52] = crypt_mode;
+    char dir[512], path[600];
+    snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/%s", root, leaf);
+    snprintf(path, sizeof(path), "%s/PARAM.SFO", dir);
+    nk_platform_mkdir_p(dir);
+    return sdt_write(path, b, sizeof(b));
+}
+
+/* #1387: the secure modes store unencrypted files, and a save a PSP encrypted is refused,
+ * never handed back as ciphertext, replaced or deleted. */
+static void test_savedata_encrypted_save_refused(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_secure";
+    char *old = sdt_root_begin(root);
+    char path[600], text[64], dir[512];
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    expect(sdt_plant_sfo(root, "NKSECURESLOT", 0x41u) &&
+               sdt_plant(root, "NKSECURESLOT", "DATA.BIN", "CIPHER") &&
+               sdt_plant_sfo(root, "NKPLAINSLOT", 0u) && sdt_plant(root, "NKPLAINSLOT", "DATA.BIN", "PLAIN"),
+           "an encrypted and an unencrypted save can be planted");
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKSECURESLOT/DATA.BIN", root);
+    snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/NKSECURESLOT", root);
+    static const uint32_t loads[] = { 2u /* LOAD */, 15u /* READDATASECURE */, 16u /* READDATA */ };
+    for (size_t i = 0; i < sizeof(loads) / sizeof(loads[0]); i++) {
+        sdt_param(loads[i], "NKSECURE", "SLOT", "DATA.BIN");
+        memset(g_mem_base + SDT_BUF, 0xee, 0x100u);
+        MEM_W32(SDT_PARAM + 0x7cu, 0x1234u);
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110306u && MEM_R8(SDT_BUF) == 0xeeu &&
+                   MEM_R32(SDT_PARAM + 0x7cu) == 0x1234u,
+               "a load of an encrypted save is refused with LOAD_DATA_BROKEN and writes nothing");
+    }
+    sdt_param(3u /* SAVE */, "NKSECURE", "SLOT", "DATA.BIN");
+    fd_guest_copy(SDT_BUF, "OVER", 4u);
+    MEM_W32(SDT_PARAM + 0x7cu, 4u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110385u && sdt_read(path, text, sizeof(text)) &&
+               !strcmp(text, "CIPHER"),
+           "a SAVE over an encrypted save is refused and leaves it as it is");
+    sdt_param(13u /* MAKEDATASECURE */, "NKSECURE", "SLOT", "DATA.BIN");
+    fd_guest_copy(SDT_BUF, "OVER", 4u);
+    MEM_W32(SDT_PARAM + 0x7cu, 4u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110321u && sdt_read(path, text, sizeof(text)) &&
+               !strcmp(text, "CIPHER"),
+           "MAKEDATASECURE over an encrypted save is refused, never reported as a full Memory Stick");
+    sdt_param(10u /* DELETE */, "NKSECURE", "SLOT", "");
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110345u && nk_platform_file_exists(path),
+           "a DELETE of an encrypted save is refused and deletes nothing");
+    sdt_param(2u, "NKPLAIN", "SLOT", "DATA.BIN");
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && !strcmp(sdt_loaded(), "PLAIN"),
+           "a save whose SAVEDATA_PARAMS marks it unencrypted loads");
+
+    /* A PARAM.SFO that cannot be parsed proves nothing about the data beside it: the save may
+     * be encrypted, so it is refused and kept like one. */
+    {
+        char sfo[600];
+        snprintf(sfo, sizeof(sfo), "%s/PSP/SAVEDATA/NKDAMAGEDSLOT/PARAM.SFO", root);
+        snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKDAMAGEDSLOT/DATA.BIN", root);
+        expect(sdt_plant(root, "NKDAMAGEDSLOT", "DATA.BIN", "MAYBE-CIPHER") &&
+                   sdt_write(sfo, "\0PSFtorn", 8u),
+               "a save with a truncated PARAM.SFO can be planted");
+        sdt_param(2u, "NKDAMAGED", "SLOT", "DATA.BIN");
+        memset(g_mem_base + SDT_BUF, 0xee, 0x100u);
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110306u && MEM_R8(SDT_BUF) == 0xeeu,
+               "a load beside an unreadable PARAM.SFO is refused and writes nothing");
+        sdt_param(3u, "NKDAMAGED", "SLOT", "DATA.BIN");
+        fd_guest_copy(SDT_BUF, "OVER", 4u);
+        MEM_W32(SDT_PARAM + 0x7cu, 4u);
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110385u && sdt_read(path, text, sizeof(text)) &&
+                   !strcmp(text, "MAYBE-CIPHER"),
+               "a SAVE over a save with an unreadable PARAM.SFO is refused and keeps it");
+        sdt_param(10u, "NKDAMAGED", "SLOT", "");
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110345u && nk_platform_file_exists(path),
+               "a DELETE of a save with an unreadable PARAM.SFO is refused");
+        sdt_param(20u /* ERASE */, "NKDAMAGED", "SLOT", "DATA.BIN");
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110321u && nk_platform_file_exists(path),
+               "an ERASE in a save with an unreadable PARAM.SFO is refused");
+    }
+    (void)dir;
+    sdt_root_end(root, old);
+}
+
+/* The six members of a full SAVE and the file each one's bytes go to. */
+static const char *const k_sdt_member[6] = {
+    "DATA.BIN", "PARAM.SFO", "ICON0.PNG", "ICON1.PMF", "PIC1.PNG", "SND0.AT3"
+};
+
+/* A SAVE of all six members of NKFAULTSLOT. Member i holds "<tag>-<name>"; PARAM.SFO carries
+ * <tag> as its SAVEDATA_TITLE. */
+static uint32_t sdt_full_save(const char *tag) {
+    char text[64];
+    sdt_param(3u /* SAVE */, "NKFAULT", "SLOT", "DATA.BIN");
+    fd_guest_copy(SDT_PARAM + 0x100u, tag, strlen(tag) + 1u);
+    int n = snprintf(text, sizeof(text), "%s-DATA.BIN", tag);
+    fd_guest_copy(SDT_BUF, text, (size_t)n);
+    MEM_W32(SDT_PARAM + 0x7cu, (uint32_t)n);
+    for (uint32_t i = 2; i < 6u; i++) {
+        const uint32_t blob = SDT_BLOBS + i * 0x100u, fd = 0x584u + (i - 2u) * 16u;
+        n = snprintf(text, sizeof(text), "%s-%s", tag, k_sdt_member[i]);
+        fd_guest_copy(blob, text, (size_t)n);
+        MEM_W32(SDT_PARAM + fd + 0u, blob);
+        MEM_W32(SDT_PARAM + fd + 4u, 0x100u);
+        MEM_W32(SDT_PARAM + fd + 8u, (uint32_t)n);
+    }
+    return sr_savedata_execute(SDT_PARAM);
+}
+
+/* Member i: 1 = the whole OLD version, 2 = the whole NEW version, 0 = torn, missing or mixed. */
+static int sdt_member_state(const char *slot, int i) {
+    char path[600], text[64], want[64];
+    snprintf(path, sizeof(path), "%s/%s", slot, k_sdt_member[i]);
+    if (i == 1) return sdt_file_has(path, "OLDSAVE") ? 1 : sdt_file_has(path, "NEWSAVE") ? 2 : 0;
+    if (!sdt_read(path, text, sizeof(text))) return 0;
+    snprintf(want, sizeof(want), "OLDSAVE-%s", k_sdt_member[i]);
+    if (!strcmp(text, want)) return 1;
+    snprintf(want, sizeof(want), "NEWSAVE-%s", k_sdt_member[i]);
+    return !strcmp(text, want) ? 2 : 0;
+}
+
+/* Every member is version v (1 old, 2 new). */
+static int sdt_all(const char *slot, int v) {
+    for (int i = 0; i < 6; i++)
+        if (sdt_member_state(slot, i) != v) return 0;
+    return 1;
+}
+
+/* A LOAD of the data file, which first settles the directory; its result. */
+static uint32_t sdt_fault_load(void) {
+    sdt_param(2u /* LOAD */, "NKFAULT", "SLOT", "DATA.BIN");
+    return sr_savedata_execute(SDT_PARAM);
+}
+
+/* #1387: a fault at every step of the SAVE transaction leaves the previous save whole, and a
+ * fault after the commit leaves the new one whole: never a mix, never a torn member, never a
+ * bookkeeping file under a live name once the next operation has run. Three fault kinds at each
+ * step k: the step fails (ONCE); it and every later step fail, as when the process stops or the
+ * disk stops taking writes (FROM); it takes effect and then reports failure (EFFECT). */
+static void test_savedata_commit_faults(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_faults";
+    char *old = sdt_root_begin(root);
+    char slot[512], what[256];
+    snprintf(slot, sizeof(slot), "%s/PSP/SAVEDATA/NKFAULTSLOT", root);
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    expect(sdt_full_save("OLDSAVE") == 0u && sdt_all(slot, 1) && sdt_live_bookkeeping(slot) == 0,
+           "the previous six-member SAVE succeeds and leaves no bookkeeping file");
+    sr_savedata_test_fault(SDT_FAULT_ONCE, 1 << 30);           /* count the steps, fail none */
+    expect(sdt_full_save("NEWSAVE") == 0u && sdt_all(slot, 2), "an unfaulted SAVE over it succeeds");
+    const int total = sr_savedata_test_fault_ops();
+    sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+    snprintf(what, sizeof(what), "a six-member SAVE over a save takes at least 23 host steps (took %d)", total);
+    expect(total >= 23, what);
+    expect(sdt_full_save("OLDSAVE") == 0u && sdt_all(slot, 1), "the previous save is back");
+
+    static const int modes[] = { SDT_FAULT_ONCE, SDT_FAULT_FROM, SDT_FAULT_EFFECT };
+    static const char *const mode_names[] = { "", "fails", "and every later step fail", "takes effect, then fails" };
+    int commit_step = 0, failures = 0;
+    for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+        for (int k = 1; k <= total; k++) {
+            sr_savedata_test_fault(modes[m], k);
+            const uint32_t r = sdt_full_save("NEWSAVE");
+            const int reached = sr_savedata_test_fault_ops() >= k;
+            if (modes[m] == SDT_FAULT_FROM) {
+                /* A recovery that itself cannot write fails closed or serves a whole save. */
+                sr_savedata_test_fault(SDT_FAULT_FROM, 1);
+                const uint32_t r3 = sdt_fault_load();
+                snprintf(what, sizeof(what), "after step %d %s, a LOAD whose recovery cannot write "
+                         "fails closed or loads a whole save (0x%08x)", k, mode_names[modes[m]], (unsigned)r3);
+                expect(r3 == 0x80110305u ||
+                           (r3 == 0u && !strcmp(sdt_loaded(), r ? "OLDSAVE-DATA.BIN" : "NEWSAVE-DATA.BIN")),
+                       what);
+            }
+            sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+            const uint32_t r2 = sdt_fault_load();
+            const int whole = sdt_all(slot, r == 0u ? 2 : 1);
+            const int live = sdt_live_bookkeeping(slot);
+            if (modes[m] == SDT_FAULT_EFFECT && r == 0u && !commit_step) commit_step = k;
+            snprintf(what, sizeof(what), "SAVE step %d %s: result 0x%08x leaves the %s save whole "
+                     "and the next LOAD (0x%08x) leaves no bookkeeping file (%d)", k,
+                     mode_names[modes[m]], (unsigned)r, r == 0u ? "new" : "previous", (unsigned)r2, live);
+            const int ok = reached && whole && r2 == 0u && live == 0;
+            expect(ok, what);
+            if (!ok) failures++;
+            if (sdt_full_save("OLDSAVE") != 0u || !sdt_all(slot, 1)) {
+                snprintf(what, sizeof(what), "the previous save can be restored after step %d", k);
+                expect(0, what);
+                failures++;
+            }
+            if (failures > 8) break;
+        }
+    }
+    expect(commit_step > 0, "a commit that takes effect and reports failure still counts as committed");
+
+    /* Planted states a crash on a file system that reorders metadata could leave: a committed
+     * record whose renames were lost. The commit is made to stick with its cleanup failing,
+     * then slot 0's two renames are undone by hand. Recovery completes them, never reverts. */
+    if (commit_step > 0) {
+        char m[600], p[600], s[600];
+        snprintf(m, sizeof(m), "%s/DATA.BIN", slot);
+        snprintf(p, sizeof(p), "%s/.nakagawa-prev-DATA.BIN", slot);
+        snprintf(s, sizeof(s), "%s/.nakagawa-stage-0", slot);
+        sr_savedata_test_fault(SDT_FAULT_FROM, commit_step + 1);
+        const uint32_t r = sdt_full_save("NEWSAVE");
+        sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+        expect(r == 0u && nk_platform_file_exists(p), "a committed SAVE whose cleanup failed keeps "
+               "its record and its previous copies");
+        expect(rename(m, s) == 0 && rename(p, m) == 0, "slot 0's two renames can be undone by hand");
+        expect(sdt_fault_load() == 0u && !strcmp(sdt_loaded(), "NEWSAVE-DATA.BIN") && sdt_all(slot, 2) &&
+                   sdt_live_bookkeeping(slot) == 0,
+               "recovery of a committed record completes the lost renames: the new save stands");
+        expect(sdt_full_save("OLDSAVE") == 0u && sdt_all(slot, 1), "the previous save is back again");
+
+        /* A committed record one of whose slots holds its new bytes nowhere (the member lost,
+         * no stage): recovery fails closed and keeps the record and every previous copy, so
+         * the save is never left partial with nothing to repair it from. */
+        char c[600];
+        snprintf(c, sizeof(c), "%s/.nakagawa-commit", slot);
+        sr_savedata_test_fault(SDT_FAULT_FROM, commit_step + 1);
+        expect(sdt_full_save("NEWSAVE") == 0u && nk_platform_file_exists(c) && nk_platform_file_exists(p),
+               "a committed SAVE whose cleanup failed keeps its record and previous copies");
+        sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+        expect(remove(m) == 0, "the committed data file can be removed by hand");
+        expect(sdt_fault_load() == 0x80110305u && nk_platform_file_exists(c) && nk_platform_file_exists(p),
+               "a committed record that cannot be completed fails closed, record and copies kept");
+        expect(sdt_full_save("OLDSAVE") == 0x80110385u && nk_platform_file_exists(p),
+               "a SAVE over that directory is refused and the copies stay");
+        /* Repair by hand: put the previous data file back and drop the bookkeeping. */
+        expect(rename(p, m) == 0 && remove(c) == 0, "the directory can be repaired by hand");
+        for (int i = 1; i < 6; i++) {
+            char prev[600];
+            snprintf(prev, sizeof(prev), "%s/.nakagawa-prev-%s", slot, k_sdt_member[i]);
+            remove(prev);
+        }
+        expect(sdt_full_save("OLDSAVE") == 0u && sdt_all(slot, 1), "after the repair the previous save is back");
+    }
+
+    /* No record, but a previous copy that differs from its member: the record was lost, so the
+     * directory fails closed and nothing is touched. */
+    {
+        char p[600], text[64];
+        snprintf(p, sizeof(p), "%s/.nakagawa-prev-DATA.BIN", slot);
+        expect(sdt_write(p, "ORPHAN", 6u), "an orphan previous copy can be planted");
+        expect(sdt_fault_load() == 0x80110305u && sdt_read(p, text, sizeof(text)) && !strcmp(text, "ORPHAN") &&
+                   sdt_all(slot, 1),
+               "a previous copy with no record fails the LOAD closed and every file is kept");
+        expect(sdt_full_save("NEWSAVE") == 0x80110385u && sdt_all(slot, 1),
+               "a SAVE over that directory is refused too");
+        remove(p);
+    }
+    /* A damaged journal with no previous copy was never acted on: its stages go. */
+    {
+        char j[600], s[600];
+        snprintf(j, sizeof(j), "%s/.nakagawa-journal", slot);
+        snprintf(s, sizeof(s), "%s/.nakagawa-stage-0", slot);
+        expect(sdt_write(j, "garbage", 7u) && sdt_write(s, "half", 4u), "a torn journal can be planted");
+        expect(sdt_fault_load() == 0u && !nk_platform_file_exists(j) && !nk_platform_file_exists(s) &&
+                   sdt_all(slot, 1),
+               "a torn journal with no previous copy is discarded and the save stands");
+    }
+    /* A damaged commit record fails closed. */
+    {
+        char c[600];
+        snprintf(c, sizeof(c), "%s/.nakagawa-commit", slot);
+        expect(sdt_write(c, "garbage", 7u), "a damaged commit record can be planted");
+        expect(sdt_fault_load() == 0x80110305u && nk_platform_file_exists(c) && sdt_all(slot, 1),
+               "a damaged commit record fails the LOAD closed and is kept");
+        remove(c);
+    }
+    /* A data file named like the save's own files is refused, not silently dropped. */
+    {
+        static const char *const names[] = { "PARAM.SFO", "param.sfo", ".nakagawa-x" };
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            sdt_param(3u, "NKFAULT", "SLOT", names[i]);
+            fd_guest_copy(SDT_BUF, "DROP", 4u);
+            MEM_W32(SDT_PARAM + 0x7cu, 4u);
+            expect(sr_savedata_execute(SDT_PARAM) == 0x80110388u && sdt_all(slot, 1),
+                   "a data file named like a save's own file is refused with SAVE_PARAM");
+        }
+    }
+    sdt_root_end(root, old);
+}
+
+/* #1386: the savedata dialog's nested output blocks are checked before anything is written,
+ * and an unknown mode is refused by name. */
+static void test_savedata_nested_outputs(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_nested";
+    char *old = sdt_root_begin(root);
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    expect(sdt_plant(root, "NKNESTSLOT", "DATA.BIN", "DATA"), "a save can be planted");
+    sdt_param(11u /* LIST */, "NKNEST", "", "");
+    MEM_W32(SDT_PARAM + 0x5f4u, 0x0bfffffcu);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110328u, "LIST refuses an idList block past the arena");
+    sdt_param(11u, "NKNEST", "", "");
+    MEM_W32(SDT_IDLIST + 0u, 5u);
+    MEM_W32(SDT_IDLIST + 4u, 0xdeadbeefu);
+    MEM_W32(SDT_IDLIST + 8u, 0x0bffffd0u);
+    MEM_W32(SDT_PARAM + 0x5f4u, SDT_IDLIST);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110328u && MEM_R32(SDT_IDLIST + 4u) == 0xdeadbeefu,
+           "LIST refuses an entry array it cannot write, before writing resultCount");
+    MEM_W32(SDT_IDLIST + 0u, 0u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && MEM_R32(SDT_IDLIST + 4u) == 0u,
+           "a LIST that writes no entry does not need an entry array");
+    sdt_param(12u /* FILES */, "NKNEST", "SLOT", "");
+    MEM_W32(SDT_PARAM + 0x5f8u, 0x0bfffff0u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110328u, "FILES refuses a fileList block past the arena");
+    sdt_param(8u /* SIZES */, "NKNEST", "SLOT", "");
+    MEM_W32(SDT_PARAM + 0x5d0u, 0x0bfffff8u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x801103c8u, "SIZES refuses an msFree block past the arena");
+    sdt_param(23u, "NKNEST", "SLOT", "");
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110300u, "an unknown savedata mode is refused, not a success");
+    sdt_param(7u /* LISTALLDELETE */, "NKNEST", "SLOT", "");
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110300u, "LISTALLDELETE, not implemented, is refused");
+    sdt_root_end(root, old);
+}
+
+/* #1386 against PSPAutotests tests/utility/dialog/{status,sizes}.expected (hrydgard/pspautotests
+ * master, recorded on a PSP): message dialog sizes and wrong-state results, a busy slot reported
+ * before a bad size, and the message dialog's default button. */
+static void test_utility_dialog_measured_states(void) {
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    static const uint32_t bad[] = { 0u, 0x40u, 0x23bu, 0x23du, 0x243u, 0x245u, 0x2c3u, 0x2c5u, 0x800u };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+        MEM_W32(UTILITY_MSG_PARAM_ADDR, bad[i]);
+        expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110004u &&
+                   utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0x80110005u,
+               "a message InitStart with an unlisted size is INVALID_PARAM_SIZE and takes no slot");
+    }
+    static const uint32_t good[] = { 0x23cu, 0x244u, 0x2c4u };
+    for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+        utility_param_block(UTILITY_MSG_PARAM_ADDR, good[i]);
+        expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u,
+               "a message InitStart accepts the 0x23c, 0x244 and 0x2c4 blocks");
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* "Savedata just started: GameSharing InitStart, bad size: INVALID_STATUS". */
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u,
+           "a savedata dialog starts");
+    utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x64u);
+    MEM_W32(UTILITY_OTHER_PARAM_ADDR, 0x20u);
+    expect(utility_call(&cpu, NID_SHARING_DIALOG_INIT, UTILITY_OTHER_PARAM_ADDR) == 0x80110001u,
+           "a game-sharing InitStart with a bad size while savedata runs is INVALID_STATUS");
+    MEM_W32(UTILITY_MSG_PARAM_ADDR, 0x20u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110001u,
+           "a message InitStart with a bad size while savedata runs is INVALID_STATUS");
+    sr_hle_test_osk_slot_reset();
+
+    /* The message dialog's wrong states. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "msg InitStart: NONE");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110001u,
+           "msg ShutdownStart during INIT: INVALID_STATUS");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u, "msg status: RUNNING");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110001u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "msg ShutdownStart while RUNNING: INVALID_STATUS, still RUNNING");
+    expect(utility_poll_to_finished(&cpu, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "msg finished: ok, then SHUTDOWN and NONE");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0x80110001u,
+           "msg Update after done: INVALID_STATUS");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110001u,
+           "msg ShutdownStart after done: INVALID_STATUS");
+    sr_hle_test_osk_slot_reset();
+
+    /* A "default No" prompt is answered No. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    MEM_W32(UTILITY_MSG_PARAM_ADDR + 0x23cu, 0x110u);           /* YESNO | DEFAULT_NO */
+    expect(msg_dialog_run_to_finished(&cpu, UTILITY_MSG_PARAM_ADDR) &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x240u) == 2u,
+           "a yes/no message dialog with the cursor on NO is answered NO (2)");
+    sr_hle_test_osk_slot_reset();
+
+    /* Through the dialog, an unknown savedata mode finishes with its refusal as the result. */
+    utility_savedata_block();
+    MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x30u, 23u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0x80110300u,
+           "a savedata dialog with an unknown mode finishes with SAVEDATA_ERROR_TYPE, not 0");
+    sr_hle_test_osk_slot_reset();
 }
 
 /* ---- coroutine park ------------------------------------------------------------------
@@ -15989,6 +17010,129 @@ static uint32_t td24b_dispatch4(uint32_t nid, uint32_t a0, uint32_t a1,
     return sr_syscall(&cpu, nid);
 }
 
+/* #1287: the interrupt manager's sub-interrupt answers, measured on a PSP by pspautotests
+ * tests/intr/registersub.expected, releasesub.expected and enablesub.expected at
+ * f573fe8c9122a8ff5db4f030d74557bed644b4e0. Each table is the expected file's column of codes
+ * for lines (or sub-interrupts of line 30) -2 to 69, one character per entry: '0' success,
+ * '5' 0x80020065 ILLEGAL_INTRCODE, '7' 0x80020067 FOUND_HANDLER, '8' 0x80020068
+ * NOTFOUND_HANDLER. As in the test, every Register is followed by a Release of the same pair. */
+static const char k_subintr_register_lines[] =
+    "558888585588585885555555555058880588885888888888888858888855555588858555";
+static const char k_subintr_release_lines[] =
+    "558888888588585885555558555058880588885888888888888858888855555588858555";
+static const char k_subintr_register_subs[] =
+    "550000000000000000557775557775555555555555555555555555555555555555555555";
+static const char k_subintr_release_subs[] =
+    "550000000000000000888888888888888855555555555555555555555555555555555555";
+
+static uint32_t subintr_code(char c) {
+    return c == '0' ? 0u : c == '5' ? 0x80020065u : c == '7' ? 0x80020067u : 0x80020068u;
+}
+
+static void test_vblank_subintr_measured_codes(void) {
+    const uint32_t handler = 0x08001000u, arg = 0xdeadbeefu;
+    reset_fixture();
+    sr_hle_init();
+    for (uint32_t no = 0u; no < 16u; no++)
+        (void)td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, no, 0u, 0u);
+
+    /* "sceKernelRegisterSubIntrHandler interrupts" and the Release interrupts loop. Line 25
+     * (the GE interrupt) answers 0 to both on the PSP, but this runtime delivers no GE
+     * sub-interrupt, so both stop the run by name instead (checked below). */
+    for (int line = -2; line < 70; line++) {
+        if (line == 25) continue;
+        uint32_t reg = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, (uint32_t)line, 0u,
+                                       handler, arg);
+        uint32_t rel = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, (uint32_t)line, 0u, 0u, 0u);
+        char what[96];
+        snprintf(what, sizeof(what), "line %d: Register and Release answer the measured codes",
+                 line);
+        expect(reg == subintr_code(k_subintr_register_lines[line + 2]) &&
+                   rel == subintr_code(k_subintr_release_lines[line + 2]),
+               what);
+    }
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 25u, 0u, handler, arg);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 25u, 0u, 0u, 0u);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 25u, 0u, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 3u,
+           "GE-interrupt sub-interrupt calls stop the run by name instead of answering 0");
+
+    /* "sceKernelRegisterSubIntrHandler sub interrupts": sub-interrupts -2 to 69 of line 30. */
+    for (int no = -2; no < 70; no++) {
+        uint32_t reg = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, (uint32_t)no,
+                                       handler, arg);
+        uint32_t rel = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, (uint32_t)no, 0u, 0u);
+        char what[96];
+        snprintf(what, sizeof(what),
+                 "VBLANK sub-interrupt %d: Register and Release answer the measured codes", no);
+        expect(reg == subintr_code(k_subintr_register_subs[no + 2]) &&
+                   rel == subintr_code(k_subintr_release_subs[no + 2]),
+               what);
+    }
+
+    /* registersub "handlers": a NULL handler registers nothing; a second non-NULL Register
+     * answers FOUND_HANDLER and keeps the first handler. */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0u, arg) == 0u,
+           "Register with a NULL handler answers 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0u, arg) == 0u,
+           "a second NULL Register answers 0 too");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, handler, arg) == 0u,
+           "a non-NULL Register after NULL ones answers 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, handler + 0x40u, 7u) ==
+               0x80020067u,
+           "a second non-NULL Register answers FOUND_HANDLER");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0u, arg) == 0x80020067u,
+           "a NULL Register over a handler answers FOUND_HANDLER");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+           "Enable of the registered sub-interrupt answers 0");
+    uint32_t got_arg = 0u;
+    expect(vblank_delivered(1u, &got_arg) == handler && got_arg == arg,
+           "the refused Registers left the first handler and its arg in place");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0x80020068u,
+           "Release answers 0, then NOTFOUND_HANDLER");
+
+    /* releasesub "handlers": a NULL-handler registration is not found by Release. */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0u, arg) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0x80020068u,
+           "Release after a NULL-handler Register answers NOTFOUND_HANDLER");
+
+    /* enablesub: line 70 and sub-interrupt 70 are ILLEGAL_INTRCODE; a number with no handler
+     * answers 0; Enable before Register delivers once registered; Release clears the enable. */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 70u, 1u, 0u, 0u) == 0x80020065u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 70u, 0u, 0u) == 0x80020065u &&
+               td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 70u, 1u, 0u, 0u) == 0x80020065u &&
+               td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 70u, 0u, 0u) == 0x80020065u,
+           "Enable and Disable refuse line 70 and sub-interrupt 70 with ILLEGAL_INTRCODE");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 3u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 3u, 0u, 0u) == 0u,
+           "Enable and Disable of a number with no handler answer 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 2u, 0u, 0u) == 0u &&
+               vblank_delivered(2u, NULL) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 2u, handler, arg) == 0u &&
+               vblank_delivered(2u, NULL) == handler,
+           "Enable before Register delivers the handler once it is registered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 2u, 0u, 0u) == 0u, "release 2");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 4u, handler, arg) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 4u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 4u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 4u, handler, arg) == 0u &&
+               vblank_delivered(4u, NULL) == 0u,
+           "Release clears the enable: a handler registered again is not delivered");
+    (void)td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 4u, 0u, 0u);
+
+    /* Not measured: Enable/Disable on lines 0-66 other than 30 and on the system's
+     * sub-interrupts 16-31 stop the run by name. */
+    stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 31u, 0u, 0u, 0u);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 0u, 0u, 0u, 0u);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 18u, 0u, 0u);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 31u, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 4u,
+           "unmeasured Enable/Disable lines and system sub-interrupts stop by name");
+}
+
 static void test_td24b_cheap_hle_batch(void) {
     uint32_t left = 0, right = 0;
 
@@ -16040,9 +17184,11 @@ static void test_td24b_cheap_hle_batch(void) {
     /* ---- 2+3. sceKernelDisableSubIntr / sceKernelReleaseSubIntrHandler ---- */
     reset_fixture();
     sr_hle_init();
-    for (uint32_t no = 0u; no < 16u; no++)
-        expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, no, 0u, 0u) == 0u,
+    for (uint32_t no = 0u; no < 16u; no++) {
+        uint32_t rc = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, no, 0u, 0u);
+        expect(rc == 0u || rc == 0x80020068u,
                "sub-interrupt fixture starts from released VBLANK sub-interrupts");
+    }
     expect(vblank_delivered(5u, NULL) == 0u, "VBLANK delivery starts clear");
     expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 5u, 0x08001000u, 0x1234u) == 0u,
            "RegisterSubIntrHandler records the VBLANK handler");
@@ -16070,10 +17216,10 @@ static void test_td24b_cheap_hle_batch(void) {
            "EnableSubIntr after release still answers success");
     expect(vblank_delivered(5u, NULL) == 0u,
            "Release clears the handler word: Enable delivers nothing");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
-           "DisableSubIntr on a non-VBLANK line answers success without effect");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
-           "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 70u, 0u, 0u, 0u) == 0x80020065u,
+           "DisableSubIntr past the last interrupt line is ILLEGAL_INTRCODE (measured)");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 31u, 0u, 0u, 0u) == 0x80020065u,
+           "ReleaseSubIntrHandler on line 31 is ILLEGAL_INTRCODE, not success (measured)");
     expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 16u, 0x08001000u, 0u) ==
                0x80020065u,
            "a VBLANK sub-interrupt number past 15 is refused (ILLEGAL_INTRCODE)");
@@ -16106,14 +17252,13 @@ static void test_td24b_cheap_hle_batch(void) {
            "the two-handler fixture leaves the VBLANK line released");
 
     /* #1287: a title that re-registers the same VBLANK handler before every frame writes the
-     * registration line once, not once per frame. A changed registration and a register after
-     * Release are written again; SR_HLELOG still writes every call. Return codes are unchanged
-     * (duplicate-register codes are UNMEASURED on the PSP). */
+     * registration line once, not once per frame. A Register over a held sub-interrupt answers
+     * FOUND_HANDLER and changes nothing (pspautotests registersub at f573fe8c, measured on a
+     * PSP), so a changed arg is not taken either; a Register after Release is written again. */
     {
         char err[2048];
         FILE *capture = NULL;
         int saved = -1;
-        int every = getenv("SR_HLELOG") != NULL;
         err[0] = '\0';
         int capturing = hle_data_stderr_capture_begin(&capture, &saved);
         expect(capturing, "the sub-interrupt selftest can capture the runtime's stderr");
@@ -16123,15 +17268,16 @@ static void test_td24b_cheap_hle_batch(void) {
         uint32_t release = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u);
         uint32_t after = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
         if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
-        expect(first == 0u && again == 0u && new_arg == 0u && release == 0u && after == 0u,
-               "repeated, changed and post-Release registrations keep their success answers");
+        expect(first == 0u && again == 0x80020067u && new_arg == 0x80020067u && release == 0u &&
+                   after == 0u,
+               "a Register over a held sub-interrupt answers FOUND_HANDLER; after Release it "
+               "succeeds again");
         expect(count_occurrences(err,
-                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000000\n") ==
-                   (every ? 2 : 1),
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000000\n") == 1,
                "an identical VBLANK re-registration writes no second registration line");
         expect(count_occurrences(err,
-                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 2,
-               "a changed arg and a register after Release each write the registration line");
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 1,
+               "only the register after Release takes the slot and writes the line");
         uint32_t quiet_arg = 0u;
         expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u &&
                    vblank_delivered(1u, &quiet_arg) == 0x08002000u && quiet_arg == 0x10u,
@@ -25345,17 +26491,22 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
            "AT3 fixture releases its decoder context");
 
     /* First-call length against the 8-byte fact chunk's delay word, measured
-     * on a PSP-3000 on 2026-10-24 (#1096; fixtures/psp_oracle/README.md
-     * `at3-decode`): delay 0 and 1024 give 955 samples, delay 955 gives 1024,
-     * delay 500 is refused by the first decode with 0x80630002 and 0 samples.
-     * Delay 100 is unmeasured: the complete decoder frame is kept. */
+     * on a PSP-3000 (#1096; at3-decode 2026-10-24, at3-delay-sweep 2026-10-31):
+     * delay 0 or 955..1797 gives 1024 - ((delay + 69) mod 1024) samples, a
+     * delay of 1..954 is refused by every decode with 0x80630002 and 0 samples,
+     * and the next-sample query before the call already reports the length.
+     * The position after the call is the samples returned. */
     {
         static const struct { uint32_t delay, ret, samples; const char *what; } rows[] = {
             {0u, 0u, 955u, "AT3 fact delay 0 gives a 955-sample first call"},
             {1024u, 0u, 955u, "AT3 fact delay 1024 gives a 955-sample first call"},
             {955u, 0u, 1024u, "AT3 fact delay 955 gives a 1024-sample first call"},
+            {956u, 0u, 1023u, "AT3 fact delay 956 gives a 1023-sample first call"},
+            {1387u, 0u, 592u, "AT3 fact delay 1387 (a retail track's) gives a 592-sample first call"},
+            {1797u, 0u, 182u, "AT3 fact delay 1797 gives a 182-sample first call"},
             {500u, 0x80630002u, 0u, "AT3 fact delay 500 is refused by the first decode with 0x80630002"},
-            {100u, 0u, 1024u, "AT3 unmeasured fact delay 100 keeps the complete decoder frame"},
+            {100u, 0x80630002u, 0u, "AT3 fact delay 100 is refused by the first decode with 0x80630002"},
+            {1u, 0x80630002u, 0u, "AT3 fact delay 1 is refused by the first decode with 0x80630002"},
         };
         for (unsigned r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
             uint32_t rid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
@@ -25366,9 +26517,20 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
                                     rows[r].delay);
             expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, rid, TRACK, 380u, 0u) == 0u,
                    "AT3 SetData accepts the fact-delay leg's track");
+            const uint32_t length = 1024u - (rows[r].delay + 69u) % 1024u;
+            MEM_W32(OUT_N, 0xffffffffu);
+            expect(td24b_dispatch4(NID_SCE_ATRAC_GET_NEXT_SAMPLE, rid, OUT_N, 0u, 0u) == 0u &&
+                       MEM_R32(OUT_N) == length,
+                   "AT3 next-sample before the first call is 1024 - ((delay + 69) mod 1024)");
             uint32_t ret = td1096_decode(rid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
             expect(ret == rows[r].ret && MEM_R32(OUT_N) == rows[r].samples,
                    rows[r].what);
+            if (rows[r].ret) {
+                MEM_W32(OUT_N, 0xffffffffu);
+                expect(td24b_dispatch4(NID_SCE_ATRAC_GET_NEXT_DECODE_POSITION, rid, OUT_N, 0u, 0u) == 0u &&
+                           MEM_R32(OUT_N) == 0u,
+                       "AT3 position stays 0 when the first decode is refused");
+            }
             (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, rid, 0u, 0u, 0u);
         }
     }
@@ -25636,11 +26798,21 @@ static void test_at3_set_data_delay_2048_1096(void) {
            "#1096: and decodes it (955-sample first call)");
     (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
 
-    /* Only the measured delay is refused. */
+    /* The measured boundary (PSP-AT3-002, 2026-10-31): 1797 is accepted, 1855 and 2047 are refused. */
     id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u);
     td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 2047u);
+    expect(id < 8u && td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0x80630008u,
+           "#1096: delay 2047 is refused by SetData with 0x80630008");
+    (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u);
+    td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 1855u);
+    expect(id < 8u && td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0x80630008u,
+           "#1096: delay 1855, the lowest refused, is refused by SetData with 0x80630008");
+    (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u);
+    td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 1797u);
     expect(id < 8u && td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0u,
-           "#1096: delay 2047 is not measured as refused and stays accepted");
+           "#1096: delay 1797, the highest measured accepted, is accepted");
     if (id < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
 
     /* The *AndGetID call shares the analysis (UNMEASURED beyond SetData) and
@@ -29857,7 +31029,7 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     expect(max_free == floor - base0, "sceKernelMaxFreeMemSize stops at the stack");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = (floor - base0) + 0x10000u;
-    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == 0x800200d9u /* MEMBLOCK_ALLOC_FAILED */,
            "an allocation that would cover the live stack fails");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = max_free & ~0xFFu;
@@ -30118,7 +31290,7 @@ static void test_partition_spans_the_whole_user_partition(void) {
            "the reported free memory excludes the runtime's stacks");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = low_free + 0x100u;
-    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == 0x800200d9u /* MEMBLOCK_ALLOC_FAILED */,
            "a block that would cover the runtime's stacks is refused");
 
     /* A fixed reservation above kernel RAM (a late PRX base) returns the skipped span to the
@@ -30284,7 +31456,7 @@ static void test_alloc_block_at_fixed_address(void) {
     heap_before = sr_hle_test_partition_heap_ptr();
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 2u; cpu.r[7] = 0x800u; cpu.r[8] = R2 + 0x400u;
-    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == 0x800200d9u /* MEMBLOCK_ALLOC_FAILED */,
            "type-2 handler rejects an overlapping address");
     expect(sr_hle_test_partition_heap_ptr() == heap_before,
            "rejected type-2 handler call does not move the bump pointer");
@@ -32450,7 +33622,8 @@ static void check_coroutine_lifecycle(void) {
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks;
+        extern int s_ctrlc_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -32467,9 +33640,9 @@ static void check_coroutine_lifecycle(void) {
                  "+ 3 flight thread-snapshot waiters "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs + %d volatile-memory Lock waiters "
-                 "= %d, observed %lu)",
+                 "+ %d controller read waiters = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
-                 s_msgpipe_parks, s_vm_parks, expected_parks, s_parks);
+                 s_msgpipe_parks, s_vm_parks, s_ctrlc_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -36309,9 +37482,255 @@ static void test_volatile_mem_lock_blocks_and_hands_off(void) {
     sr_hle_test_volatile_mem_reset();
 }
 
+/* #1383: partition 5, the volatile region, through production dispatch, against pspautotests
+ * tests/sysmem/volatile.expected and partition.expected at f573fe8c (recorded on a PSP): the
+ * partition numbers' answers, the NULL name, and partition 5's own placement, alignment, size
+ * and type answers, all inside [0x08400000, 0x08800000). */
+#define P5_NID_ALLOC 0x237dbd4fu
+#define P5_NID_FREE  0xb6d61d02u
+#define P5_NID_HEAD  0x9d9a5ba1u
+#define P5_NAME      0x08a41000u
+
+static uint32_t p5_alloc_named(uint32_t partition, uint32_t name, uint32_t type, uint32_t size,
+                               uint32_t arg) {
+    CpuState cpu = {0};
+    cpu.r[4] = partition;
+    cpu.r[5] = name;
+    cpu.r[6] = type;
+    cpu.r[7] = size;
+    cpu.r[8] = arg;   /* the 5th argument (MIPS EABI t0) */
+    return sr_syscall(&cpu, P5_NID_ALLOC);
+}
+
+static uint32_t p5_call1(uint32_t nid, uint32_t a0) {
+    CpuState cpu = {0};
+    cpu.r[4] = a0;
+    return sr_syscall(&cpu, nid);
+}
+
+/* The head address of a new partition-5 block, freed again; or the refusal code. */
+static uint32_t p5_try(uint32_t type, uint32_t size, uint32_t arg) {
+    uint32_t uid = p5_alloc_named(5u, P5_NAME, type, size, arg);
+    if ((int32_t)uid < 0) return uid;
+    uint32_t head = p5_call1(P5_NID_HEAD, uid);
+    expect(p5_call1(P5_NID_FREE, uid) == 0u, "a partition-5 block frees");
+    return head;
+}
+
+static void test_volatile_partition_allocator(void) {
+    extern void sr_hle_test_partition_reset(void);
+    char msg[128];
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_partition_reset();
+    const char name[] = "test";
+    for (uint32_t i = 0; i < sizeof(name); i++) MEM_W8(P5_NAME + i, (uint8_t)name[i]);
+
+    static const struct { int32_t partition; uint32_t want; } parts[] = {
+        { -5, 0x800200d2u }, { -1, 0x800200d2u }, { 0, 0x800200d2u }, { 1, 0x800200d6u },
+        { 2, 0u }, { 3, 0x800200d6u }, { 4, 0x800200d6u }, { 5, 0u }, { 6, 0u },
+        { 7, 0x800200d2u }, { 8, 0x800200d2u }, { 9, 0x800200d2u }, { 10, 0x800200d2u },
+    };
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        uint32_t uid = p5_alloc_named((uint32_t)parts[i].partition, P5_NAME, 0u, 0x1000u, 0u);
+        int ok = parts[i].want ? uid == parts[i].want : (int32_t)uid > 0;
+        if (!parts[i].want && (int32_t)uid > 0) (void)p5_call1(P5_NID_FREE, uid);
+        snprintf(msg, sizeof(msg), "partition %d answers its measured code (got 0x%08x)",
+                 (int)parts[i].partition, uid);
+        expect(ok, msg);
+    }
+    expect(p5_alloc_named(5u, 0u, 1u, 0x100u, 0u) == 0x80020001u,
+           "a NULL name answers 0x80020001 in partition 5");
+
+    static const struct { uint32_t type, arg, want; } types[] = {
+        { 0xffffffffu, 0u, 0x800200d8u }, { 0u, 0u, 0x08400000u }, { 1u, 0u, 0x087fff00u },
+        { 2u, 0u, 0x800200d9u }, { 3u, 0u, 0x800200e4u }, { 4u, 0u, 0x800200e4u },
+        { 5u, 0u, 0x800200d8u }, { 0x11u, 0u, 0x800200d8u }, { 0x10000001u, 0u, 0x800200d8u },
+        { 2u, 0x08500000u, 0x08500000u }, { 2u, 0x08900000u, 0x800200d9u },
+        { 3u, 128u, 0x08400000u },
+    };
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        uint32_t got = p5_try(types[i].type, 0x100u, types[i].arg);
+        snprintf(msg, sizeof(msg), "partition 5 type 0x%x arg 0x%x: 0x%08x (want 0x%08x)",
+                 types[i].type, types[i].arg, got, types[i].want);
+        expect(got == types[i].want, msg);
+    }
+    expect(p5_alloc_named(5u, 0u, 0x30u, 0u, 0x08500000u) == 0x800200d8u,
+           "a bad type wins over a NULL name and a zero size");
+
+    static const struct { uint32_t align, want; } aligns[] = {
+        { 0xffffffffu, 0x800200e4u }, { 1u, 0x087fff00u }, { 2u, 0x087fff00u },
+        { 3u, 0x800200e4u }, { 4u, 0x087fff00u }, { 6u, 0x800200e4u }, { 8u, 0x087fff00u },
+        { 16u, 0x087fff00u }, { 512u, 0x087ffe00u }, { 1024u, 0x087ffc00u },
+        { 2048u, 0x087ff800u },
+    };
+    for (size_t i = 0; i < sizeof(aligns) / sizeof(aligns[0]); i++) {
+        uint32_t got = p5_try(4u, 0x100u, aligns[i].align);
+        snprintf(msg, sizeof(msg), "partition 5 High align 0x%x: 0x%08x (want 0x%08x)",
+                 aligns[i].align, got, aligns[i].want);
+        expect(got == aligns[i].want, msg);
+    }
+
+    static const struct { uint32_t size, delta, addr; } sizes[] = {
+        { 0xffffffffu, 0u, 0x800200d9u }, { 0u, 0u, 0x800200d9u }, { 1u, 0x100u, 0x087ffe00u },
+        { 0x11u, 0x100u, 0x087ffe00u }, { 0x101u, 0x200u, 0x087ffd00u },
+        { 0x1001u, 0x1100u, 0x087fee00u }, { 0x10001u, 0x10100u, 0x087efe00u },
+        { 0x3fff00u, 0x3fff00u, 0x08400000u }, { 0x400000u, 0u, 0x800200d9u },
+    };
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        uint32_t uid1 = p5_alloc_named(5u, P5_NAME, 1u, 0x100u, 0u);
+        uint32_t uid2 = p5_alloc_named(5u, P5_NAME, 1u, sizes[i].size, 0u);
+        int ok;
+        if ((int32_t)uid2 >= 0) {
+            uint32_t ptr1 = p5_call1(P5_NID_HEAD, uid1), ptr2 = p5_call1(P5_NID_HEAD, uid2);
+            ok = ptr1 - ptr2 == sizes[i].delta && ptr2 == sizes[i].addr;
+            (void)p5_call1(P5_NID_FREE, uid2);
+        } else {
+            ok = uid2 == sizes[i].addr;
+        }
+        if ((int32_t)uid1 > 0) (void)p5_call1(P5_NID_FREE, uid1);
+        snprintf(msg, sizeof(msg), "partition 5 High size 0x%x below a 0x100 block answers as measured",
+                 sizes[i].size);
+        expect(ok, msg);
+    }
+
+    /* The volatile lock does not gate partition-5 allocations. */
+    expect(vm_call(NID_VM_TRYLOCK, 0u, 0u) == 0u, "the volatile lock is taken");
+    expect(p5_try(0u, 0x100u, 0u) == 0x08400000u, "partition 5 still allocates while it is held");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u, "the volatile lock is released");
+    sr_hle_test_volatile_mem_reset();
+}
+
+/* #1390: the controller read contract, through production dispatch. A read with no unread
+ * sample waits for the next one and returns it (pspautotests tests/ctrl/sampling and ctrl/vblank
+ * at f573fe8c, recorded on a PSP: a read right after a read answers 1) instead of handing back a
+ * stale one; where it cannot wait (host context is the scheduler's interrupt context) it answers
+ * ILLEGAL_CONTEXT. A peek reports the newest `count` samples (a peek of 64 answers 64). A read
+ * returns the newest unread samples and consumes all of them. With a sampling cycle the samples
+ * come every `cycle` microseconds of guest time, stamped at their boundaries, and a VBLANK adds
+ * none (ctrl/sampling2: 3 per VBLANK at 5555); sceCtrlReadLatch counts them. */
+#define CTRLC_NID_READ_LATCH 0x0b588501u
+#define CTRLC_ILLEGAL_CONTEXT 0x80020064u
+static uint32_t s_ctrlc_ret;
+static int s_ctrlc_returned;
+int s_ctrlc_parks = 0;   /* controller read waiters that returned and parked; check_coroutine_lifecycle */
+
+static uint32_t ctrlc_call(uint32_t nid, uint32_t a0, uint32_t a1) {
+    CpuState cpu = {0};
+    cpu.r[4] = a0;
+    cpu.r[5] = a1;
+    return sr_syscall(&cpu, nid);
+}
+
+static void ctrlc_read_waiter(void *arg) {
+    (void)arg;
+    s_ctrlc_ret = ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u);
+    s_ctrlc_returned = 1;
+    s_ctrlc_parks++;
+    selftest_park_on_scheduler();
+}
+
+static void test_ctrl_sampling_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_sampling_reset();
+    sr_hle_test_ctrl_ring_reset();
+
+    /* The power-on ring holds one sample; the next read has none to give. */
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 1u,
+           "the first read returns the power-on sample");
+    MEM_W32(CTRL_OK_BUF, 0xa5a5a5a5u);
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 1u) == CTRLC_ILLEGAL_CONTEXT &&
+               MEM_R32(CTRL_OK_BUF) == 0xa5a5a5a5u,
+           "a read with no unread sample that cannot wait answers ILLEGAL_CONTEXT, not a stale sample");
+
+    /* On a guest thread it waits for the next sample and returns exactly that one. */
+    s_ctrlc_returned = 0;
+    s_ctrlc_ret = 0xffffffffu;
+    TCB *reader = liveness_start_waiter(ctrlc_read_waiter, 0x2c10u, 30);
+    expect(reader && reader->state == TH_WAIT_OBJ && reader->wait_obj == CTRL_WAIT_OBJ &&
+               !s_ctrlc_returned,
+           "a read with no unread sample blocks on the controller object");
+    sr_hle_test_ctrl_push_sample(0x00004000u);
+    sched_wake(CTRL_WAIT_OBJ);
+    vm_run(reader);
+    expect(s_ctrlc_returned && s_ctrlc_ret == 1u && MEM_R32(CTRL_OK_BUF + 4u) == 0x00004000u,
+           "the blocked read returns the one new sample once it is latched");
+    liveness_finish_waiter(reader);
+    s_cur = -1;
+
+    /* A peek reports `count` samples whether or not they were read before. */
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 5u) == 5u,
+           "a peek of 5 right after a read answers 5");
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 64u &&
+               MEM_R32(CTRL_OK_BUF + 63u * 16u + 4u) == 0x00004000u,
+           "a peek of 64 answers 64, the newest sample last");
+
+    /* A short read returns the newest unread samples and consumes all of them. */
+    sr_hle_test_ctrl_push_sample(0x1u);
+    sr_hle_test_ctrl_push_sample(0x2u);
+    sr_hle_test_ctrl_push_sample(0x4u);
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 2u) == 2u &&
+               MEM_R32(CTRL_OK_BUF + 4u) == 0x2u && MEM_R32(CTRL_OK_BUF + 16u + 4u) == 0x4u,
+           "a read of 2 with 3 unread returns the newest two, oldest first");
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == CTRLC_ILLEGAL_CONTEXT,
+           "that read consumed the third sample too");
+
+    /* Cycle 5555: a sample every 5555 us of guest time, none at VBLANK. */
+    sr_hle_test_ctrl_latch_reset();
+    expect(ctrlc_call(NID_SCE_CTRL_SET_SAMPLING_CYCLE, 5555u, 0u) == 0u, "cycle 5555 is set");
+    uint64_t t0 = s_vtime_us;
+    s_vtime_us = t0 + 50000u;
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 9u,
+           "50 ms at cycle 5555 latches nine samples");
+    int spaced = 1;
+    for (uint32_t i = 0; i < 9u; i++)
+        if (MEM_R32(CTRL_OK_BUF + i * 16u) != (uint32_t)(t0 + 5555u * (i + 1u))) spaced = 0;
+    expect(spaced, "each cycle sample is stamped at its own 5555 us boundary");
+    uint32_t latch_out = 0x00241d00u;
+    expect(ctrlc_call(CTRLC_NID_READ_LATCH, latch_out, 0u) == 9u,
+           "sceCtrlReadLatch counts the nine cycle samples");
+    sr_ctrl_sample();
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 1u) == 1u &&
+               MEM_R32(CTRL_OK_BUF) == (uint32_t)(t0 + 5555u * 9u),
+           "a VBLANK latches no sample of its own at a non-zero cycle");
+    s_vtime_us = t0 + 50000u + 100u * 5555u;
+    expect(ctrlc_call(CTRLC_NID_READ_LATCH, latch_out, 0u) == 100u,
+           "a long gap still counts every cycle, past the ring's size");
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 63u,
+           "and the ring keeps the newest 63 of them unread");
+
+    /* Back to cycle 0: one sample per VBLANK again. */
+    expect(ctrlc_call(NID_SCE_CTRL_SET_SAMPLING_CYCLE, 0u, 0u) == 5555u, "cycle 0 is set");
+    sr_ctrl_sample();
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 1u &&
+               MEM_R32(CTRL_OK_BUF) == (uint32_t)s_vtime_us,
+           "at cycle 0 a VBLANK latches one sample, stamped at the VBLANK");
+
+    /* Digital mode centres the stick, also right after analog mode reported it off centre
+     * (PSP-KERNEL-SEM-001 ctrl-mode-*, measured on a PSP-3000 6.61). */
+    extern void sr_hle_test_ctrl_stick(uint8_t lx, uint8_t ly);
+    sr_hle_test_ctrl_stick(0x75u, 0x7cu);
+    expect(ctrlc_call(NID_SCE_CTRL_SET_SAMPLING_MODE, 1u, 0u) == 0u, "analog mode is set");
+    s_vtime_us += 5555u;
+    sr_ctrl_sample();
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 1u) == 1u &&
+               MEM_R8(CTRL_OK_BUF + 8u) == 0x75u && MEM_R8(CTRL_OK_BUF + 9u) == 0x7cu,
+           "analog mode reports the stick's position");
+    expect(ctrlc_call(NID_SCE_CTRL_SET_SAMPLING_MODE, 0u, 0u) == 1u, "digital mode is set again");
+    s_vtime_us += 5555u;
+    sr_ctrl_sample();
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 1u) == 1u &&
+               MEM_R8(CTRL_OK_BUF + 8u) == 0x80u && MEM_R8(CTRL_OK_BUF + 9u) == 0x80u,
+           "digital mode reports a centred stick, not the last analog position");
+    sr_hle_test_ctrl_stick(0x80u, 0x80u);
+    sr_hle_test_ctrl_sampling_reset();
+    sr_hle_test_ctrl_ring_reset();
+}
+
 /* Departures: a deleted waiter and a released waiter leave the queue and are never handed the
  * lock; terminating the thread that holds the lock leaves it held (the lock has no owning
- * thread); a type other than 0 is refused by name and takes nothing. */
+ * thread); a type other than 0 answers INVALID_MODE (measured) and takes nothing. */
 static void test_volatile_mem_lock_departures_and_type(void) {
     reset_fixture();
     sr_hle_init();
@@ -36355,12 +37774,14 @@ static void test_volatile_mem_lock_departures_and_type(void) {
            "another thread's VolatileMemUnlock releases it");
 
     vm_out_fill(VM_PROBE_OUT);
-    expect(vm_call(NID_VM_LOCK, 1u, VM_PROBE_OUT) == 0x80020002u &&
+    /* Measured on a PSP-3000 6.61 (PSP-KERNEL-SEM-001 vmem-*-type-*, 2026-10-31). */
+    expect(vm_call(NID_VM_LOCK, 1u, VM_PROBE_OUT) == 0x80000107u &&
            vm_out_untouched(VM_PROBE_OUT),
-           "VolatileMemLock type 1 is refused by name (unmeasured) and writes nothing");
-    expect(vm_call(NID_VM_TRYLOCK, 2u, VM_PROBE_OUT) == 0x80020002u &&
+           "VolatileMemLock type 1 answers INVALID_MODE and writes nothing");
+    expect(vm_call(NID_VM_TRYLOCK, 2u, VM_PROBE_OUT) == 0x80000107u &&
+           vm_call(NID_VM_TRYLOCK, 0xffffffffu, VM_PROBE_OUT) == 0x80000107u &&
            vm_out_untouched(VM_PROBE_OUT),
-           "VolatileMemTryLock type 2 is refused by name (unmeasured) and writes nothing");
+           "VolatileMemTryLock types 2 and -1 answer INVALID_MODE and write nothing");
     expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0x800201aeu,
            "a refused type took no lock");
 
@@ -38819,6 +40240,158 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
     expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
 }
 
+/* #1384: what pspautotests tests/font (f573fe8c9122a8ff5db4f030d74557bed644b4e0, recorded on a PSP)
+ * measures about libraries and handles, driven through production dispatch: newlib.expected
+ * (numFonts -1, 0, 10 and 100 all succeed: a count above 9 serves 9, 0 is accepted), open.expected
+ * (a NULL library is INVALID_LIB, index -1 and 50 are INVALID_ARG, a second open of the same font
+ * answers the first handle with no new allocation, and that handle stays usable after one of the
+ * two opens is closed; the fifth open of a font in a 4-font library is TOO_MANY), resolution.expected
+ * (sceFontSetResolution's accepted and refused values) and optimum.expected (a NULL library or a
+ * NULL style answers 0 with INVALID_LIB). font_find_optimum_index's rules are then checked on a
+ * synthetic inventory shaped so each rule decides one answer the PSP gave. */
+#define FLT_NID_SET_RESOLUTION 0x48293280u
+#define FLT_NID_FIND_OPTIMUM   0x099ef33cu
+#define FLT_ERR_TOO_MANY       0x80460009u
+#define FLT_STYLE_REQ          0x09052000u
+extern int sr_font_test_find_optimum(const float sizes[][4], const uint16_t codes[][4],
+                                     const char *const names[], const char *const files[], int count,
+                                     const float req_sizes[4], const uint16_t req_codes[4],
+                                     const char *req_name, const char *req_file, float lib_h_res,
+                                     float lib_v_res);
+
+static uint32_t flt_call_f(uint32_t nid, uint32_t a0, float f12, float f13) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0;
+    cpu.f[12] = f12;
+    cpu.f[13] = f13;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_font_measured_contract(uint32_t served_index) {
+    char msg[160];
+    if (!sr_hle_test_is_registered(FLT_NID_NEWLIB)) sr_hle_init();
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+
+    static const uint32_t counts[] = { 0xffffffffu, 0u, 1u, 9u, 10u, 100u };
+    for (size_t i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+        uint32_t want = counts[i] > 9u ? 9u : counts[i];
+        flt_write_params(FLT_PARAMS, counts[i]);
+        uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+        snprintf(msg, sizeof(msg), "sceFontNewLib with numFonts %d succeeds with a %u-font library",
+                 (int)counts[i], want);
+        expect(lib == FLT_LIB_A && MEM_R32(FLT_ERR) == 0u && MEM_R32(FLT_LIB_A + 4u) == want, msg);
+        if (lib) (void)flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u);
+    }
+
+    flt_write_params(FLT_PARAMS, 4u);
+    uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+    expect(lib == FLT_LIB_A, "a 4-font library for the open contract");
+    MEM_W32(FLT_ERR, 0u);
+    expect(flt_call(FLT_NID_OPEN, 0u, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+           "sceFontOpen on a NULL library answers INVALID_LIB");
+    MEM_W32(FLT_ERR, 0u);
+    expect(flt_call(FLT_NID_OPEN, lib, 0xffffffffu, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_ARG,
+           "sceFontOpen index -1 answers INVALID_ARG");
+    MEM_W32(FLT_ERR, 0u);
+    expect(flt_call(FLT_NID_OPEN, lib, 50u, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_ARG,
+           "sceFontOpen index 50 answers INVALID_ARG");
+
+    s_flt_alloc_ret = FLT_FONT;
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+    uint32_t f1 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    uint32_t allocs = s_flt_alloc_calls;
+    uint32_t f2 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(f1 == FLT_FONT && f2 == f1 && MEM_R32(FLT_ERR) == 0u && s_flt_alloc_calls == allocs,
+           "a second sceFontOpen of an open font answers the same handle and allocates nothing");
+    expect(flt_call(FLT_NID_CLOSE, f2, 0u, 0u, 0u) == 0u && s_flt_free_calls == 0u,
+           "closing one of two opens frees nothing");
+    expect(flt_call(FLT_NID_CHAR, f2, '.', FLT_INFO, 0u) == 0u,
+           "the handle still answers sceFontGetCharInfo after one of its two opens is closed");
+    uint32_t f3 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    uint32_t f4 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    uint32_t f5 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(f3 == f1 && f4 == f1 && f5 == f1 && MEM_R32(FLT_ERR) == 0u, "four opens share the handle");
+    MEM_W32(FLT_ERR, 0u);
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_TOO_MANY,
+           "the fifth open of the font answers TOO_MANY");
+    for (int i = 0; i < 4; i++) (void)flt_call(FLT_NID_CLOSE, f1, 0u, 0u, 0u);
+    expect(s_flt_free_calls == 1u && s_flt_last_free == FLT_FONT,
+           "the last close frees the font once");
+    expect(flt_call(FLT_NID_CHAR, f1, '.', FLT_INFO, 0u) == FLT_ERR_INVALID_ARG,
+           "a font closed by all its opens is refused");
+
+    expect(sr_hle_test_is_registered(FLT_NID_SET_RESOLUTION), "sceFontSetResolution is registered");
+    if (sr_hle_test_is_registered(FLT_NID_SET_RESOLUTION)) {
+        expect(flt_call_f(FLT_NID_SET_RESOLUTION, 0u, 128.0f, 128.0f) == FLT_ERR_INVALID_LIB,
+               "sceFontSetResolution on a NULL library answers INVALID_LIB");
+        expect(flt_call_f(FLT_NID_SET_RESOLUTION, lib, -1.0f, -1.0f) == FLT_ERR_INVALID_ARG &&
+                   flt_call_f(FLT_NID_SET_RESOLUTION, lib, 0.0f, 0.0f) == FLT_ERR_INVALID_ARG &&
+                   flt_call_f(FLT_NID_SET_RESOLUTION, lib, -INFINITY, -INFINITY) == FLT_ERR_INVALID_ARG,
+               "sceFontSetResolution refuses -1, 0 and -infinity");
+        expect(flt_call_f(FLT_NID_SET_RESOLUTION, lib, 1.0f, 1.0f) == 0u &&
+                   flt_call_f(FLT_NID_SET_RESOLUTION, lib, INFINITY, INFINITY) == 0u &&
+                   flt_call_f(FLT_NID_SET_RESOLUTION, lib, 128.0f, 128.0f) == 0u,
+               "sceFontSetResolution accepts 1, infinity and 128");
+    }
+
+    for (uint32_t i = 0; i < 0xa8u; i += 4u) MEM_W32(FLT_STYLE_REQ + i, 0u);   /* one SceFontStyle */
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_FIND_OPTIMUM, 0u, FLT_STYLE_REQ, FLT_ERR, 0u) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+           "sceFontFindOptimumFont on a NULL library answers 0 with INVALID_LIB");
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_FIND_OPTIMUM, lib, 0u, FLT_ERR, 0u) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+           "sceFontFindOptimumFont with a NULL style answers 0 with INVALID_LIB");
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_FIND_OPTIMUM, lib, FLT_STYLE_REQ, FLT_ERR, 0u) == 0u &&
+               MEM_R32(FLT_ERR) == 0u,
+           "an empty style answers index 0 with error 0");
+    (void)flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u);
+
+    /* Synthetic inventory: font 0 is 10.125 high, font 1 is 7.0 high, font 2 is 10.125 high again;
+     * all at 128 x 128. The 8.5625 tie between fonts 0 and 1 is the PSP's H boundary. */
+    static const float sizes[3][4] = {
+        { 10.125f, 10.125f, 128.0f, 128.0f },
+        { 7.0f, 7.0f, 128.0f, 128.0f },
+        { 10.125f, 10.125f, 128.0f, 128.0f },
+    };
+    static const uint16_t codes[3][4] = { { 1u, 103u, 1u, 1u }, { 2u, 1u, 2u, 2u }, { 1u, 1u, 2u, 3u } };
+    static const char *const names[3] = { "Font A", "Font B", "Font C" };
+    static const char *const files[3] = { "a.pgf", "b.pgf", "c.pgf" };
+    const uint16_t none[4] = { 0u, 0u, 0u, 0u };
+    struct { float h, v; uint16_t family; const char *file; float lib_res; int want; const char *what; }
+    cases[] = {
+        { 0.0f, 0.0f, 0u, NULL, 128.0f, 0, "nothing given answers index 0" },
+        { -1.0f, 0.0f, 0u, NULL, 128.0f, 0, "a negative height is not compared" },
+        { 8.5624f, 0.0f, 0u, NULL, 128.0f, 1, "a height just under the midpoint picks the smaller font" },
+        { 8.5625f, 0.0f, 0u, NULL, 128.0f, 0, "the midpoint ties and the first font wins" },
+        { INFINITY, 0.0f, 0u, NULL, 128.0f, 0, "an infinite height finds no nearer font" },
+        { 0.0f, 13.0f, 0u, NULL, 128.0f, 1, "a width alone is compared against height 0: the smallest font" },
+        { 4.2812f, 0.0f, 0u, NULL, 256.0f, 1, "the library's doubled resolution scales the request" },
+        { 0.0f, 0.0f, 1u, NULL, 128.0f, 2, "a matching family picks the last font that has it" },
+        { 0.0f, 0.0f, 2u, NULL, 128.0f, 1, "family 2 has one font" },
+        { 0.0f, 0.0f, 0u, "a.pgf", 128.0f, 0, "an exact file name picks its font" },
+        { 0.0f, 0.0f, 0u, "a.pg", 128.0f, 0, "a partial file name matches nothing: index 0" },
+        { 7.0f, 0.0f, 1u, NULL, 128.0f, 0, "a height among family-1 fonts picks the first nearest" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const float req[4] = { cases[i].h, cases[i].v, 0.0f, 0.0f };
+        uint16_t req_codes[4] = { cases[i].family, 0u, 0u, 0u };
+        int got = sr_font_test_find_optimum(sizes, codes, names, files, 3, req,
+                                            cases[i].family ? req_codes : none, NULL,
+                                            cases[i].file, cases[i].lib_res, cases[i].lib_res);
+        snprintf(msg, sizeof(msg), "FindOptimumFont: %s (got %d)", cases[i].what, got);
+        expect(got == cases[i].want, msg);
+    }
+}
+
 /* sceFontGetNumFontList / sceFontGetFontList against PSPAutotests tests/font/fontlist.expected
  * (2ed7c9c5, the console's libfont on a PSP): 18 fonts and error 0 for a live library, 0 and
  * 0x80460002 for a NULL one; GetFontList writes one 0xA8-byte style per font (num 1 writes
@@ -39302,6 +40875,7 @@ static void test_flash0_font_device(void) {
         }
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_measured_contract(served_index);
         test_font_list_contract(&expected_sources);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_alt_char_contract(served_index);
     }
@@ -41107,6 +42681,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();
     test_sysreg_virtual_registry();
+    test_console_profile_identity();
     test_sysreg_write_model();
     test_sysparam_nickname_string();
     test_ge_edram_addr_translation();
@@ -41145,6 +42720,12 @@ static int hle_selftest_main(int argc, char **argv) {
     test_msg_dialog_abort_without_update();
     test_io_devctl_memory_stick();
     test_savedata_getsize_free_space();
+    test_savedata_list_selection();
+    test_savedata_listing_times();
+    test_savedata_encrypted_save_refused();
+    test_savedata_commit_faults();
+    test_savedata_nested_outputs();
+    test_utility_dialog_measured_states();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
     test_explicit_exit_status_exact((int32_t)0x800201acu, 0x800200d2u);
@@ -41306,6 +42887,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
     test_td24b_cheap_hle_batch();
+    test_vblank_subintr_measured_codes();
     test_kernel_devkit_version_measured();
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
@@ -41370,6 +42952,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_volatile_mem_unlock_states();
     test_volatile_mem_lock_blocks_and_hands_off();
     test_volatile_mem_lock_departures_and_type();
+    test_ctrl_sampling_contract();
+    test_volatile_partition_allocator();
     test_late_prx_unload_keeps_module_owned_objects();
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();

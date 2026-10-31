@@ -1088,6 +1088,7 @@ PUBLIC_TARGETS := \
 	profile-zero-e2e \
 	cosim-selftest \
 	cosim-selftest-split \
+	cosim-selftest-opt \
 	cosim-selftest-promoted \
 	cosim-selftest-run \
 	cosim-selftest-clean \
@@ -1232,6 +1233,7 @@ HELP_DESCRIPTION_platform-ladder-clean := remove platform-ladder artifacts
 HELP_DESCRIPTION_profile-zero-e2e := run the manifest-driven profile-zero production route
 HELP_DESCRIPTION_cosim-selftest := run the source-owned AOT/interpreter cosimulation
 HELP_DESCRIPTION_cosim-selftest-split := run the cosimulation with every body split at other entries
+HELP_DESCRIPTION_cosim-selftest-opt := run the cosimulation with generated code at COSIM_OPT_LEVEL (#1730)
 HELP_DESCRIPTION_cosim-selftest-promoted := run the cosimulation with codegen register promotion (#284)
 HELP_DESCRIPTION_cosim-selftest-run := build and run the cosimulation harness
 HELP_DESCRIPTION_cosim-selftest-clean := remove cosimulation artifacts
@@ -1869,15 +1871,17 @@ ifeq ($(TRACE),1)
 override CFLAGS += -DSR_INSTRUCTION_TRACE
 endif
 # Optimization and memory-saving flags for massive machine-generated files.
-# -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
-# -O1: Measured and qualified default for HST.
+# -O0: the default for ad-hoc and selftest builds. A package build passes the measured level
+#   (tools/nk_core/package_cache.py PACKAGE_RECOMP_OPT, #1730).
+# -fno-strict-aliasing: as the runtime. Generated code passes integer register arrays to the
+#   VFPU helpers as float pointers, which -O2's type-based alias analysis must not exploit.
 # -fno-var-tracking: Saves significant memory on huge functions.
 # -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code. GCC only: Clang
 #   refuses the option, so it is passed only when $(CC) is not Clang (#317). GCC builds are unchanged.
 RECOMP_OPT ?= -O0
 RECOMP_CC_IS_CLANG := $(findstring clang version,$(shell "$(CC)" --version 2>&1))
 RECOMP_GCC_ONLY_FLAGS := $(if $(RECOMP_CC_IS_CLANG),,-ftrack-macro-expansion=0)
-RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking $(RECOMP_GCC_ONLY_FLAGS) $(NAN_TRAP_CFLAG)
+RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-strict-aliasing -fno-var-tracking $(RECOMP_GCC_ONLY_FLAGS) $(NAN_TRAP_CFLAG)
 override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
 override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
 ifeq ($(TRACE),1)
@@ -1978,9 +1982,15 @@ $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" $(RECOMP_LLVM_ENTRY_ARG) --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o" --invalidate-glob "$(BUILD_DIR)/nk_lib_*.o"
 
 # Compile the chunked generated C code.
+#
+# A unit holding one generated body over codegen's BODY_FALLBACK_BYTES compiles at codegen's
+# fallback level (#1730): <game>_recomp_opt.mk sets RECOMP_UNIT_OPT_<object stem>, which comes
+# after RECOMP_FLAGS (the last -O wins), so the level is in the command and its cache key.
+-include $(BUILD_DIR)/$(GAME_NAME)_recomp_opt.mk
+RECOMP_UNIT_OPT = $(RECOMP_UNIT_OPT_$(basename $(notdir $@)))
 
 $(BUILD_DIR)/$(GAME_NAME)_recomp_%.o: $(BUILD_DIR)/$(GAME_NAME)_recomp_%.c src/rt/recomp.h $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
-	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
+	$(CC) $(RECOMP_FLAGS) $(RECOMP_UNIT_OPT) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/$(GAME_NAME)_recomp.o: $(BUILD_DIR)/$(GAME_NAME)_recomp.c src/rt/recomp.h $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
 	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
@@ -2004,7 +2014,7 @@ $(BUILD_DIR)/$(GAME_NAME)_recomp_%_ll.o: $(BUILD_DIR)/$(GAME_NAME)_recomp_%.ll $
 # runtime header, so every game's build compiles the identical file and a package
 # build reuses its object (#1306).
 $(BUILD_DIR)/nk_lib_%.o: $(BUILD_DIR)/nk_lib_%.c src/rt/recomp.h $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
-	$(CC) $(RECOMP_FLAGS) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
+	$(CC) $(RECOMP_FLAGS) $(RECOMP_UNIT_OPT) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
 
 # Compile runtime sources.
 $(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
@@ -2136,7 +2146,7 @@ $(LIBCHDR_LIB): $(LIBCHDR_OBJS)
 
 PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_builtin_keys.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/nk_psp_amctrl.c src/core/nk_psp_lzrc.c src/core/nk_psp_npumdimg.c src/core/nk_disc_expand.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_builtin_keys.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/nk_psp_amctrl.c src/core/nk_psp_lzrc.c src/core/nk_psp_npumdimg.c src/core/nk_disc_expand.c src/core/nk_disc_verify.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS) $(NK_UI_PLAYER_HOST_SRCS)
 # The player's About page shows "v<version> (MM-DD-YYYY)" (the version itself is
@@ -2292,6 +2302,14 @@ cosim-selftest:
 cosim-selftest-split:
 	$(MAKE) cosim-selftest COSIM_DIR=$(COSIM_DIR)-split \
 		COSIM_CODEGEN_ARGS="--stack-census --region-split-threshold=0"
+
+# The same comparison with the generated code compiled at the package level (#1730): the
+# optimizer must not change what a cell does. TRACE=1 keeps a call between instructions, so
+# this lane proves the per-statement code; production-smoke and platform-ladder at the same
+# level cover release builds without the trace.
+COSIM_OPT_LEVEL ?= -O1
+cosim-selftest-opt:
+	$(MAKE) cosim-selftest COSIM_DIR=$(BUILD_ROOT)/cosim-opt RECOMP_OPT=$(COSIM_OPT_LEVEL)
 
 # The cosimulation corpus with the LLVM IR backend (#330): every cell the backend lowers
 # runs as an LLVM body in the AOT lane, against the same interpreter lane and on every
@@ -2795,9 +2813,9 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
 	@$(BUILD_DIR)/psmf_media_selftest_csc_mutant.exe > $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log 2>&1; result=$$?; \
 		if test $$result -eq 0; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc no-write mutant unexpectedly passed" >&2; exit 1; fi; \
-		if ! grep -Fq "FAIL: CSC writes the retained host picture deterministically" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the decoder-independent CSC write assertion" >&2; exit 1; fi; \
-		if ! grep -Fq "SKIP: guest Decode/Copy/CSC pixel assertions need an H.264 backend" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log && \
-		   ! grep -Fq "FAIL: guest CSC writes decoded I_PCM pixels into the guest destination" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the guest pixel assertion" >&2; exit 1; fi; \
+		if ! grep -Fq "FAIL: ycbcr: CSC converts every pixel of a varied picture from the guest planes, nearest chroma" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the decoder-independent CSC write assertion" >&2; exit 1; fi; \
+		if ! grep -Fq "SKIP: the YCbCr decode layout needs a real H.264 backend" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log && \
+		   ! grep -Fq "FAIL: ycbcr-decode: CSC writes the measured conversion of the decoded samples" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the guest pixel assertion" >&2; exit 1; fi; \
 		echo "psmf-media-selftest-csc-mutant: killed by the CSC write assertions"
 
 audio-selftest:
@@ -3585,6 +3603,8 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 	$(CC) $(NC_CFLAGS_CORE) -Werror $(LIBCHDR_INC) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) $(PLAYER_CHD_SRCS) \
 		tests/native/native_test_isolation.c tests/native/test_disc_expand.c $(LIBCHDR_LIB) $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_disc_expand$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_disc_expand$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) 		tests/native/native_test_isolation.c tests/native/test_disc_verify.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_disc_verify$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_disc_verify$(EXE_EXT)
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" tests/native/test_safe_math.c \
 		-o $(BUILD_ROOT)/test_safe_math$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_safe_math$(EXE_EXT)

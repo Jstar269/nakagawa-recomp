@@ -127,12 +127,18 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `tools/nk_cli.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/ppm2png.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `src/core/nk_psp_inflate.c` | CRC-32 | gzip member trailer of a decrypted PSP payload (RFC 1952) | Keep: the format requires it |
+| `src/core/nk_disc_verify.c` | CRC-32 | Disc verification: a whole disc image's CRC-32 and SHA-1 (the file's own FIPS 180-4 SHA-1, which the scan above does not detect), compared with the user's Redump list | Keep: Redump lists both; they identify a dump and are not a security check |
+| `src/core/nk_disc_verify.h` | CRC-32 | The disc-verification CRC-32 interface (`nk_crc32_update`) | Keep: Redump lists it; it identifies a dump and is not a security check |
+| `tools/nk_core/disc_verify.py` | SHA-1 | Disc verification: a whole disc image's SHA-1, the key into the user's Redump list | Keep: Redump lists it; it identifies a dump and is not a security check |
+| `tools/nk_core/disc_verify.py` | CRC-32 | Disc verification: a whole disc image's CRC-32, checked with the SHA-1 match | Keep: Redump lists it; it identifies a dump and is not a security check |
 | `tools/codegen.py` | FNV-64 | Staged module identity (`fnv1a64`), mirrored by `src/rt/guest_interp.c` | Candidate: SHA-256 only with a codegen and package identity bump |
 | `src/rt/guest_interp.c` | FNV-64 | Staged module identity (`sr_module_code_fnv1a64`), checked against the staged file | Candidate: SHA-256 only with a codegen and package identity bump |
 | `tools/codegen.py` | FNV-32 | Self-modifying-code block record (`stale_fnv1a`), mirrored by `src/rt/stale_code.c` | Keep: change detector |
 | `src/rt/stale_code.c` | FNV-32 | Self-modifying-code detection (`sr_stale_fnv1a`), checked per block | Keep: performance-critical change detector |
 | `tools/psp_oracle/insn_trace.py` | FNV-32 | Checks that the insn-trace probe ran the header's fixture words, against the probe's own FNV-1a report; the trace identity itself is SHA-256 | Keep: mirrors the on-device check |
-| `src/rt/mpeg.c` | FNV-64 | Change detector for a cached YCbCr conversion buffer | Keep: cache validity, not integrity |
+| `src/rt/mpeg.c` | FNV-64 | Names a decoded YCbCr picture by its plane bytes, so the `SR_MPEGAV` measurement gives a copy the player converts the picture's presentation time; computed only while `SR_MPEGAV` is on | Keep: measurement key, not integrity |
+| `src/rt/hle.c` | FNV-64 | Matches an audio block a guest player outputs to the sceMpeg block it copied (`psmf_av_content`, `SR_MPEGAV` only) | Keep: measurement key, not integrity |
+| `src/rt/savedata.c` | FNV-64 | Content identity in a SAVE's transaction record: crash recovery deletes or restores a save file only when its size and FNV-1a 64 match the recorded previous or new content, and the record's own hash finds a torn record | Keep: matches a save's own files after a crash, not a security check |
 | `src/rt/ge.c` | FNV-32 | GE transition trace draw identity and watched-buffer hash | Keep: trace key, not integrity |
 | `src/rt/gpu_sdl3vk/ge_gpu.c` | FNV-64 | Texture cache key | Keep: cache key, not integrity |
 | `src/core/nk_xb.c` | FNV-32 | In-memory path table that finds duplicate paths while writing an XB archive | Keep: hash-table key |

@@ -2776,6 +2776,17 @@
       }
     },
     {
+      "path": "fixtures/psp_oracle/probe_kernel_semantics.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "kernel-semantics-probe-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "fixtures/psp_oracle/probe_module_start.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -3461,6 +3472,28 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "disc-image-import-20261028",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/core/nk_disc_verify.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "disc-verify-compat-table-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/core/nk_disc_verify.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "disc-verify-compat-table-20261031",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -10241,6 +10274,17 @@
       }
     },
     {
+      "path": "tests/native/test_disc_verify.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "disc-verify-compat-table-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tests/native/test_fuzz_parsers.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -12097,6 +12141,17 @@
       }
     },
     {
+      "path": "tools/compat_table.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "disc-verify-compat-table-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/compiler_compare.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -12773,6 +12828,17 @@
       }
     },
     {
+      "path": "tools/nk_core/disc_verify.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "disc-verify-compat-table-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/nk_core/fonts.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -12943,6 +13009,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "package-notices-421",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/package_repro_check.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "release-prep-repro-signing-20261031",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -13513,6 +13590,17 @@
       }
     },
     {
+      "path": "tools/sign_release_binaries.ps1",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "release-prep-repro-signing-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/soak_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -13943,6 +14031,17 @@
       }
     },
     {
+      "path": "tools/test_compat_table.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "disc-verify-compat-table-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/test_compiler_compare.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -14058,6 +14157,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "disc-image-import-20261028",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_disc_verify.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "disc-verify-compat-table-20261031",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
@@ -14945,6 +15055,17 @@
       }
     },
     {
+      "path": "tools/test_package_repro_check.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "release-prep-repro-signing-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/test_padscript_from_log.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -15633,6 +15754,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "showcase-tooling-309",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_sign_release_binaries.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "release-prep-repro-signing-20261031",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
