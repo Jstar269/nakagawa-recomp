@@ -2,7 +2,7 @@
 
 import unittest
 from unittest.mock import MagicMock, patch
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import os
 import pathlib
@@ -545,6 +545,33 @@ class TestStrictTraceContract(unittest.TestCase):
         lines = pathlib.Path(written[0]).read_text(encoding="utf-8").splitlines()
         self.assertEqual(lines[2], "# start-state")
         self.assertEqual(len(lines), 3 + 2)
+
+    def run_main(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = tracediff.main(["tracediff.py", "--shrink", *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_shrink_command_exit_codes(self):
+        path_a, path_b = self.shrink_pair(diverge_at=30)
+        out = self.dir / "cli"
+        code, stdout, _ = self.run_main(str(path_a), str(path_b), str(out), "--context", "2")
+        self.assertEqual(code, 1)
+        self.assertIn("DIVERGENCE at step 30", stdout)
+        self.assertIn("SHRUNK: ", stdout)
+        self.assertTrue((out / "a.trace").is_file() and (out / "b.trace").is_file())
+
+        code, stdout, _ = self.run_main(str(path_a), str(path_a), str(self.dir / "same"))
+        self.assertEqual(code, 0)
+        self.assertIn("OK: traces identical", stdout)
+
+        code, _, stderr = self.run_main(str(path_a), str(path_b), str(out), "--context", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("--context must be a decimal record count", stderr)
+
+        code, _, stderr = self.run_main(str(path_a), str(path_b))
+        self.assertEqual(code, 2)
+        self.assertIn("usage: tracediff.py --shrink", stderr)
 
 
 class TestVerifyGateEvidence(unittest.TestCase):

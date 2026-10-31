@@ -274,6 +274,34 @@ class TestImportNameSafety(unittest.TestCase):
 
         self.assertIn("reference site 0x00009000 leaves mapped input", str(raised.exception))
 
+    def test_variable_import_reference_list_must_be_mapped(self):
+        elf = self._variable_entry()
+        struct.pack_into("<II", elf.mem, self.VSTUB_TABLE - FakeElf.BASE, 0x9000, 0x0ABC1234)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.variable_imports(elf)
+
+        self.assertIn("reference list at 0x00009000 leaves mapped input", str(raised.exception))
+
+    def test_variable_import_reference_list_is_bounded(self):
+        elf = self._variable_with_references([(2 << 26) | (0x1900 >> 2)] * 3)
+
+        with mock.patch.object(imports_tool, "MAX_VARIABLE_REFERENCES", 2):
+            with self.assertRaises(imports_tool.ImportTableError) as raised:
+                imports_tool.variable_imports(elf)
+
+        self.assertIn("more than 2 references", str(raised.exception))
+
+    def test_variable_stub_pair_must_be_mapped(self):
+        # The table's first word is mapped; its (references, NID) pair runs past the image.
+        elf = self._variable_entry(vstub_table=0x1FFC)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.variable_imports(elf)
+
+        self.assertIn("variable stub 0 of sceDisplay at 0x00001ffc leaves mapped input",
+                      str(raised.exception))
+
     def test_variable_imports_beside_functions_name_their_library(self):
         elf = self._variable_entry(num_vars=2, num_funcs=1)
 
