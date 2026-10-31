@@ -1273,6 +1273,8 @@
     "tools/mem_debug.py",
     "tools/microtest_gate.py",
     "tools/modified_file_notice_audit.py",
+    "tools/mypy_baseline.json",
+    "tools/mypy_baseline.py",
     "tools/nid_auditor.py",
     "tools/nid_corpus.json",
     "tools/nid_name_proof.py",
