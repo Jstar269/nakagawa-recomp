@@ -1932,17 +1932,19 @@ class NanTrapCacheKeyTests(unittest.TestCase):
             "SR_ACE": "v1;af=16;text=on;readout=on;notice=on;wide=off;smooth=off",
             "SR_ACE_REPORT": "ace-report.json",
         }
-        for builder in ("cli", "planner", "native"):
-            with self.subTest(builder=builder):
-                def options(environment):
-                    if builder == "cli":
-                        return nk_cli._package_codegen_options(self.MANIFEST, environment)
-                    if builder == "native":
-                        return package_cache.native_compile_flags(environment=environment)
-                    with mock.patch.dict(os.environ, environment, clear=True):
-                        return title_codegen_plan._cache_codegen_options(
-                            self.PLAN, selected_optional=set(), funcs_per_chunk=2000
-                        )
+        def planner(environment):
+            with mock.patch.dict(os.environ, environment, clear=True):
+                return title_codegen_plan._cache_codegen_options(
+                    self.PLAN, selected_optional=set(), funcs_per_chunk=2000
+                )
+
+        builders = {
+            "cli": lambda environment: nk_cli._package_codegen_options(self.MANIFEST, environment),
+            "planner": planner,
+            "native": lambda environment: package_cache.native_compile_flags(environment=environment),
+        }
+        for name, options in builders.items():
+            with self.subTest(builder=name):
                 self.assertEqual(options({}), options(ace))
 
     def test_a_trapped_key_never_matches_an_untrapped_package(self):
