@@ -909,9 +909,16 @@ class StraightLineEndTests(unittest.TestCase):
                     i += 1
                     continue
                 target = base + 4 * rng.randrange(n)
-                words[pc] = {"b": lambda: b(pc, target), "beq": lambda: beq(4, 5, pc, target),
-                             "bne": lambda: bne(4, 0, pc, target), "j": lambda: j(target),
-                             "jr": lambda: JR_RA}[kind]()
+                if kind == "b":
+                    words[pc] = b(pc, target)
+                elif kind == "beq":
+                    words[pc] = beq(4, 5, pc, target)
+                elif kind == "bne":
+                    words[pc] = bne(4, 0, pc, target)
+                elif kind == "j":
+                    words[pc] = j(target)
+                else:
+                    words[pc] = JR_RA
                 words[pc + 4] = addiu(3, 3, i + 1)                 # delay slot: never a transfer
                 i += 2
             with self.subTest(case=case):
