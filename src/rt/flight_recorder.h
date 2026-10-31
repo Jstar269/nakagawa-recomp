@@ -350,6 +350,7 @@ static inline void sr_watch_store(uint32_t pc, uint32_t addr, uint32_t value, ui
 static inline uint64_t sr_watch_match_count(void) { return 0u; }
 
 static inline void sr_flight_init(void) {}
+static inline void sr_flight_set_enhancements(const char *ace_line) { (void)ace_line; }
 static inline int sr_flight_class_enabled(uint32_t event_class) {
     (void)event_class;
     return 0;

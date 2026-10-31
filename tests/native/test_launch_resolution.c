@@ -585,8 +585,10 @@ static void test_no_iso_child_environment(const char *test_executable,
     /* An Ace Mode session exports its line and, with it, the report path. */
     snprintf(session.config.ace_spec, sizeof(session.config.ace_spec),
              "v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off");
-    snprintf(session.config.ace_report_path, sizeof(session.config.ace_report_path),
-             "%s%cace%cTEST00001.json", root, sep, sep);
+    int ace_report_len = snprintf(session.config.ace_report_path,
+                                  sizeof(session.config.ace_report_path),
+                                  "%s%cace%cTEST00001.json", root, sep, sep);
+    assert(ace_report_len > 0 && (size_t)ace_report_len < sizeof(session.config.ace_report_path));
     session.config.fps_cap = -1;
     /* A launcher that does not know its display exports an empty value, which
        still masks the inherited one; the child then uses the primary display. */

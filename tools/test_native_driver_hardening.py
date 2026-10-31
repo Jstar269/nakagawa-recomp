@@ -570,7 +570,8 @@ int main(int argc, char **argv) {{
 
             compiled = subprocess.run(
                 [CC, "-std=c11", "-O2", f"-I{RT_DIR}", f"-I{tmpdir}", "-Wall", "-Wextra", "-Werror",
-                 str(src), str(RT_DIR / "title_config.c"), str(RT_DIR / "perf.c"), "-o", str(exe)],
+                 str(src), str(RT_DIR / "title_config.c"), str(RT_DIR / "perf.c"),
+                 str(RT_DIR / "ace.c"), "-o", str(exe)],
                 capture_output=True, text=True,
             )
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
