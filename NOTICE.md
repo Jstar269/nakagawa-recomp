@@ -29,10 +29,10 @@ We aim to respond promptly and will remove material where appropriate.
 - **PPSSPP** — Copyright (c) 2012- PPSSPP Project and contributors,
   GPL-2.0-or-later, with its own third-party notices. Several HLE, GE, VFPU and
   recompiler structures are translated or adapted through the sal063 lineage;
-  the files that say so in their headers are `src/rt/hle.c`, `hle_power.c/.h`,
+  the files that say so in their headers are `src/rt/hle.c`, the files split from it (`hle_audio.c`, `hle_audio_codec.c`, `hle_cache_dma.c`, `hle_data.c`, `hle_display.c`, `hle_font.c`, `hle_ge.c`, `hle_host.c`, `hle_input.c`, `hle_internal.h`, `hle_io.c`, `hle_kernel_interrupt.c`, `hle_kernel_memory.c`, `hle_kernel_module.c`, `hle_kernel_sync.c`, `hle_kernel_thread.c`, `hle_kernel_time.c`, `hle_kernel_utils.c`, `hle_mpeg.c`, `hle_network.c`, `hle_npdrm.c`, `hle_route.c`, `hle_rtc.c`, `hle_system.c`, `hle_umd.c`, `hle_utility.c`), `hle_power.c/.h`,
   `ge.c`, `mpeg.c`, `recomp.c/.h`, `savedata.c`, `vfpu_interp.c` and `evf.h`. PPSSPP-origin data is retained only where the profile records
   its exact path, revision and notice. The per-file lineage, the pin status (the exact PPSSPP
-  revision of the inherited files is unknown) and the 34 GPL-2.0-or-later files under `src/` are
+  revision of the inherited files is unknown) and the 61 GPL-2.0-or-later files under `src/` are
   listed in [`src/rt/PROVENANCE.md`](src/rt/PROVENANCE.md).
 - **PSP game decryption (issue #295)** — `src/core/nk_psp_*`. The KIRK engine
   (`nk_psp_kirk.*`, GPL-3.0-or-later per its own notice), the AES and SHA-1 cores
