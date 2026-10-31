@@ -2686,7 +2686,7 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     t->saved.r[29] = t->sp_init;
     t->saved.r[28] = s_cpu && s_cpu->r[28] ? s_cpu->r[28] : s_gp;
     t->gp_init = t->saved.r[28];
-    t->saved.pc = entry;                         /* BUG1 fix: must seed pc=entry; otherwise dispatch target=entry sees s->pc=0 */
+    t->saved.pc = entry;                         /* the thread's first pc is its entry */
     sr_vfpu_thread_ctrl_init(&t->saved);
 
     if (getenv("SR_THLOG"))

@@ -20201,15 +20201,44 @@ static uint32_t h_IoDevctl(CpuState *s) {
         IO_DEVCTL_MSCM_UNREGISTER_CALLBACK = 0x02015805u,
         IO_DEVCTL_ERROR_UNSUPPORTED = 0x80010086u,
         IO_DEVCTL_ERROR_INVALID_ARGUMENT = 0x80010016u,
-        IO_DEVCTL_ERROR_IO = 0x80010005u
+        IO_DEVCTL_ERROR_IO = 0x80010005u,
+        IO_DEVCTL_UMD_DISC_TYPE = 0x01F20001u,
+        IO_DEVCTL_UMD_PREPARE_CACHE = 0x01F100A4u,
+        IO_UMD_TYPE_GAME = 0x10u
     };
     char device[128];
     uint32_t outdata = s->r[8], outlen = s->r[9];
     if (!A0 || !guest_cstr(A0, device, (int)sizeof(device)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (io_raw_device_path(device) != IO_RAW_DEVICE_NONE)
+    const IoRawDevicePath raw_device = io_raw_device_path(device);
+    uint32_t umd_sectors = 0u;
+    /* Two UMD drive commands a title issues before reading the disc, served while a disc
+     * image is open (behaviour reference: PPSSPP Core/HLE/sceIo.cpp sceIoDevctl):
+     *  - 0x01F20001, the disc type: the output is eight aligned writable bytes and the type
+     *    goes to its second word. It is PSP_UMD_TYPE_GAME, the type sceUmdGetDiscInfo reports
+     *    and the only medium this runtime serves.
+     *  - 0x01F100A4, prepare data in the drive cache: a four-byte argument naming the data.
+     *    The runtime has no drive cache and serves every read from the image when it is
+     *    made, so the command completes at once with nothing to do.
+     * Any other command, a malformed call or the drive with no image keeps the named
+     * boundary below. */
+    if ((raw_device == IO_RAW_DEVICE_UMD0 || raw_device == IO_RAW_DEVICE_UMD1 ||
+         raw_device == IO_RAW_DEVICE_UMD_ALIAS) &&
+        iso_sector_count(&umd_sectors) == 0 && umd_sectors != 0u) {
+        if (A1 == IO_DEVCTL_UMD_DISC_TYPE && (outdata & 3u) == 0u && outlen >= 8u &&
+            sr_guest_span_writable(outdata, 8u)) {
+            MEM_W32(outdata + 4u, IO_UMD_TYPE_GAME);
+            return 0;
+        }
+        if (A1 == IO_DEVCTL_UMD_PREPARE_CACHE && A3 >= 4u && sr_guest_span_readable(A2, 4u))
+            return 0;
+    }
+    if (raw_device != IO_RAW_DEVICE_NONE) {
+        /* Name the command too: the raw-device boundary line does not carry it. */
+        hle_note_devctl_refusal(device, A1, IO_DEVCTL_ERROR_UNSUPPORTED);
         return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_DEVCTL,
                                           "sceIoDevctl", device, UINT32_MAX);
+    }
     int is_memstick = strcmp(device, "ms0:") == 0 ||
                       strcmp(device, "fatms0:") == 0 ||
                       strcmp(device, "mscmhc0:") == 0 ||
@@ -20285,8 +20314,8 @@ static uint32_t io_async_submit(uint32_t fd, IoAsyncOp op, uint32_t a1,
                                 uint32_t a2, uint32_t a3,
                                 uint32_t stack0, uint32_t stack1) {
     const int raw_umd_queued = hle_fd_is_raw_umd(fd) &&
-        (op == IO_ASYNC_READ || op == IO_ASYNC_LSEEK32 || op == IO_ASYNC_LSEEK64 ||
-         op == IO_ASYNC_CLOSE);
+        (op == IO_ASYNC_OPEN || op == IO_ASYNC_READ || op == IO_ASYNC_LSEEK32 ||
+         op == IO_ASYNC_LSEEK64 || op == IO_ASYNC_CLOSE);
     if (hle_fd_is_raw_device(fd) && !raw_umd_queued) {
         switch (op) {
         case IO_ASYNC_READ:
@@ -20343,7 +20372,12 @@ static uint32_t h_IoOpenAsync(CpuState *s) {
     char path[512];
     uint32_t rc = io_guest_path(A0, path, sizeof(path));
     if (rc != 0u) return rc;
-    if (io_raw_device_path(path) != IO_RAW_DEVICE_NONE)
+    /* The UMD block device ("umd0:", "umd1:", "umd:") opens through the same request queue:
+     * the I/O manager hands an asynchronous open to the descriptor's async thread, which runs
+     * the device open sceIoOpen runs (uOFW src/kd/iofilemgr/iofilemgr.c, sceIoOpenAsync and
+     * do_open; behaviour only, no code copied), so its flag refusal is sceIoOpen's and the
+     * descriptor is the raw UMD sceIoOpen returns. Other raw devices keep their boundary. */
+    if (io_raw_device_path(path) == IO_RAW_DEVICE_MSSTOR0P1)
         return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_OPEN_ASYNC,
                                           "sceIoOpenAsync", path, UINT32_MAX);
     /* The host lookup runs now so the call can return the PSP-visible fd, but the
@@ -20356,8 +20390,10 @@ static uint32_t h_IoOpenAsync(CpuState *s) {
      * callback then. */
     uint32_t fd = h_IoOpen(s);
     if (fd < sizeof(s_fds) / sizeof(s_fds[0]) && s_fds[fd].used &&
-        io_async_submit(fd, IO_ASYNC_OPEN, 0u, 0u, 0u, 0u, 0u) != 0u) {
-        /* A descriptor kind the request queue does not hold completes at once. */
+        ((hle_fd_is_raw_device(fd) && !hle_fd_is_raw_umd(fd)) ||
+         io_async_submit(fd, IO_ASYNC_OPEN, 0u, 0u, 0u, 0u, 0u) != 0u)) {
+        /* A descriptor kind the request queue does not hold (the UMD with no disc image
+         * open, as for sceIoOpen) completes at once. */
         s_fds[fd].async.state = IO_ASYNC_COMPLETE;
         s_fds[fd].async.op = IO_ASYNC_NONE;
         s_fds[fd].async.result = (int64_t)(int32_t)fd;
