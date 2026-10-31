@@ -622,6 +622,46 @@ class CollectorTests(unittest.TestCase):
         self.assertIn(f"commits/{HEAD}/check-runs?filter=all", gh.reads)
         self.assertEqual(ctv.evaluate(ctv.normalise(raw)).state, "success")
 
+    def test_collect_reads_jobs_only_for_each_producers_newest_live_run(self) -> None:
+        """The rules judge a producer from its newest live run at the head, so a superseded or cancelled run's
+        jobs are not read: one API call each, and the token's hourly budget ran out on 2026-10-31.
+        Failing-before: the collector read the jobs of every run of a producer workflow."""
+        scenario = Scenario()
+        scenario.add_run(6, CI, ["Classify change", "Hygiene and security", "CI required"],
+                         created="2026-10-28T09:00:00Z")
+        scenario.add_run(8, OSV, ["OSV Vulnerability Scan"], created="2026-10-28T10:10:00Z",
+                         conclusion="cancelled")
+        gh = FakeGitHub(scenario)
+        with mock.patch.object(ctv, "git_facts", return_value=_facts()):
+            raw = ctv.collect(gh, Path("."), "main", HEAD, None)
+        assert raw is not None
+        self.assertEqual(set(raw["jobs"]), {"1", "2", "3", "4"})
+        self.assertEqual([read for read in gh.reads if read.startswith(("actions/runs/6/", "actions/runs/8/"))], [])
+        self.assertEqual(ctv.evaluate(ctv.normalise(raw)).state, "success")
+
+    def test_requests_are_counted_and_the_tokens_budget_is_logged(self) -> None:
+        """Each run logs its API requests and the budget the token's last answer reported, a refusal included."""
+        gh = ctv.GitHub("Jstar269/nakagawa-recomp", "token")
+        response = mock.MagicMock()
+        response.read.return_value = b"{}"
+        response.headers = {"X-RateLimit-Limit": "1000", "X-RateLimit-Remaining": "37", "X-RateLimit-Used": "963",
+                            "X-RateLimit-Reset": "1793473200", "X-RateLimit-Resource": "core"}
+        response.__enter__.return_value = response
+        with mock.patch.object(ctv.urllib.request, "urlopen", return_value=response):
+            gh.get(f"pulls/{PR}")
+            gh.get(f"pulls/{PR}")
+        note = gh.budget_note()
+        self.assertIn("2 request(s) this run", note)
+        self.assertIn("core budget had 37 of 1000 left", note)
+        self.assertRegex(note, r"resetting at \d\d:\d\d:\d\dZ$")
+        refusal = urllib.error.HTTPError("https://api.github.com/x", 403, "rate limited",
+                                         {"x-ratelimit-limit": "1000", "x-ratelimit-remaining": "0"},  # type: ignore[arg-type]
+                                         None)
+        with mock.patch.object(ctv.urllib.request, "urlopen", side_effect=refusal):
+            with self.assertRaises(urllib.error.HTTPError):
+                gh.get(f"pulls/{PR}")
+        self.assertIn("3 request(s) this run; the token's core budget had 0 of 1000 left", gh.budget_note())
+
     def test_collect_finds_nothing_for_a_head_without_a_pull_request_into_main(self) -> None:
         scenario = Scenario()
         scenario.raw["open_pull_requests"][0]["base"]["ref"] = "release"

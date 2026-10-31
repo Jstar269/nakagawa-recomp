@@ -37,8 +37,10 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 ### Draft pull requests
 
-The OpenSSF Scorecard workflow (`.github/workflows/scorecards.yml`) runs weekly and on pushes to
-`main`. It uploads SARIF to GitHub code scanning; publishing results to scorecard.dev is disabled.
+The OpenSSF Scorecard workflow (`.github/workflows/scorecards.yml`) runs daily, and on demand from the
+Actions tab. It doesn't run on every push to `main`, because each run spends the repository's shared hourly
+`GITHUB_TOKEN` API budget. It uploads SARIF to GitHub code scanning and publishes results to scorecard.dev
+for the README badge.
 Triage findings through the usual issue process. The workflow does not change branch-protection
 settings.
 
