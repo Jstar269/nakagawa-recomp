@@ -77,6 +77,7 @@
 #include "vfpu_tables.h" /* sr_vfpu_sha256(): enhancement data-file digests */
 #include "prx_loader.h"  /* clean-room PRX image loader (G3) */
 #include "flight_recorder.h"
+#include "ace.h"            /* Ace Mode: the 30 Hz detector sees every flip (Ace on only) */
 #include "psmf_producer.h" /* bounded project-authored PSMF/MPEG-PS AU producer */
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
 #include "ge_shared.h"      /* GE state snapshot for headless VRAM diagnostics */
@@ -24250,6 +24251,14 @@ static void display_present_active(void) {
         s_vcount - s_picture_probe_vcount >= SR_PICTURE_PROBE_EVERY &&
         display_host_span_valid(&s_display_active))
         probe = sr_capture_arm_probe();
+    /* Ace Mode's 30 Hz detector (ace.h) sees every flip here, before the presenter's own slot
+     * rule can drop a second flip in one VBLANK. Off, nothing is read. */
+    if (g_ace_on && s_display_active.addr) {
+        uint32_t bytes = (uint32_t)(s_display_active.stride > 0 ? s_display_active.stride : 512) *
+                         272u * (s_display_active.fmt == 3 ? 4u : 2u);
+        (void)ace_flip(s_display_active.addr & 0x1FFFFFu, bytes, s_vcount,
+                       sr_host_monotonic_ms() * 1000000ull);
+    }
     display_present_frame();
     sr_capture_cancel();
     uint32_t brightest;

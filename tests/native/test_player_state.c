@@ -5613,6 +5613,157 @@ static void test_input_classification_and_check_again(void) {
  * packages/<disc>-enhanced-<id>. Each entry validates only the variant it names,
  * neither stands in for the other, each must be the build its folder names,
  * and an id that is not a package name never forms a path. */
+/* Ace Mode (src/rt/ace.h, docs/ENHANCEMENT_CONTRACT.md section 11): the library's defaults,
+ * the per-title precedence (C2), the launch line, settings that round-trip and survive bad
+ * values (C3), the per-run report's "Last session" line, and Authentic taking 60 FPS game
+ * logic off. */
+static void test_ace_mode_settings(void) {
+    char sep = nk_platform_path_separator();
+    char cache_root[512], root[700], path[800], line[160];
+    PlayerAceResolved r;
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(root, sizeof(root), "%s%cace_mode_probe", cache_root, sep);
+    assert(nk_platform_mkdir_p(root));
+    snprintf(path, sizeof(path), "%s%csettings.json", root, sep);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerApp *back = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app && back);
+    player_app_settings_init_default(&app->settings);
+    /* Off until the player turns it on (owner, 2026-10-31); the features keep defaults. */
+    assert(!app->settings.ace.enabled && app->settings.ace.af == 16 && app->settings.ace.text &&
+           !app->settings.ace.readout && app->settings.ace.notice);
+    assert(app->settings.ace_title_count == 0);
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(!r.on && r.mode == PLAYER_ACE_TITLE_LIBRARY);
+    assert(player_ace_launch_line(&r, line, sizeof(line)) && strcmp(line, "off") == 0);
+
+    app->game_count = 2;
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST90001");
+    snprintf(app->games[1].disc_id, sizeof(app->games[1].disc_id), "TEST90002");
+    size_t path_len = strlen(path);
+    assert(path_len < sizeof(app->settings_path));
+    memcpy(app->settings_path, path, path_len + 1u);
+
+    /* C2: the library switch, then the title's mode over it. */
+    player_app_toggle_ace(app);
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.on && r.af == 16 && r.text && !r.readout && r.notice);
+    assert(player_ace_launch_line(&r, line, sizeof(line)) &&
+           strcmp(line, "v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off") == 0);
+    player_app_cycle_title_ace_mode(app, 1);                      /* library -> on */
+    player_app_cycle_title_ace_mode(app, 1);                      /* on -> authentic */
+    assert(player_app_title_ace_mode(app, 1) == PLAYER_ACE_TITLE_AUTHENTIC);
+    player_ace_resolve(&app->settings, "test90002", &r);         /* the same disc, any case */
+    assert(!r.on && r.mode == PLAYER_ACE_TITLE_AUTHENTIC);
+    assert(player_ace_launch_line(&r, line, sizeof(line)) && strcmp(line, "off") == 0);
+    player_app_toggle_ace(app);                                   /* library off */
+    player_app_cycle_title_ace_mode(app, 0);                      /* title 0: on */
+    player_ace_resolve(&app->settings, "TEST90001", &r);
+    assert(r.on && r.mode == PLAYER_ACE_TITLE_ON && r.af == 16);
+    player_ace_resolve(&app->settings, "TEST90003", &r);         /* not chosen: library (off) */
+    assert(!r.on);
+    /* A title's own feature value wins over the library's; absent ones follow it. */
+    {
+        PlayerAceTitle *own = (PlayerAceTitle *)player_settings_ace_title(&app->settings, "TEST90001");
+        assert(own != NULL && own->mode == PLAYER_ACE_TITLE_ON);
+        own->af = 4;
+        own->readout = 1;
+        app->settings.ace.text = false;
+        player_ace_resolve(&app->settings, "TEST90001", &r);
+        assert(r.on && r.af == 4 && r.readout && !r.text && r.notice);
+        own->af = -1;
+        own->readout = -1;
+        app->settings.ace.text = true;
+    }
+    /* Library values change what a following title gets. */
+    player_app_toggle_ace(app);
+    player_app_cycle_ace_filtering(app);                          /* 16 -> 8 */
+    player_app_toggle_ace_readout(app);
+    player_app_toggle_ace_notice(app);
+    player_ace_resolve(&app->settings, "TEST90004", &r);
+    assert(r.on && r.af == 8 && r.readout && !r.notice);
+    assert(strcmp(player_ace_filtering_label(8), "8x") == 0 &&
+           strcmp(player_ace_filtering_label(0), "Off") == 0);
+    for (int i = 0; i < 4; i++) player_app_cycle_ace_filtering(app); /* 8, 4, 2, 0, 16 */
+    assert(app->settings.ace.af == 16);
+
+    /* Authentic takes the title's 60 FPS game logic off while it is chosen. */
+    snprintf(app->settings.enhancement_60hz_discs[0], PLAYER_DISC_ID_KEY_LEN, "TEST90002");
+    app->settings.enhancement_60hz_disc_count = 1;
+    assert(player_app_title_60hz_saved(app, "TEST90002"));
+    assert(!player_app_title_60hz_on(app, 1));
+    player_app_cycle_title_ace_mode(app, 1);                      /* authentic -> library */
+    assert(player_app_title_ace_mode(app, 1) == PLAYER_ACE_TITLE_LIBRARY);
+    assert(player_app_title_60hz_on(app, 1));
+    assert(app->settings.ace_title_count == 1);                   /* back to library: dropped */
+
+    /* C3: what was saved reads back, and the file names no feature this build lacks. */
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(back->settings.ace.enabled == app->settings.ace.enabled);
+    assert(back->settings.ace.af == 16 && back->settings.ace.readout && !back->settings.ace.notice);
+    assert(back->settings.ace_title_count == 1);
+    assert(strcmp(back->settings.ace_titles[0].key, "TEST90001") == 0);
+    assert(back->settings.ace_titles[0].mode == PLAYER_ACE_TITLE_ON);
+    {
+        char *saved = read_text_file(path);
+        assert(saved && strstr(saved, "\"ace\": {\"enabled\": true, \"af\": 16,") != NULL);
+        assert(strstr(saved, "\"ace_titles\": {\"TEST90001\": {\"mode\": \"ace\"}}") != NULL);
+        assert(strstr(saved, "wide") == NULL && strstr(saved, "smooth") == NULL);
+        free(saved);
+    }
+    /* A file from before Ace Mode keeps the defaults; bad values keep them too, and a title
+       entry that is not a disc ID, or follows the library everywhere, is dropped. */
+    write_text_file(path, "{\"schema_version\": 2}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(!back->settings.ace.enabled && back->settings.ace.af == 16 && back->settings.ace.text);
+    write_text_file(path,
+        "{\"schema_version\": 2, \"ace\": {\"enabled\": \"yes\", \"af\": 3, \"text\": false},"
+        " \"ace_titles\": {\"../TEST90001\": {\"mode\": \"ace\"}, \"TEST90005\": {\"mode\": \"boost\"},"
+        " \"test90006\": {\"mode\": \"authentic\", \"af\": 7, \"text\": 1}, \"TEST90007\": 5}}");
+    memset(back, 0, sizeof(*back));
+    assert(player_app_load_settings(back, path) == NK_OK);
+    assert(!back->settings.ace.enabled && back->settings.ace.af == 16 && !back->settings.ace.text);
+    assert(back->settings.ace_title_count == 1);
+    assert(strcmp(back->settings.ace_titles[0].key, "TEST90006") == 0);
+    assert(back->settings.ace_titles[0].mode == PLAYER_ACE_TITLE_AUTHENTIC);
+    assert(back->settings.ace_titles[0].af == -1 && back->settings.ace_titles[0].text == -1);
+
+    /* The per-run report: the "Last session" line, and nothing for a missing or bad file. */
+    assert(player_ace_report_path(root, "TEST90001", line, sizeof(line)));
+    {
+        char expected[800];
+        snprintf(expected, sizeof(expected), "%s%cace%cTEST90001.json", root, sep, sep);
+        assert(strcmp(line, expected) == 0);
+    }
+    assert(!player_ace_last_session_line(root, "TEST90001", line, sizeof(line)) && line[0] == '\0');
+    {
+        char dir[760], report[800];
+        snprintf(dir, sizeof(dir), "%s%cace", root, sep);
+        assert(nk_platform_mkdir_p(dir));
+        assert(player_ace_report_path(root, "TEST90001", report, sizeof(report)));
+        write_text_file(report,
+            "{\n  \"schema\": 1,\n  \"spec\": \"v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off\",\n"
+            "  \"effective\": {\"af\": 16, \"text\": true, \"readout\": false, \"notice\": true, "
+            "\"wide\": \"off\", \"smooth\": \"off\"},\n  \"unavailable\": {},\n"
+            "  \"rate\": {\"dominant\": \"30 Hz\", \"seconds\": {\"30 Hz\": 50.0}},\n"
+            "  \"frames\": {\"flips\": 10, \"new\": 5},\n  \"pc_limited_seconds\": 0\n}\n");
+        assert(player_ace_last_session_line(root, "TEST90001", line, sizeof(line)));
+        assert(strcmp(line, "Last session: 16x filtering, crisp keyboard; the game ran at 30 Hz.") == 0);
+        write_text_file(report, "{not json");
+        assert(!player_ace_last_session_line(root, "TEST90001", line, sizeof(line)));
+        write_text_file(report, "{\"schema\": 2, \"effective\": {\"af\": 16}}");
+        assert(!player_ace_last_session_line(root, "TEST90001", line, sizeof(line)));
+        remove(report);
+        (void)test_rmdir(dir);
+    }
+    remove(path);
+    (void)test_rmdir(root);
+    free(back);
+    free(app);
+}
+
 static void test_enhanced_package_variants(void) {
     char sep = nk_platform_path_separator();
     char cache_root[512], root[700], stock_dir[900], enhanced_dir[960];
@@ -5875,6 +6026,7 @@ int main(int argc, char **argv) {
     test_license_folder_request();
     test_library_card_status_text();
     test_enhanced_package_variants();
+    test_ace_mode_settings();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */
     test_sample_entries_never_reach_library_json();

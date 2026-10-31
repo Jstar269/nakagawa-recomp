@@ -21,6 +21,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "../ace.h"   /* Ace Mode: texture filtering asks for samplerAnisotropy */
 #include "sdl3vk.h"
 #include "nk_platform.h"
 #include "../perf.h"
@@ -204,6 +205,12 @@ void sdl3vk_set_audio_active_cb(int (*cb)(void)) {
 
 void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate)) {
     s_logic_slowed_cb = cb;
+}
+
+static void (*s_ui_pass)(const Sdl3VkUiPass *frame);
+
+void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame)) {
+    s_ui_pass = pass;
 }
 
 static uint32_t s_buttons;
@@ -682,6 +689,27 @@ int sdl3vk_init(const char *title) {
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = s_denorm_preserve_f32 ? 2u : 1u;
     dci.ppEnabledExtensionNames = dev_ext;
+    /* Ace Mode's texture filtering (ace.h) is the only device feature the player ever asks
+     * for, and only in an Ace run that wants it: an authentic run creates the device with no
+     * features, as before. A device without it, or with less than 2x, runs without filtering
+     * and the run says why; a lower maximum clamps the level. */
+    VkPhysicalDeviceFeatures ace_features = {0};
+    if (g_ace_on && ace_effective()->af > 0) {
+        VkPhysicalDeviceFeatures have;
+        VkPhysicalDeviceProperties pp;
+        vkGetPhysicalDeviceFeatures(s_pdev, &have);
+        vkGetPhysicalDeviceProperties(s_pdev, &pp);
+        if (have.samplerAnisotropy && pp.limits.maxSamplerAnisotropy >= 2.0f) {
+            int device_max = pp.limits.maxSamplerAnisotropy >= 16.0f ? 16
+                           : pp.limits.maxSamplerAnisotropy >= 8.0f ? 8
+                           : pp.limits.maxSamplerAnisotropy >= 4.0f ? 4 : 2;
+            ace_features.samplerAnisotropy = VK_TRUE;
+            dci.pEnabledFeatures = &ace_features;
+            ace_set_af_effective(device_max < ace_effective()->af ? device_max : ace_effective()->af, NULL);
+        } else {
+            ace_set_af_effective(0, "this GPU has no anisotropic filtering");
+        }
+    }
     INIT_VK(vkCreateDevice(s_pdev, &dci, NULL, &s_dev));
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
 
@@ -1151,6 +1179,7 @@ int sdl3vk_get_vk(Sdl3VkInfo *out) {
     out->queue    = (void *)s_queue;
     out->queue_family = s_qfam;
     out->denorm_preserve_f32 = s_denorm_preserve_f32;
+    out->get_instance_proc_addr = (void *)vkGetInstanceProcAddr;
     return 1;
 }
 
@@ -1921,6 +1950,20 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         if ((s_hud_enabled || s_logic_slowed_cb) && f->hud_staging_map) {
             draw_hud_overlay(cmd, f, s_swap_img[idx], dw, dh);
+        }
+        if (s_ui_pass) {
+            Sdl3VkUiPass ui;
+            ui.cmd = (void *)cmd;
+            ui.frame_slot = (uint32_t)s_frame_cursor;
+            ui.frames_in_flight = PRESENT_FRAMES;
+            ui.format = (int)s_swap_fmt;
+            ui.width = (uint32_t)dw;
+            ui.height = (uint32_t)dh;
+            ui.images = (void *const *)s_swap_img;
+            ui.image_count = s_swap_n;
+            ui.image_index = idx;
+            ui.swapchain_gen = s_swapchain_gen;
+            s_ui_pass(&ui);
         }
 
         barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -3206,6 +3249,11 @@ int sdl3vk_pause_input_selftest(void) {
 }
 #undef PAUSE_CHECK
 
+/* Set while the lifecycle selftest holds its own SDL video reference: SDL_WasInit cannot tell
+ * that reference from one sdl3vk leaked, so the per-step count then checks the gamepad
+ * subsystem only, and the selftest checks video once after releasing its reference. */
+static int s_lifecycle_test_holds_video = 0;
+
 /* Objects sdl3vk_init can create, and its SDL subsystems, that are still held. */
 static int lifecycle_live_objects(void) {
     static const PresentFrame empty;
@@ -3215,7 +3263,8 @@ static int lifecycle_live_objects(void) {
             (s_fence != VK_NULL_HANDLE) + (s_swap != VK_NULL_HANDLE) + s_sdl_subsystems;
     for (int i = 0; i < PRESENT_FRAMES; i++)
         n += memcmp(&s_frame[i], &empty, sizeof empty) != 0;
-    return n + (SDL_WasInit(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) != 0);
+    return n + (SDL_WasInit(s_lifecycle_test_holds_video ? SDL_INIT_GAMEPAD
+                                                         : SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) != 0);
 }
 
 /* Init unwind, repeated shutdown and re-init (#1377). A failure injected at each fallible step
@@ -3241,6 +3290,14 @@ static int sdl3vk_lifecycle_selftest(void) {
     VkInstanceCreateInfo keep_ci = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     VkInstance keep = VK_NULL_HANDLE;
     (void)vkCreateInstance(&keep_ci, NULL, &keep);
+    /* The test holds its own SDL video reference across the cycles too. sdl3vk_shutdown
+     * releases only its own (SDL_QuitSubSystem), so the video backend's display connection
+     * stays open instead of being reopened some 70 times: under xvfb on a loaded CI runner
+     * one reconnect was seen to fail ("x11 not available"), which the loop then reported as
+     * an unwind at the wrong step. sdl3vk's own objects are still counted below; a video
+     * reference it leaked in any cycle is caught once the test releases its own. */
+    const int keep_video = SDL_InitSubSystem(SDL_INIT_VIDEO) ? 1 : 0;
+    s_lifecycle_test_holds_video = keep_video;
     sdl3vk_shutdown();
     sdl3vk_shutdown();
     if (lifecycle_live_objects() != 0) {
@@ -3321,6 +3378,15 @@ static int sdl3vk_lifecycle_selftest(void) {
         }
     }
     if (keep) vkDestroyInstance(keep, NULL);
+    if (keep_video) {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        s_lifecycle_test_holds_video = 0;
+        if (SDL_WasInit(SDL_INIT_VIDEO) != 0) {
+            fprintf(stderr, "lifecycle: SDL video still initialised after the cycles "
+                            "(a reference sdl3vk_init took was not released)\n");
+            ok = 0;
+        }
+    }
     if (sdl3vk_validation_error_count() != errors) {
         fprintf(stderr, "lifecycle: %d validation error(s) during the unwinds\n",
                 sdl3vk_validation_error_count() - errors);

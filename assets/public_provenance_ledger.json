@@ -4524,6 +4524,39 @@
       }
     },
     {
+      "path": "src/rt/ace.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ace-mode-v002-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/ace.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ace-mode-v002-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/ace_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ace-mode-v002-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "src/rt/archive_vfs.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5923,6 +5956,39 @@
         "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/ace_ui.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ace-mode-v002-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/ace_ui.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ace-mode-v002-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/ace_ui_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ace-mode-v002-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
       }
     },
     {
@@ -12722,6 +12788,28 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "publication-and-provenance-tooling-20260909",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/mypy_baseline.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "mypy-baseline-1391-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/mypy_baseline.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "mypy-baseline-1391-20261031",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null

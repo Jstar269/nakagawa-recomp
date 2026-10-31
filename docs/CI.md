@@ -37,8 +37,10 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 ### Draft pull requests
 
-The OpenSSF Scorecard workflow (`.github/workflows/scorecards.yml`) runs weekly and on pushes to
-`main`. It uploads SARIF to GitHub code scanning; publishing results to scorecard.dev is disabled.
+The OpenSSF Scorecard workflow (`.github/workflows/scorecards.yml`) runs daily, and on demand from the
+Actions tab. It doesn't run on every push to `main`, because each run spends the repository's shared hourly
+`GITHUB_TOKEN` API budget. It uploads SARIF to GitHub code scanning and publishes results to scorecard.dev
+for the README badge.
 Triage findings through the usual issue process. The workflow does not change branch-protection
 settings.
 
@@ -830,6 +832,14 @@ job with only `pull-requests: write` withdraws the approval label on a new head.
 reads the head's workflow runs, latest-attempt jobs, check runs, statuses and label events
 from GitHub's API and posts `success`, `pending` or `failure` (or `error` if it cannot judge
 the head, which replaces an older success).
+
+Those reads use the `VERDICT_READ_TOKEN` secret when it is set. It is the maintainer's
+fine-grained token, read-only and for this repository only. It moves the verifier's dozen or so
+reads per judgement off the hourly `GITHUB_TOKEN` budget that every workflow shares; on
+2026-10-31 that budget ran out and failed Trusted CodeQL. The status itself is always posted
+with `GITHUB_TOKEN`, since the ruleset accepts it only from GitHub Actions. A read the token is
+refused is retried with `GITHUB_TOKEN`. Each run's log ends with a line giving its request count
+and each token's remaining budget.
 
 | Code | Fails when |
 | --- | --- |

@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
+from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -37,7 +39,7 @@ from tools.ci_test_shards import nightly_tier
 _PUBLIC_SAFE_TREE = is_public_safe_export_tree()
 
 
-def _git(argv: list[str], cwd: Path) -> None:
+def _git(argv: Sequence[str], cwd: Path) -> None:
     run_git(argv, cwd=cwd, check=True, capture_output=True)
 
 
@@ -343,6 +345,13 @@ class TestCandidateImmutability293(unittest.TestCase):
     byte-identical apart from the intentionally variable commit metadata, and
     the exhaustive candidate-tree audit must read the exact final bytes.
     """
+    _tmp: ClassVar[tempfile.TemporaryDirectory[str]]
+    export_a: ClassVar[Path]
+    export_b: ClassVar[Path]
+    manifest_a: ClassVar[dict[str, Any]]
+    manifest_b: ClassVar[dict[str, Any]]
+    trusted_ledger: ClassVar[Path]
+    tampered: ClassVar[Path]
 
     @classmethod
     def setUpClass(cls) -> None:

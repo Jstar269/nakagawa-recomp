@@ -129,9 +129,15 @@ jobs:
 
       # The verifier fetches refs/pull/N/head into a private ref as objects
       # only, with no credentials, and posts the status itself.
+      # VERDICT_READ_TOKEN is the maintainer's read-only token for this
+      # repository: the verifier's reads use it, so they draw on that
+      # account's API budget rather than the GITHUB_TOKEN budget every
+      # workflow shares. The status is still posted with GITHUB_TOKEN. When the
+      # secret is absent (Dependabot runs) every request uses GITHUB_TOKEN.
       - name: Judge the head and post the verdict
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          VERDICT_READ_TOKEN: ${{ secrets.VERDICT_READ_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}

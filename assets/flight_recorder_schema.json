@@ -14,7 +14,16 @@
       "required": ["name", "cpu_state_abi"],
       "properties": {
         "name": {"const": "nakagawa-recomp"},
-        "cpu_state_abi": {"const": 3}
+        "cpu_state_abi": {"const": 3},
+        "enhancements": {
+          "type": "object",
+          "description": "Present only in a run with Ace Mode on (src/rt/ace.h): the run's SR_ACE line. Such a run is enhanced, not authentic, and tools/flight_diff.py refuses to compare a bundle that carries this block. An authentic run never writes it, so authentic bundles from before and after this property are unchanged.",
+          "additionalProperties": false,
+          "required": ["ace"],
+          "properties": {
+            "ace": {"type": "string", "pattern": "^v1(;[a-z]+=[a-z0-9]+)+$", "maxLength": 95}
+          }
+        }
       }
     },
     "build": {

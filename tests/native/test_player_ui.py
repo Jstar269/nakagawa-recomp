@@ -2149,10 +2149,12 @@ class NativePlayerUiTests(unittest.TestCase):
         "launcher_fullscreen": str(0x450A), "accessibility": str(0x452C),
         "interface_size": str(0x452D), "high_contrast": str(0x452E),
         "reduce_motion": str(0x4509), "text_size": str(0x452F),
+        "ace": str(0x4540), "ace_open": str(0x4541), "ace_mode": str(0x4542),
     }
-    # From Resolution, Down runs through the Game card's five rows to the button
-    # row, which it enters at Third-party notices.
-    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 5
+    # From Resolution, Down runs through the Game card's seven rows (the last two
+    # are Ace Mode and its options) to the button row, which it enters at
+    # Third-party notices.
+    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 7
 
     def focus_trail(self, run: dict[str, object]) -> list[str]:
         """The controls the next UI focused, with repeats collapsed."""
@@ -2192,6 +2194,41 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         self.assertEqual(self.screens(tabs), [("settings", "1"), ("library", "3")],
                          "the ABOUT tab on Settings closes it and opens About")
+
+    def test_next_ui_ace_mode_switch_is_saved_and_its_page_opens(self) -> None:
+        """Ace Mode (src/rt/ace.h): off by default; the Game card's row switches it for the
+        library and saves it, and Ace Mode options opens its page on its own switch."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + ("KEY_DOWN",) * 5 + ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+        )
+        self.assertIn(focus["ace"], self.focus_trail(run), "Down reaches the Ace Mode row")
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        ace = settings.get("ace")
+        assert isinstance(ace, dict), settings
+        self.assertIs(ace.get("enabled"), True, "Ace Mode switched on and saved")
+        self.assertEqual(ace.get("af"), 16, "the features keep their defaults")
+        pad = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + ("PAD_DPAD_DOWN",) * 5 + ("PAD_SOUTH", "WAIT_MS=100", "PAD_EAST"),
+        )
+        pad_settings = pad["settings"]
+        assert isinstance(pad_settings, dict)
+        pad_ace = pad_settings.get("ace")
+        assert isinstance(pad_ace, dict), pad_settings
+        self.assertIs(pad_ace.get("enabled"), True, "a controller's d-pad and south do the same")
+        page = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + ("KEY_DOWN",) * 6 + ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE",
+                                                     "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(page)],
+                         ["settings", "ace_settings", "settings"])
+        trail = self.focus_trail(page)
+        self.assertEqual(trail[-2:], [focus["ace_mode"], focus["ace_open"]],
+                         "the page opens on its switch and Back focuses the row that opened it")
 
     def test_a_dedicated_data_root_keeps_everything_out_of_the_default_profile(self) -> None:
         """--user-data-root=<folder> opens the player on a second profile, for example a
@@ -3473,7 +3510,8 @@ class NativePlayerUiTests(unittest.TestCase):
 
         Failing-before: the showcase demos read NEEDS SETUP for the first 4-9 s of
         every start, until their checks finished, and then flipped to READY."""
-        # 4.5 s spans two of the main loop's 2 s rescans, each re-checking the title for 1.5 s.
+        # 4.5 s spans the first check (1.5 s) and the periodic re-check that starts after
+        # 2 s with no check running.
         run = self.run_player(
             "ready", ("WAIT_MS=4500",), wait_background=True, ui_mode="next",
             env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "1500"},
@@ -3494,6 +3532,29 @@ class NativePlayerUiTests(unittest.TestCase):
         # CHECKING (it did on every 2 s rescan, and made this test flaky on slow hosts).
         decided = statuses.index(next(s for s in statuses if s != "Checking"))
         self.assertNotIn("Checking", statuses[decided:], statuses)
+
+    def test_background_wait_ends_when_a_check_outlasts_the_rescan_period(self) -> None:
+        """A package check slower than the 2 s rescan period no longer repeats without pause.
+
+        The periodic rescan counted 2 s from the previous rescan, even while a check
+        ran. A check of 2 s or more (a large package, or 1.5 s of test delay on a
+        loaded CI runner) found the next one queued when it ended, so the launcher
+        re-checked back to back and never went idle, and a run that waits for
+        background work hit its timeout (the library-card test above, at 49.5 s on
+        hosted Windows). Failing-before: with a 2.5 s check this run never went idle
+        and timed out. Now the rescan waits for 2 s with no check running, so the run
+        ends when the check under way finishes."""
+        try:
+            run = self.run_player(
+                "ready", ("WAIT_MS=500",), wait_background=True, ui_mode="next",
+                env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "2500"},
+                timeout=30.0,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("the launcher never went idle: each 2.5 s package check queued the next")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(int(frames[-1]["package_status_thread_attempts"]), 1, run["stdout"])
 
     def test_failed_post_build_check_does_not_suppress_later_title_build(self) -> None:
         run = self.run_player(
@@ -4696,9 +4757,11 @@ class NativePlayerUiTests(unittest.TestCase):
 
     LIBRARY_ADD = str(0x1002)
 
-    # Remove from library is the title page's lowest control, so Down presses
-    # end on it whichever action-row buttons are enabled.
-    DOWN_TO_REMOVE = ("KEY_DOWN", "WAIT_MS=80") * 4
+    # Remove from library is the title page's lowest control, beside Report a
+    # problem: Down presses reach that row whichever action-row buttons are
+    # enabled (the ENHANCEMENTS card's left-aligned Ace Mode button leads Down to
+    # Report a problem), and Right ends on Remove.
+    DOWN_TO_REMOVE = ("KEY_DOWN", "WAIT_MS=80") * 6 + ("KEY_RIGHT", "WAIT_MS=80")
 
     def remove_run(self, events: tuple[str, ...]) -> list[dict[str, str]]:
         run = self.run_player("library", events, ui_mode="next", wait_background=True)

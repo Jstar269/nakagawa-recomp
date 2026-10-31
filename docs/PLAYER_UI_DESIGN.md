@@ -484,6 +484,15 @@ sentence saying what it does and what Windows asks for now: INTERFACE SIZE (Auto
 CONTRAST and REDUCE MOTION (Automatic, On or Off; Automatic follows Windows' contrast themes and Animation effects,
 read every frame, so a change there applies at once). The four buttons share one column; at a larger text size it
 is as wide as the widest label, and the sentences go under the buttons when beside them one would be cut.
+ACE MODE (src/rt/ace.h) closes the GAME card: its ON / OFF button switches it for the library (off by default),
+and ACE MODE OPTIONS opens a dialog card in the same pattern: ACE MODE, TEXTURE FILTERING (16x, 8x, 4x, 2x, Off),
+CRISP SYSTEM TEXT, SPEED READOUT and GAME BADGE, each beside a sentence that says what it does and what it costs.
+While ACE MODE is off the feature rows are disabled (`dim`, not focusable) and keep their values. The title page's
+ENHANCEMENTS card shows ACE MODE for every game (LIBRARY DEFAULT, ON, AUTHENTIC; `PRIMARY` while in effect, never
+the default focus), one or two lines of what it turns on and the last session, and the 60 FPS switch beside it,
+which AUTHENTIC turns off. A library card where Ace is in effect carries an `ACE` badge at the art's top right. In
+game, the pause menu's caption names Ace's features and its Settings page has a live SPEED READOUT row; the launch
+notice (top right, 3 s, a cut with Reduce motion) and the readout (top left) are chips on the 16 px safe area.
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
 SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
 page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:

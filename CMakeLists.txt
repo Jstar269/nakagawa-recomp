@@ -718,6 +718,7 @@ set_tests_properties(nk_ui_sdl_input_test PROPERTIES SKIP_RETURN_CODE 77
 set(NK_RUNTIME_SOURCES
     src/rt/recomp.c
     src/rt/flight_recorder.c
+    src/rt/ace.c
     src/rt/cpu_lle.c
     src/rt/domain_mode.c
     src/rt/nested_frames.c
@@ -761,6 +762,7 @@ set(NK_RUNTIME_SOURCES
     src/rt/driver.c
     src/rt/gpu_sdl3vk/sdl3vk.c
     src/rt/gpu_sdl3vk/ge_gpu.c
+    src/rt/gpu_sdl3vk/ace_ui.c
     src/core/nk_input_profile.c
     src/core/nk_font.c
     src/core/nk_json.c
@@ -897,14 +899,15 @@ function(nk_add_title_runtime target package_dir title_id)
     # only include paths and the NK_UI_WITH_* switches the UI files read. The top-level -Werror
     # is the host tests' policy; the Makefile builds the runtime without it.
     add_library(${target}_rt OBJECT ${rt_sources} ${ui_sources} ${ui_edge}
-        "${root}/src/ui/backend/nk_ui_sdlr.c" ${overlay} "${root}/src/rt/overlay/overlay_host.c")
+        "${root}/src/ui/backend/nk_ui_sdlr.c" "${root}/src/ui/backend/nk_ui_vk.c" ${overlay}
+        "${root}/src/rt/overlay/overlay_host.c")
     target_include_directories(${target}_rt PRIVATE
         "${root}/src/rt" "${root}/src/core" "${root}/src/ui" "${root}/src/rt/overlay"
         "${root}/third_party/clay" "${root}/src/rt/atrac3p" "${root}/src/rt/atrac3p/libavcodec"
         "${root}/src/rt/atrac3p/libavutil" "${package_dir}")
     target_compile_options(${target}_rt PRIVATE -O2 -fno-strict-aliasing -Wno-error)
     target_compile_definitions(${target}_rt PRIVATE ${rt_defs} NK_UI_WITH_SDL NK_UI_WITH_SDL3
-        NK_UI_WITH_SDL_TTF)
+        NK_UI_WITH_SDL_TTF NK_UI_WITH_VULKAN)
     target_link_libraries(${target}_rt PRIVATE SDL3::SDL3)
     if(TARGET SDL3_ttf::SDL3_ttf)
         target_include_directories(${target}_rt PRIVATE

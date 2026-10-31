@@ -162,6 +162,8 @@ static int write_launch_environment_probe(void) {
     const char *experimental_60hz = getenv("SR_EXPERIMENTAL_60HZ");
     const char *developer_mode = getenv("SR_DEVELOPER_MODE");
     const char *reduce_motion = getenv("SR_REDUCE_MOTION");
+    const char *ace = getenv("SR_ACE");
+    const char *ace_report = getenv("SR_ACE_REPORT");
     const char *host_time_zone = getenv("SR_HOST_TIME_ZONE");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
@@ -183,6 +185,8 @@ static int write_launch_environment_probe(void) {
                      "SR_EXPERIMENTAL_60HZ=%s\n"
                      "SR_DEVELOPER_MODE=%s\n"
                      "SR_REDUCE_MOTION=%s\n"
+                     "SR_ACE=%s\n"
+                     "SR_ACE_REPORT=%s\n"
                      "SR_HOST_TIME_ZONE=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
@@ -203,6 +207,8 @@ static int write_launch_environment_probe(void) {
                      experimental_60hz ? experimental_60hz : "<unset>",
                      developer_mode ? developer_mode : "<unset>",
                      reduce_motion ? reduce_motion : "<unset>",
+                     ace ? ace : "<unset>",
+                     ace_report ? ace_report : "<unset>",
                      host_time_zone ? host_time_zone : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
@@ -380,6 +386,14 @@ static void test_no_iso_child_environment(const char *test_executable,
     bool had_reduce_motion;
     char *old_reduce_motion = capture_environment_value("SR_REDUCE_MOTION", &had_reduce_motion);
     set_environment_value("SR_REDUCE_MOTION", "on");
+    /* Nor an inherited Ace Mode line (src/rt/ace.h): a session the player did not resolve on
+       is authentic, "off", and exports no report path (A1). */
+    bool had_ace;
+    char *old_ace = capture_environment_value("SR_ACE", &had_ace);
+    set_environment_value("SR_ACE", "v1;af=16;text=on;readout=on;notice=on;wide=off;smooth=off");
+    bool had_ace_report;
+    char *old_ace_report = capture_environment_value("SR_ACE_REPORT", &had_ace_report);
+    set_environment_value("SR_ACE_REPORT", "poisoned-parent-report.json");
     bool had_host_zone;
     char *old_host_zone = capture_environment_value("SR_HOST_TIME_ZONE", &had_host_zone);
     set_environment_value("SR_HOST_TIME_ZONE", "poisoned-parent-zone");
@@ -543,6 +557,10 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=0\n") != NULL);
     assert(strstr(observed, "SR_DEVELOPER_MODE=0\n") != NULL);
     assert(strstr(observed, "SR_REDUCE_MOTION=system\n") != NULL);
+    assert(strcmp(session.config.ace_spec, "off") == 0);   /* prepare_session's default */
+    assert(strstr(observed, "SR_ACE=off\n") != NULL);
+    assert(strstr(observed, "SR_ACE_REPORT=\n") != NULL);   /* the parent's path is masked */
+    assert(strstr(observed, "poisoned-parent-report") == NULL);
     /* The host's local time zone for the runtime's first-run seed (#1382): "<minutes>,<0|1>"
        from the platform, never an inherited value. */
     {
@@ -564,6 +582,13 @@ static void test_no_iso_child_environment(const char *test_executable,
              "fixture-60hz");
     session.config.developer_mode = true;
     session.config.reduce_motion = NK_REDUCE_MOTION_OFF;
+    /* An Ace Mode session exports its line and, with it, the report path. */
+    snprintf(session.config.ace_spec, sizeof(session.config.ace_spec),
+             "v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off");
+    int ace_report_len = snprintf(session.config.ace_report_path,
+                                  sizeof(session.config.ace_report_path),
+                                  "%s%cace%cTEST00001.json", root, sep, sep);
+    assert(ace_report_len > 0 && (size_t)ace_report_len < sizeof(session.config.ace_report_path));
     session.config.fps_cap = -1;
     /* A launcher that does not know its display exports an empty value, which
        still masks the inherited one; the child then uses the primary display. */
@@ -584,12 +609,30 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=1\n") != NULL);
     assert(strstr(observed, "SR_DEVELOPER_MODE=1\n") != NULL);
     assert(strstr(observed, "SR_REDUCE_MOTION=off\n") != NULL);
+    assert(strstr(observed, "SR_ACE=v1;af=8;text=on;readout=off;notice=on;wide=off;smooth=off\n") != NULL);
+    {
+        char expected_report[1200];
+        snprintf(expected_report, sizeof(expected_report), "SR_ACE_REPORT=%s\n",
+                 session.config.ace_report_path);
+        assert(strstr(observed, expected_report) != NULL);
+    }
     assert(strstr(observed, "SR_LAUNCHER_DISPLAY_BOUNDS=\n") != NULL);
     assert(strstr(observed, "7,7,7,7") == NULL);
     session.enhancement_package_id[0] = '\0';
     session.config.developer_mode = false;
     session.config.reduce_motion = NK_REDUCE_MOTION_SYSTEM;
+    /* The acceptance checkpoint is evidence: an Ace line refuses to launch it. */
+    session.config.headless_accept_presented_frames = 3u;
+    assert(nk_launch_start(&session) != NK_OK);
+    assert(strstr(session.last_error, "Ace Mode is on") != NULL);
+    session.config.headless_accept_presented_frames = 0u;
+    snprintf(session.config.ace_spec, sizeof(session.config.ace_spec), "off");
+    session.config.ace_report_path[0] = '\0';
 
+    restore_environment_value("SR_ACE", old_ace, had_ace);
+    free(old_ace);
+    restore_environment_value("SR_ACE_REPORT", old_ace_report, had_ace_report);
+    free(old_ace_report);
     restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);
     restore_environment_value("SR_REDUCE_MOTION", old_reduce_motion, had_reduce_motion);
     free(old_reduce_motion);
