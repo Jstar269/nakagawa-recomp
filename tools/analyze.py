@@ -3747,10 +3747,7 @@ def main(argv):
         boundary_code = getattr(exc, "code", None)
         if not isinstance(boundary_code, str) or not boundary_code.startswith("ANALYZER_"):
             raise
-        if boundary_code == "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED":
-            message = "PSP variable imports are not supported yet."
-        else:
-            message = "This PSP import-table layout is not supported yet."
+        message = "This PSP import-table layout is not supported yet."
         sys.stderr.write(f"{boundary_code}: {exc}. {message}\n")
         return 1
     model = build_model(elf, starts)

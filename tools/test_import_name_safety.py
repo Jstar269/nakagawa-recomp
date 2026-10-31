@@ -219,16 +219,15 @@ class TestImportNameSafety(unittest.TestCase):
         struct.pack_into("<I", elf.mem, entry + 20, vstub_table)
         return elf
 
-    def test_variable_only_imports_have_a_named_unsupported_boundary(self):
+    def test_variable_only_imports_add_no_function_stub(self):
+        # A window that imports only variables names no function stub: its variables are
+        # linked at run time (variable_imports), not refused.
         elf = self._variable_entry()
 
-        with self.assertRaises(imports_tool.ImportTableError) as raised:
-            imports_tool.parse_imports(elf)
-
-        self.assertEqual(raised.exception.code, "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED")
-        self.assertIsInstance(raised.exception, imports_tool.VariableImportsUnsupported)
+        self.assertEqual(imports_tool.parse_imports(elf), {})
+        _stubs, _findings, tables = imports_tool.function_import_model(elf)
         self.assertEqual(
-            raised.exception.tables,
+            tables,
             (imports_tool.VariableImportTable("sceDisplay", 1, FakeElf.STUB, self.VSTUB_TABLE),),
         )
 
@@ -253,9 +252,8 @@ class TestImportNameSafety(unittest.TestCase):
                 "sceDisplay", 0x0ABC1234,
                 (("hi16", 0x1800), ("lo16", 0x1804), ("word32", 0x1900))),),
         )
-        # The analyzer keeps refusing the table until the linker and codegen read the model.
-        with self.assertRaises(imports_tool.VariableImportsUnsupported):
-            imports_tool.parse_imports(elf)
+        # The table imports: codegen reads these sites from memory and the runtime links them.
+        self.assertEqual(imports_tool.parse_imports(elf), {})
 
     def test_variable_import_reference_of_another_type_is_refused(self):
         elf = self._variable_with_references([(4 << 26) | (0x1800 >> 2)])
@@ -273,6 +271,32 @@ class TestImportNameSafety(unittest.TestCase):
             imports_tool.variable_imports(elf)
 
         self.assertIn("reference site 0x00009000 leaves mapped input", str(raised.exception))
+
+    def test_variable_exports_list_each_named_library_variable_with_its_address(self):
+        # .lib.ent: the nameless lifecycle entry (no linkable variables), then a library with
+        # one function and two variables; its entry table holds 3 NIDs then 3 addresses.
+        class ExportImage:
+            def __init__(self):
+                self.mem = bytearray(0x400)
+                head = struct.pack("<IHHBBHI", 0, 0, 0x8000, 4, 1, 1, 0x1100)
+                named = struct.pack("<IHHBBHI", 0x1200, 1, 1, 4, 2, 1, 0x1140)
+                self.mem[0x000:0x020] = head + named
+                struct.pack_into("<II", self.mem, 0x100, 0xD632ACDB, 0x0F7C276C)
+                struct.pack_into("<6I", self.mem, 0x140, 0xAAAA0001, 0xBBBB0001, 0xBBBB0002,
+                                 0x1300, 0x1310, 0x1320)
+                self.mem[0x200:0x208] = b"VarLib\x00\x00"
+
+            def sec(self, name):
+                return {"addr": 0x1000, "size": 0x20} if name == ".lib.ent" else None
+
+            def read_at_vaddr(self, address, size):
+                start = address - 0x1000
+                return bytes(self.mem[start:start + size]) if 0 <= start <= len(self.mem) - size else None
+
+        self.assertEqual(imports_tool.variable_exports(ExportImage()), (
+            imports_tool.VariableExport("VarLib", 0xBBBB0001, 0x1310),
+            imports_tool.VariableExport("VarLib", 0xBBBB0002, 0x1320),
+        ))
 
     def test_variable_import_reference_list_must_be_mapped(self):
         elf = self._variable_entry()
@@ -302,14 +326,13 @@ class TestImportNameSafety(unittest.TestCase):
         self.assertIn("variable stub 0 of sceDisplay at 0x00001ffc leaves mapped input",
                       str(raised.exception))
 
-    def test_variable_imports_beside_functions_name_their_library(self):
+    def test_variable_imports_beside_functions_keep_the_function_stub(self):
         elf = self._variable_entry(num_vars=2, num_funcs=1)
 
-        with self.assertRaises(imports_tool.VariableImportsUnsupported) as raised:
-            imports_tool.parse_imports(elf)
-
-        self.assertEqual(raised.exception.code, "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED")
-        self.assertIn("2 variable imports (sceDisplay x2)", str(raised.exception))
+        self.assertEqual(imports_tool.parse_imports(elf),
+                         {FakeElf.FIRST_SYM: ("sceDisplay", 0x12345678)})
+        _stubs, _findings, tables = imports_tool.function_import_model(elf)
+        self.assertEqual([(table.library, table.count) for table in tables], [("sceDisplay", 2)])
 
     def test_variable_import_library_name_must_be_mapped(self):
         elf = self._variable_entry()

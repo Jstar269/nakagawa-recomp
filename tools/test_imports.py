@@ -497,15 +497,17 @@ class AuditAnalyzerParityTests(unittest.TestCase):
         for label, case in cases.items():
             self.assertParity(case, accepted=False, label=label)
 
-    def test_variable_imports_are_a_named_boundary_in_both(self) -> None:
+    def test_variable_imports_map_the_same_functions_in_both(self) -> None:
         # The interleaved builder emits a variable-only entry (numVars 1, six words)
-        # with a null variable-stub pointer; map that pointer to the module info.
+        # with a null variable-stub pointer; map that pointer to the module info. The
+        # variables are linked at run time, so both parsers map the one function stub.
         blob = bytearray(build_interleaved_import_elf(
             [("SynthAlpha", 0, 1), ("SynthVariables", 1, 0)], [0x11000001]))
         struct.pack_into("<I", blob, _entry_offset(bytes(blob), 1) + 20, BASE_VADDR)
-        self.assertEqual(self._analyze(bytes(blob)),
-                         ("refused", "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED"))
-        self.assertParity(bytes(blob), accepted=False, label="variable imports")
+        model = self._analyze(bytes(blob))
+        self.assertEqual(model[0], "accepted", model)
+        self.assertEqual([lib_nid for lib_nid in model[1].values()], [("SynthAlpha", 0x11000001)])
+        self.assertParity(bytes(blob), accepted=True, label="variable imports")
 
     def test_malformed_envelopes_are_refused_by_both(self) -> None:
         blob, _expected = build_import_layout_elf(PRIMARY)

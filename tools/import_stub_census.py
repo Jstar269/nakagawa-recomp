@@ -23,7 +23,6 @@ A slot failing (a) or (b) is MISSING and carries one reason:
   dropped by a late pass    a direct call reached the stub, but the late discovery passes
                             did not keep it
   overlapping a function    the stub address lies inside another function's traced body
-  variable import           the image declares variable imports, which the analyzer refuses
   other                     anything else, including a refused or unanalysable image
 
 Usage:
@@ -60,11 +59,9 @@ from imports import ImportTableError  # noqa: E402
 REASON_OUTSIDE = "outside every range"
 REASON_LATE = "dropped by a late pass"
 REASON_OVERLAP = "overlapping a function"
-REASON_VARIABLE = "variable import"
 REASON_OTHER = "other"
-REASONS = (REASON_OUTSIDE, REASON_LATE, REASON_OVERLAP, REASON_VARIABLE, REASON_OTHER)
+REASONS = (REASON_OUTSIDE, REASON_LATE, REASON_OVERLAP, REASON_OTHER)
 
-VARIABLE_IMPORTS_CODE = "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED"
 HLE_REGISTRATION = re.compile(r"sr_hle_register\(\s*0x([0-9a-fA-F]+)u?")
 
 
@@ -188,10 +185,7 @@ def census_image(path, base, *, label, extra_spans=None, handled=frozenset()):
         reason, detail = None, ""
         in_named = analyze.in_ranges(addr, named)
         if not analyzed_ok:
-            if rec["refusal"] == VARIABLE_IMPORTS_CODE:
-                reason = REASON_VARIABLE
-            else:
-                reason, detail = REASON_OTHER, f"analysis refused: {rec['refusal'] or rec['status']}"
+            reason, detail = REASON_OTHER, f"analysis refused: {rec['refusal'] or rec['status']}"
         elif addr & 3:
             reason, detail = REASON_OTHER, "misaligned stub slot"
         elif addr not in functions:

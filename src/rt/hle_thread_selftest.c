@@ -1183,20 +1183,35 @@ static int write_synthetic_prx(const char *path, int malformed) {
     fixture_wr32(image + 0x80, 0x285D00D1u); /* synthetic image marker */
     memcpy(image + MODOFF + 4, "synthetic", 9);
     fixture_wr32(image + MODOFF + 36, 0x100); /* export-table virtual start */
-    fixture_wr32(image + MODOFF + 40, malformed ? 0x21101 : 0x110);
+    fixture_wr32(image + MODOFF + 40, malformed == 1 ? 0x21101 : 0x110);
 
     uint8_t *entry = image + ENTOFF;
     entry[8] = 4;                       /* words per export entry */
-    entry[9] = 0;                       /* variable exports */
+    entry[9] = malformed == 2 ? 1 : 0;  /* variable exports (variant 2: one, named) */
     fixture_wr16(entry + 10, 3);        /* three function exports */
     fixture_wr32(entry + 12, 0x140);    /* NID/target pair table */
 
-    fixture_wr32(image + TABLEOFF + 0, 0x11111111); /* target base + 0 */
-    fixture_wr32(image + TABLEOFF + 4, 0x22222222); /* target base + 0x20 */
-    fixture_wr32(image + TABLEOFF + 8, 0x33333333); /* target that wraps below */
-    fixture_wr32(image + TABLEOFF + 12, 0x00000000);
-    fixture_wr32(image + TABLEOFF + 16, 0x00000020);
-    fixture_wr32(image + TABLEOFF + 20, 0xd0000000);
+    if (malformed == 2) {
+        /* Library "VarTestLib" (file 0x200, base-relative 0x180) exports a variable at base +
+         * 0x40: NIDs are the three functions then the variable, then their targets. */
+        fixture_wr32(entry + 0, 0x180);
+        memcpy(image + 0x200, "VarTestLib", 11);
+        fixture_wr32(image + TABLEOFF + 0, 0x11111111);
+        fixture_wr32(image + TABLEOFF + 4, 0x22222222);
+        fixture_wr32(image + TABLEOFF + 8, 0x33333333);
+        fixture_wr32(image + TABLEOFF + 12, 0x44444444); /* the variable's NID */
+        fixture_wr32(image + TABLEOFF + 16, 0x00000000);
+        fixture_wr32(image + TABLEOFF + 20, 0x00000020);
+        fixture_wr32(image + TABLEOFF + 24, 0xd0000000);
+        fixture_wr32(image + TABLEOFF + 28, 0x00000040); /* the variable at base + 0x40 */
+    } else {
+        fixture_wr32(image + TABLEOFF + 0, 0x11111111); /* target base + 0 */
+        fixture_wr32(image + TABLEOFF + 4, 0x22222222); /* target base + 0x20 */
+        fixture_wr32(image + TABLEOFF + 8, 0x33333333); /* target that wraps below */
+        fixture_wr32(image + TABLEOFF + 12, 0x00000000);
+        fixture_wr32(image + TABLEOFF + 16, 0x00000020);
+        fixture_wr32(image + TABLEOFF + 20, 0xd0000000);
+    }
 
     FILE *f = fopen(path, "wb");
     if (!f) return 0;
@@ -2766,6 +2781,10 @@ static void test_guest_module_load_binding(void) {
     remove(path);
 }
 
+void sr_hle_test_var_reset(void);
+const char *sr_hle_test_var_import_add(const SrVarImport *imp, uint32_t base, uint32_t owner);
+void sr_hle_test_var_owner_remove(uint32_t owner);
+
 static void test_prx_export_relocation_behavior(void) {
     const char *path = HLE_BUILD_ROOT "/hle_prx_export_fixture.bin";
     const uint32_t base = 0x30000000u;
@@ -2794,6 +2813,37 @@ static void test_prx_export_relocation_behavior(void) {
                "malformed module metadata publishes no exports");
     }
     remove(path);
+
+    /* A module's variable export reaches a waiting importer through the production export
+     * parser (#308), and the module's unload unlinks it. */
+    enum { SITES = 0x09014000u, VAR_NID = 0x44444444u };
+    static const uint32_t original[] = {0x3c020000u, 0x3c030000u, 0x24420010u, 0x8c640000u, 4u};
+    static const uint32_t linked[] = {0x3c023000u, 0x3c033000u, 0x24420050u, 0x8c640040u,
+                                      0x30000044u};
+    static const SrVarImportRef refs[] = {
+        {0x00u, 5u}, {0x04u, 5u}, {0x08u, 6u}, {0x0cu, 6u}, {0x10u, 2u},
+    };
+    static const SrVarImport imp = {"VarTestLib", VAR_NID, refs, 5u};
+    int i;
+    sr_hle_test_var_reset();
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+    expect(sr_hle_test_var_import_add(&imp, SITES, 0x08d00000u) == NULL,
+           "variable export: the importer waits for the module");
+    int variable_fixture = write_synthetic_prx(path, 2);
+    expect(variable_fixture, "synthetic PRX fixture with a variable export was written");
+    if (variable_fixture) {
+        (void)sr_hle_test_register_prx_exports(path, base);
+        int all_linked = 1;
+        for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+        expect(all_linked, "variable export: the export parser registers the module's variable "
+                           "and the waiting import links to base + 0x40");
+        sr_hle_test_var_owner_remove(base);
+        int restored = 1;
+        for (i = 0; i < 5; i++) restored &= MEM_R32(SITES + 4u * (uint32_t)i) == original[i];
+        expect(restored, "variable export: the module's unload unlinks the importer");
+    }
+    remove(path);
+    sr_hle_test_var_reset();
 }
 
 int sr_hle_test_last_prx_host_served(void);
@@ -4535,6 +4585,119 @@ static void test_umd_block_device_async(uint32_t fd, uint32_t data_addr, uint32_
                umd_test_async_call(UMD_NID_WAIT_ASYNC, fd, result_addr, 0u, 0u, 0u) == 0u &&
                umd_test_async_result(result_addr) == (int64_t)(int32_t)0x80010086u,
            "a queued UMD read across the last sector completes at the raw-device boundary");
+}
+
+void sr_hle_test_var_reset(void);
+const char *sr_hle_test_var_import_add(const SrVarImport *imp, uint32_t base, uint32_t owner);
+const char *sr_hle_test_var_export_add(const char *lib, uint32_t nid, uint32_t addr, uint32_t owner);
+void sr_hle_test_var_owner_remove(uint32_t owner);
+const char *sr_hle_test_var_fixed_link(const char *name, uint32_t base);
+void sr_hle_test_var_fixed_reset(void);
+
+/* Variable imports (#308): the loader patches each reference with the exported variable's
+ * address (uOFW loadcore aVariableLinkApply). The variable sits at 0x0899fff8, so its low
+ * half has bit 15 set and the HI16 run must round up. Two HI16 lui words share the LO16 that
+ * follows their run (addiu +0x10), a second LO16 (lw +0) uses its own immediate, and a 32-bit
+ * word holds +4. */
+static void test_variable_import_linker(void) {
+    enum {
+        SITES = 0x09014000u, VAR = 0x0899fff8u, EXPORTER = 0x08c00000u, IMPORTER = 0x08d00000u,
+        LIB_NID = 0x12345678u,
+    };
+    static const uint32_t original[] = {
+        0x3c020000u,  /* lui v0, 0          HI16 */
+        0x3c030000u,  /* lui v1, 0          HI16 */
+        0x24420010u,  /* addiu v0, v0, 0x10 LO16 */
+        0x8c640000u,  /* lw a0, 0(v1)       LO16 */
+        0x00000004u,  /* .word 4            32-bit */
+    };
+    static const uint32_t linked[] = {
+        0x3c02089au, 0x3c03089au, 0x24420008u, 0x8c64fff8u, 0x0899fffcu,
+    };
+    static const SrVarImportRef refs[] = {
+        {0x00u, 5u}, {0x04u, 5u}, {0x08u, 6u}, {0x0cu, 6u}, {0x10u, 2u},
+    };
+    static const SrVarImport imp = {"TestLib", LIB_NID, refs, 5u};
+    int i;
+    sr_hle_test_var_reset();
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+
+    expect(sr_hle_test_var_import_add(&imp, SITES, IMPORTER) == NULL,
+           "variable import: an import whose exporter is not loaded waits");
+    int untouched = 1;
+    for (i = 0; i < 5; i++) untouched &= MEM_R32(SITES + 4u * (uint32_t)i) == original[i];
+    expect(untouched, "variable import: a waiting import patches nothing");
+
+    expect(sr_hle_test_var_export_add("TestLib", LIB_NID, VAR, EXPORTER) == NULL,
+           "variable import: the exporter registers its variable");
+    int all_linked = 1;
+    for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+    expect(all_linked, "variable import: the exporter's arrival patches every reference, "
+                       "the HI16 run rounded for the LO16 after it");
+    expect((MEM_R32(SITES) << 16) + (uint32_t)(int32_t)(int16_t)MEM_R32(SITES + 8u) == VAR + 0x10u &&
+               (MEM_R32(SITES + 4u) << 16) + (uint32_t)(int32_t)(int16_t)MEM_R32(SITES + 12u) == VAR,
+           "variable import: each lui/LO16 pair now forms its address");
+
+    sr_hle_test_var_owner_remove(EXPORTER);
+    int restored = 1;
+    for (i = 0; i < 5; i++) restored &= MEM_R32(SITES + 4u * (uint32_t)i) == original[i];
+    expect(restored, "variable import: the exporter's unload unlinks every reference");
+
+    expect(sr_hle_test_var_export_add("TestLib", LIB_NID, VAR, EXPORTER) == NULL,
+           "variable import: the exporter loads again");
+    all_linked = 1;
+    for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+    expect(all_linked, "variable import: the waiting import links again");
+
+    /* An importer that loads after its exporter links at once. */
+    sr_hle_test_var_owner_remove(IMPORTER);
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+    expect(sr_hle_test_var_import_add(&imp, SITES, IMPORTER) == NULL,
+           "variable import: an importer of a loaded exporter registers");
+    all_linked = 1;
+    for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+    expect(all_linked, "variable import: it links when it loads");
+
+    /* Lists the loader cannot patch are refused, and nothing is written. */
+    static const SrVarImportRef dangling[] = {{0x00u, 5u}, {0x10u, 2u}};
+    static const SrVarImportRef unknown[] = {{0x10u, 4u}};
+    static const SrVarImport bad_hi = {"TestLib", LIB_NID, dangling, 2u};
+    static const SrVarImport bad_kind = {"TestLib", LIB_NID, unknown, 1u};
+    sr_hle_test_var_reset();
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+    (void)sr_hle_test_var_export_add("TestLib", LIB_NID, VAR, EXPORTER);
+    const char *why_hi = sr_hle_test_var_import_add(&bad_hi, SITES, IMPORTER);
+    const char *why_kind = sr_hle_test_var_import_add(&bad_kind, SITES, IMPORTER);
+    untouched = 1;
+    for (i = 0; i < 5; i++) untouched &= MEM_R32(SITES + 4u * (uint32_t)i) == original[i];
+    expect(why_hi != NULL && strstr(why_hi, "HI16") != NULL && why_kind != NULL && untouched,
+           "variable import: a HI16 with no LO16 after its run, or an unknown reference type, "
+           "is refused before anything is written");
+
+    /* The executable's own exports link from boot; a fixed-base module's imports link when
+     * it loads (by its file name) and leave with it. */
+    static const SrVarExportDecl main_exports[] = {{"TestLib", LIB_NID, VAR}};
+    static const SrVarImportRef fixed_refs[] = {
+        {SITES + 0x00u, 5u}, {SITES + 0x04u, 5u}, {SITES + 0x08u, 6u}, {SITES + 0x0cu, 6u},
+        {SITES + 0x10u, 2u},
+    };
+    static const SrVarImport fixed_imp = {"TestLib", LIB_NID, fixed_refs, 5u};
+    sr_hle_test_var_reset();
+    sr_hle_test_var_fixed_reset();
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+    sr_main_var_exports_register(main_exports, 1u);
+    sr_fixed_var_imports_register("fixed_mod.prx", &fixed_imp, 1u);
+    expect(sr_hle_test_var_fixed_link("modules/FIXED_MOD.PRX", IMPORTER) == NULL,
+           "variable import: a fixed-base module's table is found by its file name");
+    all_linked = 1;
+    for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+    expect(all_linked, "variable import: the fixed-base module links to the executable's export");
+    sr_hle_test_var_owner_remove(IMPORTER);
+    expect(sr_hle_test_var_fixed_link("other.prx", IMPORTER) == NULL &&
+               MEM_R32(SITES) == linked[0],
+           "variable import: another module's load links nothing of this table");
+    sr_hle_test_var_reset();
+    sr_hle_test_var_fixed_reset();
 }
 
 static void test_umd_io_console_model(void) {
@@ -41753,6 +41916,41 @@ static void test_aot_return_boundary_nonlocal_return(void) {
     if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
     expect(stray_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
            "AOT nonlocal return: a target outside every live call still fails closed");
+
+    /* A longjmp into a frame a dispatch_call frame lies above: that frame's caller would
+     * run its own continuation, so the return into the live frame fails closed too. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[29] = OUTER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    cpu.r[29] = MIDDLE_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    sr_aot_return_boundary_top->dispatch_owned = 1u;
+    cpu.r[29] = INNER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, INNER_RESUME, INNER_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, 0x08a00500u);
+    cpu.r[29] = MIDDLE_SP;  /* the jmp_buf's $sp: the middle frame */
+    capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int live_dispatch_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(live_dispatch_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT return into a live frame: never abandons a dispatch_call frame");
+
+    /* The callee returned with its own frame still allocated ($sp below its entry $sp):
+     * that is a jump inside the callee, not a return into an enclosing frame. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[29] = OUTER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    cpu.r[29] = MIDDLE_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, 0x08a00500u);
+    cpu.r[29] = MIDDLE_SP - 0x20u;
+    capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int own_frame_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(own_frame_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT return into a live frame: a callee still inside its own frame fails closed");
     sr_aot_return_boundaries_reset();
 }
 
@@ -42670,6 +42868,7 @@ static int hle_selftest_main(int argc, char **argv) {
 #endif
     test_prx_export_relocation_behavior();
     test_module_identity_is_its_export_table();
+    test_variable_import_linker();
     test_fd_namespace();
     test_umd_io_console_model();
     test_ms0_unified_namespace();
@@ -43008,6 +43207,7 @@ static int hle_selftest_main(int argc, char **argv) {
  * and dispatch adapters for the rest of the HLE suite; rename recomp.c's unused
  * dispatcher exports here while leaving sr_aot_return_boundary_* unmodified. */
 void sr_recomp_test_unused_dispatch_tail_step(CpuState *s, uint32_t target);
+int sr_recomp_test_unused_dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
 void sr_recomp_test_unused_profile_dump(void);
 void sr_recomp_test_unused_profile_block(uint32_t target_pc);
 void sr_recomp_test_unused_oor(uint32_t addr, uint32_t value, int store);
@@ -43050,4 +43250,21 @@ void sr_recomp_test_unused_trace_close(void);
 #undef dispatch_call
 #undef dispatch
 #undef sr_lookup
+
+/* A live-frame continuation (sr_aot_return_boundary_end) reaches recomp.c's dispatcher,
+ * which links the interpreter floor in. This variant runs no interpreted code: its VFPU
+ * entry and the interpreter's linked-call dispatch only have to exist, and the call
+ * dispatch stops the run by name if it is ever reached. */
+int sr_vfpu_interp(CpuState *s, uint32_t op) {
+    (void)s;
+    (void)op;
+    return SR_VFPU_OTHER;
+}
+
+void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {
+    fprintf(stderr, "hle_thread_selftest: the AOT boundary variant has no interpreted "
+                    "linked call (target 0x%08x, resume 0x%08x)\n", target, resume_pc);
+    s->flow_kind = SR_FLOW_FATAL;
+    s->flow_target = target;
+}
 #endif /* SR_HLE_AOT_BOUNDARY_TEST */

@@ -121,6 +121,9 @@ ENHANCEMENT_UPDATE_BOUNDARY: int | None = None
 ENHANCEMENT_DATA_PATCHES: list[tuple[str, bytes, bytes, str]] = []
 # Verified disc data files: (disc path, stock sha256, rewritten bytes, id).
 ENHANCEMENT_DATA_FILES: list[tuple[str, str, bytes, str]] = []
+# Callable entries whose body loads $sp (guest_owns_entry_sp): no exit restores their entry
+# $sp, so the stack census leaves them unwrapped, as it leaves resume bodies.
+GUEST_SP_ENTRIES: set[int] = set()
 
 
 def _enhancement_rewrite(addr: int) -> dict | None:
@@ -217,10 +220,13 @@ class AddressSpace:
     modules that share link addresses coexist.
     """
 
-    def __init__(self, base_symbol=None, prefix=None, relocations=None):
+    def __init__(self, base_symbol=None, prefix=None, relocations=None, patched=None):
         self.base_symbol = base_symbol
         self.prefix = prefix
         self.relocations = relocations
+        # Variable-import reference sites, {address: kind}: words the runtime linker
+        # patches with an exported variable's address (variable_import_sites).
+        self.patched = dict(patched or {})
 
     @property
     def runtime_module(self):
@@ -250,12 +256,22 @@ class AddressSpace:
     def instruction_word(self, addr, w):
         """The word to emit for the instruction at ``addr``.
 
-        Only a runtime module's relocated immediates change: they become a
-        ``RelocatedWord`` that reads the loader-relocated field from the image.
-        A relocation the translation cannot express fails closed for the owning
-        function.
+        A runtime module's relocated immediates and any image's variable-import
+        reference sites change: they become a ``RelocatedWord`` that reads the
+        field the loader patches from the image. A relocation or reference the
+        translation cannot express fails closed for the owning function.
         """
-        if w is None or not self.runtime_module:
+        if w is None:
+            return w
+        kind = self.patched.get(addr)
+        if kind is not None:
+            if kind not in ("lo16", "hi16"):
+                raise Unsupported(f"variable-import {kind} reference on an executed word at 0x{addr:08x}")
+            if (w >> 26) not in _RELOCATABLE_IMMEDIATE_OPS:
+                raise Unsupported(
+                    f"variable-import {kind} reference on opcode 0x{w >> 26:02x} at 0x{addr:08x}")
+            return RelocatedWord(w, f"MEM_R16({self.pc(addr)})")
+        if not self.runtime_module:
             return w
         site = self._site(addr)
         if site is None:
@@ -275,11 +291,23 @@ class AddressSpace:
             return w
         raise Unsupported(f"{site.kind} relocation on an executed word at 0x{addr:08x}")
 
+    def unrelocated_jump(self, addr):
+        """True for a relocatable runtime module's j/jal that carries no relocation.
+
+        The loader leaves such a word as linked, and it names an address outside the module:
+        a module linked against its executable calls into it by the executable's link-space
+        address, so the real target is whatever the word holds when it runs, which the build
+        cannot know. The transfer decodes its target from the word in guest memory when it
+        executes, as the CPU does (emit_decoded_jump_target); a word nothing patched reaches
+        its link-space address and stops there by name.
+        """
+        return (self.runtime_module and self.relocations is not None
+                and self.relocations.relocatable and self._site(addr) is None)
+
     def check_jump(self, addr, w):
-        """A runtime module's j/jal must carry its relocation: an absolute jump
-        out of a relocatable image names an address the build cannot know."""
-        if (self.runtime_module and self.relocations is not None
-                and self.relocations.relocatable and self._site(addr) is None):
+        """The LLVM lowering (tools/lowering_plan.py) has no decoded-jump form, so an
+        unrelocated j/jal still fails closed for its owning function there."""
+        if self.unrelocated_jump(addr):
             raise Unsupported(f"unrelocated absolute jump in a relocatable module at 0x{addr:08x}")
 
 
@@ -857,6 +885,23 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
         f.write("#endif\n")
 
 
+def guest_owns_entry_sp(elf, insns):
+    """True when a body loads $sp from memory, so its returns leave the guest's $sp.
+
+    A callable body owes its caller the entry $sp, and its returns restore it (F3E). A body
+    that loads $sp from memory is a longjmp or a context switch: it returns into the frame
+    whose $sp it loaded, and restoring the entry $sp there would undo it. Its returns, its
+    tail transfers and its fall-through end therefore leave $sp as the guest set it, as a
+    resume body's do. A frame adjustment (`addiu sp, sp, imm`) or `move sp, fp` keeps the
+    callable contract.
+    """
+    for addr in insns:
+        w = read32(elf, addr)
+        if w is not None and (w >> 26) == 0x23 and ((w >> 16) & 0x1F) == 29:
+            return True
+    return False
+
+
 def emit_host_return(resumable, comment=None, stack_census=False):
     """The single host-exit policy for callable and live-frame resume entries."""
     if resumable:
@@ -907,6 +952,14 @@ def emit_body_call(symbol):
     return f"{symbol}(s); {BODY_CALL_DRAIN}"
 
 
+def emit_decoded_jump_target(addr):
+    """C expression for the target of the j/jal at ``addr``, decoded from the word in guest
+    memory when the transfer runs: the delay slot's 256 MiB segment and the word's 26-bit
+    index (AddressSpace.unrelocated_jump)."""
+    return (f"((({G(addr)} + 4u) & 0xF0000000u) | "
+            f"((MEM_R32({G(addr)}) & 0x03FFFFFFu) << 2))")
+
+
 def emit_checked_body_call(symbol, call_pc):
     """Wrap a direct guest CALL with its explicit return-boundary check."""
     resume_pc = (call_pc + 8) & 0xFFFFFFFF
@@ -936,7 +989,7 @@ def emit_host_fallthrough(resumable, stack_census=False):
 def wrap_stack_census_functions(func_texts, emitted, resume_owners):
     """Wrap each callable generated entry with opt-in dynamic SP observation."""
     for addr in sorted(set(emitted)):
-        if addr in resume_owners:
+        if addr in resume_owners or addr in GUEST_SP_ENTRIES:
             continue
         symbol = f"f_{addr:08x}"
         body = f"_sr_stack_census_body_{addr:08x}"
@@ -2534,6 +2587,8 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
                 insns.add(pc + 4)
                 seen.add(pc + 4)
                 terminator_slots.add(pc + 4)
+                if ADDRESS_SPACE.unrelocated_jump(pc):  # its target is outside this module
+                    break
                 if t == pc:  # a self-loop is an in-function edge, never a native call to this function
                     labels.add(t)
                 elif not is_jump_boundary(t) and in_ranges(t, ranges):  # intra goto
@@ -3042,6 +3097,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elf, start, ranges, known, resume_owners=resume_owners,
             dispatch_boundaries=dispatch_boundaries)
     insns, labels, continuations = flow
+    # A body that loads $sp leaves it to the guest at every exit, as a resume body does.
+    if not resumable and guest_owns_entry_sp(elf, insns):
+        resumable = True
+        GUEST_SP_ENTRIES.add(start)
     for label in labels:
         # A label on the delay slot of a transfer that never falls through runs the slot
         # as an ordinary word; when that word goes on to the next one, the walk owns that
@@ -3058,7 +3117,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 f"has no owned successor")
     # Static verification asserts translation-time constants; a runtime module's
     # relocated immediates and link values are not constants, so it carries none.
-    sv_points = ({} if ADDRESS_SPACE.runtime_module
+    # A variable-import site's immediate is the linker's too, so its body carries none either.
+    sv_points = ({} if ADDRESS_SPACE.runtime_module or not ADDRESS_SPACE.patched.keys().isdisjoint(insns)
                  else sv_plan(elf, insns, labels, hst_profile=hst_profile))
     # A delay slot that is itself a branch target is emitted twice: inline at its
     # owning control instruction (where it must execute as the slot) and again
@@ -3343,8 +3403,19 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             consumed.add(ds)
         ds_is_syscall = dsw is not None and (dsw >> 26) == 0 and (dsw & 0x3F) == 0x0C
 
+        if op == 3 and ADDRESS_SPACE.unrelocated_jump(addr):  # jal the loader leaves as linked
+            resume = G((addr + 8) & 0xFFFFFFFF)
+            out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
+            out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); s->r[31] = {resume}; sr_end(s, 0u, 0);")
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                                        resumable=resumable, indent="      "))
+            out.append(f"      dispatch_call(s, _t, {resume}); }}")
+            if addr in continuations:
+                out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+            elif addr in dup_slot_skips:
+                out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
+            continue
         if op == 3:  # jal
-            ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
             _jal_rw = _enhancement_rewrite(addr)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
@@ -3441,8 +3512,14 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                                             indent="      "))
                 out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
+        if op == 2 and ADDRESS_SPACE.unrelocated_jump(addr):  # j the loader leaves as linked
+            out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
+            out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); sr_end(s, 0u, 0);")
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                                        resumable=resumable, indent="      "))
+            out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
+            continue
         if op == 2:  # j
-            ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
@@ -3603,6 +3680,8 @@ class RuntimeModuleTranslation:
     # A shared module is named by its bytes, not its place in the build, and goes in its
     # own translation unit, so every game carrying the same module compiles the same file.
     shared: bool = False
+    # imports.variable_imports of the module at base 0: its sites are link addresses.
+    var_imports: tuple = ()
 
     @property
     def base_symbol(self):
@@ -3636,6 +3715,54 @@ def c_string(text):
         else:
             out.append(ch)
     return '"' + "".join(out) + '"'
+
+
+#: The PSP reference type of each variable-import reference kind (SrVarImportRef.kind).
+VAR_REFERENCE_KIND = {"word32": 2, "hi16": 5, "lo16": 6}
+
+
+def variable_import_sites(elf):
+    """An image's variable imports (tools/imports.py) and the sites the runtime linker
+    patches, {address: kind}. An image with no import table imports none."""
+    if elf.reloc is None and elf.sec(".rodata.sceModuleInfo") is None:
+        return (), {}
+    from imports import variable_imports
+    found = variable_imports(elf)
+    sites = {}
+    for imp in found:
+        for kind, site in imp.references:
+            if sites.setdefault(site, kind) != kind:
+                raise ImportTableError(
+                    "ANALYZER_IMPORT_TABLE_INVALID",
+                    f"variable-import reference site 0x{site:08x} has two reference types")
+    return found, sites
+
+
+def c_library_name(encoded):
+    """The C literal of a library name tools/imports.py encoded: its raw guest bytes, the
+    form the runtime loader reads an exporter's name in, so the two compare equal."""
+    from imports import decode_import_library_name
+    return c_string(decode_import_library_name(encoded).decode("latin-1"))
+
+
+def var_import_table_lines(name, imports):
+    """The SrVarImport table ``name`` for ``imports``, with one reference array each."""
+    lines = []
+    entries = []
+    for index, imp in enumerate(imports):
+        if imp.references:
+            refs = ", ".join(f"{{0x{site:08x}u, {VAR_REFERENCE_KIND[kind]}u}}"
+                             for kind, site in imp.references)
+            lines.append(f"static const SrVarImportRef {name}_refs_{index}[] = {{ {refs} }};")
+            refs_symbol = f"{name}_refs_{index}"
+        else:
+            refs_symbol = "NULL"
+        entries.append(f"    {{ {c_library_name(imp.library)}, 0x{imp.nid:08x}u, {refs_symbol}, "
+                       f"{len(imp.references)}u }},")
+    lines.append(f"static const SrVarImport {name}[] = {{")
+    lines.extend(entries)
+    lines.append("};")
+    return lines
 
 
 def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
@@ -3714,13 +3841,18 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
             return 1
         except Exception as exc:
             sys.stderr.write(f"warning: import table parse failed for {name}: {exc}\n")
+    try:
+        module.var_imports, var_sites = variable_import_sites(elf)
+    except ImportTableError as exc:
+        sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
+        return 1
     stub = elf.sec(".sceStub.text") or elf.sec(".lib.stub")
 
     def is_stub(a):
         return a in impmap or (stub is not None and stub["addr"] <= a < stub["addr"] + stub["size"])
 
     space = AddressSpace(base_symbol=module.base_symbol, prefix=module.prefix,
-                         relocations=relocations)
+                         relocations=relocations, patched=var_sites)
     spans = span_index(ranges)
     previous_space = ADDRESS_SPACE
     ADDRESS_SPACE = space
@@ -4120,6 +4252,10 @@ def runtime_module_descriptor_lines(module):
         lines.append(f"static const SrModuleSpan {spans}[] = {{")
         lines.extend(f"    {{ 0x{lo:08x}u, 0x{hi:08x}u }}," for lo, hi in module.spans)
         lines.append("};")
+    var_imports = "NULL"
+    if module.var_imports:
+        var_imports = f"sr_m{k}_var_imports"
+        lines.extend(var_import_table_lines(var_imports, module.var_imports))
     reason = c_string(module.unsupported_reason) if module.unsupported_reason else "NULL"
     lines += [
         f"static const SrModuleCode sr_m{k}_code = {{",
@@ -4128,7 +4264,8 @@ def runtime_module_descriptor_lines(module):
         f"{1 if module.relocatable else 0}u,",
         f"    {reason}, &{module.base_symbol},",
         f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u,",
-        f"    0x{module.overlay_check_len:08x}u, 0x{module.overlay_check_fnv1a64:016x}ull",
+        f"    0x{module.overlay_check_len:08x}u, 0x{module.overlay_check_fnv1a64:016x}ull,",
+        f"    {var_imports}, {len(module.var_imports)}u",
         "};",
         "",
     ]
@@ -4482,6 +4619,7 @@ def main(argv):
     ENHANCEMENT_APPLIED.clear()
     ENHANCEMENT_DATA_PATCHES.clear()
     ENHANCEMENT_DATA_FILES.clear()
+    GUEST_SP_ENTRIES.clear()
     if enhancement_pkg_path is not None:
         import hashlib
         from pathlib import Path
@@ -4598,6 +4736,15 @@ def main(argv):
             return 1
         except Exception as e:
             sys.stderr.write(f"warning: import table parse failed: {e}\n")
+    # The executable's variable imports: the runtime linker patches their reference sites,
+    # so the code reads those immediates from memory (AddressSpace.patched).
+    global ADDRESS_SPACE
+    try:
+        main_var_imports, main_var_sites = variable_import_sites(elf)
+    except ImportTableError as e:
+        sys.stderr.write(f"codegen: {format_boundary(e)}\n")
+        return 1
+    ADDRESS_SPACE = AddressSpace(patched=main_var_sites)
 
     # Stripped linked executables may reconstruct the loader-owned table as
     # .lib.stub instead of having a named .sceStub.text section.
@@ -4885,6 +5032,16 @@ def main(argv):
                           interpreted=primary_stubbed | omit_aot.addrs),
     }]
 
+    # Variable imports of modules translated at a fixed base, linked when each loads, and the
+    # variables the executable exports, registered at boot (src/rt/hle.c, #308).
+    fixed_var_imports = []
+    try:
+        from imports import variable_exports
+        main_var_exports = variable_exports(elf)
+    except ImportTableError as e:
+        sys.stderr.write(f"codegen: {format_boundary(e)}\n")
+        return 1
+
     # Process extra ELF files (PRX modules)
     for extra_elf_path, extra_base in extra_elfs:
         sys.stderr.write(f"Processing extra ELF: {extra_elf_path} @ 0x{extra_base:08x}\n")
@@ -4940,12 +5097,23 @@ def main(argv):
             except Exception as e:
                 sys.stderr.write(f"warning: import table parse failed for {extra_elf_path}: {e}\n")
 
+        try:
+            extra_var_imports, extra_var_sites = variable_import_sites(extra_elf)
+        except ImportTableError as e:
+            sys.stderr.write(f"codegen: {format_boundary(e, extra_elf_path)}\n")
+            return 1
+        if extra_var_imports:
+            fixed_var_imports.append((os.path.basename(extra_elf_path), extra_var_imports))
+
         extra_stub = extra_elf.sec(".sceStub.text")
         def is_extra_stub(a):
             if a in extra_impmap:
                 return True
             return extra_stub is not None and extra_stub["addr"] <= a < extra_stub["addr"] + extra_stub["size"]
 
+        # A module at a fixed base reads its own variable-import sites from memory.
+        main_space = ADDRESS_SPACE
+        ADDRESS_SPACE = AddressSpace(patched=extra_var_sites)
         for a in sorted(extra_known):
             if is_extra_stub(a):
                 lib_nid = extra_impmap.get(a)
@@ -4973,6 +5141,7 @@ def main(argv):
                 emitted.append(a)
                 stubbed.append((a, reason))
                 sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
+        ADDRESS_SPACE = main_space
         extra_stubbed = {a for a, _ in stubbed} & extra_known
         coverage_images.append({
             "image": os.path.basename(extra_elf_path),
@@ -5167,9 +5336,28 @@ def main(argv):
     if module_record is not None:
         main_out.append("")
         main_out.extend(main_module_record_lines(module_record))
+    if main_var_imports:
+        main_out.append("")
+        main_out.extend(var_import_table_lines("sr_main_var_imports", main_var_imports))
+    for index, (_name, imports_of) in enumerate(fixed_var_imports):
+        main_out.extend(var_import_table_lines(f"sr_x{index}_var_imports", imports_of))
+    if main_var_exports:
+        main_out.append("static const SrVarExportDecl sr_main_var_exports[] = {")
+        main_out.extend(f"    {{ {c_library_name(e.library)}, 0x{e.nid:08x}u, 0x{e.address:08x}u }},"
+                        for e in main_var_exports)
+        main_out.append("};")
     main_out.append("\nvoid sr_register_all(void) {")
     if module_record is not None:
         main_out.append("    sr_main_module_register(&sr_main_module_record);")
+    if main_var_exports:
+        main_out.append(f"    sr_main_var_exports_register(sr_main_var_exports, "
+                        f"{len(main_var_exports)}u);")
+    if main_var_imports:
+        main_out.append(f"    sr_main_var_imports_register(sr_main_var_imports, "
+                        f"{len(main_var_imports)}u);")
+    for index, (name, imports_of) in enumerate(fixed_var_imports):
+        main_out.append(f"    sr_fixed_var_imports_register({c_string(name)}, "
+                        f"sr_x{index}_var_imports, {len(imports_of)}u);")
     if symbol_table:
         main_out.append(
             f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")
