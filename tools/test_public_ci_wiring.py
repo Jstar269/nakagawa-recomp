@@ -103,6 +103,16 @@ def _cmake_sources_and_definitions() -> tuple[dict[str, set[str]], dict[str, set
 
 
 class PublicCiWiringTests(unittest.TestCase):
+    def test_python_tools_ci_enforces_mypy_baseline(self) -> None:
+        python_tools = _ci_job_blocks()["python_tools"]
+        step = _ci_step(python_tools, "Enforce tools mypy baseline")
+        self.assertIsNotNone(step, "python_tools must enforce the tracked mypy baseline")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("mypy==2.1.0", text)
+        self.assertIn("--require-hashes", text)
+        self.assertIn("python tools/mypy_baseline.py", text)
+
     def test_showcase_guest_build_uses_pspdev_compiler(self) -> None:
         demo = {"id": "synthetic-test", "folder": "ge_scene", "target": "fixture_app"}
         with tempfile.TemporaryDirectory(prefix="showcase_cc_") as tmp:
