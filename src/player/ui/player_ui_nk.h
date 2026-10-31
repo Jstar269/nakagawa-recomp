@@ -128,6 +128,7 @@ typedef enum {
     PLAYER_UI_ACTION_REPORT_PROBLEM,   /* the title page's Report a problem */
     PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
     PLAYER_UI_ACTION_TOGGLE_60FPS,     /* the title page's 60 FPS game logic switch */
+    PLAYER_UI_ACTION_CYCLE_ACE,        /* the title page's Ace Mode: library, on, authentic */
     PLAYER_UI_ACTION_CYCLE_SORT,        /* the library's next sort */
     PLAYER_UI_ACTION_FIND_OPEN,         /* open the library's find box */
     PLAYER_UI_ACTION_FIND_KEY,          /* an on-screen key: title_index is a codepoint, or
@@ -247,6 +248,17 @@ typedef struct {
     bool enhancement_enabled;
     bool enhancement_session;   /* on for this session by --experimental-60hz */
     const char *enhancement_problem;
+    /* Ace Mode (src/rt/ace.h) on the title page's ENHANCEMENTS card: the button's words
+       ("Ace Mode: On (library default)"), whether Ace is in effect for the title, whether the
+       button can change it now (as enhancement_enabled), what it turns on in words, and the
+       last session's line from the runtime's report ("" for none). A demo has no card. */
+    bool ace_shown;
+    const char *ace_label;
+    bool ace_in_effect;
+    bool ace_enabled;
+    const char *ace_line;
+    const char *ace_last_session;
+    bool ace_badge;             /* the library card's ACE badge */
     /* Disc verification: one sentence about how the image compares with the
        user's disc list, under the title page's tags; NULL when not checked. The
        card's badge carries the short word. */
@@ -463,7 +475,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_PAGE_FONTS,
     PLAYER_UI_SETTINGS_PAGE_UPDATES,      /* VIEW_UPDATES: check for updates */
     PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET, /* VIEW_CONFIRM_FACTORY_RESET */
-    PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY  /* VIEW_ACCESSIBILITY_SETTINGS */
+    PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY, /* VIEW_ACCESSIBILITY_SETTINGS */
+    PLAYER_UI_SETTINGS_PAGE_ACE            /* VIEW_ACE_SETTINGS */
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -514,7 +527,13 @@ typedef enum {
     PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY,
     PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, /* Automatic, 100, 125, 150, 200% */
     PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST,  /* Automatic, On, Off */
-    PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE       /* Standard, Large, Larger (100, 125, 150%) */
+    PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE,      /* Standard, Large, Larger (100, 125, 150%) */
+    PLAYER_UI_SETTINGS_OPEN_ACE,             /* Settings > Ace Mode */
+    PLAYER_UI_SETTINGS_TOGGLE_ACE,           /* the library's Ace Mode switch */
+    PLAYER_UI_SETTINGS_CYCLE_ACE_FILTERING,  /* 16x, 8x, 4x, 2x, Off */
+    PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT,
+    PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT,
+    PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -556,6 +575,13 @@ typedef struct {
     int system_scale_pct;               /* the display's scale */
     bool system_high_contrast;
     bool system_reduced_motion;
+    /* Ace Mode (VIEW_ACE_SETTINGS and the GAME card's row): the library's switch and each
+       feature's value in words */
+    bool ace_enabled;
+    const char *ace_filtering;      /* "16x" ... "Off" */
+    bool ace_text;
+    bool ace_readout;
+    bool ace_notice;
     const char *controller_line;    /* "Keyboard ready" or the pad's name */
     const char *saves_folder;
     const char *notice;             /* a settings notice (a failed save), or NULL */
@@ -830,6 +856,7 @@ enum {
     PLAYER_UI_ID_TITLE_OPEN_INPUT_FOLDER = 0x2008u,
     PLAYER_UI_ID_TITLE_REPORT = 0x2020u,
     PLAYER_UI_ID_TITLE_60FPS = 0x2009u,
+    PLAYER_UI_ID_TITLE_ACE = 0x200Au,                /* the ENHANCEMENTS card's Ace Mode */
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
@@ -893,6 +920,13 @@ enum {
     PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE = 0x452Du,
     PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST = 0x452Eu,
     PLAYER_UI_ID_SETTINGS_TEXT_SIZE = 0x452Fu,
+    PLAYER_UI_ID_SETTINGS_ACE = 0x4540u,              /* the GAME card's Ace Mode switch */
+    PLAYER_UI_ID_SETTINGS_ACE_OPEN = 0x4541u,         /* the GAME card's row that opens the page */
+    PLAYER_UI_ID_SETTINGS_ACE_MODE = 0x4542u,         /* the page's own switch */
+    PLAYER_UI_ID_SETTINGS_ACE_FILTERING = 0x4543u,
+    PLAYER_UI_ID_SETTINGS_ACE_TEXT = 0x4544u,
+    PLAYER_UI_ID_SETTINGS_ACE_READOUT = 0x4545u,
+    PLAYER_UI_ID_SETTINGS_ACE_NOTICE = 0x4546u,
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the control, 0-18 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,

@@ -232,3 +232,52 @@ Some frame-counted values are data, not instructions: tables in the executable's
 - **`data_files`** name a disc `path` (plain names separated by `/`, compared without case), the file's `sha256`, a `format` (`csv`), the zero-based `header_row` that names the columns, the `first_data_row`, and `cells`: a `column` by its header name, optional zero-based data `rows` (all data rows when left out) and a `transform`. A cell is a plain decimal number. An integer cell stays an integer and must rescale exactly; a decimal cell is read as a float, rescaled, and written as the shortest decimal that reads back to the same float. Build-package passes the title's extracted files (`--enhancement-data-root`); codegen finds the file by path and digest, rewrites it, and embeds the result. At run time `sr_enhancement_file_register()` holds it, and opening that path for reading reads the stock bytes first: matching bytes are served rewritten, with the rewritten size; any other bytes at a registered path stop the run with `ENHANCEMENT_DATA_MISMATCH`. Files on disc are never modified.
 
 Both are covered by the package digest, so a change to either is a different enhanced build.
+
+## 10. Ace Mode: the Project-Authored, Library-Wide Mode
+
+Ace Mode is one launcher switch that turns on presentation features for every game, with a per-title choice on the
+title page (#1272, #1273). It is project-authored code in the player and the runtime (section 7), not a package: no
+loader, no AOT change, no guest hook. The runtime part is `src/rt/ace.h`; the in-game UI is
+`src/rt/gpu_sdl3vk/ace_ui.h`.
+
+### 10.1. The Launch Line
+
+The launcher always exports `SR_ACE`, so an inherited value cannot opt a launch in: `off`, or
+`v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off`. Every key is required, in any order, each once; a key
+for a feature this build does not carry (`wide`, `smooth`) must be `off`. Anything else refuses the whole line: Ace
+is off for the run and one `ACE_MODE: refused (<reason>)` line says why. Unset is off. With Ace on the launcher also
+exports `SR_ACE_REPORT`, the per-run report under `<user data>/ace/`.
+
+### 10.2. Authentic Is Untouched
+
+With `SR_ACE=off` (the default: players opt in) every Ace branch sits behind one switch that stays false: the Vulkan
+device is created with no features, every sampler and the texture descriptor pool are as before, the presenter
+registers no UI pass, the observation counters do not run, and nothing is printed. `gpu-coherence-selftest` checks
+the samplers and the pool; `display-smoke` keeps its image hash.
+
+### 10.3. What Ace Changes, and What It Never Changes
+
+- **Never:** guest logic, the instruction trace, the generated code and the package key (`SR_ACE` is not a codegen
+  option), the guest timing model (VBLANK schedule, GE timing, input sampling, media clocks).
+- **Host work:** the detector and the readout count flips, draws and host waits; their cost runs on the scheduler
+  thread like any renderer cost.
+- **Pixels:** texture filtering (anisotropic, for transformed draws with linear minification) changes framebuffer
+  pixels, and every present commits the frame to guest VRAM, so a game that copies its screen (a save picture) keeps
+  the filtered picture: the same class as a render scale above 1x, and the launcher says so. The launch notice, the
+  speed readout and the crisp keyboard draw only on the swapchain image, never on the frame a capture reads.
+
+### 10.4. Stamps and Evidence
+
+An Ace run prints `ACE_MODE: on (...)` at start and `ACE_MODE: exit (...)` at an ordinary exit, and its flight
+recorder bundle carries `runtime.enhancements` (`assets/flight_recorder_schema.json`); an authentic bundle's bytes are
+unchanged. `tools/flight_diff.py` refuses to compare any bundle that carries the block, `tools/boot_gate.py` refuses an
+Ace run's log, the acceptance checkpoint refuses an Ace run (`reason=ace_mode`), and the launcher never starts one.
+
+### 10.5. Per-Title Choice
+
+`settings.json` keeps the library's choice in `"ace"` and a sparse `"ace_titles"` map. A title's `authentic` turns
+everything off, its 60 FPS game logic included; its `ace` turns Ace on whatever the library says; otherwise the
+library's switch decides. A feature takes the title's value where it has one, else the library's.
+
+Ultrawide (a host-only wide mirror of the GE's draws) and Smooth motion (in-between frames, which needs GE's Vulkan
+transform path, #318) are designed and tracked in #1272; they are not part of this build.

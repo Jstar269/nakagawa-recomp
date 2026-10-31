@@ -79,6 +79,30 @@ class BootGateTests(unittest.TestCase):
         self.assertFalse(result["sequenceOk"])
         self.assertIn("milestones-incomplete-or-out-of-order", result["disqualifyingReasons"])
 
+    def test_ace_mode_run_is_never_boot_evidence(self) -> None:
+        # An Ace Mode run (src/rt/ace.h) is enhanced, so a clean boot still fails (C6).
+        stamp = "ACE_MODE: on (af=16, text=on, readout=off, notice=on, wide=off, smooth=off)\n"
+        result = self.parse(
+            [stamp] + self.ordered_prefix() + [event("first_frame", source="cpu", nonzero_pixels=9)]
+        )
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["aceMode"])
+        self.assertEqual(result["disqualifyingReasons"], ["ace-mode-run"])
+        # A refused line means the run was authentic.
+        refused = self.parse(
+            ["ACE_MODE: refused (unknown key)\n"] + self.ordered_prefix()
+            + [event("first_frame", source="cpu", nonzero_pixels=9)]
+        )
+        self.assertTrue(refused["ok"])
+        self.assertFalse(refused["aceMode"])
+        # SR_QUIET silences stderr; the boot-event file alone still says Ace was on.
+        events_only = self.parse(
+            [event("ace_mode", on=1)] + self.ordered_prefix()
+            + [event("first_frame", source="cpu", nonzero_pixels=9)]
+        )
+        self.assertFalse(events_only["ok"])
+        self.assertEqual(events_only["disqualifyingReasons"], ["ace-mode-run"])
+
     def test_runtime_fault_is_disqualifying(self) -> None:
         result = self.parse(
             self.ordered_prefix()

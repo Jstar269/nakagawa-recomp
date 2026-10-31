@@ -21,6 +21,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "../ace.h"   /* Ace Mode: texture filtering asks for samplerAnisotropy */
 #include "sdl3vk.h"
 #include "nk_platform.h"
 #include "../perf.h"
@@ -204,6 +205,12 @@ void sdl3vk_set_audio_active_cb(int (*cb)(void)) {
 
 void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate)) {
     s_logic_slowed_cb = cb;
+}
+
+static void (*s_ui_pass)(const Sdl3VkUiPass *frame);
+
+void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame)) {
+    s_ui_pass = pass;
 }
 
 static uint32_t s_buttons;
@@ -682,6 +689,27 @@ int sdl3vk_init(const char *title) {
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = s_denorm_preserve_f32 ? 2u : 1u;
     dci.ppEnabledExtensionNames = dev_ext;
+    /* Ace Mode's texture filtering (ace.h) is the only device feature the player ever asks
+     * for, and only in an Ace run that wants it: an authentic run creates the device with no
+     * features, as before. A device without it, or with less than 2x, runs without filtering
+     * and the run says why; a lower maximum clamps the level. */
+    VkPhysicalDeviceFeatures ace_features = {0};
+    if (g_ace_on && ace_effective()->af > 0) {
+        VkPhysicalDeviceFeatures have;
+        VkPhysicalDeviceProperties pp;
+        vkGetPhysicalDeviceFeatures(s_pdev, &have);
+        vkGetPhysicalDeviceProperties(s_pdev, &pp);
+        if (have.samplerAnisotropy && pp.limits.maxSamplerAnisotropy >= 2.0f) {
+            int device_max = pp.limits.maxSamplerAnisotropy >= 16.0f ? 16
+                           : pp.limits.maxSamplerAnisotropy >= 8.0f ? 8
+                           : pp.limits.maxSamplerAnisotropy >= 4.0f ? 4 : 2;
+            ace_features.samplerAnisotropy = VK_TRUE;
+            dci.pEnabledFeatures = &ace_features;
+            ace_set_af_effective(device_max < ace_effective()->af ? device_max : ace_effective()->af, NULL);
+        } else {
+            ace_set_af_effective(0, "this GPU has no anisotropic filtering");
+        }
+    }
     INIT_VK(vkCreateDevice(s_pdev, &dci, NULL, &s_dev));
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
 
@@ -1151,6 +1179,7 @@ int sdl3vk_get_vk(Sdl3VkInfo *out) {
     out->queue    = (void *)s_queue;
     out->queue_family = s_qfam;
     out->denorm_preserve_f32 = s_denorm_preserve_f32;
+    out->get_instance_proc_addr = (void *)vkGetInstanceProcAddr;
     return 1;
 }
 
@@ -1921,6 +1950,20 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         if ((s_hud_enabled || s_logic_slowed_cb) && f->hud_staging_map) {
             draw_hud_overlay(cmd, f, s_swap_img[idx], dw, dh);
+        }
+        if (s_ui_pass) {
+            Sdl3VkUiPass ui;
+            ui.cmd = (void *)cmd;
+            ui.frame_slot = (uint32_t)s_frame_cursor;
+            ui.frames_in_flight = PRESENT_FRAMES;
+            ui.format = (int)s_swap_fmt;
+            ui.width = (uint32_t)dw;
+            ui.height = (uint32_t)dh;
+            ui.images = (void *const *)s_swap_img;
+            ui.image_count = s_swap_n;
+            ui.image_index = idx;
+            ui.swapchain_gen = s_swapchain_gen;
+            s_ui_pass(&ui);
         }
 
         barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,

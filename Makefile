@@ -864,12 +864,15 @@ endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 # The pause overlay (#1159): nk_ui, its SDL edge and SDL_Renderer backend, the overlay's pages
+# and their runtime host; Ace Mode's in-game UI draws through the Vulkan backend.
 # and their runtime host. SDL3_ttf is loaded at run time, so the runtime needs only its headers.
 RT_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c \
+                 src/ui/backend/nk_ui_vk.c \
                  $(NK_UI_OVERLAY_C9C_SRCS) $(NK_UI_OVERLAY_HOST_SRCS)
 
 RT_SRCS    := src/rt/recomp.c \
               src/rt/flight_recorder.c \
+              src/rt/ace.c \
               src/rt/cpu_lle.c \
               src/rt/domain_mode.c \
               src/rt/nested_frames.c \
@@ -910,6 +913,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/driver.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
               src/rt/gpu_sdl3vk/ge_gpu.c \
+              src/rt/gpu_sdl3vk/ace_ui.c \
               src/core/nk_input_profile.c \
               src/core/nk_font.c \
               src/core/nk_json.c \
@@ -939,9 +943,10 @@ HLE_INCLUDES := -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/li
 # The presenter also publishes its captures through the presenter-neutral
 # capture service (sr_capture_*, src/rt/fbcap.c), the same hard dependency.
 # tools/test_build_truth.py enforces that every user of sdl3vk.c supplies both.
+# Ace Mode's run switch (src/rt/ace.c) decides whether the device asks for anisotropic filtering.
 # Its event pump runs through sr_coro_call_on_thread_stack (src/rt/sr_coro.c), which Android
 # needs for JNI; a selftest without coroutines calls straight through it.
-SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c src/rt/fbcap.c src/rt/sr_coro.c \
+SDL3VK_SRCS := src/rt/gpu_sdl3vk/sdl3vk.c src/rt/fbcap_policy.c src/rt/fbcap.c src/rt/sr_coro.c src/rt/ace.c \
                src/core/nk_input_profile.c src/core/nk_json.c $(PLAYER_PLATFORM_SRC)
 
 $(BUILD_DIR)/atrac3p_%.o: src/rt/atrac3p/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
@@ -1148,6 +1153,8 @@ PUBLIC_TARGETS := \
 	fbcap-selftest \
 	osk-text-entry-selftest \
 	osk-overlay-selftest \
+	ace-selftest \
+	ace-ui-selftest \
 	osk-overlay-paint-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
@@ -1157,6 +1164,7 @@ PUBLIC_TARGETS := \
 	atrac3p-title-accept \
 	gpu-coherence-selftest \
 	gpu-snapsync-selftest \
+	gpu-ace-selftest \
 	ge-replay \
 	run \
 	run_elf \
@@ -1293,6 +1301,8 @@ HELP_DESCRIPTION_ge-texture-ref-selftest := run the GE texture sampling referenc
 HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selftest
 HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
 HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
+HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
+HELP_DESCRIPTION_ace-ui-selftest := run Ace Mode's in-game UI selftest (layout, then a headless Vulkan render; SKIPs the GPU leg without Vulkan)
 HELP_DESCRIPTION_osk-overlay-paint-selftest := run the in-window keyboard painter's exact-pixel selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
@@ -1302,6 +1312,7 @@ HELP_DESCRIPTION_audio-resampler-bench := run the synthetic-input audio resample
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
+HELP_DESCRIPTION_gpu-ace-selftest := run Ace Mode's texture filtering selftest on a real Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_ge-replay := run the graphics-engine replay selftest
 HELP_DESCRIPTION_run := build and launch the current title runtime
 HELP_DESCRIPTION_run_elf := build the reference interpreter runner
@@ -2044,6 +2055,14 @@ $(BUILD_DIR)/%.o: src/rt/overlay/%.c $(RUNTIME_PROFILE_STAMP)
 $(BUILD_DIR)/gui.o: src/rt/gui.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) $(DEPFLAGS) -c $< -o $@
 
+# Ace Mode's in-game UI (src/rt/gpu_sdl3vk/ace_ui.c) and the nk_ui Vulkan backend it draws
+# through, which is built in only here (NK_UI_WITH_VULKAN; it loads Vulkan at run time).
+$(BUILD_DIR)/ace_ui.o: src/rt/gpu_sdl3vk/ace_ui.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) $(DEPFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/nk_ui_vk.o: src/ui/backend/nk_ui_vk.c $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) -DNK_UI_WITH_VULKAN $(DEPFLAGS) -c $< -o $@
+
 # The one translation unit that reads the build-local generated configuration. Every
 # other runtime source consumes the generic accessors in src/rt/title_config.h, so the
 # generated include path stops here rather than leaking into CFLAGS.
@@ -2472,7 +2491,7 @@ SCHED_SELFTEST_CONFIG_ARG := $(if $(strip $(SCHED_SELFTEST_MANIFEST)),--manifest
 sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_frames.c src/rt/nested_frames.h
 	"$(PYTHON)" $(TITLE_CONFIG_TOOL) $(SCHED_SELFTEST_CONFIG_ARG) --output $(SCHED_SELFTEST_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(SCHED_SELFTEST_DIR) -DSR_SCHED_LIVENESS_TEST $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe \
-		src/rt/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/title_config.c $(LIBS)
+		src/rt/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/title_config.c src/rt/ace.c $(LIBS)
 	$(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe
 
 # heap-selftest — white-box unit tests for the guest heap allocator's boundary-tag
@@ -2509,7 +2528,7 @@ native-core-tests: profiler-selftest
 gui-present-selftest:
 	$(CC) $(CFLAGS) -DSR_GUI_PRESENT_SELFTEST -ffunction-sections -fdata-sections \
 		$(LDFLAGS) -Wl,--gc-sections -o $(BUILD_DIR)/gui_present_selftest.exe \
-		src/rt/gui.c $(LIBS)
+		src/rt/gui.c src/rt/ace.c $(LIBS)
 	$(BUILD_DIR)/gui_present_selftest.exe
 
 # vfpu-tables-selftest — fail-closed VFPU table loader regression suite (issue #187):
@@ -2573,6 +2592,16 @@ osk-text-entry-selftest:
 		-o $(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT) \
 		src/rt/osk_text_entry_selftest.c src/rt/osk_text_entry.c src/rt/osk_overlay.c
 	$(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT)
+
+# ace-selftest - Ace Mode's CPU-only cells (src/rt/ace.c): the SR_ACE line fails closed, the
+# 30 Hz detector's classes, hysteresis and feed, the speed readout's definitions, the per-run
+# report and an off run's silence. Built from ace.c and its test alone: a reference from ace.c
+# to anything but the C library fails this link, which is the S1 link test for ace.c.
+native-core-tests: ace-selftest
+ace-selftest:
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/ace_selftest$(EXE_EXT) src/rt/ace_selftest.c src/rt/ace.c
+	$(BUILD_DIR)/ace_selftest$(EXE_EXT) $(BUILD_DIR)
 
 # osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
 # navigation, typing, the guest's length bound with UTF-16 pairs, backspace, confirm and cancel,
@@ -2839,7 +2868,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(H264_SUB_OBJS) $(GENERIC_TITLE_CONFIG_HE
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		$(HLE_THREAD_SELFTEST_SOURCE) src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		$(HLE_THREAD_SELFTEST_SOURCE) src/rt/hle.c src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -2878,7 +2907,7 @@ hle-title-selftest-one: $(RT_GE_O) $(H264_SUB_OBJS) $(TITLE_CONFIG_TOOL) tools/t
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -2918,7 +2947,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(H264_SUB_OBJS) $(PSP_ORACLE
 		-Wno-infinite-recursion -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign \
 		-I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
@@ -3049,6 +3078,20 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
 # target-scoped synchronization closes the generation gap and rejects unsafe geometry.
+# gpu-ace-selftest - Ace Mode's texture filtering (src/rt/ace.h) on a real device: SR_ACE asks for
+# 16x before the device is made; through-mode draws keep the measured PSP sample points and get
+# no anisotropic sampler, a transformed linear draw gets one, a nearest one does not. Exit 77
+# (SKIP) without Vulkan or without anisotropic filtering.
+gpu-ace-selftest: shader-verify $(RT_GE_O)
+	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_ACE_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
+		-o $(BUILD_DIR)/gpu_ace_selftest.exe \
+		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
+	@rc=0; $(BUILD_DIR)/gpu_ace_selftest.exe || rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "SKIP gpu-ace-selftest (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL gpu-ace-selftest (exit $$rc)"; exit $$rc; fi
+
 gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
@@ -3549,6 +3592,36 @@ nk-ui-vk-selftest:
 		echo "FAIL nk-ui-vk-selftest (exit 77, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
 	elif [ $$rc -eq 77 ]; then echo "SKIP nk-ui-vk-selftest (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL nk-ui-vk-selftest (exit $$rc)"; exit $$rc; fi
+
+# ace-ui-selftest - Ace Mode's in-game UI (src/rt/gpu_sdl3vk/ace_ui.c): the readout, the launch
+# notice and the crisp keyboard laid out at the overlay's sizes and two ultrawide windows (inside
+# the 16 px safe area, apart from each other), then drawn on a headless Vulkan device over a
+# cleared image, which keeps every pixel outside them; the image is written for review. Linked
+# from the UI pass, the keyboard model and nk_ui alone (invariant S1). With SDL3_ttf the picture
+# uses the launcher's fonts. No Vulkan headers, loader or device: SKIP (exit 77), visible in
+# the log; NK_UI_VK_REQUIRE=1 makes a skip fail.
+native-core-tests: ace-ui-selftest
+.PHONY: ace-ui-selftest
+ace-ui-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		echo "SKIP ace-ui-selftest (the Vulkan headers were not found)"; \
+		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
+	fi; \
+	ttf_defs=""; ttf_srcs=""; ttf_libs=""; \
+	if printf '%s\n' '#include <SDL3/SDL.h>' '#include <SDL3_ttf/SDL_ttf.h>' '#include <SDL3_ttf/SDL_textengine.h>' | $(CC) -E -x c $(SDL3_INC_FLAGS) - >/dev/null 2>&1; then \
+		ttf_defs="-DNK_UI_WITH_SDL -DNK_UI_WITH_SDL_TTF"; ttf_srcs="src/ui/nk_ui_ttf.c"; ttf_libs="$(LDFLAGS) -lSDL3"; \
+	fi; \
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Isrc/rt -Isrc/rt/gpu_sdl3vk -Ithird_party/clay \
+		$(VULKAN_INC_FLAGS) $(SDL3_INC_FLAGS) -DNK_UI_WITH_VULKAN $$ttf_defs \
+		$(NK_UI_CORE_SRCS) src/ui/backend/nk_ui_vk.c $$ttf_srcs src/rt/osk_overlay.c \
+		src/rt/gpu_sdl3vk/ace_ui.c src/rt/gpu_sdl3vk/ace_ui_selftest.c \
+		$$ttf_libs -lm $(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_ROOT)/ace_ui_selftest$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_ROOT_RUN)/ace_ui_selftest$(EXE_EXT) $(BUILD_ROOT) --fonts . || rc=$$?; \
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL ace-ui-selftest (the GPU leg skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP ace-ui-selftest GPU leg (exit 77; the layout cells passed)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL ace-ui-selftest (exit $$rc)"; exit $$rc; fi
 
 .PHONY: nk-ui-focus-selftest
 # The focus, input and glyph checks are SDL-free. The SDL_Event translation leg is built from

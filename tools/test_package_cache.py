@@ -1925,6 +1925,28 @@ class NanTrapCacheKeyTests(unittest.TestCase):
                     self.assertNotIn("nan_trap", cli)
                     self.assertNotIn("nan_trap", planner)
 
+    def test_ace_mode_never_changes_codegen_or_the_package_key(self):
+        # Ace Mode (src/rt/ace.h) is a runtime launch line only: no codegen option, native
+        # flag or package cache key may read it (invariant A6).
+        ace = {
+            "SR_ACE": "v1;af=16;text=on;readout=on;notice=on;wide=off;smooth=off",
+            "SR_ACE_REPORT": "ace-report.json",
+        }
+        def planner(environment):
+            with mock.patch.dict(os.environ, environment, clear=True):
+                return title_codegen_plan._cache_codegen_options(
+                    self.PLAN, selected_optional=set(), funcs_per_chunk=2000
+                )
+
+        builders = {
+            "cli": lambda environment: nk_cli._package_codegen_options(self.MANIFEST, environment),
+            "planner": planner,
+            "native": lambda environment: package_cache.native_compile_flags(environment=environment),
+        }
+        for name, options in builders.items():
+            with self.subTest(builder=name):
+                self.assertEqual(options({}), options(ace))
+
     def test_a_trapped_key_never_matches_an_untrapped_package(self):
         def key(environment):
             return package_cache.build_cache_key(

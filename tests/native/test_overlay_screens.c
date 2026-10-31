@@ -257,6 +257,76 @@ static void test_settings(void) {
     nk_ui_destroy(ui);
 }
 
+/* Ace Mode (src/rt/ace.h): the menu's caption says it is on, and the Settings page offers the
+   speed readout as a live switch; an authentic run (a zeroed model) shows neither. The pages
+   still fit every window with both. */
+static void test_ace(void) {
+    NkUi *ui = overlay_ui(1280, 800, 1.0f);
+    NkOverlayModel model = base_model(1280.0f, 800.0f);
+    NkOverlayState state;
+    NkOverlayAction action;
+    if (ui == NULL) return;
+    memset(&state, 0, sizeof(state));
+    nk_overlay_open(&state, NK_OVERLAY_OPEN_USER);
+    CHECK(!frame_has_text(ui, &state, &model, "Ace Mode"), "an authentic run's menu says nothing of Ace Mode");
+    model.ace_caption = "Ace Mode on: 16x filtering \xC2\xB7 crisp keyboard";
+    CHECK(frame_has_text(ui, &state, &model, "Ace Mode on: 16x filtering"),
+          "an Ace run's menu says what Ace Mode does");
+    state.screen = NK_OVERLAY_SCREEN_SETTINGS;
+    model.ace_readout = 0;
+    CHECK(!frame_has_text(ui, &state, &model, "Speed readout"),
+          "without the in-game UI there is no readout row");
+    model.ace_readout = 1;
+    CHECK(frame_has_text(ui, &state, &model, "Speed readout"), "an Ace run offers the readout");
+    (void)settle(ui, &state, &model);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_DOWN);
+    (void)frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_DOWN);
+    CHECK(nk_ui_focused(ui) == NK_OVERLAY_ID_READOUT, "down from the HUD row reaches the readout");
+    action = frame_with(ui, &state, &model, NK_UI_EV_ACTIVATE, NK_UI_DIR_NONE);
+    CHECK(action.kind == NK_OVERLAY_ACT_SET_READOUT && action.value == 1,
+          "Confirm turns the readout on");
+    model.ace_readout = 2;
+    action = frame_with(ui, &state, &model, NK_UI_EV_NAV, NK_UI_DIR_LEFT);
+    CHECK(action.kind == NK_OVERLAY_ACT_SET_READOUT && action.value == 0, "left turns it off");
+    nk_ui_destroy(ui);
+    /* Both at every window size. */
+    {
+        static const struct { int w; int h; float scale; } sizes[] = {
+            {960, 600, 1.0f}, {1280, 800, 1.0f}, {1920, 1200, 1.5f}
+        };
+        for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+            NkUi *fit = overlay_ui(sizes[s].w, sizes[s].h, sizes[s].scale);
+            NkOverlayModel full = base_model((float)sizes[s].w / sizes[s].scale,
+                                             (float)sizes[s].h / sizes[s].scale);
+            if (fit == NULL) continue;
+            full.ace_caption = "Ace Mode on: 16x filtering \xC2\xB7 crisp keyboard \xC2\xB7 speed readout";
+            full.ace_readout = 2;
+            for (int screen = NK_OVERLAY_SCREEN_MENU; screen <= NK_OVERLAY_SCREEN_SETTINGS; ++screen) {
+                NkOverlayState st;
+                const NkUiDrawList *list;
+                bool inside = true;
+                memset(&st, 0, sizeof(st));
+                nk_overlay_open(&st, NK_OVERLAY_OPEN_USER);
+                st.screen = (NkOverlayScreen)screen;
+                nk_ui_begin(fit, 0.0);
+                (void)nk_overlay_frame(fit, &st, &full);
+                list = nk_ui_end(fit);
+                for (uint32_t i = 0u; list != NULL && i < list->ncmd; ++i) {
+                    const NkUiDrawCmd *cmd = &list->cmd[i];
+                    if (cmd->kind == NK_UI_DRAW_SCISSOR_START || cmd->kind == NK_UI_DRAW_SCISSOR_END)
+                        continue;
+                    if (cmd->bounds[0] < 0 || cmd->bounds[1] < 0 || cmd->bounds[2] > sizes[s].w ||
+                        cmd->bounds[3] > sizes[s].h) {
+                        inside = false;
+                    }
+                }
+                CHECK(list != NULL && inside, "the Ace caption and readout row fit every window");
+            }
+            nk_ui_destroy(fit);
+        }
+    }
+}
+
 static void test_controls(void) {
     NkUi *ui = overlay_ui(1280, 800, 1.0f);
     NkOverlayModel model = base_model(1280.0f, 800.0f);
@@ -1079,6 +1149,7 @@ int main(int argc, char **argv) {
     }
     test_menu();
     test_settings();
+    test_ace();
     test_controls();
     test_quit();
     test_pad_lost();

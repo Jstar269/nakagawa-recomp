@@ -54,7 +54,8 @@ typedef enum {
     VIEW_PSP_FONTS,         /* Settings > PSP fonts: import your PSP's own fonts */
     VIEW_UPDATES,           /* Settings > Updates: check for and fetch a newer version */
     VIEW_CONFIRM_FACTORY_RESET, /* Settings > Factory reset: what moves aside */
-    VIEW_ACCESSIBILITY_SETTINGS /* Settings > Accessibility: size, contrast, motion; the last value */
+    VIEW_ACCESSIBILITY_SETTINGS, /* Settings > Accessibility: size, contrast, motion */
+    VIEW_ACE_SETTINGS           /* Settings > Ace Mode (src/rt/ace.h); the last value */
 } PlayerView;
 
 typedef enum {
@@ -203,6 +204,44 @@ typedef struct {
     char problem[160];
 } PlayerTitleEnhancement;
 
+/* Ace Mode, the library-wide enhancement mode (docs/ENHANCEMENT_CONTRACT.md section 11,
+   src/rt/ace.h): one switch for every game, with a per-title choice on the title page. The
+   launcher resolves both into the one SR_ACE line a launch exports. */
+typedef enum {
+    PLAYER_ACE_TITLE_LIBRARY = 0,  /* follows the library's switch */
+    PLAYER_ACE_TITLE_ON,           /* on for this title, whatever the library's switch says */
+    PLAYER_ACE_TITLE_AUTHENTIC     /* everything off, 60 FPS game logic included */
+} PlayerAceTitleMode;
+
+/* The library's Ace Mode settings. The feature values are kept while the switch is off. */
+typedef struct {
+    bool enabled;   /* the master switch: off until the player turns it on (owner, 2026-10-31) */
+    int af;         /* texture filtering: 0, 2, 4, 8 or 16; 16 by default */
+    bool text;      /* crisp system text (the on-screen keyboard); on by default */
+    bool readout;   /* the speed readout; off by default */
+    bool notice;    /* the in-game badge at start; on by default */
+} PlayerAceSettings;
+
+/* One title's choice, saved only while it differs from the library: -1 follows the library. */
+typedef struct {
+    char key[PLAYER_DISC_ID_KEY_LEN];
+    PlayerAceTitleMode mode;
+    int af;         /* -1, or 0, 2, 4, 8, 16 */
+    int text;       /* -1, 0 or 1 */
+    int readout;
+    int notice;
+} PlayerAceTitle;
+
+/* What a title launches with (player_ace_resolve). */
+typedef struct {
+    bool on;
+    PlayerAceTitleMode mode;   /* the title's own choice */
+    int af;
+    bool text;
+    bool readout;
+    bool notice;
+} PlayerAceResolved;
+
 typedef struct {
     int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
     int present_scaling;  /* NK_PRESENT_SCALING_*: how the game window scales its frames */
@@ -244,6 +283,11 @@ typedef struct {
        "enhancement_60hz_discs". */
     char enhancement_60hz_discs[MAX_LIBRARY_GAMES][PLAYER_DISC_ID_KEY_LEN];
     int enhancement_60hz_disc_count;
+    /* Ace Mode: "ace" and the sparse "ace_titles" in settings.json. Both are additions to
+       schema version 2, as text_size is: an older player reads the file and ignores them. */
+    PlayerAceSettings ace;
+    PlayerAceTitle ace_titles[MAX_LIBRARY_GAMES];
+    int ace_title_count;
     /* Builds keep the compiled system libraries a disc carries in the data folder and
        reuse them for other games with the same library (#1306). On by default; the
        copies never leave this PC. */
@@ -1336,6 +1380,41 @@ bool player_app_title_60hz_blocked(const PlayerApp *app, int game_index);
 void player_app_set_title_60hz(PlayerApp *app, int game_index, bool on);
 /* The --experimental-60hz flag: on for this session only, never saved. */
 void player_app_set_experimental_60hz_session(PlayerApp *app, bool on);
+
+/* ---- Ace Mode (src/rt/ace.h) ---- */
+
+/* The title's saved choice for a disc, or NULL when it follows the library everywhere. */
+const PlayerAceTitle *player_settings_ace_title(const PlayerSettings *settings,
+                                                const char *disc_id);
+/* What a disc launches with: AUTHENTIC turns everything off; ON, or the library's switch,
+ * turns Ace on; each feature then takes the title's value, else the library's. */
+void player_ace_resolve(const PlayerSettings *settings, const char *disc_id,
+                        PlayerAceResolved *out);
+/* The SR_ACE line for a resolution: "off", or "v1;af=16;text=on;readout=off;notice=on;
+ * wide=off;smooth=off" (features this build does not carry are always off). Returns false
+ * when it does not fit. */
+bool player_ace_launch_line(const PlayerAceResolved *ace, char *out, size_t cap);
+/* <user_root>/ace/<disc ID>.json: the runtime's per-run report for that disc. */
+bool player_ace_report_path(const char *user_root, const char *disc_id, char *out, size_t cap);
+/* The title page's "Last session" line from that report ("Last session: 16x filtering,
+ * game at 30 Hz."). Returns false, with out empty, when there is no readable report. */
+bool player_ace_last_session_line(const char *user_root, const char *disc_id, char *out,
+                                  size_t cap);
+/* The library's settings (Settings > Ace Mode). Each change is saved. */
+void player_app_toggle_ace(PlayerApp *app);
+void player_app_cycle_ace_filtering(PlayerApp *app);   /* 16x, 8x, 4x, 2x, Off */
+void player_app_toggle_ace_text(PlayerApp *app);
+void player_app_toggle_ace_readout(PlayerApp *app);
+void player_app_toggle_ace_notice(PlayerApp *app);
+/* "16x", "8x", "4x", "2x" or "Off". */
+const char *player_ace_filtering_label(int af);
+/* The title page: Library default, On, Authentic, then Library default again. Authentic
+ * also takes the title's 60 FPS game logic off for as long as it is chosen. */
+void player_app_cycle_title_ace_mode(PlayerApp *app, int game_index);
+PlayerAceTitleMode player_app_title_ace_mode(const PlayerApp *app, int game_index);
+/* The title's "Last session" line from the report under the user data folder; false, with
+ * out empty, when there is none. */
+bool player_app_ace_last_session(const PlayerApp *app, int game_index, char *out, size_t cap);
 void player_app_toggle_share_system_libraries(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);

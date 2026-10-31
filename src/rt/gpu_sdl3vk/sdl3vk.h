@@ -104,6 +104,24 @@ void sdl3vk_set_audio_active_cb(int (*cb)(void));
  * shows a notice whether or not the HUD is on. */
 void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate));
 
+/* Ace Mode's in-game UI pass (src/rt/gpu_sdl3vk/ace_ui.h). Called on every present, after the
+ * frame blit and the HUD, with the swapchain image in TRANSFER_DST_OPTIMAL; it may record into
+ * the command buffer and must leave the image in that layout. The frame the capture reads is
+ * never touched. Registered only in an Ace run, so an authentic present records what it did
+ * before; NULL removes it. Handles are Vulkan's, passed as void pointers. */
+typedef struct {
+    void *cmd;                    /* VkCommandBuffer */
+    uint32_t frame_slot;          /* its fence already waited */
+    uint32_t frames_in_flight;
+    int format;                   /* VkFormat */
+    uint32_t width, height;
+    void *const *images;          /* VkImage[image_count] */
+    uint32_t image_count;
+    uint32_t image_index;
+    uint64_t swapchain_gen;
+} Sdl3VkUiPass;
+void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame));
+
 /* Pumps the SDL event loop without presenting a frame. Returns 0 on quit, 1 otherwise. */
 int  sdl3vk_poll(void);
 
@@ -271,6 +289,7 @@ typedef struct Sdl3VkInfo {
     /* VK_KHR_shader_float_controls is enabled and shaderDenormPreserveFloat32 is true: a shader
      * declaring DenormPreserve keeps fp32 subnormals, as GPU T&L needs (#318). */
     int      denorm_preserve_f32;
+    void    *get_instance_proc_addr;   /* PFN_vkGetInstanceProcAddr */
 } Sdl3VkInfo;
 int sdl3vk_get_vk(Sdl3VkInfo *out);
 

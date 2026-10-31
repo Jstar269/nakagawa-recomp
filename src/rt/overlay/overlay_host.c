@@ -100,16 +100,17 @@ static bool register_fonts(NkUiTtf *ttf, const char *const *roots, size_t root_c
     return true;
 }
 
-NkOverlayHost *nk_overlay_host_create(const char *ui_root, char *error, size_t error_size) {
-    NkOverlayHost *host;
+/* SDL3_ttf and the UI fonts, from the player's folder, the runtime's own, then the working
+   directory. NULL, with the reason, when either is missing. */
+static NkUiTtf *open_fonts(const char *ui_root, char *error, size_t error_size) {
     const char *base = SDL_GetBasePath();
     const char *roots[2];
     size_t root_count = 0u;
     char libraries[2][OVERLAY_PATH_MAX];
     const char *library_paths[2];
     size_t library_count = 0u;
-    NkUiConfig config;
-    if (!nk_ui_sdlr_available() || !nk_ui_ttf_available()) {
+    NkUiTtf *ttf;
+    if (!nk_ui_ttf_available()) {
         host_error(error, error_size, "this runtime was built without the SDL3_ttf headers");
         return NULL;
     }
@@ -123,19 +124,64 @@ NkOverlayHost *nk_overlay_host_create(const char *ui_root, char *error, size_t e
             ++library_count;
         }
     }
+    ttf = nk_ui_ttf_create(library_count ? library_paths : NULL, library_count);
+    if (ttf == NULL) {
+        host_error(error, error_size, nk_ui_ttf_last_error());
+        return NULL;
+    }
+    if (!register_fonts(ttf, roots, root_count)) {
+        host_error(error, error_size, "the bundled UI fonts (assets/fonts/ui) were not found");
+        nk_ui_ttf_destroy(ttf);
+        return NULL;
+    }
+    return ttf;
+}
+
+struct NkOverlayFonts {
+    NkUiTtf *ttf;
+    NkUiTextBackend text;
+};
+
+NkOverlayFonts *nk_overlay_fonts_create(const char *ui_root, char *error, size_t error_size) {
+    NkOverlayFonts *fonts = (NkOverlayFonts *)calloc(1u, sizeof(*fonts));
+    if (fonts == NULL) {
+        host_error(error, error_size, "out of memory");
+        return NULL;
+    }
+    fonts->ttf = open_fonts(ui_root, error, error_size);
+    if (fonts->ttf == NULL) {
+        free(fonts);
+        return NULL;
+    }
+    fonts->text = nk_ui_ttf_backend(fonts->ttf);
+    if (error != NULL && error_size > 0u) error[0] = '\0';
+    return fonts;
+}
+
+const NkUiTextBackend *nk_overlay_fonts_text(const NkOverlayFonts *fonts) {
+    return fonts != NULL ? &fonts->text : NULL;
+}
+
+void nk_overlay_fonts_destroy(NkOverlayFonts *fonts) {
+    if (fonts == NULL) return;
+    nk_ui_ttf_destroy(fonts->ttf);
+    free(fonts);
+}
+
+NkOverlayHost *nk_overlay_host_create(const char *ui_root, char *error, size_t error_size) {
+    NkOverlayHost *host;
+    NkUiConfig config;
+    if (!nk_ui_sdlr_available() || !nk_ui_ttf_available()) {
+        host_error(error, error_size, "this runtime was built without the SDL3_ttf headers");
+        return NULL;
+    }
     host = (NkOverlayHost *)calloc(1u, sizeof(*host));
     if (host == NULL) {
         host_error(error, error_size, "out of memory");
         return NULL;
     }
-    host->ttf = nk_ui_ttf_create(library_count ? library_paths : NULL, library_count);
+    host->ttf = open_fonts(ui_root, error, error_size);
     if (host->ttf == NULL) {
-        host_error(error, error_size, nk_ui_ttf_last_error());
-        nk_overlay_host_destroy(host);
-        return NULL;
-    }
-    if (!register_fonts(host->ttf, roots, root_count)) {
-        host_error(error, error_size, "the bundled UI fonts (assets/fonts/ui) were not found");
         nk_overlay_host_destroy(host);
         return NULL;
     }
