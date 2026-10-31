@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "atrac3p_bridge.h"
+#include "atrac3p/atrac3p_api.h"
 #include "perf.h"
 #include "libavutil/error.h"   /* AVERROR(EINVAL/ENOMEM) */
 

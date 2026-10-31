@@ -192,7 +192,8 @@ int64_t sr_psmf_pts_advance(int64_t *clock, int *valid, int has_pts,
 #define SR_PSMF_STREAM_NONE ((uint32_t)-1)
 
 /* Select the stream indices to demux.
- * video_stream_num: 0-based index of the video stream in the PSMF stream table.
+ * video_stream_num: 0-based index of the video stream in the PSMF stream table,
+ *                   or SR_PSMF_STREAM_NONE for an audio-only demux (the sceMpeg ATRAC path).
  * audio_stream_num: 0-based index of the audio stream in the PSMF stream table,
  *                   or SR_PSMF_STREAM_NONE if no audio is requested.
  * Returns 1 on success, 0 on failure (e.g. out of range). */

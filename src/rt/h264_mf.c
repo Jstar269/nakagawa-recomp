@@ -251,9 +251,7 @@ static int feed_one(Dec *d) {
     return ret;
 }
 
-static uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
-
-/* NV12 -> PSP pixel format (BT.601 limited range). buffer is the guest video buffer address,
+/* NV12 -> PSP pixel format, with the PSP's own conversion (sr_h264_psp_rgb). buffer is the guest video buffer address,
  * frameWidth its stride in pixels; PSP movie buffers are 272 rows tall.  Returns 1 when the
  * picture was actually written into guest memory and 0 when it was refused (invalid buffer,
  * malformed NV12 extent, unusable geometry) -- a refused conversion is never reported as a
@@ -298,10 +296,8 @@ static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
         const uint8_t *yr = yp + (size_t)(uint32_t)y * (size_t)(uint32_t)stride;
         const uint8_t *uv = uvp + (size_t)(uint32_t)(y / 2) * (size_t)(uint32_t)stride;
         for (int x = 0; x < w; x++) {
-            int c = yr[x] - 16, dd = uv[x & ~1] - 128, e = uv[(x & ~1) + 1] - 128;
-            int r = clamp8((298 * c + 409 * e + 128) >> 8);
-            int g = clamp8((298 * c - 100 * dd - 208 * e + 128) >> 8);
-            int b = clamp8((298 * c + 516 * dd + 128) >> 8);
+            uint8_t r, g, b;
+            sr_h264_psp_rgb(yr[x], uv[x & ~1], uv[(x & ~1) + 1], &r, &g, &b);
             switch (pixelMode) {
                 case 0:  /* 5650 */
                     { uint16_t pixel = (uint16_t)((r >> 3) | ((g >> 2) << 5) | ((b >> 3) << 11));
@@ -315,11 +311,11 @@ static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
                     { uint16_t pixel = (uint16_t)((r >> 4) | ((g >> 4) << 4) | ((b >> 4) << 8) | 0xF000);
                       memcpy(row + (size_t)(uint32_t)x * 2u, &pixel, sizeof pixel); }
                     break;
-                default: /* 8888: R,G,B,A byte order in guest memory */
-                    row[(size_t)(uint32_t)x * 4u + 0] = (uint8_t)r;
-                    row[(size_t)(uint32_t)x * 4u + 1] = (uint8_t)g;
-                    row[(size_t)(uint32_t)x * 4u + 2] = (uint8_t)b;
-                    row[(size_t)(uint32_t)x * 4u + 3] = 0xFF;
+                default: /* 8888: R,G,B,A byte order, alpha 0 as the PSP writes it (PSP-MPEG-001) */
+                    row[(size_t)(uint32_t)x * 4u + 0] = r;
+                    row[(size_t)(uint32_t)x * 4u + 1] = g;
+                    row[(size_t)(uint32_t)x * 4u + 2] = b;
+                    row[(size_t)(uint32_t)x * 4u + 3] = 0x00;
                     break;
             }
         }
@@ -330,9 +326,8 @@ static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
 }
 
 /* Try to pull one decoded frame. 1 = frame written to buffer, 0 = need more input, -1 = failure. */
-/* NV12 -> host RGBA8888 (BT.601 limited range), for pictures the caller stores and converts
- * later (the sceMpegAvc*YCbCr path).  Returns 1 when the picture was written, 0 when the
- * destination or the decoded extent made the conversion impossible. */
+/* NV12 -> host RGBA8888 with the PSP's conversion.  Returns 1 when the picture was written, 0
+ * when the destination or the decoded extent made the conversion impossible. */
 static int convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint8_t *dst,
                               int maxW, int maxH, int strideBytes) {
     if (!dst || !src || maxW <= 0 || maxH <= 0 || strideBytes < maxW * 4) return 0;
@@ -351,11 +346,35 @@ static int convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint8
         const uint8_t *uv = uvp + (size_t)(y / 2) * (size_t)stride;
         uint8_t *row = dst + (size_t)y * (size_t)strideBytes;
         for (int x = 0; x < w; x++) {
-            int c = yr[x] - 16, dd = uv[x & ~1] - 128, e = uv[(x & ~1) + 1] - 128;
-            row[x * 4 + 0] = clamp8((298 * c + 409 * e + 128) >> 8);
-            row[x * 4 + 1] = clamp8((298 * c - 100 * dd - 208 * e + 128) >> 8);
-            row[x * 4 + 2] = clamp8((298 * c + 516 * dd + 128) >> 8);
+            sr_h264_psp_rgb(yr[x], uv[x & ~1], uv[(x & ~1) + 1],
+                            &row[x * 4 + 0], &row[x * 4 + 1], &row[x * 4 + 2]);
             row[x * 4 + 3] = 0xFF;
+        }
+    }
+    return 1;
+}
+
+/* NV12 -> host 4:2:0 planes, the decoded samples unconverted (the sceMpegAvc*YCbCr path). */
+static int convert_frame_host_yuv(Dec *d, const uint8_t *src, uint32_t srcLen,
+                                  const SrH264FrameTarget *t) {
+    int stride = d->outStride > 0 ? d->outStride : d->outW;
+    int w = d->outW, h = d->outH;
+    if (!src || stride <= 0 || w <= 0 || h <= 0 || w > stride) return 0;
+    uint64_t yBytes = (uint64_t)(uint32_t)stride * (uint32_t)h;
+    uint64_t srcNeed = yBytes + (uint64_t)(uint32_t)stride * (((uint64_t)(uint32_t)h + 1u) / 2u);
+    if (srcNeed > srcLen) return 0;
+    if (w > t->host_width) w = t->host_width;
+    if (h > 272) h = 272;
+    if (h > t->host_height) h = t->host_height;
+    const uint8_t *uvp = src + (size_t)yBytes;
+    for (int y = 0; y < h; y++)
+        memcpy(t->host_buffer + (size_t)y * (size_t)t->host_stride, src + (size_t)y * (size_t)stride,
+               (size_t)w);
+    for (int cy = 0; cy < (h + 1) / 2; cy++) {
+        const uint8_t *uv = uvp + (size_t)cy * (size_t)stride;
+        for (int cx = 0; cx < (w + 1) / 2; cx++) {
+            t->host_cb[(size_t)cy * (size_t)t->host_c_stride + (size_t)cx] = uv[cx * 2];
+            t->host_cr[(size_t)cy * (size_t)t->host_c_stride + (size_t)cx] = uv[cx * 2 + 1];
         }
     }
     return 1;
@@ -373,7 +392,7 @@ static SrH264PixelFormat guest_pixel_format(int pixelMode) {
 
 static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
                      uint8_t *host, int hostW, int hostH, int hostStride,
-                     SrH264FrameInfo *info) {
+                     const SrH264FrameTarget *yuv, SrH264FrameInfo *info) {
     /* 1 = a picture was produced AND delivered, 2 = produced but there was nowhere to write
      * it (the caller asked for a frame it cannot receive), 0 = need more input, -1 = decoder
      * failure.  Distinguishing 2 from 1 is what keeps "a frame was written" from becoming a
@@ -412,12 +431,13 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
             return -1;
         }
         int delivered = 0;
-        if (buffer || host) {
+        if (buffer || host || yuv) {
             IMFMediaBuffer *cbuf = NULL;
             if (SUCCEEDED(IMFSample_ConvertToContiguousBuffer(smp, &cbuf)) && cbuf) {
                 BYTE *base = NULL; DWORD cur = 0;
                 if (SUCCEEDED(IMFMediaBuffer_Lock(cbuf, &base, NULL, &cur))) {
-                    delivered = host ? convert_frame_host(d, base, cur, host, hostW, hostH, hostStride)
+                    delivered = yuv ? convert_frame_host_yuv(d, base, cur, yuv)
+                              : host ? convert_frame_host(d, base, cur, host, hostW, hostH, hostStride)
                                      : convert_frame(d, base, cur, buffer, frameWidth, pixelMode);
                     IMFMediaBuffer_Unlock(cbuf);
                 }
@@ -426,14 +446,16 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
         }
         if (delivered && info) {
             memset(info, 0, sizeof(*info));
-            info->width = host ? (d->outW < hostW ? d->outW : hostW) :
-                               (d->outW < frameWidth ? d->outW : frameWidth);
+            if (yuv) { hostW = yuv->host_width; hostH = yuv->host_height; hostStride = yuv->host_stride; }
+            info->width = (host || yuv) ? (d->outW < hostW ? d->outW : hostW) :
+                                        (d->outW < frameWidth ? d->outW : frameWidth);
             info->height = d->outH < 272 ? d->outH : 272;
-            if (host && info->height > hostH) info->height = hostH;
-            info->stride = host ? hostStride : frameWidth * (pixelMode == 3 ? 4 : 2);
+            if ((host || yuv) && info->height > hostH) info->height = hostH;
+            info->stride = (host || yuv) ? hostStride : frameWidth * (pixelMode == 3 ? 4 : 2);
             info->native_format = SR_H264_PIXEL_NATIVE_NV12;
-            info->delivered_format = host ? SR_H264_PIXEL_RGBA8888 :
-                                         guest_pixel_format(pixelMode);
+            info->delivered_format = yuv ? SR_H264_PIXEL_NATIVE_NV12 :
+                                     host ? SR_H264_PIXEL_RGBA8888 :
+                                            guest_pixel_format(pixelMode);
             info->pts = -1;
         }
         IMFMediaBuffer_Release(mb); IMFSample_Release(smp);
@@ -514,12 +536,12 @@ int sr_h264_mf_submit_au(int id, const SrH264AccessUnit *au) {
  * Returns 1 if a frame was written, 0 if none is available yet, -1 if decoding failed. */
 static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode,
                        uint8_t *host, int hostW, int hostH, int hostStride,
-                       SrH264FrameInfo *info) {
+                       const SrH264FrameTarget *yuv, SrH264FrameInfo *info) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
     Dec *d = &s_dec[id];
     if (d->failed || !d->xf) return -1;
     for (int guard = 0; guard < 4096; guard++) {
-        int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostH, hostStride, info);
+        int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostH, hostStride, yuv, info);
         /* A refused destination (r == 2) is reported as "no frame written" but does NOT poison
          * the decoder: the picture was already consumed from the MFT, the stream is still
          * valid, and a later call with a usable buffer must keep working.  Only decoder-level
@@ -553,7 +575,7 @@ int sr_h264_mf_frame_ex(int id, int eos, const SrH264FrameTarget *target,
         if (!target->guest_buffer || target->frame_width <= 0 ||
             target->pixel_mode < 0 || target->pixel_mode > 3) return -1;
         return pull_frame(id, eos, target->guest_buffer, target->frame_width,
-                          target->pixel_mode, NULL, 0, 0, 0, info);
+                          target->pixel_mode, NULL, 0, 0, 0, NULL, info);
     }
     if (target->kind == SR_H264_TARGET_HOST) {
         if (!target->host_buffer || target->host_width <= 0 ||
@@ -561,7 +583,14 @@ int sr_h264_mf_frame_ex(int id, int eos, const SrH264FrameTarget *target,
             target->host_stride < target->host_width * 4) return -1;
         return pull_frame(id, eos, 0, 0, 0, target->host_buffer,
                           target->host_width, target->host_height,
-                          target->host_stride, info);
+                          target->host_stride, NULL, info);
+    }
+    if (target->kind == SR_H264_TARGET_HOST_YUV) {
+        if (!target->host_buffer || !target->host_cb || !target->host_cr ||
+            target->host_width <= 0 || target->host_height <= 0 ||
+            target->host_stride < target->host_width ||
+            target->host_c_stride < (target->host_width + 1) / 2) return -1;
+        return pull_frame(id, eos, 0, 0, 0, NULL, 0, 0, 0, target, info);
     }
     return -1;
 }
