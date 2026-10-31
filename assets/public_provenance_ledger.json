@@ -1630,7 +1630,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "da27b29988ecb9f258e13399b7ab0701aa6f4a074af9d810989defb788ec8331"
+      "sha256": "bfb2d1001980937ab50bfab3f0dc0c9f8ab7f4b0a967b410fdf7d0ffb34efe0c"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -13211,7 +13211,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a6e86dce4a3973d0f5538a6b8ac06f7751f6f1180466ec92f862c554a9396f70"
+      "sha256": "39cc79930d6f6df4855db7894ba5d649c05c21c2efc00eb2034e953a7be2e924"
     },
     {
       "path": "tools/compiler_compare.py",
@@ -15248,7 +15248,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "21f953306451288e5b6269f8481f463d675a024741ae85e5855ce0c3238365e0"
+      "sha256": "d842b21e6ac272df4cb672c20029a5305c9ab5f430b709546689e5602c9f93f9"
     },
     {
       "path": "tools/test_compiler_compare.py",

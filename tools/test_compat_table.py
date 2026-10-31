@@ -108,6 +108,7 @@ class TierRuleTests(unittest.TestCase):
         self.assertIn("commit `0123456789ab`, with a 2400 s time budget per disc and a 30 s "
                       "first launch", block)
         self.assertIn("3,500 discs, version 2026-06-13", block)
+        self.assertIn("1 not built yet in this run, and 1 copy of a disc already counted.", block)
         # The list in SAMPLE records no serials, so the summary says Unknown is not Modified.
         self.assertIn("A lone fan translation counts as **Unknown**", block)
         with_serials = json.loads(json.dumps(SAMPLE))

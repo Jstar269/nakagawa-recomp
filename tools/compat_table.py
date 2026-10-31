@@ -278,10 +278,11 @@ def render_markdown(summary: dict[str, Any], date: str) -> str:
     totals = [_number(sum(tiers[tier][column] for tier in tiers)) for column in VERIFICATION_COLUMNS]
     lines.append("| **Counted** | " + " | ".join(totals) + f" | {_number(summary['counted'])} |")
     left_out = summary["left_out"]
+    copies = ("copy of a disc" if left_out["copies"] == 1 else "copies of a disc")
     lines += [
         "",
         f"Not counted: {_number(left_out['not_built_yet'])} not built yet in this run, and "
-        f"{_number(left_out['copies'])} copies of a disc already counted.",
+        f"{_number(left_out['copies'])} {copies} already counted.",
         "",
         "Where they stop, by named cause ([`FAILURE_CODES.md`](FAILURE_CODES.md)):",
         "",
