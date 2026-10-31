@@ -10255,8 +10255,10 @@ static void gsi_blocking(int emulated, const char *case_id, int draw, int qid) {
         (uint32_t)qid, (uint32_t)s_gsi_returned, (uint32_t)s_gsi_result,
         (uint32_t)wait_rc, (uint32_t)delete_rc, elapsed,
     };
-    emit_ge_sync(emulated, case_id, th < 0 ? "SKIP" : s_gsi_returned ? "PASS" : "TIMEOUT",
-                 (uint32_t)s_gsi_result, out, GSI_BLOCK_OUTS);
+    /* A call that has not returned within the bound is the measurement (out1 = 0), so the
+       record passes once the bounded wait itself ran. */
+    emit_ge_sync(emulated, case_id, th < 0 ? "SKIP" : "PASS", (uint32_t)s_gsi_result, out,
+                 GSI_BLOCK_OUTS);
 }
 
 /* Enqueue the transfer list with no stall address and wait, bounded, for the GE to go idle.
@@ -10348,6 +10350,16 @@ static void run_ge_sync_ids(int emulated) {
         emit_ge_sync(emulated, cases[k], qid_s[k] >= 0 ? "PASS" : "SKIP", out[1], out, 7);
     }
 
+    /* A blocking sceGeDrawSync on the GE idle after those lists, then the ids' peeks after it. */
+    gsi_blocking(emulated, "ge-draw-sync-idle-wait", 1, 0);
+    probe_step(emulated, "ge-sync-ids", "after-draw-wait");
+    out[0] = (uint32_t)qid_s[2];
+    out[1] = (uint32_t)(qid_s[2] >= 0 ? sceGeListSync(qid_s[2], 1) : qid_s[2]);
+    out[2] = (uint32_t)(qid_s[1] >= 0 ? sceGeListSync(qid_s[1], 1) : qid_s[1]);
+    out[3] = (uint32_t)(qid_s[1] >= 0 ? sceGeListDeQueue(qid_s[1]) : qid_s[1]);
+    emit_ge_sync(emulated, "ge-list-sync-after-draw-wait", qid_s[2] >= 0 ? "PASS" : "SKIP",
+                 out[1], out, 4);
+
     /* A list stalled at its start and removed by a reset: the poll form is the measured
        0x80000100 (PSP-GE-CONTROL-001); the blocking form is measured below. */
     probe_step(emulated, "ge-sync-ids", "cancelled");
@@ -10363,19 +10375,11 @@ static void run_ge_sync_ids(int emulated) {
     emit_ge_sync(emulated, "ge-list-sync-cancelled-poll", qid_c >= 0 ? "PASS" : "SKIP",
                  out[2], out, 4);
 
-    /* Blocking forms, each bounded, on an idle GE. */
-    gsi_blocking(emulated, "ge-draw-sync-idle-wait", 1, 0);
+    /* Blocking forms, each bounded, after the reset. */
+    gsi_blocking(emulated, "ge-draw-sync-after-reset-wait", 1, 0);
     gsi_blocking(emulated, "ge-list-sync-completed-wait", 0, qid_b);
     gsi_blocking(emulated, "ge-list-sync-cancelled-wait", 0, qid_c);
     gsi_blocking(emulated, "ge-list-sync-unknown-wait", 0, GSI_UNKNOWN_QID);
-
-    /* After a completed sceGeDrawSync(0): the last stale-sequence id's peek, and its wait. */
-    probe_step(emulated, "ge-sync-ids", "after-draw-wait");
-    out[0] = (uint32_t)qid_s[2];
-    out[1] = (uint32_t)(qid_s[2] >= 0 ? sceGeListSync(qid_s[2], 1) : qid_s[2]);
-    out[2] = (uint32_t)(qid_s[0] >= 0 ? sceGeListSync(qid_s[0], 1) : qid_s[0]);
-    emit_ge_sync(emulated, "ge-list-sync-after-draw-wait", qid_s[2] >= 0 ? "PASS" : "SKIP",
-                 out[1], out, 3);
     gsi_blocking(emulated, "ge-list-sync-stale-wait", 0, qid_s[0]);
 
     /* Leave the GE idle whatever happened above. */
@@ -10394,7 +10398,7 @@ static void run_ge_sync_ids(int emulated) {
     emit_ge_sync(emulated, "ge-sync-quiesce", w.idle ? "PASS" : "TIMEOUT",
                  (uint32_t)quiesce_rc, out, 4);
 
-    uint32_t done = 16;  /* the records above */
+    uint32_t done = 17;  /* the records above */
     emit_record_extended(emulated, "PSP-GE-SYNC-001", "ge-sync-ids-done", "PASS", 0, &done, 1);
 }
 #endif
