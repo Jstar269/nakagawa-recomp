@@ -107,6 +107,33 @@ int sr_capture_arm_probe(void);
  * colour byte (0..255), once per probe; 0 when no probe result is waiting. */
 int sr_capture_probe_take(uint32_t *brightest);
 
+/* 1 while the armed or recorded request is a picture probe rather than a file capture. */
+int sr_capture_pending_is_probe(void);
+
+/* Deferred probe readback. A presenter whose readback completes on the GPU after the present
+ * returns (sdl3vk) does not wait for it inside the present. Once the presenting submit is
+ * queued and the frame reached the presentation engine, where a file capture would wait and
+ * publish, it calls sr_capture_probe_defer() instead. The probe then leaves the capture slot,
+ * so a file capture can be armed for the next present, and stays in flight until the
+ * presenter publishes the completed readback with sr_capture_publish_probe() (the same
+ * brightest-byte result a synchronous service gives) or drops it with sr_capture_probe_drop()
+ * (no result, as for a failed present). One probe is in flight at most: sr_capture_arm_probe()
+ * refuses while one is. */
+void sr_capture_probe_defer(void);
+int  sr_capture_probe_in_flight(void);
+int  sr_capture_publish_probe(const void *px, uint32_t row_bytes, sr_cap_order order);
+void sr_capture_probe_drop(const char *why);
+
+/* The presenter that defers probes registers how to finish one: it publishes or drops the
+ * in-flight probe and returns 1 once it did either. With block 0 it must not wait for the
+ * GPU (0: the readback is still running); with block non-zero it waits. NULL unregisters. */
+typedef int (*SrCaptureProbeResolver)(int block);
+void sr_capture_set_probe_resolver(SrCaptureProbeResolver resolver);
+
+/* Ask the registered presenter to finish the in-flight probe. Returns 1 when it is no longer
+ * in flight (published or dropped), 0 when it is still running or nothing was in flight. */
+int  sr_capture_probe_poll(int block);
+
 /* Dark-picture watch, fed by picture probes. The no-frame watchdog sees a game that stops
  * flipping; this one sees a game that keeps flipping frames nobody can see. A frame is dark
  * when no colour byte is above SR_PICTURE_DARK_MAX, the value of the lowest non-zero step of a
@@ -122,6 +149,8 @@ typedef struct {
     uint32_t first_vcount;   /* VBLANK of the stretch's first dark probe */
     uint32_t last_vcount;    /* VBLANK of the latest probe */
     uint32_t reported;       /* report buckets already emitted for this stretch */
+    int pending;             /* a probe was sent whose result has not been fed yet */
+    uint32_t pending_vcount; /* VBLANK of that probe */
 } SrPictureWatch;
 
 enum {
@@ -139,6 +168,26 @@ int sr_picture_watch_probe(SrPictureWatch *w, uint32_t vcount, uint32_t brightes
  * (the latest within two probe periods): a game that stopped flipping is the no-frame
  * watchdog's observation, not this one's. */
 int sr_picture_watch_tick(SrPictureWatch *w, uint32_t vcount, uint32_t *dark_vblanks);
+
+/* Deferred probe results. A probe whose readback is still in flight (sr_capture_probe_defer)
+ * is noted with sr_picture_watch_probe_sent() at the VBLANK it was taken, and its result is
+ * fed later, under that VBLANK, by sr_picture_watch_collect(). The watch's verdicts and
+ * reports are those of feeding every result at its probe's present, as long as the caller
+ * collects with block set whenever sr_picture_watch_tick_needs_probe() says the tick about
+ * to run could depend on the pending result. */
+void sr_picture_watch_probe_sent(SrPictureWatch *w, uint32_t vcount);
+
+/* 1 when a probe is pending and the tick at vcount could report differently with its result
+ * fed: an open stretch due a new report bucket (a visible result ends it instead), or a probe
+ * pending for a whole report period (a dark result would open a stretch already due one).
+ * Otherwise the tick reports nothing either way, so it may run before the result is in. */
+int sr_picture_watch_tick_needs_probe(const SrPictureWatch *w, uint32_t vcount);
+
+/* Collect the pending probe through sr_capture_probe_poll(block) and feed its result under
+ * the probe's own VBLANK. Returns sr_picture_watch_probe()'s verdict, with *brightest set when
+ * a result was fed. A probe the presenter dropped, or one a blocking collect could not finish
+ * (then dropped here), clears the pending state with no result, like a failed present. */
+int sr_picture_watch_collect(SrPictureWatch *w, int block, uint32_t *brightest);
 
 #ifdef __cplusplus
 }
