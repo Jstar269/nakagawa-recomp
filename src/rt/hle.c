@@ -10965,6 +10965,7 @@ typedef struct {
     uint32_t at3FactSize;         /* RIFF fact chunk size (8 or 12) */
     uint32_t at3FactDelay;        /* fact word after the sample count */
     int at3FirstFramePending;     /* no frame decoded since SetData */
+    int at3SkipApplied;           /* leading samples the first call dropped (guest position offset) */
     /* Streamed AT3: file frame 0, held from SetData to prime the decoder (#1096). */
     uint8_t at3PrimeFrame[1024];
     int at3PrimeValid;
@@ -11075,6 +11076,7 @@ static void atrac_stream_window_consume(Atrac *a, uint32_t bytes) {
     a->streamWindowQueued -= bytes;
 }
 #define ATRAC_ERROR_BAD_CODEC_PARAMS 0x80630008u
+#define ATRAC3_SETDATA_DELAY_REFUSED 1855u   /* lowest refused fact delay (PSP-AT3-002) */
 static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t *refusal) {
     /* Scan the RIFF for "fmt " (frame size / blockAlign), "fact" (total samples),
      * "data" (frame payload offset) and "smpl" (loop points). The input is
@@ -11185,15 +11187,14 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t *re
     }
     if (endSample <= 0) return 0;
     if (a->codecType == ATRAC_CODEC_AT3 && !hasFmt) return 0;
-    /* MEASURED on a PSP-3000 (firmware 6.61, 2026-10-24; #1096,
-     * fixtures/psp_oracle/README.md `at3-decode`): an AT3 stream whose 8-byte
-     * fact chunk carries delay 2048 is refused by sceAtracSetData with
-     * 0x80630008, and the DecodeData that follows returns 0x80630010 because
-     * the context holds no data. Only the delay value 2048 with an 8-byte
-     * fact chunk is measured; no threshold between 1024 and 2048 is known, and
-     * only sceAtracSetData was measured. The other Set* calls share this
-     * track analysis here and are UNMEASURED. */
-    if (a->codecType == ATRAC_CODEC_AT3 && at3FactSize == 8u && at3FactDelay == 2048u) {
+    /* MEASURED on a PSP-3000 (firmware 6.61; #1096, PSP-AT3-002 at3-delay-sweep, 2026-10-31,
+     * over a whole 52964-byte track and an 8 KiB prefix of it): an AT3 stream whose 8-byte fact
+     * chunk carries a delay of 1855 or more (1855 .. 3072 measured) is refused by sceAtracSetData
+     * with 0x80630008, and the DecodeData that follows returns 0x80630010 because the context
+     * holds no data; 1797 and every measured delay below it are accepted.  1798 .. 1854 is not
+     * measured and is accepted here.  Only sceAtracSetData was measured; the other Set* calls
+     * share this track analysis and are UNMEASURED. */
+    if (a->codecType == ATRAC_CODEC_AT3 && at3FactSize == 8u && at3FactDelay >= ATRAC3_SETDATA_DELAY_REFUSED) {
         if (refusal) *refusal = ATRAC_ERROR_BAD_CODEC_PARAMS;
         return 0;
     }
@@ -11378,6 +11379,7 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t bufSi
     (void)atrac_reset_decoder(a);
     a->decodeFailureReported = 0;
     a->at3FirstFramePending = 1;
+    a->at3SkipApplied = 0;
     if (oldStreamWindow) free(oldStreamWindow);
     a->streamWindow = NULL;
     a->streamWindowSize = 0;
@@ -11916,28 +11918,26 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out
     return 1;
 }
 
-/* First sceAtracDecodeData of a plain AT3 track against the delay word of an
- * 8-byte RIFF fact chunk. MEASURED on a PSP-3000 (firmware 6.61) on 2026-10-24
- * with one 2-channel, 304-byte-block stream launched once per delay, only the
- * delay word changed (#1096; fixtures/psp_oracle/README.md `at3-decode`):
- *   delay 0 and 1024 -> 955 samples; delay 955 -> 1024 samples; later calls
- *   1024 each; delay 500 -> the first decode returns 0x80630002, 0 samples.
- * Only these delays are modelled. Any other delay, or a 12-byte fact chunk,
- * keeps the complete decoder frame and reports ATRAC3_NOT_MEASURED once. The
- * PSP's sceAtracSetData refusal of delay 2048 (0x80630008) is modelled in
- * atrac_parse_track. The sample counts are measured; which samples of the frame
- * the PSP drops is not public evidence, and the leading ones are dropped
- * (assumed). */
-static const struct {
-    uint32_t delay;
-    int first_samples;     /* samples returned by the first call; 0 = refused */
-    uint32_t error;        /* first-call return when refused */
-} k_atrac3_first_frame_measured[] = {
-    { 0u, 955, 0u },
-    { 955u, 1024, 0u },
-    { 1024u, 955, 0u },
-    { 500u, 0, ATRAC_ERROR_API_FAIL },
-};
+/* First sceAtracDecodeData of a plain AT3 track against the delay word d of an 8-byte RIFF fact
+ * chunk.  MEASURED on a PSP-3000 (firmware 6.61; #1096, PSP-AT3-002 at3-delay-sweep, 2026-10-31,
+ * 36 delays on one 2-channel 304-byte-block stream, then 21 more over the whole track):
+ *   d == 0 or 955 <= d <= 1797: the first call returns 1024 - ((d + 69) mod 1024) samples (69 is
+ *     the decoder's own delay): the leading (d + 69) mod 1024 samples of the first decoded frame are
+ *     dropped (delays 955 and 956 differ by exactly one leading stereo sample), and every later call
+ *     returns 1024 samples, identical whatever d is;
+ *   1 <= d <= 954: sceAtracSetData accepts the track, but every DecodeData returns 0x80630002 with
+ *     0 samples and consumes nothing;
+ *   d >= 1855: refused by sceAtracSetData (atrac_parse_track).
+ * 1798 .. 1854 is not measured: the same length rule is applied and ATRAC3_NOT_MEASURED is reported
+ * once.  A 12-byte fact chunk is not measured either and keeps the complete decoder frame. */
+#define ATRAC3_FIRST_FRAME_DECODER_DELAY 69u
+#define ATRAC3_FIRST_FRAME_MIN_DELAY 955u        /* smallest nonzero delay the first decode accepts */
+#define ATRAC3_FIRST_FRAME_MEASURED_MAX 1797u    /* largest delay measured on the accepted side */
+/* The leading samples the first call drops, or -1 when the first call is refused. */
+static int atrac3_first_frame_skip(uint32_t delay) {
+    if (delay != 0u && delay < ATRAC3_FIRST_FRAME_MIN_DELAY) return -1;
+    return (int)((delay + ATRAC3_FIRST_FRAME_DECODER_DELAY) % (uint32_t)ATRAC3_SAMPLES_PER_FRAME);
+}
 /* Returns the first-call error for a refused delay (0 otherwise) and sets
  * *skip to the leading samples the first frame drops. */
 static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
@@ -11946,16 +11946,16 @@ static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
     if (a->codecType != ATRAC_CODEC_AT3 || !a->at3FirstFramePending)
         return 0;
     if (a->at3FactSize == 8u) {
-        for (size_t i = 0; i < sizeof(k_atrac3_first_frame_measured) /
-                                   sizeof(k_atrac3_first_frame_measured[0]); i++) {
-            if (k_atrac3_first_frame_measured[i].delay != a->at3FactDelay)
-                continue;
-            if (k_atrac3_first_frame_measured[i].error)
-                return k_atrac3_first_frame_measured[i].error;
-            *skip = ATRAC3_SAMPLES_PER_FRAME -
-                    k_atrac3_first_frame_measured[i].first_samples;
-            return 0;
+        int dropped = atrac3_first_frame_skip(a->at3FactDelay);
+        if (dropped < 0) return ATRAC_ERROR_API_FAIL;
+        if (a->at3FactDelay > ATRAC3_FIRST_FRAME_MEASURED_MAX && !reported) {
+            fprintf(stderr,
+                    "ATRAC3_NOT_MEASURED: first-frame length for fact delay %u is not measured; "
+                    "the measured length rule is applied (#1096).\n", a->at3FactDelay);
+            reported = 1;
         }
+        *skip = dropped;
+        return 0;
     }
     if (!reported) {
         fprintf(stderr,
@@ -12026,6 +12026,7 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
          * the PSP's position after a shortened first call is NOT_MEASURED
          * (#1096), so the frame-offset bookkeeping is left unchanged. */
         n = decoded_samples - skip;
+        if (a->at3FirstFramePending) a->at3SkipApplied = skip;
         a->at3FirstFramePending = 0;
         if (atrac_streamed_state(a)) atrac_consume_frame(a);
         a->posSample += decoded_samples;
@@ -12163,6 +12164,15 @@ static uint32_t h_AtracSetSecondBuffer(CpuState *s) {
 static uint32_t h_AtracGetNextSample(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
+    /* MEASURED (#1096, PSP-AT3-002): before the first decode of a plain AT3 track with an 8-byte
+     * fact chunk, the next call's length is 1024 - ((delay + 69) mod 1024), for every delay
+     * sceAtracSetData accepts, including those whose decode is then refused. */
+    if (a->codecType == ATRAC_CODEC_AT3 && a->at3FirstFramePending && a->at3FactSize == 8u) {
+        MEM_W32(A1, (uint32_t)(ATRAC3_SAMPLES_PER_FRAME -
+                    (int)((a->at3FactDelay + ATRAC3_FIRST_FRAME_DECODER_DELAY) %
+                          (uint32_t)ATRAC3_SAMPLES_PER_FRAME)));
+        return 0;
+    }
     int remain = a->endSample - a->posSample;
     if (remain < 0) remain = 0;
     if (remain > atrac_samples_per_frame(a)) remain = atrac_samples_per_frame(a);
@@ -12223,10 +12233,14 @@ static uint32_t h_AtracAddStreamData(CpuState *s) {
     }
     return 0;
 }
+/* MEASURED (#1096, PSP-AT3-002): after a shortened first AT3 call the position is the samples
+ * the guest has received (955 after a 955-sample call, then 1979, 3003, ...), so the dropped
+ * leading samples are taken off the decoder position. */
 static uint32_t h_AtracGetNextDecodePosition(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (a->posSample >= a->endSample) return ATRAC_ERROR_ALLDATA_DECODED;
-    if (A1) MEM_W32(A1, (uint32_t)a->posSample);
+    int pos = a->posSample - a->at3SkipApplied;
+    if (A1) MEM_W32(A1, (uint32_t)(pos > 0 ? pos : 0));
     return 0;
 }
 static uint32_t h_AtracGetSoundSample(CpuState *s) {
