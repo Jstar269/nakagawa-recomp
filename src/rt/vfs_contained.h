@@ -144,6 +144,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>      /* flock: sr_cd_lock_dir */
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -1111,10 +1112,15 @@ static inline sr_cd_status sr_cd_mkdir_leaf(const sr_cd_root *root, const char *
  * links, directories, and special files before renameat. renameat itself never
  * follows either final component, so even a replacement race cannot redirect
  * the operation outside the two bound parents. POSIX does not offer an
- * object-bound rename, so this extension claims containment, not child identity. */
-static inline sr_cd_status sr_cd_rename_file(const sr_cd_root *root,
-                                             const char *old_rel,
-                                             const char *new_rel) {
+ * object-bound rename, so this extension claims containment, not child identity.
+ * With replace == 0 an existing destination of any type is refused with
+ * SR_CD_ALREADY_EXISTS (savedata's commit renames, #1387). POSIX has no portable
+ * no-replace rename (renameat2 is Linux-only), so this checks and then renames:
+ * the caller must exclude other writers of the directory for the duration
+ * (savedata holds its root lock, sr_cd_lock_dir, and runs on the one guest
+ * thread). sr_cd_rename_file, below, is the replacing form. */
+static inline sr_cd_status sr_cd_rename_file_ex(const sr_cd_root *root, const char *old_rel,
+                                                const char *new_rel, int replace) {
     char old_parent_rel[SR_CD_REL_MAX], old_leaf[SR_CD_NAME_MAX];
     char new_parent_rel[SR_CD_REL_MAX], new_leaf[SR_CD_NAME_MAX];
     if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
@@ -1152,6 +1158,10 @@ static inline sr_cd_status sr_cd_rename_file(const sr_cd_root *root,
     }
 
     if (fstatat(new_dir_fd, new_leaf, &info, AT_SYMLINK_NOFOLLOW) == 0) {
+        if (!replace) {
+            st = SR_CD_ALREADY_EXISTS;
+            goto done;
+        }
         if (S_ISLNK(info.st_mode)) {
             st = SR_CD_NOT_CONTAINED;
             goto done;
@@ -1185,6 +1195,57 @@ done:
     close(new_dir_fd);
     close(old_dir_fd);
     return st;
+}
+
+static inline sr_cd_status sr_cd_rename_file(const sr_cd_root *root,
+                                             const char *old_rel,
+                                             const char *new_rel) {
+    return sr_cd_rename_file_ex(root, old_rel, new_rel, 1);
+}
+
+/* Ask the host to make a root-relative directory's entries durable (fsync on its descriptor,
+ * walked like every other operation). Savedata calls it between the steps of its commit so a
+ * rename is on disk before the next step depends on it (#1387). */
+static inline sr_cd_status sr_cd_sync_dir(const sr_cd_root *root, const char *rel) {
+    if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
+    if (!rel || (rel[0] && !sr_cd_rel_is_acceptable(rel))) return SR_CD_INVALID_PATH;
+    int dir_fd = -1;
+    sr_cd_status st = sr_cd__at_walk(root->fd, rel, &dir_fd);
+    if (st != SR_CD_OK) return st;
+    if (fsync(dir_fd) != 0) st = SR_CD_IO_ERROR;
+    close(dir_fd);
+    return st;
+}
+
+/* Exclusive, non-blocking lock on a root-relative directory, held until sr_cd_unlock_dir: an
+ * flock on the directory's own descriptor. It belongs to the open file description, so no lock
+ * file exists to be unlinked or raced, and two openers in one process exclude each other too.
+ * flock is BSD, not POSIX.1-2008, but every POSIX host this runtime targets (Linux, the BSDs,
+ * macOS, Android) has it. Busy: SR_CD_IO_ERROR with errno EWOULDBLOCK. A file system that
+ * offers no locks at all (ENOLCK, ENOSYS, EOPNOTSUPP, EINVAL from some network and FUSE file
+ * systems): SR_CD_UNSUPPORTED_HOST, so the caller can say so instead of reporting "busy". */
+static inline sr_cd_status sr_cd_lock_dir(const sr_cd_root *root, const char *rel, int *fd_out) {
+    if (!fd_out) return SR_CD_INVALID_PATH;
+    *fd_out = -1;
+    if (!root || root->fd < 0) return SR_CD_NOT_CONTAINED;
+    if (!rel || (rel[0] && !sr_cd_rel_is_acceptable(rel))) return SR_CD_INVALID_PATH;
+    int dir_fd = -1;
+    sr_cd_status st = sr_cd__at_walk(root->fd, rel, &dir_fd);
+    if (st != SR_CD_OK) return st;
+    if (flock(dir_fd, LOCK_EX | LOCK_NB) != 0) {
+        int err = errno;
+        close(dir_fd);
+        errno = err == EAGAIN ? EWOULDBLOCK : err;
+        if (err == ENOLCK || err == ENOSYS || err == EOPNOTSUPP || err == EINVAL)
+            return SR_CD_UNSUPPORTED_HOST;
+        return SR_CD_IO_ERROR;
+    }
+    *fd_out = dir_fd;
+    return SR_CD_OK;
+}
+
+static inline void sr_cd_unlock_dir(int fd) {
+    if (fd >= 0) close(fd);   /* closing the description releases the flock */
 }
 
 /* sceIoRemove names regular files only. Unlike the savedata delete_leaf

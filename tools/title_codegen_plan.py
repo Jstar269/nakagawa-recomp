@@ -89,9 +89,10 @@ OBJECT_KEY_MAX_WORKERS = 16
 #: file while it compiles, one line each time another object finishes.
 COMPILE_PROGRESS_FILE_ENV = "NK_COMPILE_PROGRESS_FILE"
 COMPILE_PROGRESS_POLL_SECONDS = 0.5
-#: A runtime-placed system library's own translation unit (tools/codegen.py
-#: shared_library_source_name): named by the module's bytes, never by the game.
-SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}\.c")
+#: A runtime-placed system library's own translation units (tools/codegen.py
+#: shared_library_units): named by the module's bytes, never by the game, with ``_<n>``
+#: when the module needs several. The same pattern as codegen.SHARED_LIBRARY_SOURCE_RE.
+SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}(?:_[0-9]+)?\.c")
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Manifest fields that carry no operational meaning and are therefore excluded
@@ -171,6 +172,26 @@ def package_job_bytes(chunk_target_bytes: str | None) -> int:
     )
 
 
+def compile_job_bytes(chunk_target_bytes: str | None, largest_unit_bytes: int) -> int:
+    """Memory to allow one compile job once the generated units exist.
+
+    A unit is normally within ``CHUNK_TARGET_BYTES``, but codegen gives a body larger than
+    its unit budget a unit of its own (#1730), and gcc's memory grows with that unit at
+    every level. Such a unit raises the budget to its own size at the same rate, with no
+    upper cap: past the host's free memory, the build runs one job.
+    """
+    return max(package_job_bytes(chunk_target_bytes),
+               largest_unit_bytes * PACKAGE_BUILD_JOB_BYTES_PER_CHUNK_BYTE)
+
+
+def _largest_generated_unit(build_dir: Path, game_name: str) -> int:
+    """Bytes of the largest generated translation unit in ``build_dir``, 0 when none."""
+    sizes = [path.stat().st_size for path in build_dir.glob(f"{game_name}_recomp_*.c")]
+    sizes += [path.stat().st_size for path in build_dir.glob("nk_lib_*.c")
+              if SHARED_LIBRARY_SOURCE_RE.fullmatch(path.name)]
+    return max(sizes, default=0)
+
+
 def package_build_jobs(
     *,
     cpu_count: int | None,
@@ -225,12 +246,13 @@ def object_key_workers(cpu_count: int | None) -> int:
     return max(1, min(cpus, OBJECT_KEY_MAX_WORKERS))
 
 
-def _host_package_build_jobs(chunk_target_bytes: str | None = None) -> tuple[int, str]:
+def _host_package_build_jobs(chunk_target_bytes: str | None = None,
+                             largest_unit_bytes: int = 0) -> tuple[int, str]:
     return package_build_jobs(
         cpu_count=os.process_cpu_count(),
         available_bytes=available_physical_memory(),
         override=os.environ.get(PACKAGE_BUILD_JOBS_ENV),
-        job_bytes=package_job_bytes(chunk_target_bytes),
+        job_bytes=compile_job_bytes(chunk_target_bytes, largest_unit_bytes),
     )
 
 
@@ -489,17 +511,29 @@ class CompiledObjectReuse:
         return list(self.reused)
 
     def library_report(self) -> list[str]:
-        """One build-log line per system library: reused, compiled, or not shared."""
+        """One build-log line per system library: reused, compiled, or not shared.
+
+        A library cut into several translation units (#1730) still gets one line.
+        """
         reused = set(self.reused)
-        lines = []
+        # Keyed by the module's bytes (nk_lib_<fnv>), not its file name: two modules of one
+        # name are two libraries.
+        units: dict[str, tuple[str, list[bool]]] = {}
         for command in self.libraries:
-            name = self.library_name(command)
+            module = re.sub(r"_[0-9]+$", "", Path(command.source).stem)
+            _name, hits = units.setdefault(module, (self.library_name(command), []))
+            hits.append(_object_path(command.output, self.cwd) in reused)
+        lines = []
+        for name, hits in units.values():
             if self.library_cache is None:
                 lines.append(f"SHARED_LIBRARY: {name} compiled for this game only (sharing is off)")
-            elif _object_path(command.output, self.cwd) in reused:
+            elif all(hits):
                 lines.append(f"SHARED_LIBRARY: reused {name}")
-            else:
+            elif not any(hits):
                 lines.append(f"SHARED_LIBRARY: compiling {name}")
+            else:
+                lines.append(f"SHARED_LIBRARY: compiling {name} "
+                             f"({hits.count(False)} of {len(hits)} units; the rest reused)")
         return lines
 
     def store(self) -> int:
@@ -1315,6 +1349,52 @@ def _make_input_images(
         raise PackageRouteError("PACKAGE_INVALID_ELF", str(exc)) from exc
 
 
+#: The lines tools/codegen.py write_unit_opt_makefile writes (#1730). Make reads the file,
+#: so nothing else may be in it: a comment, a unit row, or that unit's level.
+_UNIT_FALLBACK_ROW = re.compile(r"# unit ([A-Za-z0-9_.-]+) body (\w+) bytes ([1-9][0-9]*)")
+_UNIT_FALLBACK_LEVEL = re.compile(r"RECOMP_UNIT_OPT_([A-Za-z0-9_.-]+) := (-O[0-3sg])")
+
+
+def _read_unit_fallbacks(opt_makefile: Path) -> list[dict[str, Any]]:
+    """The units codegen compiles below the build's level (tools/codegen.py
+    write_unit_opt_makefile, #1730), one build-report row each.
+
+    Codegen always writes the file, and Make executes it, so a missing file, a line that is
+    not a comment, a row or its level, or a row and level that do not pair up is refused
+    before Make runs.
+    """
+    def refuse(detail: str) -> PackageRouteError:
+        return PackageRouteError("PACKAGE_INVALID_CODEGEN_REPORT", f"{opt_makefile.name}: {detail}")
+
+    if not opt_makefile.is_file():
+        # A missing generated-code output, as _record_aot_stage names one.
+        raise PackageRouteError(
+            "PACKAGE_BUILD_INCOMPLETE", f"missing generated-code outputs: {opt_makefile.name}")
+    try:
+        text = opt_makefile.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise refuse(f"unreadable: {exc}") from exc
+    rows: list[dict[str, Any]] = []
+    levels: dict[str, str] = {}
+    for line in text.splitlines():
+        row = _UNIT_FALLBACK_ROW.fullmatch(line)
+        level = _UNIT_FALLBACK_LEVEL.fullmatch(line)
+        if row:
+            rows.append({"unit": row.group(1), "body": row.group(2), "bytes": int(row.group(3))})
+        elif level:
+            if level.group(1) in levels:
+                raise refuse(f"{level.group(1)} has two levels")
+            levels[level.group(1)] = level.group(2)
+        elif not line.startswith("# "):
+            raise refuse(f"unexpected line {line[:80]!r}")
+    units = [row["unit"] for row in rows]
+    if len(set(units)) != len(units) or set(units) != set(levels):
+        raise refuse("every unit row needs exactly one level line, and every level a row")
+    for row in rows:
+        row["level"] = levels[row["unit"]]
+    return rows
+
+
 def _read_codegen_fallbacks(
     stub_report: Path, sources: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1547,6 +1627,7 @@ def _aot_required_outputs(game_name: str) -> set[str]:
         f"{game_name}_recomp_stubs.txt",
         f"{game_name}_image.bin",
         f"{game_name}_imports.toml",
+        f"{game_name}_recomp_opt.mk",
     }
 
 
@@ -1571,13 +1652,27 @@ def _read_static_coverage(path: Path) -> dict[str, Any] | None:
 
 def _is_aot_output(name: str, game_name: str) -> bool:
     """Whether ``name`` is generation-phase output: a required output, a C chunk, the LLVM
-    IR half of a chunk and the backend's record (``--backend=llvm``, #330), or a system
-    library's own translation unit (``nk_lib_*.c``, named apart from the game so that
-    another game's build compiles the identical file)."""
+    IR half of a chunk and the backend's record (``--backend=llvm``, #330), the per-unit
+    optimization levels (``<game>_recomp_opt.mk``, #1730), or a system library's own
+    translation units (``nk_lib_*.c``, named apart from the game so that another game's
+    build compiles the identical files)."""
     return name in _aot_required_outputs(game_name) or (
-        name.startswith(f"{game_name}_recomp_") and Path(name).suffix.lower() in {".c", ".h", ".ll"}
+        name.startswith(f"{game_name}_recomp_")
+        and Path(name).suffix.lower() in {".c", ".h", ".ll"}
     ) or name in (f"{game_name}_recomp_coverage.json", f"{game_name}_recomp_llvm.json") or bool(
         SHARED_LIBRARY_SOURCE_RE.fullmatch(name))
+
+
+def _remove_other_aot_outputs(destination: Path, game_name: str, keep: set[str]) -> None:
+    """Remove generated-code files in ``destination`` that a copy did not bring.
+
+    A package can build in its output folder, where an earlier build's chunks or library
+    units may remain; Make compiles every one it finds (#1730: a module once written as one
+    unit and now as several would define its bodies twice).
+    """
+    for path in destination.iterdir():
+        if path.is_file() and path.name not in keep and _is_aot_output(path.name, game_name):
+            path.unlink()
 
 
 def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
@@ -1598,6 +1693,7 @@ def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
             "PACKAGE_REUSE_INVALID",
             "reusable AOT source is incomplete: " + ", ".join(missing),
         )
+    _remove_other_aot_outputs(destination, game_name, copied)
 
 
 def _copy_verified_aot_stage(
@@ -1649,6 +1745,8 @@ def _copy_verified_aot_stage(
                     "PACKAGE_REUSE_INVALID",
                     f"a refused generated-code stage copy could not be removed: {exc}",
                 ) from exc
+    else:
+        _remove_other_aot_outputs(destination, game_name, set(names))
     return mismatch
 
 
@@ -1769,7 +1867,7 @@ def _cache_key_for_build(
             public_safe=public_safe,
             environment={
                 **os.environ,
-                **package_cache.package_optimization(plan["codegen_profile"]),
+                **package_cache.package_optimization(),
             },
         ),
         link_flags=os.environ.get("LDFLAGS", ""),
@@ -2139,7 +2237,7 @@ def build_package(
         build_environment = os.environ.copy()
         # The optimization the cache key above names is what Make compiles with.
         build_environment.update(
-            package_cache.package_optimization(plan["codegen_profile"], build_environment)
+            package_cache.package_optimization(build_environment)
         )
         # The chunking the cache key above names is what codegen writes.
         build_environment.update(package_cache.package_chunking(build_environment))
@@ -2184,13 +2282,27 @@ def build_package(
             build_environment, package_cache.SHARED_LIBRARY_CACHE_DIR_ENV
         )
         for target in _make_build_targets(native_only=pregenerated, aot_stage=aot_stage):
-            command = _make_build_command(make_executable, target, jobs=build_jobs)
+            jobs = build_jobs
+            if target == "compile":
+                # Make executes the per-unit levels: refuse content codegen did not write. A
+                # missing file runs nothing, and is refused with the other missing outputs.
+                opt_makefile = build_workspace / f"{selected_name}_recomp_opt.mk"
+                if opt_makefile.is_file():
+                    _read_unit_fallbacks(opt_makefile)
+                # The units exist now: one larger than the chunk target needs its own budget.
+                largest = _largest_generated_unit(build_workspace, selected_name)
+                jobs, jobs_reason = _host_package_build_jobs(
+                    build_environment["CHUNK_TARGET_BYTES"], largest)
+                if jobs != build_jobs:
+                    print(f"PACKAGE_BUILD_JOBS: {jobs} for compile, largest unit {largest} bytes "
+                          f"({jobs_reason})", flush=True)
+            command = _make_build_command(make_executable, target, jobs=jobs)
             try:
                 if target == "compile" and (progress_file is not None or object_cache is not None):
                     returncode = _run_compile_phase(
                         make_executable,
                         env=build_environment,
-                        jobs=build_jobs,
+                        jobs=jobs,
                         progress_file=progress_file,
                         object_cache=object_cache,
                         library_cache=library_cache,
@@ -2274,6 +2386,14 @@ def build_package(
             "instructions": unsupported_instructions,
             "regions": unsupported_regions,
         }
+        # The level Make compiled the generated code with (a caller's RECOMP_FLAGS override
+        # RECOMP_OPT), and each unit codegen gave a lower one because it holds a single
+        # oversized body (#1730).
+        optimization = {
+            "recomp_opt": package_cache.effective_recomp_opt(build_environment),
+            "fallback_units": _read_unit_fallbacks(
+                build_workspace / f"{selected_name}_recomp_opt.mk"),
+        }
         coverage = {
             **analysis_summary,
             "aot_entries": len(entry_symbols),
@@ -2312,6 +2432,7 @@ def build_package(
             "tools": tools,
             "coverage": coverage,
             "unsupported": unsupported,
+            "optimization": optimization,
             "analysis_diagnostics": sorted(
                 diagnostics, key=lambda row: (row["module"], row["message"])
             ),

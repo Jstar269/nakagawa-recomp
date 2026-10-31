@@ -232,6 +232,76 @@ class TestImportNameSafety(unittest.TestCase):
             (imports_tool.VariableImportTable("sceDisplay", 1, FakeElf.STUB, self.VSTUB_TABLE),),
         )
 
+    REFS = 0x1600
+
+    def _variable_with_references(self, words, nid=0x0ABC1234):
+        elf = self._variable_entry()
+        struct.pack_into("<II", elf.mem, self.VSTUB_TABLE - FakeElf.BASE, self.REFS, nid)
+        for index, word in enumerate([*words, 0]):
+            struct.pack_into("<I", elf.mem, self.REFS - FakeElf.BASE + 4 * index, word)
+        return elf
+
+    def test_variable_import_references_name_each_patched_word(self):
+        # A lui/addiu pair at 0x1800/0x1804 and a data word at 0x1900: types 5, 6 and 2
+        # over word addresses divided by four (uOFW aVariableLinkApply).
+        elf = self._variable_with_references(
+            [(5 << 26) | (0x1800 >> 2), (6 << 26) | (0x1804 >> 2), (2 << 26) | (0x1900 >> 2)])
+
+        self.assertEqual(
+            imports_tool.variable_imports(elf),
+            (imports_tool.VariableImport(
+                "sceDisplay", 0x0ABC1234,
+                (("hi16", 0x1800), ("lo16", 0x1804), ("word32", 0x1900))),),
+        )
+        # The analyzer keeps refusing the table until the linker and codegen read the model.
+        with self.assertRaises(imports_tool.VariableImportsUnsupported):
+            imports_tool.parse_imports(elf)
+
+    def test_variable_import_reference_of_another_type_is_refused(self):
+        elf = self._variable_with_references([(4 << 26) | (0x1800 >> 2)])
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.variable_imports(elf)
+
+        self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_TABLE_INVALID")
+        self.assertIn("reference type 4", str(raised.exception))
+
+    def test_variable_import_reference_site_must_be_mapped(self):
+        elf = self._variable_with_references([(5 << 26) | (0x9000 >> 2)])
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.variable_imports(elf)
+
+        self.assertIn("reference site 0x00009000 leaves mapped input", str(raised.exception))
+
+    def test_variable_import_reference_list_must_be_mapped(self):
+        elf = self._variable_entry()
+        struct.pack_into("<II", elf.mem, self.VSTUB_TABLE - FakeElf.BASE, 0x9000, 0x0ABC1234)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.variable_imports(elf)
+
+        self.assertIn("reference list at 0x00009000 leaves mapped input", str(raised.exception))
+
+    def test_variable_import_reference_list_is_bounded(self):
+        elf = self._variable_with_references([(2 << 26) | (0x1900 >> 2)] * 3)
+
+        with mock.patch.object(imports_tool, "MAX_VARIABLE_REFERENCES", 2):
+            with self.assertRaises(imports_tool.ImportTableError) as raised:
+                imports_tool.variable_imports(elf)
+
+        self.assertIn("more than 2 references", str(raised.exception))
+
+    def test_variable_stub_pair_must_be_mapped(self):
+        # The table's first word is mapped; its (references, NID) pair runs past the image.
+        elf = self._variable_entry(vstub_table=0x1FFC)
+
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.variable_imports(elf)
+
+        self.assertIn("variable stub 0 of sceDisplay at 0x00001ffc leaves mapped input",
+                      str(raised.exception))
+
     def test_variable_imports_beside_functions_name_their_library(self):
         elf = self._variable_entry(num_vars=2, num_funcs=1)
 

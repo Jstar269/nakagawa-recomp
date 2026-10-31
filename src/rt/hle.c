@@ -13555,6 +13555,39 @@ static uint32_t utility_slot_claim_locked(int type) {
     s_utility_slot = type;
     return 0;
 }
+/* A busy slot is reported before the parameter block is looked at: on a PSP a game-sharing
+ * InitStart with a bad size returns INVALID_STATUS while a savedata dialog is starting, and
+ * INVALID_PARAM_SIZE once nothing is active (PSPAutotests tests/utility/dialog/status.expected,
+ * hrydgard/pspautotests master). A refused block never takes the slot: every type still reports
+ * WRONG_TYPE after it. Measured for game sharing; the other dialogs share the one slot and are
+ * checked in the same order. */
+static int utility_slot_busy(void) {
+    dialog_lock();
+    const int busy = utility_slot_active_locked();
+    dialog_unlock();
+    return busy;
+}
+/* The block's first word is its size, one of `count` versioned sizes; the whole block must be
+ * readable and writable (PSPAutotests tests/utility/dialog/sizes.expected). */
+static int utility_param_size_ok(uint32_t param, const uint32_t *sizes, size_t count) {
+    if (!param || !sr_guest_span_readable(param, 4u)) return 0;
+    const uint32_t size = MEM_R32(param);
+    for (size_t i = 0; i < count; i++)
+        if (size == sizes[i])
+            return sr_guest_span_readable(param, size) && sr_guest_span_writable(param, size);
+    return 0;
+}
+
+/* The guest wall clock and the console time zone, for save timestamps (#1387, savedata.c).
+ * Both are the RTC's own, defined with it below: the RTC tick (microseconds since 0001-01-01,
+ * anchored to the host clock once and advanced by guest time) and the console's registry time
+ * zone plus daylight saving, never the host process time zone. */
+static uint64_t rtc_now_tick(void);
+static int64_t psp_profile_local_offset_minutes(int32_t *zone_out, uint32_t *daylight_out);
+uint64_t sr_savedata_guest_rtc_tick(void) { return rtc_now_tick(); }
+int32_t sr_savedata_console_offset_minutes(void) {
+    return (int32_t)psp_profile_local_offset_minutes(NULL, NULL);
+}
 
 static int s_dlg_status = 0, s_dlg_tick = 0;
 static uint32_t s_dlg_param = 0, s_dlg_param_size = 0, s_dlg_result = 0, s_dlg_generation = 0;
@@ -13567,12 +13600,11 @@ int sr_savedata_pause_busy(void) {
 }
 static uint32_t h_SavedataInitStart(CpuState *s) {
     /* The block's first word is its size: the 0x5c8, 0x5dc and 0x600-byte versions are
-     * accepted and any other size is refused (pspautotests e2d098fc). */
-    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
+     * accepted and any other size is refused (pspautotests e2d098fc), after the busy check. */
+    static const uint32_t sizes[] = { 0x5c8u, 0x5dcu, 0x600u };
+    if (utility_slot_busy()) return SCE_ERROR_UTILITY_INVALID_STATUS;
+    if (!utility_param_size_ok(A0, sizes, sizeof(sizes) / sizeof(sizes[0]))) return 0x80110004u;
     const uint32_t size = MEM_R32(A0);
-    if ((size != 0x5c8u && size != 0x5dcu && size != 0x600u) ||
-        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
-        return 0x80110004u;
     dialog_lock();
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_SAVEDATA);
     if (claim) {
@@ -13737,6 +13769,7 @@ static void utility_dialogs_reset_locked(void) {
     s_utility_slot = UTILITY_SLOT_NONE;
 }
 
+/* `param` has passed its type's size check, which follows the busy check (utility_slot_busy). */
 static uint32_t utility_dialog_init(UtilityDialog *d, uint32_t param) {
     if (!param) return 0x80110004u; /* SCE_ERROR_UTILITY_INVALID_PARAM */
     dialog_lock();
@@ -13755,6 +13788,20 @@ static uint32_t utility_dialog_init(UtilityDialog *d, uint32_t param) {
     dialog_unlock();
     return 0;
 }
+/* The answer a message dialog confirmed at once gives: its default button. There is no message
+ * dialog UI, so the runtime presses the button the cursor starts on, which is what a person
+ * pressing X straight away gets. PSPSDK psputility_msgdialog.h: options bit 0x10 asks for
+ * YES/NO buttons and bit 0x100 puts the cursor on NO; buttonPressed reads 1 for YES (and OK) and
+ * 2 for NO. A "delete this save? (default No)" prompt is therefore answered No, never Yes. */
+#define MSG_DIALOG_OPTION_YESNO      0x10u
+#define MSG_DIALOG_OPTION_DEFAULT_NO 0x100u
+static uint32_t msg_dialog_default_answer(uint32_t param) {
+    const uint32_t options = MEM_R32(param + 0x23c);
+    const int no = (options & MSG_DIALOG_OPTION_YESNO) && (options & MSG_DIALOG_OPTION_DEFAULT_NO);
+    fprintf(stderr, "sceUtilityMsgDialog: no dialog UI; answered %s, the default button "
+            "(options 0x%08" PRIx32 ")\n", no ? "NO" : "YES/OK", options);
+    return no ? 2u : 1u;
+}
 static uint32_t utility_dialog_update(UtilityDialog *d) {
     uint32_t param = 0, generation = 0, result = 0;
     unsigned kind = 0;
@@ -13763,7 +13810,11 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
-    if (d->status == 1) {  /* still starting up: Update does not move INIT (#1386) */
+    /* Still starting up: Update does not move INIT (#1386). A message dialog also refuses
+     * Update once it is back at NONE ("msg Update after done: INVALID_STATUS", PSPAutotests
+     * tests/utility/dialog/status.expected); netconf, gamedata and sharing are unmeasured there
+     * and keep accepting it. */
+    if (d->status == 1 || (d->status == 0 && d->kind == UTILITY_MSG)) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
@@ -13787,14 +13838,14 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
             result = sr_savedata_prepare_utility(SR_UTILITY_STORAGE_GAMEDATA);
         else if (kind == UTILITY_GAMESHARING)
             result = sr_savedata_prepare_utility(SR_UTILITY_STORAGE_GAMESHARING);
-        /* The message dialog answers with its default affirmative/OK button. The answer
-         * goes to buttonPressed at +0x240, which exists from the 580-byte (V2) parameter
+        /* The message dialog answers with its default button (msg_dialog_default_answer). The
+         * answer goes to buttonPressed at +0x240, which exists from the 580-byte (V2) parameter
          * block on; +0x23c is the caller's options word (YES/NO, default NO, ...) and is
          * input, never written (PPSSPP Core/Dialog/PSPMsgDialog.h pspMessageDialog: V1 ends
          * at 572 bytes, V2 adds options and buttonPressed, V3 is 708 bytes). Writing the
          * answer into options left buttonPressed 0, which a yes/no caller reads as "no". */
         else if (kind == UTILITY_MSG && MEM_R32(param) >= 0x244u)
-            MEM_W32(param + 0x240, 1u);
+            MEM_W32(param + 0x240, msg_dialog_default_answer(param));
         dialog_lock();
         if (generation == d->generation) {
             d->result = result;
@@ -13829,7 +13880,14 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
-    if (d->status) d->status = 4;
+    /* A message dialog shuts down only from FINISHED: ShutdownStart during INIT, while RUNNING and
+     * again after it are INVALID_STATUS (PSPAutotests tests/utility/dialog/status.expected). The
+     * other types are unmeasured and keep the old rule. */
+    if (d->kind == UTILITY_MSG ? d->status != 3 : !d->status) {
+        dialog_unlock();
+        return d->kind == UTILITY_MSG ? SCE_ERROR_UTILITY_INVALID_STATUS : 0u;
+    }
+    d->status = 4;
     dialog_unlock();
     return 0;
 }
@@ -13859,8 +13917,16 @@ static uint32_t utility_dialog_abort(UtilityDialog *d) {
     return 0;
 }
 static uint32_t h_MsgDialogAbort(CpuState *s);
+/* PSPAutotests tests/utility/dialog/sizes.expected: the message dialog accepts the 0x23c (V1),
+ * 0x244 (V2) and 0x2c4 (V3) blocks and every other size from 0 to 0x800 is INVALID_PARAM_SIZE;
+ * larger sizes are unmeasured and refused the same way. */
+static uint32_t h_MsgDialogInit(CpuState *s) {
+    static const uint32_t sizes[] = { 0x23cu, 0x244u, 0x2c4u };
+    if (utility_slot_busy()) return SCE_ERROR_UTILITY_INVALID_STATUS;
+    if (!utility_param_size_ok(A0, sizes, sizeof(sizes) / sizeof(sizes[0]))) return 0x80110004u;
+    return utility_dialog_init(&s_msg_dialog, A0);
+}
 #define UTILITY_DIALOG_HANDLERS(prefix, slot) \
-    static uint32_t prefix##Init(CpuState *s) { return utility_dialog_init(&(slot), A0); } \
     static uint32_t prefix##Update(CpuState *s) { (void)s; return utility_dialog_update(&(slot)); } \
     static uint32_t prefix##Status(CpuState *s) { (void)s; return utility_dialog_status(&(slot)); } \
     static uint32_t prefix##Shutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&(slot)); }
@@ -13868,11 +13934,9 @@ UTILITY_DIALOG_HANDLERS(h_MsgDialog, s_msg_dialog)
 static uint32_t h_MsgDialogAbort(CpuState *s) { (void)s; return utility_dialog_abort(&s_msg_dialog); }
 /* PSPAutotests utility/dialog/sizes lists these netconf parameter versions. */
 static uint32_t h_NetDialogInit(CpuState *s) {
-    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
-    uint32_t size = MEM_R32(A0);
-    if ((size != 0x38u && size != 0x40u && size != 0x44u) ||
-        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
-        return 0x80110004u;
+    static const uint32_t sizes[] = { 0x38u, 0x40u, 0x44u };
+    if (utility_slot_busy()) return SCE_ERROR_UTILITY_INVALID_STATUS;
+    if (!utility_param_size_ok(A0, sizes, sizeof(sizes) / sizeof(sizes[0]))) return 0x80110004u;
     return utility_dialog_init(&s_net_dialog, A0);
 }
 static uint32_t h_NetDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_net_dialog); }
@@ -13880,11 +13944,10 @@ static uint32_t h_NetDialogStatus(CpuState *s) { (void)s; return utility_dialog_
 static uint32_t h_NetDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_net_dialog); }
 /* PSPAutotests utility/dialog/sizes lists the storage dialog versions. */
 static uint32_t utility_storage_init(UtilityDialog *d, uint32_t param) {
-    if (!param || !sr_guest_span_readable(param, 4u)) return 0x80110004u;
-    uint32_t size = MEM_R32(param);
-    int valid = d->kind == UTILITY_GAMEDATA ? (size == 0x590u || size == 0x598u) :
-        (size == 0x50u || size == 0x54u || size == 0x64u);
-    if (!valid || !sr_guest_span_readable(param, size) || !sr_guest_span_writable(param, size))
+    static const uint32_t gamedata[] = { 0x590u, 0x598u }, sharing[] = { 0x50u, 0x54u, 0x64u };
+    const int install = d->kind == UTILITY_GAMEDATA;
+    if (utility_slot_busy()) return SCE_ERROR_UTILITY_INVALID_STATUS;
+    if (!utility_param_size_ok(param, install ? gamedata : sharing, install ? 2u : 3u))
         return 0x80110004u;
     return utility_dialog_init(d, param);
 }
@@ -14109,13 +14172,12 @@ static int osk_collect(void) {
 /* A keyboard, like every utility dialog, starts only while the slot's holder is at NONE: a
  * running keyboard or dialog keeps the slot, its open request included (#1386). */
 static uint32_t h_OskInitStart(CpuState *s) {
-    /* PSPAutotests utility/dialog/sizes: OSK has two versioned sizes. Check the
-     * size word first, then the entire version before retaining the guest address. */
-    if (!A0 || !sr_guest_span_readable(A0, 4u)) return 0x80110004u;
-    uint32_t size = MEM_R32(A0);
-    if ((size != 0x40u && size != 0x44u) ||
-        !sr_guest_span_readable(A0, size) || !sr_guest_span_writable(A0, size))
-        return 0x80110004u;
+    /* PSPAutotests utility/dialog/sizes: OSK has two versioned sizes. After the busy check
+     * (utility_slot_busy), check the size word, then the entire version before retaining the
+     * guest address. */
+    static const uint32_t sizes[] = { 0x40u, 0x44u };
+    if (utility_slot_busy()) return SCE_ERROR_UTILITY_INVALID_STATUS;
+    if (!utility_param_size_ok(A0, sizes, sizeof(sizes) / sizeof(sizes[0]))) return 0x80110004u;
     dialog_lock();
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_OSK);
     if (!claim) {
@@ -20139,15 +20201,44 @@ static uint32_t h_IoDevctl(CpuState *s) {
         IO_DEVCTL_MSCM_UNREGISTER_CALLBACK = 0x02015805u,
         IO_DEVCTL_ERROR_UNSUPPORTED = 0x80010086u,
         IO_DEVCTL_ERROR_INVALID_ARGUMENT = 0x80010016u,
-        IO_DEVCTL_ERROR_IO = 0x80010005u
+        IO_DEVCTL_ERROR_IO = 0x80010005u,
+        IO_DEVCTL_UMD_DISC_TYPE = 0x01F20001u,
+        IO_DEVCTL_UMD_PREPARE_CACHE = 0x01F100A4u,
+        IO_UMD_TYPE_GAME = 0x10u
     };
     char device[128];
     uint32_t outdata = s->r[8], outlen = s->r[9];
     if (!A0 || !guest_cstr(A0, device, (int)sizeof(device)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (io_raw_device_path(device) != IO_RAW_DEVICE_NONE)
+    const IoRawDevicePath raw_device = io_raw_device_path(device);
+    uint32_t umd_sectors = 0u;
+    /* Two UMD drive commands a title issues before reading the disc, served while a disc
+     * image is open (behaviour reference: PPSSPP Core/HLE/sceIo.cpp sceIoDevctl):
+     *  - 0x01F20001, the disc type: the output is eight aligned writable bytes and the type
+     *    goes to its second word. It is PSP_UMD_TYPE_GAME, the type sceUmdGetDiscInfo reports
+     *    and the only medium this runtime serves.
+     *  - 0x01F100A4, prepare data in the drive cache: a four-byte argument naming the data.
+     *    The runtime has no drive cache and serves every read from the image when it is
+     *    made, so the command completes at once with nothing to do.
+     * Any other command, a malformed call or the drive with no image keeps the named
+     * boundary below. */
+    if ((raw_device == IO_RAW_DEVICE_UMD0 || raw_device == IO_RAW_DEVICE_UMD1 ||
+         raw_device == IO_RAW_DEVICE_UMD_ALIAS) &&
+        iso_sector_count(&umd_sectors) == 0 && umd_sectors != 0u) {
+        if (A1 == IO_DEVCTL_UMD_DISC_TYPE && (outdata & 3u) == 0u && outlen >= 8u &&
+            sr_guest_span_writable(outdata, 8u)) {
+            MEM_W32(outdata + 4u, IO_UMD_TYPE_GAME);
+            return 0;
+        }
+        if (A1 == IO_DEVCTL_UMD_PREPARE_CACHE && A3 >= 4u && sr_guest_span_readable(A2, 4u))
+            return 0;
+    }
+    if (raw_device != IO_RAW_DEVICE_NONE) {
+        /* Name the command too: the raw-device boundary line does not carry it. */
+        hle_note_devctl_refusal(device, A1, IO_DEVCTL_ERROR_UNSUPPORTED);
         return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_DEVCTL,
                                           "sceIoDevctl", device, UINT32_MAX);
+    }
     int is_memstick = strcmp(device, "ms0:") == 0 ||
                       strcmp(device, "fatms0:") == 0 ||
                       strcmp(device, "mscmhc0:") == 0 ||
@@ -20223,8 +20314,8 @@ static uint32_t io_async_submit(uint32_t fd, IoAsyncOp op, uint32_t a1,
                                 uint32_t a2, uint32_t a3,
                                 uint32_t stack0, uint32_t stack1) {
     const int raw_umd_queued = hle_fd_is_raw_umd(fd) &&
-        (op == IO_ASYNC_READ || op == IO_ASYNC_LSEEK32 || op == IO_ASYNC_LSEEK64 ||
-         op == IO_ASYNC_CLOSE);
+        (op == IO_ASYNC_OPEN || op == IO_ASYNC_READ || op == IO_ASYNC_LSEEK32 ||
+         op == IO_ASYNC_LSEEK64 || op == IO_ASYNC_CLOSE);
     if (hle_fd_is_raw_device(fd) && !raw_umd_queued) {
         switch (op) {
         case IO_ASYNC_READ:
@@ -20281,7 +20372,12 @@ static uint32_t h_IoOpenAsync(CpuState *s) {
     char path[512];
     uint32_t rc = io_guest_path(A0, path, sizeof(path));
     if (rc != 0u) return rc;
-    if (io_raw_device_path(path) != IO_RAW_DEVICE_NONE)
+    /* The UMD block device ("umd0:", "umd1:", "umd:") opens through the same request queue:
+     * the I/O manager hands an asynchronous open to the descriptor's async thread, which runs
+     * the device open sceIoOpen runs (uOFW src/kd/iofilemgr/iofilemgr.c, sceIoOpenAsync and
+     * do_open; behaviour only, no code copied), so its flag refusal is sceIoOpen's and the
+     * descriptor is the raw UMD sceIoOpen returns. Other raw devices keep their boundary. */
+    if (io_raw_device_path(path) == IO_RAW_DEVICE_MSSTOR0P1)
         return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_OPEN_ASYNC,
                                           "sceIoOpenAsync", path, UINT32_MAX);
     /* The host lookup runs now so the call can return the PSP-visible fd, but the
@@ -20294,8 +20390,10 @@ static uint32_t h_IoOpenAsync(CpuState *s) {
      * callback then. */
     uint32_t fd = h_IoOpen(s);
     if (fd < sizeof(s_fds) / sizeof(s_fds[0]) && s_fds[fd].used &&
-        io_async_submit(fd, IO_ASYNC_OPEN, 0u, 0u, 0u, 0u, 0u) != 0u) {
-        /* A descriptor kind the request queue does not hold completes at once. */
+        ((hle_fd_is_raw_device(fd) && !hle_fd_is_raw_umd(fd)) ||
+         io_async_submit(fd, IO_ASYNC_OPEN, 0u, 0u, 0u, 0u, 0u) != 0u)) {
+        /* A descriptor kind the request queue does not hold (the UMD with no disc image
+         * open, as for sceIoOpen) completes at once. */
         s_fds[fd].async.state = IO_ASYNC_COMPLETE;
         s_fds[fd].async.op = IO_ASYNC_NONE;
         s_fds[fd].async.result = (int64_t)(int32_t)fd;

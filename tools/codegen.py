@@ -33,7 +33,7 @@ from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
-    static_coverage,
+    static_coverage, branch_kind, BRANCH_UNCOND,
 )
 from host_stubs import HST_SIMPLE_STUBS
 import codegen_llvm
@@ -2384,6 +2384,28 @@ def is_control(w):
         return True
     return op in (2, 3) or (op == 0 and fn in (0x08, 0x09)) or is_cond_branch(w)
 
+def ends_straight_line(pc, w):
+    """Whether control never continues past the delay slot of the transfer at ``pc``.
+
+    True for `j`, `jr`, `jalr $zero` and the `b` idiom (beq $zero, $zero; the analyzer's
+    BRANCH_UNCOND), unless a guest patch or an enhancement rewrite replaces that `b`: the
+    replacement may fall through, so its not-taken path stays in the body.
+    """
+    op, fn = w >> 26, w & 0x3F
+    if op == 2 or (op == 0 and (fn == 0x08 or (fn == 0x09 and rd(w) == 0))):
+        return True
+    if not is_cond_branch(w) or branch_kind(w) != BRANCH_UNCOND:
+        return False
+    return pc not in GUEST_PATCHES and (pc not in ENHANCEMENT_SITES
+                                        or ADDRESS_SPACE.runtime_module)
+
+
+def continues_to_next_word(w):
+    """Whether the body walk goes on from ``w`` to the next word: anything but a control
+    transfer, a syscall (an HLE boundary) or eret."""
+    return not is_control(w) and not ((w >> 26) == 0 and (w & 0x3F) == 0x0C)
+
+
 class _WalkBudgetExceeded(Exception):
     """The unsplit walk of one entry passed REGION_SPLIT_THRESHOLD instructions."""
 
@@ -2431,7 +2453,18 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
     # target that is another entry stays outside the body (the emitter records a TAIL
     # transfer to it), and a not-taken successor that is one is a continuation. TAIL
     # transfers (#855) run a guest loop through such edges in constant host stack.
+    #
+    # The `b` idiom (beq $zero, $zero) is always taken: like `j` it has no not-taken
+    # successor, as the analyzer's CFG says (analyze.branch_kind). The words after its
+    # delay slot join the body only when another edge reaches them; walking on into them
+    # copied the next function's code, never run from this entry, into every body (#1730).
     continuations = {}
+    # Delay slots of transfers that never fall through (j, jr, jalr $zero, `b`). A
+    # branch may also land on such a slot: on that path the slot is an ordinary
+    # instruction and execution continues after it, so a slot reached as a label after
+    # its transfer was walked resumes the walk at slot+4 (a slot reached first as a
+    # label is walked straight through anyway).
+    terminator_slots = set()
 
     def is_entry_boundary(next_pc):
         if next_pc == start:
@@ -2469,6 +2502,11 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
     stack = [start]
     while stack:
         pc = stack.pop()
+        if pc in terminator_slots:
+            # Walk the slot again as an ordinary word, by the rules any word follows (a
+            # syscall there still ends the line), so the body is the same in either order.
+            terminator_slots.discard(pc)
+            seen.discard(pc)
         while in_ranges(pc, ranges) and pc not in seen:
             seen.add(pc)
             insns.add(pc)
@@ -2489,11 +2527,13 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
             if op == 0 and fn == 0x09:  # jalr $zero, rs: computed tail transfer
                 insns.add(pc + 4)
                 seen.add(pc + 4)
+                terminator_slots.add(pc + 4)
                 break
             if op == 2:  # j
                 t = jump_target(pc, w)
                 insns.add(pc + 4)
                 seen.add(pc + 4)
+                terminator_slots.add(pc + 4)
                 if t == pc:  # a self-loop is an in-function edge, never a native call to this function
                     labels.add(t)
                 elif not is_jump_boundary(t) and in_ranges(t, ranges):  # intra goto
@@ -2503,6 +2543,7 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
             if op == 0 and fn == 0x08:  # jr: return / computed / tail
                 insns.add(pc + 4)
                 seen.add(pc + 4)
+                terminator_slots.add(pc + 4)
                 break
             if op == 0 and fn == 0x0C:  # syscall: HLE boundary
                 break
@@ -2534,8 +2575,12 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
                     stack.append(t)
                 insns.add(pc + 4)
                 seen.add(pc + 4)
-                # Both successors belong to one native control-flow region.  In
-                # particular, do not turn a loop's not-taken edge into a host call.
+                if ends_straight_line(pc, w):
+                    terminator_slots.add(pc + 4)
+                    break
+                # Both successors of any other conditional branch belong to one native
+                # control-flow region.  In particular, do not turn a loop's not-taken
+                # edge into a host call.
                 pc += 8
                 if split and stop_at_continuation(pc - 8, pc):
                     break
@@ -2997,6 +3042,20 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elf, start, ranges, known, resume_owners=resume_owners,
             dispatch_boundaries=dispatch_boundaries)
     insns, labels, continuations = flow
+    for label in labels:
+        # A label on the delay slot of a transfer that never falls through runs the slot
+        # as an ordinary word; when that word goes on to the next one, the walk owns that
+        # path (_walk_body terminator_slots). Without it the label's C would fall into
+        # whatever block the address order puts next.
+        owner_word = read32(elf, label - 4) if label - 4 in insns else None
+        slot_word = read32(elf, label)
+        if (owner_word is not None and ends_straight_line(label - 4, owner_word)
+                and slot_word is not None and continues_to_next_word(slot_word)
+                and label + 4 not in insns and label not in continuations
+                and in_ranges(label + 4, ranges)):
+            raise AssertionError(
+                f"0x{start:08x}: label 0x{label:08x} on the delay slot of 0x{label - 4:08x} "
+                f"has no owned successor")
     # Static verification asserts translation-time constants; a runtime module's
     # relocated immediates and link values are not constants, so it carries none.
     sv_points = ({} if ADDRESS_SPACE.runtime_module
@@ -3888,17 +3947,109 @@ def write_coverage_report(path, images, module_translations):
           + f" translated_share={total['translated_share']}")
 
 
-SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}\.c")
+#: A shared module's translation units (tools/title_codegen_plan.py SHARED_LIBRARY_SOURCE_RE):
+#: ``nk_lib_<fnv1a64>.c``, or ``nk_lib_<fnv1a64>_<n>.c`` when the module needs several.
+SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}(?:_[0-9]+)?\.c")
+
+# A shared module's bodies are cut into units as the game's own are, so no system library is
+# one unbounded translation unit (#1730: one was 1.96 GB of C, and its cc1 passed 18 GB). The
+# budget is the library's own, not the build's --target-chunk-bytes / --funcs-per-chunk: those
+# differ between build routes, and every game carrying the module must write the same files
+# (#1306).
+LIBRARY_UNIT_TARGET_BYTES = 4_000_000
+LIBRARY_UNIT_MAX_FUNCS = 2000
 
 
-def shared_library_source_name(module):
-    """A shared module's translation unit, named by its bytes (tools/title_codegen_plan.py
-    SHARED_LIBRARY_SOURCE_RE)."""
-    return f"nk_lib_{module.file_fnv1a64:016x}.c"
+#: A generated C body larger than this compiles alone, in a unit of its own, at
+#: BODY_FALLBACK_OPT rather than the build's RECOMP_OPT (#1730). A unit is otherwise bounded
+#: by its byte budget; only a single body can exceed it. gcc's memory grows with that body at
+#: every level (about 170 bytes per byte of C, linear up to the 4 MB budget), so the level
+#: bounds its time, not its memory: the package build budgets that unit's memory from its
+#: size (tools/title_codegen_plan.py compile_job_bytes). -O0 keeps such a body where every
+#: package compiled it before. The Makefile reads the level per object from
+#: <game>_recomp_opt.mk, and the package build copies its rows to the build report.
+#: Constants, so the generated files never depend on the machine that wrote them.
+BODY_FALLBACK_BYTES = 4_000_000
+BODY_FALLBACK_OPT = "-O0"
 
 
-def shared_library_source_text(module):
-    """A shared module's translation unit: its bodies with their own declarations.
+def _body_weight(text):
+    """Bytes of C a body costs its unit; an LLVM body weighs what its C body would."""
+    return getattr(text, "chunk_bytes", len(text))
+
+
+def partition_units(texts, target_bytes, max_funcs):
+    """Cut bodies into translation units, keeping their order.
+
+    A unit closes before the body that would take it past ``target_bytes`` of C or past
+    ``max_funcs`` bodies; a body larger than the budget is a unit of its own, and so is a
+    body over BODY_FALLBACK_BYTES whatever the budget. A ``target_bytes`` of 0 cuts by
+    count only. An LLVM body weighs what its C body would (``chunk_bytes``), so units
+    fall where the C backend cuts them.
+    """
+    units, cur, cur_bytes = [], [], 0
+    for text in texts:
+        weight = _body_weight(text)
+        alone = weight > BODY_FALLBACK_BYTES
+        if cur and (alone or (target_bytes > 0 and cur_bytes + weight > target_bytes)
+                    or len(cur) >= max_funcs):
+            units.append(cur)
+            cur, cur_bytes = [], 0
+        cur.append(text)
+        cur_bytes += weight
+        if alone:
+            units.append(cur)
+            cur, cur_bytes = [], 0
+    if cur:
+        units.append(cur)
+    return units
+
+
+def fallback_unit_row(stem, unit, renames=None):
+    """``(object stem, body symbol, bytes)`` when ``unit`` compiles at BODY_FALLBACK_OPT.
+
+    The symbol is the one the written unit defines (``renames``: symbol_map_renames).
+    """
+    if len(unit) != 1 or isinstance(unit[0], codegen_llvm.LLVMBody):
+        return None
+    weight = _body_weight(unit[0])
+    if weight <= BODY_FALLBACK_BYTES:
+        return None
+    match = re.search(r"(?m)^void (\w+)\(CpuState \*s\) \{", unit[0])
+    if match is None:
+        raise AssertionError(f"{stem}: an oversized unit with no body definition")
+    return stem, (renames or {}).get(match.group(1), match.group(1)), weight
+
+
+def write_unit_opt_makefile(path, rows):
+    """``<game>_recomp_opt.mk``: the units that compile at BODY_FALLBACK_OPT, always written.
+
+    Each ``# unit`` comment names the body; tools/title_codegen_plan.py reads them for the
+    build report. An empty file means every unit compiles at the build's level.
+    """
+    lines = [
+        "# Generated by tools/codegen.py. Do not edit by hand.",
+        f"# Units holding one generated body over {BODY_FALLBACK_BYTES} bytes of C compile at",
+        f"# {BODY_FALLBACK_OPT}, after RECOMP_FLAGS (#1730).",
+    ]
+    for stem, symbol, weight in rows:
+        lines.append(f"# unit {stem} body {symbol} bytes {weight}")
+        lines.append(f"RECOMP_UNIT_OPT_{stem} := {BODY_FALLBACK_OPT}")
+    with open(path, "w", encoding="ascii", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def shared_library_units(module):
+    """``(file name, bodies)`` for each translation unit of a shared module, named by its bytes."""
+    units = partition_units(module.texts, LIBRARY_UNIT_TARGET_BYTES, LIBRARY_UNIT_MAX_FUNCS)
+    stem = f"nk_lib_{module.file_fnv1a64:016x}"
+    if len(units) == 1:
+        return [(f"{stem}.c", units[0])]
+    return [(f"{stem}_{n}.c", unit) for n, unit in enumerate(units)]
+
+
+def shared_library_source_text(module, texts):
+    """One translation unit of a shared module: some of its bodies, with every declaration.
 
     Nothing in it names the game, so the build of every game carrying this module writes
     the same bytes. The first comment names the module for the build log; comments do
@@ -3925,25 +4076,32 @@ def shared_library_source_text(module):
     lines.append("")
     if SV_ENABLED:
         lines += [SR_SV_CHECK, ""]
-    return "\n".join(lines) + "\n" + "\n\n".join(module.texts) + "\n"
+    return "\n".join(lines) + "\n" + "\n\n".join(texts) + "\n"
 
 
 def write_shared_library_sources(out_dir, module_translations):
-    """Write each shared module's translation unit and remove ones a previous run left."""
-    written = set()
+    """Write each shared module's translation units and remove ones a previous run left.
+
+    Returns the fallback_unit_row of each unit that compiles at BODY_FALLBACK_OPT.
+    """
+    written, fallbacks = set(), []
     for module in module_translations:
         if not module.shared or not module.texts:
             continue
-        name = shared_library_source_name(module)
-        written.add(name)
-        with open(os.path.join(out_dir, name), "w", encoding="ascii", newline="\n") as f:
-            f.write(shared_library_source_text(module))
+        for name, texts in shared_library_units(module):
+            written.add(name)
+            row = fallback_unit_row(name[:-2], texts)
+            if row is not None:
+                fallbacks.append(row)
+            with open(os.path.join(out_dir, name), "w", encoding="ascii", newline="\n") as f:
+                f.write(shared_library_source_text(module, texts))
     for entry in os.listdir(out_dir):
         stem, suffix = os.path.splitext(entry)
         source = stem + ".c"
         if suffix in (".c", ".o", ".d") and SHARED_LIBRARY_SOURCE_RE.fullmatch(source) and \
                 source not in written:
             os.remove(os.path.join(out_dir, entry))
+    return fallbacks
 
 
 def runtime_module_descriptor_lines(module):
@@ -4854,29 +5012,10 @@ def main(argv):
             sys.stderr.write(f"codegen: {exc}\n")
             return 2
 
-    if chunk_target_bytes > 0:
-        # Deterministic size-aware partition: preserve emitted function order and
-        # close a chunk when adding the next function would exceed the byte budget
-        # (the function-count cap still bounds pathological single-function chunks).
-        boundaries = []
-        cur = []
-        cur_bytes = 0
-        for ft in func_texts:
-            # An LLVM body weighs what its C body would, so chunks fall where C cuts them.
-            w = getattr(ft, "chunk_bytes", len(ft))
-            if cur and (cur_bytes + w > chunk_target_bytes or len(cur) >= funcs_per_chunk):
-                boundaries.append(cur)
-                cur = []
-                cur_bytes = 0
-            cur.append(ft)
-            cur_bytes += w
-        if cur:
-            boundaries.append(cur)
-    else:
-        boundaries = [
-            func_texts[i * funcs_per_chunk : (i + 1) * funcs_per_chunk]
-            for i in range((len(func_texts) + funcs_per_chunk - 1) // funcs_per_chunk)
-        ]
+    # Deterministic size-aware partition: emitted function order is kept, and a chunk
+    # closes when the next function would take it past the byte budget (the function
+    # count still bounds a chunk of tiny functions). Without a byte budget, the count alone.
+    boundaries = partition_units(func_texts, chunk_target_bytes, funcs_per_chunk)
     num_files = len(boundaries)
     base_name = os.path.splitext(out_c)[0]
 
@@ -5129,7 +5268,17 @@ def main(argv):
     elif os.path.exists(llvm_manifest_path):
         os.remove(llvm_manifest_path)
 
-    write_shared_library_sources(os.path.dirname(base_name) or ".", module_translations)
+    unit_fallbacks = [
+        row for row in (fallback_unit_row(f"{os.path.basename(base_name)}_{i}", chunk, renames)
+                        for i, chunk in enumerate(boundaries))
+        if row is not None
+    ]
+    unit_fallbacks += write_shared_library_sources(os.path.dirname(base_name) or ".",
+                                                   module_translations)
+    write_unit_opt_makefile(f"{base_name}_opt.mk", unit_fallbacks)
+    for stem, symbol, weight in unit_fallbacks:
+        print(f"CODEGEN_OPT_FALLBACK unit={stem} body={symbol} bytes={weight} "
+              f"level={BODY_FALLBACK_OPT}")
 
     if cfg_report_path is not None:
         cfg_report["emitted_ownership_map"] = build_emitted_ownership_map(

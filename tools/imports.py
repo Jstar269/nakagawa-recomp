@@ -157,6 +157,90 @@ def _variable_import_table(elf, pos, entry_bytes, size_words, library, count, re
 
 
 
+@dataclass(frozen=True)
+class VariableImport:
+    """One imported variable and every word the loader patches with its address.
+
+    references holds (field, address) pairs: "word32" adds the address to a data word,
+    "hi16"/"lo16" to the immediate of an instruction pair. The PSP loader reads them from
+    the variable stub's reference list, a zero-terminated list of words whose top six bits
+    are the relocation type (2 R_MIPS_32, 5 R_MIPS_HI16, 6 R_MIPS_LO16) and whose low 26
+    bits are the word address divided by four, in the list's own 256 MiB segment (uOFW
+    src/kd/loadcore/loadcore.c aVariableLinkApply; behaviour only).
+    """
+
+    library: str
+    nid: int
+    references: tuple[tuple[str, int], ...]
+
+
+VARIABLE_REFERENCE_FIELDS = {2: "word32", 5: "hi16", 6: "lo16"}
+MAX_VARIABLE_REFERENCES = 4096
+
+
+def variable_imports(elf):
+    """Return every declared variable import with its reference sites, in table order.
+
+    The analyzer still refuses an image that declares variable imports (parse_imports):
+    this is the model the linking work reads. A reference of another type, a list that
+    leaves mapped input or runs past MAX_VARIABLE_REFERENCES, and a site outside the
+    image are named boundaries.
+    """
+    _windows, tables, base = _walk_import_windows(elf)
+
+    def rebase(v):
+        return v + base if v and base != 0 and v < base else v
+
+    result = []
+    for table in tables:
+        for index in range(table.count):
+            pair = elf.read_at_vaddr(table.vstub_table + 8 * index, 8)
+            if pair is None or len(pair) != 8:
+                raise ImportTableError(
+                    "ANALYZER_IMPORT_TABLE_INVALID",
+                    f"variable stub {index} of {table.library} at "
+                    f"0x{table.vstub_table + 8 * index:08x} leaves mapped input",
+                )
+            refs_ptr, nid = struct.unpack("<II", pair)
+            refs_ptr = rebase(refs_ptr)
+            references = []
+            for slot in range(MAX_VARIABLE_REFERENCES + 1):
+                raw = elf.read_at_vaddr(refs_ptr + 4 * slot, 4) if refs_ptr else None
+                if raw is None or len(raw) != 4:
+                    raise ImportTableError(
+                        "ANALYZER_IMPORT_TABLE_INVALID",
+                        f"{table.library} variable 0x{nid:08x}: reference list at "
+                        f"0x{refs_ptr:08x} leaves mapped input",
+                    )
+                word = struct.unpack("<I", raw)[0]
+                if word == 0:
+                    break
+                if slot == MAX_VARIABLE_REFERENCES:
+                    raise ImportTableError(
+                        "ANALYZER_IMPORT_TABLE_INVALID",
+                        f"{table.library} variable 0x{nid:08x}: more than "
+                        f"{MAX_VARIABLE_REFERENCES} references",
+                    )
+                field = VARIABLE_REFERENCE_FIELDS.get(word >> 26)
+                if field is None:
+                    raise ImportTableError(
+                        "ANALYZER_IMPORT_TABLE_INVALID",
+                        f"{table.library} variable 0x{nid:08x}: reference type "
+                        f"{word >> 26} is not a 32-bit, HI16 or LO16 relocation",
+                    )
+                site = rebase((refs_ptr & 0xF0000000) | ((word & 0x03FFFFFF) << 2))
+                target = elf.read_at_vaddr(site, 4)
+                if target is None or len(target) != 4:
+                    raise ImportTableError(
+                        "ANALYZER_IMPORT_TABLE_INVALID",
+                        f"{table.library} variable 0x{nid:08x}: reference site "
+                        f"0x{site:08x} leaves mapped input",
+                    )
+                references.append((field, site))
+            result.append(VariableImport(table.library, nid, tuple(references)))
+    return tuple(result)
+
+
 def _encode_import_library_name(raw):
     """Return a reversible source/config-safe ASCII representation of guest bytes.
 

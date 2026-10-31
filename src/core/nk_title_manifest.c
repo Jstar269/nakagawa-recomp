@@ -4320,7 +4320,7 @@ static bool package_validate_build_report(const JsonNode *report,
     static const char * const allowed_root_keys[] = {
         "format", "schema_version", "title_id", "runtime_abi", "cache", "input_hashes",
         "tools", "coverage", "unsupported", "analysis_diagnostics", "artifacts",
-        "backends", "limits", NULL
+        "backends", "limits", "optimization", NULL
     };
     static const char * const required_root_keys[] = {
         "format", "schema_version", "title_id", "runtime_abi", "cache", "input_hashes",
@@ -4328,6 +4328,8 @@ static bool package_validate_build_report(const JsonNode *report,
     };
     static const char * const runtime_keys[] = {"name", "version", NULL};
     static const char * const runtime_required[] = {"name", "version", NULL};
+    static const char * const optimization_keys[] = {"recomp_opt", "fallback_units", NULL};
+    static const char * const fallback_unit_keys[] = {"unit", "body", "bytes", "level", NULL};
     const char *value = NULL;
     if (!package_check_object(report, "build-report", allowed_root_keys, required_root_keys, error, error_size) ||
         !package_string(obj_get(report, "format"), &value) || strcmp(value, "nakagawa-build-report") != 0 ||
@@ -4373,6 +4375,31 @@ static bool package_validate_build_report(const JsonNode *report,
         obj_get(unsupported, "regions") == NULL || obj_get(unsupported, "regions")->type != JSON_ARRAY) {
         if (error && error_size) snprintf(error, error_size, "build report unsupported boundaries must be arrays");
         return false;
+    }
+    /* #1730: the level the generated code compiled at, and each unit codegen compiled lower
+       because it holds one body over its unit budget. Reports written before it have none. */
+    const JsonNode *optimization = obj_get(report, "optimization");
+    if (optimization) {
+        const JsonNode *units = obj_get(optimization, "fallback_units");
+        bool shape = package_check_object(optimization, "build-report.optimization",
+                                          optimization_keys, optimization_keys, error, error_size) &&
+                     package_string(obj_get(optimization, "recomp_opt"), &value) &&
+                     units->type == JSON_ARRAY;
+        for (size_t i = 0; shape && i < units->u.arr.count; i++) {
+            const JsonNode *unit = units->u.arr.items[i];
+            const JsonNode *bytes = obj_get(unit, "bytes");
+            shape = package_check_object(unit, "build-report.optimization.fallback_units[]",
+                                         fallback_unit_keys, fallback_unit_keys, error, error_size) &&
+                    package_string(obj_get(unit, "unit"), &value) &&
+                    package_string(obj_get(unit, "body"), &value) &&
+                    package_string(obj_get(unit, "level"), &value) &&
+                    bytes->type == JSON_NUMBER && bytes->u.num.is_integer && bytes->u.num.int_val > 0;
+        }
+        if (!shape) {
+            if (error && error_size && !error[0]) snprintf(error, error_size,
+                "build report optimization must name its level and each fallback unit");
+            return false;
+        }
     }
     return true;
 }

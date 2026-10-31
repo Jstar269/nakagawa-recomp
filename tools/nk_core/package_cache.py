@@ -1010,17 +1010,19 @@ def compiler_target(
     return machine
 
 
-# What a package build compiles with when its caller sets no optimization (#1296). The
-# Makefile's -O0 default is for ad-hoc and selftest builds; a package is what a player runs.
-# The runtime is project code and builds at -O2 for every title. Generated guest code stays
-# at -O0 unless the title's codegen profile has a measured, qualified level, because gcc at
-# higher levels on 2,000-function chunks can exhaust memory on an unqualified title.
+# What a package build compiles with when its caller sets no optimization (#1296, #1730).
+# The Makefile's -O0 default is for ad-hoc and selftest builds; a package is what a player runs.
+# The runtime is project code and builds at -O2. Generated guest code builds at one measured
+# level for every title: codegen bounds every unit, a body over its unit budget compiles alone
+# at -O0 (tools/codegen.py BODY_FALLBACK_BYTES), and the compile phase budgets each job's memory
+# from the largest unit, so the level no longer depends on which title it is.
+# Measured for #1730 on HST and two other titles: -O1 runs generated guest code 11-33% faster
+# than -O0; -O2 is no faster than -O1 beyond run-to-run noise and takes up to 3.3x the build CPU.
 PACKAGE_RUNTIME_OPT = "-O2"
-PACKAGE_RECOMP_OPT_BY_PROFILE = {"hst": "-O1"}
+PACKAGE_RECOMP_OPT = "-O1"
 
 
 def package_optimization(
-    codegen_profile: str,
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """``RUNTIME_OPT`` and ``RECOMP_OPT`` for a package build; a value the caller set wins.
@@ -1031,8 +1033,7 @@ def package_optimization(
     env = os.environ if environment is None else environment
     return {
         "RUNTIME_OPT": env.get("RUNTIME_OPT") or PACKAGE_RUNTIME_OPT,
-        "RECOMP_OPT": env.get("RECOMP_OPT")
-        or PACKAGE_RECOMP_OPT_BY_PROFILE.get(codegen_profile, "-O0"),
+        "RECOMP_OPT": env.get("RECOMP_OPT") or PACKAGE_RECOMP_OPT,
     }
 
 
@@ -1059,18 +1060,39 @@ def package_chunking(environment: Mapping[str, str] | None = None) -> dict[str, 
     }
 
 
+def default_recomp_flags(recomp_opt: str) -> str:
+    """The generated-code flags Make uses when the caller sets no RECOMP_FLAGS
+    (``RECOMP_FLAGS ?= $(RECOMP_OPT) ...`` in the Makefile, with gcc's flag set)."""
+    return f"{recomp_opt} -w -fno-strict-aliasing -fno-var-tracking -ftrack-macro-expansion=0"
+
+
+def effective_recomp_opt(environment: Mapping[str, str] | None = None) -> str:
+    """The -O level Make compiles generated code with (#1730): the last -O in RECOMP_FLAGS
+    when the caller set them, which override RECOMP_OPT, otherwise RECOMP_OPT."""
+    env = os.environ if environment is None else environment
+    if "RECOMP_FLAGS" not in env:
+        return env.get("RECOMP_OPT", "-O0")
+    levels = [word for word in env["RECOMP_FLAGS"].split() if word.startswith("-O")]
+    if not levels:
+        return "-O0"
+    return "-O1" if levels[-1] == "-O" else levels[-1]
+
+
 def native_compile_flags(
     *,
     public_safe: bool = False,
     environment: Mapping[str, str] | None = None,
 ) -> str:
     env = os.environ if environment is None else environment
+    recomp_opt = env.get("RECOMP_OPT", "-O0")
     values = (
         env.get("CFLAGS", ""),
         env.get("RUNTIME_OPT", "-O0"),
         env.get("GE_CFLAGS", "-O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK"),
-        env.get("RECOMP_OPT", "-O0"),
-        env.get("RECOMP_FLAGS", "-O0 -w -fno-var-tracking -ftrack-macro-expansion=0"),
+        recomp_opt,
+        # Unset, Make derives the flags from RECOMP_OPT, so the key must too: a hardcoded -O0
+        # here would match an explicit -O0 RECOMP_FLAGS that compiles differently.
+        env.get("RECOMP_FLAGS", default_recomp_flags(recomp_opt)),
         env.get("TRACE", "0"),
         env.get("SR_STALE_DETECT", "0"),
         env.get("LLE_CPU", ""),
