@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace
+from typing import Any, ClassVar, cast
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -107,6 +108,11 @@ from psp_oracle.parse_golden import (
     parse_umd_raw_read_output,
     validate_hle_edram_restore,
 )
+
+
+def _matched(match: re.Match[str] | None) -> re.Match[str]:
+    """Return a regex match at call sites that already rely on it being present."""
+    return cast(re.Match[str], match)
 
 
 META = (
@@ -476,16 +482,16 @@ class NewProbeResultParserTests(unittest.TestCase):
             "DMAC_INVALID_MAX_DELTA",
         )
         constants = {
-            name: int(re.search(
+            name: int(_matched(re.search(
                 rf"(?m)^#define\s+{name}\s+(0x[0-9a-fA-F]+|[0-9]+)[uU]?\s*$",
                 probe,
-            ).group(1), 0)
+            )).group(1), 0)
             for name in constant_names
         }
 
         def macro_terms(name: str) -> tuple[str, ...]:
             match = re.search(rf"(?m)^#define\s+{name}\s+\(([^)]*)\)", flattened)
-            return tuple(re.findall(r"DMAC_INVALID_[A-Z_]+", match.group(1)))
+            return tuple(re.findall(r"DMAC_INVALID_[A-Z_]+", _matched(match).group(1)))
 
         self.assertCountEqual(
             macro_terms("DMAC_INVALID_MAX_REQUEST"),
@@ -537,7 +543,7 @@ class NewProbeResultParserTests(unittest.TestCase):
         self.assertIsNotNone(delta_match, "missing Tier-B request deltas")
         deltas = tuple(
             int(value.strip().rstrip("uU"), 0)
-            for value in delta_match.group(1).split(",") if value.strip()
+            for value in _matched(delta_match).group(1).split(",") if value.strip()
         )
         self.assertCountEqual(deltas, (1, 4, 0x1000, 0x2000))
         payload_offset = constants["DMAC_INVALID_PRE_GUARD_BYTES"]
@@ -849,9 +855,9 @@ class GeCorpusGateTests(unittest.TestCase):
             command.extend(["--ge-corpus", str(corpus_path)])
             return subprocess.run(command, capture_output=True, text=True, check=False)
 
-    def _report(self, completed: subprocess.CompletedProcess[str]) -> dict:
+    def _report(self, completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
         self.assertTrue(completed.stdout, completed.stderr)
-        return json.loads(completed.stdout)
+        return cast(dict[str, Any], json.loads(completed.stdout))
 
     def test_unmeasured_ge_case_reports_not_run(self) -> None:
         completed = self._run_gate()
@@ -861,8 +867,11 @@ class GeCorpusGateTests(unittest.TestCase):
         self.assertEqual(report["tracking_issue"], 343)
         self.assertEqual(report["cases"][0]["status"], "NOT_RUN")
 
-    def _schema(self) -> dict:
-        return json.loads((self.root / "assets" / "ge_corpus.schema.json").read_text(encoding="utf-8"))
+    def _schema(self) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            json.loads((self.root / "assets" / "ge_corpus.schema.json").read_text(encoding="utf-8")),
+        )
 
     def test_a_substituted_schema_is_refused(self) -> None:
         permissive = json.loads((self.root / "assets" / "public_source_profile.json").read_text(encoding="utf-8"))
@@ -987,8 +996,8 @@ class GeCorpusGateTests(unittest.TestCase):
         self.assertEqual(result["status"], "REFUSED")
         self.assertIn("not acceptance-eligible", result["reason"])
 
-    def _hardware_case(self, raw_result: str, record_sha: str | None = None) -> dict:
-        document = json.loads(json.dumps(self.corpus))
+    def _hardware_case(self, raw_result: str, record_sha: str | None = None) -> dict[str, Any]:
+        document: dict[str, Any] = json.loads(json.dumps(self.corpus))
         case = document["cases"][0]
         case["source_tier"] = "PSP_HARDWARE"
         case["framebuffer_sha256"] = "a" * 64
@@ -1246,9 +1255,12 @@ class PspOracleDeviceIdentityTests(unittest.TestCase):
 
     def _report(
         self, tmp: Path, *, binary: str, commit: str | None
-    ) -> dict[str, object]:
-        return _validate_host0_capture(
-            device_identity_stream(binary=binary, commit=commit), identity_args(tmp)
+    ) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            _validate_host0_capture(
+                device_identity_stream(binary=binary, commit=commit), identity_args(tmp)
+            ),
         )
 
     def test_matching_device_identity_is_eligible(self) -> None:
@@ -2983,10 +2995,13 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertEqual(open_guards, [], f"unclosed #if at lines {open_guards}")
 
     def _oracle_manifest(self) -> dict:
-        return json.loads(
-            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
-                encoding="utf-8"
-            )
+        return cast(
+            dict[str, Any],
+            json.loads(
+                (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            ),
         )
 
     def test_system_manifest_exposes_the_model_profile_case(self) -> None:
@@ -3164,7 +3179,7 @@ class PspDmacProbeTests(unittest.TestCase):
                     r"(docs/[A-Za-z0-9_./-]+\.md)#([a-z0-9-]+)", entry["evidence_ref"]
                 )
                 self.assertIsNotNone(match, "evidence_ref must be 'docs/....md#section'")
-                self.assertIn(match.group(1), include_paths)
+                self.assertIn(_matched(match).group(1), include_paths)
                 cases = entry["evidence_cases"]
                 self.assertTrue(cases)
                 self.assertTrue(
@@ -3886,13 +3901,13 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
                 if name in helpers:
                     emitted[ids[0]] = helpers[name]
                     continue
-                count = re.search(r",\s*(\w+)\s*$", args).group(1)
+                count = _matched(re.search(r",\s*(\w+)\s*$", args)).group(1)
                 emitted[ids[0]] = int(count) if count.isdigit() else defines[count]
             spec, counts = CAMPAIGN_PROBE_CASES[case]
             self.assertEqual(emitted, counts, case)
             self.assertEqual(tuple(emitted), spec.ordered_cases, case)
             done = re.search(r"uint32_t done = (\d+);", body)
-            self.assertEqual(int(done.group(1)), len(spec.ordered_cases) - 1, case)
+            self.assertEqual(int(_matched(done).group(1)), len(spec.ordered_cases) - 1, case)
 
     def test_no_probe_blocks_on_the_ge_without_a_bound(self) -> None:
         # A blocking sync is allowed only where it is the measurement (ge-timing's C2/C6,
@@ -3907,10 +3922,12 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
                 entry = re.match(r"\nstatic int (\w+)\(SceSize \w+, void \*\w+\) \{",
                                  text[head:text.index("{", head) + 1])
                 self.assertIsNotNone(entry, f"{source.name}: {call.group(0)} outside a helper thread")
-                create = re.search(r"sceKernelCreateThread\([^;]*\b%s\b" % entry.group(1), text)
-                self.assertIsNotNone(create, f"{source.name}: {entry.group(1)} is never started")
-                caller_head = text.rfind("\nstatic ", 0, create.start())
-                caller = text[caller_head:text.index("\n}\n", create.start())]
+                create = re.search(
+                    r"sceKernelCreateThread\([^;]*\b%s\b" % _matched(entry).group(1), text
+                )
+                self.assertIsNotNone(create, f"{source.name}: {_matched(entry).group(1)} is never started")
+                caller_head = text.rfind("\nstatic ", 0, _matched(create).start())
+                caller = text[caller_head:text.index("\n}\n", _matched(create).start())]
                 self.assertRegex(caller, r"sceKernelWaitThreadEnd\(\s*\w+\s*,\s*&\w+\s*\)", source.name)
                 self.assertIn("sceKernelTerminateDeleteThread(", caller, source.name)
             self.assertNotIn("sceGuSync(", text, source.name)
@@ -4026,9 +4043,9 @@ def _gu_teardown_problems(source: str) -> list[str]:
         if not all(steps):
             problems.append("ge_gu_teardown lacks the bounded wait, the reset, the callback "
                             "unregistration or the guarded sceGuTerm")
-        elif [step.start() for step in steps] != sorted(step.start() for step in steps):
+        elif [_matched(step).start() for step in steps] != sorted(_matched(step).start() for step in steps):
             problems.append("ge_gu_teardown does not wait, reset and unregister before sceGuTerm")
-        elif re.search(r"\breturn\b", helper[:steps[-1].start()]):
+        elif re.search(r"\breturn\b", helper[:_matched(steps[-1]).start()]):
             problems.append("ge_gu_teardown can return before sceGuTerm")
 
     for name, body in functions:
@@ -4172,7 +4189,7 @@ class GeTimingContractTests(unittest.TestCase):
         self.assertIn('snprintf(s_gt_clk, sizeof(s_gt_clk), "b%u", (unsigned int)bus);', self.probe)
         self.assertIn("gt_pass(emulated, 222, 222, 111);", self.probe)
         self.assertIn("gt_pass(emulated, 333, 333, 166);", self.probe)
-        cells = {re.match(r"[a-z]\d+-", case[len("gt-b111-"):]).group(0)
+        cells = {_matched(re.match(r"[a-z]\d+-", case[len("gt-b111-"):])).group(0)
                  for case in self.spec.ordered_cases if case.startswith("gt-b111-")}
         # t0-t15, s1-s4 and the completion cells c13, c2, c4, c5 and c6.
         self.assertEqual(len(cells), 16 + 4 + 5)
@@ -4339,7 +4356,7 @@ class VfpuCompareProbeTests(unittest.TestCase):
             value = 1.0 if x >= y else 0.0
         else:
             value = 1.0 if x < y else 0.0
-        return struct.unpack("<I", struct.pack("<f", value))[0]
+        return cast(int, struct.unpack("<I", struct.pack("<f", value))[0])
 
     def setUp(self) -> None:
         self.root = Path(__file__).resolve().parents[1]
@@ -4645,8 +4662,8 @@ class VfpuTranscendentalParserFormatTests(unittest.TestCase):
         def words(body: str) -> list[int]:
             return [int(word, 16) for word in re.findall(r"0x([0-9a-fA-F]{8})u", body)]
 
-        shared_specials = words(special_match.group(1))
-        asin_specials = words(asin_special_match.group(1))
+        shared_specials = words(_matched(special_match).group(1))
+        asin_specials = words(_matched(asin_special_match).group(1))
         self.assertEqual(len(shared_specials), 20)
         self.assertEqual(len(asin_specials), 20)
         self.assertTrue({
@@ -4665,14 +4682,14 @@ class VfpuTranscendentalParserFormatTests(unittest.TestCase):
                 self.probe,
             )
             self.assertIsNotNone(match, name)
-            domains[name] = words(match.group(1))
+            domains[name] = words(_matched(match).group(1))
             self.assertEqual(len(domains[name]), 43, name)
 
         old_probe = (self.root / "fixtures" / "vfpu_oracle" / "vfpu_probe.c").read_text(
             encoding="utf-8")
         old_match = re.search(r"VASIN_DOMAIN_INPUTS\[\]\s*=\s*\{([^}]*)\}", old_probe)
         self.assertIsNotNone(old_match)
-        measured_vasin_inputs = set(words(old_match.group(1)))
+        measured_vasin_inputs = set(words(_matched(old_match).group(1)))
         self.assertFalse(
             measured_vasin_inputs & (set(asin_specials) | set(domains["asin"])),
             "the new VASIN input grid must not repeat its measured edge corpus",
@@ -4817,7 +4834,7 @@ def _c_functions(section: str) -> dict[str, tuple[list[str], str]]:
             for piece in _c_split(raw):
                 named = (re.search(r"\(\*\s*(\w+)\s*\)", piece)
                          or re.search(r"(\w+)\s*(\[[^\]]*\])?\s*$", piece))
-                params.append(named.group(1))
+                params.append(_matched(named).group(1))
         found[match.group(1)] = (params, section[brace + 1:_c_close(section, brace)])
     return found
 
@@ -4828,7 +4845,7 @@ def _c_value(arg: str, env: dict, defines: dict, arrays: dict):
     if _C_STRING_RE.fullmatch(arg):
         return ("str", arg[1:-1])
     if _C_INT_RE.fullmatch(arg):
-        return ("int", int(_C_INT_RE.fullmatch(arg).group(1), 0))
+        return ("int", int(_matched(_C_INT_RE.fullmatch(arg)).group(1), 0))
     if re.fullmatch(r"\w+", arg):
         if arg in env:
             return env[arg]
@@ -4935,6 +4952,13 @@ class HleMeasureProbeTests(unittest.TestCase):
     restored GE width), the host0 log each family writes, the fixed record shape
     the parser registry expects, and the GE restore invariant.
     """
+
+    root: ClassVar[Path]
+    fixture: ClassVar[Path]
+    makefile: ClassVar[str]
+    manifest: ClassVar[dict[str, Any]]
+    probe: ClassVar[str]
+    threadman: ClassVar[str]
 
     FAMILIES = (
         # campaign case, CASE_ID, PRX stem, family import block, probe section macro, test id
@@ -5123,7 +5147,7 @@ class HleMeasureProbeTests(unittest.TestCase):
                             "$(BUILD_DIR)/threadman_user_imports.o"]
                 if block is not None:
                     expected.append("$(BUILD_DIR)/" + block.replace(".S", ".o"))
-                self.assertEqual(match.group(1).split(), expected)
+                self.assertEqual(_matched(match).group(1).split(), expected)
 
     def test_module_stop_is_exported_for_the_probe_object(self) -> None:
         self.assertRegex(
@@ -5374,8 +5398,8 @@ class HleMeasureProbeTests(unittest.TestCase):
         hle_path = re.search(r'#define HLE_ROUNDTRIP_PATH "([^"]+)"', self.probe)
         self.assertIsNotNone(probe_path)
         self.assertIsNotNone(hle_path)
-        self.assertEqual(probe_path.group(1), "host0:/nakagawa_transport_write.bin")
-        self.assertEqual(hle_path.group(1), probe_path.group(1))
+        self.assertEqual(_matched(probe_path).group(1), "host0:/nakagawa_transport_write.bin")
+        self.assertEqual(_matched(hle_path).group(1), _matched(probe_path).group(1))
         self.assertIn("#define HLE_ROUNDTRIP_BYTES 64u", self.probe)
         self.assertIn("static int hle_host0_roundtrip(void)", self._shared_section())
 
@@ -5612,6 +5636,8 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
     22b027f6 that was captured only).
     """
 
+    h: ClassVar[HleMeasureProbeTests]
+
     SINGLE = HleMeasureProbeTests.SINGLE_LAUNCH_FAMILIES
     # Manifest hardware_evidence per case after the 2026-10-15 runs. The pool-bounds probe was
     # revised after its captured run, so its revised form is NOT_RUN.
@@ -5836,7 +5862,7 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
         # $f0 is preset to the sentinel before the jal, so an untouched $f0 is recorded.
         self.assertLess(section.index('"mtc1 $t1, $f0'), section.index('"jal " #target'))
         sentinel_text = re.search(r'#define HLE_SENTINEL_HEX "(0x[0-9A-Fa-f]+)"', self.h.probe)
-        self.assertEqual(int(sentinel_text.group(1), 16), 0xA5A5A5A5)
+        self.assertEqual(int(_matched(sentinel_text).group(1), 16), 0xA5A5A5A5)
         self.assertIn("#define HLE_SENTINEL 0xA5A5A5A5u", self.h.probe)
         self.assertEqual(
             re.findall(r"^HLE_PFV_WRAPPER\((\w+), (\w+)\);$", section, re.MULTILINE),
@@ -5858,8 +5884,10 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
         for case, _cid, _stem, _block, _macro, _test in self.SINGLE:
             with self.subTest(case=case):
                 spec, counts = CAMPAIGN_PROBE_CASES[case]
-                cells = {name: ("PASS", 0xFFFFFFFF, [0xDEADBEEF] * counts[name])
-                         for name in spec.semantic_cases}
+                cells: dict[str, tuple[str, int, list[int] | None]] = {
+                    name: ("PASS", 0xFFFFFFFF, [0xDEADBEEF] * counts[name])
+                    for name in spec.semantic_cases
+                }
                 first = spec.semantic_cases[0]
                 cells[first] = ("SKIP", 0, None)
                 if case == self.POOL_CASE:
@@ -6193,6 +6221,15 @@ class HleIssuesProbeTests(unittest.TestCase):
     apis naming every import, and a strict parser for each stream.
     """
 
+    root: ClassVar[Path]
+    fixture: ClassVar[Path]
+    probe: ClassVar[str]
+    measure: ClassVar[str]
+    makefile: ClassVar[str]
+    threadman: ClassVar[str]
+    manifest: ClassVar[dict[str, Any]]
+    code: ClassVar[str]
+
     # campaign case, CASE_ID, PRX stem, section macro, test id, host0 log
     CASES = (
         ("hle-issues-batch", 106, "hle_issues_batch", "HLE_CASE_ISSUES_BATCH",
@@ -6284,7 +6321,9 @@ class HleIssuesProbeTests(unittest.TestCase):
         return text
 
     def _case_block(self, case: str) -> str:
-        start = re.search(rf"^ifeq \(\$\(CASE\),{case}\)\n", self.makefile, re.MULTILINE).start()
+        start = _matched(re.search(
+            rf"^ifeq \(\$\(CASE\),{case}\)\n", self.makefile, re.MULTILINE
+        )).start()
         return self.makefile[start:self.makefile.index("\nendif\n", start)]
 
     # ---- Makefile wiring and import tables -------------------------------------------
@@ -6298,8 +6337,8 @@ class HleIssuesProbeTests(unittest.TestCase):
                 match = re.search(rf"else ifeq \(\$\(CASE\),{case}\)\nTARGET = \$\(BUILD_DIR\)/"
                                   rf"{stem}\nOBJS = (.*)\n", self.makefile)
                 self.assertIsNotNone(match, case)
-                self.assertEqual(match.group(1).split(), ["$(BUILD_DIR)/probe_hle_issues.o",
-                                                          "$(BUILD_DIR)/threadman_user_imports.o"])
+                self.assertEqual(_matched(match).group(1).split(), ["$(BUILD_DIR)/probe_hle_issues.o",
+                                                                    "$(BUILD_DIR)/threadman_user_imports.o"])
         self.assertIn("$(BUILD_DIR)/probe_hle_issues.o: probe_hle_issues.c hle_vfpu_cells.h\n"
                       "\t$(CC) $(CFLAGS) -c $< -o $@\n", self.makefile)
         self.assertIn("ifneq ($(filter $(BUILD_DIR)/probe_hle_issues.o,$(OBJS)),)\n"
@@ -7019,7 +7058,7 @@ class VramMirrorParserTests(unittest.TestCase):
                         aliases=parse_golden.VRAM_MIRROR_DEPTH_ALIASES,
                     )
                 else:
-                    output_fields = []
+                    output_fields: list[int] = []
                     for offset in offsets:
                         for alias in parse_golden.VRAM_MIRROR_DEPTH_ALIASES:
                             physical = (
@@ -7375,6 +7414,11 @@ class VfpuFormsProbeTests(unittest.TestCase):
     words. Register-only: no system call beyond the shared writer and lifecycle, bounded
     loops, one step per group, and a fixed-shape stream that matches the registry."""
 
+    makefile: ClassVar[str]
+    probe: ClassVar[str]
+    rows: ClassVar[list[dict[str, Any]]]
+    section: ClassVar[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -7468,6 +7512,13 @@ class IntrCauseProbeTests(unittest.TestCase):
     loops are bounded; each cell writes its step first and no host I/O runs while
     interrupts are suspended; and the fixed-shape stream matches the registry."""
 
+    makefile: ClassVar[str]
+    probe: ClassVar[str]
+    rows: ClassVar[list[dict[str, Any]]]
+    raw_section: ClassVar[str]
+    section: ClassVar[str]
+    functions: ClassVar[dict[str, str]]
+
     @classmethod
     def setUpClass(cls) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -7498,7 +7549,9 @@ class IntrCauseProbeTests(unittest.TestCase):
         self.assertIn("intr-cause", parse_golden.HLE_OBSERVATION_CASES)
 
     def test_link_gate_pins_the_imports_exactly(self) -> None:
-        start = re.search(r"^ifeq \(\$\(CASE\),intr-cause\)\n", self.makefile, re.MULTILINE).start()
+        start = _matched(re.search(
+            r"^ifeq \(\$\(CASE\),intr-cause\)\n", self.makefile, re.MULTILINE
+        )).start()
         block = self.makefile[start:self.makefile.index("\nendif\n", start)]
         self.assertIn("LIBS += -lpspkubridge\n", block)
         pins = dict(re.findall(r"--exact-library (\w+)=([0-9A-Fx,]+)", block))
@@ -7590,6 +7643,11 @@ class IntrCellsRuntimeContractTests(unittest.TestCase):
     100 us on. The behaviour is asserted natively by the selftests named here; these pin the
     source so a revert to the delivery-time rule or a dropped minimum fails here as well."""
 
+    sched: ClassVar[str]
+    hle: ClassVar[str]
+    sched_selftest: ClassVar[str]
+    hle_selftest: ClassVar[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -7638,6 +7696,11 @@ class VfpuFunnelProbeTests(unittest.TestCase):
     """CASE=vfpu-funnel (122, PSP-VFPU-FUNNEL-001) in probe_hle_issues.c: the #326 vfad and
     vavg words. Register-only: no system call beyond the shared writer and lifecycle,
     bounded loops, one step per group, and a fixed-shape stream that matches the registry."""
+
+    makefile: ClassVar[str]
+    probe: ClassVar[str]
+    rows: ClassVar[list[dict[str, Any]]]
+    section: ClassVar[str]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -7731,7 +7794,7 @@ class VfpuFunnelProbeTests(unittest.TestCase):
         # x / 3 against x * (1 / 3) cases; the specials follow.
         ops = re.search(r"s_fn_ops\[26\]\[4\] = \{(.*?)\n\};", self.section, re.DOTALL)
         self.assertIsNotNone(ops)
-        sets = re.findall(r"\{(0x[0-9a-f]{8}u(?:, 0x[0-9a-f]{8}u){3})\}", ops.group(1))
+        sets = re.findall(r"\{(0x[0-9a-f]{8}u(?:, 0x[0-9a-f]{8}u){3})\}", _matched(ops).group(1))
         self.assertEqual(len(sets), parse_golden.VFPU_FUNNEL_OPERAND_SETS)
         words = [[int(w[:-1], 16) for w in item.split(", ")] for item in sets]
         self.assertEqual(words[0], [0x4b800000, 0x3f800000, 0x3f800000, 0x3f800000])
@@ -7755,6 +7818,11 @@ class VfpuSortProbeTests(unittest.TestCase):
     """CASE=vfpu-sort (125, PSP-VFPU-SORT-001) in probe_hle_issues.c: the #326 vsrt1.q to
     vsrt4.q words. Register-only: no system call beyond the shared writer and lifecycle,
     bounded loops, one step per group, and a fixed-shape stream that matches the registry."""
+
+    makefile: ClassVar[str]
+    probe: ClassVar[str]
+    rows: ClassVar[list[dict[str, Any]]]
+    section: ClassVar[str]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -7843,7 +7911,7 @@ class VfpuSortProbeTests(unittest.TestCase):
     def test_the_operand_sets_put_the_pairs_in_several_positions(self) -> None:
         ops = re.search(r"s_st_ops\[24\]\[4\] = \{(.*?)\n\};", self.section, re.DOTALL)
         self.assertIsNotNone(ops)
-        sets = re.findall(r"\{(0x[0-9a-f]{8}u(?:, 0x[0-9a-f]{8}u){3})\}", ops.group(1))
+        sets = re.findall(r"\{(0x[0-9a-f]{8}u(?:, 0x[0-9a-f]{8}u){3})\}", _matched(ops).group(1))
         self.assertEqual(len(sets), parse_golden.VFPU_SORT_OPERAND_SETS)
         words = [[int(w[:-1], 16) for w in item.split(", ")] for item in sets]
         self.assertEqual(words[0], [0x3f800000, 0x40000000, 0x40400000, 0x40800000])
@@ -7868,6 +7936,11 @@ class VfpuForms2ProbeTests(unittest.TestCase):
     of VFPU forms (vrnds.s, wide vrndi/vrndf1/vrndf2, vf2h, vc2i). Register-only: no system call
     beyond the shared writer and lifecycle, bounded loops, one step per group, and a fixed-shape
     stream that matches the registry."""
+
+    makefile: ClassVar[str]
+    probe: ClassVar[str]
+    rows: ClassVar[list[dict[str, Any]]]
+    section: ClassVar[str]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -7996,7 +8069,7 @@ class VfpuForms2ProbeTests(unittest.TestCase):
     def test_the_operands_cover_the_requested_values(self) -> None:
         quads = re.search(r"s_f2_quads\[28\]\[4\] = \{(.*?)\n\};", self.section, re.DOTALL)
         self.assertIsNotNone(quads)
-        sets = re.findall(r"\{(0x[0-9a-f]{8}u(?:, 0x[0-9a-f]{8}u){3})\}", quads.group(1))
+        sets = re.findall(r"\{(0x[0-9a-f]{8}u(?:, 0x[0-9a-f]{8}u){3})\}", _matched(quads).group(1))
         self.assertEqual(len(sets), 28)
         words = [[int(w[:-1], 16) for w in item.split(", ")] for item in sets]
         self.assertEqual(len({tuple(item) for item in words}), len(words))
@@ -8010,7 +8083,7 @@ class VfpuForms2ProbeTests(unittest.TestCase):
             with self.subTest(word=f"0x{needed:08x}"):
                 self.assertIn(needed, flat)
         seeds = re.search(r"s_f2_seeds\[24\] = \{(.*?)\n\};", self.section, re.DOTALL)
-        seed_words = {int(w[:-1], 16) for w in re.findall(r"0x[0-9a-f]{8}u", seeds.group(1))}
+        seed_words = {int(w[:-1], 16) for w in re.findall(r"0x[0-9a-f]{8}u", _matched(seeds).group(1))}
         self.assertEqual(len(seed_words), 24)
         for needed in (0, 1, 0x80000000, 0xFFFFFFFF, 0x3F800000, 0x7FC00000, 0x12345678,
                        0xDEADBEEF):
@@ -8033,6 +8106,11 @@ class GeSampleProbeTests(unittest.TestCase):
     """CASE=ge-sample (109, PSP-GE-SAMPLE-001) in probe_ge_sample.c: the #282 GE texture
     sample-point cells. Raw display lists, bounded GE waits, one step per draw, the shared
     writer and lifecycle, and a fixed-shape stream that matches the registry."""
+
+    issues: ClassVar[str]
+    makefile: ClassVar[str]
+    probe: ClassVar[str]
+    section: ClassVar[str]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -8111,6 +8189,12 @@ class DmaTimingProbeTests(unittest.TestCase):
     """CASE=dma-timing (118, PSP-DMAC-002) in probe_dmac_timing.c: the #303 DMAC transfer-time
     and busy-channel cells. Probe-owned spans only, bounded loops and joins, the shared
     writer and lifecycle, and a fixed-shape stream that matches the registry."""
+
+    issues: ClassVar[str]
+    makefile: ClassVar[str]
+    manifest: ClassVar[dict[str, Any]]
+    probe: ClassVar[str]
+    section: ClassVar[str]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -8227,6 +8311,11 @@ class GeRasterProbeTests(unittest.TestCase):
     src/rt/hle_thread_selftest.c, which runs every cell through the software GE and compares
     the window digests the PSP produced; the stream matches the registry."""
 
+    makefile: ClassVar[str]
+    probe: ClassVar[str]
+    section: ClassVar[str]
+    selftest: ClassVar[str]
+
     START = "/* ==== GE raster cells (PSP-GE-RASTER-001, #343) ===="
     END = "/* ==== end of the GE raster cells ==== */\n"
 
@@ -8309,6 +8398,15 @@ class ModuleStartProbeTests(unittest.TestCase):
     main thread whose own module_start records its thread and starts a helper, which reads
     that thread's state after module_start returned. The writer is the HLE issue cells' copy;
     the module lifecycle is this probe's own."""
+
+    root: ClassVar[Path]
+    fixture: ClassVar[Path]
+    issues: ClassVar[str]
+    makefile: ClassVar[str]
+    probe: ClassVar[str]
+    threadman: ClassVar[str]
+    code: ClassVar[str]
+    bodies: ClassVar[dict[str, str]]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -8537,6 +8635,11 @@ class RegistryFontWalkHostTests(unittest.TestCase):
     test replays the call log and checks the walk's safety contract, not only its records.
     """
 
+    root: ClassVar[Path]
+    fixture: ClassVar[Path]
+    tmp: ClassVar[str]
+    exe: ClassVar[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.root = Path(__file__).resolve().parents[1]
@@ -8544,7 +8647,7 @@ class RegistryFontWalkHostTests(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="registry_walk_host_")
         cls.exe = str(Path(cls.tmp) / "registry_walk_host.exe")
         result = subprocess.run(
-            [_HOST_CC, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+            [cast(str, _HOST_CC), "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
              f"-I{cls.fixture}", "-o", cls.exe, str(cls.fixture / "registry_walk_host.c")],
             capture_output=True, text=True, check=False,
         )
@@ -8802,7 +8905,7 @@ class RegistryFontWalkHostTests(unittest.TestCase):
 
         def mutate(old: str, new: str) -> str:
             self.assertIn(old, run.stream)
-            return run.stream.replace(old, new, 1)
+            return cast(str, run.stream.replace(old, new, 1))
 
         for bad in (
             # A category whose listing key named something else was opened by a literal path.
@@ -8951,6 +9054,11 @@ class IoCasesHostTests(unittest.TestCase):
     every descriptor is closed.
     """
 
+    root: ClassVar[Path]
+    fixture: ClassVar[Path]
+    tmp: ClassVar[str]
+    exe: ClassVar[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.root = Path(__file__).resolve().parents[1]
@@ -8958,7 +9066,7 @@ class IoCasesHostTests(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="io_cases_host_")
         cls.exe = str(Path(cls.tmp) / "io_cases_host.exe")
         result = subprocess.run(
-            [_HOST_CC, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+            [cast(str, _HOST_CC), "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
              f"-I{cls.fixture}", "-o", cls.exe, str(cls.fixture / "io_cases_host.c")],
             capture_output=True, text=True, check=False,
         )
@@ -9640,7 +9748,7 @@ class IoCasesSourceTests(unittest.TestCase):
             (path, c_int(flags), c_int(result))
             for path, flags, result in re.findall(
                 r'\{"([^"]+)",\s*(0x[0-9a-fA-F]+u?),\s*(0x[0-9a-fA-F]+u?|[0-9]+u?)\}',
-                open_block.group(1),
+                _matched(open_block).group(1),
             )
         )
         expected_opens = tuple(
@@ -9657,7 +9765,7 @@ class IoCasesSourceTests(unittest.TestCase):
             (path, c_int(result))
             for path, result in re.findall(
                 r'\{"([^"]+)",\s*(0x[0-9a-fA-F]+u?|[0-9]+u?)\}',
-                dopen_block.group(1),
+                _matched(dopen_block).group(1),
             )
         )
         expected_dopens = tuple(
@@ -9762,6 +9870,11 @@ def _font_style_hex(*, h: float = 10.0, v: float = 10.0, hres: float = 128.0, vr
 class FontListHostTests(unittest.TestCase):
     """font_list.h against io_cases_host.c's fake font library: call order, bounds and records."""
 
+    root: ClassVar[Path]
+    fixture: ClassVar[Path]
+    tmp: ClassVar[str]
+    exe: ClassVar[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.root = Path(__file__).resolve().parents[1]
@@ -9769,7 +9882,7 @@ class FontListHostTests(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="font_list_host_")
         cls.exe = str(Path(cls.tmp) / "io_cases_host.exe")
         result = subprocess.run(
-            [_HOST_CC, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+            [cast(str, _HOST_CC), "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
              f"-I{cls.fixture}", "-o", cls.exe, str(cls.fixture / "io_cases_host.c")],
             capture_output=True, text=True, check=False,
         )
@@ -10066,10 +10179,12 @@ class LlscLinkProbeTests(unittest.TestCase):
     def test_probe_model_words_match_the_project_model(self) -> None:
         constants = {name: int(value, 16) for name, value in re.findall(
             r"^#define LLSC_LINK_(\w+) (0x[0-9a-fA-F]+)u$", self.probe, re.MULTILINE)}
-        model_a = re.search(r"const uint32_t model_a\[LLSC_LINK_CELLS\] = \{\s*([^}]*)\}",
-                            self.probe).group(1)
-        model_b = re.search(r"const uint32_t model_b\[LLSC_LINK_CELLS\] = \{\s*([^}]*)\}",
-                            self.probe).group(1)
+        model_a = _matched(re.search(
+            r"const uint32_t model_a\[LLSC_LINK_CELLS\] = \{\s*([^}]*)\}", self.probe
+        )).group(1)
+        model_b = _matched(re.search(
+            r"const uint32_t model_b\[LLSC_LINK_CELLS\] = \{\s*([^}]*)\}", self.probe
+        )).group(1)
         names = {"FIRST": constants["FIRST"], "SECOND": constants["SECOND"],
                  "A_INIT": constants["A_INIT"], "B_INIT": constants["B_INIT"],
                  "OTHER": constants["OTHER"]}
