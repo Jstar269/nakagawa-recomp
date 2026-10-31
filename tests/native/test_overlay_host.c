@@ -9,6 +9,11 @@
    Exit 77 means SKIP with the reason printed: a build without the SDL3 or SDL3_ttf
    headers, or a host where the SDL3_ttf library cannot be loaded. */
 
+/* setenv/unsetenv are POSIX: without this, -std=c99 on glibc leaves them undeclared. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "overlay_host.h"
 
 #include <stdio.h>
