@@ -635,6 +635,16 @@ int sr_picture_watch_tick(SrPictureWatch *w, uint32_t vcount, uint32_t *dark_vbl
     (void)w; (void)vcount; (void)dark_vblanks;
     return SR_PICTURE_WATCH_NONE;
 }
+int sr_capture_probe_in_flight(void) { return 0; }
+void sr_picture_watch_probe_sent(SrPictureWatch *w, uint32_t vcount) { (void)w; (void)vcount; }
+int sr_picture_watch_tick_needs_probe(const SrPictureWatch *w, uint32_t vcount) {
+    (void)w; (void)vcount;
+    return 0;
+}
+int sr_picture_watch_collect(SrPictureWatch *w, int block, uint32_t *brightest) {
+    (void)w; (void)block; (void)brightest;
+    return SR_PICTURE_WATCH_NONE;
+}
 int sdl3vk_renderer_terminal(void) { return 0; }
 const char *sr_capture_source_label(void) { return ""; }
 int sdl3vk_validation_error_count(void) { return 0; }
