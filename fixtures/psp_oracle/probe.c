@@ -10785,7 +10785,54 @@ static void run_at3_loop_file(int emulated) {
     if (total < 65536u) return;
     at3s_buffer_case(emulated, "loop-full", s_at3s_loop, total);
     at3s_buffer_case(emulated, "loop-prefix64k", s_at3s_loop, 65536u);
+    at3s_buffer_case(emulated, "loop-prefix48k", s_at3s_loop, 49152u);
+    at3s_buffer_case(emulated, "loop-prefix32k", s_at3s_loop, 32768u);
+    at3s_buffer_case(emulated, "loop-prefix24k", s_at3s_loop, 24576u);
+    at3s_buffer_case(emulated, "loop-prefix16k", s_at3s_loop, 16384u);
+    at3s_buffer_case(emulated, "loop-prefix12k", s_at3s_loop, 12288u);
     at3s_buffer_case(emulated, "loop-prefix8k", s_at3s_loop, AT3S_BYTES);
+}
+
+/* The unlooped track staged whole as host0:/at3-original-file.bin, its delay word patched to values
+   between the last accepted (1652) and the first refused (1892) delay of the 8 KiB sweep and past it,
+   each over the whole file and over an 8 KiB prefix: whether the SetData refusal depends on the
+   buffered amount. */
+#define AT3S_WHOLE_PATH "host0:/at3-original-file.bin"
+#define AT3S_WHOLE_CAP (128u << 10)
+static unsigned char s_at3s_whole[AT3S_WHOLE_CAP] __attribute__((aligned(64)));
+static unsigned char s_at3s_whole_work[AT3S_WHOLE_CAP] __attribute__((aligned(64)));
+static const uint32_t k_at3s_whole_delays[] = {
+    955u, 1387u, 1652u, 1653u, 1692u, 1704u, 1754u, 1775u, 1792u, 1797u, 1855u, 1864u, 1891u,
+    1892u, 1937u, 1956u, 1976u, 1978u, 1979u, 2047u, 2048u,
+};
+
+static void run_at3_whole_file(int emulated) {
+    uint32_t total = 0;
+    SceUID fd = sceIoOpen(AT3S_WHOLE_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) return;
+    while (total < AT3S_WHOLE_CAP) {
+        const int n = sceIoRead(fd, s_at3s_whole + total, AT3S_WHOLE_CAP - total);
+        if (n <= 0) break;
+        total += (uint32_t)n;
+    }
+    (void)sceIoClose(fd);
+    char line[200];
+    (void)snprintf(line, sizeof(line), "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-whole-input "
+                   "status=RC result=0x00000000 bytes=%u\n", (unsigned int)total);
+    at3s_line(emulated, line);
+    if (total <= AT3S_BYTES || memcmp(s_at3s_whole + 52, "fact", 4) != 0 || at3s_le32(s_at3s_whole + 56) != 8u)
+        return;
+    for (size_t i = 0; i < sizeof(k_at3s_whole_delays) / sizeof(k_at3s_whole_delays[0]); i++) {
+        const uint32_t delay = k_at3s_whole_delays[i];
+        char name[32];
+        memcpy(s_at3s_whole_work, s_at3s_whole, total);
+        for (unsigned b = 0; b < 4u; b++)
+            s_at3s_whole_work[AT3S_FACT_DELAY_OFFSET + b] = (unsigned char)((delay >> (8u * b)) & 0xffu);
+        (void)snprintf(name, sizeof(name), "whole-d%u", (unsigned int)delay);
+        at3s_buffer_case(emulated, name, s_at3s_whole_work, total);
+        (void)snprintf(name, sizeof(name), "prefix8k-d%u", (unsigned int)delay);
+        at3s_buffer_case(emulated, name, s_at3s_whole_work, AT3S_BYTES);
+    }
 }
 
 static void run_at3_delay_sweep(int emulated) {
@@ -10834,6 +10881,7 @@ static void run_at3_delay_sweep(int emulated) {
                 for (size_t i = 0; i < sizeof(k_at3s_delays) / sizeof(k_at3s_delays[0]); i++)
                     at3s_one_delay(emulated, k_at3s_delays[i]);
                 run_at3_loop_file(emulated);
+                run_at3_whole_file(emulated);
                 probe_step(emulated, "at3-delay-sweep", "unload-atrac3plus");
                 (void)sceUtilityUnloadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
             }
@@ -10934,7 +10982,9 @@ SceInt32 sceMpegAvcCsc(SceMpeg *mpeg, void *ycbcr, SceInt32 *range, SceInt32 fra
 #define MPY_H 272
 #define MPY_STRIDE 512
 #define MPY_DEST_BYTES (MPY_STRIDE * MPY_H * 4u)
-#define MPY_MAX_AUS 96
+#define MPY_MAX_AUS 400
+/* The movie's first pictures are a fade from black: the buffer is dumped at a textured picture. */
+#define MPY_TARGET_PICTURE 240
 static unsigned char s_mpy_file[MPY_FILE_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_ring[MPY_RING_CAP] __attribute__((aligned(64)));
 static unsigned char s_mpy_mpeg[MPY_MPEG_CAP] __attribute__((aligned(64)));
@@ -11097,11 +11147,12 @@ static void run_mpeg_ycbcr(int emulated) {
         if (rc != 0) goto free_es;
         mpy_dump(emulated, "ycbcr-after-init", s_mpy_ycbcr, (uint32_t)ysize + 64u);
 
-        /* Feed and decode into the YCbCr buffer until the first picture. */
+        /* Feed and decode into the YCbCr buffer up to the target picture; the first few calls and every
+           100th are recorded. */
         SceInt32 init = 0;
         void *ycbcr_ptr = s_mpy_ycbcr;
-        int aus = 0;
-        for (int iter = 0; iter < 4 * MPY_MAX_AUS && aus < MPY_MAX_AUS && init == 0; iter++) {
+        int aus = 0, pictures = 0;
+        for (int iter = 0; iter < 4 * MPY_MAX_AUS && aus < MPY_MAX_AUS && pictures < MPY_TARGET_PICTURE; iter++) {
             const SceInt32 avail = sceMpegRingbufferAvailableSize(&s_mpy_rb);
             if (avail > 0) (void)sceMpegRingbufferPut(&s_mpy_rb, avail, avail);
             SceInt32 attr = -1;
@@ -11114,14 +11165,20 @@ static void run_mpeg_ycbcr(int emulated) {
             (void)snprintf(step, sizeof(step), "decode-ycbcr%d", aus);
             probe_step(emulated, "mpeg-ycbcr", step);
             rc = sceMpegAvcDecodeYCbCr(&mpeg, &s_mpy_au, &ycbcr_ptr, &init);
-            (void)snprintf(extra, sizeof(extra), "init=%d pts=0x%08x%08x au_size=%u", (int)init,
-                           (unsigned int)s_mpy_au.iPtsMSB, (unsigned int)s_mpy_au.iPts,
-                           (unsigned int)s_mpy_au.iAuSize);
-            mpy_rc(emulated, step, rc, extra);
+            if (init) pictures++;
+            if (aus < 4 || aus % 100 == 0 || rc != 0 || pictures == MPY_TARGET_PICTURE) {
+                (void)snprintf(extra, sizeof(extra), "init=%d pictures=%d pts=0x%08x%08x au_size=%u", (int)init,
+                               pictures, (unsigned int)s_mpy_au.iPtsMSB, (unsigned int)s_mpy_au.iPts,
+                               (unsigned int)s_mpy_au.iAuSize);
+                mpy_rc(emulated, step, rc, extra);
+            }
             aus++;
             if (rc != 0) break;
         }
         if (init == 0) goto free_es;
+        /* The decoded size, as the buffer's first two words give it in macroblocks. */
+        const SceInt32 pic_h = (SceInt32)(((const uint32_t *)s_mpy_ycbcr)[0] * 16u);
+        const SceInt32 pic_w = (SceInt32)(((const uint32_t *)s_mpy_ycbcr)[1] * 16u);
         sceKernelDcacheWritebackInvalidateAll();
         mpy_dump(emulated, "ycbcr-picture", s_mpy_ycbcr, (uint32_t)ysize + 64u);
         memcpy(s_mpy_ycbcr_copy, s_mpy_ycbcr, (uint32_t)ysize);
@@ -11141,29 +11198,40 @@ static void run_mpeg_ycbcr(int emulated) {
 
         /* CSC of the picture as decoded, of the same buffer with every byte past the first 128 set to
            0x80, and of the decoded buffer with its first 128 bytes cleared. */
-        mpy_csc(emulated, &mpeg, "full", 0, 0, MPY_W, MPY_H, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "full", 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
         memset(s_mpy_ycbcr + 128, 0x80, (uint32_t)ysize - 128u);
-        mpy_csc(emulated, &mpeg, "planes80", 0, 0, MPY_W, MPY_H, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "planes80", 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
         memcpy(s_mpy_ycbcr, s_mpy_ycbcr_copy, (uint32_t)ysize);
         memset(s_mpy_ycbcr, 0, 128);
-        mpy_csc(emulated, &mpeg, "head0", 0, 0, MPY_W, MPY_H, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "head0", 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
         memcpy(s_mpy_ycbcr, s_mpy_ycbcr_copy, (uint32_t)ysize);
+        /* The first two plane pointers exchanged: whether CSC reads the planes the header names. */
+        {
+            uint32_t *hdr = (uint32_t *)s_mpy_ycbcr;
+            const uint32_t t = hdr[4];
+            hdr[4] = hdr[6];
+            hdr[6] = t;
+            mpy_csc(emulated, &mpeg, "swap02", 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
+            memcpy(s_mpy_ycbcr, s_mpy_ycbcr_copy, (uint32_t)ysize);
+        }
         /* Range and stride: a sub-rectangle (dumped), then refusals or clips (results only). */
         mpy_csc(emulated, &mpeg, "sub", 16, 16, 64, 64, MPY_STRIDE, 1);
         mpy_csc(emulated, &mpeg, "x-odd", 1, 0, 64, 64, MPY_STRIDE, 0);
-        mpy_csc(emulated, &mpeg, "wide", 0, 0, 496, MPY_H, MPY_STRIDE, 0);
-        mpy_csc(emulated, &mpeg, "tall", 0, 0, MPY_W, 288, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "x16", 16, 0, pic_w - 16, pic_h, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "w-odd", 0, 0, 63, 64, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "wide", 0, 0, pic_w + 16, pic_h, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "tall", 0, 0, pic_w, pic_h + 16, MPY_STRIDE, 0);
         mpy_csc(emulated, &mpeg, "neg", -16, 0, 64, 64, MPY_STRIDE, 0);
         mpy_csc(emulated, &mpeg, "empty", 0, 0, 0, 0, MPY_STRIDE, 0);
-        mpy_csc(emulated, &mpeg, "fw480", 0, 0, MPY_W, MPY_H, 480, 0);
-        mpy_csc(emulated, &mpeg, "fw256", 0, 0, MPY_W, MPY_H, 256, 0);
+        mpy_csc(emulated, &mpeg, "fw480", 0, 0, pic_w, pic_h, 480, 0);
+        mpy_csc(emulated, &mpeg, "fw256", 0, 0, pic_w, pic_h, 256, 0);
 
         /* One direct sceMpegAvcDecode of the following pictures into the destination buffer. */
         SceInt32 init2 = 0;
         void *dest_ptr = s_mpy_dest;
         memset(s_mpy_dest, 0x5a, sizeof(s_mpy_dest));
         sceKernelDcacheWritebackInvalidateAll();
-        for (int iter = 0; iter < 4 * MPY_MAX_AUS && aus < 2 * MPY_MAX_AUS && init2 == 0; iter++) {
+        for (int iter = 0; iter < 4 * MPY_MAX_AUS && aus < MPY_MAX_AUS + 64 && init2 == 0; iter++) {
             const SceInt32 avail = sceMpegRingbufferAvailableSize(&s_mpy_rb);
             if (avail > 0) (void)sceMpegRingbufferPut(&s_mpy_rb, avail, avail);
             SceInt32 attr = -1;
