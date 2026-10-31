@@ -82,7 +82,7 @@
     "tools/soak_audit.py": 9,
     "tools/stage_install.py": 2,
     "tools/test_admit_paths.py": 6,
-    "tools/test_analyzer_span_scope.py": 10,
+    "tools/test_analyzer_span_scope.py": 13,
     "tools/test_android_build.py": 4,
     "tools/test_app_icon.py": 1,
     "tools/test_audit_public_issue_links.py": 3,
@@ -171,6 +171,7 @@
     "tools/test_stage_install.py": 1,
     "tools/test_text_write_newlines.py": 1,
     "tools/test_third_party_notices.py": 2,
+    "tools/test_title_codegen_plan.py": 1,
     "tools/test_title_manager_adapter.py": 11,
     "tools/test_title_manifest.py": 3,
     "tools/test_title_protected_digest.py": 1,
@@ -184,7 +185,7 @@
     "tools/test_vfpu_oracle.py": 2,
     "tools/test_waits_census.py": 8,
     "tools/test_xb_probe.py": 6,
-    "tools/title_codegen_plan.py": 6,
+    "tools/title_codegen_plan.py": 9,
     "tools/title_manifest.py": 2,
     "tools/title_qualification.py": 20,
     "tools/tree_lint.py": 5,
@@ -203,5 +204,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 977
+  "total_errors": 984
 }
