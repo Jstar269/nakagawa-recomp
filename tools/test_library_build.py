@@ -44,6 +44,17 @@ if name.startswith("slow"):
         "duration_ms": 0}}}
     (work / "bringup-progress.json").write_text(json.dumps(progress), encoding="utf-8")
     time.sleep(60)
+if name.startswith("busy"):
+    # Two bring-ups of one disc ID at once would share its folders: say so in the log.
+    marker = work.parent / ("running-" + name)
+    try:
+        marker.touch(exist_ok=False)
+    except FileExistsError:
+        with open(log, "a", encoding="utf-8") as stream:
+            stream.write("OVERLAP\n")
+    else:
+        time.sleep(1)
+        marker.unlink()
 if name.startswith("crash"):
     sys.exit(3)
 for stage in ("inspect", "prepare_import", "analyze", "codegen"):
@@ -167,6 +178,18 @@ class LibraryBuildTests(unittest.TestCase):
         self.assertEqual(len(hashes), 2)
         # Without a datafile nothing is classified.
         self.assertEqual(result["verification_counts"], {"NOT_CHECKED": 2})
+
+    def test_images_sharing_a_disc_id_never_build_at_once(self) -> None:
+        self.disc("a/busy-test70016.iso", "TEST70016")
+        translated = self.discs / "b" / "busy-test70016.iso"
+        translated.parent.mkdir(parents=True)
+        create_test_iso(translated, disc_id="TEST70016", title="Title TEST70016 [T-En]")
+        self.disc("c/ok-test70017.iso", "TEST70017")
+        result = self.build(jobs=2).run()
+        records = self.by_source(result)
+        self.assertEqual([records[key]["outcome"] for key in sorted(records)], ["BUILT"] * 3)
+        # No overlap was logged: the second image started only after the first one ended.
+        self.assertEqual(sorted(self.calls()), ["busy-test70016", "busy-test70016", "ok-test70017"])
 
     def test_two_discs_that_could_not_be_hashed_both_build(self) -> None:
         self.disc("a/ok-test70015.iso", "TEST70015")

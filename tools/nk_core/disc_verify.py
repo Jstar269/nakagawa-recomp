@@ -31,6 +31,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Callable, Iterable, Mapping, Optional
 import zlib
 
@@ -196,12 +197,13 @@ def import_dat(source: Path | str, user_data_root: Path | str) -> RedumpDat:
     """Check a datafile the user chose and keep a copy in their data folder.
 
     The copy replaces any earlier import whole (written beside it, then renamed), so a reader
-    never sees half a list. Nothing leaves the machine.
+    never sees half a list. The file it is written to is created new under a random name, so a
+    link already in the folder is never written through. Nothing leaves the machine.
     """
     data = Path(source)
     dat = load_dat(data)
     target = imported_dat_path(user_data_root)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary: Path | None = None
     folder = target.parent
     root = Path(user_data_root).resolve(strict=False)
     if (folder.is_symlink() or folder.is_junction() or target.is_symlink()
@@ -210,11 +212,15 @@ def import_dat(source: Path | str, user_data_root: Path | str) -> RedumpDat:
                               "saved outside the data folder.",
                               boundary_code="DISC_DAT_WRITE_FAILED")
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_bytes(data.read_bytes())
+        folder.mkdir(parents=True, exist_ok=True)
+        handle, name = tempfile.mkstemp(dir=folder, prefix=f".{target.name}.", suffix=".tmp")
+        temporary = Path(name)
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(data.read_bytes())
         os.replace(temporary, target)
     except OSError as exc:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
         raise DiscVerifyError(f"The datafile can't be saved in the data folder: {exc}",
                               boundary_code="DISC_DAT_WRITE_FAILED") from exc
     return dat

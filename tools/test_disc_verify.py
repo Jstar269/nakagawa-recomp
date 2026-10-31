@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -194,6 +195,13 @@ class HashAndImportTests(unittest.TestCase):
                 with self.assertRaises(disc_verify.DiscVerifyError):
                     disc_verify.import_dat(source, linked)
                 self.assertEqual((outside / "redump.dat").read_text(encoding="utf-8"), "kept")
+                # Nor is a link left where an earlier import named its temporary file.
+                planted = data / "verification" / f".redump.dat.{os.getpid()}.tmp"
+                planted.symlink_to(outside / "redump.dat")
+                disc_verify.import_dat(source, data)
+                self.assertEqual((outside / "redump.dat").read_text(encoding="utf-8"), "kept")
+                self.assertTrue(planted.is_symlink())
+                planted.unlink()
             self.assertEqual(disc_verify.load_imported_dat(data).serials, frozenset())
             self.assertEqual(sorted(path.name for path in imported.parent.iterdir()),
                              ["redump.dat"])

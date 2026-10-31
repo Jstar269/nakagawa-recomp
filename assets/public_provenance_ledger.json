@@ -13730,7 +13730,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5f71b35752969a6c968bf0c204428548bdd2de3eef985f6ed84d3e4176e8d9d1"
+      "sha256": "aed67b10e28c6f8d00ad945b07c5df8b09c09f63d9acbe8353876cb923504d19"
     },
     {
       "path": "tools/library_sweep.py",
@@ -13960,7 +13960,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0ecf4a7b27ef2d00001e5c5e35a7bc7984cde8c8457e85f7589c4d4c85d1f547"
+      "sha256": "ac6d86f42608f53cef8c29cfb17cd38548eb17a0ef0fc9c867d2b57c4dbf1fc4"
     },
     {
       "path": "tools/nk_core/fonts.py",
@@ -15392,7 +15392,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b2c87fd8b00ff9580b95ef16995191b5229cf495be6e58ec5f4b7669d4deb4f6"
+      "sha256": "45e99956d989dad367e2a973df597b1a44671e166be7c4befda2996c5308022c"
     },
     {
       "path": "tools/test_discovery_contract.py",
@@ -16053,7 +16053,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d5e134d059fb79ede198012c42065ae2951d9ddbbb779c6e6e278196fababcbc"
+      "sha256": "4fdb8bb837d6b5b9ae913b41bf1b0654dcab534e282b8e7577762c3cf26700b9"
     },
     {
       "path": "tools/test_library_sweep.py",

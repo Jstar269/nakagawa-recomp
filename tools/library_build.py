@@ -584,21 +584,31 @@ class LibraryBuild:
                  f"{sum(self.skipped.values())} other files skipped")
         stopped = False
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs) as pool:
-            pending: set[concurrent.futures.Future] = set()
+            # Each running build's disc ID. Images that share one (a fan translation and its
+            # retail disc) share the data folder's per-disc paths and the bring-up's build lock,
+            # so they build one after the other; discs with other IDs run beside them.
+            pending: dict[concurrent.futures.Future, str | None] = {}
             queue = list(todo)
             while queue or pending:
                 while queue and len(pending) < self.jobs and not stopped:
+                    running = {disc_id for disc_id in pending.values() if disc_id}
+                    index = next((index for index, record in enumerate(queue)
+                                  if record.get("disc_id") not in running), None)
+                    if index is None:
+                        break  # every queued disc waits for a build of its disc ID
                     if not self._wait_while_paused():
                         stopped = True
                         break
-                    pending.add(pool.submit(self.build_one, queue.pop(0)))
+                    record = queue.pop(index)
+                    pending[pool.submit(self.build_one, record)] = record.get("disc_id")
                 if stopped:
                     queue.clear()
                 if not pending:
                     break
-                done, pending = concurrent.futures.wait(
+                done, _ = concurrent.futures.wait(
                     pending, return_when=concurrent.futures.FIRST_COMPLETED)
                 for future in done:
+                    del pending[future]
                     exception = future.exception()
                     if exception is not None:  # recorded per title; the batch goes on
                         self.log(f"title worker raised {type(exception).__name__}: {exception}")
