@@ -3449,9 +3449,6 @@ _ANALYZER_BOUNDARY_MESSAGES = {
         "The PSP import stub and NID regions do not pair one-to-one. "
         "This import-table layout is not supported yet."
     ),
-    "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED": (
-        "PSP variable imports are not supported yet."
-    ),
     "ANALYZER_IMPORT_TABLE_INVALID": (
         "The PSP import table is invalid or outside mapped data. "
         "This import-table layout is not supported yet."

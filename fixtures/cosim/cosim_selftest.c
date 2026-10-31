@@ -2220,8 +2220,9 @@ int main(int argc, char **argv) {
     SrStackCensusSummary stack_census;
     /* Returns with no ordinary return contract: the rewritten-$ra callee in both
      * rewritten-$ra cases and the fatal exit of the caller it stops, plus the nonlocal
-     * case's exit block and the middle frame its return passes through. */
-    const uint64_t expected_excluded = (skip_ra_return_cases ? 0u : 3u) + 2u;
+     * case's exit block and the middle frame its return passes through, plus the two
+     * frames each longjmp abandons (lj_g, lj_f) in the lj case's two native lanes. */
+    const uint64_t expected_excluded = (skip_ra_return_cases ? 0u : 3u) + 2u + 4u;
     sr_stack_census_snapshot(&stack_census);
     const CosimCase *stack_leak_control = NULL;
     for (unsigned i = 0; i < g_case_count; i++) {

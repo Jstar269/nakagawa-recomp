@@ -1240,6 +1240,25 @@ typedef struct SrModuleSpan {
     uint32_t end;
 } SrModuleSpan;
 
+/* A variable a module imports from another module's library, and the words its loader
+ * patches with the variable's address (tools/imports.py variable_imports). kind is the PSP
+ * reference type: 2 the whole word, 5 a HI16 immediate, 6 a LO16 immediate. The sites are in
+ * reference-list order: the patching of a HI16 run reads the LO16 entry that follows it. A
+ * runtime-placed module's sites are link addresses (the bind adds its base); the main
+ * image's are absolute. Generated code reads every HI16/LO16 site's immediate from memory, so
+ * the patched value reaches it (sr_var_import_*, src/rt/hle.c). */
+typedef struct SrVarImportRef {
+    uint32_t site;
+    uint32_t kind;
+} SrVarImportRef;
+
+typedef struct SrVarImport {
+    const char *library;
+    uint32_t nid;
+    const SrVarImportRef *refs;
+    uint32_t nrefs;
+} SrVarImport;
+
 typedef struct SrModuleCode {
     const char *name;                 /* module file name, as the title manifest names it */
     uint32_t file_size;               /* identity of the exact bytes that were translated */
@@ -1260,6 +1279,9 @@ typedef struct SrModuleCode {
      * and unbound when they no longer are. sceKernelLoadModule never binds it. */
     uint32_t overlay_check_len;
     uint64_t overlay_check_fnv1a64;
+    /* The variables the module imports, linked when it loads and its exporter is loaded. */
+    const SrVarImport *var_imports;
+    uint32_t nvar_imports;
 } SrModuleCode;
 
 typedef enum SrModuleBindResult {
@@ -1310,6 +1332,20 @@ typedef struct SrMainModuleRecord {
     uint32_t start_thread_attr;
 } SrMainModuleRecord;
 void sr_main_module_register(const SrMainModuleRecord *record);  /* from generated sr_register_all() */
+/* The main image's variable imports (absolute sites), from generated sr_register_all(). They
+ * link as their exporters load (src/rt/hle.c). */
+void sr_main_var_imports_register(const SrVarImport *imports, uint32_t count);
+/* A variable the main image exports: importers link to it from boot. */
+typedef struct SrVarExportDecl {
+    const char *library;
+    uint32_t nid;
+    uint32_t addr;
+} SrVarExportDecl;
+void sr_main_var_exports_register(const SrVarExportDecl *exports, uint32_t count);
+/* The variable imports of a module translated at a fixed base (absolute sites), keyed by its
+ * file name; they link when that module loads and unlink when it unloads. */
+void sr_fixed_var_imports_register(const char *module, const SrVarImport *imports,
+                                   uint32_t count);
 const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
 unsigned sr_module_code_count(void);
 const SrModuleCode *sr_module_code_at(unsigned index);
@@ -1394,6 +1430,8 @@ typedef struct SrAotReturnBoundary {
     uint32_t call_sp;          /* guest $sp at the call, after its delay slot: the callee's entry $sp */
     uint32_t dispatch_owned;   /* begun by dispatch_call_aot, whose caller ignores the end result */
     uint32_t unwinding;        /* abandoned by a guest return to an enclosing linked call */
+    uint32_t resume_sp;        /* unwinding 3: the guest $sp a longjmp restored, reapplied
+                                * after the abandoned bodies' host returns */
 } SrAotReturnBoundary;
 
 /* The active AOT return stack follows the running guest fiber. Each TCB owns

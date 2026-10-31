@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **409** (declared in `recomp.h`: 346)
-- reach class: emitter-reached 71, production-runtime-only 305, selftest-only 17, address-only 7, none 9
-- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 381
+- helpers: **413** (declared in `recomp.h`: 349)
+- reach class: emitter-reached 74, production-runtime-only 306, selftest-only 17, address-only 7, none 9
+- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 385
 
 ## Helpers
 
@@ -219,6 +219,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_aot_return_boundary_discard_to_floor` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_end` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_grow` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_aot_return_boundary_resume_live_frame` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_scope_begin` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_scope_end` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_aot_return_boundary_stack_destroy` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
@@ -260,6 +261,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_exit_request_stop_due` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_exp2_approx` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_exp2_fixed` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_fixed_var_imports_register` | `rt/hle.c` | yes | emitter-reached (direct) | `rt/hle.c`: upstream_derived |
 | `sr_ge_vram_read_prepare` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `sr_ge_vram_write_commit` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `sr_ge_vram_write_prepare` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
@@ -339,6 +341,8 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_lwl` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_lwr` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_main_module_register` | `rt/hle.c` | yes | emitter-reached (direct) | `rt/hle.c`: upstream_derived |
+| `sr_main_var_exports_register` | `rt/hle.c` | yes | emitter-reached (direct) | `rt/hle.c`: upstream_derived |
+| `sr_main_var_imports_register` | `rt/hle.c` | yes | emitter-reached (direct) | `rt/hle.c`: upstream_derived |
 | `sr_mem_init` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_mem_reset` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_module_bind_result_name` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |

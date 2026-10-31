@@ -280,10 +280,12 @@ class CodegenIntegrationTests(unittest.TestCase):
         kept = {int(row["address"], 16) for row in self.manifest()["fallbacks"]}
 
         def body(backend, addr):
-            # The census-wrapped body through the end of its wrapper.
+            # The census-wrapped body through the end of its wrapper; a body that loads $sp
+            # is not wrapped (codegen.GUEST_SP_ENTRIES), so it is the function alone.
             text = "\n".join(self.files(backend, "g_recomp_*.c").values())
-            match = re.search(rf"static void _sr_stack_census_body_{addr:08x}\(.*?"
-                              rf"\nvoid f_{addr:08x}\(CpuState \*s\) \{{.*?\n\}}", text, re.S)
+            match = (re.search(rf"static void _sr_stack_census_body_{addr:08x}\(.*?"
+                               rf"\nvoid f_{addr:08x}\(CpuState \*s\) \{{.*?\n\}}", text, re.S)
+                     or re.search(rf"(?m)^void f_{addr:08x}\(CpuState \*s\) \{{.*?\n\}}", text, re.S))
             self.assertIsNotNone(match, f"0x{addr:08x} under {backend}")
             return match.group(0)
         self.assertTrue(kept)
