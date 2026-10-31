@@ -58,11 +58,14 @@ function Find-SignTool {
         if (-not (Test-Path -LiteralPath $SignTool -PathType Leaf)) { Fail "SIGNTOOL_MISSING: $SignTool" }
         return (Resolve-Path -LiteralPath $SignTool).Path
     }
-    $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-    $found = Get-ChildItem -Path $kits -Filter signtool.exe -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
-        Sort-Object { [version]($_.FullName -replace '^.*\\bin\\([0-9.]+)\\x64\\.*$', '$1') } -Descending |
-        Select-Object -First 1
+    $kits = Join-Path (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits') '10/bin'
+    $found = $null
+    if (Test-Path -LiteralPath $kits -PathType Container) {
+        $found = Get-ChildItem -Path $kits -Filter signtool.exe -Recurse -File |
+            Where-Object { $_.FullName.Replace('\', '/') -match '/x64/signtool\.exe$' } |
+            Sort-Object { [version]($_.FullName.Replace('\', '/') -replace '^.*/bin/([0-9.]+)/x64/.*$', '$1') } -Descending |
+            Select-Object -First 1
+    }
     if (-not $found) { Fail 'SIGNTOOL_MISSING: install the Windows SDK or pass -SignTool' }
     return $found.FullName
 }
