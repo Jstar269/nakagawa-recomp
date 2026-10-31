@@ -323,6 +323,67 @@ def write_elf_with_data_jal_in_text_to_rodata(path: Path) -> int:
     return target
 
 
+def write_zero_based_module(path: Path, *, relocatable: bool = True) -> None:
+    """A zero-based PSP module (ET_SCE_PRX) whose loader relocations name its addresses.
+
+    .text holds three functions: 0x00 (the entry) calls 0x20 through a relocated jal and
+    makes an unrelocated jal whose target field reads 0x14, the shape a module linked
+    against its executable uses for a call into it; 0x20 is a leaf; 0x28 is a leaf reached
+    only through the relocated pointer in .data. .data also holds the integer 8, equal to
+    the text offset of a delay slot inside 0x00, with no relocation. `relocatable=False`
+    writes the same bytes as an ET_EXEC with no relocation section.
+    """
+    text = [
+        0x27BDFFF0,  # 0x00 addiu sp, sp, -16
+        0x0C000008,  # 0x04 jal 0x20 (R_MIPS_26)
+        0x00000000,  # 0x08 nop
+        0x0C000005,  # 0x0c jal 0x14 (no relocation: outside the module)
+        0x00000000,  # 0x10 nop
+        0x27BD0010,  # 0x14 addiu sp, sp, 16
+        0x03E00008,  # 0x18 jr ra
+        0x00000000,  # 0x1c nop
+        0x03E00008,  # 0x20 jr ra
+        0x00000000,  # 0x24 nop
+        0x03E00008,  # 0x28 jr ra
+        0x00000000,  # 0x2c nop
+    ]
+    data = [0x00000028, 0x00000008]  # 0x40: relocated pointer; 0x44: unrelocated integer
+    relocations = [(0x04, 4), (0x40, 2)]  # type-A (offset, info): R_MIPS_26, R_MIPS_32
+    payload_off = 52 + 32
+    image = bytearray(0x48)
+    for index, word in enumerate(text):
+        struct.pack_into("<I", image, index * 4, word)
+    for index, word in enumerate(data):
+        struct.pack_into("<I", image, 0x40 + index * 4, word)
+    rel_off = payload_off + len(image)
+    rel = b"".join(struct.pack("<II", offset, info) for offset, info in relocations)
+    if not relocatable:
+        rel = b""
+    shstr = b"\x00.text\x00.data\x00.rel.text\x00.shstrtab\x00"
+    shstr_off = rel_off + len(rel)
+    shoff = shstr_off + len(shstr)
+    sections = 5 if relocatable else 4
+    blob = bytearray(shoff + 40 * sections)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        0xFFA0 if relocatable else 2, 8, 1, 0, 52, shoff, 0, 52, 32, 1, 40,
+        sections, sections - 1,
+    )
+    struct.pack_into("<8I", blob, 52, 1, payload_off, 0, 0, len(image), len(image), 7, 16)
+    blob[payload_off:payload_off + len(image)] = image
+    blob[rel_off:rel_off + len(rel)] = rel
+    blob[shstr_off:shstr_off + len(shstr)] = shstr
+    struct.pack_into("<10I", blob, shoff + 40, 1, 1, 6, 0, payload_off, 0x30, 0, 0, 4, 0)
+    struct.pack_into("<10I", blob, shoff + 80, 7, 1, 3, 0x40, payload_off + 0x40, 8, 0, 0, 4, 0)
+    if relocatable:
+        struct.pack_into("<10I", blob, shoff + 120,
+                         13, 0x700000A0, 0, 0, rel_off, len(rel), 0, 0, 4, 8)
+    struct.pack_into("<10I", blob, shoff + 40 * (sections - 1),
+                     23, 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0)
+    path.write_bytes(blob)
+
+
 class AnalyzerSpanScopeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._saved_environ = os.environ.copy()
@@ -447,6 +508,50 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         starts, _ = analyze.analyze(loaded)
 
         self.assertNotIn(target, starts)
+
+    def test_relocatable_module_takes_code_addresses_only_from_relocated_words(self) -> None:
+        # A relocatable module can load anywhere, so a word its loader does not relocate is
+        # no address in it: the integer 8 in .data is not a pointer to 0x08, and the
+        # unrelocated jal's target field (0x14) names code outside the module. Both used to
+        # seed functions inside 0x00, splitting it at a delay slot and at its epilogue.
+        module = self.root / "zero-based-module.prx"
+        write_zero_based_module(module)
+        loaded = analyze.Elf(str(module), base=0)
+        self.assertEqual(loaded.relocated_words, {0x04: "jump26", 0x40: "word32"})
+
+        starts, _ = analyze.analyze(loaded)
+
+        self.assertEqual(sorted(starts), [0x00, 0x20, 0x28])
+        evidence = analyze.code_pointer_evidence(loaded, analyze.exec_ranges(loaded))
+        self.assertEqual(evidence["jal"], frozenset({0x20}))
+        self.assertEqual(evidence["data"], frozenset({0x28}))
+
+    def test_unrelocated_call_in_a_relocatable_module_still_continues(self) -> None:
+        # The call into the executable returns: the code after its delay slot is the same
+        # function's, and the module's own epilogue stays owned.
+        module = self.root / "zero-based-module.prx"
+        write_zero_based_module(module)
+        loaded = analyze.Elf(str(module), base=0)
+        covered, calls, found = set(), set(), set()
+
+        analyze.trace_function(loaded, 0x00, analyze.exec_ranges(loaded), covered, calls, {0x00},
+                               unrelocated=found)
+
+        self.assertEqual(found, {0x0C})
+        self.assertEqual(calls, {0x20})
+        self.assertTrue({0x14, 0x18, 0x1C} <= covered)
+
+    def test_a_fixed_address_image_keeps_every_word_as_address_evidence(self) -> None:
+        # The same bytes as a fixed-address executable: its words are its addresses as they
+        # stand, so the jal to 0x14 and the data word 8 still count (the legacy rule).
+        image = self.root / "fixed-image.elf"
+        write_zero_based_module(image, relocatable=False)
+        loaded = analyze.Elf(str(image), base=0)
+        self.assertIsNone(loaded.relocated_words)
+
+        starts, _ = analyze.analyze(loaded)
+
+        self.assertTrue({0x08, 0x14} <= set(starts))
 
     def test_generic_analyzer_source_carries_no_title_constant(self) -> None:
         source = (TOOLS / "analyze.py").read_text(encoding="utf-8")

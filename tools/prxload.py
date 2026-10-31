@@ -58,6 +58,15 @@ _TYPE_A_RECOGNIZED_TYPES = (
     | _TYPE_A_SPECIAL_TYPES
     | _TYPE_A_KNOWN_UNSUPPORTED_TYPES
 )
+# The field each applied relocation rewrites (Prx.relocated). Packed-stream types: 2 is the
+# 32-bit word, 3/6/7 the 26-bit jump field (6 and 7 also force j and jal), 4 HI16, 1/5 the
+# low half.
+_TYPE_A_RELOCATION_FIELD = {
+    R_MIPS_32: "word32", R_MIPS_26: "jump26", R_MIPS_HI16: "hi16",
+    R_MIPS_LO16: "lo16", R_MIPS_16: "lo16",
+}
+_PACKED_RELOCATION_FIELD = {2: "word32", 3: "jump26", 6: "jump26", 7: "jump26",
+                            4: "hi16", 1: "lo16", 5: "lo16"}
 
 
 def _image_address_bias(elf_type: int, image_base: int, loads: list[dict]) -> int:
@@ -1369,6 +1378,10 @@ class Prx:
             for seg in self.segments:
                 if seg["type"] in (0x700000a0, 0x700000a1):
                     self.sections.append(dict(typ=seg["type"], off=seg["off"], size=seg["filesz"], seg_idx=seg["idx"]))
+        # Every word relocate() rewrites, by the field it rewrites: "word32", "jump26", "hi16"
+        # or "lo16" (R_MIPS_16 and LO16 both rewrite the low half). The analyzer reads it as
+        # the module's address evidence (analyze._relocated_words).
+        self.relocated = {}
 
     def r32(self, addr):
         o = addr - self.lo
@@ -1438,6 +1451,7 @@ class Prx:
         lo16 = 0
         off_seg = 0
         rcount = 0
+        relocated = self.__dict__.setdefault("relocated", {})
 
         nseg = len(self.seg_vaddr)
 
@@ -1542,11 +1556,15 @@ class Prx:
                 elif rtype in (1, 5):
                     op = (op & 0xFFFF0000) | (((op & 0xFFFF) + relocate_to) & 0xFFFF)
 
+                kind = _PACKED_RELOCATION_FIELD.get(rtype)
+                if kind is not None:
+                    relocated[rel_offset_addr] = kind
                 self.w32(rel_offset_addr, op)
                 rcount += 1
         return rcount
 
     def _apply(self, rels):
+        relocated = self.__dict__.setdefault("relocated", {})
         nseg = len(self.seg_vaddr)
         n = len(rels)
         for r in range(n):
@@ -1611,6 +1629,9 @@ class Prx:
                 op = (op & 0xFFFF0000) | (((op & 0xFFFF) + relocate_to) & 0xFFFF)
             elif rtype == R_MIPS_16:
                 op = (op & 0xFFFF0000) | ((((op & 0xFFFF)) + relocate_to) & 0xFFFF)
+            kind = _TYPE_A_RELOCATION_FIELD.get(rtype)
+            if kind is not None:
+                relocated[addr] = kind
             self.w32(addr, op)
 
 
