@@ -414,6 +414,7 @@
     "fixtures/psp_oracle/probe_hle_issues.c",
     "fixtures/psp_oracle/probe_hle_measure.c",
     "fixtures/psp_oracle/probe_insn_trace.c",
+    "fixtures/psp_oracle/probe_kernel_semantics.c",
     "fixtures/psp_oracle/probe_module_start.c",
     "fixtures/psp_oracle/psp_b1.c",
     "fixtures/psp_oracle/psp_b2.c",

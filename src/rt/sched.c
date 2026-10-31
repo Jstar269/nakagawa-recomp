@@ -1872,8 +1872,10 @@ static void deliver_vblank(void) {
     uint32_t interrupt_fatal_target = 0u;
     int interrupt_fatal = 0;
     /* Every registered and enabled VBLANK sub-interrupt handler runs on this VBLANK, in
-     * sub-interrupt number order (the order is UNMEASURED on the PSP). A title can keep
-     * several at once, for example its frame counter on 0 and a video player's on 1. */
+     * sub-interrupt number order whatever order they were registered in: handlers registered
+     * on 3, 0, 2 and 1 run as 0, 1, 2, 3 on every VBLANK, each with its own (no, arg)
+     * (PSP-3000 6.61, PSP-KERNEL-SEM-001 subintr-order, 2026-10-31). A title can keep several
+     * at once, for example its frame counter on 0 and a video player's on 1. */
     for (uint32_t no = 0u; !interrupt_fatal; no++) {
         uint32_t h = 0u, arg = 0u;
         int sub = sr_vblank_subintr(no, &h, &arg);

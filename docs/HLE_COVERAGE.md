@@ -24,11 +24,11 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 16 |
-| `ppsspp-derived` | 112 | 90 |
+| `ppsspp-derived` | 111 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 295 | 200 |
-| `unverified` | 189 | 57 |
-| total | 660 | 363 |
+| `synthetic` | 296 | 200 |
+| `unverified` | 190 | 57 |
+| total | 661 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -263,6 +263,7 @@ belongs to without the census's own grouping.
 | `0x472e3825` | `sceAtracSetMOutDataAndGetID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x478fe6f5` | `scePowerGetBusClockFrequency` | power | `hardware-measured` | PSP oracle PSP-HLE-POWER-001 |
 | `0x47a0b729` | `sceKernelIsCpuIntrSuspended` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
+| `0x48293280` | `sceFontSetResolution` | font | `unverified` | no recorded evidence |
 | `0x4928bd96` | `sceUtilityMsgDialogAbort` | utility | `ppsspp-derived` | registry notes name PPSSPP |
 | `0x4a719fb2` | `sceKernelFreeTlspl` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0x4a9e5e29` | `sceUmdWaitDriveStatCB` | umd | `synthetic` | conformance cells |
@@ -708,7 +709,7 @@ belongs to without the census's own grouping.
 | `0xfa8a5739` | `sceRegCloseRegistry` | system | `synthetic` | HLE selftest dispatch |
 | `0xfaa4f89b` | `sceAtracGetLoopStatus` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xfb6425c3` | `sceKernelSetVTimerTimeWide` | kernel_time | `synthetic` | HLE selftest dispatch |
-| `0xfb8e22ec` | `sceKernelEnableSubIntr` | kernel_interrupt | `ppsspp-derived` | handler comment names PPSSPP |
+| `0xfb8e22ec` | `sceKernelEnableSubIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
 | `0xfbfa697d` | `sceKernelReceiveMsgPipeCB` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0xfc6fc07b` | `sceNetAdhocPtpConnect` | network | `unverified` | no recorded evidence |
 | `0xfccfad26` | `sceKernelCancelWakeupThread` | kernel_thread | `unverified` | no recorded evidence |
