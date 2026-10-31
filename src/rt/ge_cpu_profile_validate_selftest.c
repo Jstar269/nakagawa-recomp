@@ -480,9 +480,10 @@ static void test_ge_vram_depth_bit13_absolute_xor(void) {
  * so the colour drawn names the level the sampler chose. Level 1 stores its 4 texels per
  * row in a buffer 8 wide with magenta beyond them, which only a sampler ignoring that
  * level's own buffer width reaches. Levels 2 and 3 use buffer width 4: a linear texture's
- * rows are whole 16-byte lines on the PSP (ge_tex_row_bytes, PSP-GE-RASTER-001). The PSP's nearest-level rounding, slope formula and
- * between-level weights are unmeasured (ge.c tex_lod); these cases pin the PSPSDK modes and
- * keep today's level-0 output wherever mip levels are off. */
+ * rows are whole 16-byte lines on the PSP (ge_tex_row_bytes, PSP-GE-RASTER-001). The level
+ * rules are the PSP's (PSP-GE-MIP-001, ge.c tex_detail16; hle_thread_selftest.c
+ * test_ge_mip_cells_match_psp checks them against the PSP); these cases pin the PSPSDK modes
+ * and keep today's level-0 output wherever mip levels are off. */
 #define MIP_LIST  0x08116000u
 #define MIP_VERTS 0x08118000u
 #define MIP_TEX   0x08320000u
@@ -573,7 +574,7 @@ static void test_ge_texture_mip_levels(void) {
         { "auto_minified",    3u, MIP_LEVEL(0, 0),   4u, 2u,  BLUE },
         { "auto_biased",      3u, MIP_LEVEL(0, -16), 4u, 2u,  GREEN },
         { "auto_clamped",     1u, MIP_LEVEL(0, 0),   4u, 1u,  GREEN },
-        /* Slope: no public formula, so level 0 (unmeasured). */
+        /* Slope with TEXLODSLOPE 0: its logarithm is -2032, so level 0. */
         { "slope_level_0",    3u, MIP_LEVEL(2, 16),  4u, 2u,  RED },
         /* GU_NEAREST_MIPMAP_LINEAR at lod 0.5: half of level 0 and half of level 1. */
         { "linear_between",   3u, MIP_LEVEL(1, 8),   6u, 8u,  -1 },

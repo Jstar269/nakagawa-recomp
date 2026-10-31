@@ -259,28 +259,35 @@ Semantic handler census: **532** handlers across **26** API families, covering *
   - Limitation: resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0 result when no list is paused is PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
 - **`h_GeDrawSync`** (`sceGe`): `sceGeDrawSync` (0xb287bd61)
-  - Limitation: the mode 1 peeks (paused 2, stalled 3, 0 after a reset) are measured; mode 0 blocking is the PSPSDK contract and is source-selftested, and modes other than 0 and 1 take the wait path without a measurement
+  - Limitation: the mode 1 peeks (paused 2, stalled 3, 0 after a reset) and the 0x80000107 for modes 2 and -1 are measured (PSP-GE-CONTROL-001, PSP-GE-SYNC-001); the mode 0 wait frees completed lists' slots, so their peeks read 0x80000100 afterwards (measured); after a reset of a stalled list the PSP's mode 0 returned in some launches and did not return in others, and the runtime returns
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-draw-sync-paused, ge-draw-sync-cancelled, ge-list-dequeue-stalled)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-SYNC-001: ge-sync-invalid-mode, ge-list-sync-after-draw-wait, ge-draw-sync-after-reset-wait)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_sync_ids_match_psp
 - **`h_GeEdramSetAddrTranslation`** (`sceGe`): `sceGeEdramSetAddrTranslation` (0xb77905ea)
   - Limitation: replacement-width returns and restoration to boot width 1024 are measured; width 0 as an input, unsupported-width error 0x80000107 (a project choice), and applying the setting to actual GE address translation are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-GE-EDRAM-001: initial width, 512/1024/2048/4096 replacements, restore and final query)
 - **`h_GeListDeQueue`** (`sceGe`): `sceGeListDeQueue` (0x5fb86ab0)
-  - Limitation: a stalled list returns BUSY (0x80000021) and stays queued, PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run); paused, completed, cancelled and unknown queue ids are refused as NOT_IMPLEMENTED because no dequeue result is measured for them (#341)
+  - Limitation: a stalled list returns BUSY (0x80000021) and stays queued (PSP-GE-CONTROL-001), and so does a completed list until a sceGeDrawSync(0) frees it; an unknown id is 0x80000100 (PSP-GE-SYNC-001, measured); a queued list that has not started is removed and its waiters released, and a freed slot is 0x80000100, following uofw src/kd/ge/ge.c (unmeasured)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_sync_ids_match_psp
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_queued_lists_run_in_order
 - **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
-  - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)
+  - Limitation: display-smoke covers one unstalled synchronous list; a list enqueued behind an active one waits its turn and runs in enqueue order once the head completes, slots come from a FIFO of free slots and ids name slots (uofw src/kd/ge/ge.c; the queued peek 1 and the 64-list 0x80000022 refusal are unmeasured), and argument and priority validation and asynchronous execution timing remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
   - Evidence: fixtures/display_smoke/generate.py:flight_smoke
   - Evidence: src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_queued_lists_run_in_order
 - **`h_GeListEnQueueHead`** (`sceGe`): `sceGeListEnQueueHead` (0x1c0d95a6)
   - Limitation: idle-list execution follows the shared enqueue path; head ordering is refused while a list is stalled, and asynchronous queue behavior remains unmodeled
 - **`h_GeListSync`** (`sceGe`): `sceGeListSync` (0x03444eb4)
-  - Limitation: the syncType 1 peeks (paused 4, stalled 3) and the reset-removed 0x80000100 are measured; syncType 0 blocking is the PSPSDK contract and is source-selftested, an unknown queue id returns 0 without a measurement, and command-boundary timing is not measured
+  - Limitation: the syncType 1 peeks (paused 4, stalled 3, 0x80000100 for an unknown id, a reset-removed list or a list after a sceGeDrawSync(0)), the 0x80000107 for other sync types and the syncType 0 results (0 at once for a completed list, no return for a list a reset removed) are measured (PSP-GE-CONTROL-001, PSP-GE-SYNC-001); the queued peek 1 follows uofw unmeasured; a completed list's peek before any sceGeDrawSync(0) read 0 in one PSP launch and often 0x80000100 in others, and the runtime keeps 0 until a sceGeDrawSync(0); command-boundary timing is not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-list-sync-paused, ge-list-sync-cancelled, ge-list-dequeue-stalled)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-SYNC-001: ge-list-sync-unknown-poll, ge-sync-invalid-mode, ge-list-sync-cancelled-wait, ge-list-sync-stale-wait, ge-list-sync-after-draw-wait)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_sync_ids_match_psp
 - **`h_HprmIsHeadphoneExist`** (`sceHprm`): `sceHprmIsHeadphoneExist` (0x7e69eda4)
   - Limitation: reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the conditions under which firmware reports 1 are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-headphone-first, hprm-headphone-second)

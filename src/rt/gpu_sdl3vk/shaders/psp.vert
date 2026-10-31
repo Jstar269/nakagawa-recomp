@@ -21,6 +21,10 @@ layout(location = 1) noperspective out float v_rw;
 layout(location = 2) noperspective out float v_fog;
 layout(location = 3) noperspective out vec4  v_color;
 
+/* No contraction of y * (1/136) - 1 into a fused multiply-add: psp_tnl.vert computes the same
+ * position and has to round it the same way on every driver (#318). */
+precise gl_Position;
+
 void main() {
     gl_Position = vec4(in_pos.x * (1.0 / 256.0) - 1.0,
                        in_pos.y * (1.0 / 136.0) - 1.0,
