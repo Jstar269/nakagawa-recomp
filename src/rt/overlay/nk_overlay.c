@@ -10,10 +10,11 @@
 
 #include <string.h>
 
-#define OVERLAY_ID_ROOT 0x70000001u
-#define OVERLAY_ID_BODY 0x70000002u
-#define OVERLAY_ID_CARD 0x70000003u
-#define OVERLAY_ID_PROMPTS 0x70000004u
+#define OVERLAY_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_OVERLAY, (offset))
+#define OVERLAY_ID_ROOT OVERLAY_ID(0x000001u)
+#define OVERLAY_ID_BODY OVERLAY_ID(0x000002u)
+#define OVERLAY_ID_CARD OVERLAY_ID(0x000003u)
+#define OVERLAY_ID_PROMPTS OVERLAY_ID(0x000004u)
 
 void nk_overlay_open(NkOverlayState *state, NkOverlayOpenReason reason) {
     if (state == NULL) return;

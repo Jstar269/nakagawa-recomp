@@ -734,10 +734,20 @@ bool nk_ui_draw_add_convex(NkUiDrawBuffer *buffer, const float *xy, uint32_t cou
            (the showcase cube) overlap by their fringe instead of leaving a seam. */
         buffer->vertices[base + i] = nk_ui_vertex(x, y, rgba_pm);
         buffer->vertices[base + count + i] = nk_ui_vertex(x + nx * 0.75f, y + ny * 0.75f, 0u);
-        if ((int)x < bounds.x0) bounds.x0 = (int)x;
-        if ((int)y < bounds.y0) bounds.y0 = (int)y;
-        if ((int)x > bounds.x1) bounds.x1 = (int)x;
-        if ((int)y > bounds.y1) bounds.y1 = (int)y;
+        /* The bounds hold every pixel the shape touches, its fringe included, so a
+           backend that clips each command to them (Vulkan) trims nothing a backend
+           that clips only to scissors (SDL_Renderer) draws. */
+        {
+            const float edge_x[2] = {x, x + nx * 0.75f};
+            const float edge_y[2] = {y, y + ny * 0.75f};
+            uint32_t k;
+            for (k = 0u; k < 2u; ++k) {
+                if ((int)floorf(edge_x[k]) < bounds.x0) bounds.x0 = (int)floorf(edge_x[k]);
+                if ((int)floorf(edge_y[k]) < bounds.y0) bounds.y0 = (int)floorf(edge_y[k]);
+                if ((int)ceilf(edge_x[k]) > bounds.x1) bounds.x1 = (int)ceilf(edge_x[k]);
+                if ((int)ceilf(edge_y[k]) > bounds.y1) bounds.y1 = (int)ceilf(edge_y[k]);
+            }
+        }
     }
     for (i = 0; i + 2u < count; ++i) {
         buffer->indices[index_base + i * 3u + 0u] = base;
