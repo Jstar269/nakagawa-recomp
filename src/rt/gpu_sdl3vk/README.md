@@ -159,6 +159,32 @@ UNDEFINED-layout image and published a PPM under a `.png` name. It is gone. In i
   means SKIP (Vulkan unavailable). `fbcap-selftest` covers the presenter-neutral service itself
   without a GPU.
 
+## Present and swapchain failures (#1377)
+
+Every state-changing Vulkan result on the present, pause-overlay and swapchain paths is checked.
+A failed present returns -1 and resolves an armed capture as failed. Whether the renderer can
+go on decides the transition:
+
+- Nothing is lost when an acquire fails with out-of-memory (no image was acquired), or a present
+  fails before it is enqueued (`recover_unenqueued_present` replaces the frame's semaphore). The
+  next present tries again.
+- The renderer turns terminal (`sdl3vk_renderer_terminal()`; every later present returns -1 at
+  once) when the device or surface is lost, a fence wait fails (the frame's work may still run),
+  or any step between a successful acquire and the submit fails (the image stays acquired and its
+  semaphore stays to be signalled, and neither can be handed back without a present). It also
+  turns terminal when the swapchain cannot be rebuilt: the queue-idle wait fails,
+  `vkCreateSwapchainKHR` fails (the old swapchain is retired anyway, so it is destroyed), or
+  its images cannot be read.
+- A suboptimal acquire has acquired its image: the frame is presented and the present, which
+  reports it again, rebuilds the swapchain.
+- Only `sdl3vk_shutdown` leaves the terminal state, and a later `sdl3vk_init` starts afresh.
+
+`sdl3vk_lifecycle_selftest` (inside `gpu-capture-selftest`) checks two kinds of fault with the
+validation layer on, and expects no leaked object and no validation error from either:
+
+- an init failure at each step;
+- a failure at each checked present step, through a one-shot present-step fault seam.
+
 ## Environment variables
 
 - `SR_GPU_GE=1` — enable the GPU rasterizer (SDL3 build only; default off).
