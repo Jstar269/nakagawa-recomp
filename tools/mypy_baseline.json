@@ -70,7 +70,6 @@
     "tools/psp_oracle/oracle_matrix.py": 7,
     "tools/psp_oracle/parse_golden.py": 43,
     "tools/psp_oracle/protocol.py": 11,
-    "tools/psp_oracle/run_psplink.py": 72,
     "tools/psp_oracle/user_mode_imports.py": 2,
     "tools/psp_oracle/verify_vfpu_addr.py": 2,
     "tools/psp_threading_oracle/analyzer.py": 2,
@@ -125,7 +124,6 @@
     "tools/test_guest_span_routing.py": 1,
     "tools/test_hardware_runner_protocol.py": 7,
     "tools/test_history_audit.py": 1,
-    "tools/test_hle_manifest.py": 115,
     "tools/test_hle_title_config_behavior.py": 1,
     "tools/test_hle_title_isolation.py": 2,
     "tools/test_hst_doctor_hardening.py": 5,
@@ -169,10 +167,8 @@
     "tools/test_provenance_wildcard_regression.py": 1,
     "tools/test_psp_decrypt.py": 34,
     "tools/test_psp_issue_matrix.py": 18,
-    "tools/test_psp_oracle.py": 546,
     "tools/test_psp_threading_oracle.py": 1,
     "tools/test_pspdev_lock.py": 26,
-    "tools/test_public_ci_wiring.py": 146,
     "tools/test_public_export.py": 17,
     "tools/test_public_title_isolation.py": 1,
     "tools/test_publication_policy_gate.py": 2,
@@ -225,5 +221,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 2443
+  "total_errors": 1564
 }
