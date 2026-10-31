@@ -964,13 +964,12 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
     /* A sample is shown, never added to the user's library. */
     if (game->is_sample) return false;
 
+    /* What a re-added disc keeps comes from the record this one replaces, the
+       same image's: another image can share the disc ID (a fan translation
+       of the same size) and must not lend it its staged files. */
     GameRecord merged = *game;
-    for (int i = 0; i < app->library.count; i++) {
-        if (strcmp(app->library.entries[i].disc_id, game->disc_id) == 0) {
-            player_merge_readded_game(&app->library.entries[i], &merged);
-            break;
-        }
-    }
+    const GameRecord *replaced = nk_library_find_replaced(&app->library, game);
+    if (replaced) player_merge_readded_game(replaced, &merged);
     game = &merged;
 
     /* Both results used to be discarded before returning an unconditional
@@ -989,8 +988,19 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
        library was loaded is kept (#1768). */
     NkResult save_res = nk_library_commit_entry(&app->library, game, NULL);
     player_app_sync_library(app);
-    /* Its image is hashed once, after the add, on main.c's worker. */
-    if (save_res == NK_OK) (void)player_app_disc_check_queue(app, game);
+    /* Its image is hashed after the add, on main.c's worker, every time it is
+       added: a file can change in place. So is any other image of its disc ID
+       not hashed yet (one added before this check existed), so the two cards
+       get their tiers and a copy of the same image is found to be one. */
+    if (save_res == NK_OK) {
+        (void)player_app_disc_check_queue(app, game);
+        for (int i = 0; i < app->library.count; i++) {
+            const GameRecord *other = &app->library.entries[i];
+            if (strcmp(other->disc_id, game->disc_id) == 0 && !other->content_sha1[0]) {
+                (void)player_app_disc_check_queue(app, other);
+            }
+        }
+    }
     return save_res == NK_OK;
 }
 
@@ -1004,15 +1014,20 @@ int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id) {
     return -1;
 }
 
-int player_app_find_added_game(const PlayerApp *app, const GameRecord *game) {
-    if (!app || !game) return -1;
+int player_app_find_game_by_image(const PlayerApp *app, const char *disc_id,
+                                  const char *iso_path) {
+    if (!app || !disc_id || !iso_path) return -1;
     for (int i = 0; i < app->game_count; i++) {
-        if (strcmp(app->games[i].disc_id, game->disc_id) == 0 &&
-            strcmp(app->games[i].iso_path, game->iso_path) == 0) {
+        if (strcmp(app->games[i].disc_id, disc_id) == 0 &&
+            strcmp(app->games[i].iso_path, iso_path) == 0) {
             return i;
         }
     }
-    return player_app_find_game_by_disc_id(app, game->disc_id);
+    return -1;
+}
+
+int player_app_find_added_game(const PlayerApp *app, const GameRecord *game) {
+    return game ? player_app_find_game_by_image(app, game->disc_id, game->iso_path) : -1;
 }
 
 /* ---- disc verification (PlayerDiscCheckState) ---- */
@@ -1032,8 +1047,7 @@ static int player_library_index_of_image(const PlayerApp *app, const char *disc_
 bool player_app_disc_check_queue(PlayerApp *app, const GameRecord *game) {
     if (!app || !game || !game->disc_id[0] || !game->iso_path[0]) return false;
     if (game->is_sample || player_game_is_showcase(game)) return false;
-    int index = player_library_index_of_image(app, game->disc_id, game->iso_path);
-    if (index < 0 || app->library.entries[index].content_sha1[0]) return false;
+    if (player_library_index_of_image(app, game->disc_id, game->iso_path) < 0) return false;
     PlayerDiscCheckState *check = &app->disc_check;
     for (int i = 0; i < check->count; i++) {
         if (strcmp(check->queue[i].disc_id, game->disc_id) == 0 &&
@@ -1044,6 +1058,7 @@ bool player_app_disc_check_queue(PlayerApp *app, const GameRecord *game) {
     if (check->count >= PLAYER_DISC_CHECK_QUEUE) {
         player_dev_log_add(app, "disc check", "%s not checked: %d images are waiting already",
                            game->disc_id, check->count);
+        snprintf(check->note, sizeof(check->note), "Some disc images were not checked");
         return false;
     }
     PlayerDiscCheckItem *item = &check->queue[check->count++];
@@ -1067,7 +1082,6 @@ bool player_app_disc_check_take(PlayerApp *app, PlayerDiscCheckItem *out,
     check->running = true;
     check->cancel_requested = false;
     check->percent = 0;
-    check->note[0] = '\0';
     return true;
 }
 
@@ -1165,7 +1179,8 @@ bool player_app_disc_check_line(const PlayerApp *app, char *out, size_t out_size
     out[0] = '\0';
     const PlayerDiscCheckState *check = &app->disc_check;
     if (check->running) {
-        if (offers_cancel) *offers_cancel = !check->cancel_requested;
+        /* While it stops, Cancel stays (asking again does nothing more). */
+        if (offers_cancel) *offers_cancel = true;
         if (check->cancel_requested) {
             snprintf(out, out_size, "Stopping the disc check");
         } else if (check->count > 1) {
@@ -1181,12 +1196,6 @@ bool player_app_disc_check_line(const PlayerApp *app, char *out, size_t out_size
         return true;
     }
     return false;
-}
-
-bool player_app_disc_check_running_for(const PlayerApp *app, const GameRecord *game) {
-    return app && game && app->disc_check.running && app->disc_check.count > 0 &&
-           strcmp(app->disc_check.queue[0].disc_id, game->disc_id) == 0 &&
-           strcmp(app->disc_check.queue[0].iso_path, game->iso_path) == 0;
 }
 
 const char *player_disc_tier_badge(uint32_t tier) {
@@ -3070,6 +3079,34 @@ bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
     return ok;
 }
 
+/* The library file this library writes (nk_library_commit_entry's rule). */
+static bool player_library_file_path(const PlayerApp *app, char *out, size_t out_size) {
+    if (app->library.library_path[0]) {
+        return snprintf(out, out_size, "%s", app->library.library_path) < (int)out_size;
+    }
+    char data[NK_MAX_PATH];
+    if (!nk_platform_get_path(NK_PATH_DATA, data, sizeof(data))) return false;
+    int written = snprintf(out, out_size, "%s%clibrary.json", data, nk_platform_path_separator());
+    return written > 0 && (size_t)written < out_size;
+}
+
+/* Whether the library file holds an image of the card's disc ID other than the
+   card's own: another player or a bring-up may have added one since this
+   library was read. A file that can't be read holds none. */
+static bool player_library_file_has_other_image(const GameRecord *game, const char *path) {
+    NkLibrary *disk = (NkLibrary *)malloc(sizeof(*disk));
+    if (!disk) return true; /* can't tell: keep the folders */
+    bool other = false;
+    if (nk_library_load(disk, path) == NK_OK) {
+        for (int i = 0; i < disk->count && !other; i++) {
+            other = strcmp(disk->entries[i].disc_id, game->disc_id) == 0 &&
+                    strcmp(disk->entries[i].iso_path, game->iso_path) != 0;
+        }
+    }
+    free(disk);
+    return other;
+}
+
 bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete_saves,
                                      char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
@@ -3085,6 +3122,27 @@ bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete
         }
         return false;
     }
+    /* The folders are the disc ID's. Another image of it may have reached the
+       library file since this library was read (another player, a bring-up):
+       the file is read again under the library lock, which stays held while
+       the folders are deleted, and with such an image they stay. */
+    char library_path[NK_MAX_PATH];
+    NkFileLock lock;
+    bool locked = false;
+    if (plan.path_count > 0 && player_library_file_path(app, library_path, sizeof(library_path))) {
+        if (nk_library_lock_acquire(&lock, library_path, NK_LIBRARY_LOCK_TIMEOUT_MS) != NK_OK) {
+            if (error && error_size) {
+                snprintf(error, error_size, "The library is in use by another program. "
+                         "Try again in a moment.");
+            }
+            return false;
+        }
+        locked = true;
+        if (player_library_file_has_other_image(&app->games[game_index], library_path)) {
+            plan.path_count = 0;
+            plan.files_shared = true;
+        }
+    }
     /* Saves first when they go, so a kept Memory Stick folder never holds up
        the extracted files around it. */
     for (int pass = 0; pass < 2; ++pass) {
@@ -3098,10 +3156,12 @@ bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete
                     snprintf(error, error_size, "%s could not be deleted. Close any program "
                              "using it and try again.", entry->path);
                 }
+                if (locked) nk_platform_file_lock_release(&lock);
                 return false;
             }
         }
     }
+    if (locked) nk_platform_file_lock_release(&lock);
     return player_app_remove_game(app, game_index);
 }
 
@@ -4394,12 +4454,8 @@ bool player_app_inspected_game_needs_staging(const PlayerApp *app) {
     /* A disc already in the library keeps its staged files: judge the record
        ADD TO LIBRARY will actually save. */
     GameRecord merged = app->inspecting_game;
-    for (int i = 0; i < app->library.count; i++) {
-        if (strcmp(app->library.entries[i].disc_id, merged.disc_id) == 0) {
-            (void)player_merge_readded_game(&app->library.entries[i], &merged);
-            break;
-        }
-    }
+    const GameRecord *replaced = nk_library_find_replaced(&app->library, &merged);
+    if (replaced) (void)player_merge_readded_game(replaced, &merged);
     PlayerStagePlan *plan = (PlayerStagePlan *)calloc(1, sizeof(*plan));
     bool takes_data_from_disc = plan && player_app_build_stage_plan(&merged, plan) &&
                                 player_stage_title_takes_data_from_disc(&plan->request);

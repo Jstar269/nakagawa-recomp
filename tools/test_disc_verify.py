@@ -97,6 +97,13 @@ class DatafileTests(unittest.TestCase):
         with self.assertRaises(disc_verify.DiscVerifyError) as raised:
             disc_verify.parse_dat_text('<datafile><game name="x"><rom size="1"/></game></datafile>')
         self.assertEqual(raised.exception.boundary_code, "DISC_DAT_EMPTY")
+        # A list cut short is refused, at a game's end or inside one, as the C reader does.
+        whole = datafile()
+        last_game = whole.rindex("<game")
+        for cut in (whole[:last_game], whole[:whole.rindex("<rom")] + "</datafile>\n"):
+            with self.assertRaises(disc_verify.DiscVerifyError) as raised:
+                disc_verify.parse_dat_text(cut)
+            self.assertEqual(raised.exception.boundary_code, "DISC_DAT_NOT_DATAFILE")
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "big.dat"
             path.write_text(datafile(), encoding="utf-8")
@@ -163,6 +170,47 @@ class HashAndImportTests(unittest.TestCase):
             self.assertEqual(raised.exception.boundary_code, "DISC_IMAGE_READ_FAILED")
         # The CRC-32 check value, as the C reader's test checks it.
         self.assertEqual(f"{zlib.crc32(b'123456789'):08x}", "cbf43926")
+
+    def test_nk_cli_prints_the_list_version_without_control_characters(self) -> None:
+        import argparse
+        import contextlib
+        import io
+
+        import nk_cli
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "chosen.dat"
+            source.write_text(datafile().replace("<version>2026-10-31</version>",
+                                                 "<version>1\x1b[31m\x07red</version>"),
+                              encoding="utf-8")
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                self.assertEqual(nk_cli.cmd_redump_import(argparse.Namespace(
+                    datafile=source, user_data_root=root / "data")), 0)
+            self.assertIn("(version 1[31mred)", shown.getvalue())
+            self.assertNotIn("\x1b", shown.getvalue())
+            self.assertNotIn("\x07", shown.getvalue())
+
+    def test_import_saves_the_bytes_it_checked(self) -> None:
+        # The file is read once: a source that changes after the check can't put
+        # unchecked bytes in the data folder.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "chosen.dat"
+            checked = datafile().encode("utf-8")
+            source.write_bytes(checked)
+            real_parse = disc_verify._parse_dat_bytes
+
+            def parse_then_change(data: bytes) -> disc_verify.RedumpDat:
+                dat = real_parse(data)
+                source.write_bytes(b"not a datafile, written after the check")
+                return dat
+
+            with mock.patch.object(disc_verify, "_parse_dat_bytes", parse_then_change):
+                disc_verify.import_dat(source, root / "data")
+            self.assertEqual((root / "data" / "verification" / "redump.dat").read_bytes(),
+                             checked)
 
     def test_import_keeps_a_whole_copy_in_the_data_folder(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

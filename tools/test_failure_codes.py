@@ -138,6 +138,8 @@ PLAYER_NOT_CODES = {
     "DISC_ID", "DISC_VERSION", "PSP_GAME",
     # the success status of a decrypt (nk_psp_status_name for NK_PSP_OK)
     "VALIDATED_DECRYPTED",
+    # how a disc check ended, in the player's DISC_CHECK log line (NkDiscVerifyResult)
+    "READ_FAILED", "LIST_UNUSABLE",
     # gamepad and pointer names, UI actions and the UI test harness's tokens
     "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "DPAD_UP", "LEFT_SHOULDER", "RIGHT_SHOULDER",
     "MOUSE_DOWN", "MOUSE_UP", "MOUSE_X1", "MOUSE_X1_DOWN", "MOUSE_X1_UP", "OPEN_FOLDER",

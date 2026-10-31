@@ -1884,14 +1884,13 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
                : nk_disc_id_is_non_retail_key(game->disc_id) ? "Beta / unofficial"
                : "Your disc";
     /* Disc verification: a checked image says how it compares with the user's
-       disc list, and the one being hashed says so. A beta's own badge says more
-       than "Unknown dump", and the title page's sentence covers both. */
+       disc list; the check's progress is the library's heading line, so the
+       badge changes once. A beta's own badge says more than "Unknown dump", and
+       the title page's sentence covers both. */
     if (!out->is_demo && !game->is_sample && out->art_kind == NK_UI_ART_NONE) {
         const char *tier = player_disc_tier_badge(game->disc_verification);
-        if (player_app_disc_check_running_for(app, game)) {
-            out->badge = "Checking disc";
-        } else if (tier != NULL && !(game->disc_verification == NK_DISC_TIER_UNKNOWN &&
-                                     nk_disc_id_is_non_retail_key(game->disc_id))) {
+        if (tier != NULL && !(game->disc_verification == NK_DISC_TIER_UNKNOWN &&
+                              nk_disc_id_is_non_retail_key(game->disc_id))) {
             out->badge = tier;
         }
     }

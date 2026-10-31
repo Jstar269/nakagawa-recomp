@@ -52,6 +52,7 @@ HASH_CHUNK_BYTES = 1024 * 1024
 DAT_RELATIVE_PATH = Path("verification") / "redump.dat"
 
 _GAME = re.compile(r"<game\b[^>]*>(.*?)</game\s*>", re.DOTALL)
+_GAME_OPEN = re.compile(r"<game\b")
 _ROM = re.compile(r"<rom\b([^>]*?)/?>")
 _ATTRIBUTE = re.compile(r'([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*"([^"]*)"')
 _SERIAL = re.compile(r"<serial>([^<]*)</serial\s*>")
@@ -131,12 +132,20 @@ def parse_dat_text(text: str) -> RedumpDat:
     if "<datafile" not in text:
         raise DiscVerifyError("This file isn't a Redump datafile: it has no <datafile> element.",
                               boundary_code="DISC_DAT_NOT_DATAFILE")
+    # A list cut short (a download that stopped) is refused, never read as the whole list:
+    # its discs past the cut would all read as unknown.
+    if "</datafile" not in text:
+        raise DiscVerifyError("The datafile is cut short: it has no closing </datafile>.",
+                              boundary_code="DISC_DAT_NOT_DATAFILE")
     dat = RedumpDat()
     header_name = _HEADER_NAME.search(text)
     header_version = _HEADER_VERSION.search(text)
     dat.name = _xml_text(header_name.group(1)).strip() if header_name else ""
     dat.version = _xml_text(header_version.group(1)).strip() if header_version else ""
     serials: set[str] = set()
+    if len(_GAME_OPEN.findall(text)) != len(_GAME.findall(text)):
+        raise DiscVerifyError("The datafile is cut short inside a <game> element.",
+                              boundary_code="DISC_DAT_NOT_DATAFILE")
     for game in _GAME.finditer(text):
         dat.games += 1
         body = game.group(1)
@@ -168,11 +177,10 @@ def parse_dat_text(text: str) -> RedumpDat:
     return dat
 
 
-def load_dat(path: Path | str) -> RedumpDat:
-    """Read a datafile from disk, refusing one over ``MAX_DAT_BYTES``."""
-    path = Path(path)
+def _read_dat_bytes(path: Path | str) -> bytes:
+    """A datafile's bytes, read once and refused over ``MAX_DAT_BYTES``."""
     try:
-        with path.open("rb") as handle:
+        with Path(path).open("rb") as handle:
             data = handle.read(MAX_DAT_BYTES + 1)
     except OSError as exc:
         raise DiscVerifyError(f"The datafile can't be read: {exc}",
@@ -180,12 +188,21 @@ def load_dat(path: Path | str) -> RedumpDat:
     if len(data) > MAX_DAT_BYTES:
         raise DiscVerifyError(f"The datafile is larger than {MAX_DAT_BYTES} bytes.",
                               boundary_code="DISC_DAT_TOO_LARGE")
+    return data
+
+
+def _parse_dat_bytes(data: bytes) -> RedumpDat:
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise DiscVerifyError("The datafile isn't UTF-8 text.",
                               boundary_code="DISC_DAT_NOT_DATAFILE") from exc
     return parse_dat_text(text)
+
+
+def load_dat(path: Path | str) -> RedumpDat:
+    """Read a datafile from disk, refusing one over ``MAX_DAT_BYTES``."""
+    return _parse_dat_bytes(_read_dat_bytes(path))
 
 
 def imported_dat_path(user_data_root: Path | str) -> Path:
@@ -198,10 +215,11 @@ def import_dat(source: Path | str, user_data_root: Path | str) -> RedumpDat:
 
     The copy replaces any earlier import whole (written beside it, then renamed), so a reader
     never sees half a list. The file it is written to is created new under a random name, so a
-    link already in the folder is never written through. Nothing leaves the machine.
+    link already in the folder is never written through. The bytes checked are the bytes
+    saved: the file is read once. Nothing leaves the machine.
     """
-    data = Path(source)
-    dat = load_dat(data)
+    data = _read_dat_bytes(source)
+    dat = _parse_dat_bytes(data)
     target = imported_dat_path(user_data_root)
     temporary: Path | None = None
     folder = target.parent
@@ -216,7 +234,7 @@ def import_dat(source: Path | str, user_data_root: Path | str) -> RedumpDat:
         handle, name = tempfile.mkstemp(dir=folder, prefix=f".{target.name}.", suffix=".tmp")
         temporary = Path(name)
         with os.fdopen(handle, "wb") as stream:
-            stream.write(data.read_bytes())
+            stream.write(data)
         os.replace(temporary, target)
     except OSError as exc:
         if temporary is not None:

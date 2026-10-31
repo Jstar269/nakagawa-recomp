@@ -864,10 +864,10 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game);
  * extraction. Returns true when anything was carried over. */
 bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming);
 
-/* Disc verification (PlayerDiscCheckState). Queue the image of a game just
- * added when its library record is not hashed yet: a disc the user added (not a
- * sample or a showcase demo) with an image path. False when it is not one, is
- * waiting already, or the queue is full (logged). */
+/* Disc verification (PlayerDiscCheckState). Queue the image of a game in the
+ * library for a check: a disc the user added (not a sample or a showcase demo)
+ * with an image path. False when it is not one, is waiting already, or the
+ * queue is full (logged, and the library's line says so). */
 bool player_app_disc_check_queue(PlayerApp *app, const GameRecord *game);
 /* The next image to hash, when none is being hashed and nothing a whole-image
  * read would slow down is running (a game, a launch or a package build); it is
@@ -887,8 +887,6 @@ void player_app_disc_check_hide_note(PlayerApp *app);
  * there is nothing to show; *offers_cancel says its button is Cancel, not Hide. */
 bool player_app_disc_check_line(const PlayerApp *app, char *out, size_t out_size,
                                 bool *offers_cancel);
-/* Whether game's image is the one being hashed now. */
-bool player_app_disc_check_running_for(const PlayerApp *app, const GameRecord *game);
 /* A checked image's card badge ("Verified retail", "Modified disc", "Unknown
  * dump") and the title page's sentence about it; NULL when it is not checked. */
 const char *player_disc_tier_badge(uint32_t tier);
@@ -1347,10 +1345,13 @@ void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
    just written is not necessarily the last one; callers that need the record
    they have just added must look it up rather than assume it was appended. */
 int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id);
-/* The card of the image just added: its disc ID and file, or else the first
-   with its disc ID. Two images can share a disc ID (a retail disc and a fan
-   translation of it), so the disc ID alone can pick the other card. */
+/* The card of the image just added, by its disc ID and file, or -1 when the add
+   failed. Two images can share a disc ID (a retail disc and a fan translation
+   of it), so the disc ID alone could pick the other card. */
 int player_app_find_added_game(const PlayerApp *app, const GameRecord *game);
+/* The card of one image, by its disc ID and file, or -1. */
+int player_app_find_game_by_image(const PlayerApp *app, const char *disc_id,
+                                  const char *iso_path);
 
 /* Disc ID of the selected library card, or NULL when no card is selected. The
    per-title controller mapping choice (#520) needs one to name. */

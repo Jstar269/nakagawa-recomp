@@ -1127,8 +1127,10 @@ class NativePlayerUiTests(unittest.TestCase):
             legacy_root = userprofile / "Nakagawa" / "data"
             if legacy_data:
                 legacy_root.mkdir(parents=True)
-            # The player's data folder: a disc list the user imported (nk_disc_verify.h).
-            data_folder = localappdata / "Nakagawa" / "data"
+            # The player's data folder (LOCALAPPDATA on Windows, XDG_DATA_HOME elsewhere), with
+            # a disc list the user imported (nk_disc_verify.h).
+            data_folder = (localappdata / "Nakagawa" / "data" if os.name == "nt"
+                           else userprofile / "data" / "nakagawa-recomp")
             if disc_list is not None:
                 (data_folder / "verification").mkdir(parents=True)
                 (data_folder / "verification" / "redump.dat").write_text(disc_list,
@@ -2097,7 +2099,8 @@ class NativePlayerUiTests(unittest.TestCase):
         """#1731: a disc added from the game-found card is hashed once after the add, on the
         disc check worker (never the UI thread), and compared with the disc list the user
         imported; its library record keeps the hashes and the tier. With no list it is
-        hashed and left unchecked."""
+        hashed and left unchecked. The worker is held for a moment: the library draws frames
+        meanwhile, with the check running."""
         with tempfile.TemporaryDirectory(prefix=".disc-check-", dir=ROOT) as tmp:
             iso_path = Path(tmp) / "synthetic.iso"
             create_test_iso_with_executables(
@@ -2112,15 +2115,20 @@ class NativePlayerUiTests(unittest.TestCase):
                      f"<rom name=\"synthetic.iso\" size=\"{len(iso)}\" crc=\"{crc}\" "
                      f"sha1=\"{sha1}\"/></game>\n</datafile>\n")
         events = ("WAIT_VIEW=experimental|unsupported|supported|error,15000", "WAIT_MS=100",
-                  "KEY_RETURN", "WAIT_MS=1500")
+                  "KEY_RETURN", "WAIT_MS=2000")
         for listed, tier in ((True, "VERIFIED_RETAIL"), (False, "NOT_CHECKED")):
             with self.subTest(listed=listed):
                 run = self.next_ui_run("library", events, drop_bytes=("source-owned.iso", iso),
-                                       disc_list=disc_list if listed else None)
+                                       disc_list=disc_list if listed else None,
+                                       env_extra={"NK_UI_TEST_DISC_CHECK_HOLD_MS": "700"})
                 frames = run["frames"]
                 stdout = run["stdout"]
                 assert isinstance(frames, list) and isinstance(stdout, str)
                 self.assertEqual(frames[-1]["view"], "library", stdout)
+                checking = [frame for frame in frames
+                            if frame["view"] == "library" and frame["disc_check"] == "1"]
+                self.assertGreaterEqual(len(checking), 2, stdout)
+                self.assertEqual(frames[-1]["disc_check"], "0", stdout)
                 checks = re.findall(
                     r"^\[PLAYER\] DISC_CHECK disc=(\S+) result=(\S+) tier=(\S+)$", stdout, re.M)
                 self.assertEqual(checks, [("TEST00043", "HASHED", tier)], stdout)

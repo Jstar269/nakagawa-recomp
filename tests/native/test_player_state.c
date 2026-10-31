@@ -2606,7 +2606,6 @@ static void test_disc_check_after_add(void) {
     assert(player_app_disc_check_take(app, &item, &verified_elsewhere));
     assert(!verified_elsewhere && strcmp(item.iso_path, translated_iso) == 0);
     assert(!player_app_disc_check_take(app, &item, &verified_elsewhere));
-    assert(player_app_disc_check_running_for(app, &app->games[0]));
     player_app_disc_check_progress(app, 40);
     char line[96];
     bool offers_cancel = false;
@@ -2663,6 +2662,44 @@ static void test_disc_check_after_add(void) {
            nk_library_find_by_key(&loaded, "TEST70021", retail.sha1) != NULL);
     assert(player_app_plan_game_removal(app, 0, &plan) && !plan.files_shared);
 
+    /* Another writer adds an image of the disc ID to the file after this
+       library read it: the removal reads the file again under the library
+       lock and keeps the folders that image uses. */
+    {
+        char data_dir[NK_MAX_PATH], extracted[NK_MAX_PATH + 64], marker[NK_MAX_PATH + 96];
+        assert(nk_platform_get_app_data_dir(data_dir, sizeof(data_dir)));
+        snprintf(extracted, sizeof(extracted), "%s%cgames%cTEST70021", data_dir, sep, sep);
+        assert(nk_platform_mkdir_p(extracted));
+        snprintf(marker, sizeof(marker), "%s%ckeep.txt", extracted, sep);
+        write_text_file(marker, "kept\n");
+        NkGameEntry elsewhere;
+        seed_entry(&elsewhere, "TEST70021", "Synthetic Title Added Elsewhere");
+        snprintf(elsewhere.iso_path, sizeof(elsewhere.iso_path), "elsewhere.iso");
+        assert(nk_library_load(&loaded, path) == NK_OK);
+        assert(nk_library_add_or_update(&loaded, &elsewhere) == NK_OK);
+        assert(nk_library_save(&loaded, path) == NK_OK);
+        assert(app->game_count == 1);
+        assert(player_app_plan_game_removal(app, 0, &plan) && !plan.files_shared &&
+               plan.path_count > 0);
+        assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        FILE *kept = fopen(marker, "rb");
+        assert(kept != NULL);
+        fclose(kept);
+        assert(nk_library_load(&loaded, path) == NK_OK && nk_library_count(&loaded) == 1 &&
+               strcmp(nk_library_get(&loaded, 0)->iso_path, "elsewhere.iso") == 0);
+        assert(app->game_count == 1 && strcmp(app->games[0].iso_path, "elsewhere.iso") == 0);
+        assert(nk_platform_remove_tree(extracted, NULL));
+        /* The retail disc comes back for the checks below. */
+        assert(player_app_remove_game(app, 0));
+        assert(player_app_add_game(app, &retail_game));
+        assert(player_app_disc_check_take(app, &item, &verified_elsewhere));
+        assert(nk_disc_verify_image(item.iso_path, data_root, item.disc_id, verified_elsewhere,
+                                    NULL, &check));
+        player_app_disc_check_finish(app, &check);
+        assert(app->game_count == 1 &&
+               app->games[0].disc_verification == NK_DISC_TIER_VERIFIED_RETAIL);
+    }
+
     /* The library's Cancel ends the running check and the ones waiting; a
        check that fails keeps the record unchecked and says so until Hide. */
     assert(player_app_add_game(app, &translated));
@@ -2675,7 +2712,7 @@ static void test_disc_check_after_add(void) {
     assert(strcmp(line, "Checking disc images: 0%, 1 more") == 0);
     player_app_disc_check_cancel(app);
     assert(player_app_disc_check_line(app, line, sizeof(line), &offers_cancel) &&
-           !offers_cancel);
+           offers_cancel && strcmp(line, "Stopping the disc check") == 0);
     memset(&check, 0, sizeof(check));
     check.result = NK_DISC_VERIFY_CANCELLED;
     player_app_disc_check_finish(app, &check);
@@ -2690,8 +2727,57 @@ static void test_disc_check_after_add(void) {
     translated_index = player_app_find_added_game(app, &translated);
     assert(translated_index >= 0 && app->games[translated_index].content_sha1[0] == '\0');
     assert(dev_log_contains(app, "The disc image could not be read."));
+    /* The note outlasts the next check, which shows its progress meanwhile. */
+    assert(player_app_disc_check_queue(app, &translated));
+    assert(player_app_disc_check_take(app, &item, &verified_elsewhere));
+    assert(player_app_disc_check_line(app, line, sizeof(line), &offers_cancel) &&
+           strcmp(line, "Checking disc image: 0%") == 0);
+    assert(nk_disc_verify_image(item.iso_path, data_root, item.disc_id, verified_elsewhere,
+                                NULL, &check));
+    player_app_disc_check_finish(app, &check);
+    assert(player_app_disc_check_line(app, line, sizeof(line), &offers_cancel) &&
+           strcmp(line, "A disc image could not be checked") == 0);
     player_app_disc_check_hide_note(app);
     assert(!player_app_disc_check_line(app, line, sizeof(line), &offers_cancel));
+
+    /* A hashed image added again is checked again: its file may have changed in
+       place, at the same size. */
+    translated_index = player_app_find_added_game(app, &translated);
+    assert(translated_index >= 0 && app->games[translated_index].content_sha1[0] != '\0');
+    image[8192] ^= 0x33u;
+    write_binary_file(translated_iso, image, sizeof(image));
+    assert(player_app_add_game(app, &translated));
+    assert(app->disc_check.count == 1);
+    assert(player_app_disc_check_take(app, &item, &verified_elsewhere));
+    char old_sha1[sizeof(app->games[0].content_sha1)];
+    snprintf(old_sha1, sizeof(old_sha1), "%s", app->games[translated_index].content_sha1);
+    assert(nk_disc_verify_image(item.iso_path, data_root, item.disc_id, verified_elsewhere,
+                                NULL, &check));
+    player_app_disc_check_finish(app, &check);
+    translated_index = player_app_find_added_game(app, &translated);
+    assert(translated_index >= 0 &&
+           strcmp(app->games[translated_index].content_sha1, old_sha1) != 0 &&
+           app->games[translated_index].disc_verification == NK_DISC_TIER_MODIFIED);
+
+    /* An add that failed finds no card, never the other image of its disc ID. */
+    GameRecord missing = translated;
+    snprintf(missing.iso_path, sizeof(missing.iso_path), "not-added.iso");
+    assert(player_app_find_added_game(app, &missing) == -1);
+
+    /* A queue that is full says so on the library's line. */
+    for (int i = 0; i < PLAYER_DISC_CHECK_QUEUE; i++) {
+        snprintf(app->disc_check.queue[i].disc_id, sizeof(app->disc_check.queue[i].disc_id),
+                 "TEST7%04d", 1000 + i);
+        snprintf(app->disc_check.queue[i].iso_path, sizeof(app->disc_check.queue[i].iso_path),
+                 "queued-%d.iso", i);
+    }
+    app->disc_check.count = PLAYER_DISC_CHECK_QUEUE;
+    assert(!player_app_disc_check_queue(app, &translated));
+    assert(player_app_disc_check_line(app, line, sizeof(line), &offers_cancel) &&
+           strcmp(line, "Some disc images were not checked") == 0);
+    player_app_disc_check_cancel(app);
+    player_app_disc_check_hide_note(app);
+    assert(app->disc_check.count == 0);
 
     remove(path);
     remove(retail_iso);

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import re
@@ -99,7 +101,8 @@ class TierRuleTests(unittest.TestCase):
         self.assertEqual(causes[(compat_table.DRAWS_FRAMES, compat_table.OTHER_CAUSE)], (1, 308))
         self.assertEqual(summary["settings"], [{"title_timeout_seconds": 2400,
                                                 "launch_timeout_seconds": 30,
-                                                "source_commit": COMMIT[:12], "discs": 5}])
+                                                "source_commit": COMMIT[:12], "decrypt": None,
+                                                "discs": 5}])
 
     def test_higher_tiers_say_not_measured_and_settings_are_named(self) -> None:
         block = compat_table.render_markdown(compat_table.summarize(SAMPLE), "2026-10-31")
@@ -120,6 +123,15 @@ class TierRuleTests(unittest.TestCase):
         mixed["titles"][0]["run_settings"]["title_timeout_seconds"] = 5400
         self.assertIn("not all built with the same settings",
                       compat_table.render_markdown(compat_table.summarize(mixed), "2026-10-31"))
+        # Decrypting or not is a setting of its own: the runs are not compared as one.
+        decrypting = json.loads(json.dumps(SAMPLE))
+        for index, title in enumerate(decrypting["titles"]):
+            if isinstance(title.get("run_settings"), dict):
+                title["run_settings"]["decrypt"] = index == 0
+        block = compat_table.render_markdown(compat_table.summarize(decrypting), "2026-10-31")
+        self.assertIn("decrypting each disc's program", block)
+        self.assertIn("without decrypting", block)
+        self.assertIn("not all built with the same settings", block)
 
 
 class PrivacyTests(unittest.TestCase):
@@ -164,7 +176,7 @@ class PrivacyTests(unittest.TestCase):
                                             "source_commit": "x"}
         rows = compat_table.summarize(odd)["settings"]
         self.assertIn({"title_timeout_seconds": None, "launch_timeout_seconds": None,
-                       "source_commit": None, "discs": 1}, rows)
+                       "source_commit": None, "decrypt": None, "discs": 1}, rows)
         # A disc named like part of a cause name is not a leak by itself.
         named_exit = manifest([record("TEST71007", "EXIT", "BUILT", failure="EXITED_ZERO_BEFORE_HLE")])
         compat_table.check_public(
@@ -188,6 +200,21 @@ class PrivacyTests(unittest.TestCase):
             self.assertIn("Whole library, 2026-10-31: 5 disc images counted.", text)
             self.assertEqual(json.loads((root / "summary.json").read_text(encoding="utf-8"))
                              ["counted"], 5)
+
+    def test_the_cli_never_writes_over_its_manifest_or_one_output_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "library-build.json"
+            source.write_text(json.dumps(SAMPLE), encoding="utf-8")
+            before = source.read_bytes()
+            for extra in (["--json", str(source)],
+                          ["--output", str(root / "same.md"), "--json", str(root / "same.md")]):
+                with self.subTest(extra=extra):
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        with self.assertRaises(SystemExit):
+                            compat_table.main([str(source), *extra])
+                    self.assertEqual(source.read_bytes(), before)
+                    self.assertFalse((root / "same.md").exists())
 
     def test_the_compatibility_page_has_one_generated_block(self) -> None:
         text = (ROOT / "docs" / "COMPATIBILITY.md").read_text(encoding="utf-8")

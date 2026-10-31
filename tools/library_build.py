@@ -118,14 +118,19 @@ def identify(path: Path) -> dict[str, Any]:
 
 
 def source_commit(root: Path = ROOT) -> str | None:
-    """The commit the tools run from, recorded with each title's settings; None outside git."""
+    """The commit the tools run from, recorded with each title's settings. None outside git,
+    and None when tracked files differ from it: a changed tree isn't that commit."""
     try:
         result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
                                 capture_output=True, text=True, timeout=30, check=False)
+        changed = subprocess.run(["git", "-C", str(root), "status", "--porcelain",
+                                  "--untracked-files=no"],
+                                 capture_output=True, text=True, timeout=60, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     commit = result.stdout.strip()
-    return commit if result.returncode == 0 and len(commit) == 40 else None
+    clean = changed.returncode == 0 and not changed.stdout.strip()
+    return commit if result.returncode == 0 and len(commit) == 40 and clean else None
 
 
 def record_digest(record: dict[str, Any]) -> disc_verify.DiscDigest | None:
@@ -505,6 +510,7 @@ class LibraryBuild:
                                "title_timeout_seconds": self.title_timeout_seconds,
                                "launch_timeout_seconds": self.launch_timeout_seconds,
                                "source_commit": self.commit,
+                               "decrypt": self.decrypt is not None,
                            }})
         self.write_manifest()
         iso = self.disc_root / record["source"]

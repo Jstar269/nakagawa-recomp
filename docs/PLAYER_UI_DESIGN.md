@@ -357,14 +357,16 @@ two lines at most, and the status in `LABEL_S`). The cards are focusable, never 
 demo's title page like a game card. The grid gives up rows to fit the row; where the empty-library card and the row
 do not both fit (the 960 x 540 minimum), the card leaves out its icon.
 
-Disc check (#1731): each disc the user adds is hashed once after the add, on a worker, one disc at a time, and
-compared with the disc list the user imported ([COMPATIBILITY.md](COMPATIBILITY.md#whole-library)). None starts
-while a game starts or runs or a package builds. While one runs, the heading row carries a `CAPTION` `muted` line,
-"Checking disc image: 40%" ("Checking disc images: 40%, 2 more" with more waiting), and a small CANCEL that stops it
-and the ones waiting; the games stay, unchecked. A check that could not finish leaves a `warning` line ("A disc
-image could not be checked", or "Your disc list could not be read") with HIDE; the reason goes to the developer log.
-Neither button is ever the default focus. The progress is a number, not an animation. The card's badge, YOUR DISC
-until then, reads CHECKING DISC while its image is hashed, then VERIFIED RETAIL, MODIFIED DISC or UNKNOWN DUMP (a
+Disc check (#1731): each time the user adds a disc, its image is hashed after the add, on a worker, one disc at a
+time, and compared with the disc list the user imported ([COMPATIBILITY.md](COMPATIBILITY.md#whole-library)); so is
+any other image of its disc ID not hashed yet. None starts while a game starts or runs or a package builds. While
+one runs, the heading row carries a `CAPTION` `muted` line, "Checking disc image: 40%" ("Checking disc images: 40%,
+2 more" with more waiting), and a small CANCEL that stops it and the ones waiting (it stays while the check stops);
+the games stay, unchecked. A check that could not finish leaves a `warning` line ("A disc image could not be
+checked", "Your disc list could not be read", or "Some disc images were not checked" when too many wait) with HIDE,
+and the reason goes to the developer log. The line stays until HIDE; a later check shows its progress meanwhile.
+Neither button is ever the default focus. The progress is a number, not an animation, and it is on that line
+only: the card's badge, YOUR DISC until then, changes once, to VERIFIED RETAIL, MODIFIED DISC or UNKNOWN DUMP (a
 beta's BETA / UNOFFICIAL stays over UNKNOWN DUMP).
 
 ### Title detail (C5, built)

@@ -91,8 +91,8 @@ NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
    translation of it, are two records. An entry replaces the record with its
    disc ID and the same content_sha1, or else the record of the same file
    (iso_path), which now holds it. An entry never hashed also replaces the
-   only record with its disc ID when that record was never hashed either, as
-   before hashing. Any other entry of another file is added, a hashed one even
+   only record with its disc ID when that record was never hashed either and
+   its file is gone (the disc moved), as before hashing. Any other entry of another file is added, a hashed one even
    beside a record written before hashing, so no image's record is lost. A
    hashed entry that takes over its image's record from another file (the image
    moved, then was added again) also drops the record its new file had: one
@@ -101,6 +101,10 @@ NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
    verified retail, the unknown records with its disc ID become modified: the
    disc ID is now known retail (nk_disc_verify.h). */
 NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry);
+
+/* The record nk_library_add_or_update(lib, entry) would replace, or NULL when it
+   would add entry: the record of the same image, as far as the library can tell. */
+const NkGameEntry *nk_library_find_replaced(const NkLibrary *lib, const NkGameEntry *entry);
 
 /* Remove the only game entry with disc_id. NK_ERROR_AMBIGUOUS, removing
    nothing, when several images share the disc ID; nk_library_remove_by_key

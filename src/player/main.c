@@ -3044,6 +3044,12 @@ static int SDLCALL disc_check_thread_main(void *userdata) {
     if (!job) return -1;
     NkDiscExpandCallbacks callbacks = { disc_check_progress, disc_check_cancelled, job };
     NkDiscVerification check;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* The UI test holds the worker, to see the library draw frames while a
+       check runs. */
+    const char *hold = getenv("NK_UI_TEST_DISC_CHECK_HOLD_MS");
+    if (hold && hold[0]) SDL_Delay((Uint32)strtoul(hold, NULL, 10));
+#endif
     bool hashed = nk_disc_verify_image(job->item.iso_path, job->data_root, job->item.disc_id,
                                        job->verified_elsewhere, &callbacks, &check);
     SDL_LockMutex(job->mutex);
@@ -3285,9 +3291,10 @@ static int player_stage_inspected_title(PlayerApp *app) {
  * the library keeps its staged files: re-adding it merges the earlier record,
  * and a complete staged tree is reused rather than extracted again. */
 static int player_stage_for_launch_now(PlayerApp *app) {
-    int existing = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
-    if (existing >= 0) {
-        (void)player_merge_readded_game(&app->games[existing], &app->inspecting_game);
+    /* The same image's record, not another image with its disc ID. */
+    const GameRecord *existing = nk_library_find_replaced(&app->library, &app->inspecting_game);
+    if (existing) {
+        (void)player_merge_readded_game(existing, &app->inspecting_game);
     }
     NkLaunchDataRootStatus status = player_app_game_data_root_status(
         app, &app->inspecting_game, NULL, 0, NULL, 0);
@@ -5622,8 +5629,11 @@ int main(int argc, char *argv[]) {
         player_app_poll_package_build(&app, SDL_GetTicks());
         if (app.build_session.is_complete && !build_check_pending &&
             !build_check_session_already_handled) {
-            int build_game_index = player_app_find_game_by_disc_id(
-                &app, app.build_session.disc_id);
+            /* The card of the image built, not another image with its disc ID. */
+            int build_game_index = app.build_session.iso_path[0]
+                ? player_app_find_game_by_image(&app, app.build_session.disc_id,
+                                                app.build_session.iso_path)
+                : player_app_find_game_by_disc_id(&app, app.build_session.disc_id);
             if (build_game_index >= 0 && build_game_index < app.game_count) {
                 /* The build may have bound the executable this entry was
                    saved without; the check validates against that one. */

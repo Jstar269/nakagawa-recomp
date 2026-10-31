@@ -79,6 +79,13 @@ static int library_index_of_disc_id_alone(const NkLibrary *lib, const char *disc
     return count == 1 ? only : -1;
 }
 
+/* Whether a record's image file is still there. When it is, an unhashed image
+   of another file is a second image (a fan translation added beside its retail
+   disc), not the same disc moved. */
+static bool library_image_present(const NkGameEntry *record) {
+    return record->iso_path[0] && nk_platform_file_exists(record->iso_path);
+}
+
 /* The record an incoming entry replaces (nk_library.h), or -1 to add it. A
    record is replaced only when it is the same image as far as the library can
    tell; when it can't tell, both are kept, so no image's record is lost. */
@@ -97,12 +104,21 @@ static int library_index_for_entry(const NkLibrary *lib, const NkGameEntry *entr
     }
     /* A hashed image of another file is another image, even beside a record
        written before hashing. An unhashed one replaces the only record of its
-       disc ID when that record was never hashed either, as before hashing; a
-       hashed record is a known image, and beside it or several records the
-       newcomer can't be told apart, so it is added and nothing is lost. */
+       disc ID when that record was never hashed either and its file is gone:
+       the disc moved, as before hashing. A hashed record is a known image, a
+       record whose file is still there is another image until hashes say
+       otherwise, and beside several records the newcomer can't be told apart,
+       so it is added and nothing is lost. */
     if (entry->content_sha1[0]) return -1;
     int only = library_index_of_disc_id_alone(lib, entry->disc_id, false);
-    return only >= 0 && !lib->entries[only].content_sha1[0] ? only : -1;
+    return only >= 0 && !lib->entries[only].content_sha1[0] &&
+           !library_image_present(&lib->entries[only]) ? only : -1;
+}
+
+const NkGameEntry *nk_library_find_replaced(const NkLibrary *lib, const NkGameEntry *entry) {
+    if (!lib || !entry || !entry->disc_id[0]) return NULL;
+    int index = library_index_for_entry(lib, entry);
+    return index >= 0 ? &lib->entries[index] : NULL;
 }
 
 const NkGameEntry *nk_library_find_by_disc_id(const NkLibrary *lib, const char *disc_id) {

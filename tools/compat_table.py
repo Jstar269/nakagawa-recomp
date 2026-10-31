@@ -153,11 +153,13 @@ def _settings_key(record: dict[str, Any]) -> tuple:
     """The settings a disc was built with; a value of any other shape counts as unrecorded."""
     settings = record.get("run_settings")
     if not isinstance(settings, dict):
-        return (None, None, None)
+        return (None, None, None, None)
     commit = settings.get("source_commit")
+    decrypt = settings.get("decrypt")
     return (_seconds(settings.get("title_timeout_seconds")),
             _seconds(settings.get("launch_timeout_seconds")),
-            commit if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit) else None)
+            commit if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit) else None,
+            decrypt if type(decrypt) is bool else None)
 
 
 def summarize(manifest: dict[str, Any], codes: frozenset[str] | None = None) -> dict[str, Any]:
@@ -202,7 +204,8 @@ def summarize(manifest: dict[str, Any], codes: frozenset[str] | None = None) -> 
             # A short commit: a whole one has the shape of an image's SHA-1, which never
             # leaves the tool.
             {"title_timeout_seconds": key[0], "launch_timeout_seconds": key[1],
-             "source_commit": key[2][:12] if key[2] else None, "discs": count}
+             "source_commit": key[2][:12] if key[2] else None, "decrypt": key[3],
+             "discs": count}
             for key, count in sorted(settings.items(), key=lambda item: -item[1])
         ],
         "datafile": {
@@ -229,7 +232,11 @@ def _settings_sentence(settings: list[dict[str, Any]]) -> str:
                   if type(row["launch_timeout_seconds"]) is int else "an unrecorded launch time")
         commit = (f"commit `{row['source_commit']}`" if row["source_commit"]
                   else "an unrecorded commit")
-        parts.append(f"{_number(row['discs'])} built from {commit}, with {budget} and {launch}")
+        # Whether the build decrypted the disc's own program; an older run didn't say.
+        decrypt = {True: ", decrypting each disc's program",
+                   False: ", without decrypting"}.get(row.get("decrypt"), "")
+        parts.append(f"{_number(row['discs'])} built from {commit}, with {budget} and {launch}"
+                     f"{decrypt}")
     sentence = "; ".join(parts) + "."
     if len(settings) > 1:
         sentence += (" These discs were not all built with the same settings, so compare this "
@@ -397,6 +404,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--date", default=None,
                         help="The date the summary names (default: the manifest's last update)")
     args = parser.parse_args(list(argv) if argv is not None else None)
+    outputs = [path.resolve() for path in (args.write_doc, args.output, args.json)
+               if path is not None]
+    if args.manifest.resolve() in outputs or len(set(outputs)) != len(outputs):
+        parser.error("each output must be a file of its own, and never the manifest it reads")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     summary = summarize(manifest)
     updated = manifest.get("updated_at")

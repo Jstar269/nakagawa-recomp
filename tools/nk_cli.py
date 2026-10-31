@@ -2988,7 +2988,9 @@ def cmd_redump_import(args: argparse.Namespace) -> int:
         detail = f" [{code}]" if code else ""
         sys.stderr.write(f"Redump list not imported{detail}: {exc}\n")
         return 1
-    version = f" (version {dat.version})" if dat.version else ""
+    # The version is the datafile's own text: printed without control characters.
+    shown = "".join(ch for ch in dat.version if ch.isprintable())[:64]
+    version = f" (version {shown})" if shown else ""
     print(f"Imported a Redump list of {len(dat)} discs{version}. Discs nk_cli.py bringup adds "
           "from now on are checked against it.")
     return 0

@@ -319,6 +319,25 @@ static void test_dat_reader_and_tiers(void) {
     const char *not_dat = "<html><body>nothing</body></html>";
     CHECK(!nk_disc_dat_parse(not_dat, strlen(not_dat), &dat, &status));
     CHECK(strcmp(status.code, NK_DISC_DAT_NOT_DATAFILE) == 0);
+    /* A list cut short is refused, at a game's end or inside one. */
+    {
+        char *whole = build_dat(false);
+        const char *cut_at = strstr(whole, "\t<game name=\"Elsewhere (Japan)\">");
+        CHECK(cut_at != NULL);
+        CHECK(!nk_disc_dat_parse(whole, (size_t)(cut_at - whole), &dat, &status));
+        CHECK(strcmp(status.code, NK_DISC_DAT_NOT_DATAFILE) == 0 && dat.roms == NULL);
+        const char *inside = strstr(whole, "Elsewhere.iso");
+        CHECK(inside != NULL);
+        char *spliced = (char *)malloc(strlen(whole) + 1u);
+        CHECK(spliced != NULL);
+        size_t head = (size_t)(inside - whole);
+        memcpy(spliced, whole, head);
+        snprintf(spliced + head, strlen(whole) + 1u - head, "</datafile>\n");
+        CHECK(!nk_disc_dat_parse(spliced, strlen(spliced), &dat, &status));
+        CHECK(strcmp(status.code, NK_DISC_DAT_NOT_DATAFILE) == 0 && dat.roms == NULL);
+        free(spliced);
+        free(whole);
+    }
     const char *empty_dat = "<datafile><game name=\"x\"><rom name=\"x\" size=\"1\"/></game></datafile>";
     CHECK(!nk_disc_dat_parse(empty_dat, strlen(empty_dat), &dat, &status));
     CHECK(strcmp(status.code, NK_DISC_DAT_EMPTY) == 0);
@@ -608,15 +627,34 @@ static void test_library_keys_by_disc_id_and_hash(void) {
           strcmp(nk_library_get(&g_lib, 0)->content_sha1, g_modified_digest.sha1) == 0);
 
     /* An unhashed entry of a new file replaces the record its disc ID alone
-       picks out, as before hashing; with two hashed images of the disc ID it
-       can pick out neither, so it is added and both images stay. */
+       picks out when that record's file is gone (the disc moved), as before
+       hashing; with two hashed images of the disc ID it can pick out neither,
+       so it is added and both images stay. */
     nk_library_init(&g_lib);
     seed(&entry, "TEST70003", "one.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
     seed(&entry, "TEST70003", "moved.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    CHECK(nk_library_find_replaced(&g_lib, &entry) == nk_library_get(&g_lib, 0));
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
     CHECK(nk_library_count(&g_lib) == 1 &&
           strcmp(nk_library_get(&g_lib, 0)->iso_path, "games/moved.iso") == 0);
+    /* While the first image's file is still there, an unhashed second image
+       (added before either is hashed) is another card, not a move. */
+    {
+        char first_file[NATIVE_TEST_PATH_MAX];
+        path_in(first_file, sizeof(first_file), "still_here.iso");
+        write_bytes(first_file, "image", 5u);
+        nk_library_init(&g_lib);
+        seed(&entry, "TEST70003", "unused.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+        CHECK(strlen(first_file) < sizeof(entry.iso_path));
+        memcpy(entry.iso_path, first_file, strlen(first_file) + 1u);
+        CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+        seed(&entry, "TEST70003", "second.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+        CHECK(nk_library_find_replaced(&g_lib, &entry) == NULL);
+        CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+        CHECK(nk_library_count(&g_lib) == 2);
+        remove(first_file);
+    }
     nk_library_init(&g_lib);
     seed(&entry, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);

@@ -144,8 +144,8 @@ typedef struct {
 } NkDiscDat;
 
 void nk_disc_dat_free(NkDiscDat *dat);
-/* Read a datafile from memory. Refuses a text with no <datafile> element
-   (DISC_DAT_NOT_DATAFILE), no rom with a SHA-1 (DISC_DAT_EMPTY) or more than
+/* Read a datafile from memory. Refuses a text with no complete <datafile>
+   element, a list cut short included (DISC_DAT_NOT_DATAFILE), no rom with a SHA-1 (DISC_DAT_EMPTY) or more than
    NK_DISC_DAT_MAX_ROMS roms (DISC_DAT_TOO_LARGE). */
 bool nk_disc_dat_parse(const char *text, size_t length, NkDiscDat *out,
                        NkDiscExpandStatus *status);

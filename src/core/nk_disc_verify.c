@@ -476,6 +476,12 @@ bool nk_disc_dat_parse(const char *text, size_t length, NkDiscDat *out,
         return verify_fail(status, NK_DISC_DAT_NOT_DATAFILE,
                            "This file isn't a Redump datafile: it has no <datafile> element.");
     }
+    /* A list cut short (a download that stopped) is refused, never read as the
+       whole list: its discs past the cut would all read as unknown. */
+    if (!span_find(text, end, "</datafile")) {
+        return verify_fail(status, NK_DISC_DAT_NOT_DATAFILE,
+                           "The datafile is cut short: it has no closing </datafile>.");
+    }
     const char *header = find_tag(text, end, "header");
     const char *header_end = header ? span_find(header, end, "</header") : NULL;
     if (header && header_end) {
@@ -494,7 +500,11 @@ bool nk_disc_dat_parse(const char *text, size_t length, NkDiscDat *out,
         if (!game) break;
         const char *body = span_find(game, end, ">");
         const char *game_end = body ? span_find(body, end, "</game") : NULL;
-        if (!game_end) break; /* an unterminated last element holds no complete rom */
+        if (!game_end) {
+            nk_disc_dat_free(out);
+            return verify_fail(status, NK_DISC_DAT_NOT_DATAFILE,
+                               "The datafile is cut short inside a <game> element.");
+        }
         out->games++;
         char ids[NK_DISC_MAX_GAME_SERIALS][10];
         size_t id_count = 0;

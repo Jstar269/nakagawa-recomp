@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -256,7 +259,31 @@ class LibraryBuildTests(unittest.TestCase):
         record = self.by_source(result)["ok-test70014.iso"]
         self.assertEqual(record["run_settings"], {"title_timeout_seconds": 30,
                                                   "launch_timeout_seconds": 5,
-                                                  "source_commit": commit})
+                                                  "source_commit": commit,
+                                                  "decrypt": False})
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_a_tree_that_differs_from_its_commit_records_no_commit(self) -> None:
+        repo = self.root / "repo"
+        repo.mkdir()
+        env = dict(os.environ, GIT_AUTHOR_NAME="Synthetic", GIT_AUTHOR_EMAIL="synthetic@example.invalid",
+                   GIT_COMMITTER_NAME="Synthetic", GIT_COMMITTER_EMAIL="synthetic@example.invalid")
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", "-C", str(repo), *args], check=True, env=env,
+                           capture_output=True)
+
+        git("init", "-q")
+        (repo / "tracked.txt").write_text("one\n", encoding="utf-8")
+        git("add", "tracked.txt")
+        git("commit", "-q", "-m", "synthetic")
+        commit = library_build.source_commit(repo)
+        self.assertRegex(commit or "", r"^[0-9a-f]{40}$")
+        # An untracked file is not the build's source; a changed tracked one is.
+        (repo / "notes.txt").write_text("private\n", encoding="utf-8")
+        self.assertEqual(library_build.source_commit(repo), commit)
+        (repo / "tracked.txt").write_text("two\n", encoding="utf-8")
+        self.assertIsNone(library_build.source_commit(repo))
 
     def test_a_stopped_run_resumes_and_redoes_only_what_did_not_end(self) -> None:
         self.disc("ok-test70020.iso", "TEST70020")
