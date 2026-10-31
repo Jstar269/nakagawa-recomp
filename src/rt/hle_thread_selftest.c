@@ -15844,6 +15844,129 @@ static uint32_t td24b_dispatch4(uint32_t nid, uint32_t a0, uint32_t a1,
     return sr_syscall(&cpu, nid);
 }
 
+/* #1287: the interrupt manager's sub-interrupt answers, measured on a PSP by pspautotests
+ * tests/intr/registersub.expected, releasesub.expected and enablesub.expected at
+ * f573fe8c9122a8ff5db4f030d74557bed644b4e0. Each table is the expected file's column of codes
+ * for lines (or sub-interrupts of line 30) -2 to 69, one character per entry: '0' success,
+ * '5' 0x80020065 ILLEGAL_INTRCODE, '7' 0x80020067 FOUND_HANDLER, '8' 0x80020068
+ * NOTFOUND_HANDLER. As in the test, every Register is followed by a Release of the same pair. */
+static const char k_subintr_register_lines[] =
+    "558888585588585885555555555058880588885888888888888858888855555588858555";
+static const char k_subintr_release_lines[] =
+    "558888888588585885555558555058880588885888888888888858888855555588858555";
+static const char k_subintr_register_subs[] =
+    "550000000000000000557775557775555555555555555555555555555555555555555555";
+static const char k_subintr_release_subs[] =
+    "550000000000000000888888888888888855555555555555555555555555555555555555";
+
+static uint32_t subintr_code(char c) {
+    return c == '0' ? 0u : c == '5' ? 0x80020065u : c == '7' ? 0x80020067u : 0x80020068u;
+}
+
+static void test_vblank_subintr_measured_codes(void) {
+    const uint32_t handler = 0x08001000u, arg = 0xdeadbeefu;
+    reset_fixture();
+    sr_hle_init();
+    for (uint32_t no = 0u; no < 16u; no++)
+        (void)td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, no, 0u, 0u);
+
+    /* "sceKernelRegisterSubIntrHandler interrupts" and the Release interrupts loop. Line 25
+     * (the GE interrupt) answers 0 to both on the PSP, but this runtime delivers no GE
+     * sub-interrupt, so both stop the run by name instead (checked below). */
+    for (int line = -2; line < 70; line++) {
+        if (line == 25) continue;
+        uint32_t reg = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, (uint32_t)line, 0u,
+                                       handler, arg);
+        uint32_t rel = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, (uint32_t)line, 0u, 0u, 0u);
+        char what[96];
+        snprintf(what, sizeof(what), "line %d: Register and Release answer the measured codes",
+                 line);
+        expect(reg == subintr_code(k_subintr_register_lines[line + 2]) &&
+                   rel == subintr_code(k_subintr_release_lines[line + 2]),
+               what);
+    }
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 25u, 0u, handler, arg);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 25u, 0u, 0u, 0u);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 25u, 0u, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 3u,
+           "GE-interrupt sub-interrupt calls stop the run by name instead of answering 0");
+
+    /* "sceKernelRegisterSubIntrHandler sub interrupts": sub-interrupts -2 to 69 of line 30. */
+    for (int no = -2; no < 70; no++) {
+        uint32_t reg = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, (uint32_t)no,
+                                       handler, arg);
+        uint32_t rel = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, (uint32_t)no, 0u, 0u);
+        char what[96];
+        snprintf(what, sizeof(what),
+                 "VBLANK sub-interrupt %d: Register and Release answer the measured codes", no);
+        expect(reg == subintr_code(k_subintr_register_subs[no + 2]) &&
+                   rel == subintr_code(k_subintr_release_subs[no + 2]),
+               what);
+    }
+
+    /* registersub "handlers": a NULL handler registers nothing; a second non-NULL Register
+     * answers FOUND_HANDLER and keeps the first handler. */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0u, arg) == 0u,
+           "Register with a NULL handler answers 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0u, arg) == 0u,
+           "a second NULL Register answers 0 too");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, handler, arg) == 0u,
+           "a non-NULL Register after NULL ones answers 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, handler + 0x40u, 7u) ==
+               0x80020067u,
+           "a second non-NULL Register answers FOUND_HANDLER");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0u, arg) == 0x80020067u,
+           "a NULL Register over a handler answers FOUND_HANDLER");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+           "Enable of the registered sub-interrupt answers 0");
+    uint32_t got_arg = 0u;
+    expect(vblank_delivered(1u, &got_arg) == handler && got_arg == arg,
+           "the refused Registers left the first handler and its arg in place");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0x80020068u,
+           "Release answers 0, then NOTFOUND_HANDLER");
+
+    /* releasesub "handlers": a NULL-handler registration is not found by Release. */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0u, arg) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0x80020068u,
+           "Release after a NULL-handler Register answers NOTFOUND_HANDLER");
+
+    /* enablesub: line 70 and sub-interrupt 70 are ILLEGAL_INTRCODE; a number with no handler
+     * answers 0; Enable before Register delivers once registered; Release clears the enable. */
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 70u, 1u, 0u, 0u) == 0x80020065u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 70u, 0u, 0u) == 0x80020065u &&
+               td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 70u, 1u, 0u, 0u) == 0x80020065u &&
+               td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 70u, 0u, 0u) == 0x80020065u,
+           "Enable and Disable refuse line 70 and sub-interrupt 70 with ILLEGAL_INTRCODE");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 3u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 3u, 0u, 0u) == 0u,
+           "Enable and Disable of a number with no handler answer 0");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 2u, 0u, 0u) == 0u &&
+               vblank_delivered(2u, NULL) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 2u, handler, arg) == 0u &&
+               vblank_delivered(2u, NULL) == handler,
+           "Enable before Register delivers the handler once it is registered");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 2u, 0u, 0u) == 0u, "release 2");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 4u, handler, arg) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 4u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 4u, 0u, 0u) == 0u &&
+               td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 4u, handler, arg) == 0u &&
+               vblank_delivered(4u, NULL) == 0u,
+           "Release clears the enable: a handler registered again is not delivered");
+    (void)td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 4u, 0u, 0u);
+
+    /* Not measured: Enable/Disable on lines 0-66 other than 30 and on the system's
+     * sub-interrupts 16-31 stop the run by name. */
+    stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 31u, 0u, 0u, 0u);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 0u, 0u, 0u, 0u);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 18u, 0u, 0u);
+    (void)td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 30u, 31u, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 4u,
+           "unmeasured Enable/Disable lines and system sub-interrupts stop by name");
+}
+
 static void test_td24b_cheap_hle_batch(void) {
     uint32_t left = 0, right = 0;
 
@@ -15895,9 +16018,11 @@ static void test_td24b_cheap_hle_batch(void) {
     /* ---- 2+3. sceKernelDisableSubIntr / sceKernelReleaseSubIntrHandler ---- */
     reset_fixture();
     sr_hle_init();
-    for (uint32_t no = 0u; no < 16u; no++)
-        expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, no, 0u, 0u) == 0u,
+    for (uint32_t no = 0u; no < 16u; no++) {
+        uint32_t rc = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, no, 0u, 0u);
+        expect(rc == 0u || rc == 0x80020068u,
                "sub-interrupt fixture starts from released VBLANK sub-interrupts");
+    }
     expect(vblank_delivered(5u, NULL) == 0u, "VBLANK delivery starts clear");
     expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 5u, 0x08001000u, 0x1234u) == 0u,
            "RegisterSubIntrHandler records the VBLANK handler");
@@ -15925,10 +16050,10 @@ static void test_td24b_cheap_hle_batch(void) {
            "EnableSubIntr after release still answers success");
     expect(vblank_delivered(5u, NULL) == 0u,
            "Release clears the handler word: Enable delivers nothing");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
-           "DisableSubIntr on a non-VBLANK line answers success without effect");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 31u, 0u, 0u, 0u) == 0u,
-           "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_DISABLE_SUBINTR, 70u, 0u, 0u, 0u) == 0x80020065u,
+           "DisableSubIntr past the last interrupt line is ILLEGAL_INTRCODE (measured)");
+    expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 31u, 0u, 0u, 0u) == 0x80020065u,
+           "ReleaseSubIntrHandler on line 31 is ILLEGAL_INTRCODE, not success (measured)");
     expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 16u, 0x08001000u, 0u) ==
                0x80020065u,
            "a VBLANK sub-interrupt number past 15 is refused (ILLEGAL_INTRCODE)");
@@ -15961,14 +16086,13 @@ static void test_td24b_cheap_hle_batch(void) {
            "the two-handler fixture leaves the VBLANK line released");
 
     /* #1287: a title that re-registers the same VBLANK handler before every frame writes the
-     * registration line once, not once per frame. A changed registration and a register after
-     * Release are written again; SR_HLELOG still writes every call. Return codes are unchanged
-     * (duplicate-register codes are UNMEASURED on the PSP). */
+     * registration line once, not once per frame. A Register over a held sub-interrupt answers
+     * FOUND_HANDLER and changes nothing (pspautotests registersub at f573fe8c, measured on a
+     * PSP), so a changed arg is not taken either; a Register after Release is written again. */
     {
         char err[2048];
         FILE *capture = NULL;
         int saved = -1;
-        int every = getenv("SR_HLELOG") != NULL;
         err[0] = '\0';
         int capturing = hle_data_stderr_capture_begin(&capture, &saved);
         expect(capturing, "the sub-interrupt selftest can capture the runtime's stderr");
@@ -15978,15 +16102,16 @@ static void test_td24b_cheap_hle_batch(void) {
         uint32_t release = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u);
         uint32_t after = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
         if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
-        expect(first == 0u && again == 0u && new_arg == 0u && release == 0u && after == 0u,
-               "repeated, changed and post-Release registrations keep their success answers");
+        expect(first == 0u && again == 0x80020067u && new_arg == 0x80020067u && release == 0u &&
+                   after == 0u,
+               "a Register over a held sub-interrupt answers FOUND_HANDLER; after Release it "
+               "succeeds again");
         expect(count_occurrences(err,
-                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000000\n") ==
-                   (every ? 2 : 1),
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000000\n") == 1,
                "an identical VBLANK re-registration writes no second registration line");
         expect(count_occurrences(err,
-                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 2,
-               "a changed arg and a register after Release each write the registration line");
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 1,
+               "only the register after Release takes the slot and writes the line");
         uint32_t quiet_arg = 0u;
         expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 1u, 0u, 0u) == 0u &&
                    vblank_delivered(1u, &quiet_arg) == 0x08002000u && quiet_arg == 0x10u,
@@ -37852,6 +37977,158 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
     expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
 }
 
+/* #1384: what pspautotests tests/font (f573fe8c9122a8ff5db4f030d74557bed644b4e0, recorded on a PSP)
+ * measures about libraries and handles, driven through production dispatch: newlib.expected
+ * (numFonts -1, 0, 10 and 100 all succeed: a count above 9 serves 9, 0 is accepted), open.expected
+ * (a NULL library is INVALID_LIB, index -1 and 50 are INVALID_ARG, a second open of the same font
+ * answers the first handle with no new allocation, and that handle stays usable after one of the
+ * two opens is closed; the fifth open of a font in a 4-font library is TOO_MANY), resolution.expected
+ * (sceFontSetResolution's accepted and refused values) and optimum.expected (a NULL library or a
+ * NULL style answers 0 with INVALID_LIB). font_find_optimum_index's rules are then checked on a
+ * synthetic inventory shaped so each rule decides one answer the PSP gave. */
+#define FLT_NID_SET_RESOLUTION 0x48293280u
+#define FLT_NID_FIND_OPTIMUM   0x099ef33cu
+#define FLT_ERR_TOO_MANY       0x80460009u
+#define FLT_STYLE_REQ          0x09052000u
+extern int sr_font_test_find_optimum(const float sizes[][4], const uint16_t codes[][4],
+                                     const char *const names[], const char *const files[], int count,
+                                     const float req_sizes[4], const uint16_t req_codes[4],
+                                     const char *req_name, const char *req_file, float lib_h_res,
+                                     float lib_v_res);
+
+static uint32_t flt_call_f(uint32_t nid, uint32_t a0, float f12, float f13) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0;
+    cpu.f[12] = f12;
+    cpu.f[13] = f13;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_font_measured_contract(uint32_t served_index) {
+    char msg[160];
+    if (!sr_hle_test_is_registered(FLT_NID_NEWLIB)) sr_hle_init();
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+
+    static const uint32_t counts[] = { 0xffffffffu, 0u, 1u, 9u, 10u, 100u };
+    for (size_t i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+        uint32_t want = counts[i] > 9u ? 9u : counts[i];
+        flt_write_params(FLT_PARAMS, counts[i]);
+        uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+        snprintf(msg, sizeof(msg), "sceFontNewLib with numFonts %d succeeds with a %u-font library",
+                 (int)counts[i], want);
+        expect(lib == FLT_LIB_A && MEM_R32(FLT_ERR) == 0u && MEM_R32(FLT_LIB_A + 4u) == want, msg);
+        if (lib) (void)flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u);
+    }
+
+    flt_write_params(FLT_PARAMS, 4u);
+    uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+    expect(lib == FLT_LIB_A, "a 4-font library for the open contract");
+    MEM_W32(FLT_ERR, 0u);
+    expect(flt_call(FLT_NID_OPEN, 0u, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+           "sceFontOpen on a NULL library answers INVALID_LIB");
+    MEM_W32(FLT_ERR, 0u);
+    expect(flt_call(FLT_NID_OPEN, lib, 0xffffffffu, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_ARG,
+           "sceFontOpen index -1 answers INVALID_ARG");
+    MEM_W32(FLT_ERR, 0u);
+    expect(flt_call(FLT_NID_OPEN, lib, 50u, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_ARG,
+           "sceFontOpen index 50 answers INVALID_ARG");
+
+    s_flt_alloc_ret = FLT_FONT;
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+    uint32_t f1 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    uint32_t allocs = s_flt_alloc_calls;
+    uint32_t f2 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(f1 == FLT_FONT && f2 == f1 && MEM_R32(FLT_ERR) == 0u && s_flt_alloc_calls == allocs,
+           "a second sceFontOpen of an open font answers the same handle and allocates nothing");
+    expect(flt_call(FLT_NID_CLOSE, f2, 0u, 0u, 0u) == 0u && s_flt_free_calls == 0u,
+           "closing one of two opens frees nothing");
+    expect(flt_call(FLT_NID_CHAR, f2, '.', FLT_INFO, 0u) == 0u,
+           "the handle still answers sceFontGetCharInfo after one of its two opens is closed");
+    uint32_t f3 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    uint32_t f4 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    uint32_t f5 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(f3 == f1 && f4 == f1 && f5 == f1 && MEM_R32(FLT_ERR) == 0u, "four opens share the handle");
+    MEM_W32(FLT_ERR, 0u);
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_TOO_MANY,
+           "the fifth open of the font answers TOO_MANY");
+    for (int i = 0; i < 4; i++) (void)flt_call(FLT_NID_CLOSE, f1, 0u, 0u, 0u);
+    expect(s_flt_free_calls == 1u && s_flt_last_free == FLT_FONT,
+           "the last close frees the font once");
+    expect(flt_call(FLT_NID_CHAR, f1, '.', FLT_INFO, 0u) == FLT_ERR_INVALID_ARG,
+           "a font closed by all its opens is refused");
+
+    expect(sr_hle_test_is_registered(FLT_NID_SET_RESOLUTION), "sceFontSetResolution is registered");
+    if (sr_hle_test_is_registered(FLT_NID_SET_RESOLUTION)) {
+        expect(flt_call_f(FLT_NID_SET_RESOLUTION, 0u, 128.0f, 128.0f) == FLT_ERR_INVALID_LIB,
+               "sceFontSetResolution on a NULL library answers INVALID_LIB");
+        expect(flt_call_f(FLT_NID_SET_RESOLUTION, lib, -1.0f, -1.0f) == FLT_ERR_INVALID_ARG &&
+                   flt_call_f(FLT_NID_SET_RESOLUTION, lib, 0.0f, 0.0f) == FLT_ERR_INVALID_ARG &&
+                   flt_call_f(FLT_NID_SET_RESOLUTION, lib, -INFINITY, -INFINITY) == FLT_ERR_INVALID_ARG,
+               "sceFontSetResolution refuses -1, 0 and -infinity");
+        expect(flt_call_f(FLT_NID_SET_RESOLUTION, lib, 1.0f, 1.0f) == 0u &&
+                   flt_call_f(FLT_NID_SET_RESOLUTION, lib, INFINITY, INFINITY) == 0u &&
+                   flt_call_f(FLT_NID_SET_RESOLUTION, lib, 128.0f, 128.0f) == 0u,
+               "sceFontSetResolution accepts 1, infinity and 128");
+    }
+
+    for (uint32_t i = 0; i < 0xa8u; i += 4u) MEM_W32(FLT_STYLE_REQ + i, 0u);   /* one SceFontStyle */
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_FIND_OPTIMUM, 0u, FLT_STYLE_REQ, FLT_ERR, 0u) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+           "sceFontFindOptimumFont on a NULL library answers 0 with INVALID_LIB");
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_FIND_OPTIMUM, lib, 0u, FLT_ERR, 0u) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB,
+           "sceFontFindOptimumFont with a NULL style answers 0 with INVALID_LIB");
+    MEM_W32(FLT_ERR, 0xdeadbeefu);
+    expect(flt_call(FLT_NID_FIND_OPTIMUM, lib, FLT_STYLE_REQ, FLT_ERR, 0u) == 0u &&
+               MEM_R32(FLT_ERR) == 0u,
+           "an empty style answers index 0 with error 0");
+    (void)flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u);
+
+    /* Synthetic inventory: font 0 is 10.125 high, font 1 is 7.0 high, font 2 is 10.125 high again;
+     * all at 128 x 128. The 8.5625 tie between fonts 0 and 1 is the PSP's H boundary. */
+    static const float sizes[3][4] = {
+        { 10.125f, 10.125f, 128.0f, 128.0f },
+        { 7.0f, 7.0f, 128.0f, 128.0f },
+        { 10.125f, 10.125f, 128.0f, 128.0f },
+    };
+    static const uint16_t codes[3][4] = { { 1u, 103u, 1u, 1u }, { 2u, 1u, 2u, 2u }, { 1u, 1u, 2u, 3u } };
+    static const char *const names[3] = { "Font A", "Font B", "Font C" };
+    static const char *const files[3] = { "a.pgf", "b.pgf", "c.pgf" };
+    const uint16_t none[4] = { 0u, 0u, 0u, 0u };
+    struct { float h, v; uint16_t family; const char *file; float lib_res; int want; const char *what; }
+    cases[] = {
+        { 0.0f, 0.0f, 0u, NULL, 128.0f, 0, "nothing given answers index 0" },
+        { -1.0f, 0.0f, 0u, NULL, 128.0f, 0, "a negative height is not compared" },
+        { 8.5624f, 0.0f, 0u, NULL, 128.0f, 1, "a height just under the midpoint picks the smaller font" },
+        { 8.5625f, 0.0f, 0u, NULL, 128.0f, 0, "the midpoint ties and the first font wins" },
+        { INFINITY, 0.0f, 0u, NULL, 128.0f, 0, "an infinite height finds no nearer font" },
+        { 0.0f, 13.0f, 0u, NULL, 128.0f, 1, "a width alone is compared against height 0: the smallest font" },
+        { 4.2812f, 0.0f, 0u, NULL, 256.0f, 1, "the library's doubled resolution scales the request" },
+        { 0.0f, 0.0f, 1u, NULL, 128.0f, 2, "a matching family picks the last font that has it" },
+        { 0.0f, 0.0f, 2u, NULL, 128.0f, 1, "family 2 has one font" },
+        { 0.0f, 0.0f, 0u, "a.pgf", 128.0f, 0, "an exact file name picks its font" },
+        { 0.0f, 0.0f, 0u, "a.pg", 128.0f, 0, "a partial file name matches nothing: index 0" },
+        { 7.0f, 0.0f, 1u, NULL, 128.0f, 0, "a height among family-1 fonts picks the first nearest" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const float req[4] = { cases[i].h, cases[i].v, 0.0f, 0.0f };
+        uint16_t req_codes[4] = { cases[i].family, 0u, 0u, 0u };
+        int got = sr_font_test_find_optimum(sizes, codes, names, files, 3, req,
+                                            cases[i].family ? req_codes : none, NULL,
+                                            cases[i].file, cases[i].lib_res, cases[i].lib_res);
+        snprintf(msg, sizeof(msg), "FindOptimumFont: %s (got %d)", cases[i].what, got);
+        expect(got == cases[i].want, msg);
+    }
+}
+
 /* sceFontGetNumFontList / sceFontGetFontList against PSPAutotests tests/font/fontlist.expected
  * (2ed7c9c5, the console's libfont on a PSP): 18 fonts and error 0 for a live library, 0 and
  * 0x80460002 for a NULL one; GetFontList writes one 0xA8-byte style per font (num 1 writes
@@ -38335,6 +38612,7 @@ static void test_flash0_font_device(void) {
         }
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_measured_contract(served_index);
         test_font_list_contract(&expected_sources);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_alt_char_contract(served_index);
     }
@@ -40332,6 +40610,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
     test_td24b_cheap_hle_batch();
+    test_vblank_subintr_measured_codes();
     test_kernel_devkit_version_measured();
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();

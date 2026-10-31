@@ -196,6 +196,7 @@ enum {
 #define NID_IC_SUSPEND_DISPATCH_THREAD 0x3ad58b8cu
 #define NID_IC_RESUME_DISPATCH_THREAD  0x27e22ec2u
 #define NID_IC_REGISTER_SUBINTR   0xca04a2b9u
+#define NID_IC_RELEASE_SUBINTR    0xd61e6961u
 #define NID_IC_ENABLE_SUBINTR     0xfb8e22ecu
 #define NID_IC_CREATE_SEMA        0xd6da4ba1u
 #define NID_IC_CREATE_EVF         0x55c20a00u
@@ -832,6 +833,11 @@ static uint64_t ic_run_in_interrupt(const IcProbe *p) {
     (void)sr_syscall(&ctl, NID_IC_CPU_RESUME_INTR);
 
     s_ic_in_intr_probe = 0;
+    /* Release the handler again: a second Register of a held sub-interrupt answers
+     * FOUND_HANDLER on the PSP (#1287), so the next probe could not register it. */
+    memset(&ctl, 0, sizeof ctl);
+    ctl.r[4] = 30u; ctl.r[5] = 1u;
+    (void)sr_syscall(&ctl, NID_IC_RELEASE_SUBINTR);
     return s_ic_intr_ran ? s_ic_intr_result : IC_SETUPFAIL;
 }
 

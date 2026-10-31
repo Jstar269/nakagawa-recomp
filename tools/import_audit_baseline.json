@@ -1255,6 +1255,12 @@
     "name": "sceKernelIsCpuIntrSuspended",
     "status": "unreviewed"
   },
+  "0x48293280": {
+    "classification": "dedicated",
+    "handler": "h_FontSetResolution",
+    "name": "sceFontSetResolution",
+    "status": "unreviewed"
+  },
   "0x4928bd96": {
     "classification": "dedicated",
     "handler": "h_MsgDialogAbort",

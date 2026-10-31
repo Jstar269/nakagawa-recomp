@@ -46,8 +46,8 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **659** (dedicated **553**, fake_success **5**, controlled_unsupported **101**).
-Semantic handler census: **532** handlers across **26** API families, covering **559** handler-associated NID registrations.
+Registered NIDs: **660** (dedicated **554**, fake_success **5**, controlled_unsupported **101**).
+Semantic handler census: **533** handlers across **26** API families, covering **560** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -55,7 +55,7 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 | `partial` | 212 | 217 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 303 | 312 |
+| `unreviewed` | 304 | 313 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -66,7 +66,7 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 | `sceCtrl` | 0 | 6 | 0 | 0 | 6 | 12 | 12 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
-| `sceFont` | 0 | 3 | 0 | 0 | 10 | 13 | 13 |
+| `sceFont` | 0 | 3 | 0 | 0 | 11 | 14 | 14 |
 | `sceGe` | 2 | 8 | 0 | 0 | 4 | 14 | 14 |
 | `sceHprm` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
@@ -85,7 +85,7 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 | `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
 | `sceUtility` | 0 | 7 | 0 | 0 | 27 | 34 | 34 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **212** | **1** | **2** | **303** | **532** | **559** |
+| **Total** | **14** | **212** | **1** | **2** | **304** | **533** | **560** |
 
 #### Complete Handlers (Evidence-Backed)
 

@@ -1824,6 +1824,24 @@ _register_campaign_probe(
     {case: 13 for case in VFPU_SORT_CASES},
 )
 
+# kernel-semantics (126, probe_hle_issues.c): the v0.0.2 kernel cells (#1287, #1390, #1383,
+# #1380, #1382). Every row is emitted on every run with a fixed word count; a word that does
+# not apply is 0xA5A5A5A5, and the io rows are SKIP when the probe-owned Memory Stick
+# directory already existed. The parser checks the stream's shape, never a PSP value.
+KERNEL_SEM_ROWS = {
+    "subintr-register": 8, "subintr-order": 24, "subintr-times": 24, "subintr-release": 8,
+    "ctrl-empty-read": 6, "ctrl-short-read-peek": 8, "ctrl-short-read": 3,
+    "ctrl-short-read-next": 3, "ctrl-peek-count": 3, "ctrl-mode-digital": 9,
+    "ctrl-mode-analog": 9, "ctrl-cycle-5555": 13, "ctrl-cycle-wait": 3,
+    "vmem-trylock-type-1": 4, "vmem-trylock-type-2": 4, "vmem-trylock-type-m1": 4,
+    "vmem-lock-type-1": 4, "vmem-alloc-free": 6, "vmem-alloc-held": 6, "vmem-unlock": 1,
+    "io-missing-parent": 4, "io-mkdir": 1, "io-excl-new": 3, "io-excl-existing": 5,
+    "io-seek64": 16, "io-seek64-rdwr": 4, "io-cleanup": 3, "wlan-state": 2,
+}
+_register_campaign_probe(
+    "kernel-semantics", "PSP-KERNEL-SEM-001", tuple(KERNEL_SEM_ROWS), dict(KERNEL_SEM_ROWS),
+)
+
 # vfpu-forms2 (121, probe_hle_issues.c): the second #326 batch of VFPU forms, two passes. Every
 # row is emitted on every run, so the stream is fixed-shape. Per pass: vrnds.s over 24 seed
 # words from two RCX states (rnds-p<pass>-<i>-<a|b>, 25 words), vrndi, vrndf1 and vrndf2 at

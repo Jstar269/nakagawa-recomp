@@ -2444,13 +2444,14 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 111)
+        self.assertEqual(len(routes), 112)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
-                         | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125},
+                         | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125,
+                            126},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -2474,6 +2475,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             re.MULTILINE,
         ))
         self.assertEqual(routes.get("thread-k0-block"), "116")
+        self.assertEqual(routes.get("kernel-semantics"), "126")
 
     def test_mutex_import_block_is_limited_to_mutex_cases(self) -> None:
         self.assertIn("OBJS = $(BUILD_DIR)/probe.o\n", self.makefile)
