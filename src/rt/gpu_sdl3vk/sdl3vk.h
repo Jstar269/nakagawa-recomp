@@ -268,6 +268,9 @@ int  sdl3vk_pause_input_selftest(void);
 typedef struct Sdl3VkInfo {
     void    *instance, *physical, *device, *queue;
     uint32_t queue_family;
+    /* VK_KHR_shader_float_controls is enabled and shaderDenormPreserveFloat32 is true: a shader
+     * declaring DenormPreserve keeps fp32 subnormals, as GPU T&L needs (#318). */
+    int      denorm_preserve_f32;
 } Sdl3VkInfo;
 int sdl3vk_get_vk(Sdl3VkInfo *out);
 

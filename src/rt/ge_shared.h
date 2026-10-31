@@ -106,11 +106,11 @@ typedef struct {
 } GeState;
 
 /* Mip levels are sampled (#1373) when TEXFILTER's minification field names a mipmap filter
- * (bit 2: GU_{NEAREST,LINEAR}_MIPMAP_{NEAREST,LINEAR}), TEXMODE's highest level is above 0
- * and TEXLEVEL is in its automatic (0) or constant (1) mode. Slope mode (2) and the unused
- * mode 3 stay on level 0: no public source gives their formula (unmeasured). The software
- * sampler (ge.c tex_lod) and the Vulkan texture cache (gpu_sdl3vk/ge_gpu.c) share this one
- * rule so the two GE paths turn mip levels on for the same states. */
+ * (bit 2: GU_{NEAREST,LINEAR}_MIPMAP_{NEAREST,LINEAR}) and TEXMODE's highest level is above
+ * 0, in every TEXLEVEL mode: automatic (0), constant (1), slope (2), and the unused mode 3,
+ * which a PSP-3000 treats as constant (PSP-GE-MIP-001 m3-b2, m3-b0-4x). The software
+ * sampler (ge.c tex_detail16) and the Vulkan texture cache (gpu_sdl3vk/ge_gpu.c) share this
+ * one rule so the two GE paths turn mip levels on for the same states. */
 /* Bytes per row of a linear (unswizzled) texture whose buffer width is `bufw` texels of
  * `bits` bits: whole 16-byte lines, the width's bytes rounded down to a multiple of 16 and at
  * least one line (PSP-GE-RASTER-001 tx-c4-4444, tx-c4-bw48, tx-c4-bw64, tx-c8-bw24,
@@ -121,7 +121,39 @@ static inline uint32_t ge_tex_row_bytes(uint32_t bufw, uint32_t bits) {
 }
 
 static inline int ge_tex_mip_active(const GeState *g) {
-    return (g->tex_filter & 4u) != 0u && g->tex_max_level > 0u && g->tex_level_mode <= 1u;
+    return (g->tex_filter & 4u) != 0u && g->tex_max_level > 0u;
+}
+
+/* The GE's level arithmetic, measured on a PSP-3000 (PSP-GE-MIP-001, #1373; 55 of its 57
+ * cells, docs/HARDWARE_ORACLE.md). A level of detail is an integer in 1/16 levels. Its
+ * logarithm is the float's exponent and top four mantissa bits, log2(1 + m) taken as m:
+ * 1.5 and 3 texels per pixel give 0.5 and 1.5 levels, not 0.585 and 1.585. The sign bit is
+ * dropped and 0 gives -2032. */
+static inline int ge_lod_log16(float f) {
+    union { float f; uint32_t u; } bits = { f };
+    return (int)((bits.u >> 19) & 0xFFFu) - 127 * 16;
+}
+
+/* The level and blend weight (in 1/16) a level of detail selects with highest level `max`.
+ * Up to 0 it is level 0. TEXFILTER bit 1 off (GU_*_MIPMAP_NEAREST) takes the nearest level,
+ * one half rounding up (c-b0f8); on (GU_*_MIPMAP_LINEAR) it blends level detail16 >> 4 with
+ * the next by detail16 & 15 (cl-b0f1, cl-b6ff). The highest level clamps both, with no blend
+ * (cl-b7f8, cl-max2-b2f8). */
+static inline void ge_tex_level_pick(int detail16, uint32_t tex_filter, uint32_t max,
+                                     uint32_t *level, int *frac) {
+    *level = 0u;
+    *frac = 0;
+    if (detail16 <= 0) return;
+    if (tex_filter & 2u) {
+        *level = (uint32_t)(detail16 >> 4);
+        *frac = detail16 & 15;
+    } else {
+        *level = (uint32_t)((detail16 + 8) >> 4);
+    }
+    if (*level >= max) {
+        *level = max;
+        *frac = 0;
+    }
 }
 
 /* A rasterized vertex: screen position, reciprocal clip-w (for persp-correct interp), UV,
@@ -272,6 +304,8 @@ typedef enum GeProfileCheck {
  * guest memory already contains the CPU's new bytes. An overlapping persistent target must
  * merge exactly that byte span, preserve newer GPU bytes outside it, and prevent an older
  * asynchronous readback from committing over the CPU generation. */
+struct GeTnlPrim;   /* below */
+
 typedef struct GeGpuHooks {
     int  (*tri)(const GeVtx *a, const GeVtx *b, const GeVtx *c, int persp);
     int  (*sprite)(const GeVtx *p0, const GeVtx *p1, int persp);
@@ -295,10 +329,83 @@ typedef struct GeGpuHooks {
     int  (*vram_read)(uint32_t addr, uint32_t bytes);
     int  (*vram_write_prepare)(uint32_t addr, uint32_t bytes);
     int  (*vram_pending)(void);
+    /* GPU transform and lighting (#318): a whole transform-mode triangle PRIM that ge.c found
+     * eligible (see GeTnlPrim). Returns 1 when the backend drew it, 0 when it declined (an
+     * unsupported fragment state, as tri does), and ge.c then runs its own T&L for the PRIM. */
+    int  (*tnl_prim)(const struct GeTnlPrim *p);
 } GeGpuHooks;
+
+/* ---- GPU transform and lighting (#318) ----------------------------------------------------
+ *
+ * Opt-in with SR_GPU_TNL=1. ge.c stays the arbiter: it hands a transform-mode triangle PRIM to
+ * the backend only when the result is provably the one its own T&L gives through the same
+ * rasterizer. The state is a subset of transform_model_vtx_clip's (no specular or powered
+ * diffuse light, which needs host powf; texture map mode 0; gouraud shading; not clear mode),
+ * every float input is 0 or a normal number of magnitude 2^-40..2^40, and a clip-space bound of
+ * the PRIM's vertices shows that no vertex is non-finite, out of the screen grid or the depth
+ * range, or near the near plane, so every triangle is drawn whole. The vertex shader
+ * (shaders/psp_tnl.vert) then repeats ge.c's arithmetic in the same order with correctly rounded
+ * operations, and the triangles reach the rasterizer with the bits the CPU path would have
+ * given them. */
+#define GE_TNL_MAX_WEIGHTS 8
+#define GE_TNL_LIGHTS 4
+
+/* One vertex reference: the decoded vertex after morphing and before skinning. */
+typedef struct GeTnlVtx {
+    float x, y, z;                     /* model-space position */
+    float nx, ny, nz;                  /* model-space normal (0 when the format has none) */
+    float u, v;                        /* texture coordinate as read */
+    uint32_t rgba;                     /* vertex colour, r in the low byte (material if absent) */
+    float w[GE_TNL_MAX_WEIGHTS];       /* skinning weights; unused ones are 0 */
+    uint32_t param;                    /* backend-owned: the PRIM's parameter record */
+} GeTnlVtx;
+
+typedef struct GeTnlLight {
+    uint32_t on;                       /* 1 when the light is enabled */
+    uint32_t point;                    /* 1: point or spot (position), 0: directional */
+    float l[3];                        /* normalized direction or position (ge.c light_consts) */
+    float acol[3], dcol[3];            /* ambient and diffuse colour, 0..1 */
+    float att[3];                      /* constant, linear and quadratic attenuation */
+} GeTnlLight;
+
+/* Everything the vertex shader reads, as ge.c's T&L uses it. 32-bit words only (std430). */
+typedef struct GeTnlParams {
+    float world[12], view[12], proj[16];   /* column-major, as GeState */
+    float bone[96];                        /* the eight bone matrices */
+    float vp[6];                           /* x, y, z scale, x, y, z centre (decoded float24) */
+    float off[2];                          /* screen offset x, y in pixels */
+    float tex[6];                          /* u scale, v scale, u offset, v offset, width, height */
+    float fog[3];                          /* end, slope (after the inf/NaN rewrite), constant */
+    uint32_t fog_mode;                     /* 0: factor 1, 1: the constant, 2: clamp((z+end)*slope) */
+    uint32_t weights;                      /* skinning weights per vertex, 0..8 */
+    uint32_t lighting;                     /* 1: lit (light_vertex), 0: the vertex colour */
+    uint32_t mat_update;                   /* MATERIALUPDATE bits */
+    uint32_t lit_alpha;                    /* lit alpha when MATERIALUPDATE bit 0 is clear */
+    uint32_t amb_alpha;                    /* scene ambient alpha */
+    float mat_amb[3], mat_dif[3], emissive[3], amb[3];
+    GeTnlLight light[GE_TNL_LIGHTS];
+} GeTnlParams;
+
+/* A PRIM for tnl_prim: `refs` holds `nrefs` vertex references in PRIM order, `tri` holds
+ * `ntri` index triples into refs, each in the order ge.c submits that triangle (the cull and
+ * strip-parity flips applied), so triangle k's vertices are refs[tri[3k]], refs[tri[3k+1]] and
+ * refs[tri[3k+2]]. `box` bounds the projected vertices (from ge.c's clip-space bound). */
+typedef struct GeTnlPrim {
+    const GeTnlParams *params;
+    const GeTnlVtx *refs;
+    uint32_t nrefs;
+    const uint32_t *tri;
+    uint32_t ntri;
+    float box[4];                      /* x0, y0, x1, y1: framebuffer pixels every vertex is in */
+} GeTnlPrim;
 
 /* Implemented in ge.c. */
 void      ge_set_gpu_hooks(const GeGpuHooks *h);
+/* GPU transform and lighting (#318): on with SR_GPU_TNL=1, or set here (-1 re-reads the
+ * environment). The counts are PRIMs the backend drew and PRIMs ge.c found ineligible or the
+ * backend declined, since the last reset. */
+void      ge_tnl_set_enabled(int on);
+void      ge_tnl_counts(unsigned long long *taken, unsigned long long *cpu, int reset);
 /* Post-write notification for CPU-side writes that may alias GPU-cached framebuffers
  * (movie decode, DMA memcpy). No-op when no GPU backend is registered. */
 void      sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);

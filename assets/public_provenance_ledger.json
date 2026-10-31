@@ -5951,6 +5951,18 @@
       }
     },
     {
+      "path": "src/rt/gpu_sdl3vk/psp_tnl_vert.inc",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-gpu-tnl-shader-20261031",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "src/rt/gpu_sdl3vk/psp_vert.inc",
       "classification": "upstream_derived",
       "evidence": {
@@ -6016,6 +6028,18 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/shaders/psp_tnl.vert",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-gpu-tnl-shader-20261031",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
