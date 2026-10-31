@@ -168,6 +168,19 @@ class LibraryBuildTests(unittest.TestCase):
         # Without a datafile nothing is classified.
         self.assertEqual(result["verification_counts"], {"NOT_CHECKED": 2})
 
+    def test_two_discs_that_could_not_be_hashed_both_build(self) -> None:
+        self.disc("a/ok-test70015.iso", "TEST70015")
+        self.disc("b/ok-test70015.iso", "TEST70015")
+
+        def unreadable(_path: Path) -> disc_verify.DiscDigest:
+            raise disc_verify.DiscVerifyError("unreadable", boundary_code="DISC_IMAGE_READ_FAILED")
+
+        result = self.build(hash_disc=unreadable).run()
+        records = self.by_source(result)
+        self.assertEqual([records[key]["outcome"] for key in sorted(records)], ["BUILT", "BUILT"])
+        self.assertEqual(records["a/ok-test70015.iso"]["verification"],
+                         {"error": "DISC_IMAGE_READ_FAILED"})
+
     def _redump_list(self, *images: Path) -> disc_verify.RedumpDat:
         rows = "".join(
             f'<game name="Disc {index}"><rom name="Disc {index}.iso" size="{digest.size_bytes}" '

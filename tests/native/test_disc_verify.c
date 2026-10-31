@@ -627,6 +627,15 @@ static void test_library_keys_by_disc_id_and_hash(void) {
     CHECK(nk_library_count(&g_lib) == 3);
     CHECK(nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1) != NULL);
     CHECK(nk_library_find_by_key(&g_lib, "TEST70001", g_modified_digest.sha1) != NULL);
+    /* Nor does it replace the only record when that one is hashed: an image
+       whose hash failed may be another image. */
+    nk_library_init(&g_lib);
+    seed(&entry, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    seed(&entry, "TEST70001", "unread.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 2 &&
+          nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1) != NULL);
 
     /* A player re-add of a record a bring-up wrote, which records no size (0),
        keeps the bring-up's hashes. */

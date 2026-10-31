@@ -91,10 +91,9 @@ NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
    translation of it, are two records. An entry replaces the record with its
    disc ID and the same content_sha1, or else the record of the same file
    (iso_path), which now holds it. An entry never hashed also replaces the
-   only record with its disc ID, as before hashing; a hashed entry of another
-   file is added, even beside a record written before hashing, and so is an
-   unhashed one beside several records of its disc ID, so no image's record is
-   lost. An unhashed
+   only record with its disc ID when that record was never hashed either, as
+   before hashing. Any other entry of another file is added, a hashed one even
+   beside a record written before hashing, so no image's record is lost. An unhashed
    update of the same file keeps that record's hashes. When an entry is
    verified retail, the unknown records with its disc ID become modified: the
    disc ID is now known retail (nk_disc_verify.h). */

@@ -3795,8 +3795,9 @@ def _library_record_to_replace(games: list, disc_id: str, digest: disc_verify.Di
 
     The rules of src/core/nk_library.c's add_or_update: the record with the same disc ID and
     SHA-1, else the record of the same file (which now holds this image). An image that could
-    not be hashed also replaces the only record with its disc ID, as before hashing, and is
-    added beside several. A hashed image of another file never replaces a
+    not be hashed also replaces the only record with its disc ID when that record was never
+    hashed either, as before hashing, and is added beside a hashed one or several. A hashed
+    image of another file never replaces a
     record it is not shown to be: a record written before hashing is hashed now, from its own
     file, and replaced only when that file is this image (the player cannot hash on its UI
     thread, so it keeps both instead). No record of another image is ever dropped.
@@ -3812,7 +3813,9 @@ def _library_record_to_replace(games: list, disc_id: str, digest: disc_verify.Di
         if _library_same_path(games[index], iso_path):
             return index
     if not sha1:
-        return same_id[0] if len(same_id) == 1 else None
+        if len(same_id) == 1 and not _library_content_sha1(games[same_id[0]]):
+            return same_id[0]
+        return None
     for index in (index for index in same_id if not _library_content_sha1(games[index])):
         game = games[index]
         other = Path(str(game.get("iso_path") or "")).expanduser()

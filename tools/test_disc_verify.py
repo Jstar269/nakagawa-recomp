@@ -180,6 +180,20 @@ class HashAndImportTests(unittest.TestCase):
             self.assertEqual(imported.read_bytes(), source.read_bytes())
             source.write_text(datafile(serials=False), encoding="utf-8")
             disc_verify.import_dat(source, data)
+            # A verification folder that links elsewhere is refused; the file there is kept.
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "redump.dat").write_text("kept", encoding="utf-8")
+            linked = root / "linked"
+            linked.mkdir()
+            try:
+                (linked / "verification").symlink_to(outside, target_is_directory=True)
+            except OSError:
+                pass  # this host cannot make a symlink without privilege
+            else:
+                with self.assertRaises(disc_verify.DiscVerifyError):
+                    disc_verify.import_dat(source, linked)
+                self.assertEqual((outside / "redump.dat").read_text(encoding="utf-8"), "kept")
             self.assertEqual(disc_verify.load_imported_dat(data).serials, frozenset())
             self.assertEqual(sorted(path.name for path in imported.parent.iterdir()),
                              ["redump.dat"])
@@ -277,6 +291,15 @@ class BringupLibraryTests(unittest.TestCase):
         # A new file, unhashed, beside two images of its disc ID: added, nothing dropped.
         self.write("third.iso", OTHER, hashed=False)
         self.assertEqual(sorted(self.by_file()), ["retail.iso", "third.iso", "translation.iso"])
+
+    def test_a_failed_hash_never_replaces_a_hashed_record_of_another_file(self) -> None:
+        self.write("retail.iso", RETAIL)
+        self.write("unread.iso", MODIFIED, hashed=False)
+        self.assertEqual(sorted(self.by_file()), ["retail.iso", "unread.iso"])
+        # Beside a record that was never hashed either, it replaces it, as before hashing.
+        self.write("old.iso", OTHER, disc_id="TEST70009", hashed=False)
+        self.write("moved.iso", OTHER, disc_id="TEST70009", hashed=False)
+        self.assertNotIn("old.iso", self.by_file())
 
     def test_the_file_another_image_now_fills_is_replaced(self) -> None:
         self.write("disc.iso", RETAIL)

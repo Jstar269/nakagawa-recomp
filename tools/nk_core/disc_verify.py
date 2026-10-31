@@ -202,6 +202,13 @@ def import_dat(source: Path | str, user_data_root: Path | str) -> RedumpDat:
     dat = load_dat(data)
     target = imported_dat_path(user_data_root)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    folder = target.parent
+    root = Path(user_data_root).resolve(strict=False)
+    if (folder.is_symlink() or folder.is_junction() or target.is_symlink()
+            or not folder.resolve(strict=False).is_relative_to(root)):
+        raise DiscVerifyError("The data folder's verification folder is a link; the list was not "
+                              "saved outside the data folder.",
+                              boundary_code="DISC_DAT_WRITE_FAILED")
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_bytes(data.read_bytes())

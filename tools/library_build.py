@@ -141,10 +141,14 @@ def record_digest(record: dict[str, Any]) -> disc_verify.DiscDigest | None:
     return disc_verify.DiscDigest(sha1=sha1, crc32=crc32, size_bytes=size)
 
 
-def content_key(record: dict[str, Any]) -> tuple[str, str | None]:
-    """What makes two files the same disc: the disc ID and, once hashed, the image's SHA-1."""
+def content_key(record: dict[str, Any]) -> tuple[str, str]:
+    """What makes two files the same disc: the disc ID and the image's SHA-1.
+
+    A disc whose image was not hashed (a lone disc ID, or a file that could not be read) is
+    keyed by its own file, so it is never taken for a copy of another.
+    """
     digest = record_digest(record)
-    return (record["disc_id"], digest.sha1 if digest else None)
+    return (record["disc_id"], digest.sha1 if digest else f"file:{record['source_key']}")
 
 
 class DiscDecryption:
@@ -386,7 +390,7 @@ class LibraryBuild:
                 del self.records[key]  # the file is gone from the folder
         self.hash_discs(present)
         self.classify()
-        first_by_content: dict[tuple[str, str | None], str] = {}
+        first_by_content: dict[tuple[str, str], str] = {}
         for record in present:
             if record.get("outcome") == "BUILT" and record.get("disc_id"):
                 first_by_content.setdefault(content_key(record), record["source_key"])

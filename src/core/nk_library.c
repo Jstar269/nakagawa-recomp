@@ -98,10 +98,12 @@ static int library_index_for_entry(const NkLibrary *lib, const NkGameEntry *entr
     }
     /* A hashed image of another file is another image, even beside a record
        written before hashing. An unhashed one replaces the only record of its
-       disc ID, as before hashing; beside several, it can't say which, so it is
-       added. */
-    return entry->content_sha1[0] ? -1
-                                  : library_index_of_disc_id_alone(lib, entry->disc_id, false);
+       disc ID when that record was never hashed either, as before hashing; a
+       hashed record is a known image, and beside it or several records the
+       newcomer can't be told apart, so it is added and nothing is lost. */
+    if (entry->content_sha1[0]) return -1;
+    int only = library_index_of_disc_id_alone(lib, entry->disc_id, false);
+    return only >= 0 && !lib->entries[only].content_sha1[0] ? only : -1;
 }
 
 const NkGameEntry *nk_library_find_by_disc_id(const NkLibrary *lib, const char *disc_id) {
