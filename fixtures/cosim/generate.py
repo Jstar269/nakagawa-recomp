@@ -562,6 +562,71 @@ def _cell_jtarget() -> list[int]:
 # build_text_segment (XING_BRANCHES).
 
 
+def _cell_bjoin() -> list[int]:
+    """Words after a `b` that only a later backward branch reaches (#1730).
+
+    `b` (beq $zero, $zero) never falls through, so the body owns 0x14 only because the
+    loop at 0x1c branches back to it; the code there must run under its own label. The
+    not-taken `beq` at 0x04 is the contrast: its fall-through is the rest of the cell.
+    """
+    return [
+        _i(0x09, ZERO, T0, 2),              # 0x00 addiu t0, zero, 2
+        _i(0x04, T0, ZERO, 7),              # 0x04 beq   t0, zero, +7 (-> 0x24, not taken)
+        _i(0x09, ZERO, V0, 0),              # 0x08 addiu v0, zero, 0    (slot)
+        _i(0x04, ZERO, ZERO, 3),            # 0x0c b     +3 (-> 0x1c)
+        _i(0x09, V0, V0, 1),                # 0x10 addiu v0, v0, 1      (slot)
+        _i(0x09, V0, V0, 0x10),             # 0x14 addiu v0, v0, 16     (loop body)
+        _i(0x09, T0, T0, -1),               # 0x18 addiu t0, t0, -1
+        _i(0x07, T0, ZERO, -3),             # 0x1c bgtz  t0, -3 (-> 0x14)
+        _i(0x09, V0, V0, 0x100),            # 0x20 addiu v0, v0, 256    (slot)
+        JR_RA,                              # 0x24
+        _i(0x09, V0, V0, 0x1000),           # 0x28 addiu v0, v0, 4096   (return slot)
+    ]
+
+
+def _slot_entry_cell(transfer: int) -> list[int]:
+    """A branch lands on the delay slot of a transfer that never falls through (#1730).
+
+    On that path the slot is an ordinary word and the guest runs on into 0x1c. The
+    transfer itself sits on the never-taken path. A body that owned the slot only as the
+    transfer's slot would run the slot's label straight into the transfer's target.
+    """
+    return [
+        _i(0x09, ZERO, T0, 1),              # 0x00 addiu t0, zero, 1
+        _i(0x09, ZERO, V0, 0),              # 0x04 addiu v0, zero, 0
+        _i(0x05, T0, ZERO, 3),              # 0x08 bne   t0, zero, +3 (-> 0x18, taken)
+        _i(0x09, V0, V0, 1),                # 0x0c addiu v0, v0, 1      (slot)
+        _i(0x09, V0, V0, 0x800),            # 0x10 addiu v0, v0, 2048   (never runs)
+        transfer,                           # 0x14 b / j -> 0x28        (never runs)
+        _i(0x09, V0, V0, 0x10),             # 0x18 addiu v0, v0, 16     (its slot, entered)
+        _i(0x09, V0, V0, 0x100),            # 0x1c addiu v0, v0, 256
+        JR_RA,                              # 0x20
+        _i(0x09, ZERO, V1, 7),              # 0x24 addiu v1, zero, 7    (return slot)
+        JR_RA,                              # 0x28 the transfer's target
+        _i(0x09, ZERO, V1, 9),              # 0x2c addiu v1, zero, 9    (return slot)
+    ]
+
+
+def _cell_bslot() -> list[int]:
+    return _slot_entry_cell(_i(0x04, ZERO, ZERO, 4))   # b +4 (-> 0x28)
+
+
+def _cell_jslot() -> list[int]:
+    return _slot_entry_cell(_j(0x02, 0x28))           # j +0x28 (relocated)
+
+
+def _cell_bself() -> list[int]:
+    """`b .+4`: the slot runs as the slot, then again as the branch target (#1730)."""
+    return [
+        _i(0x09, ZERO, V0, 0),              # 0x00 addiu v0, zero, 0
+        _i(0x04, ZERO, ZERO, 0),            # 0x04 b     +0 (-> 0x08, its own slot)
+        _i(0x09, V0, V0, 1),                # 0x08 addiu v0, v0, 1      (slot, then target)
+        _i(0x09, V0, V0, 0x10),             # 0x0c addiu v0, v0, 16
+        JR_RA,                              # 0x10
+        _i(0x09, V0, V0, 0x100),            # 0x14 addiu v0, v0, 256    (return slot)
+    ]
+
+
 def _cell_xing_taken() -> list[int]:
     """A not-taken and a taken `beq`/`bne` into another entry, slots always run.
 
@@ -1420,6 +1485,10 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("jump", "direct jump + delay slot", _cell_jump),
     ("jthunk", "direct-j this-adjusting tail thunk", _cell_jthunk),
     ("jtarget", "known entry reached by the direct-j thunk", _cell_jtarget),
+    ("bjoin", "words after `b` reached only by a later branch", _cell_bjoin),
+    ("bslot", "branch into the delay slot of `b`", _cell_bslot),
+    ("jslot", "branch into the delay slot of `j`", _cell_jslot),
+    ("bself", "`b` to its own delay slot", _cell_bself),
     ("xing_taken", "conditional branches into another entry", _cell_xing_taken),
     ("xing_likely", "branch-likely into another entry, annulled and taken", _cell_xing_likely),
     ("xing_fall_a", "not-taken fall-through into another entry", _cell_xing_fall_a),
@@ -1624,6 +1693,9 @@ def build_text_segment() -> bytes:
     )
     struct.pack_into(
         "<I", text, layout["jthunk"][0], _j(0x02, layout["jtarget"][0])
+    )
+    struct.pack_into(
+        "<I", text, layout["jslot"][0] + 0x14, _j(0x02, layout["jslot"][0] + 0x28)
     )
     for cell, at, target in XING_BRANCHES:
         source = layout[cell][0] + at
@@ -2104,6 +2176,13 @@ def verify(build_dir: Path) -> int:
         problems.append(
             f"jthunk tail decodes to 0x{jthunk_target:08x}, expected jtarget at "
             f"0x{BASE + layout['jtarget'][0]:08x}"
+        )
+    jslot = struct.unpack_from("<I", image, layout["jslot"][0] + 0x14)[0]
+    jslot_target = ((jslot & 0x03FFFFFF) << 2) | (BASE & 0xF0000000)
+    if (jslot >> 26) != 2 or jslot_target != BASE + layout["jslot"][0] + 0x28:
+        problems.append(
+            f"jslot jump decodes to 0x{jslot_target:08x}, expected 0x"
+            f"{BASE + layout['jslot'][0] + 0x28:08x}"
         )
 
     # The aliasing cell is only meaningful while its two leaf pointers actually
