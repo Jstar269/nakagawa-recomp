@@ -1846,7 +1846,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "37e29f2cb466abf991656d85132e1b8d175170d67b069e344715492f8fef48e2"
+      "sha256": "95a37463b5fee366b81fe98c01c833be701fefe24213619df53530a1f0565d89"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1960,7 +1960,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1525c445bff4ba7ceb3bc6afe2b80392b78c3eb389d87a98cff6136b5e430845"
+      "sha256": "21bf88a65c87f85c85c89047ba1b21147bbe9b28e618039377124a8f646a6aec"
     },
     {
       "path": "docs/SETUP.md",
@@ -14104,7 +14104,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0fc95d7fdc3c80506673d2d01ee071dcea3070c05096e880051c471418e5a2cd"
+      "sha256": "3eca61072fd9823f178c1baf5821ee945628b20c904ca502e8facb14f62cfecf"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -14755,7 +14755,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92359befe07cdede2d7200d89fc37da00d88e09edc962405cae6c49fd701de79"
+      "sha256": "8e666fbf23fd65ad5f259ad22694c55552814fee1844db3d112851e69c97c6a6"
     },
     {
       "path": "tools/stage_runtime_dlls.py",
@@ -16305,7 +16305,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "242470637449214ad1c15dd9c5c9296aa29a6b8b56e21c59b9a54bd2ecb7c1ec"
+      "sha256": "7f131f086ef73f51005ddc688dae91e51a7f372bc5660aeddfd4a121f7d496af"
     },
     {
       "path": "tools/test_padscript_from_log.py",
@@ -17110,7 +17110,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea1afa632655d9e0205ddc22c80ac1fd47d47496d9b82be300b490882dea039f"
+      "sha256": "9d6c1fb978e4fddf7d6a874a89b97dec395b92c9de079ff33e4663aadf4212da"
     },
     {
       "path": "tools/test_stale_code_detect.py",
