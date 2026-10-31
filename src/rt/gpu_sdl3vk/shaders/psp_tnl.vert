@@ -1,6 +1,14 @@
 #version 450
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2025-2026 the psp-recomp authors
 // Copyright (C) 2026 the Nakagawa Recomp authors
+// Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
+// Translates src/rt/ge.c's transform and lighting (decode_model_vtx skinning, transform_model_vtx_clip,
+// light_vertex, project_cvtx) and ge_gpu.c's put_vert into GLSL.
+// Modified by Nakagawa Recomp contributors, 2026-10-31.
+// See NOTICE.md for upstream lineage and modification provenance.
+// Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 
 /* PSP GE vertex stage with transform and lighting (#318). The CPU path (psp.vert) receives
  * vertices ge.c already transformed and lit; this stage receives the decoded model-space vertex

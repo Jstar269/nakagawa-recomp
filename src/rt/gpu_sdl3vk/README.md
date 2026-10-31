@@ -128,6 +128,8 @@ Enabled with `SR_GPU_GE=1`. Implementation:
   flush + guest-VRAM writeback. Hooks defined in `src/rt/ge_shared.h`.
 - `shaders/psp.vert`, `shaders/psp.frag` — compiled by glslc (`GLSLC` in the Makefile)
   into `psp_{vert,frag}.inc` at build time.
+- `shaders/psp_tnl.vert` — the GPU transform-and-lighting vertex stage (`SR_GPU_TNL=1`, #318), a GLSL
+  translation of ge.c's T&L; compiled the same way into `psp_tnl_vert.inc`.
 - `tools/ppmdiff.py`, `tools/ppm2png.py` (repo root) — A/B snapshot comparison.
 
 ## Present-truthful frame capture

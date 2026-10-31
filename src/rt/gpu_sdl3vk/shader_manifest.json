@@ -31,7 +31,7 @@
       "embedded": "psp_tnl_vert.inc",
       "embedded_sha256": "0a2623c30a5173008286e4fafdd15dc8ef64560e0a526eda513f205b5f227fb8",
       "source": "shaders/psp_tnl.vert",
-      "source_sha256": "e5834e5aca77d6bb3d2833241cf794bbe60db5f2e4c1870ce05a7cfc758acb61",
+      "source_sha256": "e179970c4006a15358f7c29c95669c55bc58be2ca3316d164306aeb963f62570",
       "spirv_bytes": 37228,
       "spirv_sha256": "b97f790567d6757ba362b71d8b3dbf45c727d5a4832e608b4a29d295f59d018d",
       "stage": "vert"
