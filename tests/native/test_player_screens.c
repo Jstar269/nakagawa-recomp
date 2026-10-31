@@ -2602,11 +2602,11 @@ static void test_settings_pages(void) {
               strstr(dump, "saved as you make them") != NULL,
           "Settings shows each value on the button that changes it");
     CHECK(flow_case_fits(FLOW_SETTINGS_ACCESSIBILITY, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "\"INTERFACE SIZE: 125%\"") != NULL &&
+              strstr(dump, "\"INTERFACE: 125%\"") != NULL &&
               strstr(dump, "\"TEXT SIZE: LARGER\"") != NULL &&
               strstr(dump, "size.\"") != NULL &&
-              strstr(dump, "\"HIGH CONTRAST: AUTOMATIC\"") != NULL &&
-              strstr(dump, "\"REDUCE MOTION: ON\"") != NULL &&
+              strstr(dump, "\"CONTRAST: AUTOMATIC\"") != NULL &&
+              strstr(dump, "\"MOTION: ON\"") != NULL &&
               strstr(dump, "Windows: 150%.\"") != NULL &&
               strstr(dump, "Windows: off.\"") != NULL &&
               strstr(dump, "Animations in Windows: on.\"") != NULL &&

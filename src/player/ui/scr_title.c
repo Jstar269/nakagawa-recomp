@@ -1666,25 +1666,27 @@ static bool text_was_cut(const char *shown, const char *text) {
            !(text_length >= n && memcmp(text + text_length - n, ellipsis, n) == 0);
 }
 
-/* The column a group of rows `width` px across shares. At the design text size
-   that is the design: a 220 px column with each sentence beside its button. At
-   a larger text size the column is as wide as the widest label, so the buttons
-   line up, and when that leaves a sentence too little room beside its button,
-   or would cut one short of its two lines, every sentence goes under its
-   button at the full width. */
+/* The column a group of rows `width` px across shares: the design's 220 px, or
+   as wide as the widest label when that is wider, at every text size (a label
+   such as "Interface size: Automatic" outgrew 220 px in the real font and was
+   cut). The buttons line up, and when the column leaves a sentence too little
+   room beside its button, or would cut one short of its two lines, every
+   sentence goes under its button at the full width. */
 static WizardColumn wizard_column(NkUi *ui, const WizardRow *rows, size_t count, float width) {
     NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, 0u);
     WizardColumn column = {WIZARD_VALUE_CELL, false};
     char label[48];
     float room;
-    if (!(nk_ui_text_scale(ui) > 1.0f)) {
-        return column;
-    }
     for (size_t i = 0u; i < count; ++i) {
         float need;
         (void)snprintf(label, sizeof(label), "%s: %s", rows[i].name, rows[i].value);
         need = nk_ui_button_width(ui, label, 0u);
         if (need > column.cell) column.cell = need;
+    }
+    /* At the design text size the sentences stay beside their buttons, as the
+       design lays the page out; only larger type stacks them. */
+    if (!(nk_ui_text_scale(ui) > 1.0f)) {
+        return column;
     }
     room = width - column.cell - NK_UI_SPACE_4;
     column.stacked = room < WIZARD_VALUE_SENTENCE_MIN;
@@ -3040,11 +3042,11 @@ static void settings_accessibility(NkUi *ui, const PlayerUiSettingsModel *model,
                    system, model->system_reduced_motion ? "off" : "on");
     if (wizard_box_begin(ui, 0u)) {
         const WizardRow rows[] = {
-            {"Interface size", safe_text(model->interface_size, "Automatic"), interface_line},
+            {"Interface", safe_text(model->interface_size, "Automatic"), interface_line},
             {"Text size", safe_text(model->text_size, "Standard"),
              "Makes the launcher's text larger. Controls keep their size."},
-            {"High contrast", safe_text(model->high_contrast_choice, "Automatic"), contrast_line},
-            {"Reduce motion", safe_text(model->reduce_motion_choice, "Automatic"), motion_line}
+            {"Contrast", safe_text(model->high_contrast_choice, "Automatic"), contrast_line},
+            {"Motion", safe_text(model->reduce_motion_choice, "Automatic"), motion_line}
         };
         /* The four buttons line up on one column at every text size. */
         WizardColumn column = wizard_column(ui, rows, sizeof(rows) / sizeof(rows[0]),
