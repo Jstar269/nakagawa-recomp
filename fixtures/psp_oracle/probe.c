@@ -10680,6 +10680,8 @@ static void at3s_one_delay(int emulated, uint32_t delay) {
     }
     (void)snprintf(step, sizeof(step), "d%u-set-data", (unsigned int)delay);
     probe_step(emulated, "at3-delay-sweep", step);
+    /* The patched copy is written by the CPU: push it out of the data cache before the library reads it. */
+    sceKernelDcacheWritebackInvalidateAll();
     const int set_rc = sceAtracSetData(id, s_at3s_stream, AT3S_BYTES);
     u32 pos0 = 0xffffffffu;
     const int rc_pos0 = sceAtracGetNextDecodePosition(id, &pos0);
@@ -10733,6 +10735,9 @@ static void at3s_buffer_case(int emulated, const char *name, unsigned char *buf,
     }
     (void)snprintf(step, sizeof(step), "%s-set-data", name);
     probe_step(emulated, "at3-delay-sweep", step);
+    /* A patched copy is written by the CPU: push it out of the data cache before the library reads it
+       (without this, 8 KiB prefixes of a memcpy'd file were refused with 0x80630006 on 2026-10-31). */
+    sceKernelDcacheWritebackInvalidateAll();
     const int set_rc = sceAtracSetData(id, buf, bytes);
     int end_sample = -1, loop_start = -1, loop_end = -1, remain = -1;
     const int rc_sound = sceAtracGetSoundSample(id, &end_sample, &loop_start, &loop_end);
