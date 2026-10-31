@@ -833,6 +833,14 @@ reads the head's workflow runs, latest-attempt jobs, check runs, statuses and la
 from GitHub's API and posts `success`, `pending` or `failure` (or `error` if it cannot judge
 the head, which replaces an older success).
 
+Those reads use the `VERDICT_READ_TOKEN` secret when it is set. It is the maintainer's
+fine-grained token, read-only and for this repository only. It moves the verifier's dozen or so
+reads per judgement off the hourly `GITHUB_TOKEN` budget that every workflow shares; on
+2026-10-31 that budget ran out and failed Trusted CodeQL. The status itself is always posted
+with `GITHUB_TOKEN`, since the ruleset accepts it only from GitHub Actions. A read the token is
+refused is retried with `GITHUB_TOKEN`. Each run's log ends with a line giving its request count
+and each token's remaining budget.
+
 | Code | Fails when |
 | --- | --- |
 | `CI_CHANGE_UNAPPROVED` | the head changes `.github/workflows/**`, `.github/actions/**`, `.pre-commit-config.yaml`, a CI tool (`tools/ci_paths.py`, `tools/ci_required.py`, `tools/ci_test_shards.py`, `tools/ci_test_weights.json`, `tools/requirements-lock.txt`, `tools/ci_trust_verdict.py`) or any `tools/` file a default-branch workflow runs, without a current `ci-change-approved` label |
