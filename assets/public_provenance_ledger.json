@@ -4481,7 +4481,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2b719bb41a2545bcfdf29ec789bfef948ba4ea8c733c563144912d4748c2154f"
+      "sha256": "fa0e718003400943ff0ee8dd35e2853d954fb862d7d0ebe63a1dc989d59c8844"
     },
     {
       "path": "src/player/input_settings.h",
@@ -4493,7 +4493,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e21832a0831c5688721a59314112a564e7cafe054c5bae4d776ff561d07074d0"
+      "sha256": "c2cb99bb41f83fc22d732582ffee062f8e0836f18fcd4a771c6fdc0ddb6b8f44"
     },
     {
       "path": "src/player/iso_reader.c",
@@ -4529,7 +4529,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12e08f14bb6396464616e902b61d03187dea9dec024ac27f0265ce223c564fe9"
+      "sha256": "23ee13e1b1432761d82b8d00bd19f9faf160f35afbfb52a9bb01664db9902c54"
     },
     {
       "path": "src/player/package_builder.c",
@@ -4685,7 +4685,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4483453a49685c29938de61a99bae52a448fe9b94c0bdcd6b5b6aa84c691dc9"
+      "sha256": "f99e552c1972ee566d2e43ac83c23b695398fff86e3a1045468e1b888e687294"
     },
     {
       "path": "src/player/ui/player_ui_nk.h",
@@ -11184,7 +11184,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "89f52d504c1ec602d8d983976a3d4f3f9f3be369d37383ccf4f435b4f9212e91"
+      "sha256": "2a32829b286c14c52156c7898b9a063c0727371a43c14c4ab736416013ea4a1c"
     },
     {
       "path": "tests/native/test_launch_resolution.c",
@@ -11388,7 +11388,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "964a5b9dd85eecb61d8a83dd2575c85b11975b65a8360d1c5a9792a1461affb6"
+      "sha256": "22c8cf7e7491207ded817248ec1664b00e497da52e72a47bce3dab5b5cb83248"
     },
     {
       "path": "tests/native/test_player_ui_art.c",
