@@ -894,6 +894,14 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
         edge_rows.append(edge)
         nodes[source]["edges"].append(edge)
 
+    landed = set()
+    for address in sorted(nodes):
+        word = nodes[address]["word"]
+        if word >> 26 == 2:
+            landed.add(((address + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2))
+        elif branch_target(address, word) is not None and branch_kind(word) != BRANCH_LINK:
+            landed.add(branch_target(address, word))
+
     for address in sorted(nodes):
         row = nodes[address]
         word = row["word"]
@@ -948,6 +956,8 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
                 add_edge(address, None, "unresolved-indirect", "computed-tail-transfer")
         elif address not in delay_owner and address + 4 in nodes:
             add_edge(address, address + 4, "fallthrough", "linear")
+        elif address in landed and address + 4 in nodes:
+            add_edge(address, address + 4, "fallthrough", "landed-delay-slot")
 
     # A direct jump or unconditional branch to a known entry is a tail transfer;
     # all other direct jumps remain ordinary intra-function edges until ownership
@@ -1127,6 +1137,39 @@ class CanonicalCfgTests(unittest.TestCase):
     def test_cfg_requires_a_mapped_image_reader(self):
         with self.assertRaisesRegex(ValueError, "read_at_vaddr"):
             analyze.canonical_cfg_report(None)
+
+    def test_a_branch_onto_a_delay_slot_continues_after_the_slot(self):
+        # The beq lands on jr's delay slot: the slot runs as an ordinary instruction and
+        # execution goes on to the word after it, which nothing else reaches.
+        words = {
+            0x3000: branch(4, 4, 0, 0x3000, 0x3010), 0x3004: 0,  # beq a0, zero, slot
+            0x3008: 0x24020001,                                  # addiu v0, zero, 1
+            0x300C: jr(31), 0x3010: 0x24420010,                  # jr ra; addiu v0, v0, 0x10
+            0x3014: 0x24420100,                                  # addiu v0, v0, 0x100
+            0x3018: jr(31), 0x301C: 0,
+        }
+        image = FakeCodeImage(words)
+        report = analyze.canonical_cfg_report(image, ranges=[(0x3000, 0x3020)], entries=[0x3000])
+
+        self.assertIn(
+            {"source": 0x3010, "target": 0x3014, "kind": "fallthrough",
+             "detail": "landed-delay-slot"},
+            cfg_node(report, 0x3010)["edges"],
+        )
+        for address in (0x3014, 0x3018, 0x301C):
+            self.assertEqual(cfg_node(report, address)["owners"], [0x3000], hex(address))
+        self.assertEqual(
+            report,
+            _canonical_cfg_report_reference(image, ranges=[(0x3000, 0x3020)], entries=[0x3000]),
+        )
+        self.assertEqual(analyze.verify_canonical_cfg_report(report), [])
+
+        # The same slot reached only as jr's delay slot gets no such edge.
+        words[0x3000] = branch(4, 4, 0, 0x3000, 0x3008)
+        report = analyze.canonical_cfg_report(
+            FakeCodeImage(words), ranges=[(0x3000, 0x3020)], entries=[0x3000])
+        self.assertEqual([edge["kind"] for edge in cfg_node(report, 0x3010)["edges"]], [])
+        self.assertEqual(cfg_node(report, 0x3014)["owners"], [])
 
     def test_cfg_erets_are_no_delay_exits_not_linear_fallthrough(self):
         image = FakeCodeImage({

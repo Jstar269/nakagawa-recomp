@@ -1806,6 +1806,7 @@ _CFG_DETAIL_NAMES = (
     "linear",
     "known-entry-tail-transfer",
     "computed-tail-transfer",
+    "landed-delay-slot",
 )
 _CFG_DETAIL_IDS = {name: index for index, name in enumerate(_CFG_DETAIL_NAMES)}
 _CFG_REASON_NAMES = ("entry",) + _CFG_KIND_NAMES
@@ -2253,6 +2254,15 @@ def canonical_cfg_state(image, ranges=None, entries=None):
         state.edge_details.append(-1 if detail is None else _CFG_DETAIL_IDS[detail])
         edge_counts[source_index] += 1
 
+    # Words a direct jump or a non-linking branch lands on. Landing on a delay slot runs it
+    # as an ordinary instruction, and execution continues at the word after it.
+    landed = set()
+    for address, word in zip(state.addresses, state.words, strict=True):
+        if word >> 26 == 2:
+            landed.add(((address + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2))
+        elif branch_target(address, word) is not None and branch_kind(word) != BRANCH_LINK:
+            landed.add(branch_target(address, word))
+
     for source_index, address in enumerate(state.addresses):
         word = state.words[source_index]
         control = _cfg_control_transfer(word)
@@ -2311,6 +2321,8 @@ def canonical_cfg_state(image, ranges=None, entries=None):
                     )
             elif state.delay_of[source_index] == _CFG_NONE and next_index is not None:
                 add_edge(source_index, address + 4, "fallthrough", "linear")
+            elif next_index is not None and address in landed:
+                add_edge(source_index, address + 4, "fallthrough", "landed-delay-slot")
 
     # A direct jump/branch to a known entry is a tail transfer.  Keep this as a
     # post-pass so all edge kinds use the same entry qualification.
