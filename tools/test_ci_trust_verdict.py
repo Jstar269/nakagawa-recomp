@@ -662,6 +662,68 @@ class CollectorTests(unittest.TestCase):
                 gh.get(f"pulls/{PR}")
         self.assertIn("3 request(s) this run; the token's core budget had 0 of 1000 left", gh.budget_note())
 
+    @staticmethod
+    def _answer(limit: str, remaining: str) -> mock.MagicMock:
+        response = mock.MagicMock()
+        response.read.return_value = b"{}"
+        response.headers = {"X-RateLimit-Limit": limit, "X-RateLimit-Remaining": remaining,
+                            "X-RateLimit-Resource": "core"}
+        response.__enter__.return_value = response
+        return response
+
+    def test_reads_use_the_read_token_and_the_status_uses_github_token(self) -> None:
+        """VERDICT_READ_TOKEN carries the reads, on the maintainer's budget; the ruleset accepts the status only
+        from GitHub Actions, so it is posted with GITHUB_TOKEN."""
+        gh = ctv.GitHub("Jstar269/nakagawa-recomp", "actions-token", "read-token")
+        seen: list[tuple[str, str]] = []
+
+        def urlopen(request, timeout):
+            seen.append((request.get_method(), request.get_header("Authorization")))
+            return self._answer("5000", "4900") if request.get_method() == "GET" else self._answer("1000", "640")
+
+        with mock.patch.object(ctv.urllib.request, "urlopen", side_effect=urlopen):
+            gh.get(f"pulls/{PR}")
+            gh.paginate("pulls?state=open")
+            gh.post(f"statuses/{HEAD}", {"state": "success"})
+        self.assertEqual(seen, [("GET", "Bearer read-token"), ("GET", "Bearer read-token"),
+                                ("POST", "Bearer actions-token")])
+        note = gh.budget_note()
+        self.assertIn("3 request(s) this run (2 with the read token, 0 refused)", note)
+        self.assertIn("the read token's core budget had 4900 of 5000 left", note)
+        self.assertIn("GITHUB_TOKEN's core budget had 640 of 1000 left", note)
+
+    def test_a_read_the_read_token_is_refused_goes_to_github_token(self) -> None:
+        """A missing permission or a spent budget on the read token costs one retry, not the verdict."""
+        gh = ctv.GitHub("Jstar269/nakagawa-recomp", "actions-token", "read-token")
+        refusal = urllib.error.HTTPError("https://api.github.com/x", 403, "forbidden", {}, None)  # type: ignore[arg-type]
+        seen: list[str] = []
+
+        def urlopen(request, timeout):
+            seen.append(request.get_header("Authorization"))
+            if request.get_header("Authorization") == "Bearer read-token":
+                raise refusal
+            return self._answer("1000", "500")
+
+        with mock.patch.object(ctv.urllib.request, "urlopen", side_effect=urlopen), mock.patch("sys.stderr"):
+            self.assertEqual(gh.get(f"commits/{HEAD}/check-runs"), {})
+        self.assertEqual(seen, ["Bearer read-token", "Bearer actions-token"])
+        self.assertEqual(gh.read_refusals, 1)
+        not_found = urllib.error.HTTPError("https://api.github.com/x", 404, "missing", {}, None)  # type: ignore[arg-type]
+        with mock.patch.object(ctv.urllib.request, "urlopen", side_effect=not_found), mock.patch("sys.stderr"):
+            with self.assertRaises(urllib.error.HTTPError):
+                gh.get(f"pulls/{PR}")   # missing for both tokens: still an error
+
+    def test_main_passes_the_read_token_only_when_it_is_set(self) -> None:
+        for value, expected in (("read-token", "read-token"), ("", None)):
+            with self.subTest(read_token=value):
+                gh = FakeGitHub(Scenario())
+                env = {"GITHUB_TOKEN": "token", "VERDICT_READ_TOKEN": value}
+                with mock.patch.object(ctv, "GitHub", return_value=gh) as client, \
+                        mock.patch.dict(os.environ, env), mock.patch("sys.stdout"), \
+                        mock.patch.object(ctv, "git_facts", return_value=_facts()):
+                    ctv.main(["--repository", gh.repository, "--head-sha", HEAD])
+                client.assert_called_once_with(gh.repository, "token", expected)
+
     def test_collect_finds_nothing_for_a_head_without_a_pull_request_into_main(self) -> None:
         scenario = Scenario()
         scenario.raw["open_pull_requests"][0]["base"]["ref"] = "release"

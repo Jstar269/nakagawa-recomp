@@ -607,37 +607,62 @@ def git_facts(repo: Path, repository: str, number: int, head_sha: str, remote: s
 # needed a manual re-run. These statuses, and a dropped connection, are retried; any other answer is final.
 TRANSIENT_HTTP = frozenset({500, 502, 503, 504})
 RETRY_DELAYS = (5, 15)   # seconds before the second and third attempt
+# Answers to the read token that send the read to GITHUB_TOKEN instead: a revoked or expired token (401), a
+# missing permission or a spent budget (403, 429), and a fine-grained token's 404 for a resource it may not see.
+READ_TOKEN_REFUSALS = frozenset({401, 403, 404, 429})
 
 
 class GitHub:
-    def __init__(self, repository: str, token: str) -> None:
+    def __init__(self, repository: str, token: str, read_token: str | None = None) -> None:
         self.repository = repository
         self.token = token
         # The repository's GITHUB_TOKEN shares one hourly API budget across every workflow. Its use ran out on
-        # 2026-10-31 and failed Trusted CodeQL four times in an hour, so each run logs what it spent and what
-        # the token's last answer said was left (``budget_note``).
+        # 2026-10-31 and failed Trusted CodeQL four times in an hour. Reads therefore use ``read_token`` when it
+        # is set: the maintainer's read-only VERDICT_READ_TOKEN, whose budget is the maintainer's own. Writes
+        # (the status) always use ``token``, and a read the read token is refused (a missing permission, or
+        # its own budget spent) is retried once with ``token``. Each run logs what it spent and what each
+        # token's last answer said was left (``budget_note``).
+        self.read_token = read_token or None
         self.requests = 0
-        self.rate_limit: dict[str, str] = {}
+        self.read_requests = 0
+        self.read_refusals = 0
+        self.rate_limit: dict[str, dict[str, str]] = {}
 
     def _request(self, method: str, path: str, body: dict | None = None) -> tuple[object, dict]:
+        if method != "GET" or self.read_token is None:
+            return self._send(method, path, body, self.token, "token")
+        try:
+            return self._send(method, path, body, self.read_token, "read token")
+        except urllib.error.HTTPError as error:
+            if error.code not in READ_TOKEN_REFUSALS:
+                raise
+            if not self.read_refusals:
+                print(f"GET {path}: the read token was refused (HTTP {error.code}); using GITHUB_TOKEN for it",
+                      file=sys.stderr)
+            self.read_refusals += 1
+            return self._send(method, path, body, self.token, "token")
+
+    def _send(self, method: str, path: str, body: dict | None, token: str, label: str) -> tuple[object, dict]:
         url = path if path.startswith("https://") else f"{API_ROOT}/repos/{self.repository}/{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(url, data=data, method=method, headers={
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f"Bearer {token}",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "nakagawa-recomp-ci-trust-verdict",
         })
         for delay in (*RETRY_DELAYS, None):
             try:
                 self.requests += 1
+                if label == "read token":
+                    self.read_requests += 1
                 with urllib.request.urlopen(request, timeout=60) as response:
                     payload = response.read()
                     headers = dict(response.headers)
-                    self._note_rate_limit(headers)
+                    self._note_rate_limit(label, headers)
                     return (json.loads(payload) if payload else None), headers
             except urllib.error.HTTPError as error:
-                self._note_rate_limit(dict(error.headers or {}))
+                self._note_rate_limit(label, dict(error.headers or {}))
                 if delay is None or error.code not in TRANSIENT_HTTP:
                     raise
             except (urllib.error.URLError, TimeoutError):
@@ -663,23 +688,30 @@ class GitHub:
     def post(self, path: str, body: dict) -> object:
         return self._request("POST", path, body)[0]
 
-    def _note_rate_limit(self, headers: dict) -> None:
+    def _note_rate_limit(self, label: str, headers: dict) -> None:
         lowered = {str(name).lower(): str(value) for name, value in headers.items()}
         fields = {field: lowered[f"x-ratelimit-{field}"]
                   for field in ("limit", "remaining", "used", "reset", "resource")
                   if f"x-ratelimit-{field}" in lowered}
         if fields:
-            self.rate_limit = fields
+            self.rate_limit[label] = fields
 
     def budget_note(self) -> str:
-        """One log line: this run's requests and the token's budget as its last answer reported it."""
+        """One log line: this run's requests and each token's budget as its last answer reported it."""
         note = f"GitHub API: {self.requests} request(s) this run"
-        budget = self.rate_limit
-        if "remaining" in budget and "limit" in budget:
-            note += f"; the token's {budget.get('resource', 'core')} budget had {budget['remaining']} of {budget['limit']} left"
-            if budget.get("reset", "").isdigit():
-                reset = time.strftime("%H:%M:%SZ", time.gmtime(int(budget["reset"])))
-                note += f", resetting at {reset}"
+        if self.read_requests:
+            note += f" ({self.read_requests} with the read token, {self.read_refusals} refused)"
+        for label in ("read token", "token"):
+            budget = self.rate_limit.get(label, {})
+            if "remaining" in budget and "limit" in budget:
+                owner = "the token's" if label == "token" and not self.read_token else f"the {label}'s"
+                if label == "token" and self.read_token:
+                    owner = "GITHUB_TOKEN's"
+                note += (f"; {owner} {budget.get('resource', 'core')} budget had {budget['remaining']} "
+                         f"of {budget['limit']} left")
+                if budget.get("reset", "").isdigit():
+                    reset = time.strftime("%H:%M:%SZ", time.gmtime(int(budget["reset"])))
+                    note += f", resetting at {reset}"
         return note
 
 
@@ -816,7 +848,7 @@ def main(argv: list[str] | None = None) -> int:
     token = os.environ.get("GITHUB_TOKEN", "")
     if not token or not args.repository:
         parser.error("GITHUB_TOKEN and --repository are required unless --snapshot is given")
-    gh = GitHub(args.repository, token)
+    gh = GitHub(args.repository, token, os.environ.get("VERDICT_READ_TOKEN") or None)
     head = args.head_sha
     if head is None:
         if args.pull_request is None:
