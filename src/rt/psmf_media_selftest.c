@@ -3708,8 +3708,9 @@ static void test_player_av_composited_presentation(void) {
 }
 
 /* sceMpegAvcDecodeDetail (an import ten library titles stop at): through the production HLE
- * dispatch it writes exactly nine words -- decode result 1, pictures decoded, frame width and
- * height from the PSMF header, four zero crop words, the last decode's frame status -- and
+ * dispatch it writes exactly the 13 words the PSP writes -- 0, pictures decoded, frame width and
+ * height from the PSMF header, four zero crop words, the last decode's frame status, four more
+ * words (zero here) -- and
  * refuses an invalid pointer or an unknown handle. */
 #define DD_NID 0x0f6c18d7u
 static void test_mpeg_avc_decode_detail(void) {
@@ -3730,11 +3731,11 @@ static void test_mpeg_avc_decode_detail(void) {
     memset(SR_HOST(DD_DETAIL), 0xa5, 64u);
     CHECK(guest_mpeg_import(DD_NID, DD_DESC, DD_DETAIL, 0, 0, 0) == 0u,
           "decode-detail: the import has a handler and succeeds");
-    CHECK(MEM_R32(DD_DETAIL + 0u) == 1u && MEM_R32(DD_DETAIL + 4u) == 0u &&
+    CHECK(MEM_R32(DD_DETAIL + 0u) == 0u && MEM_R32(DD_DETAIL + 4u) == 0u &&
               MEM_R32(DD_DETAIL + 8u) == FIX_W_MBS * 16u && MEM_R32(DD_DETAIL + 12u) == FIX_H_MBS * 16u &&
               guest_bytes_are(DD_DETAIL + 16u, 16u, 0x00) && MEM_R32(DD_DETAIL + 32u) == 0u &&
-              guest_bytes_are(DD_DETAIL + 36u, 28u, 0xa5),
-          "decode-detail: nine words before any decode, nothing past them");
+              guest_bytes_are(DD_DETAIL + 36u, 16u, 0x00) && guest_bytes_are(DD_DETAIL + 52u, 12u, 0xa5),
+          "decode-detail: the 13 measured words before any decode, nothing past them");
     Mpeg *ctx = mpeg_find(DD_DESC);
     if (ctx) { ctx->h264Frames = 2; ctx->avcFrameStatus = 1; }
     CHECK(guest_mpeg_import(DD_NID, DD_DESC, DD_DETAIL, 0, 0, 0) == 0u &&

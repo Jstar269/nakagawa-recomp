@@ -69,7 +69,7 @@
 #define MPEG_AU_MODE_DECODE 0u
 #define MPEG_AU_MODE_SKIP   1u
 
-#define SCE_MPEG_ERROR_INVALID_VALUE 0x806100FEu
+#define SCE_MPEG_ERROR_INVALID_VALUE 0x806101FEu   /* MEASURED (PSP-MPEG-001); was 0x806100FE */
 #define SCE_MPEG_ERROR_BAD_VERSION   0x806100A0u
 #define SCE_MPEG_ERROR_NO_DATA       0x80618001u
 #define SCE_MPEG_ERROR_NO_MEMORY     0x80610022u
@@ -1069,22 +1069,24 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
     }
     return gotFrame > 0 ? 0 : SCE_MPEG_ERROR_NO_DATA;
 }
-/* sceMpegAvcDecodeDetail(mpeg, detail): nine words about the AVC decoder.  Layout and values
- * follow PPSSPP Core/HLE/sceMpeg.cpp (c9e2afb6) sceMpegAvcDecodeDetail: the decode result (1, the
- * library's success value), the pictures decoded so far, the frame width and height (the PSMF
- * header's macroblock counts times 16), four frame-crop words (0), and whether the last decode
- * call produced a picture.  Not yet measured on this project's PSP (probe mpeg-ycbcr, #302). */
+/* sceMpegAvcDecodeDetail(mpeg, detail), MEASURED on a PSP-3000 (6.61, 2026-10-31, PSP-MPEG-001,
+ * after one picture): 13 words -- 0, 1 (the pictures decoded so far, as PPSSPP has it; only one
+ * picture was measured), the frame width and height (the PSMF header's macroblock counts times 16,
+ * 480 x 224 there), four zero crop words, 1 (the last decode produced a picture), 0, a guest address
+ * the probe could not identify (written 0 here), 0, 0.  PPSSPP (c9e2afb6) writes nine words with a
+ * decode result of 1 in word 0. */
 uint32_t mpeg_avc_decode_detail(uint32_t mpegAddr, uint32_t detailAddr) {
-    if (!detailAddr || (detailAddr & 3u) || !sr_guest_span_writable(detailAddr, 36u))
+    if (!detailAddr || (detailAddr & 3u) || !sr_guest_span_writable(detailAddr, 52u))
         return mpeg_contract_error("sceMpegAvcDecodeDetail", "invalid detail pointer", (uint32_t)-1);
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
-    MEM_W32(detailAddr + 0u, 1u);
+    MEM_W32(detailAddr + 0u, 0u);
     MEM_W32(detailAddr + 4u, (uint32_t)ctx->h264Frames);
     MEM_W32(detailAddr + 8u, ctx->streamWidth);
     MEM_W32(detailAddr + 12u, ctx->streamHeight);
     for (uint32_t off = 16u; off < 32u; off += 4u) MEM_W32(detailAddr + off, 0u);
     MEM_W32(detailAddr + 32u, ctx->avcFrameStatus ? 1u : 0u);
+    for (uint32_t off = 36u; off < 52u; off += 4u) MEM_W32(detailAddr + off, 0u);
     return 0;
 }
 
