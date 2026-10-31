@@ -152,6 +152,9 @@ typedef struct {
     /* The last write failed, so the file on disk is behind the mapping:
      * input_settings_flush writes it again (leaving the page, closing). */
     bool unsaved;
+    /* Back was pressed once with the mapping unsaved: the page stayed to say so,
+     * and the next Back leaves without saving. Any change or write clears it. */
+    bool leave_unsaved;
 
     /* Guided calibration state (#357) */
     GuidedCalibrationState calib;

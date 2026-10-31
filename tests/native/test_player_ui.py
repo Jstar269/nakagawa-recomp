@@ -2381,6 +2381,22 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(self.focus_trail(back)[-1], self.SETTINGS_FOCUS["controller"],
                          "Back returns to Settings on Controls")
 
+        # A profile that cannot be written (its folder is a file): the binding's write
+        # fails and says so, the first Back keeps the page to show it, and Back again
+        # leaves without saving.
+        unwritable = {"NK_INPUT_PROFILE": str(PLAYER_EXE / "input_profile.json")}
+        rebind_and_back = (("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "PAD_SOUTH", "WAIT_MS=100",
+                            "KEY_UP") + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_RETURN", "WAIT_MS=100"))
+        stay = self.next_ui_run("controller", rebind_and_back, env_extra=unwritable)
+        frames = stay["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["profile_save_notice"], "1", "the failed write is shown")
+        self.assertEqual(frames[-1]["view"], "controller", "the first Back stays to show it")
+        leave = self.next_ui_run("controller", rebind_and_back + ("KEY_RETURN", "WAIT_MS=100"),
+                                 env_extra=unwritable)
+        self.assertEqual([view for view, _ in self.screens(leave)], ["controller", "settings"],
+                         "Back again leaves without saving")
+
     def test_next_ui_keyboard_keys_rebind_refuse_reset_and_save(self) -> None:
         """#1299: KEYBOARD shows the keys; a chosen button takes the next key pressed,
         a key another control uses moves to it and that control takes its old key,

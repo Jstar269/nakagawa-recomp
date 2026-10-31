@@ -1638,8 +1638,17 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
             break;
         case PLAYER_UI_CONTROLLER_BACK:
         case PLAYER_UI_CONTROLLER_CLOSE:
-            /* Leaving the page writes what is not on disk yet, a failed write included. */
-            (void)input_settings_flush(input);
+            /* Leaving the page writes what is not on disk yet, a failed write included.
+               If that fails, the page stays once to say so; Back again leaves without
+               saving. */
+        {
+            bool leave_anyway = input->leave_unsaved;   /* the write clears it */
+            if (input_settings_flush(input) != NK_OK && !leave_anyway) {
+                input->leave_unsaved = true;
+                break;
+            }
+            input->leave_unsaved = false;
+        }
             player_app_set_view(app, op == PLAYER_UI_CONTROLLER_BACK ? VIEW_SETTINGS
                                                                      : VIEW_LIBRARY);
             break;
@@ -5677,8 +5686,12 @@ int main(int argc, char *argv[]) {
 #endif
     }
 
-    /* A binding made in the same moment as the quit is written before closing. */
-    (void)input_settings_flush(&app.input_settings);
+    /* A binding made in the same moment as the quit is written before closing; a
+       write that fails now has nowhere left to be shown, so it goes to the log. */
+    if (input_settings_flush(&app.input_settings) != NK_OK) {
+        fprintf(stderr, "[PLAYER] Controls not saved: %s\n",
+                app.input_settings.save_diagnostic);
+    }
 
     /* Closing: a package check still hashing stops at its next read, so the
        window does not hang until every startup check is done. */

@@ -365,14 +365,22 @@ static void clear_note(InputSettingsState *state) {
 
 /* Copy the mapping being edited back into the document slot it belongs to, so a
  * save writes the user's edits to the right mapping and leaves the others be. */
-static void store_current_scope(InputSettingsState *state) {
-    if (!state) return;
+static bool store_current_scope(InputSettingsState *state) {
+    if (!state) return false;
     if (!state->editing_disc_id[0]) {
         state->file.global = state->profile;
-        return;
+        return true;
     }
-    nk_input_profile_file_set_title(&state->file, state->editing_disc_id,
-                                    &state->profile, NULL, 0);
+    /* A per-title entry the document refuses is not stored, so a save would write
+       the old one: say so, and keep it unsaved, rather than report it saved. */
+    if (nk_input_profile_file_set_title(&state->file, state->editing_disc_id, &state->profile,
+                                        state->save_diagnostic,
+                                        sizeof(state->save_diagnostic)) != NK_OK) {
+        state->has_save_diagnostic = true;
+        state->unsaved = true;
+        return false;
+    }
+    return true;
 }
 
 void input_settings_reset_to_defaults(InputSettingsState *state) {
@@ -384,7 +392,7 @@ void input_settings_reset_to_defaults(InputSettingsState *state) {
     clear_note(state);
     state->save_diagnostic[0] = '\0';
     state->has_save_diagnostic = false;
-    store_current_scope(state);
+    (void)store_current_scope(state);
     input_settings_refresh_conflicts(state);
     state->dirty = true;
 }
@@ -400,7 +408,7 @@ void input_settings_reset_device_to_defaults(InputSettingsState *state) {
         input_settings_cancel_capture(state);
         state->save_diagnostic[0] = '\0';
         state->has_save_diagnostic = false;
-        store_current_scope(state);
+        (void)store_current_scope(state);
         state->dirty = true;
         return;
     }
@@ -412,7 +420,7 @@ void input_settings_reset_device_to_defaults(InputSettingsState *state) {
     input_settings_reset_to_defaults(state);
     memcpy(state->profile.psp_keys, keys, sizeof(keys));
     memcpy(state->profile.stick_keys, stick, sizeof(stick));
-    store_current_scope(state);
+    (void)store_current_scope(state);
 }
 
 void input_settings_set_stick(InputSettingsState *state, bool right) {
@@ -421,7 +429,7 @@ void input_settings_set_stick(InputSettingsState *state, bool right) {
                                                                 : NK_HOST_AXIS_LEFTX;
     state->profile.axes[NK_PSP_AXIS_ANALOG_Y].host_axis = right ? NK_HOST_AXIS_RIGHTY
                                                                 : NK_HOST_AXIS_LEFTY;
-    store_current_scope(state);
+    (void)store_current_scope(state);
     state->dirty = true;
 }
 
@@ -480,9 +488,11 @@ bool input_settings_assign_key(InputSettingsState *state, int control_idx, int k
     for (int i = 0; i < INPUT_CONTROL_TOTAL_COUNT; i++) {
         NkKeyBinding *other = i == control_idx ? NULL : control_keys(&state->profile, i);
         if (!other || (other->primary != key && other->secondary != key)) continue;
-        /* The other control takes this one's key in the slot the key leaves. */
+        /* The other control takes this one's key in the slot the key leaves; a
+           control may list one key in both slots, and then both leave. */
         if (other->primary == key) {
             other->primary = previous;
+            if (other->secondary == key) other->secondary = NK_HOST_KEY_NONE;
         } else {
             other->secondary = previous;
         }
@@ -501,7 +511,7 @@ bool input_settings_assign_key(InputSettingsState *state, int control_idx, int k
     /* A key that was this control's second key swaps with its first. */
     if (keys->secondary == key) keys->secondary = previous;
     keys->primary = key;
-    store_current_scope(state);
+    (void)store_current_scope(state);
     state->dirty = true;
     return true;
 }
@@ -545,7 +555,7 @@ bool input_settings_set_scope(InputSettingsState *state, const char *disc_id) {
     if (!state) return false;
     /* Edits made in the scope being left are kept, so switching back and forth
      * between the global mapping and a disc's own mapping never loses work. */
-    store_current_scope(state);
+    (void)store_current_scope(state);
     if (!disc_id || !disc_id[0]) {
         state->profile = state->file.global;
         state->editing_disc_id[0] = '\0';
@@ -787,8 +797,13 @@ NkResult input_settings_save(InputSettingsState *state, const char *custom_path)
     state->save_diagnostic[0] = '\0';
     state->has_save_diagnostic = false;
 
-    /* The whole document is written, so entries for other discs are preserved. */
-    store_current_scope(state);
+    /* The whole document is written, so entries for other discs are preserved. A
+       mapping the document refuses is not written over the old one as if saved. */
+    if (!store_current_scope(state)) {
+        state->dirty = false;
+        state->leave_unsaved = false;
+        return NK_ERROR_GENERIC;
+    }
     NkResult res = nk_input_profile_file_save(&state->file, save_path,
                                               state->save_diagnostic,
                                               sizeof(state->save_diagnostic));
@@ -799,6 +814,7 @@ NkResult input_settings_save(InputSettingsState *state, const char *custom_path)
        frame, but the next change, leaving the page or closing writes again. */
     state->dirty = false;
     state->unsaved = res != NK_OK;
+    state->leave_unsaved = false;
     return res;
 }
 
@@ -888,9 +904,14 @@ bool input_settings_assign_binding(InputSettingsState *state, int control_idx, N
                  !sources_equal(&other->secondary, &source))) {
                 continue;
             }
-            /* The other button takes this one's input in the slot the input leaves. */
+            /* The other button takes this one's input in the slot the input leaves;
+               an input listed in both its slots leaves both. */
             if (sources_equal(&other->primary, &source)) {
                 other->primary = previous;
+                if (sources_equal(&other->secondary, &source)) {
+                    other->secondary.type = NK_BINDING_NONE;
+                    other->secondary.index = 0;
+                }
             } else {
                 other->secondary = previous;
             }
@@ -912,7 +933,7 @@ bool input_settings_assign_binding(InputSettingsState *state, int control_idx, N
     }
     bind->primary = source;
     input_settings_refresh_conflicts(state);
-    store_current_scope(state);
+    (void)store_current_scope(state);
     state->dirty = true;
     return true;
 }

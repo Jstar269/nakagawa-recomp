@@ -1001,8 +1001,9 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
     model.stick_right = input_settings_stick_is_right(input);
     /* A write that failed comes first: the mapping on screen is not the one on disk. */
     if (input->has_save_diagnostic) {
-        snprintf(player->pad_status, sizeof(player->pad_status), "Not saved: %s",
-                 input->save_diagnostic);
+        snprintf(player->pad_status, sizeof(player->pad_status), "Not saved: %s%s",
+                 input->save_diagnostic,
+                 input->leave_unsaved ? " Back again leaves without saving." : "");
         model.status = player->pad_status;
         model.status_error = true;
     } else if (input->note[0] != '\0') {

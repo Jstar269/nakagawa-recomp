@@ -1180,6 +1180,61 @@ static void test_stick_keys_and_saving(void) {
 }
 
 /* -----------------------------------------------------------------------------
+ * 12c. A key listed in both of a control's slots moves whole, and a per-title
+ *      mapping the document refuses is reported, not saved as if it were (review)
+ * -------------------------------------------------------------------------- */
+static void test_per_title_rebind_persists(void) {
+    printf("[INPUT_SETTINGS_TEST] Subtest 12c: per-title rebinds persist or say why not...\n");
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_per_title_rebind_profile.json";
+    const int key_x = nk_host_key_from_name("x");
+    const int key_c = nk_host_key_from_name("c");
+    char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+    InputSettingsState state;
+    InputSettingsState loaded;
+    remove(file_path);
+    input_settings_init(&state);
+    snprintf(state.profile_path, sizeof(state.profile_path), "%s", file_path);
+    assert(input_settings_set_scope(&state, "TEST00005"));
+    input_settings_set_device(&state, INPUT_DEVICE_KEYBOARD);
+    /* Cross lists X in both slots, which the profile allows. */
+    state.profile.psp_keys[NK_PSP_BTN_CROSS].secondary = key_x;
+    assert(nk_input_profile_validate(&state.profile, diag, sizeof(diag)) == NK_OK);
+    assert(input_settings_assign_key(&state, INPUT_CONTROL_BTN_START, key_x));
+    assert(state.profile.psp_keys[NK_PSP_BTN_CROSS].primary == nk_host_key_from_name("return"));
+    assert(state.profile.psp_keys[NK_PSP_BTN_CROSS].secondary == NK_HOST_KEY_NONE);
+    assert(nk_input_profile_validate(&state.profile, diag, sizeof(diag)) == NK_OK);
+    assert(input_settings_save_if_dirty(&state) == NK_OK && !state.has_save_diagnostic);
+    assert(input_settings_load(&loaded, file_path) == NK_OK);
+    assert(input_settings_set_scope(&loaded, "TEST00005"));
+    assert(loaded.profile.psp_keys[NK_PSP_BTN_START].primary == key_x);
+
+    /* The controller likewise: a button listed in both slots leaves both. */
+    input_settings_set_device(&state, INPUT_DEVICE_CONTROLLER);
+    NkBindingSource north = {NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_NORTH};
+    state.profile.psp_buttons[INPUT_CONTROL_BTN_TRIANGLE].secondary = north;
+    assert(input_settings_assign_binding(&state, INPUT_CONTROL_BTN_SQUARE, north));
+    assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_TRIANGLE].secondary.type == NK_BINDING_NONE);
+    assert(nk_input_profile_validate(&state.profile, diag, sizeof(diag)) == NK_OK);
+    assert(input_settings_save_if_dirty(&state) == NK_OK);
+
+    /* A per-title mapping the document refuses is not written over the old one as if
+     * saved: the save fails, says why, and the mapping stays unsaved. */
+    input_settings_set_device(&state, INPUT_DEVICE_KEYBOARD);
+    state.profile.psp_keys[NK_PSP_BTN_SQUARE].secondary = key_c;
+    state.profile.psp_keys[NK_PSP_BTN_CIRCLE].secondary = key_c;   /* one key, two controls */
+    assert(input_settings_assign_key(&state, INPUT_CONTROL_BTN_HOME, nk_host_key_from_name("h")));
+    assert(state.has_save_diagnostic && state.unsaved);
+    assert(input_settings_save_if_dirty(&state) != NK_OK);
+    assert(state.has_save_diagnostic && state.unsaved && state.save_diagnostic[0] != '\0');
+    assert(input_settings_load(&loaded, file_path) == NK_OK);
+    assert(input_settings_set_scope(&loaded, "TEST00005"));
+    assert(loaded.profile.psp_keys[NK_PSP_BTN_HOME].primary == NK_HOST_KEY_NONE);
+
+    remove(file_path);
+    printf("[INPUT_SETTINGS_TEST] Subtest 12c PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
  * 13. The prompt glyph beside each binding on the Controls page (#1299)
  * -------------------------------------------------------------------------- */
 static void expect_glyph(const InputBindingGlyph *glyph, InputGlyphKind kind, const char *legend,
@@ -1303,6 +1358,7 @@ int main(void) {
     test_hostile_profile_files();
     test_keyboard_keys();
     test_stick_keys_and_saving();
+    test_per_title_rebind_persists();
     test_binding_glyphs();
 
     native_test_assert_real_config_untouched();
