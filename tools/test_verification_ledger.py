@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from typing import Any, ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_manifest  # noqa: E402
@@ -20,6 +21,11 @@ FIVE = ("hardware-measured", "ppsspp-derived", "game-route", "synthetic", "unver
 
 
 class LedgerTests(unittest.TestCase):
+    ledger: ClassVar[dict[str, Any]]
+    manifest: ClassVar[dict[str, Any]]
+    sources: ClassVar[list[tuple[str, str]]]
+    registered: ClassVar[set[str]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.ledger = ledger_mod.build_ledger()

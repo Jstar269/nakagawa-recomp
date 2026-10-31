@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from typing import Any, ClassVar
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -78,6 +79,8 @@ def _gcc() -> str | None:
 
 
 class FixtureHeaderTests(unittest.TestCase):
+    data: ClassVar[dict[str, Any]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.data = insn_trace.parse_fixtures()
@@ -129,6 +132,11 @@ class FixtureHeaderTests(unittest.TestCase):
 
 
 class ProbeSourceTests(unittest.TestCase):
+    probe: ClassVar[str]
+    tramp: ClassVar[str]
+    issues: ClassVar[str]
+    makefile: ClassVar[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.probe = (FIXTURE_DIR / "probe_insn_trace.c").read_text(encoding="utf-8")
@@ -249,6 +257,10 @@ class ConversionTests(unittest.TestCase):
 @unittest.skipUnless(_gcc(), "needs a host C compiler for the generated code")
 class LocalTraceTests(unittest.TestCase):
     """Nakagawa's trace of the fixtures, the measured PSP streams, and a codegen mutation."""
+
+    data: ClassVar[dict[str, Any]]
+    tmp: ClassVar[tempfile.TemporaryDirectory[str]]
+    lines: ClassVar[dict[str, list[str]]]
 
     @classmethod
     def setUpClass(cls) -> None:

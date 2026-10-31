@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import ClassVar, cast
 
 try:
     import ci_paths
@@ -109,6 +110,11 @@ def _step_bash() -> tuple[str | None, str]:
 class LiveRepositoryPlanTests(unittest.TestCase):
     """The committed data and the tracked test modules, exactly as CI consumes them."""
 
+    modules: ClassVar[list[str]]
+    data: ClassVar[ci_test_shards.WeightData]
+    python_job: ClassVar[str]
+    num_shards: ClassVar[int]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.modules = ci_test_shards.discover_modules()
@@ -160,7 +166,7 @@ class LiveRepositoryPlanTests(unittest.TestCase):
         plan = ci_test_shards.plan_shards(self.modules, self.data, self.num_shards)
 
         def cost(name: str) -> float:
-            return self.data.weights.get(name, self.data.default_seconds)
+            return cast(float, self.data.weights.get(name, self.data.default_seconds))
 
         round_robin = [0.0] * self.num_shards
         for index, name in enumerate(self.modules):
@@ -178,7 +184,8 @@ class LiveRepositoryPlanTests(unittest.TestCase):
         )
         fallback = re.search(r"python_shards \|\| '(\[[^']*\])'", self.python_job)
         self.assertIsNotNone(fallback)
-        self.assertEqual(json.loads(fallback.group(1)), list(range(ci_paths.PYTHON_SHARDS_FULL)))
+        self.assertEqual(json.loads(cast(re.Match[str], fallback).group(1)),
+                         list(range(ci_paths.PYTHON_SHARDS_FULL)))
         self.assertIn("NUM_SHARDS: ${{ needs.classify.outputs.python_num_shards }}", self.python_job)
         self.assertIn("PYTHON_SCOPE: ${{ needs.classify.outputs.python_scope }}", self.python_job)
         self.assertNotIn("< <(python tools/ci_test_shards.py", self.python_job,

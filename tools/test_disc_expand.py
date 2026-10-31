@@ -26,6 +26,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from typing import ClassVar
 from unittest import mock
 import zlib
 
@@ -156,6 +157,12 @@ def _have_compiler() -> bool:
 
 @unittest.skipUnless(_have_compiler(), "no C compiler to build nk_disc_expand (SKIP, not a pass)")
 class DiscExpandToolTests(unittest.TestCase):
+    _tmp: ClassVar[tempfile.TemporaryDirectory[str]]
+    root: ClassVar[Path]
+    iso_path: ClassVar[Path]
+    iso: ClassVar[bytes]
+    images: ClassVar[dict[str, Path]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls._tmp = tempfile.TemporaryDirectory(prefix="nk-disc-expand-")

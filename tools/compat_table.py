@@ -35,7 +35,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 TOOLS = Path(__file__).resolve().parent
 if str(TOOLS) not in sys.path:
@@ -143,7 +143,7 @@ def cause_of(record: dict[str, Any], codes: frozenset[str]) -> str:
 def verification_of(record: dict[str, Any]) -> str:
     tier = (record.get("verification") or {}).get("tier") if isinstance(
         record.get("verification"), dict) else None
-    return tier if tier in VERIFICATION_COLUMNS else disc_verify.NOT_CHECKED
+    return cast(str, tier) if tier in VERIFICATION_COLUMNS else disc_verify.NOT_CHECKED
 
 
 def _seconds(value: Any) -> int | None:
@@ -185,7 +185,8 @@ def summarize(manifest: dict[str, Any], codes: frozenset[str] | None = None) -> 
         grid[(tier, verification_of(record))] += 1
         causes[(tier, cause_of(record, codes))] += 1
         settings[_settings_key(record)] += 1
-    datafile = manifest.get("datafile") if isinstance(manifest.get("datafile"), dict) else {}
+    datafile = (cast(dict[str, Any], manifest.get("datafile"))
+                if isinstance(manifest.get("datafile"), dict) else {})
     version = datafile.get("version")
     return {
         "format": "nakagawa-compat-summary",
@@ -235,7 +236,7 @@ def _settings_sentence(settings: list[dict[str, Any]]) -> str:
                   else "an unrecorded commit")
         # Whether the build decrypted the disc's own program; an older run didn't say.
         decrypt = {True: ", decrypting each disc's program",
-                   False: ", without decrypting"}.get(row.get("decrypt"), "")
+                   False: ", without decrypting"}.get(cast(bool, row.get("decrypt")), "")
         parts.append(f"{_number(row['discs'])} built from {commit}, with {budget} and {launch}"
                      f"{decrypt}")
     sentence = "; ".join(parts) + "."

@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import unittest
+from typing import Any, cast
 
 from tools.psp_oracle import oracle_matrix as om
 
@@ -155,7 +156,7 @@ class MatrixTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def plan_dict(self, cases: list[dict[str, object]], **extra: object) -> dict[str, object]:
+    def plan_dict(self, cases: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
         return {
             "schema": 1,
             "matrix_id": "m1",
@@ -177,12 +178,12 @@ class MatrixTestCase(unittest.TestCase):
             **extra,
         }
 
-    def write_plan(self, value: dict[str, object]) -> Path:
+    def write_plan(self, value: dict[str, Any]) -> Path:
         path = self.private / "plan.json"
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
-    def load(self, cases: list[dict[str, object]], **extra: object) -> om.MatrixPlan:
+    def load(self, cases: list[dict[str, Any]], **extra: Any) -> om.MatrixPlan:
         return om.load_plan(self.write_plan(self.plan_dict(cases, **extra)), repo_root=self.repo)
 
     def runner(self, plan: om.MatrixPlan, device: FakeDevice) -> om.MatrixRunner:
@@ -193,8 +194,8 @@ class MatrixTestCase(unittest.TestCase):
     def device(self, **behaviours: str) -> FakeDevice:
         return FakeDevice(self.repo, self.lock_path, {k.replace("_", "-"): v for k, v in behaviours.items()})
 
-    def lock(self) -> dict[str, object]:
-        return json.loads(self.lock_path.read_text(encoding="utf-8"))
+    def lock(self) -> dict[str, Any]:
+        return cast(dict[str, Any], json.loads(self.lock_path.read_text(encoding="utf-8")))
 
 
 class PlanValidationTests(MatrixTestCase):
@@ -504,7 +505,7 @@ class MatrixExecutionTests(MatrixTestCase):
 
 class ClassifyLaunchTests(MatrixTestCase):
     def classify(self, path: Path, **overrides):
-        values = dict(case=om.MatrixCase("delay-zero", 60.0), epoch_boot=80, probe_exit=0,
+        values: dict[str, Any] = dict(case=om.MatrixCase("delay-zero", 60.0), epoch_boot=80, probe_exit=0,
                       probe_stdout='{"boots": [80]}', runner_report_path=path, launch_started_ns=time.time_ns(),
                       staged={"transport-write": "a" * 64, "delay-zero": "b" * 64}, source_commit=COMMIT,
                       expected_firmware="6.6.1")

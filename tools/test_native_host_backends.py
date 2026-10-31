@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import ClassVar, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -72,7 +73,7 @@ CORE_SOURCES = [
 
 
 def _compile_object(
-    owner: type[unittest.TestCase],
+    owner: type[NativeHostBackendTests],
     source: str,
     object_name: str,
     extra_flags: tuple[str, ...] = (),
@@ -92,7 +93,7 @@ def _compile_object(
 
 
 def _build_and_run(
-    test_case: unittest.TestCase,
+    test_case: NativeHostBackendTests,
     test_source: str,
     exe_stem: str,
     extra_sources: tuple[str, ...] = (),
@@ -171,7 +172,7 @@ def _build_and_run(
                     if "nakagawa" in path.name.lower())
     test_case.assertEqual(
         leaked, [], f"{test_source} wrote into the developer's profile before isolating it")
-    return run.stdout
+    return cast(str, run.stdout)
 
 
 def _function_body(source: str, head: str) -> str:
@@ -183,6 +184,9 @@ def _function_body(source: str, head: str) -> str:
 
 
 class NativeHostBackendTests(unittest.TestCase):
+    _object_dir: ClassVar[Path]
+    _objects: ClassVar[dict[str, Path]]
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
@@ -200,7 +204,7 @@ class NativeHostBackendTests(unittest.TestCase):
         (ROOT / "build").mkdir(exist_ok=True)
 
         cls._object_dir = Path(tempfile.mkdtemp(prefix="nk_backend_objects_"))
-        cls._objects: dict[str, Path] = {}
+        cls._objects = {}
         common_sources = [*CORE_SOURCES, PLATFORM_SRC, "src/rt/pgf_public.c", "src/core/nk_pgf_host.c"]
         for source in common_sources:
             cls._objects[source] = _compile_object(
