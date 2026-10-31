@@ -1063,10 +1063,10 @@ One console is one data point; see §11. Nothing here closes issue #70
     the sixteen logic operations, and transform-mode triangles and sprites.
 
 - **PSP-3000 single-case runs of the `ge-mip` and `ge-sync-ids` probes on commit `66940d76` (2026-10-31)**:
-  firmware 6.61, PSPLink 3.2.1, operator-declared model PSP-3000, boot 86. PSPLink `pspver` read 6.6.0
-  (`0x06060010`) at the cited launch and 6.6.1 (`0x06060110`) at an earlier launch on the same boot; the
-  device's own `sceKernelDevkitVersion` answer changed between them, and the runner records what `pspver`
-  prints. One launch of case 126 in `fixtures/psp_oracle/probe_ge_sample.c` (`ge-mip`) and case 78 in
+  system software 6.61, ARK-5.1.0 (owner); `pspver` 6.6.0. PSPLink 3.2.1, operator-declared model PSP-3000,
+  boot 86. PSPLink `pspver` read 6.6.0 (`0x06060010`) at the cited launch, and that is the firmware declared to
+  the runner; it read 6.6.1 (`0x06060110`) at an earlier launch on the same boot. The device's own
+  `sceKernelDevkitVersion` answer changed between them, and the runner records what `pspver` prints. One launch of case 126 in `fixtures/psp_oracle/probe_ge_sample.c` (`ge-mip`) and case 78 in
   `fixtures/psp_oracle/probe.c` (`ge-sync-ids`) after the `transport-write` preflight (PSP-TRANSPORT-001 is not
   re-cited). Both envelopes are acceptance-eligible with 0 blockers: evidence class `PSP_HARDWARE`, source
   commit binding `MATCH` on a clean committed tree, strict golden sequences of 285 `ge-mip` records and 17
@@ -2954,7 +2954,8 @@ not expected PSP values.
 
 ### PSP-GE-SYNC-001 runs 2026-10-31
 
-Four `ge-sync-ids` launches, each preceded by `transport-write`, ran on the project PSP-3000 (firmware 6.61) on
+Four `ge-sync-ids` launches, each preceded by `transport-write`, ran on the project PSP-3000 (system software
+6.61, ARK-5.1.0 (owner); `pspver` 6.6.0 except where noted) on
 2026-10-31 under the hardware-lock protocol: revision `96fe29f6` on boot 80 and `f6da6125` on boot 81 (PSPLink
 `pspver` 6.6.0, standalone PSPLink after a soft reset; complete but not acceptance-eligible, their bounded
 blocking cells were recorded as `TIMEOUT`), then `66940d76`, which records that outcome as data (`out1` = 0, the

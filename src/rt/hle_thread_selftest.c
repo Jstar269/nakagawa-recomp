@@ -21457,8 +21457,8 @@ static void test_ge_mip_cells_software_contract(void) {
     sr_hle_test_ge_lists_reset();
 }
 
-/* PSP-GE-MIP-001 (#1373): the window digest each cell left on a PSP-3000 (firmware 6.61; probe
- * case ge-mip at 66940d76, docs/HARDWARE_ORACLE.md). Index k is gm_cells[k]. `modelled` is 0
+/* PSP-GE-MIP-001 (#1373): the window digest each cell left on a PSP-3000 (system software 6.61,
+ * ARK-5.1.0; pspver 6.6.0; probe case ge-mip at 66940d76, docs/HARDWARE_ORACLE.md). Index k is gm_cells[k]. `modelled` is 0
  * for the two cells whose w varies across the window: there the PSP holds one level of detail
  * per 4-pixel span of a row at a triangle-dependent point (ge.c tex_detail16), which the
  * software GE does not model, so their digests are recorded but not required. */

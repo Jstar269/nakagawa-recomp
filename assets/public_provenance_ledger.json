@@ -1687,7 +1687,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e029e0c0ab81cff3e0763ee698ded90b6ce75fd490bba3c91706311e1ef18f0a"
+      "sha256": "8873436bdf624d214153f9ecbd1d5309f0f51cdf384b42bf62a899fc1e3a27a2"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -9615,7 +9615,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0177a534b246ac1fd2e8aa4322094a26a55a9a3b0967c2fad8b5d3ad924f7440"
+      "sha256": "b9f8d96baaaec786a23175929377b45b8dcf73145bfe02976357e6e20882822b"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -14385,7 +14385,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2a4d06b1ef7d4a0e5fceba27c59b15b80c31b8d8d7b4bc406f95561b1375d9c0"
+      "sha256": "d1ed507e3a9f77823cda7951ad61d7a4e9e937a31e5fb1f2e180af2fb5fa397c"
     },
     {
       "path": "tools/psp_oracle/oracle_matrix.py",
