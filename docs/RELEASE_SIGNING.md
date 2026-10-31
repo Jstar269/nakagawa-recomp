@@ -133,10 +133,15 @@ player hides a demo whose file no longer matches.
 
 **What the attestations cover.** The SLSA Build L2 attestations cover the bytes the workflow built, which
 are unsigned. A signature changes a file's SHA-256, so `gh attestation verify` passes on the unsigned file and
-fails on the signed one. The tool therefore writes `signing-record.json` at the package root, listing the
-unsigned and the signed SHA-256 of each signed file and the signer. The release notes say so.
+fails on the signed one. Re-keying `bin/runtime-manifest.json` (below) changes a third attested file the same
+way. The tool therefore writes `signing-record.json` at the package root: the unsigned and the signed SHA-256
+of each signed file, the attested and the refreshed SHA-256 of the runtime manifest, and the signer. A
+downloader checks the attestations on the unsigned bundle, which the maintainer keeps with the release
+records (a workflow artifact expires after 90 days), and matches its hashes to the record. The release notes
+say so.
 
-**Requirements.** The Windows SDK (`signtool.exe`), PowerShell 7.4 or later, and one of:
+**Requirements.** The Windows SDK (`signtool.exe`), PowerShell 7.4 or later, Python on `PATH` (or
+`$env:PYTHON`) for the runtime manifest, and one of:
 
 - a code-signing certificate in a Windows certificate store, chosen by its SHA-1 thumbprint. A certificate on a
   hardware token or behind a cloud signing provider's key storage provider shows up there too;
@@ -167,10 +172,14 @@ package is never published.
 Signing the binaries in the attestation workflow, so that the attestation covers the signed bytes, needs the
 key to be reachable from CI. That is a separate decision and is not part of this procedure.
 
+**If a step fails**, the script restores the unsigned executables and the previous runtime manifest and
+removes the record, so the stage is either untouched or completely signed.
+
 **Reproducibility.** An unsigned package is byte-for-byte reproducible
-([check](PREVIEW_RELEASE.md#check-that-the-package-is-reproducible)). A signed package is reproducible apart
-from the two signatures: a timestamp makes each signing run different. Check a signed package by comparing
-the unsigned files and the `unsigned_sha256` values in `signing-record.json`.
+([check](PREVIEW_RELEASE.md#check-that-the-package-is-reproducible)). Two signed runs differ in the two
+signatures (each timestamp is different) and in everything that describes the signed bytes: the three SBOMs,
+`bin/runtime-manifest.json`, `SHA256SUMS.txt` and `signing-record.json`. Check a signed package by building the
+same inputs unsigned and comparing it with the unsigned bundle's hashes in `signing-record.json`.
 
 ## Tests
 

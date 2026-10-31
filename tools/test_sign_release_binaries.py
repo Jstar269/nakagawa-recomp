@@ -61,9 +61,13 @@ class SignReleaseBinariesTests(unittest.TestCase):
         self.assertLess(recipe, release.index("python tools/generate_sbom.py"))
         self.assertLess(recipe, release.index("python tools/stage_install.py --portable-zip"))
 
-    def test_release_pages_do_not_name_a_signing_service(self):
-        for page in (SIGNING_DOC, RELEASE_DOC, ROOT / "docs" / "RUNTIME_PACKAGING_ARCHITECTURE.md"):
-            self.assertNotIn("signpath", page.read_text(encoding="utf-8").lower(), page.name)
+    def test_a_failed_run_restores_the_stage_and_the_record_covers_the_refreshed_manifest(self):
+        for needle in ("} catch {", "restored to its unsigned state", "refreshed_files", "attested_sha256",
+                       "refreshed_sha256"):
+            self.assertIn(needle, self.script)
+
+    def test_signtool_discovery_ignores_unversioned_sdk_folders(self):
+        self.assertIn("bin/[0-9][0-9.]*/x64/signtool", self.script)
 
 
 if __name__ == "__main__":

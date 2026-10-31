@@ -121,12 +121,20 @@ def compare_zips(first: Path, second: Path) -> list[dict]:
 
 
 def _tree(root: Path) -> dict[str, Path]:
+    """Files by relative POSIX name, and each empty folder as ``name/`` (the ZIP stores both)."""
     files: dict[str, Path] = {}
-    for folder, _dirs, names in os.walk(root):
+    for folder, dirs, names in os.walk(root):
+        here = Path(folder)
+        if not dirs and not names and here != root:
+            files[here.relative_to(root).as_posix() + "/"] = here
         for name in names:
-            path = Path(folder) / name
+            path = here / name
             files[path.relative_to(root).as_posix()] = path
     return files
+
+
+def _size(path: Path) -> str:
+    return "empty folder" if path.is_dir() else f"{path.stat().st_size} bytes"
 
 
 def compare_folders(first: Path, second: Path) -> list[dict]:
@@ -134,10 +142,10 @@ def compare_folders(first: Path, second: Path) -> list[dict]:
     found: list[dict] = []
     a, b = _tree(first), _tree(second)
     for name in sorted(set(a) - set(b)):
-        found.append({"kind": "only-in-first", "entry": name, "detail": f"{a[name].stat().st_size} bytes"})
+        found.append({"kind": "only-in-first", "entry": name, "detail": _size(a[name])})
     for name in sorted(set(b) - set(a)):
-        found.append({"kind": "only-in-second", "entry": name, "detail": f"{b[name].stat().st_size} bytes"})
-    for name in sorted(set(a) & set(b)):
+        found.append({"kind": "only-in-second", "entry": name, "detail": _size(b[name])})
+    for name in sorted(n for n in set(a) & set(b) if not n.endswith("/")):
         if a[name].stat().st_size != b[name].stat().st_size or sha256_file(a[name]) != sha256_file(b[name]):
             found.append({"kind": "content", "entry": name,
                           "detail": f"{a[name].stat().st_size} vs {b[name].stat().st_size} bytes, SHA-256 differs"})

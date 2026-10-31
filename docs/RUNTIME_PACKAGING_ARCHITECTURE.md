@@ -607,7 +607,7 @@ ledger and prerequisite pins, packaged twice into two folders with the whole rec
 ([`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#check-that-the-package-is-reproducible)). The prerequisite source
 archive was identical. The portable ZIPs differed in five files under `source/.git` (the source export leaves
 a one-commit repository whose commit time and index timestamps change on every run), and so in
-`SHA256SUMS.txt`. After removing `source/.git`, which nothing reads, both ZIPs were byte-identical (9,215
+`SHA256SUMS.txt`. After removing `source/.git` (the installed `source/` never had one; see the recipe notes), both ZIPs were byte-identical (9,215
 files, 255,540,572 bytes). `--portable-zip` now refuses a stage that has a `.git` entry. Two clean builds of
 `nakagawa_player.exe` from one commit and one checkout path were also byte-identical. Whether two runs of the attestation workflow
 for one commit produce identical binaries was not measured; the check above reuses one bundle.

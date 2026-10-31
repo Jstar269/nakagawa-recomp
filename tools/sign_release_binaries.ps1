@@ -62,7 +62,7 @@ function Find-SignTool {
     $found = $null
     if (Test-Path -LiteralPath $kits -PathType Container) {
         $found = Get-ChildItem -Path $kits -Filter signtool.exe -Recurse -File |
-            Where-Object { $_.FullName.Replace('\', '/') -match '/x64/signtool\.exe$' } |
+            Where-Object { $_.FullName.Replace('\', '/') -match '/bin/[0-9][0-9.]*/x64/signtool\.exe$' } |
             Sort-Object { [version]($_.FullName.Replace('\', '/') -replace '^.*/bin/([0-9.]+)/x64/.*$', '$1') } -Descending |
             Select-Object -First 1
     }
@@ -107,51 +107,81 @@ foreach ($file in $Files) {
 }
 if (Test-Path -LiteralPath (Join-Path $Root $RecordName)) { Fail "SIGN_RECORD_EXISTS: $RecordName is already in the stage" }
 
+# Every change below is undone if any step fails, so a stage is either untouched or completely signed: the
+# unsigned files and the previous runtime manifest are kept in a scratch folder until the record is written.
+$manifestPath = Join-Path (Join-Path $Root 'bin') 'runtime-manifest.json'
+$backup = Join-Path ([System.IO.Path]::GetTempPath()) ('nk-sign-backup-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $backup | Out-Null
+$hadManifest = Test-Path -LiteralPath $manifestPath -PathType Leaf
+$attestedManifestSha = $null
+foreach ($file in $Files) { Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $backup $file.Name) }
+if ($hadManifest) {
+    Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $backup 'runtime-manifest.json')
+    $attestedManifestSha = Get-Sha256 $manifestPath
+}
 $records = @()
 $certificate = $null
-foreach ($file in $Files) {
-    $relative = Relative $Root $file.FullName
-    $unsigned = Get-Sha256 $file.FullName
-    $arguments = @('sign', '/fd', 'sha256')
-    if ($Thumbprint) { $arguments += @('/sha1', $Thumbprint) }
-    if ($TimestampUrl) { $arguments += @('/tr', $TimestampUrl, '/td', 'sha256') }
-    $arguments += $ExtraSigntoolArgument
-    $arguments += $file.FullName
-    & $tool @arguments
-    if ($LASTEXITCODE -ne 0) { Fail "SIGN_FAILED: signtool exited $LASTEXITCODE for $relative" }
-    & $tool verify /pa /all $file.FullName 2>&1 | Out-Null
-    $trusted = $LASTEXITCODE -eq 0
-    if (-not $trusted -and -not $TestCertificate) { Fail "SIGN_VERIFY: signtool verify /pa failed for $relative" }
-    $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
-    if (-not $signature.SignerCertificate) { Fail "SIGN_VERIFY: $relative carries no signature after signing" }
-    if ($certificate -and $certificate.Thumbprint -ne $signature.SignerCertificate.Thumbprint) { Fail 'SIGN_MIXED_CERTIFICATES: files were signed by different certificates' }
-    $certificate = $signature.SignerCertificate
-    $records += [ordered]@{
-        path            = $relative
-        unsigned_sha256 = $unsigned
-        signed_sha256   = Get-Sha256 $file.FullName
+try {
+    foreach ($file in $Files) {
+        $relative = Relative $Root $file.FullName
+        $unsigned = Get-Sha256 $file.FullName
+        $arguments = @('sign', '/fd', 'sha256')
+        if ($Thumbprint) { $arguments += @('/sha1', $Thumbprint) }
+        if ($TimestampUrl) { $arguments += @('/tr', $TimestampUrl, '/td', 'sha256') }
+        $arguments += $ExtraSigntoolArgument
+        $arguments += $file.FullName
+        & $tool @arguments
+        if ($LASTEXITCODE -ne 0) { Fail "SIGN_FAILED: signtool exited $LASTEXITCODE for $relative" }
+        & $tool verify /pa /all $file.FullName 2>&1 | Out-Null
+        $trusted = $LASTEXITCODE -eq 0
+        if (-not $trusted -and -not $TestCertificate) { Fail "SIGN_VERIFY: signtool verify /pa failed for $relative" }
+        $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+        if (-not $signature.SignerCertificate) { Fail "SIGN_VERIFY: $relative carries no signature after signing" }
+        if ($certificate -and $certificate.Thumbprint -ne $signature.SignerCertificate.Thumbprint) { Fail 'SIGN_MIXED_CERTIFICATES: files were signed by different certificates' }
+        $certificate = $signature.SignerCertificate
+        $records += [ordered]@{
+            path            = $relative
+            unsigned_sha256 = $unsigned
+            signed_sha256   = Get-Sha256 $file.FullName
+        }
     }
-}
 
-# bin/runtime-manifest.json lists the size and SHA-256 of every .exe and .dll in bin/: refresh it.
-$python = if ($env:PYTHON) { $env:PYTHON } else { 'python' }
-$tools = $PSScriptRoot
-& $python (Join-Path $tools 'stage_runtime_dlls.py') --target (Join-Path $Root 'bin') --write-runtime-manifest-only
-if ($LASTEXITCODE -ne 0) { Fail 'SIGN_MANIFEST: refreshing bin/runtime-manifest.json failed' }
-& $python (Join-Path $tools 'stage_runtime_dlls.py') --target (Join-Path $Root 'bin') --verify-runtime-manifest
-if ($LASTEXITCODE -ne 0) { Fail 'SIGN_MANIFEST: the refreshed runtime manifest does not verify' }
+    # bin/runtime-manifest.json lists the size and SHA-256 of every .exe and .dll in bin/: refresh it.
+    $python = if ($env:PYTHON) { $env:PYTHON } else { 'python' }
+    $tools = $PSScriptRoot
+    & $python (Join-Path $tools 'stage_runtime_dlls.py') --target (Join-Path $Root 'bin') --write-runtime-manifest-only
+    if ($LASTEXITCODE -ne 0) { Fail 'SIGN_MANIFEST: refreshing bin/runtime-manifest.json failed (needs Python on PATH, or $env:PYTHON)' }
+    & $python (Join-Path $tools 'stage_runtime_dlls.py') --target (Join-Path $Root 'bin') --verify-runtime-manifest
+    if ($LASTEXITCODE -ne 0) { Fail 'SIGN_MANIFEST: the refreshed runtime manifest does not verify' }
 
-$record = [ordered]@{
-    format           = 'nakagawa-signing-record'
-    schema           = 1
-    test_certificate = [bool]$TestCertificate
-    signer_subject   = $certificate.Subject
-    signer_thumbprint = $certificate.Thumbprint.ToLowerInvariant()
-    digest_algorithm = 'sha256'
-    timestamped      = [bool]$TimestampUrl
-    files            = $records
+    # The workflow attests bin/runtime-manifest.json too, and it is rewritten here: record its two digests.
+    $refreshed = @([ordered]@{
+        path             = 'bin/runtime-manifest.json'
+        attested_sha256  = $attestedManifestSha
+        refreshed_sha256 = Get-Sha256 $manifestPath
+    })
+    $record = [ordered]@{
+        format           = 'nakagawa-signing-record'
+        schema           = 1
+        test_certificate = [bool]$TestCertificate
+        signer_subject   = $certificate.Subject
+        signer_thumbprint = $certificate.Thumbprint.ToLowerInvariant()
+        digest_algorithm = 'sha256'
+        timestamped      = [bool]$TimestampUrl
+        files            = $records
+        refreshed_files  = $refreshed
+    }
+    $json = ($record | ConvertTo-Json -Depth 4) + "`n"
+    [System.IO.File]::WriteAllText((Join-Path $Root $RecordName), $json, [System.Text.UTF8Encoding]::new($false))
+} catch {
+    foreach ($file in $Files) { Copy-Item -LiteralPath (Join-Path $backup $file.Name) -Destination $file.FullName -Force }
+    if ($hadManifest) { Copy-Item -LiteralPath (Join-Path $backup 'runtime-manifest.json') -Destination $manifestPath -Force }
+    else { Remove-Item -LiteralPath $manifestPath -Force -ErrorAction Ignore }
+    Remove-Item -LiteralPath (Join-Path $Root $RecordName) -Force -ErrorAction Ignore
+    Write-Warning 'Signing failed: the stage was restored to its unsigned state.'
+    throw
+} finally {
+    Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction Ignore
 }
-$json = ($record | ConvertTo-Json -Depth 4) + "`n"
-[System.IO.File]::WriteAllText((Join-Path $Root $RecordName), $json, [System.Text.UTF8Encoding]::new($false))
 Write-Output "signed $($records.Count) file(s) as $($certificate.Subject); wrote $RecordName and refreshed bin/runtime-manifest.json"
 if ($TestCertificate) { Write-Warning 'TEST CERTIFICATE: this package is a rehearsal and is never published.' }

@@ -145,6 +145,18 @@ class CompareFolderTests(unittest.TestCase):
             self.assertEqual([(item["kind"], item["entry"]) for item in report["differences"]],
                              [("only-in-second", "extra.txt"), ("content", "SBOM.json")])
 
+    def test_an_empty_folder_is_a_difference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for side in ("a", "b"):
+                (root / side).mkdir()
+                (root / side / "x.txt").write_bytes(b"x")
+            (root / "b" / "prereqs" / "tmp").mkdir(parents=True)
+            report = package_repro_check.compare(root / "a", root / "b")
+            self.assertFalse(report["identical"])
+            self.assertEqual([(item["kind"], item["entry"]) for item in report["differences"]],
+                             [("only-in-second", "prereqs/tmp/")])
+
 
 if __name__ == "__main__":
     unittest.main()

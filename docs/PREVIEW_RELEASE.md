@@ -262,7 +262,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $Bin 'runtime-manifest.json') -PathT
     if ($LASTEXITCODE -ne 0) { throw 'Recording the runtime manifest failed.' }
 }
 # The source export is a one-commit Git repository whose commit time and index timestamps change on every
-# run, so source/.git would make two builds differ. Nothing reads it: the installed source/ has no .git.
+# run, so source/.git would make two builds differ. The installed source/ has no .git either (see below).
 Remove-Item -LiteralPath (Join-Path $Source '.git') -Recurse -Force
 # Writes SHA256SUMS.txt, checks bin/ against its runtime manifest, then writes the ZIP with
 # sorted entries dated at the candidate commit's time, fixed permissions and no extra fields,
@@ -290,8 +290,8 @@ The source archive step writes `nakagawa-recomp-<version>-prerequisite-sources.z
 ### Check that the package is reproducible
 
 Two builds of one package must give the same bytes: the same commit, the same attested bundle, the same
-trusted ledger copy and the same prerequisite pins. Run the recipe twice, into two different artifact roots, and
-compare the results:
+trusted ledger copy and the same prerequisite pins. Run the recipe twice, into two different artifact roots (the recipe writes under `$env:TEMP`; set
+`$env:TEMP` to another folder for the second run), and compare the results:
 
 ```powershell
 python tools/package_repro_check.py $ZipFirst $ZipSecond
@@ -307,15 +307,19 @@ folders next to find the file behind a content difference. The causes that are k
   CPython for both runs; `--portable-zip` reports the zlib version it used.
 - **A different attested bundle.** Two workflow runs of one commit are two bundles. Both runs of the check use
   the same downloaded bundle.
-- **A signature.** A signed package differs by its signatures and timestamps
-  ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md#sign-the-windows-binaries-authenticode)); compare the unsigned
-  files instead.
+- **A signature.** Two signed packages differ in the signatures and in every file that describes the signed
+  bytes ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md#sign-the-windows-binaries-authenticode)); check the unsigned
+  build instead.
 
 One cause was found by this check and is fixed rather than allowed. `tools/build_public_export.py` leaves a
 one-commit repository in `source/.git`, and its commit time and index timestamps change on every export, so two
-otherwise identical packages differed in five files and in `SHA256SUMS.txt`. Nothing reads it (the installed
-`source/` has no `.git`), so the recipe deletes it before archiving and `--portable-zip` refuses a stage that
-still has a `.git` entry.
+otherwise identical packages differed in five files and in `SHA256SUMS.txt`. The recipe deletes it before
+archiving and `--portable-zip` refuses a stage that still has a `.git` entry. The package stays complete: the
+installed `source/` (`tools/stage_install.py --dest`) has never had a `.git`, and the package identity, the
+export manifest and the prerequisite check do not use it. One consumer is the Makefile's build-identity lookup
+(`git rev-parse HEAD`): a title built from the packaged `source/` now records no build identity, the documented
+state for a source drop, where it used to record the export commit's id, which named no real commit and changed
+on every export. `tools/flight_diff.py` refuses a bundle without an identity.
 
 Before a maintainer treats the zip as publishable, inspect it with:
 
