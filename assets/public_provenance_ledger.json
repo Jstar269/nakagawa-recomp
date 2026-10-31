@@ -5809,7 +5809,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5da9790a53f7780123a86f08a69edb808352af201005492c1ff191aeb35bd32f"
+      "sha256": "42df1946ce1559796f3d58059f8b8d228e3fe789b86adf0ae7b6f84195fd0af3"
     },
     {
       "path": "src/rt/atrac3p_bridge.h",
@@ -5821,7 +5821,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "51c3eefcb8f92d866b743bbe8c9466d22e4452cde7fe67da5c0bfc75b6dfafaa"
+      "sha256": "24bdc3849734b85531d914a1004d87a9f4eaf10b486426dfce4f08fac8dd6cc5"
     },
     {
       "path": "src/rt/atrac3p_bridge_selftest.c",
@@ -5833,7 +5833,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6da3a1126f77ed20366e641cbe738072ab9c4a486c4bf98afbcbc134fe915e81"
+      "sha256": "c0c037dacecc3fa201ccf83c56c21c5b47fc213db58eb52d6b77c2539434e465"
     },
     {
       "path": "src/rt/atrac3p_selftest.c",
@@ -5858,7 +5858,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8bee724a89d9c045cc9a4b8185d78819665c3b068563ec82a92cf55e6c941a3b"
+      "sha256": "d51d6b6ebe5108949ffb52e9cfec93e75b0191aed709342c37b25ad833e1de97"
     },
     {
       "path": "src/rt/audio_resample.c",
@@ -9539,7 +9539,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8e53341a49e43439ccbbdc970248045cf41dfcedc94ae1f5636723be14713a9c"
+      "sha256": "198df4b92c825d7d208a9e0704c5ed72108455c5a34c09cd7eea7ea2538f2db6"
     },
     {
       "path": "src/rt/hle_evidence.h",
@@ -9737,7 +9737,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a7f66b2b612611efaf5c1aea3afadb599ec51435b11304381301916410b2c184"
+      "sha256": "a9c8ed9b62b8c6c6171e0cd3f7096eb6235b9ab6ed8a22acfb02e372bbd477d4"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -10122,7 +10122,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a72ea2146b57d9e60e5dcbab398f5345d75200635492a1eda4ab47d286be252"
+      "sha256": "3e69067d34c793164c53b29beb90c7e224b118818e2537709c4f8a38dd9b0901"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -10134,7 +10134,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1d086f842ef4b671bdf521e523d83cf5fd6cefbf41a4881a9b81fe9b777869f"
+      "sha256": "3d60f7402dde78daf7973ea605799e20f9fa319309bb7fe2bbaf7af97db7fa2a"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -10146,7 +10146,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8872eba20c32a68a6820e017b425f4caf6c75a40eeaf0323d58e833541a755e2"
+      "sha256": "a729740755f037e3d8923542e8e72f222118a0aef1e400ff6c523959fe1e229c"
     },
     {
       "path": "src/rt/psmf_producer_selftest.c",
