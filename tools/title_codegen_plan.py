@@ -1325,6 +1325,33 @@ def _make_input_images(
         raise PackageRouteError("PACKAGE_INVALID_ELF", str(exc)) from exc
 
 
+_UNIT_FALLBACK_ROW = re.compile(r"# unit (\S+) body (\S+) bytes ([0-9]+)")
+_UNIT_FALLBACK_LEVEL = re.compile(r"RECOMP_UNIT_OPT_(\S+) := (-O\w+)")
+
+
+def _read_unit_fallbacks(opt_makefile: Path) -> list[dict[str, Any]]:
+    """The units codegen compiles below the build's level (tools/codegen.py
+    write_unit_opt_makefile, #1730), one build-report row each. No file means none."""
+    if not opt_makefile.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    levels: dict[str, str] = {}
+    for line in opt_makefile.read_text(encoding="ascii").splitlines():
+        row = _UNIT_FALLBACK_ROW.fullmatch(line)
+        if row:
+            rows.append({"unit": row.group(1), "body": row.group(2), "bytes": int(row.group(3))})
+            continue
+        level = _UNIT_FALLBACK_LEVEL.fullmatch(line)
+        if level:
+            levels[level.group(1)] = level.group(2)
+    for row in rows:
+        if row["unit"] not in levels:
+            raise PackageRouteError(
+                "PACKAGE_INVALID_CODEGEN_REPORT", f"{opt_makefile.name}: {row['unit']} has no level")
+        row["level"] = levels[row["unit"]]
+    return rows
+
+
 def _read_codegen_fallbacks(
     stub_report: Path, sources: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1581,11 +1608,13 @@ def _read_static_coverage(path: Path) -> dict[str, Any] | None:
 
 def _is_aot_output(name: str, game_name: str) -> bool:
     """Whether ``name`` is generation-phase output: a required output, a C chunk, the LLVM
-    IR half of a chunk and the backend's record (``--backend=llvm``, #330), or a system
-    library's own translation unit (``nk_lib_*.c``, named apart from the game so that
-    another game's build compiles the identical file)."""
+    IR half of a chunk and the backend's record (``--backend=llvm``, #330), the per-unit
+    optimization levels (``<game>_recomp_opt.mk``, #1730), or a system library's own
+    translation units (``nk_lib_*.c``, named apart from the game so that another game's
+    build compiles the identical files)."""
     return name in _aot_required_outputs(game_name) or (
-        name.startswith(f"{game_name}_recomp_") and Path(name).suffix.lower() in {".c", ".h", ".ll"}
+        name.startswith(f"{game_name}_recomp_")
+        and Path(name).suffix.lower() in {".c", ".h", ".ll", ".mk"}
     ) or name in (f"{game_name}_recomp_coverage.json", f"{game_name}_recomp_llvm.json") or bool(
         SHARED_LIBRARY_SOURCE_RE.fullmatch(name))
 
@@ -2284,6 +2313,13 @@ def build_package(
             "instructions": unsupported_instructions,
             "regions": unsupported_regions,
         }
+        # The level Make compiled the generated code with, and each unit codegen gave a
+        # lower one because it holds a single oversized body (#1730).
+        optimization = {
+            "recomp_opt": build_environment["RECOMP_OPT"],
+            "fallback_units": _read_unit_fallbacks(
+                build_workspace / f"{selected_name}_recomp_opt.mk"),
+        }
         coverage = {
             **analysis_summary,
             "aot_entries": len(entry_symbols),
@@ -2322,6 +2358,7 @@ def build_package(
             "tools": tools,
             "coverage": coverage,
             "unsupported": unsupported,
+            "optimization": optimization,
             "analysis_diagnostics": sorted(
                 diagnostics, key=lambda row: (row["module"], row["message"])
             ),

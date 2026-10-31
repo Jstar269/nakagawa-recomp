@@ -154,6 +154,13 @@ helpers into more functions of a smaller unit). Each compile job is then given m
 proportion to the target (256 bytes per byte, at least 1 GiB, at most the 3 GiB that
 count-based chunks need), so a host with little free memory still compiles several chunks
 at once.
+Only a single body can make its unit larger than the target, so codegen gives every body over
+`BODY_FALLBACK_BYTES` (4,000,000 bytes of C, the same in every build) a unit of its own that
+compiles at `-O0` (#1730). The generated `<game>_recomp_opt.mk` sets that level per object
+after `RECOMP_FLAGS`, so it is in the compile command and the object's cache key, and
+`build-report.json` lists each such unit under `optimization.fallback_units` with the level
+the rest compiled at. Up to that size, gcc's cost grows linearly with the body: a generated body
+chained to 4 MB compiles at `-O2` in about a minute and 670 MB.
 Current Make recipes cannot transport whitespace or shell-sensitive characters
 in bound paths. Inputs at such paths are copied byte-for-byte into
 `<output-dir>/staged-inputs/` (hashes are unchanged). When the output directory
