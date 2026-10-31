@@ -323,7 +323,8 @@ def write_elf_with_data_jal_in_text_to_rodata(path: Path) -> int:
     return target
 
 
-def write_zero_based_module(path: Path, *, relocatable: bool = True) -> None:
+def write_zero_based_module(path: Path, *, relocatable: bool = True,
+                            unrelocated_call: int = 0x0C000005, data_pointer: int = 0x28) -> None:
     """A zero-based PSP module (ET_SCE_PRX) whose loader relocations name its addresses.
 
     .text holds three functions: 0x00 (the entry) calls 0x20 through a relocated jal and
@@ -331,13 +332,14 @@ def write_zero_based_module(path: Path, *, relocatable: bool = True) -> None:
     against its executable uses for a call into it; 0x20 is a leaf; 0x28 is a leaf reached
     only through the relocated pointer in .data. .data also holds the integer 8, equal to
     the text offset of a delay slot inside 0x00, with no relocation. `relocatable=False`
-    writes the same bytes as an ET_EXEC with no relocation section.
+    writes the same bytes as an ET_EXEC with no relocation section. `unrelocated_call`
+    and `data_pointer` replace the unrelocated jal word and the relocated pointer.
     """
     text = [
         0x27BDFFF0,  # 0x00 addiu sp, sp, -16
         0x0C000008,  # 0x04 jal 0x20 (R_MIPS_26)
         0x00000000,  # 0x08 nop
-        0x0C000005,  # 0x0c jal 0x14 (no relocation: outside the module)
+        unrelocated_call,  # 0x0c jal 0x14 (no relocation: outside the module)
         0x00000000,  # 0x10 nop
         0x27BD0010,  # 0x14 addiu sp, sp, 16
         0x03E00008,  # 0x18 jr ra
@@ -347,7 +349,7 @@ def write_zero_based_module(path: Path, *, relocatable: bool = True) -> None:
         0x03E00008,  # 0x28 jr ra
         0x00000000,  # 0x2c nop
     ]
-    data = [0x00000028, 0x00000008]  # 0x40: relocated pointer; 0x44: unrelocated integer
+    data = [data_pointer, 0x00000008]  # 0x40: relocated pointer; 0x44: unrelocated integer
     relocations = [(0x04, 4), (0x40, 2)]  # type-A (offset, info): R_MIPS_26, R_MIPS_32
     payload_off = 52 + 32
     image = bytearray(0x48)
@@ -540,6 +542,22 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertEqual(found, {0x0C})
         self.assertEqual(calls, {0x20})
         self.assertTrue({0x14, 0x18, 0x1C} <= covered)
+
+    def test_a_module_placed_at_a_load_address_keeps_its_unrelocated_calls(self) -> None:
+        # A module placed at a load address whose own calls carry no relocation was linked
+        # for that address: the unrelocated jal runs to its face value, 0x28 in the module
+        # there, so it is an edge. The pointer that also reached 0x28 is dropped here.
+        module = self.root / "placed-module.prx"
+        base = 0x08A00000
+        write_zero_based_module(module, unrelocated_call=0x0C000000 | ((base + 0x28) >> 2),
+                                data_pointer=0)
+        loaded = analyze.Elf(str(module), base=base)
+        self.assertTrue(loaded.relocated_words)
+
+        with redirect_stderr(io.StringIO()):
+            starts, _ = analyze.analyze(loaded)
+
+        self.assertIn(base + 0x28, set(starts))
 
     def test_a_fixed_address_image_keeps_every_word_as_address_evidence(self) -> None:
         # The same bytes as a fixed-address executable: its words are its addresses as they

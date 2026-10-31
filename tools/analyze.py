@@ -843,6 +843,19 @@ def _relocated_words(elf):
     return getattr(elf, "relocated_words", None)
 
 
+def _relocated_jumps(elf):
+    """The relocation map that decides j/jal evidence, or None when every jump counts.
+
+    An unrelocated j/jal runs to its face value. A relocatable module placed at a load
+    address (a nonzero base) whose own calls carry no relocation was linked for that
+    address, so their face values are its addresses there. Without a load address (base
+    0) such a face value cannot be told apart from an address in the executable that a
+    module calls by link address, so only the relocated jumps are edges.
+    """
+    relocated = _relocated_words(elf)
+    return None if relocated is None or getattr(elf, "base", None) else relocated
+
+
 def _relocated_as(relocated, address, field):
     """True when `address` may serve as address evidence: the image is not relocatable, or
     the loader rewrites that word's `field` (see _relocated_words)."""
@@ -1009,7 +1022,8 @@ def _constant_arguments_at_calls(elf, covered, relocated):
     traced words, the call's delay slot included. A run ends at a gap, after a control
     transfer's delay slot, and at any branch or jump target, where another path joins with
     other values. In a relocatable module each constant's low half must be a LO16 the
-    loader relocates, and the call a relocated jump, as for every other address evidence.
+    loader relocates, and the call a jump that names the module (_relocated_jumps), as for
+    every other address evidence.
     """
     addresses = sorted(covered)
     words = {}
@@ -1059,7 +1073,7 @@ def _constant_arguments_at_calls(elf, covered, relocated):
             pending = None
             a0, a1 = consts.get(4), consts.get(5)
             if (target is not None and a0 is not None and a1 is not None
-                    and _relocated_as(relocated, transfer, "jump26")
+                    and _relocated_as(_relocated_jumps(elf), transfer, "jump26")
                     and all(lo is not None and _relocated_as(relocated, lo, "lo16")
                             for _, lo in (a0, a1) if relocated is not None)):
                 yield target, a0[0], a1[0]
@@ -1128,11 +1142,11 @@ def trace_function(elf, start, ranges, covered, calls, hc, walked=None, unreloca
     # Without the memo every start re-expands the whole shared tail it reaches: a profiled
     # run of one large executable expanded each word about 190 times. `walked=None` is the
     # uncached walk, kept so tests can pin the memoized walk against it.
-    # In a relocatable module (_relocated_words) a j/jal the loader does not relocate names an
-    # address outside the module (a module linked against its executable calls into it this
-    # way), so its target is no edge into this module's code; the word is added to
-    # `unrelocated` when the caller passes a set.
-    relocated = _relocated_words(elf)
+    # In a relocatable module analysed without a load address (_relocated_jumps) a j/jal the
+    # loader does not relocate names an address outside the module (a module linked against
+    # its executable calls into it this way), so its target is no edge into this module's
+    # code; the word is added to `unrelocated` when the caller passes a set.
+    relocated = _relocated_jumps(elf)
     ranges = span_index(ranges)
     stack = [start]
     local = set()
@@ -3011,8 +3025,10 @@ def code_pointer_evidence(elf, ranges):
     """
     evidence = {kind: set() for kind in ("jal", "branch-link", "immediate", "data")}
     file_exec_ranges = _file_backed_exec_ranges(elf)
-    # A relocatable module's addresses are only the words its loader relocates.
+    # A relocatable module's addresses are only the words its loader relocates (its jumps:
+    # see _relocated_jumps).
     relocated = _relocated_words(elf)
+    jumps = _relocated_jumps(elf)
 
     hireg = {}
     clear_next = False
@@ -3023,7 +3039,7 @@ def code_pointer_evidence(elf, ranges):
         op = word >> 26
         if op == 3:  # jal
             target = (addr & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
-            if in_ranges(target, ranges) and _relocated_as(relocated, addr, "jump26"):
+            if in_ranges(target, ranges) and _relocated_as(jumps, addr, "jump26"):
                 evidence["jal"].add(target)
         elif op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT:
             target = branch_target(addr, word)
@@ -3084,6 +3100,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     ranges = exec_ranges(elf, extra_spans=extra_spans)
     file_exec_ranges = _file_backed_exec_ranges(elf)
     relocated = _relocated_words(elf)
+    jumps = _relocated_jumps(elf)
     # Executable segment bytes that a called pointer array proves hold code although the
     # section table names them data (see called_pointer_array_entries). Filled after the
     # first discovery round; only control flow from those entries reaches into them.
@@ -3313,7 +3330,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
             op = word >> 26
             if op == 2:  # j: tail call or intra-function goto -> weak
                 target = (addr & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
-                if in_ranges(target, ranges) and _relocated_as(relocated, addr, "jump26"):
+                if in_ranges(target, ranges) and _relocated_as(jumps, addr, "jump26"):
                     noisy.add(target)
                     jtails.add(target)
             if (word >> 16) == 0x27BD and (word & 0x8000):  # addiu $sp,$sp,-N prologue
