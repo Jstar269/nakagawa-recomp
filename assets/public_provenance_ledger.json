@@ -9737,7 +9737,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "cdc9b3b6c0cfdb5662a4aecb4ec01af612fc15f9d2cd1d03093f107c41fb6917"
+      "sha256": "e3af6b7b720e113a4c313dd09fcef883e3c0da31ee7b16fff31d40cd9ec26e6d"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -10122,7 +10122,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef584f055b6439088b78d9284b09fbb94e96c96010598db009f46fd876959a4f"
+      "sha256": "df1de36336b3b52b643a20268a3209636c1513c469b88cedba8e985f14672ef5"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -16125,7 +16125,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f87cb3774f2494c6d496707343c5e6fc6588be3ee9da5f57e34f9cd64446d661"
+      "sha256": "c617a81cfa84f23f963ba3623b6a8873b4dd4f25dec49360d829e830275ac3a6"
     },
     {
       "path": "tools/test_native_core_build.py",
