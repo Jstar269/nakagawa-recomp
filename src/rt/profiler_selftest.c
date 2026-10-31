@@ -33,12 +33,13 @@ static int s_failures;
  * reaches the emitter as one finished, newline-terminated string, so the stream sees one write
  * per line.  The production report path is driven through the test sink; with the old direct
  * fprintf(stderr, ...) the sink is never reached and the line count below is 0. */
-static char s_report_lines[4][2048];
-static size_t s_report_lens[4];
+#define REPORT_LINES 8
+static char s_report_lines[REPORT_LINES][2048];
+static size_t s_report_lens[REPORT_LINES];
 static int s_report_count;
 
 static void capture_report_line(const char *line, size_t len) {
-    if (s_report_count < 4 && len < sizeof s_report_lines[0]) {
+    if (s_report_count < REPORT_LINES && len < sizeof s_report_lines[0]) {
         memcpy(s_report_lines[s_report_count], line, len);
         s_report_lines[s_report_count][len] = '\0';
         s_report_lens[s_report_count] = len;
@@ -47,7 +48,7 @@ static void capture_report_line(const char *line, size_t len) {
 }
 
 static int whole_line(int i, const char *prefix) {
-    if (i >= s_report_count || i >= 4) return 0;
+    if (i >= s_report_count || i >= REPORT_LINES) return 0;
     const char *l = s_report_lines[i];
     size_t n = s_report_lens[i];
     return n > strlen(prefix) && strncmp(l, prefix, strlen(prefix)) == 0 &&
@@ -458,6 +459,9 @@ static void test_frame_intervals_and_work(void) {
     sr_perf_test_reinit();
 }
 
+static uint32_t fake_pc(void) { return 0x08804000u; }
+static uint32_t fake_uid(void) { return 7u; }
+
 /* SR_PERF_CSV alone turns the counters on and writes nothing to stderr, the cumulative
  * PERF_ATTRIB lines included; SR_PERF=0 keeps them off even with an output path (the benchmark's
  * profiler-off leg); with SR_PERF the attribution lines leave as one write each. */
@@ -479,20 +483,42 @@ static void test_files_only_counters(void) {
     set_env("SR_PERF", "0");
     sr_perf_test_reinit();
     CHECK(!sr_perf_enabled, "SR_PERF=0 keeps the counters off with SR_PERF_CSV set");
+    sr_perf_enable_counters();                   /* the HUD toggled on still collects */
+    CHECK(sr_perf_enabled, "the HUD toggle turns the counters on under SR_PERF=0");
 
+    /* The attribution lines' text is what tools/vblank_ledger.py parses: a late latch inside a
+     * syscall carries its sampled thread, PC and NID, and a collapse drops owed episodes. */
     set_env("SR_PERF", "1");
     sr_perf_test_reinit();
+    sr_rt_pc_fn = fake_pc;
+    sr_rt_uid_fn = fake_uid;
+    sr_rt_phase = SR_RT_PHASE_SYSCALL;
+    sr_rt_nid = 0x12345678u;
+    sr_perf_vblank_latch(50000u, 3u, 0);
+    sr_rt_phase = SR_RT_PHASE_OTHER;
+    sr_rt_nid = 0u;
+    sr_rt_pc_fn = NULL;
+    sr_rt_uid_fn = NULL;
+    sr_perf_vblank_collapse(2u, 5u);
     sr_perf_test_set_report_sink(capture_report_line);
     s_report_count = 0;
     sr_perf_phase_report(1);
     sr_perf_test_set_report_sink(NULL);
-    CHECK(s_report_count == 3, "the attribution report reached the emitter as %d lines (expected 3)",
+    CHECK(s_report_count == 5, "the attribution report reached the emitter as %d lines (expected 5)",
           s_report_count);
-    CHECK(whole_line(0, "PERF_ATTRIB vblank_late total=1 ") &&
-              whole_line(1, "PERF_ATTRIB vblank_owed owed=3 ") &&
-              whole_line(2, "  PERF_ATTRIB_LATE phase=other n=1 "),
-          "attribution lines arrive whole: [%s] [%s] [%s]", s_report_lines[0], s_report_lines[1],
-          s_report_lines[2]);
+    CHECK(whole_line(0, "PERF_ATTRIB vblank_late total=2 lost_ms=56 masked_periods=3 ") &&
+              whole_line(1, "PERF_ATTRIB vblank_owed owed=6 coalesced=0 delivered=0 dropped=2 "),
+          "attribution totals arrive whole: [%s] [%s]", s_report_lines[0], s_report_lines[1]);
+    CHECK(s_report_count == 5 && strcmp(s_report_lines[2], "  PERF_ATTRIB_DROP phase=other episodes=2\n") == 0,
+          "drop line: [%s]", s_report_lines[2]);
+    CHECK(s_report_count == 5 &&
+              strcmp(s_report_lines[3], "  PERF_ATTRIB_LATE phase=other n=1 lost_ms=23 max_gap_ms=40 "
+                                        "periods=1\n") == 0,
+          "late line without samples: [%s]", s_report_lines[3]);
+    CHECK(s_report_count == 5 &&
+              strcmp(s_report_lines[4], "  PERF_ATTRIB_LATE phase=syscall n=1 lost_ms=33 max_gap_ms=50 "
+                                        "periods=2 [uid=0x7 pc=0x08804000 nid]=0x12345678\n") == 0,
+          "late line with a sampled syscall: [%s]", s_report_lines[4]);
 }
 
 /* The real thread clock: a 30 ms spin on this thread between two new frames is read as at most
