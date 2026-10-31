@@ -173,7 +173,7 @@ static void test_bind_rebind_and_capture(void) {
     input_settings_init(&state);
 
     /* Direct assign */
-    NkBindingSource src_north = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_NORTH };
+    NkBindingSource src_north = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_NORTH, 0 };
     bool ok = input_settings_assign_binding(&state, INPUT_CONTROL_BTN_CROSS, src_north);
     assert(ok);
     assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_CROSS].primary.type == NK_BINDING_HOST_BUTTON);
@@ -193,7 +193,7 @@ static void test_bind_rebind_and_capture(void) {
     assert(input_settings_get_capture_remaining_ms(&state) == INPUT_SETTINGS_CAPTURE_TIMEOUT_MS - 1000);
 
     /* Feed capture input */
-    NkBindingSource src_west = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_WEST };
+    NkBindingSource src_west = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_WEST, 0 };
     ok = input_settings_feed_capture_source(&state, src_west);
     assert(ok);
     assert(!input_settings_is_capturing(&state));
@@ -227,7 +227,7 @@ static void test_conflict_detection(void) {
     /* In the default mapping CROSS = SOUTH and CIRCLE = EAST. Giving CIRCLE the
      * south button moves it there, and CROSS takes CIRCLE's east button: one input
      * never drives two buttons, so the mapping can always be saved. */
-    NkBindingSource src_south = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_SOUTH };
+    NkBindingSource src_south = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_SOUTH, 0 };
     assert(input_settings_assign_binding(&state, INPUT_CONTROL_BTN_CIRCLE, src_south));
     assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_CIRCLE].primary.index == NK_HOST_BUTTON_SOUTH);
     assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_CROSS].primary.index == NK_HOST_BUTTON_EAST);
@@ -250,7 +250,7 @@ static void test_conflict_detection(void) {
     assert(nk_input_profile_validate(&state.profile, diag, sizeof(diag)) == NK_OK);
 
     /* A button's own second input swaps with its first. */
-    NkBindingSource left_trigger = { NK_BINDING_HOST_TRIGGER, NK_HOST_AXIS_LEFT_TRIGGER };
+    NkBindingSource left_trigger = { NK_BINDING_HOST_TRIGGER, NK_HOST_AXIS_LEFT_TRIGGER, 0 };
     assert(input_settings_assign_binding(&state, INPUT_CONTROL_BTN_LTRIGGER, left_trigger));
     assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_LTRIGGER].primary.type == NK_BINDING_HOST_TRIGGER);
     assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_LTRIGGER].secondary.index ==
@@ -321,7 +321,7 @@ static void test_reset_to_defaults(void) {
     input_settings_init(&state);
 
     /* Mutate everything */
-    NkBindingSource src_none = { NK_BINDING_NONE, 0 };
+    NkBindingSource src_none = { NK_BINDING_NONE, 0, 0 };
     input_settings_assign_binding(&state, INPUT_CONTROL_BTN_CROSS, src_none);
     input_settings_set_deadzone(&state, NK_PSP_AXIS_ANALOG_X, 25000);
     input_settings_set_trigger_threshold(&state, 20000);
@@ -352,8 +352,8 @@ static void test_save_load_roundtrip(void) {
     input_settings_init(&state);
 
     /* Configure customized mapping */
-    NkBindingSource src_north = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_NORTH };
-    NkBindingSource src_south = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_SOUTH };
+    NkBindingSource src_north = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_NORTH, 0 };
+    NkBindingSource src_south = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_SOUTH, 0 };
     /* Swap CROSS and TRIANGLE */
     input_settings_assign_binding(&state, INPUT_CONTROL_BTN_CROSS, src_north);
     input_settings_assign_binding(&state, INPUT_CONTROL_BTN_TRIANGLE, src_south);
@@ -998,7 +998,7 @@ static void test_keyboard_keys(void) {
      * its key; a controller input does not answer the wait. */
     input_settings_set_device(&state, INPUT_DEVICE_KEYBOARD);
     assert(input_settings_start_capture(&state, INPUT_CONTROL_BTN_START));
-    NkBindingSource south = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_SOUTH };
+    NkBindingSource south = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_SOUTH, 0 };
     assert(!input_settings_feed_capture_source(&state, south));
     assert(input_settings_is_capturing(&state));
     assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_START].primary.index == NK_HOST_BUTTON_START);
@@ -1034,7 +1034,7 @@ static void test_keyboard_keys(void) {
     assert(nk_input_profile_validate(&state.profile, diag, sizeof(diag)) == NK_OK);
 
     /* Reset to defaults resets only the device shown. */
-    NkBindingSource left_stick = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_LEFT_STICK };
+    NkBindingSource left_stick = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_LEFT_STICK, 0 };
     assert(input_settings_assign_binding(&state, INPUT_CONTROL_BTN_START, left_stick));
     input_settings_reset_device_to_defaults(&state);
     assert(state.profile.psp_keys[NK_PSP_BTN_START].primary == nk_host_key_from_name("return"));
@@ -1210,7 +1210,7 @@ static void test_per_title_rebind_persists(void) {
 
     /* The controller likewise: a button listed in both slots leaves both. */
     input_settings_set_device(&state, INPUT_DEVICE_CONTROLLER);
-    NkBindingSource north = {NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_NORTH};
+    NkBindingSource north = {NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_NORTH, 0};
     state.profile.psp_buttons[INPUT_CONTROL_BTN_TRIANGLE].secondary = north;
     assert(input_settings_assign_binding(&state, INPUT_CONTROL_BTN_SQUARE, north));
     assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_TRIANGLE].secondary.type == NK_BINDING_NONE);
@@ -1301,13 +1301,13 @@ static void test_binding_glyphs(void) {
 
     /* A pad input with no glyph of its own is named the way the pad's family names it. */
     static const struct { NkBindingSource source; const char *legends[INPUT_PAD_NAMES_COUNT]; } pills[] = {
-        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_BACK}, {"BACK", "VIEW", "-", "CREATE"}},
-        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_GUIDE}, {"HOME", "GUIDE", "HOME", "HOME"}},
-        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_LEFT_STICK}, {"LS", "LS", "LS", "L3"}},
-        {{NK_BINDING_HOST_TRIGGER, NK_HOST_AXIS_LEFT_TRIGGER}, {"LT", "LT", "ZL", "L2"}},
-        {{NK_BINDING_HOST_AXIS_POS, NK_HOST_AXIS_RIGHT_TRIGGER}, {"RT", "RT", "ZR", "R2"}},
-        {{NK_BINDING_HOST_AXIS_NEG, NK_HOST_AXIS_RIGHTY}, {"RS", "RS", "RS", "RS"}},
-        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_LEFT_PADDLE1}, {"P3", "P3", "P3", "P3"}}
+        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_BACK, 0}, {"BACK", "VIEW", "-", "CREATE"}},
+        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_GUIDE, 0}, {"HOME", "GUIDE", "HOME", "HOME"}},
+        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_LEFT_STICK, 0}, {"LS", "LS", "LS", "L3"}},
+        {{NK_BINDING_HOST_TRIGGER, NK_HOST_AXIS_LEFT_TRIGGER, 0}, {"LT", "LT", "ZL", "L2"}},
+        {{NK_BINDING_HOST_AXIS_POS, NK_HOST_AXIS_RIGHT_TRIGGER, 0}, {"RT", "RT", "ZR", "R2"}},
+        {{NK_BINDING_HOST_AXIS_NEG, NK_HOST_AXIS_RIGHTY, 0}, {"RS", "RS", "RS", "RS"}},
+        {{NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_LEFT_PADDLE1, 0}, {"P3", "P3", "P3", "P3"}}
     };
     for (size_t i = 0; i < sizeof(pills) / sizeof(pills[0]); i++) {
         state.profile.psp_buttons[INPUT_CONTROL_BTN_HOME].primary = pills[i].source;
@@ -1318,7 +1318,7 @@ static void test_binding_glyphs(void) {
     }
     /* A control with only a second source shows it; one with none shows no glyph. */
     state.profile.psp_buttons[INPUT_CONTROL_BTN_HOLD].secondary =
-        (NkBindingSource){NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_WEST};
+        (NkBindingSource){NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_WEST, 0};
     input_settings_pad_glyph(&state, INPUT_CONTROL_BTN_HOLD, INPUT_PAD_NAMES_NEUTRAL, &glyph);
     expect_glyph(&glyph, INPUT_GLYPH_FACE_WEST, "", "Hold's second source alone");
     input_settings_pad_glyph(&state, INPUT_CONTROL_ANALOG_STICK, INPUT_PAD_NAMES_NEUTRAL, &glyph);
