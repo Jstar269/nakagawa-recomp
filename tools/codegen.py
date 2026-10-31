@@ -2400,6 +2400,12 @@ def ends_straight_line(pc, w):
                                         or ADDRESS_SPACE.runtime_module)
 
 
+def continues_to_next_word(w):
+    """Whether the body walk goes on from ``w`` to the next word: anything but a control
+    transfer, a syscall (an HLE boundary) or eret."""
+    return not is_control(w) and not ((w >> 26) == 0 and (w & 0x3F) == 0x0C)
+
+
 class _WalkBudgetExceeded(Exception):
     """The unsplit walk of one entry passed REGION_SPLIT_THRESHOLD instructions."""
 
@@ -2497,11 +2503,10 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
     while stack:
         pc = stack.pop()
         if pc in terminator_slots:
+            # Walk the slot again as an ordinary word, by the rules any word follows (a
+            # syscall there still ends the line), so the body is the same in either order.
             terminator_slots.discard(pc)
-            next_pc = pc + 4
-            if stop_at_continuation(pc, next_pc):
-                continue
-            pc = next_pc
+            seen.discard(pc)
         while in_ranges(pc, ranges) and pc not in seen:
             seen.add(pc)
             insns.add(pc)
@@ -3039,11 +3044,13 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     insns, labels, continuations = flow
     for label in labels:
         # A label on the delay slot of a transfer that never falls through runs the slot
-        # as an ordinary instruction and continues after it; the walk owns that path
-        # (_walk_body terminator_slots). Without it the label's C would fall into
+        # as an ordinary word; when that word goes on to the next one, the walk owns that
+        # path (_walk_body terminator_slots). Without it the label's C would fall into
         # whatever block the address order puts next.
         owner_word = read32(elf, label - 4) if label - 4 in insns else None
+        slot_word = read32(elf, label)
         if (owner_word is not None and ends_straight_line(label - 4, owner_word)
+                and slot_word is not None and continues_to_next_word(slot_word)
                 and label + 4 not in insns and label not in continuations
                 and in_ranges(label + 4, ranges)):
             raise AssertionError(
@@ -3955,9 +3962,12 @@ LIBRARY_UNIT_MAX_FUNCS = 2000
 
 #: A generated C body larger than this compiles alone, in a unit of its own, at
 #: BODY_FALLBACK_OPT rather than the build's RECOMP_OPT (#1730). A unit is otherwise bounded
-#: by its byte budget; only a single body can exceed it, and gcc's time and memory grow
-#: faster than linearly with the largest function. The Makefile reads the level per object
-#: from <game>_recomp_opt.mk, and the package build copies its rows to the build report.
+#: by its byte budget; only a single body can exceed it. gcc's memory grows with that body at
+#: every level (about 170 bytes per byte of C, linear up to the 4 MB budget), so the level
+#: bounds its time, not its memory: the package build budgets that unit's memory from its
+#: size (tools/title_codegen_plan.py compile_job_bytes). -O0 keeps such a body where every
+#: package compiled it before. The Makefile reads the level per object from
+#: <game>_recomp_opt.mk, and the package build copies its rows to the build report.
 #: Constants, so the generated files never depend on the machine that wrote them.
 BODY_FALLBACK_BYTES = 4_000_000
 BODY_FALLBACK_OPT = "-O0"
@@ -3995,15 +4005,20 @@ def partition_units(texts, target_bytes, max_funcs):
     return units
 
 
-def fallback_unit_row(stem, unit):
-    """``(object stem, body symbol, bytes)`` when ``unit`` compiles at BODY_FALLBACK_OPT."""
+def fallback_unit_row(stem, unit, renames=None):
+    """``(object stem, body symbol, bytes)`` when ``unit`` compiles at BODY_FALLBACK_OPT.
+
+    The symbol is the one the written unit defines (``renames``: symbol_map_renames).
+    """
     if len(unit) != 1 or isinstance(unit[0], codegen_llvm.LLVMBody):
         return None
     weight = _body_weight(unit[0])
     if weight <= BODY_FALLBACK_BYTES:
         return None
     match = re.search(r"(?m)^void (\w+)\(CpuState \*s\) \{", unit[0])
-    return stem, match.group(1) if match else "?", weight
+    if match is None:
+        raise AssertionError(f"{stem}: an oversized unit with no body definition")
+    return stem, (renames or {}).get(match.group(1), match.group(1)), weight
 
 
 def write_unit_opt_makefile(path, rows):
@@ -5254,7 +5269,7 @@ def main(argv):
         os.remove(llvm_manifest_path)
 
     unit_fallbacks = [
-        row for row in (fallback_unit_row(f"{os.path.basename(base_name)}_{i}", chunk)
+        row for row in (fallback_unit_row(f"{os.path.basename(base_name)}_{i}", chunk, renames)
                         for i, chunk in enumerate(boundaries))
         if row is not None
     ]

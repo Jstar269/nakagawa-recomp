@@ -334,9 +334,10 @@ off-by-one `ext` size, an `ins` that ORs instead of replacing, a `seb` that does
 sign-extend, and a `mov.s` that quiets a signaling NaN) and two generator mutants (a
 branch-likely slot that always runs, an `ins` that keeps the old field). Two more
 generator mutants break the body walk (#1730): one gives every `beq` no not-taken
-successor (`bjoin`'s not-taken `beq` must diverge), and one drops the continuation
-after a delay slot that a branch lands on, with the emitter's own refusal removed
-so the kill is a divergence, not a build failure (`bslot` and `jslot` must diverge).
+successor, and one drops the continuation after a delay slot that a branch lands on,
+with the emitter's own refusal removed so the kill is a divergence, not a build failure.
+The campaign counts any divergence as a kill; the first it reports for these is in
+`bjoin` (its not-taken `beq`) and in `bslot` respectively, the cells built for them.
 Making `beql $zero, $zero` a terminator too would be an equivalent mutant (its slot
 and target are the same either way when taken) and is not claimed.
 

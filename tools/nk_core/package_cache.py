@@ -1070,7 +1070,7 @@ def native_compile_flags(
         env.get("RUNTIME_OPT", "-O0"),
         env.get("GE_CFLAGS", "-O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK"),
         env.get("RECOMP_OPT", "-O0"),
-        env.get("RECOMP_FLAGS", "-O0 -w -fno-var-tracking -ftrack-macro-expansion=0"),
+        env.get("RECOMP_FLAGS", "-O0 -w -fno-strict-aliasing -fno-var-tracking -ftrack-macro-expansion=0"),
         env.get("TRACE", "0"),
         env.get("SR_STALE_DETECT", "0"),
         env.get("LLE_CPU", ""),

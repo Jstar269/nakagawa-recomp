@@ -1087,6 +1087,7 @@ PUBLIC_TARGETS := \
 	profile-zero-e2e \
 	cosim-selftest \
 	cosim-selftest-split \
+	cosim-selftest-opt \
 	cosim-selftest-promoted \
 	cosim-selftest-run \
 	cosim-selftest-clean \

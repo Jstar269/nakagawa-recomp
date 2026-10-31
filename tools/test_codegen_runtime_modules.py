@@ -222,15 +222,15 @@ class RuntimeModuleTranslation(unittest.TestCase):
         # The module bodies stay out of the game's own chunks.
         self.assertNotRegex(self.chunks, r"(?m)^void [lm][0-9a-f]+_[0-9a-f]{8}\(")
 
-    def library_build(self, name, funcs_per_chunk, max_funcs):
+    def library_build(self, name, funcs_per_chunk, max_funcs, main=None, game="g"):
         """A build of both overlays with the library budget lowered to ``max_funcs`` bodies."""
-        out = Path(self.tmp.name) / name / "g_recomp.c"
+        out = Path(self.tmp.name) / name / f"{game}_recomp.c"
         out.parent.mkdir(exist_ok=True)
         saved = codegen.LIBRARY_UNIT_MAX_FUNCS
         codegen.LIBRARY_UNIT_MAX_FUNCS = max_funcs
         try:
             status, _out, err = run_codegen([
-                str(self.main), str(out), "--base=0x08940000",
+                str(main or self.main), str(out), "--base=0x08940000",
                 f"--funcs-per-chunk={funcs_per_chunk}",
                 *[f"--extra-elf={path}@runtime" for _spec, path in self.overlays],
             ])
@@ -242,9 +242,13 @@ class RuntimeModuleTranslation(unittest.TestCase):
 
     def test_a_module_over_the_library_budget_is_cut_into_units(self):
         # #1730: a library unit is bounded like the game's chunks, by the library's own
-        # budget, so the units are the same files whatever the game's chunk settings.
+        # budget, so another game (another executable and name, other chunk settings)
+        # writes the same files.
+        other_main = Path(self.tmp.name) / "other_main.prx"
+        other_main.write_bytes(ladder.build_prx(ladder.PLANS["ladder-reloc"])[0])
         _dir, cut = self.library_build("cut4", funcs_per_chunk=4, max_funcs=4)
-        _dir, cut_other = self.library_build("cut7", funcs_per_chunk=7, max_funcs=4)
+        _dir, cut_other = self.library_build("cut7", funcs_per_chunk=7, max_funcs=4,
+                                             main=other_main, game="other")
         self.assertEqual(cut, cut_other)
         body = re.compile(r"(?ms)^void ([lm][0-9a-f]+_[0-9a-f]{8})\(CpuState \*s\) \{.*?^\}$")
         for index in range(len(self.overlays)):

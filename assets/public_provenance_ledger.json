@@ -451,7 +451,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a9acd1f8f1f71e471eb9cc0ef9888be9573cf32dc6e9765d47191b9daf19898c"
+      "sha256": "92ff96bbe7e00ef8a13a0bf9ade595708ade2e2774df6c1c2921f5007c98bdf1"
     },
     {
       "path": "NOTICE.md",
@@ -1960,7 +1960,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "04a2b6080f7d7823780bf897530bfb668cad88e53aafbaff19de767480fee349"
+      "sha256": "9f5b1e8e1376147e16e0b3074d31d462d86c1f63db20455bb7c66a96faff17f2"
     },
     {
       "path": "docs/SETUP.md",
@@ -2398,7 +2398,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d13ac24bf82cc5d9ff889fc9a362fe9695d7573c579ad9ca2bf3e5054c186bcf"
+      "sha256": "81ec4b5625a5c785eae1a2453b79c49f05f1cc935721fef222ad95d32a42266a"
     },
     {
       "path": "fixtures/cosim/cosim_selftest.c",
@@ -4409,7 +4409,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f08d8b310d721eb2ce3b231fe13e8f027e77bdc86683fc8602a7a1920d6918a1"
+      "sha256": "f40518f3527aaaa81418d71c61974e4cd27f0478bce17a1d8f2b51e8b119136b"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -11376,7 +11376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bf644b7b9aaf5f30f6de775ecb8865263194441d5cdfad961c84035cf0ad094e"
+      "sha256": "ebfa4a9f3a953607d377b78c12aae958e24f5e6e98ddd01cb281038a2282b61f"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -13126,7 +13126,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "be6c2eafbd0af0e5eeeeb34d2f4d9f58b16109c1abf8b6f70253d1e38dd920df"
+      "sha256": "6d8ec18f20b737f29c3bd645aff6185210b011c45ed392d9da6efdffa6096845"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -13972,7 +13972,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84f75c12aed6eb7f00c71cb11eb5959c717b0de6c6f54fa6e0df80270c288472"
+      "sha256": "1d2630377a36b589ac51864c7ef641afff88462556c221b92e230fb1e8cb100b"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
@@ -14995,7 +14995,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e9443318f810078f59b1ba074e112d4d459fccf0e4ada3bc7d93e41021f8d3bd"
+      "sha256": "5678f6545736c6c8f08e3a37d7088495694f7112e7fdb95916369c72e207bf01"
     },
     {
       "path": "tools/test_codegen_entry_semantics.py",
@@ -15128,7 +15128,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f707334cee913feb61fc5a38bcf66d769cdd98d96cb863fba46e1a152ed3fc6c"
+      "sha256": "8edfff311f2f6b1ee219f4ba0adde3c826164f8016ca7a333758a526664a8ed4"
     },
     {
       "path": "tools/test_codegen_static_verify.py",
@@ -17158,7 +17158,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "494f5c4634c46ace10f44879e2585e3c2cb81ff734b0b5a5e4202b376cd647d8"
+      "sha256": "08960ab12563ef78991623c8a13095300a74dc5dae363a0633e308dbaa083c5e"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -17602,7 +17602,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d015f6e254c03bbe30819f3bcafed321c05e5b7eb759276630ec0e27b73071c6"
+      "sha256": "6fa0c0cd60065e205d188a3d77472003dc29a2971f7418bf6756777b41c9242e"
     },
     {
       "path": "tools/title_manager_plan.ps1",

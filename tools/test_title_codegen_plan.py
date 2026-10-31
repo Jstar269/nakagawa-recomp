@@ -147,6 +147,32 @@ class TitleCodegenPlanTests(unittest.TestCase):
         self.assertEqual(jobs(cpu_count=24, available_bytes=free,
                               job_bytes=title_codegen_plan.package_job_bytes("4000000"))[0], 3)
 
+    def test_an_oversized_unit_raises_the_compile_job_budget(self) -> None:
+        # #1730: a body over the unit budget is a unit of its own; its job is budgeted from
+        # its own size, past the 3 GiB cap, so a host runs fewer such jobs at once.
+        job_bytes = title_codegen_plan.compile_job_bytes
+        per_byte = title_codegen_plan.PACKAGE_BUILD_JOB_BYTES_PER_CHUNK_BYTE
+        target = title_codegen_plan.package_job_bytes("4000000")
+        self.assertEqual(job_bytes("4000000", 0), target)
+        self.assertEqual(job_bytes("4000000", 3_900_000), target)
+        self.assertEqual(job_bytes("4000000", 20_000_000), 20_000_000 * per_byte)
+        self.assertGreater(job_bytes("4000000", 20_000_000), title_codegen_plan.PACKAGE_BUILD_JOB_BYTES)
+        jobs = title_codegen_plan.package_build_jobs
+        free = 16 * 1024**3
+        self.assertEqual(jobs(cpu_count=24, available_bytes=free,
+                              job_bytes=job_bytes("4000000", 0))[0], 8)
+        self.assertEqual(jobs(cpu_count=24, available_bytes=free,
+                              job_bytes=job_bytes("4000000", 20_000_000))[0], 2)
+        with tempfile.TemporaryDirectory() as temp:
+            build = Path(temp)
+            (build / "g_recomp_0.c").write_bytes(b"x" * 10)
+            (build / "g_recomp_1.c").write_bytes(b"x" * 30)
+            (build / "nk_lib_0123456789abcdef_2.c").write_bytes(b"x" * 50)
+            (build / "nk_lib_other.c").write_bytes(b"x" * 90)
+            (build / "h_recomp_0.c").write_bytes(b"x" * 70)
+            self.assertEqual(title_codegen_plan._largest_generated_unit(build, "g"), 50)
+            self.assertEqual(title_codegen_plan._largest_generated_unit(build / "none", "g"), 0)
+
     def test_host_package_build_jobs_reads_the_environment(self) -> None:
         with mock.patch.dict(os.environ, {"NK_PACKAGE_JOBS": "3"}):
             self.assertEqual(title_codegen_plan._host_package_build_jobs()[0], 3)
@@ -847,6 +873,11 @@ class CompileObjectReuseTests(unittest.TestCase):
         stem = "nk_lib_0123456789abcdef_0"
         build = self.root / "levels"
         build.mkdir()
+
+        def write(text: str) -> Path:
+            path = build / "probe_opt.mk"
+            path.write_text(text, encoding="ascii")
+            return path
         for name in ("g_recomp_0.c", "g_recomp_1.c", f"{stem}.c", "g_recomp_funcs.h"):
             (build / name).write_text("/* generated */\n", encoding="ascii")
         (build / "g_recomp_opt.mk").write_text(
@@ -858,8 +889,10 @@ class CompileObjectReuseTests(unittest.TestCase):
             encoding="ascii",
         )
         objects = [f"{build.as_posix()}/{name}.o" for name in ("g_recomp_0", "g_recomp_1", stem)]
+        # Parsing the Makefile writes beneath BUILD_ROOT and LOG_DIR: keep both in scratch.
         proc = subprocess.run(
-            [self.make, "-n", "--no-print-directory", f"BUILD_DIR={build.as_posix()}",
+            [self.make, "-n", "--no-print-directory", f"BUILD_ROOT={self.root.as_posix()}",
+             f"LOG_DIR={(self.root / 'logs').as_posix()}", f"BUILD_DIR={build.as_posix()}",
              "GAME_NAME=g", "RECOMP_OPT=-O2", *objects],
             cwd=ROOT, capture_output=True, text=True,
         )
@@ -876,11 +909,43 @@ class CompileObjectReuseTests(unittest.TestCase):
             [{"unit": "g_recomp_1", "body": "f_00001000", "bytes": 5000000, "level": "-O0"},
              {"unit": stem, "body": "l0123456789abcdef_00000000", "bytes": 4500000, "level": "-O0"}],
         )
-        self.assertEqual(title_codegen_plan._read_unit_fallbacks(build / "missing.mk"), [])
+        self.assertEqual(title_codegen_plan._read_unit_fallbacks(write("# Generated.\n")), [])
         self.assertTrue(title_codegen_plan._is_aot_output("g_recomp_opt.mk", "g"))
-        (build / "g_recomp_opt.mk").write_text("# unit g_recomp_1 body f bytes 1\n", encoding="ascii")
-        with self.assertRaises(title_codegen_plan.PackageRouteError):
-            title_codegen_plan._read_unit_fallbacks(build / "g_recomp_opt.mk")
+        self.assertIn("g_recomp_opt.mk", title_codegen_plan._aot_required_outputs("g"))
+        self.assertFalse(title_codegen_plan._is_aot_output("g_recomp_extra.mk", "g"))
+        # Make executes the file: anything codegen does not write is refused before it runs.
+        for text in (
+            None,                                                     # missing
+            "# unit g_recomp_1 body f bytes 1\n",                     # a row with no level
+            "RECOMP_UNIT_OPT_g_recomp_1 := -O0\n",                    # a level with no row
+            "# unit g_recomp_1 body f bytes 1\nRECOMP_UNIT_OPT_g_recomp_1 := -O0\n"
+            "RECOMP_UNIT_OPT_g_recomp_1 := -O1\n",                    # two levels
+            "# unit g_recomp_1 body f bytes 1\nRECOMP_UNIT_OPT_g_recomp_1 := -O0 $(shell x)\n",
+            "# unit g_recomp_1 body f bytes 1\nRECOMP_UNIT_OPT_g_recomp_1 := -O0\nall: ; x\n",
+            "#unit g_recomp_1 body f bytes 1\n",
+        ):
+            with self.subTest(text=text):
+                path = build / "missing.mk" if text is None else write(text)
+                with self.assertRaises(title_codegen_plan.PackageRouteError):
+                    title_codegen_plan._read_unit_fallbacks(path)
+
+    def test_a_reused_copy_leaves_no_earlier_generated_unit_behind(self) -> None:
+        # #1730: a package can build in its output folder; an earlier build's single library
+        # unit beside the copy's cut units would define the module's bodies twice.
+        source, destination = self.root / "source", self.root / "destination"
+        source.mkdir()
+        destination.mkdir()
+        for name in title_codegen_plan._aot_required_outputs("g") | {
+                "g_recomp_0.c", "nk_lib_0123456789abcdef_0.c", "nk_lib_0123456789abcdef_1.c"}:
+            (source / name).write_text("new\n", encoding="ascii")
+        for name in ("nk_lib_0123456789abcdef.c", "g_recomp_7.c", "g_recomp_0.c",
+                     "build-report.json", "notes.txt"):
+            (destination / name).write_text("old\n", encoding="ascii")
+        title_codegen_plan._copy_reusable_aot(source, destination, "g")
+        names = {path.name for path in destination.iterdir()}
+        self.assertEqual(names, {path.name for path in source.iterdir()} |
+                         {"build-report.json", "notes.txt"})
+        self.assertEqual((destination / "g_recomp_0.c").read_text(encoding="ascii"), "new\n")
 
     def test_library_unit_names_are_generated_code_and_one_pattern(self) -> None:
         import codegen

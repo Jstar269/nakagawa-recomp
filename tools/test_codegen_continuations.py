@@ -700,6 +700,7 @@ def addiu(rt, rs, imm):
 JR_RA = 0x03E00008
 JR_T9 = 0x03200008
 NOP = 0
+SYSCALL = 0x0000000C
 
 
 def b(pc, target):
@@ -732,6 +733,8 @@ def reachable(words, entry):
             work.append(codegen.branch_target(pc, w))
             if not (op == 4 and (w >> 16) & 0x3FF == 0):
                 work.append(pc + 8)
+        elif w == SYSCALL:
+            pass                                                  # an HLE boundary ends the body
         else:
             work.append(pc + 4)
     return {pc for pc in entered | slots if pc in words}
@@ -828,6 +831,23 @@ class StraightLineEndTests(unittest.TestCase):
                 self.assertEqual(insns, reachable(words, 0x1000))
                 self.assertTrue({0x2004, 0x2008, 0x200C, 0x2010} <= insns)
 
+    def test_a_syscall_slot_ends_the_line_in_either_walk_order(self):
+        # A syscall in a terminator's slot, entered as a label, is an HLE boundary like any
+        # syscall: the body is the same whichever the walk meets first, and emits.
+        tail = {0x2000: b(0x2000, 0x2014), 0x2004: SYSCALL, 0x2008: addiu(2, 2, 0x10),
+                0x200C: JR_RA, 0x2010: NOP, 0x2014: JR_RA, 0x2018: NOP}
+        label_first = {0x1000: bne(4, 0, 0x1000, 0x1100), 0x1004: NOP,
+                       0x1008: bne(5, 0, 0x1008, 0x2004), 0x100C: NOP,
+                       0x1010: JR_RA, 0x1014: NOP, 0x1100: j(0x2000), 0x1104: NOP, **tail}
+        b_first = {0x1000: bne(5, 0, 0x1000, 0x2004), 0x1004: NOP,
+                   0x1008: j(0x2000), 0x100C: NOP, **tail}
+        for name, words in (("label first", label_first), ("b first", b_first)):
+            with self.subTest(order=name):
+                insns, _labels, _continuations = self.flow(words)
+                self.assertEqual(insns, reachable(words, 0x1000))
+                self.assertNotIn(0x2008, insns)
+                self.emit(words)
+
     def test_b_to_its_own_slot_runs_the_slot_again_and_continues(self):
         words = {0x1000: b(0x1000, 0x1004), 0x1004: addiu(2, 2, 1),
                  0x1008: addiu(2, 2, 0x10), 0x100C: JR_RA, 0x1010: NOP}
@@ -903,9 +923,9 @@ class StraightLineEndTests(unittest.TestCase):
             words, i = {}, 0
             while i < n:
                 pc = base + 4 * i
-                kind = rng.choice(("op", "op", "op", "b", "beq", "bne", "j", "jr"))
-                if kind == "op" or i + 1 >= n:
-                    words[pc] = addiu(2, 2, i + 1)
+                kind = rng.choice(("op", "op", "op", "syscall", "b", "beq", "bne", "j", "jr"))
+                if kind in ("op", "syscall") or i + 1 >= n:
+                    words[pc] = SYSCALL if kind == "syscall" else addiu(2, 2, i + 1)
                     i += 1
                     continue
                 target = base + 4 * rng.randrange(n)
@@ -919,7 +939,8 @@ class StraightLineEndTests(unittest.TestCase):
                     words[pc] = j(target)
                 else:
                     words[pc] = JR_RA
-                words[pc + 4] = addiu(3, 3, i + 1)                 # delay slot: never a transfer
+                # A delay slot is never a transfer; now and then it is a syscall.
+                words[pc + 4] = SYSCALL if rng.random() < 0.15 else addiu(3, 3, i + 1)
                 i += 2
             with self.subTest(case=case):
                 insns, _labels, _continuations = self.flow(words, start=base)
