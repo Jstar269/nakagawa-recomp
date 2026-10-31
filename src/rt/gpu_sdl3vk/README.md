@@ -106,11 +106,17 @@ Enabled with `SR_GPU_GE=1`. Implementation:
   has no exact shader counterpart), texture map mode 0, gouraud shading, no clear mode, every
   float input zero or of magnitude 2^-40..2^40. The shader evaluates ge.c's arithmetic in C's
   order with `precise` (Vulkan rounds add and multiply correctly; the reference has no fused
-  multiply-add) and divides and takes square roots exactly in integer arithmetic, so its
-  vertices reach the rasterizer with the bits the CPU T&L gives them. Everything else, and a
-  draw the fragment state sends to software, keeps ge.c's T&L. The `tnl-parity` cells of
-  `gpu-coherence-selftest` compare the two routes byte for byte. Left: texgen, flat shading,
-  specular light, sprites, lines, points and clipped draws.
+  multiply-add) and divides and takes square roots exactly in integer arithmetic, subnormal
+  operands included, so its vertices reach the rasterizer with the bits the CPU T&L gives them.
+  Intermediate values can be subnormal even with every input in range (the squared length of
+  a small transformed normal), and the CPU keeps them, so the shader declares DenormPreserve:
+  the stage runs only on a device that enables `VK_KHR_shader_float_controls` with
+  `shaderDenormPreserveFloat32`. On other devices, NVIDIA's among them, ge.c keeps T&L and
+  `SR_GPU_TNL=1` says so once. Everything else, and a draw the fragment state sends to
+  software, keeps ge.c's T&L. The `tnl-parity` cells of `gpu-coherence-selftest` compare the
+  two routes byte for byte (on a device without the feature, every cell on ge.c's route). Left:
+  texgen, flat shading, specular light, sprites, lines, points, clipped draws, and devices that
+  flush fp32 subnormals.
 - Render-to-texture chains (the hangar uses fbp swaps), depth readbacks if any game code
   reads zbuf, small-tri rasterization rules (top-left bias already documented in
   raster_tri) via conservative settings.
@@ -166,8 +172,9 @@ A failed present returns -1 and resolves an armed capture as failed. Whether the
 go on decides the transition:
 
 - Nothing is lost when an acquire fails with out-of-memory (no image was acquired), or a present
-  fails before it is enqueued (`recover_unenqueued_present` replaces the frame's semaphore). The
-  next present tries again.
+  fails before it is enqueued: `recover_unenqueued_present` waits for the frame and replaces its
+  semaphore, and the swapchain is rebuilt, which hands back the image the present still held.
+  The next present tries again.
 - The renderer turns terminal (`sdl3vk_renderer_terminal()`; every later present returns -1 at
   once) when the device or surface is lost, a fence wait fails (the frame's work may still run),
   or any step between a successful acquire and the submit fails (the image stays acquired and its

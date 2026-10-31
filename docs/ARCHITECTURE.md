@@ -845,7 +845,7 @@ the maintained references for exact behavior.
 | `SR_NOVBPACE` | unset, empty, `0` / `1` | Vblank pacing mode: unset, empty, or `0` = paced (default); `1` = turbo. Other values fail closed |
 | `SR_PAUSE_SCRIPT` | `<vcount>:<host_ms>[,...]` | Test-only scheduler pause source for showcase checks. Append `:user` to exercise an interactive refusal; malformed values fail closed |
 | `SR_GPU_GE` | `0` / `1` | Software vs Vulkan GE path |
-| `SR_GPU_TNL` | unset / `1` | With the Vulkan GE path, transform, skinning, fog and diffuse lighting of eligible transform-mode triangle draws run in the Vulkan vertex shader, with the same bits as ge.c's T&L ([#318](https://github.com/Jstar269/nakagawa-recomp/issues/318)); any other value keeps ge.c's T&L |
+| `SR_GPU_TNL` | unset / `1` | With the Vulkan GE path, transform, skinning, fog and diffuse lighting of eligible transform-mode triangle draws run in the Vulkan vertex shader, with the same bits as ge.c's T&L ([#318](https://github.com/Jstar269/nakagawa-recomp/issues/318)), on a device that keeps fp32 subnormals in shaders (`shaderDenormPreserveFloat32`; elsewhere ge.c keeps T&L); any other value keeps ge.c's T&L |
 | `SR_GPU_LOG` | present/unset | GPU diagnostics where implemented |
 | `SR_VIDEO` | e.g. `gdi` | Select host fallback video path |
 | `SR_PRESENT_SCALING` | `sharp` (default) / `integer` / `bilinear` | How the Vulkan presenter scales game frames into the window: sharp bilinear (nearest to the next integer multiple, then linear), the largest integer multiple letterboxed, or plain linear; an exact integer fit is a nearest blit in every mode ([#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129)). The player's Settings set it |

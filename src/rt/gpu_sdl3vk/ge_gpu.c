@@ -3537,6 +3537,16 @@ static int tnl_alloc(void) {
  * own T&L and hook_tri would give them; the fragment state and batching are hook_tri's. */
 static int hook_tnl_prim(const GeTnlPrim *p) {
     if (!s_ready) return 0;
+    if (!s_vs_tnl) {
+        static int device_reported;
+        if (!device_reported) {
+            device_reported = 1;
+            fprintf(stderr, "gegpu: SR_GPU_TNL: this device does not keep fp32 subnormals in shaders "
+                            "(shaderDenormPreserveFloat32), which GPU T&L needs to match ge.c bit for "
+                            "bit; ge.c keeps T&L (#318)\n");
+        }
+        return 0;
+    }
     const uint32_t nv = p->ntri * 3u;
     if (!nv || nv > MAX_TNL_VERTS) return 0;
     if (!s_tnl_ready && !tnl_alloc()) {
@@ -7348,13 +7358,15 @@ static int coherence_run_fallback_reasons(void) {
  * transform PRIM as drawn by psp_tnl.vert, or, for a cell whose state ge.c declines (a
  * near-plane crossing, specular light, texgen, flat shading), as declined: a run that silently
  * took the other route would prove nothing. The software run is reported, not asserted: the
- * Vulkan rasterizer's own tolerances against ge.c are the blend and sample-point fixtures'. */
+ * Vulkan rasterizer's own tolerances against ge.c are the blend and sample-point fixtures'. On a
+ * device without fp32 subnormal preservation there is no T&L stage, and every cell must take
+ * ge.c's route and match: the fallback is what that device can show. */
 enum {
     TNLC_STATIC, TNLC_STRIP_CULL0, TNLC_STRIP_CULL1, TNLC_FAN_IDX16, TNLC_LIST_IDX8,
     TNLC_TEXTURED, TNLC_FOG_LINEAR, TNLC_FOG_INF, TNLC_DEPTH, TNLC_RAMP, TNLC_FIXED_FMT,
     TNLC_MORPH2, TNLC_SKIN1, TNLC_SKIN2_U8, TNLC_SKIN4_U16, TNLC_SKIN8_F, TNLC_LIGHT_DIR,
     TNLC_LIGHT_POINT, TNLC_LIGHT4_MATUPD, TNLC_LIGHT_SKIN, TNLC_OFFSET_VIEWPORT,
-    TNLC_NEAR_CROSS, TNLC_SPECULAR, TNLC_FLAT, TNLC_TEXGEN,
+    TNLC_NEAR_CROSS, TNLC_SPECULAR, TNLC_FLAT, TNLC_TEXGEN, TNLC_LIGHT_SUBNORMAL,
 };
 
 typedef struct TnlCell {
@@ -7522,6 +7534,12 @@ static uint32_t tnlp_build(const TnlCell *c) {
         proj[14] = 2.0f * zf * zn / (zn - zf);
     }
     if (c->kind == TNLC_NEAR_CROSS) view[11] = -1.2f;   /* the mesh reaches through the near plane */
+    if (c->kind == TNLC_LIGHT_SUBNORMAL) {
+        /* World 3x3 scaled by 2^-30 and view 3x3 by 2^30: the same screen positions (powers of
+         * two scale exactly), but world-space normals near 2^-66, whose squared length is
+         * subnormal before light_vertex normalises them. */
+        for (int i = 0; i < 9; i++) { world[i] = ldexpf(world[i], -30); view[i] = ldexpf(view[i], 30); }
+    }
     tnlp_matrix(&L, 0x3A, world, 12);
     tnlp_matrix(&L, 0x3C, view, 12);
     tnlp_matrix(&L, 0x3E, proj, 16);
@@ -7618,7 +7636,8 @@ static uint32_t tnlp_build(const TnlCell *c) {
 
     /* Lighting. */
     int lit = c->kind == TNLC_LIGHT_DIR || c->kind == TNLC_LIGHT_POINT ||
-              c->kind == TNLC_LIGHT4_MATUPD || c->kind == TNLC_LIGHT_SKIN || c->kind == TNLC_SPECULAR;
+              c->kind == TNLC_LIGHT4_MATUPD || c->kind == TNLC_LIGHT_SKIN || c->kind == TNLC_SPECULAR ||
+              c->kind == TNLC_LIGHT_SUBNORMAL;
     if (lit) {
         TNLP_W(&L, 0x17, 1);
         TNLP_W(&L, 0x53, c->kind == TNLC_LIGHT4_MATUPD ? 3u : 0u);
@@ -7667,6 +7686,9 @@ static uint32_t tnlp_build(const TnlCell *c) {
                            (-1.1f + 2.2f * (float)y / (float)gh) * scale,
                            tnlp_rand(-0.3f, 0.3f) * scale };
             float n[3] = { tnlp_rand(-0.5f, 0.5f), tnlp_rand(-0.5f, 0.5f), 0.8f };
+            if (c->kind == TNLC_LIGHT_SUBNORMAL)
+                for (int i = 0; i < 3; i++)   /* every component at least 2^-40, as ge.c requires */
+                    n[i] = ldexpf(n[i] < 0.0f ? n[i] - 0.1f : n[i] + 0.1f, -35);
             float w[8];
             float sum = 0.0f;
             for (int i = 0; i < 8; i++) { w[i] = i < skin_w ? tnlp_rand(0.0f, 1.0f) : 0.0f; sum += w[i]; }
@@ -7823,6 +7845,7 @@ static int coherence_run_tnl_parity(void) {
         { "specular", TNLC_SPECULAR, 0 },
         { "flat", TNLC_FLAT, 0 },
         { "texgen", TNLC_TEXGEN, 0 },
+        { "light-subnormal-length", TNLC_LIGHT_SUBNORMAL, 1 },
     };
     const size_t px = (size_t)TNLP_STRIDE * FB_H;
     TnlpOut sw = { (uint32_t *)malloc(px * 4u), (uint16_t *)malloc(px * 2u) };
@@ -7856,11 +7879,12 @@ static int coherence_run_tnl_parity(void) {
                 if (d > swmax) swmax = d;
             }
         }
-        const int route_ok = c->gpu ? t_gpu > 0 : t_gpu == 0;
+        const int want_gpu = c->gpu && s_vs_tnl != VK_NULL_HANDLE;
+        const int route_ok = want_gpu ? t_gpu > 0 : t_gpu == 0;
         if (cdiff || zdiff || !route_ok || !drawn) {
             fprintf(stderr, "gpu coherence selftest [tnl-parity/%s]: FAIL colour_diff=%zu depth_diff=%zu "
                     "gpu_tnl_prims=%llu (want %s) drawn=%zu",
-                    c->name, cdiff, zdiff, t_gpu, c->gpu ? ">0" : "0", drawn);
+                    c->name, cdiff, zdiff, t_gpu, want_gpu ? ">0" : "0", drawn);
             if (first < px)
                 fprintf(stderr, " first=(%zu,%zu) cpu=%08x gpu=%08x", first % TNLP_STRIDE,
                         first / TNLP_STRIDE, (unsigned)cpu.color[first], (unsigned)gpu.color[first]);
@@ -7871,14 +7895,15 @@ static int coherence_run_tnl_parity(void) {
             ok = 0;
             continue;
         }
-        if (c->gpu) taken_cells++;
+        if (want_gpu) taken_cells++;
         printf("gpu coherence selftest: PASS tnl-parity %-22s gpu_tnl_prims=%llu drawn=%zu "
                "software_diff=%zu max_delta=%d\n", c->name, t_gpu, drawn, swdiff, swmax);
     }
     free(sw.color); free(sw.depth); free(cpu.color); free(cpu.depth); free(gpu.color); free(gpu.depth);
     if (ok)
-        printf("gpu coherence selftest: PASS %-22s cells=%zu gpu_tnl_cells=%u\n", "tnl-parity",
-               sizeof(cells) / sizeof(cells[0]), taken_cells);
+        printf("gpu coherence selftest: PASS %-22s cells=%zu gpu_tnl_cells=%u%s\n", "tnl-parity",
+               sizeof(cells) / sizeof(cells[0]), taken_cells,
+               s_vs_tnl ? "" : " (no fp32 subnormal preservation: every cell checked on ge.c's route)");
     return ok;
 }
 
@@ -8275,8 +8300,15 @@ int gegpu_init(void) {
     VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_vs));
     smc.codeSize = sizeof(k_frag_spv); smc.pCode = k_frag_spv;
     VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_fs));
-    smc.codeSize = sizeof(k_tnl_vert_spv); smc.pCode = k_tnl_vert_spv;
-    VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_vs_tnl));
+    /* psp_tnl.vert declares DenormPreserve (it must keep fp32 subnormals to match ge.c bit for
+     * bit), which a device may run only with VK_KHR_shader_float_controls and
+     * shaderDenormPreserveFloat32. Without them there is no T&L stage: hook_tnl_prim declines
+     * and ge.c keeps T&L. */
+    s_vs_tnl = VK_NULL_HANDLE;
+    if (vi.denorm_preserve_f32) {
+        smc.codeSize = sizeof(k_tnl_vert_spv); smc.pCode = k_tnl_vert_spv;
+        VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_vs_tnl));
+    }
 
     /* Shared clamp samplers for render-target and snapshot sampling. The min and mag
      * fields stay independent so Vulkan selects the PSP TFLT field from the footprint. */

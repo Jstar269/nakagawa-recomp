@@ -24,9 +24,17 @@
  *   - Vulkan rounds add, subtract and multiply correctly, and every result here is `precise`
  *     (no contraction into fused multiply-add), evaluated in C's left-to-right order. The CPU
  *     reference is built for baseline x86-64, which has no fused multiply-add either.
+ *   - Intermediate values can still be subnormal (a squared length of a small transformed
+ *     normal, by cancellation or scale), which the CPU keeps. The DenormPreserve execution mode
+ *     (SPV_KHR_float_controls) keeps them here too; the backend runs this stage only on a device
+ *     that reports shaderDenormPreserveFloat32.
  *   - Division and square root are not correctly rounded in Vulkan, so div_rn and sqrt_rn
- *     compute them exactly in integer arithmetic, rounding to nearest even.
+ *     compute them exactly in integer arithmetic, rounding to nearest even, for subnormal
+ *     operands and quotients as well.
  *   - Constants that C folds (1.0f/255.0f) are their float bit patterns. */
+
+#extension GL_EXT_spirv_intrinsics : require
+spirv_execution_mode(extensions = ["SPV_KHR_float_controls"], capabilities = [4464], 4459, 32);
 
 layout(location = 0) in vec3  in_pos;
 layout(location = 1) in vec3  in_nrm;
@@ -71,14 +79,27 @@ uint s_base;
 float pf(int i) { return uintBitsToFloat(tnl.words[s_base + uint(i)]); }
 uint  pu(int i) { return tnl.words[s_base + uint(i)]; }
 
-/* a / b rounded to nearest even, for a zero or normal, b normal and a normal quotient:
- * restoring division of the 24-bit significands, 24 bits plus a round bit and a sticky bit. */
+/* The significand of a nonzero float as an integer with its leading one at bit 23, and the
+ * biased exponent e for which |a| = m * 2^(e - 150); a subnormal is normalised. */
+uint sig24(uint ua, out int e) {
+    uint f = (ua >> 23) & 0xffu, m = ua & 0x7fffffu;
+    if (f != 0u) { e = int(f); return m | 0x800000u; }
+    int sh = 23 - findMSB(m);
+    e = 1 - sh;
+    return m << uint(sh);
+}
+
+/* a / b rounded to nearest even, for a zero, normal or subnormal a and a nonzero finite b
+ * whose quotient does not overflow: restoring division of the 24-bit significands, 24 bits
+ * plus a round bit, and a sticky bit; a quotient below the normal range is shifted into the
+ * subnormal range before it is rounded. */
 float div_rn(float a, float b) {
     uint ua = floatBitsToUint(a), ub = floatBitsToUint(b);
     uint sign = (ua ^ ub) & 0x80000000u;
     if ((ua & 0x7fffffffu) == 0u) return uintBitsToFloat(sign);
-    int e = int((ua >> 23) & 0xffu) - int((ub >> 23) & 0xffu) + 127;
-    uint ma = (ua & 0x7fffffu) | 0x800000u, mb = (ub & 0x7fffffu) | 0x800000u;
+    int ea, eb;
+    uint ma = sig24(ua, ea), mb = sig24(ub, eb);
+    int e = ea - eb + 127;
     if (ma < mb) { ma <<= 1; e -= 1; }
     uint q = 0u, r = ma;
     for (int i = 0; i < 25; i++) {
@@ -86,20 +107,31 @@ float div_rn(float a, float b) {
         if (r >= mb) { r -= mb; q |= 1u; }
         r <<= 1;
     }
+    uint sticky = r != 0u ? 1u : 0u;
+    if (e < 1) {
+        int sh = 1 - e;
+        if (sh > 25) return uintBitsToFloat(sign);
+        if ((q & ((1u << uint(sh)) - 1u)) != 0u) sticky = 1u;
+        q >>= uint(sh);
+        e = 0;
+    }
     uint round_bit = q & 1u;
     q >>= 1;
-    if (round_bit != 0u && (r != 0u || (q & 1u) != 0u)) q += 1u;
+    if (round_bit != 0u && (sticky != 0u || (q & 1u) != 0u)) q += 1u;
+    if (e == 0) return uintBitsToFloat(sign | q);     /* 0x800000 is the smallest normal */
     if (q == 0x1000000u) { q >>= 1; e += 1; }
     return uintBitsToFloat(sign | (uint(e) << 23) | (q & 0x7fffffu));
 }
 
-/* sqrt(a) rounded to nearest even, for a zero or positive normal: digit-by-digit square root
- * of the significand scaled to 50 bits, giving 24 bits plus a round bit, and a sticky bit. */
+/* sqrt(a) rounded to nearest even, for a zero, positive normal or positive subnormal a:
+ * digit-by-digit square root of the significand scaled to 50 bits, giving 24 bits plus a round
+ * bit, and a sticky bit. The root of a subnormal is normal. */
 float sqrt_rn(float a) {
     uint ua = floatBitsToUint(a);
     if ((ua & 0x7fffffffu) == 0u) return a;
-    int ee = int((ua >> 23) & 0xffu) - 150;          /* a = m * 2^ee */
-    uint m = (ua & 0x7fffffu) | 0x800000u;
+    int ef;
+    uint m = sig24(ua, ef);
+    int ee = ef - 150;                               /* a = m * 2^ee */
     if ((ee & 1) != 0) { m <<= 1; ee -= 1; } else { m <<= 2; ee -= 2; }   /* m < 2^26 */
     uint rem = 0u, root = 0u;
     for (int k = 0; k < 25; k++) {                   /* the radicand is m * 2^24 */
@@ -112,10 +144,10 @@ float sqrt_rn(float a) {
     }
     uint round_bit = root & 1u;
     uint q = root >> 1;
-    int ef = ee / 2 + 139;
+    int er = ee / 2 + 139;
     if (round_bit != 0u && (rem != 0u || (q & 1u) != 0u)) q += 1u;
-    if (q == 0x1000000u) { q >>= 1; ef += 1; }
-    return uintBitsToFloat((uint(ef) << 23) | (q & 0x7fffffu));
+    if (q == 0x1000000u) { q >>= 1; er += 1; }
+    return uintBitsToFloat((uint(er) << 23) | (q & 0x7fffffu));
 }
 
 float clampf01(float v) { return v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v; }

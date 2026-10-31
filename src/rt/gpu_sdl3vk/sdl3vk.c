@@ -98,6 +98,7 @@ static VkImage        s_swap_img[8];
 static VkFence        s_swap_img_fence[8];
 
 static int      s_renderer_terminal = 0;
+static int      s_denorm_preserve_f32 = 0;   /* see sdl3vk_init: VK_KHR_shader_float_controls */
 /* A quit request (window close, SDL_EVENT_QUIT, ESC) is sticky. Two call sites drain
  * the SDL event queue -- gui_pump's sdl3vk_poll() and every present -- and only the
  * former exits the process. When a present consumed the quit (the common case: it
@@ -651,11 +652,35 @@ int sdl3vk_init(const char *title) {
     qci.queueFamilyIndex = s_qfam;
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
-    const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    /* GPU T&L (#318) repeats ge.c's float arithmetic bit for bit, subnormal intermediates
+     * included, which a shader keeps only under DenormPreserve: VK_KHR_shader_float_controls
+     * with shaderDenormPreserveFloat32. Optional; a device without it keeps T&L in ge.c. */
+    s_denorm_preserve_f32 = 0;
+    {
+        uint32_t nx = 0;
+        VkExtensionProperties *xs = NULL;
+        if (vkEnumerateDeviceExtensionProperties(s_pdev, NULL, &nx, NULL) == VK_SUCCESS && nx)
+            xs = (VkExtensionProperties *)calloc(nx, sizeof(*xs));
+        int have = 0;
+        if (xs && vkEnumerateDeviceExtensionProperties(s_pdev, NULL, &nx, xs) == VK_SUCCESS)
+            for (uint32_t i = 0; i < nx; i++)
+                if (strcmp(xs[i].extensionName, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME) == 0) have = 1;
+        free(xs);
+        if (have) {
+            VkPhysicalDeviceFloatControlsPropertiesKHR fc = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES_KHR };
+            VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                               .pNext = &fc };
+            vkGetPhysicalDeviceProperties2(s_pdev, &p2);
+            s_denorm_preserve_f32 = fc.shaderDenormPreserveFloat32 == VK_TRUE;
+        }
+    }
+    const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                              VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME };
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = 1;
+    dci.enabledExtensionCount = s_denorm_preserve_f32 ? 2u : 1u;
     dci.ppEnabledExtensionNames = dev_ext;
     INIT_VK(vkCreateDevice(s_pdev, &dci, NULL, &s_dev));
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
@@ -1114,6 +1139,7 @@ int sdl3vk_get_vk(Sdl3VkInfo *out) {
     out->device   = (void *)s_dev;
     out->queue    = (void *)s_queue;
     out->queue_family = s_qfam;
+    out->denorm_preserve_f32 = s_denorm_preserve_f32;
     return 1;
 }
 
@@ -1911,7 +1937,11 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         case PRESENT_NOT_ENQUEUED:
             presented = 0;
-            recover_unenqueued_present(f);
+            /* The image is still acquired: only a present or the swapchain's destruction hands
+             * it back, and a few such failures in a row would leave no image to acquire (#1377).
+             * The frame is recovered (its fence waited, sem_done replaced) and the swapchain
+             * rebuilt; if either fails, the renderer is terminal. */
+            if (!recover_unenqueued_present(f) || !create_swapchain()) s_renderer_terminal = 1;
             why = disp_why;
             goto fail;
 
@@ -2290,7 +2320,9 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
         }
         return 2;
     case PRESENT_NOT_ENQUEUED:
-        recover_unenqueued_present(f);
+        /* The image is still acquired: recover the frame and rebuild the swapchain to hand it
+         * back, as present_common does (#1377). */
+        if (!recover_unenqueued_present(f) || !create_swapchain()) s_renderer_terminal = 1;
         fprintf(stderr, "sdl3vk: pause overlay present failed: %s\n", why ? why : "not enqueued");
         return -1;
     case PRESENT_SURFACE_LOST:
@@ -3642,8 +3674,11 @@ static int sdl3vk_capture_selftest_body(void) {
             fprintf(stderr, "present fault OOD: enqueued present must NOT recreate semaphore\n"); ok = 0;
         }
 
-        /* Test 3: VK_ERROR_OUT_OF_HOST_MEMORY (unenqueued hard error / semaphore recovery) */
+        /* Test 3: VK_ERROR_OUT_OF_HOST_MEMORY (unenqueued hard error / semaphore recovery).
+         * The image the failed present held stays acquired until the swapchain is rebuilt
+         * (#1377), so the failure rebuilds it. */
         sem0 = sdl3vk_frame_semaphore_generation();
+        sc0 = sdl3vk_swapchain_generation();
         if (!sr_capture_arm("selftest_oom.ppm")) {
             fprintf(stderr, "present fault OOM: arm failed\n"); ok = 0;
         }
@@ -3657,10 +3692,26 @@ static int sdl3vk_capture_selftest_body(void) {
         if (sdl3vk_frame_semaphore_generation() <= sem0) {
             fprintf(stderr, "present fault OOM: expected frame semaphore recovery/recreation\n"); ok = 0;
         }
+        if (sdl3vk_swapchain_generation() <= sc0 || sdl3vk_renderer_terminal()) {
+            fprintf(stderr, "present fault OOM: the still-acquired image must be handed back by a "
+                            "swapchain rebuild\n"); ok = 0;
+        }
 
         /* Verify frame slot recovery: next normal present must succeed cleanly without validation errors */
         if (sdl3vk_present_rgba(px) != 1) {
             fprintf(stderr, "present recovery: post-OOM normal present failed\n"); ok = 0;
+        }
+        /* More unenqueued presents in a row than the swapchain has images: without the rebuild
+         * every one would keep an image and the next acquire would wait forever. */
+        for (uint32_t k = 0; ok && k <= s_swap_n; k++) {
+            sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_HOST_MEMORY);
+            if (sdl3vk_present_rgba(px) != -1 || sdl3vk_renderer_terminal()) {
+                fprintf(stderr, "present fault OOM: repeated failure %u was not recovered\n", (unsigned)k);
+                ok = 0;
+            }
+        }
+        if (ok && sdl3vk_present_rgba(px) != 1) {
+            fprintf(stderr, "present recovery: present after repeated OOM failures failed\n"); ok = 0;
         }
 
     }
@@ -3832,6 +3883,7 @@ void sdl3vk_shutdown(void) {
         s_sdl_subsystems = 0;
     }
     s_renderer_terminal = 0;
+    s_denorm_preserve_f32 = 0;
     s_quit_requested = 0;
     s_pstep_fault = PSTEP_NONE;
     sdl3vk_reset_input_profile();

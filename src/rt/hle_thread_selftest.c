@@ -22378,6 +22378,13 @@ static void test_ge_sync_ids_match_psp(void) {
            "sceGeListSync(0) on an unknown id returns 0x80000100 without waiting");
     expect(gsw_call(NID_SCE_GE_LIST_DEQUEUE, unknown, 0u, 0u, 0u) == 0x80000100u,
            "sceGeListDeQueue on an unknown id is 0x80000100");
+    /* An id that names a slot no enqueue has used yet is a free slot: its peek names no list,
+     * and its wait returns at once, because the driver creates its per-slot completion event
+     * flags with every bit set (uofw src/kd/ge/ge.c _sceGeQueueInit). A freed slot behaves the
+     * same (ge-list-sync-stale-wait, PSP-GE-SYNC-001). */
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, 0x35000000u, 1u, 0u, 0u) == 0x80000100u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, 0x35000000u, 0u, 0u, 0u) == 0u,
+           "a never-used slot's id peeks 0x80000100 and its wait returns 0 at once (uofw)");
 
     const uint32_t a = gsw_call(NID_SCE_GE_LIST_ENQUEUE, dl, 0u, 0xffffffffu, 0u);
     expect(gsw_call(NID_SCE_GE_LIST_SYNC, a, 1u, 0u, 0u) == 0u,

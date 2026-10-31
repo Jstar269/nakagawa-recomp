@@ -29,11 +29,11 @@
     },
     {
       "embedded": "psp_tnl_vert.inc",
-      "embedded_sha256": "0a2623c30a5173008286e4fafdd15dc8ef64560e0a526eda513f205b5f227fb8",
+      "embedded_sha256": "f29bcd426c9f22c12f1f3792ae26e57964948b3979e653e95a2d01a33c3019ee",
       "source": "shaders/psp_tnl.vert",
-      "source_sha256": "e179970c4006a15358f7c29c95669c55bc58be2ca3316d164306aeb963f62570",
-      "spirv_bytes": 37228,
-      "spirv_sha256": "b97f790567d6757ba362b71d8b3dbf45c727d5a4832e608b4a29d295f59d018d",
+      "source_sha256": "7d2b2e513b4533fc77c02cc725e5231e5df1c37e81877905c1078c8348a87627",
+      "spirv_bytes": 39004,
+      "spirv_sha256": "6c8ea42947aa89c5f6065a476b3b07f6fdabd483ba5b208745f727861a16a4fd",
       "stage": "vert"
     }
   ]

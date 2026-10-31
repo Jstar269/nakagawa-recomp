@@ -1594,7 +1594,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ceb42fa31f2fc1f036f150e6cad7d392b7e2f3307f52d26600a0626fa59d2f2b"
+      "sha256": "d91d929bc38e9821c170e3cfbf31bd52820433b717b06247dd83e97e29a3effe"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -6453,7 +6453,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "970ced5319f306f18592bfab113791e8064ce0b2574d660830993e8ab7f2affc"
+      "sha256": "e3b69ce5ae7ab0232defe34af509771aa45318dcde3ae8c2c18a504e95812954"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.c",
@@ -6466,7 +6466,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "dd4256436674a2bac8f47795855b4452243782c30b5dc34478883532a5cb13dd"
+      "sha256": "3691dc6472354a98bb64b0e69784360c1752f5b94efbe693a7e443cde7028338"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -6505,7 +6505,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0a2623c30a5173008286e4fafdd15dc8ef64560e0a526eda513f205b5f227fb8"
+      "sha256": "f29bcd426c9f22c12f1f3792ae26e57964948b3979e653e95a2d01a33c3019ee"
     },
     {
       "path": "src/rt/gpu_sdl3vk/psp_vert.inc",
@@ -6531,7 +6531,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "bddbf1f9bf246407ff05427e546819f05d2b828f0b1212feffd194d8105109b2"
+      "sha256": "0cfb3e6a751e8e7c2a11633775a6d5de323cdc073a6a7139d3d1fc05e1377ef5"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
@@ -6544,7 +6544,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ab0f7fb4e7f223118d2cb6a45f44c93e39a50804cb0f6b2852b74cb01610ae07"
+      "sha256": "9bc4ec42254aeb0268bfaf2e5c7d083664672574e402a927e60b8750e571b684"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shader_manifest.json",
@@ -6557,7 +6557,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "349e596892f5dd8dea3d50b5e854ace815db0d82869cd5ca107c408fad301c92"
+      "sha256": "6a939e98d9a3dc3d977a012d600393159938a49f32852d617133d5db1db707ab"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shaders/psp.frag",
@@ -6596,7 +6596,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e179970c4006a15358f7c29c95669c55bc58be2ca3316d164306aeb963f62570"
+      "sha256": "7d2b2e513b4533fc77c02cc725e5231e5df1c37e81877905c1078c8348a87627"
     },
     {
       "path": "src/rt/guest_interp.c",
@@ -9615,7 +9615,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b9f8d96baaaec786a23175929377b45b8dcf73145bfe02976357e6e20882822b"
+      "sha256": "35cf751e212ce2c96794fd247538b77969ccfd4582c63da81721e3038df27f41"
     },
     {
       "path": "src/rt/intr_conformance.h",
