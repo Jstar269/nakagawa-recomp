@@ -2963,7 +2963,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "44d9e4f9dea3256e32471cd2431a04ab639a8aecdaac5db792d7677f6b9a845c"
+      "sha256": "28c0242765e34be5cee6c443d1126e7cdc7ae324d7bfb342acb9300d168776e2"
     },
     {
       "path": "fixtures/psp_oracle/probe_dmac_timing.c",
@@ -9737,7 +9737,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1dcab1b6c9f680700a29f758b54d121370737ace152fee2ed935e2505e1c6ce7"
+      "sha256": "53c9069339e9a6d9a303fd2c92bf9bfc11aceb40d24913ec43d1feefa2855506"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -10122,7 +10122,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b688cd01b79243abeed0f97900225aa8c33c019c42d0475c45d0961ad7f442fd"
+      "sha256": "ac97a742f2fee07383970b188f628fe2e369e4e05a64da52566f7a1ea130b531"
     },
     {
       "path": "src/rt/psmf_producer.c",
