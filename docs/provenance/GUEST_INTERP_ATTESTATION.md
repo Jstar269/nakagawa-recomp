@@ -73,7 +73,9 @@ is absent or unqualified. A routine byte change therefore does not require a
 second private `reviewed_blobs` approval. That legacy exact-digest check remains
 available only through `--require-reviewed-blobs` for high-assurance runs.
 
-The public ledger carries the current content digests for reference:
+When this record was written, the public ledger carried these content digests. The
+committed ledger now carries claims only (#1673); the trusted attestation regenerates the
+current digests from the authority at landing:
 
 ```text
 src/rt/guest_interp.c  1e40b7627b60e435e5fec8fc12200d5fe4c010ecad702c0095743db1dcd99019

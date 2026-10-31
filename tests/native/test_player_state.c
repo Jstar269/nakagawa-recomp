@@ -5844,6 +5844,22 @@ int main(int argc, char **argv) {
         }
         settings->settings.interface_size_pct = 0;
     }
+    {
+        /* The text size steps Standard, Large, Larger and round again. */
+        static const int sizes[] = {125, 150, 100, 125};
+        static const char *const words[] = {"Large", "Larger", "Standard", "Large"};
+        settings->settings.text_size_pct = 100;
+        assert(strcmp(player_text_size_label(100), "Standard") == 0);
+        for (size_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+            player_app_cycle_text_size(settings);
+            assert(settings->settings.text_size_pct == sizes[i]);
+            assert(strcmp(player_text_size_label(settings->settings.text_size_pct), words[i]) == 0);
+        }
+        assert(strcmp(player_text_size_label(175), "Standard") == 0);
+        settings->settings.text_size_pct = 175; /* not a size: steps to the first */
+        player_app_cycle_text_size(settings);
+        assert(settings->settings.text_size_pct == 100);
+    }
 
     /* The library's sort: Recently played first, then Name A to Z, Recently
        added, and round again. */
@@ -5894,6 +5910,14 @@ int main(int argc, char **argv) {
         assert(cfg.fullscreen == true);
         assert(cfg.master_volume == 55);
         assert(cfg.developer_mode == true);   /* the runtime's developer pages follow it (#314) */
+        /* The pause overlay eases or cuts as the launcher does (SR_REDUCE_MOTION). */
+        assert(cfg.reduce_motion == NK_REDUCE_MOTION_ON);
+        applied.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_OFF;
+        player_app_apply_settings_to_session(&applied, &cfg);
+        assert(cfg.reduce_motion == NK_REDUCE_MOTION_OFF);
+        applied.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_AUTO;
+        player_app_apply_settings_to_session(&applied, &cfg);
+        assert(cfg.reduce_motion == NK_REDUCE_MOTION_SYSTEM);
         assert(cfg.gui_mode == true);   /* untouched by the mapping */
         /* NULL arguments are safe no-ops. */
         player_app_apply_settings_to_session(NULL, &cfg);
@@ -7969,6 +7993,7 @@ int main(int argc, char **argv) {
         assert(s_app->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_AUTO);
         assert(s_app->settings.high_contrast_choice == PLAYER_SYSTEM_CHOICE_AUTO);
         assert(s_app->settings.interface_size_pct == 0);
+        assert(s_app->settings.text_size_pct == 100);
         assert(s_app->settings.master_volume == 80);
         assert(s_app->settings.launcher_window_width == 1280);
         assert(s_app->settings.launcher_window_height == 720);
@@ -7984,6 +8009,7 @@ int main(int argc, char **argv) {
         s_app->settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_OFF;
         s_app->settings.high_contrast_choice = PLAYER_SYSTEM_CHOICE_ON;
         s_app->settings.interface_size_pct = 150;
+        s_app->settings.text_size_pct = 150;
         /* #1306: shared system libraries are on by default and persist when turned off. */
         assert(s_app->settings.share_system_libraries == true);
         player_app_toggle_share_system_libraries(s_app);
@@ -8009,6 +8035,7 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_OFF);
         assert(s_app2->settings.high_contrast_choice == PLAYER_SYSTEM_CHOICE_ON);
         assert(s_app2->settings.interface_size_pct == 150);
+        assert(s_app2->settings.text_size_pct == 150);
         assert(s_app2->settings.share_system_libraries == false);
         assert(s_app2->settings.master_volume == 55);
         assert(s_app2->settings.library_sort == PLAYER_LIBRARY_SORT_PLAYED);
@@ -8566,11 +8593,13 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_OFF);
         write_text_file(test_settings_path,
                         "{\"schema_version\": 2, \"reduce_motion_choice\": \"sometimes\", "
-                        "\"high_contrast_focus\": true, \"interface_size\": 175}");
+                        "\"high_contrast_focus\": true, \"interface_size\": 175, "
+                        "\"text_size\": 175}");
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.reduce_motion_choice == PLAYER_SYSTEM_CHOICE_AUTO);
         assert(s_app2->settings.high_contrast_choice == PLAYER_SYSTEM_CHOICE_AUTO);
         assert(s_app2->settings.interface_size_pct == 0);
+        assert(s_app2->settings.text_size_pct == 100); /* not a text size: Standard */
         s_app2->settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
         assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
         {
@@ -8580,6 +8609,7 @@ int main(int argc, char **argv) {
             assert(strstr(saved, "\"reduce_motion_choice\": \"on\",") != NULL);
             assert(strstr(saved, "\"high_contrast_focus\": \"auto\",") != NULL);
             assert(strstr(saved, "\"interface_size\": 0,") != NULL);
+            assert(strstr(saved, "\"text_size\": 100,") != NULL);
             free(saved);
         }
         s_app2->settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_AUTO;

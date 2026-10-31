@@ -98,6 +98,7 @@ static VkImage        s_swap_img[8];
 static VkFence        s_swap_img_fence[8];
 
 static int      s_renderer_terminal = 0;
+static int      s_denorm_preserve_f32 = 0;   /* see sdl3vk_init: VK_KHR_shader_float_controls */
 /* A quit request (window close, SDL_EVENT_QUIT, ESC) is sticky. Two call sites drain
  * the SDL event queue -- gui_pump's sdl3vk_poll() and every present -- and only the
  * former exits the process. When a present consumed the quit (the common case: it
@@ -109,6 +110,29 @@ static uint64_t s_frame_sem_gen = 0;
 
 static int     s_present_fault_armed = 0;
 static VkResult s_present_fault_result = VK_SUCCESS;
+
+/* Present-step fault seam for the lifecycle selftest (#1377): armed for one checked step of a
+ * present, the next check of that step sees s_pstep_fault_result. A failure code stands in for
+ * the call, which is not made; a success code (VK_SUBOPTIMAL_KHR) replaces the call's own
+ * VK_SUCCESS. One-shot; PSTEP_NONE is disarmed. */
+enum { PSTEP_NONE, PSTEP_FRAME_WAIT, PSTEP_ACQUIRE, PSTEP_IMAGE_WAIT, PSTEP_RESET_CMD,
+       PSTEP_BEGIN_CMD, PSTEP_END_CMD, PSTEP_RESET_FENCE, PSTEP_SUBMIT };
+static int      s_pstep_fault = PSTEP_NONE;
+static VkResult s_pstep_fault_result = VK_SUCCESS;
+
+static int pstep_skips(int step) {
+    if (s_pstep_fault != step || s_pstep_fault_result >= 0) return 0;
+    s_pstep_fault = PSTEP_NONE;
+    return 1;
+}
+
+static VkResult pstep_after(int step, VkResult r) {
+    if (s_pstep_fault != step || r != VK_SUCCESS) return r;
+    s_pstep_fault = PSTEP_NONE;
+    return s_pstep_fault_result;
+}
+
+#define PSTEP_VK(step, expr) (pstep_skips(step) ? s_pstep_fault_result : pstep_after((step), (expr)))
 
 int sdl3vk_renderer_terminal(void) {
     return s_renderer_terminal;
@@ -219,15 +243,23 @@ static uint32_t find_mem_type(uint32_t bits, VkMemoryPropertyFlags want) {
     return UINT32_MAX;
 }
 
+/* A failed wait (device lost, out of memory) leaves the frame's submission possibly running, so
+ * its command buffer, semaphores and staging memory can never be reused: the renderer is
+ * terminal (#1377). */
 static int wait_present_frame(PresentFrame *f) {
     if (!f->submitted) return 1;
     uint64_t wait_started = sr_perf_now_ns();
-    VkResult r=vkWaitForFences(s_dev,1,&f->fence,VK_TRUE,UINT64_MAX);
+    VkResult r = PSTEP_VK(PSTEP_FRAME_WAIT, vkWaitForFences(s_dev, 1, &f->fence, VK_TRUE, UINT64_MAX));
     if (wait_started) {
         sr_perf_vulkan_wait(wait_started, 0);
         sr_perf_present_wait(wait_started);
     }
-    if(r!=VK_SUCCESS)return 0;
+    if (r != VK_SUCCESS) {
+        fprintf(stderr, "sdl3vk: present frame fence wait failed: %d; the renderer is terminal\n",
+                (int)r);
+        s_renderer_terminal = 1;
+        return 0;
+    }
     f->submitted=0;
     f->source=VK_NULL_HANDLE;
     return 1;
@@ -342,11 +374,35 @@ static int create_swapchain(void) {
     }
     sci.clipped          = VK_TRUE;
     sci.oldSwapchain     = old;
-    VK_TRY(vkCreateSwapchainKHR(s_dev, &sci, NULL, &s_swap));
+    VkSwapchainKHR made = VK_NULL_HANDLE;
+    VkResult cr = vkCreateSwapchainKHR(s_dev, &sci, NULL, &made);
+    if (cr != VK_SUCCESS) {
+        /* The old swapchain is retired even when the new one is not created (vkCreateSwapchainKHR,
+         * oldSwapchain), so it can present nothing more; its images are unused (waited above).
+         * It is destroyed and the renderer is terminal (#1377). */
+        fprintf(stderr, "sdl3vk: vkCreateSwapchainKHR failed: %d; the renderer is terminal\n",
+                (int)cr);
+        if (old) vkDestroySwapchainKHR(s_dev, old, NULL);
+        s_swap = VK_NULL_HANDLE;
+        s_swap_n = 0;
+        memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
+        s_renderer_terminal = 1;
+        return 0;
+    }
+    s_swap = made;
     if (old) vkDestroySwapchainKHR(s_dev, old, NULL);
 
     uint32_t n_img = (uint32_t)(sizeof(s_swap_img) / sizeof(s_swap_img[0]));
-    VK_TRY(vkGetSwapchainImagesKHR(s_dev, s_swap, &n_img, s_swap_img));
+    VkResult ir = vkGetSwapchainImagesKHR(s_dev, s_swap, &n_img, s_swap_img);
+    if (ir != VK_SUCCESS) {
+        /* The new swapchain exists and the old one is gone, but its images are unknown. */
+        fprintf(stderr, "sdl3vk: vkGetSwapchainImagesKHR failed: %d; the renderer is terminal\n",
+                (int)ir);
+        s_swap_n = 0;
+        memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
+        s_renderer_terminal = 1;
+        return 0;
+    }
     s_swap_n = n_img;
     memset(s_swap_img_fence,0,sizeof(s_swap_img_fence));
     s_swapchain_gen++;
@@ -596,11 +652,35 @@ int sdl3vk_init(const char *title) {
     qci.queueFamilyIndex = s_qfam;
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
-    const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    /* GPU T&L (#318) repeats ge.c's float arithmetic bit for bit, subnormal intermediates
+     * included, which a shader keeps only under DenormPreserve: VK_KHR_shader_float_controls
+     * with shaderDenormPreserveFloat32. Optional; a device without it keeps T&L in ge.c. */
+    s_denorm_preserve_f32 = 0;
+    {
+        uint32_t nx = 0;
+        VkExtensionProperties *xs = NULL;
+        if (vkEnumerateDeviceExtensionProperties(s_pdev, NULL, &nx, NULL) == VK_SUCCESS && nx)
+            xs = (VkExtensionProperties *)calloc(nx, sizeof(*xs));
+        int have = 0;
+        if (xs && vkEnumerateDeviceExtensionProperties(s_pdev, NULL, &nx, xs) == VK_SUCCESS)
+            for (uint32_t i = 0; i < nx; i++)
+                if (strcmp(xs[i].extensionName, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME) == 0) have = 1;
+        free(xs);
+        if (have) {
+            VkPhysicalDeviceFloatControlsPropertiesKHR fc = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES_KHR };
+            VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                               .pNext = &fc };
+            vkGetPhysicalDeviceProperties2(s_pdev, &p2);
+            s_denorm_preserve_f32 = fc.shaderDenormPreserveFloat32 == VK_TRUE;
+        }
+    }
+    const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                              VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME };
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = 1;
+    dci.enabledExtensionCount = s_denorm_preserve_f32 ? 2u : 1u;
     dci.ppEnabledExtensionNames = dev_ext;
     INIT_VK(vkCreateDevice(s_pdev, &dci, NULL, &s_dev));
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
@@ -1027,6 +1107,17 @@ static void poll_input_on_this_stack(void *arg) {
         sdl3vk_map_gamepad(prof, host_buttons, host_axes, &pad_buttons, &lx, &ly);
         b |= pad_buttons;
     }
+    /* The stick's keyboard keys (#1299): an axis with one of its two keys held goes
+     * to its edge; otherwise the controller's stick keeps it. */
+    {
+        NkInputProfile def_profile;
+        const NkInputProfile *stick_prof = key_prof;
+        if (!stick_prof) {
+            nk_input_profile_init_default(&def_profile);
+            stick_prof = &def_profile;
+        }
+        (void)nk_input_profile_eval_key_analog(stick_prof, k, key_count, &lx, &ly);
+    }
     s_raw_buttons = b;
     s_raw_lx = lx; s_raw_ly = ly;
     nk_input_gate_apply(&s_gate, &b, &s_button_pulse, &lx, &ly);
@@ -1059,6 +1150,7 @@ int sdl3vk_get_vk(Sdl3VkInfo *out) {
     out->device   = (void *)s_dev;
     out->queue    = (void *)s_queue;
     out->queue_family = s_qfam;
+    out->denorm_preserve_f32 = s_denorm_preserve_f32;
     return 1;
 }
 
@@ -1172,60 +1264,96 @@ int sdl3vk_poll(void) {
  * presentation source inside the presenting submit, and handing the completed readback to
  * fbcap.c with its source label (CPU framebuffer image or GE render target) and byte order. */
 
-static VkBuffer s_cap_buf;
-static VkDeviceMemory s_cap_mem;
-static void    *s_cap_map;
-static uint64_t s_cap_alloc;              /* allocated byte capacity (grows on demand) */
-static int      s_cap_noncoherent;        /* memory type lacks HOST_COHERENT */
-static uint32_t s_cap_w, s_cap_h;         /* dimensions of the recorded readback */
-static sr_cap_order s_cap_order;          /* byte order of the recorded readback */
+/* One host-mapped readback buffer. File captures and picture probes each have their own: a
+ * file capture is read back and published inside its present, while a probe is read after
+ * the present (fbcap.h, deferred probe readback), so a file capture armed for the next
+ * present must not overwrite a probe's pixels before they are read. */
+typedef struct CapBuffer {
+    VkBuffer buf;
+    VkDeviceMemory mem;
+    void *map;
+    uint64_t alloc;              /* allocated byte capacity (grows on demand) */
+    int noncoherent;             /* memory type lacks HOST_COHERENT */
+    uint32_t mem_flags;          /* VkMemoryPropertyFlags of the chosen memory type */
+} CapBuffer;
 
-static void cap_free_buffer(void) {
-    if (s_cap_map) vkUnmapMemory(s_dev, s_cap_mem);
-    s_cap_map = NULL;
-    if (s_cap_buf) vkDestroyBuffer(s_dev, s_cap_buf, NULL);
-    s_cap_buf = VK_NULL_HANDLE;
-    if (s_cap_mem) vkFreeMemory(s_dev, s_cap_mem, NULL);
-    s_cap_mem = VK_NULL_HANDLE;
-    s_cap_alloc = 0;
-    s_cap_noncoherent = 0;
+static CapBuffer s_cap;                   /* file captures */
+static CapBuffer s_probe;                 /* picture probes */
+static uint32_t s_cap_w;                  /* row width of the recorded file readback */
+static sr_cap_order s_cap_order;          /* byte order of the recorded file readback */
+static uint32_t s_probe_w;                /* row width of the deferred probe readback */
+static sr_cap_order s_probe_order;
+static PresentFrame *s_probe_frame;       /* the frame whose submit carries the probe's copy */
+
+static void cap_free_buffer(CapBuffer *c) {
+    if (c->map) vkUnmapMemory(s_dev, c->mem);
+    if (c->buf) vkDestroyBuffer(s_dev, c->buf, NULL);
+    if (c->mem) vkFreeMemory(s_dev, c->mem, NULL);
+    memset(c, 0, sizeof *c);
+}
+
+/* The memory type for a buffer the CPU reads back, from the device's per-type property flags
+ * and the buffer's allowed type bits. A HOST_CACHED type comes first, as
+ * gegpu_pick_host_mem_type (ge_gpu.c) chooses for the GE readbacks: the first
+ * HOST_VISIBLE|HOST_COHERENT type is usually uncached write-combined memory, where every CPU
+ * read goes to memory, and reading a 4x frame back from it took about a second (#1296). In
+ * order: cached and coherent; cached (*noncoherent set: invalidate after the copy fence);
+ * coherent; any host-visible type. UINT32_MAX when no type is host-visible. */
+static uint32_t cap_pick_mem_type(const uint32_t *type_flags, uint32_t type_count,
+                                  uint32_t allowed_bits, int *noncoherent) {
+    static const uint32_t want[4] = {
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+            VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+    };
+    for (unsigned k = 0; k < 4u; k++)
+        for (uint32_t i = 0; i < type_count && i < 32u; i++)
+            if ((allowed_bits & (1u << i)) && (type_flags[i] & want[k]) == want[k]) {
+                if (noncoherent)
+                    *noncoherent = (type_flags[i] & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0u;
+                return i;
+            }
+    return UINT32_MAX;
 }
 
 /* The readback buffer is allocated from THIS buffer's own VkBufferMemoryRequirements
  * (size/alignment/memory-type bits) -- never from another object's requirements -- and is
- * grown lazily. HOST_COHERENT is preferred; on a non-coherent type the host must
- * invalidate the mapped range after the copy fence completes (cap_invalidate_readback). */
-static int cap_ensure(uint32_t w, uint32_t h) {
+ * grown lazily. The memory type comes from cap_pick_mem_type; on a non-coherent type the
+ * host must invalidate the mapped range after the copy fence completes
+ * (cap_invalidate_readback). */
+static int cap_ensure(CapBuffer *c, uint32_t w, uint32_t h) {
     uint64_t need = (uint64_t)w * (uint64_t)h * 4u;
     if (need == 0 || need > UINT32_MAX) return 0;
-    if (s_cap_buf && need <= s_cap_alloc) return 1;
-    cap_free_buffer();
+    if (c->buf && need <= c->alloc) return 1;
+    cap_free_buffer(c);
     VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     bci.size = (VkDeviceSize)need;
     bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (vkCreateBuffer(s_dev, &bci, NULL, &s_cap_buf) != VK_SUCCESS) return 0;
+    if (vkCreateBuffer(s_dev, &bci, NULL, &c->buf) != VK_SUCCESS) return 0;
     VkMemoryRequirements mr;
-    vkGetBufferMemoryRequirements(s_dev, s_cap_buf, &mr);
-    if (need > mr.size) { cap_free_buffer(); return 0; }
-    uint32_t mtype = find_mem_type(mr.memoryTypeBits,
-                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    s_cap_noncoherent = 0;
-    if (mtype == UINT32_MAX) {
-        mtype = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-        s_cap_noncoherent = 1;
-    }
-    if (mtype == UINT32_MAX) { cap_free_buffer(); return 0; }
+    vkGetBufferMemoryRequirements(s_dev, c->buf, &mr);
+    if (need > mr.size) { cap_free_buffer(c); return 0; }
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(s_pdev, &mp);
+    uint32_t type_flags[VK_MAX_MEMORY_TYPES];
+    for (uint32_t i = 0; i < mp.memoryTypeCount && i < VK_MAX_MEMORY_TYPES; i++)
+        type_flags[i] = (uint32_t)mp.memoryTypes[i].propertyFlags;
+    uint32_t mtype = cap_pick_mem_type(type_flags, mp.memoryTypeCount, mr.memoryTypeBits,
+                                       &c->noncoherent);
+    if (mtype == UINT32_MAX) { cap_free_buffer(c); return 0; }
+    c->mem_flags = type_flags[mtype];
     VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     mai.allocationSize = mr.size;
     mai.memoryTypeIndex = mtype;
-    if (vkAllocateMemory(s_dev, &mai, NULL, &s_cap_mem) != VK_SUCCESS ||
-        vkBindBufferMemory(s_dev, s_cap_buf, s_cap_mem, 0) != VK_SUCCESS ||
-        vkMapMemory(s_dev, s_cap_mem, 0, VK_WHOLE_SIZE, 0, &s_cap_map) != VK_SUCCESS) {
-        cap_free_buffer();
+    if (vkAllocateMemory(s_dev, &mai, NULL, &c->mem) != VK_SUCCESS ||
+        vkBindBufferMemory(s_dev, c->buf, c->mem, 0) != VK_SUCCESS ||
+        vkMapMemory(s_dev, c->mem, 0, VK_WHOLE_SIZE, 0, &c->map) != VK_SUCCESS) {
+        cap_free_buffer(c);
         return 0;
     }
-    s_cap_alloc = need;
+    c->alloc = need;
     return 1;
 }
 
@@ -1233,8 +1361,8 @@ static int cap_ensure(uint32_t w, uint32_t h) {
  * The source image is still TRANSFER_SRC_OPTIMAL -- its content is what the presentation
  * engine receives -- so no layout transition is needed and nothing is discarded. The
  * buffer rows are tightly packed (no bufferRowLength), so the mapped pitch is w*4. */
-static int cap_record(VkCommandBuffer cmd, VkImage src, int srcw, int srch) {
-    if (!src || !s_cap_buf) return 0;
+static int cap_record(VkCommandBuffer cmd, const CapBuffer *c, VkImage src, int srcw, int srch) {
+    if (!src || !c->buf) return 0;
     VkBufferImageCopy bic = {0};
     bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     bic.imageSubresource.layerCount = 1;
@@ -1242,13 +1370,13 @@ static int cap_record(VkCommandBuffer cmd, VkImage src, int srcw, int srch) {
     bic.imageExtent.height = (uint32_t)srch;
     bic.imageExtent.depth = 1;
     vkCmdCopyImageToBuffer(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           s_cap_buf, 1, &bic);
+                           c->buf, 1, &bic);
     VkBufferMemoryBarrier bb = { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
     bb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     bb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     bb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bb.buffer = s_cap_buf;
+    bb.buffer = c->buf;
     bb.offset = 0;
     bb.size = VK_WHOLE_SIZE;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
@@ -1258,14 +1386,54 @@ static int cap_record(VkCommandBuffer cmd, VkImage src, int srcw, int srch) {
 
 /* Invalidate the mapped readback range after the copy fence completes, so the host reads
  * the GPU's writes on non-coherent memory. The pixels are then handed to fbcap.c. */
-static int cap_invalidate_readback(void) {
-    if (!s_cap_buf || !s_cap_map) return 0;
-    if (!s_cap_noncoherent) return 1;
+static int cap_invalidate_readback(const CapBuffer *c) {
+    if (!c->buf || !c->map) return 0;
+    if (!c->noncoherent) return 1;
     VkMappedMemoryRange rng = { .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
-    rng.memory = s_cap_mem;
+    rng.memory = c->mem;
     rng.offset = 0;
     rng.size = VK_WHOLE_SIZE;
     return vkInvalidateMappedMemoryRanges(s_dev, 1, &rng) == VK_SUCCESS;
+}
+
+/* Finish the in-flight picture probe (fbcap.h, deferred probe readback): publish its
+ * readback once the fence of the frame that carries the copy has signalled. Without block it
+ * never waits: a frame still on the GPU leaves the probe in flight (0). With block it waits on
+ * that frame's fence, as present_common's slot reuse would. A failed wait or invalidate drops
+ * the probe without a result. Returns 1 when the probe is no longer in flight. Every present
+ * calls it right after waiting its own slot, before the slot's fence is reset for reuse, so
+ * the probe is published before the frame that carries it is recorded again. */
+static int cap_probe_resolve(int block) {
+    if (!sr_capture_probe_in_flight()) return 0;
+    PresentFrame *f = s_probe_frame;
+    if (!f) {
+        sr_capture_probe_drop("no frame carries the readback");
+        return 1;
+    }
+    if (f->submitted) {
+        if (block) {
+            if (!wait_present_frame(f)) {
+                s_probe_frame = NULL;
+                sr_capture_probe_drop("readback fence wait failed");
+                return 1;
+            }
+        } else {
+            VkResult st = vkGetFenceStatus(s_dev, f->fence);
+            if (st == VK_NOT_READY) return 0;
+            if (st != VK_SUCCESS) {
+                s_probe_frame = NULL;
+                sr_capture_probe_drop("readback fence status failed");
+                return 1;
+            }
+        }
+    }
+    s_probe_frame = NULL;
+    if (!cap_invalidate_readback(&s_probe)) {
+        sr_capture_probe_drop("readback invalidate failed");
+        return 1;
+    }
+    (void)sr_capture_publish_probe(s_probe.map, s_probe_w * 4u, s_probe_order);
+    return 1;
 }
 
 typedef enum PresentDisposition {
@@ -1639,32 +1807,49 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
     if (quit) { why = "window closed during present"; goto fail_quit; }
     PresentFrame *f = &s_frame[s_frame_cursor];
     if (!wait_present_frame(f)) { why = "present frame fence wait failed"; goto fail; }
+    /* A picture probe read back by an earlier present is published once its frame's fence
+     * has signalled; never waited for here, and always before this slot is reused. */
+    (void)cap_probe_resolve(0);
     if (upload) { memcpy(f->staging_map, upload, PSP_W * PSP_H * 4); src = f->fbimg; }
     VkCommandBuffer cmd = f->cmd;
 
     for (int attempt = 0; attempt < 2; attempt++) {
         uint32_t idx = 0;
-        VkResult ar = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, f->sem_acq,
-                                            VK_NULL_HANDLE, &idx);
-        if (ar == VK_ERROR_OUT_OF_DATE_KHR || ar == VK_SUBOPTIMAL_KHR) {
+        VkResult ar = PSTEP_VK(PSTEP_ACQUIRE, vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX,
+                                                                    f->sem_acq, VK_NULL_HANDLE, &idx));
+        if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
             if (!create_swapchain()) { why = "swapchain recreation failed"; goto fail; }
             continue;
         }
-        if (ar != VK_SUCCESS) { why = "swapchain acquire failed"; goto fail; }
+        /* VK_SUBOPTIMAL_KHR has acquired an image and will signal f->sem_acq, so the frame is
+         * shown and the present, which reports it again, rebuilds the swapchain. Rebuilding here
+         * would leave that image acquired and the semaphore signalled for the next acquire
+         * (#1377). A failed acquire acquired nothing; a lost device or surface is terminal. */
+        if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) {
+            if (ar == VK_ERROR_DEVICE_LOST || ar == VK_ERROR_SURFACE_LOST_KHR)
+                s_renderer_terminal = 1;
+            why = "swapchain acquire failed"; goto fail;
+        }
         if (s_swap_img_fence[idx] && s_swap_img_fence[idx] != f->fence) {
             uint64_t wait_started = sr_perf_now_ns();
-            vkWaitForFences(s_dev, 1, &s_swap_img_fence[idx], VK_TRUE, UINT64_MAX);
+            VkResult iw = PSTEP_VK(PSTEP_IMAGE_WAIT, vkWaitForFences(s_dev, 1, &s_swap_img_fence[idx],
+                                                                     VK_TRUE, UINT64_MAX));
             if (wait_started) {
                 sr_perf_vulkan_wait(wait_started, 0);
                 sr_perf_present_wait(wait_started);
             }
+            if (iw != VK_SUCCESS) { why = "swapchain image fence wait failed"; goto fail_acquired; }
         }
         s_swap_img_fence[idx] = f->fence;
 
         VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkResetCommandBuffer(cmd, 0);
-        vkBeginCommandBuffer(cmd, &bi);
+        if (PSTEP_VK(PSTEP_RESET_CMD, vkResetCommandBuffer(cmd, 0)) != VK_SUCCESS) {
+            why = "vkResetCommandBuffer failed"; goto fail_acquired;
+        }
+        if (PSTEP_VK(PSTEP_BEGIN_CMD, vkBeginCommandBuffer(cmd, &bi)) != VK_SUCCESS) {
+            why = "vkBeginCommandBuffer failed"; goto fail_acquired;
+        }
 
         if (upload) {
             /* staging buffer -> fb image */
@@ -1744,16 +1929,25 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         int cap_in_submit = 0;
         if (sr_capture_is_armed()) {
-            if (!cap_ensure((uint32_t)srcw, (uint32_t)srch)) {
+            CapBuffer *cb = sr_capture_pending_is_probe() ? &s_probe : &s_cap;
+            if (!cap_ensure(cb, (uint32_t)srcw, (uint32_t)srch)) {
                 why = "capture buffer allocation failed"; goto fail;
             }
-            s_cap_w = (uint32_t)srcw; s_cap_h = (uint32_t)srch;
             /* fbimg is B8G8R8A8_UNORM; a GE render target is R8G8B8A8_UNORM. */
-            s_cap_order = upload ? SR_CAP_ORDER_BGRX : SR_CAP_ORDER_RGBX;
-            if (!cap_record(cmd, src, srcw, srch)) { why = "capture record failed"; goto fail; }
+            sr_cap_order order = upload ? SR_CAP_ORDER_BGRX : SR_CAP_ORDER_RGBX;
+            if (cb == &s_probe) {
+                s_probe_w = (uint32_t)srcw;
+                s_probe_order = order;
+            } else {
+                s_cap_w = (uint32_t)srcw;
+                s_cap_order = order;
+            }
+            if (!cap_record(cmd, cb, src, srcw, srch)) { why = "capture record failed"; goto fail; }
             cap_in_submit = 1;
         }
-        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) { why = "vkEndCommandBuffer failed"; goto fail; }
+        if (PSTEP_VK(PSTEP_END_CMD, vkEndCommandBuffer(cmd)) != VK_SUCCESS) {
+            why = "vkEndCommandBuffer failed"; goto fail_acquired;
+        }
 
         VkPipelineStageFlags wait_st = VK_PIPELINE_STAGE_TRANSFER_BIT;
         VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
@@ -1764,17 +1958,20 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         si.pCommandBuffers = &cmd;
         si.signalSemaphoreCount = 1;
         si.pSignalSemaphores = &f->sem_done;
-        vkResetFences(s_dev, 1, &f->fence);
+        if (PSTEP_VK(PSTEP_RESET_FENCE, vkResetFences(s_dev, 1, &f->fence)) != VK_SUCCESS) {
+            why = "vkResetFences failed"; goto fail_acquired;
+        }
         uint64_t perf_submit_started = sr_perf_now_ns();
-        if (vkQueueSubmit(s_queue, 1, &si, f->fence) != VK_SUCCESS) {
-            why = "vkQueueSubmit failed"; goto fail;
+        if (PSTEP_VK(PSTEP_SUBMIT, vkQueueSubmit(s_queue, 1, &si, f->fence)) != VK_SUCCESS) {
+            why = "vkQueueSubmit failed"; goto fail_acquired;
         }
         if (perf_submit_started) sr_perf_vulkan_submit(perf_submit_started);
         if (sr_perf_enabled) sr_perf_present_submit();
         f->submitted = 1;
         f->source = upload ? VK_NULL_HANDLE : src;
         if (cap_in_submit)
-            sr_capture_mark_recorded(upload ? SR_CAP_SRC_CPU : SR_CAP_SRC_GPU, s_cap_w, s_cap_h);
+            sr_capture_mark_recorded(upload ? SR_CAP_SRC_CPU : SR_CAP_SRC_GPU,
+                                     (uint32_t)srcw, (uint32_t)srch);
 
         VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         pi.waitSemaphoreCount = 1;
@@ -1838,7 +2035,11 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         case PRESENT_NOT_ENQUEUED:
             presented = 0;
-            recover_unenqueued_present(f);
+            /* The image is still acquired: only a present or the swapchain's destruction hands
+             * it back, and a few such failures in a row would leave no image to acquire (#1377).
+             * The frame is recovered (its fence waited, sem_done replaced) and the swapchain
+             * rebuilt; if either fails, the renderer is terminal. */
+            if (!recover_unenqueued_present(f) || !create_swapchain()) s_renderer_terminal = 1;
             why = disp_why;
             goto fail;
 
@@ -1869,7 +2070,13 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
     /* Complete the armed capture only now that this frame is known to have reached the
      * presentation engine, so a published file always corresponds to a presented frame.
      * The fence covers this submission; presentation itself stays asynchronous. */
-    if (sr_capture_is_recorded()) {
+    if (sr_capture_is_recorded() && sr_capture_pending_is_probe()) {
+        /* A picture probe is not waited for: it is published by a later present (or a
+         * VBLANK that needs its result) once this frame's fence has signalled. */
+        s_probe_frame = f;
+        sr_capture_set_probe_resolver(cap_probe_resolve);
+        sr_capture_probe_defer();
+    } else if (sr_capture_is_recorded()) {
         if (f->submitted) {
             uint64_t perf_wait_started = sr_perf_now_ns();
             if (vkWaitForFences(s_dev, 1, &f->fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
@@ -1884,13 +2091,19 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
          * because gui.c would otherwise re-present it through the CPU fallback. The
          * capture resolves as attempted-and-failed (-1) inside fbcap.c, never as a
          * fabricated success. */
-        if (!cap_invalidate_readback())
+        if (!cap_invalidate_readback(&s_cap))
             sr_capture_fail("capture readback invalidate failed");
         else
-            sr_capture_publish_recorded(s_cap_map, s_cap_w * 4u, s_cap_order);
+            sr_capture_publish_recorded(s_cap.map, s_cap_w * 4u, s_cap_order);
     }
     return 1;
 
+fail_acquired:
+    /* Between a successful acquire and the submit: the image stays acquired and f->sem_acq
+     * stays to be signalled, and neither is handed back without a present, so the renderer is
+     * terminal (#1377). */
+    fprintf(stderr, "sdl3vk: %s; the renderer is terminal\n", why);
+    s_renderer_terminal = 1;
 fail:
     /* One exit for every failure above: the armed capture resolves as failed, never as
      * an invented success. */
@@ -2079,7 +2292,7 @@ static int overlay_upload(const void *px, int pitch) {
         memcpy((uint8_t *)s_ovl_buf_map + y * row, (const uint8_t *)px + (size_t)y * (size_t)pitch, row);
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkResetCommandBuffer(s_cmd, 0);
+    if (vkResetCommandBuffer(s_cmd, 0) != VK_SUCCESS) return 0;
     if (vkBeginCommandBuffer(s_cmd, &bi) != VK_SUCCESS) return 0;
     barrier(s_cmd, s_ovl_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             0, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -2096,9 +2309,14 @@ static int overlay_upload(const void *px, int pitch) {
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
     si.pCommandBuffers = &s_cmd;
-    vkResetFences(s_dev, 1, &s_fence);
+    if (vkResetFences(s_dev, 1, &s_fence) != VK_SUCCESS) return 0;
     if (vkQueueSubmit(s_queue, 1, &si, s_fence) != VK_SUCCESS) return 0;
-    if (vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) return 0;
+    if (vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        /* The upload may still be running: s_cmd and s_fence cannot be reused (#1377). */
+        fprintf(stderr, "sdl3vk: pause overlay upload fence wait failed; the renderer is terminal\n");
+        s_renderer_terminal = 1;
+        return 0;
+    }
     s_ovl_valid = 1;
     return 1;
 }
@@ -2126,17 +2344,30 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
         return 2;
     }
     /* VK_SUBOPTIMAL_KHR acquired an image that can still be shown; the present below
-     * reports it again and the swapchain is rebuilt there. */
-    if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) return -1;
-    if (s_swap_img_fence[idx] && s_swap_img_fence[idx] != f->fence)
-        vkWaitForFences(s_dev, 1, &s_swap_img_fence[idx], VK_TRUE, UINT64_MAX);
+     * reports it again and the swapchain is rebuilt there. A lost device or surface is
+     * terminal; any other failed acquire acquired nothing. */
+    if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) {
+        if (ar == VK_ERROR_DEVICE_LOST || ar == VK_ERROR_SURFACE_LOST_KHR) s_renderer_terminal = 1;
+        return -1;
+    }
+    /* From here to the submit a failure leaves the image acquired and f->sem_acq to be
+     * signalled, as in present_common: the renderer is terminal (#1377). */
+    const char *fail_why = NULL;
+    if (s_swap_img_fence[idx] && s_swap_img_fence[idx] != f->fence &&
+        vkWaitForFences(s_dev, 1, &s_swap_img_fence[idx], VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        fail_why = "swapchain image fence wait failed";
     s_swap_img_fence[idx] = f->fence;
 
     VkCommandBuffer cmd = f->cmd;
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkResetCommandBuffer(cmd, 0);
-    vkBeginCommandBuffer(cmd, &bi);
+    if (!fail_why && vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) fail_why = "vkResetCommandBuffer failed";
+    if (!fail_why && vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) fail_why = "vkBeginCommandBuffer failed";
+    if (fail_why) {
+        fprintf(stderr, "sdl3vk: pause overlay: %s; the renderer is terminal\n", fail_why);
+        s_renderer_terminal = 1;
+        return -1;
+    }
     barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             0, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -2150,7 +2381,7 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             VK_ACCESS_TRANSFER_WRITE_BIT, 0,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) return -1;
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) fail_why = "vkEndCommandBuffer failed";
 
     VkPipelineStageFlags wait_st = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
@@ -2161,8 +2392,13 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     si.pCommandBuffers = &cmd;
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &f->sem_done;
-    vkResetFences(s_dev, 1, &f->fence);
-    if (vkQueueSubmit(s_queue, 1, &si, f->fence) != VK_SUCCESS) return -1;
+    if (!fail_why && vkResetFences(s_dev, 1, &f->fence) != VK_SUCCESS) fail_why = "vkResetFences failed";
+    if (!fail_why && vkQueueSubmit(s_queue, 1, &si, f->fence) != VK_SUCCESS) fail_why = "vkQueueSubmit failed";
+    if (fail_why) {
+        fprintf(stderr, "sdl3vk: pause overlay: %s; the renderer is terminal\n", fail_why);
+        s_renderer_terminal = 1;
+        return -1;
+    }
     f->submitted = 1;
     f->source = VK_NULL_HANDLE;
 
@@ -2188,7 +2424,9 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
         }
         return 2;
     case PRESENT_NOT_ENQUEUED:
-        recover_unenqueued_present(f);
+        /* The image is still acquired: recover the frame and rebuild the swapchain to hand it
+         * back, as present_common does (#1377). */
+        if (!recover_unenqueued_present(f) || !create_swapchain()) s_renderer_terminal = 1;
         fprintf(stderr, "sdl3vk: pause overlay present failed: %s\n", why ? why : "not enqueued");
         return -1;
     case PRESENT_SURFACE_LOST:
@@ -2383,6 +2621,8 @@ static int cap_test_image_create(CapTestImage *t, int w, int h) {
     return 1;
 }
 
+static int cap_test_image_submit(CapTestImage *t);
+
 /* Upload the pattern and leave the image TRANSFER_SRC_OPTIMAL, exactly the contract
  * sdl3vk_present_image(_ex) requires of GE targets. */
 static int cap_test_image_upload(CapTestImage *t) {
@@ -2395,6 +2635,26 @@ static int cap_test_image_upload(CapTestImage *t) {
             px[2] = (uint8_t)cap_test_pattern(x, y, 2);
             px[3] = 0xFF;
         }
+    return cap_test_image_submit(t);
+}
+
+/* A dark frame for the picture probe: every colour byte 0 except the last pixel's first
+ * colour byte, `last`, so the probe's brightest byte is `last` and only a scan of the whole
+ * frame finds it. The ignored byte is 0xFF everywhere and never counts. */
+static int cap_test_image_upload_dark(CapTestImage *t, uint8_t last) {
+    uint8_t *dst = (uint8_t *)t->staging_map;
+    size_t n = (size_t)t->w * (size_t)t->h;
+    for (size_t i = 0; i < n; i++) {
+        dst[i * 4u + 0u] = 0u;
+        dst[i * 4u + 1u] = 0u;
+        dst[i * 4u + 2u] = 0u;
+        dst[i * 4u + 3u] = 0xFFu;
+    }
+    dst[(n - 1u) * 4u] = last;
+    return cap_test_image_submit(t);
+}
+
+static int cap_test_image_submit(CapTestImage *t) {
     vkResetCommandBuffer(s_cmd, 0);
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -2999,6 +3259,67 @@ static int sdl3vk_lifecycle_selftest(void) {
             ok = 0;
         }
     }
+    /* A failure at each checked step of a present (#1377) is reported; the renderer is
+     * terminal exactly when the step leaves a frame, or an acquired image, that cannot be
+     * handed back; a terminal renderer refuses the next present, a recovered one presents it;
+     * and shutdown and re-init leave no object alive and raise no validation error. A
+     * suboptimal acquire is presented, not rebuilt over with its image still acquired. */
+    static const struct {
+        const char *name;
+        int step;
+        VkResult result;
+        int want, terminal;     /* the faulted present's result; the renderer state after it */
+    } pcases[] = {
+        { "frame fence wait",       PSTEP_FRAME_WAIT,  VK_ERROR_DEVICE_LOST,          -1, 1 },
+        { "acquire, out of memory", PSTEP_ACQUIRE,     VK_ERROR_OUT_OF_HOST_MEMORY,   -1, 0 },
+        { "acquire, device lost",   PSTEP_ACQUIRE,     VK_ERROR_DEVICE_LOST,          -1, 1 },
+        { "acquire, suboptimal",    PSTEP_ACQUIRE,     VK_SUBOPTIMAL_KHR,              1, 0 },
+        { "image fence wait",       PSTEP_IMAGE_WAIT,  VK_ERROR_DEVICE_LOST,          -1, 1 },
+        { "command buffer reset",   PSTEP_RESET_CMD,   VK_ERROR_OUT_OF_DEVICE_MEMORY, -1, 1 },
+        { "command buffer begin",   PSTEP_BEGIN_CMD,   VK_ERROR_OUT_OF_HOST_MEMORY,   -1, 1 },
+        { "command buffer end",     PSTEP_END_CMD,     VK_ERROR_OUT_OF_DEVICE_MEMORY, -1, 1 },
+        { "fence reset",            PSTEP_RESET_FENCE, VK_ERROR_OUT_OF_DEVICE_MEMORY, -1, 1 },
+        { "submit",                 PSTEP_SUBMIT,      VK_ERROR_DEVICE_LOST,          -1, 1 },
+    };
+    static uint32_t px[PSP_W * PSP_H];
+    const int npcases = (int)(sizeof pcases / sizeof pcases[0]);
+    for (int i = 0; ok && i < npcases; i++) {
+        if (!sdl3vk_init("Nakagawa GPU lifecycle selftest")) {
+            fprintf(stderr, "lifecycle: re-init before present case '%s' failed\n", pcases[i].name);
+            ok = 0;
+            break;
+        }
+        /* Every frame submitted once, so the next present waits on its frame's fence. */
+        int warm = 1;
+        for (int k = 0; k < PRESENT_FRAMES; k++) warm &= sdl3vk_present_rgba(px) == 1;
+        /* The image fence wait runs only when the acquired image was last drawn by the other
+         * frame, which a swapchain whose image count is a multiple of PRESENT_FRAMES never
+         * does: mark every image as drawn by the other frame (its fence was submitted above). */
+        if (pcases[i].step == PSTEP_IMAGE_WAIT)
+            for (uint32_t k = 0; k < s_swap_n; k++)
+                s_swap_img_fence[k] = s_frame[(s_frame_cursor + 1) % PRESENT_FRAMES].fence;
+        s_pstep_fault = pcases[i].step;
+        s_pstep_fault_result = pcases[i].result;
+        int got = 0, presents = 0;
+        while (s_pstep_fault != PSTEP_NONE && presents < 8) {
+            got = sdl3vk_present_rgba(px);
+            presents++;
+        }
+        int reached = s_pstep_fault == PSTEP_NONE;
+        s_pstep_fault = PSTEP_NONE;
+        int terminal = sdl3vk_renderer_terminal();
+        int after = sdl3vk_present_rgba(px);
+        sdl3vk_shutdown();
+        int live = lifecycle_live_objects();
+        if (!warm || !reached || got != pcases[i].want || terminal != pcases[i].terminal ||
+            after != (pcases[i].terminal ? -1 : 1) || live != 0) {
+            fprintf(stderr, "lifecycle: present fault '%s': warm=%d reached=%d present=%d (want %d) "
+                            "terminal=%d (want %d) next present=%d, %d object(s) alive after "
+                            "shutdown\n", pcases[i].name, warm, reached, got, pcases[i].want,
+                    terminal, pcases[i].terminal, after, live);
+            ok = 0;
+        }
+    }
     if (keep) vkDestroyInstance(keep, NULL);
     if (sdl3vk_validation_error_count() != errors) {
         fprintf(stderr, "lifecycle: %d validation error(s) during the unwinds\n",
@@ -3006,7 +3327,8 @@ static int sdl3vk_lifecycle_selftest(void) {
         ok = 0;
     }
     if (!ok) return 1;
-    printf("gpu lifecycle selftest: init unwind at each of %d steps OK\n", steps);
+    printf("gpu lifecycle selftest: init unwind at each of %d steps OK; %d present faults OK\n",
+           steps, npcases);
     return 0;
 }
 
@@ -3044,6 +3366,41 @@ static int sdl3vk_capture_selftest_body(void) {
         sr_fbcap_exit_status(SR_FBCAP_FBDUMP, 0) != 1 ||
         sr_fbcap_exit_status(SR_FBCAP_FBDUMP, -1) != 1) {
         fprintf(stderr, "policy: exit-status table wrong\n"); ok = 0;
+    }
+    if (!ok) return 1;
+
+    /* ---- readback memory type (#1296); no Vulkan needed ----------------------------- */
+    /* An RTX 3080's types: 3 is visible+coherent but uncached, 4 adds HOST_CACHED. A capture
+     * or probe buffer the CPU reads must take a cached type when one is allowed: the first
+     * visible+coherent type made a full read of a 4x frame cost about a second. */
+    {
+        const uint32_t vis = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        const uint32_t coh = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        const uint32_t cac = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        const uint32_t dev = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        const uint32_t rtx3080[6] = { 0u, dev, dev, vis | coh, vis | coh | cac, dev | vis | coh };
+        const uint32_t cached_noncoherent[3] = { vis | coh, vis | cac, 0u };
+        const uint32_t noncoherent_only[2] = { dev, vis };
+        int nc = -1;
+        if (cap_pick_mem_type(rtx3080, 6u, 0x3fu, &nc) != 4u || nc != 0) {
+            fprintf(stderr, "readback memory: the cached+coherent type must win\n"); ok = 0;
+        }
+        if (cap_pick_mem_type(rtx3080, 6u, 0x2fu, &nc) != 3u || nc != 0) {
+            fprintf(stderr, "readback memory: without a cached type, the first visible+coherent\n");
+            ok = 0;
+        }
+        if (cap_pick_mem_type(cached_noncoherent, 3u, 0x7u, &nc) != 1u || nc != 1) {
+            fprintf(stderr, "readback memory: a cached non-coherent type beats an uncached "
+                            "coherent one, and must be invalidated\n");
+            ok = 0;
+        }
+        if (cap_pick_mem_type(noncoherent_only, 2u, 0x3u, &nc) != 1u || nc != 1) {
+            fprintf(stderr, "readback memory: the last resort is any host-visible type\n"); ok = 0;
+        }
+        if (cap_pick_mem_type(rtx3080, 6u, 0x07u, &nc) != UINT32_MAX) {
+            fprintf(stderr, "readback memory: no host-visible type allowed must be refused\n");
+            ok = 0;
+        }
     }
     if (!ok) return 1;
 
@@ -3309,6 +3666,114 @@ static int sdl3vk_capture_selftest_body(void) {
         cap_test_image_destroy(&big);
     }
 
+    /* ---- picture probe at a 4x render scale (#1296) ---------------------------------
+     * The probe's readback is not waited for or scanned inside the present: the present
+     * returns with the probe in flight and no result, a file capture can be armed and
+     * published for the next present, and the probe's own pixels (not the newer frame's)
+     * give the result once its fence has signalled. Its buffer comes from the same picker
+     * as the readback memory cells above. */
+    CapTestImage dark;
+    if (!cap_test_image_create(&dark, 2048, 1088) || !cap_test_image_upload_dark(&dark, 8u)) {
+        fprintf(stderr, "probe: image setup failed\n"); ok = 0;
+    } else {
+        uint32_t b = 0u;
+        if (!sr_capture_arm_probe()) {
+            fprintf(stderr, "probe: arm refused\n"); ok = 0;
+        }
+        if (sdl3vk_present_image_ex((void *)dark.img, 2048, 1088) != 1) {
+            fprintf(stderr, "probe: present failed\n"); ok = 0;
+        }
+        if (!sr_capture_probe_in_flight() || sr_capture_probe_take(&b)) {
+            fprintf(stderr, "probe: the present must return with the probe in flight and no "
+                            "result (no fence wait or scan inside the present)\n");
+            ok = 0;
+        }
+        if (sr_capture_arm_probe()) {
+            fprintf(stderr, "probe: a second probe must be refused while one is in flight\n");
+            ok = 0;
+            sr_capture_cancel();
+        }
+        if (!s_probe.buf || s_probe.buf == s_cap.buf) {
+            fprintf(stderr, "probe: the probe must read back into its own buffer\n"); ok = 0;
+        } else {
+            /* The memory type wiring: the probe buffer took the picker's choice. */
+            VkPhysicalDeviceMemoryProperties mp;
+            vkGetPhysicalDeviceMemoryProperties(s_pdev, &mp);
+            VkMemoryRequirements mr;
+            vkGetBufferMemoryRequirements(s_dev, s_probe.buf, &mr);
+            uint32_t flags[VK_MAX_MEMORY_TYPES];
+            for (uint32_t i = 0; i < mp.memoryTypeCount; i++)
+                flags[i] = (uint32_t)mp.memoryTypes[i].propertyFlags;
+            uint32_t want = cap_pick_mem_type(flags, mp.memoryTypeCount, mr.memoryTypeBits, NULL);
+            if (want == UINT32_MAX || s_probe.mem_flags != flags[want]) {
+                fprintf(stderr, "probe: the probe buffer must use the readback memory picker\n");
+                ok = 0;
+            }
+        }
+        CapTestImage pat;
+        if (!cap_test_image_create(&pat, PSP_W, PSP_H) || !cap_test_image_upload(&pat)) {
+            fprintf(stderr, "probe: pattern image setup failed\n"); ok = 0;
+        } else {
+            if (!sr_capture_arm("selftest_after_probe.ppm")) {
+                fprintf(stderr, "probe: a file capture must be accepted while a probe is in "
+                                "flight\n");
+                ok = 0;
+            }
+            if (sdl3vk_present_image_ex((void *)pat.img, PSP_W, PSP_H) != 1 ||
+                sr_capture_result() != 1 ||
+                !cap_test_verify_ppm("selftest_after_probe.ppm", PSP_W, PSP_H)) {
+                fprintf(stderr, "probe: the file capture after a probe must be exact\n"); ok = 0;
+            }
+            remove("selftest_after_probe.ppm");
+            cap_test_image_destroy(&pat);
+        }
+        (void)sr_capture_probe_poll(1);
+        if (sr_capture_probe_in_flight() || !sr_capture_probe_take(&b) || b != 8u) {
+            fprintf(stderr, "probe: result %u (expected 8, the probe's own frame)\n", b); ok = 0;
+        }
+
+        /* The cost left once the GPU is done: invalidate and scan of a 2048x1088 dark
+         * frame, the full-scan case. Reported, not asserted (host-dependent). */
+        if (!sr_capture_arm_probe() ||
+            sdl3vk_present_image_ex((void *)dark.img, 2048, 1088) != 1 ||
+            !sdl3vk_wait_image((void *)dark.img)) {
+            fprintf(stderr, "probe: timing probe setup failed\n"); ok = 0;
+        }
+        uint64_t t0 = SDL_GetTicksNS();
+        (void)sr_capture_probe_poll(0);
+        uint64_t t1 = SDL_GetTicksNS();
+        if (sr_capture_probe_in_flight() || !sr_capture_probe_take(&b) || b != 8u) {
+            fprintf(stderr, "probe: a completed readback must publish without waiting\n"); ok = 0;
+        }
+        fprintf(stderr, "probe: 2048x1088 dark frame scanned in %.3f ms (memory flags 0x%x)\n",
+                (double)(t1 - t0) / 1e6, (unsigned)s_probe.mem_flags);
+
+        /* Published before its frame slot is reused, with no blocking poll: after
+         * PRESENT_FRAMES more presents the probe is no longer in flight. */
+        if (!sr_capture_arm_probe() ||
+            sdl3vk_present_image_ex((void *)dark.img, 2048, 1088) != 1) {
+            fprintf(stderr, "probe: second probe setup failed\n"); ok = 0;
+        }
+        for (int i = 0; i < PRESENT_FRAMES; i++)
+            if (sdl3vk_present_rgba(px) != 1) {
+                fprintf(stderr, "probe: present %d after the probe failed\n", i); ok = 0;
+            }
+        if (sr_capture_probe_in_flight() || !sr_capture_probe_take(&b) || b != 8u) {
+            fprintf(stderr, "probe: not published before its frame slot was reused\n"); ok = 0;
+        }
+
+        /* A present that fails after the probe was recorded leaves no probe in flight and no
+         * result, as before: the next present simply carries a new probe. */
+        sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);
+        if (!sr_capture_arm_probe() ||
+            sdl3vk_present_image_ex((void *)dark.img, 2048, 1088) != -1 ||
+            sr_capture_probe_in_flight() || sr_capture_probe_take(&b)) {
+            fprintf(stderr, "probe: a failed present must leave no probe and no result\n"); ok = 0;
+        }
+        (void)sdl3vk_wait_image((void *)dark.img);
+        cap_test_image_destroy(&dark);
+    }
+
     /* ---- production publication path -------------------------------------------------
      * FBSNAP's build/snapshots directory is not created by the build. The capture
      * publisher owns that boundary and must create it before opening its temp sibling. */
@@ -3478,8 +3943,11 @@ static int sdl3vk_capture_selftest_body(void) {
             fprintf(stderr, "present fault OOD: enqueued present must NOT recreate semaphore\n"); ok = 0;
         }
 
-        /* Test 3: VK_ERROR_OUT_OF_HOST_MEMORY (unenqueued hard error / semaphore recovery) */
+        /* Test 3: VK_ERROR_OUT_OF_HOST_MEMORY (unenqueued hard error / semaphore recovery).
+         * The image the failed present held stays acquired until the swapchain is rebuilt
+         * (#1377), so the failure rebuilds it. */
         sem0 = sdl3vk_frame_semaphore_generation();
+        sc0 = sdl3vk_swapchain_generation();
         if (!sr_capture_arm("selftest_oom.ppm")) {
             fprintf(stderr, "present fault OOM: arm failed\n"); ok = 0;
         }
@@ -3493,10 +3961,26 @@ static int sdl3vk_capture_selftest_body(void) {
         if (sdl3vk_frame_semaphore_generation() <= sem0) {
             fprintf(stderr, "present fault OOM: expected frame semaphore recovery/recreation\n"); ok = 0;
         }
+        if (sdl3vk_swapchain_generation() <= sc0 || sdl3vk_renderer_terminal()) {
+            fprintf(stderr, "present fault OOM: the still-acquired image must be handed back by a "
+                            "swapchain rebuild\n"); ok = 0;
+        }
 
         /* Verify frame slot recovery: next normal present must succeed cleanly without validation errors */
         if (sdl3vk_present_rgba(px) != 1) {
             fprintf(stderr, "present recovery: post-OOM normal present failed\n"); ok = 0;
+        }
+        /* More unenqueued presents in a row than the swapchain has images: without the rebuild
+         * every one would keep an image and the next acquire would wait forever. */
+        for (uint32_t k = 0; ok && k <= s_swap_n; k++) {
+            sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_HOST_MEMORY);
+            if (sdl3vk_present_rgba(px) != -1 || sdl3vk_renderer_terminal()) {
+                fprintf(stderr, "present fault OOM: repeated failure %u was not recovered\n", (unsigned)k);
+                ok = 0;
+            }
+        }
+        if (ok && sdl3vk_present_rgba(px) != 1) {
+            fprintf(stderr, "present recovery: present after repeated OOM failures failed\n"); ok = 0;
         }
 
     }
@@ -3611,8 +4095,11 @@ void sdl3vk_shutdown(void) {
         (void)wait_all_present_frames();
         /* Presentation-engine ownership is not covered by a submit fence.  A queue-idle
          * at final teardown is therefore still required before destroying the swapchain;
-         * unlike vkDeviceWaitIdle this does not stall unrelated device queues. */
-        vkQueueWaitIdle(s_queue);
+         * unlike vkDeviceWaitIdle this does not stall unrelated device queues. A failed wait
+         * (a lost device) is reported; teardown goes on, as nothing else can be done. */
+        VkResult idle = vkQueueWaitIdle(s_queue);
+        if (idle != VK_SUCCESS)
+            fprintf(stderr, "sdl3vk: shutdown vkQueueWaitIdle failed: %d\n", (int)idle);
     }
     destroy_swapchain();
     s_swap_n = 0;
@@ -3620,7 +4107,14 @@ void sdl3vk_shutdown(void) {
     if (s_hud_ren)  { SDL_DestroyRenderer(s_hud_ren); s_hud_ren = NULL; }
     if (s_hud_surf) { SDL_DestroySurface(s_hud_surf); s_hud_surf = NULL; }
     s_hud_fmt = VK_FORMAT_UNDEFINED;
-    cap_free_buffer();
+    /* Every frame was waited above, so an in-flight probe is published, not lost; one this
+     * renderer can no longer finish is dropped without a result. */
+    if (s_dev) (void)cap_probe_resolve(0);
+    s_probe_frame = NULL;
+    sr_capture_probe_drop("renderer shut down");
+    sr_capture_set_probe_resolver(NULL);
+    cap_free_buffer(&s_cap);
+    cap_free_buffer(&s_probe);
     prescale_free();
     for (int i = PRESENT_FRAMES - 1; i >= 0; i--) {
         PresentFrame *f = &s_frame[i];
@@ -3665,6 +4159,8 @@ void sdl3vk_shutdown(void) {
         s_sdl_subsystems = 0;
     }
     s_renderer_terminal = 0;
+    s_denorm_preserve_f32 = 0;
     s_quit_requested = 0;
+    s_pstep_fault = PSTEP_NONE;
     sdl3vk_reset_input_profile();
 }

@@ -26,6 +26,7 @@ TARGET_ENV = "vulkan1.1"
 SHADERS = (
     ("vert", Path("shaders/psp.vert"), Path("psp_vert.inc")),
     ("frag", Path("shaders/psp.frag"), Path("psp_frag.inc")),
+    ("vert", Path("shaders/psp_tnl.vert"), Path("psp_tnl_vert.inc")),
 )
 UI_SHADERS = (
     ("vert", Path("shaders/ui.vert"), Path("shaders/ui_vert.inc")),

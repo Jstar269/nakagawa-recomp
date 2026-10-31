@@ -635,6 +635,16 @@ int sr_picture_watch_tick(SrPictureWatch *w, uint32_t vcount, uint32_t *dark_vbl
     (void)w; (void)vcount; (void)dark_vblanks;
     return SR_PICTURE_WATCH_NONE;
 }
+int sr_capture_probe_in_flight(void) { return 0; }
+void sr_picture_watch_probe_sent(SrPictureWatch *w, uint32_t vcount) { (void)w; (void)vcount; }
+int sr_picture_watch_tick_needs_probe(const SrPictureWatch *w, uint32_t vcount) {
+    (void)w; (void)vcount;
+    return 0;
+}
+int sr_picture_watch_collect(SrPictureWatch *w, int block, uint32_t *brightest) {
+    (void)w; (void)block; (void)brightest;
+    return SR_PICTURE_WATCH_NONE;
+}
 int sdl3vk_renderer_terminal(void) { return 0; }
 const char *sr_capture_source_label(void) { return ""; }
 int sdl3vk_validation_error_count(void) { return 0; }
@@ -2690,6 +2700,74 @@ static void test_prx_export_relocation_behavior(void) {
                "malformed module metadata publishes no exports");
     }
     remove(path);
+}
+
+int sr_hle_test_last_prx_host_served(void);
+void sr_hle_test_unregister_late_imports(uint32_t lo, uint32_t hi);
+int sr_hle_test_module_host_served(uint32_t uid);
+
+/* Replaces the first little-endian copy of `from` in the file with `to`. */
+static int fixture_patch_u32(const char *path, uint32_t from, uint32_t to) {
+    FILE *f = fopen(path, "r+b");
+    if (!f) return 0;
+    uint8_t buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    int done = 0;
+    for (size_t i = 0; !done && i + 4u <= n; i += 4u) {
+        uint32_t v = (uint32_t)buf[i] | (uint32_t)buf[i + 1] << 8 | (uint32_t)buf[i + 2] << 16 |
+                     (uint32_t)buf[i + 3] << 24;
+        if (v != from) continue;
+        uint8_t w[4] = { (uint8_t)to, (uint8_t)(to >> 8), (uint8_t)(to >> 16), (uint8_t)(to >> 24) };
+        done = fseek(f, (long)i, SEEK_SET) == 0 && fwrite(w, 1, 4, f) == 4;
+    }
+    return fclose(f) == 0 && done;
+}
+
+/* #1385: what the runtime knows of a module is its export table, never a substring of its
+ * path. A module that exports a function host HLE implements (scePsmfPlayerCreate here, as
+ * the PSMF-player library does) is host-served whatever it is called; one that exports none
+ * is not. A look-alike file name loaded from a path no manifest declares (notpsmf.prx,
+ * libpsmfplayer.prx.bak) is not host-served, and starting it runs no entry. */
+#define NID_PSMF_PLAYER_CREATE 0x235d8787u
+static void test_module_identity_is_its_export_table(void) {
+    const char *path = HLE_BUILD_ROOT "/hle_prx_identity_fixture.bin";
+    const uint32_t base = 0x30000000u;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_module_reset();
+
+    expect(write_synthetic_prx(path, 0) &&
+               sr_hle_test_register_prx_exports(path, base) == 2u &&
+               !sr_hle_test_last_prx_host_served(),
+           "module identity: exports host HLE does not implement leave a module guest-served");
+    expect(fixture_patch_u32(path, 0x22222222u, NID_PSMF_PLAYER_CREATE) &&
+               sr_hle_test_register_prx_exports(path, base) == 2u &&
+               sr_hle_test_last_prx_host_served(),
+           "module identity: an export host HLE implements makes the module host-served");
+    sr_hle_test_unregister_late_imports(base, base + 0x100u);
+    remove(path);
+
+    static const char *const lookalikes[] = {
+        "disc0:/PSP_GAME/USRDIR/notpsmf.prx",
+        "disc0:/PSP_GAME/USRDIR/libpsmfplayer.prx.bak",
+    };
+    for (size_t i = 0; i < sizeof(lookalikes) / sizeof(lookalikes[0]); i++) {
+        CpuState cpu;
+        char what[160];
+        title_hle_write_cstr(0x08906000u, lookalikes[i]);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0x08906000u;
+        const uint32_t uid = sr_hle_test_load_module(&cpu);
+        snprintf(what, sizeof(what), "module identity: %s loads as a record that is not host-served",
+                 lookalikes[i]);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u && sr_hle_test_module_host_served(uid) == 0,
+               what);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        snprintf(what, sizeof(what), "module identity: starting %s runs no entry", lookalikes[i]);
+        expect(sr_hle_test_start_module(&cpu) == 0u, what);
+    }
+    sr_hle_test_module_reset();
 }
 
 static CpuState s_cpu_store;
@@ -18433,6 +18511,141 @@ static void test_quit_request_notifies_registered_exit_callback(void) {
     s_vtime_us = 0u;
 }
 
+/* The player's stop decision for a quit (#1377): sr_exit_request_stop_due, polled at scheduler
+ * boundaries, is 0 while the run must go on and 1 once the scheduler should stop. The guest's
+ * exit callback is notified once and gets the window; a savedata dialog the guest started holds
+ * the stop inside the same window, which also bounds it; with neither the stop is due at once. */
+int sr_savedata_pause_busy(void);   /* hle.c: the savedata dialog is running */
+void sr_hle_test_exit_request_reset(void);
+
+static uint32_t quit_check_callback(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    return sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback"));
+}
+
+static void test_quit_stop_decision(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_hle_test_osk_slot_reset();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    s_vtime_us = 1000u;
+    TCB *owner = fixture_thread(0x3440u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+
+    expect(sr_exit_request_stop_due() == 1 && !sr_thread_has_pending_callbacks(owner->uid),
+           "quit stop: with no exit callback and no save the run stops at once");
+
+    /* A registered exit callback: notified once, and the run goes on for its window. */
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    s_vtime_us = 1000u;
+    owner = fixture_thread(0x3441u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "exit-callback",
+                                         WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    expect(cb != 0u && exit_request_register(cb) == 0u,
+           "quit stop: the exit callback is registered");
+    expect(sr_exit_request_stop_due() == 0 && sr_thread_has_pending_callbacks(owner->uid),
+           "quit stop: the first poll notifies the exit callback and the run goes on");
+    expect(sr_exit_request_stop_due() == 0 && sr_exit_request_stop_due() == 0,
+           "quit stop: later polls inside the window keep the run going");
+    expect(quit_check_callback() == 1u && s_wakeup_log_len == 1u,
+           "quit stop: repeated polls notified the exit callback exactly once");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US - 1u;
+    expect(sr_exit_request_stop_due() == 0,
+           "quit stop: the run goes on one microsecond before the window ends");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
+    expect(sr_exit_request_stop_due() == 1,
+           "quit stop: a guest that has not exited when the window ends is stopped");
+    expect(quit_check_callback() == 0u && s_wakeup_log_len == 1u,
+           "quit stop: the stop notified nothing more");
+    wakeup_delete_callback(cb);
+
+    /* No callback, but a savedata dialog running: the stop waits for it, inside the window. */
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_hle_test_osk_slot_reset();
+    s_vtime_us = 1000u;
+    owner = fixture_thread(0x3442u, TH_RUNNING, 0x30);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               sr_savedata_pause_busy(),
+           "quit stop: the guest has a savedata dialog running");
+    expect(sr_exit_request_stop_due() == 0,
+           "quit stop: a running savedata dialog holds the stop");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US - 1u;
+    expect(sr_exit_request_stop_due() == 0,
+           "quit stop: the dialog still holds the stop just inside the window");
+    expect(utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u &&
+               !sr_savedata_pause_busy(),
+           "quit stop: the guest finishes and shuts down its savedata dialog");
+    expect(sr_exit_request_stop_due() == 1,
+           "quit stop: the run stops once the save has ended");
+
+    /* A dialog that never ends cannot hold the player: the window bounds it. */
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_hle_test_osk_slot_reset();
+    s_vtime_us = 1000u;
+    owner = fixture_thread(0x3443u, TH_RUNNING, 0x30);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               sr_exit_request_stop_due() == 0,
+           "quit stop: a second savedata dialog holds the stop");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
+    expect(sr_savedata_pause_busy() && sr_exit_request_stop_due() == 1,
+           "quit stop: a dialog still running when the window ends no longer holds the stop");
+
+    /* A callback the guest registers after the quit (during the hold) is notified, but the
+     * stop still comes at the end of the one window the quit opened. */
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_hle_test_osk_slot_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    s_vtime_us = 1000u;
+    owner = fixture_thread(0x3444u, TH_RUNNING, 0x30);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               sr_exit_request_stop_due() == 0,
+           "quit stop: a savedata dialog holds a quit made with no exit callback");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US / 2u;
+    cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "late-exit-callback",
+                                WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    expect(cb != 0u && exit_request_register(cb) == 0u && sr_exit_request_stop_due() == 0 &&
+               sr_thread_has_pending_callbacks(owner->uid),
+           "quit stop: a callback registered during the hold is notified");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
+    expect(sr_exit_request_stop_due() == 1,
+           "quit stop: the late callback does not open a second window past the first");
+    wakeup_delete_callback(cb);
+    sr_hle_test_osk_slot_reset();
+    sr_hle_test_exit_request_reset();
+    sr_test_guest_fn_reset();
+    s_vtime_us = 0u;
+}
+
 static uint32_t memstick_check_callback(void) {
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -21068,6 +21281,514 @@ static uint64_t gr_digest(const uint32_t *px)
 }
 /* ==== end of the GE raster cells ==== */
 
+/* ==== GE mip cells (PSP-GE-MIP-001, #1373) ====
+ * This block is carried byte for byte by fixtures/psp_oracle/probe_ge_sample.c (the PSP
+ * side, CASE=ge-mip) and src/rt/hle_thread_selftest.c (the software GE side);
+ * tools/test_psp_oracle.py pins the copy. Each cell is one display list of project-written
+ * command words (no game data). It draws into the 16x4 window x 16..31, y 8..11 of a 64x32
+ * 8888 colour buffer at VRAM offset GM_FB_OFFSET whose pixels are 0 before the list runs,
+ * sampling a 64x64 8888 texture of eight levels in which every level is one colour,
+ * gm_level_colour(level), with REPLACE/RGBA and clamped coordinates. A pixel's colour then
+ * names the level the GE sampled, or for a filter that blends two levels, the pair and the
+ * weight (red is 32 x level, green alternates 255 and 0), whatever texel the coordinates
+ * reach. The cells vary only the level-of-detail inputs:
+ *   GM_K_SPRITE  a through-mode sprite over the window with texture coordinates (0, 0) to
+ *                (u, v) texels: a footprint of u/16 by v/4 texels per pixel;
+ *   GM_K_QUAD    a transform-mode triangle strip over the window whose clip w is w0 at the
+ *                window's left edge and w1 at its right, with texture coordinates (0, 0) to
+ *                (u, v) texels. The vertex z is the clip w (projection column 2 is
+ *                (0, 0, 0, 1), column 3 is 0) and clip z is 0.
+ * The result is the window's 64 pixels. */
+
+#define GM_FB_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
+#define GM_ZB_OFFSET 0x00110000u   /* depth buffer pointer; depth test and writes are off */
+#define GM_STRIDE 64u
+#define GM_ROWS 32u
+#define GM_WX 16u                  /* window x 16..31, y 8..11 */
+#define GM_WY 8u
+#define GM_WW 16u
+#define GM_WH 4u
+#define GM_N 64u                   /* pixels in the window */
+#define GM_LEVELS 8u
+#define GM_TEX_BYTES 22528u        /* room for every level, each at a 64-byte boundary */
+#define GM_LIST_WORDS 192u
+#define GM_VTX_WORDS 32u
+
+enum { GM_K_SPRITE, GM_K_QUAD };
+
+/* level_mode: TEXLEVEL bits 0-1 (0 automatic, 1 constant, 2 slope); bias: its signed 4.4
+   level bias; max_level: TEXMODE's highest level; filter: TEXFILTER (minification |
+   magnification << 8); slope: TEXLODSLOPE; u, v: the texel span; w0, w1: GM_K_QUAD's
+   clip w at the left and right edges. */
+struct gm_cell {
+    const char *name;
+    uint8_t kind, level_mode, max_level;
+    int8_t bias;
+    uint16_t filter;
+    float slope, u, v, w0, w1;
+};
+
+#define GM_CELL_COUNT 57u
+static const struct gm_cell gm_cells[GM_CELL_COUNT] = {
+    {"c-b0", GM_K_SPRITE, 1u, 7u, 0x00, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b1", GM_K_SPRITE, 1u, 7u, 0x10, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b3", GM_K_SPRITE, 1u, 7u, 0x30, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b7", GM_K_SPRITE, 1u, 7u, 0x70, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b7f", GM_K_SPRITE, 1u, 7u, 0x7f, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-bm1", GM_K_SPRITE, 1u, 7u, -16, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b0f7", GM_K_SPRITE, 1u, 7u, 0x07, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b0f8", GM_K_SPRITE, 1u, 7u, 0x08, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b0f9", GM_K_SPRITE, 1u, 7u, 0x09, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-b1f8", GM_K_SPRITE, 1u, 7u, 0x18, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b0f1", GM_K_SPRITE, 1u, 7u, 0x01, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b0f4", GM_K_SPRITE, 1u, 7u, 0x04, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b0f8", GM_K_SPRITE, 1u, 7u, 0x08, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b1fc", GM_K_SPRITE, 1u, 7u, 0x1c, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b6ff", GM_K_SPRITE, 1u, 7u, 0x6f, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-b7f8", GM_K_SPRITE, 1u, 7u, 0x78, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-max2-b4", GM_K_SPRITE, 1u, 2u, 0x40, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"cl-max2-b2f8", GM_K_SPRITE, 1u, 2u, 0x28, 0x006u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-nomip-b3", GM_K_SPRITE, 1u, 7u, 0x30, 0x000u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-f5-b2", GM_K_SPRITE, 1u, 7u, 0x20, 0x005u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"c-f7-b2f8", GM_K_SPRITE, 1u, 7u, 0x28, 0x007u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"m3-b2", GM_K_SPRITE, 3u, 7u, 0x20, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"m3-b0-4x", GM_K_SPRITE, 3u, 7u, 0x00, 0x004u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f},
+    {"a-1x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    {"a-2x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 32.0f, 8.0f, 0.0f, 0.0f},
+    {"a-4x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f},
+    {"a-8x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 128.0f, 32.0f, 0.0f, 0.0f},
+    {"a-16x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 256.0f, 64.0f, 0.0f, 0.0f},
+    {"a-1x5", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 24.0f, 6.0f, 0.0f, 0.0f},
+    {"a-3x", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 48.0f, 12.0f, 0.0f, 0.0f},
+    {"a-half", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 8.0f, 2.0f, 0.0f, 0.0f},
+    {"al-1x5", GM_K_SPRITE, 0u, 7u, 0x00, 0x006u, 0.0f, 24.0f, 6.0f, 0.0f, 0.0f},
+    {"al-3x", GM_K_SPRITE, 0u, 7u, 0x00, 0x006u, 0.0f, 48.0f, 12.0f, 0.0f, 0.0f},
+    {"al-6x", GM_K_SPRITE, 0u, 7u, 0x00, 0x006u, 0.0f, 96.0f, 24.0f, 0.0f, 0.0f},
+    {"a-u4", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 64.0f, 4.0f, 0.0f, 0.0f},
+    {"a-v4", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 16.0f, 16.0f, 0.0f, 0.0f},
+    {"a-u4v2", GM_K_SPRITE, 0u, 7u, 0x00, 0x004u, 0.0f, 64.0f, 8.0f, 0.0f, 0.0f},
+    {"al-u3v2", GM_K_SPRITE, 0u, 7u, 0x00, 0x006u, 0.0f, 48.0f, 8.0f, 0.0f, 0.0f},
+    {"a-4x-b1", GM_K_SPRITE, 0u, 7u, 0x10, 0x004u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f},
+    {"a-4x-bm1", GM_K_SPRITE, 0u, 7u, -16, 0x004u, 0.0f, 64.0f, 16.0f, 0.0f, 0.0f},
+    {"al-2x-b0f8", GM_K_SPRITE, 0u, 7u, 0x08, 0x006u, 0.0f, 32.0f, 8.0f, 0.0f, 0.0f},
+    {"a-quad-w2", GM_K_QUAD, 0u, 7u, 0x00, 0x006u, 0.0f, 32.0f, 8.0f, 2.0f, 2.0f},
+    {"a-quad-w1to4", GM_K_QUAD, 0u, 7u, 0x00, 0x006u, 0.0f, 32.0f, 8.0f, 1.0f, 4.0f},
+    {"s-s1-w1", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 1.0f, 1.0f},
+    {"s-s1-w2", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 2.0f, 2.0f},
+    {"s-s1-w3", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 3.0f, 3.0f},
+    {"s-s1-w4", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 4.0f, 4.0f},
+    {"s-s1-w8", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 8.0f, 8.0f},
+    {"s-s1-wh", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 0.5f, 0.5f},
+    {"s-s2-w1", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 2.0f, 16.0f, 4.0f, 1.0f, 1.0f},
+    {"s-s2-w4", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 2.0f, 16.0f, 4.0f, 4.0f, 4.0f},
+    {"s-sh-w8", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 0.5f, 16.0f, 4.0f, 8.0f, 8.0f},
+    {"s-s1-w2-b1", GM_K_QUAD, 2u, 7u, 0x10, 0x006u, 1.0f, 16.0f, 4.0f, 2.0f, 2.0f},
+    {"s-s1-w2-4x", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 64.0f, 16.0f, 2.0f, 2.0f},
+    {"sn-s1-w3", GM_K_QUAD, 2u, 7u, 0x00, 0x004u, 1.0f, 16.0f, 4.0f, 3.0f, 3.0f},
+    {"s-s1-w1to8", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 1.0f, 8.0f},
+    {"s-spr-s4", GM_K_SPRITE, 2u, 7u, 0x00, 0x006u, 4.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+};
+
+/* Level `level`'s side in texels, its buffer width (whole 16-byte rows: at least 4 texels)
+   and its byte offset in the texture block. */
+static uint32_t gm_level_side(uint32_t level)
+{
+    const uint32_t side = 64u >> level;
+    return side ? side : 1u;
+}
+
+static uint32_t gm_level_bufw(uint32_t level)
+{
+    const uint32_t side = gm_level_side(level);
+    return side < 4u ? 4u : side;
+}
+
+static uint32_t gm_level_offset(uint32_t level)
+{
+    uint32_t off = 0;
+    for (uint32_t l = 0; l < level; l++) {
+        off += (gm_level_bufw(l) * 4u * gm_level_side(l) + 63u) & ~63u;
+    }
+    return off;
+}
+
+/* Every texel of level `level`: red 32 x level, green 255 on even levels and 0 on odd ones,
+   blue 0x80, alpha 0xff. */
+static uint32_t gm_level_colour(uint32_t level)
+{
+    return 0xff800000u | ((level & 1u) ? 0u : 0x0000ff00u) | (level * 32u);
+}
+
+/* The texture block: every level filled with its colour. Returns the byte count. */
+static uint32_t gm_texture(uint8_t *out)
+{
+    uint32_t end = 0;
+    for (uint32_t l = 0; l < GM_LEVELS; l++) {
+        const uint32_t base = gm_level_offset(l);
+        const uint32_t texels = gm_level_bufw(l) * gm_level_side(l);
+        const uint32_t c = gm_level_colour(l);
+        for (uint32_t i = 0; i < texels; i++) {
+            for (uint32_t b = 0; b < 4u; b++) {
+                out[base + 4u * i + b] = (uint8_t)(c >> (8u * b));
+            }
+        }
+        end = base + 4u * texels;
+    }
+    return end;
+}
+
+static uint32_t gm_fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+/* One vertex of type 0x183 (through or not): float u, v; float x, y, z. */
+static uint32_t gm_vtx(uint32_t *out, float u, float v, float x, float y, float z)
+{
+    out[0] = gm_fbits(u);
+    out[1] = gm_fbits(v);
+    out[2] = gm_fbits(x);
+    out[3] = gm_fbits(y);
+    out[4] = gm_fbits(z);
+    return 5u;
+}
+
+/* The cell's vertex words; returns the count. GM_K_QUAD positions are the clip x, y that the
+   viewport maps back to window pixels at clip w = z: x = 32 + 32 X / w, y = 16 + 16 Y / w on
+   the 64x32 buffer. */
+static uint32_t gm_vertices(const struct gm_cell *c, uint32_t *out)
+{
+    const float x0 = (float)GM_WX, y0 = (float)GM_WY;
+    const float x1 = x0 + (float)GM_WW, y1 = y0 + (float)GM_WH;
+    uint32_t n = 0;
+    if (c->kind == GM_K_SPRITE) {
+        n += gm_vtx(out + n, 0.0f, 0.0f, x0, y0, 0.0f);
+        n += gm_vtx(out + n, c->u, c->v, x1, y1, 0.0f);
+        return n;
+    }
+    const float su = c->u / 64.0f, sv = c->v / 64.0f;
+    const float xl = (x0 - 32.0f) / 32.0f, xr = (x1 - 32.0f) / 32.0f;
+    const float yt = (y0 - 16.0f) / 16.0f, yb = (y1 - 16.0f) / 16.0f;
+    n += gm_vtx(out + n, 0.0f, 0.0f, xl * c->w0, yt * c->w0, c->w0);
+    n += gm_vtx(out + n, su, 0.0f, xr * c->w1, yt * c->w1, c->w1);
+    n += gm_vtx(out + n, 0.0f, sv, xl * c->w0, yb * c->w0, c->w0);
+    n += gm_vtx(out + n, su, sv, xr * c->w1, yb * c->w1, c->w1);
+    return n;
+}
+
+/* The cell's display list for vertex words at `vtx` and the texture block at `tex` (physical
+   addresses); returns the word count. Every state the draw reads is set. */
+static uint32_t gm_list(const struct gm_cell *c, uint32_t vtx, uint32_t tex, uint32_t *out)
+{
+    static const uint8_t off_units[12] = {0x17u, 0x1cu, 0x1du, 0x1fu, 0x20u, 0x21u,
+                                          0x22u, 0x23u, 0x24u, 0x25u, 0x27u, 0x28u};
+    static const float ident43[12] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                      0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f};
+    /* Clip x, y as given, clip z 0, clip w the vertex z. */
+    static const float proj[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    const uint32_t full = (GM_STRIDE - 1u) | ((GM_ROWS - 1u) << 10);
+    uint32_t n = 0;
+#define GM_W(cmd, data) (out[n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00ffffffu))
+    GM_W(0x10, (vtx >> 8) & 0x000f0000u);
+    GM_W(0x9c, GM_FB_OFFSET);
+    GM_W(0x9d, GM_STRIDE);
+    GM_W(0xd2, 3u);
+    GM_W(0x9e, GM_ZB_OFFSET);
+    GM_W(0x9f, GM_STRIDE);
+    GM_W(0x15, 0);
+    GM_W(0x16, full);
+    GM_W(0xd4, 0);
+    GM_W(0xd5, full);
+    GM_W(0xd6, 0);
+    GM_W(0xd7, 0xffffu);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GM_W(off_units[i], 0);
+    }
+    GM_W(0x50, 0);              /* flat shading */
+    GM_W(0xd3, 0);              /* clear mode off */
+    GM_W(0xe7, 1);              /* depth writes off */
+    GM_W(0xe8, 0);
+    GM_W(0xe9, 0);
+    GM_W(0xdb, 0x00ff0001u);    /* alpha test ALWAYS */
+    GM_W(0xd8, 1);              /* colour test ALWAYS */
+    GM_W(0xd9, 0);
+    GM_W(0xda, 0);
+    GM_W(0xdc, 0x00ff0001u);    /* stencil test ALWAYS */
+    GM_W(0xdd, 0);              /* KEEP, KEEP, KEEP */
+    GM_W(0xde, 1);              /* depth test ALWAYS */
+    GM_W(0xdf, 0x32u);
+    GM_W(0xe0, 0);
+    GM_W(0xe1, 0);
+    GM_W(0xe6, 3);              /* logic op COPY */
+    GM_W(0xe2, 0x1d0cu);        /* the PSP SDK default dither matrix */
+    GM_W(0xe3, 0xf3e2u);
+    GM_W(0xe4, 0x0c1du);
+    GM_W(0xe5, 0xe2f3u);
+    GM_W(0xcf, 0);
+    GM_W(0xcd, 0);
+    GM_W(0xce, 0);
+    GM_W(0x55, 0xffffffu);
+    GM_W(0x58, 0xffu);
+    GM_W(0x1e, 1);              /* texture on */
+    GM_W(0xc0, 0);              /* UV mapping */
+    GM_W(0xc2, (uint32_t)c->max_level << 16);
+    GM_W(0xc3, 3);              /* 8888 */
+    for (uint32_t l = 0; l < GM_LEVELS; l++) {
+        const uint32_t a = tex + gm_level_offset(l);
+        uint32_t log2 = 0;
+        while ((1u << log2) < gm_level_side(l)) {
+            log2++;
+        }
+        GM_W(0xa0 + l, a);
+        GM_W(0xa8 + l, ((a >> 8) & 0x000f0000u) | gm_level_bufw(l));
+        GM_W(0xb8 + l, (log2 << 8) | log2);
+    }
+    GM_W(0xc6, c->filter);
+    GM_W(0xc7, 0x101u);         /* clamp u and v */
+    GM_W(0xc8, ((uint32_t)(uint8_t)c->bias << 16) | c->level_mode);
+    GM_W(0xd0, gm_fbits(c->slope) >> 8);
+    GM_W(0xc9, 0x103u);         /* REPLACE, RGBA */
+    GM_W(0xca, 0);
+    GM_W(0x48, gm_fbits(1.0f) >> 8);
+    GM_W(0x49, gm_fbits(1.0f) >> 8);
+    GM_W(0x4a, 0);
+    GM_W(0x4b, 0);
+    GM_W(0xcb, 0);              /* texture flush */
+    if (c->kind == GM_K_SPRITE) {
+        GM_W(0x4c, 0);
+        GM_W(0x4d, 0);
+        GM_W(0x12, 0x00800183u);  /* through, float uv, float position */
+        GM_W(0x01, vtx);
+        GM_W(0x04, (6u << 16) | 2u);
+    } else {
+        GM_W(0x3a, 0);
+        for (uint32_t i = 0; i < 12u; i++) {
+            GM_W(0x3b, gm_fbits(ident43[i]) >> 8);
+        }
+        GM_W(0x3c, 0);
+        for (uint32_t i = 0; i < 12u; i++) {
+            GM_W(0x3d, gm_fbits(ident43[i]) >> 8);
+        }
+        GM_W(0x3e, 0);
+        for (uint32_t i = 0; i < 16u; i++) {
+            GM_W(0x3f, gm_fbits(proj[i]) >> 8);
+        }
+        GM_W(0x42, gm_fbits(32.0f) >> 8);   /* viewport: x = 32 + 32 X, y = 16 + 16 Y */
+        GM_W(0x43, gm_fbits(16.0f) >> 8);
+        GM_W(0x44, 0);
+        GM_W(0x45, gm_fbits(2048.0f) >> 8);
+        GM_W(0x46, gm_fbits(2048.0f) >> 8);
+        GM_W(0x47, gm_fbits(32768.0f) >> 8);
+        GM_W(0x4c, (2048u - 32u) << 4);
+        GM_W(0x4d, (2048u - 16u) << 4);
+        GM_W(0x12, 0x00000183u);  /* transform, float uv, float position */
+        GM_W(0x01, vtx);
+        GM_W(0x04, (4u << 16) | 4u);
+    }
+    GM_W(0x0f, 0);
+    GM_W(0x0c, 0);
+#undef GM_W
+    return n;
+}
+
+/* FNV-1a 64 over the window's 64 result words, each little-endian. */
+static uint64_t gm_digest(const uint32_t *px)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint32_t i = 0; i < GM_N; i++) {
+        for (uint32_t b = 0; b < 4u; b++) {
+            h ^= (px[i] >> (8u * b)) & 0xffu;
+            h *= 0x100000001b3ull;
+        }
+    }
+    return h;
+}
+/* ==== end of the GE mip cells ==== */
+
+/* The software GE over the mip cells (#1373): the cells whose sampled level any level-of-detail
+ * rule agrees on read that level's colour in every pixel. Integer constant biases select their
+ * level, a bias past the highest level or a TEXMODE highest level clamps, a negative level and a
+ * filter with no mip bit stay on level 0, and an automatic footprint of a power of two texels
+ * per pixel selects its log2 (the larger axis), plus its bias (PSPSDK sceGuTexMode,
+ * sceGuTexLevelMode, sceGuTexFilter). Red, green and blue name the level; alpha is the stencil
+ * channel. The other cells' levels and blends are what PSP-GE-MIP-001 measures. */
+void sr_hle_test_ge_lists_reset(void);
+static void test_ge_mip_cells_software_contract(void) {
+    static const struct { const char *name; uint32_t level; } want[] = {
+        {"c-b0", 0u}, {"c-b1", 1u}, {"c-b3", 3u}, {"c-b7", 7u}, {"c-b7f", 7u}, {"c-bm1", 0u},
+        {"c-max2-b4", 2u}, {"c-nomip-b3", 0u}, {"c-f5-b2", 2u}, {"a-1x", 0u}, {"a-2x", 1u},
+        {"a-4x", 2u}, {"a-8x", 3u}, {"a-16x", 4u}, {"a-half", 0u}, {"a-4x-b1", 3u},
+        {"a-4x-bm1", 1u}, {"a-u4", 2u}, {"a-v4", 2u},
+    };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    const uint32_t list = 0x08900000u, vtx = 0x08904000u, tex = 0x08910000u;
+    const uint32_t fb = 0x04000000u + GM_FB_OFFSET;
+    (void)gm_texture((uint8_t *)SR_HOST(tex));
+    unsigned checked = 0, wrong = 0, synced = 1;
+    for (uint32_t k = 0; k < GM_CELL_COUNT; k++) {
+        const struct gm_cell *c = &gm_cells[k];
+        int expected = -1;
+        for (size_t w = 0; w < sizeof(want) / sizeof(want[0]); w++) {
+            if (strcmp(want[w].name, c->name) == 0) expected = (int)want[w].level;
+        }
+        if (expected < 0) continue;
+        memset(SR_HOST(fb), 0, GM_STRIDE * GM_ROWS * 4u);
+        (void)gm_vertices(c, (uint32_t *)SR_HOST(vtx));
+        (void)gm_list(c, vtx, tex, (uint32_t *)SR_HOST(list));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = list;
+        const uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = qid;
+        cpu.r[5] = 1u;
+        if ((qid & 0xFF000000u) != 0x35000000u || sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) != 0u)
+            synced = 0;
+        checked++;
+        unsigned bad = 0;
+        for (uint32_t i = 0; i < GM_N; i++) {
+            const uint32_t at = (GM_WY + i / GM_WW) * GM_STRIDE + GM_WX + i % GM_WW;
+            /* RGB only: the alpha byte is the stencil channel, not the level. */
+            if (((MEM_R32(fb + at * 4u) ^ gm_level_colour((uint32_t)expected)) & 0x00ffffffu) != 0u)
+                bad++;
+        }
+        if (bad) {
+            wrong++;
+            fprintf(stderr, "GE-MIP %s: %u of %u pixels are not level %d (0x%08x); first 0x%08x\n",
+                    c->name, bad, (unsigned)GM_N, expected, (unsigned)gm_level_colour((uint32_t)expected),
+                    (unsigned)MEM_R32(fb + (GM_WY * GM_STRIDE + GM_WX) * 4u));
+        }
+    }
+    expect(synced, "every software-contract mip cell's list is accepted and completes");
+    expect(checked == sizeof(want) / sizeof(want[0]), "every software-contract mip cell is in the table");
+    expect(wrong == 0, "every software-contract mip cell samples its level in every pixel");
+    sr_hle_test_ge_lists_reset();
+}
+
+/* PSP-GE-MIP-001 (#1373): the window digest each cell left on a PSP-3000 (system software 6.61,
+ * ARK-5.1.0; pspver 6.6.0; probe case ge-mip at 66940d76, docs/HARDWARE_ORACLE.md). Index k is gm_cells[k]. `modelled` is 0
+ * for the two cells whose w varies across the window: there the PSP holds one level of detail
+ * per 4-pixel span of a row at a triangle-dependent point (ge.c tex_detail16), which the
+ * software GE does not model, so their digests are recorded but not required. */
+static const struct {
+    const char *name;
+    uint64_t psp;
+} s_gm_psp[GM_CELL_COUNT] = {
+    {"c-b0", 0x41fc7ffbc5957d25ull},
+    {"c-b1", 0x435b12e96fc3b725ull},
+    {"c-b3", 0x9dc00e67ab07b725ull},
+    {"c-b7", 0x4f89008273cbb725ull},
+    {"c-b7f", 0x4f89008273cbb725ull},
+    {"c-bm1", 0x41fc7ffbc5957d25ull},
+    {"c-b0f7", 0x41fc7ffbc5957d25ull},
+    {"c-b0f8", 0x435b12e96fc3b725ull},
+    {"c-b0f9", 0x435b12e96fc3b725ull},
+    {"c-b1f8", 0x2eafad0013467d25ull},
+    {"cl-b0f1", 0xef4c02a4fd20d7a5ull},
+    {"cl-b0f4", 0xbeadf15fe1d49725ull},
+    {"cl-b0f8", 0xd97fa6a7a3f43d25ull},
+    {"cl-b1fc", 0xa137f6a565616725ull},
+    {"cl-b6ff", 0x8a1824de7a7d0fa5ull},
+    {"cl-b7f8", 0x4f89008273cbb725ull},
+    {"c-max2-b4", 0x2eafad0013467d25ull},
+    {"cl-max2-b2f8", 0x2eafad0013467d25ull},
+    {"c-nomip-b3", 0x41fc7ffbc5957d25ull},
+    {"c-f5-b2", 0x2eafad0013467d25ull},
+    {"c-f7-b2f8", 0x218f5318dc273d25ull},
+    {"m3-b2", 0x2eafad0013467d25ull},
+    {"m3-b0-4x", 0x41fc7ffbc5957d25ull},
+    {"a-1x", 0x41fc7ffbc5957d25ull},
+    {"a-2x", 0x435b12e96fc3b725ull},
+    {"a-4x", 0x2eafad0013467d25ull},
+    {"a-8x", 0x9dc00e67ab07b725ull},
+    {"a-16x", 0x52a140c78ecf7d25ull},
+    {"a-1x5", 0x435b12e96fc3b725ull},
+    {"a-3x", 0x2eafad0013467d25ull},
+    {"a-half", 0x41fc7ffbc5957d25ull},
+    {"al-1x5", 0xd97fa6a7a3f43d25ull},
+    {"al-3x", 0xdc49573f1e11bd25ull},
+    {"al-6x", 0x218f5318dc273d25ull},
+    {"a-u4", 0x2eafad0013467d25ull},
+    {"a-v4", 0x2eafad0013467d25ull},
+    {"a-u4v2", 0x2eafad0013467d25ull},
+    {"al-u3v2", 0xdc49573f1e11bd25ull},
+    {"a-4x-b1", 0x9dc00e67ab07b725ull},
+    {"a-4x-bm1", 0x435b12e96fc3b725ull},
+    {"al-2x-b0f8", 0xdc49573f1e11bd25ull},
+    {"a-quad-w2", 0x435b12e96fc3b725ull},
+    {"a-quad-w1to4", 0xe41dd15337611eadull},
+    {"s-s1-w1", 0x435b12e96fc3b725ull},
+    {"s-s1-w2", 0x2eafad0013467d25ull},
+    {"s-s1-w3", 0xe624f7106d8a8ea5ull},
+    {"s-s1-w4", 0x9dc00e67ab07b725ull},
+    {"s-s1-w8", 0x52a140c78ecf7d25ull},
+    {"s-s1-wh", 0x41fc7ffbc5957d25ull},
+    {"s-s2-w1", 0x2eafad0013467d25ull},
+    {"s-s2-w4", 0x52a140c78ecf7d25ull},
+    {"s-sh-w8", 0x9dc00e67ab07b725ull},
+    {"s-s1-w2-b1", 0x9dc00e67ab07b725ull},
+    {"s-s1-w2-4x", 0x2eafad0013467d25ull},
+    {"sn-s1-w3", 0x9dc00e67ab07b725ull},
+    {"s-s1-w1to8", 0xc96687bd2bfe7501ull},
+    {"s-spr-s4", 0x9dc00e67ab07b725ull},
+};
+
+static int gm_cell_modelled(const char *name) {
+    return strcmp(name, "a-quad-w1to4") != 0 && strcmp(name, "s-s1-w1to8") != 0;
+}
+
+/* Every PSP-GE-MIP-001 cell through production dispatch and the software GE, with the probe's
+ * own list, vertices and texture; each modelled cell's window must match the PSP's digest. A
+ * diverging cell prints its software window for comparison with the raw hardware rows. */
+static void test_ge_mip_cells_match_psp(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    const uint32_t list = 0x08900000u, vtx = 0x08904000u, tex = 0x08910000u;
+    const uint32_t fb = 0x04000000u + GM_FB_OFFSET;
+    (void)gm_texture((uint8_t *)SR_HOST(tex));
+    unsigned diverged = 0, modelled = 0, names_ok = 1, synced = 1;
+    for (uint32_t k = 0; k < GM_CELL_COUNT; k++) {
+        const struct gm_cell *c = &gm_cells[k];
+        uint32_t px[GM_N];
+        memset(SR_HOST(fb), 0, GM_STRIDE * GM_ROWS * 4u);
+        (void)gm_vertices(c, (uint32_t *)SR_HOST(vtx));
+        (void)gm_list(c, vtx, tex, (uint32_t *)SR_HOST(list));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = list;
+        const uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = qid;
+        if ((qid & 0xFF000000u) != 0x35000000u || sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) != 0u)
+            synced = 0;
+        for (uint32_t i = 0; i < GM_N; i++)
+            px[i] = MEM_R32(fb + ((GM_WY + i / GM_WW) * GM_STRIDE + GM_WX + i % GM_WW) * 4u);
+        if (strcmp(s_gm_psp[k].name, c->name) != 0) names_ok = 0;
+        if (!gm_cell_modelled(c->name)) continue;
+        modelled++;
+        const uint64_t digest = gm_digest(px);
+        if (digest != s_gm_psp[k].psp) {
+            diverged++;
+            fprintf(stderr, "GE-MIP %s software=0x%016llx psp=0x%016llx", c->name,
+                    (unsigned long long)digest, (unsigned long long)s_gm_psp[k].psp);
+            for (uint32_t i = 0; i < GM_N; i++)
+                fprintf(stderr, "%s%08x", i % GM_WW ? " " : "\n  ", (unsigned)px[i]);
+            fprintf(stderr, "\n");
+        }
+    }
+    expect(names_ok, "PSP-GE-MIP-001 digest table rows name the cells in table order");
+    expect(synced, "every PSP-GE-MIP-001 list is accepted and completes");
+    expect(modelled == GM_CELL_COUNT - 2u, "PSP-GE-MIP-001 leaves only the two varying-w cells unmodelled");
+    expect(diverged == 0, "every modelled PSP-GE-MIP-001 cell matches the PSP window digest");
+    sr_hle_test_ge_lists_reset();
+}
+
 /* PSP-GE-RASTER-001 (#343): the window digest each cell left on a PSP-3000 (firmware 6.6.1,
  * probe case ge-raster, docs/HARDWARE_ORACLE.md). Index k is gr_cells[k]. */
 static const struct {
@@ -21722,6 +22443,8 @@ static int s_gsw_reset;              /* producer resets the queue instead of adv
 static unsigned s_gsw_producer_done;  /* producer finished advancing or resetting */
 static uint32_t s_gsw_list_rc, s_gsw_list_poll, s_gsw_draw_rc, s_gsw_draw_poll, s_gsw_reset_rc;
 static unsigned s_gsw_list_done_at_return, s_gsw_draw_done_at_return, s_gsw_reset_done_at_return;
+static uint32_t s_gsw_completed_wait, s_gsw_draw_wait, s_gsw_freed_poll, s_gsw_freed_wait;
+static unsigned s_gsw_blocked_after_reset, s_gsw_reenqueues;
 void sr_hle_test_ge_lists_reset(void);
 
 static uint32_t gsw_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
@@ -21735,6 +22458,20 @@ static void gsw_producer_fn(CpuState *cpu) {
     (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, GSW_PRODUCER_DELAY_US, 0u, 0u, 0u);
     if (s_gsw_reset) {
         (void)gsw_call(NID_SCE_GE_BREAK, 1u, 0u, 0u, 0u);
+        /* The reset ends the list without completing it, so the waiter must still be
+         * parked after it has had every chance to run (PSP-GE-SYNC-001
+         * ge-list-sync-cancelled-wait: no return). It returns only once a later list
+         * that the driver gives the same slot, and so the same id, completes. */
+        (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, GSW_PRODUCER_DELAY_US, 0u, 0u, 0u);
+        s_gsw_blocked_after_reset = s_gsw_reset_rc == 0xdeadbeefu;
+        MEM_W32(GSW_LIST + 0x100u, 0x0f000000u);
+        MEM_W32(GSW_LIST + 0x104u, 0x0c000000u);
+        s_gsw_reenqueues = 0u;
+        uint32_t id = 0u;
+        while (id != s_gsw_qid && s_gsw_reenqueues < 64u) {
+            id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST + 0x100u, 0u, 0xffffffffu, 0u);
+            s_gsw_reenqueues++;
+        }
     } else {
         /* The guest writes the rest of the list, then moves the stall past it. */
         MEM_W32(GSW_LIST, 0x0f000000u);       /* FINISH */
@@ -21771,6 +22508,17 @@ static void gsw_main_fn(CpuState *cpu) {
     gsw_arm(1);
     s_gsw_reset_rc = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 0u, 0u, 0u);
     s_gsw_reset_done_at_return = s_gsw_producer_done;
+
+    /* A list that completed answers the blocking form at once, also once its peek reads the
+     * invalid-id code (PSP-GE-SYNC-001 ge-list-sync-completed-wait, ge-list-sync-stale-wait);
+     * here a sceGeDrawSync(0) frees its slot (uofw). */
+    MEM_W32(GSW_LIST, 0x0f000000u);
+    MEM_W32(GSW_LIST + 4u, 0x0c000000u);
+    const uint32_t done = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST, 0u, 0xffffffffu, 0u);
+    s_gsw_completed_wait = gsw_call(NID_SCE_GE_LIST_SYNC, done, 0u, 0u, 0u);
+    s_gsw_draw_wait = gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u);
+    s_gsw_freed_poll = gsw_call(NID_SCE_GE_LIST_SYNC, done, 1u, 0u, 0u);
+    s_gsw_freed_wait = gsw_call(NID_SCE_GE_LIST_SYNC, done, 0u, 0u, 0u);
     cpu->r[2] = 0u;
 }
 
@@ -21783,7 +22531,9 @@ static void test_ge_blocking_sync_waits_for_stalled_list(void) {
     sr_test_register_guest_fn(GSW_MAIN_ENTRY, gsw_main_fn);
     sr_test_register_guest_fn(GSW_PRODUCER_ENTRY, gsw_producer_fn);
     s_gsw_list_rc = s_gsw_list_poll = s_gsw_draw_rc = s_gsw_draw_poll = s_gsw_reset_rc = 0xdeadbeefu;
+    s_gsw_completed_wait = s_gsw_draw_wait = s_gsw_freed_poll = s_gsw_freed_wait = 0xdeadbeefu;
     s_gsw_list_done_at_return = s_gsw_draw_done_at_return = s_gsw_reset_done_at_return = 0u;
+    s_gsw_blocked_after_reset = s_gsw_reenqueues = 0u;
     g_worker_uid = SR_ROLE_UID_NONE;
     memset(s_cpu, 0, sizeof(*s_cpu));
 
@@ -21797,8 +22547,17 @@ static void test_ge_blocking_sync_waits_for_stalled_list(void) {
            "blocking sceGeDrawSync returns 0 only after the producer thread advanced the stall");
     expect(s_gsw_draw_poll == 0u,
            "sceGeDrawSync(1) after the blocking return reads no list busy");
-    expect(s_gsw_reset_rc == 0x80000100u && s_gsw_reset_done_at_return == 1u,
-           "blocking sceGeListSync wakes on a sceGeBreak(1) reset with the removed-list code");
+    expect(s_gsw_blocked_after_reset == 1u,
+           "a blocking sceGeListSync stays parked through a sceGeBreak(1) reset of its list "
+           "(PSP-GE-SYNC-001 ge-list-sync-cancelled-wait)");
+    expect(s_gsw_reset_rc == 0u && s_gsw_reset_done_at_return == 1u && s_gsw_reenqueues >= 1u &&
+               s_gsw_reenqueues <= 64u,
+           "the reset list's waiter returns 0 once a later list in the same slot completes");
+    expect(s_gsw_completed_wait == 0u && s_gsw_draw_wait == 0u,
+           "the blocking forms return 0 at once for a completed list and an idle GE");
+    expect(s_gsw_freed_poll == 0x80000100u && s_gsw_freed_wait == 0u,
+           "after sceGeDrawSync(0) a completed list's peek reads 0x80000100 (uofw) and its wait "
+           "still returns 0 (PSP-GE-SYNC-001 ge-list-sync-stale-wait)");
 
     /* Outside a waitable guest thread nothing can advance the list: refused, not completed. */
     MEM_W32(GSW_LIST, 0u);
@@ -21812,6 +22571,72 @@ static void test_ge_blocking_sync_waits_for_stalled_list(void) {
     sr_hle_test_ge_lists_reset();
     sr_test_guest_fn_reset();
 }
+
+/* #1374: what the sync calls return for ids that name no list, for completed lists and
+ * for sync types other than 0 and 1. Every expected value is a PSP-GE-SYNC-001 cell
+ * (PSP-3000, probe ge-sync-ids, captured by the runs of 96fe29f6 and f6da6125 on
+ * 2026-10-31; tools/psp_oracle/manifest.json) unless the line says otherwise. */
+static void test_ge_sync_ids_match_psp(void) {
+    const uint32_t dl = 0x08922000u, unknown = 0x0badf00du;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    MEM_W32(dl, 0x0f000000u);       /* FINISH */
+    MEM_W32(dl + 4u, 0x0c000000u);  /* END */
+
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, unknown, 1u, 0u, 0u) == 0x80000100u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, 0xffffffffu, 1u, 0u, 0u) == 0x80000100u,
+           "sceGeListSync(1) on an id no enqueue returned, and on -1, is 0x80000100");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, unknown, 0u, 0u, 0u) == 0x80000100u,
+           "sceGeListSync(0) on an unknown id returns 0x80000100 without waiting");
+    expect(gsw_call(NID_SCE_GE_LIST_DEQUEUE, unknown, 0u, 0u, 0u) == 0x80000100u,
+           "sceGeListDeQueue on an unknown id is 0x80000100");
+    /* An id that names a slot no enqueue has used yet is a free slot: its peek names no list,
+     * and its wait returns at once, because the driver creates its per-slot completion event
+     * flags with every bit set (uofw src/kd/ge/ge.c _sceGeQueueInit). A freed slot behaves the
+     * same (ge-list-sync-stale-wait, PSP-GE-SYNC-001). */
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, 0x35000000u, 1u, 0u, 0u) == 0x80000100u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, 0x35000000u, 0u, 0u, 0u) == 0u,
+           "a never-used slot's id peeks 0x80000100 and its wait returns 0 at once (uofw)");
+
+    const uint32_t a = gsw_call(NID_SCE_GE_LIST_ENQUEUE, dl, 0u, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, a, 1u, 0u, 0u) == 0u,
+           "a list that ran to its END peeks as completed (0)");
+    expect(gsw_call(NID_SCE_GE_LIST_DEQUEUE, a, 0u, 0u, 0u) == 0x80000021u,
+           "sceGeListDeQueue on a completed list is BUSY (0x80000021)");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, a, 2u, 0u, 0u) == 0x80000107u &&
+               gsw_call(NID_SCE_GE_DRAW_SYNC, 2u, 0u, 0u, 0u) == 0x80000107u &&
+               gsw_call(NID_SCE_GE_DRAW_SYNC, 0xffffffffu, 0u, 0u, 0u) == 0x80000107u,
+           "sync types other than 0 and 1 are 0x80000107");
+
+    /* A second list gets a different id. The PSP read some completed lists' peeks as
+     * 0x80000100 before any sceGeDrawSync(0) and others as 0; nothing in the GE driver's
+     * list lifecycle (uofw src/kd/ge/ge.c) frees a slot there, so the runtime keeps 0. */
+    const uint32_t b = gsw_call(NID_SCE_GE_LIST_ENQUEUE, dl, 0u, 0xffffffffu, 0u);
+    expect(b != a && gsw_call(NID_SCE_GE_LIST_SYNC, b, 1u, 0u, 0u) == 0u,
+           "a second list gets its own id and also peeks as completed");
+
+    /* sceGeDrawSync(0) frees every completed slot: the peek then names no list, the
+     * dequeue too (uofw; the dequeue is UNMEASURED). */
+    expect(gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u) == 0u,
+           "sceGeDrawSync(0) on an idle GE returns 0");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, a, 1u, 0u, 0u) == 0x80000100u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, b, 1u, 0u, 0u) == 0x80000100u,
+           "after sceGeDrawSync(0) the completed lists' peeks are 0x80000100");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, b, 0u, 0u, 0u) == 0u,
+           "after sceGeDrawSync(0) a completed list's wait still returns 0");
+    expect(gsw_call(NID_SCE_GE_LIST_DEQUEUE, b, 0u, 0u, 0u) == 0x80000100u,
+           "after sceGeDrawSync(0) a completed list's dequeue is 0x80000100 (uofw)");
+
+    /* A list stalled at its start and removed by a reset. */
+    const uint32_t c = gsw_call(NID_SCE_GE_LIST_ENQUEUE, dl, dl, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_BREAK, 1u, 0u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, c, 1u, 0u, 0u) == 0x80000100u &&
+               gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u) == 0u,
+           "a reset-removed list peeks as 0x80000100 and the GE as idle");
+    sr_hle_test_ge_lists_reset();
+}
+
 
 static void test_kernel_import_sweep_ge_head(void) {
     const uint32_t list = 0x08918000u;
@@ -21996,20 +22821,18 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after continue");
 
-    /* No measured dequeue result exists for a completed list or an unknown id:
-     * both stop the run by name rather than hand the game an invented result. */
-    uint32_t dequeue_stops = sr_hle_test_unmodelled_stops();
+    /* A completed list dequeues BUSY until a sceGeDrawSync(0) frees it, and an id that
+     * names no list is 0x80000100 (PSP-GE-SYNC-001 ge-list-sync-completed-poll,
+     * ge-list-dequeue-unknown). */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u &&
-               sr_hle_test_unmodelled_stops() == dequeue_stops + 1u,
-           "sceGeListDeQueue on a completed list stops the run by name");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80000021u,
+           "sceGeListDeQueue on a completed list is BUSY (0x80000021, PSP-GE-SYNC-001)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x7fffffffu;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u &&
-               sr_hle_test_unmodelled_stops() == dequeue_stops + 2u,
-           "sceGeListDeQueue on an unknown id stops the run by name");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80000100u,
+           "sceGeListDeQueue on an unknown id is 0x80000100 (PSP-GE-SYNC-001)");
 
     /* Mode 1 cancellation */
     memset(&cpu, 0, sizeof(cpu));
@@ -22321,6 +23144,81 @@ static void test_ge_finish_callback_reports(void) {
     expect(sr_hle_test_ge_finish_reports(1) == 1u,
            "GE finish: an unregistered callback ID is reported once, not once per list");
     s_ge_tim_cbid = registered;
+    ge_tim_teardown();
+}
+
+/* #1374: lists enqueued while another list is still on the GE wait their turn, in enqueue
+ * order, as the GE driver's queue runs them (uofw src/kd/ge/ge.c _sceGeListEnQueue and
+ * _sceGeFinishInterrupt). The queued-list peek (1) is uofw's SCE_GE_LIST_QUEUED and
+ * UNMEASURED; the head's stalled peek (3) is PSP-GE-CONTROL-001. */
+static void test_ge_queued_lists_run_in_order(void) {
+    CpuState cpu;
+    ge_tim_setup();
+    sr_hle_test_ge_lists_reset();
+    MEM_W32(GE_TIM_DL, 0x0f000000u | ge_tim_finish_id(GE_TIM_DL));
+    MEM_W32(GE_TIM_DL + 4u, 0x0c000000u);
+    ge_tim_write_list(GE_TIM_DL2, 0u);
+    ge_tim_write_list(GE_TIM_DL2 + 0x100u, 0u);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GE_TIM_DL;
+    cpu.r[5] = GE_TIM_DL;      /* empty ring: the head list stalls at its start */
+    cpu.r[6] = s_ge_tim_cbid;
+    const uint32_t head = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    const uint32_t second = ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    const uint32_t third = ge_tim_enqueue(&cpu, GE_TIM_DL2 + 0x100u);
+    expect(s_ge_tim_calls == 0u,
+           "lists enqueued behind a stalled list do not run ahead of it");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, second, 1u) == 1u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, head, 1u) == 3u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 3u,
+           "the queued list peeks as queued (1) and the GE as stalled on its head (3)");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_DEQUEUE, third, 0u) == 0u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, third, 1u) == 0x80000100u,
+           "a queued list that never started dequeues (0) and its id then names no list");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = head;
+    cpu.r[5] = GE_TIM_DL + 8u;
+    (void)sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR);
+    expect(s_ge_tim_calls == 2u && s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL) &&
+               s_ge_tim_id[1] == ge_tim_finish_id(GE_TIM_DL2),
+           "once the head completes, the queued list runs next and completes after it; "
+           "the dequeued list never runs");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, head, 1u) == 0u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, second, 1u) == 0u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
+           "both lists then peek as completed and the GE as idle");
+    sr_hle_test_ge_lists_reset();
+    ge_tim_teardown();
+}
+
+/* #1374: with the opt-in timing model, a blocking sync whose completion interrupt this caller
+ * cannot wait for (here: no guest thread) stops the run by name rather than report the list
+ * complete before its finish callback ran. Once the completion is delivered, it returns 0. */
+static void test_ge_timing_blocking_sync_cannot_wait(void) {
+    CpuState cpu;
+    ge_tim_setup();
+    sr_hle_test_ge_lists_reset();
+    sr_hle_test_ge_timing(1);
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    s_vtime_us = 1000u;
+    memset(&cpu, 0, sizeof(cpu));
+    const uint32_t qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    const uint32_t stops = sr_hle_test_unmodelled_stops();
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 0u) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == stops + 1u,
+           "GE timing: a blocking sceGeListSync that cannot wait for the completion stops by name");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 0u, 0u) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == stops + 2u,
+           "GE timing: a blocking sceGeDrawSync that cannot wait for the completion stops by name");
+    expect(s_ge_tim_calls == 0u, "GE timing: neither stop ran the finish callback early");
+    s_vtime_us = 1015u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u && ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 0u) == 0u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 0u, 0u) == 0u,
+           "GE timing: once the completion is delivered both blocking forms return 0");
+    sr_hle_test_ge_lists_reset();
     ge_tim_teardown();
 }
 
@@ -22638,8 +23536,10 @@ static void test_ge_consumed_list_ignores_late_stall_address(void) {
     cpu.r[5] = 1;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0u,
            "the consumed list stays complete for sceGeListSync after a late stall address");
+    /* The peek, not the wait: a sceGeDrawSync(0) would free the completed list's slot, and
+     * the late chunks below would then name no list. */
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0;
+    cpu.r[4] = 1;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "the consumed list leaves the GE drawing nothing after a late stall address");
 
@@ -40128,6 +41028,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_aot_return_boundary_thread_isolation();
 #endif
     test_prx_export_relocation_behavior();
+    test_module_identity_is_its_export_table();
     test_fd_namespace();
     test_umd_io_console_model();
     test_ms0_unified_namespace();
@@ -40154,9 +41055,12 @@ static int hle_selftest_main(int argc, char **argv) {
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
     test_ge_blocking_sync_waits_for_stalled_list();
+    test_ge_sync_ids_match_psp();
     test_ge_break_continue();
     test_ge_completion_timing();
     test_ge_finish_callback_reports();
+    test_ge_queued_lists_run_in_order();
+    test_ge_timing_blocking_sync_cannot_wait();
     test_volatile_mem_output_preflight();
     test_osk_parameter_sizes();
     test_osk_update_and_shutdown_init_states();
@@ -40214,6 +41118,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_stall_alias_linear_from_uncached_list();
     test_ge_linear_filter_stays_inside_region();
     test_ge_raster_cells_match_psp();
+    test_ge_mip_cells_software_contract();
+    test_ge_mip_cells_match_psp();
     test_ge_block_transfer_span_atomicity();
     test_dcache_maintenance_notifies_renderer();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
@@ -40264,6 +41170,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
     test_callback_check_pump_services_pending_in_slot_order();
     test_quit_request_notifies_registered_exit_callback();
+    test_quit_stop_decision();
     test_io_devctl_memstick_callback_notify();
     test_callback_wakeup_resumes_delay_wait_in_slot_order();
     test_display_frame_per_sec_float_return();
