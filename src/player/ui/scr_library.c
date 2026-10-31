@@ -27,6 +27,10 @@
 #define LIBRARY_ID_GRID LIBRARY_ID(0x000030u)
 #define LIBRARY_ID_ROW_BASE LIBRARY_ID(0x000100u)
 #define LIBRARY_ID_ROW_BASE_SPAN 0x20u
+/* Reserved: disc verification on the library (a card's Verified retail, Modified or
+   Unknown, an add's progress and cancel). */
+#define LIBRARY_ID_VERIFY LIBRARY_ID(0x000400u)
+#define LIBRARY_ID_VERIFY_SPAN 0x100u
 #define LIBRARY_ID_PROMPTS LIBRARY_ID(0x000040u)
 #define LIBRARY_ID_WAVES LIBRARY_ID(0x000050u)
 #define LIBRARY_ID_BACKDROP LIBRARY_ID(0x000051u)

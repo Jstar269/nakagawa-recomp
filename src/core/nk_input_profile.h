@@ -172,6 +172,11 @@ typedef enum {
 typedef struct {
     NkBindingSourceType type;
     int index; /* NkHostGamepadButton or NkHostGamepadAxis */
+    /* A stick direction's own threshold (1-32767), or 0 for the profile's
+     * trigger_threshold. Written "+rightx@20000"; #1791's second-stick and mouse
+     * sources take the same "@threshold" form ("mouse:+x@4" is reserved for it and
+     * refused until it is supported). */
+    int16_t threshold;
 } NkBindingSource;
 
 /**

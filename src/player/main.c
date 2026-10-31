@@ -776,7 +776,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
              event->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
             event->gaxis.value > 16000) {
-            NkBindingSource src;
+            NkBindingSource src = {NK_BINDING_NONE, 0, 0};
             src.type = NK_BINDING_HOST_TRIGGER;
             src.index = event->gaxis.axis;
             input_settings_feed_capture_source(&app->input_settings, src);
@@ -804,7 +804,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
            both launchers. */
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
-            NkBindingSource src;
+            NkBindingSource src = {NK_BINDING_NONE, 0, 0};
             if (app->input_settings.device == INPUT_DEVICE_KEYBOARD) {
                 /* A controller has no keys: its press stops the wait for one. */
                 input_settings_cancel_capture(&app->input_settings);

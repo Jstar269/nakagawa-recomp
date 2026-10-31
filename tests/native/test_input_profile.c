@@ -3058,6 +3058,67 @@ static void versioned_profile_case(const char *fixture, int version, int title_c
     remove(path);
 }
 
+/* #1791's ground: a binding source can be a stick direction with its own threshold
+ * ("+rightx@20000"), written back the same way, and the mouse prefix that #1791 adds
+ * is refused by name until then, never read as something else. */
+static bool parse_with_cross(const char *saved, const char *cross, char *diag, size_t diag_sz) {
+    static char text[65536];
+    const char *at = strstr(saved, "\"+rightx@20000\"");
+    NkInputProfile parsed;
+    if (at == NULL) return false;
+    snprintf(text, sizeof(text), "%.*s\"%s\"%s", (int)(at - saved), saved, cross,
+             at + strlen("\"+rightx@20000\""));
+    return nk_input_profile_parse_json(&parsed, text, strlen(text), diag, diag_sz) == NK_OK;
+}
+
+static void test_source_thresholds(void) {
+    printf("[INPUT_PROFILE_TEST] Subtest 17: stick-direction sources with their own threshold...\n");
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_source_thresholds.json";
+    static char saved[65536];
+    char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+    NkInputProfile profile;
+    NkInputProfile reloaded;
+    bool buttons[NK_HOST_BUTTON_COUNT];
+    int16_t axes[NK_HOST_AXIS_COUNT];
+    FILE *file;
+    size_t size;
+    memset(buttons, 0, sizeof(buttons));
+    memset(axes, 0, sizeof(axes));
+    nk_input_profile_init_default(&profile);
+    profile.psp_buttons[NK_PSP_BTN_CROSS].primary =
+        (NkBindingSource){NK_BINDING_HOST_AXIS_POS, NK_HOST_AXIS_RIGHTX, 20000};
+    profile.psp_buttons[NK_PSP_BTN_CIRCLE].primary =
+        (NkBindingSource){NK_BINDING_HOST_AXIS_NEG, NK_HOST_AXIS_RIGHTY, 0};
+    assert(nk_input_profile_validate(&profile, diag, sizeof(diag)) == NK_OK);
+    /* Its own threshold, not the profile's: 18000 holds Circle's direction but not Cross's. */
+    axes[NK_HOST_AXIS_RIGHTX] = 18000;
+    axes[NK_HOST_AXIS_RIGHTY] = -18000;
+    uint32_t held = nk_input_profile_eval_buttons(&profile, buttons, axes);
+    assert((held & NK_PSP_BTN_CROSS_BIT) == 0 && (held & NK_PSP_BTN_CIRCLE_BIT) != 0);
+    axes[NK_HOST_AXIS_RIGHTX] = 21000;
+    assert(nk_input_profile_eval_buttons(&profile, buttons, axes) & NK_PSP_BTN_CROSS_BIT);
+    /* Written as "+rightx@20000" and read back the same. */
+    assert(nk_input_profile_save(&profile, path, diag, sizeof(diag)) == NK_OK);
+    file = fopen(path, "rb");
+    assert(file != NULL);
+    size = fread(saved, 1, sizeof(saved) - 1, file);
+    fclose(file);
+    saved[size] = '\0';
+    assert(strstr(saved, "\"+rightx@20000\"") != NULL && strstr(saved, "\"-righty\"") != NULL);
+    assert(nk_input_profile_load(&reloaded, path, diag, sizeof(diag)) == NK_OK);
+    assert(reloaded.psp_buttons[NK_PSP_BTN_CROSS].primary.threshold == 20000);
+    assert(reloaded.psp_buttons[NK_PSP_BTN_CIRCLE].primary.threshold == 0);
+    remove(path);
+    /* The mouse is #1791's: refused by name. Out-of-range thresholds are refused too. */
+    assert(!parse_with_cross(saved, "mouse:+x@4", diag, sizeof(diag)));
+    assert(strstr(diag, "mouse source") != NULL);
+    assert(!parse_with_cross(saved, "+rightx@0", diag, sizeof(diag)));
+    assert(!parse_with_cross(saved, "+rightx@40000", diag, sizeof(diag)));
+    assert(!parse_with_cross(saved, "+nostick@100", diag, sizeof(diag)));
+    assert(parse_with_cross(saved, "+leftx@32767", diag, sizeof(diag)));
+    printf("[INPUT_PROFILE_TEST] Subtest 17 PASSED!\n");
+}
+
 static void test_versioned_profile_files(void) {
     printf("[INPUT_PROFILE_TEST] Versioned files: earlier players' profiles load, migrate "
            "and keep a backup; a newer one is kept...\n");
@@ -3115,6 +3176,7 @@ int main(void) {
     test_overlay_input_gate();
     test_keyboard_bindings();
     test_stick_keys();
+    test_source_thresholds();
     test_versioned_profile_files();
 
     printf("=================================================================\n");

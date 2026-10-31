@@ -973,10 +973,45 @@ static bool parse_binding_source_str(
     char *diag_buf,
     size_t diag_buf_sz
 ) {
+    out_src->threshold = 0;
     if (!str || !*str || nk_ascii_casecmp(str, "none") == 0) {
         out_src->type = NK_BINDING_NONE;
         out_src->index = 0;
         return true;
+    }
+    /* Reserved for #1791 (mouse movement as a source): refused by name, never read as
+       something else. */
+    if (strncmp(str, "mouse:", 6) == 0) {
+        diag_set(diag_buf, diag_buf_sz,
+                 "mouse source '%s' is not supported by this version of Nakagawa", str);
+        return false;
+    }
+    /* A stick direction may carry its own threshold: "+rightx@20000". */
+    if (str[0] == '+' || str[0] == '-') {
+        const char *at = strchr(str, '@');
+        if (at != NULL) {
+            char name[32];
+            char *end = NULL;
+            long value = strtol(at + 1, &end, 10);
+            size_t length = (size_t)(at - (str + 1));
+            if (length == 0 || length >= sizeof(name) || end == at + 1 || *end != '\0' ||
+                value < 1 || value > 32767) {
+                diag_set(diag_buf, diag_buf_sz,
+                         "binding '%s' needs a threshold from 1 to 32767 after '@'", str);
+                return false;
+            }
+            memcpy(name, str + 1, length);
+            name[length] = '\0';
+            NkHostGamepadAxis ax = nk_host_axis_from_name(name);
+            if (ax == NK_HOST_AXIS_INVALID) {
+                diag_set(diag_buf, diag_buf_sz, "unknown host axis '%s'", name);
+                return false;
+            }
+            out_src->type = str[0] == '+' ? NK_BINDING_HOST_AXIS_POS : NK_BINDING_HOST_AXIS_NEG;
+            out_src->index = (int)ax;
+            out_src->threshold = (int16_t)value;
+            return true;
+        }
     }
 
     /* Check prefix "button:" or "axis:" */
@@ -1058,10 +1093,14 @@ static void format_binding_source(const NkBindingSource *src, char *out, size_t 
         snprintf(out, out_sz, "%s", nk_host_axis_name((NkHostGamepadAxis)src->index));
         break;
     case NK_BINDING_HOST_AXIS_POS:
-        snprintf(out, out_sz, "+%s", nk_host_axis_name((NkHostGamepadAxis)src->index));
-        break;
     case NK_BINDING_HOST_AXIS_NEG:
-        snprintf(out, out_sz, "-%s", nk_host_axis_name((NkHostGamepadAxis)src->index));
+        if (src->threshold > 0) {
+            snprintf(out, out_sz, "%c%s@%d", src->type == NK_BINDING_HOST_AXIS_POS ? '+' : '-',
+                     nk_host_axis_name((NkHostGamepadAxis)src->index), (int)src->threshold);
+        } else {
+            snprintf(out, out_sz, "%c%s", src->type == NK_BINDING_HOST_AXIS_POS ? '+' : '-',
+                     nk_host_axis_name((NkHostGamepadAxis)src->index));
+        }
         break;
     default:
         snprintf(out, out_sz, "none");
@@ -2330,12 +2369,14 @@ static bool eval_source(
         break;
     case NK_BINDING_HOST_AXIS_POS:
         if (host_axes && src->index >= 0 && src->index < NK_HOST_AXIS_COUNT) {
-            return host_axes[src->index] > trigger_threshold;
+            return host_axes[src->index] > (src->threshold > 0 ? src->threshold
+                                                               : trigger_threshold);
         }
         break;
     case NK_BINDING_HOST_AXIS_NEG:
         if (host_axes && src->index >= 0 && src->index < NK_HOST_AXIS_COUNT) {
-            return host_axes[src->index] < -trigger_threshold;
+            return host_axes[src->index] < -(src->threshold > 0 ? src->threshold
+                                                                : trigger_threshold);
         }
         break;
     default:

@@ -45,6 +45,7 @@ typedef uint32_t NkUiId;
 #define NK_UI_ID_SCREEN_SETTINGS 0x63u
 #define NK_UI_ID_SCREEN_CONTROLS 0x64u
 #define NK_UI_ID_SCREEN_DEVELOPER_LOG 0x65u
+#define NK_UI_ID_SCREEN_DISC_VERIFY 0x66u   /* reserved: disc verification's own pages */
 #define NK_UI_ID_SCREEN_OVERLAY 0x70u       /* the in-game overlay's pages (src/rt/overlay) */
 
 typedef enum {
