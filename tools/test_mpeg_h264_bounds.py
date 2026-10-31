@@ -163,7 +163,8 @@ class TestMpegYcbcrContracts(unittest.TestCase):
         self.assertNotIn("memset(SR_HOST", init)
         decode = block[block.index("uint32_t mpeg_avc_decode_ycbcr") : block.index("uint32_t mpeg_avc_decode_stop_ycbcr")]
         self.assertIn("SR_H264_TARGET_HOST_YUV", decode)
-        self.assertIn("ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height)", decode)
+        self.assertIn("ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes)", decode)
+        self.assertIn("ycbcr_picture_set(mpegAddr, bytes, au_read_pts(auAddr));", decode)
         self.assertIn("MEM_W32(initAddr, 1u);", decode)
         store = block[block.index("static uint32_t ycbcr_store_picture") : block.index("uint32_t mpeg_avc_decode_ycbcr")]
         self.assertIn("MEM_W32(buf, h / 16u);", store)

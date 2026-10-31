@@ -4024,8 +4024,10 @@ static void test_mpeg_atrac_au_decode(void) {
 }
 
 /* The sceMpeg path: a picture decoded by sceMpegAvcDecodeYCbCr carries its access unit's
- * time, and sceMpegAvcCsc is where it lands in guest memory. */
-static void test_mpeg_csc_presentation_boundary(void) {
+ * time, and sceMpegAvcCsc is where it lands in guest memory.  A guest PSMF player converts
+ * another buffer it filled from the decoded one: by copying the header (copy_planes = 0) or the
+ * planes (copy_planes = 1). */
+static void test_mpeg_csc_presentation_boundary(int copy_planes) {
     enum {
         PC_DESC = 0x08100000u, PC_DATA = 0x08110000u, PC_YCBCR = 0x08130000u,
         PC_RANGE = 0x08140000u, PC_DEST = 0x08150000u, PC_PTR = 0x08160000u,
@@ -4074,13 +4076,20 @@ static void test_mpeg_csc_presentation_boundary(void) {
           "sceMpeg presentation picture decodes");
     CHECK(sr_hle_test_psmf_av_counter(0, "delivered") == 0,
           "sceMpeg: a decoded YCbCr picture is not delivered to the guest until sceMpegAvcCsc");
-    /* A guest PSMF player converts another buffer whose header it copied from the decoded one:
-     * the header's planes name the picture and its time. */
-    memset(SR_HOST(PC_DISPLAY), 0, 128u);
-    memcpy(SR_HOST(PC_DISPLAY), SR_HOST(PC_YCBCR), 128u);
+    if (copy_planes) {
+        CHECK(guest_mpeg_import(0x67179b1bu, PC_DESC, 1u, width, height, PC_DISPLAY) == 0,
+              "sceMpeg presentation display buffer initializes");
+        memcpy(SR_HOST(PC_DISPLAY + 128u), SR_HOST(PC_YCBCR + 128u), (size_t)width * height * 3u / 2u);
+        MEM_W32(PC_DISPLAY, MEM_R32(PC_YCBCR));
+        MEM_W32(PC_DISPLAY + 4u, MEM_R32(PC_YCBCR + 4u));
+    } else {
+        memset(SR_HOST(PC_DISPLAY), 0, 128u);
+        memcpy(SR_HOST(PC_DISPLAY), SR_HOST(PC_YCBCR), 128u);
+    }
     CHECK(guest_mpeg_import(0x31bd0272u, PC_DESC, PC_DISPLAY, PC_RANGE, width, PC_DEST) == 0 &&
               ref_csc_matches(PC_YCBCR, PC_DEST, width, 0u, width, height),
-          "sceMpeg presentation Csc of a copied header writes the decoded picture");
+          copy_planes ? "sceMpeg presentation Csc of copied planes writes the decoded picture"
+                      : "sceMpeg presentation Csc of a copied header writes the decoded picture");
     CHECK(sr_hle_test_psmf_av_counter(0, "delivered") == 1 && sr_hle_test_psmf_av_counter(0, "pending") == 1,
           "sceMpeg: sceMpegAvcCsc delivers the picture with the access unit's time");
     sr_hle_test_psmf_av_set_clock_us(2000000);
@@ -4196,7 +4205,8 @@ int main(int argc, char **argv) {
     test_player_av_presentation_timing(AV_LAYOUT_PACKED);
     test_player_av_presentation_boundary();
     test_player_av_composited_presentation();
-    test_mpeg_csc_presentation_boundary();
+    test_mpeg_csc_presentation_boundary(0);
+    test_mpeg_csc_presentation_boundary(1);
     test_mpeg_av_audio_followed_by_content();
     test_mpeg_atrac_au_decode();
     test_mpeg_avc_decode_detail();

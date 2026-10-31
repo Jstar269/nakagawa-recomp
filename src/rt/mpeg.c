@@ -1085,8 +1085,8 @@ uint32_t mpeg_avc_decode_detail(uint32_t mpegAddr, uint32_t detailAddr) {
  * the strip length from the decoded height rests on this one geometry, and an odd number of
  * strips is not measured.  The host keeps only the sceMpegAvcInitYCbCr geometry of each buffer (a
  * bound on the decode) and the presentation time of each decoded picture (the A/V measurement),
- * keyed by its first luma plane: a guest PSMF player hands sceMpegAvcCsc a buffer whose header
- * it copied from the decoded one, so the planes, not the buffer, name the picture.  Neither gates
+ * keyed by a hash of its plane bytes: a guest PSMF player converts another buffer it filled from
+ * the decoded one, so the picture's bytes, not the buffer, name it.  Neither gates
  * sceMpegAvcCsc. */
 #define YCBCR_HEADER_BYTES 128u
 #define YCBCR_ALIGNMENT 16u
@@ -1105,7 +1105,8 @@ typedef struct {
 } YcbcrBuf;
 static YcbcrBuf s_ycbcr[YCBCR_SLOT_COUNT];
 typedef struct {
-    uint32_t mpeg, plane0;   /* the picture's first luma plane; 0 = free */
+    uint32_t mpeg;
+    uint64_t bytes;          /* FNV-1a of the picture's planes; 0 = free */
     int64_t pts;             /* its access unit's presentation time, -1 when it carried none */
 } YcbcrPicture;
 static YcbcrPicture s_ycbcr_pictures[YCBCR_SLOT_COUNT];
@@ -1139,22 +1140,23 @@ static void ycbcr_reset_mpeg(uint32_t mpegAddr) {
     }
 }
 
-static void ycbcr_picture_set(uint32_t mpegAddr, uint32_t plane0, int64_t pts) {
-    if (!plane0) return;
+/* A picture with the same bytes as an earlier one takes over its entry: the newest time wins. */
+static void ycbcr_picture_set(uint32_t mpegAddr, uint64_t bytes, int64_t pts) {
+    if (!bytes) return;
     YcbcrPicture *p = NULL;
     for (int i = 0; i < YCBCR_SLOT_COUNT && !p; i++)
-        if (s_ycbcr_pictures[i].plane0 == plane0 && s_ycbcr_pictures[i].mpeg == mpegAddr) p = &s_ycbcr_pictures[i];
+        if (s_ycbcr_pictures[i].bytes == bytes && s_ycbcr_pictures[i].mpeg == mpegAddr) p = &s_ycbcr_pictures[i];
     for (int i = 0; i < YCBCR_SLOT_COUNT && !p; i++)
-        if (!s_ycbcr_pictures[i].plane0) p = &s_ycbcr_pictures[i];
+        if (!s_ycbcr_pictures[i].bytes) p = &s_ycbcr_pictures[i];
     if (!p) p = &s_ycbcr_pictures[s_ycbcr_picture_next++ % YCBCR_SLOT_COUNT];
     p->mpeg = mpegAddr;
-    p->plane0 = plane0;
+    p->bytes = bytes;
     p->pts = pts;
 }
 
-static int64_t ycbcr_picture_pts(uint32_t mpegAddr, uint32_t plane0) {
+static int64_t ycbcr_picture_pts(uint32_t mpegAddr, uint64_t bytes) {
     for (int i = 0; i < YCBCR_SLOT_COUNT; i++)
-        if (plane0 && s_ycbcr_pictures[i].plane0 == plane0 && s_ycbcr_pictures[i].mpeg == mpegAddr)
+        if (bytes && s_ycbcr_pictures[i].bytes == bytes && s_ycbcr_pictures[i].mpeg == mpegAddr)
             return s_ycbcr_pictures[i].pts;
     return -1;
 }
@@ -1229,6 +1231,17 @@ static void ycbcr_planes_out(const YcbcrLayout *l, uint32_t width, uint32_t heig
         uint32_t n = ycbcr_plane_bytes(i, width, height);
         if (n) sr_guest_copy_out(l->plane[i], ycbcr_scratch_plane(i), n);
     }
+}
+
+/* FNV-1a of the picture's share of the scratch planes (never 0). */
+static uint64_t ycbcr_planes_hash(uint32_t width, uint32_t height) {
+    uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < 8; i++) {
+        const uint8_t *p = ycbcr_scratch_plane(i);
+        for (uint32_t n = ycbcr_plane_bytes(i, width, height), k = 0; k < n; k++)
+            h = (h ^ p[k]) * 1099511628211ull;
+    }
+    return h ? h : 1u;
 }
 
 static int ycbcr_mode1_geometry(uint32_t width, uint32_t height) {
@@ -1329,7 +1342,8 @@ uint32_t mpeg_avc_decode_mode(uint32_t mpegAddr, uint32_t modeAddr) {
 }
 
 /* Write the decoded picture (pw x ph samples in the scratch planes) through buf's header. */
-static uint32_t ycbcr_store_picture(uint32_t mpegAddr, uint32_t buf, const YcbcrLayout *l, int pw, int ph) {
+static uint32_t ycbcr_store_picture(uint32_t mpegAddr, uint32_t buf, const YcbcrLayout *l, int pw, int ph,
+                                    uint64_t *bytes) {
     if (pw <= 0 || ph <= 0 || (uint32_t)pw > YCBCR_MODE1_MAX_W || (uint32_t)ph > YCBCR_MODE1_MAX_H)
         return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "a picture larger than 480x272 is beyond the measured layout",
                                    SCE_MPEG_ERROR_INVALID_VALUE);
@@ -1359,6 +1373,7 @@ static uint32_t ycbcr_store_picture(uint32_t mpegAddr, uint32_t buf, const Ycbcr
     ycbcr_planes_out(l, w, h);
     MEM_W32(buf, h / 16u);
     MEM_W32(buf + 4u, w / 16u);
+    *bytes = ycbcr_planes_hash(w, h);
     return 0;
 }
 
@@ -1416,12 +1431,13 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
             return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "no decoded picture at end of stream", SCE_MPEG_ERROR_NO_DATA);
         return 0;
     }
-    uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height);
+    uint64_t bytes = 0;
+    uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes);
     if (stored) {
         MEM_W32(initAddr, 0u);
         return stored;
     }
-    ycbcr_picture_set(mpegAddr, layout.plane[0], au_read_pts(auAddr));
+    ycbcr_picture_set(mpegAddr, bytes, au_read_pts(auAddr));
     MEM_W32(initAddr, 1u);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
@@ -1477,12 +1493,13 @@ uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t
     }
 #endif
     if (got) {
-        uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height);
+        uint64_t bytes = 0;
+        uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes);
         if (stored) {
             MEM_W32(statusAddr, 0u);
             return stored;
         }
-        ycbcr_picture_set(mpegAddr, layout.plane[0], -1);
+        ycbcr_picture_set(mpegAddr, bytes, -1);
     }
     MEM_W32(statusAddr, got ? 1u : 0u);
     return 0;
@@ -1523,7 +1540,6 @@ uint32_t mpeg_avc_copy_ycbcr(uint32_t mpegAddr, uint32_t dst, uint32_t src) {
     ycbcr_planes_out(&to, w, h);
     MEM_W32(dst, h / 16u);
     MEM_W32(dst + 4u, w / 16u);
-    ycbcr_picture_set(mpegAddr, to.plane[0], ycbcr_picture_pts(mpegAddr, from.plane[0]));
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
@@ -1625,7 +1641,7 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
             fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%" PRIx32 " dest=0x%" PRIx32 " fw=%" PRIu32 " range=%d,%d %dx%d\n",
                     n, buf, dest, frameWidth, (int)x, (int)y, (int)w, (int)h);
     }
-    const int64_t pts = ycbcr_picture_pts(mpegAddr, l.plane[0]);
+    const int64_t pts = ycbcr_picture_pts(mpegAddr, ycbcr_planes_hash(l.width, l.height));
     sr_psmf_av_note_video_delivery(span.first, span.total_bytes, pts, pts >= 0);
     return 0;
 }
