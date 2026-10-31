@@ -3959,6 +3959,29 @@ static int sdl3vk_capture_selftest_body(void) {
         remove(p2);
     }
 
+    /* ---- present semaphores follow the swapchain image (#1799) ----------------------
+     * A present's wait on its semaphore is known to be over only once its image is acquired
+     * again; no fence covers it. Frames drawn from one slot put the frame ring out of step
+     * with the swapchain images, as a driver that hands images out of order does, and none of
+     * them may signal a semaphore that an earlier present of another image may still be
+     * waiting on: the validation layer reports that as an ERROR. */
+    {
+        int errors0 = sdl3vk_validation_error_count();
+        for (int i = 0; i < 8 * PRESENT_FRAMES; i++) {
+            s_frame_cursor = 0;
+            if (sdl3vk_present_rgba(px) != 1) {
+                fprintf(stderr, "present semaphores: present %d from one frame slot failed\n", i);
+                ok = 0;
+            }
+        }
+        if (sdl3vk_validation_error_count() != errors0) {
+            fprintf(stderr, "present semaphores: %d validation error(s) presenting from one frame "
+                            "slot (a semaphore signalled before its image was acquired again)\n",
+                    sdl3vk_validation_error_count() - errors0);
+            ok = 0;
+        }
+    }
+
     /* ---- present error recovery and disposition tests ------------------------------- */
     {
         /* Test 1: VK_SUBOPTIMAL_KHR (enqueued rebuild) */
