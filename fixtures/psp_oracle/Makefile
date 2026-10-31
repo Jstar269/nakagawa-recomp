@@ -153,6 +153,10 @@ else ifeq ($(CASE),wait-outcomes)
 CASE_ID = 63
 else ifeq ($(CASE),ge-break-continue)
 CASE_ID = 64
+# 78: #1374 GE sync results for unknown, completed and cancelled queue ids, poll and
+# bounded blocking forms (probe.c, PSP-GE-SYNC-001).
+else ifeq ($(CASE),ge-sync-ids)
+CASE_ID = 78
 else ifeq ($(CASE),refer-status-size)
 CASE_ID = 65
 else ifeq ($(CASE),registry-readonly)
@@ -211,6 +215,10 @@ CASE_ID = 109
 # functions and formats, wrap, coverage, framebuffer formats, dither, masks, logic, clear, fog.
 else ifeq ($(CASE),ge-raster)
 CASE_ID = 123
+# 126: the GE level-of-detail and mip cells (probe_ge_sample.c, #1373): constant, automatic
+# and slope TEXLEVEL modes over a texture whose every level is one colour.
+else ifeq ($(CASE),ge-mip)
+CASE_ID = 126
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -485,6 +493,10 @@ OBJS = $(BUILD_DIR)/probe_dmac_timing.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE raster corpus: the same source as the sample-point cells, case 123.
 else ifeq ($(CASE),ge-raster)
 TARGET = $(BUILD_DIR)/ge_raster
+OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The GE mip cells: the same source as the sample-point cells, case 126.
+else ifeq ($(CASE),ge-mip)
+TARGET = $(BUILD_DIR)/ge_mip
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The instruction trace: its own source, the single-step trampoline and the fixtures
 # header, with the same writer, ThreadManForUser block and module lifecycle as the HLE

@@ -183,7 +183,8 @@ history lives in git, so nothing is deleted.
   subset, refusal catalogue, determinism rules, metric-target policy, source
   pin, and conversion manifest.
 - [`../assets/public_provenance_ledger.json`](../assets/public_provenance_ledger.json)
-  is the path-hashed public provenance ledger; unresolved records are not clearance.
+  is the per-path public provenance ledger (claims only; the trusted attestation
+  regenerates each file's hash); unresolved records are not clearance.
 - [`provenance/HST_PUBLIC_CENSUS.md`](provenance/HST_PUBLIC_CENSUS.md) classifies
   title-specific versus generic/synthetic surfaces.
 - [`provenance/MODIFIED_FILE_NOTICES.md`](provenance/MODIFIED_FILE_NOTICES.md)

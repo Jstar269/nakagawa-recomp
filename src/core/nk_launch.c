@@ -1505,6 +1505,10 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     /* Likewise developer mode (#314): the game's developer HUD and pause pages follow the
        launcher's setting, never an inherited value. */
     envp[env_count++] = session->config.developer_mode ? "SR_DEVELOPER_MODE=1" : "SR_DEVELOPER_MODE=0";
+    /* And Reduce motion: the pause overlay eases or cuts as the launcher does. */
+    envp[env_count++] = session->config.reduce_motion == NK_REDUCE_MOTION_ON ? "SR_REDUCE_MOTION=on"
+        : session->config.reduce_motion == NK_REDUCE_MOTION_OFF ? "SR_REDUCE_MOTION=off"
+        : "SR_REDUCE_MOTION=system";
     if (session->config.headless_accept_presented_frames > 0u) {
         snprintf(env_headless_accept_frames, sizeof(env_headless_accept_frames),
                  "SR_HEADLESS_ACCEPT_PRESENTED_FRAMES=%u",

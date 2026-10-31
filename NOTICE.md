@@ -25,7 +25,7 @@ We aim to respond promptly and will remove material where appropriate.
 - **sal063 PSP Recompilation Project** — GPL-2.0-or-later, public revision
   `da17b0e1db209206a407d097d132201e516e3855`. Nakagawa began from this toolkit
   and retains substantial modified runtime and pipeline code. See the
-  path-hashed [public provenance ledger](assets/public_provenance_ledger.json).
+  per-path [public provenance ledger](assets/public_provenance_ledger.json).
 - **PPSSPP** — Copyright (c) 2012- PPSSPP Project and contributors,
   GPL-2.0-or-later, with its own third-party notices. Several HLE, GE, VFPU and
   recompiler structures are translated or adapted through the sal063 lineage;

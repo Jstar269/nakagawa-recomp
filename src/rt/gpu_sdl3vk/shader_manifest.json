@@ -11,11 +11,11 @@
   "shaders": [
     {
       "embedded": "psp_vert.inc",
-      "embedded_sha256": "0cb658a5ba2350ca607538700debaf6c728719dfd6ff1b36a3518e49d9fc679c",
+      "embedded_sha256": "421c00b8e3e6fdeed242f849f92a5209651c90dd32ea7fcbf4c2a29595df05d6",
       "source": "shaders/psp.vert",
-      "source_sha256": "efe617f64a0049adffee672f0f392e46c6923073e994c1802069e707ee49cc02",
-      "spirv_bytes": 1736,
-      "spirv_sha256": "b5caa23ab254ee1438307c67c79d7ede45817640639f9d68f6abad10fa9b2616",
+      "source_sha256": "c94c133a49ada1877da55f69e64ab87826be05af8333d132d6b2cf6f539b07a9",
+      "spirv_bytes": 1796,
+      "spirv_sha256": "2677e644af6e91541bc89b390c9a65218dfa7116dfff383a33a4e0407c14d139",
       "stage": "vert"
     },
     {
@@ -26,6 +26,15 @@
       "spirv_bytes": 28780,
       "spirv_sha256": "b374d674f61de504ac8455a501844cf558f13b0749089cb09da570cf67fc01a5",
       "stage": "frag"
+    },
+    {
+      "embedded": "psp_tnl_vert.inc",
+      "embedded_sha256": "f29bcd426c9f22c12f1f3792ae26e57964948b3979e653e95a2d01a33c3019ee",
+      "source": "shaders/psp_tnl.vert",
+      "source_sha256": "7d2b2e513b4533fc77c02cc725e5231e5df1c37e81877905c1078c8348a87627",
+      "spirv_bytes": 39004,
+      "spirv_sha256": "6c8ea42947aa89c5f6065a476b3b07f6fdabd483ba5b208745f727861a16a4fd",
+      "stage": "vert"
     }
   ]
 }
