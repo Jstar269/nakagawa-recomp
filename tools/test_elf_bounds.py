@@ -897,9 +897,9 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
     landed = set()
     for address in sorted(nodes):
         word = nodes[address]["word"]
-        if word >> 26 == 2:
+        if word >> 26 in (2, 3):
             landed.add(((address + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2))
-        elif branch_target(address, word) is not None and branch_kind(word) != BRANCH_LINK:
+        elif branch_target(address, word) is not None:
             landed.add(branch_target(address, word))
 
     for address in sorted(nodes):
@@ -1163,6 +1163,29 @@ class CanonicalCfgTests(unittest.TestCase):
             _canonical_cfg_report_reference(image, ranges=[(0x3000, 0x3020)], entries=[0x3000]),
         )
         self.assertEqual(analyze.verify_canonical_cfg_report(report), [])
+
+        # A call can land on a delay slot too: a jal, or a linking branch (bal), entered at
+        # the slot of another function's jr runs on past it.
+        for call in (jal(0x3210), branch(1, 0, 0x11, 0x3100, 0x3210)):  # jal; bgezal $zero
+            linked_image = FakeCodeImage({
+                0x3100: call, 0x3104: 0, 0x3108: jr(31), 0x310C: 0,  # the caller
+                0x3200: 0, 0x3204: 0, 0x3208: 0x24020001,             # padding; addiu
+                0x320C: jr(31), 0x3210: 0x24420010,                   # jr ra; slot
+                0x3214: 0x24420100, 0x3218: jr(31), 0x321C: 0,
+            })
+            spans = [(0x3100, 0x3110), (0x3200, 0x3220)]
+            linked_report = analyze.canonical_cfg_report(
+                linked_image, ranges=spans, entries=[0x3100, 0x3210])
+            self.assertIn(
+                {"source": 0x3210, "target": 0x3214, "kind": "fallthrough",
+                 "detail": "landed-delay-slot"},
+                cfg_node(linked_report, 0x3210)["edges"],
+            )
+            self.assertEqual(cfg_node(linked_report, 0x3214)["owners"], [0x3210])
+            self.assertEqual(
+                linked_report,
+                _canonical_cfg_report_reference(linked_image, ranges=spans, entries=[0x3100, 0x3210]),
+            )
 
         # The same slot reached only as jr's delay slot gets no such edge.
         words[0x3000] = branch(4, 4, 0, 0x3000, 0x3008)

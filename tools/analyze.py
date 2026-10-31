@@ -2254,13 +2254,13 @@ def canonical_cfg_state(image, ranges=None, entries=None):
         state.edge_details.append(-1 if detail is None else _CFG_DETAIL_IDS[detail])
         edge_counts[source_index] += 1
 
-    # Words a direct jump or a non-linking branch lands on. Landing on a delay slot runs it
-    # as an ordinary instruction, and execution continues at the word after it.
+    # Words a direct jump, call or branch lands on. Landing on a delay slot runs it as an
+    # ordinary instruction, and execution continues at the word after it.
     landed = set()
     for address, word in zip(state.addresses, state.words, strict=True):
-        if word >> 26 == 2:
+        if word >> 26 in (2, 3):
             landed.add(((address + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2))
-        elif branch_target(address, word) is not None and branch_kind(word) != BRANCH_LINK:
+        elif branch_target(address, word) is not None:
             landed.add(branch_target(address, word))
 
     for source_index, address in enumerate(state.addresses):
