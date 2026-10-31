@@ -168,7 +168,8 @@ void player_ui_apply_display(NkUi *ui, NkUiViewport *viewport, const PlayerUiDis
         return;
     }
     viewport->ui_scale_pct = display->interface_size_pct;
-    viewport->text_size_pct = 100;
+    viewport->text_size_pct = display->text_size_pct == 125 || display->text_size_pct == 150
+                                  ? display->text_size_pct : 100;
     memset(&prefs, 0, sizeof(prefs));
     prefs.reduce_motion = display->reduce_motion;
     prefs.high_contrast_focus = display->high_contrast_focus;

@@ -217,6 +217,7 @@ typedef struct {
     PlayerSystemChoice reduce_motion_choice;
     PlayerSystemChoice high_contrast_choice;
     int interface_size_pct; /* 0 = automatic (the display's scale), or 100, 125, 150, 200 */
+    int text_size_pct;      /* 100 Standard, 125 Large, 150 Larger: the type only */
     bool ui_sounds;       /* launcher move/confirm/back sounds; off by default */
     PlayerLibrarySort library_sort;
     bool launcher_window_maximized;
@@ -1225,11 +1226,15 @@ bool player_window_fit_to_display(PlayerWindowRect requested,
 bool player_ui_canvas_fit(int pixel_width, int pixel_height,
                           PlayerUiCanvas *out);
 void player_app_toggle_vsync(PlayerApp *app);
-/* Settings > Accessibility. Each choice cycles Automatic, On, Off; the size cycles
- * Automatic, 100, 125, 150 and 200%. Each change is saved. */
+/* Settings > Accessibility. Each choice cycles Automatic, On, Off; the interface
+ * size cycles Automatic, 100, 125, 150 and 200%; the text size cycles Standard
+ * (100%), Large (125%) and Larger (150%). Each change is saved. */
 void player_app_cycle_reduce_motion(PlayerApp *app);
 void player_app_cycle_high_contrast_focus(PlayerApp *app);
 void player_app_cycle_interface_size(PlayerApp *app);
+void player_app_cycle_text_size(PlayerApp *app);
+/* "Standard", "Large" or "Larger" for a text size; "Standard" for anything else. */
+const char *player_text_size_label(int text_size_pct);
 /* "Automatic", "On" or "Off". */
 const char *player_system_choice_label(PlayerSystemChoice choice);
 /* Reads the operating system's display preferences into the app (nk_platform); the

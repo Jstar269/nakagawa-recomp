@@ -8,11 +8,13 @@
 #include "nk_ui_widgets.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 void nk_ui_button_configuration(const NkUi *ui, uint32_t flags,
                                 NkUiLayout *layout, NkUiStyle *style);
+NkUiTypeRole nk_ui_button_role(uint32_t flags);
 
 static NkUiSizing nk_ui_fixed(float value) {
     NkUiSizing sizing = {NK_UI_SIZE_FIXED, value, 0.0f, 0.0f};
@@ -145,13 +147,66 @@ bool nk_ui_button(NkUi *ui, NkUiId id, const char *label, uint32_t flags) {
         nk_ui_focus_ring(ui, id, NK_UI_RADIUS_CONTROL);
     }
     activated = (flags & NK_UI_BUTTON_DISABLED) == 0u && nk_ui_take_activation(ui, id);
-    text = nk_ui_type((flags & NK_UI_BUTTON_LARGE) != 0u ? NK_UI_TYPE_LABEL_L :
-                      (flags & NK_UI_BUTTON_SMALL) != 0u ? NK_UI_TYPE_LABEL_S :
-                      NK_UI_TYPE_LABEL,
-                      nk_ui_button_text_rgba(ui, flags));
+    text = nk_ui_type(nk_ui_button_role(flags), nk_ui_button_text_rgba(ui, flags));
     nk_ui_text(ui, id, nk_ui_caps(ui, label), &text);
     nk_ui_end_container(ui);
     return activated;
+}
+
+float nk_ui_button_width(NkUi *ui, const char *label, uint32_t flags) {
+    NkUiLayout layout;
+    NkUiStyle style;
+    NkUiTextStyle text;
+    if (ui == NULL || label == NULL) {
+        return 0.0f;
+    }
+    nk_ui_button_configuration(ui, flags, &layout, &style);
+    text = nk_ui_type(nk_ui_button_role(flags), 0u);
+    return ceilf(nk_ui_text_width(ui, nk_ui_caps(ui, label), &text)) + layout.padding_left +
+           layout.padding_right;
+}
+
+/* ---- Wrapping rows ---------------------------------------------------------------- */
+
+bool nk_ui_flow_begin(NkUi *ui, NkUiFlowRow *flow, NkUiId id, const NkUiLayout *row,
+                      float width) {
+    if (flow == NULL) {
+        return false;
+    }
+    memset(flow, 0, sizeof(*flow));
+    if (ui == NULL || row == NULL) {
+        return false;
+    }
+    flow->id = id;
+    flow->layout = *row;
+    flow->width = width - row->padding_left - row->padding_right;
+    flow->used = -1.0f;
+    flow->open = nk_ui_begin_container(ui, id, row, NULL);
+    flow->rows = flow->open ? 1u : 0u;
+    return flow->open;
+}
+
+void nk_ui_flow_item(NkUi *ui, NkUiFlowRow *flow, float item_width) {
+    if (ui == NULL || flow == NULL || flow->rows == 0u) {
+        return;
+    }
+    if (flow->used >= 0.0f && flow->used + flow->layout.gap + item_width > flow->width) {
+        if (flow->open) {
+            nk_ui_end_container(ui);
+        }
+        flow->open = nk_ui_begin_container(ui, nk_ui_child_id(flow->id, flow->rows),
+                                           &flow->layout, NULL);
+        ++flow->rows;
+        flow->used = -1.0f;
+    }
+    flow->used = flow->used < 0.0f ? item_width : flow->used + flow->layout.gap + item_width;
+}
+
+void nk_ui_flow_end(NkUi *ui, NkUiFlowRow *flow) {
+    if (ui != NULL && flow != NULL && flow->open) {
+        nk_ui_end_container(ui);
+        flow->open = false;
+    }
 }
 
 /* ---- Containers --------------------------------------------------------------------- */
@@ -177,10 +232,19 @@ void nk_ui_divider(NkUi *ui, NkUiId id, bool horizontal) {
 
 /* ---- Chips ------------------------------------------------------------------------- */
 
+/* A chip's height around one line of `role` at the current text size. */
+static float nk_ui_chip_height(const NkUi *ui, float height, NkUiTypeRole role) {
+    NkUiTextStyle text = nk_ui_type(role, 0u);
+    return nk_ui_line_box(ui, height, &text);
+}
+
 void nk_ui_status_pill(NkUi *ui, NkUiId id, const char *marker, const char *word,
                        uint32_t rgba) {
     const NkUiTheme *theme = nk_ui_theme(ui);
-    NkUiLayout layout = nk_ui_row(nk_ui_fit(), nk_ui_fixed(NK_UI_CHIP_HEIGHT), 6.0f);
+    NkUiLayout layout = nk_ui_row(nk_ui_fit(),
+                                  nk_ui_fixed(nk_ui_chip_height(ui, NK_UI_CHIP_HEIGHT,
+                                                                NK_UI_TYPE_LABEL_S)),
+                                  6.0f);
     NkUiStyle style = nk_ui_fill(theme->surface_high, theme->line_strong, NK_UI_RADIUS_CHIP);
     nk_ui_pad(&layout, 0.0f, 10.0f, 0.0f, 10.0f);
     if (!nk_ui_begin_container(ui, id, &layout, &style)) {
@@ -196,7 +260,10 @@ void nk_ui_status_pill(NkUi *ui, NkUiId id, const char *marker, const char *word
 
 void nk_ui_tag(NkUi *ui, NkUiId id, const char *text) {
     const NkUiTheme *theme = nk_ui_theme(ui);
-    NkUiLayout layout = nk_ui_row(nk_ui_fit(), nk_ui_fixed(NK_UI_CHIP_HEIGHT), 0.0f);
+    NkUiLayout layout = nk_ui_row(nk_ui_fit(),
+                                  nk_ui_fixed(nk_ui_chip_height(ui, NK_UI_CHIP_HEIGHT,
+                                                                NK_UI_TYPE_LABEL_S)),
+                                  0.0f);
     NkUiStyle style = nk_ui_fill(theme->surface_high, theme->line_strong, NK_UI_RADIUS_CHIP);
     nk_ui_pad(&layout, 0.0f, 10.0f, 0.0f, 10.0f);
     if (nk_ui_begin_container(ui, id, &layout, &style)) {
@@ -208,7 +275,10 @@ void nk_ui_tag(NkUi *ui, NkUiId id, const char *text) {
 
 void nk_ui_badge(NkUi *ui, NkUiId id, const char *text) {
     const NkUiTheme *theme = nk_ui_theme(ui);
-    NkUiLayout layout = nk_ui_row(nk_ui_fit(), nk_ui_fixed(NK_UI_BADGE_HEIGHT), 0.0f);
+    NkUiLayout layout = nk_ui_row(nk_ui_fit(),
+                                  nk_ui_fixed(nk_ui_chip_height(ui, NK_UI_BADGE_HEIGHT,
+                                                                NK_UI_TYPE_MICRO)),
+                                  0.0f);
     NkUiStyle style = nk_ui_fill(theme->art_scrim, 0u, NK_UI_RADIUS_CHIP);
     nk_ui_pad(&layout, 0.0f, 7.0f, 0.0f, 7.0f);
     if (nk_ui_begin_container(ui, id, &layout, &style)) {
@@ -490,6 +560,24 @@ static void nk_ui_art_content(NkUi *ui, NkUiId id, NkUiArtKind art, const NkUiIm
 
 /* ---- Game card ------------------------------------------------------------------- */
 
+/* The card body's two text boxes: the name's two lines and the meta row's one. */
+static float nk_ui_tile_name_height(float text_scale) {
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_TILE_TITLE, 0u);
+    float height = 2.0f * nk_ui_line_height_at(&text, text_scale);
+    return height > 40.0f ? height : 40.0f;
+}
+
+static float nk_ui_tile_meta_height(float text_scale) {
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_LABEL_S, 0u);
+    float height = nk_ui_line_height_at(&text, text_scale);
+    return height > 16.0f ? height : 16.0f;
+}
+
+float nk_ui_tile_body_height(float text_scale) {
+    return NK_UI_TILE_BODY_HEIGHT + (nk_ui_tile_name_height(text_scale) - 40.0f) +
+           (nk_ui_tile_meta_height(text_scale) - 16.0f);
+}
+
 bool nk_ui_tile(NkUi *ui, NkUiId id, const NkUiTileSpec *spec) {
     const NkUiTheme *theme;
     NkUiLayout layout;
@@ -530,16 +618,21 @@ bool nk_ui_tile(NkUi *ui, NkUiId id, const NkUiTileSpec *spec) {
         nk_ui_badge(ui, nk_ui_child_id(id, 2u),
                     spec->badge != NULL && spec->badge[0] != '\0' ? spec->badge : "Your disc");
         nk_ui_art_content(ui, nk_ui_child_id(id, 3u), spec->art, spec->icon, NULL,
-                          art_h - NK_UI_SPACE_2 * 2.0f - NK_UI_BADGE_HEIGHT, 0.82f,
+                          art_h - NK_UI_SPACE_2 * 2.0f -
+                              nk_ui_chip_height(ui, NK_UI_BADGE_HEIGHT, NK_UI_TYPE_MICRO),
+                          0.82f,
                           "ART FROM YOUR DISC");
         nk_ui_end_container(ui);
     }
 
-    /* Body: the name (two lines at most) and the meta row. */
+    /* Body: the name (two lines at most) and the meta row, each as tall as its
+       text at the current text size (nk_ui_tile_body_height). */
     layout = nk_ui_column(nk_ui_grow(), nk_ui_fit(), NK_UI_SPACE_2);
     nk_ui_pad(&layout, NK_UI_SPACE_3, 14.0f, 14.0f, 14.0f);
     if (nk_ui_begin_container(ui, nk_ui_child_id(id, 4u), &layout, NULL)) {
-        NkUiLayout name = nk_ui_column(nk_ui_grow(), nk_ui_fixed(40.0f), 0.0f);
+        NkUiLayout name = nk_ui_column(nk_ui_grow(),
+                                       nk_ui_fixed(nk_ui_tile_name_height(nk_ui_text_scale(ui))),
+                                       0.0f);
         if (nk_ui_begin_container(ui, nk_ui_child_id(id, 5u), &name, NULL)) {
             NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_TILE_TITLE,
                                             spec->muted_title ? theme->muted : theme->paper);
@@ -549,7 +642,9 @@ bool nk_ui_tile(NkUi *ui, NkUiId id, const NkUiTileSpec *spec) {
                        nk_ui_text_clamp(ui, title, &text, spec->width - 28.0f, 2), &text);
             nk_ui_end_container(ui);
         }
-        layout = nk_ui_row(nk_ui_grow(), nk_ui_fixed(16.0f), NK_UI_SPACE_2);
+        layout = nk_ui_row(nk_ui_grow(),
+                           nk_ui_fixed(nk_ui_tile_meta_height(nk_ui_text_scale(ui))),
+                           NK_UI_SPACE_2);
         if (nk_ui_begin_container(ui, nk_ui_child_id(id, 7u), &layout, NULL)) {
             const char *word = nk_ui_caps(ui, spec->status_word);
             if (spec->status_marker != NULL && spec->status_marker[0] != '\0') {
@@ -628,6 +723,7 @@ void nk_ui_hero(NkUi *ui, NkUiId id, NkUiArtKind art, const char *art_key,
                 float width, const char *caption, const char *size_note) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     float height = (float)(int)(width * NK_UI_HERO_ASPECT + 0.5f);
+    float caption_h = nk_ui_chip_height(ui, NK_UI_BADGE_HEIGHT, NK_UI_TYPE_MICRO);
     NkUiLayout layout = nk_ui_column(nk_ui_fixed(width), nk_ui_fixed(height), NK_UI_SPACE_2);
     NkUiStyle style = nk_ui_fill(nk_ui_art_fill(art, art_key), 0u, NK_UI_RADIUS_TILE);
     nk_ui_pad(&layout, NK_UI_SPACE_3, NK_UI_SPACE_3, NK_UI_SPACE_3, NK_UI_SPACE_3);
@@ -635,9 +731,9 @@ void nk_ui_hero(NkUi *ui, NkUiId id, NkUiArtKind art, const char *art_key,
         return;
     }
     nk_ui_art_content(ui, nk_ui_child_id(id, 1u), art, icon, picture,
-                      height - NK_UI_SPACE_3 * 2.0f - NK_UI_BADGE_HEIGHT - NK_UI_SPACE_2,
+                      height - NK_UI_SPACE_3 * 2.0f - caption_h - NK_UI_SPACE_2,
                       0.78f, "ART FROM YOUR DISC SHOWS HERE");
-    layout = nk_ui_row(nk_ui_grow(), nk_ui_fixed(NK_UI_BADGE_HEIGHT), NK_UI_SPACE_2);
+    layout = nk_ui_row(nk_ui_grow(), nk_ui_fixed(caption_h), NK_UI_SPACE_2);
     if (nk_ui_begin_container(ui, nk_ui_child_id(id, 2u), &layout, NULL)) {
         if (caption != NULL && caption[0] != '\0') {
             nk_ui_badge(ui, nk_ui_child_id(id, 3u), caption);
@@ -718,10 +814,11 @@ int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count
             }
             nk_ui_spacer(ui, nk_ui_child_id(tab_id, 1u), nk_ui_fixed(1.0f), nk_ui_grow());
             {
-                NkUiLayout label = nk_ui_row(nk_ui_fit(), nk_ui_fixed(34.0f), 0.0f);
                 NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_LABEL,
                                                 sections[i].active || focused || hovered
                                                     ? theme->paper : theme->muted);
+                NkUiLayout label = nk_ui_row(nk_ui_fit(),
+                                             nk_ui_fixed(nk_ui_line_box(ui, 34.0f, &text)), 0.0f);
                 nk_ui_pad(&label, 0.0f, NK_UI_SPACE_3, 0.0f, NK_UI_SPACE_3);
                 label.align_y = NK_UI_ALIGN_CENTER;
                 text.letter_spacing = 1.2f;
@@ -762,8 +859,9 @@ int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count
     }
     /* Input chip. */
     if (input_label != NULL && input_label[0] != '\0') {
-        NkUiLayout chip = nk_ui_row(nk_ui_fit(), nk_ui_fixed(30.0f), NK_UI_SPACE_2);
-        NkUiStyle fill = nk_ui_fill(theme->surface_raised, theme->line, 15.0f);
+        float chip_h = nk_ui_chip_height(ui, 30.0f, NK_UI_TYPE_LABEL_S);
+        NkUiLayout chip = nk_ui_row(nk_ui_fit(), nk_ui_fixed(chip_h), NK_UI_SPACE_2);
+        NkUiStyle fill = nk_ui_fill(theme->surface_raised, theme->line, chip_h * 0.5f);
         nk_ui_pad(&chip, 0.0f, NK_UI_SPACE_3, 0.0f, NK_UI_SPACE_3);
         if (nk_ui_begin_container(ui, nk_ui_child_id(id, 5u), &chip, &fill)) {
             NkUiLayout dot = nk_ui_row(nk_ui_fixed(8.0f), nk_ui_fixed(8.0f), 0.0f);
@@ -809,7 +907,20 @@ void nk_ui_prompt_bar(NkUi *ui, NkUiId id, const char *hint,
             NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
             text.wrap = false;
             if (hint != NULL && hint[0] != '\0') {
-                nk_ui_text(ui, nk_ui_child_id(id, 3u), hint, &text);
+                /* The hint is one line in the room the prompts leave across the
+                   window; at a larger text size it ends in an ellipsis there
+                   instead of running under them. */
+                NkUiTextStyle label = nk_ui_type(NK_UI_TYPE_LABEL, 0u);
+                float room = nk_ui_layout_width(ui) - 2.0f * NK_UI_GUTTER;
+                for (i = 0; items != NULL && i < count; ++i) {
+                    room -= (i == 0u ? NK_UI_SPACE_5 : 18.0f) +
+                            nk_ui_prompt_glyph_size(ui, items[i].action, NK_UI_GLYPH_SIZE) +
+                            NK_UI_SPACE_2 +
+                            nk_ui_text_width(ui, nk_ui_caps(ui, items[i].label), &label);
+                }
+                nk_ui_text(ui, nk_ui_child_id(id, 3u),
+                           nk_ui_text_clamp(ui, hint, &text, room > 1.0f ? room : 1.0f, 1),
+                           &text);
             }
             nk_ui_end_container(ui);
         }
@@ -836,10 +947,18 @@ void nk_ui_prompt_bar(NkUi *ui, NkUiId id, const char *hint,
 /* ---- Dialogs and progress ------------------------------------------------------ */
 
 bool nk_ui_dialog_begin(NkUi *ui, NkUiId id, float width) {
+    return nk_ui_dialog_begin_scroll(ui, id, width, 0.0f);
+}
+
+bool nk_ui_dialog_begin_scroll(NkUi *ui, NkUiId id, float width, float max_height) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout layout = nk_ui_column(nk_ui_fixed(width), nk_ui_fit(), 14.0f);
     NkUiStyle style = nk_ui_fill(theme->surface_raised, theme->line_strong, NK_UI_RADIUS_DIALOG);
     nk_ui_pad(&layout, 26.0f, 28.0f, 22.0f, 28.0f);
+    if (max_height > 0.0f) {
+        layout.height.max = max_height;
+        layout.scroll = true;
+    }
     return nk_ui_begin_modal(ui, id, &layout, &style);
 }
 
