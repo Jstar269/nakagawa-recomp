@@ -2909,6 +2909,51 @@ not expected PSP values.
 | `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
 | `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |
 | `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
+| `ge-sync-ids` | `PSP-GE-SYNC-001` | `CAPTURED` (2026-10-31, PSP-3000 / PSPLink `pspver` 6.6.0; `96fe29f6` and `f6da6125`, boots 80 and 81; complete streams, not acceptance-eligible: bounded blocking cells were recorded as `TIMEOUT`; `5e301c98` records that as data and has not run) | #1374: `sceGeListSync`, `sceGeDrawSync` and `sceGeListDeQueue` on an unknown queue id, on completed lists before and after later lists, on a list a `sceGeBreak(1)` reset removed, and with sync types other than 0 and 1, each blocking call bounded in a helper thread. See [PSP-GE-SYNC-001 captured runs 2026-10-31](#psp-ge-sync-001-captured-runs-2026-10-31). |
+
+### PSP-GE-SYNC-001 captured runs 2026-10-31
+
+Two `ge-sync-ids` launches, each preceded by `transport-write`, ran on the project PSP-3000 (PSPLink
+`pspver` 6.6.0, `0x06060010`; standalone PSPLink after a soft reset) on 2026-10-31 under the
+hardware-lock protocol: revision `96fe29f6` on boot 80 and `f6da6125` on boot 81. Both streams are
+complete and their completion line is PASS, but neither envelope is acceptance-eligible: the bounded
+blocking cells that did not return were recorded with status `TIMEOUT`. Revision `5e301c98` records
+that outcome as data (`out1` = 0, the call had not returned within 200 ms) and is the eligible re-run;
+it has not run yet, so these cells are `CAPTURED` and establish nothing on their own. The runtime
+(`src/rt/hle.c`, #1374) follows the cells that agree in both runs and the GE driver's list
+lifecycle as uofw reconstructs it (`src/kd/ge/ge.c`, MIT). The raw logs stay private.
+
+Agreeing in both runs:
+
+- `ge-list-sync-unknown-poll`: `sceGeListSync(0x0badf00d, 1)` and `sceGeListSync(-1, 1)` return
+  0x80000100; `sceGeDrawSync(1)` reads 0.
+- `ge-list-dequeue-unknown`: `sceGeListDeQueue(0x0badf00d)` returns 0x80000100.
+- `ge-list-sync-unknown-wait`: `sceGeListSync(0x0badf00d, 0)` returns 0x80000100 at once.
+- `ge-list-sync-completed-poll`: a list that ran to its FINISH and END peeks 0, and
+  `sceGeListDeQueue` on it returns 0x80000021 (BUSY).
+- `ge-sync-invalid-mode`: `sceGeListSync(qid, 2)`, `sceGeDrawSync(2)` and `sceGeDrawSync(-1)` return
+  0x80000107.
+- `ge-list-sync-cancelled-poll`: a list stalled at its start and removed by `sceGeBreak(1)` peeks
+  0x80000100.
+- `ge-list-sync-cancelled-wait`: `sceGeListSync(qid, 0)` on that list did not return within 200 ms.
+- `ge-list-sync-completed-wait`, `ge-list-sync-stale-wait`: `sceGeListSync(qid, 0)` on a completed
+  list returns 0 at once, also when its peek already reads 0x80000100.
+
+Not consistent, and not followed by the runtime:
+
+- `ge-list-sync-after-reenqueue`, `ge-list-sync-stale-1`, `ge-list-sync-stale-2`,
+  `ge-list-sync-stale-3`: of seven completed lists over the two runs, three peeked 0 and four
+  0x80000100 within 1 ms of their completion, with no `sceGeDrawSync(0)` in between; each of the
+  three peeked 0x80000100 once a later list had run. Nothing in the driver's list lifecycle frees a slot there; the runtime
+  keeps a completed list's peek at 0 until a `sceGeDrawSync(0)` frees its slot.
+- `ge-draw-sync-idle-wait`, which in these two revisions ran after the reset (`5e301c98` moves it
+  before the reset and names the later cell `ge-draw-sync-after-reset-wait`): after the reset of a
+  stalled list, `sceGeDrawSync(0)` returned 0 in run 1 and did not return within 200 ms in run 2.
+  With no list active the runtime returns 0.
+
+Not measured yet: the peeks after a completed `sceGeDrawSync(0)` (`ge-list-sync-after-draw-wait`;
+run 2's wait did not return), a dequeue of a list that is queued behind another, and the queued
+peek.
 
 ### PSP-CPU-TIMING-001 measured run 2026-10-27
 

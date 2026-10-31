@@ -2444,12 +2444,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 111)
+        self.assertEqual(len(routes), 112)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
+        self.assertEqual(set(range(1, 79)) | set(range(90, 104)) | {106, 107, 108, 109}
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
@@ -3140,6 +3140,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-NULL-OUT-001",
                 # 2026-10-17: raw UMD capture stopped before the 32768-byte seek/read result.
                 "PSP-UMDRAW-001",
+                # 96fe29f6 and f6da6125, 2026-10-31: complete streams whose bounded blocking
+                # cells were recorded as TIMEOUT (#1374).
+                "PSP-GE-SYNC-001",
             },
         )
 

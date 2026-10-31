@@ -21722,6 +21722,8 @@ static int s_gsw_reset;              /* producer resets the queue instead of adv
 static unsigned s_gsw_producer_done;  /* producer finished advancing or resetting */
 static uint32_t s_gsw_list_rc, s_gsw_list_poll, s_gsw_draw_rc, s_gsw_draw_poll, s_gsw_reset_rc;
 static unsigned s_gsw_list_done_at_return, s_gsw_draw_done_at_return, s_gsw_reset_done_at_return;
+static uint32_t s_gsw_completed_wait, s_gsw_draw_wait, s_gsw_freed_poll, s_gsw_freed_wait;
+static unsigned s_gsw_blocked_after_reset, s_gsw_reenqueues;
 void sr_hle_test_ge_lists_reset(void);
 
 static uint32_t gsw_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
@@ -21735,6 +21737,20 @@ static void gsw_producer_fn(CpuState *cpu) {
     (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, GSW_PRODUCER_DELAY_US, 0u, 0u, 0u);
     if (s_gsw_reset) {
         (void)gsw_call(NID_SCE_GE_BREAK, 1u, 0u, 0u, 0u);
+        /* The reset ends the list without completing it, so the waiter must still be
+         * parked after it has had every chance to run (PSP-GE-SYNC-001
+         * ge-list-sync-cancelled-wait: no return). It returns only once a later list
+         * that the driver gives the same slot, and so the same id, completes. */
+        (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, GSW_PRODUCER_DELAY_US, 0u, 0u, 0u);
+        s_gsw_blocked_after_reset = s_gsw_reset_rc == 0xdeadbeefu;
+        MEM_W32(GSW_LIST + 0x100u, 0x0f000000u);
+        MEM_W32(GSW_LIST + 0x104u, 0x0c000000u);
+        s_gsw_reenqueues = 0u;
+        uint32_t id = 0u;
+        while (id != s_gsw_qid && s_gsw_reenqueues < 64u) {
+            id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST + 0x100u, 0u, 0xffffffffu, 0u);
+            s_gsw_reenqueues++;
+        }
     } else {
         /* The guest writes the rest of the list, then moves the stall past it. */
         MEM_W32(GSW_LIST, 0x0f000000u);       /* FINISH */
@@ -21771,6 +21787,17 @@ static void gsw_main_fn(CpuState *cpu) {
     gsw_arm(1);
     s_gsw_reset_rc = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 0u, 0u, 0u);
     s_gsw_reset_done_at_return = s_gsw_producer_done;
+
+    /* A list that completed answers the blocking form at once, also once its peek reads the
+     * invalid-id code (PSP-GE-SYNC-001 ge-list-sync-completed-wait, ge-list-sync-stale-wait);
+     * here a sceGeDrawSync(0) frees its slot (uofw). */
+    MEM_W32(GSW_LIST, 0x0f000000u);
+    MEM_W32(GSW_LIST + 4u, 0x0c000000u);
+    const uint32_t done = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST, 0u, 0xffffffffu, 0u);
+    s_gsw_completed_wait = gsw_call(NID_SCE_GE_LIST_SYNC, done, 0u, 0u, 0u);
+    s_gsw_draw_wait = gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u);
+    s_gsw_freed_poll = gsw_call(NID_SCE_GE_LIST_SYNC, done, 1u, 0u, 0u);
+    s_gsw_freed_wait = gsw_call(NID_SCE_GE_LIST_SYNC, done, 0u, 0u, 0u);
     cpu->r[2] = 0u;
 }
 
@@ -21783,7 +21810,9 @@ static void test_ge_blocking_sync_waits_for_stalled_list(void) {
     sr_test_register_guest_fn(GSW_MAIN_ENTRY, gsw_main_fn);
     sr_test_register_guest_fn(GSW_PRODUCER_ENTRY, gsw_producer_fn);
     s_gsw_list_rc = s_gsw_list_poll = s_gsw_draw_rc = s_gsw_draw_poll = s_gsw_reset_rc = 0xdeadbeefu;
+    s_gsw_completed_wait = s_gsw_draw_wait = s_gsw_freed_poll = s_gsw_freed_wait = 0xdeadbeefu;
     s_gsw_list_done_at_return = s_gsw_draw_done_at_return = s_gsw_reset_done_at_return = 0u;
+    s_gsw_blocked_after_reset = s_gsw_reenqueues = 0u;
     g_worker_uid = SR_ROLE_UID_NONE;
     memset(s_cpu, 0, sizeof(*s_cpu));
 
@@ -21797,8 +21826,17 @@ static void test_ge_blocking_sync_waits_for_stalled_list(void) {
            "blocking sceGeDrawSync returns 0 only after the producer thread advanced the stall");
     expect(s_gsw_draw_poll == 0u,
            "sceGeDrawSync(1) after the blocking return reads no list busy");
-    expect(s_gsw_reset_rc == 0x80000100u && s_gsw_reset_done_at_return == 1u,
-           "blocking sceGeListSync wakes on a sceGeBreak(1) reset with the removed-list code");
+    expect(s_gsw_blocked_after_reset == 1u,
+           "a blocking sceGeListSync stays parked through a sceGeBreak(1) reset of its list "
+           "(PSP-GE-SYNC-001 ge-list-sync-cancelled-wait)");
+    expect(s_gsw_reset_rc == 0u && s_gsw_reset_done_at_return == 1u && s_gsw_reenqueues >= 1u &&
+               s_gsw_reenqueues <= 64u,
+           "the reset list's waiter returns 0 once a later list in the same slot completes");
+    expect(s_gsw_completed_wait == 0u && s_gsw_draw_wait == 0u,
+           "the blocking forms return 0 at once for a completed list and an idle GE");
+    expect(s_gsw_freed_poll == 0x80000100u && s_gsw_freed_wait == 0u,
+           "after sceGeDrawSync(0) a completed list's peek reads 0x80000100 (uofw) and its wait "
+           "still returns 0 (PSP-GE-SYNC-001 ge-list-sync-stale-wait)");
 
     /* Outside a waitable guest thread nothing can advance the list: refused, not completed. */
     MEM_W32(GSW_LIST, 0u);
@@ -21812,6 +21850,65 @@ static void test_ge_blocking_sync_waits_for_stalled_list(void) {
     sr_hle_test_ge_lists_reset();
     sr_test_guest_fn_reset();
 }
+
+/* #1374: what the sync calls return for ids that name no list, for completed lists and
+ * for sync types other than 0 and 1. Every expected value is a PSP-GE-SYNC-001 cell
+ * (PSP-3000, probe ge-sync-ids, captured by the runs of 96fe29f6 and f6da6125 on
+ * 2026-10-31; tools/psp_oracle/manifest.json) unless the line says otherwise. */
+static void test_ge_sync_ids_match_psp(void) {
+    const uint32_t dl = 0x08922000u, unknown = 0x0badf00du;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    MEM_W32(dl, 0x0f000000u);       /* FINISH */
+    MEM_W32(dl + 4u, 0x0c000000u);  /* END */
+
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, unknown, 1u, 0u, 0u) == 0x80000100u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, 0xffffffffu, 1u, 0u, 0u) == 0x80000100u,
+           "sceGeListSync(1) on an id no enqueue returned, and on -1, is 0x80000100");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, unknown, 0u, 0u, 0u) == 0x80000100u,
+           "sceGeListSync(0) on an unknown id returns 0x80000100 without waiting");
+    expect(gsw_call(NID_SCE_GE_LIST_DEQUEUE, unknown, 0u, 0u, 0u) == 0x80000100u,
+           "sceGeListDeQueue on an unknown id is 0x80000100");
+
+    const uint32_t a = gsw_call(NID_SCE_GE_LIST_ENQUEUE, dl, 0u, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, a, 1u, 0u, 0u) == 0u,
+           "a list that ran to its END peeks as completed (0)");
+    expect(gsw_call(NID_SCE_GE_LIST_DEQUEUE, a, 0u, 0u, 0u) == 0x80000021u,
+           "sceGeListDeQueue on a completed list is BUSY (0x80000021)");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, a, 2u, 0u, 0u) == 0x80000107u &&
+               gsw_call(NID_SCE_GE_DRAW_SYNC, 2u, 0u, 0u, 0u) == 0x80000107u &&
+               gsw_call(NID_SCE_GE_DRAW_SYNC, 0xffffffffu, 0u, 0u, 0u) == 0x80000107u,
+           "sync types other than 0 and 1 are 0x80000107");
+
+    /* A second list gets a different id. The PSP read some completed lists' peeks as
+     * 0x80000100 before any sceGeDrawSync(0) and others as 0; nothing in the GE driver's
+     * list lifecycle (uofw src/kd/ge/ge.c) frees a slot there, so the runtime keeps 0. */
+    const uint32_t b = gsw_call(NID_SCE_GE_LIST_ENQUEUE, dl, 0u, 0xffffffffu, 0u);
+    expect(b != a && gsw_call(NID_SCE_GE_LIST_SYNC, b, 1u, 0u, 0u) == 0u,
+           "a second list gets its own id and also peeks as completed");
+
+    /* sceGeDrawSync(0) frees every completed slot: the peek then names no list, the
+     * dequeue too (uofw; the dequeue is UNMEASURED). */
+    expect(gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u) == 0u,
+           "sceGeDrawSync(0) on an idle GE returns 0");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, a, 1u, 0u, 0u) == 0x80000100u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, b, 1u, 0u, 0u) == 0x80000100u,
+           "after sceGeDrawSync(0) the completed lists' peeks are 0x80000100");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, b, 0u, 0u, 0u) == 0u,
+           "after sceGeDrawSync(0) a completed list's wait still returns 0");
+    expect(gsw_call(NID_SCE_GE_LIST_DEQUEUE, b, 0u, 0u, 0u) == 0x80000100u,
+           "after sceGeDrawSync(0) a completed list's dequeue is 0x80000100 (uofw)");
+
+    /* A list stalled at its start and removed by a reset. */
+    const uint32_t c = gsw_call(NID_SCE_GE_LIST_ENQUEUE, dl, dl, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_BREAK, 1u, 0u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, c, 1u, 0u, 0u) == 0x80000100u &&
+               gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u) == 0u,
+           "a reset-removed list peeks as 0x80000100 and the GE as idle");
+    sr_hle_test_ge_lists_reset();
+}
+
 
 static void test_kernel_import_sweep_ge_head(void) {
     const uint32_t list = 0x08918000u;
@@ -21996,20 +22093,18 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after continue");
 
-    /* No measured dequeue result exists for a completed list or an unknown id:
-     * both stop the run by name rather than hand the game an invented result. */
-    uint32_t dequeue_stops = sr_hle_test_unmodelled_stops();
+    /* A completed list dequeues BUSY until a sceGeDrawSync(0) frees it, and an id that
+     * names no list is 0x80000100 (PSP-GE-SYNC-001 ge-list-sync-completed-poll,
+     * ge-list-dequeue-unknown). */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u &&
-               sr_hle_test_unmodelled_stops() == dequeue_stops + 1u,
-           "sceGeListDeQueue on a completed list stops the run by name");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80000021u,
+           "sceGeListDeQueue on a completed list is BUSY (0x80000021, PSP-GE-SYNC-001)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x7fffffffu;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u &&
-               sr_hle_test_unmodelled_stops() == dequeue_stops + 2u,
-           "sceGeListDeQueue on an unknown id stops the run by name");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80000100u,
+           "sceGeListDeQueue on an unknown id is 0x80000100 (PSP-GE-SYNC-001)");
 
     /* Mode 1 cancellation */
     memset(&cpu, 0, sizeof(cpu));
@@ -22321,6 +22416,52 @@ static void test_ge_finish_callback_reports(void) {
     expect(sr_hle_test_ge_finish_reports(1) == 1u,
            "GE finish: an unregistered callback ID is reported once, not once per list");
     s_ge_tim_cbid = registered;
+    ge_tim_teardown();
+}
+
+/* #1374: lists enqueued while another list is still on the GE wait their turn, in enqueue
+ * order, as the GE driver's queue runs them (uofw src/kd/ge/ge.c _sceGeListEnQueue and
+ * _sceGeFinishInterrupt). The queued-list peek (1) is uofw's SCE_GE_LIST_QUEUED and
+ * UNMEASURED; the head's stalled peek (3) is PSP-GE-CONTROL-001. */
+static void test_ge_queued_lists_run_in_order(void) {
+    CpuState cpu;
+    ge_tim_setup();
+    sr_hle_test_ge_lists_reset();
+    MEM_W32(GE_TIM_DL, 0x0f000000u | ge_tim_finish_id(GE_TIM_DL));
+    MEM_W32(GE_TIM_DL + 4u, 0x0c000000u);
+    ge_tim_write_list(GE_TIM_DL2, 0u);
+    ge_tim_write_list(GE_TIM_DL2 + 0x100u, 0u);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GE_TIM_DL;
+    cpu.r[5] = GE_TIM_DL;      /* empty ring: the head list stalls at its start */
+    cpu.r[6] = s_ge_tim_cbid;
+    const uint32_t head = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    const uint32_t second = ge_tim_enqueue(&cpu, GE_TIM_DL2);
+    const uint32_t third = ge_tim_enqueue(&cpu, GE_TIM_DL2 + 0x100u);
+    expect(s_ge_tim_calls == 0u,
+           "lists enqueued behind a stalled list do not run ahead of it");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, second, 1u) == 1u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, head, 1u) == 3u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 3u,
+           "the queued list peeks as queued (1) and the GE as stalled on its head (3)");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_DEQUEUE, third, 0u) == 0u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, third, 1u) == 0x80000100u,
+           "a queued list that never started dequeues (0) and its id then names no list");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = head;
+    cpu.r[5] = GE_TIM_DL + 8u;
+    (void)sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR);
+    expect(s_ge_tim_calls == 2u && s_ge_tim_id[0] == ge_tim_finish_id(GE_TIM_DL) &&
+               s_ge_tim_id[1] == ge_tim_finish_id(GE_TIM_DL2),
+           "once the head completes, the queued list runs next and completes after it; "
+           "the dequeued list never runs");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, head, 1u) == 0u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, second, 1u) == 0u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
+           "both lists then peek as completed and the GE as idle");
+    sr_hle_test_ge_lists_reset();
     ge_tim_teardown();
 }
 
@@ -22638,8 +22779,10 @@ static void test_ge_consumed_list_ignores_late_stall_address(void) {
     cpu.r[5] = 1;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0u,
            "the consumed list stays complete for sceGeListSync after a late stall address");
+    /* The peek, not the wait: a sceGeDrawSync(0) would free the completed list's slot, and
+     * the late chunks below would then name no list. */
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0;
+    cpu.r[4] = 1;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "the consumed list leaves the GE drawing nothing after a late stall address");
 
@@ -40154,9 +40297,11 @@ static int hle_selftest_main(int argc, char **argv) {
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
     test_ge_blocking_sync_waits_for_stalled_list();
+    test_ge_sync_ids_match_psp();
     test_ge_break_continue();
     test_ge_completion_timing();
     test_ge_finish_callback_reports();
+    test_ge_queued_lists_run_in_order();
     test_volatile_mem_output_preflight();
     test_osk_parameter_sizes();
     test_osk_update_and_shutdown_init_states();

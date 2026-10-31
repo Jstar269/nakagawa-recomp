@@ -190,6 +190,21 @@
       "reset": "one PRX launch; PSPLink soft reset before the next queue entry"
     },
     {
+      "id": "PSP-GE-SYNC-001",
+      "status": "implemented",
+      "hardware_evidence": "CAPTURED",
+      "evidence_note": "Captured on 2026-10-31 by two PSP-3000 launches (PSPLink pspver 6.6.0, 0x06060010; standalone PSPLink after a soft reset, boots 80 and 81) of campaign case ge-sync-ids at revisions 96fe29f6 and f6da6125, each after transport-write. Both streams were complete and PASS but not acceptance-eligible: the bounded blocking cells that did not return were recorded with status TIMEOUT. Revision 5e301c98 records that outcome as data (out1 = 0) and is the eligible re-run; it has not run yet. Values observed in both runs: sceGeListSync(qid, 1) on 0x0badf00d and on -1, and sceGeListSync(qid, 0) and sceGeListDeQueue on 0x0badf00d, return 0x80000100; a list that ran to its END peeks 0 and dequeues 0x80000021; sync type 2 for sceGeListSync and 2 or -1 for sceGeDrawSync return 0x80000107; a list stalled at its start and removed by sceGeBreak(1) peeks 0x80000100 and its sceGeListSync(qid, 0) did not return within 200 ms; a completed list's sceGeListSync(qid, 0) returns 0 at once, also after its peek reads 0x80000100. Not measured yet: the peeks after a completed sceGeDrawSync(0) (run 2's did not return). Not consistent: some completed lists peeked 0x80000100 within 1 ms of completion with no sceGeDrawSync(0) in between and others 0, and sceGeDrawSync(0) after the reset returned 0 in run 1 and did not return within 200 ms in run 2. The raw logs stay private.",
+      "group": "ge",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["sceGeListSync", "sceGeDrawSync", "sceGeListDeQueue", "sceGeListEnQueue", "sceGeBreak"],
+      "case_ids": ["ge-list-sync-unknown-poll", "ge-list-dequeue-unknown", "ge-list-sync-completed-poll", "ge-sync-invalid-mode", "ge-list-sync-after-reenqueue", "ge-list-sync-stale-1", "ge-list-sync-stale-2", "ge-list-sync-stale-3", "ge-draw-sync-idle-wait", "ge-list-sync-after-draw-wait", "ge-list-sync-cancelled-poll", "ge-draw-sync-after-reset-wait", "ge-list-sync-completed-wait", "ge-list-sync-cancelled-wait", "ge-list-sync-unknown-wait", "ge-list-sync-stale-wait", "ge-sync-quiesce", "ge-sync-ids-done"],
+      "invariant": "raw sync and dequeue results for unknown, completed, freed and reset-removed queue ids are emitted in fixed order; every blocking call is bounded in a helper thread",
+      "issues": [1374],
+      "risk": "medium; owns a bounded GE list and source buffer",
+      "reset": "one PRX launch; PSPLink soft reset before the next queue entry"
+    },
+    {
       "id": "PSP-KERNEL-STATUS-001",
       "status": "implemented",
       "hardware_evidence": "MEASURED",
