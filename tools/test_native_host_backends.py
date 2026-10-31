@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 import scratch_dir  # noqa: E402
+import hle_sources  # noqa: E402
 
 #: The host platform backend, chosen the same way the Makefile chooses it.
 _WINDOWS = os.name == "nt"
@@ -379,7 +380,7 @@ class NativeHostBackendTests(unittest.TestCase):
         helper after the audio statistics rather than inside them, that the helper sits under the
         public-backend guard, and that the backend defines the function it calls. The statistics
         come from the block route_fail shares (#827), which keeps the SR_AUDIOSTAT gate."""
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         start = hle.index("BOOT_EVENT phase=exit_at_vblank")
         block = hle[start:hle.index("_Exit(0);", start)]
         stats = block.find("hle_exit_audio_stats();")
@@ -401,7 +402,7 @@ class NativeHostBackendTests(unittest.TestCase):
         sits inside the exit branch and before _Exit. Under SR_ROUTE_NO_EXIT the run carries on,
         so the close must not run there. Like the vblank pin, this reads the source: no native
         target runs a route failure with the public audio backend linked."""
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         start = hle.index("static void route_fail(const char *fmt, ...) {")
         body = hle[start:hle.index("\n}\n", start)]
         call = body.find("hle_exit_close_audio_dump();")
@@ -419,7 +420,7 @@ class NativeHostBackendTests(unittest.TestCase):
         (#827). Both exits call one helper so the two cannot drift, and the helper keeps the
         SR_AUDIOSTAT gate. Like the vblank pin, this reads the source: no native target runs a route
         failure with the public audio backend linked."""
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         start = hle.index("static void route_fail(const char *fmt, ...) {")
         body = hle[start:hle.index("\n}\n", start)]
         stats = body.find("hle_exit_audio_stats();")
@@ -448,7 +449,7 @@ class NativeHostBackendTests(unittest.TestCase):
         The call is idempotent and a no-op without SR_PERF. ge.c has no _Exit left: its
         SR_GE_CAPTURE_EXIT run stops at a scheduler boundary, and its fallback with no scheduler
         loop leaves through exit() after the summary (#1377)."""
-        lines = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8").splitlines()
+        lines = hle_sources.text().splitlines()
         found = 0
         for index, line in enumerate(lines):
             code = line.split("//", 1)[0]

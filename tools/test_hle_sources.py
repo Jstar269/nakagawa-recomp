@@ -12,6 +12,7 @@ byte.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -88,6 +89,11 @@ class SplitItemsTests(unittest.TestCase):
         self.assertEqual(len(names), 1)
         self.assertTrue(names[0].text.endswith('"c{" };'))
 
+    def test_static_after_a_leading_attribute_is_static(self) -> None:
+        source = "__attribute__((format(printf, 1, 2)))\nstatic int note(const char *f, ...) { return 0; }\n"
+        self.assertTrue(hle_sources.split_items(source)[0].is_static)
+        self.assertFalse(hle_sources.split_items("__attribute__((cold)) int f(void) { return 0; }\n")[0].is_static)
+
     def test_object_definitions_exclude_prototypes_and_types(self) -> None:
         source = "static int a;\nint b = 1;\nextern int c;\nint f(void);\ntypedef int T;\nstruct S { int x; };\n"
         kinds = {item.names[0]: hle_sources.is_object_definition(item) for item in hle_sources.split_items(source)}
@@ -109,6 +115,20 @@ class LiveListTests(unittest.TestCase):
         for path in hle_sources.RUNTIME_HLE_SOURCES + hle_sources.NOT_RUNTIME + hle_sources.HLE_PRIVATE_HEADERS:
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
+
+    def test_makefile_and_cmake_list_the_same_sources(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertEqual(hle_sources.makefile_hle_srcs(makefile), list(hle_sources.RUNTIME_HLE_SOURCES))
+        headers = re.search(r"(?m)^HLE_HDRS\s*:=\s*(.*)$", makefile)
+        self.assertIsNotNone(headers)
+        self.assertEqual(headers.group(1).split(), list(hle_sources.HLE_PRIVATE_HEADERS))
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        runtime = re.search(r"(?ms)^set\(NK_RUNTIME_SOURCES\b(.*?)\)", cmake)
+        self.assertIsNotNone(runtime)
+        listed = runtime.group(1).split()
+        hle = [path for path in listed if path in hle_sources.RUNTIME_HLE_SOURCES
+               or re.fullmatch(r"src/rt/hle(?:_[a-z0-9_]+)?\.c", path)]
+        self.assertEqual(hle, list(hle_sources.RUNTIME_HLE_SOURCES), "CMake lists the HLE sources together, in order")
 
     def test_manifest_reads_the_same_sources(self) -> None:
         self.assertEqual(
@@ -215,6 +235,19 @@ class PathConstantGuardTests(unittest.TestCase):
         source = 'TEXT = open("src/rt/hle_io.c").read()\n'
         self.assertEqual(hle_sources.hle_source_path_constants(source), [(1, "src/rt/hle_io.c")])
 
+    def test_regex_glob_and_fstring_paths_are_found(self) -> None:
+        source = (
+            'import re\n'
+            'A = re.compile(r"src/rt/hle\\.c")\n'
+            'B = sorted(ROOT.glob("src/rt/hle*.c"))\n'
+            'C = f"src/rt/hle_{name}.c"\n'
+            'D = f"{prefix}/rt/x.c"\n'
+        )
+        self.assertEqual(
+            hle_sources.hle_source_path_constants(source),
+            [(2, "src/rt/hle\\.c"), (3, "src/rt/hle*.c"), (4, "src/rt/hle_*.c")],
+        )
+
     def test_prose_docstrings_and_non_runtime_files_are_not_found(self) -> None:
         source = (
             '"""Reads src/rt/hle.c."""\n'
@@ -222,6 +255,46 @@ class PathConstantGuardTests(unittest.TestCase):
             'SELFTEST = "src/rt/hle_thread_selftest.c"\n'
         )
         self.assertEqual(hle_sources.hle_source_path_constants(source), [])
+
+
+class NoOtherReaderTests(unittest.TestCase):
+    """No tool or fixture names a runtime HLE source except as data (#307, I10).
+
+    A tool that reads ``src/rt/hle.c`` by path sees only the part of HLE left in that
+    file after the split, and passes on nothing. Every reader goes through
+    tools/hle_sources.py; the files below name a source only as data, never to read it.
+    """
+
+    #: Files that name a runtime HLE source as data, each with the reason.
+    PATH_DATA = {
+        "tools/hle_sources.py": "the list itself",
+        "tools/hle_move_proof.py": "the base revision's HLE file names, for git show",
+        "tools/provenance_record_gap.py": "KNOWN_DISPOSITION_GAPS records hle_power.c by path (#359)",
+        "tools/purity_gate.py": "allowlist entries keyed by the file that holds each literal",
+        "tools/test_build_graph_snapshot.py": "a synthetic dependency file",
+        "tools/test_ci_paths.py": "changed paths handed to the CI router",
+        "tools/test_contrib_check.py": "changed paths handed to contrib_check",
+        "tools/test_hle_manifest.py": "synthetic sources and the owner_file values the manifest reports",
+        "tools/test_hle_move_proof.py": "a synthetic split",
+        "tools/test_hle_sources.py": "synthetic trees and this guard's own cases",
+        "tools/test_import_stub_census.py": "a synthetic tree",
+        "tools/test_package_cache.py": "a synthetic compile command",
+        "tools/test_portability_inventory.py": "paths handed to the classifier",
+        "tools/test_progress_evidence.py": "a synthetic tree",
+        "tools/test_provenance_record_gap.py": "paths handed to the record-gap check",
+        "tools/test_purity_gate.py": "a synthetic tree",
+    }
+
+    def test_no_tool_names_an_hle_source(self) -> None:
+        found: dict[str, list[tuple[int, str]]] = {}
+        for path in sorted([*(ROOT / "tools").rglob("*.py"), *(ROOT / "fixtures").rglob("*.py")]):
+            relative = path.relative_to(ROOT).as_posix()
+            hits = hle_sources.hle_source_path_constants(path.read_text(encoding="utf-8"), relative)
+            if hits:
+                found[relative] = hits
+        unexpected = {relative: hits for relative, hits in found.items() if relative not in self.PATH_DATA}
+        self.assertEqual(unexpected, {}, "read the runtime HLE sources through tools/hle_sources.py")
+        self.assertEqual(sorted(set(self.PATH_DATA) - set(found)), [], "allowlist entries that name nothing")
 
 
 if __name__ == "__main__":

@@ -57,8 +57,13 @@ NOT_RUNTIME: tuple[str, ...] = (
 #: The function every complete runtime HLE source set defines exactly once.
 INIT_SIGNATURE = "void sr_hle_init(void)"
 
-#: A string constant naming a runtime HLE source by path: ``hle.c``, ``src/rt/hle_io.c``.
-_HLE_SOURCE_NAME_RE = re.compile(r"(?:^|/)hle(?:_[a-z0-9_]+)?\.c$")
+#: The storage-class `static` of a declaration, after any leading GNU attributes
+#: (``__attribute__((format(printf, 2, 3))) static uint32_t f(...)``).
+STATIC_SPECIFIER = re.compile(r"^(\s*(?:__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)\s*)*)static\b\s*")
+
+#: A string constant naming a runtime HLE source by path: ``hle.c``, ``src/rt/hle_io.c``, or a glob
+#: (``hle*.c``) or f-string (``f"hle_{name}.c"``, read with ``*`` for each field) that matches one.
+_HLE_SOURCE_NAME_RE = re.compile(r"(?:^|/)hle(?:[_*][a-z0-9_*]*)?\.c$")
 
 
 class HleSourcesError(RuntimeError):
@@ -305,10 +310,10 @@ def _name_item(item: Item, core: str) -> None:
         head = core[:core.index("{")]
         words = _IDENT.findall(head[:_last_top_paren(head)])
         item.names = [words[-1]] if words else []
-        item.is_static = re.match(r"\s*static\b", head) is not None
+        item.is_static = STATIC_SPECIFIER.match(head) is not None
     elif item.kind == "decl":
         item.names = _declared_names(core)
-        item.is_static = re.match(r"\s*static\b", core) is not None
+        item.is_static = STATIC_SPECIFIER.match(core) is not None
     elif item.kind == "macro_call":
         match = re.match(r"\s*[A-Z_][A-Z0-9_]*\s*\(\s*([A-Za-z_]\w*)", core)
         if match:
@@ -451,7 +456,9 @@ def hle_source_path_constants(python_source: str, filename: str = "<python>") ->
 
     A constant counts when its whole value, stripped, is a path or file name of the form
     ``hle.c`` / ``hle_<name>.c``: ``ROOT / "src" / "rt" / "hle.c"`` and ``"src/rt/hle_io.c"``
-    both count; a sentence that mentions ``src/rt/hle.c`` does not. Docstrings are skipped.
+    both count; a sentence that mentions ``src/rt/hle.c`` does not. A regular expression
+    (``hle\\.c``), a glob (``hle*.c``) and an f-string (``f"src/rt/hle_{name}.c"``) count
+    too. Docstrings are skipped.
     """
     tree = ast.parse(python_source, filename=filename)
     docstrings: set[int] = set()
@@ -462,14 +469,26 @@ def hle_source_path_constants(python_source: str, filename: str = "<python>") ->
                 docstrings.add(id(body[0].value))
     not_runtime = {Path(path).name for path in NOT_RUNTIME}
     hits: list[tuple[int, str]] = []
+    in_fstring: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            parts = [part.value if isinstance(part, ast.Constant) else "*" for part in node.values]
+            in_fstring.update(id(part) for part in node.values)
+            if _names_hle_source("".join(parts), not_runtime):
+                hits.append((node.lineno, "".join(parts)))
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)) or id(node) in docstrings:
             continue
-        value = node.value.strip()
-        if " " in value or not _HLE_SOURCE_NAME_RE.search(value) or value.rsplit("/", 1)[-1] in not_runtime:
+        if id(node) in in_fstring:
             continue
-        hits.append((node.lineno, node.value))
+        if _names_hle_source(node.value, not_runtime):
+            hits.append((node.lineno, node.value))
     return sorted(hits)
+
+
+def _names_hle_source(value: str, not_runtime: set[str]) -> bool:
+    value = value.strip().replace("\\", "")
+    return " " not in value and bool(_HLE_SOURCE_NAME_RE.search(value)) and value.rsplit("/", 1)[-1] not in not_runtime
 
 
 def main(argv: list[str] | None = None) -> int:

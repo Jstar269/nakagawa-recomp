@@ -42,9 +42,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hle_registry_meta as meta  # noqa: E402
 from hle_manifest import build_manifest  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 SELFTEST_C = ROOT / "src" / "rt" / "sdkver_selftest.c"
-HLE_SOURCE = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+HLE_SOURCE = hle_sources.text()
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
 STATEFUL_HANDLER = "h_SetCompiledSdkVersion"

@@ -7,7 +7,7 @@
 Live join of every exact `sce*` / `__sce*` API named in
 `docs/PSP_INTR_WAITS_MATRIX.md` against
 `tools/hle_manifest.build_manifest()` (registrations extracted from
-`src/rt/hle.c`). Regenerate with `python tools/waits_census.py`;
+the runtime HLE sources, `tools/hle_sources.py`). Regenerate with `python tools/waits_census.py`;
 `--check` fails when this file is stale.
 
 ## Dispositions and owners

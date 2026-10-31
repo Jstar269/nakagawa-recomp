@@ -42,13 +42,14 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 import scratch_dir
+import hle_sources  # noqa: E402
 
 RT = ROOT / "src" / "rt"
 STALE_H = (RT / "stale_code.h").read_text(encoding="utf-8")
 STALE_C = (RT / "stale_code.c").read_text(encoding="utf-8")
 SELFTEST_C = RT / "stale_code_selftest.c"
 SELFTEST_TEXT = SELFTEST_C.read_text(encoding="utf-8")
-HLE_C = (RT / "hle.c").read_text(encoding="utf-8")
+HLE_C = hle_sources.text()
 RECOMP_H = (RT / "recomp.h").read_text(encoding="utf-8")
 MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")

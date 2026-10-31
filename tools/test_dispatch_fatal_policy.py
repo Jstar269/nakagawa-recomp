@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -39,10 +40,13 @@ try:
 except ModuleNotFoundError:
     from tools import scratch_dir
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 RT = ROOT / "src" / "rt"
 CORE = ROOT / "src" / "core"
-HLE_C = ROOT / "src" / "rt" / "hle.c"
 RECOMP_C = ROOT / "src" / "rt" / "recomp.c"
 LAUNCH_C = ROOT / "src" / "core" / "nk_launch.c"
 MGR = ROOT / "nk_manager.ps1"
@@ -98,7 +102,7 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
 
     def test_hle_unregistered_nid_fails_closed(self):
         """sr_syscall must terminate on unregistered NIDs and never return 0."""
-        hle_src = HLE_C.read_text(encoding="utf-8")
+        hle_src = hle_sources.text()
         self.assertIn("uint32_t sr_syscall(CpuState *s, uint32_t nid)", hle_src)
         fn_body = function_body(hle_src, "uint32_t sr_syscall(CpuState *s, uint32_t nid)")
         self.assertIn("if (!e)", fn_body)
@@ -108,7 +112,7 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
 
     def test_unregistered_nid_stop_is_named_for_the_player(self):
         """The unregistered-NID stop writes the player's semantic-boundary line first."""
-        hle_src = HLE_C.read_text(encoding="utf-8")
+        hle_src = hle_sources.text()
         fn_body = function_body(hle_src, "uint32_t sr_syscall(CpuState *s, uint32_t nid)")
         record = fn_body.index("hle_record_unsupported_import_stop(nid, nm);")
         self.assertLess(record, fn_body.index("_Exit(7)"))
@@ -126,7 +130,7 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
 
     def test_unmodelled_argument_shape_stop_is_named_for_the_player(self):
         """A handler's unmodelled-shape stop names the import for the player, then exits 7."""
-        hle_src = HLE_C.read_text(encoding="utf-8")
+        hle_src = hle_sources.text()
         stop = function_body(
             hle_src, "static uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...)")
         production = stop.split("#else", 1)[1]

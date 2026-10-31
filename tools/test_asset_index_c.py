@@ -11,6 +11,10 @@ import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parent.parent
 SELFTEST_C = ROOT / "src" / "rt" / "asset_index_selftest.c"
@@ -228,14 +232,14 @@ class TestProjectFontAssetCopy(unittest.TestCase):
             self.assertIn("nkkr.pgf", result.stdout + result.stderr)
 
     def test_production_font_policy_has_distinct_configured_and_absent_roots(self):
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         self.assertIn("font_load: SR_FONTDIR is configured but is not a valid absolute path", hle)
         self.assertIn("font_load: no SR_FONTDIR and executable font root could not be resolved", hle)
         self.assertIn("pgf_open_w", hle)
         self.assertNotIn('pgf_open("font/', hle)
 
     def test_production_data_root_is_wide_and_configured(self):
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         # Title isolation (#308): generic HLE no longer infers a data root beside the executable; the
         # title manifest / launcher must configure SR_DATAROOT, and its absence is refused.
         self.assertNotIn("sr_wide_module_data_root(&root_wide)", hle)
@@ -270,7 +274,7 @@ class TestProjectFontAssetCopy(unittest.TestCase):
         every host. The pin is the bounds guard in front of the fixed-width
         compare, not one host's CRT spelling.
         """
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         self.assertIn(
             "if (guest_key_length >= 8u && sr_vfs_strnicmp(p, \"data_\", 5) == 0",
             hle,
@@ -303,7 +307,7 @@ class TestProjectFontAssetCopy(unittest.TestCase):
             self.assertLess(prepare_idx, idx,
                             f"preparation must precede {name} (guest execution seam)")
 
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         lookup_idx = hle.find("static const SrAssetIndexEntry *host_data_lookup")
         self.assertNotEqual(lookup_idx, -1)
         lookup_end = hle.find("\n}\n", lookup_idx)
@@ -323,7 +327,7 @@ class TestHleFontSpecTable(unittest.TestCase):
     """The sceFont shim keeps no font table of its own: it reads the measured slots and served headers."""
 
     def test_shim_reads_metadata_from_the_measured_registry_view(self):
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         # The removed per-index table held model values and hard-coded names; neither may return.
         self.assertNotIn("s_font_specs", hle)
         self.assertNotIn("SrFontSpec", hle)

@@ -4,13 +4,17 @@
 # Copyright (C) 2026 the Nakagawa Recomp authors
 """
 NID Compliance Auditor.
-Cross-examines hst_imports.toml against src/rt/hle.c to evaluate HLE coverage.
+Cross-examines hst_imports.toml against the runtime HLE sources to evaluate HLE coverage.
 """
 
 import sys
 import os
 import re
 import json
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hle_sources  # noqa: E402
 
 def find_repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,12 +47,8 @@ def parse_imports_toml(toml_path):
 
     return imports
 
-def parse_hle_c(hle_path):
-    if not os.path.exists(hle_path):
-        return {}, {}
-
-    with open(hle_path, "r", encoding="utf-8") as f:
-        content = f.read()
+def parse_hle_c(content):
+    """Registrations and handler details from the runtime HLE source text."""
 
     # Find all sr_hle_register calls: sr_hle_register(0xca04a2b9, "sceKernelRegisterSubIntrHandler", h_RegisterSubIntr);
     # Also handle things like sr_hle_register(sas_ok[i], ...) - we'll skip variables.
@@ -216,12 +216,11 @@ def main():
     watch_mode = "--watch" in sys.argv
     repo_root = find_repo_root()
     imports_path = os.path.join(repo_root, "build", "hst", "hst_imports.toml")
-    hle_path = os.path.join(repo_root, "src", "rt", "hle.c")
     output_path = os.path.join(repo_root, "build", "hst", "nid_audit_report.json")
 
     def run_audit():
         imports = parse_imports_toml(imports_path)
-        registrations, handlers_info = parse_hle_c(hle_path)
+        registrations, handlers_info = parse_hle_c(hle_sources.text(Path(repo_root)))
 
         nids_report = []
         module_stats = {}
@@ -291,12 +290,12 @@ def main():
         last_mtime = 0
         while True:
             try:
-                mtime = os.stat(hle_path).st_mtime
+                mtime = max(os.stat(os.path.join(repo_root, rel)).st_mtime for rel in hle_sources.RUNTIME_HLE_SOURCES)
                 if mtime != last_mtime:
                     run_audit()
                     last_mtime = mtime
             except Exception as e:
-                print(f"Error checking {hle_path}: {e}")
+                print(f"Error checking the runtime HLE sources: {e}")
             time.sleep(2.0)
     else:
         run_audit()

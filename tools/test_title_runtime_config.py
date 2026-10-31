@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import compat_overrides  # noqa: E402
 import title_manifest  # noqa: E402
+import hle_sources  # noqa: E402
 import title_runtime_config  # noqa: E402
 
 FIXTURE_A = ROOT / "assets" / "titles" / "pspdev-phase5.json"
@@ -1191,7 +1192,6 @@ class RoleUidsAreOutcomesNotConfiguration(unittest.TestCase):
     """The role UIDs must never be title configuration, nor a numeric default."""
 
     SCHED = ROOT / "src" / "rt" / "sched.c"
-    HLE = ROOT / "src" / "rt" / "hle.c"
 
     def test_role_uids_are_not_manifest_fields(self):
         published = set(title_manifest.RUNTIME_BINDING_FIELDS)
@@ -1215,7 +1215,7 @@ class RoleUidsAreOutcomesNotConfiguration(unittest.TestCase):
             )
 
     def test_the_uid_pool_never_produces_the_absent_marker(self):
-        hle = self.HLE.read_text(encoding="utf-8")
+        hle = hle_sources.text()
         allocator = hle.split("uint32_t sr_alloc_uid(void) {", 1)[1].split("}", 1)[0]
         self.assertIn("SR_ROLE_UID_NONE", allocator)
         self.assertIn("s_uid == 0u", allocator)

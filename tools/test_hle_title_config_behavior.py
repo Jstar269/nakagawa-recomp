@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import scratch_dir
 import title_runtime_config
 import title_manifest
+import hle_sources  # noqa: E402
 
 FIXTURE = ROOT / "assets" / "titles" / "synthetic.json"
 
@@ -74,11 +76,20 @@ def libfont_selftest_manifest(tmp_path: Path) -> Path:
     return path
 
 
+def hle_file_containing(needle: str) -> tuple[str, str]:
+    """The one runtime HLE source that contains ``needle``, exactly once, as (path, text)."""
+    hits = [(relative, text) for relative, text in hle_sources.sources() if needle in text]
+    assert len(hits) == 1, f"{needle!r} is in {len(hits)} runtime HLE sources"
+    assert hits[0][1].count(needle) == 1, f"{needle!r} appears more than once in {hits[0][0]}"
+    return hits[0]
+
+
 def run_libfont_selftest(make: str, tmp_path: Path, manifest_path: Path,
-                         hle_source: str | None = None) -> subprocess.CompletedProcess:
+                         hle_source: tuple[str, str] | None = None) -> subprocess.CompletedProcess:
     """Build and run the production HLE selftest against the synthetic libfont
-    manifest. ``hle_source`` replaces src/rt/hle.c through a private Makefile, so a
-    mutation is executed in a temporary directory rather than described."""
+    manifest. ``hle_source`` is (path, text): the text replaces that runtime HLE
+    source through a private Makefile, so a mutation is executed in a temporary
+    directory rather than described."""
     tag = "mutant" if hle_source is not None else "libfont"
     out_dir = tmp_path / tag
     out_dir.mkdir(exist_ok=True)
@@ -89,11 +100,13 @@ def run_libfont_selftest(make: str, tmp_path: Path, manifest_path: Path,
     else:
         command_makefile = tmp_path / f"Makefile.{tag}"
         makefile_text = makefile.read_text(encoding="utf-8")
-        assert "src/rt/hle.c" in makefile_text
-        mutant_source = tmp_path / f"hle_{tag}.c"
-        mutant_source.write_text(hle_source, encoding="utf-8")
+        relative, text = hle_source
+        hle_srcs = re.search(r"(?m)^HLE_SRCS\s*:=\s*(.*)$", makefile_text)
+        assert hle_srcs is not None and relative in hle_srcs.group(1).split(), relative
+        mutant_source = tmp_path / f"{tag}_{Path(relative).name}"
+        mutant_source.write_text(text, encoding="utf-8")
         command_makefile.write_text(
-            makefile_text.replace("src/rt/hle.c", mutant_source.as_posix()),
+            makefile_text.replace(hle_srcs.group(0), hle_srcs.group(0).replace(relative, mutant_source.as_posix())),
             encoding="utf-8",
         )
         makefile_arg = ["-f", command_makefile.as_posix()]
@@ -157,7 +170,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertIn("not hardware measured", issue_299)
 
     def test_stopped_module_restart_comment_is_labeled_as_inference(self):
-        source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        source = hle_sources.text()
         restart_comment = "\n".join(
             line for line in source.splitlines()
             if "stopped module" in line.lower() or "Inference, not" in line
@@ -255,14 +268,13 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
             tmp_path = Path(tmp)
             manifest_path = libfont_selftest_manifest(tmp_path)
             result = run_libfont_selftest(make, tmp_path, manifest_path)
-            source_text = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
             policy = "ModuleStartPolicy policy = module_start_policy();"
-            self.assertEqual(source_text.count(policy), 1)
+            relative, source_text = hle_file_containing(policy)
             # Denying every entry is the pre-#652 shape: libfont startup never runs,
             # so only the guest module_start can write the readiness word.
             mutant = run_libfont_selftest(
                 make, tmp_path, manifest_path,
-                hle_source=source_text.replace(policy, "ModuleStartPolicy policy = MODULE_START_NONE;", 1),
+                hle_source=(relative, source_text.replace(policy, "ModuleStartPolicy policy = MODULE_START_NONE;", 1)),
             )
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, output)
@@ -292,14 +304,13 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
             tmp_path = Path(tmp)
             manifest_path = libfont_selftest_manifest(tmp_path)
             result = run_libfont_selftest(make, tmp_path, manifest_path)
-            source_text = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
             kill_switch = 'if (strcmp(e, "0") == 0) return MODULE_START_NONE;'
-            self.assertEqual(source_text.count(kill_switch), 1)
+            relative, source_text = hle_file_containing(kill_switch)
             mutant = run_libfont_selftest(
                 make, tmp_path, manifest_path,
-                hle_source=source_text.replace(
+                hle_source=(relative, source_text.replace(
                     kill_switch,
-                    'if (strcmp(e, "0") == 0) return MODULE_START_LIBFONT_ONLY;', 1),
+                    'if (strcmp(e, "0") == 0) return MODULE_START_LIBFONT_ONLY;', 1)),
             )
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, output)

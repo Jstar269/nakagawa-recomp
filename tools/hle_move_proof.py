@@ -24,7 +24,10 @@ L3, init sequence. In each configuration ``sr_hle_init`` is flattened by inlinin
     registration order and the side effects of initialisation are unchanged.
 L4, artefacts (CLI only). The HLE manifest and the production/selftest reachability of
     every NID are unchanged apart from ``owner_file``, and ``tools/import_audit_baseline.json``
-    is byte-identical to the base's.
+    is byte-identical to the base's. Symbols: compiled in the production configuration, the
+    new units export exactly the base's external symbols plus the names that lost ``static``
+    and the new registration functions; no symbol is defined twice; no newly external name is
+    also defined by a library the runtime links; on ELF every newly external name is hidden.
 
 CLI: ``python tools/hle_move_proof.py --base origin/main`` exits 0 when every layer passes.
 ``--map`` writes the function -> new file map other branches use to port their changes.
@@ -74,6 +77,11 @@ CONFIGS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
                        "SR_H264_FFMPEG", "NK_UI_WITH_SDL", "NK_UI_WITH_SDL3"), ()),
     "flash0-harness": ((), ("-std=gnu11",)),
 }
+#: Base units a configuration's binary did not compile itself but linked as a production object:
+#: the base media selftest compiled hle.c with its own defines and linked the production
+#: hle_power.o (PSMF_MEDIA_RUNTIME_OBJS). After the split it compiles every HLE source, so the
+#: base side of that comparison is hle_power.c's production preprocessing.
+LINKED_AS_PRODUCTION: dict[str, tuple[str, ...]] = {"media-selftest": ("src/rt/hle_power.c",)}
 #: The Android build compiles the runtime with NDK clang for the ABIs the app ships
 #: (``android/app/build.gradle.kts``: ``nk.abis`` arm64-v8a and x86_64, minSdk 29) and CMake's ``rt_defs``.
 _ANDROID = ("SR_SDL3VK", "SR_FLIGHT_RECORDER_LINKED", "PERF_AOT_INSTRUCTIONS=0", "SR_PUBLIC_SAFE", "SR_H264_FFMPEG",
@@ -99,6 +107,8 @@ _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
 class Report:
     errors: list[str] = field(default_factory=list)
     static_removed: list[str] = field(default_factory=list)
+    #: every name a declaration in static_removed declares (``static int a, b;`` declares two)
+    static_removed_names: dict[str, list[str]] = field(default_factory=dict)
     made_inline: list[str] = field(default_factory=list)
     regrouped: list[str] = field(default_factory=list)
     new_glue: list[str] = field(default_factory=list)
@@ -133,6 +143,9 @@ def _is_declaration_glue(item: Item) -> bool:
                                                          core)
 
 
+_VISIBILITY_PRAGMA = re.compile(r"#\s*pragma\s+GCC\s+visibility\s+(?:push\s*\(\s*hidden\s*\)|pop)\s*")
+
+
 def _category(item: Item) -> str:
     """``content`` (must move intact), ``conditional`` (checked through ``cond``) or ``glue``."""
     if item.kind == "guard":
@@ -140,7 +153,9 @@ def _category(item: Item) -> str:
     if item.kind == "pp":
         if _directive(item) in _CONDITIONAL:
             return "conditional"
-        return "glue" if _directive(item) == "include" else "content"
+        if _directive(item) == "include" or _VISIBILITY_PRAGMA.fullmatch(item.text):
+            return "glue"
+        return "content"
     if _is_declaration_glue(item):
         return "glue"
     return "content"
@@ -324,7 +339,7 @@ def compare_items(base: list[Unit], new: list[Unit]) -> Report:
         candidates = new_by_text.get(key, [])
         removed_static = made_inline = False
         if not candidates and item.is_static:
-            key = re.sub(r"^static\s+", "", text_key, count=1)
+            key = hle_sources.STATIC_SPECIFIER.sub(r"\1", text_key, count=1)
             candidates = new_by_text.get(key, [])
             removed_static = bool(candidates)
         if not candidates and item.is_static and item.kind == "func" and not re.match(r"static\s+inline\b", text_key):
@@ -356,6 +371,7 @@ def compare_items(base: list[Unit], new: list[Unit]) -> Report:
             report.moved_to[name] = new_path
         if removed_static:
             report.static_removed.append(f"{name} ({new_path})")
+            report.static_removed_names[name] = list(item.names) or [name]
         if made_inline:
             report.made_inline.append(f"{name} ({new_path})")
 
@@ -397,7 +413,9 @@ def _check_static_removals(report: Report, new: list[Unit]) -> None:
     for entry in report.static_removed:
         name, home = entry.rsplit(" (", 1)
         home = home.rstrip(")")
-        pattern = re.compile(rf"\b{re.escape(name)}\b")
+        # `static int a, b;` loses `static` for both names when another file uses either
+        names = report.static_removed_names.get(name, [name])
+        pattern = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b")
         users = [p for p, text in blanked.items() if p != home and not p.endswith(".h") and pattern.search(text)]
         if not users:
             report.errors.append(f"{home}: `static` was dropped from {name}, which no other HLE file uses")
@@ -461,18 +479,25 @@ def preprocess_unit(tree: Path, relative: str, config: tuple[tuple[str, ...], tu
         if m:
             name = m.group(1).replace("\\\\", "\\")
             current_kept = Path(name).resolve().as_posix().lower() in wanted
-            out.append("")
             continue
-        out.append(line if current_kept else "")
+        # Lines from other files are dropped, not blanked: the system headers are most of the
+        # output, and no definition spans two files, so the kept tokens are the same.
+        if current_kept:
+            out.append(line)
     return "\n".join(out)
 
 
 def preprocessed_definitions(tree: Path, units: list[str], headers: tuple[str, ...],
-                             config: tuple[tuple[str, ...], tuple[str, ...]], cc: str) -> dict[str, list[str]]:
-    """Name -> token list of every function, object and type, from every unit in one configuration."""
+                             config: tuple[tuple[str, ...], tuple[str, ...]], cc: str,
+                             unit_configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
+                             ) -> dict[str, list[str]]:
+    """Name -> token list of every function, object and type, from every unit in one configuration.
+
+    ``unit_configs`` preprocesses the units it names in another configuration instead.
+    """
     found: dict[str, list[str]] = {}
     for relative in units:
-        text = preprocess_unit(tree, relative, config, cc, (relative,) + headers)
+        text = preprocess_unit(tree, relative, (unit_configs or {}).get(relative, config), cc, (relative,) + headers)
         for item in split_items(text):
             if not item.names or item.kind != "func" and not (item.kind == "decl" and not _is_declaration_glue(item)):
                 continue
@@ -537,7 +562,8 @@ def compare_preprocessed(base_tree: Path, base_units: list[str], base_headers: t
     inlined = {entry.rsplit(" (", 1)[0] for entry in report.made_inline}
     glue = {entry.rsplit(" (", 1)[0] for entry in report.new_glue}
     for config, flags in configs.items():
-        base = preprocessed_definitions(base_tree, base_units, base_headers, flags, cc)
+        production = {unit: CONFIGS["production"] for unit in LINKED_AS_PRODUCTION.get(config, ()) if unit in base_units}
+        base = preprocessed_definitions(base_tree, base_units, base_headers, flags, cc, production)
         new = preprocessed_definitions(new_tree, new_units, new_headers, flags, cc)
         # L5: a declaration missing from the private header must fail here, not compile into an
         # implicit `int` on a compiler that only warns about it.
@@ -553,8 +579,10 @@ def compare_preprocessed(base_tree: Path, base_units: list[str], base_headers: t
             if other is None:
                 report.errors.append(f"[{config}] {name} is defined in the base but not in the new sources")
                 continue
-            if name in removed and tokens[:1] == ["static"]:
-                tokens = tokens[1:]
+            declarator = tokens.index(name) if name in tokens else len(tokens)
+            if name in removed and "static" in tokens[:declarator]:
+                at = tokens.index("static")
+                tokens = tokens[:at] + tokens[at + 1:]
             if name in inlined and other[:2] == ["static", "inline"]:
                 other = other[:1] + other[2:]
             if other != tokens:
@@ -574,6 +602,115 @@ def compare_preprocessed(base_tree: Path, base_units: list[str], base_headers: t
 
 
 # --------------------------------------------------------------------------------------
+# L4 symbols
+
+#: Libraries a runtime link names or the toolchain adds by default, per host. A newly external
+#: HLE name must not also be defined by one of them: an archive would bind it silently.
+LINK_LIBRARIES = {
+    "win32": ("SDL3", "SDL3_ttf", "vulkan-1", "winmm", "ole32", "oleaut32", "uuid", "mfplat", "mfuuid", "mf",
+              "mfreadwrite", "propsys", "shlwapi", "dbghelp", "bcrypt", "xinput", "dinput8", "dxguid", "gdi32",
+              "user32", "kernel32", "advapi32", "shell32", "mingw32", "mingwex", "moldname", "msvcrt", "ucrt",
+              "ucrtbase", "gcc", "gcc_eh", "pthread", "m", "avcodec", "avutil"),
+    "posix": ("c", "m", "pthread", "dl", "rt", "gcc", "gcc_s", "SDL3", "SDL3_ttf", "vulkan", "avcodec", "avutil"),
+}
+
+
+def _nm(path: Path, nm: str, dynamic: bool = False) -> set[str]:
+    command = [nm, "-g", "--defined-only", *(["-D"] if dynamic else []), str(path)]
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    names = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        # MinGW emits a `.refptr.<name>` COMDAT stub in every object that reads an external
+        # variable; the linker merges them, so they are not definitions of the source.
+        if len(parts) >= 3 and len(parts[-2]) == 1 and not parts[-1].startswith(".refptr."):
+            names.add(parts[-1].split("@", 1)[0])
+    return names
+
+
+def object_symbols(tree: Path, units: list[str], config: tuple[tuple[str, ...], tuple[str, ...]], cc: str,
+                   nm: str, out_dir: Path) -> dict[str, set[str]]:
+    """Unit -> external symbols its object defines, compiled with ``-c`` in ``config``."""
+    found: dict[str, set[str]] = {}
+    for relative in units:
+        obj = out_dir / (relative.replace("/", "_") + ".o")
+        command = [cc, "-c", *_compile_flags(tree, config), "-o", str(obj), str(tree / relative)]
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            raise RuntimeError(f"{' '.join(command)} failed:\n{result.stderr[-2000:]}")
+        found[relative] = _nm(obj, nm)
+    return found
+
+
+def library_symbols(cc: str, nm: str) -> tuple[set[str], list[str]]:
+    """Every external symbol the host's link libraries define, and the libraries found."""
+    host = "win32" if sys.platform == "win32" else "posix"
+    names: set[str] = set()
+    found: list[str] = []
+    for lib in LINK_LIBRARIES[host]:
+        for candidate in (f"lib{lib}.a", f"lib{lib}.dll.a", f"lib{lib}.so"):
+            result = subprocess.run([cc, f"-print-file-name={candidate}"], capture_output=True, text=True)
+            path = Path(result.stdout.strip())
+            if path.is_absolute() and path.is_file():
+                text = path.read_bytes()[:64]
+                if text.startswith(b"/* GNU ld script"):
+                    continue
+                names |= _nm(path, nm, dynamic=candidate.endswith(".so"))
+                found.append(candidate)
+                break
+    return names, found
+
+
+def compare_symbols(base_tree: Path, base_units: list[str], new_tree: Path, new_units: list[str],
+                    report: Report, cc: str) -> None:
+    nm = shutil.which("nm")
+    if nm is None:
+        report.notes.append("L4 symbols NOT_RUN: no nm on PATH")
+        return
+    config = CONFIGS["production"]
+    with tempfile.TemporaryDirectory() as tmp:
+        base_dir, new_dir = Path(tmp) / "base", Path(tmp) / "new"
+        base_dir.mkdir()
+        new_dir.mkdir()
+        base = object_symbols(base_tree, base_units, config, cc, nm, base_dir)
+        new = object_symbols(new_tree, new_units, config, cc, nm, new_dir)
+        base_all = set().union(*base.values())
+        new_all = set().union(*new.values())
+        owners: dict[str, list[str]] = collections.defaultdict(list)
+        for unit, names in new.items():
+            for name in names:
+                owners[name].append(unit)
+        for name, units in sorted(owners.items()):
+            if len(units) > 1:
+                report.errors.append(f"L4: {name} is defined in {len(units)} units ({', '.join(units)})")
+        allowed = ({n for names in report.static_removed_names.values() for n in names}
+                   | {e.rsplit(" (", 1)[0] for e in report.static_removed}
+                   | {e.rsplit(" (", 1)[0] for e in report.new_glue})
+        gained = new_all - base_all
+        for name in sorted(gained - allowed):
+            report.errors.append(f"L4: {name} is external in the new objects but neither was in the base nor lost `static`")
+        for name in sorted(base_all - new_all):
+            report.errors.append(f"L4: {name} was external in the base objects and is not any more")
+        libraries, found = library_symbols(cc, nm)
+        clashes = sorted(gained & libraries)
+        for name in clashes:
+            report.errors.append(f"L4: newly external {name} is also defined by a link library")
+        report.notes.append(f"L4 symbols: {len(gained)} names newly external, checked against "
+                            f"{len(libraries)} library symbols from {len(found)} libraries")
+        if sys.platform != "win32" and shutil.which("readelf"):
+            for unit in new_units:
+                obj = new_dir / (unit.replace("/", "_") + ".o")
+                out = subprocess.run(["readelf", "-sW", str(obj)], capture_output=True, text=True).stdout
+                for line in out.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 8 and parts[4] == "GLOBAL" and parts[6] != "UND" and parts[7] in gained \
+                            and parts[5] != "HIDDEN":
+                        report.errors.append(f"L4: {parts[7]} ({unit}) is newly external with {parts[5]} visibility")
+        else:
+            report.notes.append("L4 ELF visibility NOT_RUN on this host (run the proof on Linux or WSL)")
+
+
+# --------------------------------------------------------------------------------------
 # CLI
 
 
@@ -584,8 +721,11 @@ def _git(*args: str) -> str:
     return result.stdout
 
 
-def base_unit_paths(rev: str) -> tuple[list[str], list[str]]:
-    listed = _git("ls-tree", "-r", "--name-only", rev, "--", "src/rt").split()
+def base_unit_paths(rev: str, base_dir: Path | None = None) -> tuple[list[str], list[str]]:
+    if base_dir is not None:
+        listed = [p.relative_to(base_dir).as_posix() for p in (base_dir / "src" / "rt").glob("*") if p.is_file()]
+    else:
+        listed = _git("ls-tree", "-r", "--name-only", rev, "--", "src/rt").split()
     units = [p for p in listed if re.fullmatch(r"src/rt/hle(?:_[a-z0-9_]+)?\.c", p)
              and p not in hle_sources.NOT_RUNTIME]
     units.sort(key=lambda p: (p != "src/rt/hle.c", p))
@@ -641,16 +781,25 @@ def find_ndk_clang() -> str | None:
 
 def run(rev: str, cc: str | None, configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]],
         ndk_clang: str | None = None,
-        ndk_configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None) -> Report:
-    base_paths, base_headers = base_unit_paths(rev)
-    base = [(p, _git("show", f"{rev}:{p}")) for p in base_paths + base_headers]
+        ndk_configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
+        base_dir: Path | None = None) -> Report:
+    """``base_dir``, when given, is the base revision's tree (``git archive <rev> src tools``,
+    extracted), read instead of git: for a host whose git cannot read this checkout."""
+
+    def show(relative: str) -> str:
+        if base_dir is not None:
+            return (base_dir / relative).read_bytes().decode("utf-8")
+        return _git("show", f"{rev}:{relative}")
+
+    base_paths, base_headers = base_unit_paths(rev, base_dir)
+    base = [(p, show(p)) for p in base_paths + base_headers]
     new = hle_sources.sources(headers=True)
     report = compare_items(base, new)
     base_c = "\n".join(text for p, text in base if p.endswith(".c"))
     new_c = hle_sources.text(headers=False)
     report.errors += manifest_differences(base_c, new_c)
     baseline = "tools/import_audit_baseline.json"
-    if _git("show", f"{rev}:{baseline}") != (ROOT / baseline).read_text(encoding="utf-8"):
+    if show(baseline) != (ROOT / baseline).read_bytes().decode("utf-8"):
         report.errors.append(f"{baseline} differs from {rev}'s")
     if cc is None:
         report.notes.append("L2/L3/L5 NOT_RUN: no C compiler given")
@@ -658,10 +807,15 @@ def run(rev: str, cc: str | None, configs: dict[str, tuple[tuple[str, ...], tupl
     ndk_configs = ndk_configs or {}
     with tempfile.TemporaryDirectory() as tmp:
         base_tree = Path(tmp)
-        _extract_tree(rev, base_tree)
+        if base_dir is not None:
+            shutil.copytree(base_dir / "src", base_tree / "src")
+        else:
+            _extract_tree(rev, base_tree)
         new_units = list(hle_sources.RUNTIME_HLE_SOURCES)
         compare_preprocessed(base_tree, base_paths, tuple(base_headers), ROOT, new_units,
                              hle_sources.HLE_PRIVATE_HEADERS, report, cc, configs)
+        if "production" in configs:
+            compare_symbols(base_tree, base_paths, ROOT, new_units, report, cc)
         if ndk_configs and ndk_clang:
             compare_preprocessed(base_tree, base_paths, tuple(base_headers), ROOT, new_units,
                                  hle_sources.HLE_PRIVATE_HEADERS, report, ndk_clang, ndk_configs)
@@ -700,13 +854,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", action="append", choices=sorted(CONFIGS) + sorted(NDK_CONFIGS),
                         help="limit L2/L3/L5 to these configurations")
     parser.add_argument("--ndk-clang", help="NDK clang for the Android configurations (default: the pinned NDK, if found)")
+    parser.add_argument("--base-dir", type=Path,
+                        help="the base revision's tree, extracted (`git archive <rev> src tools`), instead of git")
     parser.add_argument("--report", type=Path, help="write the Markdown report here too")
     parser.add_argument("--map", type=Path, help="write the moved-name -> new file map as JSON")
     args = parser.parse_args(argv)
     configs = {k: v for k, v in CONFIGS.items() if not args.config or k in args.config}
     ndk_configs = {k: v for k, v in NDK_CONFIGS.items() if not args.config or k in args.config}
     report = run(args.base, None if args.no_preprocess else args.cc, configs,
-                 args.ndk_clang or find_ndk_clang(), ndk_configs)
+                 args.ndk_clang or find_ndk_clang(), ndk_configs, args.base_dir)
     text = render(report, args.base)
     print(text)
     if args.report:

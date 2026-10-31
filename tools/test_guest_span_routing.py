@@ -11,6 +11,11 @@ whole-span preflight from regressing when generated code is regenerated.
 from pathlib import Path
 import re
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,7 +81,7 @@ class TestGuestSpanRouting(unittest.TestCase):
                         copy_in.find("memcpy(out, SR_HOST(src), run)"))
 
     def test_generic_memcpy_memset_preflight_before_sr_host(self) -> None:
-        text = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        text = hle_sources.text()
         dmac_start = text.find("static uint32_t h_DmacMemcpy")
         dmac_end = text.find("static uint32_t h_Memset", dmac_start)
         dmac = text[dmac_start:dmac_end]

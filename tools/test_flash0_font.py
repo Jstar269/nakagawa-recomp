@@ -51,6 +51,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import pgf_writer  # noqa: E402
 import scratch_dir  # noqa: E402
+import hle_sources  # noqa: E402
 from nk_core import fonts  # noqa: E402
 
 SLOT_HEADER = ROOT / "src" / "core" / "nk_font_slots.h"
@@ -456,7 +457,7 @@ class Flash0UserRootSourceContractTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        self.source = hle_sources.text()
 
     def test_relative_user_root_is_refused_on_every_host(self) -> None:
         """#827 review: Win32 refuses a relative SR_USER_DATA_ROOT inside the wide helper, but POSIX
@@ -481,7 +482,7 @@ class Flash0ConfiguredRootSourceContractTests(unittest.TestCase):
     """Configured roots (SR_FONTDIR, SR_DATAROOT, SR_EXE_DIR) must be absolute on every host, checked in
     the source so it runs everywhere, WSL included.
 
-    sr_wide_configured_root_wide_alloc has a Win32 and a POSIX definition in hle.c. Win32 refused a relative
+    sr_wide_configured_root_wide_alloc has a Win32 and a POSIX definition in the runtime HLE sources. Win32 refused a relative
     value; POSIX joined it to the working directory, so a child process started in a package directory read
     a different directory from the one the caller configured (#827 review of #1025).
     """
@@ -489,7 +490,7 @@ class Flash0ConfiguredRootSourceContractTests(unittest.TestCase):
     SIGNATURE = "static int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **out) {"
 
     def setUp(self) -> None:
-        self.source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        self.source = hle_sources.text()
         self.assertEqual(self.source.count(self.SIGNATURE), 2, "expected one Win32 and one POSIX definition")
         self.first = self.source.index(self.SIGNATURE)
         self.second = self.source.index(self.SIGNATURE, self.first + 1)
@@ -528,10 +529,11 @@ class Flash0ConfiguredRootSourceContractTests(unittest.TestCase):
         self.assertIn("atomic_exchange_explicit(&s_font_dir_refusal_named", self.source)
 
 
-#: A scratch harness for the native check. It #includes the production hle.c and resolves the flash0:
-#: project font root twice, so the one-time refusal is counted across two opens.
+#: A scratch harness for the native check. It #includes the runtime HLE source that defines
+#: flash0_font_sources (@FLASH0_FONT_SOURCES_FILE@, filled in from tools/hle_sources.py) and resolves the
+#: flash0: project font root twice, so the one-time refusal is counted across two opens.
 FONT_DIR_HARNESS_C = r'''
-#include "src/rt/hle.c"
+#include "@FLASH0_FONT_SOURCES_FILE@"
 
 int main(void) {
     Flash0Sources first;
@@ -712,7 +714,8 @@ class Flash0FontDirRefusalNativeTests(unittest.TestCase):
     """A refused SR_FONTDIR is named once on stderr, and the project source is skipped, on every host with a
     C compiler (WSL and hosted Linux included). Elsewhere the class is skipped by name.
 
-    The harness links the production hle.c with its other entry points left unresolved. That is safe here:
+    The harness #includes the runtime HLE source that defines flash0_font_sources, compiles the other runtime
+    HLE sources beside it, and leaves the rest of the runtime unresolved. That is safe here:
     flash0_font_sources reaches only SR_USER_DATA_ROOT (set absolute, so nk_platform_get_path is never
     called), SR_FONTDIR (always set in these cases), and the wide helpers.
     """
@@ -730,14 +733,16 @@ class Flash0FontDirRefusalNativeTests(unittest.TestCase):
         cls.scratch = scratch_dir.TemporaryDirectory(prefix="flash0-fontdir-")
         cls.tmp = Path(cls.scratch.name)
         source = cls.tmp / "harness.c"
-        source.write_text(FONT_DIR_HARNESS_C, encoding="utf-8")
+        home = hle_sources.defining_file("flash0_font_sources")
+        source.write_text(FONT_DIR_HARNESS_C.replace("@FLASH0_FONT_SOURCES_FILE@", home), encoding="utf-8")
+        others = [str(ROOT / relative) for relative in hle_sources.RUNTIME_HLE_SOURCES if relative != home]
         cls.exe = cls.tmp / "harness"
         build = subprocess.run(
             [compiler, "-std=gnu11", "-w", f"-I{ROOT}", f"-I{ROOT / 'src' / 'rt'}",
              f"-I{ROOT / 'src' / 'core'}", f"-I{ROOT / 'src' / 'core' / 'generated'}",
              f"-I{ROOT / 'src' / 'rt' / 'atrac3p'}", f"-I{ROOT / 'src' / 'rt' / 'atrac3p' / 'libavcodec'}",
              f"-I{ROOT / 'src' / 'rt' / 'atrac3p' / 'libavutil'}",
-             str(source), "-o", str(cls.exe), "-Wl,--unresolved-symbols=ignore-all",
+             str(source), *others, "-o", str(cls.exe), "-Wl,--unresolved-symbols=ignore-all",
              "-lpthread", "-lm"],
             capture_output=True, text=True, check=False, timeout=600,
         )

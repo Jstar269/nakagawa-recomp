@@ -29,11 +29,15 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HEADER = ROOT / "src" / "rt" / "intr_conformance.h"
-HLE_C = ROOT / "src" / "rt" / "hle.c"
 _REL = pathlib.Path("ppsspp-src") / "pspautotests" / "tests" / "intr" / "waits.expected"
 
 
@@ -224,7 +228,7 @@ class TestRegistryScope(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.src = HLE_C.read_text(encoding="utf-8", errors="replace")
+        cls.src = hle_sources.text()
 
     @staticmethod
     def triples(block: str):

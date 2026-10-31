@@ -136,6 +136,27 @@ class ItemLayerTests(unittest.TestCase):
         self.assertEqual(report.moved_to["h_IoOpen"], "src/rt/hle_io.c")
         self.assertEqual(report.missing_comments, [])
 
+    def test_static_after_a_leading_attribute_may_be_dropped(self) -> None:
+        attr = "__attribute__((format(printf, 1, 2)))"
+        base = [("src/rt/hle.c", f"void sr_hle_init(void) {{}}\n{attr}\nstatic int note(const char *f, ...) {{ return 0; }}\n"
+                                 "int use_a(void) { return note(\"a\"); }\n")]
+        new = [("src/rt/hle.c", f"void sr_hle_init(void) {{}}\n{attr}\nint note(const char *f, ...) {{ return 0; }}\n"),
+               ("src/rt/hle_a.c", '#include "hle_internal.h"\nint use_a(void) { return note("a"); }\n'),
+               ("src/rt/hle_internal.h", f"{attr} int note(const char *f, ...);\n")]
+        report = proof.compare_items(base, new)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.static_removed, ["note (src/rt/hle.c)"])
+
+    def test_static_dropped_from_a_declaration_whose_second_name_another_file_uses(self) -> None:
+        base = [("src/rt/hle.c", "void sr_hle_init(void) {}\nstatic int s_a, s_b;\nint use_b(void) { return s_b; }\n")]
+        new = [("src/rt/hle.c", "void sr_hle_init(void) {}\nint s_a, s_b;\n"),
+               ("src/rt/hle_a.c", '#include "hle_internal.h"\nint use_b(void) { return s_b; }\n'),
+               ("src/rt/hle_internal.h", "#pragma GCC visibility push(hidden)\nextern int s_a, s_b;\n"
+                                         "#pragma GCC visibility pop\n")]
+        report = proof.compare_items(base, new)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.static_removed_names, {"s_a": ["s_a", "s_b"]})
+
     def assert_l1_error(self, split: dict[str, str], fragment: str) -> None:
         errors = proof.compare_items(BASE_UNITS, new_units(split)).errors
         self.assertTrue(any(fragment in e for e in errors), errors)

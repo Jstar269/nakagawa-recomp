@@ -284,15 +284,18 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         }
         self.assertEqual(owned, {f"0x{n:08x}" for n in self.POWER_NIDS})
 
-    def test_hle_c_registers_no_power_nid(self) -> None:
-        active = hle_manifest.active_source(hle_manifest.HLE_C.read_text(encoding="utf-8"))
-        registered = {
-            int(m.group(1), 16)
-            for m in re.finditer(
-                r"sr_hle_register(?:_unsupported)?\s*\(\s*0x([0-9a-fA-F]{1,8})[uU]?\s*,", active
-            )
-        }
-        self.assertEqual(registered & self.POWER_NIDS, set())
+    def test_no_other_runtime_source_registers_a_power_nid(self) -> None:
+        for relative, text in hle_manifest.runtime_hle_sources():
+            if relative == "src/rt/hle_power.c":
+                continue
+            active = hle_manifest.active_source(text)
+            registered = {
+                int(m.group(1), 16)
+                for m in re.finditer(
+                    r"sr_hle_register(?:_unsupported)?\s*\(\s*0x([0-9a-fA-F]{1,8})[uU]?\s*,", active
+                )
+            }
+            self.assertEqual(registered & self.POWER_NIDS, set(), relative)
 
 
 class RegistrationOwnerFileTests(unittest.TestCase):
@@ -1368,7 +1371,7 @@ static uint32_t h_SynthReal(CpuState *s) {
 
 class ControlledRefusalDiagnosticTests(unittest.TestCase):
     def test_runtime_diagnostics_name_api_nid_issue_and_exit_summary(self) -> None:
-        source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        source = hle_manifest.runtime_hle_source()
         self.assertIn(
             "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#341)",
             source,
@@ -1474,6 +1477,35 @@ class RegistrationScopeTests(unittest.TestCase):
 
     def test_registration_outside_any_conditional_is_reachable_from_both(self) -> None:
         self.assertEqual(self.scopes[0x80]["reachable_from"], ["production", "selftest"])
+
+    def test_helper_chains_resolve_to_the_outermost_call_site(self) -> None:
+        """A registration run called from a helper that only the selftest calls is not production."""
+        source = (
+            "static void register_inner(void) {\n"
+            '    sr_hle_register(0x00000090u, "synthInner", h_Prod);\n'
+            "}\n"
+            "static void register_outer(void) {\n"
+            "    register_inner();\n"
+            "}\n"
+            "static void register_both_inner(void) {\n"
+            '    sr_hle_register(0x000000a0u, "synthBothInner", h_Prod);\n'
+            "}\n"
+            "static void register_both_outer(void) {\n"
+            "    register_both_inner();\n"
+            "}\n"
+            "void sr_hle_init(void) {\n"
+            "#ifdef SR_HLE_THREAD_SELFTEST\n"
+            "    register_outer();\n"
+            "#endif\n"
+            "    register_both_outer();\n"
+            "}\n"
+        )
+        scopes = hle_manifest.registration_scopes(source)
+        self.assertEqual(scopes[0x90]["declared_in"], "register_inner")
+        self.assertEqual(scopes[0x90]["reachable_from"], ["selftest"],
+                         "one level of call sites sees register_outer() called unconditionally and "
+                         "would call a selftest-only registration production evidence")
+        self.assertEqual(scopes[0xA0]["reachable_from"], ["production", "selftest"])
 
     def test_unrelated_conditionals_do_not_narrow_production_reachability(self) -> None:
         source = CHAIN_SOURCE.replace(

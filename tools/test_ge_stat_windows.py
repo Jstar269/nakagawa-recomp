@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import ge_stat_windows  # noqa: E402
+import hle_sources  # noqa: E402
 from test_ge_nonfinite_vertex import CC, GE_HARNESS_PRELUDE_C, compile_ge_harness  # noqa: E402
 
 HARNESS_C = GE_HARNESS_PRELUDE_C + r"""
@@ -170,8 +171,7 @@ class VcountCadenceSourceTests(unittest.TestCase):
     EXACT_MODULUS = re.compile(r"\((?:s_vcount|frame)\s*(?:%\s*\w+|&\s*0x[0-9a-fA-F]+)\)\s*==\s*0")
 
     @staticmethod
-    def _body(path: Path, signature: str) -> str:
-        source = path.read_text(encoding="utf-8")
+    def _body(source: str, signature: str) -> str:
         start = source.index(signature)
         depth = 0
         for index in range(start, len(source)):
@@ -184,8 +184,8 @@ class VcountCadenceSourceTests(unittest.TestCase):
         raise AssertionError(f"unbalanced body for {signature}")
 
     def test_vblank_tick_and_ge_window_have_no_exact_modulus(self) -> None:
-        tick = self._body(ROOT / "src" / "rt" / "hle.c", "void sr_vblank_tick(void) {")
-        frame = self._body(ROOT / "src" / "rt" / "ge.c", "void ge_set_frame(uint32_t frame) {")
+        tick = self._body(hle_sources.text(), "void sr_vblank_tick(void) {")
+        frame = self._body((ROOT / "src" / "rt" / "ge.c").read_text(encoding="utf-8"), "void ge_set_frame(uint32_t frame) {")
         for name, body in (("sr_vblank_tick", tick), ("ge_set_frame", frame)):
             with self.subTest(function=name):
                 self.assertIsNone(self.EXACT_MODULUS.search(body), name)
