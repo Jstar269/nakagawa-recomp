@@ -2206,6 +2206,10 @@ class LiveRepositoryTests(unittest.TestCase):
             self.assertLess(block.index("[ \"${#v3_name}\" -eq 64 ]"), block.index("gh api"))
             v3_hit = block[:block.index("else")]
             self.assertNotIn("trusted_candidate_policy=", v3_hit)
+            # Only a confirmed absence falls back to the legacy layouts; any other error stops the step.
+            fallback = block[block.index("else"):]
+            self.assertLess(fallback.index('grep -q "HTTP 404"'), fallback.index("nested_policy_dir="))
+            self.assertIn("exit 1", fallback[:fallback.index("nested_policy_dir=")])
             self.assertIn('--policy-delta-authority "${POLICY_DELTA_AUTHORITY}"', raw)
             self.assertNotIn("policy delta authority outputs must be paired", raw)
             blocks[name] = block
@@ -3109,7 +3113,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             {finding["code"] for finding in verdict["findings"]},
         )
 
-    def test_blessed_candidate_policy_and_exact_delta_can_authorize_a_change(self) -> None:
+    def test_a_legacy_delta_cannot_admit_a_path_and_its_v3_delta_can(self) -> None:
         self.repo.branch("authorized-policy-change", self.base)
         # The declaration has to resolve to a file the tree carries, so this
         # case publishes the document it declares and the legacy controls stay
@@ -3153,11 +3157,22 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             },
         }))
 
-        verdict = self.run_ephemeral(
-            head,
-            trusted_candidate_policy=blessed_policy,
-            policy_delta_authority=authority,
-        )
+        # A V1/V2 record binds no file bytes, so since V3 (#1673) it cannot admit a new path:
+        # an edited new file would miss its V3 delta and pass on the old record.
+        with self.assertRaises(verifier.VerifyError) as caught:
+            self.run_ephemeral(
+                head,
+                trusted_candidate_policy=blessed_policy,
+                policy_delta_authority=authority,
+            )
+        self.assertEqual(caught.exception.code, "POLICY_DELTA_LEGACY_ADDS_PATHS")
+
+        # The same change under its V3 delta (what a --rekey writes) is authorized.
+        v3 = self.outside / "policy-delta-v3.json"
+        v3.write_bytes(provenance_ledger.policy_delta_v3_bytes(provenance_ledger.derive_policy_delta_v3(
+            json.loads(baseline_raw), json.loads(candidate_policy_raw), {"docs/new.md": _sha(raw)}.get,
+        )))
+        verdict = self.run_ephemeral(head, policy_delta_authority=v3)
 
         self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
         self.assertEqual(verdict["policy_delta"]["include_added"], ["docs/new.md"])
@@ -3497,6 +3512,29 @@ class PolicyDeltaV3Tests(EphemeralGenerationTests):
         authority = self._v3(self.base, head)
         self.repo.write(self.NEW_A, b"# edited after admission\n")
         edited = self.repo.commit("edit the new file after its admission")
+        self._refused("POLICY_DELTA_ADDED_BYTES_MISMATCH", edited, self.base, authority)
+
+    def test_an_edited_file_cannot_fall_back_to_its_legacy_record(self) -> None:
+        """Cross-review 1: a pre-V3 admission keeps its byte-free V1 record next to the V3 one."""
+        head = self._change("pr-legacy", self.base, {self.NEW_A: b"# admitted\n"}, include=[self.NEW_A])
+        authority = self._v3(self.base, head)
+        blessed = self.outside / "blessed-legacy.json"
+        blessed.write_bytes(provenance_ledger.canonical_profile_bytes(self._profile(head)))
+        legacy = self.outside / "v1-legacy.json"
+        legacy.write_bytes(_canonical({
+            "schema_version": 1, "kind": "policy-delta-authority",
+            "baseline_policy_sha256": _sha(provenance_ledger.canonical_profile_bytes(self._profile(self.base))),
+            "candidate_policy_sha256": _sha(blessed.read_bytes()),
+            "allowed_delta": {"include_added": [self.NEW_A], "include_removed": [], "exclude_added": [],
+                              "exclude_removed": [], "rule_changes": []},
+        }))
+        self.repo.write(self.NEW_A, b"# edited after admission\n")
+        edited = self.repo.commit("edit the new file; the profile is unchanged")
+        # The V3 name the workflow derives for the edit no longer matches; the legacy record it
+        # would fall back to is refused for any path addition.
+        self.assertNotEqual(verifier.policy_delta_key(repo=self.repo.root, base_rev=self.base, candidate_rev=edited),
+                            authority.stem.split("-", 1)[1])
+        self._refused("POLICY_DELTA_LEGACY_ADDS_PATHS", edited, self.base, legacy, trusted_candidate_policy=blessed)
         self._refused("POLICY_DELTA_ADDED_BYTES_MISMATCH", edited, self.base, authority)
 
     def test_an_added_path_the_base_already_publishes_is_refused(self) -> None:

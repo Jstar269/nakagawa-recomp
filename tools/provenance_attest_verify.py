@@ -1655,6 +1655,18 @@ def generate_ephemeral_controls(
             )
         except RefreshError as error:
             raise VerifyError(error.code, str(error)) from error
+        # A V1/V2 record binds the two profile digests and no file bytes. Since V3 (#1673)
+        # every path admission binds its bytes, so a legacy record may still approve a
+        # profile change that adds no path, but never a new path: an edited new file would
+        # miss its V3 delta and pass on the old record. One `admit_paths.py --rekey` writes
+        # the V3 delta from the recorded admission.
+        if allowed_delta["include_added"]:
+            raise VerifyError(
+                "POLICY_DELTA_LEGACY_ADDS_PATHS",
+                "a V1/V2 policy delta binds no bytes, so it cannot admit new paths "
+                f"({', '.join(allowed_delta['include_added'])}); re-key the admission to a V3 delta "
+                "with admit_paths.py --rekey",
+            )
         policy_delta = _classify_policy_delta(baseline_document, candidate_document)
         if policy_delta != allowed_delta:
             raise VerifyError(

@@ -165,12 +165,19 @@ jobs:
             if gh api \
               -H "Accept: application/vnd.github.raw" \
               "repos/${TRUSTED_REPO}/contents/docs/provenance/policy-deltas-v3/${v3_name}.json?ref=${authority_sha}" \
-              > "${RUNNER_TEMP}/trusted/policy-delta-authority.json"; then
+              > "${RUNNER_TEMP}/trusted/policy-delta-authority.json" 2> "${RUNNER_TEMP}/trusted/v3-lookup.err"; then
               echo "V3 policy delta authority ${v3_name} materialized"
               echo "policy_delta_authority=${RUNNER_TEMP}/trusted/policy-delta-authority.json" >> "${GITHUB_OUTPUT}"
             else
+              # Only a confirmed absence falls back; any other lookup error fails this step.
+              if ! grep -q "HTTP 404" "${RUNNER_TEMP}/trusted/v3-lookup.err"; then
+                cat "${RUNNER_TEMP}/trusted/v3-lookup.err" >&2
+                echo "the V3 policy delta lookup failed for a reason other than its absence" >&2
+                exit 1
+              fi
               # No V3 authority: an admission from before V3 deltas left a V1/V2 record keyed by
-              # both profile digests (nested), or by the candidate digest alone (flat).
+              # both profile digests (nested), or by the candidate digest alone (flat). The
+              # verifier accepts such a record only for a change that adds no path.
               rm -f "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
               nested_policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}/${base_policy_sha}"
               flat_policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}"

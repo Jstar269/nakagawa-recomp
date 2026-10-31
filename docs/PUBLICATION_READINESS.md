@@ -653,7 +653,9 @@ removes a public file, with the failure each skipped step produces.
    * a V3 policy delta, `docs/provenance/policy-deltas-v3/<sha256 of its bytes>.json`: the profile change alone,
      with each added path bound to the SHA-256 of its admitted bytes (see "V3 policy deltas" below). Nested
      `policy-deltas/<candidate sha256>/<baseline sha256>/` and flat `policy-deltas/<candidate sha256>/` V1/V2
-     records from earlier admissions remain readable; nothing writes them now.
+     records from earlier admissions remain readable for a profile change that adds no path; nothing writes them
+     now. A V1/V2 record binds no file bytes, so one that adds a path is refused
+     (`POLICY_DELTA_LEGACY_ADDS_PATHS`) and its admission needs one `--rekey`.
 3. **Push the private `main` commit.** The hosted "Trusted provenance attestation" check reads the authority from
    `main`; local-only records fail with HTTP 404.
 4. **Admit the new paths** with `provenance_ledger.py admit-new-reviewed`, from a clean candidate commit whose only
@@ -722,8 +724,9 @@ stays and a path either side removed or moved stays out, and it refuses if anoth
 would end up both included and excluded. Keep unrelated ready PRs moving.
 
 `--rekey` (one pull request) and `--batch-resume` (a JSON list of entries) are for pull requests admitted before V3
-deltas existed, whose nested V1/V2 delta expired when the base moved. They reuse the recorded admission (the same
-paths and bytes), record no new decision, and write the V3 delta, so the pull request needs no further re-key:
+deltas existed: their V1/V2 delta binds no bytes and is refused for a path addition. They reuse the recorded
+admission (the same paths and bytes), record no new decision, and write the V3 delta, so the pull request needs no
+further re-key:
 
 ```text
 python tools/admit_paths.py --batch-resume <file.json> --base <new-base> --private-repo <authority checkout>
@@ -766,11 +769,13 @@ equal it exactly, and refuses, each with its own code:
 | `POLICY_DELTA_UNAUTHORIZED` | the profile changes anything the delta does not record |
 | `CANDIDATE_POLICY_NOT_CANONICAL` | the candidate profile is not in canonical form |
 | `POLICY_DELTA_ARGUMENT_REQUIRED` | a V3 authority came with a blessed candidate policy, or a V1/V2 one without |
+| `POLICY_DELTA_LEGACY_ADDS_PATHS` | a V1/V2 record, which binds no bytes, tried to admit a path; re-key it to V3 |
 
 Limits: `exclude_rationale` is one rule field, so two pull requests that each add an exclusion still conflict and
 the second needs a new delta; a removed `exclude_globs` or `exclude_prefixes` entry is refused whatever the delta
-says. To withdraw an approval before its pull request lands, delete the V3 file from the private `main`; reproducing
-an approved change needs the exact approved bytes.
+says. To withdraw an approval before its pull request lands, delete the V3 file from the private `main` (a legacy
+V1/V2 record left beside it cannot admit the path either); reproducing an approved change needs the exact approved
+bytes.
 
 A profile change that adds no path (a removed path, an exclude-list change, or a rule change such as an
 `exclude_rationale` edit) needs a policy delta but no admission. Commit the canonical profile on the PR branch, then:
