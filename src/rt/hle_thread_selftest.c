@@ -1183,20 +1183,35 @@ static int write_synthetic_prx(const char *path, int malformed) {
     fixture_wr32(image + 0x80, 0x285D00D1u); /* synthetic image marker */
     memcpy(image + MODOFF + 4, "synthetic", 9);
     fixture_wr32(image + MODOFF + 36, 0x100); /* export-table virtual start */
-    fixture_wr32(image + MODOFF + 40, malformed ? 0x21101 : 0x110);
+    fixture_wr32(image + MODOFF + 40, malformed == 1 ? 0x21101 : 0x110);
 
     uint8_t *entry = image + ENTOFF;
     entry[8] = 4;                       /* words per export entry */
-    entry[9] = 0;                       /* variable exports */
+    entry[9] = malformed == 2 ? 1 : 0;  /* variable exports (variant 2: one, named) */
     fixture_wr16(entry + 10, 3);        /* three function exports */
     fixture_wr32(entry + 12, 0x140);    /* NID/target pair table */
 
-    fixture_wr32(image + TABLEOFF + 0, 0x11111111); /* target base + 0 */
-    fixture_wr32(image + TABLEOFF + 4, 0x22222222); /* target base + 0x20 */
-    fixture_wr32(image + TABLEOFF + 8, 0x33333333); /* target that wraps below */
-    fixture_wr32(image + TABLEOFF + 12, 0x00000000);
-    fixture_wr32(image + TABLEOFF + 16, 0x00000020);
-    fixture_wr32(image + TABLEOFF + 20, 0xd0000000);
+    if (malformed == 2) {
+        /* Library "VarTestLib" (file 0x200, base-relative 0x180) exports a variable at base +
+         * 0x40: NIDs are the three functions then the variable, then their targets. */
+        fixture_wr32(entry + 0, 0x180);
+        memcpy(image + 0x200, "VarTestLib", 11);
+        fixture_wr32(image + TABLEOFF + 0, 0x11111111);
+        fixture_wr32(image + TABLEOFF + 4, 0x22222222);
+        fixture_wr32(image + TABLEOFF + 8, 0x33333333);
+        fixture_wr32(image + TABLEOFF + 12, 0x44444444); /* the variable's NID */
+        fixture_wr32(image + TABLEOFF + 16, 0x00000000);
+        fixture_wr32(image + TABLEOFF + 20, 0x00000020);
+        fixture_wr32(image + TABLEOFF + 24, 0xd0000000);
+        fixture_wr32(image + TABLEOFF + 28, 0x00000040); /* the variable at base + 0x40 */
+    } else {
+        fixture_wr32(image + TABLEOFF + 0, 0x11111111); /* target base + 0 */
+        fixture_wr32(image + TABLEOFF + 4, 0x22222222); /* target base + 0x20 */
+        fixture_wr32(image + TABLEOFF + 8, 0x33333333); /* target that wraps below */
+        fixture_wr32(image + TABLEOFF + 12, 0x00000000);
+        fixture_wr32(image + TABLEOFF + 16, 0x00000020);
+        fixture_wr32(image + TABLEOFF + 20, 0xd0000000);
+    }
 
     FILE *f = fopen(path, "wb");
     if (!f) return 0;
@@ -2766,6 +2781,10 @@ static void test_guest_module_load_binding(void) {
     remove(path);
 }
 
+void sr_hle_test_var_reset(void);
+const char *sr_hle_test_var_import_add(const SrVarImport *imp, uint32_t base, uint32_t owner);
+void sr_hle_test_var_owner_remove(uint32_t owner);
+
 static void test_prx_export_relocation_behavior(void) {
     const char *path = HLE_BUILD_ROOT "/hle_prx_export_fixture.bin";
     const uint32_t base = 0x30000000u;
@@ -2794,6 +2813,37 @@ static void test_prx_export_relocation_behavior(void) {
                "malformed module metadata publishes no exports");
     }
     remove(path);
+
+    /* A module's variable export reaches a waiting importer through the production export
+     * parser (#308), and the module's unload unlinks it. */
+    enum { SITES = 0x09014000u, VAR_NID = 0x44444444u };
+    static const uint32_t original[] = {0x3c020000u, 0x3c030000u, 0x24420010u, 0x8c640000u, 4u};
+    static const uint32_t linked[] = {0x3c023000u, 0x3c033000u, 0x24420050u, 0x8c640040u,
+                                      0x30000044u};
+    static const SrVarImportRef refs[] = {
+        {0x00u, 5u}, {0x04u, 5u}, {0x08u, 6u}, {0x0cu, 6u}, {0x10u, 2u},
+    };
+    static const SrVarImport imp = {"VarTestLib", VAR_NID, refs, 5u};
+    int i;
+    sr_hle_test_var_reset();
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+    expect(sr_hle_test_var_import_add(&imp, SITES, 0x08d00000u) == NULL,
+           "variable export: the importer waits for the module");
+    int variable_fixture = write_synthetic_prx(path, 2);
+    expect(variable_fixture, "synthetic PRX fixture with a variable export was written");
+    if (variable_fixture) {
+        (void)sr_hle_test_register_prx_exports(path, base);
+        int all_linked = 1;
+        for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+        expect(all_linked, "variable export: the export parser registers the module's variable "
+                           "and the waiting import links to base + 0x40");
+        sr_hle_test_var_owner_remove(base);
+        int restored = 1;
+        for (i = 0; i < 5; i++) restored &= MEM_R32(SITES + 4u * (uint32_t)i) == original[i];
+        expect(restored, "variable export: the module's unload unlinks the importer");
+    }
+    remove(path);
+    sr_hle_test_var_reset();
 }
 
 int sr_hle_test_last_prx_host_served(void);

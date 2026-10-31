@@ -2116,7 +2116,9 @@ static int sr_aot_return_boundary_unwind_to(CpuState *s, uint32_t target) {
  * are abandoned as sr_aot_return_boundary_unwind_to abandons them, and that call's own end
  * runs the target as its continuation (sr_aot_return_boundary_end). The callee that
  * returned must have left its own frame: a jump within it is not a return. Never crosses a
- * callback or interrupt floor or a dispatch_call frame. */
+ * callback or interrupt floor or a dispatch_call frame. A frame no linked call encloses (a
+ * thread's or callback's own entry function, which no resume PC follows) has no
+ * continuation to run in, so a longjmp into it stays the named mismatch stop. */
 static int sr_aot_return_boundary_resume_live_frame(CpuState *s,
                                                     const SrAotReturnBoundary *returned,
                                                     uint32_t target) {
@@ -2198,8 +2200,11 @@ int sr_aot_return_boundary_end(CpuState *s) {
          * this call's resume PC. The interpreter floor runs it: a callable native body at the
          * target would restore an entry $sp the frame never had; the native calls it makes
          * run natively as usual. */
+        /* `boundary` was popped: the continuation's own calls reuse (and may move) its slot,
+         * so everything it needs is read now. */
         const uint32_t target = (uint32_t)boundary->observed_target;
-        const SrGuestInterpCallBoundary call = { boundary->resume_pc };
+        const uint32_t resume_pc = boundary->resume_pc;
+        const SrGuestInterpCallBoundary call = { resume_pc };
         /* A host wrapper of an abandoned body (the stack census) may have restored its own
          * entry $sp on the way out; the frame runs on the $sp the guest restored. */
         s->r[29] = boundary->resume_sp;
@@ -2210,8 +2215,7 @@ int sr_aot_return_boundary_end(CpuState *s) {
         if (result < 0 && s->flow_kind != SR_FLOW_FATAL) {
             s->flow_kind = SR_FLOW_FATAL;
             s->flow_target = target;
-            sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, boundary->resume_pc - 8u, target,
-                            boundary->resume_pc);
+            sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, resume_pc - 8u, target, resume_pc);
         }
         return s->flow_kind == SR_FLOW_FATAL;
     }

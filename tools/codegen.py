@@ -3738,6 +3738,13 @@ def variable_import_sites(elf):
     return found, sites
 
 
+def c_library_name(encoded):
+    """The C literal of a library name tools/imports.py encoded: its raw guest bytes, the
+    form the runtime loader reads an exporter's name in, so the two compare equal."""
+    from imports import decode_import_library_name
+    return c_string(decode_import_library_name(encoded).decode("latin-1"))
+
+
 def var_import_table_lines(name, imports):
     """The SrVarImport table ``name`` for ``imports``, with one reference array each."""
     lines = []
@@ -3750,7 +3757,7 @@ def var_import_table_lines(name, imports):
             refs_symbol = f"{name}_refs_{index}"
         else:
             refs_symbol = "NULL"
-        entries.append(f"    {{ {c_string(imp.library)}, 0x{imp.nid:08x}u, {refs_symbol}, "
+        entries.append(f"    {{ {c_library_name(imp.library)}, 0x{imp.nid:08x}u, {refs_symbol}, "
                        f"{len(imp.references)}u }},")
     lines.append(f"static const SrVarImport {name}[] = {{")
     lines.extend(entries)
@@ -5336,7 +5343,7 @@ def main(argv):
         main_out.extend(var_import_table_lines(f"sr_x{index}_var_imports", imports_of))
     if main_var_exports:
         main_out.append("static const SrVarExportDecl sr_main_var_exports[] = {")
-        main_out.extend(f"    {{ {c_string(e.library)}, 0x{e.nid:08x}u, 0x{e.address:08x}u }},"
+        main_out.extend(f"    {{ {c_library_name(e.library)}, 0x{e.nid:08x}u, 0x{e.address:08x}u }},"
                         for e in main_var_exports)
         main_out.append("};")
     main_out.append("\nvoid sr_register_all(void) {")

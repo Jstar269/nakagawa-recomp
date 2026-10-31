@@ -284,6 +284,23 @@ def _encode_import_library_name(raw):
     return "".join(chr(b) if b in allowed else f"%{b:02X}" for b in raw)
 
 
+def decode_import_library_name(text):
+    """The guest bytes of a name _encode_import_library_name encoded (its inverse).
+
+    The runtime compares library names as the loader reads them, raw, so a generated table
+    carries these bytes rather than the encoding."""
+    out = bytearray()
+    i = 0
+    while i < len(text):
+        if text[i] == "%":
+            out.append(int(text[i + 1:i + 3], 16))
+            i += 3
+        else:
+            out.append(ord(text[i]))
+            i += 1
+    return bytes(out)
+
+
 def _read_guest_cstr(elf, addr, *, max_bytes=MAX_IMPORT_LIBRARY_NAME_BYTES):
     """Read one mapped guest C string with deterministic byte/address bounds."""
     if not isinstance(addr, int) or addr < 0 or addr > 0xFFFFFFFF:

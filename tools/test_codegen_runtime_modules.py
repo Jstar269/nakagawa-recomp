@@ -686,6 +686,12 @@ class RelocatedImmediateEmission(unittest.TestCase):
             "};",
         ])
 
+    def test_a_table_names_its_library_by_the_guest_bytes(self):
+        # tools/imports.py percent-encodes a name byte outside its safe alphabet; the runtime
+        # compares an importer's name with the raw name the loader reads from its exporter.
+        self.assertEqual(codegen.c_library_name("Lib%2FName%25x"), '"Lib/Name%x"')
+        self.assertEqual(codegen.c_library_name("Lib%22%5C"), '"Lib\\042\\134"')
+
     def test_a_fixed_address_image_keeps_its_absolute_jumps(self):
         space = self.space({}, relocatable=False)
         space.check_jump(0x40, 0x0C000010)                       # no refusal
