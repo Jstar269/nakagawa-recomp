@@ -1766,8 +1766,20 @@ uint32_t gui_headless_acceptance_presented_frames(void);
 #define SR_HEADLESS_ACCEPTANCE_EXIT_REACHED 42
 #define SR_HEADLESS_ACCEPTANCE_EXIT_PRESENTER_UNAVAILABLE 43
 #define SR_HEADLESS_ACCEPTANCE_EXIT_NOT_REACHED 44
-/* Optional stop request polled by sched_run after each guest slice. The driver points it at
- * gui_headless_acceptance_complete for an acceptance launch; NULL (the default) never stops. */
+/* The scheduler-run stop the window reports (#1377): an acceptance launch presented its frames,
+ * or the person quit and sr_exit_request_stop_due says the run should end now. A quit request
+ * never exits from inside the presenter; the scheduler returns and the driver tears down. */
+int      gui_stop_requested(void);
+/* Releases the presenter, the SR_PERF summary first; idempotent. The driver calls it once the
+ * scheduler returns, and gui_init registers it with atexit for a run that ends otherwise. */
+void     gui_shutdown(void);
+/* 1 once SR_GE_CAPTURE_EXIT's capture was written (ge.c): a scheduler run stops at its next
+ * boundary instead of exiting from inside the GE path. */
+int      ge_capture_exit_due(void);
+/* Optional stop request polled by sched_run between guest slices and by sr_yield, which
+ * returns a lone running thread to the scheduler when it is set, as for a pause. The driver
+ * points it at its stop check for a scheduler run (the window's, a GE capture's); NULL (the
+ * default) never stops. */
 extern int (*sr_sched_stop_requested)(void);
 
 /* Player pause is a scheduler-context host stall. C9a owns the audio callbacks;
@@ -1812,9 +1824,12 @@ void         gui_pause_leave(void);
 /* A player quit request notifies the guest's registered exit callback (src/rt/hle.c, #1392).
  * sr_exit_request_quit returns 1 while the guest has its bounded window to call
  * sceKernelExitGame, 0 when the player should exit now; sr_exit_request_expired is 1 once that
- * window has passed. */
+ * window has passed. sr_exit_request_stop_due is the player's stop decision at a scheduler
+ * boundary: 0 while that window is open or a save the guest started is still running inside
+ * it, 1 when the run should end now (#1377). */
 int      sr_exit_request_quit(void);
 int      sr_exit_request_expired(void);
+int      sr_exit_request_stop_due(void);
 SrPauseVerdict sched_pause_request(SrPauseSource source);
 int      sched_pause_active(void);
 /* The source of the pause requested or open now (the presenter opens on the controller

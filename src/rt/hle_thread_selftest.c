@@ -18433,6 +18433,114 @@ static void test_quit_request_notifies_registered_exit_callback(void) {
     s_vtime_us = 0u;
 }
 
+/* The player's stop decision for a quit (#1377): sr_exit_request_stop_due, polled at scheduler
+ * boundaries, is 0 while the run must go on and 1 once the scheduler should stop. The guest's
+ * exit callback is notified once and gets the window; a savedata dialog the guest started holds
+ * the stop inside the same window, which also bounds it; with neither the stop is due at once. */
+int sr_savedata_pause_busy(void);   /* hle.c: the savedata dialog is running */
+void sr_hle_test_exit_request_reset(void);
+
+static uint32_t quit_check_callback(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    return sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback"));
+}
+
+static void test_quit_stop_decision(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_hle_test_osk_slot_reset();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    s_vtime_us = 1000u;
+    TCB *owner = fixture_thread(0x3440u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+
+    expect(sr_exit_request_stop_due() == 1 && !sr_thread_has_pending_callbacks(owner->uid),
+           "quit stop: with no exit callback and no save the run stops at once");
+
+    /* A registered exit callback: notified once, and the run goes on for its window. */
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    s_vtime_us = 1000u;
+    owner = fixture_thread(0x3441u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "exit-callback",
+                                         WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    expect(cb != 0u && exit_request_register(cb) == 0u,
+           "quit stop: the exit callback is registered");
+    expect(sr_exit_request_stop_due() == 0 && sr_thread_has_pending_callbacks(owner->uid),
+           "quit stop: the first poll notifies the exit callback and the run goes on");
+    expect(sr_exit_request_stop_due() == 0 && sr_exit_request_stop_due() == 0,
+           "quit stop: later polls inside the window keep the run going");
+    expect(quit_check_callback() == 1u && s_wakeup_log_len == 1u,
+           "quit stop: repeated polls notified the exit callback exactly once");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US - 1u;
+    expect(sr_exit_request_stop_due() == 0,
+           "quit stop: the run goes on one microsecond before the window ends");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
+    expect(sr_exit_request_stop_due() == 1,
+           "quit stop: a guest that has not exited when the window ends is stopped");
+    expect(quit_check_callback() == 0u && s_wakeup_log_len == 1u,
+           "quit stop: the stop notified nothing more");
+    wakeup_delete_callback(cb);
+
+    /* No callback, but a savedata dialog running: the stop waits for it, inside the window. */
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_hle_test_osk_slot_reset();
+    s_vtime_us = 1000u;
+    owner = fixture_thread(0x3442u, TH_RUNNING, 0x30);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               sr_savedata_pause_busy(),
+           "quit stop: the guest has a savedata dialog running");
+    expect(sr_exit_request_stop_due() == 0,
+           "quit stop: a running savedata dialog holds the stop");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US - 1u;
+    expect(sr_exit_request_stop_due() == 0,
+           "quit stop: the dialog still holds the stop just inside the window");
+    expect(utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u &&
+               !sr_savedata_pause_busy(),
+           "quit stop: the guest finishes and shuts down its savedata dialog");
+    expect(sr_exit_request_stop_due() == 1,
+           "quit stop: the run stops once the save has ended");
+
+    /* A dialog that never ends cannot hold the player: the window bounds it. */
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_hle_test_osk_slot_reset();
+    s_vtime_us = 1000u;
+    owner = fixture_thread(0x3443u, TH_RUNNING, 0x30);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               sr_exit_request_stop_due() == 0,
+           "quit stop: a second savedata dialog holds the stop");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
+    expect(sr_savedata_pause_busy() && sr_exit_request_stop_due() == 1,
+           "quit stop: a dialog still running when the window ends no longer holds the stop");
+    sr_hle_test_osk_slot_reset();
+    sr_hle_test_exit_request_reset();
+    sr_test_guest_fn_reset();
+    s_vtime_us = 0u;
+}
+
 static uint32_t memstick_check_callback(void) {
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -40264,6 +40372,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
     test_callback_check_pump_services_pending_in_slot_order();
     test_quit_request_notifies_registered_exit_callback();
+    test_quit_stop_decision();
     test_io_devctl_memstick_callback_notify();
     test_callback_wakeup_resumes_delay_wait_in_slot_order();
     test_display_frame_per_sec_float_return();

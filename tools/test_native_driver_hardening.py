@@ -112,6 +112,10 @@ int gui_pause_busy_reason(void) {{ return 0; }}
 void gui_pause_enter(void) {{}}
 SrPauseFrame gui_pause_frame(void) {{ return SR_PAUSE_FRAME_RESUME; }}
 void gui_pause_leave(void) {{}}
+/* No window to quit and no GE capture to finish (gui.c, ge.c): nothing stops a scheduler run. */
+int gui_stop_requested(void) {{ return 0; }}
+void gui_shutdown(void) {{}}
+int ge_capture_exit_due(void) {{ return 0; }}
 int (*sr_sched_stop_requested)(void) = NULL;
 const SrPauseHost *sr_sched_pause_host = NULL;
 void sr_audio_pause_enter(void) {{}}

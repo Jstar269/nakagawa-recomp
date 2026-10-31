@@ -1131,6 +1131,41 @@ static void test_waiting_guest_keeps_host_window_pumped(void) {
            "no gap between window pumps exceeds one display period plus one poll");
 }
 
+/* A quit seen while the only runnable thread holds the CPU (#1377): the window is pumped from
+ * that thread's sr_yield, and the stop it raises is a scheduler rendezvous there, as a pause is.
+ * sr_yield returns the lone runner to the scheduler, whose loop sees the stop and returns
+ * without resuming it, so the driver's teardown runs at a scheduler boundary.
+ *
+ * MUTANT: drop the stop check from sr_yield's switch decision -- with no other thread ready,
+ *   sr_yield keeps the runner on the CPU and it runs on past the stop. */
+enum { QS_ENTRY = 0x09320000u, QS_STOP_AT = 3, QS_CAP = 64 };
+static int g_qs_yields, g_qs_stop, g_qs_ran_past_stop;
+static void quit_stop_body(CpuState *s) {
+    for (g_qs_yields = 0; g_qs_yields < QS_CAP; g_qs_yields++) {
+        if (g_qs_stop) g_qs_ran_past_stop++;
+        if (g_qs_yields == QS_STOP_AT) g_qs_stop = 1;   /* the close, seen before this yield */
+        sr_yield(s);
+    }
+}
+static int quit_stop_requested(void) { return g_qs_stop; }
+
+static void test_stop_request_returns_a_lone_runner_to_the_scheduler(void) {
+    reset_sched();
+    begin_clock_fixture(1, 1000u);
+    g_qs_yields = 0;
+    g_qs_stop = 0;
+    g_qs_ran_past_stop = 0;
+    g_test_body = quit_stop_body;
+    sr_sched_stop_requested = quit_stop_requested;
+    sched_run(QS_ENTRY, 0u, 0u);
+    sr_sched_stop_requested = NULL;
+    s_host_ns_fn = NULL;
+    expect(g_qs_stop == 1 && g_qs_yields == QS_STOP_AT,
+           "stop: the lone runner's yield that saw the stop returned it to the scheduler for good");
+    expect(g_qs_ran_past_stop == 0,
+           "stop: no guest code ran after the stop was raised");
+}
+
 /* The module-start thread sched_run creates takes the module's declared
  * module_start_thread_parameter (uOFW modulemgr.c _StartModule), here {0x20, 0x400,
  * 0x80000000} as a retail main module declares it, and the module's gp when the driver seeded
@@ -5426,6 +5461,7 @@ int main(int argc, char **argv) {
     test_interrupt_frame_is_restored();
     test_vblank_runs_every_enabled_subintr();
     test_waiting_guest_keeps_host_window_pumped();
+    test_stop_request_returns_a_lone_runner_to_the_scheduler();
     test_module_start_thread_uses_declared_parameters();
     test_module_start_thread_is_deleted_on_return();
     test_paced_vtime_is_host_anchored();

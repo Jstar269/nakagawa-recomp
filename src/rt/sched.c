@@ -3356,6 +3356,9 @@ void sr_yield(CpuState *s) {
      * runnable guest. It uses the same legal switch path as an ordinary peer; the
      * interrupt, handler-context and dispatch-suspended gates above still defer it. */
     if (s_pause_requested) other = 1;
+    /* So is a stop request (the player quit, #1377): the scheduler loop sees it and returns
+     * before resuming anyone, where a lone runner would otherwise keep the CPU. */
+    if (sr_sched_stop_requested && sr_sched_stop_requested()) other = 1;
     /* If no other thread is runnable AND nothing is sleeping on a small timer, TURBO mode
      * advances virtual time so PSP timers (UMD-Ready, callback-drive, etc.) fire. uid 0x115
      * spinning in critically-fast SuspendIntr/ResumeIntr would otherwise burn CPU without

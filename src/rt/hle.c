@@ -8293,6 +8293,39 @@ int sr_exit_request_quit(void) {
 int sr_exit_request_expired(void) {
     return s_exit_request_pending && sched_vtime_us() >= s_exit_request_deadline_us;
 }
+
+int sr_savedata_pause_busy(void);   /* the savedata dialog is running (defined below) */
+static int s_quit_stop_armed;
+static uint64_t s_quit_stop_deadline_us;
+
+/* The player's stop decision for a quit request, polled at scheduler boundaries (#1377). The
+ * first call notifies the exit callback (sr_exit_request_quit) and opens one window of guest
+ * time, SR_EXIT_REQUEST_WINDOW_US, whether or not a callback is registered. Returns 0 while the
+ * run goes on: the guest's callback window is open, or a savedata dialog it started is still
+ * running inside that window, so a quit does not cut off a save in progress (the pause
+ * overlay's Quit is refused for the same reason). Returns 1 once the run should end; the window
+ * bounds the wait, so a guest that never finishes cannot hold the player open. Ending a run
+ * mid-dialog leaves the previous save, as savedata.c's staged write commits whole or not. */
+int sr_exit_request_stop_due(void) {
+    if (!s_quit_stop_armed) {
+        s_quit_stop_armed = 1;
+        s_quit_stop_deadline_us = sched_vtime_us() + SR_EXIT_REQUEST_WINDOW_US;
+    }
+    if (sr_exit_request_quit()) return 0;
+    if (sched_vtime_us() < s_quit_stop_deadline_us && sr_savedata_pause_busy()) return 0;
+    return 1;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* A fresh quit for each test: nothing in the runtime resets a quit request, which lasts for
+ * the process (a LoadExec in the window does not give the next program a new one). */
+void sr_hle_test_exit_request_reset(void) {
+    s_exit_request_pending = 0;
+    s_exit_request_deadline_us = 0u;
+    s_quit_stop_armed = 0;
+    s_quit_stop_deadline_us = 0u;
+}
+#endif
 /* sceKernelStopUnloadSelfModuleWithStatus(status, ...): on hardware the kernel stops the
  * module's threads and reclaims its memory -- control NEVER returns to the caller. The
  * runtime loads exactly one game module and its threads are the only execution surface,
