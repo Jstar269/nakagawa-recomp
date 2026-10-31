@@ -234,10 +234,13 @@ int __wrap_fflush(FILE *f) {
     return __real_fflush(f);
 }
 
-int __real_fsync(int fd);
+/* The sync itself is not performed: nothing in this process can observe durability (no
+ * power is cut), and about 2,000 real syncs made the run take 35-45 s on an idle WSL host
+ * and pass its 60 s limit on a loaded CI runner (2026-10-31). The descriptor is still
+ * checked, so a sync of a closed or invalid one fails as the real call would. */
 int __wrap_fsync(int fd) {
     if (inject_now('s')) { errno = EIO; return -1; }
-    return __real_fsync(fd);
+    return fcntl(fd, F_GETFD) == -1 ? -1 : 0;
 }
 
 int __real_fclose(FILE *f);
