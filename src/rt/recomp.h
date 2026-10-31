@@ -1240,6 +1240,25 @@ typedef struct SrModuleSpan {
     uint32_t end;
 } SrModuleSpan;
 
+/* A variable a module imports from another module's library, and the words its loader
+ * patches with the variable's address (tools/imports.py variable_imports). kind is the PSP
+ * reference type: 2 the whole word, 5 a HI16 immediate, 6 a LO16 immediate. The sites are in
+ * reference-list order: the patching of a HI16 run reads the LO16 entry that follows it. A
+ * runtime-placed module's sites are link addresses (the bind adds its base); the main
+ * image's are absolute. Generated code reads every HI16/LO16 site's immediate from memory, so
+ * the patched value reaches it (sr_var_import_*, src/rt/hle.c). */
+typedef struct SrVarImportRef {
+    uint32_t site;
+    uint32_t kind;
+} SrVarImportRef;
+
+typedef struct SrVarImport {
+    const char *library;
+    uint32_t nid;
+    const SrVarImportRef *refs;
+    uint32_t nrefs;
+} SrVarImport;
+
 typedef struct SrModuleCode {
     const char *name;                 /* module file name, as the title manifest names it */
     uint32_t file_size;               /* identity of the exact bytes that were translated */
@@ -1260,6 +1279,9 @@ typedef struct SrModuleCode {
      * and unbound when they no longer are. sceKernelLoadModule never binds it. */
     uint32_t overlay_check_len;
     uint64_t overlay_check_fnv1a64;
+    /* The variables the module imports, linked when it loads and its exporter is loaded. */
+    const SrVarImport *var_imports;
+    uint32_t nvar_imports;
 } SrModuleCode;
 
 typedef enum SrModuleBindResult {
@@ -1310,6 +1332,9 @@ typedef struct SrMainModuleRecord {
     uint32_t start_thread_attr;
 } SrMainModuleRecord;
 void sr_main_module_register(const SrMainModuleRecord *record);  /* from generated sr_register_all() */
+/* The main image's variable imports (absolute sites), from generated sr_register_all(). They
+ * link as their exporters load (src/rt/hle.c). */
+void sr_main_var_imports_register(const SrVarImport *imports, uint32_t count);
 const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
 unsigned sr_module_code_count(void);
 const SrModuleCode *sr_module_code_at(unsigned index);

@@ -655,6 +655,37 @@ class RelocatedImmediateEmission(unittest.TestCase):
         for link_target in (0x300, 0x400):
             self.assertNotIn(f"0x{link_target:08x}u", text)
 
+    def test_variable_import_sites_read_their_immediate_from_memory(self):
+        # The runtime linker patches these words when the exporter loads, in any image:
+        # the code reads each HI16/LO16 immediate from memory, never the placeholder.
+        codegen.ADDRESS_SPACE = codegen.AddressSpace(
+            patched={0x08900010: "hi16", 0x08900014: "lo16", 0x08900018: "word32"})
+        space = codegen.ADDRESS_SPACE
+        lui_c, _, _ = codegen.effect(0x08900010, space.instruction_word(0x08900010, 0x3C020000))
+        lw_c, _, _ = codegen.effect(0x08900014, space.instruction_word(0x08900014, 0x8C430000))
+        self.assertEqual(lui_c, "s->r[2] = (((uint32_t)(uint16_t)MEM_R16(0x08900010u)) << 16);")
+        self.assertIn("((uint32_t)(int32_t)(int16_t)(uint16_t)MEM_R16(0x08900014u))", lw_c)
+        self.assertEqual(space.instruction_word(0x0890001C, 0x24020001), 0x24020001)
+        with self.assertRaisesRegex(codegen.Unsupported,
+                                    "variable-import word32 reference on an executed word"):
+            space.instruction_word(0x08900018, 0x24020001)
+
+    def test_variable_import_table_lists_each_reference_in_order(self):
+        from imports import VariableImport
+        lines = codegen.var_import_table_lines("sr_main_var_imports", (
+            VariableImport("SynthLib", 0x12345678, (("hi16", 0x08900010), ("lo16", 0x08900014),
+                                                    ("word32", 0x08A00000))),
+            VariableImport("Empty", 0x1, ()),
+        ))
+        self.assertEqual(lines, [
+            "static const SrVarImportRef sr_main_var_imports_refs_0[] = { {0x08900010u, 5u}, "
+            "{0x08900014u, 6u}, {0x08a00000u, 2u} };",
+            "static const SrVarImport sr_main_var_imports[] = {",
+            '    { "SynthLib", 0x12345678u, sr_main_var_imports_refs_0, 3u },',
+            '    { "Empty", 0x00000001u, NULL, 0u },',
+            "};",
+        ])
+
     def test_a_fixed_address_image_keeps_its_absolute_jumps(self):
         space = self.space({}, relocatable=False)
         space.check_jump(0x40, 0x0C000010)                       # no refusal

@@ -4537,6 +4537,93 @@ static void test_umd_block_device_async(uint32_t fd, uint32_t data_addr, uint32_
            "a queued UMD read across the last sector completes at the raw-device boundary");
 }
 
+void sr_hle_test_var_reset(void);
+const char *sr_hle_test_var_import_add(const SrVarImport *imp, uint32_t base, uint32_t owner);
+const char *sr_hle_test_var_export_add(const char *lib, uint32_t nid, uint32_t addr, uint32_t owner);
+void sr_hle_test_var_owner_remove(uint32_t owner);
+
+/* Variable imports (#308): the loader patches each reference with the exported variable's
+ * address (uOFW loadcore aVariableLinkApply). The variable sits at 0x0899fff8, so its low
+ * half has bit 15 set and the HI16 run must round up. Two HI16 lui words share the LO16 that
+ * follows their run (addiu +0x10), a second LO16 (lw +0) uses its own immediate, and a 32-bit
+ * word holds +4. */
+static void test_variable_import_linker(void) {
+    enum {
+        SITES = 0x09014000u, VAR = 0x0899fff8u, EXPORTER = 0x08c00000u, IMPORTER = 0x08d00000u,
+        LIB_NID = 0x12345678u,
+    };
+    static const uint32_t original[] = {
+        0x3c020000u,  /* lui v0, 0          HI16 */
+        0x3c030000u,  /* lui v1, 0          HI16 */
+        0x24420010u,  /* addiu v0, v0, 0x10 LO16 */
+        0x8c640000u,  /* lw a0, 0(v1)       LO16 */
+        0x00000004u,  /* .word 4            32-bit */
+    };
+    static const uint32_t linked[] = {
+        0x3c02089au, 0x3c03089au, 0x24420008u, 0x8c64fff8u, 0x0899fffcu,
+    };
+    static const SrVarImportRef refs[] = {
+        {0x00u, 5u}, {0x04u, 5u}, {0x08u, 6u}, {0x0cu, 6u}, {0x10u, 2u},
+    };
+    static const SrVarImport imp = {"TestLib", LIB_NID, refs, 5u};
+    int i;
+    sr_hle_test_var_reset();
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+
+    expect(sr_hle_test_var_import_add(&imp, SITES, IMPORTER) == NULL,
+           "variable import: an import whose exporter is not loaded waits");
+    int untouched = 1;
+    for (i = 0; i < 5; i++) untouched &= MEM_R32(SITES + 4u * (uint32_t)i) == original[i];
+    expect(untouched, "variable import: a waiting import patches nothing");
+
+    expect(sr_hle_test_var_export_add("TestLib", LIB_NID, VAR, EXPORTER) == NULL,
+           "variable import: the exporter registers its variable");
+    int all_linked = 1;
+    for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+    expect(all_linked, "variable import: the exporter's arrival patches every reference, "
+                       "the HI16 run rounded for the LO16 after it");
+    expect((MEM_R32(SITES) << 16) + (uint32_t)(int32_t)(int16_t)MEM_R32(SITES + 8u) == VAR + 0x10u &&
+               (MEM_R32(SITES + 4u) << 16) + (uint32_t)(int32_t)(int16_t)MEM_R32(SITES + 12u) == VAR,
+           "variable import: each lui/LO16 pair now forms its address");
+
+    sr_hle_test_var_owner_remove(EXPORTER);
+    int restored = 1;
+    for (i = 0; i < 5; i++) restored &= MEM_R32(SITES + 4u * (uint32_t)i) == original[i];
+    expect(restored, "variable import: the exporter's unload unlinks every reference");
+
+    expect(sr_hle_test_var_export_add("TestLib", LIB_NID, VAR, EXPORTER) == NULL,
+           "variable import: the exporter loads again");
+    all_linked = 1;
+    for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+    expect(all_linked, "variable import: the waiting import links again");
+
+    /* An importer that loads after its exporter links at once. */
+    sr_hle_test_var_owner_remove(IMPORTER);
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+    expect(sr_hle_test_var_import_add(&imp, SITES, IMPORTER) == NULL,
+           "variable import: an importer of a loaded exporter registers");
+    all_linked = 1;
+    for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+    expect(all_linked, "variable import: it links when it loads");
+
+    /* Lists the loader cannot patch are refused, and nothing is written. */
+    static const SrVarImportRef dangling[] = {{0x00u, 5u}, {0x10u, 2u}};
+    static const SrVarImportRef unknown[] = {{0x10u, 4u}};
+    static const SrVarImport bad_hi = {"TestLib", LIB_NID, dangling, 2u};
+    static const SrVarImport bad_kind = {"TestLib", LIB_NID, unknown, 1u};
+    sr_hle_test_var_reset();
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+    (void)sr_hle_test_var_export_add("TestLib", LIB_NID, VAR, EXPORTER);
+    const char *why_hi = sr_hle_test_var_import_add(&bad_hi, SITES, IMPORTER);
+    const char *why_kind = sr_hle_test_var_import_add(&bad_kind, SITES, IMPORTER);
+    untouched = 1;
+    for (i = 0; i < 5; i++) untouched &= MEM_R32(SITES + 4u * (uint32_t)i) == original[i];
+    expect(why_hi != NULL && strstr(why_hi, "HI16") != NULL && why_kind != NULL && untouched,
+           "variable import: a HI16 with no LO16 after its run, or an unknown reference type, "
+           "is refused before anything is written");
+    sr_hle_test_var_reset();
+}
+
 static void test_umd_io_console_model(void) {
     enum { PATH_ADDR = 0x09010000u, DATA_ADDR = 0x09012000u, FD_KIND_RAW_DEVICE = 3 };
     static const uint32_t nid_io_open = 0x109f50bcu;
@@ -42705,6 +42792,7 @@ static int hle_selftest_main(int argc, char **argv) {
 #endif
     test_prx_export_relocation_behavior();
     test_module_identity_is_its_export_table();
+    test_variable_import_linker();
     test_fd_namespace();
     test_umd_io_console_model();
     test_ms0_unified_namespace();

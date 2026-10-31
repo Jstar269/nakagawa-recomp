@@ -220,10 +220,13 @@ class AddressSpace:
     modules that share link addresses coexist.
     """
 
-    def __init__(self, base_symbol=None, prefix=None, relocations=None):
+    def __init__(self, base_symbol=None, prefix=None, relocations=None, patched=None):
         self.base_symbol = base_symbol
         self.prefix = prefix
         self.relocations = relocations
+        # Variable-import reference sites, {address: kind}: words the runtime linker
+        # patches with an exported variable's address (variable_import_sites).
+        self.patched = dict(patched or {})
 
     @property
     def runtime_module(self):
@@ -253,12 +256,22 @@ class AddressSpace:
     def instruction_word(self, addr, w):
         """The word to emit for the instruction at ``addr``.
 
-        Only a runtime module's relocated immediates change: they become a
-        ``RelocatedWord`` that reads the loader-relocated field from the image.
-        A relocation the translation cannot express fails closed for the owning
-        function.
+        A runtime module's relocated immediates and any image's variable-import
+        reference sites change: they become a ``RelocatedWord`` that reads the
+        field the loader patches from the image. A relocation or reference the
+        translation cannot express fails closed for the owning function.
         """
-        if w is None or not self.runtime_module:
+        if w is None:
+            return w
+        kind = self.patched.get(addr)
+        if kind is not None:
+            if kind not in ("lo16", "hi16"):
+                raise Unsupported(f"variable-import {kind} reference on an executed word at 0x{addr:08x}")
+            if (w >> 26) not in _RELOCATABLE_IMMEDIATE_OPS:
+                raise Unsupported(
+                    f"variable-import {kind} reference on opcode 0x{w >> 26:02x} at 0x{addr:08x}")
+            return RelocatedWord(w, f"MEM_R16({self.pc(addr)})")
+        if not self.runtime_module:
             return w
         site = self._site(addr)
         if site is None:
@@ -3104,7 +3117,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 f"has no owned successor")
     # Static verification asserts translation-time constants; a runtime module's
     # relocated immediates and link values are not constants, so it carries none.
-    sv_points = ({} if ADDRESS_SPACE.runtime_module
+    # A variable-import site's immediate is the linker's too, so its body carries none either.
+    sv_points = ({} if ADDRESS_SPACE.runtime_module or not ADDRESS_SPACE.patched.keys().isdisjoint(insns)
                  else sv_plan(elf, insns, labels, hst_profile=hst_profile))
     # A delay slot that is itself a branch target is emitted twice: inline at its
     # owning control instruction (where it must execute as the slot) and again
@@ -3666,6 +3680,8 @@ class RuntimeModuleTranslation:
     # A shared module is named by its bytes, not its place in the build, and goes in its
     # own translation unit, so every game carrying the same module compiles the same file.
     shared: bool = False
+    # imports.variable_imports of the module at base 0: its sites are link addresses.
+    var_imports: tuple = ()
 
     @property
     def base_symbol(self):
@@ -3699,6 +3715,47 @@ def c_string(text):
         else:
             out.append(ch)
     return '"' + "".join(out) + '"'
+
+
+#: The PSP reference type of each variable-import reference kind (SrVarImportRef.kind).
+VAR_REFERENCE_KIND = {"word32": 2, "hi16": 5, "lo16": 6}
+
+
+def variable_import_sites(elf):
+    """An image's variable imports (tools/imports.py) and the sites the runtime linker
+    patches, {address: kind}. An image with no import table imports none."""
+    if elf.reloc is None and elf.sec(".rodata.sceModuleInfo") is None:
+        return (), {}
+    from imports import variable_imports
+    found = variable_imports(elf)
+    sites = {}
+    for imp in found:
+        for kind, site in imp.references:
+            if sites.setdefault(site, kind) != kind:
+                raise ImportTableError(
+                    "ANALYZER_IMPORT_TABLE_INVALID",
+                    f"variable-import reference site 0x{site:08x} has two reference types")
+    return found, sites
+
+
+def var_import_table_lines(name, imports):
+    """The SrVarImport table ``name`` for ``imports``, with one reference array each."""
+    lines = []
+    entries = []
+    for index, imp in enumerate(imports):
+        if imp.references:
+            refs = ", ".join(f"{{0x{site:08x}u, {VAR_REFERENCE_KIND[kind]}u}}"
+                             for kind, site in imp.references)
+            lines.append(f"static const SrVarImportRef {name}_refs_{index}[] = {{ {refs} }};")
+            refs_symbol = f"{name}_refs_{index}"
+        else:
+            refs_symbol = "NULL"
+        entries.append(f"    {{ {c_string(imp.library)}, 0x{imp.nid:08x}u, {refs_symbol}, "
+                       f"{len(imp.references)}u }},")
+    lines.append(f"static const SrVarImport {name}[] = {{")
+    lines.extend(entries)
+    lines.append("};")
+    return lines
 
 
 def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
@@ -3777,13 +3834,18 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
             return 1
         except Exception as exc:
             sys.stderr.write(f"warning: import table parse failed for {name}: {exc}\n")
+    try:
+        module.var_imports, var_sites = variable_import_sites(elf)
+    except ImportTableError as exc:
+        sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
+        return 1
     stub = elf.sec(".sceStub.text") or elf.sec(".lib.stub")
 
     def is_stub(a):
         return a in impmap or (stub is not None and stub["addr"] <= a < stub["addr"] + stub["size"])
 
     space = AddressSpace(base_symbol=module.base_symbol, prefix=module.prefix,
-                         relocations=relocations)
+                         relocations=relocations, patched=var_sites)
     spans = span_index(ranges)
     previous_space = ADDRESS_SPACE
     ADDRESS_SPACE = space
@@ -4183,6 +4245,10 @@ def runtime_module_descriptor_lines(module):
         lines.append(f"static const SrModuleSpan {spans}[] = {{")
         lines.extend(f"    {{ 0x{lo:08x}u, 0x{hi:08x}u }}," for lo, hi in module.spans)
         lines.append("};")
+    var_imports = "NULL"
+    if module.var_imports:
+        var_imports = f"sr_m{k}_var_imports"
+        lines.extend(var_import_table_lines(var_imports, module.var_imports))
     reason = c_string(module.unsupported_reason) if module.unsupported_reason else "NULL"
     lines += [
         f"static const SrModuleCode sr_m{k}_code = {{",
@@ -4191,7 +4257,8 @@ def runtime_module_descriptor_lines(module):
         f"{1 if module.relocatable else 0}u,",
         f"    {reason}, &{module.base_symbol},",
         f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u,",
-        f"    0x{module.overlay_check_len:08x}u, 0x{module.overlay_check_fnv1a64:016x}ull",
+        f"    0x{module.overlay_check_len:08x}u, 0x{module.overlay_check_fnv1a64:016x}ull,",
+        f"    {var_imports}, {len(module.var_imports)}u",
         "};",
         "",
     ]
@@ -4662,6 +4729,15 @@ def main(argv):
             return 1
         except Exception as e:
             sys.stderr.write(f"warning: import table parse failed: {e}\n")
+    # The executable's variable imports: the runtime linker patches their reference sites,
+    # so the code reads those immediates from memory (AddressSpace.patched).
+    global ADDRESS_SPACE
+    try:
+        main_var_imports, main_var_sites = variable_import_sites(elf)
+    except ImportTableError as e:
+        sys.stderr.write(f"codegen: {format_boundary(e)}\n")
+        return 1
+    ADDRESS_SPACE = AddressSpace(patched=main_var_sites)
 
     # Stripped linked executables may reconstruct the loader-owned table as
     # .lib.stub instead of having a named .sceStub.text section.
@@ -5231,9 +5307,15 @@ def main(argv):
     if module_record is not None:
         main_out.append("")
         main_out.extend(main_module_record_lines(module_record))
+    if main_var_imports:
+        main_out.append("")
+        main_out.extend(var_import_table_lines("sr_main_var_imports", main_var_imports))
     main_out.append("\nvoid sr_register_all(void) {")
     if module_record is not None:
         main_out.append("    sr_main_module_register(&sr_main_module_record);")
+    if main_var_imports:
+        main_out.append(f"    sr_main_var_imports_register(sr_main_var_imports, "
+                        f"{len(main_var_imports)}u);")
     if symbol_table:
         main_out.append(
             f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")

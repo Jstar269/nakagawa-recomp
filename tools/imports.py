@@ -104,25 +104,6 @@ class VariableImportTable:
     vstub_table: int
 
 
-class VariableImportsUnsupported(ImportTableError):
-    """A well-formed import table that declares variable imports.
-
-    The analyzer records every declaring library; resolving each variable's
-    references and providing exported-variable storage is not implemented, so
-    the table stops at this named boundary instead of being partly imported.
-    """
-
-    def __init__(self, tables):
-        self.tables = tuple(tables)
-        total = sum(table.count for table in self.tables)
-        summary = ", ".join(f"{table.library} x{table.count}" for table in self.tables)
-        super().__init__(
-            "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED",
-            f"import table declares {total} variable imports ({summary}); "
-            "variable imports are not supported yet",
-        )
-
-
 def _variable_import_table(elf, pos, entry_bytes, size_words, library, count, rebase):
     """Validate and record one entry's variable-import declaration.
 
@@ -306,22 +287,20 @@ def _import_model_impl(elf):
     (library name, NID); slots no window claims map to the
     UNATTRIBUTED_LIBRARY marker. findings is a list of deterministic
     structural strings (unreferenced section words, detached runs, and
-    unclaimed and multi-claimed positions).
+    unclaimed and multi-claimed positions). A table's variable imports are
+    not function stubs: variable_imports models them, codegen reads their
+    reference sites from memory and the runtime linker patches those sites.
     """
-    stubs, findings, _variable_tables = _function_import_model(elf, allow_variables=False)
+    stubs, findings, _variable_tables = _function_import_model(elf)
     return stubs, findings
 
 
 def function_import_model(
     elf: Elf,
 ) -> "tuple[dict[int, tuple[str, int]], list[str], tuple[VariableImportTable, ...]]":
-    """Return (stubs, findings, variable_tables) without refusing variable imports.
-
-    The same layout as parse_imports. The analyzer refuses an image that declares
-    variable imports; the import-stub census uses this entry point to enumerate the
-    function stubs of such an image and name each one as missing, so none is silent.
-    """
-    return _function_import_model(elf, allow_variables=True)
+    """Return (stubs, findings, variable_tables): parse_imports plus the windows that
+    declare variables (variable_imports models those)."""
+    return _function_import_model(elf)
 
 
 def function_import_windows(
@@ -398,10 +377,8 @@ def _walk_import_windows(elf):
     return windows, variable_tables, base
 
 
-def _function_import_model(elf, *, allow_variables):
+def _function_import_model(elf):
     windows, variable_tables, base = _walk_import_windows(elf)
-    if variable_tables and not allow_variables:
-        raise VariableImportsUnsupported(variable_tables)
 
     # Passes 2-4: the shared layout model (psp_import_table.layout_import_windows)
     # pairs stub slots with NIDs for the audit parser and the analyzer alike.
@@ -419,6 +396,11 @@ def _function_import_model(elf, *, allow_variables):
             raise ValueError(f"truncated import NID region at 0x{address:08x}")
         return struct.unpack(f"<{count}I", blob)
 
+    if variable_tables and not any(window.count for window in windows):
+        # A table that imports only variables has no function stub to pair; a stub or NID
+        # section with content and no function window still fails closed in the layout.
+        if not ((stub_section and stub_section[1]) or (nid_section and nid_section[1])):
+            return {}, [], tuple(variable_tables)
     stubs, findings = layout_import_windows(windows, stub_section, nid_section, read_nids)
     return stubs, findings, tuple(variable_tables)
 

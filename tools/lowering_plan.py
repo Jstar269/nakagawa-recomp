@@ -292,6 +292,8 @@ def plan_function(cg, elf, start, ranges, known, *, resume_owners=None, resumabl
         dispatch_boundaries=dispatch_boundaries)
     if not insns:
         raise Unsupported("empty body")
+    if not space.patched.keys().isdisjoint(insns):
+        raise Unsupported("variable-import reference site (its immediate is read from memory)")
     # A body that loads $sp leaves it to the guest at every exit (codegen.guest_owns_entry_sp).
     resumable = resumable or cg.guest_owns_entry_sp(elf, insns)
     if cg.ENHANCEMENT_SITES and insns & set(cg.ENHANCEMENT_SITES):

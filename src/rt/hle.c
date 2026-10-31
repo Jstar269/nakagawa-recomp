@@ -5425,6 +5425,211 @@ static void mark_module_started(uint32_t entry) {
     }
 }
 
+/* Variable imports (#308). A module that imports a variable from another module's library
+ * reaches it through words its loader patches with the variable's address: the whole word,
+ * or the immediates of the lui/addiu (HI16/LO16) pair that forms the address. Behaviour of
+ * uOFW loadcore (github.com/uofw/uofw, src/kd/loadcore/loadcore.c, aLinkVariableStub_sub and
+ * aVariableLinkApply), no source copied: a 32-bit reference adds the address; a LO16 adds it
+ * to its own sign-extended immediate and keeps the low half; a run of HI16 references takes
+ * the high half of (its immediate << 16) + the following LO16's sign-extended immediate + the
+ * address, rounded for the signed low half, computed before that LO16 is patched. Unlinking
+ * subtracts the same address. The imports link when the importer loads and its exporter is
+ * loaded, or when the exporter registers its library later; the exporter's unload unlinks
+ * them again in every importer still loaded (PPSSPP Core/HLE/sceKernelModule.cpp
+ * ImportVarSymbol, ExportVarSymbol and UnexportVarSymbol model the same order). Generated
+ * code reads every patched immediate from memory, so the linked address reaches it. */
+#define SR_VAR_OWNER_MAIN 0xFFFFFFFFu  /* the main image; no module image starts there */
+#define SR_VAR_EXPORT_MAX 1024u
+#define SR_VAR_LINK_MAX 4096u
+#define SR_VAR_REF_WORD32 2u
+#define SR_VAR_REF_HI16 5u
+#define SR_VAR_REF_LO16 6u
+
+typedef struct {
+    char lib[SR_PRX_LIBNAME_LEN];
+    uint32_t nid;
+    uint32_t addr;
+    uint32_t owner;        /* image base of the exporting module */
+} SrVarExport;
+
+typedef struct {
+    const SrVarImport *imp;
+    uint32_t base;         /* added to each site: the importer's bind base, 0 for absolute */
+    uint32_t owner;        /* image base of the importer, SR_VAR_OWNER_MAIN for the main image */
+    uint32_t value;        /* the address linked in, while linked */
+    uint32_t exporter;     /* the exporting module's image base, while linked */
+    int linked;
+} SrVarLink;
+
+static SrVarExport s_var_exports[SR_VAR_EXPORT_MAX];
+static unsigned s_var_export_count;
+static SrVarLink s_var_links[SR_VAR_LINK_MAX];
+static unsigned s_var_link_count;
+
+static uint32_t var_sext16(uint32_t word) { return (uint32_t)(int32_t)(int16_t)(word & 0xFFFFu); }
+
+/* NULL when every reference of `imp` can be patched at `base`, else why not (the first bad
+ * site in *bad_site). Nothing is written before every site checks. */
+static const char *var_import_check(const SrVarImport *imp, uint32_t base, uint32_t *bad_site) {
+    for (uint32_t i = 0; i < imp->nrefs; i++) {
+        const SrVarImportRef *ref = &imp->refs[i];
+        const uint32_t site = base + ref->site;
+        *bad_site = site;
+        if (ref->kind != SR_VAR_REF_WORD32 && ref->kind != SR_VAR_REF_HI16 &&
+            ref->kind != SR_VAR_REF_LO16)
+            return "a reference that is not a 32-bit, HI16 or LO16 reference";
+        if ((site & 3u) != 0u || !sr_guest_span_writable(site, 4u))
+            return "a reference site outside writable guest memory";
+        if (ref->kind == SR_VAR_REF_HI16) {
+            uint32_t end = i;
+            while (end < imp->nrefs && imp->refs[end].kind == SR_VAR_REF_HI16) end++;
+            if (end == imp->nrefs || imp->refs[end].kind != SR_VAR_REF_LO16)
+                return "a HI16 reference with no LO16 after its run";
+        }
+    }
+    return NULL;
+}
+
+static void var_import_write(uint32_t site, uint32_t word) {
+    MEM_W32(site, word);
+    if (sr_stale_enabled()) {
+        /* A loader patch, not a code overwrite: the patched word is the expected one now. */
+        sr_stale_forget_range(site, 4u);
+        sr_stale_register_word(site, word);
+    }
+}
+
+/* Add `delta` (the address, or its negation to unlink) at every reference; checked first. */
+static void var_import_patch(const SrVarImport *imp, uint32_t base, uint32_t delta) {
+    for (uint32_t i = 0; i < imp->nrefs;) {
+        const SrVarImportRef *ref = &imp->refs[i];
+        const uint32_t site = base + ref->site;
+        if (ref->kind == SR_VAR_REF_WORD32) {
+            var_import_write(site, MEM_R32(site) + delta);
+            i++;
+        } else if (ref->kind == SR_VAR_REF_LO16) {
+            const uint32_t word = MEM_R32(site);
+            var_import_write(site, (word & 0xFFFF0000u) | ((var_sext16(word) + delta) & 0xFFFFu));
+            i++;
+        } else {
+            uint32_t end = i;
+            while (imp->refs[end].kind == SR_VAR_REF_HI16) end++;
+            const uint32_t low = var_sext16(MEM_R32(base + imp->refs[end].site));
+            for (; i < end; i++) {
+                const uint32_t hi_site = base + imp->refs[i].site;
+                const uint32_t word = MEM_R32(hi_site);
+                const uint32_t full = ((word & 0xFFFFu) << 16) + low + delta;
+                var_import_write(hi_site, (word & 0xFFFF0000u) | (((full + 0x8000u) >> 16) & 0xFFFFu));
+            }
+        }
+    }
+}
+
+static const SrVarExport *var_export_find(const char *lib, uint32_t nid) {
+    for (unsigned i = 0; i < s_var_export_count; i++)
+        if (s_var_exports[i].nid == nid && strcmp(s_var_exports[i].lib, lib) == 0)
+            return &s_var_exports[i];
+    return NULL;
+}
+
+static void var_link_one(SrVarLink *link, const SrVarExport *e) {
+    var_import_patch(link->imp, link->base, e->addr);
+    link->value = e->addr;
+    link->exporter = e->owner;
+    link->linked = 1;
+    fprintf(stderr, "VAR_IMPORT: linked %s 0x%08x at 0x%08x (%u reference(s))\n",
+            link->imp->library, link->imp->nid, e->addr, link->imp->nrefs);
+}
+
+/* Record `imp` (sites at `base`) for its importer; link it now when its exporter is loaded.
+ * NULL on success, else why it cannot be patched (nothing is written then). */
+static const char *var_import_add(const SrVarImport *imp, uint32_t base, uint32_t owner,
+                                  uint32_t *bad_site) {
+    const char *why = var_import_check(imp, base, bad_site);
+    if (why) return why;
+    if (s_var_link_count == SR_VAR_LINK_MAX) return "more variable imports than the linker holds";
+    SrVarLink *link = &s_var_links[s_var_link_count++];
+    *link = (SrVarLink){imp, base, owner, 0u, 0u, 0};
+    const SrVarExport *e = var_export_find(imp->library, imp->nid);
+    if (e) var_link_one(link, e);
+    return NULL;
+}
+
+/* Register an exported variable and link every import still waiting for it. */
+static const char *var_export_add(const char *lib, uint32_t nid, uint32_t addr, uint32_t owner) {
+    if (var_export_find(lib, nid)) return NULL;  /* the first exporter keeps the library */
+    if (s_var_export_count == SR_VAR_EXPORT_MAX) return "more exported variables than the linker holds";
+    SrVarExport *e = &s_var_exports[s_var_export_count++];
+    snprintf(e->lib, sizeof(e->lib), "%s", lib);
+    e->nid = nid;
+    e->addr = addr;
+    e->owner = owner;
+    for (unsigned i = 0; i < s_var_link_count; i++) {
+        SrVarLink *link = &s_var_links[i];
+        if (link->linked || link->imp->nid != nid || strcmp(link->imp->library, lib) != 0)
+            continue;
+        uint32_t bad_site = 0u;
+        const char *why = var_import_check(link->imp, link->base, &bad_site);
+        if (why) {
+            /* Checked when the importer loaded; its image is still loaded, so this is a fault. */
+            fprintf(stderr, "SEMANTIC_BOUNDARY: VARIABLE_IMPORT_INVALID: the import of %s "
+                            "0x%08x has %s (0x%08x); refusing to link it\n",
+                    lib, nid, why, bad_site);
+            fflush(stderr);
+            exit(1);
+        }
+        var_link_one(link, e);
+    }
+    return NULL;
+}
+
+/* An image leaves: its own imports are dropped, every import linked to one of its exported
+ * variables is unlinked (and waits again), and its exports go. */
+static void var_owner_remove(uint32_t owner) {
+    unsigned kept = 0;
+    for (unsigned i = 0; i < s_var_link_count; i++) {
+        SrVarLink link = s_var_links[i];
+        if (link.owner == owner) continue;
+        if (link.linked && link.exporter == owner) {
+            var_import_patch(link.imp, link.base, 0u - link.value);
+            link.linked = 0;
+            link.value = link.exporter = 0u;
+        }
+        s_var_links[kept++] = link;
+    }
+    s_var_link_count = kept;
+    kept = 0;
+    for (unsigned i = 0; i < s_var_export_count; i++)
+        if (s_var_exports[i].owner != owner) s_var_exports[kept++] = s_var_exports[i];
+    s_var_export_count = kept;
+}
+
+void sr_main_var_imports_register(const SrVarImport *imports, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t bad_site = 0u;
+        const char *why = var_import_add(&imports[i], 0u, SR_VAR_OWNER_MAIN, &bad_site);
+        if (!why) continue;
+        fprintf(stderr, "SEMANTIC_BOUNDARY: VARIABLE_IMPORT_INVALID: the executable's import of "
+                        "%s 0x%08x has %s (0x%08x); refusing to run it unlinked\n",
+                imports[i].library, imports[i].nid, why, bad_site);
+        fflush(stderr);
+        exit(1);
+    }
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Selftest seams: the linker's state and its three entry points, driven without a loader. */
+void sr_hle_test_var_reset(void) { s_var_export_count = 0; s_var_link_count = 0; }
+const char *sr_hle_test_var_import_add(const SrVarImport *imp, uint32_t base, uint32_t owner) {
+    uint32_t bad_site = 0u;
+    return var_import_add(imp, base, owner, &bad_site);
+}
+const char *sr_hle_test_var_export_add(const char *lib, uint32_t nid, uint32_t addr, uint32_t owner) {
+    return var_export_add(lib, nid, addr, owner);
+}
+void sr_hle_test_var_owner_remove(uint32_t owner) { var_owner_remove(owner); }
+#endif
+
 /* Retire one image: drop the export authority the kernel would unlink at unload, clear the
  * per-image started flag, release exactly the reservation this image owns, and reclaim the
  * table slot. Only the image's own [base,end) range and its own allocation are touched, so
@@ -5442,6 +5647,7 @@ static void unload_prx_image(uint32_t base) {
          * bodies; then the exports and the memory go. */
         if (img.code) sr_module_code_unbind(img.code);
         sr_hle_unregister_late_imports_in_range(img.base, img.end);
+        var_owner_remove(img.base);
         if (img.alloc_uid != 0u && img.alloc_uid != 0xFFFFFFFFu) free_block(img.alloc_uid);
         for (unsigned j = i + 1; j < s_prx_image_count; j++) s_prx_images[j - 1] = s_prx_images[j];
         s_prx_image_count--;
@@ -5888,11 +6094,26 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
     memcpy(SR_HOST(image), s_prx_stage, s_prx_stage_len);
     if (span > s_prx_stage_len) memset(SR_HOST(image + s_prx_stage_len), 0, span - s_prx_stage_len);
 
+    /* The module's own variable imports link now, while it loads, and before the bind
+     * records its words (a patched word is a loaded word, not a later overwrite). */
+    for (uint32_t i = 0; code && i < code->nvar_imports; i++) {
+        uint32_t bad_site = 0u;
+        const char *why = var_import_add(&code->var_imports[i], base, image, &bad_site);
+        if (!why) continue;
+        var_owner_remove(image);
+        snprintf(detail, sizeof(detail), "variable import %s 0x%08x has %s (0x%08x)",
+                 code->var_imports[i].library, code->var_imports[i].nid, why, bad_site);
+        sr_prx_image_free(&img);
+        free_block(alloc_uid);
+        return guest_module_boundary("guest-module-variable-import-refused", file, detail);
+    }
+
     SrModuleBindDetail bind_detail;
     SrModuleBindResult bound = sr_module_code_bind(code, base, &bind_detail);
     if (bound != SR_MODULE_BIND_OK) {
         snprintf(detail, sizeof(detail), "%s at 0x%08x", sr_module_bind_result_name(bound),
                  bind_detail.address);
+        var_owner_remove(image);
         sr_prx_image_free(&img);
         free_block(alloc_uid);
         return guest_module_boundary("guest-module-bind-refused", file, detail);
@@ -5907,7 +6128,18 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
     unsigned exported = 0;
     for (uint32_t i = 0; i < img.nexp; i++) {
         const SrPrxExport *e = &img.exps[i];
-        if (!e->is_func) continue;
+        if (!e->is_func) {
+            /* A named library's variable: importers waiting for it link now (#308). */
+            const char *why = e->lib[0] != '\0'
+                ? var_export_add(e->lib, e->nid, e->addr, image) : NULL;
+            if (why) {
+                fprintf(stderr, "SEMANTIC_BOUNDARY: VARIABLE_IMPORT_INVALID: %s exports %s "
+                                "0x%08x, but %s\n", file, e->lib, e->nid, why);
+                fflush(stderr);
+                exit(1);
+            }
+            continue;
+        }
         if (e->lib[0] == '\0') {
             if (e->nid == 0xCEE05613u) module_stop = e->addr;
             continue;
