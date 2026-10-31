@@ -2444,13 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 111)
+        self.assertEqual(len(routes), 113)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107, 108, 109}
-                         | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125},
+        self.assertEqual(set(range(1, 79)) | set(range(90, 104)) | {106, 107, 108, 109}
+                         | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
@@ -3128,6 +3128,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 # The 2026-10-29 acceptance-eligible #325 runs: hle-intr-cells of 77a1a5e3 and
                 # intr-cause of 2c199df8.
                 "PSP-HLE-INTR-001", "PSP-INTR-CAUSE-001",
+                # The 2026-10-31 acceptance-eligible ge-mip (#1373) and ge-sync-ids (#1374) runs of
+                # 66940d76.
+                "PSP-GE-MIP-001", "PSP-GE-SYNC-001",
             },
         )
         self.assertEqual(
@@ -8302,6 +8305,86 @@ class GeRasterProbeTests(unittest.TestCase):
         table = self.selftest[self.selftest.index("} s_gr_psp[GR_CELL_COUNT] = {"):]
         table = table[:table.index("\n};")]
         self.assertEqual(tuple(re.findall(r'\{"([a-z0-9-]+)", 0x[0-9a-f]{16}ull\}', table)), cells)
+
+
+class GeMipProbeTests(unittest.TestCase):
+    """CASE=ge-mip (126, PSP-GE-MIP-001) in probe_ge_sample.c: the #1373 level-of-detail and
+    mip cells. The cell table and list builder are one block shared byte for byte with
+    src/rt/hle_thread_selftest.c, which runs the cells through the software GE; the stream
+    matches the registry."""
+
+    START = "/* ==== GE mip cells (PSP-GE-MIP-001, #1373) ===="
+    END = "/* ==== end of the GE mip cells ==== */\n"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        cls.selftest = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_MIP\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_MIP */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    @classmethod
+    def _block(cls, text: str) -> str:
+        start = text.index(cls.START)
+        return text[start:text.index(cls.END, start) + len(cls.END)]
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-mip)\nCASE_ID = 126\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-mip)\nTARGET = $(BUILD_DIR)/ge_mip\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define GE_CASE_MIP 126\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-mip"\n#define HLE_TEST_ID "PSP-GE-MIP-001"\n'
+                      '#define HLE_LOG "host0:/ge_mip_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-mip").name, "ge_mip_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-mip"), "strict-golden-sequence")
+        self.assertNotIn("ge-mip", CAMPAIGN_QUEUE_CASES)
+
+    def test_the_cell_block_is_the_selftest_copy(self) -> None:
+        block = self._block(self.probe)
+        self.assertEqual(self.probe.count(self.START), 1)
+        self.assertEqual(self.selftest.count(self.START), 1)
+        self.assertEqual(block, self._block(self.selftest))
+        # The block builds lists and patterns only: no PSP or host API.
+        code = _c_code(block)
+        self.assertEqual(set(re.findall(r"\b(sce\w+|sr_\w+|MEM_\w+)\s*\(", code)), set())
+        self.assertNotIn("#include", block)
+        self.assertIn("test_ge_mip_cells_software_contract();", self.selftest)
+        self.assertIn("test_ge_mip_cells_match_psp();", self.selftest)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay"):
+            self.assertNotIn(banned, self.section)
+        # The one while loop is the texture size log2 in the shared block, bounded by the side.
+        self.assertEqual(self.section.count("while ("), 1)
+        self.assertIn("while ((1u << log2) < gm_level_side(l)) {", self.section)
+        self.assertEqual(self.section.count("i < GM_WAIT_POLLS; i++"), 2)
+        self.assertIn("#define GM_WAIT_POLLS 5000u", self.probe)
+        self.assertIn("#define GM_FB_OFFSET 0x00100000u", self.probe)
+        self.assertIn("for (unsigned i = 0; i < GM_STRIDE * GM_ROWS; i++) {", self.section)
+        body = _c_function_bodies(self.section)["gm_draw"]
+        self.assertLess(body.index("hle_step(c->name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-mip"]
+        self.assertEqual(spec.test_id, "PSP-GE-MIP-001")
+        self.assertEqual(spec.terminal_case, "ge-mip-done")
+        cells = tuple(re.findall(r'^    \{"([a-z0-9-]+)", GM_K_', self._block(self.probe), re.M))
+        self.assertEqual(cells, parse_golden.GE_MIP_CELLS)
+        self.assertEqual(len(set(cells)), len(cells))
+        self.assertIn(f"#define GM_CELL_COUNT {len(cells)}u", self.probe)
+        self.assertEqual(len(parse_golden.GE_MIP_CASES), len(cells) * 5)
+        self.assertEqual(counts[f"{cells[0]}-draw"], 9)
+        self.assertEqual(counts[f"{cells[-1]}-r3"], 16)
 
 
 class ModuleStartProbeTests(unittest.TestCase):
