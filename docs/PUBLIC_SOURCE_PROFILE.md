@@ -39,8 +39,13 @@ Build a new candidate with:
 
 ```text
 python tools/build_public_export.py --public-safe-profile --export-dir <staging> \
-  --trusted-ledger assets/public_provenance_ledger.json
+  --trusted-ledger <verified-controls>/public_provenance_ledger.hashed.json
 ```
+
+The trusted ledger is the hashed generation the trusted attestation writes for the
+frozen candidate (see [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md)). The committed
+`assets/public_provenance_ledger.json` carries claims only and binds no bytes, so the
+candidate audit refuses it as an anchor (`PROVENANCE_LEDGER_UNHASHED`).
 
 The generator materializes the exact audited Git index, filters the profile,
 writes the deterministic `PUBLIC_EXPORT.json` while the tree is still being

@@ -136,7 +136,7 @@ $env:NAKAGAWA_CANDIDATE_SHA = $CandidateSha
 
 The packaged player binaries and runtime closure are copied byte-for-byte from the verified bundle. The package script below repeats the attestation checks and confirms the bundle's `toolchain.json` matches the frozen source SHA; it does not rebuild or restage those binaries locally. The resulting ZIP is a packaging container, not a subject of this Build L2 workflow: after extracting it, verify each executable and runtime DLL individually with gh attestation verify.
 
-At candidate freeze, the maintainer-selected trust anchor is the detailed `IMPLEMENTATION_PROVENANCE.json` from the external authority repository, never a candidate-committed public ledger. Verify the frozen main commit's admissions, commit and push truthful authority changes, then copy the ledger from that exact authority commit to an external immutable file. Record the full candidate SHA, authority commit SHA, and copied ledger SHA-256 together in #278. Set `NAKAGAWA_TRUSTED_PUBLIC_LEDGER` to that detailed copy and do not edit or regenerate it. Different source bytes require a fresh freeze and binding. The export audit consumes a public `entries` projection; the commands below independently generate and verify that projection from the selected detailed authority instead of trusting the candidate's copy.
+At candidate freeze, the maintainer-selected trust anchor is the detailed `IMPLEMENTATION_PROVENANCE.json` from the external authority repository, never a candidate-committed public ledger. Verify the frozen main commit's admissions, commit and push truthful authority changes, then copy the ledger from that exact authority commit to an external immutable file. Record the full candidate SHA, authority commit SHA, and copied ledger SHA-256 together in #278. Set `NAKAGAWA_TRUSTED_PUBLIC_LEDGER` to that detailed copy and do not edit or regenerate it. Different source bytes require a fresh freeze and binding. The export audit consumes a hashed public `entries` projection; the commands below independently generate and verify that projection from the selected detailed authority instead of trusting the candidate's copy, which carries claims only.
 
 ```powershell
 $Version = '0.0.1'
@@ -192,7 +192,9 @@ python tools/provenance_attest_verify.py --repo . --base $FrozenCandidateSha `
     --candidate $FrozenCandidateSha --require-immutable-revisions --ephemeral `
     --trusted-ledger $DetailedLedger --trusted-baseline $TrustBaseline --output-dir $TrustControls
 if ($LASTEXITCODE -ne 0) { throw 'Frozen candidate trusted attestation failed.' }
-$TrustedLedger = Join-Path $TrustControls 'public_provenance_ledger.json'
+# The hashed generation is the content anchor; public_provenance_ledger.json next to it is
+# the committed claims form, which binds no bytes.
+$TrustedLedger = Join-Path $TrustControls 'public_provenance_ledger.hashed.json'
 New-Item -ItemType Directory -Path $ArtifactRoot, $Source -Force | Out-Null
 python tools/build_public_export.py --public-safe-profile --export-dir $Source --trusted-ledger $TrustedLedger
 

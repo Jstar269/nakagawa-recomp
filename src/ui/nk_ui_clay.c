@@ -42,6 +42,10 @@ typedef struct {
     size_t memory_size;
     NkUiTextBackend text;
     float density;
+    /* The text size (NkUiViewport.text_size_pct / 100): type is measured,
+       spaced, given line heights and drawn this much larger on top of density,
+       while every box, gap and padding keeps the density alone. */
+    float text_scale;
     Clay_Dimensions dimensions; /* the layout's size, given to Clay as each frame begins */
     bool frame_open;
     bool failed;                /* a fatal layout error this frame */
@@ -91,12 +95,16 @@ static NkUiPixelRect nk_ui_clay_round_box(Clay_BoundingBox box, float density) {
     return nk_ui_round_rect(rect, density);
 }
 
+/* A clip is the box as it is drawn: its edges round to the nearest device pixel,
+   as every rect's do (nk_ui_round_rect). Rounded outwards instead, a scroll
+   container at a fractional density let its content paint one pixel row over
+   the bar beside it. */
 static NkUiPixelRect nk_ui_clay_round_scissor(Clay_BoundingBox box, float density) {
     NkUiPixelRect rect;
-    rect.x0 = nk_ui_clay_clamp_int(floor((double)box.x * (double)density));
-    rect.y0 = nk_ui_clay_clamp_int(floor((double)box.y * (double)density));
-    rect.x1 = nk_ui_clay_clamp_int(ceil((double)(box.x + box.width) * (double)density));
-    rect.y1 = nk_ui_clay_clamp_int(ceil((double)(box.y + box.height) * (double)density));
+    rect.x0 = nk_ui_clay_clamp_int(floor((double)box.x * (double)density + 0.5));
+    rect.y0 = nk_ui_clay_clamp_int(floor((double)box.y * (double)density + 0.5));
+    rect.x1 = nk_ui_clay_clamp_int(floor((double)(box.x + box.width) * (double)density + 0.5));
+    rect.y1 = nk_ui_clay_clamp_int(floor((double)(box.y + box.height) * (double)density + 0.5));
     return rect;
 }
 
@@ -150,6 +158,35 @@ static float nk_ui_clay_spacing(uint16_t packed) {
     return (float)(packed >> NK_UI_CLAY_FONT_BITS) / NK_UI_CLAY_SPACING_STEPS;
 }
 
+/* A style's letter spacing as Clay lays it out (in eighths of a logical px),
+   for measuring a run the way it is drawn. */
+float nk_ui_clay_layout_spacing(float letter_spacing) {
+    return nk_ui_clay_spacing(nk_ui_clay_pack_font(0, letter_spacing));
+}
+
+/* The device pixel size a run of `logical_px` type is measured and drawn at:
+   density for the layout, text_scale on top for the type. nk_ui_text_clamp
+   measures with the same rounding. */
+int nk_ui_clay_device_px(int logical_px, float density, float text_scale) {
+    return (int)floorf((float)logical_px * density * text_scale + 0.5f);
+}
+
+/* Letter spacing in whole device pixels, after every character. */
+float nk_ui_clay_device_spacing(float spacing, float density, float text_scale) {
+    return floorf(spacing * text_scale * density + 0.5f);
+}
+
+/* The logical line box a run lays out in: its line height (one font size when
+   it has none, or a smaller one), grown with the text size and rounded as Clay
+   stores it. */
+float nk_ui_clay_line_height(float line_height, int size_px, float text_scale) {
+    float base = isfinite(line_height) && line_height >= (float)size_px ? line_height
+                                                                         : (float)size_px;
+    float scaled = isfinite(text_scale) && text_scale > 0.0f ? base * text_scale : base;
+    scaled = floorf(scaled + 0.5f);
+    return scaled > 65535.0f ? 65535.0f : scaled;
+}
+
 static size_t nk_ui_clay_codepoints(const char *text, size_t length) {
     size_t count = 0u;
     size_t i;
@@ -172,7 +209,8 @@ static Clay_Dimensions nk_ui_clay_measure(Clay_StringSlice text,
         text.length < 0 || logical_px <= 0 || clay->density <= 0.0f) {
         return result;
     }
-    device_px = (int)floorf((float)logical_px * clay->density + 0.5f);
+    /* The type is measured at its text size; the result is in layout units. */
+    device_px = nk_ui_clay_device_px(logical_px, clay->density, clay->text_scale);
     if (device_px < 1) {
         device_px = 1;
     }
@@ -190,7 +228,8 @@ static Clay_Dimensions nk_ui_clay_measure(Clay_StringSlice text,
                the per-character rule keeps their sum equal to the whole. */
             if (spacing > 0.0f) {
                 size_t codepoints = nk_ui_clay_codepoints(text.chars, (size_t)text.length);
-                float device_spacing = floorf(spacing * clay->density + 0.5f);
+                float device_spacing = nk_ui_clay_device_spacing(spacing, clay->density,
+                                                                 clay->text_scale);
                 result.width += device_spacing * (float)codepoints / clay->density;
             }
         }
@@ -346,6 +385,7 @@ void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
         clay->text = *text;
     }
     clay->density = 1.0f;
+    clay->text_scale = 1.0f;
     clay->report_error = report_error;
     clay->report_user = report_user;
     previous = Clay_GetCurrentContext();
@@ -381,17 +421,20 @@ void nk_ui_clay_destroy(void *opaque_clay) {
     free(clay);
 }
 
-bool nk_ui_clay_set_dimensions(void *opaque_clay, float width, float height, float density) {
+bool nk_ui_clay_set_dimensions(void *opaque_clay, float width, float height, float density,
+                               float text_scale) {
     NkUiClay *clay = (NkUiClay *)opaque_clay;
     Clay_Context *previous;
     if (clay == NULL || clay->context == NULL || !isfinite(width) || !isfinite(height) ||
-        !isfinite(density) || density <= 0.0f) {
+        !isfinite(density) || density <= 0.0f || !isfinite(text_scale) || text_scale <= 0.0f) {
         return false;
     }
     previous = Clay_GetCurrentContext();
     Clay_SetCurrentContext(clay->context);
-    if (clay->density != density) {
+    /* Clay keys its measurements by text, font and size, not by either scale. */
+    if (clay->density != density || clay->text_scale != text_scale) {
         clay->density = density;
+        clay->text_scale = text_scale;
         Clay_ResetMeasureTextCache();
     }
     clay->dimensions = (Clay_Dimensions){width, height};
@@ -609,9 +652,11 @@ bool nk_ui_clay_text_styled(void *opaque_clay, NkUiId id, const char *text, size
     };
     text_config.fontId = nk_ui_clay_pack_font(font, style->letter_spacing);
     text_config.fontSize = (uint16_t)(size_px > 65535 ? 65535 : size_px);
-    text_config.lineHeight = isfinite(style->line_height) &&
-                             style->line_height >= (float)text_config.fontSize
-        ? nk_ui_clay_u16(style->line_height) : text_config.fontSize;
+    /* fontSize stays the style's own size (the measure and the draw scale it);
+       the line box Clay stacks wrapped lines in grows with the text. */
+    text_config.lineHeight = (uint16_t)nk_ui_clay_line_height(style->line_height,
+                                                              text_config.fontSize,
+                                                              clay->text_scale);
     text_config.wrapMode = style->wrap ? CLAY_TEXT_WRAP_WORDS : CLAY_TEXT_WRAP_NONE;
     text_config.userData = (void *)(uintptr_t)id;
     text_config.textAlignment = CLAY_TEXT_ALIGN_LEFT;
@@ -896,10 +941,12 @@ bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density,
         case CLAY_RENDER_COMMAND_TYPE_TEXT: {
             Clay_TextRenderData *text = &command->renderData.text;
             NkUiPixelRect bounds = nk_ui_clay_round_box(box, density);
-            int pixel_size = (int)floorf((float)text->fontSize * density + 0.5f);
+            int pixel_size = nk_ui_clay_device_px((int)text->fontSize, density,
+                                                  clay->text_scale);
             ok = nk_ui_draw_add_text_spaced(draw, bounds, text->stringContents.chars,
                 (size_t)text->stringContents.length, nk_ui_clay_font(text->fontId), pixel_size,
-                floorf(nk_ui_clay_spacing(text->fontId) * density + 0.5f),
+                nk_ui_clay_device_spacing(nk_ui_clay_spacing(text->fontId), density,
+                                          clay->text_scale),
                 nk_ui_clay_color(text->textColor), id);
             break;
         }

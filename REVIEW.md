@@ -40,16 +40,20 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
 
 ## Do not flag
 
-- Regenerated `PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json` that
-  re-hash exactly the paths the same commit changes (the pre-commit publication audit
-  requires that), or a focused provenance-refresh commit after a merge from `main`. Flag
-  entries for paths the commit does not change, a refresh commit that changes anything
-  else, or a head whose "Trusted provenance attestation" check failed or did not run (it
-  is currently observation-only, not required).
+- Regenerated `PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json` that add or
+  remove exactly the entries for paths the same commit adds or removes, or a focused
+  provenance-refresh commit after a merge from `main`. The ledger carries claims only
+  (#1673), so a commit that only edits existing files leaves it unchanged. Flag a ledger
+  hunk in such a commit, entries for paths the commit does not add, remove or
+  reclassify, a refresh commit that changes anything else, or a head whose "Trusted
+  provenance attestation" check failed or did not run (it is currently
+  observation-only, not required).
   Before flagging a ledger entry, attribute the hunk correctly. A unified diff's trailing
-  context lines show the *next* entry's `path`, while the changed `sha256` belongs to the
+  context lines show the *next* entry's `path`, while the changed lines belong to the
   entry above the hunk. Compare that entry's path with the files the commit changes, not
-  the path that follows it.
+  the path that follows it. A branch made before #1673 may still show the older ledger
+  with a `sha256` per entry; one conversion to the claims form after merging `main` is
+  expected.
 - New `assets/public_source_profile.json` entries for files the same PR adds, provided
   the attestation check passed on the head. Otherwise flag them as unauthorized public
   paths.

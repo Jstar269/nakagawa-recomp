@@ -14,9 +14,10 @@ layout(location = 0) out vec2 out_uv;
 layout(location = 1) out vec4 out_color;
 
 void main() {
+    // Draw-list pixels and Vulkan clip space both have y growing downwards, so
+    // the top-left pixel corner is (-1, -1).
     vec2 normalized = in_position_px / transform.output_size_px;
-    gl_Position = vec4(normalized.x * 2.0 - 1.0,
-                       1.0 - normalized.y * 2.0, 0.0, 1.0);
+    gl_Position = vec4(normalized * 2.0 - 1.0, 0.0, 1.0);
     out_uv = in_uv;
     out_color = in_color;
 }

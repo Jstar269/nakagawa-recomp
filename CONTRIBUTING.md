@@ -29,10 +29,10 @@ The rules it links to decide whether a change can land, so read them once.
    `PATH`). It runs the gates that apply to the files you changed. Add a test for any behaviour you changed,
    and paste the exact commands and results into the pull request.
 6. **Refresh provenance controls.** If you changed files that already have public entries, run
-   `python tools/contrib_refresh.py` (or `make contrib-refresh`) and commit what it stages. Never hand-edit
-   `PUBLIC_EXPORT.json` or `assets/public_provenance_ledger.json`. Adding or removing a file is a new public
-   path: the tool refuses it, so say so in the pull request and a maintainer admits it. The table below lists
-   each refusal.
+   `python tools/contrib_refresh.py` (or `make contrib-refresh`) and commit what it stages; usually it
+   stages nothing, because an edit changes no claim. Never hand-edit `PUBLIC_EXPORT.json` or
+   `assets/public_provenance_ledger.json`. Adding or removing a file is a new public path: the tool refuses
+   it, so say so in the pull request and a maintainer admits it. The table below lists each refusal.
 7. **Disclose AI help.** If an AI tool helped, follow [docs/AI_USAGE.md](docs/AI_USAGE.md). Add one
    `Assisted-by: <tool> (<model>)` trailer per tool to each commit it helped produce (not `Co-Authored-By:`),
    and say so in the pull request. If you work with an AI agent, point it at [AGENTS.md](AGENTS.md): its
@@ -66,8 +66,10 @@ know exactly where it came from and under which licence.
 Run `make contrib-refresh`, or leave this to a maintainer. Two files,
 `PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json`, are generated from a private
 trusted ledger that contributors don't have, so never edit them by hand. For each published file, the
-ledger records where it came from, the evidence for that, and the SHA-256 of its bytes. The export is
-the list of public files and their digests, built from that ledger.
+ledger records where it came from and the evidence for that (its classification and evidence). It
+carries no content hash: the maintainer's **Trusted provenance attestation** regenerates every file's
+SHA-256 from the private authority at landing and compares the committed claims with it, so editing an
+existing file does not change the ledger. The export records the publication policy and its digest.
 
 For the ordinary case — you changed the contents of paths that already have public entries, and you
 added and removed nothing — run:
@@ -78,9 +80,15 @@ mingw32-make contrib-refresh  # Windows (MSYS2 UCRT64 on PATH)
 ```
 
 `contrib-refresh` runs `tools/contrib_refresh.py` against `origin/main` (override with
-`CONTRIB_BASE`, as with `contrib-check`). It copies the claim already recorded for each changed
-path, rehashes only those paths, prints the old and new hash for every path it rehashed, and stages
-both files. Add `CONTRIB_REFRESH_CHECK=--check` to see what would change without writing anything.
+`CONTRIB_BASE`, as with `contrib-check`). It keeps the claim already recorded for each changed path,
+prints `claim kept <path>` for each, writes both files and stages them; for an ordinary change neither
+file's bytes change. Add `CONTRIB_REFRESH_CHECK=--check` to see what would change without writing
+anything.
+
+**After the ledger lost its hashes (#1673).** A branch made before that change may still carry the
+older ledger with a `sha256` per entry. When you merge `main` and Git reports a conflict in
+`assets/public_provenance_ledger.json`, take `main`'s copy (`git checkout --theirs -- <path>` during a
+merge), stage it, finish the merge, then run `make contrib-refresh` and commit what it stages.
 
 This is a convenience, not an authority. It cannot see the private trusted ledger, so it cannot see
 historical frozen debt or a changed executable path with no public entry, and it never invents a
@@ -134,7 +142,7 @@ summary distinguishes the two so a new file never reads as a mistake you made.
 | Windows runtime compile gate | The runtime builds with MSYS2 UCRT64 on Windows | Check Windows-only APIs and headers |
 | Trusted provenance attestation | Your change against the private trusted ledger | Provenance mismatches are handled by a maintainer |
 | dependency-review, OSV, CodeQL | Dependency and static security scans | Read the finding; ask if unsure |
-| Public export candidate audit | The publication gates and the public-safe export candidate, which must fail closed without the trusted ledger and leave nothing at the requested path | Read the failing step in the job log. A provenance mismatch in the publication audit stops the job before the candidate audit, so the step then says it failed for a reason other than the named fail-closed candidate audit; fix the mismatch first |
+| Public export candidate audit | The publication gates and the public-safe export candidate, which must fail closed without the trusted ledger and leave nothing at the requested path | Read the failing step in the job log. A provenance finding in the publication audit (a missing or unresolved claim) stops the job before the candidate audit, so the step then says it failed for a reason other than the named fail-closed candidate audit; fix that finding first |
 | Main integration smoke | The compact import and publication smoke (`tools/import_audit_gate.py`) and the provenance record gap check. It runs on pushes to `main`, manual runs and merge-queue groups, and is skipped on pull requests | Run `python tools/import_audit_gate.py` and `python tools/provenance_record_gap.py --check` |
 | CI required | The aggregate of the required jobs above | Fix the failing job it names |
 

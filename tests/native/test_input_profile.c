@@ -410,10 +410,13 @@ static void test_future_version_refused(void) {
     char diag[256];
     NkInputProfile profile;
 
-    const char *future_json =
+    /* One past the current version: the next schema this build cannot know. */
+    const int future_version = NK_INPUT_PROFILE_SCHEMA_VERSION + 1;
+    char future_json[512];
+    snprintf(future_json, sizeof(future_json),
         "{\n"
-        "  \"schema_version\": 4,\n"
-        "  \"device\": { \"guid\": \"guid_v4\", \"name_hint\": \"Future Controller\" },\n"
+        "  \"schema_version\": %d,\n"
+        "  \"device\": { \"guid\": \"guid_future\", \"name_hint\": \"Future Controller\" },\n"
         "  \"calibration\": {\n"
         "    \"trigger_threshold\": 8192,\n"
         "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
@@ -421,11 +424,14 @@ static void test_future_version_refused(void) {
         "  },\n"
         "  \"psp_bindings\": [],\n"
         "  \"navigation_bindings\": []\n"
-        "}";
+        "}", future_version);
+    char future_diag[64], future_field[64];
+    snprintf(future_diag, sizeof(future_diag), "unsupported future schema_version %d", future_version);
+    snprintf(future_field, sizeof(future_field), "\"schema_version\": %d", future_version);
 
     NkResult res = nk_input_profile_parse_json(&profile, future_json, strlen(future_json), diag, sizeof(diag));
     assert(res != NK_OK);
-    assert(strstr(diag, "unsupported future schema_version 4") != NULL);
+    assert(strstr(diag, future_diag) != NULL);
     /* Safe defaults fallback */
     assert(profile.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
     assert(profile.trigger_threshold == NK_INPUT_DEFAULT_TRIGGER_THRESHOLD);
@@ -439,7 +445,7 @@ static void test_future_version_refused(void) {
 
     res = nk_input_profile_load(&profile, file_path, diag, sizeof(diag));
     assert(res != NK_OK);
-    assert(strstr(diag, "unsupported future schema_version 4") != NULL);
+    assert(strstr(diag, future_diag) != NULL);
 
     /* Verify the file on disk is still the future version and has not been overwritten */
     f = fopen(file_path, "rb");
@@ -448,7 +454,7 @@ static void test_future_version_refused(void) {
     size_t rb_bytes = fread(readback, 1, sizeof(readback) - 1, f);
     fclose(f);
     readback[rb_bytes] = '\0';
-    assert(strstr(readback, "\"schema_version\": 4") != NULL);
+    assert(strstr(readback, future_field) != NULL);
 
     remove(file_path);
     printf("[INPUT_PROFILE_TEST] Subtest 4 PASSED!\n");
@@ -762,7 +768,7 @@ static void test_schema_one_migration(void) {
     size_t rb = fread(readback, 1, sizeof(readback) - 1, f);
     fclose(f);
     readback[rb] = '\0';
-    assert(strstr(readback, "\"schema_version\": 3") != NULL);
+    assert(strstr(readback, "\"schema_version\": 4") != NULL);
     assert(strstr(readback, "\"per_title\"") != NULL);
 
     NkInputProfileFile reloaded;
@@ -2399,7 +2405,7 @@ static void test_keyboard_bindings(void) {
     size_t rb = fread(readback, 1, sizeof(readback) - 1, f);
     fclose(f);
     readback[rb] = '\0';
-    assert(strstr(readback, "\"schema_version\": 3") != NULL);
+    assert(strstr(readback, "\"schema_version\": 4") != NULL);
     assert(strstr(readback, "\"keyboard_bindings\"") != NULL);
     assert(strstr(readback, "\"kp_2\"") != NULL);
 
@@ -2447,6 +2453,7 @@ static void test_keyboard_bindings(void) {
         assert(doc.global.psp_keys[i].primary == def.psp_keys[i].primary);
         assert(doc.global.psp_keys[i].secondary == def.psp_keys[i].secondary);
     }
+    assert(memcmp(doc.global.stick_keys, def.stick_keys, sizeof(def.stick_keys)) == 0);
     keyboard_doc(json, sizeof(json), 2, "\"per_title\": []");
     assert(nk_input_profile_file_parse_json(&doc, json, strlen(json), diag, sizeof(diag)) == NK_OK);
     keyboard_doc(json, sizeof(json), 1, "");
@@ -2512,6 +2519,443 @@ static void test_keyboard_bindings(void) {
     assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) == NK_OK);
 
     printf("[INPUT_PROFILE_TEST] Subtest 15 PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
+ * Subtest 16: Analog stick keys (schema 4, #1299)
+ * -------------------------------------------------------------------------- */
+
+static bool stick_diag_has(const char *diag, const char *fragment) {
+    if (strstr(diag, fragment) != NULL) return true;
+    printf("[INPUT_PROFILE_TEST] stick case: expected '%s' in diag: %s\n", fragment, diag);
+    return false;
+}
+
+/* A schema 4 document must parse, then its mapping must validate. */
+static void stick_doc_parse_ok(const char *extra, NkInputProfileFile *doc, int version) {
+    char json[4096];
+    char diag[256];
+    keyboard_doc(json, sizeof(json), version, extra);
+    if (nk_input_profile_file_parse_json(doc, json, strlen(json), diag, sizeof(diag)) != NK_OK) {
+        printf("[INPUT_PROFILE_TEST] stick doc refused: %s\n  diag: %s\n", extra, diag);
+        assert(0);
+    }
+    assert(nk_input_profile_validate(&doc->global, diag, sizeof(diag)) == NK_OK);
+}
+
+static void stick_doc_refused(const char *extra, int version, const char *fragment) {
+    char json[4096];
+    char diag[256];
+    NkInputProfileFile doc;
+    keyboard_doc(json, sizeof(json), version, extra);
+    NkResult res = nk_input_profile_file_parse_json(&doc, json, strlen(json), diag, sizeof(diag));
+    if (res == NK_OK || !stick_diag_has(diag, fragment)) {
+        printf("[INPUT_PROFILE_TEST] stick case not refused as expected: %s\n  diag: %s\n",
+               extra, diag);
+        assert(0);
+    }
+    /* A refused document leaves the safe defaults, never a partial set. */
+    NkInputProfile def;
+    nk_input_profile_init_default(&def);
+    assert(memcmp(doc.global.stick_keys, def.stick_keys, sizeof(def.stick_keys)) == 0);
+    assert(memcmp(doc.global.psp_keys, def.psp_keys, sizeof(def.psp_keys)) == 0);
+    assert(strcmp(doc.global.guid, "default") == 0);
+}
+
+static void test_stick_keys(void) {
+    printf("[INPUT_PROFILE_TEST] Subtest 16: analog stick keys (names, defaults, JSON, migration, "
+           "validation, evaluation)...\n");
+    char diag[256];
+    char json[4096];
+    NkInputProfileFile doc;
+    NkInputProfile def;
+    nk_input_profile_init_default(&def);
+
+    /* The schema this adds, and the version it first appears in. */
+    assert(NK_INPUT_PROFILE_SCHEMA_VERSION == 4);
+    assert(NK_INPUT_PROFILE_STICK_KEYS_SCHEMA_VERSION == 4);
+    assert(def.schema_version == 4);
+
+    /* Names: stable, case-insensitive, distinct from the button names. */
+    static const char *const kDirNames[NK_PSP_STICK_DIR_COUNT] = {
+        "stick_up", "stick_down", "stick_left", "stick_right"
+    };
+    assert(NK_PSP_STICK_DIR_COUNT == 4);
+    for (int d = 0; d < NK_PSP_STICK_DIR_COUNT; d++) {
+        assert(strcmp(nk_psp_stick_dir_name((NkPspStickDir)d), kDirNames[d]) == 0);
+        assert(nk_psp_stick_dir_from_name(kDirNames[d]) == (NkPspStickDir)d);
+        assert(nk_psp_button_from_name(kDirNames[d]) == (NkPspButton)-1);
+    }
+    assert(nk_psp_stick_dir_from_name("STICK_Right") == NK_PSP_STICK_RIGHT);
+    assert(nk_psp_stick_dir_from_name("up") == (NkPspStickDir)-1);
+    assert(nk_psp_stick_dir_from_name("stick_") == (NkPspStickDir)-1);
+    assert(nk_psp_stick_dir_from_name("") == (NkPspStickDir)-1);
+    assert(nk_psp_stick_dir_from_name(NULL) == (NkPspStickDir)-1);
+    assert(strcmp(nk_psp_stick_dir_name(NK_PSP_STICK_DIR_COUNT), "unknown") == 0);
+    assert(strcmp(nk_psp_stick_dir_name((NkPspStickDir)-1), "unknown") == 0);
+
+    /* Defaults: I up, K down, J left, L right; they validate and collide with no button key. */
+    assert(def.stick_keys[NK_PSP_STICK_UP].primary == nk_host_key_from_name("i"));
+    assert(def.stick_keys[NK_PSP_STICK_DOWN].primary == nk_host_key_from_name("k"));
+    assert(def.stick_keys[NK_PSP_STICK_LEFT].primary == nk_host_key_from_name("j"));
+    assert(def.stick_keys[NK_PSP_STICK_RIGHT].primary == nk_host_key_from_name("l"));
+    for (int d = 0; d < NK_PSP_STICK_DIR_COUNT; d++) {
+        assert(def.stick_keys[d].primary != NK_HOST_KEY_NONE);
+        assert(def.stick_keys[d].secondary == NK_HOST_KEY_NONE);
+        assert(nk_input_profile_key_buttons(&def, def.stick_keys[d].primary) == 0);
+    }
+    assert(nk_input_profile_validate(&def, diag, sizeof(diag)) == NK_OK);
+    {
+        /* Stick keys are not buttons: holding them presses nothing. */
+        bool down[NK_HOST_KEY_LIMIT] = {false};
+        for (int d = 0; d < NK_PSP_STICK_DIR_COUNT; d++) down[def.stick_keys[d].primary] = true;
+        assert(nk_input_profile_eval_keys(&def, down, NK_HOST_KEY_LIMIT) == 0);
+    }
+
+    /* Round trip: rebound, two-key and unbound stick directions survive save and load, in
+     * the global mapping and in a per-title entry, and the file lists the 14 buttons then
+     * the 4 stick directions. */
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_stick_profile.json";
+    NkInputProfile original;
+    nk_input_profile_init_default(&original);
+    original.stick_keys[NK_PSP_STICK_UP].primary = nk_host_key_from_name("kp_8");
+    original.stick_keys[NK_PSP_STICK_UP].secondary = nk_host_key_from_name("t");
+    original.stick_keys[NK_PSP_STICK_DOWN].primary = NK_HOST_KEY_NONE;
+    original.stick_keys[NK_PSP_STICK_LEFT].primary = nk_host_key_from_name("f");
+    original.stick_keys[NK_PSP_STICK_RIGHT].primary = nk_host_key_from_name("h");
+    original.stick_keys[NK_PSP_STICK_RIGHT].secondary = nk_host_key_from_name("kp_6");
+    assert(nk_input_profile_validate(&original, diag, sizeof(diag)) == NK_OK);
+    assert(nk_input_profile_save(&original, file_path, diag, sizeof(diag)) == NK_OK);
+
+    FILE *f = fopen(file_path, "rb");
+    assert(f != NULL);
+    static char readback[32768];
+    size_t rb = fread(readback, 1, sizeof(readback) - 1, f);
+    fclose(f);
+    readback[rb] = '\0';
+    assert(strstr(readback, "\"schema_version\": 4") != NULL);
+    {
+        /* psp_bindings also names "hold", so look from the keyboard list on. */
+        const char *kb = strstr(readback, "\"keyboard_bindings\"");
+        assert(kb != NULL);
+        const char *hold = strstr(kb, "\"control\": \"hold\"");
+        const char *up = strstr(kb, "\"control\": \"stick_up\"");
+        const char *down = strstr(kb, "\"control\": \"stick_down\"");
+        const char *left = strstr(kb, "\"control\": \"stick_left\"");
+        const char *right = strstr(kb, "\"control\": \"stick_right\"");
+        assert(hold && up && down && left && right);
+        assert(hold < up && up < down && down < left && left < right);
+        /* An unbound direction is written as "none", not left out. */
+        const char *none = strstr(down, "\"primary\": \"none\"");
+        assert(none != NULL && none < left);
+        assert(strstr(up, "\"secondary\": \"t\"") != NULL);
+    }
+    NkInputProfile loaded;
+    assert(nk_input_profile_load(&loaded, file_path, diag, sizeof(diag)) == NK_OK);
+    assert(memcmp(loaded.stick_keys, original.stick_keys, sizeof(original.stick_keys)) == 0);
+    assert(memcmp(loaded.psp_keys, original.psp_keys, sizeof(original.psp_keys)) == 0);
+    {
+        bool down[NK_HOST_KEY_LIMIT] = {false};
+        uint8_t lx = 77, ly = 78;
+        down[nk_host_key_from_name("t")] = true; /* the secondary key of stick_up */
+        down[nk_host_key_from_name("kp_6")] = true;
+        assert(nk_input_profile_eval_key_analog(&loaded, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 255 && ly == 0);
+        /* The unbound direction and the old default key do nothing. */
+        memset(down, 0, sizeof(down));
+        down[nk_host_key_from_name("k")] = true;
+        down[nk_host_key_from_name("j")] = true;
+        lx = 77; ly = 78;
+        assert(!nk_input_profile_eval_key_analog(&loaded, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 77 && ly == 78);
+    }
+
+    NkInputProfile title_map;
+    nk_input_profile_init_default(&title_map);
+    title_map.stick_keys[NK_PSP_STICK_LEFT].primary = nk_host_key_from_name("v");
+    nk_input_profile_file_init_default(&doc);
+    assert(nk_input_profile_file_set_title(&doc, "UCUS98701", &title_map, diag, sizeof(diag)) == NK_OK);
+    assert(nk_input_profile_file_save(&doc, file_path, diag, sizeof(diag)) == NK_OK);
+    NkInputProfileFile reloaded;
+    assert(nk_input_profile_file_load(&reloaded, file_path, diag, sizeof(diag)) == NK_OK);
+    assert(reloaded.title_count == 1);
+    assert(reloaded.title[0].stick_keys[NK_PSP_STICK_LEFT].primary == nk_host_key_from_name("v"));
+    assert(reloaded.global.stick_keys[NK_PSP_STICK_LEFT].primary == nk_host_key_from_name("j"));
+    remove(file_path);
+
+    /* set_title refuses a mapping whose stick key duplicates a button key. */
+    {
+        NkInputProfile clash = def;
+        clash.stick_keys[NK_PSP_STICK_UP].primary = nk_host_key_from_name("z");
+        nk_input_profile_file_init_default(&doc);
+        assert(nk_input_profile_file_set_title(&doc, "TEST00005", &clash, diag, sizeof(diag)) != NK_OK);
+        assert(stick_diag_has(diag, "'z' is bound to both 'circle' and 'stick_up'"));
+        assert(doc.title_count == 0);
+    }
+
+    /* Schema 4: a keyboard_bindings list replaces the defaults, so a direction it does not
+     * name is unbound; with no list at all, buttons and stick keep their default keys. */
+    stick_doc_parse_ok("\"keyboard_bindings\": [ { \"control\": \"cross\", \"primary\": \"c\" } ]",
+                       &doc, 4);
+    assert(doc.global.psp_keys[NK_PSP_BTN_CROSS].primary == nk_host_key_from_name("c"));
+    assert(doc.global.psp_keys[NK_PSP_BTN_START].primary == NK_HOST_KEY_NONE);
+    for (int d = 0; d < NK_PSP_STICK_DIR_COUNT; d++) {
+        assert(doc.global.stick_keys[d].primary == NK_HOST_KEY_NONE);
+        assert(doc.global.stick_keys[d].secondary == NK_HOST_KEY_NONE);
+    }
+    stick_doc_parse_ok("\"keyboard_bindings\": [ { \"control\": \"STICK_LEFT\", \"primary\": \"a\", "
+                       "\"secondary\": \"kp_4\" }, { \"control\": \"stick_up\", \"primary\": \"none\", "
+                       "\"secondary\": \"y\" } ]", &doc, 4);
+    assert(doc.global.stick_keys[NK_PSP_STICK_LEFT].primary == nk_host_key_from_name("a"));
+    assert(doc.global.stick_keys[NK_PSP_STICK_LEFT].secondary == nk_host_key_from_name("kp_4"));
+    assert(doc.global.stick_keys[NK_PSP_STICK_UP].primary == NK_HOST_KEY_NONE);
+    assert(doc.global.stick_keys[NK_PSP_STICK_UP].secondary == nk_host_key_from_name("y"));
+    assert(doc.global.stick_keys[NK_PSP_STICK_DOWN].primary == NK_HOST_KEY_NONE);
+    assert(doc.global.stick_keys[NK_PSP_STICK_RIGHT].primary == NK_HOST_KEY_NONE);
+    assert(doc.global.psp_keys[NK_PSP_BTN_CROSS].primary == NK_HOST_KEY_NONE);
+    stick_doc_parse_ok("", &doc, 4);
+    assert(memcmp(doc.global.psp_keys, def.psp_keys, sizeof(def.psp_keys)) == 0);
+    assert(memcmp(doc.global.stick_keys, def.stick_keys, sizeof(def.stick_keys)) == 0);
+
+    /* A schema 3 document cannot carry a stick entry: an older build would ignore it. */
+    stick_doc_refused("\"keyboard_bindings\": [ { \"control\": \"stick_up\", \"primary\": \"i\" } ]",
+                      3, "schema_version 3 cannot carry stick keys (introduced in 4)");
+    stick_doc_refused("\"keyboard_bindings\": [ { \"control\": \"cross\", \"primary\": \"c\" }, "
+                      "{ \"control\": \"stick_right\", \"primary\": \"none\" } ]",
+                      3, "cannot carry stick keys");
+    /* ... and a schema 2 document cannot carry any keyboard list. */
+    stick_doc_refused("\"keyboard_bindings\": [ { \"control\": \"stick_up\", \"primary\": \"i\" } ]",
+                      2, "cannot carry keyboard_bindings");
+    /* ... nor can one name a direction twice, or bind an unbindable key. */
+    stick_doc_refused("\"keyboard_bindings\": [ { \"control\": \"stick_up\", \"primary\": \"i\" }, "
+                      "{ \"control\": \"stick_up\", \"primary\": \"o\" } ]",
+                      4, "duplicate keyboard binding for control 'stick_up'");
+    stick_doc_refused("\"keyboard_bindings\": [ { \"control\": \"stick_up\", \"primary\": \"escape\" } ]",
+                      4, "unknown host key 'escape' for 'stick_up'");
+    stick_doc_refused("\"keyboard_bindings\": [ { \"control\": \"stick_up\" } ]",
+                      4, "names neither 'primary' nor 'secondary'");
+    stick_doc_refused("\"keyboard_bindings\": [ { \"control\": \"stick_middle\", \"primary\": \"i\" } ]",
+                      4, "unknown PSP control 'stick_middle'");
+    /* A stick key that is also a button key is refused in the document, naming both. */
+    stick_doc_refused("\"keyboard_bindings\": [ { \"control\": \"cross\", \"primary\": \"x\" }, "
+                      "{ \"control\": \"stick_up\", \"primary\": \"x\" } ]",
+                      4, "conflicting keyboard binding: host key 'x' is bound to both 'cross' and 'stick_up'");
+    stick_doc_refused("\"keyboard_bindings\": [ { \"control\": \"stick_up\", \"primary\": \"i\" }, "
+                      "{ \"control\": \"stick_left\", \"secondary\": \"i\" } ]",
+                      4, "host key 'i' is bound to both 'stick_up' and 'stick_left'");
+
+    /* Migration v3 -> v4: a schema 3 mapping with a keyboard_bindings list gets the default
+     * stick keys, and its button keys do not change. */
+    stick_doc_parse_ok("\"keyboard_bindings\": [ { \"control\": \"cross\", \"primary\": \"c\" } ]",
+                       &doc, 3);
+    assert(doc.global.psp_keys[NK_PSP_BTN_CROSS].primary == nk_host_key_from_name("c"));
+    assert(doc.global.psp_keys[NK_PSP_BTN_START].primary == NK_HOST_KEY_NONE);
+    assert(memcmp(doc.global.stick_keys, def.stick_keys, sizeof(def.stick_keys)) == 0);
+    stick_doc_parse_ok("", &doc, 3); /* no list: every default, stick included */
+    assert(memcmp(doc.global.psp_keys, def.psp_keys, sizeof(def.psp_keys)) == 0);
+    assert(memcmp(doc.global.stick_keys, def.stick_keys, sizeof(def.stick_keys)) == 0);
+
+    /* ... except a default stick key the file already binds to a PSP button: that direction
+     * stays unbound, in either slot of the button, and the other directions are filled in. */
+    stick_doc_parse_ok("\"keyboard_bindings\": [ { \"control\": \"square\", \"primary\": \"j\" }, "
+                       "{ \"control\": \"circle\", \"primary\": \"b\", \"secondary\": \"l\" }, "
+                       "{ \"control\": \"cross\", \"primary\": \"x\" } ]", &doc, 3);
+    assert(doc.global.psp_keys[NK_PSP_BTN_SQUARE].primary == nk_host_key_from_name("j"));
+    assert(doc.global.psp_keys[NK_PSP_BTN_CIRCLE].primary == nk_host_key_from_name("b"));
+    assert(doc.global.psp_keys[NK_PSP_BTN_CIRCLE].secondary == nk_host_key_from_name("l"));
+    assert(doc.global.psp_keys[NK_PSP_BTN_CROSS].primary == nk_host_key_from_name("x"));
+    assert(doc.global.stick_keys[NK_PSP_STICK_UP].primary == nk_host_key_from_name("i"));
+    assert(doc.global.stick_keys[NK_PSP_STICK_DOWN].primary == nk_host_key_from_name("k"));
+    assert(doc.global.stick_keys[NK_PSP_STICK_LEFT].primary == NK_HOST_KEY_NONE);
+    assert(doc.global.stick_keys[NK_PSP_STICK_RIGHT].primary == NK_HOST_KEY_NONE);
+    for (int d = 0; d < NK_PSP_STICK_DIR_COUNT; d++) {
+        assert(doc.global.stick_keys[d].secondary == NK_HOST_KEY_NONE);
+    }
+    {
+        /* The migrated mapping saves and reloads unchanged at schema 4. */
+        assert(nk_input_profile_file_save(&doc, file_path, diag, sizeof(diag)) == NK_OK);
+        assert(nk_input_profile_file_load(&reloaded, file_path, diag, sizeof(diag)) == NK_OK);
+        assert(memcmp(reloaded.global.psp_keys, doc.global.psp_keys, sizeof(doc.global.psp_keys)) == 0);
+        assert(memcmp(reloaded.global.stick_keys, doc.global.stick_keys,
+                      sizeof(doc.global.stick_keys)) == 0);
+        remove(file_path);
+    }
+
+    /* A schema 3 per-title entry migrates on its own terms, under the same rule. */
+    snprintf(json, sizeof(json),
+             "{\n"
+             "  \"schema_version\": 3,\n"
+             "  \"device\": { \"guid\": \"kb\", \"name_hint\": \"Keyboard Test\" },\n"
+             "  \"calibration\": {\n"
+             "    \"trigger_threshold\": 8192,\n"
+             "    \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+             "    \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+             "  },\n"
+             "  \"psp_bindings\": [ { \"control\": \"cross\", \"primary\": \"south\" } ],\n"
+             "  \"navigation_bindings\": [],\n"
+             "  \"keyboard_bindings\": [ { \"control\": \"cross\", \"primary\": \"x\" } ],\n"
+             "  \"per_title\": [ { \"disc_id\": \"UCUS98701\", \"profile\": {\n"
+             "    \"device\": { \"guid\": \"kb2\", \"name_hint\": \"Keyboard Test 2\" },\n"
+             "    \"calibration\": {\n"
+             "      \"trigger_threshold\": 8192,\n"
+             "      \"analog_x\": { \"host_axis\": \"leftx\", \"deadzone_inner\": 1000 },\n"
+             "      \"analog_y\": { \"host_axis\": \"lefty\", \"deadzone_inner\": 1000 }\n"
+             "    },\n"
+             "    \"psp_bindings\": [ { \"control\": \"cross\", \"primary\": \"south\" } ],\n"
+             "    \"navigation_bindings\": [],\n"
+             "    \"keyboard_bindings\": [ { \"control\": \"triangle\", \"primary\": \"i\" } ]\n"
+             "  } } ]\n"
+             "}");
+    assert(nk_input_profile_file_parse_json(&doc, json, strlen(json), diag, sizeof(diag)) == NK_OK);
+    assert(doc.title_count == 1);
+    assert(memcmp(doc.global.stick_keys, def.stick_keys, sizeof(def.stick_keys)) == 0);
+    assert(doc.title[0].psp_keys[NK_PSP_BTN_TRIANGLE].primary == nk_host_key_from_name("i"));
+    assert(doc.title[0].stick_keys[NK_PSP_STICK_UP].primary == NK_HOST_KEY_NONE);
+    assert(doc.title[0].stick_keys[NK_PSP_STICK_DOWN].primary == nk_host_key_from_name("k"));
+    assert(doc.title[0].stick_keys[NK_PSP_STICK_LEFT].primary == nk_host_key_from_name("j"));
+    assert(doc.title[0].stick_keys[NK_PSP_STICK_RIGHT].primary == nk_host_key_from_name("l"));
+    assert(nk_input_profile_validate(&doc.title[0], diag, sizeof(diag)) == NK_OK);
+
+    /* Validation: a stick key that duplicates a button key is refused, naming both controls,
+     * in either slot; so is a stick key shared by two directions or a code outside the key
+     * table; a direction may repeat its own key across its two slots. */
+    NkInputProfile bad = def;
+    bad.stick_keys[NK_PSP_STICK_UP].primary = nk_host_key_from_name("x");
+    assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) != NK_OK);
+    assert(stick_diag_has(diag, "conflicting keyboard binding: host key 'x' is bound to both "
+                                "'cross' and 'stick_up'"));
+    bad = def;
+    bad.stick_keys[NK_PSP_STICK_RIGHT].secondary = nk_host_key_from_name("rshift");
+    assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) != NK_OK);
+    assert(stick_diag_has(diag, "host key 'rshift' is bound to both 'select' and 'stick_right'"));
+    bad = def;
+    bad.stick_keys[NK_PSP_STICK_DOWN].primary = def.stick_keys[NK_PSP_STICK_LEFT].primary;
+    assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) != NK_OK);
+    assert(stick_diag_has(diag, "host key 'j' is bound to both 'stick_down' and 'stick_left'"));
+    assert(nk_input_profile_save(&bad, file_path, diag, sizeof(diag)) != NK_OK);
+    assert(!nk_platform_file_exists(file_path));
+    bad = def;
+    bad.stick_keys[NK_PSP_STICK_LEFT].primary = 41; /* Escape */
+    assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) != NK_OK);
+    assert(stick_diag_has(diag, "stick direction 'stick_left' binds host key code 41"));
+    assert(stick_diag_has(diag, "not a bindable key"));
+    bad.stick_keys[NK_PSP_STICK_LEFT].primary = NK_HOST_KEY_LIMIT;
+    assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) != NK_OK);
+    bad.stick_keys[NK_PSP_STICK_LEFT].primary = -1;
+    assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) != NK_OK);
+    bad.stick_keys[NK_PSP_STICK_LEFT].primary = NK_HOST_KEY_NONE;
+    bad.stick_keys[NK_PSP_STICK_LEFT].secondary = 41;
+    assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) != NK_OK);
+    bad = def;
+    bad.stick_keys[NK_PSP_STICK_UP].secondary = bad.stick_keys[NK_PSP_STICK_UP].primary;
+    assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) == NK_OK);
+    /* Every direction may be unbound. */
+    memset(bad.stick_keys, 0, sizeof(bad.stick_keys));
+    assert(nk_input_profile_validate(&bad, diag, sizeof(diag)) == NK_OK);
+
+    /* Evaluation: for each axis, exactly one held direction gives full deflection (up and
+     * left 0, down and right 255); none or both leaves the value passed in. */
+    {
+        const int kI = nk_host_key_from_name("i"), kK = nk_host_key_from_name("k");
+        const int kJ = nk_host_key_from_name("j"), kL = nk_host_key_from_name("l");
+        bool down[NK_HOST_KEY_LIMIT];
+        uint8_t lx, ly;
+
+        memset(down, 0, sizeof(down));
+        lx = 40; ly = 200; /* a controller's stick, kept while no stick key is held */
+        assert(!nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 40 && ly == 200);
+
+        down[kI] = true;
+        assert(nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 40 && ly == 0);
+        down[kI] = false; down[kK] = true;
+        ly = 90;
+        assert(nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 40 && ly == 255);
+        down[kI] = true; /* up and down together cancel: the input value stays */
+        ly = 90;
+        assert(!nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 40 && ly == 90);
+
+        memset(down, 0, sizeof(down));
+        down[kJ] = true;
+        lx = 90;
+        assert(nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 0 && ly == 90);
+        down[kJ] = false; down[kL] = true;
+        lx = 90;
+        assert(nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 255 && ly == 90);
+        down[kJ] = true; /* left and right together cancel */
+        lx = 90;
+        assert(!nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 90 && ly == 90);
+
+        /* The axes are independent: a diagonal sets both, a lone axis key leaves the other. */
+        memset(down, 0, sizeof(down));
+        down[kI] = true; down[kL] = true;
+        lx = 1; ly = 2;
+        assert(nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 255 && ly == 0);
+        down[kJ] = true; /* left cancels right on X; up still drives Y */
+        lx = 1; ly = 2;
+        assert(nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 1 && ly == 0);
+
+        /* Keys at or beyond key_count read as released. */
+        memset(down, 0, sizeof(down));
+        down[kI] = true; down[kL] = true;
+        lx = 1; ly = 2;
+        assert(!nk_input_profile_eval_key_analog(&def, down, kI, &lx, &ly));   /* i == key_count */
+        assert(lx == 1 && ly == 2);
+        assert(nk_input_profile_eval_key_analog(&def, down, kI + 1, &lx, &ly)); /* i just inside */
+        assert(lx == 1 && ly == 0);
+        lx = 1; ly = 2;
+        assert(nk_input_profile_eval_key_analog(&def, down, kL + 1, &lx, &ly));
+        assert(lx == 255 && ly == 0);
+        lx = 1; ly = 2;
+        assert(!nk_input_profile_eval_key_analog(&def, down, 1, &lx, &ly));
+        assert(lx == 1 && ly == 2);
+
+        /* A bound key in either slot drives the direction. */
+        NkInputProfile two = def;
+        two.stick_keys[NK_PSP_STICK_UP].secondary = nk_host_key_from_name("kp_8");
+        memset(down, 0, sizeof(down));
+        down[nk_host_key_from_name("kp_8")] = true;
+        lx = 5; ly = 6;
+        assert(nk_input_profile_eval_key_analog(&two, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 5 && ly == 0);
+        assert(!nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+
+        /* An unbound direction never fires, even for key code 0. */
+        NkInputProfile none = def;
+        memset(none.stick_keys, 0, sizeof(none.stick_keys));
+        memset(down, 0, sizeof(down));
+        down[0] = true; down[kI] = true; down[kJ] = true;
+        lx = 5; ly = 6;
+        assert(!nk_input_profile_eval_key_analog(&none, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(lx == 5 && ly == 6);
+
+        /* NULL arguments: nothing changes and false comes back. A NULL axis pointer is
+         * skipped while the other axis still follows its keys. */
+        memset(down, 0, sizeof(down));
+        down[kI] = true; down[kL] = true;
+        lx = 5; ly = 6;
+        assert(!nk_input_profile_eval_key_analog(NULL, down, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(!nk_input_profile_eval_key_analog(&def, NULL, NK_HOST_KEY_LIMIT, &lx, &ly));
+        assert(!nk_input_profile_eval_key_analog(&def, down, 0, &lx, &ly));
+        assert(!nk_input_profile_eval_key_analog(&def, down, -1, &lx, &ly));
+        assert(!nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, NULL, NULL));
+        assert(lx == 5 && ly == 6);
+        assert(nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, NULL, &ly));
+        assert(lx == 5 && ly == 0);
+        ly = 6;
+        assert(nk_input_profile_eval_key_analog(&def, down, NK_HOST_KEY_LIMIT, &lx, NULL));
+        assert(lx == 255 && ly == 6);
+    }
+
+    printf("[INPUT_PROFILE_TEST] Subtest 16 PASSED!\n");
 }
 
 /* -----------------------------------------------------------------------------
@@ -2587,6 +3031,15 @@ static void versioned_profile_case(const char *fixture, int version, int title_c
     if (version < NK_INPUT_PROFILE_KEYBOARD_SCHEMA_VERSION) {
         assert(memcmp(doc.global.psp_keys, defaults.psp_keys, sizeof(defaults.psp_keys)) == 0);
     }
+    /* A file older than stick keys gets the default I/J/K/L stick, in the global mapping
+     * and in its per-title entry (none of the fixtures binds those keys to a button). */
+    if (version < NK_INPUT_PROFILE_STICK_KEYS_SCHEMA_VERSION) {
+        assert(memcmp(doc.global.stick_keys, defaults.stick_keys, sizeof(defaults.stick_keys)) == 0);
+        if (title_count) {
+            assert(memcmp(doc.title[0].stick_keys, defaults.stick_keys,
+                          sizeof(defaults.stick_keys)) == 0);
+        }
+    }
 
     assert(nk_input_profile_file_save(&doc, path, diag, sizeof(diag)) == NK_OK);
     if (version < NK_INPUT_PROFILE_SCHEMA_VERSION) {
@@ -2596,13 +3049,74 @@ static void versioned_profile_case(const char *fixture, int version, int title_c
         assert(none == NULL);
     }
     char *saved = versioned_read(path);
-    assert(strstr(saved, "\"schema_version\": 3,") != NULL);
+    assert(strstr(saved, "\"schema_version\": 4,") != NULL);
     free(saved);
     assert(nk_input_profile_file_load(&reloaded, path, diag, sizeof(diag)) == NK_OK);
     assert(memcmp(&reloaded.global, &doc.global, sizeof(doc.global)) == 0);
     assert(reloaded.title_count == doc.title_count);
     remove(backup);
     remove(path);
+}
+
+/* #1791's ground: a binding source can be a stick direction with its own threshold
+ * ("+rightx@20000"), written back the same way, and the mouse prefix that #1791 adds
+ * is refused by name until then, never read as something else. */
+static bool parse_with_cross(const char *saved, const char *cross, char *diag, size_t diag_sz) {
+    static char text[65536];
+    const char *at = strstr(saved, "\"+rightx@20000\"");
+    NkInputProfile parsed;
+    if (at == NULL) return false;
+    snprintf(text, sizeof(text), "%.*s\"%s\"%s", (int)(at - saved), saved, cross,
+             at + strlen("\"+rightx@20000\""));
+    return nk_input_profile_parse_json(&parsed, text, strlen(text), diag, diag_sz) == NK_OK;
+}
+
+static void test_source_thresholds(void) {
+    printf("[INPUT_PROFILE_TEST] Subtest 17: stick-direction sources with their own threshold...\n");
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_source_thresholds.json";
+    static char saved[65536];
+    char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+    NkInputProfile profile;
+    NkInputProfile reloaded;
+    bool buttons[NK_HOST_BUTTON_COUNT];
+    int16_t axes[NK_HOST_AXIS_COUNT];
+    FILE *file;
+    size_t size;
+    memset(buttons, 0, sizeof(buttons));
+    memset(axes, 0, sizeof(axes));
+    nk_input_profile_init_default(&profile);
+    profile.psp_buttons[NK_PSP_BTN_CROSS].primary =
+        (NkBindingSource){NK_BINDING_HOST_AXIS_POS, NK_HOST_AXIS_RIGHTX, 20000};
+    profile.psp_buttons[NK_PSP_BTN_CIRCLE].primary =
+        (NkBindingSource){NK_BINDING_HOST_AXIS_NEG, NK_HOST_AXIS_RIGHTY, 0};
+    assert(nk_input_profile_validate(&profile, diag, sizeof(diag)) == NK_OK);
+    /* Its own threshold, not the profile's: 18000 holds Circle's direction but not Cross's. */
+    axes[NK_HOST_AXIS_RIGHTX] = 18000;
+    axes[NK_HOST_AXIS_RIGHTY] = -18000;
+    uint32_t held = nk_input_profile_eval_buttons(&profile, buttons, axes);
+    assert((held & NK_PSP_BTN_CROSS_BIT) == 0 && (held & NK_PSP_BTN_CIRCLE_BIT) != 0);
+    axes[NK_HOST_AXIS_RIGHTX] = 21000;
+    assert(nk_input_profile_eval_buttons(&profile, buttons, axes) & NK_PSP_BTN_CROSS_BIT);
+    /* Written as "+rightx@20000" and read back the same. */
+    assert(nk_input_profile_save(&profile, path, diag, sizeof(diag)) == NK_OK);
+    file = fopen(path, "rb");
+    assert(file != NULL);
+    size = fread(saved, 1, sizeof(saved) - 1, file);
+    fclose(file);
+    saved[size] = '\0';
+    assert(strstr(saved, "\"+rightx@20000\"") != NULL && strstr(saved, "\"-righty\"") != NULL);
+    assert(nk_input_profile_load(&reloaded, path, diag, sizeof(diag)) == NK_OK);
+    assert(reloaded.psp_buttons[NK_PSP_BTN_CROSS].primary.threshold == 20000);
+    assert(reloaded.psp_buttons[NK_PSP_BTN_CIRCLE].primary.threshold == 0);
+    remove(path);
+    /* The mouse is #1791's: refused by name. Out-of-range thresholds are refused too. */
+    assert(!parse_with_cross(saved, "mouse:+x@4", diag, sizeof(diag)));
+    assert(strstr(diag, "mouse source") != NULL);
+    assert(!parse_with_cross(saved, "+rightx@0", diag, sizeof(diag)));
+    assert(!parse_with_cross(saved, "+rightx@40000", diag, sizeof(diag)));
+    assert(!parse_with_cross(saved, "+nostick@100", diag, sizeof(diag)));
+    assert(parse_with_cross(saved, "+leftx@32767", diag, sizeof(diag)));
+    printf("[INPUT_PROFILE_TEST] Subtest 17 PASSED!\n");
 }
 
 static void test_versioned_profile_files(void) {
@@ -2614,9 +3128,13 @@ static void test_versioned_profile_files(void) {
     versioned_profile_case("fixtures/user_data/v0.0.1/input_profile.json", 3, 1);
 
     /* A newer player's profile is refused by name, and a save leaves it as it is. */
-    static const char newer[] =
-        "{\"schema_version\": 4, \"device\": {\"guid\": \"g\", \"name_hint\": \"n\"},"
-        " \"a_later_member\": []}\n";
+    char newer[160];
+    snprintf(newer, sizeof(newer),
+             "{\"schema_version\": %d, \"device\": {\"guid\": \"g\", \"name_hint\": \"n\"},"
+             " \"a_later_member\": []}\n", NK_INPUT_PROFILE_SCHEMA_VERSION + 1);
+    char newer_field[40];
+    snprintf(newer_field, sizeof(newer_field), "schema_version %d",
+             NK_INPUT_PROFILE_SCHEMA_VERSION + 1);
     const char *path = VERSIONED_PROFILE_ROOT "/profile_newer.json";
     char diag[256];
     static NkInputProfileFile doc;
@@ -2625,7 +3143,7 @@ static void test_versioned_profile_files(void) {
     assert(strstr(diag, "newer Nakagawa") != NULL);
     nk_input_profile_file_init_default(&doc);
     assert(nk_input_profile_file_save(&doc, path, diag, sizeof(diag)) == NK_ERROR_NEWER_SCHEMA);
-    assert(strstr(diag, "schema_version 4") != NULL);
+    assert(strstr(diag, newer_field) != NULL);
     char *kept = versioned_read(path);
     assert(kept != NULL && strcmp(kept, newer) == 0);
     free(kept);
@@ -2657,6 +3175,8 @@ int main(void) {
     test_psp_button_bitmask();
     test_overlay_input_gate();
     test_keyboard_bindings();
+    test_stick_keys();
+    test_source_thresholds();
     test_versioned_profile_files();
 
     printf("=================================================================\n");

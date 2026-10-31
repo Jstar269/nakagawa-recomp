@@ -776,7 +776,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
              event->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
             event->gaxis.value > 16000) {
-            NkBindingSource src;
+            NkBindingSource src = {NK_BINDING_NONE, 0, 0};
             src.type = NK_BINDING_HOST_TRIGGER;
             src.index = event->gaxis.axis;
             input_settings_feed_capture_source(&app->input_settings, src);
@@ -804,7 +804,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
            both launchers. */
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
-            NkBindingSource src;
+            NkBindingSource src = {NK_BINDING_NONE, 0, 0};
             if (app->input_settings.device == INPUT_DEVICE_KEYBOARD) {
                 /* A controller has no keys: its press stops the wait for one. */
                 input_settings_cancel_capture(&app->input_settings);
@@ -1534,6 +1534,7 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             player_app_set_view(app, VIEW_ACCESSIBILITY_SETTINGS);
             break;
         case PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE: player_app_cycle_interface_size(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE: player_app_cycle_text_size(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST: player_app_cycle_high_contrast_focus(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION: player_app_cycle_reduce_motion(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:
@@ -1598,7 +1599,10 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
     InputSettingsState *input = &app->input_settings;
     switch (op) {
         case PLAYER_UI_CONTROLLER_REBIND:
-            if (control >= (size_t)INPUT_CONTROL_DIGITAL_COUNT) break;
+            if (control >= (size_t)INPUT_CONTROL_TOTAL_COUNT ||
+                !input_settings_control_bindable(input, (int)control)) {
+                break;
+            }
             /* Choosing the button that is waiting stops the wait. */
             if (input->capturing && input->capture_control == (int)control) {
                 input_settings_cancel_capture(input);
@@ -1619,12 +1623,8 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
             (void)input_settings_adjust_trigger_threshold(input, 1000);
             break;
         case PLAYER_UI_CONTROLLER_CALIBRATE: (void)input_settings_start_calibration(input); break;
-        case PLAYER_UI_CONTROLLER_SAVE:
-            if (input_settings_save(input, NULL) == NK_OK) {
-                snprintf(input->save_diagnostic, sizeof(input->save_diagnostic),
-                         "Profile successfully saved to disk");
-                input->has_save_diagnostic = true;
-            }
+        case PLAYER_UI_CONTROLLER_STICK:
+            input_settings_set_stick(input, !input_settings_stick_is_right(input));
             break;
         case PLAYER_UI_CONTROLLER_RESET:
             /* The defaults of the device shown: the other device keeps its own. */
@@ -1638,8 +1638,17 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
             break;
         case PLAYER_UI_CONTROLLER_BACK:
         case PLAYER_UI_CONTROLLER_CLOSE:
-            if (input_settings_is_capturing(input)) input_settings_cancel_capture(input);
-            if (input_settings_is_calibrating(input)) input_settings_cancel_calibration(input);
+            /* Leaving the page writes what is not on disk yet, a failed write included.
+               If that fails, the page stays once to say so; Back again leaves without
+               saving. */
+        {
+            bool leave_anyway = input->leave_unsaved;   /* the write clears it */
+            if (input_settings_flush(input) != NK_OK && !leave_anyway) {
+                input->leave_unsaved = true;
+                break;
+            }
+            input->leave_unsaved = false;
+        }
             player_app_set_view(app, op == PLAYER_UI_CONTROLLER_BACK ? VIEW_SETTINGS
                                                                      : VIEW_LIBRARY);
             break;
@@ -4468,7 +4477,11 @@ int main(int argc, char *argv[]) {
 #endif
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (ui_test_mode) app.settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
+    /* Scripted runs cut motion so their frames are steady; NK_UI_TEST_MOTION keeps the
+       settings' choice, for the tests of motion itself. */
+    if (ui_test_mode && getenv("NK_UI_TEST_MOTION") == NULL) {
+        app.settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
+    }
 #endif
 
     app.window_width = override_w;
@@ -5199,6 +5212,9 @@ int main(int argc, char *argv[]) {
         if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
             input_settings_update_capture(&app.input_settings, delta_ms > 0 ? delta_ms : 1);
         }
+        /* The Controls page has no Save step: a binding, a reset or a stick setting
+           changed last frame is written to the input profile now (#1299). */
+        (void)input_settings_save_if_dirty(&app.input_settings);
 
         input.mouse_clicked = false;
         input.activate_pressed = false;
@@ -5668,6 +5684,13 @@ int main(int argc, char *argv[]) {
             }
         }
 #endif
+    }
+
+    /* A binding made in the same moment as the quit is written before closing; a
+       write that fails now has nowhere left to be shown, so it goes to the log. */
+    if (input_settings_flush(&app.input_settings) != NK_OK) {
+        fprintf(stderr, "[PLAYER] Controls not saved: %s\n",
+                app.input_settings.save_diagnostic);
     }
 
     /* Closing: a package check still hashing stops at its next read, so the
