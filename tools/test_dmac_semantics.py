@@ -49,7 +49,7 @@ def _dmac_region() -> str:
     The block is one stretch of the file that defines it (since #307, hle_cache_dma.c), so the
     slice stays inside that file.
     """
-    text = dict(hle_sources.sources())[hle_sources.defining_file("dmac_transfer")]
+    text: str = dict(hle_sources.sources())[hle_sources.defining_file("dmac_transfer")]
     start = text.index("/* ---- sceDmacMemcpy / sceDmacTryMemcpy")
     transfer = hle_sources.function_text("uint32_t dmac_transfer(CpuState *s, int try_only) {")
     return text[start:text.index(transfer, start) + len(transfer)]

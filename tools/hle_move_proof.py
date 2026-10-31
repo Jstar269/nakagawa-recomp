@@ -29,7 +29,9 @@ L4, artefacts (CLI only). The HLE manifest and the production/selftest reachabil
     and the new registration functions; no symbol is defined twice; no newly external name is
     also defined by a library the runtime links; on ELF every newly external name is hidden.
 
-CLI: ``python tools/hle_move_proof.py --base origin/main`` exits 0 when every layer passes.
+CLI: ``python tools/hle_move_proof.py --base origin/main`` exits 0 when every layer ran and passed,
+1 when a layer failed, and 2 (RESULT: INCOMPLETE) when a layer or configuration did not run: a
+partial run can find a failure but cannot certify the move.
 ``--map`` writes the function -> new file map other branches use to port their changes.
 """
 
@@ -115,10 +117,20 @@ class Report:
     missing_comments: list[str] = field(default_factory=list)
     moved_to: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    #: layers or configurations that did not run; any entry makes the result INCOMPLETE
+    incomplete: list[str] = field(default_factory=list)
+    #: name -> units whose preprocessed code (not declarations) uses it, over every configuration run
+    code_users: dict[str, set[str]] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
         return not self.errors
+
+    @property
+    def result(self) -> str:
+        if self.errors:
+            return "FAIL"
+        return "INCOMPLETE" if self.incomplete else "PASS"
 
 
 # --------------------------------------------------------------------------------------
@@ -274,7 +286,7 @@ def unit_items(path: str, text: str) -> list[Item]:
     and changes no item's meaning, so an item moved into a header keeps the conditions it had.
     The guard's own ``#define`` becomes an ``#include``-like glue line.
     """
-    items = split_items(text)
+    items: list[Item] = split_items(text)
     if not path.endswith(".h"):
         return items
     pps = [item for item in items if item.kind in ("pp", "macro")]
@@ -490,10 +502,13 @@ def preprocess_unit(tree: Path, relative: str, config: tuple[tuple[str, ...], tu
 def preprocessed_definitions(tree: Path, units: list[str], headers: tuple[str, ...],
                              config: tuple[tuple[str, ...], tuple[str, ...]], cc: str,
                              unit_configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
+                             uses: dict[str, set[str]] | None = None, watch: frozenset[str] = frozenset(),
                              ) -> dict[str, list[str]]:
     """Name -> token list of every function, object and type, from every unit in one configuration.
 
-    ``unit_configs`` preprocesses the units it names in another configuration instead.
+    ``unit_configs`` preprocesses the units it names in another configuration instead. When
+    ``uses`` is given, every unit whose definitions use a name in ``watch`` is added to
+    ``uses[name]``; declarations do not count, so an unused prototype is not a use.
     """
     found: dict[str, list[str]] = {}
     for relative in units:
@@ -502,6 +517,10 @@ def preprocessed_definitions(tree: Path, units: list[str], headers: tuple[str, .
             if not item.names or item.kind != "func" and not (item.kind == "decl" and not _is_declaration_glue(item)):
                 continue
             tokens = _TOKEN.findall(item.text)
+            if uses is not None:
+                for token in watch.intersection(tokens):
+                    if token not in item.names:
+                        uses.setdefault(token, set()).add(relative)
             previous = found.get(item.names[0])
             if previous is not None and previous != tokens:
                 found[item.names[0] + "@" + relative] = tokens
@@ -557,14 +576,17 @@ def registration_roots(definitions: dict[str, list[str]]) -> list[str]:
 def compare_preprocessed(base_tree: Path, base_units: list[str], base_headers: tuple[str, ...],
                          new_tree: Path, new_units: list[str], new_headers: tuple[str, ...],
                          report: Report, cc: str,
-                         configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]]) -> None:
+                         configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]],
+                         check_static_uses: bool = True) -> None:
     removed = {entry.rsplit(" (", 1)[0] for entry in report.static_removed}
+    watch = frozenset(n for names in report.static_removed_names.values() for n in names)
     inlined = {entry.rsplit(" (", 1)[0] for entry in report.made_inline}
     glue = {entry.rsplit(" (", 1)[0] for entry in report.new_glue}
     for config, flags in configs.items():
         production = {unit: CONFIGS["production"] for unit in LINKED_AS_PRODUCTION.get(config, ()) if unit in base_units}
         base = preprocessed_definitions(base_tree, base_units, base_headers, flags, cc, production)
-        new = preprocessed_definitions(new_tree, new_units, new_headers, flags, cc)
+        new = preprocessed_definitions(new_tree, new_units, new_headers, flags, cc,
+                                       uses=report.code_users, watch=watch)
         # L5: a declaration missing from the private header must fail here, not compile into an
         # implicit `int` on a compiler that only warns about it.
         for relative in new_units:
@@ -599,6 +621,47 @@ def compare_preprocessed(base_tree: Path, base_units: list[str], base_headers: t
                     report.errors.append(f"[{config}] {root}'s flattened registration sequence differs")
             except RuntimeError as exc:
                 report.errors.append(f"[{config}] registration sequence of {root}: {exc}")
+    if check_static_uses:
+        _check_static_uses(report, [(unit, (new_tree / unit).read_bytes().decode("utf-8")) for unit in new_units])
+
+
+def _source_users(sources: list[Unit], names: list[str], home: str) -> set[str]:
+    """Units other than ``home`` with a definition (not a declaration) that names one of ``names``
+    in its code, whatever its conditions: code some other host compiles counts here."""
+    pattern = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b")
+    users: set[str] = set()
+    for unit, text in sources:
+        if unit == home:
+            continue
+        for item in split_items(text):
+            if item.kind not in ("func", "decl", "macro_call") or _is_declaration_glue(item):
+                continue
+            if not set(item.names) & set(names) and pattern.search(blank_comments_and_literals(item.text)):
+                users.add(unit)
+                break
+    return users
+
+
+def _check_static_uses(report: Report, sources: list[Unit]) -> None:
+    """Each dropped ``static`` must be needed: another unit's code uses one of the declaration's
+    names. A prototype or ``extern`` in another file is not a use. A use this host compiles in
+    one of its configurations settles it; a use only in code another host compiles (an
+    ``#ifndef _WIN32`` arm on Windows) is left to that host's run, and listed."""
+    for entry in report.static_removed:
+        name, home = entry.rsplit(" (", 1)
+        home = home.rstrip(")")
+        names = report.static_removed_names.get(name, [name])
+        users = set().union(*(report.code_users.get(n, set()) for n in names)) - {home}
+        if users:
+            continue
+        elsewhere = _source_users(sources, names, home)
+        if elsewhere:
+            report.notes.append(f"`static` dropped from {name} ({home}) for a use only another host compiles, "
+                                f"in {', '.join(sorted(elsewhere))}: that host's run checks it")
+        else:
+            report.errors.append(
+                f"{home}: `static` was dropped from {name}, but no other unit's code uses it "
+                "(a declaration alone is not a use)")
 
 
 # --------------------------------------------------------------------------------------
@@ -665,7 +728,7 @@ def compare_symbols(base_tree: Path, base_units: list[str], new_tree: Path, new_
                     report: Report, cc: str) -> None:
     nm = shutil.which("nm")
     if nm is None:
-        report.notes.append("L4 symbols NOT_RUN: no nm on PATH")
+        report.incomplete.append("L4 symbols: no nm on PATH")
         return
     config = CONFIGS["production"]
     with tempfile.TemporaryDirectory() as tmp:
@@ -706,8 +769,10 @@ def compare_symbols(base_tree: Path, base_units: list[str], new_tree: Path, new_
                     if len(parts) >= 8 and parts[4] == "GLOBAL" and parts[6] != "UND" and parts[7] in gained \
                             and parts[5] != "HIDDEN":
                         report.errors.append(f"L4: {parts[7]} ({unit}) is newly external with {parts[5]} visibility")
+        elif sys.platform != "win32":
+            report.incomplete.append("L4 ELF visibility: no readelf on PATH")
         else:
-            report.notes.append("L4 ELF visibility NOT_RUN on this host (run the proof on Linux or WSL)")
+            report.notes.append("L4 ELF visibility does not apply to PE objects; the Linux run checks it")
 
 
 # --------------------------------------------------------------------------------------
@@ -802,9 +867,12 @@ def run(rev: str, cc: str | None, configs: dict[str, tuple[tuple[str, ...], tupl
     if show(baseline) != (ROOT / baseline).read_bytes().decode("utf-8"):
         report.errors.append(f"{baseline} differs from {rev}'s")
     if cc is None:
-        report.notes.append("L2/L3/L5 NOT_RUN: no C compiler given")
+        report.incomplete.append("L2, L3, L4 symbols and L5: no C compiler given")
         return report
     ndk_configs = ndk_configs or {}
+    skipped = sorted(set(CONFIGS) - set(configs))
+    if skipped:
+        report.incomplete.append(f"configurations not run: {', '.join(skipped)}")
     with tempfile.TemporaryDirectory() as tmp:
         base_tree = Path(tmp)
         if base_dir is not None:
@@ -812,26 +880,30 @@ def run(rev: str, cc: str | None, configs: dict[str, tuple[tuple[str, ...], tupl
         else:
             _extract_tree(rev, base_tree)
         new_units = list(hle_sources.RUNTIME_HLE_SOURCES)
+        # The static-use check needs every gcc configuration: a name may be used only in one.
         compare_preprocessed(base_tree, base_paths, tuple(base_headers), ROOT, new_units,
-                             hle_sources.HLE_PRIVATE_HEADERS, report, cc, configs)
+                             hle_sources.HLE_PRIVATE_HEADERS, report, cc, configs,
+                             check_static_uses=not skipped)
         if "production" in configs:
             compare_symbols(base_tree, base_paths, ROOT, new_units, report, cc)
         if ndk_configs and ndk_clang:
             compare_preprocessed(base_tree, base_paths, tuple(base_headers), ROOT, new_units,
-                                 hle_sources.HLE_PRIVATE_HEADERS, report, ndk_clang, ndk_configs)
+                                 hle_sources.HLE_PRIVATE_HEADERS, report, ndk_clang, ndk_configs,
+                                 check_static_uses=False)
             report.notes.append(f"Android configurations ran with {ndk_clang}")
         elif ndk_configs:
-            report.notes.append(
-                f"{', '.join(ndk_configs)} NOT_RUN: no NDK clang found; run "
+            report.incomplete.append(
+                f"{', '.join(ndk_configs)}: no NDK clang found; run "
                 f"`python tools/hle_move_proof.py --base {rev} --ndk-clang <ndk>/toolchains/llvm/prebuilt/<host>/bin/clang` "
                 f"{' '.join('--config ' + name for name in ndk_configs)}")
     return report
 
 
 def render(report: Report, rev: str) -> str:
-    lines = [f"# HLE move proof against {rev}", "", f"RESULT: {'PASS' if report.ok else 'FAIL'}", ""]
+    lines = [f"# HLE move proof against {rev}", "", f"RESULT: {report.result}", ""]
     sections = (
         ("Errors", report.errors),
+        ("Not run (the result is INCOMPLETE while any is listed)", report.incomplete),
         ("Static removed (name, new home)", report.static_removed),
         ("Moved to a private header as static inline (name, header)", report.made_inline),
         ("Registration functions regrouped (proved by L3)", report.regrouped),
@@ -869,7 +941,7 @@ def main(argv: list[str] | None = None) -> int:
         args.report.write_text(text, encoding="utf-8")
     if args.map:
         args.map.write_text(json.dumps(dict(sorted(report.moved_to.items())), indent=1) + "\n", encoding="utf-8")
-    return 0 if report.ok else 1
+    return {"PASS": 0, "FAIL": 1, "INCOMPLETE": 2}[report.result]
 
 
 if __name__ == "__main__":

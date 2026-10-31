@@ -731,7 +731,8 @@ def runtime_hle_sources() -> list[tuple[str, str]]:
     extract_registrations needs them all. Every registration is attributed to the
     unit its call sits in (owner_file).
     """
-    return hle_sources.sources()
+    sources: list[tuple[str, str]] = hle_sources.sources()
+    return sources
 
 
 def runtime_hle_source() -> str:
@@ -960,7 +961,7 @@ def registration_scopes(raw_source: str) -> dict[int, dict]:
     owners = enclosing_functions(source)
     lines = source.split("\n")
 
-    call_sites: dict[str, list[tuple[str | None, str]]] = {}
+    call_sites: dict[str | None, list[tuple[str | None, str]]] = {}
     for idx, line in enumerate(lines):
         m = _HELPER_CALL_RE.match(line)
         if m:

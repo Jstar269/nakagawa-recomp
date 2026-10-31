@@ -204,6 +204,15 @@ class ItemLayerTests(unittest.TestCase):
         self.assertEqual(report.missing_comments, ["/* shared between two subsystems */"])
 
 
+class ResultTests(unittest.TestCase):
+    def test_a_skipped_layer_is_incomplete_not_a_pass(self) -> None:
+        report = proof.Report(incomplete=["configurations not run: trace"])
+        self.assertEqual(report.result, "INCOMPLETE")
+        self.assertIn("RESULT: INCOMPLETE", proof.render(report, "base"))
+        self.assertEqual(proof.Report().result, "PASS")
+        self.assertEqual(proof.Report(errors=["x"], incomplete=["y"]).result, "FAIL")
+
+
 class FlattenTests(unittest.TestCase):
     def definitions(self, **bodies: str) -> dict[str, list[str]]:
         return {name: proof._TOKEN.findall(f"void {name}(void) {{ {body} }}") for name, body in bodies.items()}
@@ -247,10 +256,35 @@ class PreprocessedLayerTests(unittest.TestCase):
             configs = {k: proof.CONFIGS[k] for k in ("production", "thread-selftest")}
             proof.compare_preprocessed(base_tree, ["src/rt/hle.c"], (), new_tree, list(NEW_C), NEW_H,
                                        report, "gcc", configs)
-        return report.errors
+        errors: list[str] = report.errors
+        return errors
 
     def test_correct_split_passes(self) -> None:
         self.assertEqual(self.run_layers(SPLIT), [])
+
+    def test_static_dropped_for_an_unused_declaration_fails(self) -> None:
+        """Another file naming the object in a declaration does not make dropping `static` needed."""
+        split = mutate("src/rt/hle.c", "static int s_shared = 0;\n", "int s_shared = 0;\n")
+        split["src/rt/hle_internal.h"] = split["src/rt/hle_internal.h"].replace(
+            "#endif\n", "extern int s_shared;\n#endif\n")
+        split = {**split, "src/rt/hle_io.c": split["src/rt/hle_io.c"].replace(
+            '#include "hle_internal.h"\n', '#include "hle_internal.h"\nextern int s_shared;\n')}
+        self.assertEqual(proof.compare_items(BASE_UNITS, new_units(split)).errors, [],
+                         "the text check alone accepts it")
+        errors = self.run_layers(split)
+        self.assertTrue(any("no other unit's code uses it" in e for e in errors), errors)
+
+    def test_static_used_only_in_another_hosts_arm_is_left_to_that_host(self) -> None:
+        """A use under a condition this host never compiles (standing for the other host's arm,
+        `#ifndef _WIN32` on Windows) is the other host's to confirm, not an error here."""
+        split = mutate("src/rt/hle.c", "static int s_shared = 0;\n", "int s_shared = 0;\n")
+        split["src/rt/hle_internal.h"] = split["src/rt/hle_internal.h"].replace(
+            "#endif\n", "extern int s_shared;\n#endif\n")
+        hook = "#ifdef SR_NOT_COMPILED_HERE\nint io_peek(void) { return s_shared; }\n#endif\n"
+        split = {**split, "src/rt/hle_io.c": split["src/rt/hle_io.c"] + hook}
+        # io_peek itself is new code, which L1 reports; the static check must not.
+        errors = [e for e in self.run_layers(split) if "io_peek" not in e]
+        self.assertEqual(errors, [])
 
     def test_swapped_registration_order_fails(self) -> None:
         split = mutate("src/rt/hle.c", "    hle_register_mixed_audio();\n    hle_register_mixed_io();\n",

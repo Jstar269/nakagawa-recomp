@@ -498,7 +498,8 @@ def hle_source_path_constants(python_source: str, filename: str = "<python>") ->
     in_fstring: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.JoinedStr):
-            parts = [part.value if isinstance(part, ast.Constant) else "*" for part in node.values]
+            parts = [part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else "*"
+                     for part in node.values]
             in_fstring.update(id(part) for part in node.values)
             if _names_hle_source("".join(parts), not_runtime):
                 hits.append((node.lineno, "".join(parts)))

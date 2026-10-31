@@ -120,11 +120,11 @@ class LiveListTests(unittest.TestCase):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertEqual(hle_sources.makefile_hle_srcs(makefile), list(hle_sources.RUNTIME_HLE_SOURCES))
         headers = re.search(r"(?m)^HLE_HDRS\s*:=\s*(.*)$", makefile)
-        self.assertIsNotNone(headers)
+        assert headers is not None
         self.assertEqual(headers.group(1).split(), list(hle_sources.HLE_PRIVATE_HEADERS))
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         runtime = re.search(r"(?ms)^set\(NK_RUNTIME_SOURCES\b(.*?)\)", cmake)
-        self.assertIsNotNone(runtime)
+        assert runtime is not None
         listed = runtime.group(1).split()
         hle = [path for path in listed if path in hle_sources.RUNTIME_HLE_SOURCES
                or re.fullmatch(r"src/rt/hle(?:_[a-z0-9_]+)?\.c", path)]
@@ -167,7 +167,7 @@ class LiveListTests(unittest.TestCase):
         for relative, body in hle_sources.sources():
             with self.subTest(path=relative):
                 first = re.search(r'(?m)^\s*#\s*include\s+(\S+)', body)
-                self.assertIsNotNone(first)
+                assert first is not None
                 self.assertEqual(first.group(1), '"hle_internal.h"')
 
 
