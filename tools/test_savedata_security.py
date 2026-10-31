@@ -26,20 +26,22 @@ SEAM_H = ROOT / "src" / "rt" / "vfs_contained.h"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 POSIX_PROFILE = [] if os.name == "nt" else ["-D_POSIX_C_SOURCE=200809L"]
 
-# The production write stages each member in a temporary opened through the
-# contained seam and renames it over the member when the whole SAVE is staged
-# (issue #1387).  The by-name mutant swaps only that open for an fopen of the
-# published member, so the rest of the function still compiles and the mutant
-# fails for its semantic reason.
+# The production write stages each member in a temporary created exclusively
+# through the contained seam and renames it into place only once the whole SAVE
+# is staged and journaled (issue #1387).  The by-name mutant swaps only that
+# open for a path fopen, so the rest of the function still compiles and the
+# mutant fails for its semantic reason: the write-order case sees no exclusive,
+# no-follow create.
 WRITE_OPEN_BLOCK = (
     "    FILE *f = NULL;\n"
-    "    sr_cd_status st = sr_cd_open_file(&t->root, t->rel, s->tmp, SR_CD_FILE_WRITE_TRUNCATE, &f);\n"
+    "    if (sr_cd_open_file(&d->root, d->rel, name, SR_CD_FILE_READ_WRITE_NEW, &f) != SR_CD_OK || !f)\n"
+    "        return 0;\n"
 )
 UNSAFE_WRITE_OPEN = (
-    "    char path[PATH_MAX];\n"
-    "    if (!path_join(path, sizeof(path), t->dir, s->name)) return 0;\n"
-    "    FILE *f = fopen(path, \"wb\");\n"
-    "    sr_cd_status st = f ? SR_CD_OK : SR_CD_IO_ERROR;\n"
+    "    char upath[PATH_MAX];\n"
+    "    if (!path_join(upath, sizeof(upath), d->dir, name)) return 0;\n"
+    "    FILE *f = fopen(upath, \"wb\");\n"
+    "    if (!f) return 0;\n"
 )
 
 
@@ -71,6 +73,10 @@ uint32_t sr_get_ge_status(void) { return 0; }
 /* src/rt/hle.c supplies the host Memory Stick free space; these cases do not size it. */
 /* 1 GiB free, the Memory Stick in pspautotests utility/savedata/getsize.expected (2ed7c9c5). */
 int sr_hle_memstick_free_bytes(uint64_t *free_bytes) { *free_bytes = 0x40000000ull; return 1; }
+/* src/rt/hle.c supplies the guest clock and the console time zone for save times: a fixed
+ * 2001-09-09 01:46:40 UTC and UTC here. */
+uint64_t sr_savedata_guest_rtc_tick(void) { return 62135596800000000ull + 1000000000ull * 1000000ull; }
+int32_t sr_savedata_console_offset_minutes(void) { return 0; }
 
 #ifdef ORDER_INSTRUMENTED
 static int g_write_open_count;
@@ -83,14 +89,21 @@ static int g_force_nonregular;
 static int g_fail_fstat;
 static int g_fail_ftruncate;
 static int g_fail_fdopen;
+static int g_fail_fdopen_any;   /* every fdopen fails: a SAVE's staging open */
 static int g_write_pending;
 static int g_write_fd = -1;
 static int g_write_fd_close_count;
+static int g_create_count;      /* openat calls that may create a file */
+static int g_create_unsafe;     /* ... without O_EXCL and O_NOFOLLOW, or with O_TRUNC */
 
 int __real_openat(int dirfd, const char *path, int flags, ...);
 int __wrap_openat(int dirfd, const char *path, int flags, ...) {
     mode_t mode = 0;
     int result;
+    if (flags & O_CREAT) {
+        g_create_count++;
+        if (!(flags & O_EXCL) || !(flags & O_NOFOLLOW) || (flags & O_TRUNC)) g_create_unsafe++;
+    }
     if (flags & O_CREAT) {
         va_list ap;
         va_start(ap, flags);
@@ -143,7 +156,7 @@ int __wrap_ftruncate(int fd, off_t length) {
 
 FILE *__real_fdopen(int fd, const char *mode);
 FILE *__wrap_fdopen(int fd, const char *mode) {
-    if (g_fail_fdopen && g_write_pending && fd == g_write_fd) {
+    if ((g_fail_fdopen && g_write_pending && fd == g_write_fd) || g_fail_fdopen_any) {
         errno = EIO;
         return NULL;
     }
@@ -173,6 +186,8 @@ static void order_reset(void) {
     g_write_pending = 0;
     g_write_fd = -1;
     g_write_fd_close_count = 0;
+    g_create_count = 0;
+    g_create_unsafe = 0;
 }
 #else
 static void order_reset(void) { }
@@ -232,10 +247,33 @@ int __wrap_fclose(FILE *f) {
     return result;
 }
 
+/* g_inject_effect: the injected rename or unlink takes effect and then reports EIO, as a
+ * call interrupted after the file system acted does. */
+static int g_inject_effect;
 int __real_renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath);
 int __wrap_renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
-    if (inject_now('r')) { errno = EIO; return -1; }
+    if (inject_now('r')) {
+        if (g_inject_effect) (void)__real_renameat(olddirfd, oldpath, newdirfd, newpath);
+        errno = EIO;
+        return -1;
+    }
     return __real_renameat(olddirfd, oldpath, newdirfd, newpath);
+}
+
+int __real_unlinkat(int dirfd, const char *path, int flags);
+int __wrap_unlinkat(int dirfd, const char *path, int flags) {
+    if (inject_now('u')) {
+        if (g_inject_effect) (void)__real_unlinkat(dirfd, path, flags);
+        errno = EIO;
+        return -1;
+    }
+    return __real_unlinkat(dirfd, path, flags);
+}
+
+int __real_futimens(int fd, const struct timespec times[2]);
+int __wrap_futimens(int fd, const struct timespec times[2]) {
+    if (inject_now('t')) { errno = EPERM; return -1; }
+    return __real_futimens(fd, times);
 }
 #endif
 
@@ -542,20 +580,21 @@ static void check_write_order_cases(const char *base) {
     CHECK(make_savedata_tree(root), "write-order fixture");
     snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/ULUS99999SLOT00/DATA.BIN", root);
 
-    /* R1/R2: an existing regular file is opened, truncated only after the
-     * regular-file check, and receives the exact replacement bytes. */
+    /* Issue #1387: a SAVE never opens a published member for writing. Every file it creates
+     * (each staged member and the journal) is created exclusively, without following a link
+     * and without O_TRUNC, so nothing planted at a name is ever opened or truncated. */
     CHECK(write_file(path, "OLD-TRAILING-CONTENT"), "existing regular-file setup");
     order_reset();
-    CHECK(run_save(root, "DATA.BIN", "NEW") == 0,
-          "existing regular-file SAVE must succeed");
-    CHECK(g_write_open_count > 0 && g_write_open_trunc == 0,
-          "initial write opens must not request O_TRUNC");
-    CHECK(g_write_ftruncate_count == g_write_open_count && g_write_bad_order == 0,
-          "every write open must fstat before post-validation ftruncate");
+    CHECK(run_save(root, "DATA.BIN", "NEW") == 0, "existing regular-file SAVE must succeed");
+    CHECK(g_create_count >= 3 && g_create_unsafe == 0,
+          "every file a SAVE creates is created with O_EXCL and O_NOFOLLOW, never O_TRUNC "
+          "(%d creates, %d unsafe)", g_create_count, g_create_unsafe);
+    CHECK(g_write_open_trunc == 0 && g_write_ftruncate_count == 0,
+          "a SAVE neither truncates nor opens a file with O_TRUNC");
     CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "NEW"),
           "existing regular file must receive exact replacement bytes");
 
-    /* R3: creation of a missing regular file remains successful. */
+    /* Creation of a missing regular file remains successful. */
     char create_root[512], create_path[512];
     snprintf(create_root, sizeof(create_root), "%s/order-create", base);
     CHECK(run_save(create_root, "NEW.BIN", "CREATED") == 0,
@@ -565,58 +604,85 @@ static void check_write_order_cases(const char *base) {
     CHECK(read_file(create_path, content, sizeof(content)) && !strcmp(content, "CREATED"),
           "created regular file must contain exact bytes");
 
-    /* M3 guard: if fstat reports a non-regular final object, no truncation may
-     * occur before the type decision and the old contents must remain. */
+    /* The seam's truncating open (the sceIo route): an existing regular file is opened
+     * without O_TRUNC and truncated only after the regular-file check. */
+    sr_cd_root bound;
+    FILE *stream = NULL;
+    CHECK(sr_cd_root_open(root, &bound) == SR_CD_OK, "open root for the truncating-open cases");
+    CHECK(write_file(path, "OLD-TRAILING-CONTENT"), "truncating-open setup");
+    order_reset();
+    CHECK(sr_cd_open_file(&bound, "PSP/SAVEDATA/ULUS99999SLOT00", "DATA.BIN",
+                          SR_CD_FILE_WRITE_TRUNCATE, &stream) == SR_CD_OK && stream,
+          "the truncating open of a regular file succeeds");
+    if (stream) { fputs("NEW", stream); fclose(stream); stream = NULL; }
+    CHECK(g_write_open_count == 1 && g_write_open_trunc == 0,
+          "the truncating open must not request O_TRUNC");
+    CHECK(g_write_ftruncate_count == 1 && g_write_bad_order == 0,
+          "the truncating open must fstat before its post-validation ftruncate");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "NEW"),
+          "the truncated file must hold exactly the new bytes");
+
+    /* If fstat reports a non-regular final object, no truncation may occur before the type
+     * decision and the old contents must remain. */
     CHECK(write_file(path, "KEEP"), "non-regular validation setup");
     order_reset();
     g_force_nonregular = 1;
-    CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0,
+    CHECK(sr_cd_open_file(&bound, "PSP/SAVEDATA/ULUS99999SLOT00", "DATA.BIN",
+                          SR_CD_FILE_WRITE_TRUNCATE, &stream) != SR_CD_OK && !stream,
           "forced non-regular final object must fail closed");
     CHECK(g_write_ftruncate_count == 0 && g_write_bad_order == 0,
           "non-regular final object must not be truncated");
     CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "KEEP"),
           "non-regular rejection must preserve the existing file");
 
-    /* An fstat failure must close the acquired descriptor before reporting
-     * failure, and must not reach the post-validation truncate. */
+    /* An fstat failure must close the acquired descriptor before reporting failure, and must
+     * not reach the post-validation truncate. */
     order_reset();
     g_fail_fstat = 1;
-    CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0,
-          "fstat failure must fail the SAVE");
+    CHECK(sr_cd_open_file(&bound, "PSP/SAVEDATA/ULUS99999SLOT00", "DATA.BIN",
+                          SR_CD_FILE_WRITE_TRUNCATE, &stream) != SR_CD_OK && !stream,
+          "fstat failure must fail the open");
     CHECK(g_write_ftruncate_count == 0 && g_write_fd_close_count == 1,
           "fstat failure must close the descriptor without truncating");
     CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "KEEP"),
           "fstat failure must preserve the existing file");
 
-    /* Ftruncate failure must close the descriptor and report SAVE failure;
-     * the injected failure occurs before the real truncate, preserving data. */
+    /* Ftruncate failure must close the descriptor and report failure; the injected failure
+     * occurs before the real truncate, preserving data. */
     order_reset();
     g_fail_ftruncate = 1;
-    CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0,
-          "ftruncate failure must fail the SAVE");
+    CHECK(sr_cd_open_file(&bound, "PSP/SAVEDATA/ULUS99999SLOT00", "DATA.BIN",
+                          SR_CD_FILE_WRITE_TRUNCATE, &stream) != SR_CD_OK && !stream,
+          "ftruncate failure must fail the open");
     CHECK(g_write_ftruncate_count == 1 && g_write_bad_order == 0 &&
               g_write_fd_close_count == 1,
           "ftruncate failure must validate first and close the descriptor");
     CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "KEEP"),
           "ftruncate failure must not modify the existing file");
 
-    /* fdopen failure occurs after the descriptor has been validated and
-     * truncated; the untransferred descriptor still must be closed and the
-     * production SAVE must report failure.  Issue #1387: the truncated object
-     * is the temporary file, never the published save, so the previous save
-     * survives whole and no temporary is left behind. */
+    /* fdopen failure occurs after the descriptor has been validated and truncated; the
+     * untransferred descriptor still must be closed and the open must report failure. */
     order_reset();
     g_fail_fdopen = 1;
-    CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0,
-          "fdopen failure must fail the SAVE");
-    CHECK(g_write_fd_close_count == 1,
-          "fdopen failure must close the untransferred descriptor");
+    CHECK(sr_cd_open_file(&bound, "PSP/SAVEDATA/ULUS99999SLOT00", "DATA.BIN",
+                          SR_CD_FILE_WRITE_TRUNCATE, &stream) != SR_CD_OK && !stream,
+          "fdopen failure must fail the open");
+    CHECK(g_write_fd_close_count == 1, "fdopen failure must close the untransferred descriptor");
+    order_reset();
+    sr_cd_root_close(&bound);
+
+    /* A SAVE whose staging write cannot be opened (fdopen fails on its exclusive create)
+     * fails, keeps the previous save and leaves no temporary behind. */
+    CHECK(write_file(path, "KEEP"), "staging-failure setup");
+    order_reset();
+    g_fail_fdopen_any = 1;
+    CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0, "a SAVE whose staging open fails must fail");
+    g_fail_fdopen_any = 0;
     CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "KEEP"),
           "a failed SAVE must keep the previous save intact");
     char slot[512];
     snprintf(slot, sizeof(slot), "%s/PSP/SAVEDATA/ULUS99999SLOT00", root);
-    CHECK(stage_files_in(slot) == 0,
-          "a failed SAVE must not leave its temporary file behind");
+    CHECK(stage_files_in(slot) == 0, "a failed SAVE must not leave its temporary file behind");
 #else
     (void)base;
     printf("SKIP: write-order instrumentation requires the POSIX descriptor backend\n");
@@ -707,15 +773,18 @@ static void check_atomic_cases(const char *base) {
     CHECK(rmdir(planted) == 0 && run_save(root, "DATA.BIN", "THIRD") == 0,
           "the SAVE succeeds once the name is free");
 
-    /* A member written twice in one SAVE (a data file named PARAM.SFO) keeps
-     * its later bytes, the PARAM.SFO, as sequential writes did. */
+    /* A data file named like a member the SAVE writes itself (PARAM.SFO, in any case) would
+     * be replaced by that member in the same SAVE: the game's bytes would be lost while the
+     * SAVE reported success. It is refused with SAVE_PARAM and nothing changes. */
     char sfo[600];
     snprintf(sfo, sizeof(sfo), "%s/PARAM.SFO", slot);
-    CHECK(run_save(root, "PARAM.SFO", "DATA-NAMED-LIKE-THE-SFO") == 0,
-          "a data file named PARAM.SFO must save");
+    CHECK(run_save(root, "PARAM.SFO", "DATA-NAMED-LIKE-THE-SFO") == 0x80110388u,
+          "a data file named PARAM.SFO must be refused with SAVE_PARAM");
+    CHECK(run_save(root, "param.sfo", "DATA-NAMED-LIKE-THE-SFO") == 0x80110388u,
+          "a data file named param.sfo must be refused with SAVE_PARAM");
     CHECK(file_contains(sfo, "PSF") && !file_contains(sfo, "DATA-NAMED-LIKE-THE-SFO"),
-          "the later PARAM.SFO bytes must win");
-    CHECK(stage_files_in(slot) == 0, "a repeated member must not leave a temporary");
+          "the refused SAVE must leave PARAM.SFO as it was");
+    CHECK(stage_files_in(slot) == 0, "a refused SAVE must not leave a temporary");
 
     /* A buffer that fits exactly still loads. */
     memset(content, 0, sizeof(content));
@@ -792,11 +861,25 @@ static int member_state(const char *slot, int i) {
 }
 #endif
 
-/* Issue #1387 failure injection: every host operation of a six-member SAVE is
- * failed in turn over a complete previous save.  Each failed SAVE must report
- * failure, leave no temporary and keep the previous data file; a failure
- * before the first rename keeps every member, and a failed rename leaves each
- * member whole (the ones renamed before it are new). */
+/* Bookkeeping files still under a live name: stage, prev, journal or commit. */
+static int live_bookkeeping_in(const char *dir) {
+    DIR *d = opendir(dir);
+    int n = 0;
+    if (!d) return -1;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL)
+        if (!strncmp(de->d_name, ".nakagawa-stage-", 16) || !strncmp(de->d_name, ".nakagawa-prev-", 15) ||
+            !strcmp(de->d_name, ".nakagawa-journal") || !strcmp(de->d_name, ".nakagawa-commit"))
+            n++;
+    closedir(d);
+    return n;
+}
+
+/* Issue #1387 failure injection: every host operation of a six-member SAVE over a complete
+ * previous save is failed in turn, once plainly and once taking effect before it reports the
+ * failure. The next operation (a LOAD) settles the directory; then the save is whole: the
+ * previous one when the SAVE reported failure, the new one when it reported success, never a
+ * mix, and no bookkeeping file is left under a live name. */
 static void check_inject_cases(const char *base) {
 #if defined(SR_CD_BACKEND_POSIX_AT) && defined(INJECT_INSTRUMENTED)
     char root[512], slot[512];
@@ -805,40 +888,48 @@ static void check_inject_cases(const char *base) {
     g_inject_at = 0;
     g_inject_ops = 0;
     CHECK(run_full_save(root, "OLDSAVE") == 0, "the previous SAVE must succeed");
+    g_inject_ops = 0;
+    CHECK(run_full_save(root, "NEWSAVE") == 0, "an uninjected SAVE over it must succeed");
     int total = g_inject_ops;
-    /* Six members, each created, written, flushed, synced, closed, renamed. */
-    CHECK(total == 6 * SAVE_MEMBERS,
-          "a six-member SAVE must perform %d injectable operations, got %d",
-          6 * SAVE_MEMBERS, total);
-    for (int i = 0; i < SAVE_MEMBERS; i++)
-        CHECK(member_state(slot, i) == 1, "previous SAVE member %d must be published", i);
-    for (int k = 1; k <= total; k++) {
-        g_inject_ops = 0;
-        g_inject_kind = 0;
-        g_inject_at = k;
-        uint32_t r = run_full_save(root, "NEWSAVE");
-        g_inject_at = 0;
-        char kind = g_inject_kind ? g_inject_kind : '?';
-        CHECK(g_inject_kind != 0, "operation %d must be reached", k);
-        CHECK(r == 0x80110381u, "failure %d (%c) must fail the SAVE, got 0x%08x", k, kind,
-              (unsigned)r);
-        CHECK(stage_files_in(slot) == 0, "failure %d (%c) must leave no temporary", k, kind);
-        CHECK(member_state(slot, 0) == 1, "failure %d (%c) must keep the previous data file",
-              k, kind);
-        for (int i = 1; i < SAVE_MEMBERS; i++) {
-            int st = member_state(slot, i);
-            if (kind == 'r')
-                CHECK(st == 1 || st == 2, "rename failure %d must leave member %d whole", k, i);
-            else
-                CHECK(st == 1, "staging failure %d (%c) must keep member %d", k, kind, i);
+    /* Six staged members and the journal (create, write, flush, sync, close each), a directory
+     * sync, twelve renames, a sync, the commit rename and a sync, then the cleanup. */
+    CHECK(total >= 7 * 5 + 1 + 12 + 1 + 1 + 1,
+          "a six-member SAVE must perform at least 51 injectable operations, got %d", total);
+    g_inject_ops = 0;
+    CHECK(run_full_save(root, "OLDSAVE") == 0, "the previous save is restored");
+    for (int effect = 0; effect < 2; effect++) {
+        for (int k = 1; k <= total; k++) {
+            g_inject_ops = 0;
+            g_inject_kind = 0;
+            g_inject_effect = effect;
+            g_inject_at = k;
+            uint32_t r = run_full_save(root, "NEWSAVE");
+            g_inject_at = 0;
+            g_inject_effect = 0;
+            char kind = g_inject_kind ? g_inject_kind : '?';
+            CHECK(g_inject_kind != 0, "operation %d must be reached", k);
+            CHECK(r == 0 || r == 0x80110385u || r == 0x80110383u,
+                  "failure %d (%c%s) must succeed or fail with ACCESS_ERROR/NOSPACE, got 0x%08x",
+                  k, kind, effect ? ", effective" : "", (unsigned)r);
+            char content[64];
+            uint32_t loaded = run_load(root, "DATA.BIN", content, sizeof(content));
+            CHECK(loaded == 0, "failure %d (%c): the next LOAD must settle the directory (0x%08x)",
+                  k, kind, (unsigned)loaded);
+            for (int i = 0; i < SAVE_MEMBERS; i++)
+                CHECK(member_state(slot, i) == (r == 0 ? 2 : 1),
+                      "failure %d (%c%s, result 0x%08x) must leave member %d of the %s save whole",
+                      k, kind, effect ? ", effective" : "", (unsigned)r, i, r == 0 ? "new" : "previous");
+            CHECK(live_bookkeeping_in(slot) == 0, "failure %d (%c) must leave no live bookkeeping file",
+                  k, kind);
+            g_inject_ops = 0;
+            CHECK(run_full_save(root, "OLDSAVE") == 0, "restoring the previous save after %d", k);
         }
-        g_inject_ops = 0;
-        CHECK(run_full_save(root, "OLDSAVE") == 0, "restoring the previous save after %d", k);
     }
     CHECK(run_full_save(root, "NEWSAVE") == 0, "an uninjected SAVE must succeed");
     for (int i = 0; i < SAVE_MEMBERS; i++)
         CHECK(member_state(slot, i) == 2, "an uninjected SAVE must publish member %d", i);
-    CHECK(stage_files_in(slot) == 0, "an uninjected SAVE must leave no temporary");
+    CHECK(stage_files_in(slot) == 0 && live_bookkeeping_in(slot) == 0,
+          "an uninjected SAVE must leave no temporary");
 #else
     (void)base;
     printf("SKIP: failure injection requires the instrumented POSIX descriptor backend\n");
@@ -983,7 +1074,8 @@ def _build(tmp, savedata_override=None, seam_override=None, hooks=False,
     if inject:
         flags += ["-DINJECT_INSTRUMENTED"] + [
             "-Wl,--wrap=" + name
-            for name in ("openat", "fwrite", "fflush", "fsync", "fclose", "renameat")]
+            for name in ("openat", "fwrite", "fflush", "fsync", "fclose", "renameat",
+                         "unlinkat", "futimens")]
     if unsupported:
         flags += ["-DSR_CD_FORCE_UNSUPPORTED_BACKEND", "-DSR_CD_ALLOW_UNSUPPORTED_HOST"]
     flags += ["-I", str(tmp), "-I", str(rt), "-o", str(exe), str(harness),
@@ -1002,14 +1094,20 @@ def _run(exe, *args, timeout=10):
 
 
 class TestSavedataSecurityShape(unittest.TestCase):
+    # Every savedata function that opens a file: its marker and the text that follows it.
+    STORAGE_OPENS = (("static int sd_write_new", "/* Rename `from` to `to`"),
+                     ("static int sd_content", "/* Create `name` exclusively"),
+                     ("static int host_read_file", "/* One regular file's size"),
+                     ("static int host_file_stat", "/* A whole regular file read"),
+                     ("static int host_read_exact", "static int cmp_names"))
+
     def test_posix_storage_uses_the_contained_descriptor_open(self):
         text = SAVEDATA_C.read_text(encoding="utf-8")
-        for marker, end in (("static int host_write_file", "static int host_read_file"),
-                            ("static int host_read_file", "/* Storage boundary")):
+        for marker, end in self.STORAGE_OPENS:
             code = text[text.index(marker):text.index(end, text.index(marker))]
-            posix = code.split("#else", 1)[1]
-            self.assertIn("sr_cd_open_file", posix)
-            self.assertNotIn("fopen(", posix)
+            posix = code.split("SR_CD_BACKEND_POSIX_AT", 1)[1]
+            self.assertIn("sr_cd_open_file", posix, marker)
+            self.assertNotIn("fopen(", posix, marker)
         posix = SEAM_H.read_text(encoding="utf-8")
         self.assertIn("openat", posix)
         self.assertIn("O_NOFOLLOW", posix)
@@ -1018,7 +1116,7 @@ class TestSavedataSecurityShape(unittest.TestCase):
     def test_getsize_preflights_nested_output_and_entry_spans(self):
         text = SAVEDATA_C.read_text(encoding="utf-8")
         start = text.index("static int validate_getsize_entries")
-        code = text[start:text.index("/* Resolve the effective saveName", start)]
+        code = text[start:text.index("/* ---- list selection (#1387)", start)]
         self.assertIn("SAVEDATA_SIZE_INFO_BYTES", code)
         self.assertIn("sr_guest_span_readable(si", code)
         self.assertIn("sr_guest_span_writable(si", code)
@@ -1029,12 +1127,16 @@ class TestSavedataSecurityShape(unittest.TestCase):
 
     def test_windows_storage_branch_keeps_verified_handle_path(self):
         text = SAVEDATA_C.read_text(encoding="utf-8")
-        for marker, end in (("static int host_write_file", "static int host_read_file"),
-                            ("static int host_read_file", "/* Storage boundary")):
+        for marker, end in self.STORAGE_OPENS:
             code = text[text.index(marker):text.index(end, text.index(marker))]
-            windows = code.split("#ifdef _WIN32", 1)[1].split("#else", 1)[0]
-            self.assertIn("sr_vfs_open_contained_utf8", windows)
-            self.assertNotIn("fopen(", windows)
+            windows = code.split("#ifdef _WIN32", 1)[1].split("#el", 1)[0]
+            self.assertTrue("sr_vfs_open_contained_utf8" in windows or "sd_win_open(" in windows, marker)
+            self.assertNotIn("fopen(", windows, marker)
+        # sd_win_open is the transaction's own verified open: OPEN -> HANDLE -> FINAL PATH VERIFY.
+        start = text.index("static int sd_win_open")
+        opener = text[start:text.index("static int sd_win_not_found", start)]
+        self.assertIn("CreateFileW(", opener)
+        self.assertIn("sr_vfs_handle_is_contained(h, d->canonical_root)", opener)
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
@@ -1122,7 +1224,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
 
         mutants = [
             ("path-fopen", original_savedata.replace(write_block, unsafe_write, 1)
-             .replace(read_block, unsafe_read, 1), original_seam, "open"),
+             .replace(read_block, unsafe_read), original_seam, "open"),
             ("final-no-follow", original_savedata, original_seam.replace(
                 "int flags = O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;",
                 "int flags = O_CLOEXEC | O_NONBLOCK;", 1), "open"),
@@ -1199,8 +1301,10 @@ class TestSavedataSecurityProduction(unittest.TestCase):
                 "int flags = O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;",
                 "int flags = O_CLOEXEC | O_NONBLOCK;", 1),
              original_savedata, "open", False),
+            # A path fopen of the staging file: the write-order case requires every file a
+            # SAVE creates to be an exclusive, no-follow openat.
             ("PATH_FOPEN", original_seam,
-             original_savedata.replace(write_block, unsafe_write, 1), "open", False),
+             original_savedata.replace(write_block, unsafe_write, 1), "order", True),
         ]
 
         survivors = []
