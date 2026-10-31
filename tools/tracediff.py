@@ -432,10 +432,14 @@ def shrink(path_a, path_b, out_dir, context=8):
     earlier record is the same on both sides and can be rebuilt from either one. The window
     keeps `context` agreeing records before the divergence and the divergent record itself;
     each side is written renumbered from 0 with a `# start-state` comment holding every
-    register and memory value written before the window. A fixture that seeds that state and
-    runs the window's instructions reproduces the divergence without the original run. The
-    output is a v1 trace on purpose: a shrunk stream is a regression seed, never hardware
-    evidence. Returns None when the traces agree, else (step, pc, detail, paths).
+    register and memory value written before the window. A trace records only the values its
+    records change, so state the prefix never wrote is the original run's initial state, which
+    the trace does not hold: a fixture reproduces the divergence when it starts from that same
+    initial state, seeds the listed values and runs the window's instructions. The output is a
+    v1 trace on purpose: a shrunk stream is a regression seed, never hardware evidence. Nothing
+    is overwritten: an existing `a.trace` or `b.trace` in `out_dir` (an input among them)
+    raises FileExistsError before either file is written. Returns None when the traces agree,
+    else (step, pc, detail, paths).
     """
     import os
 
@@ -447,19 +451,25 @@ def shrink(path_a, path_b, out_dir, context=8):
     header_b, b = load(path_b)
     start = max(0, step - max(0, int(context)))
     state = _start_state_tokens(a, start)
+    for name in ("a", "b"):
+        target = os.path.join(out_dir, f"{name}.trace")
+        if os.path.lexists(target):
+            raise FileExistsError(f"{target} exists; --shrink never overwrites a trace")
     os.makedirs(out_dir, exist_ok=True)
     written = []
     for name, path, header, records in (("a", path_a, header_a, a), ("b", path_b, header_b, b)):
         window = records[start:step + 1]
         first_pc = window[0][1] if window else pc
         out_path = os.path.join(out_dir, f"{name}.trace")
-        with open(out_path, "w", encoding="utf-8", newline="\n") as handle:
+        with open(out_path, "x", encoding="utf-8", newline="\n") as handle:
             handle.write(f"# psp-recomp trace v1 target=shrunk "
                          f"oracle={_header_field(header, 'oracle', 'shrunk')} "
                          f"start_pc={first_pc} steps={len(window)}\n")
             handle.write(f"# shrunk from {path} records {start}..{step} "
                          f"(first divergence at record {step}, pc {pc}: {detail})\n")
             handle.write("# start-state" + "".join(f" {token}" for token in state) + "\n")
+            handle.write("# state the earlier records never wrote is the original run's "
+                         "initial state\n")
             for index, (_step, record_pc, op, writes) in enumerate(window):
                 tokens = " ".join(f"{key}={value}" for key, value in writes.items())
                 handle.write(f"{index} pc={record_pc} op={op}" + (f" {tokens}" if tokens else "") + "\n")
@@ -480,7 +490,11 @@ def _main_shrink(args):
             "usage: tracediff.py --shrink <trace-a> <trace-b> <out-dir> [--context N]\n"
         )
         return 2
-    result = shrink(args[0], args[1], args[2], context)
+    try:
+        result = shrink(args[0], args[1], args[2], context)
+    except FileExistsError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
     if result is None:
         print("OK: traces identical, nothing to shrink")
         return 0

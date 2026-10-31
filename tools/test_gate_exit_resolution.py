@@ -517,9 +517,11 @@ class TestStrictTraceContract(unittest.TestCase):
         # Records 27..30, renumbered from 0, starting at record 27's pc.
         self.assertEqual(a[0], "# psp-recomp trace v1 target=shrunk oracle=interp "
                                "start_pc=0x0890016c steps=4")
-        self.assertEqual([line.split()[0] for line in a[3:]], ["0", "1", "2", "3"])
-        self.assertEqual(a[3:6], b[3:6])
-        self.assertNotEqual(a[6], b[6])
+        self.assertEqual(a[3], "# state the earlier records never wrote is the original run's "
+                               "initial state")
+        self.assertEqual([line.split()[0] for line in a[4:]], ["0", "1", "2", "3"])
+        self.assertEqual(a[4:7], b[4:7])
+        self.assertNotEqual(a[7], b[7])
         # The state before record 27: the last value of each register and memory word the
         # first 27 records wrote, registers first, memory by address.
         self.assertEqual(a[2], b[2])
@@ -544,7 +546,7 @@ class TestStrictTraceContract(unittest.TestCase):
         self.assertEqual(step, 1)
         lines = pathlib.Path(written[0]).read_text(encoding="utf-8").splitlines()
         self.assertEqual(lines[2], "# start-state")
-        self.assertEqual(len(lines), 3 + 2)
+        self.assertEqual(len(lines), 4 + 2)
 
     def run_main(self, *args):
         out, err = io.StringIO(), io.StringIO()
@@ -572,6 +574,25 @@ class TestStrictTraceContract(unittest.TestCase):
         code, _, stderr = self.run_main(str(path_a), str(path_b))
         self.assertEqual(code, 2)
         self.assertIn("usage: tracediff.py --shrink", stderr)
+
+        # A second run into the same directory overwrites nothing.
+        before = (out / "a.trace").read_bytes()
+        code, _, stderr = self.run_main(str(path_a), str(path_b), str(out))
+        self.assertEqual(code, 2)
+        self.assertIn("never overwrites", stderr)
+        self.assertEqual((out / "a.trace").read_bytes(), before)
+
+    def test_shrink_never_overwrites_its_inputs(self):
+        path_a, path_b = self.shrink_pair(diverge_at=30)
+        inputs = self.dir / "inputs"
+        inputs.mkdir()
+        a, b = inputs / "a.trace", inputs / "b.trace"
+        a.write_bytes(path_a.read_bytes())
+        b.write_bytes(path_b.read_bytes())
+        with self.assertRaises(FileExistsError):
+            tracediff.shrink(str(a), str(b), str(inputs))
+        self.assertEqual(a.read_bytes(), path_a.read_bytes())
+        self.assertEqual(b.read_bytes(), path_b.read_bytes())
 
 
 class TestVerifyGateEvidence(unittest.TestCase):

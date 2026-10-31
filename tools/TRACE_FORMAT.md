@@ -151,7 +151,11 @@ records before the first divergence (8 by default) through the divergent record,
 renumbered from zero. The two traces agree before the divergence, so the state at
 the window's start is the same on both sides; a `# start-state` comment lists every
 register and memory value the earlier records wrote, registers first and memory by
-address. A fixture that seeds that state and runs the window's instructions
-reproduces the divergence without the original run. The output is a v1 trace, so a
-shrunk stream is a regression seed and never hardware evidence. The exit status is
-1 when a pair was written and 0 when the traces agree (nothing is written).
+address. A trace records only the values each record changes, so state the earlier
+records never wrote is the original run's initial state, which the trace does not
+hold. A fixture that starts from that initial state, seeds the listed values and runs
+the window's instructions reproduces the divergence. The output is a v1 trace, so a
+shrunk stream is a regression seed and never hardware evidence. An existing
+`a.trace` or `b.trace` in `<out-dir>`, an input among them, is never overwritten:
+the command writes nothing and exits 2. The exit status is 1 when a pair was written
+and 0 when the traces agree (nothing is written).
