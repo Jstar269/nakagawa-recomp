@@ -59,7 +59,7 @@ def _seam_backend(macro):
     return text[idx:end]
 
 
-_POSIX_FILE_IO_EXTENSIONS = ("sr_cd_mkdir_leaf", "sr_cd_rename_file", "sr_cd_delete_file")
+_POSIX_FILE_IO_EXTENSIONS = ("sr_cd_mkdir_leaf", "sr_cd_rename_file_ex", "sr_cd_delete_file")
 
 
 def _c_function(code, name):
@@ -155,14 +155,20 @@ class TestSavedataSpanPreflight(unittest.TestCase):
         do_load_idx = text.find("static uint32_t do_load")
         self.assertNotEqual(do_load_idx, -1)
         do_load_code = text[do_load_idx:text.find("static uint32_t do_delete", do_load_idx)]
-        self.assertIn("(uint64_t)cap", do_load_code, "do_load must compare file size against cap using 64-bit unsigned comparison to prevent LP64 narrowing truncation bypass")
+        self.assertIn("host_read_exact(", do_load_code, "do_load must size and read the data file through one open")
+        # host_read_exact narrows the host size only after a 64-bit range check, so a file
+        # larger than 4 GiB can never wrap below the guest buffer's capacity.
+        exact_idx = text.find("static int host_read_exact")
+        exact = text[exact_idx:text.find("static int cmp_names", exact_idx)]
+        self.assertIn("(uint64_t)info.st_size <= UINT32_MAX", exact, "the POSIX size must be range-checked as 64 bits before narrowing")
+        self.assertIn("sz.QuadPart <= UINT32_MAX", exact, "the Win32 size must be range-checked as 64 bits before narrowing")
 
     def test_sfo_reader_checks_index_extent_and_bounded_keys(self):
         text = SAVEDATA_C.read_text(encoding="utf-8")
-        sfo_idx = text.find("static void load_sfo_param")
+        sfo_idx = text.find("static uint8_t *sfo_read")
         self.assertNotEqual(sfo_idx, -1)
         sfo_code = text[sfo_idx:text.find("/* ---- modes", sfo_idx)]
-        self.assertIn("cnt > ((uint32_t)n - 20u) / 16u", sfo_code)
+        self.assertIn("cnt > (n - 20u) / 16u", sfo_code)
         self.assertIn("uint64_t keyPos", sfo_code)
         self.assertIn("uint64_t dataPos", sfo_code)
         self.assertIn("unterminated key", sfo_code)
@@ -175,13 +181,13 @@ class TestSavedataSpanPreflight(unittest.TestCase):
         self.assertIn("static SfoEnt sfo_str_entry", text)
         self.assertIn("slen >= (size_t)maxlen", text)
         self.assertIn("slen = (size_t)maxlen - 1u", text)
-        self.assertIn("if (e[i].len > e[i].maxlen) return 0;", text)
+        self.assertIn("if (e[i].len > e[i].maxlen) return NULL;", text)
 
     def test_sfo_writer_copies_payload_and_terminates_inside_the_slot(self):
         text = SAVEDATA_C.read_text(encoding="utf-8")
-        sfo_idx = text.find("static int sfo_write")
+        sfo_idx = text.find("static uint8_t *sfo_build")
         self.assertNotEqual(sfo_idx, -1)
-        sfo_code = text[sfo_idx:text.find("/* ---- ScePspDateTime", sfo_idx)]
+        sfo_code = text[sfo_idx:text.find("/* ---- save times", sfo_idx)]
         self.assertIn("e[i].fmt == 0x0204", sfo_code)
         self.assertIn("payload = e[i].len > 0 ? e[i].len - 1u : 0u", sfo_code)
         self.assertIn("if (e[i].maxlen > 0) {", sfo_code)
@@ -247,6 +253,9 @@ uint32_t sched_current_uid(void) { return 0; }
 uint32_t sr_get_ge_status(void) { return 0; }
 /* src/rt/hle.c supplies the host Memory Stick free space; these cases do not size it. */
 int sr_hle_memstick_free_bytes(uint64_t *free_bytes) { *free_bytes = 0; return 0; }
+/* src/rt/hle.c supplies the guest clock and the console time zone for save times. */
+uint64_t sr_savedata_guest_rtc_tick(void) { return 62135596800000000ull + 1000000000ull * 1000000ull; }
+int32_t sr_savedata_console_offset_minutes(void) { return 0; }
 
 #define RZ 64
 #define RZ_FILL 0xAA
@@ -431,14 +440,17 @@ int main(void) {
         CHECK(save_rel(rel, sizeof(rel), "CO", "N") == 0,
               "a joined device alias must be refused");
         /* ...while a JOINED name that merely contains those letters stays
-         * legal, so the added check does not over-reject. (A game string of
-         * exactly "CON" is already refused one layer earlier, by the
-         * per-component path_sanitize that has always run.) */
+         * legal, so the added check does not over-reject. It is the joined name
+         * alone that reaches the host (#1387): a part that is a device name on
+         * its own ("CON", or a saveName "AUX") is fine inside a longer name. */
         CHECK(save_rel(rel, sizeof(rel), "CONS", "OLE") == 1,
               "CONSOLE is an ordinary save directory name");
         CHECK(strcmp(rel, "PSP/SAVEDATA/CONSOLE") == 0, "save_rel produced '%s'", rel);
-        CHECK(save_rel(rel, sizeof(rel), "CON", "SOLE") == 0,
-              "a reserved-device GAME string is refused by the pre-existing component filter");
+        CHECK(save_rel(rel, sizeof(rel), "CON", "SOLE") == 1,
+              "a device-name part inside an ordinary joined name is accepted");
+        CHECK(save_rel(rel, sizeof(rel), "ULUS10000", "AUX") == 1,
+              "a saveName AUX after a gameName is an ordinary save directory name");
+        CHECK(save_rel(rel, sizeof(rel), "", "CON") == 0, "an empty gameName is refused");
 
         CHECK(save_rel(rel, sizeof(rel), "A/B", "C") == 0, "a separator must be refused");
         CHECK(save_rel(rel, sizeof(rel), "..", "X") == 0, "traversal must be refused");
@@ -449,17 +461,18 @@ int main(void) {
         CHECK(save_rel(rel, sizeof(rel), "", "DATA") == 0, "an empty game must be refused");
         CHECK(save_rel(rel, 8, "ULUS00001", "DATA") == 0, "a path that does not fit must be refused");
 
-        /* save_dir must also allow empty saveName and direct illegal names to INVALID */
+        /* save_dir allows an empty saveName and refuses an illegal name by name (#1387): it
+         * no longer falls back to one shared PSP/SAVEDATA/INVALID directory, where unrelated
+         * refused requests saved over and loaded each other's data. */
         char sdir[512];
-        save_dir(sdir, sizeof(sdir), "UCUS98701", "");
-        CHECK(strstr(sdir, "/INVALID") == NULL, "empty saveName must not route to INVALID in save_dir");
+        CHECK(save_dir(sdir, sizeof(sdir), "UCUS98701", "") == 1,
+              "an empty saveName names the gameName directory");
         CHECK(strstr(sdir, "/PSP/SAVEDATA/UCUS98701") != NULL, "save_dir must produce valid directory path");
 
-        save_dir(sdir, sizeof(sdir), "UCUS98701", "../bad");
-        CHECK(strstr(sdir, "/INVALID") != NULL, "malicious saveName must route to INVALID in save_dir");
-
-        save_dir(sdir, sizeof(sdir), "", "DATA");
-        CHECK(strstr(sdir, "/INVALID") != NULL, "empty gameName must route to INVALID in save_dir");
+        CHECK(save_dir(sdir, sizeof(sdir), "UCUS98701", "../bad") == 0 && sdir[0] == 0,
+              "a malicious saveName is refused by save_dir");
+        CHECK(save_dir(sdir, sizeof(sdir), "", "DATA") == 0 && sdir[0] == 0,
+              "an empty gameName is refused by save_dir");
     }
 
     printf(g_fail ? "sfo_selftest: %d FAILURE(S)\n" : "sfo_selftest: OK\n", g_fail);
@@ -487,7 +500,7 @@ _DROP_CLAMP = (
     "        slen = (size_t)maxlen - 1u;\n"
     "    }\n", "",
 )
-_DROP_PREFLIGHT = ("        if (e[i].len > e[i].maxlen) return 0;\n", "")
+_DROP_PREFLIGHT = ("        if (e[i].len > e[i].maxlen) return NULL;\n", "")
 
 SFO_MUTANTS = {
     # The whole pre-fix writer: oversized locals, no clamp, no preflight.
@@ -640,8 +653,8 @@ class TestWindowsContainmentArchitecture(unittest.TestCase):
 
     def test_storage_reads_route_through_the_containment_boundary(self):
         text = SAVEDATA_C.read_text(encoding="utf-8")
-        for fn_marker, next_marker in (("static int host_write_file", "static int host_read_file"),
-                                       ("static int host_read_file", "/* Storage boundary")):
+        for fn_marker, next_marker in (("static int host_read_file", "/* One regular file's size"),
+                                       ("static int host_read_exact", "static int cmp_names")):
             fn_idx = text.find(fn_marker)
             self.assertNotEqual(fn_idx, -1)
             fn_code = text[fn_idx:text.find(next_marker, fn_idx)]
@@ -839,7 +852,10 @@ class TestPortableContainedDeleteArchitecture(unittest.TestCase):
         CONCATENATION that reaches the host: "NU" + "L" is two safe components
         and one device alias."""
         code = _savedata_fn("static int save_rel", "static int sdlog")
-        self.assertIn("sr_vfs_is_safe_component(leaf", code,
+        leaf = _savedata_fn("static int save_leaf", "static int save_dir")
+        self.assertIn("save_leaf(leaf", code,
+                      "save_rel must build its leaf through save_leaf")
+        self.assertIn("sr_vfs_is_safe_component(out", leaf,
                       "the joined save-directory name must be validated as one component")
         self.assertIn('"PSP/SAVEDATA/%s"', code,
                       "save_rel must produce a root-relative path")

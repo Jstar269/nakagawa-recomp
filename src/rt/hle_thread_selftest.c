@@ -77,9 +77,14 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include <strings.h>          /* strncasecmp: the ms0:/fatms0: device prefix */
 #include <unistd.h>           /* dup/dup2/fileno/close, getpid, getcwd/chdir, rmdir: POSIX, and
                                  the same names in MinGW's CRT */
+#include <dirent.h>           /* opendir: the savedata cases count bookkeeping files */
+#include <sys/stat.h>         /* stat: a SAVE's modification time */
+#include <time.h>             /* time: the host clock a SAVE's guest time is compared with */
 #ifdef _WIN32
 #include <windows.h>          /* the Win32-only fixtures: CreateProcessW respawn, the FindFirstFileW
                                  error classifier, the junction, GetModuleFileNameA */
+#else
+#include <fcntl.h>            /* AT_FDCWD */
 #endif
 
 /* The fixture path buffers are sized by the Win32 MAX_PATH. POSIX publishes no such
@@ -4810,7 +4815,8 @@ static void test_ms0_unified_namespace(void) {
         expect(nk_platform_mkdir_p(planted), "a directory planted at a temporary's name");
         fd_guest_copy(DATA_ADDR, data, sizeof(data) - 1u);
         MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(data) - 1u));
-        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110381u,
+        /* #1387: a host failure is SAVE_ACCESS_ERROR, never "no Memory Stick" or "full". */
+        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110385u,
                "a SAVE whose PARAM.SFO cannot be staged fails");
         expect(nk_platform_get_file_size(save_host) == (int64_t)(sizeof(shorter) - 1u),
                "a SAVE that failed while staging keeps the previous data file");
@@ -7227,6 +7233,7 @@ static void test_netconf_parameter_sizes(void) {
 static uint32_t utility_fixture_size(uint32_t init) {
     if (init == NID_GAMEDATA_DIALOG_INIT) return 0x590u;
     if (init == NID_SHARING_DIALOG_INIT) return 0x50u;
+    if (init == NID_MSG_DIALOG_INIT) return 0x2c4u;  /* PSPAutotests utility/dialog/sizes */
     return 0x40u;
 }
 
@@ -7289,7 +7296,7 @@ static void test_utility_dialog_single_slot(void) {
     }
 
     /* The message dialog takes the free slot. */
-    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
     expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
                MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
            "a message InitStart takes the free slot and clears its result");
@@ -7297,7 +7304,7 @@ static void test_utility_dialog_single_slot(void) {
 
     /* Repeated init: a second message InitStart neither restarts the running dialog nor takes
      * its own parameter block. */
-    utility_param_block(UTILITY_MSG2_PARAM_ADDR, 0x40u);
+    utility_param_block(UTILITY_MSG2_PARAM_ADDR, 0x2c4u);
     expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG2_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_MSG2_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
            "a second message InitStart while one is active returns INVALID_STATUS and leaves "
@@ -7336,9 +7343,11 @@ static void test_utility_dialog_single_slot(void) {
            "the finished message dialog accepts ShutdownStart");
     utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
     MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR, 0x601u);
-    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110004u &&
+    /* The busy slot is reported before the size (PSPAutotests tests/utility/dialog/status.expected). */
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
-           "savedata rejects an unknown parameter version without claiming the slot");
+           "savedata InitStart with an unknown parameter version while the message dialog shuts "
+           "down is INVALID_STATUS and claims nothing");
     utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
@@ -7654,7 +7663,7 @@ static void test_utility_dialog_status_sequence(void) {
 
     expect(utility_change_priority(&cpu, 0x20u) == 0u && utility_savedata_start_to_finished(&cpu),
            "savedata reaches FINISHED for a caller at 0x20");
-    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
                utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110001u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
@@ -7698,7 +7707,7 @@ static void test_utility_dialog_status_sequence(void) {
 
     /* The message dialog's shutdown has no such threshold: a caller at 0x6F sees SHUTDOWN and
      * a savedata InitStart right after it is refused. */
-    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
     utility_savedata_block();
     expect(utility_change_priority(&cpu, 0x6fu) == 0u &&
                utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
@@ -8083,6 +8092,730 @@ static void test_savedata_getsize_free_space(void) {
     nk_platform_remove_tree(ms_root, NULL);
     hle_test_setenv("SR_MEMSTICK", old_root);
     free(old_root);
+}
+
+/* ---- savedata (#1387): list selection, deterministic listings, secure saves, the commit -----
+ * Every case runs the production entry point (sr_savedata_execute) over a synthetic Memory Stick
+ * under the build directory. The list rules follow PPSSPP SavedataParam::SetPspParam and
+ * PSPSaveDialog::Init (revision c9e2afb6) as the behaviour reference. */
+extern void sr_savedata_test_fault(int mode, int at);
+extern int sr_savedata_test_fault_ops(void);
+extern uint64_t sr_savedata_guest_rtc_tick(void);
+uint32_t sr_savedata_execute_sized(uint32_t param, uint32_t size);
+enum { SDT_FAULT_OFF = 0, SDT_FAULT_ONCE = 1, SDT_FAULT_FROM = 2, SDT_FAULT_EFFECT = 3 };
+enum {
+    SDT_PARAM   = 0x08803000u,  /* SceUtilitySavedataParam, 0x600 bytes */
+    SDT_NAMES   = 0x08803800u,  /* saveNameList: char[20] entries, "" ends it */
+    SDT_BUF     = 0x08803c00u,  /* dataBuf, 0x100 bytes */
+    SDT_IDLIST  = 0x08803e00u,  /* SceUtilitySavedataIdListInfo: max, result, entries */
+    SDT_IDENT   = 0x08804000u,  /* SceUtilitySavedataIdListEntry, 72 bytes each */
+    SDT_FILELIST = 0x08804800u, /* SceUtilitySavedataFileListInfo, 36 bytes */
+    SDT_FILES   = 0x08804900u,  /* SceUtilitySavedataFileListEntry, 80 bytes each */
+    SDT_BLOBS   = 0x08805000u   /* icon/pic/snd blobs, 0x100 bytes each */
+};
+
+/* SR_MEMSTICK pointed at a fresh synthetic root for one case, and put back after it. */
+static char *sdt_root_begin(const char *root) {
+    const char *old_value = getenv("SR_MEMSTICK");
+    char *old = old_value ? (char *)malloc(strlen(old_value) + 1u) : NULL;
+    if (old) memcpy(old, old_value, strlen(old_value) + 1u);
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    nk_platform_remove_tree(root, NULL);
+    nk_platform_mkdir_p(root);
+    expect(hle_test_setenv("SR_MEMSTICK", root), "savedata case selects its synthetic Memory Stick root");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", NULL);
+    sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+    return old;
+}
+
+static void sdt_root_end(const char *root, char *old) {
+    sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", NULL);
+    nk_platform_remove_tree(root, NULL);
+    hle_test_setenv("SR_MEMSTICK", old);
+    free(old);
+}
+
+static int sdt_set_times(const char *path, time_t atime, time_t mtime) {
+#ifdef _WIN32
+    HANDLE h = CreateFileA(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    ULARGE_INTEGER a, m;
+    a.QuadPart = ((uint64_t)atime + 11644473600ull) * 10000000ull;
+    m.QuadPart = ((uint64_t)mtime + 11644473600ull) * 10000000ull;
+    FILETIME fa = { a.LowPart, a.HighPart }, fm = { m.LowPart, m.HighPart };
+    BOOL ok = SetFileTime(h, NULL, &fa, &fm);
+    CloseHandle(h);
+    return ok != 0;
+#else
+    struct timespec times[2] = { { atime, 0 }, { mtime, 0 } };
+    return utimensat(AT_FDCWD, path, times, 0) == 0;
+#endif
+}
+
+static int sdt_write(const char *path, const void *data, size_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    int ok = fwrite(data, 1, n, f) == n;
+    if (fclose(f) != 0) ok = 0;
+    return ok;
+}
+
+/* The file's bytes as a string (0 when it cannot be read). */
+static int sdt_read(const char *path, char *out, size_t cap) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t n = fread(out, 1, cap - 1u, f);
+    fclose(f);
+    out[n] = 0;
+    return 1;
+}
+
+static int sdt_file_has(const char *path, const char *needle) {
+    char buf[8192];
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t n = fread(buf, 1, sizeof(buf), f), len = strlen(needle);
+    fclose(f);
+    for (size_t i = 0; i + len <= n; i++)
+        if (!memcmp(buf + i, needle, len)) return 1;
+    return 0;
+}
+
+/* One save directory <root>/PSP/SAVEDATA/<leaf> holding `file` with `data`. */
+static int sdt_plant(const char *root, const char *leaf, const char *file, const char *data) {
+    char dir[512], path[600];
+    snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/%s", root, leaf);
+    snprintf(path, sizeof(path), "%s/%s", dir, file);
+    nk_platform_mkdir_p(dir);
+    return sdt_write(path, data, strlen(data));
+}
+
+/* Bookkeeping files still under a live name: stage, prev, journal or commit. */
+static int sdt_live_bookkeeping(const char *dir) {
+    int n = 0;
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL)
+        if (!strncmp(de->d_name, ".nakagawa-stage-", 16) || !strncmp(de->d_name, ".nakagawa-prev-", 15) ||
+            !strcmp(de->d_name, ".nakagawa-journal") || !strcmp(de->d_name, ".nakagawa-commit"))
+            n++;
+    closedir(d);
+    return n;
+}
+
+static void sdt_param(uint32_t mode, const char *game, const char *save, const char *file) {
+    memset(g_mem_base + SDT_PARAM, 0, 0x600u);
+    memset(g_mem_base + SDT_BUF, 0, 0x100u);
+    MEM_W32(SDT_PARAM, 0x600u);
+    fd_guest_copy(SDT_PARAM + 0x3cu, game, strlen(game) + 1u);
+    fd_guest_copy(SDT_PARAM + 0x4cu, save, strlen(save) + 1u);
+    fd_guest_copy(SDT_PARAM + 0x64u, file, strlen(file) + 1u);
+    MEM_W32(SDT_PARAM + 0x30u, mode);
+    MEM_W32(SDT_PARAM + 0x74u, SDT_BUF);
+    MEM_W32(SDT_PARAM + 0x78u, 0x100u);
+}
+
+static void sdt_list(uint32_t mode, uint32_t focus, const char *save, const char *const *names) {
+    sdt_param(mode, "NKLIST", save, "DATA.BIN");
+    memset(g_mem_base + SDT_NAMES, 0, 0x400u);
+    MEM_W32(SDT_PARAM + 0x5c8u, focus);
+    if (names) {
+        for (uint32_t i = 0; names[i]; i++)
+            fd_guest_copy(SDT_NAMES + i * 20u, names[i], strlen(names[i]) + 1u);
+        MEM_W32(SDT_PARAM + 0x60u, SDT_NAMES);
+    }
+}
+
+static const char *sdt_loaded(void) {
+    static char text[32];
+    for (uint32_t i = 0; i + 1u < sizeof(text); i++) text[i] = (char)MEM_R8(SDT_BUF + i);
+    text[sizeof(text) - 1u] = 0;
+    return text;
+}
+
+static uint32_t sdt_list_load(uint32_t focus, const char *save, const char *const *names) {
+    sdt_list(4u /* LISTLOAD */, focus, save, names);
+    return sr_savedata_execute(SDT_PARAM);
+}
+
+/* One save NKLIST<save>/DATA.BIN holding `data`, its directory dated `when`. */
+static int sdt_plant_list(const char *root, const char *save, const char *data, time_t when) {
+    char leaf[64], dir[512];
+    snprintf(leaf, sizeof(leaf), "NKLIST%s", save);
+    snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/%s", root, leaf);
+    return sdt_plant(root, leaf, "DATA.BIN", data) && sdt_set_times(dir, when, when);
+}
+
+static void test_savedata_list_selection(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_list";
+    char *old = sdt_root_begin(root);
+    char path[600], text[64];
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    /* Planted out of name order, with the newest save neither first nor last. */
+    expect(sdt_plant_list(root, "SLOT3", "THREE", (time_t)1300000000) &&
+               sdt_plant_list(root, "SLOT1", "ONE", (time_t)1100000000) &&
+               sdt_plant_list(root, "SLOT2", "TWO", (time_t)1500000000) &&
+               sdt_plant_list(root, "EXTRA", "EXTRA", (time_t)1000000000),
+           "four dated list saves can be planted");
+
+    /* SLOT4 has no save: LISTLOAD's rows are SLOT1, SLOT2, SLOT3. */
+    static const char *const listed[] = { "SLOT1", "SLOT4", "SLOT2", "SLOT3", NULL };
+    expect(sdt_list_load(1u, "", listed) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "LISTLOAD focus FIRSTLIST loads the first listed save");
+    expect(sdt_list_load(2u, "", listed) == 0u && !strcmp(sdt_loaded(), "THREE"),
+           "LISTLOAD focus LASTLIST loads the last row, not a missing entry");
+    expect(sdt_list_load(3u, "", listed) == 0u && !strcmp(sdt_loaded(), "TWO"),
+           "LISTLOAD focus LATEST loads the most recently saved save");
+    expect(sdt_list_load(4u, "", listed) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "LISTLOAD focus OLDEST loads the least recently saved save");
+    expect(sdt_list_load(0u, "SLOT3", listed) == 0u && !strcmp(sdt_loaded(), "THREE"),
+           "LISTLOAD focus NAME loads the row saveName names");
+    expect(sdt_list_load(0u, "SLOT4", listed) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "LISTLOAD focus NAME on a name with no row falls back to the first row");
+    expect(sdt_list_load(6u, "", listed) == 0u && !strcmp(sdt_loaded(), "THREE"),
+           "LISTLOAD focus LASTDATA loads the last row that holds a save");
+    expect(sdt_list_load(99u, "", listed) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "LISTLOAD with an unknown focus starts on the first row");
+    static const char *const missing[] = { "SLOT4", "SLOT5", NULL };
+    expect(sdt_list_load(1u, "SLOT1", missing) == 0x80110307u,
+           "LISTLOAD whose listed saves are all missing reports LOAD_NO_DATA, not saveName's save");
+    sdt_list(6u /* LISTDELETE */, 1u, "SLOT1", missing);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110347u,
+           "LISTDELETE whose listed saves are all missing reports DELETE_NO_DATA");
+    static const char *const wild[] = { "SLOT1", "<>", NULL };
+    expect(sdt_list_load(2u, "", wild) == 0u && !strcmp(sdt_loaded(), "EXTRA"),
+           "a \"<>\" list entry is the first unlisted save in sorted name order");
+
+    /* focus starts at 0x5c8, so a 0x5c8-byte block has none: there it reads as NAME. */
+    sdt_list(4u, 2u /* LASTLIST */, "SLOT1", listed);
+    expect(sr_savedata_execute_sized(SDT_PARAM, 0x5c8u) == 0u && !strcmp(sdt_loaded(), "ONE"),
+           "a 0x5c8-byte LISTLOAD has no focus field and starts on the saveName row");
+    sdt_list(4u, 2u, "SLOT1", listed);
+    expect(sr_savedata_execute_sized(SDT_PARAM, 0x5dcu) == 0u && !strcmp(sdt_loaded(), "THREE"),
+           "a 0x5dc-byte LISTLOAD reads its focus field");
+
+    /* The test option chooses a row, or cancels; a cancel reads nothing. */
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", "SLOT2");
+    expect(sdt_list_load(1u, "", listed) == 0u && !strcmp(sdt_loaded(), "TWO"),
+           "SR_SAVEDATA_LIST_SELECT=<saveName> chooses that row");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", "CANCEL");
+    expect(sdt_list_load(1u, "", listed) == 1u && sdt_loaded()[0] == 0,
+           "SR_SAVEDATA_LIST_SELECT=CANCEL cancels the dialog (result 1) and loads nothing");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", "SLOT4");
+    expect(sdt_list_load(1u, "", listed) == 1u,
+           "SR_SAVEDATA_LIST_SELECT naming a name that is not a row cancels");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", NULL);
+
+    /* LISTDELETE never deletes a save nobody chose: without the option it cancels. */
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKLISTSLOT2/DATA.BIN", root);
+    sdt_list(6u, 1u, "", listed);
+    expect(sr_savedata_execute(SDT_PARAM) == 1u && nk_platform_file_exists(path),
+           "LISTDELETE with no list UI cancels and deletes nothing");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", "SLOT2");
+    sdt_list(6u, 1u, "", listed);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && !nk_platform_file_exists(path),
+           "LISTDELETE deletes the row SR_SAVEDATA_LIST_SELECT chose");
+    hle_test_setenv("SR_SAVEDATA_LIST_SELECT", NULL);
+
+    /* LISTSAVE keeps the entries that have no save: FIRSTEMPTY picks SLOT4. */
+    static const char *const save_list[] = { "SLOT1", "SLOT4", "SLOT2", NULL };
+    sdt_list(5u /* LISTSAVE */, 7u, "SLOT1", save_list);
+    fd_guest_copy(SDT_BUF, "FOUR", 4u);
+    MEM_W32(SDT_PARAM + 0x7cu, 4u);
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKLISTSLOT4/DATA.BIN", root);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && sdt_read(path, text, sizeof(text)) &&
+               !strcmp(text, "FOUR"),
+           "LISTSAVE focus FIRSTEMPTY saves to the first listed entry with no save");
+    /* An automatic LISTSAVE onto a row that holds a save keeps the version it replaces. */
+    sdt_list(5u, 0u /* NAME */, "SLOT1", save_list);
+    fd_guest_copy(SDT_BUF, "UNO", 3u);
+    MEM_W32(SDT_PARAM + 0x7cu, 3u);
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKLISTSLOT1/DATA.BIN", root);
+    char kept[600];
+    snprintf(kept, sizeof(kept), "%s/PSP/SAVEDATA/NKLISTSLOT1/.nakagawa-kept-0-DATA.BIN", root);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && sdt_read(path, text, sizeof(text)) &&
+               !strcmp(text, "UNO") && sdt_read(kept, text, sizeof(text)) && !strcmp(text, "ONE"),
+           "an automatic LISTSAVE over an existing save keeps the replaced version");
+
+    /* Outside the list modes "<>" is the empty save name, not some existing save. */
+    sdt_list(0u /* AUTOLOAD */, 0u, "<>", listed);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110307u,
+           "AUTOLOAD of saveName \"<>\" reads only the save named by the game name alone");
+    expect(sdt_plant_list(root, "", "BARE", (time_t)1000000000),
+           "a save named by the game name alone can be planted");
+    sdt_list(0u, 0u, "<>", listed);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && !strcmp(sdt_loaded(), "BARE"),
+           "AUTOLOAD of saveName \"<>\" loads that save");
+
+    /* LIST: sorted by name, whatever order the host enumerates. */
+    {
+        static const char *const want[] = { "", "EXTRA", "SLOT1", "SLOT3", "SLOT4" };
+        sdt_list(11u /* LIST */, 0u, "", NULL);
+        memset(g_mem_base + SDT_IDENT, 0, 72u * 8u);
+        MEM_W32(SDT_IDLIST + 0u, 8u);
+        MEM_W32(SDT_IDLIST + 4u, 0u);
+        MEM_W32(SDT_IDLIST + 8u, SDT_IDENT);
+        MEM_W32(SDT_PARAM + 0x5f4u, SDT_IDLIST);
+        int sorted = sr_savedata_execute(SDT_PARAM) == 0u && MEM_R32(SDT_IDLIST + 4u) == 5u;
+        for (uint32_t i = 0; sorted && i < 5u; i++) {
+            char name[21];
+            for (uint32_t j = 0; j < 20u; j++) name[j] = (char)MEM_R8(SDT_IDENT + i * 72u + 52u + j);
+            name[20] = 0;
+            sorted = !strcmp(name, want[i]);
+        }
+        expect(sorted, "LIST returns this game's saves in sorted name order, bookkeeping hidden");
+    }
+    sdt_root_end(root, old);
+}
+
+/* ScePspDateTime fields at `at`: year, month, day, hour, minute, second. */
+static int sdt_date_is(uint32_t at, unsigned y, unsigned mo, unsigned d, unsigned h, unsigned mi,
+                       unsigned s) {
+    return MEM_R16(at) == y && MEM_R16(at + 2u) == mo && MEM_R16(at + 4u) == d &&
+           MEM_R16(at + 6u) == h && MEM_R16(at + 8u) == mi && MEM_R16(at + 10u) == s &&
+           MEM_R32(at + 12u) == 0u;
+}
+
+/* #1387: listing times are the same on every host. A save's time is its PARAM.SFO's
+ * modification time; created, accessed and modified all carry it; and it is shown in the
+ * console's time zone (here +9:00, no daylight saving), never the host's. 1000000000 is
+ * 2001-09-09 01:46:40 UTC, so 10:46:40 local. */
+static void test_savedata_listing_times(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_times";
+    char *old = sdt_root_begin(root);
+    char dir[512], path[600];
+    uint32_t rc;
+    reset_fixture(); sr_hle_init(); sysreg_scratch_clean(); sysreg_restart();
+    sr_hle_test_register_iofilemgr();
+    uint32_t reg = sysreg_open_registry(2u, &rc);
+    uint32_t cat = sysreg_open_category(reg, "/CONFIG/DATE", 2u, &rc);
+    expect(sysreg_set_int(cat, "time_zone_offset", 540u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "the console time zone is set to +9:00 for the listing case");
+    static const char *const slots[] = { "NKTIMESLOTB", "NKTIMESLOTA", "NKTIMESLOTC" };
+    static const time_t when[] = { 1000003600, 1000000000, 1000007200 };
+    int planted = 1;
+    for (int i = 0; i < 3; i++) {
+        snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/%s", root, slots[i]);
+        planted = planted && sdt_plant(root, slots[i], "PARAM.SFO", "SFO") &&
+                  sdt_plant(root, slots[i], "DATA.BIN", "DATA");
+        snprintf(path, sizeof(path), "%s/PARAM.SFO", dir);
+        planted = planted && sdt_set_times(path, (time_t)1500000000, when[i]);
+        snprintf(path, sizeof(path), "%s/DATA.BIN", dir);
+        planted = planted && sdt_set_times(path, (time_t)1500000000, when[i]);
+        planted = planted && sdt_set_times(dir, (time_t)1600000000, (time_t)1600000000);
+    }
+    expect(planted, "three dated saves can be planted, out of name order");
+
+    sdt_param(11u /* LIST */, "NKTIME", "", "");
+    memset(g_mem_base + SDT_IDENT, 0, 72u * 4u);
+    MEM_W32(SDT_IDLIST + 0u, 4u);
+    MEM_W32(SDT_IDLIST + 4u, 0xdeadbeefu);
+    MEM_W32(SDT_IDLIST + 8u, SDT_IDENT);
+    MEM_W32(SDT_PARAM + 0x5f4u, SDT_IDLIST);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && MEM_R32(SDT_IDLIST + 4u) == 3u,
+           "LIST finds the three saves");
+    char first[21];
+    for (uint32_t j = 0; j < 20u; j++) first[j] = (char)MEM_R8(SDT_IDENT + 52u + j);
+    first[20] = 0;
+    expect(!strcmp(first, "SLOTA"), "LIST's first row is SLOTA, in name order");
+    expect(sdt_date_is(SDT_IDENT + 4u, 2001, 9, 9, 10, 46, 40) &&
+               sdt_date_is(SDT_IDENT + 20u, 2001, 9, 9, 10, 46, 40) &&
+               sdt_date_is(SDT_IDENT + 36u, 2001, 9, 9, 10, 46, 40),
+           "a LIST row's created, accessed and modified times are its PARAM.SFO's modification "
+           "time in the console's time zone");
+    expect(sdt_date_is(SDT_IDENT + 72u + 36u, 2001, 9, 9, 11, 46, 40),
+           "the second row carries its own PARAM.SFO time");
+
+    sdt_param(12u /* FILES */, "NKTIME", "SLOTA", "");
+    memset(g_mem_base + SDT_FILES, 0, 80u * 8u);
+    memset(g_mem_base + SDT_FILELIST, 0, 36u);
+    MEM_W32(SDT_FILELIST + 4u, 4u);              /* maxNormal */
+    MEM_W32(SDT_FILELIST + 28u, SDT_FILES);      /* normal entries */
+    MEM_W32(SDT_PARAM + 0x5f8u, SDT_FILELIST);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && MEM_R32(SDT_FILELIST + 16u) == 1u &&
+               sdt_date_is(SDT_FILES + 16u, 2001, 9, 9, 10, 46, 40) &&
+               sdt_date_is(SDT_FILES + 32u, 2001, 9, 9, 10, 46, 40) &&
+               sdt_date_is(SDT_FILES + 48u, 2001, 9, 9, 10, 46, 40),
+           "a FILES entry's three times are the file's modification time in the console's zone");
+
+    /* A SAVE stamps its files with the guest clock: here ten days ahead of the host's. */
+    {
+        const uint64_t saved_vtime = s_vtime_us;
+        sr_hle_test_reset_rtc_epoch();
+        (void)sr_savedata_guest_rtc_tick();
+        s_vtime_us += 10ull * 86400ull * 1000000ull;
+        sdt_param(3u /* SAVE */, "NKCLOCK", "SLOT", "DATA.BIN");
+        fd_guest_copy(SDT_BUF, "CLOCK", 5u);
+        MEM_W32(SDT_PARAM + 0x7cu, 5u);
+        const time_t host_now = time(NULL);
+        uint32_t r = sr_savedata_execute(SDT_PARAM);
+        struct stat st;
+        snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKCLOCKSLOT/PARAM.SFO", root);
+        const int stamped = r == 0u && stat(path, &st) == 0 &&
+                            st.st_mtime >= host_now + 10 * 86400 - 300 &&
+                            st.st_mtime <= host_now + 10 * 86400 + 300;
+        expect(stamped, "a SAVE stamps PARAM.SFO with the guest clock, not the host's");
+        s_vtime_us = saved_vtime;
+        sr_hle_test_reset_rtc_epoch();
+    }
+    sysreg_scratch_clean();
+    sysreg_restart();
+    sdt_root_end(root, old);
+}
+
+/* A PARAM.SFO holding only SAVEDATA_PARAMS, whose first byte is the encryption mode. */
+static int sdt_plant_sfo(const char *root, const char *leaf, uint8_t crypt_mode) {
+    uint8_t b[180];
+    memset(b, 0, sizeof(b));
+    memcpy(b, "\0PSF", 4);
+    b[4] = 0x01; b[5] = 0x01;                 /* version 1.1 */
+    b[8] = 36;                                /* keyStart: 20 + 16 */
+    b[12] = 52;                               /* dataStart */
+    b[16] = 1;                                /* one entry */
+    b[22] = 0x04;                             /* fmt 0x0004: binary */
+    b[24] = 128; b[28] = 128;                 /* len, maxlen */
+    memcpy(b + 36, "SAVEDATA_PARAMS", 16);
+    b[52] = crypt_mode;
+    char dir[512], path[600];
+    snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/%s", root, leaf);
+    snprintf(path, sizeof(path), "%s/PARAM.SFO", dir);
+    nk_platform_mkdir_p(dir);
+    return sdt_write(path, b, sizeof(b));
+}
+
+/* #1387: the secure modes store unencrypted files, and a save a PSP encrypted is refused,
+ * never handed back as ciphertext, replaced or deleted. */
+static void test_savedata_encrypted_save_refused(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_secure";
+    char *old = sdt_root_begin(root);
+    char path[600], text[64], dir[512];
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    expect(sdt_plant_sfo(root, "NKSECURESLOT", 0x41u) &&
+               sdt_plant(root, "NKSECURESLOT", "DATA.BIN", "CIPHER") &&
+               sdt_plant_sfo(root, "NKPLAINSLOT", 0u) && sdt_plant(root, "NKPLAINSLOT", "DATA.BIN", "PLAIN"),
+           "an encrypted and an unencrypted save can be planted");
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKSECURESLOT/DATA.BIN", root);
+    snprintf(dir, sizeof(dir), "%s/PSP/SAVEDATA/NKSECURESLOT", root);
+    static const uint32_t loads[] = { 2u /* LOAD */, 15u /* READDATASECURE */, 16u /* READDATA */ };
+    for (size_t i = 0; i < sizeof(loads) / sizeof(loads[0]); i++) {
+        sdt_param(loads[i], "NKSECURE", "SLOT", "DATA.BIN");
+        memset(g_mem_base + SDT_BUF, 0xee, 0x100u);
+        MEM_W32(SDT_PARAM + 0x7cu, 0x1234u);
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110306u && MEM_R8(SDT_BUF) == 0xeeu &&
+                   MEM_R32(SDT_PARAM + 0x7cu) == 0x1234u,
+               "a load of an encrypted save is refused with LOAD_DATA_BROKEN and writes nothing");
+    }
+    sdt_param(3u /* SAVE */, "NKSECURE", "SLOT", "DATA.BIN");
+    fd_guest_copy(SDT_BUF, "OVER", 4u);
+    MEM_W32(SDT_PARAM + 0x7cu, 4u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110385u && sdt_read(path, text, sizeof(text)) &&
+               !strcmp(text, "CIPHER"),
+           "a SAVE over an encrypted save is refused and leaves it as it is");
+    sdt_param(13u /* MAKEDATASECURE */, "NKSECURE", "SLOT", "DATA.BIN");
+    fd_guest_copy(SDT_BUF, "OVER", 4u);
+    MEM_W32(SDT_PARAM + 0x7cu, 4u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110321u && sdt_read(path, text, sizeof(text)) &&
+               !strcmp(text, "CIPHER"),
+           "MAKEDATASECURE over an encrypted save is refused, never reported as a full Memory Stick");
+    sdt_param(10u /* DELETE */, "NKSECURE", "SLOT", "");
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110345u && nk_platform_file_exists(path),
+           "a DELETE of an encrypted save is refused and deletes nothing");
+    sdt_param(2u, "NKPLAIN", "SLOT", "DATA.BIN");
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && !strcmp(sdt_loaded(), "PLAIN"),
+           "a save whose SAVEDATA_PARAMS marks it unencrypted loads");
+    (void)dir;
+    sdt_root_end(root, old);
+}
+
+/* The six members of a full SAVE and the file each one's bytes go to. */
+static const char *const k_sdt_member[6] = {
+    "DATA.BIN", "PARAM.SFO", "ICON0.PNG", "ICON1.PMF", "PIC1.PNG", "SND0.AT3"
+};
+
+/* A SAVE of all six members of NKFAULTSLOT. Member i holds "<tag>-<name>"; PARAM.SFO carries
+ * <tag> as its SAVEDATA_TITLE. */
+static uint32_t sdt_full_save(const char *tag) {
+    char text[64];
+    sdt_param(3u /* SAVE */, "NKFAULT", "SLOT", "DATA.BIN");
+    fd_guest_copy(SDT_PARAM + 0x100u, tag, strlen(tag) + 1u);
+    int n = snprintf(text, sizeof(text), "%s-DATA.BIN", tag);
+    fd_guest_copy(SDT_BUF, text, (size_t)n);
+    MEM_W32(SDT_PARAM + 0x7cu, (uint32_t)n);
+    for (uint32_t i = 2; i < 6u; i++) {
+        const uint32_t blob = SDT_BLOBS + i * 0x100u, fd = 0x584u + (i - 2u) * 16u;
+        n = snprintf(text, sizeof(text), "%s-%s", tag, k_sdt_member[i]);
+        fd_guest_copy(blob, text, (size_t)n);
+        MEM_W32(SDT_PARAM + fd + 0u, blob);
+        MEM_W32(SDT_PARAM + fd + 4u, 0x100u);
+        MEM_W32(SDT_PARAM + fd + 8u, (uint32_t)n);
+    }
+    return sr_savedata_execute(SDT_PARAM);
+}
+
+/* Member i: 1 = the whole OLD version, 2 = the whole NEW version, 0 = torn, missing or mixed. */
+static int sdt_member_state(const char *slot, int i) {
+    char path[600], text[64], want[64];
+    snprintf(path, sizeof(path), "%s/%s", slot, k_sdt_member[i]);
+    if (i == 1) return sdt_file_has(path, "OLDSAVE") ? 1 : sdt_file_has(path, "NEWSAVE") ? 2 : 0;
+    if (!sdt_read(path, text, sizeof(text))) return 0;
+    snprintf(want, sizeof(want), "OLDSAVE-%s", k_sdt_member[i]);
+    if (!strcmp(text, want)) return 1;
+    snprintf(want, sizeof(want), "NEWSAVE-%s", k_sdt_member[i]);
+    return !strcmp(text, want) ? 2 : 0;
+}
+
+/* Every member is version v (1 old, 2 new). */
+static int sdt_all(const char *slot, int v) {
+    for (int i = 0; i < 6; i++)
+        if (sdt_member_state(slot, i) != v) return 0;
+    return 1;
+}
+
+/* A LOAD of the data file, which first settles the directory; its result. */
+static uint32_t sdt_fault_load(void) {
+    sdt_param(2u /* LOAD */, "NKFAULT", "SLOT", "DATA.BIN");
+    return sr_savedata_execute(SDT_PARAM);
+}
+
+/* #1387: a fault at every step of the SAVE transaction leaves the previous save whole, and a
+ * fault after the commit leaves the new one whole: never a mix, never a torn member, never a
+ * bookkeeping file under a live name once the next operation has run. Three fault kinds at each
+ * step k: the step fails (ONCE); it and every later step fail, as when the process stops or the
+ * disk stops taking writes (FROM); it takes effect and then reports failure (EFFECT). */
+static void test_savedata_commit_faults(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_faults";
+    char *old = sdt_root_begin(root);
+    char slot[512], what[256];
+    snprintf(slot, sizeof(slot), "%s/PSP/SAVEDATA/NKFAULTSLOT", root);
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    expect(sdt_full_save("OLDSAVE") == 0u && sdt_all(slot, 1) && sdt_live_bookkeeping(slot) == 0,
+           "the previous six-member SAVE succeeds and leaves no bookkeeping file");
+    sr_savedata_test_fault(SDT_FAULT_ONCE, 1 << 30);           /* count the steps, fail none */
+    expect(sdt_full_save("NEWSAVE") == 0u && sdt_all(slot, 2), "an unfaulted SAVE over it succeeds");
+    const int total = sr_savedata_test_fault_ops();
+    sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+    snprintf(what, sizeof(what), "a six-member SAVE over a save takes at least 23 host steps (took %d)", total);
+    expect(total >= 23, what);
+    expect(sdt_full_save("OLDSAVE") == 0u && sdt_all(slot, 1), "the previous save is back");
+
+    static const int modes[] = { SDT_FAULT_ONCE, SDT_FAULT_FROM, SDT_FAULT_EFFECT };
+    static const char *const mode_names[] = { "", "fails", "and every later step fail", "takes effect, then fails" };
+    int commit_step = 0, failures = 0;
+    for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+        for (int k = 1; k <= total; k++) {
+            sr_savedata_test_fault(modes[m], k);
+            const uint32_t r = sdt_full_save("NEWSAVE");
+            const int reached = sr_savedata_test_fault_ops() >= k;
+            if (modes[m] == SDT_FAULT_FROM) {
+                /* A recovery that itself cannot write fails closed or serves a whole save. */
+                sr_savedata_test_fault(SDT_FAULT_FROM, 1);
+                const uint32_t r3 = sdt_fault_load();
+                snprintf(what, sizeof(what), "after step %d %s, a LOAD whose recovery cannot write "
+                         "fails closed or loads a whole save (0x%08x)", k, mode_names[modes[m]], (unsigned)r3);
+                expect(r3 == 0x80110305u ||
+                           (r3 == 0u && !strcmp(sdt_loaded(), r ? "OLDSAVE-DATA.BIN" : "NEWSAVE-DATA.BIN")),
+                       what);
+            }
+            sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+            const uint32_t r2 = sdt_fault_load();
+            const int whole = sdt_all(slot, r == 0u ? 2 : 1);
+            const int live = sdt_live_bookkeeping(slot);
+            if (modes[m] == SDT_FAULT_EFFECT && r == 0u && !commit_step) commit_step = k;
+            snprintf(what, sizeof(what), "SAVE step %d %s: result 0x%08x leaves the %s save whole "
+                     "and the next LOAD (0x%08x) leaves no bookkeeping file (%d)", k,
+                     mode_names[modes[m]], (unsigned)r, r == 0u ? "new" : "previous", (unsigned)r2, live);
+            const int ok = reached && whole && r2 == 0u && live == 0;
+            expect(ok, what);
+            if (!ok) failures++;
+            if (sdt_full_save("OLDSAVE") != 0u || !sdt_all(slot, 1)) {
+                snprintf(what, sizeof(what), "the previous save can be restored after step %d", k);
+                expect(0, what);
+                failures++;
+            }
+            if (failures > 8) break;
+        }
+    }
+    expect(commit_step > 0, "a commit that takes effect and reports failure still counts as committed");
+
+    /* Planted states a crash on a file system that reorders metadata could leave: a committed
+     * record whose renames were lost. The commit is made to stick with its cleanup failing,
+     * then slot 0's two renames are undone by hand. Recovery completes them, never reverts. */
+    if (commit_step > 0) {
+        char m[600], p[600], s[600];
+        snprintf(m, sizeof(m), "%s/DATA.BIN", slot);
+        snprintf(p, sizeof(p), "%s/.nakagawa-prev-DATA.BIN", slot);
+        snprintf(s, sizeof(s), "%s/.nakagawa-stage-0", slot);
+        sr_savedata_test_fault(SDT_FAULT_FROM, commit_step + 1);
+        const uint32_t r = sdt_full_save("NEWSAVE");
+        sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+        expect(r == 0u && nk_platform_file_exists(p), "a committed SAVE whose cleanup failed keeps "
+               "its record and its previous copies");
+        expect(rename(m, s) == 0 && rename(p, m) == 0, "slot 0's two renames can be undone by hand");
+        expect(sdt_fault_load() == 0u && !strcmp(sdt_loaded(), "NEWSAVE-DATA.BIN") && sdt_all(slot, 2) &&
+                   sdt_live_bookkeeping(slot) == 0,
+               "recovery of a committed record completes the lost renames: the new save stands");
+        expect(sdt_full_save("OLDSAVE") == 0u && sdt_all(slot, 1), "the previous save is back again");
+    }
+
+    /* No record, but a previous copy that differs from its member: the record was lost, so the
+     * directory fails closed and nothing is touched. */
+    {
+        char p[600], text[64];
+        snprintf(p, sizeof(p), "%s/.nakagawa-prev-DATA.BIN", slot);
+        expect(sdt_write(p, "ORPHAN", 6u), "an orphan previous copy can be planted");
+        expect(sdt_fault_load() == 0x80110305u && sdt_read(p, text, sizeof(text)) && !strcmp(text, "ORPHAN") &&
+                   sdt_all(slot, 1),
+               "a previous copy with no record fails the LOAD closed and every file is kept");
+        expect(sdt_full_save("NEWSAVE") == 0x80110385u && sdt_all(slot, 1),
+               "a SAVE over that directory is refused too");
+        remove(p);
+    }
+    /* A damaged journal with no previous copy was never acted on: its stages go. */
+    {
+        char j[600], s[600];
+        snprintf(j, sizeof(j), "%s/.nakagawa-journal", slot);
+        snprintf(s, sizeof(s), "%s/.nakagawa-stage-0", slot);
+        expect(sdt_write(j, "garbage", 7u) && sdt_write(s, "half", 4u), "a torn journal can be planted");
+        expect(sdt_fault_load() == 0u && !nk_platform_file_exists(j) && !nk_platform_file_exists(s) &&
+                   sdt_all(slot, 1),
+               "a torn journal with no previous copy is discarded and the save stands");
+    }
+    /* A damaged commit record fails closed. */
+    {
+        char c[600];
+        snprintf(c, sizeof(c), "%s/.nakagawa-commit", slot);
+        expect(sdt_write(c, "garbage", 7u), "a damaged commit record can be planted");
+        expect(sdt_fault_load() == 0x80110305u && nk_platform_file_exists(c) && sdt_all(slot, 1),
+               "a damaged commit record fails the LOAD closed and is kept");
+        remove(c);
+    }
+    /* A data file named like the save's own files is refused, not silently dropped. */
+    {
+        static const char *const names[] = { "PARAM.SFO", "param.sfo", ".nakagawa-x" };
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            sdt_param(3u, "NKFAULT", "SLOT", names[i]);
+            fd_guest_copy(SDT_BUF, "DROP", 4u);
+            MEM_W32(SDT_PARAM + 0x7cu, 4u);
+            expect(sr_savedata_execute(SDT_PARAM) == 0x80110388u && sdt_all(slot, 1),
+                   "a data file named like a save's own file is refused with SAVE_PARAM");
+        }
+    }
+    sdt_root_end(root, old);
+}
+
+/* #1386: the savedata dialog's nested output blocks are checked before anything is written,
+ * and an unknown mode is refused by name. */
+static void test_savedata_nested_outputs(void) {
+    static const char root[] = HLE_BUILD_ROOT "/hle_savedata_nested";
+    char *old = sdt_root_begin(root);
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    expect(sdt_plant(root, "NKNESTSLOT", "DATA.BIN", "DATA"), "a save can be planted");
+    sdt_param(11u /* LIST */, "NKNEST", "", "");
+    MEM_W32(SDT_PARAM + 0x5f4u, 0x0bfffffcu);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110328u, "LIST refuses an idList block past the arena");
+    sdt_param(11u, "NKNEST", "", "");
+    MEM_W32(SDT_IDLIST + 0u, 5u);
+    MEM_W32(SDT_IDLIST + 4u, 0xdeadbeefu);
+    MEM_W32(SDT_IDLIST + 8u, 0x0bffffd0u);
+    MEM_W32(SDT_PARAM + 0x5f4u, SDT_IDLIST);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110328u && MEM_R32(SDT_IDLIST + 4u) == 0xdeadbeefu,
+           "LIST refuses an entry array it cannot write, before writing resultCount");
+    MEM_W32(SDT_IDLIST + 0u, 0u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0u && MEM_R32(SDT_IDLIST + 4u) == 0u,
+           "a LIST that writes no entry does not need an entry array");
+    sdt_param(12u /* FILES */, "NKNEST", "SLOT", "");
+    MEM_W32(SDT_PARAM + 0x5f8u, 0x0bfffff0u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110328u, "FILES refuses a fileList block past the arena");
+    sdt_param(8u /* SIZES */, "NKNEST", "SLOT", "");
+    MEM_W32(SDT_PARAM + 0x5d0u, 0x0bfffff8u);
+    expect(sr_savedata_execute(SDT_PARAM) == 0x801103c8u, "SIZES refuses an msFree block past the arena");
+    sdt_param(23u, "NKNEST", "SLOT", "");
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110300u, "an unknown savedata mode is refused, not a success");
+    sdt_param(7u /* LISTALLDELETE */, "NKNEST", "SLOT", "");
+    expect(sr_savedata_execute(SDT_PARAM) == 0x80110300u, "LISTALLDELETE, not implemented, is refused");
+    sdt_root_end(root, old);
+}
+
+/* #1386 against PSPAutotests tests/utility/dialog/{status,sizes}.expected (hrydgard/pspautotests
+ * master, recorded on a PSP): message dialog sizes and wrong-state results, a busy slot reported
+ * before a bad size, and the message dialog's default button. */
+static void test_utility_dialog_measured_states(void) {
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    static const uint32_t bad[] = { 0u, 0x40u, 0x23bu, 0x23du, 0x243u, 0x245u, 0x2c3u, 0x2c5u, 0x800u };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+        MEM_W32(UTILITY_MSG_PARAM_ADDR, bad[i]);
+        expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110004u &&
+                   utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0x80110005u,
+               "a message InitStart with an unlisted size is INVALID_PARAM_SIZE and takes no slot");
+    }
+    static const uint32_t good[] = { 0x23cu, 0x244u, 0x2c4u };
+    for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+        utility_param_block(UTILITY_MSG_PARAM_ADDR, good[i]);
+        expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u,
+               "a message InitStart accepts the 0x23c, 0x244 and 0x2c4 blocks");
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* "Savedata just started: GameSharing InitStart, bad size: INVALID_STATUS". */
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u,
+           "a savedata dialog starts");
+    utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x64u);
+    MEM_W32(UTILITY_OTHER_PARAM_ADDR, 0x20u);
+    expect(utility_call(&cpu, NID_SHARING_DIALOG_INIT, UTILITY_OTHER_PARAM_ADDR) == 0x80110001u,
+           "a game-sharing InitStart with a bad size while savedata runs is INVALID_STATUS");
+    MEM_W32(UTILITY_MSG_PARAM_ADDR, 0x20u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110001u,
+           "a message InitStart with a bad size while savedata runs is INVALID_STATUS");
+    sr_hle_test_osk_slot_reset();
+
+    /* The message dialog's wrong states. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "msg InitStart: NONE");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110001u,
+           "msg ShutdownStart during INIT: INVALID_STATUS");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u, "msg status: RUNNING");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110001u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "msg ShutdownStart while RUNNING: INVALID_STATUS, still RUNNING");
+    expect(utility_poll_to_finished(&cpu, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "msg finished: ok, then SHUTDOWN and NONE");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0x80110001u,
+           "msg Update after done: INVALID_STATUS");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110001u,
+           "msg ShutdownStart after done: INVALID_STATUS");
+    sr_hle_test_osk_slot_reset();
+
+    /* A "default No" prompt is answered No. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    MEM_W32(UTILITY_MSG_PARAM_ADDR + 0x23cu, 0x110u);           /* YESNO | DEFAULT_NO */
+    expect(msg_dialog_run_to_finished(&cpu, UTILITY_MSG_PARAM_ADDR) &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x240u) == 2u,
+           "a yes/no message dialog with the cursor on NO is answered NO (2)");
+    sr_hle_test_osk_slot_reset();
+
+    /* Through the dialog, an unknown savedata mode finishes with its refusal as the result. */
+    utility_savedata_block();
+    MEM_W32(UTILITY_SAVEDATA_PARAM_ADDR + 0x30u, 23u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0x80110300u,
+           "a savedata dialog with an unknown mode finishes with SAVEDATA_ERROR_TYPE, not 0");
+    sr_hle_test_osk_slot_reset();
 }
 
 /* ---- coroutine park ------------------------------------------------------------------
@@ -40174,6 +40907,12 @@ static int hle_selftest_main(int argc, char **argv) {
     test_msg_dialog_abort_without_update();
     test_io_devctl_memory_stick();
     test_savedata_getsize_free_space();
+    test_savedata_list_selection();
+    test_savedata_listing_times();
+    test_savedata_encrypted_save_refused();
+    test_savedata_commit_faults();
+    test_savedata_nested_outputs();
+    test_utility_dialog_measured_states();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
     test_explicit_exit_status_exact((int32_t)0x800201acu, 0x800200d2u);
