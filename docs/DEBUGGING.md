@@ -45,17 +45,36 @@ $env:SR_PERF_CSV = "build/perf/baseline.csv"
 ```
 
 `SR_PERF_CSV` derives a sibling `.json` path when `SR_PERF_JSON` is unset. The manager's
-`Benchmark` profile sets both paths and copies both artifacts. With `SR_PERF` unset or set to `0`,
-clock reads, aggregation, interval output, summary writing, and generated AOT per-instruction hooks
-are disabled. Runtime seams use one predicted `sr_perf_enabled` branch; `PERF_AOT_INSTRUCTIONS=0`
-removes the generated per-instruction hook entirely. The benchmark command measures the remaining
-runtime branch cost rather than assuming a zero-cost binary.
+`Benchmark` profile sets both paths and copies both artifacts. With `SR_PERF` unset, either path on
+its own turns the counters on for its file and writes no telemetry line to stderr, the 60-second
+`PERF_ATTRIB` lines included, so a measured run carries no stderr writes. With `SR_PERF=0`, or
+with `SR_PERF` unset and neither path set, clock reads, aggregation, interval output, summary
+writing, and generated AOT per-instruction hooks are disabled. Runtime seams use one predicted
+`sr_perf_enabled` branch; `PERF_AOT_INSTRUCTIONS=0` removes the generated per-instruction hook
+entirely. The benchmark command measures the remaining runtime branch cost rather than assuming a
+zero-cost binary.
 
 The CSV's `fps` and `present_submits` columns count presents, re-presents of one finished frame
-included. Its last three columns count new game frames as the overlay does: `new_frames`, and over
-`new_frame_intervals` intervals between them, `new_frame_vblanks` VBlanks. Game frames per second are
-`new_frames` divided by the interval's `wall_ms`, and VBlanks per frame are
-`new_frame_vblanks / new_frame_intervals`.
+included. `new_frames` counts new game frames as the overlay does, and over `new_frame_intervals`
+intervals between them, `new_frame_vblanks` VBlanks. Game frames per second are `new_frames`
+divided by the interval's `wall_ms`, and VBlanks per frame are
+`new_frame_vblanks / new_frame_intervals`. The columns after them (#1296):
+
+- `new_frame_iv0` to `new_frame_iv3` and `new_frame_iv4p` count those intervals by VBlanks: 0, 1, 2,
+  3, and 4 or more. A title that waits two VBlanks per frame on time has only `iv2`.
+  `new_frame_iv1_late` counts the one-VBlank intervals that hold a late VBlank latch: the latch
+  credits every owed period at once, so the frame after a catch-up can be one VBlank on and still on
+  time.
+- `frame_work_*` is the host work per game frame: the CPU time of the scheduler thread, which runs
+  the guest, HLE, GE lists, VBlank service and the presenter, from one new frame to the next. Waits
+  and time the thread was descheduled are not in it, so other load on the machine does not inflate
+  it. `frame_work_frames` intervals were measured, `frame_work_ms` is their sum and
+  `frame_work_max_ms` the longest. The buckets count them by upper bound: `le16_7` (one display
+  period), `le22` (22 ms, two-thirds of a 30 fps frame), `le33_4` (two periods), `le50_1` (three
+  periods) and `gt50_1`. On Windows the clock is the thread's TSC cycles, converted at the TSC rate
+  measured over the run, so it needs an invariant TSC and reads nothing in the first half second;
+  `frame_work_frames` stays 0 where no precise thread clock exists. The JSON summary's `frames`
+  object holds the run totals.
 
 For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
 run with `SR_PERF=1` and `SR_GE_CPU_PROFILE=1`; `command_dispatch` is exported with those two, and

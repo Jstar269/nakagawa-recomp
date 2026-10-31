@@ -325,6 +325,205 @@ static void test_new_frames_are_distinct_buffers(void) {
           per_frame);
 }
 
+/* ---- frame pacing and host work per game frame (#1296) ------------------------------------
+ * The CSV and JSON outputs are read back by column name, so a value written under the wrong
+ * header fails as surely as a wrong count. */
+static char s_csv_path[512];
+
+static void set_env(const char *name, const char *value) {
+#ifdef _WIN32
+    _putenv_s(name, value ? value : "");
+#else
+    if (value) setenv(name, value, 1);
+    else unsetenv(name);
+#endif
+}
+
+static size_t read_file(const char *path, char *buf, size_t size) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t n = fread(buf, 1, size - 1u, f);
+    fclose(f);
+    buf[n] = '\0';
+    return n;
+}
+
+/* The value under `name` in the CSV's last row, or -1 when the column or the row is missing. */
+static double csv_last(const char *name) {
+    static char text[65536];
+    if (!read_file(s_csv_path, text, sizeof text)) return -1.0;
+    char *header_end = strchr(text, '\n');
+    if (!header_end) return -1.0;
+    *header_end = '\0';
+    if (header_end > text && header_end[-1] == '\r') header_end[-1] = '\0';   /* a text-mode CSV */
+    char *last = NULL;
+    for (char *line = header_end + 1; *line;) {
+        char *end = strchr(line, '\n');
+        if (end && end > line) last = line;
+        if (!end) break;
+        *end = '\0';
+        line = end + 1;
+    }
+    if (!last) return -1.0;
+    int column = -1, i = 0;
+    for (char *h = text, *next; h; h = next, i++) {
+        next = strchr(h, ',');
+        size_t len = next ? (size_t)(next - h) : strlen(h);
+        if (next) next++;
+        if (len == strlen(name) && strncmp(h, name, len) == 0) column = i;
+    }
+    if (column < 0) return -1.0;
+    char *v = last;
+    for (i = 0; v && i < column; i++) {
+        v = strchr(v, ',');
+        if (v) v++;
+    }
+    return v ? strtod(v, NULL) : -1.0;
+}
+
+static int csv_rows(void) {
+    static char text[65536];
+    if (!read_file(s_csv_path, text, sizeof text)) return -1;
+    int lines = 0;
+    for (const char *p = text; *p; p++) lines += *p == '\n';
+    return lines - 1;   /* without the header */
+}
+
+static uint64_t s_fake_wall_ns;
+static uint64_t s_fake_cpu_ns;
+static uint64_t fake_wall(void) { return s_fake_wall_ns; }
+static uint64_t fake_cpu(void) { return s_fake_cpu_ns; }
+
+static void flip(uint32_t buffer, uint32_t vcount, double cpu_ms) {
+    s_fake_cpu_ns += (uint64_t)(cpu_ms * 1000000.0 + 0.5);
+    s_fake_wall_ns += 1000000u;
+    sr_perf_present_done(0, 1);
+    sr_perf_present_frame(buffer, vcount);
+}
+
+/* Ten new frames (A/B alternate) and one re-present. VBLANK intervals 2, 2, 3, 0, 1 (after an
+ * on-time and a masked latch), 1 (after a late latch), 6, 2 (across the re-present), 1: by count iv0
+ * 1, iv1 3, iv2 3, iv3 1, iv4+ 1, and only one of the one-VBLANK intervals follows a late latch.
+ * The scheduler thread's CPU per interval, ms:
+ * 10, 20, 30, 16.683333 (exactly one display period: bounds are inclusive), 22 (exactly the
+ * target), 45, 80, 5 + 3 across the re-present, 12. */
+static void test_frame_intervals_and_work(void) {
+    const uint32_t a = 0x04000000u, b = 0x04044000u;
+    s_fake_wall_ns = 10000000000ull;
+    s_fake_cpu_ns = 1000000000ull;
+    sr_perf_test_set_clocks(fake_wall, fake_cpu);
+    sr_perf_test_reinit();
+    flip(a, 100u, 0.0);
+    flip(b, 102u, 10.0);
+    flip(a, 104u, 20.0);
+    flip(b, 107u, 30.0);
+    flip(a, 107u, 16.683333);
+    sr_perf_vblank_latch(16000u, 1u, 0);       /* on time */
+    sr_perf_vblank_latch(50000u, 3u, 1);       /* masked by the guest: not a late latch */
+    flip(b, 108u, 22.0);
+    sr_perf_vblank_latch(40000u, 2u, 0);       /* a late latch: two periods owed at once */
+    flip(a, 109u, 45.0);
+    flip(b, 115u, 80.0);
+    flip(b, 116u, 5.0);                       /* a re-present: no new frame, no interval */
+    flip(a, 117u, 3.0);
+    flip(b, 118u, 12.0);
+    sr_perf_test_force_report();
+    static const struct { const char *column; double want; } cells[] = {
+        { "new_frames", 10.0 }, { "new_frame_intervals", 9.0 }, { "new_frame_vblanks", 18.0 },
+        { "new_frame_iv0", 1.0 }, { "new_frame_iv1", 3.0 }, { "new_frame_iv2", 3.0 },
+        { "new_frame_iv3", 1.0 }, { "new_frame_iv4p", 1.0 }, { "new_frame_iv1_late", 1.0 },
+        { "frame_work_frames", 9.0 }, { "frame_work_ms", 243.683 }, { "frame_work_max_ms", 80.0 },
+        { "frame_work_le16_7", 4.0 }, { "frame_work_le22", 2.0 }, { "frame_work_le33_4", 1.0 },
+        { "frame_work_le50_1", 1.0 }, { "frame_work_gt50_1", 1.0 },
+    };
+    for (unsigned i = 0; i < sizeof cells / sizeof cells[0]; i++) {
+        double got = csv_last(cells[i].column);
+        CHECK(got > cells[i].want - 0.0015 && got < cells[i].want + 0.0015,
+              "CSV %s = %.3f (expected %.3f)", cells[i].column, got, cells[i].want);
+    }
+
+    /* The run's totals in the JSON summary, written at shutdown. */
+    sr_perf_shutdown();
+    char json_path[600];
+    snprintf(json_path, sizeof json_path, "%.*s.json", (int)(strlen(s_csv_path) - 4u), s_csv_path);
+    static char json[16384];
+    CHECK(read_file(json_path, json, sizeof json) > 0, "the JSON summary was written");
+    CHECK(strstr(json, "\"frames\":{\"new\":10,\"intervals\":9,\"interval_vblanks\":18,"
+                       "\"intervals_by_vblanks\":[1,3,3,1,1],\"one_vblank_after_late_latch\":1,"
+                       "\"work\":{\"frames\":9,\"ns\":243683333,\"max_ns\":80000000,\"buckets\":"
+                       "{\"le16_7\":4,\"le22\":2,\"le33_4\":1,\"le50_1\":1,\"gt50_1\":1}}}") != NULL,
+          "JSON frames section: %s", strstr(json, "\"frames\"") ? strstr(json, "\"frames\"") : json);
+    remove(json_path);
+    sr_perf_test_set_clocks(NULL, NULL);
+    sr_perf_test_reinit();
+}
+
+/* SR_PERF_CSV alone turns the counters on and writes nothing to stderr, the cumulative
+ * PERF_ATTRIB lines included; SR_PERF=0 keeps them off even with an output path (the benchmark's
+ * profiler-off leg); with SR_PERF the attribution lines leave as one write each. */
+static void test_files_only_counters(void) {
+    set_env("SR_PERF", NULL);
+    sr_perf_test_reinit();
+    CHECK(sr_perf_enabled, "SR_PERF_CSV alone turns the counters on");
+    int rows = csv_rows();
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
+    sr_perf_present_done(0, 1);
+    sr_perf_test_force_report();
+    sr_perf_phase_report(1);
+    sr_perf_test_set_report_sink(NULL);
+    CHECK(s_report_count == 0, "files-only counters emitted %d stderr lines (expected 0)",
+          s_report_count);
+    CHECK(csv_rows() == rows + 1, "files-only counters wrote a CSV row (%d -> %d)", rows, csv_rows());
+
+    set_env("SR_PERF", "0");
+    sr_perf_test_reinit();
+    CHECK(!sr_perf_enabled, "SR_PERF=0 keeps the counters off with SR_PERF_CSV set");
+
+    set_env("SR_PERF", "1");
+    sr_perf_test_reinit();
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
+    sr_perf_phase_report(1);
+    sr_perf_test_set_report_sink(NULL);
+    CHECK(s_report_count == 3, "the attribution report reached the emitter as %d lines (expected 3)",
+          s_report_count);
+    CHECK(whole_line(0, "PERF_ATTRIB vblank_late total=1 ") &&
+              whole_line(1, "PERF_ATTRIB vblank_owed owed=3 ") &&
+              whole_line(2, "  PERF_ATTRIB_LATE phase=other n=1 "),
+          "attribution lines arrive whole: [%s] [%s] [%s]", s_report_lines[0], s_report_lines[1],
+          s_report_lines[2]);
+}
+
+/* The real thread clock: a 30 ms spin on this thread between two new frames is read as at most
+ * the wall time it took (a thread cannot run longer than the wall clock), and above zero. A clock
+ * read in the wrong unit (TSC cycles as ns) is several times the wall time. */
+static void spin_ns(uint64_t ns);
+
+static void test_thread_clock(void) {
+    sr_perf_test_reinit();
+    spin_ns(600000000u);                         /* the Windows TSC rate needs half a second */
+    sr_perf_present_done(0, 1);
+    sr_perf_present_frame(0x04000000u, 200u);
+    uint64_t t0 = sr_exec_now_ns();
+    spin_ns(30000000u);
+    sr_perf_present_done(0, 1);
+    sr_perf_present_frame(0x04044000u, 202u);
+    double wall_ms = (double)(sr_exec_now_ns() - t0) / 1000000.0;
+    sr_perf_test_force_report();
+    double frames = csv_last("frame_work_frames");
+    double work = csv_last("frame_work_ms");
+    if (frames == 0.0) {
+        printf("profiler selftest: no precise thread CPU clock on this host; frame work not measured\n");
+        return;
+    }
+    printf("profiler selftest: the thread clock read a 30 ms spin (%.3f ms of wall) as %.3f ms\n", wall_ms,
+           work);
+    CHECK(frames == 1.0 && work > 0.0 && work <= wall_ms + 1.0,
+          "a 30 ms spin read as %.3f ms of thread CPU over %.3f ms of wall (frames %.0f)", work,
+          wall_ms, frames);
+}
+
 /* Execution share (perf.h): always on, so it is driven here with SR_PERF unset. */
 static void spin_ns(uint64_t ns) {
     uint64_t until = sr_exec_now_ns() + ns;
@@ -423,6 +622,13 @@ static void test_exec_share(void) {
 }
 
 int main(void) {
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !tmp[0]) tmp = getenv("TEMP");
+    if (!tmp || !tmp[0]) tmp = "/tmp";
+    snprintf(s_csv_path, sizeof s_csv_path, "%s/nk_profiler_selftest_%ld.csv", tmp,
+             (long)sr_exec_now_ns());
+    set_env("SR_PERF_CSV", s_csv_path);
+    set_env("SR_HUD", NULL);
     test_exec_share();
     test_telemetry_lines_are_emitted_whole();
     test_audio_queue_line();
@@ -431,6 +637,16 @@ int main(void) {
     test_live_history_follows_the_report();
     test_guest_symbol_labels();
     test_new_frames_are_distinct_buffers();
+    test_frame_intervals_and_work();
+    test_files_only_counters();
+    test_thread_clock();
+    sr_perf_shutdown();
+    {
+        char json_path[600];
+        snprintf(json_path, sizeof json_path, "%.*s.json", (int)(strlen(s_csv_path) - 4u), s_csv_path);
+        remove(json_path);
+        remove(s_csv_path);
+    }
     sr_profile_test_reset();
 
     /* HST and other zero-based PSP images can legitimately execute PC zero. It must be a
