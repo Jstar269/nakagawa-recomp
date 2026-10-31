@@ -151,6 +151,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_SAS_INIT 117
 /* #1096: the first AT3 decode against many fact-chunk delays in one launch; see run_at3_delay_sweep. */
 #define PSP_ORACLE_CASE_AT3_DELAY_SWEEP 150
+/* #302: the sceMpeg YCbCr, CSC and decode-detail path on a real AVC stream; see run_mpeg_ycbcr. */
+#define PSP_ORACLE_CASE_MPEG_YCBCR 151
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -386,6 +388,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/thread_k0_block_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DELAY_SWEEP
 #define PROBE_HOST0_LOG "host0:/at3_delay_sweep_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MPEG_YCBCR
+#define PROBE_HOST0_LOG "host0:/mpeg_ycbcr_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
 #define PROBE_HOST0_LOG "host0:/sas_init_log.txt"
 #endif
@@ -10766,6 +10770,384 @@ static void run_at3_delay_sweep(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MPEG_YCBCR
+#include <pspmpeg.h>
+#include <psputility_avmodules.h>
+/* #302: what the PSP's sceMpeg YCbCr path does with a real AVC stream. The private PSMF prefix staged as
+   host0:/mpeg-input.pmf is fed through a ring buffer to one registered AVC stream; the case records the
+   sceMpegAvcQueryYCbCrSize / sceMpegAvcInitYCbCr results over a matrix of modes and sizes, the buffer
+   bytes InitYCbCr writes, the sceMpegAvcDecodeYCbCr results up to the first picture, the raw YCbCr buffer
+   of that picture, sceMpegAvcDecodeDetail's words, sceMpegAvcCsc of the buffer as decoded, with its plane
+   bytes overwritten, and with its first 128 bytes cleared (whether CSC reads guest memory), CSC range and
+   stride refusals, and one direct sceMpegAvcDecode for comparison. The picture bytes go to private host0
+   files only. Every call is preceded by a durable step marker; loops are bounded. Ends in the normal
+   teardown with the AV modules unloaded. */
+/* PSPSDK's libpspmpeg.a has no YCbCr, CSC or decode-detail stubs, so this case links one complete sceMpeg
+   import block of its own instead (libpspmpeg.a is not linked: two blocks for one library leave the stubs out
+   of order). Library name and version word match libpspmpeg.a; the NIDs are the ones src/rt/nid_names.h names.
+   Same layout as PSPSDK's pspimport.s IMPORT_START / IMPORT_FUNC. */
+#define MPY_STUB(nid, name)                                                   \
+    ".set push\n\t.set noreorder\n\t"                                         \
+    ".section .sceStub.text, \"ax\", @progbits\n\t"                          \
+    ".globl " #name "\n\t.type " #name ", @function\n\t"                     \
+    ".ent " #name ", 0\n" #name ":\n\t"                                      \
+    ".word __stub_module_mpy_sceMpeg\n\t.word " #nid "\n\t"                \
+    ".end " #name "\n\t.size " #name ", .-" #name "\n\t"                     \
+    ".section .rodata.sceNid, \"a\"\n\t"                                     \
+    ".word " #nid "\n\t.set pop\n\t"
+__asm__(
+    ".set push\n\t"
+    ".section .rodata.sceResident, \"a\"\n\t"
+    ".word 0\n"
+    "__stub_modulestr_mpy_sceMpeg:\n\t"
+    ".asciz \"sceMpeg\"\n\t"
+    ".align 2\n\t"
+    ".section .lib.stub, \"a\", @progbits\n\t"
+    ".global __stub_module_mpy_sceMpeg\n"
+    "__stub_module_mpy_sceMpeg:\n\t"
+    ".word __stub_modulestr_mpy_sceMpeg\n\t"
+    ".word 0x00090000\n\t"
+    ".word 0x5\n\t"
+    ".word __executable_start\n\t"
+    ".word __executable_start\n\t"
+    ".set pop\n\t"
+    MPY_STUB(0x682A619B, sceMpegInit)
+    MPY_STUB(0x874624D6, sceMpegFinish)
+    MPY_STUB(0xD7A29F46, sceMpegRingbufferQueryMemSize)
+    MPY_STUB(0x37295ED8, sceMpegRingbufferConstruct)
+    MPY_STUB(0x13407F13, sceMpegRingbufferDestruct)
+    MPY_STUB(0xB240A59E, sceMpegRingbufferPut)
+    MPY_STUB(0xB5F6DC87, sceMpegRingbufferAvailableSize)
+    MPY_STUB(0xC132E22F, sceMpegQueryMemSize)
+    MPY_STUB(0xD8C5F121, sceMpegCreate)
+    MPY_STUB(0x606A4649, sceMpegDelete)
+    MPY_STUB(0x21FF80E4, sceMpegQueryStreamOffset)
+    MPY_STUB(0x611E9E11, sceMpegQueryStreamSize)
+    MPY_STUB(0x42560F23, sceMpegRegistStream)
+    MPY_STUB(0x591A4AA2, sceMpegUnRegistStream)
+    MPY_STUB(0xA780CF7E, sceMpegMallocAvcEsBuf)
+    MPY_STUB(0xCEB870B1, sceMpegFreeAvcEsBuf)
+    MPY_STUB(0x167AFD9E, sceMpegInitAu)
+    MPY_STUB(0xFE246728, sceMpegGetAvcAu)
+    MPY_STUB(0xA11C7026, sceMpegAvcDecodeMode)
+    MPY_STUB(0x0E3C2E9D, sceMpegAvcDecode)
+    MPY_STUB(0x740FCCD1, sceMpegAvcDecodeStop)
+    MPY_STUB(0x0F6C18D7, sceMpegAvcDecodeDetail)
+    MPY_STUB(0x211A057C, sceMpegAvcQueryYCbCrSize)
+    MPY_STUB(0x67179B1B, sceMpegAvcInitYCbCr)
+    MPY_STUB(0xF0EB1125, sceMpegAvcDecodeYCbCr)
+    MPY_STUB(0xF2930C9C, sceMpegAvcDecodeStopYCbCr)
+    MPY_STUB(0x31BD0272, sceMpegAvcCsc)
+    MPY_STUB(0x707B7629, sceMpegFlushAllStream)
+    ".text\n");
+SceInt32 sceMpegAvcDecodeDetail(SceMpeg *mpeg, void *detail);
+SceInt32 sceMpegAvcQueryYCbCrSize(SceMpeg *mpeg, SceInt32 mode, SceInt32 width, SceInt32 height, SceInt32 *size);
+SceInt32 sceMpegAvcInitYCbCr(SceMpeg *mpeg, SceInt32 mode, SceInt32 width, SceInt32 height, void *ycbcr);
+SceInt32 sceMpegAvcDecodeYCbCr(SceMpeg *mpeg, SceMpegAu *au, void **ycbcr, SceInt32 *init);
+SceInt32 sceMpegAvcDecodeStopYCbCr(SceMpeg *mpeg, void *ycbcr, SceInt32 *status);
+SceInt32 sceMpegAvcCsc(SceMpeg *mpeg, void *ycbcr, SceInt32 *range, SceInt32 frame_width, void *dest);
+
+#define MPY_INPUT_PATH "host0:/mpeg-input.pmf"
+#define MPY_FILE_CAP (2u << 20)
+#define MPY_PACKETS 256
+#define MPY_RING_CAP (640u << 10)
+#define MPY_MPEG_CAP (256u << 10)
+#define MPY_YCBCR_CAP (256u << 10)
+#define MPY_W 480
+#define MPY_H 272
+#define MPY_STRIDE 512
+#define MPY_DEST_BYTES (MPY_STRIDE * MPY_H * 4u)
+#define MPY_MAX_AUS 96
+static unsigned char s_mpy_file[MPY_FILE_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_ring[MPY_RING_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_mpeg[MPY_MPEG_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_ycbcr[MPY_YCBCR_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_ycbcr_copy[MPY_YCBCR_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_dest[MPY_DEST_BYTES] __attribute__((aligned(64)));
+static uint32_t s_mpy_detail[32] __attribute__((aligned(64)));
+static uint32_t s_mpy_file_bytes;
+static uint32_t s_mpy_cursor;
+static SceMpegRingbuffer s_mpy_rb __attribute__((aligned(64)));
+static SceMpegAu s_mpy_au __attribute__((aligned(64)));
+
+static void mpy_rc(int emulated, const char *step, int rc, const char *extra) {
+    char line[360];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-MPEG-001 case_id=mpy-%s status=RC result=0x%08x%s%s\n",
+                   step, (unsigned int)rc, extra && extra[0] ? " " : "", extra ? extra : "");
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
+/* A private host0 file of raw picture bytes; the log carries its size and FNV-1a. */
+static void mpy_dump(int emulated, const char *name, const void *bytes, uint32_t size) {
+    char path[64], extra[160];
+    uint32_t hash = 2166136261u;
+    for (uint32_t i = 0; i < size; i++) hash = (hash ^ ((const unsigned char *)bytes)[i]) * 16777619u;
+    (void)snprintf(path, sizeof(path), "host0:/mpy_%s.bin", name);
+    SceUID fd = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    int wrote = fd >= 0 ? sceIoWrite(fd, bytes, size) : fd;
+    if (fd >= 0) (void)sceIoClose(fd);
+    (void)snprintf(extra, sizeof(extra), "bytes=%u fnv=0x%08x wrote=%d", (unsigned int)size, (unsigned int)hash,
+                   wrote);
+    char step[48];
+    (void)snprintf(step, sizeof(step), "dump-%s", name);
+    mpy_rc(emulated, step, 0, extra);
+}
+
+static SceInt32 mpy_ring_cb(ScePVoid data, SceInt32 packets, ScePVoid param) {
+    (void)param;
+    SceInt32 done = 0;
+    while (done < packets && s_mpy_cursor + 2048u <= s_mpy_file_bytes) {
+        memcpy((unsigned char *)data + (uint32_t)done * 2048u, s_mpy_file + s_mpy_cursor, 2048u);
+        s_mpy_cursor += 2048u;
+        done++;
+    }
+    return done;
+}
+
+static void mpy_csc(int emulated, SceMpeg *mpeg, const char *name, SceInt32 x, SceInt32 y, SceInt32 w, SceInt32 h,
+                    SceInt32 frame_width, int dump) {
+    SceInt32 range[4] __attribute__((aligned(16))) = {x, y, w, h};
+    char step[48], extra[96];
+    memset(s_mpy_dest, 0x5a, sizeof(s_mpy_dest));
+    sceKernelDcacheWritebackInvalidateAll();
+    (void)snprintf(step, sizeof(step), "csc-%s", name);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    const int rc = sceMpegAvcCsc(mpeg, s_mpy_ycbcr, range, frame_width, s_mpy_dest);
+    sceKernelDcacheWritebackInvalidateAll();
+    (void)snprintf(extra, sizeof(extra), "x=%d y=%d w=%d h=%d fw=%d", (int)x, (int)y, (int)w, (int)h,
+                   (int)frame_width);
+    mpy_rc(emulated, step, rc, extra);
+    if (dump && rc == 0) mpy_dump(emulated, name, s_mpy_dest, MPY_DEST_BYTES);
+}
+
+static void run_mpeg_ycbcr(int emulated) {
+    char extra[200];
+    probe_step(emulated, "mpeg-ycbcr", "read-input");
+    SceUID fd = sceIoOpen(MPY_INPUT_PATH, PSP_O_RDONLY, 0);
+    if (fd >= 0) {
+        while (s_mpy_file_bytes < MPY_FILE_CAP) {
+            const int n = sceIoRead(fd, s_mpy_file + s_mpy_file_bytes, MPY_FILE_CAP - s_mpy_file_bytes);
+            if (n <= 0) break;
+            s_mpy_file_bytes += (uint32_t)n;
+        }
+        (void)sceIoClose(fd);
+    }
+    (void)snprintf(extra, sizeof(extra), "bytes=%u magic_ok=%d", (unsigned int)s_mpy_file_bytes,
+                   s_mpy_file_bytes >= 2048u && memcmp(s_mpy_file, "PSMF", 4) == 0);
+    mpy_rc(emulated, "input", fd < 0 ? fd : 0, extra);
+    if (fd < 0 || s_mpy_file_bytes < (64u << 10) || memcmp(s_mpy_file, "PSMF", 4) != 0) goto park;
+
+    probe_step(emulated, "mpeg-ycbcr", "load-avcodec");
+    int rc = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+    mpy_rc(emulated, "load-avcodec", rc, NULL);
+    if (rc != 0) goto park;
+    probe_step(emulated, "mpeg-ycbcr", "load-mpegbase");
+    rc = sceUtilityLoadAvModule(PSP_AV_MODULE_MPEGBASE);
+    mpy_rc(emulated, "load-mpegbase", rc, NULL);
+    if (rc != 0) goto unload_avcodec;
+    probe_step(emulated, "mpeg-ycbcr", "init");
+    rc = sceMpegInit();
+    mpy_rc(emulated, "init", rc, NULL);
+    if (rc != 0) goto unload_mpeg;
+
+    {
+        SceMpeg mpeg = NULL;
+        const SceInt32 ring_size = sceMpegRingbufferQueryMemSize(MPY_PACKETS);
+        const SceInt32 mpeg_size = sceMpegQueryMemSize(0);
+        (void)snprintf(extra, sizeof(extra), "ring_size=%d mpeg_size=%d", (int)ring_size, (int)mpeg_size);
+        mpy_rc(emulated, "query-mem", 0, extra);
+        if (ring_size <= 0 || (uint32_t)ring_size > MPY_RING_CAP || mpeg_size <= 0 ||
+            (uint32_t)mpeg_size > MPY_MPEG_CAP)
+            goto finish;
+        probe_step(emulated, "mpeg-ycbcr", "ring-construct");
+        rc = sceMpegRingbufferConstruct(&s_mpy_rb, MPY_PACKETS, s_mpy_ring, ring_size, mpy_ring_cb, NULL);
+        mpy_rc(emulated, "ring-construct", rc, NULL);
+        if (rc != 0) goto finish;
+        probe_step(emulated, "mpeg-ycbcr", "create");
+        rc = sceMpegCreate(&mpeg, s_mpy_mpeg, mpeg_size, &s_mpy_rb, MPY_STRIDE, 0, 0);
+        mpy_rc(emulated, "create", rc, NULL);
+        if (rc != 0) goto ring_destruct;
+
+        SceInt32 offset = -1, stream_size = -1;
+        const int rc_off = sceMpegQueryStreamOffset(&mpeg, s_mpy_file, &offset);
+        const int rc_size = sceMpegQueryStreamSize(s_mpy_file, &stream_size);
+        (void)snprintf(extra, sizeof(extra), "rc_off=0x%08x offset=%d rc_size=0x%08x size=%d",
+                       (unsigned int)rc_off, (int)offset, (unsigned int)rc_size, (int)stream_size);
+        mpy_rc(emulated, "stream-info", 0, extra);
+        if (rc_off != 0 || offset <= 0 || (uint32_t)offset >= s_mpy_file_bytes) goto delete_mpeg;
+        s_mpy_cursor = (uint32_t)offset;
+
+        probe_step(emulated, "mpeg-ycbcr", "regist-stream");
+        SceMpegStream *stream = sceMpegRegistStream(&mpeg, 0, 0);
+        mpy_rc(emulated, "regist-stream", stream ? 0 : -1, NULL);
+        if (!stream) goto delete_mpeg;
+        ScePVoid es = sceMpegMallocAvcEsBuf(&mpeg);
+        mpy_rc(emulated, "malloc-es", es ? 0 : -1, NULL);
+        if (!es) goto unregist;
+        rc = sceMpegInitAu(&mpeg, es, &s_mpy_au);
+        mpy_rc(emulated, "init-au", rc, NULL);
+        SceMpegAvcMode mode = {-1, SCE_MPEG_AVC_FORMAT_8888};
+        rc = sceMpegAvcDecodeMode(&mpeg, &mode);
+        mpy_rc(emulated, "decode-mode", rc, NULL);
+
+        /* Size and init over a matrix of modes and geometries. */
+        static const SceInt32 dims[][2] = {
+            {480, 272}, {16, 16}, {480, 288}, {496, 272}, {512, 272}, {720, 480}, {15, 16}, {16, 15}, {0, 0},
+        };
+        static const SceInt32 modes[] = {1, 0, 2, 3, 4, -1};
+        for (unsigned m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+            for (unsigned d = 0; d < sizeof(dims) / sizeof(dims[0]); d++) {
+                SceInt32 size = -1;
+                char step[48];
+                (void)snprintf(step, sizeof(step), "qsize-m%d-%dx%d", (int)modes[m], (int)dims[d][0],
+                               (int)dims[d][1]);
+                probe_step(emulated, "mpeg-ycbcr", step);
+                rc = sceMpegAvcQueryYCbCrSize(&mpeg, modes[m], dims[d][0], dims[d][1], &size);
+                (void)snprintf(extra, sizeof(extra), "size=%d", (int)size);
+                mpy_rc(emulated, step, rc, extra);
+            }
+        }
+        SceInt32 ysize = -1;
+        rc = sceMpegAvcQueryYCbCrSize(&mpeg, 1, MPY_W, MPY_H, &ysize);
+        if (rc != 0 || ysize <= 0 || (uint32_t)ysize > MPY_YCBCR_CAP) goto free_es;
+        memset(s_mpy_ycbcr, 0xa5, MPY_YCBCR_CAP);
+        sceKernelDcacheWritebackInvalidateAll();
+        probe_step(emulated, "mpeg-ycbcr", "init-ycbcr");
+        rc = sceMpegAvcInitYCbCr(&mpeg, 1, MPY_W, MPY_H, s_mpy_ycbcr);
+        sceKernelDcacheWritebackInvalidateAll();
+        mpy_rc(emulated, "init-ycbcr", rc, NULL);
+        if (rc != 0) goto free_es;
+        mpy_dump(emulated, "ycbcr-after-init", s_mpy_ycbcr, (uint32_t)ysize + 64u);
+
+        /* Feed and decode into the YCbCr buffer until the first picture. */
+        SceInt32 init = 0;
+        void *ycbcr_ptr = s_mpy_ycbcr;
+        int aus = 0;
+        for (int iter = 0; iter < 4 * MPY_MAX_AUS && aus < MPY_MAX_AUS && init == 0; iter++) {
+            const SceInt32 avail = sceMpegRingbufferAvailableSize(&s_mpy_rb);
+            if (avail > 0) (void)sceMpegRingbufferPut(&s_mpy_rb, avail, avail);
+            SceInt32 attr = -1;
+            rc = sceMpegGetAvcAu(&mpeg, stream, &s_mpy_au, &attr);
+            if (rc != 0) {
+                if (s_mpy_cursor + 2048u > s_mpy_file_bytes && avail <= 0) break;
+                continue;
+            }
+            char step[32];
+            (void)snprintf(step, sizeof(step), "decode-ycbcr%d", aus);
+            probe_step(emulated, "mpeg-ycbcr", step);
+            rc = sceMpegAvcDecodeYCbCr(&mpeg, &s_mpy_au, &ycbcr_ptr, &init);
+            (void)snprintf(extra, sizeof(extra), "init=%d pts=0x%08x%08x au_size=%u", (int)init,
+                           (unsigned int)s_mpy_au.iPtsMSB, (unsigned int)s_mpy_au.iPts,
+                           (unsigned int)s_mpy_au.iAuSize);
+            mpy_rc(emulated, step, rc, extra);
+            aus++;
+            if (rc != 0) break;
+        }
+        if (init == 0) goto free_es;
+        sceKernelDcacheWritebackInvalidateAll();
+        mpy_dump(emulated, "ycbcr-picture", s_mpy_ycbcr, (uint32_t)ysize + 64u);
+        memcpy(s_mpy_ycbcr_copy, s_mpy_ycbcr, (uint32_t)ysize);
+
+        for (unsigned i = 0; i < 32; i++) s_mpy_detail[i] = 0xcafe0000u | i;
+        sceKernelDcacheWritebackInvalidateAll();
+        probe_step(emulated, "mpeg-ycbcr", "decode-detail");
+        rc = sceMpegAvcDecodeDetail(&mpeg, s_mpy_detail);
+        sceKernelDcacheWritebackInvalidateAll();
+        {
+            int n = snprintf(extra, sizeof(extra), "w=");
+            for (unsigned i = 0; i < 16 && n > 0 && n < (int)sizeof(extra) - 10; i++)
+                n += snprintf(extra + n, sizeof(extra) - (size_t)n, "%08x%s", (unsigned int)s_mpy_detail[i],
+                              i < 15 ? "," : "");
+            mpy_rc(emulated, "decode-detail", rc, extra);
+        }
+
+        /* CSC of the picture as decoded, of the same buffer with every byte past the first 128 set to
+           0x80, and of the decoded buffer with its first 128 bytes cleared. */
+        mpy_csc(emulated, &mpeg, "full", 0, 0, MPY_W, MPY_H, MPY_STRIDE, 1);
+        memset(s_mpy_ycbcr + 128, 0x80, (uint32_t)ysize - 128u);
+        mpy_csc(emulated, &mpeg, "planes80", 0, 0, MPY_W, MPY_H, MPY_STRIDE, 1);
+        memcpy(s_mpy_ycbcr, s_mpy_ycbcr_copy, (uint32_t)ysize);
+        memset(s_mpy_ycbcr, 0, 128);
+        mpy_csc(emulated, &mpeg, "head0", 0, 0, MPY_W, MPY_H, MPY_STRIDE, 1);
+        memcpy(s_mpy_ycbcr, s_mpy_ycbcr_copy, (uint32_t)ysize);
+        /* Range and stride: a sub-rectangle (dumped), then refusals or clips (results only). */
+        mpy_csc(emulated, &mpeg, "sub", 16, 16, 64, 64, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "x-odd", 1, 0, 64, 64, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "wide", 0, 0, 496, MPY_H, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "tall", 0, 0, MPY_W, 288, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "neg", -16, 0, 64, 64, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "empty", 0, 0, 0, 0, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "fw480", 0, 0, MPY_W, MPY_H, 480, 0);
+        mpy_csc(emulated, &mpeg, "fw256", 0, 0, MPY_W, MPY_H, 256, 0);
+
+        /* One direct sceMpegAvcDecode of the following pictures into the destination buffer. */
+        SceInt32 init2 = 0;
+        void *dest_ptr = s_mpy_dest;
+        memset(s_mpy_dest, 0x5a, sizeof(s_mpy_dest));
+        sceKernelDcacheWritebackInvalidateAll();
+        for (int iter = 0; iter < 4 * MPY_MAX_AUS && aus < 2 * MPY_MAX_AUS && init2 == 0; iter++) {
+            const SceInt32 avail = sceMpegRingbufferAvailableSize(&s_mpy_rb);
+            if (avail > 0) (void)sceMpegRingbufferPut(&s_mpy_rb, avail, avail);
+            SceInt32 attr = -1;
+            if (sceMpegGetAvcAu(&mpeg, stream, &s_mpy_au, &attr) != 0) {
+                if (s_mpy_cursor + 2048u > s_mpy_file_bytes && avail <= 0) break;
+                continue;
+            }
+            char step[32];
+            (void)snprintf(step, sizeof(step), "avc-decode%d", aus);
+            probe_step(emulated, "mpeg-ycbcr", step);
+            rc = sceMpegAvcDecode(&mpeg, &s_mpy_au, MPY_STRIDE, &dest_ptr, &init2);
+            (void)snprintf(extra, sizeof(extra), "init=%d pts=0x%08x%08x", (int)init2,
+                           (unsigned int)s_mpy_au.iPtsMSB, (unsigned int)s_mpy_au.iPts);
+            mpy_rc(emulated, step, rc, extra);
+            aus++;
+            if (rc != 0) break;
+        }
+        sceKernelDcacheWritebackInvalidateAll();
+        if (init2) mpy_dump(emulated, "avc-decode", s_mpy_dest, MPY_DEST_BYTES);
+
+        SceInt32 status = -1;
+        probe_step(emulated, "mpeg-ycbcr", "decode-stop-ycbcr");
+        rc = sceMpegAvcDecodeStopYCbCr(&mpeg, s_mpy_ycbcr, &status);
+        (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
+        mpy_rc(emulated, "decode-stop-ycbcr", rc, extra);
+        status = -1;
+        probe_step(emulated, "mpeg-ycbcr", "decode-stop");
+        rc = sceMpegAvcDecodeStop(&mpeg, MPY_STRIDE, &dest_ptr, &status);
+        (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
+        mpy_rc(emulated, "decode-stop", rc, extra);
+free_es:
+        probe_step(emulated, "mpeg-ycbcr", "free-es");
+        sceMpegFreeAvcEsBuf(&mpeg, es);
+        mpy_rc(emulated, "free-es", 0, NULL);
+unregist:
+        probe_step(emulated, "mpeg-ycbcr", "unregist");
+        /* PSPSDK declares the handle by value; the library takes the handle's address like every other call. */
+        sceMpegUnRegistStream((SceMpeg)&mpeg, stream);
+delete_mpeg:
+        probe_step(emulated, "mpeg-ycbcr", "delete");
+        sceMpegDelete(&mpeg);
+ring_destruct:
+        probe_step(emulated, "mpeg-ycbcr", "ring-destruct");
+        sceMpegRingbufferDestruct(&s_mpy_rb);
+    }
+finish:
+    probe_step(emulated, "mpeg-ycbcr", "finish");
+    sceMpegFinish();
+unload_mpeg:
+    probe_step(emulated, "mpeg-ycbcr", "unload-mpegbase");
+    mpy_rc(emulated, "unload-mpegbase", sceUtilityUnloadAvModule(PSP_AV_MODULE_MPEGBASE), NULL);
+unload_avcodec:
+    probe_step(emulated, "mpeg-ycbcr", "unload-avcodec");
+    mpy_rc(emulated, "unload-avcodec", sceUtilityUnloadAvModule(PSP_AV_MODULE_AVCODEC), NULL);
+park:
+    probe_step(emulated, "mpeg-ycbcr", "park");
+    /* Normal teardown: parks until PSPLink modstop. Returning from main would drop PSPLink to the XMB. */
+    probe_teardown(emulated);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
 #include <pspsascore.h>
 #include <psputility_avmodules.h>
@@ -12059,6 +12441,8 @@ int main(int argc, char *argv[]) {
     run_sas_init(emulated); /* ends in probe_teardown, which parks until modstop */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DELAY_SWEEP
     run_at3_delay_sweep(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MPEG_YCBCR
+    run_mpeg_ycbcr(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
