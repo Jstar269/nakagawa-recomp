@@ -88,38 +88,38 @@ static const PlayerUiTitle k_titles[] = {
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "", NULL},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "", NULL},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0xC29AF4FFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "", NULL},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0xC29AF4FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "", NULL},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, false, "", NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "", NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, ""}
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "", NULL}
 };
 
 /* A library with the demos that come with Nakagawa among the user's games, in
@@ -129,22 +129,22 @@ static const PlayerUiTitle k_demo_titles[] = {
      "Plays a synthetic game with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "", NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "", NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "", NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, ""}
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "", NULL}
 };
 
 /* The demos alone: a first start with nothing added yet. */
@@ -153,12 +153,12 @@ static const PlayerUiTitle k_demo_only_titles[] = {
      "Plays a synthetic game with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, ""},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "", NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, ""}
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "", NULL}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -4676,6 +4676,138 @@ static void test_rebuild_prompt_reminder_and_banner(void) {
     }
 }
 
+static bool disc_verify_op_is(PlayerUiAction action, PlayerUiDiscVerifyOp op) {
+    return action.kind == PLAYER_UI_ACTION_DISC_VERIFY &&
+           (PlayerUiDiscVerifyOp)action.primary == op;
+}
+
+/* Disc verification: the library's line shows an added image's check with
+   Cancel, or one that could not finish with Hide, and never takes the default
+   focus from the first card; the card's badge names the tier; the title page
+   says what it means; and removing one of two images of a disc ID says its
+   files stay. */
+static void test_disc_verify_line_badge_and_note(void) {
+    static char dump[CASE_DUMP_CAP];
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiAction action;
+    char expect[96];
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    PlayerUiTitle titles[1];
+    PlayerUiLibraryModel library;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    memset(titles, 0, sizeof(titles));
+    titles[0].title = "Synthetic Checked Fixture";
+    titles[0].disc_id = "TEST70021";
+    titles[0].library_status = "Ready";
+    titles[0].badge = "Verified retail";
+    memset(&library, 0, sizeof(library));
+    library.titles = titles;
+    library.title_count = 1u;
+    library.columns = 4u;
+    library.page_size = 8u;
+    library.logical_width = 1280.0f;
+    library.logical_height = 800.0f;
+    library.verify_notice = "Checking disc image: 40%";
+    library.verify_offers_cancel = true;
+    action = activate_library_button(PLAYER_UI_ID_DISC_VERIFY_CANCEL, &library);
+    CHECK(disc_verify_op_is(action, PLAYER_UI_DISC_VERIFY_CANCEL), "the check's Cancel");
+    ui = screen_ui_create(&config);
+    CHECK(ui != NULL, "create the disc check line UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_library(ui, &library);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    (void)snprintf(expect, sizeof(expect), "%08X \"Checking disc image: 40%%\"",
+                   (unsigned)theme->muted);
+    CHECK(strstr(dump, expect) != NULL, "the library shows the check's progress");
+    CHECK(strstr(dump, "\"VERIFIED RETAIL\"") != NULL, "the card's badge names the tier");
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(0u),
+          "the first card keeps the default focus");
+    library.verify_notice = "A disc image could not be checked";
+    library.verify_offers_cancel = false;
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_library(ui, &library);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    (void)snprintf(expect, sizeof(expect), "%08X \"A disc image could not be checked\"",
+                   (unsigned)theme->warning);
+    CHECK(strstr(dump, expect) != NULL && strstr(dump, "\"CANCEL\"") == NULL,
+          "a check that could not finish says so in the warning colour, with no Cancel");
+    nk_ui_destroy(ui);
+    action = activate_library_button(PLAYER_UI_ID_DISC_VERIFY_HIDE, &library);
+    CHECK(disc_verify_op_is(action, PLAYER_UI_DISC_VERIFY_HIDE), "the line's Hide");
+
+    /* The title page: the tier's sentence under its tags; PLAY keeps focus. */
+    {
+        PlayerUiTitle title;
+        PlayerUiTitleModel detail;
+        memset(&title, 0, sizeof(title));
+        title.title = "Synthetic Checked Fixture";
+        title.disc_id = "TEST70021";
+        title.library_status = "Ready";
+        title.badge = "Unknown dump";
+        title.disc_check_note = "Disc check: not in your disc list. This means not shown to be "
+                                "retail, not modified: Redump's PSP list names no disc IDs.";
+        title.primary_action_label = "PLAY";
+        title.primary_action = PLAYER_UI_PRIMARY_PLAY;
+        title.primary_action_enabled = true;
+        title.package_state = PLAYER_UI_PACKAGE_READY;
+        memset(&detail, 0, sizeof(detail));
+        detail.title = &title;
+        detail.logical_width = 1280.0f;
+        detail.logical_height = 800.0f;
+        ui = screen_ui_create(&config);
+        CHECK(ui != NULL, "create the checked title UI");
+        if (ui == NULL) return;
+        set_test_viewport(ui, 1280, 800);
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_title(ui, &detail);
+            (void)nk_ui_end(ui);
+        }
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        CHECK(strstr(dump, "\"UNKNOWN DUMP\"") != NULL &&
+                  strstr(dump, "not shown to be retail, not modified") != NULL,
+              "the title page names the tier and what it means");
+        CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_PRIMARY, "PLAY keeps the default focus");
+        nk_ui_destroy(ui);
+    }
+
+    /* Removing one of two images of a disc ID: its files and saves stay. */
+    {
+        PlayerUiRemoveModel remove;
+        memset(&remove, 0, sizeof(remove));
+        remove.title = "Synthetic Checked Fixture";
+        remove.disc_id = "TEST70021";
+        remove.files_shared = true;
+        remove.logical_width = 1280.0f;
+        remove.logical_height = 800.0f;
+        ui = screen_ui_create(&config);
+        CHECK(ui != NULL, "create the shared removal UI");
+        if (ui == NULL) return;
+        set_test_viewport(ui, 1280, 800);
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_remove(ui, &remove);
+        (void)nk_ui_end(ui);
+        (void)nk_ui_dump(ui, dump, sizeof(dump));
+        CHECK(strstr(dump, "image of this disc in your library uses them.") != NULL &&
+                  strstr(dump, "This game has no saves.") == NULL &&
+                  strstr(dump, "has not built anything") == NULL,
+              "the dialog says the shared files and saves stay");
+        nk_ui_destroy(ui);
+    }
+}
+
 /* The walkthrough: three of the Controls page's binding buttons ended in
    "...". The words input_settings.c writes for the defaults and for any one
    input stay within PLAYER_UI_CONTROLLER_BINDING_CHARS, and a label that long
@@ -4842,6 +4974,7 @@ int main(int argc, char **argv) {
     test_outcome_lines_take_their_colour();
     test_stop_game_asks_first();
     test_rebuild_prompt_reminder_and_banner();
+    test_disc_verify_line_badge_and_note();
     test_binding_labels_fit();
     test_input_chip_words();
     test_build_bar_shows_compiled_parts();

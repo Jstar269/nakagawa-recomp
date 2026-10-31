@@ -437,6 +437,12 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                                                       ? "Showcase demo" : "Your disc"));
                 nk_ui_end_container(ui);
             }
+            /* Disc verification: what the badge's Verified retail, Modified
+               disc or Unknown dump means for this image. */
+            if (title->disc_check_note != NULL && title->disc_check_note[0] != '\0') {
+                nk_ui_text_role(ui, PLAYER_UI_ID_DISC_VERIFY_TITLE_NOTE, title->disc_check_note,
+                                NK_UI_TYPE_BODY_S, theme->muted);
+            }
             if (model->stalled_game_notice_visible &&
                 nk_ui_card_begin(ui, TITLE_ID_STALL_NOTICE, sizing_grow(), sizing_fit(),
                                  NK_UI_SPACE_2)) {
@@ -973,7 +979,10 @@ PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *mode
     shown = model->items != NULL ? model->item_count : 0u;
     if (shown > PLAYER_UI_REMOVE_ITEM_CAP) shown = PLAYER_UI_REMOVE_ITEM_CAP;
     nk_ui_text_role(ui, FLOW_ID_LEAD,
-                    shown > 0u
+                    model->files_shared
+                        ? "It leaves your library. What Nakagawa built for it and its saves "
+                          "stay: another image of this disc in your library uses them."
+                    : shown > 0u
                         ? "It leaves your library, and Nakagawa deletes what it built for it:"
                         : "It leaves your library. Nakagawa has not built anything for it yet.",
                     NK_UI_TYPE_BODY_S, theme->muted);
@@ -1022,7 +1031,7 @@ PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *mode
                         model->delete_saves ? "Your saves for this game will be deleted too."
                                             : "Your saves stay.",
                         NK_UI_TYPE_BODY_S, model->delete_saves ? theme->error : theme->muted);
-    } else {
+    } else if (!model->files_shared) {
         nk_ui_text_role(ui, FLOW_ID_MESSAGE, "This game has no saves.", NK_UI_TYPE_BODY_S,
                         theme->muted);
     }

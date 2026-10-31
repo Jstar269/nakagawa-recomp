@@ -956,7 +956,7 @@ static int player_ui_wizard_save_title(PlayerApp *app) {
     int idx;
     if (app->inspecting_game.disc_id[0] == '\0') return -1;
     player_app_add_game(app, &app->inspecting_game);
-    idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+    idx = player_app_find_added_game(app, &app->inspecting_game);
     if (idx >= 0) app->selected_game_index = idx;
     return idx;
 }
@@ -1724,6 +1724,15 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
     if (action->kind == PLAYER_UI_ACTION_DEVELOPER_LOG) {
         player_ui_developer_log_apply(app, (PlayerUiDeveloperLogOp)action->primary);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_DISC_VERIFY) {
+        /* The library's disc check line: the worker sees the cancel in main's loop. */
+        if ((PlayerUiDiscVerifyOp)action->primary == PLAYER_UI_DISC_VERIFY_CANCEL) {
+            player_app_disc_check_cancel(app);
+        } else if ((PlayerUiDiscVerifyOp)action->primary == PLAYER_UI_DISC_VERIFY_HIDE) {
+            player_app_disc_check_hide_note(app);
+        }
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_REBUILD) {
@@ -2984,6 +2993,148 @@ static void destroy_psn_job(PlayerPsnJob **job_slot) {
     *job_slot = NULL;
 }
 
+/* A disc check (nk_disc_verify.h): one added image, hashed whole on its own
+   worker, never the UI thread. Progress and completion come back as SDL user
+   events (data1 is the job), and the library's Cancel stops it between 1 MiB
+   reads. A cancelled or failed check keeps nothing. */
+typedef struct {
+    SDL_Thread *thread;
+    SDL_Mutex *mutex;
+    PlayerDiscCheckItem item;
+    bool verified_elsewhere;
+    char data_root[NK_MAX_PATH];
+    bool cancel_requested;
+    bool finished;
+    int percent;
+    NkDiscVerification check;
+} PlayerDiscCheckJob;
+
+static void disc_check_push_event(PlayerDiscCheckJob *job, int code) {
+    SDL_Event event;
+    memset(&event, 0, sizeof(event));
+    event.type = SDL_EVENT_USER;
+    event.user.code = code;
+    event.user.data1 = job;
+    SDL_PushEvent(&event);
+}
+
+static bool disc_check_cancelled(void *userdata) {
+    PlayerDiscCheckJob *job = (PlayerDiscCheckJob *)userdata;
+    if (!job || !job->mutex) return true;
+    SDL_LockMutex(job->mutex);
+    bool cancelled = job->cancel_requested;
+    SDL_UnlockMutex(job->mutex);
+    return cancelled;
+}
+
+static void disc_check_progress(uint64_t done_bytes, uint64_t total_bytes, void *userdata) {
+    PlayerDiscCheckJob *job = (PlayerDiscCheckJob *)userdata;
+    int percent = total_bytes ? (int)((done_bytes * 100u) / total_bytes) : 0;
+    bool changed;
+    if (!job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    changed = job->percent != percent;
+    job->percent = percent;
+    SDL_UnlockMutex(job->mutex);
+    if (changed) disc_check_push_event(job, PLAYER_STAGING_EVENT_PROGRESS);
+}
+
+static int SDLCALL disc_check_thread_main(void *userdata) {
+    PlayerDiscCheckJob *job = (PlayerDiscCheckJob *)userdata;
+    if (!job) return -1;
+    NkDiscExpandCallbacks callbacks = { disc_check_progress, disc_check_cancelled, job };
+    NkDiscVerification check;
+    bool hashed = nk_disc_verify_image(job->item.iso_path, job->data_root, job->item.disc_id,
+                                       job->verified_elsewhere, &callbacks, &check);
+    SDL_LockMutex(job->mutex);
+    job->check = check;
+    job->finished = true;
+    SDL_UnlockMutex(job->mutex);
+    disc_check_push_event(job, PLAYER_STAGING_EVENT_COMPLETE);
+    return hashed ? 0 : 1;
+}
+
+/* The next added image's check, when one waits and nothing it would slow down
+   runs (player_app_disc_check_take). */
+static void start_disc_check_job(PlayerApp *app, PlayerDiscCheckJob **job_slot) {
+    PlayerDiscCheckItem item;
+    bool verified_elsewhere = false;
+    if (!app || !job_slot || *job_slot) return;
+    if (!player_app_disc_check_take(app, &item, &verified_elsewhere)) return;
+    NkDiscVerification failed;
+    memset(&failed, 0, sizeof(failed));
+    failed.result = NK_DISC_VERIFY_READ_FAILED;
+    PlayerDiscCheckJob *job = (PlayerDiscCheckJob *)calloc(1, sizeof(*job));
+    if (job && !nk_platform_get_app_data_dir(job->data_root, sizeof(job->data_root))) {
+        free(job);
+        snprintf(failed.reason, sizeof(failed.reason),
+                 "Nakagawa's data folder could not be found, so the disc was not checked.");
+        player_app_disc_check_finish(app, &failed);
+        return;
+    }
+    if (job) {
+        job->item = item;
+        job->verified_elsewhere = verified_elsewhere;
+        job->mutex = SDL_CreateMutex();
+    }
+    if (job && job->mutex) {
+        job->thread = SDL_CreateThread(disc_check_thread_main, "nakagawa-disc-check", job);
+    }
+    if (!job || !job->mutex || !job->thread) {
+        if (job && job->mutex) SDL_DestroyMutex(job->mutex);
+        free(job);
+        snprintf(failed.reason, sizeof(failed.reason),
+                 "Nakagawa could not start the disc check.");
+        player_app_disc_check_finish(app, &failed);
+        return;
+    }
+    *job_slot = job;
+}
+
+static void request_disc_check_cancel(PlayerDiscCheckJob *job) {
+    if (!job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    job->cancel_requested = true;
+    SDL_UnlockMutex(job->mutex);
+}
+
+static void sync_disc_check_progress(PlayerApp *app, PlayerDiscCheckJob *job) {
+    if (!app || !job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    int percent = job->percent;
+    SDL_UnlockMutex(job->mutex);
+    player_app_disc_check_progress(app, percent);
+}
+
+/* A finished check's result goes into the library on the UI thread. */
+static void finish_disc_check_job(PlayerApp *app, PlayerDiscCheckJob **job_slot) {
+    if (!app || !job_slot || !*job_slot) return;
+    PlayerDiscCheckJob *job = *job_slot;
+    SDL_LockMutex(job->mutex);
+    bool finished = job->finished;
+    NkDiscVerification check = job->check;
+    SDL_UnlockMutex(job->mutex);
+    if (!finished) return;
+    if (job->thread) SDL_WaitThread(job->thread, NULL);
+    SDL_DestroyMutex(job->mutex);
+    free(job);
+    *job_slot = NULL;
+    player_app_disc_check_finish(app, &check);
+}
+
+static void destroy_disc_check_job(PlayerDiscCheckJob **job_slot) {
+    if (!job_slot || !*job_slot) return;
+    PlayerDiscCheckJob *job = *job_slot;
+    request_disc_check_cancel(job);
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    if (job->mutex) SDL_DestroyMutex(job->mutex);
+    free(job);
+    *job_slot = NULL;
+}
+
 static void destroy_staging_job(PlayerStagingJob **job_slot) {
     if (!job_slot || !*job_slot) return;
     PlayerStagingJob *job = *job_slot;
@@ -4028,8 +4179,9 @@ int main(int argc, char *argv[]) {
                        place rather than appending it, so in a library holding
                        several games the last entry is a DIFFERENT title
                        whenever this disc was already known. Find the entry by
-                       its inspected disc ID. */
-                    int game_idx = player_app_find_game_by_disc_id(&app, app.inspecting_game.disc_id);
+                       its inspected disc ID and file: another image (a fan
+                       translation) can have the same disc ID. */
+                    int game_idx = player_app_find_added_game(&app, &app.inspecting_game);
                     if (game_idx < 0) {
                         fprintf(stderr, "[PLAYER] Disc %s is not in the library after adding it.\n",
                                 app.inspecting_game.disc_id);
@@ -4833,6 +4985,7 @@ int main(int argc, char *argv[]) {
     }
     PlayerStagingJob *staging_job = NULL;
     PlayerPsnJob *psn_job = NULL;
+    PlayerDiscCheckJob *disc_check_job = NULL;
     PlayerPackageStatusJob *package_status_job = NULL;
     bool package_status_requested[MAX_LIBRARY_GAMES] = { false };
     bool package_status_force_requested[MAX_LIBRARY_GAMES] = { false };
@@ -5294,6 +5447,12 @@ int main(int argc, char *argv[]) {
                             } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
                                 finish_psn_job(&app, psn_job);
                             }
+                        } else if (disc_check_job && event.user.data1 == disc_check_job) {
+                            if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
+                                sync_disc_check_progress(&app, disc_check_job);
+                            } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
+                                finish_disc_check_job(&app, &disc_check_job);
+                            }
                         } else if (event.user.data1 == staging_job) {
                             if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
                                 sync_staging_progress(&app, staging_job);
@@ -5384,6 +5543,14 @@ int main(int argc, char *argv[]) {
         if (psn_job_finished(psn_job)) {
             finish_psn_job(&app, psn_job);
         }
+        /* Each added image is hashed once, on its own worker: the library's
+           Cancel reaches it here, a completion whose event was lost is
+           finished here, and the next image waiting starts. */
+        if (disc_check_job && app.disc_check.cancel_requested) {
+            request_disc_check_cancel(disc_check_job);
+        }
+        finish_disc_check_job(&app, &disc_check_job);
+        start_disc_check_job(&app, &disc_check_job);
 
         if (app.selected_game_index != last_package_selection) {
             last_package_selection = app.selected_game_index;
@@ -5635,7 +5802,7 @@ int main(int argc, char *argv[]) {
         if (app.request_factory_reset) {
             app.request_factory_reset = false;
             /* A finished staging or PSN job stays allocated until the next one. */
-            if (launch_job || package_status_job || s_update_job ||
+            if (launch_job || package_status_job || s_update_job || disc_check_job ||
                 (staging_job && !staging_job->completion_handled) ||
                 (psn_job && !psn_job->completion_handled)) {
                 /* A worker may still have a file in the user data open. */
@@ -5730,6 +5897,7 @@ int main(int argc, char *argv[]) {
     player_update_shutdown();
     destroy_staging_job(&staging_job);
     destroy_psn_job(&psn_job);
+    destroy_disc_check_job(&disc_check_job);
     if (package_status_job) {
         if (package_status_job->thread) {
             SDL_WaitThread(package_status_job->thread, NULL);

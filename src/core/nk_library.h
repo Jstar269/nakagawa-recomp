@@ -93,8 +93,11 @@ NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
    (iso_path), which now holds it. An entry never hashed also replaces the
    only record with its disc ID when that record was never hashed either, as
    before hashing. Any other entry of another file is added, a hashed one even
-   beside a record written before hashing, so no image's record is lost. An unhashed
-   update of the same file keeps that record's hashes. When an entry is
+   beside a record written before hashing, so no image's record is lost. A
+   hashed entry that takes over its image's record from another file (the image
+   moved, then was added again) also drops the record its new file had: one
+   file holds one image. An unhashed update of the same file keeps that
+   record's hashes. When an entry is
    verified retail, the unknown records with its disc ID become modified: the
    disc ID is now known retail (nk_disc_verify.h). */
 NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry);

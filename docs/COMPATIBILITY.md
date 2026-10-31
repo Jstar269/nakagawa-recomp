@@ -201,8 +201,9 @@ PSP datafile>` hashes every disc, gives each its disc check (see [Whole library]
 list into the data folder; `--verify-only` hashes and checks the discs without building any. Hashes are kept in the
 manifest and reused while a file's size and modification time stay the same. The manifest records the settings each
 title was built with. `python tools/nk_cli.py redump-import <datafile>` imports a list into your player data folder
-on its own, and `nk_cli.py bringup` then hashes and checks each disc it adds. The player doesn't check the discs it
-adds yet.
+on its own, and `nk_cli.py bringup` then hashes and checks each disc it adds. The player hashes and checks each disc
+it adds too, after the add and on a worker, and shows the result as the card's badge
+([PLAYER_UI_DESIGN.md](PLAYER_UI_DESIGN.md#library-c5-built)).
 
 Two images with one disc ID still share some folders, so only one of them is ready to play at a time:
 

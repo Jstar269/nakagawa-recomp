@@ -66,7 +66,6 @@ static int library_index_of_key(const NkLibrary *lib, const char *disc_id,
     return -1;
 }
 
-/* The record an incoming entry replaces (nk_library.h), or -1 to add it. */
 /* The record a disc ID alone picks out: the only one with it (unhashed_only:
    the only unhashed one), or -1 when there is none or it can't say which. */
 static int library_index_of_disc_id_alone(const NkLibrary *lib, const char *disc_id,
@@ -139,6 +138,31 @@ static void library_label_modified(NkLibrary *lib, const char *disc_id) {
     }
 }
 
+/* One file holds one image: the other records of the disc ID that name the
+   file of lib->entries[keep] are stale. That happens when a hashed image takes
+   over its own record from another file (the image moved, then was added
+   again): the record its new file got before it was hashed goes. */
+static void library_drop_stale_records_of_file(NkLibrary *lib, int keep) {
+    char disc_id[sizeof(lib->entries[0].disc_id)];
+    char iso_path[sizeof(lib->entries[0].iso_path)];
+    memcpy(disc_id, lib->entries[keep].disc_id, sizeof(disc_id));
+    memcpy(iso_path, lib->entries[keep].iso_path, sizeof(iso_path));
+    if (!iso_path[0]) return;
+    int kept = 0;
+    for (int i = 0; i < lib->count; i++) {
+        if (i != keep && strcmp(lib->entries[i].disc_id, disc_id) == 0 &&
+            strcmp(lib->entries[i].iso_path, iso_path) == 0) {
+            continue;
+        }
+        if (kept != i) lib->entries[kept] = lib->entries[i];
+        kept++;
+    }
+    if (kept < lib->count) {
+        memset(&lib->entries[kept], 0, (size_t)(lib->count - kept) * sizeof(lib->entries[0]));
+        lib->count = kept;
+    }
+}
+
 NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
     if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
 
@@ -157,6 +181,7 @@ NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
             merged.disc_verification = existing->disc_verification;
         }
         *existing = merged;
+        if (merged.content_sha1[0]) library_drop_stale_records_of_file(lib, index);
     } else {
         if (lib->count >= NK_MAX_GAMES) {
             return NK_ERROR_OUT_OF_MEMORY;

@@ -2081,6 +2081,21 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual((card.get("kind"), card.get("add")), ("4", "0"), unsupported["stdout"])
         self.assertEqual(self.screens(unsupported)[-1][0], "library")
 
+    def test_next_ui_hashes_an_added_disc_once_on_a_worker(self) -> None:
+        """#1731: a disc added from the game-found card is hashed once after the add, on the
+        disc check worker (never the UI thread), and the frames go on meanwhile. With no
+        disc list imported it is hashed but not checked against one."""
+        added = self.next_ui_run("experimental", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=1500"))
+        frames = added["frames"]
+        stdout = added["stdout"]
+        assert isinstance(frames, list) and isinstance(stdout, str)
+        self.assertEqual(frames[-1]["view"], "library", stdout)
+        self.assertEqual(int(frames[-1]["games"]), int(frames[0]["games"]) + 1, stdout)
+        checks = re.findall(r"^\[PLAYER\] DISC_CHECK disc=(\S+) result=(\S+) tier=(\S+)$",
+                            stdout, re.M)
+        self.assertEqual(len(checks), 1, stdout)
+        self.assertEqual(checks[0][1:], ("HASHED", "NOT_CHECKED"), stdout)
+
     # The next UI's Settings controls (player_ui_nk.h), as the frame line prints them.
     SETTINGS_FOCUS = {
         "resolution": str(0x4501), "pacing": str(0x4502), "done": str(0x450C),

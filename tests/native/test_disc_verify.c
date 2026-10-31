@@ -637,6 +637,31 @@ static void test_library_keys_by_disc_id_and_hash(void) {
     CHECK(nk_library_count(&g_lib) == 2 &&
           nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1) != NULL);
 
+    /* The image moved, then was added again: the new file's record, unhashed,
+       stays beside the hashed one until it is hashed. Then it takes over the
+       image's record, which now names the new file, and the record the new
+       file got before hashing goes: one file holds one image. */
+    nk_library_init(&g_lib);
+    seed(&entry, "TEST70004", "first.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    seed(&entry, "TEST70004", "second.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 2);
+    seed(&entry, "TEST70004", "second.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 1 &&
+          strcmp(nk_library_get(&g_lib, 0)->iso_path, "games/second.iso") == 0 &&
+          strcmp(nk_library_get(&g_lib, 0)->content_sha1, g_retail_digest.sha1) == 0);
+    /* Another image of the disc ID is never dropped with it. */
+    seed(&entry, "TEST70004", "translation.iso", &g_modified_digest, NK_DISC_TIER_UNKNOWN);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    seed(&entry, "TEST70004", "third.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 2 &&
+          nk_library_find_by_key(&g_lib, "TEST70004", g_modified_digest.sha1) != NULL &&
+          strcmp(nk_library_find_by_key(&g_lib, "TEST70004", g_retail_digest.sha1)->iso_path,
+                 "games/third.iso") == 0);
+
     /* A player re-add of a record a bring-up wrote, which records no size (0),
        keeps the bring-up's hashes. */
     nk_library_init(&g_lib);

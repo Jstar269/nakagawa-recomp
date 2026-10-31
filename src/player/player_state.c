@@ -989,6 +989,8 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
        library was loaded is kept (#1768). */
     NkResult save_res = nk_library_commit_entry(&app->library, game, NULL);
     player_app_sync_library(app);
+    /* Its image is hashed once, after the add, on main.c's worker. */
+    if (save_res == NK_OK) (void)player_app_disc_check_queue(app, game);
     return save_res == NK_OK;
 }
 
@@ -1000,6 +1002,216 @@ int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id) {
         }
     }
     return -1;
+}
+
+int player_app_find_added_game(const PlayerApp *app, const GameRecord *game) {
+    if (!app || !game) return -1;
+    for (int i = 0; i < app->game_count; i++) {
+        if (strcmp(app->games[i].disc_id, game->disc_id) == 0 &&
+            strcmp(app->games[i].iso_path, game->iso_path) == 0) {
+            return i;
+        }
+    }
+    return player_app_find_game_by_disc_id(app, game->disc_id);
+}
+
+/* ---- disc verification (PlayerDiscCheckState) ---- */
+
+/* The library record of one image: its disc ID and file. */
+static int player_library_index_of_image(const PlayerApp *app, const char *disc_id,
+                                         const char *iso_path) {
+    for (int i = 0; i < app->library.count; i++) {
+        if (strcmp(app->library.entries[i].disc_id, disc_id) == 0 &&
+            strcmp(app->library.entries[i].iso_path, iso_path) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool player_app_disc_check_queue(PlayerApp *app, const GameRecord *game) {
+    if (!app || !game || !game->disc_id[0] || !game->iso_path[0]) return false;
+    if (game->is_sample || player_game_is_showcase(game)) return false;
+    int index = player_library_index_of_image(app, game->disc_id, game->iso_path);
+    if (index < 0 || app->library.entries[index].content_sha1[0]) return false;
+    PlayerDiscCheckState *check = &app->disc_check;
+    for (int i = 0; i < check->count; i++) {
+        if (strcmp(check->queue[i].disc_id, game->disc_id) == 0 &&
+            strcmp(check->queue[i].iso_path, game->iso_path) == 0) {
+            return false;
+        }
+    }
+    if (check->count >= PLAYER_DISC_CHECK_QUEUE) {
+        player_dev_log_add(app, "disc check", "%s not checked: %d images are waiting already",
+                           game->disc_id, check->count);
+        return false;
+    }
+    PlayerDiscCheckItem *item = &check->queue[check->count++];
+    snprintf(item->disc_id, sizeof(item->disc_id), "%s", game->disc_id);
+    snprintf(item->iso_path, sizeof(item->iso_path), "%s", game->iso_path);
+    return true;
+}
+
+bool player_app_disc_check_take(PlayerApp *app, PlayerDiscCheckItem *out,
+                                bool *verified_elsewhere) {
+    if (!app || !out) return false;
+    PlayerDiscCheckState *check = &app->disc_check;
+    if (check->running || check->count == 0) return false;
+    if (app->is_game_running || app->launch_pending || app->build_session.is_building) {
+        return false;
+    }
+    *out = check->queue[0];
+    if (verified_elsewhere) {
+        *verified_elsewhere = nk_library_has_verified_disc_id(&app->library, out->disc_id);
+    }
+    check->running = true;
+    check->cancel_requested = false;
+    check->percent = 0;
+    check->note[0] = '\0';
+    return true;
+}
+
+void player_app_disc_check_progress(PlayerApp *app, int percent) {
+    if (!app || !app->disc_check.running) return;
+    app->disc_check.percent = percent < 0 ? 0 : percent > 100 ? 100 : percent;
+}
+
+/* Put a hashed image's hashes and tier into its record. */
+static void player_disc_check_record(PlayerApp *app, const PlayerDiscCheckItem *item,
+                                     const NkDiscVerification *result) {
+    int index = player_library_index_of_image(app, item->disc_id, item->iso_path);
+    if (index < 0) {
+        player_dev_log_add(app, "disc check", "%s left the library before its check ended",
+                           item->disc_id);
+        return;
+    }
+    GameRecord updated = app->library.entries[index];
+    nk_disc_verification_to_entry(result, &updated);
+    /* The same image may have a record of another file (it moved, then was
+       added again): that record now names this file, so it keeps what a
+       re-added disc keeps. */
+    const GameRecord *same = nk_library_find_by_key(&app->library, updated.disc_id,
+                                                    updated.content_sha1);
+    if (same && strcmp(same->iso_path, updated.iso_path) != 0) {
+        (void)player_merge_readded_game(same, &updated);
+    }
+    NkResult res = nk_library_add_or_update(&app->library, &updated);
+    /* Under the library lock, from what the file holds now (#1768). */
+    if (res == NK_OK) res = nk_library_commit_entry(&app->library, &updated, NULL);
+    player_app_sync_library(app);
+    if (res != NK_OK) {
+        player_dev_log_add(app, "disc check", "%s: the result could not be saved to the library",
+                           item->disc_id);
+        snprintf(app->disc_check.note, sizeof(app->disc_check.note),
+                 "A disc check could not be saved");
+        return;
+    }
+    player_dev_log_add(app, "disc check", "%s: %s", item->disc_id,
+                       nk_disc_tier_name((NkDiscTier)updated.disc_verification));
+}
+
+void player_app_disc_check_finish(PlayerApp *app, const NkDiscVerification *result) {
+    if (!app || !result || !app->disc_check.running) return;
+    PlayerDiscCheckState *check = &app->disc_check;
+    PlayerDiscCheckItem item = check->queue[0];
+    bool cancelled = check->cancel_requested;
+    memmove(&check->queue[0], &check->queue[1],
+            (size_t)(check->count - 1) * sizeof(check->queue[0]));
+    check->count--;
+    memset(&check->queue[check->count], 0, sizeof(check->queue[0]));
+    check->running = false;
+    check->cancel_requested = false;
+    check->percent = 0;
+    if (result->reason[0]) {
+        player_dev_log_add(app, "disc check", "%s: %s", item.disc_id, result->reason);
+    }
+    static const char *const results[] = {"HASHED", "CANCELLED", "READ_FAILED", "LIST_UNUSABLE"};
+    printf("[PLAYER] DISC_CHECK disc=%s result=%s tier=%s\n", item.disc_id,
+           (size_t)result->result < sizeof(results) / sizeof(results[0])
+               ? results[result->result] : "UNKNOWN",
+           nk_disc_tier_name(result->tier));
+    if (result->result == NK_DISC_VERIFY_HASHED || result->result == NK_DISC_VERIFY_LIST_UNUSABLE) {
+        player_disc_check_record(app, &item, result);
+        if (result->result == NK_DISC_VERIFY_LIST_UNUSABLE) {
+            snprintf(check->note, sizeof(check->note), "Your disc list could not be read");
+        }
+    } else if (cancelled) {
+        /* The library's Cancel: the checks waiting end too. */
+        memset(check->queue, 0, sizeof(check->queue));
+        check->count = 0;
+    } else {
+        snprintf(check->note, sizeof(check->note), "A disc image could not be checked");
+    }
+}
+
+void player_app_disc_check_cancel(PlayerApp *app) {
+    if (!app) return;
+    if (app->disc_check.running) {
+        app->disc_check.cancel_requested = true;
+    } else {
+        memset(app->disc_check.queue, 0, sizeof(app->disc_check.queue));
+        app->disc_check.count = 0;
+    }
+}
+
+void player_app_disc_check_hide_note(PlayerApp *app) {
+    if (app) app->disc_check.note[0] = '\0';
+}
+
+bool player_app_disc_check_line(const PlayerApp *app, char *out, size_t out_size,
+                                bool *offers_cancel) {
+    if (offers_cancel) *offers_cancel = false;
+    if (!app || !out || out_size == 0) return false;
+    out[0] = '\0';
+    const PlayerDiscCheckState *check = &app->disc_check;
+    if (check->running) {
+        if (offers_cancel) *offers_cancel = !check->cancel_requested;
+        if (check->cancel_requested) {
+            snprintf(out, out_size, "Stopping the disc check");
+        } else if (check->count > 1) {
+            snprintf(out, out_size, "Checking disc images: %d%%, %d more", check->percent,
+                     check->count - 1);
+        } else {
+            snprintf(out, out_size, "Checking disc image: %d%%", check->percent);
+        }
+        return true;
+    }
+    if (check->note[0]) {
+        snprintf(out, out_size, "%s", check->note);
+        return true;
+    }
+    return false;
+}
+
+bool player_app_disc_check_running_for(const PlayerApp *app, const GameRecord *game) {
+    return app && game && app->disc_check.running && app->disc_check.count > 0 &&
+           strcmp(app->disc_check.queue[0].disc_id, game->disc_id) == 0 &&
+           strcmp(app->disc_check.queue[0].iso_path, game->iso_path) == 0;
+}
+
+const char *player_disc_tier_badge(uint32_t tier) {
+    switch ((NkDiscTier)tier) {
+        case NK_DISC_TIER_VERIFIED_RETAIL: return "Verified retail";
+        case NK_DISC_TIER_MODIFIED: return "Modified disc";
+        case NK_DISC_TIER_UNKNOWN: return "Unknown dump";
+        case NK_DISC_TIER_NOT_CHECKED:
+        default: return NULL;
+    }
+}
+
+const char *player_disc_tier_note(uint32_t tier) {
+    switch ((NkDiscTier)tier) {
+        case NK_DISC_TIER_VERIFIED_RETAIL:
+            return "Disc check: this image matches a retail disc in your disc list.";
+        case NK_DISC_TIER_MODIFIED:
+            return "Disc check: a changed copy of a retail disc in your library, such as a "
+                   "fan translation or a patch.";
+        case NK_DISC_TIER_UNKNOWN:
+            return "Disc check: not in your disc list. This means not shown to be retail, "
+                   "not modified: Redump's PSP list names no disc IDs.";
+        case NK_DISC_TIER_NOT_CHECKED:
+        default: return NULL;
+    }
 }
 
 const char *player_app_selected_disc_id(const PlayerApp *app) {
@@ -2708,11 +2920,15 @@ bool player_app_remove_game(PlayerApp *app, int game_index) {
     const char *disc_id = app->games[game_index].disc_id;
     if (!disc_id || disc_id[0] == '\0') return false;
     if (player_game_is_showcase(&app->games[game_index])) return false;
+    /* The card's own image, by its hash ("" names the unhashed record): two
+     * images can share a disc ID, and the disc ID alone could take the other. */
+    char sha1[sizeof(app->games[game_index].content_sha1)];
+    snprintf(sha1, sizeof(sha1), "%s", app->games[game_index].content_sha1);
     /* Only the library entry is removed. The user's ISO file on disk is
      * never touched. */
-    if (nk_library_remove(&app->library, disc_id) != NK_OK) return false;
+    if (nk_library_remove_by_key(&app->library, disc_id, sha1) != NK_OK) return false;
     /* Under the library lock, from what the file holds now (#1768). */
-    if (nk_library_commit_remove(&app->library, disc_id, NULL) != NK_OK) {
+    if (nk_library_commit_remove_by_key(&app->library, disc_id, sha1, NULL) != NK_OK) {
         player_app_sync_library(app);
         return false;
     }
@@ -2795,6 +3011,14 @@ bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
     if (player_app_removal_blocker(app, game_index) != NULL) return false;
     const char *disc = app->games[game_index].disc_id;
     snprintf(plan->disc_id, sizeof(plan->disc_id), "%s", disc);
+    /* Every folder below is the disc ID's. Another image with it (a retail
+       disc beside its fan translation) uses them and the saves, so they stay. */
+    for (int i = 0; i < app->game_count; i++) {
+        if (i != game_index && strcmp(app->games[i].disc_id, disc) == 0) {
+            plan->files_shared = true;
+            return true;
+        }
+    }
     /* The build writes under the runtime root when one is set; disc copies
        and saves always live in the per-user directories. */
     char build_root[NK_MAX_PATH];
@@ -4203,7 +4427,7 @@ bool player_app_register_staged_game(PlayerApp *app) {
         !app->inspecting_game.prepared_root[0]) return false;
 
     if (!player_app_add_game(app, &app->inspecting_game)) return false;
-    int index = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+    int index = player_app_find_added_game(app, &app->inspecting_game);
     if (index < 0) return false;
     app->selected_game_index = index;
     app->wizard.step = WIZARD_STEP_READY_LAUNCH;
@@ -5381,7 +5605,7 @@ void player_app_wizard_next(PlayerApp *app) {
         case WIZARD_STEP_READY_LAUNCH:
             if (app->inspecting_game.disc_id[0] != '\0') {
                 player_app_add_game(app, &app->inspecting_game);
-                int idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+                int idx = player_app_find_added_game(app, &app->inspecting_game);
                 if (idx >= 0) {
                     app->selected_game_index = idx;
                 }
