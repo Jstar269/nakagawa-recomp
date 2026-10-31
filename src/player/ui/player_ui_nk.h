@@ -274,6 +274,11 @@ typedef struct {
        queue runs (no Rebuild all). NULL draws nothing. */
     const char *rebuild_notice;
     bool rebuild_notice_offers_all;
+    /* The art rest (#1299 launcher work): the picture of the game whose card focus
+       has rested on, drawn behind the library while `backdrop_shown`, and still
+       passed while it fades out after focus moves on. NULL draws nothing. */
+    const struct NkUiImage *backdrop;
+    bool backdrop_shown;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
@@ -1054,6 +1059,9 @@ const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t in
 int player_ui_nk_test_route(const PlayerUiNk *player);
 /* Test only: the control the next UI focuses, or 0. */
 unsigned player_ui_nk_test_focus(const PlayerUiNk *player);
+/* Test only: the game whose picture is behind the library (the art rest), -1 for
+   none; *shown tells it fading in or whole from fading out. */
+int player_ui_nk_test_backdrop(const PlayerUiNk *player, bool *shown);
 /* Test only: print each compatibility record's category tier and tier. */
 void player_ui_nk_test_report_compatibility(void);
 #endif

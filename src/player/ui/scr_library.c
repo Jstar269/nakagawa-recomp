@@ -29,6 +29,7 @@
 #define LIBRARY_ID_ROW_BASE_SPAN 0x20u
 #define LIBRARY_ID_PROMPTS LIBRARY_ID(0x000040u)
 #define LIBRARY_ID_WAVES LIBRARY_ID(0x000050u)
+#define LIBRARY_ID_BACKDROP LIBRARY_ID(0x000051u)
 #define LIBRARY_ID_EMPTY LIBRARY_ID(0x000005u)
 #define LIBRARY_ID_EMPTY_ICON LIBRARY_ID(0x000060u)
 #define LIBRARY_ID_EMPTY_ART LIBRARY_ID(0x000160u)
@@ -587,6 +588,10 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
     has_games = game_count > 0u || model->find_open;
 
     (void)nk_ui_waves_element(ui, LIBRARY_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
+    if (model->backdrop != NULL) {
+        (void)nk_ui_backdrop(ui, LIBRARY_ID_BACKDROP, (NkUiRect){0.0f, 0.0f, width, height},
+                             model->backdrop, model->backdrop_shown);
+    }
     layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_grow(), 0.0f);
     if (!nk_ui_begin_container(ui, LIBRARY_ID_ROOT, &layout, NULL)) {
         return result;

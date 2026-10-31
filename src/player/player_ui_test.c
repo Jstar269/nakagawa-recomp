@@ -652,6 +652,9 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     if (app->active_view == VIEW_BUILDING_PACKAGE && ui_test_build_bar_fraction() >= 0.0f) {
         build_bar_permille = (int)(ui_test_build_bar_fraction() * 1000.0f + 0.5f);
     }
+    bool backdrop_shown = false;
+    int backdrop_index = g_ui_test_next_ui != NULL
+        ? player_ui_nk_test_backdrop(g_ui_test_next_ui, &backdrop_shown) : -1;
     printf("[PLAYER_UI_TEST] frame=%d ticks_ms=%llu view=%s "
            "selected=%d selected_disc=%s selected_title_id=%s "
            "focus=%d focus_count=%d settings_two_col=%d wizard_step=%s "
@@ -683,7 +686,8 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "outdated=%d outdated_scanned=%d rebuild_prompt=%d rebuild_banner=%d "
            "rebuild_reminder=%d rebuild_queue=%d rebuild_queue_active=%d "
            "rebuild_queue_paused=%d prompt_version=%s "
-           "input_class=%s input_files=%zu next_input_class=%s next_input_files=%zu\n",
+           "input_class=%s input_files=%zu next_input_class=%s next_input_files=%zu "
+           "backdrop=%d backdrop_shown=%d\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -765,7 +769,8 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            player_input_class_name(app->wizard.preflight.input.input_class),
            app->wizard.preflight.input.files_needed,
            selected_input ? player_input_class_name(selected_input->input_class) : "none",
-           selected_input ? selected_input->files_needed : (size_t)0);
+           selected_input ? selected_input->files_needed : (size_t)0,
+           backdrop_index, backdrop_shown ? 1 : 0);
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {

@@ -197,9 +197,17 @@ is painted over.
 ### Motion
 
 Tokens are in seconds (`NK_UI_MOTION_*`): fast 0.12 (focus, press), base 0.20 (toast, tab rule), slow 0.50 (art
-crossfade); art appears after a 0.6 s rest, preview music after 1.1 s, fading in over 1.0 s and out over 0.45 s.
-The waves step at 30 Hz. Reduce motion (the setting, or with it on Automatic, Windows' Animation effects turned
-off) makes every duration a cut and holds the waves on one frame. Nothing ever needs motion to be understood.
+crossfade); art appears after a 0.6 s rest. The preview-music tokens (after 1.1 s, fading in over 1.0 s and out
+over 0.45 s) are reserved: the player has no preview music. The waves step at 30 Hz. Reduce motion (the setting, or
+with it on Automatic, Windows' Animation effects turned off) makes every duration a cut and holds the waves on one
+frame. Nothing ever needs motion to be understood.
+
+The art rest: once focus has rested on a game's card for 0.6 s (`NK_UI_MOTION_ART_REST`), the player reads that
+disc's PIC1 and it fades in behind the library over slow (`nk_ui_backdrop`), over the waves and under a scrim of the
+page colour. Moving on fades it out, so browsing past cards reads no pictures and changes nothing behind them. The
+scrim is solved for every step of the fade so that a white picture over the brightest waves stays as dark as the
+waves' own limit, and every text colour keeps its contrast (`nk_ui_backdrop_scrim`, `test_backdrop_rests_and_fades`).
+The demos (their art is the project's own drawing), the find box and Reduce motion leave it out: it is decoration.
 
 The launcher's loop asks nk_ui how long it may wait for input (`nk_ui_wait_s`, `test_wait_follows_motion`): one
 display frame while something moves, until the waves' next 30 Hz step while they play, else 50 ms. It used to wait

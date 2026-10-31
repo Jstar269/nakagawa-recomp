@@ -1619,6 +1619,60 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertNotIn("next_ui_disc_icon", missing["stdout"],
                          "an unreadable disc keeps the placeholder")
 
+    @staticmethod
+    def backdrops(run: dict[str, object]) -> list[tuple[int, str, str]]:
+        """Each frame's (ticks, backdrop game, shown) on the library."""
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        return [(int(frame["ticks_ms"]), frame["backdrop"], frame["backdrop_shown"])
+                for frame in frames if frame["view"] in ("library", "ready_library")]
+
+    def test_next_ui_art_rest_shows_the_rested_cards_picture_behind_the_library(self) -> None:
+        """The 0.6 s art rest: focus resting on a game's card for 0.6 s brings its
+        PIC1 in behind the library; focus that moves on sooner reads no picture, and
+        moving on fades the picture out. Reduce motion leaves it out altogether."""
+        motion = {"reduce_motion_choice": "off"}
+        # Scripted runs cut motion unless NK_UI_TEST_MOTION keeps the settings' choice.
+        keep = {"NK_UI_TEST_MOTION": "1"}
+        rest = self.run_player("ready", ("WAIT_MS=1500",), art_iso="available", ui_mode="next",
+                               settings=motion, env_extra=keep)
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(rest["stdout"]):
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        frames = self.backdrops(rest)
+        start = frames[0][0]
+        self.assertTrue(all(game == "-1" for ticks, game, _ in frames if ticks - start < 550),
+                        f"nothing behind the library before the rest: {frames[:6]}")
+        self.assertIn(("0", "1"), [(game, shown) for _, game, shown in frames],
+                      "after resting on the first card, its picture is behind the library")
+
+        browse = self.run_player("ready", ("WAIT_MS=300", "KEY_RIGHT", "WAIT_MS=1500"),
+                                 art_iso="available", ui_mode="next", settings=motion,
+                                 env_extra=keep)
+        self.assertNotIn("0", [game for _, game, _ in self.backdrops(browse)],
+                         "focus that moved on before the rest brings no picture in")
+
+        leave = self.run_player("ready", ("WAIT_MS=1200", "KEY_RIGHT", "WAIT_MS=1200"),
+                                art_iso="available", ui_mode="next", settings=motion,
+                                env_extra=keep)
+        states = [(game, shown) for _, game, shown in self.backdrops(leave)]
+        self.assertIn(("0", "1"), states)
+        after = states[states.index(("0", "1")):]
+        self.assertIn(("0", "0"), after, "moving on fades the picture out")
+        self.assertEqual(after[-1], ("-1", "0"), "and then it is gone")
+
+        bare = self.run_player("ready", ("WAIT_MS=1500",), art_iso="icon-only", ui_mode="next",
+                               settings=motion, env_extra=keep)
+        bare_frames = self.backdrops(bare)
+        self.assertEqual({game for _, game, _ in bare_frames}, {"-1"},
+                         "a disc with no picture has nothing to show")
+        self.assertLess(len(bare_frames), 100,
+                        "after the rest on a disc with no picture the loop sleeps between frames")
+
+        still = self.run_player("ready", ("WAIT_MS=1500",), art_iso="available", ui_mode="next",
+                                settings={"reduce_motion_choice": "on"}, env_extra=keep)
+        self.assertEqual({game for _, game, _ in self.backdrops(still)}, {"-1"},
+                         "Reduce motion: no picture behind the library")
+
     def test_a_library_of_hundreds_of_titles_loads_pages_and_checks_what_it_shows(self) -> None:
         """A library of 300 titles: every one loads (the player held 64, and one
         more made the whole library load empty); the first card, not NEXT, has the

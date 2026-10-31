@@ -4467,7 +4467,11 @@ int main(int argc, char *argv[]) {
 #endif
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (ui_test_mode) app.settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
+    /* Scripted runs cut motion so their frames are steady; NK_UI_TEST_MOTION keeps the
+       settings' choice, for the tests of motion itself. */
+    if (ui_test_mode && getenv("NK_UI_TEST_MOTION") == NULL) {
+        app.settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
+    }
 #endif
 
     app.window_width = override_w;

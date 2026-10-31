@@ -91,6 +91,13 @@ struct PlayerUiNk {
     NkUiRouter *router;
     NkUiViewport viewport;
     size_t library_page;
+    /* The art rest: the card focus rests on and since when, and the game whose
+       picture is behind the library (SIZE_MAX: none) and when it stopped being
+       shown, so it is kept while it fades out. */
+    size_t rest_index;
+    double rest_since_s;
+    size_t backdrop_index;
+    double backdrop_hidden_s;
     PlayerUiTitle titles[PLAYER_UI_TITLE_CAP];
     /* The library grid in its sort order: indices into titles, no demos; while
        the find box is open, only the games that match. */
@@ -328,6 +335,8 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window, Play
                             "The next UI could not allocate its renderer state.");
         return NULL;
     }
+    player->rest_index = SIZE_MAX;
+    player->backdrop_index = SIZE_MAX;
     player->router = nk_ui_router_create();
     if (player->router == NULL) {
         player_ui_set_error(error, error_size,
@@ -444,6 +453,13 @@ uint32_t player_ui_nk_wait_ms(const PlayerUiNk *player, uint32_t idle_ms) {
     }
     /* Rounded up: a frame drawn a millisecond early would find nothing due. */
     wait_s = nk_ui_wait_s(player->ui, now_s, (double)idle_ms / 1000.0);
+    /* A rest still under way wakes the loop when it ends. Once it has ended the
+       picture's read is the art worker's, which the idle wake picks up: a disc with
+       no picture must not keep the loop from sleeping. */
+    if (player->rest_index != SIZE_MAX && player->rest_index != player->backdrop_index) {
+        double rest_s = player->rest_since_s + NK_UI_MOTION_ART_REST - now_s;
+        if (rest_s > 0.0 && rest_s < wait_s) wait_s = rest_s;
+    }
     return (uint32_t)ceil(wait_s * 1000.0);
 }
 
@@ -1401,6 +1417,14 @@ int player_ui_nk_test_route(const PlayerUiNk *player) {
 unsigned player_ui_nk_test_focus(const PlayerUiNk *player) {
     return player != NULL && player->ui != NULL ? (unsigned)nk_ui_focused(player->ui) : 0u;
 }
+
+int player_ui_nk_test_backdrop(const PlayerUiNk *player, bool *shown) {
+    if (shown != NULL) *shown = false;
+    if (player == NULL || player->backdrop_index == SIZE_MAX) return -1;
+    if (shown != NULL) *shown = player->backdrop_hidden_s >= player->rest_since_s &&
+                                player->rest_index == player->backdrop_index;
+    return (int)player->backdrop_index;
+}
 #endif
 
 /* Opens the Remove from library dialog for a title, listing what Nakagawa
@@ -2084,6 +2108,49 @@ static void player_ui_library_page_art(PlayerUiNk *player, const PlayerApp *app,
 }
 
 
+/* The art rest (docs/PLAYER_UI_DESIGN.md, Motion): focus resting on a game's card
+   for NK_UI_MOTION_ART_REST asks for that disc's picture, and once it is read it
+   fades in behind the library. Moving on fades it out, so browsing past cards reads
+   no pictures and changes nothing behind them. Not for the demos, whose art is the
+   project's own drawing, not while finding, and not under Reduce motion. */
+static size_t player_ui_focused_title_index(NkUiId focused, size_t count);
+static void player_ui_library_backdrop(PlayerUiNk *player, const PlayerApp *app, size_t count,
+                                       double now_s, PlayerUiLibraryModel *model) {
+    size_t focused = player_ui_focused_title_index(nk_ui_focused(player->ui), count);
+    bool shown = false;
+    if (player_app_reduce_motion(app) || model->find_open ||
+        (focused < count && player->titles[focused].art_kind != NK_UI_ART_NONE)) {
+        focused = SIZE_MAX;
+    }
+    if (focused >= count) focused = SIZE_MAX;
+    if (focused != player->rest_index) {
+        player->rest_index = focused;
+        player->rest_since_s = now_s;
+    }
+    if (focused != SIZE_MAX && now_s - player->rest_since_s >= NK_UI_MOTION_ART_REST) {
+        player_ui_title_art(player, app, focused, true);
+        if (player->titles[focused].picture != NULL) {
+            player->backdrop_index = focused;
+            shown = true;
+        }
+    }
+    if (player->backdrop_index >= count) {
+        player->backdrop_index = SIZE_MAX;
+        return;
+    }
+    if (shown) {
+        player->backdrop_hidden_s = now_s;
+    } else if (now_s - player->backdrop_hidden_s > NK_UI_MOTION_SLOW + 0.1) {
+        player->backdrop_index = SIZE_MAX;   /* faded out */
+        return;
+    }
+    /* Asked for every frame it is drawn, so the cache keeps it through the fade. */
+    player_ui_title_art(player, app, player->backdrop_index, true);
+    model->backdrop = player->titles[player->backdrop_index].picture;
+    model->backdrop_shown = shown;
+    if (model->backdrop == NULL) player->backdrop_index = SIZE_MAX;
+}
+
 static size_t player_ui_focused_title_index(NkUiId focused, size_t count) {
     uint32_t value = focused;
     if (value < PLAYER_UI_ID_LIBRARY_ITEM_BASE) return count;
@@ -2408,6 +2475,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                                                  &model.rebuild_notice_offers_all);
             model.rebuild_notice = player->rebuild_notice;
         }
+        player_ui_library_backdrop(player, app, count, now_s, &model);
         action = player_ui_screen_library(player->ui, &model);
         if (action.kind == PLAYER_UI_ACTION_OPEN_TITLE && action.title_index < count) {
             app->selected_game_index = (int)action.title_index;

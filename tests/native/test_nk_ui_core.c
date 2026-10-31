@@ -1364,6 +1364,111 @@ static int test_art_fades_in(void) {
     return 1;
 }
 
+/* One frame with the launcher backdrop (nk_ui_backdrop) at `now_s`: `image` when not
+   NULL, shown or fading out. Returns the alpha the picture is drawn at, -1 when it is
+   not drawn; *scrim gets the scrim's alpha over it. */
+static int draw_backdrop(NkUi *ui, double now_s, const NkUiImage *image, bool shown,
+                         int *scrim) {
+    const NkUiDrawList *list;
+    int alpha = -1;
+    uint32_t i;
+    if (scrim != NULL) *scrim = -1;
+    nk_ui_begin(ui, now_s);
+    if (image != NULL) {
+        (void)nk_ui_backdrop(ui, 96u, (NkUiRect){0.0f, 0.0f, 320.0f, 180.0f}, image, shown);
+    }
+    nk_ui_label(ui, 99u, "Library", 0, 12);
+    list = nk_ui_end(ui);
+    for (i = 0u; list != NULL && i < list->ncmd; ++i) {
+        const NkUiDrawCmd *cmd = &list->cmd[i];
+        if (cmd->element_id != 96u) continue;
+        if (cmd->kind == NK_UI_DRAW_CUSTOM && cmd->custom_kind == NK_UI_CUSTOM_IMAGE) {
+            alpha = (int)(cmd->rgba_pm & 0xFFu);
+        } else if (cmd->kind == NK_UI_DRAW_RECTANGLE && scrim != NULL && cmd->count > 0u) {
+            *scrim = (int)(list->v[list->idx[cmd->first]].rgba_pm & 0xFFu);
+        }
+    }
+    return alpha;
+}
+
+/* The art rest's backdrop (#1299 launcher work): the focused card's picture behind the
+   library fades in over NK_UI_MOTION_SLOW, fades out when no longer shown, and a new
+   picture starts from nothing. Its scrim keeps a white picture, over waves at their
+   limit, as dark as the waves' own limit at every point of the fade. Overlay hosts
+   and Reduce motion leave it out. */
+static int test_backdrop_rests_and_fades(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    static uint8_t pixels[2u * 2u * 4u] = {
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
+    };
+    NkUiImage image = {2u, 2u, pixels, 7u};
+    NkUiImage other = {2u, 2u, pixels, 8u};
+    NkUiConfig config;
+    NkUiPrefs prefs;
+    NkUi *ui;
+    int scrim = -1;
+    int mid;
+    float fade;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create backdrop context");
+    set_test_window(ui);
+    for (fade = 0.0f; fade <= 1.0f; fade += 0.01f) {
+        float s = nk_ui_backdrop_scrim(fade);
+        float worst = (0.22f * (1.0f - fade) + fade) * (1.0f - s) + (0x0B / 255.0f) * s;
+        CHECK(s >= 0.0f && s <= 1.0f && worst <= 0.23f,
+              "backdrop: the scrim keeps a white picture as dark as the waves' limit");
+    }
+    CHECK(nk_ui_backdrop_scrim(0.0f) == 0.0f && nk_ui_backdrop_scrim(1.0f) > 0.75f,
+          "backdrop: no scrim before the picture shows, a strong one once it has");
+    CHECK(draw_backdrop(ui, 60.0, NULL, false, NULL) == -1, "backdrop: none asked, none drawn");
+    mid = draw_backdrop(ui, 60.1, &image, true, NULL);
+    CHECK(mid >= 0 && mid < 64 && nk_ui_in_motion(ui),
+          "backdrop: it starts faint, one display frame in, and the host keeps drawing");
+    mid = draw_backdrop(ui, 60.1 + NK_UI_MOTION_SLOW / 2.0, &image, true, &scrim);
+    CHECK(mid > 0 && mid < 255 && scrim > 0 && nk_ui_in_motion(ui),
+          "backdrop: half way, the picture is fading in under its scrim");
+    CHECK(draw_backdrop(ui, 60.1 + NK_UI_MOTION_SLOW, &image, true, &scrim) == 255 &&
+              scrim == (int)(nk_ui_backdrop_scrim(1.0f) * 255.0f + 0.999f),
+          "backdrop: then it is whole, under the full scrim");
+    (void)draw_backdrop(ui, 60.7, &image, true, NULL);
+    CHECK(!nk_ui_in_motion(ui), "backdrop: and still");
+    CHECK(draw_backdrop(ui, 61.0, &other, true, NULL) < 64,
+          "backdrop: a different picture starts from nothing");
+    (void)draw_backdrop(ui, 61.0 + NK_UI_MOTION_SLOW, &other, true, NULL);
+    CHECK(draw_backdrop(ui, 61.6, &other, false, NULL) > 0 && nk_ui_in_motion(ui),
+          "backdrop: no longer shown, it starts to fade out");
+    mid = draw_backdrop(ui, 61.6 + NK_UI_MOTION_SLOW / 2.0, &other, false, NULL);
+    CHECK(mid > 0 && mid < 255 && nk_ui_in_motion(ui), "backdrop: half way out");
+    CHECK(draw_backdrop(ui, 61.6 + NK_UI_MOTION_SLOW + 0.05, &other, false, NULL) == -1 &&
+              !nk_ui_in_motion(ui),
+          "backdrop: and then it is gone");
+    (void)draw_backdrop(ui, 62.0, &image, true, NULL);
+    (void)draw_backdrop(ui, 62.0 + NK_UI_MOTION_SLOW, &image, true, NULL);
+    CHECK(draw_backdrop(ui, 62.6, NULL, false, NULL) == -1 &&
+              draw_backdrop(ui, 62.7, &image, true, NULL) < 64,
+          "backdrop: a frame without it ends it");
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.reduce_motion = true;
+    nk_ui_set_prefs(ui, &prefs);
+    (void)draw_backdrop(ui, 63.0, &image, true, NULL);
+    CHECK(draw_backdrop(ui, 64.0, &image, true, NULL) == -1 && !nk_ui_in_motion(ui),
+          "backdrop: Reduce motion leaves it out");
+    nk_ui_destroy(ui);
+    config.host = NK_UI_HOST_OVERLAY;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create overlay context");
+    set_test_window(ui);
+    nk_ui_begin(ui, 1.0);
+    CHECK(!nk_ui_backdrop(ui, 96u, (NkUiRect){0.0f, 0.0f, 10.0f, 10.0f}, &image, true),
+          "backdrop: an overlay host refuses it");
+    (void)nk_ui_end(ui);
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 /* Clay's layout inspector draws its panel, listing the layout's elements by
    their id strings, while it is on, and the frame is still drawn. */
 static int test_layout_debug(void) {
@@ -1922,6 +2027,7 @@ int main(int argc, char **argv) {
         !test_draw_clips_nest() || !test_modal_card_floats() || !test_focus_ring_floats() ||
         !test_focus_ring_moves() || !test_hover_fill_eases() || !test_tab_rule_slides() ||
         !test_wait_follows_motion() || !test_art_fades_in() ||
+        !test_backdrop_rests_and_fades() ||
         !test_layout_debug() || !test_pointer_state_once_a_frame() ||
         !test_undrawn_command_is_reported()) {
         return 1;

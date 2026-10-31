@@ -427,11 +427,28 @@ void nk_ui_set_prompt_images(NkUi *ui, const struct NkUiPromptImages *images);
    or with an unknown tint_index. rect is in logical UI pixels. */
 bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index);
 
+/* Launcher-only backdrop: `picture` cover-fitted over rect (logical px), drawn over
+   the waves and under the layout, beneath a scrim of the page colour that keeps
+   every text colour at the contrast the waves allow (nk_ui_backdrop_scrim). While
+   `shown` it fades in over NK_UI_MOTION_SLOW, and once not shown it fades out; a
+   different picture starts from nothing. A frame that does not call it drops it.
+   Returns true while it is drawn. Returns false, and draws nothing, on an overlay
+   host, with no open frame, an unusable picture or an empty rect, and under Reduce
+   motion, where the backdrop is left out altogether: it is decoration. */
+struct NkUiImage;
+bool nk_ui_backdrop(NkUi *ui, NkUiId id, NkUiRect rect, const struct NkUiImage *picture,
+                    bool shown);
+/* The scrim alpha the backdrop is drawn under at `fade` (0-1, eased): enough that a
+   white picture, over waves at their brightest, stays as dark as the waves' limit
+   (NK_UI_WAVES_LUMINANCE_MAX), so contrast holds through the fade too. */
+float nk_ui_backdrop_scrim(float fade);
+
 /* Finishes the frame and returns its draw list, or NULL when the frame failed.
    The list is owned by ui and is valid until the next nk_ui_begin or
-   nk_ui_destroy. Render it with nk_ui_vk_render (backend/nk_ui_vk.h) or
-   nk_ui_sdlr_render (backend/nk_ui_sdlr.h); NkUiDrawList itself is defined in
-   nk_ui_draw.h and is opaque to hosts that only forward it. */
+   nk_ui_destroy. Render it with nk_ui_sdlr_render (backend/nk_ui_sdlr.h), or
+   with nk_ui_vk_prepare outside a render pass and nk_ui_vk_render inside one
+   (backend/nk_ui_vk.h); NkUiDrawList itself is defined in nk_ui_draw.h and is
+   opaque to hosts that only forward it. */
 const NkUiDrawList *nk_ui_end(NkUi *ui);
 bool nk_ui_next_wake(const NkUi *ui, double *at_s);
 /* How long a host may wait for input before it draws the next frame, at most

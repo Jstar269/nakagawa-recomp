@@ -116,6 +116,17 @@ struct NkUi {
     NkUiArtFade art_fades[NK_UI_ART_FADES];
     size_t art_fade_count;
     bool art_fading;        /* a picture is still fading in this frame */
+    /* The launcher's backdrop (nk_ui_backdrop): its picture, how far it has faded
+       in (0-1, before easing), whether it is shown, and whether this frame drew it. */
+    struct {
+        NkUiId id;
+        const NkUiImage *picture;
+        uint64_t serial;
+        NkUiRect rect;
+        float fade;
+        bool shown;
+        bool asked;
+    } backdrop;
     double now_s;
     double frame_delta_s;       /* seconds since the previous frame; 0 on the first */
     bool frame_clock_started;
@@ -1307,6 +1318,54 @@ bool nk_ui_waves_element(NkUi *ui, NkUiId id, NkUiRect rect, unsigned tint_index
     return true;
 }
 
+bool nk_ui_backdrop(NkUi *ui, NkUiId id, NkUiRect rect, const NkUiImage *picture, bool shown) {
+    float step;
+    if (ui == NULL || !ui->frame_open || ui->host == NK_UI_HOST_OVERLAY) {
+        return false;
+    }
+    if (!isfinite(rect.x) || !isfinite(rect.y) || !isfinite(rect.w) || !isfinite(rect.h) ||
+        rect.w <= 0.0f || rect.h <= 0.0f || !nk_ui_image_usable(picture) ||
+        ui->prefs.reduce_motion) {
+        return false;
+    }
+    if (ui->backdrop.picture == NULL || picture->serial != ui->backdrop.serial) {
+        ui->backdrop.fade = 0.0f;   /* a new picture starts from nothing */
+    }
+    ui->backdrop.id = id;
+    ui->backdrop.picture = picture;
+    ui->backdrop.serial = picture->serial;
+    ui->backdrop.rect = rect;
+    ui->backdrop.shown = shown;
+    ui->backdrop.asked = true;
+    /* As a transition does: one starting now is given one display frame of the idle
+       time before it, not the whole wait for input. */
+    step = (float)((!ui->transitioning && ui->frame_delta_s > NK_UI_MOTION_FRAME
+                        ? NK_UI_MOTION_FRAME : ui->frame_delta_s) / NK_UI_MOTION_SLOW);
+    if (!(step > 0.0f)) step = 0.0f;
+    ui->backdrop.fade += shown ? step : -step;
+    if (ui->backdrop.fade < 0.0f) ui->backdrop.fade = 0.0f;
+    if (ui->backdrop.fade > 1.0f) ui->backdrop.fade = 1.0f;
+    /* Still fading: the host draws the next frame soon (nk_ui_in_motion). */
+    if (shown ? ui->backdrop.fade < 1.0f : ui->backdrop.fade > 0.0f) ui->art_fading = true;
+    return ui->backdrop.fade > 0.0f || shown;
+}
+
+/* The backdrop under its scrim, eased with Clay's ease-out as the other fades are. */
+static bool nk_ui_paint_backdrop(NkUi *ui) {
+    float t = 1.0f - ui->backdrop.fade;
+    float eased = 1.0f - t * t * t;
+    float scrim = nk_ui_backdrop_scrim(eased);
+    NkUiImageArt art;
+    memset(&art, 0, sizeof(art));
+    art.cover = ui->backdrop.picture;
+    return nk_ui_paint_image(&ui->draw, &art, eased, ui->backdrop.rect, ui->scale.density,
+                             ui->backdrop.id) &&
+           nk_ui_draw_add_rect(&ui->draw, ui->backdrop.rect, ui->scale.density, 0.0f,
+                               (ui->theme.surface & 0xFFFFFF00u) |
+                                   (uint32_t)(scrim * 255.0f + 0.999f),
+                               ui->backdrop.id);
+}
+
 const NkUiDrawList *nk_ui_end(NkUi *ui) {
     if (ui == NULL || !ui->frame_open) {
         return NULL;
@@ -1327,6 +1386,14 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
             ui->frame_ok = false;
         }
     }
+    if (ui->backdrop.asked && ui->backdrop.fade > 0.0f && !nk_ui_paint_backdrop(ui)) {
+        ui->frame_ok = false;
+    }
+    if (!ui->backdrop.asked) {
+        ui->backdrop.picture = NULL;   /* a frame without it ends it */
+        ui->backdrop.fade = 0.0f;
+    }
+    ui->backdrop.asked = false;
     /* Clay adds the frame's time to a transition from the frame it starts on.
        The time since the last frame was idle when nothing was moving then, so
        a transition starting now gets one frame of it, not the whole wait for
