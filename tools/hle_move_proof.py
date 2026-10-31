@@ -54,20 +54,28 @@ ROOT = hle_sources.ROOT
 
 Unit = tuple[str, str]
 
-#: Defines every build of the runtime HLE carries: the Makefile's CFLAGS (``SR_PUBLIC_SAFE``
-#: through its ``override``) and CMake's ``rt_defs``.
-COMMON_DEFINES = ("SR_SDL3VK", "_CRT_SECURE_NO_WARNINGS", "SR_PUBLIC_SAFE")
 INCLUDE_DIRS = ("src/rt", "src/core", "src/rt/atrac3p", "src/rt/atrac3p/libavcodec", "src/rt/atrac3p/libavutil")
-_SELFTEST = ("SR_HLE_THREAD_SELFTEST", "SR_CORO_LIFECYCLE_TEST", "SR_SCHED_LIVENESS_TEST")
-#: The configurations the HLE sources are really compiled in (Makefile recipes and CMake).
-CONFIGS: dict[str, tuple[str, ...]] = {
-    "production": (),
-    "thread-selftest": _SELFTEST,
-    "aot-boundary-selftest": _SELFTEST + ("SR_HLE_AOT_BOUNDARY_TEST",),
-    "media-selftest": ("SR_MPEG_MEDIA_SELFTEST",),
-    "cmake-runtime": ("SR_FLIGHT_RECORDER_LINKED", "PERF_AOT_INSTRUCTIONS=0", "SR_H264_FFMPEG",
-                      "NK_UI_WITH_SDL", "NK_UI_WITH_SDL3"),
+#: The Makefile's CFLAGS defines, with the two its ``override`` lines always add.
+_MAKE = ("SR_SDL3VK", "_CRT_SECURE_NO_WARNINGS", "SR_PUBLIC_SAFE", "SR_FLIGHT_RECORDER_LINKED",
+         "PERF_AOT_INSTRUCTIONS=0")
+_SELFTEST = _MAKE + ("SR_HLE_THREAD_SELFTEST", "SR_CORO_LIFECYCLE_TEST", "SR_SCHED_LIVENESS_TEST")
+#: The configurations the HLE sources are compiled in: name -> (defines, extra compiler flags).
+#: At the go these are checked against ``make -n -B`` of every recipe that compiles HLE.
+CONFIGS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "production": (_MAKE, ()),
+    "thread-selftest": (_SELFTEST, ()),
+    "aot-boundary-selftest": (_SELFTEST + ("SR_HLE_AOT_BOUNDARY_TEST",), ()),
+    "media-selftest": (_MAKE + ("SR_MPEG_MEDIA_SELFTEST",), ("-std=c11",)),
+    "trace": (_MAKE + ("SR_INSTRUCTION_TRACE",), ()),
+    "nan-trap": (_MAKE + ("SR_NAN_TRAP",), ()),
+    "stack-census": (_MAKE + ("SR_STACK_CENSUS_ENABLED",), ()),
+    "perf-aot": (_MAKE[:-1] + ("PERF_AOT_INSTRUCTIONS=1",), ()),
+    "android-cmake": (("SR_SDL3VK", "SR_FLIGHT_RECORDER_LINKED", "PERF_AOT_INSTRUCTIONS=0", "SR_PUBLIC_SAFE",
+                       "SR_H264_FFMPEG", "NK_UI_WITH_SDL", "NK_UI_WITH_SDL3"), ()),
+    "flash0-harness": ((), ("-std=gnu11",)),
 }
+#: Flags under which a missing declaration is an error on every compiler (GCC 13 only warns).
+DECLARATION_ERRORS = ("-Werror=implicit-function-declaration", "-Werror=implicit-int", "-Werror=int-conversion")
 
 REGISTER_API = frozenset({"sr_hle_register", "sr_hle_register_unsupported", "sr_hle_register_entry"})
 _REGISTER_CALLS = ("sr_hle_register", "sr_hle_register_unsupported")
@@ -417,11 +425,22 @@ def _check_headers(report: Report, new: list[Unit]) -> None:
 # L2 and L3
 
 
-def preprocess_unit(tree: Path, relative: str, defines: tuple[str, ...], cc: str,
+def _compile_flags(tree: Path, config: tuple[tuple[str, ...], tuple[str, ...]]) -> list[str]:
+    defines, flags = config
+    return [*flags, *(f"-D{d}" for d in defines), *(f"-I{tree / d}" for d in INCLUDE_DIRS)]
+
+
+def syntax_errors(tree: Path, relative: str, config: tuple[tuple[str, ...], tuple[str, ...]], cc: str) -> str:
+    """Compiler errors for ``relative`` with missing declarations made errors; empty when it compiles."""
+    command = [cc, "-fsyntax-only", *DECLARATION_ERRORS, *_compile_flags(tree, config), str(tree / relative)]
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return "" if result.returncode == 0 else result.stderr.strip()[-1500:]
+
+
+def preprocess_unit(tree: Path, relative: str, config: tuple[tuple[str, ...], tuple[str, ...]], cc: str,
                     keep: tuple[str, ...]) -> str:
     """The preprocessed text of ``relative`` (in ``tree``) that came from the files in ``keep``."""
-    command = [cc, "-E", *(f"-D{d}" for d in COMMON_DEFINES + defines),
-               *(f"-I{tree / d}" for d in INCLUDE_DIRS), str(tree / relative)]
+    command = [cc, "-E", *_compile_flags(tree, config), str(tree / relative)]
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(command)} failed:\n{result.stderr[-2000:]}")
@@ -440,14 +459,14 @@ def preprocess_unit(tree: Path, relative: str, defines: tuple[str, ...], cc: str
     return "\n".join(out)
 
 
-def preprocessed_definitions(tree: Path, units: list[str], headers: tuple[str, ...], defines: tuple[str, ...],
-                             cc: str) -> dict[str, list[str]]:
-    """Function and object name -> token list, from every unit preprocessed in one configuration."""
+def preprocessed_definitions(tree: Path, units: list[str], headers: tuple[str, ...],
+                             config: tuple[tuple[str, ...], tuple[str, ...]], cc: str) -> dict[str, list[str]]:
+    """Name -> token list of every function, object and type, from every unit in one configuration."""
     found: dict[str, list[str]] = {}
     for relative in units:
-        text = preprocess_unit(tree, relative, defines, cc, (relative,) + headers)
+        text = preprocess_unit(tree, relative, config, cc, (relative,) + headers)
         for item in split_items(text):
-            if not item.names or not (item.kind == "func" or is_object_definition(item)):
+            if not item.names or item.kind != "func" and not (item.kind == "decl" and not _is_declaration_glue(item)):
                 continue
             tokens = _TOKEN.findall(item.text)
             previous = found.get(item.names[0])
@@ -458,8 +477,8 @@ def preprocessed_definitions(tree: Path, units: list[str], headers: tuple[str, .
     return found
 
 
-def flatten_init(definitions: dict[str, list[str]]) -> list[str]:
-    """``sr_hle_init``'s body with every no-argument call to a registration function inlined."""
+def flatten_init(definitions: dict[str, list[str]], root: str = "sr_hle_init") -> list[str]:
+    """``root``'s body with every no-argument call to a registration function inlined."""
     bodies = {name: " ".join(tokens) for name, tokens in definitions.items() if "{" in tokens}
     registering = registering_functions(bodies)
 
@@ -485,20 +504,39 @@ def flatten_init(definitions: dict[str, list[str]]) -> list[str]:
             k += 1
         return out
 
-    if "sr_hle_init" not in definitions:
-        raise RuntimeError("sr_hle_init is not defined in this configuration")
-    return flatten("sr_hle_init", 0)
+    if root not in definitions:
+        raise RuntimeError(f"{root} is not defined in this configuration")
+    return flatten(root, 0)
+
+
+def registration_roots(definitions: dict[str, list[str]]) -> list[str]:
+    """Registering functions no other registering function calls: ``sr_hle_init`` and any
+    other entry point that registers (a selftest hook that re-runs one helper, for example)."""
+    bodies = {name: " ".join(tokens) for name, tokens in definitions.items() if "{" in tokens}
+    registering = registering_functions(bodies)
+    called: set[str] = set()
+    for name in registering:
+        tokens = _function_body_tokens(definitions[name])
+        called |= {t for k, t in enumerate(tokens[:-1]) if t in registering and tokens[k + 1] == "("}
+    return sorted(registering - called)
 
 
 def compare_preprocessed(base_tree: Path, base_units: list[str], base_headers: tuple[str, ...],
                          new_tree: Path, new_units: list[str], new_headers: tuple[str, ...],
-                         report: Report, cc: str, configs: dict[str, tuple[str, ...]]) -> None:
+                         report: Report, cc: str,
+                         configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]]) -> None:
     removed = {entry.rsplit(" (", 1)[0] for entry in report.static_removed}
     inlined = {entry.rsplit(" (", 1)[0] for entry in report.made_inline}
     glue = {entry.rsplit(" (", 1)[0] for entry in report.new_glue}
-    for config, defines in configs.items():
-        base = preprocessed_definitions(base_tree, base_units, base_headers, defines, cc)
-        new = preprocessed_definitions(new_tree, new_units, new_headers, defines, cc)
+    for config, flags in configs.items():
+        base = preprocessed_definitions(base_tree, base_units, base_headers, flags, cc)
+        new = preprocessed_definitions(new_tree, new_units, new_headers, flags, cc)
+        # L5: a declaration missing from the private header must fail here, not compile into an
+        # implicit `int` on a compiler that only warns about it.
+        for relative in new_units:
+            errors = syntax_errors(new_tree, relative, flags, cc)
+            if errors and not (relative in base_units and syntax_errors(base_tree, relative, flags, cc)):
+                report.errors.append(f"[{config}] {relative} does not compile with declarations enforced:\n{errors}")
         regrouped = set(report.regrouped)
         for name, tokens in base.items():
             if name in regrouped:
@@ -519,11 +557,12 @@ def compare_preprocessed(base_tree: Path, base_units: list[str], base_headers: t
         for name in new:
             if name not in base and name not in glue and name.split("@", 1)[0] not in regrouped:
                 report.errors.append(f"[{config}] {name} is defined only in the new sources")
-        try:
-            if flatten_init(base) != flatten_init(new):
-                report.errors.append(f"[{config}] sr_hle_init's flattened registration sequence differs")
-        except RuntimeError as exc:
-            report.errors.append(f"[{config}] init sequence: {exc}")
+        for root in registration_roots(base):
+            try:
+                if flatten_init(base, root) != flatten_init(new, root):
+                    report.errors.append(f"[{config}] {root}'s flattened registration sequence differs")
+            except RuntimeError as exc:
+                report.errors.append(f"[{config}] registration sequence of {root}: {exc}")
 
 
 # --------------------------------------------------------------------------------------

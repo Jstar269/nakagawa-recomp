@@ -196,6 +196,16 @@ class FlattenTests(unittest.TestCase):
         flat = " ".join(proof.flatten_init(defs))
         self.assertEqual(flat, 'sr_hle_register ( 1u , "x" , h ) ; hook ( 1 ) ; sr_hle_register ( 2u , "y" , h ) ;')
 
+    def test_every_entry_point_that_registers_is_a_root(self) -> None:
+        defs = self.definitions(
+            sr_hle_init="a(); b();",
+            sr_hle_test_register_b="b();",
+            a='sr_hle_register(1u, "x", h);',
+            b='if (g) return; sr_hle_register(2u, "y", h);',
+            unrelated="hook(1);",
+        )
+        self.assertEqual(proof.registration_roots(defs), ["sr_hle_init", "sr_hle_test_register_b"])
+
     def test_a_returning_body_is_scoped(self) -> None:
         defs = self.definitions(sr_hle_init="a();", a='if (g) return; sr_hle_register(1u, "x", h);')
         self.assertEqual(proof.flatten_init(defs)[0], "@{")
@@ -232,6 +242,11 @@ class PreprocessedLayerTests(unittest.TestCase):
                        '#include "hle_internal.h"\n#undef A0\n#define A0 (s->r[5])\n')
         errors = self.run_layers(split)
         self.assertTrue(any("h_IoOpen preprocesses differently" in e for e in errors), errors)
+
+    def test_missing_declaration_fails_even_where_the_compiler_only_warns(self) -> None:
+        split = mutate("src/rt/hle_internal.h", "uint32_t shared_helper(uint32_t x);\n", "")
+        errors = self.run_layers(split)
+        self.assertTrue(any("hle_io.c does not compile with declarations enforced" in e for e in errors), errors)
 
     def test_selftest_hook_left_out_of_a_configuration_fails(self) -> None:
         split = mutate("src/rt/hle.c", "#ifdef SR_HLE_THREAD_SELFTEST\n", "#ifdef SR_SOMETHING_ELSE\n")
