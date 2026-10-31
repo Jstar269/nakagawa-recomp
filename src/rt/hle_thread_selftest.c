@@ -4541,6 +4541,8 @@ void sr_hle_test_var_reset(void);
 const char *sr_hle_test_var_import_add(const SrVarImport *imp, uint32_t base, uint32_t owner);
 const char *sr_hle_test_var_export_add(const char *lib, uint32_t nid, uint32_t addr, uint32_t owner);
 void sr_hle_test_var_owner_remove(uint32_t owner);
+const char *sr_hle_test_var_fixed_link(const char *name, uint32_t base);
+void sr_hle_test_var_fixed_reset(void);
 
 /* Variable imports (#308): the loader patches each reference with the exported variable's
  * address (uOFW loadcore aVariableLinkApply). The variable sits at 0x0899fff8, so its low
@@ -4621,7 +4623,31 @@ static void test_variable_import_linker(void) {
     expect(why_hi != NULL && strstr(why_hi, "HI16") != NULL && why_kind != NULL && untouched,
            "variable import: a HI16 with no LO16 after its run, or an unknown reference type, "
            "is refused before anything is written");
+
+    /* The executable's own exports link from boot; a fixed-base module's imports link when
+     * it loads (by its file name) and leave with it. */
+    static const SrVarExportDecl main_exports[] = {{"TestLib", LIB_NID, VAR}};
+    static const SrVarImportRef fixed_refs[] = {
+        {SITES + 0x00u, 5u}, {SITES + 0x04u, 5u}, {SITES + 0x08u, 6u}, {SITES + 0x0cu, 6u},
+        {SITES + 0x10u, 2u},
+    };
+    static const SrVarImport fixed_imp = {"TestLib", LIB_NID, fixed_refs, 5u};
     sr_hle_test_var_reset();
+    sr_hle_test_var_fixed_reset();
+    for (i = 0; i < 5; i++) MEM_W32(SITES + 4u * (uint32_t)i, original[i]);
+    sr_main_var_exports_register(main_exports, 1u);
+    sr_fixed_var_imports_register("fixed_mod.prx", &fixed_imp, 1u);
+    expect(sr_hle_test_var_fixed_link("modules/FIXED_MOD.PRX", IMPORTER) == NULL,
+           "variable import: a fixed-base module's table is found by its file name");
+    all_linked = 1;
+    for (i = 0; i < 5; i++) all_linked &= MEM_R32(SITES + 4u * (uint32_t)i) == linked[i];
+    expect(all_linked, "variable import: the fixed-base module links to the executable's export");
+    sr_hle_test_var_owner_remove(IMPORTER);
+    expect(sr_hle_test_var_fixed_link("other.prx", IMPORTER) == NULL &&
+               MEM_R32(SITES) == linked[0],
+           "variable import: another module's load links nothing of this table");
+    sr_hle_test_var_reset();
+    sr_hle_test_var_fixed_reset();
 }
 
 static void test_umd_io_console_model(void) {

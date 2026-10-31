@@ -5025,6 +5025,16 @@ def main(argv):
                           interpreted=primary_stubbed | omit_aot.addrs),
     }]
 
+    # Variable imports of modules translated at a fixed base, linked when each loads, and the
+    # variables the executable exports, registered at boot (src/rt/hle.c, #308).
+    fixed_var_imports = []
+    try:
+        from imports import variable_exports
+        main_var_exports = variable_exports(elf)
+    except ImportTableError as e:
+        sys.stderr.write(f"codegen: {format_boundary(e)}\n")
+        return 1
+
     # Process extra ELF files (PRX modules)
     for extra_elf_path, extra_base in extra_elfs:
         sys.stderr.write(f"Processing extra ELF: {extra_elf_path} @ 0x{extra_base:08x}\n")
@@ -5080,12 +5090,23 @@ def main(argv):
             except Exception as e:
                 sys.stderr.write(f"warning: import table parse failed for {extra_elf_path}: {e}\n")
 
+        try:
+            extra_var_imports, extra_var_sites = variable_import_sites(extra_elf)
+        except ImportTableError as e:
+            sys.stderr.write(f"codegen: {format_boundary(e, extra_elf_path)}\n")
+            return 1
+        if extra_var_imports:
+            fixed_var_imports.append((os.path.basename(extra_elf_path), extra_var_imports))
+
         extra_stub = extra_elf.sec(".sceStub.text")
         def is_extra_stub(a):
             if a in extra_impmap:
                 return True
             return extra_stub is not None and extra_stub["addr"] <= a < extra_stub["addr"] + extra_stub["size"]
 
+        # A module at a fixed base reads its own variable-import sites from memory.
+        main_space = ADDRESS_SPACE
+        ADDRESS_SPACE = AddressSpace(patched=extra_var_sites)
         for a in sorted(extra_known):
             if is_extra_stub(a):
                 lib_nid = extra_impmap.get(a)
@@ -5113,6 +5134,7 @@ def main(argv):
                 emitted.append(a)
                 stubbed.append((a, reason))
                 sys.stderr.write(f"skip 0x{a:08x}: {e}\n")
+        ADDRESS_SPACE = main_space
         extra_stubbed = {a for a, _ in stubbed} & extra_known
         coverage_images.append({
             "image": os.path.basename(extra_elf_path),
@@ -5310,12 +5332,25 @@ def main(argv):
     if main_var_imports:
         main_out.append("")
         main_out.extend(var_import_table_lines("sr_main_var_imports", main_var_imports))
+    for index, (_name, imports_of) in enumerate(fixed_var_imports):
+        main_out.extend(var_import_table_lines(f"sr_x{index}_var_imports", imports_of))
+    if main_var_exports:
+        main_out.append("static const SrVarExportDecl sr_main_var_exports[] = {")
+        main_out.extend(f"    {{ {c_string(e.library)}, 0x{e.nid:08x}u, 0x{e.address:08x}u }},"
+                        for e in main_var_exports)
+        main_out.append("};")
     main_out.append("\nvoid sr_register_all(void) {")
     if module_record is not None:
         main_out.append("    sr_main_module_register(&sr_main_module_record);")
+    if main_var_exports:
+        main_out.append(f"    sr_main_var_exports_register(sr_main_var_exports, "
+                        f"{len(main_var_exports)}u);")
     if main_var_imports:
         main_out.append(f"    sr_main_var_imports_register(sr_main_var_imports, "
                         f"{len(main_var_imports)}u);")
+    for index, (name, imports_of) in enumerate(fixed_var_imports):
+        main_out.append(f"    sr_fixed_var_imports_register({c_string(name)}, "
+                        f"sr_x{index}_var_imports, {len(imports_of)}u);")
     if symbol_table:
         main_out.append(
             f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")

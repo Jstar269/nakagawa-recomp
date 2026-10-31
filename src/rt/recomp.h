@@ -1335,6 +1335,17 @@ void sr_main_module_register(const SrMainModuleRecord *record);  /* from generat
 /* The main image's variable imports (absolute sites), from generated sr_register_all(). They
  * link as their exporters load (src/rt/hle.c). */
 void sr_main_var_imports_register(const SrVarImport *imports, uint32_t count);
+/* A variable the main image exports: importers link to it from boot. */
+typedef struct SrVarExportDecl {
+    const char *library;
+    uint32_t nid;
+    uint32_t addr;
+} SrVarExportDecl;
+void sr_main_var_exports_register(const SrVarExportDecl *exports, uint32_t count);
+/* The variable imports of a module translated at a fixed base (absolute sites), keyed by its
+ * file name; they link when that module loads and unlink when it unloads. */
+void sr_fixed_var_imports_register(const char *module, const SrVarImport *imports,
+                                   uint32_t count);
 const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
 unsigned sr_module_code_count(void);
 const SrModuleCode *sr_module_code_at(unsigned index);

@@ -159,6 +159,52 @@ VARIABLE_REFERENCE_FIELDS = {2: "word32", 5: "hi16", 6: "lo16"}
 MAX_VARIABLE_REFERENCES = 4096
 
 
+@dataclass(frozen=True)
+class VariableExport:
+    """One variable a named library of the image exports, and its address."""
+
+    library: str
+    nid: int
+    address: int
+
+
+def variable_exports(elf):
+    """Every variable a named library of the image exports, in .lib.ent order.
+
+    An export record is a 16-byte head (library name, version, attributes, length in words,
+    variable count, function count, entry table); its entry table holds the function NIDs,
+    the variable NIDs, then their addresses in the same order. The nameless module-lifecycle
+    entry exports no linkable variable. An image with no .lib.ent exports none.
+    """
+    libent = elf.sec(".lib.ent")
+    if not libent or not libent.get("size"):
+        return ()
+    blob = elf.read_at_vaddr(libent["addr"], libent["size"])
+    if blob is None or len(blob) != libent["size"]:
+        raise ImportTableError("ANALYZER_IMPORT_TABLE_INVALID", ".lib.ent leaves mapped input")
+    found = []
+    pos = 0
+    while pos + 16 <= len(blob):
+        name_ptr, _version, _attributes, size, num_vars, num_funcs, table = struct.unpack_from(
+            "<IHHBBHI", blob, pos)
+        if size < 4:
+            break  # a record shorter than its own head ends the table, as the analyzer reads it
+        if num_vars and name_ptr:
+            library = _read_guest_cstr(elf, name_ptr)
+            count = num_funcs + num_vars
+            words = elf.read_at_vaddr(table, 8 * count) if table else None
+            if words is None or len(words) != 8 * count:
+                raise ImportTableError(
+                    "ANALYZER_IMPORT_TABLE_INVALID",
+                    f"{library} export table at 0x{table:08x} leaves mapped input")
+            values = struct.unpack(f"<{2 * count}I", words)
+            for j in range(num_vars):
+                found.append(VariableExport(library, values[num_funcs + j],
+                                            values[count + num_funcs + j]))
+        pos += size * 4
+    return tuple(found)
+
+
 def variable_imports(elf):
     """Return every declared variable import with its reference sites, in table order.
 

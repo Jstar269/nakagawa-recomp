@@ -272,6 +272,32 @@ class TestImportNameSafety(unittest.TestCase):
 
         self.assertIn("reference site 0x00009000 leaves mapped input", str(raised.exception))
 
+    def test_variable_exports_list_each_named_library_variable_with_its_address(self):
+        # .lib.ent: the nameless lifecycle entry (no linkable variables), then a library with
+        # one function and two variables; its entry table holds 3 NIDs then 3 addresses.
+        class ExportImage:
+            def __init__(self):
+                self.mem = bytearray(0x400)
+                head = struct.pack("<IHHBBHI", 0, 0, 0x8000, 4, 1, 1, 0x1100)
+                named = struct.pack("<IHHBBHI", 0x1200, 1, 1, 4, 2, 1, 0x1140)
+                self.mem[0x000:0x020] = head + named
+                struct.pack_into("<II", self.mem, 0x100, 0xD632ACDB, 0x0F7C276C)
+                struct.pack_into("<6I", self.mem, 0x140, 0xAAAA0001, 0xBBBB0001, 0xBBBB0002,
+                                 0x1300, 0x1310, 0x1320)
+                self.mem[0x200:0x208] = b"VarLib\x00\x00"
+
+            def sec(self, name):
+                return {"addr": 0x1000, "size": 0x20} if name == ".lib.ent" else None
+
+            def read_at_vaddr(self, address, size):
+                start = address - 0x1000
+                return bytes(self.mem[start:start + size]) if 0 <= start <= len(self.mem) - size else None
+
+        self.assertEqual(imports_tool.variable_exports(ExportImage()), (
+            imports_tool.VariableExport("VarLib", 0xBBBB0001, 0x1310),
+            imports_tool.VariableExport("VarLib", 0xBBBB0002, 0x1320),
+        ))
+
     def test_variable_import_reference_list_must_be_mapped(self):
         elf = self._variable_entry()
         struct.pack_into("<II", elf.mem, self.VSTUB_TABLE - FakeElf.BASE, 0x9000, 0x0ABC1234)

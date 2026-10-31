@@ -5205,6 +5205,8 @@ static uint32_t s_last_prx_base = 0;
  * identity is the export table, never its path (#1385). */
 static int s_last_prx_host_served = 0;
 
+static const char *var_export_add(const char *lib, uint32_t nid, uint32_t addr, uint32_t owner);
+
 static unsigned register_prx_exports(const char *host_path, uint32_t base) {
     s_last_prx_host_served = 0;
     FILE *f = fopen(host_path, "rb");
@@ -5299,6 +5301,29 @@ static unsigned register_prx_exports(const char *host_path, uint32_t base) {
             uint32_t *pairs = (uint32_t *)malloc((size_t)pair_bytes);
             if (!pairs) break;
             if (!fseek(f, (long)toff, SEEK_SET) && fread(pairs, sizeof(uint32_t), count * 2u, f) == count * 2u) {
+                /* A named library's variables: importers waiting for them link now (#308).
+                 * The image is owned by its load base, so its unload unlinks them. */
+                uint32_t name_ptr;
+                memcpy(&name_ptr, e, 4);
+                char lib[SR_PRX_LIBNAME_LEN] = "";
+                uint32_t name_off = nvars && name_ptr
+                    ? prx_vaddr_to_file(ph, phnum, name_ptr, base, file_len) : UINT32_MAX;
+                if (name_off != UINT32_MAX && name_off <= (uint32_t)LONG_MAX &&
+                    !fseek(f, (long)name_off, SEEK_SET)) {
+                    size_t got = fread(lib, 1, sizeof(lib) - 1u, f);
+                    lib[got < sizeof(lib) ? got : sizeof(lib) - 1u] = '\0';
+                }
+                for (unsigned j = 0; lib[0] != '\0' && j < nvars; j++) {
+                    uint32_t target = pairs[count + nfuncs + j];
+                    const char *why = target <= UINT32_MAX - base
+                        ? var_export_add(lib, pairs[nfuncs + j], base + target, base) : NULL;
+                    if (why) {
+                        fprintf(stderr, "SEMANTIC_BOUNDARY: VARIABLE_IMPORT_INVALID: %s exports %s "
+                                        "0x%08x, but %s\n", host_path, lib, pairs[nfuncs + j], why);
+                        fflush(stderr);
+                        exit(1);
+                    }
+                }
                 for (unsigned i = 0; i < nfuncs; i++) {
                     uint32_t target = pairs[count + i];
                     /* Export targets are PRX-relative virtual addresses.  Zero is a
@@ -5617,6 +5642,69 @@ void sr_main_var_imports_register(const SrVarImport *imports, uint32_t count) {
     }
 }
 
+void sr_main_var_exports_register(const SrVarExportDecl *exports, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        const char *why = var_export_add(exports[i].library, exports[i].nid, exports[i].addr,
+                                         SR_VAR_OWNER_MAIN);
+        if (!why) continue;
+        fprintf(stderr, "SEMANTIC_BOUNDARY: VARIABLE_IMPORT_INVALID: the executable exports %s "
+                        "0x%08x, but %s\n", exports[i].library, exports[i].nid, why);
+        fflush(stderr);
+        exit(1);
+    }
+}
+
+#define SR_VAR_FIXED_TABLE_MAX 64u
+static struct {
+    const char *module;
+    const SrVarImport *imports;
+    uint32_t count;
+} s_var_fixed_tables[SR_VAR_FIXED_TABLE_MAX];
+static unsigned s_var_fixed_table_count;
+
+void sr_fixed_var_imports_register(const char *module, const SrVarImport *imports,
+                                   uint32_t count) {
+    if (s_var_fixed_table_count == SR_VAR_FIXED_TABLE_MAX) {
+        fprintf(stderr, "SEMANTIC_BOUNDARY: VARIABLE_IMPORT_INVALID: more fixed-base modules "
+                        "import variables than the linker holds (%s)\n", module);
+        fflush(stderr);
+        exit(1);
+    }
+    s_var_fixed_tables[s_var_fixed_table_count].module = module;
+    s_var_fixed_tables[s_var_fixed_table_count].imports = imports;
+    s_var_fixed_tables[s_var_fixed_table_count].count = count;
+    s_var_fixed_table_count++;
+}
+
+/* The variable imports codegen recorded for the fixed-base module `name` (its file name;
+ * a manifest path may carry directories), or NULL. */
+static const char *var_fixed_basename(const char *name) {
+    const char *base = name;
+    for (const char *p = name; *p; p++)
+        if (*p == '/' || *p == '\\') base = p + 1;
+    return base;
+}
+
+/* Link a fixed-base module's own variable imports when it loads at `base` (its owner). NULL on
+ * success, else why one cannot be patched (the importer's own links are dropped again). */
+static const char *var_fixed_imports_link(const char *name, uint32_t base, uint32_t *bad_site,
+                                          const SrVarImport **bad) {
+    const char *file = var_fixed_basename(name);
+    for (unsigned t = 0; t < s_var_fixed_table_count; t++) {
+        if (sr_vfs_strnicmp(s_var_fixed_tables[t].module, file, strlen(file) + 1u) != 0) continue;
+        for (uint32_t i = 0; i < s_var_fixed_tables[t].count; i++) {
+            const SrVarImport *imp = &s_var_fixed_tables[t].imports[i];
+            const char *why = var_import_add(imp, 0u, base, bad_site);
+            if (why) {
+                *bad = imp;
+                var_owner_remove(base);
+                return why;
+            }
+        }
+    }
+    return NULL;
+}
+
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Selftest seams: the linker's state and its three entry points, driven without a loader. */
 void sr_hle_test_var_reset(void) { s_var_export_count = 0; s_var_link_count = 0; }
@@ -5628,6 +5716,12 @@ const char *sr_hle_test_var_export_add(const char *lib, uint32_t nid, uint32_t a
     return var_export_add(lib, nid, addr, owner);
 }
 void sr_hle_test_var_owner_remove(uint32_t owner) { var_owner_remove(owner); }
+const char *sr_hle_test_var_fixed_link(const char *name, uint32_t base) {
+    uint32_t bad_site = 0u;
+    const SrVarImport *bad = NULL;
+    return var_fixed_imports_link(name, base, &bad_site, &bad);
+}
+void sr_hle_test_var_fixed_reset(void) { s_var_fixed_table_count = 0; }
 #endif
 
 /* Retire one image: drop the export authority the kernel would unlink at unload, clear the
@@ -5746,6 +5840,17 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
     } else {
         memcpy(SR_HOST(base), s_prx_stage, s_prx_stage_len);
         if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
+        uint32_t bad_site = 0u;
+        const SrVarImport *bad = NULL;
+        const char *why = var_fixed_imports_link(name, base, &bad_site, &bad);
+        if (why) {
+            free_block(alloc_uid);
+            fprintf(stderr, "GUEST_MODULE_BOUNDARY: guest-module-variable-import-refused module=%s: "
+                            "variable import %s 0x%08x has %s (0x%08x); in the works (#704)\n",
+                    name, bad->library, bad->nid, why, bad_site);
+            sr_prx_image_free(&img);
+            return 0;
+        }
         s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, alloc_uid, 0, NULL};
         s_last_prx_base = base;
         note_psmfplayer_lib_version(&img);

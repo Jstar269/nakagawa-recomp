@@ -553,13 +553,6 @@
         "report"
       ]
     },
-    "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED": {
-      "stage": "analyze",
-      "in": [
-        "report",
-        "route"
-      ]
-    },
     "PACKAGE_INVALID_ELF": {
       "stage": "analyze",
       "in": [
@@ -1475,7 +1468,8 @@
   },
   "retired": {
     "ANALYSIS_FAILED": "never emitted",
-    "ANALYZER_FAILURE_UNCLASSIFIED": "replaced by named analyze-stage codes and ANALYZER_INTERNAL_ERROR"
+    "ANALYZER_FAILURE_UNCLASSIFIED": "replaced by named analyze-stage codes and ANALYZER_INTERNAL_ERROR",
+    "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED": "variable imports are linked at run time (#308)"
   },
   "stop_boundaries": {
     "names": {
