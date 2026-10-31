@@ -66,6 +66,12 @@ typedef struct {
        0, as prepare_session leaves it, exports an empty value: the child then
        uses the primary display. */
     int launcher_display_bounds[4];
+    /* Ace Mode (src/rt/ace.h): the SR_ACE line the player resolved for this title, always
+       exported so an inherited value cannot opt a launch in. prepare_session leaves "off", the
+       authentic run, and an empty value exports "off" too. With Ace on, ace_report_path names
+       the runtime's per-run report (SR_ACE_REPORT); the player creates its folder. */
+    char ace_spec[96];
+    char ace_report_path[NK_MAX_PATH];
 } NkRuntimeConfig;
 
 typedef struct {
