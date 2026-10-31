@@ -64,6 +64,7 @@
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
 #include "hle_evidence.h" /* generated: NIDs with no recorded evidence (docs/HLE_COVERAGE.md) */
 #include "atrac3p_bridge.h" /* HLE bridges for separate ATRAC3+ and AT3 decoding */
+#include "atrac3p/atrac3p_api.h" /* ATRAC3P_MAX_CHANNELS, ATRAC3P_PADDING_SIZE */
 #include "mp3_bridge.h"     /* minimp3 frame decoder behind sceMp3 */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
 #include "fbcap.h"           /* presenter-neutral frame capture service (issue #57) */
@@ -5711,6 +5712,20 @@ static int loadexec_module_file_matches_translation(const char *file) {
     return size == code->file_size && digest == code->file_fnv1a64;
 }
 
+/* Libraries a title ships as its own module, for which host HLE only stands in. When the
+ * title's copy is staged and translated, its exports are the library (LLE first, AGENTS.md
+ * section 6): the module is not host-served, so it starts as any guest-placed module does
+ * and its exports take over the host handlers once it has started. The host handlers stay
+ * for a title that does not stage the module and for the public synthetic fixtures (#286).
+ * scePsmfPlayer is the SDK's libpsmfplayer.prx: user-mode code over sceMpeg, scePsmf and
+ * the kernel, all of which stay reachable beneath it. */
+static int guest_module_owns_library(const char *lib) {
+    static const char *const owned[] = { "scePsmfPlayer" };
+    for (size_t i = 0; i < sizeof(owned) / sizeof(owned[0]); i++)
+        if (strcmp(lib, owned[i]) == 0) return 1;
+    return 0;
+}
+
 /* Lay a guest-placed module out and bind its translation. On success `mod` holds the
  * module's entry points, image and $gp, and 0 is returned; otherwise the guest-visible
  * error is returned and nothing the attempt reserved stays reserved. */
@@ -5898,7 +5913,7 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
             continue;
         }
         if (sr_hle_register_late_import(e->nid, e->addr)) exported++;
-        if (hle_find(e->nid)) mod->host_served = 1;
+        if (hle_find(e->nid) && !guest_module_owns_library(e->lib)) mod->host_served = 1;
     }
     mod->runtime_placed = 1;
     mod->code = code;
@@ -6550,11 +6565,18 @@ static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEG
  * offset is video offset - audio offset over a window of guest time, so a constant startup
  * delay common to both streams cancels while a stream running slow shows up as drift.
  *
+ * A title that composites the movie draws the picture through the GE instead of presenting
+ * its buffer.  While the measurement runs, each textured GE_PRIM reports its texture and its
+ * render target (sr_ge_texture_sample_hook, ge.c); a draw whose level-0 texture overlaps a
+ * waiting picture marks that picture composited into the draw's render target, and the first
+ * present of a framebuffer overlapping that target is the picture's presentation time.  A
+ * composited picture is not superseded by a later delivery into its buffer (it was already
+ * drawn); one whose render target is never presented stays pending and is counted.
+ *
  * Nothing here changes behaviour: no guest memory is written, no time advances, and the
  * only host call on a match is one sr_audio_queued() read.  A delivery that is never
  * presented/played (overwritten by a later delivery, pushed out of the ring, or still waiting
- * when the report is made) is counted, never hidden; a title that composites the movie
- * through the GE before presenting it simply shows 0 video matches.
+ * when the report is made) is counted, never hidden.
  *
  * Enabled by SR_MPEGAV (or SR_MPEGLOG).  Output: one PSMF_AV_PRESENT line per window and a
  * PSMF_AV_PRESENT_FINAL summary at scePsmfPlayerDelete and at process exit. */
@@ -6564,6 +6586,7 @@ static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEG
 #define PSMF_AV_PTS_LIMIT ((int64_t)1 << 48)
 #define PSMF_AV_DISPLAY_ROWS 272u
 #define PSMF_AV_LAT_LIMIT_US ((int64_t)1 << 32)
+#define PSMF_AV_CONTENT_MAX 8192u            /* one sceMpegAtracDecode block */
 enum { PSMF_AV_VIDEO = 0, PSMF_AV_AUDIO = 1 };
 
 typedef struct {
@@ -6572,12 +6595,18 @@ typedef struct {
     int64_t pts;
     int64_t delivered_us;
     int pts_valid, live;
+    int composited;             /* drawn by the GE into the render target [fb_lo, fb_hi) */
+    uint32_t fb_lo, fb_hi;
+    uint64_t content;           /* audio followed by its bytes (FNV-1a), 0 when not */
+    uint32_t content_bytes;
 } PsmfAvEntry;
 
 typedef struct {
     PsmfAvEntry pend[PSMF_AV_PENDING];
     uint64_t delivered, matched, unmeasured, superseded, evicted, nospan;
     uint64_t boundary_calls, boundary_hits;
+    uint64_t composited, composited_matched;   /* video only */
+    uint64_t content_matched;                  /* audio only */
     uint64_t lat_sum_us;
     int64_t lat_max_us;
     int64_t win_sum_x9;
@@ -6701,19 +6730,31 @@ static void psmf_av_window_tick(int64_t now_us) {
 
 static void psmf_av_final(const char *reason);
 static void psmf_av_exit_report(void) { psmf_av_final("exit"); }
+extern void (*sr_ge_texture_sample_hook)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+                                         uint32_t, uint32_t);
+static void psmf_av_texture_sampled(uint32_t tex_addr, uint32_t tex_bufw, uint32_t tex_h,
+                                    uint32_t tex_fmt, uint32_t fb_addr, uint32_t fb_stride,
+                                    uint32_t fb_fmt);
 
-static void psmf_av_delivered(int stream, uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
-    if (!psmf_av_on()) return;
+static PsmfAvEntry *psmf_av_delivered(int stream, uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
+    if (!psmf_av_on()) return NULL;
     if (!s_psmf_av.exit_hooked) { s_psmf_av.exit_hooked = 1; atexit(psmf_av_exit_report); }
+    if (stream == PSMF_AV_VIDEO) sr_ge_texture_sample_hook = psmf_av_texture_sampled;
     PsmfAvStream *st = &s_psmf_av.s[stream];
     st->delivered++;
     uint32_t lo, hi;
-    if (!psmf_av_range(first, bytes, &lo, &hi)) { st->nospan++; return; }
+    if (!psmf_av_range(first, bytes, &lo, &hi)) { st->nospan++; return NULL; }
     PsmfAvEntry *slot = NULL, *oldest = NULL;
     for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
         PsmfAvEntry *e = &st->pend[i];
         if (!e->live) { if (!slot) slot = e; continue; }
-        if (e->lo < hi && lo < e->hi) { e->live = 0; st->superseded++; if (!slot) slot = e; continue; }
+        if (!e->composited && e->lo < hi && lo < e->hi) {
+            if (e->content) {
+                e->lo = e->hi = 0;   /* overwritten where it was written: followed by its bytes only */
+            } else {
+                e->live = 0; st->superseded++; if (!slot) slot = e; continue;
+            }
+        }
         if (!oldest || e->seq < oldest->seq) oldest = e;
     }
     if (!slot) { oldest->live = 0; st->evicted++; slot = oldest; }
@@ -6724,6 +6765,58 @@ static void psmf_av_delivered(int stream, uint32_t first, uint32_t bytes, int64_
     slot->pts_valid = pts_valid;
     slot->delivered_us = psmf_av_now_us();
     slot->live = 1;
+    slot->composited = 0;
+    slot->fb_lo = slot->fb_hi = 0;
+    slot->content = 0;
+    slot->content_bytes = 0;
+    return slot;
+}
+
+/* FNV-1a of [addr, +bytes), 0 when the bytes are all zero or cannot be read: a silent block is
+ * not told apart from any other. */
+static uint64_t psmf_av_content(uint32_t addr, uint32_t bytes) {
+    static uint8_t block[PSMF_AV_CONTENT_MAX];
+    if (!bytes || bytes > PSMF_AV_CONTENT_MAX || !sr_guest_copy_in(block, addr, bytes)) return 0;
+    uint64_t h = 1469598103934665603ull;
+    unsigned any = 0;
+    for (uint32_t i = 0; i < bytes; i++) {
+        any |= block[i];
+        h = (h ^ block[i]) * 1099511628211ull;
+    }
+    return any ? (h ? h : 1u) : 0;
+}
+
+/* Bytes of a level-0 texture: bufw texels per row, h rows, at the PSM's texel size.  0 for
+ * the DXT formats, whose block layout is not a picture a movie decoder writes. */
+static uint32_t psmf_av_texture_bytes(uint32_t bufw, uint32_t h, uint32_t fmt) {
+    static const uint8_t bits[8] = {16, 16, 16, 32, 4, 8, 16, 32};
+    uint32_t texels;
+    if (fmt > 7u || !sr_size_mul_ok(bufw, h, &texels) || texels > 0x08000000u) return 0;
+    return (uint32_t)(((uint64_t)texels * bits[fmt] + 7u) / 8u);
+}
+
+/* A textured draw (GE_PRIM) samples [tex_addr, +level-0 bytes) into the render target at
+ * fb_addr (fb_stride pixels, fb_fmt): a waiting picture it overlaps is composited there. */
+static void psmf_av_texture_sampled(uint32_t tex_addr, uint32_t tex_bufw, uint32_t tex_h,
+                                    uint32_t tex_fmt, uint32_t fb_addr, uint32_t fb_stride,
+                                    uint32_t fb_fmt) {
+    if (!psmf_av_on()) return;
+    PsmfAvStream *st = &s_psmf_av.s[PSMF_AV_VIDEO];
+    uint32_t tlo, thi, row, fbytes, flo, fhi;
+    uint32_t tbytes = psmf_av_texture_bytes(tex_bufw, tex_h, tex_fmt);
+    if (!tbytes || !psmf_av_range(tex_addr, tbytes, &tlo, &thi) || fb_fmt > 3u ||
+        !sr_size_mul_ok(fb_stride, fb_fmt == 3u ? 4u : 2u, &row) ||
+        !sr_size_mul_ok(row, PSMF_AV_DISPLAY_ROWS, &fbytes) ||
+        !psmf_av_range(fb_addr, fbytes, &flo, &fhi))
+        return;
+    for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
+        PsmfAvEntry *e = &st->pend[i];
+        if (!e->live || e->composited || !(e->lo < thi && tlo < e->hi)) continue;
+        e->composited = 1;
+        e->fb_lo = flo;
+        e->fb_hi = fhi;
+        st->composited++;
+    }
 }
 
 /* One delivery meets its presentation/play time.  play_ok = 0 means the time itself was not
@@ -6760,13 +6853,52 @@ static void psmf_av_video_presented(uint32_t addr, int32_t stride, int32_t fmt) 
     int hit = 0;
     for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
         PsmfAvEntry *e = &st->pend[i];
-        if (!e->live || !(e->lo < hi && lo < e->hi)) continue;
+        if (!e->live) continue;
+        int own = e->lo < hi && lo < e->hi;
+        int drawn = e->composited && e->fb_lo < hi && lo < e->fb_hi;
+        if (!own && !drawn) continue;
         int64_t now = psmf_av_now_us();
         if (!hit) psmf_av_window_tick(now);
         hit = 1;
+        if (!own) st->composited_matched++;
         psmf_av_match(st, e, now, 1);
     }
     if (hit) st->boundary_hits++;
+}
+
+/* A submitted buffer that holds no pending block where it was written may hold one the guest
+ * copied there: each block-sized piece of it meets the oldest pending block with the same
+ * bytes. */
+static void psmf_av_audio_by_content(PsmfAvStream *st, int ch, uint32_t buf, uint32_t bytes,
+                                     uint32_t bytes_per_frame, uint32_t rate_hz) {
+    uint32_t size = 0;
+    for (unsigned i = 0; i < PSMF_AV_PENDING && !size; i++)
+        if (st->pend[i].live && st->pend[i].content) size = st->pend[i].content_bytes;
+    if (!size || bytes < size) return;
+    int ticked = 0, queued = -1;
+    int64_t now = 0, lead_us = 0;
+    for (uint32_t off = 0; bytes - off >= size; off += size) {
+        uint64_t h = psmf_av_content(buf + off, size);
+        if (!h) continue;
+        PsmfAvEntry *best = NULL;
+        for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
+            PsmfAvEntry *e = &st->pend[i];
+            if (e->live && e->content == h && e->content_bytes == size && (!best || e->seq < best->seq))
+                best = e;
+        }
+        if (!best) continue;
+        if (!ticked) {
+            queued = psmf_av_queue_frames(ch);      /* lead ahead of this buffer, read before the push */
+            now = psmf_av_now_us();
+            lead_us = queued >= 0 ? (int64_t)queued * 1000000 / 44100 : 0;
+            psmf_av_window_tick(now);
+            ticked = 1;
+        }
+        int64_t play = now + lead_us + (int64_t)(off / bytes_per_frame) * 1000000 / (int64_t)rate_hz;
+        st->content_matched++;
+        psmf_av_match(st, best, play, queued >= 0);
+    }
+    if (ticked) st->boundary_hits++;
 }
 
 /* An audio buffer reaches an sceAudioOutput* call.  rate_hz is the guest-side rate used to
@@ -6783,7 +6915,10 @@ static void psmf_av_audio_submit(int ch, uint32_t buf, uint32_t bytes, uint32_t 
         PsmfAvEntry *e = &st->pend[i];
         if (e->live && e->lo < hi && lo < e->hi) { any = 1; break; }
     }
-    if (!any) return;
+    if (!any) {
+        psmf_av_audio_by_content(st, ch, buf, bytes, bytes_per_frame, rate_hz);
+        return;
+    }
     int queued = psmf_av_queue_frames(ch);          /* lead ahead of this buffer, read before the push */
     int64_t now = psmf_av_now_us();
     int64_t lead_us = queued >= 0 ? (int64_t)queued * 1000000 / 44100 : 0;
@@ -6823,16 +6958,20 @@ static void psmf_av_final(const char *reason) {
     int n = snprintf(line, sizeof(line),
         "PSMF_AV_PRESENT_FINAL: reason=%s windows=%u paired=%u"
         " vdel=%llu vmatch=%llu vunmeas=%llu vsuper=%llu vevict=%llu vnospan=%llu vpend=%llu vbnd=%llu vhit=%llu"
+        " vcomp=%llu vcompmatch=%llu"
         " adel=%llu amatch=%llu aunmeas=%llu asuper=%llu aevict=%llu anospan=%llu apend=%llu abnd=%llu ahit=%llu"
+        " acontent=%llu"
         " vlat_mean_us=%s vlat_max_us=%s alat_mean_us=%s alat_max_us=%s"
         " av_min_us=%s av_max_us=%s av_mean_us=%s av_first_us=%s av_last_us=%s drift_us=%s\n",
         reason, s_psmf_av.windows, s_psmf_av.paired,
         (unsigned long long)v->delivered, (unsigned long long)v->matched, (unsigned long long)v->unmeasured,
         (unsigned long long)v->superseded, (unsigned long long)v->evicted, (unsigned long long)v->nospan,
         (unsigned long long)pend[0], (unsigned long long)v->boundary_calls, (unsigned long long)v->boundary_hits,
+        (unsigned long long)v->composited, (unsigned long long)v->composited_matched,
         (unsigned long long)a->delivered, (unsigned long long)a->matched, (unsigned long long)a->unmeasured,
         (unsigned long long)a->superseded, (unsigned long long)a->evicted, (unsigned long long)a->nospan,
         (unsigned long long)pend[1], (unsigned long long)a->boundary_calls, (unsigned long long)a->boundary_hits,
+        (unsigned long long)a->content_matched,
         vlm, vlx, alm, alx, mn, mx, mean, first, last, drift);
     if (n > 0 && (size_t)n < sizeof(line)) {
         fputs(line, stderr);
@@ -6844,9 +6983,20 @@ static void psmf_av_final(const char *reason) {
     psmf_av_clear();
 }
 
-/* Entry point for the sceMpeg path in mpeg.c (a separate translation unit in production). */
+/* Entry points for the sceMpeg path in mpeg.c (a separate translation unit in production):
+ * sceMpegAvcDecode/Csc pictures and sceMpegAtracDecode blocks.  A guest PSMF player copies each
+ * sceMpegAtracDecode block into its own output buffer before the game plays it, so a block is
+ * also followed by its bytes. */
+int sr_psmf_av_active(void) { return psmf_av_on(); }
 void sr_psmf_av_note_video_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
-    psmf_av_delivered(PSMF_AV_VIDEO, first, bytes, pts, pts_valid);
+    (void)psmf_av_delivered(PSMF_AV_VIDEO, first, bytes, pts, pts_valid);
+}
+void sr_psmf_av_note_audio_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
+    PsmfAvEntry *e = psmf_av_delivered(PSMF_AV_AUDIO, first, bytes, pts, pts_valid);
+    if (e) {
+        e->content = psmf_av_content(first, bytes);
+        e->content_bytes = e->content ? bytes : 0u;
+    }
 }
 
 #ifdef SR_MPEG_MEDIA_SELFTEST
@@ -6877,8 +7027,11 @@ int64_t sr_hle_test_psmf_av_counter(int audio, const char *key) {
     if (!strcmp(key, "superseded")) return (int64_t)st->superseded;
     if (!strcmp(key, "evicted")) return (int64_t)st->evicted;
     if (!strcmp(key, "nospan")) return (int64_t)st->nospan;
+    if (!strcmp(key, "content_matched")) return (int64_t)st->content_matched;
     if (!strcmp(key, "boundary")) return (int64_t)st->boundary_calls;
     if (!strcmp(key, "hits")) return (int64_t)st->boundary_hits;
+    if (!strcmp(key, "composited")) return (int64_t)st->composited;
+    if (!strcmp(key, "composited_matched")) return (int64_t)st->composited_matched;
     if (!strcmp(key, "pending")) {
         int64_t n = 0;
         for (unsigned i = 0; i < PSMF_AV_PENDING; i++) if (st->pend[i].live) n++;
@@ -11158,6 +11311,7 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
 uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth, uint32_t bufferAddr, uint32_t initAddr);
 uint32_t mpeg_atrac_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufferAddr, uint32_t init);
 uint32_t mpeg_avc_decode_stop(uint32_t mpegAddr, uint32_t frameWidth, uint32_t bufferAddr, uint32_t statusAddr);
+uint32_t mpeg_avc_decode_detail(uint32_t mpegAddr, uint32_t detailAddr);
 uint32_t mpeg_malloc_avc_es_buf(uint32_t mpegAddr);
 uint32_t mpeg_free_avc_es_buf(uint32_t mpegAddr, uint32_t esBuf);
 uint32_t mpeg_init_au(uint32_t mpegAddr, uint32_t esBuffer, uint32_t auAddr);
@@ -11235,6 +11389,7 @@ static uint32_t h_MpegAtracDecode(CpuState *s) {
     return r;
 }
 static uint32_t h_MpegAvcDecodeStop(CpuState *s) { return mpeg_avc_decode_stop(A0, A1, A2, A3); }
+static uint32_t h_MpegAvcDecodeDetail(CpuState *s) { return mpeg_avc_decode_detail(A0, A1); }
 /* sceMpegRingbufferDestruct(ring): drain a constructed ring buffer. The ring
  * layout is owned by src/rt/mpeg.c (RB_* field offsets); mpeg.c is not linked
  * into the executable HLE harness, so the harness-visible handler carries the
@@ -11363,6 +11518,7 @@ typedef struct {
     uint32_t at3FactSize;         /* RIFF fact chunk size (8 or 12) */
     uint32_t at3FactDelay;        /* fact word after the sample count */
     int at3FirstFramePending;     /* no frame decoded since SetData */
+    int at3SkipApplied;           /* leading samples the first call dropped (guest position offset) */
     /* Streamed AT3: file frame 0, held from SetData to prime the decoder (#1096). */
     uint8_t at3PrimeFrame[1024];
     int at3PrimeValid;
@@ -11473,6 +11629,7 @@ static void atrac_stream_window_consume(Atrac *a, uint32_t bytes) {
     a->streamWindowQueued -= bytes;
 }
 #define ATRAC_ERROR_BAD_CODEC_PARAMS 0x80630008u
+#define ATRAC3_SETDATA_DELAY_REFUSED 1855u   /* lowest refused fact delay (PSP-AT3-002) */
 static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t *refusal) {
     /* Scan the RIFF for "fmt " (frame size / blockAlign), "fact" (total samples),
      * "data" (frame payload offset) and "smpl" (loop points). The input is
@@ -11583,15 +11740,14 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t *re
     }
     if (endSample <= 0) return 0;
     if (a->codecType == ATRAC_CODEC_AT3 && !hasFmt) return 0;
-    /* MEASURED on a PSP-3000 (firmware 6.61, 2026-10-24; #1096,
-     * fixtures/psp_oracle/README.md `at3-decode`): an AT3 stream whose 8-byte
-     * fact chunk carries delay 2048 is refused by sceAtracSetData with
-     * 0x80630008, and the DecodeData that follows returns 0x80630010 because
-     * the context holds no data. Only the delay value 2048 with an 8-byte
-     * fact chunk is measured; no threshold between 1024 and 2048 is known, and
-     * only sceAtracSetData was measured. The other Set* calls share this
-     * track analysis here and are UNMEASURED. */
-    if (a->codecType == ATRAC_CODEC_AT3 && at3FactSize == 8u && at3FactDelay == 2048u) {
+    /* MEASURED on a PSP-3000 (firmware 6.61; #1096, PSP-AT3-002 at3-delay-sweep, 2026-10-31,
+     * over a whole 52964-byte track and an 8 KiB prefix of it): an AT3 stream whose 8-byte fact
+     * chunk carries a delay of 1855 or more (1855 .. 3072 measured) is refused by sceAtracSetData
+     * with 0x80630008, and the DecodeData that follows returns 0x80630010 because the context
+     * holds no data; 1797 and every measured delay below it are accepted.  1798 .. 1854 is not
+     * measured and is accepted here.  Only sceAtracSetData was measured; the other Set* calls
+     * share this track analysis and are UNMEASURED. */
+    if (a->codecType == ATRAC_CODEC_AT3 && at3FactSize == 8u && at3FactDelay >= ATRAC3_SETDATA_DELAY_REFUSED) {
         if (refusal) *refusal = ATRAC_ERROR_BAD_CODEC_PARAMS;
         return 0;
     }
@@ -11776,6 +11932,7 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t bufSi
     (void)atrac_reset_decoder(a);
     a->decodeFailureReported = 0;
     a->at3FirstFramePending = 1;
+    a->at3SkipApplied = 0;
     if (oldStreamWindow) free(oldStreamWindow);
     a->streamWindow = NULL;
     a->streamWindowSize = 0;
@@ -12314,28 +12471,26 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out
     return 1;
 }
 
-/* First sceAtracDecodeData of a plain AT3 track against the delay word of an
- * 8-byte RIFF fact chunk. MEASURED on a PSP-3000 (firmware 6.61) on 2026-10-24
- * with one 2-channel, 304-byte-block stream launched once per delay, only the
- * delay word changed (#1096; fixtures/psp_oracle/README.md `at3-decode`):
- *   delay 0 and 1024 -> 955 samples; delay 955 -> 1024 samples; later calls
- *   1024 each; delay 500 -> the first decode returns 0x80630002, 0 samples.
- * Only these delays are modelled. Any other delay, or a 12-byte fact chunk,
- * keeps the complete decoder frame and reports ATRAC3_NOT_MEASURED once. The
- * PSP's sceAtracSetData refusal of delay 2048 (0x80630008) is modelled in
- * atrac_parse_track. The sample counts are measured; which samples of the frame
- * the PSP drops is not public evidence, and the leading ones are dropped
- * (assumed). */
-static const struct {
-    uint32_t delay;
-    int first_samples;     /* samples returned by the first call; 0 = refused */
-    uint32_t error;        /* first-call return when refused */
-} k_atrac3_first_frame_measured[] = {
-    { 0u, 955, 0u },
-    { 955u, 1024, 0u },
-    { 1024u, 955, 0u },
-    { 500u, 0, ATRAC_ERROR_API_FAIL },
-};
+/* First sceAtracDecodeData of a plain AT3 track against the delay word d of an 8-byte RIFF fact
+ * chunk.  MEASURED on a PSP-3000 (firmware 6.61; #1096, PSP-AT3-002 at3-delay-sweep, 2026-10-31,
+ * 36 delays on one 2-channel 304-byte-block stream, then 21 more over the whole track):
+ *   d == 0 or 955 <= d <= 1797: the first call returns 1024 - ((d + 69) mod 1024) samples (69 is
+ *     the decoder's own delay): the leading (d + 69) mod 1024 samples of the first decoded frame are
+ *     dropped (delays 955 and 956 differ by exactly one leading stereo sample), and every later call
+ *     returns 1024 samples, identical whatever d is;
+ *   1 <= d <= 954: sceAtracSetData accepts the track, but every DecodeData returns 0x80630002 with
+ *     0 samples and consumes nothing;
+ *   d >= 1855: refused by sceAtracSetData (atrac_parse_track).
+ * 1798 .. 1854 is not measured: the same length rule is applied and ATRAC3_NOT_MEASURED is reported
+ * once.  A 12-byte fact chunk is not measured either and keeps the complete decoder frame. */
+#define ATRAC3_FIRST_FRAME_DECODER_DELAY 69u
+#define ATRAC3_FIRST_FRAME_MIN_DELAY 955u        /* smallest nonzero delay the first decode accepts */
+#define ATRAC3_FIRST_FRAME_MEASURED_MAX 1797u    /* largest delay measured on the accepted side */
+/* The leading samples the first call drops, or -1 when the first call is refused. */
+static int atrac3_first_frame_skip(uint32_t delay) {
+    if (delay != 0u && delay < ATRAC3_FIRST_FRAME_MIN_DELAY) return -1;
+    return (int)((delay + ATRAC3_FIRST_FRAME_DECODER_DELAY) % (uint32_t)ATRAC3_SAMPLES_PER_FRAME);
+}
 /* Returns the first-call error for a refused delay (0 otherwise) and sets
  * *skip to the leading samples the first frame drops. */
 static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
@@ -12344,16 +12499,16 @@ static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
     if (a->codecType != ATRAC_CODEC_AT3 || !a->at3FirstFramePending)
         return 0;
     if (a->at3FactSize == 8u) {
-        for (size_t i = 0; i < sizeof(k_atrac3_first_frame_measured) /
-                                   sizeof(k_atrac3_first_frame_measured[0]); i++) {
-            if (k_atrac3_first_frame_measured[i].delay != a->at3FactDelay)
-                continue;
-            if (k_atrac3_first_frame_measured[i].error)
-                return k_atrac3_first_frame_measured[i].error;
-            *skip = ATRAC3_SAMPLES_PER_FRAME -
-                    k_atrac3_first_frame_measured[i].first_samples;
-            return 0;
+        int dropped = atrac3_first_frame_skip(a->at3FactDelay);
+        if (dropped < 0) return ATRAC_ERROR_API_FAIL;
+        if (a->at3FactDelay > ATRAC3_FIRST_FRAME_MEASURED_MAX && !reported) {
+            fprintf(stderr,
+                    "ATRAC3_NOT_MEASURED: first-frame length for fact delay %u is not measured; "
+                    "the measured length rule is applied (#1096).\n", a->at3FactDelay);
+            reported = 1;
         }
+        *skip = dropped;
+        return 0;
     }
     if (!reported) {
         fprintf(stderr,
@@ -12424,6 +12579,7 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
          * the PSP's position after a shortened first call is NOT_MEASURED
          * (#1096), so the frame-offset bookkeeping is left unchanged. */
         n = decoded_samples - skip;
+        if (a->at3FirstFramePending) a->at3SkipApplied = skip;
         a->at3FirstFramePending = 0;
         if (atrac_streamed_state(a)) atrac_consume_frame(a);
         a->posSample += decoded_samples;
@@ -12561,6 +12717,15 @@ static uint32_t h_AtracSetSecondBuffer(CpuState *s) {
 static uint32_t h_AtracGetNextSample(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
+    /* MEASURED (#1096, PSP-AT3-002): before the first decode of a plain AT3 track with an 8-byte
+     * fact chunk, the next call's length is 1024 - ((delay + 69) mod 1024), for every delay
+     * sceAtracSetData accepts, including those whose decode is then refused. */
+    if (a->codecType == ATRAC_CODEC_AT3 && a->at3FirstFramePending && a->at3FactSize == 8u) {
+        MEM_W32(A1, (uint32_t)(ATRAC3_SAMPLES_PER_FRAME -
+                    (int)((a->at3FactDelay + ATRAC3_FIRST_FRAME_DECODER_DELAY) %
+                          (uint32_t)ATRAC3_SAMPLES_PER_FRAME)));
+        return 0;
+    }
     int remain = a->endSample - a->posSample;
     if (remain < 0) remain = 0;
     if (remain > atrac_samples_per_frame(a)) remain = atrac_samples_per_frame(a);
@@ -12621,10 +12786,14 @@ static uint32_t h_AtracAddStreamData(CpuState *s) {
     }
     return 0;
 }
+/* MEASURED (#1096, PSP-AT3-002): after a shortened first AT3 call the position is the samples
+ * the guest has received (955 after a 955-sample call, then 1979, 3003, ...), so the dropped
+ * leading samples are taken off the decoder position. */
 static uint32_t h_AtracGetNextDecodePosition(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (a->posSample >= a->endSample) return ATRAC_ERROR_ALLDATA_DECODED;
-    if (A1) MEM_W32(A1, (uint32_t)a->posSample);
+    int pos = a->posSample - a->at3SkipApplied;
+    if (A1) MEM_W32(A1, (uint32_t)(pos > 0 ? pos : 0));
     return 0;
 }
 static uint32_t h_AtracGetSoundSample(CpuState *s) {
@@ -16076,7 +16245,8 @@ static uint32_t h_StartModule(CpuState *s) {
     /* A guest-placed module is the game's own code laid out by the guest allocator: its
      * module_start runs by default, as libfont's does, unless host HLE implements one of
      * its exports -- then the host keeps serving them and the guest init is bypassed
-     * like every other host-served module's. */
+     * like every other host-served module's. An export of a library the guest owns
+     * (guest_module_owns_library) never makes its module host-served. */
     int guest_owned_start = is_libfont || (mod->runtime_placed && mod->code && !mod->host_served);
     int allow_entry = policy == MODULE_START_ALLOW_ALL ||
                       (policy == MODULE_START_LIBFONT_ONLY && guest_owned_start);
@@ -29995,6 +30165,7 @@ static void hle_register_mpeg_shared_handlers(void) {
  * movie frame writer behind the VRAM mirrors, #1049) through the production handler. */
 static void hle_register_mpeg_avc_decode_handler(void) {
     sr_hle_register(0x0e3c2e9d, "sceMpegAvcDecode", h_MpegAvcDecode);
+    sr_hle_register(0x0f6c18d7, "sceMpegAvcDecodeDetail", h_MpegAvcDecodeDetail);
 }
 
 static void hle_register_mpeg_ycbcr_handlers(void) {

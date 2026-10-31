@@ -38,6 +38,7 @@
 #include <string.h>
 
 #include "atrac3p_bridge.h"
+#include "atrac3p/atrac3p_api.h"
 
 /* ---- bounded host-side container parse (same fields as hle.c) ---- */
 

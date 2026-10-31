@@ -542,6 +542,7 @@ static int audio_substream_matches(uint8_t entry_stream_id, uint8_t entry_substr
 }
 
 static int is_selected_video_stream(const SrPsmfProducer *p, uint8_t sid) {
+    if (p->selected_video_stream == SR_PSMF_STREAM_NONE) return 0;
     if (p->single_stream_compat) {
         return (p->selected_video_stream == 0);
     }
@@ -1017,7 +1018,7 @@ int sr_psmf_producer_resolve_warmup_hold(SrPsmfProducer *p,
 
 int sr_psmf_producer_select_streams(SrPsmfProducer *p, uint32_t vs, uint32_t as) {
     if (!p) return 0;
-    if (vs >= p->video_stream_count) return 0;
+    if (vs != SR_PSMF_STREAM_NONE && vs >= p->video_stream_count) return 0;
     if (as != SR_PSMF_STREAM_NONE) {
         if (p->audio_stream_count == 0 || as >= p->audio_stream_count) return 0;
     }

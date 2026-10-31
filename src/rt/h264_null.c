@@ -369,6 +369,14 @@ int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
     return 1;
 }
 
+int sr_h264_au_peek_pts(int id, int64_t *pts) {
+    SrH264Instance *instance = instance_for(id);
+    if (!instance || !instance->ps_demux || instance->ps_failed || !instance->au_metadata_count) return 0;
+    const SrH264AuMetadata *next = &instance->au_metadata[instance->au_metadata_head];
+    if (pts) *pts = next->has_pts ? next->pts : -1;
+    return 1;
+}
+
 int64_t sr_h264_first_audio_pts(int id) {
     SrH264Instance *instance = instance_for(id);
     return instance && instance->ps_demux ?
