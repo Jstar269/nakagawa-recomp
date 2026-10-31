@@ -1492,20 +1492,20 @@ _register_campaign_probe(
 )
 # ge-sync-ids (78, probe.c, #1374): GE sync results for a queue id no enqueue returned, the id
 # of a completed list (before and after a second list) and a list a reset removed, in the poll
-# form and in the bounded blocking form. A blocking record is qid, returned, result, wait
-# result, delete result and elapsed us.
+# form and in the bounded blocking form, and sync types other than 0 and 1 on an idle GE. A
+# blocking record is qid, returned, result, wait result, delete result and elapsed us.
 GE_SYNC_IDS_CASES = (
     "ge-list-sync-unknown-poll", "ge-list-dequeue-unknown", "ge-list-sync-completed-poll",
-    "ge-list-sync-after-reenqueue", "ge-list-sync-cancelled-poll", "ge-draw-sync-idle-wait",
-    "ge-list-sync-completed-wait", "ge-list-sync-cancelled-wait", "ge-list-sync-unknown-wait",
-    "ge-sync-quiesce",
+    "ge-sync-invalid-mode", "ge-list-sync-after-reenqueue", "ge-list-sync-cancelled-poll",
+    "ge-draw-sync-idle-wait", "ge-list-sync-completed-wait", "ge-list-sync-cancelled-wait",
+    "ge-list-sync-unknown-wait", "ge-sync-quiesce",
 )
 GE_SYNC_IDS_OUT_COUNTS = {
     "ge-list-sync-unknown-poll": 4, "ge-list-dequeue-unknown": 2,
-    "ge-list-sync-completed-poll": 7, "ge-list-sync-after-reenqueue": 7,
-    "ge-list-sync-cancelled-poll": 4, "ge-draw-sync-idle-wait": 6,
-    "ge-list-sync-completed-wait": 6, "ge-list-sync-cancelled-wait": 6,
-    "ge-list-sync-unknown-wait": 6, "ge-sync-quiesce": 4,
+    "ge-list-sync-completed-poll": 7, "ge-sync-invalid-mode": 4,
+    "ge-list-sync-after-reenqueue": 7, "ge-list-sync-cancelled-poll": 4,
+    "ge-draw-sync-idle-wait": 6, "ge-list-sync-completed-wait": 6,
+    "ge-list-sync-cancelled-wait": 6, "ge-list-sync-unknown-wait": 6, "ge-sync-quiesce": 4,
 }
 _register_campaign_probe(
     "ge-sync-ids", "PSP-GE-SYNC-001", GE_SYNC_IDS_CASES, GE_SYNC_IDS_OUT_COUNTS,

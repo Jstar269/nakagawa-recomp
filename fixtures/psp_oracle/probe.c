@@ -10304,6 +10304,15 @@ static void run_ge_sync_ids(int emulated) {
     emit_ge_sync(emulated, "ge-list-sync-completed-poll", qid_a >= 0 ? "PASS" : "SKIP",
                  out[4], out, 7);
 
+    /* Sync types other than 0 and 1, read with the GE idle so a type taken as a wait
+       returns at once. */
+    probe_step(emulated, "ge-sync-ids", "invalid-mode");
+    out[0] = (uint32_t)qid_a;
+    out[1] = (uint32_t)(qid_a >= 0 ? sceGeListSync(qid_a, 2) : qid_a);
+    out[2] = (uint32_t)sceGeDrawSync(2);
+    out[3] = (uint32_t)sceGeDrawSync(-1);
+    emit_ge_sync(emulated, "ge-sync-invalid-mode", qid_a >= 0 ? "PASS" : "SKIP", out[1], out, 4);
+
     /* A second list after it: whether the first id comes back, and what each id reads. */
     const int qid_b = gsi_run_list(emulated, "completed-b", list, out);
     out[4] = (uint32_t)qid_a;
