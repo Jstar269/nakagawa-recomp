@@ -68,7 +68,6 @@
     "tools/psp_import_table.py": 9,
     "tools/psp_oracle/insn_trace.py": 2,
     "tools/psp_oracle/oracle_matrix.py": 7,
-    "tools/psp_oracle/parse_golden.py": 43,
     "tools/psp_oracle/protocol.py": 11,
     "tools/psp_oracle/user_mode_imports.py": 2,
     "tools/psp_oracle/verify_vfpu_addr.py": 2,
@@ -90,7 +89,6 @@
     "tools/test_audit_public_issue_links.py": 3,
     "tools/test_boot_gate.py": 1,
     "tools/test_build_system_parity.py": 2,
-    "tools/test_build_truth.py": 61,
     "tools/test_callback_correctness.py": 2,
     "tools/test_ci_paths.py": 7,
     "tools/test_ci_required.py": 1,
@@ -131,7 +129,6 @@
     "tools/test_import_audit.py": 7,
     "tools/test_imports.py": 2,
     "tools/test_incident_regression_private.py": 9,
-    "tools/test_insn_trace.py": 48,
     "tools/test_iso_parity.py": 28,
     "tools/test_key_scrub_tools.py": 2,
     "tools/test_library_build.py": 1,
@@ -147,7 +144,6 @@
     "tools/test_nk_core.py": 15,
     "tools/test_oracle_matrix.py": 31,
     "tools/test_package_cache.py": 22,
-    "tools/test_parse_fuzz.py": 40,
     "tools/test_perf_attribution.py": 1,
     "tools/test_perf_summary_diff.py": 1,
     "tools/test_pgf_validate_parity.py": 20,
@@ -193,7 +189,6 @@
     "tools/test_title_qualification.py": 3,
     "tools/test_title_runtime_config.py": 12,
     "tools/test_tree_lint.py": 2,
-    "tools/test_ttf2pgf.py": 48,
     "tools/test_validate_assets.py": 1,
     "tools/test_verification_ledger.py": 35,
     "tools/test_vfpu_addressing.py": 5,
@@ -221,5 +216,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 1564
+  "total_errors": 1324
 }
