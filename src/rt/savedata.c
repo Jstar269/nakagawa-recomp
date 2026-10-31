@@ -1171,7 +1171,8 @@ static int sd_scan(SavedataDir *d, char names[][40], int cap, int *has_prev) {
         const int stage = !strncmp(de->d_name, SAVEDATA_STAGE_PREFIX, sizeof(SAVEDATA_STAGE_PREFIX) - 1u);
         if (!prev && !stage) continue;
         if (prev) *has_prev = 1;
-        if (n < cap && strlen(de->d_name) < 40u) snprintf(names[n++], 40, "%s", de->d_name);
+        const size_t len = strlen(de->d_name);
+        if (n < cap && len < 40u) memcpy(names[n++], de->d_name, len + 1u);
         else n = cap + 1;               /* more than the scan holds: the caller fails closed */
     }
     closedir(dd);
