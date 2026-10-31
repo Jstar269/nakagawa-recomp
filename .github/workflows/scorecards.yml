@@ -1,11 +1,12 @@
 name: OpenSSF Scorecard
 
 on:
-  push:
-    branches:
-      - main
+  # Daily, not on every push to main: the repository's GITHUB_TOKEN shares one hourly API budget across all
+  # workflows, and a run per landing helped exhaust it on 2026-10-31 (Trusted CodeQL then failed on the rate
+  # limit). A day-old score is current enough for the badge and the code-scanning view.
   schedule:
-    - cron: '23 3 * * 1'
+    - cron: '23 3 * * *'
+  workflow_dispatch:
 
 permissions: read-all
 

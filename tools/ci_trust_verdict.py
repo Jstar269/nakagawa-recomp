@@ -613,6 +613,11 @@ class GitHub:
     def __init__(self, repository: str, token: str) -> None:
         self.repository = repository
         self.token = token
+        # The repository's GITHUB_TOKEN shares one hourly API budget across every workflow. Its use ran out on
+        # 2026-10-31 and failed Trusted CodeQL four times in an hour, so each run logs what it spent and what
+        # the token's last answer said was left (``budget_note``).
+        self.requests = 0
+        self.rate_limit: dict[str, str] = {}
 
     def _request(self, method: str, path: str, body: dict | None = None) -> tuple[object, dict]:
         url = path if path.startswith("https://") else f"{API_ROOT}/repos/{self.repository}/{path}"
@@ -625,10 +630,14 @@ class GitHub:
         })
         for delay in (*RETRY_DELAYS, None):
             try:
+                self.requests += 1
                 with urllib.request.urlopen(request, timeout=60) as response:
                     payload = response.read()
-                    return (json.loads(payload) if payload else None), dict(response.headers)
+                    headers = dict(response.headers)
+                    self._note_rate_limit(headers)
+                    return (json.loads(payload) if payload else None), headers
             except urllib.error.HTTPError as error:
+                self._note_rate_limit(dict(error.headers or {}))
                 if delay is None or error.code not in TRANSIENT_HTTP:
                     raise
             except (urllib.error.URLError, TimeoutError):
@@ -653,6 +662,25 @@ class GitHub:
 
     def post(self, path: str, body: dict) -> object:
         return self._request("POST", path, body)[0]
+
+    def _note_rate_limit(self, headers: dict) -> None:
+        lowered = {str(name).lower(): str(value) for name, value in headers.items()}
+        fields = {field: lowered[f"x-ratelimit-{field}"]
+                  for field in ("limit", "remaining", "used", "reset", "resource")
+                  if f"x-ratelimit-{field}" in lowered}
+        if fields:
+            self.rate_limit = fields
+
+    def budget_note(self) -> str:
+        """One log line: this run's requests and the token's budget as its last answer reported it."""
+        note = f"GitHub API: {self.requests} request(s) this run"
+        budget = self.rate_limit
+        if "remaining" in budget and "limit" in budget:
+            note += f"; the token's {budget.get('resource', 'core')} budget had {budget['remaining']} of {budget['limit']} left"
+            if budget.get("reset", "").isdigit():
+                reset = time.strftime("%H:%M:%SZ", time.gmtime(int(budget["reset"])))
+                note += f", resetting at {reset}"
+        return note
 
 
 def unfinished_producers(workflow_runs: list[dict], head_sha: str) -> list[str]:
@@ -720,12 +748,24 @@ def collect(gh: GitHub, repo: Path, default_branch: str, head_sha: str, number: 
                 raw["label_actor_permission"] = (answer or {}).get("permission")  # type: ignore[union-attr]
             except urllib.error.HTTPError:
                 raw["label_actor_permission"] = None
-    workflows = {producer.workflow for producer in PRODUCERS}
+    # The rules read jobs only from each producer's newest live run at this head (``_check_producer``), so only
+    # those runs' jobs are fetched: one call per run, and superseded or cancelled runs used to cost one each.
+    latest_ids = {run["id"] for run in (latest_live_run(workflow_runs, producer, head_sha) for producer in PRODUCERS)
+                  if run is not None}
     raw["jobs"] = {
         str(run["id"]): gh.paginate(f"actions/runs/{run['id']}/jobs?filter=latest", "jobs")
-        for run in raw["workflow_runs"] if run.get("path") in workflows
+        for run in raw["workflow_runs"] if run["id"] in latest_ids
     }
     return raw | git_facts(repo, gh.repository, number, head_sha)
+
+
+def latest_live_run(workflow_runs: list[dict], producer: Producer, head_sha: str) -> dict | None:
+    """The run whose jobs judge ``producer``: its newest run at this head that was not cancelled, chosen as the
+    rules choose it (``created_at``, then id)."""
+    live = [run for run in workflow_runs
+            if run.get("path") == producer.workflow and run.get("event") in producer.events
+            and run.get("head_sha") == head_sha and run.get("conclusion") != "cancelled"]
+    return max(live, key=lambda run: (run.get("created_at") or "", run["id"])) if live else None
 
 
 def summary_markdown(verdict: Verdict, snapshot: dict) -> str:
@@ -798,11 +838,13 @@ def main(argv: list[str] | None = None) -> int:
         raw = collect(gh, args.repo_dir, args.default_branch, head, args.pull_request)
         if raw is None:
             print(f"no open pull request into {args.default_branch} has head {head}; no verdict")
+            print(gh.budget_note())
             return 0
         if raw.get("waiting_producers"):
             description = Verdict("pending", pending=raw["waiting_producers"]).description()
             print(f"{description}; the full judgement runs when the last of them finishes")
             post("pending", description)
+            print(gh.budget_note())
             return 0
         if args.snapshot_out:
             args.snapshot_out.write_text(json.dumps(raw, indent=1, sort_keys=True), encoding="utf-8")
@@ -812,9 +854,11 @@ def main(argv: list[str] | None = None) -> int:
         # An earlier verdict for this head may still say success. Replace it:
         # a head that cannot be judged now is not a passing head.
         post("error", f"verifier could not judge this head: {type(error).__name__}")
+        print(gh.budget_note())
         raise
     _report(verdict, snapshot, args.summary)
     post(verdict.state, verdict.description())
+    print(gh.budget_note())
     return 1 if verdict.state == "failure" else 0
 
 
