@@ -521,6 +521,12 @@ def _prepare_admission(
             )
         except RefreshError as error:
             raise AdmitError(error.code, str(error)) from error
+        # admit-new-reviewed writes the hashed trusted generation; the branch a pull request
+        # merges carries the committed claims form (#1673), so the merge adds only the new
+        # entries instead of rewriting every line of the ledger.
+        ledger_file = candidate / "assets" / "public_provenance_ledger.json"
+        ledger_file.write_bytes(provenance_ledger.claims_ledger_bytes(
+            json.loads(ledger_file.read_text(encoding="utf-8"))))
         _git(candidate, "add", "-A")
         admission_commit = _commit(candidate, f"provenance: admit {slug}", assisted_by)
         ledger = _git(candidate, "cat-file", "blob", f"{admission_commit}:assets/public_provenance_ledger.json")

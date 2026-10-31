@@ -168,7 +168,7 @@ try:
     from .provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        claims_ledger, is_claims_ledger, validate_ledger,
+        claims_ledger, claims_ledger_bytes, is_claims_ledger, validate_ledger,
     )
     from .public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
     from .public_export import build_control_document as _build_control_document
@@ -179,7 +179,7 @@ except ImportError:
     from provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        claims_ledger, is_claims_ledger, validate_ledger,
+        claims_ledger, claims_ledger_bytes, is_claims_ledger, validate_ledger,
     )
     from public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
     from public_export import build_control_document as _build_control_document
@@ -195,6 +195,11 @@ POLICY_PATH = "assets/public_source_profile.json"
 EXPORT_PATH = "PUBLIC_EXPORT.json"
 MANIFEST_PATH = "assets/release_manifest.json"
 CONTROL_PATHS = frozenset({LEDGER_PATH, EXPORT_PATH})
+#: The verifier's scratch outputs: the committed (claims) ledger, which ``ci_controls.sh --adopt``
+#: copies into a candidate, and the full hashed generation, which a release passes to
+#: ``build_public_export.py --trusted-ledger`` as its content anchor.
+LEDGER_OUTPUT_NAME = "public_provenance_ledger.json"
+HASHED_LEDGER_OUTPUT_NAME = "public_provenance_ledger.hashed.json"
 
 # A baseline supplied in the integration-time workflow is either the exact
 # legacy ledger blob from the trusted base (compatibility window), or this
@@ -873,6 +878,14 @@ def _validate_public_baseline(
                 "plain trusted public baseline is not the exact ledger blob from the trusted base tree",
             )
 
+    if is_claims_ledger(document):
+        # The committed ledger carries claims only (#1673), so the base's committed blob can
+        # no longer be a plain baseline: it binds no bytes. --emit-authority-baseline is the route.
+        raise VerifyError(
+            "TRUSTED_BASELINE_UNHASHED",
+            "trusted public baseline is a claims-only ledger and binds no content; generate the "
+            "baseline from the authority with --emit-authority-baseline",
+        )
     errors = validate_ledger(document, require_hashes=True, require_resolved=True)
     if errors:
         raise VerifyError("TRUSTED_BASELINE_INVALID", errors[0])
@@ -1460,6 +1473,7 @@ class EphemeralControls:
     trusted_scope: set[str]
     generated_ledger: dict
     generated_ledger_bytes: bytes
+    committed_ledger_bytes: bytes
     generated_export: dict
     generated_export_bytes: bytes
 
@@ -1513,7 +1527,8 @@ def generate_ephemeral_controls(
     if policy_delta_authority_file is not None:
         trusted_inputs.add(policy_delta_authority_file.resolve())
     generated_targets = {
-        (workdir / "public_provenance_ledger.json").resolve(),
+        (workdir / LEDGER_OUTPUT_NAME).resolve(),
+        (workdir / HASHED_LEDGER_OUTPUT_NAME).resolve(),
         (workdir / "PUBLIC_EXPORT.json").resolve(),
         (workdir / "inputs" / "trusted_policy.json").resolve(),
         (workdir / "inputs" / "candidate_policy.json").resolve(),
@@ -1621,10 +1636,19 @@ def generate_ephemeral_controls(
         authorized_policy_delta=policy_delta,
     )
     generated_ledger_bytes = _canonical_json_bytes(generated_ledger)
+    # What a producer commits (#1673): the claims form, with no hash and no audit block.
+    committed_ledger_bytes = claims_ledger_bytes(generated_ledger)
+    # The export is recomputed over the ledger bytes this candidate is expected to carry:
+    # a candidate still on the hashed schema-1 ledger must carry the hashed generation, any
+    # other candidate the claims form. Recomputing over bytes the tree will never hold would
+    # make the tree-derived digests disagree with publish_audit and the release export.
+    expected_ledger_bytes = committed_ledger_bytes
+    if _declares_hashed_ledger(candidate_blobs.get(LEDGER_PATH)):
+        expected_ledger_bytes = generated_ledger_bytes
     generated_export = _generate_ephemeral_export(
         candidate_blobs=candidate_blobs,
         candidate_policy=candidate_policy,
-        ledger_bytes=generated_ledger_bytes,
+        ledger_bytes=expected_ledger_bytes,
     )
     # The generated export has ONE committed shape: the policy-derived control.
     # The tree-wide digests stay in ``generated_export`` for the field-by-field
@@ -1653,9 +1677,21 @@ def generate_ephemeral_controls(
         trusted_scope=trusted_scope,
         generated_ledger=generated_ledger,
         generated_ledger_bytes=generated_ledger_bytes,
+        committed_ledger_bytes=committed_ledger_bytes,
         generated_export=generated_export,
         generated_export_bytes=generated_export_bytes,
     )
+
+
+def _declares_hashed_ledger(raw: bytes | None) -> bool:
+    """True when a candidate's committed ledger still declares the hashed schema-1 form."""
+    if raw is None:
+        return False
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(document, dict) and document.get("schema_version") == 1
 
 
 def verify_ephemeral(
@@ -1753,9 +1789,13 @@ def verify_ephemeral(
             "result from merging is not the tree this run attested",
         ))
 
-    ledger_output = output_dir / "public_provenance_ledger.json"
+    # The committed form is what a producer adopts; the hashed generation is the content
+    # anchor a release passes to publish_audit --provenance-ledger.
+    ledger_output = output_dir / LEDGER_OUTPUT_NAME
+    hashed_ledger_output = output_dir / HASHED_LEDGER_OUTPUT_NAME
     export_output = output_dir / "PUBLIC_EXPORT.json"
-    ledger_output.write_bytes(generated_ledger_bytes)
+    ledger_output.write_bytes(controls.committed_ledger_bytes)
+    hashed_ledger_output.write_bytes(generated_ledger_bytes)
     export_output.write_bytes(generated_export_bytes)
 
     fatal = [finding for finding in findings if finding.fatal]
@@ -1779,9 +1819,11 @@ def verify_ephemeral(
         "trusted_record_count": len(record_ids),
         "public_path_count": len(protected),
         "generated_outputs": {
-            "ledger_sha256": hashlib.sha256(generated_ledger_bytes).hexdigest(),
+            "ledger_sha256": hashlib.sha256(controls.committed_ledger_bytes).hexdigest(),
+            "hashed_ledger_sha256": hashlib.sha256(generated_ledger_bytes).hexdigest(),
             "export_sha256": hashlib.sha256(generated_export_bytes).hexdigest(),
             "ledger_path": str(ledger_output),
+            "hashed_ledger_path": str(hashed_ledger_output),
             "export_path": str(export_output),
         },
         "legacy_controls_present": {

@@ -240,10 +240,16 @@ class AdmitPathsTest(unittest.TestCase):
         ]))
         self.assertEqual(git(fixture.pr, "show", f"{branch}:assets/public_source_profile.json").encode() + b"\n",
                          candidate_policy)
+        # The branch carries the committed claims form (#1673): the merge adds the new entry
+        # and rewrites nothing else. The bytes stay bound by the private admission record.
         ledger = json.loads(git(fixture.pr, "show", f"{branch}:assets/public_provenance_ledger.json"))
+        self.assertTrue(provenance_ledger.is_claims_ledger(ledger))
+        self.assertNotIn("admission", ledger)
         entry = next(entry for entry in ledger["entries"] if entry["path"] == "docs/new-page.md")
-        self.assertEqual((entry["classification"], entry["sha256"]), ("reviewed_documentation", digest))
-        self.assertEqual(ledger["admission"]["candidate_tree"], result["candidate_tree"])
+        self.assertEqual(entry["classification"], "reviewed_documentation")
+        self.assertNotIn("sha256", entry)
+        admission_digest = fixture.record(result["records"][0])["reviewed_new_paths"][0]["sha256"]
+        self.assertEqual(admission_digest, digest)
         self.assertIn("Assisted-by: Test Tool (test-model)", git(fixture.pr, "log", "-1", "--format=%B", branch))
         self.assertNotIn("Signed-off-by", git(fixture.pr, "log", "-2", "--format=%B", branch))
 

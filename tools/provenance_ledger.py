@@ -748,6 +748,14 @@ def build_ledger(
             "detailed development provenance ledger is not present; the checked-in public ledger "
             "is release evidence and must not be regenerated from broad defaults"
         )
+    if output.resolve() == DEFAULT_OUTPUT.resolve():
+        # The committed ledger is the claims form the hosted generator derives
+        # (tools/provenance_refresh.py); this development ledger is hashed and its
+        # claims come from the in-tree detailed ledger, so it is never that file.
+        raise RuntimeError(
+            "refusing to overwrite the committed public ledger; pass --output, and refresh the "
+            "committed ledger with tools/provenance_refresh.py"
+        )
     policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     included = set(policy.get("include_paths", []))
     tracked = _tracked_paths()
@@ -798,13 +806,27 @@ CLAIMS_LEDGER_SCHEMA_VERSION = 2
 
 
 def claims_ledger(document: dict) -> dict:
-    """Return the claims-only committed form of a hashed ledger document."""
+    """Return the claims-only committed form of a hashed ledger document.
+
+    Every tool that writes ``assets/public_provenance_ledger.json`` writes this form. It
+    drops each entry's ``sha256`` and the ``refresh`` and ``admission`` audit blocks: a block
+    names one candidate tree, so it rewrote the same lines on every landing, and it cannot
+    reconcile against a claims ledger anyway. The verifier compares a committed claims ledger
+    with this function's output for the hashed ledger it generates.
+    """
     claims = json.loads(json.dumps(document, ensure_ascii=False))
     claims["schema_version"] = CLAIMS_LEDGER_SCHEMA_VERSION
+    claims.pop("refresh", None)
+    claims.pop("admission", None)
     for entry in claims.get("entries", []):
         if isinstance(entry, dict):
             entry.pop("sha256", None)
     return claims
+
+
+def claims_ledger_bytes(document: dict) -> bytes:
+    """The committed bytes of :func:`claims_ledger`."""
+    return _canonical_json_bytes(claims_ledger(document))
 
 
 def is_claims_ledger(document: dict) -> bool:
@@ -1067,6 +1089,14 @@ def _validate_public_snapshot(
     policy,
     label: str,
 ) -> dict[str, dict]:
+    if is_claims_ledger(document):
+        # A claims ledger binds no bytes, so it can never anchor a refresh. The committed
+        # ledger is in this form; a trusted snapshot is a hashed generation.
+        raise RefreshError(
+            "TRUSTED_LEDGER_UNHASHED",
+            f"{label} is a claims-only ledger (schema {CLAIMS_LEDGER_SCHEMA_VERSION}) and binds no content; "
+            "pass a hashed trusted snapshot or the detailed ledger",
+        )
     errors = validate_ledger(document, require_hashes=True, require_resolved=True)
     if errors:
         raise RefreshError("TRUSTED_LEDGER_INVALID", f"{label}: {errors[0]}")
@@ -2494,7 +2524,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.check and not args.implementation_ledger.is_file():
         print(
             "provenance ledger: note: detailed development ledger is absent; the checked-in ledger is "
-            "validated structurally (coverage, resolution, hashes) but attestation claims are not "
+            "validated structurally (entries, classes, resolution; it carries claims, not content "
+            "hashes) but attestation claims are not "
             "authenticated here -- attestation is asserted by the release flow against the detailed "
             "development ledger or an externally trusted copy",
             file=sys.stderr,

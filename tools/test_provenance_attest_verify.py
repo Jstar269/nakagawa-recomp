@@ -2556,14 +2556,15 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             trusted_ledger=self.trusted_ledger,
             workdir=self.outside / "local-generation",
         )
-        # A refresh commits a per-path ledger, never the single-slot ``refresh``
-        # audit block.  Carrying it made every landing rewrite the same lines
-        # and left a block that can no longer reconcile against a later base;
-        # the base here still has one, and the committed result must not.
-        self.assertNotIn("refresh", local.generated_ledger)
-        self.assertNotIn(b'"refresh"', local.generated_ledger_bytes)
+        # A refresh commits the per-path claims ledger (#1673), never the single-slot
+        # ``refresh`` audit block.  Carrying it made every landing rewrite the same lines
+        # and left a block that can no longer reconcile against a later base; the base
+        # here still has one, and the committed result must not.
+        committed = json.loads(local.committed_ledger_bytes)
+        self.assertNotIn("refresh", committed)
+        self.assertTrue(provenance_ledger.is_claims_ledger(committed))
         self.assertNotIn("candidate_tree", local.generated_export)
-        self.repo.write(verifier.LEDGER_PATH, local.generated_ledger_bytes)
+        self.repo.write(verifier.LEDGER_PATH, local.committed_ledger_bytes)
         self.repo.write(verifier.EXPORT_PATH, local.generated_export_bytes)
         refreshed_head = self.repo.commit("local refresh controls")
 
@@ -2571,7 +2572,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         hosted_ledger = Path(hosted["generated_outputs"]["ledger_path"]).read_bytes()
         hosted_export = Path(hosted["generated_outputs"]["export_path"]).read_bytes()
         self.assertNotIn("refresh", json.loads(hosted_ledger))
-        self.assertEqual(local.generated_ledger_bytes, hosted_ledger)
+        self.assertEqual(local.committed_ledger_bytes, hosted_ledger)
         self.assertEqual(local.generated_export_bytes, hosted_export)
         self.assertEqual(hosted["verdict"], "pass", hosted["findings"])
 
@@ -2582,7 +2583,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
             trusted_ledger=self.trusted_ledger,
             workdir=self.outside / "fixed-point-generation",
         )
-        self.assertEqual(fixed_point.generated_ledger_bytes, local.generated_ledger_bytes)
+        self.assertEqual(fixed_point.committed_ledger_bytes, local.committed_ledger_bytes)
         self.assertEqual(fixed_point.generated_export_bytes, local.generated_export_bytes)
 
     def _changed_recordless_test_head(self, branch: str) -> str:
@@ -2817,7 +2818,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
 
         self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
         generated = json.loads(
-            (self.outside / "generated" / "public_provenance_ledger.json").read_text(encoding="utf-8")
+            (self.outside / "generated" / verifier.HASHED_LEDGER_OUTPUT_NAME).read_text(encoding="utf-8")
         )
         entry = next(item for item in generated["entries"] if item["path"] == "src/rt/core.c")
         self.assertEqual(entry["sha256"], _sha(b"int core(void) { return 41; }\n"),
@@ -2856,6 +2857,111 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.assertIn(("LEDGER_COVERAGE", dropped),
                       {(finding["code"], finding["path"]) for finding in verdict["findings"]})
 
+    def _commit_claims_base(self) -> str:
+        """Commit the claims-only ledger the producers write (#1673) on top of the base."""
+        claims = self._claims_ledger_for(self.base)
+        self.repo.branch("claims-base", self.base)
+        self.repo.write(verifier.LEDGER_PATH, provenance_ledger._canonical_json_bytes(claims))
+        return self.repo.commit("convert the committed ledger to the claims form")
+
+    def test_outputs_are_the_committed_claims_and_the_hashed_generation(self) -> None:
+        verdict = self.run_ephemeral(self.base)
+        out = self.outside / "generated"
+        committed = (out / verifier.LEDGER_OUTPUT_NAME).read_bytes()
+        hashed = (out / verifier.HASHED_LEDGER_OUTPUT_NAME).read_bytes()
+        self.assertEqual(committed, provenance_ledger.claims_ledger_bytes(json.loads(hashed)))
+        self.assertTrue(provenance_ledger.is_claims_ledger(json.loads(committed)))
+        self.assertEqual(
+            [entry["path"] for entry in json.loads(hashed)["entries"]
+             if entry["path"] not in verifier.UNHASHED_PATHS and "sha256" not in entry],
+            [], "the hashed generation is the release's content anchor",
+        )
+        outputs = verdict["generated_outputs"]
+        self.assertEqual(outputs["ledger_sha256"], _sha(committed), "ci_controls.sh checks this digest")
+        self.assertEqual(outputs["hashed_ledger_sha256"], _sha(hashed))
+
+    def test_adopting_the_committed_output_round_trips(self) -> None:
+        """ci_controls.sh --adopt: a stale schema-1 head fails, its adopted outputs pass unchanged."""
+        self.repo.before_commit = self._write_control_export
+        self.repo.branch("adopt", self.base)
+        self.repo.write("src/rt/core.c", b"int core(void) { return 7; }\n")
+        stale = self.repo.commit("edit a source file, hashed ledger left stale")
+        first = self.run_ephemeral(stale)
+        self.assertIn("LEGACY_CONTROL_MISMATCH", self._fatal_codes(first))
+        out = self.outside / "generated"
+        committed = (out / verifier.LEDGER_OUTPUT_NAME).read_bytes()
+        export = (out / verifier.EXPORT_PATH).read_bytes()
+        self.repo.before_commit = None
+        self.repo.write(verifier.LEDGER_PATH, committed)
+        self.repo.write(verifier.EXPORT_PATH, export)
+        adopted = self.repo.commit("adopt the generated controls")
+
+        second = self.run_ephemeral(adopted)
+
+        self.assertEqual(second["verdict"], "pass", second["findings"])
+        self.assertEqual((out / verifier.LEDGER_OUTPUT_NAME).read_bytes(), committed)
+        self.assertEqual((out / verifier.EXPORT_PATH).read_bytes(), export)
+
+    def test_a_hashed_candidate_still_passes_on_a_claims_base(self) -> None:
+        """The switch: a branch that still carries the schema-1 ledger is accepted on a claims base."""
+        self.back_legacy_path()
+        claims_base = self._commit_claims_base()
+        self.repo.write("src/rt/core.c", b"int core(void) { return 8; }\n")
+        unrefreshed = self.repo.commit("edit a source file")
+        self.run_ephemeral(unrefreshed, base=claims_base, authority_baseline=True)
+        hashed = (self.outside / "generated" / verifier.HASHED_LEDGER_OUTPUT_NAME).read_bytes()
+        self.repo.write(verifier.LEDGER_PATH, hashed)
+        head = self.repo.commit("carry the hashed schema-1 generation, as an old branch does")
+
+        verdict = self.run_ephemeral(head, base=claims_base, authority_baseline=True)
+
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+
+    def test_a_claims_ledger_is_not_a_plain_baseline(self) -> None:
+        claims_base = self._commit_claims_base()
+        with self.assertRaises(verifier.VerifyError) as caught:
+            self.run_ephemeral(claims_base, base=claims_base)
+        self.assertEqual(caught.exception.code, "TRUSTED_BASELINE_UNHASHED")
+
+    def test_the_export_is_recomputed_over_the_ledger_bytes_the_tree_carries(self) -> None:
+        self.back_legacy_path()
+        self.repo.before_commit = self._write_control_export
+        claims_base = self._commit_claims_base()
+        digests = {}
+        for candidate, form in ((claims_base, "claims"), (self.base, "hashed")):
+            with self.subTest(form=form):
+                controls = verifier.generate_ephemeral_controls(
+                    repo=self.repo.root,
+                    candidate_tree=candidate,
+                    base_rev=candidate,
+                    trusted_ledger=self.trusted_ledger,
+                    trusted_baseline=self.authority_baseline(candidate),
+                    workdir=self.outside / f"export-{form}",
+                )
+                # A claims candidate is expected to carry the committed form, a schema-1
+                # candidate the hashed generation; the export digests the bytes it will carry.
+                expected = controls.committed_ledger_bytes if form == "claims" else controls.generated_ledger_bytes
+                digests[form] = controls.generated_export["provenance_ledger_sha256"]
+                self.assertEqual(digests[form], _sha(expected))
+        self.assertNotEqual(digests["claims"], digests["hashed"])
+
+    def test_a_trusted_input_at_the_hashed_output_path_is_refused(self) -> None:
+        output_dir = self.outside / "collision-hashed"
+        output_dir.mkdir()
+        trusted = output_dir / verifier.HASHED_LEDGER_OUTPUT_NAME
+        trusted.write_bytes(self.trusted_ledger.read_bytes())
+        with self.assertRaises(verifier.VerifyError) as caught:
+            verifier.verify_ephemeral(
+                repo=self.repo.root,
+                candidate_rev=self.base,
+                base_rev=self.base,
+                trusted_ledger=trusted,
+                trusted_baseline=self.baseline(),
+                output_dir=output_dir,
+            )
+        self.assertEqual(caught.exception.code, "OUTPUT_TRUSTED_INPUT_COLLISION")
+        self.assertEqual(trusted.read_bytes(), self.trusted_ledger.read_bytes())
+
     def test_stale_legacy_controls_cannot_hide_the_fresh_hash(self) -> None:
         self.repo.branch("stale-legacy", self.base)
         changed = b"int core(void) { return 99; }\n"
@@ -2871,7 +2977,7 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         self.assertIn("CONTENT_MISMATCH", codes)
         self.assertIn("LEGACY_CONTROL_MISMATCH", codes)
         generated = json.loads(
-            (self.outside / "generated" / "public_provenance_ledger.json").read_text(encoding="utf-8")
+            (self.outside / "generated" / verifier.HASHED_LEDGER_OUTPUT_NAME).read_text(encoding="utf-8")
         )
         entry = next(item for item in generated["entries"] if item["path"] == "src/rt/core.c")
         self.assertEqual(entry["sha256"], _sha(changed))
@@ -3281,7 +3387,7 @@ class IndependentRefreshMergeTests(EphemeralGenerationTests):
             trusted_ledger=self.trusted_ledger,
             workdir=self.outside / "base-controls",
         )
-        self.repo.write(verifier.LEDGER_PATH, controls.generated_ledger_bytes)
+        self.repo.write(verifier.LEDGER_PATH, controls.committed_ledger_bytes)
         self.repo.write(verifier.EXPORT_PATH, controls.generated_export_bytes)
         self.base = self.repo.commit("base in committed control form")
 
@@ -3297,7 +3403,7 @@ class IndependentRefreshMergeTests(EphemeralGenerationTests):
             trusted_ledger=self.trusted_ledger,
             workdir=self.outside / f"controls-{name}",
         )
-        self.repo.write(verifier.LEDGER_PATH, controls.generated_ledger_bytes)
+        self.repo.write(verifier.LEDGER_PATH, controls.committed_ledger_bytes)
         self.repo.write(verifier.EXPORT_PATH, controls.generated_export_bytes)
         return self.repo.commit(f"provenance: refresh controls for {path}")
 
@@ -3335,21 +3441,56 @@ class IndependentRefreshMergeTests(EphemeralGenerationTests):
         )
 
     def test_a_refresh_commits_no_single_slot_audit_block(self) -> None:
+        base_ledger = (self.repo.root / verifier.LEDGER_PATH).read_bytes()
         self._reviewed_branch("change-a", self.PATH_A, b"# fixture notes, edited by A\n")
 
         committed = json.loads(
             (self.repo.root / verifier.LEDGER_PATH).read_text(encoding="utf-8")
         )
         self.assertNotIn("refresh", committed)
-        # The per-path entries still carry the exact content the trusted
-        # generation produced; only the tree-wide audit slot is gone.
+        # The committed entries carry claims only (#1673): an edit changes no claim, so the
+        # refresh leaves the ledger's bytes exactly as the base had them.
         entry = next(
             item for item in committed["entries"] if item["path"] == self.PATH_A
         )
-        self.assertEqual(
-            entry["sha256"],
-            hashlib.sha256(b"# fixture notes, edited by A\n").hexdigest(),
+        self.assertNotIn("sha256", entry)
+        self.assertEqual((self.repo.root / verifier.LEDGER_PATH).read_bytes(), base_ledger)
+
+    def test_two_edits_to_one_file_merge_without_a_control_conflict(self) -> None:
+        """Conflict source 1 of #1673: different hunks of one file used to collide on its hash line."""
+        lines = [f"line {index}\n".encode() for index in range(12)]
+        self.repo.branch("shared-file", self.base)
+        self.repo.write(self.PATH_A, b"".join(lines))
+        self.repo.commit("a longer shared file")
+        controls = provenance_refresh.generate_controls(
+            repo=self.repo.root,
+            base_rev=self.base,
+            candidate_tree=verifier._rev_tree(self.repo.root, self.repo.head()),
+            trusted_ledger=self.trusted_ledger,
+            workdir=self.outside / "controls-shared",
         )
+        self.repo.write(verifier.LEDGER_PATH, controls.committed_ledger_bytes)
+        self.repo.write(verifier.EXPORT_PATH, controls.generated_export_bytes)
+        self.base = self.repo.commit("refresh the shared file's controls")
+        top = b"".join([b"top edit by A\n", *lines[1:]])
+        bottom = b"".join([*lines[:-1], b"bottom edit by B\n"])
+        landed = self._reviewed_branch("hunk-a", self.PATH_A, top)
+        self._reviewed_branch("hunk-b", self.PATH_A, bottom)
+
+        merge = run_git(
+            ["merge", "--no-edit", "hunk-a"],
+            cwd=self.repo.root, capture_output=True, text=True, check=False,
+        )
+
+        self.assertEqual(merge.returncode, 0, f"{merge.stdout}\n{merge.stderr}")
+        merged = (self.repo.root / self.PATH_A).read_bytes()
+        self.assertTrue(merged.startswith(b"top edit by A\n") and merged.endswith(b"bottom edit by B\n"))
+        verdict = self.run_ephemeral(self.repo.head(), base=landed, authority_baseline=True)
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        hashed = json.loads(Path(verdict["generated_outputs"]["hashed_ledger_path"]).read_text(encoding="utf-8"))
+        entry = next(item for item in hashed["entries"] if item["path"] == self.PATH_A)
+        self.assertEqual(entry["sha256"], hashlib.sha256(merged).hexdigest(),
+                         "the hosted generation binds the merged bytes")
 
 
 class RealHistoryParityTests(unittest.TestCase):

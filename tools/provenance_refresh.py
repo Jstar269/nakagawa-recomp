@@ -13,7 +13,6 @@ never synthesized by this command.
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import os
 from pathlib import Path
 import subprocess
@@ -169,47 +168,14 @@ def generate_controls(
                 f"changed executable/security-sensitive path lacks qualifying exact authority: {path}",
             )
 
-    reconciled = verifier._reconcile_refresh_audit(
-        generated=controls.generated_ledger,
-        candidate_blobs=controls.candidate_blobs,
-        base_blobs=controls.base_blobs,
-        base_tree=controls.base_tree,
-        authorized_policy_delta=controls.policy_delta,
-    )
-    # The committed ledger is a per-path document and stops there.  It never
-    # carries the candidate's ``refresh`` audit block.  That block is one slot
-    # holding the trusted base tree, the candidate tree and the refreshed path
-    # list, so every landing rewrote the same lines, two independent refreshes
-    # conflicted on them, and a block written against an earlier base can never
-    # reconcile against a later one -- which is what made one landing force a
-    # control resync on every other open change.  Dropping it grants nothing
-    # away: ``_reconcile_refresh_audit`` recomputes the changed set from the
-    # trusted base and the candidate blobs and still refuses an inherited block
-    # that does not describe exactly this candidate, the checks above still
-    # refuse any changed path without qualifying exact authority, and the
-    # hosted verifier still recomputes the same entries and hashes.  The
-    # block's ``candidate_tree`` named the pre-commit scratch tree, which does
-    # not survive the commit that carries it.  The audit trail is the commit,
-    # the hosted verdict, and the external authority document.
-    reconciled = {key: value for key, value in reconciled.items() if key != "refresh"}
-    ledger_bytes = verifier._canonical_json_bytes(reconciled)
-    export = verifier._generate_ephemeral_export(
-        candidate_blobs=controls.candidate_blobs,
-        candidate_policy=controls.candidate_policy,
-        ledger_bytes=ledger_bytes,
-    )
-    # ``generated_export`` is the full recomputation used for verification;
-    # only its control form is written into the repository, so an unrelated
-    # merge cannot turn into a conflict in every open pull request.  The
-    # verifier recomputes the tree-wide fields and refuses any declared value
-    # that disagrees, so nothing is lost.
-    return replace(
-        controls,
-        generated_ledger=reconciled,
-        generated_ledger_bytes=ledger_bytes,
-        generated_export=export,
-        generated_export_bytes=controls.generated_export_bytes,
-    )
+    # The committed ledger is the claims form (#1673): ``generate_ephemeral_controls`` already
+    # derived it from the same hashed generation the hosted verifier compares against, with no
+    # hash and no ``refresh`` or ``admission`` block. An edit to an existing path changes no
+    # claim, so for an ordinary change these bytes equal the base's. The checks above still
+    # refuse any changed path without qualifying exact authority, and the hosted verifier still
+    # regenerates every entry and hash from the trusted inputs. The export control written next
+    # to it is the policy-derived control form, which does not depend on the ledger's bytes.
+    return controls
 
 
 def _policy_sync(repo: Path, *, apply_policy: bool) -> None:
@@ -318,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             provenance_ledger._write_controls_atomic(
                 [
-                    (repo / LEDGER, controls.generated_ledger_bytes),
+                    (repo / LEDGER, controls.committed_ledger_bytes),
                     (repo / EXPORT, controls.generated_export_bytes),
                 ],
                 code="REFRESH_OUTPUT_ERROR",

@@ -312,8 +312,9 @@ class ProvenanceLedgerTest(unittest.TestCase):
         if self.public_only:
             self.assertTrue(self.public_entries, "public provenance ledger must not be empty")
             for entry in self.public_entries:
-                if entry.get("path") not in {"PUBLIC_EXPORT.json", "assets/public_provenance_ledger.json"}:
-                    self.assertEqual(len(entry.get("sha256", "")), 64, entry.get("path"))
+                # The committed ledger carries claims only (#1673); content is bound by the
+                # hosted attestation's regeneration, so no entry may carry a hash.
+                self.assertNotIn("sha256", entry, entry.get("path"))
                 self.assertNotEqual(entry.get("classification"), "unresolved", entry.get("path"))
             return
         for finding in self.ledger["findings"]:
@@ -2082,8 +2083,9 @@ class TrustedAdmissionTests(unittest.TestCase):
 class SelfReferentialEntryTests(unittest.TestCase):
     """The two entries that describe the ledger machinery itself carry no digest.
 
-    `assets/public_provenance_ledger.json` records a `sha256` for every path it
-    covers, and two of those paths are the ledger and the export document. A file
+    The hashed generation (the verifier's output, and the schema-1 form the committed
+    ledger had before #1673) records a `sha256` for every path it covers, and two of
+    those paths are the ledger and the export document. A file
     cannot contain its own hash, and the two documents also hash each other:
     `PUBLIC_EXPORT.json` records `provenance_ledger_sha256`. Writing a digest for
     either one is therefore not merely stale, it cannot converge -- refreshing one
@@ -2113,14 +2115,17 @@ class SelfReferentialEntryTests(unittest.TestCase):
                     "refreshing it changes the bytes being hashed. Omit the key.",
                 )
 
-    def test_every_other_covered_path_does_carry_one(self) -> None:
-        """The exemption is exactly two paths, not a general licence to omit."""
-        missing = [
-            entry["path"]
-            for entry in self.ledger["entries"]
-            if "sha256" not in entry and entry["path"] not in self.SELF_REFERENTIAL
-        ]
-        self.assertEqual(missing, [])
+    def test_the_committed_ledger_is_the_claims_form(self) -> None:
+        """No entry carries a hash at all (#1673), so the exemption above is now universal.
+
+        The committed ledger holds claims; the hosted attestation regenerates every hash from
+        the trusted authority and compares the committed claims with that generation's claims
+        form, byte for byte. A half-converted file is refused by ``validate_ledger``.
+        """
+        self.assertEqual(self.ledger["schema_version"], provenance_ledger.CLAIMS_LEDGER_SCHEMA_VERSION)
+        hashed = [entry["path"] for entry in self.ledger["entries"] if "sha256" in entry]
+        self.assertEqual(hashed, [])
+        self.assertEqual(provenance_ledger.validate_ledger(self.ledger, require_resolved=True), [])
 
     def test_the_exemption_is_justified_by_the_documents_themselves(self) -> None:
         """Pin the circularity, so the exemption cannot be cargo-culted wider.
