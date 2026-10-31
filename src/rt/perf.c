@@ -21,6 +21,16 @@
 #include <windows.h>
 #endif
 
+/* The scheduler thread's CPU clock (thread_cpu_now). Windows counts a thread's run time in TSC
+ * cycles (QueryThreadCycleTime), converted with the TSC rate measured against the performance
+ * counter; only an invariant TSC ticks at that one rate. POSIX has a thread CPU clock. */
+#if (defined(_WIN32) || defined(_WIN64)) && (defined(__x86_64__) || defined(__i386__)) && \
+    defined(__GNUC__)
+#include <cpuid.h>
+#include <x86intrin.h>
+#define SR_PERF_TSC_THREAD_CLOCK 1
+#endif
+
 #ifndef PERF_AOT_INSTRUCTIONS
 #define PERF_AOT_INSTRUCTIONS 0
 #endif
@@ -43,6 +53,24 @@
     s_perf.total.field[(index)] += (value); \
 } while (0)
 
+#define KEEP_MAX(field, value) do { \
+    if ((value) > s_perf.interval.field) s_perf.interval.field = (value); \
+    if ((value) > s_perf.total.field) s_perf.total.field = (value); \
+} while (0)
+
+/* New-frame intervals by VBLANK count: 0 (two flips in one period, which a catch-up latch can
+ * produce), 1, 2, 3, and 4 or more. */
+#define SR_PERF_FRAME_IV_COUNT 5u
+/* Frame-work buckets, by upper bound: one display period (1001/60 ms), 22 ms (the #1296 margin
+ * target: two-thirds of a 30 fps frame), two periods, three periods, and over three. */
+#define SR_PERF_FRAME_WORK_BUCKETS 5u
+static const uint64_t s_frame_work_bound_ns[SR_PERF_FRAME_WORK_BUCKETS - 1u] = {
+    16683333u, 22000000u, 33366667u, 50050000u,
+};
+static const char *const s_frame_work_names[SR_PERF_FRAME_WORK_BUCKETS] = {
+    "le16_7", "le22", "le33_4", "le50_1", "gt50_1",
+};
+
 typedef struct SrPerfMetrics {
     uint64_t guest_ns;
     uint64_t guest_idle_ns;
@@ -54,6 +82,12 @@ typedef struct SrPerfMetrics {
     uint64_t new_frames;            /* presents of a buffer other than the previous present's */
     uint64_t new_frame_intervals;   /* new frames with a previous new frame to measure from */
     uint64_t new_frame_vblanks;     /* VBLANKs summed over those intervals */
+    uint64_t new_frame_iv[SR_PERF_FRAME_IV_COUNT];   /* those intervals by VBLANK count */
+    uint64_t new_frame_iv1_late;    /* one-VBLANK intervals holding a late VBLANK latch */
+    uint64_t frame_work_frames;     /* intervals whose scheduler-thread CPU time was read */
+    uint64_t frame_work_ns;         /* that CPU time, summed */
+    uint64_t frame_work_max_ns;     /* the longest single interval's */
+    uint64_t frame_work_bucket[SR_PERF_FRAME_WORK_BUCKETS];
     uint64_t ge_submits;
     uint64_t present_submits;
     uint64_t ge_waits;
@@ -171,6 +205,9 @@ typedef struct SrPerfState {
     int frame_seen;                 /* a present happened, so last_frame_buffer is valid */
     uint32_t last_frame_buffer;     /* guest framebuffer of the previous present */
     uint32_t last_new_frame_vcount; /* VBLANK of the previous new frame */
+    int late_since_frame;           /* a late VBLANK latch since the previous new frame */
+    int frame_cpu_valid;            /* last_frame_cpu_ns holds a reading */
+    uint64_t last_frame_cpu_ns;     /* scheduler-thread CPU clock at the previous new frame */
 } SrPerfState;
 
 static SrPerfState s_perf;
@@ -195,8 +232,20 @@ static const char *const s_gpu_replay_names[SR_PERF_GPU_REPLAY_COUNT] = {
     "fallback_mips", "fallback_line", "fallback_point", "stencil_splits",
 };
 /* SR_PERF prints 1 Hz telemetry; SR_HUD or the F1 overlay only collect counters for
- * the in-game HUD, so the stderr lines are gated separately. */
+ * the in-game HUD, so the stderr lines are gated separately. SR_PERF_CSV or SR_PERF_JSON alone
+ * turns the counters on for their files and writes no telemetry line to stderr at all, the
+ * cumulative PERF_ATTRIB lines included, so a measured run carries no stderr writes. */
 static int s_perf_stderr_enabled = 0;
+static int s_perf_files_only = 0;
+#ifdef SR_PROFILER_SELFTEST
+static SrPerfTestClock s_test_wall_clock;
+static SrPerfTestClock s_test_thread_clock;
+#endif
+#ifdef SR_PERF_TSC_THREAD_CLOCK
+static int s_tsc_invariant = -1;      /* -1: not asked yet */
+static uint64_t s_tsc_base;           /* TSC and host clock at the start of the rate measurement */
+static uint64_t s_tsc_base_ns;
+#endif
 static double s_hud_fps = 0.0;
 static double s_hud_frame_ms = 0.0;
 static double s_hud_vblank_hz = 0.0;
@@ -209,6 +258,9 @@ static int env_on(const char *name) {
 }
 
 static uint64_t raw_now_ns(void) {
+#ifdef SR_PROFILER_SELFTEST
+    if (s_test_wall_clock) return s_test_wall_clock();
+#endif
 #if defined(_WIN32) || defined(_WIN64)
     static LARGE_INTEGER frequency;
     LARGE_INTEGER counter;
@@ -231,6 +283,51 @@ static uint64_t raw_now_ns(void) {
 
 static double ms(uint64_t ns) {
     return (double)ns / 1000000.0;
+}
+
+/* Starts the TSC rate measurement thread_cpu_now converts with; called when the counters come
+ * on. The rate is the TSC's advance over the host clock's since then, so it sharpens as the run
+ * goes on and is read only once at least half a second has passed. */
+static void thread_clock_start(void) {
+#ifdef SR_PERF_TSC_THREAD_CLOCK
+    if (s_tsc_invariant < 0) {
+        unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
+        s_tsc_invariant = __get_cpuid(0x80000007u, &eax, &ebx, &ecx, &edx) && (edx & (1u << 8)) ? 1 : 0;
+    }
+    s_tsc_base = __rdtsc();
+    s_tsc_base_ns = raw_now_ns();
+#endif
+}
+
+/* The calling thread's CPU time in ns. Returns 0 when this host has no precise thread clock or
+ * its rate is not measured yet. Only differences between two readings on the same thread mean
+ * anything; time the thread spent waiting or descheduled is not in them. */
+static int thread_cpu_now(uint64_t *out_ns) {
+#ifdef SR_PROFILER_SELFTEST
+    if (s_test_thread_clock) {
+        *out_ns = s_test_thread_clock();
+        return 1;
+    }
+#endif
+#ifdef SR_PERF_TSC_THREAD_CLOCK
+    ULONG64 cycles = 0;
+    uint64_t now = raw_now_ns();
+    if (s_tsc_invariant != 1 || now < s_tsc_base_ns + 500000000ull ||
+        !QueryThreadCycleTime(GetCurrentThread(), &cycles))
+        return 0;
+    double tsc_per_ns = (double)(__rdtsc() - s_tsc_base) / (double)(now - s_tsc_base_ns);
+    if (!(tsc_per_ns > 0.0)) return 0;
+    *out_ns = (uint64_t)((double)cycles / tsc_per_ns);
+    return 1;
+#elif defined(CLOCK_THREAD_CPUTIME_ID)
+    struct timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return 0;
+    *out_ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    return 1;
+#else
+    (void)out_ns;
+    return 0;
+#endif
 }
 
 static uint64_t ge_frontend_estimate_ns(const SrPerfMetrics *m, unsigned stage) {
@@ -408,7 +505,12 @@ static void csv_header(FILE *csv) {
                 s_ge_frontend_stage_names[i], s_ge_frontend_stage_names[i]);
     for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++)
         fprintf(csv, ",gpu_replay_%s", s_gpu_replay_names[i]);
-    fputs(",new_frames,new_frame_intervals,new_frame_vblanks\n", csv);
+    fputs(",new_frames,new_frame_intervals,new_frame_vblanks", csv);
+    fputs(",new_frame_iv0,new_frame_iv1,new_frame_iv2,new_frame_iv3,new_frame_iv4p,new_frame_iv1_late"
+          ",frame_work_frames,frame_work_ms,frame_work_max_ms", csv);
+    for (unsigned i = 0; i < SR_PERF_FRAME_WORK_BUCKETS; i++)
+        fprintf(csv, ",frame_work_%s", s_frame_work_names[i]);
+    fputc('\n', csv);
 }
 
 static void csv_row(FILE *csv, const SrPerfMetrics *m, uint64_t total_vblanks,
@@ -495,8 +597,15 @@ static void csv_row(FILE *csv, const SrPerfMetrics *m, uint64_t total_vblanks,
                 (unsigned long long)m->ge_frontend_eligible[i]);
     for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++)
         fprintf(csv, ",%llu", (unsigned long long)m->gpu_replay[i]);
-    fprintf(csv, ",%llu,%llu,%llu\n", (unsigned long long)m->new_frames,
+    fprintf(csv, ",%llu,%llu,%llu", (unsigned long long)m->new_frames,
             (unsigned long long)m->new_frame_intervals, (unsigned long long)m->new_frame_vblanks);
+    for (unsigned i = 0; i < SR_PERF_FRAME_IV_COUNT; i++)
+        fprintf(csv, ",%llu", (unsigned long long)m->new_frame_iv[i]);
+    fprintf(csv, ",%llu,%llu,%.3f,%.3f", (unsigned long long)m->new_frame_iv1_late,
+            (unsigned long long)m->frame_work_frames, ms(m->frame_work_ns), ms(m->frame_work_max_ns));
+    for (unsigned i = 0; i < SR_PERF_FRAME_WORK_BUCKETS; i++)
+        fprintf(csv, ",%llu", (unsigned long long)m->frame_work_bucket[i]);
+    fputc('\n', csv);
 }
 
 static int transition_compare(const void *left, const void *right) {
@@ -653,6 +762,19 @@ static void write_summary(const char *path, uint64_t wall_ns) {
     fprintf(json, "  \"vblanks\":{\"count\":%llu,\"presents\":%llu,\"present_skips\":%llu},\n",
             (unsigned long long)m->vblanks, (unsigned long long)m->presents,
             (unsigned long long)m->present_skips);
+    fprintf(json, "  \"frames\":{\"new\":%llu,\"intervals\":%llu,\"interval_vblanks\":%llu,"
+                  "\"intervals_by_vblanks\":[%llu,%llu,%llu,%llu,%llu],\"one_vblank_after_late_latch\":%llu,"
+                  "\"work\":{\"frames\":%llu,\"ns\":%llu,\"max_ns\":%llu,\"buckets\":{",
+            (unsigned long long)m->new_frames, (unsigned long long)m->new_frame_intervals,
+            (unsigned long long)m->new_frame_vblanks, (unsigned long long)m->new_frame_iv[0],
+            (unsigned long long)m->new_frame_iv[1], (unsigned long long)m->new_frame_iv[2],
+            (unsigned long long)m->new_frame_iv[3], (unsigned long long)m->new_frame_iv[4],
+            (unsigned long long)m->new_frame_iv1_late, (unsigned long long)m->frame_work_frames,
+            (unsigned long long)m->frame_work_ns, (unsigned long long)m->frame_work_max_ns);
+    for (unsigned i = 0; i < SR_PERF_FRAME_WORK_BUCKETS; i++)
+        fprintf(json, "%s\"%s\":%llu", i ? "," : "", s_frame_work_names[i],
+                (unsigned long long)m->frame_work_bucket[i]);
+    fputs("}}},\n", json);
     fprintf(json, "  \"guest\":{\"ns\":%llu,\"idle_ns\":%llu,\"aot_ns\":%llu,\"aot_calls\":%llu,\"aot_instruction_count\":",
             (unsigned long long)m->guest_ns, (unsigned long long)m->guest_idle_ns,
             (unsigned long long)m->aot_ns, (unsigned long long)m->aot_calls);
@@ -1158,14 +1280,23 @@ void sr_perf_init(void) {
     sr_perf_history_reset(&s_history);
     s_perf.initialized = 1;
     s_perf_stderr_enabled = env_on("SR_PERF");
-    s_perf.enabled = s_perf_stderr_enabled || env_on("SR_HUD");
+    /* An output path alone turns the counters on, unless SR_PERF says 0: that is how a benchmark
+     * measures the runtime with the profiler off (tools/run_perf_benchmarks.py). */
+    const char *perf = getenv("SR_PERF");
+    const char *csv_path = getenv("SR_PERF_CSV");
+    const char *json_path = getenv("SR_PERF_JSON");
+    int perf_off = perf && strcmp(perf, "0") == 0;
+    int files = !perf_off && ((csv_path && csv_path[0]) || (json_path && json_path[0]));
+    int hud = env_on("SR_HUD");
+    s_perf.enabled = s_perf_stderr_enabled || hud || files;
+    s_perf_files_only = s_perf.enabled && !s_perf_stderr_enabled && !hud;
     sr_perf_enabled = s_perf.enabled;
     sr_perf_aot_active = 0;
     if (!s_perf.enabled) return;
     s_perf.run_start_ns = raw_now_ns();
     s_perf.interval_start_ns = s_perf.run_start_ns;
+    thread_clock_start();
     seed_gpu_replay_base();
-    const char *csv_path = getenv("SR_PERF_CSV");
     if (csv_path && csv_path[0]) {
         snprintf(s_perf.csv_path, sizeof(s_perf.csv_path), "%s", csv_path);
         make_summary_path(s_perf.csv_path, s_perf.json_path, sizeof(s_perf.json_path));
@@ -1177,14 +1308,31 @@ void sr_perf_init(void) {
             fprintf(stderr, "PERF: cannot open CSV output\n");
         }
     }
-    const char *json_path = getenv("SR_PERF_JSON");
     if (json_path && json_path[0])
         snprintf(s_perf.json_path, sizeof(s_perf.json_path), "%s", json_path);
-    atexit(perf_exit);
-    fprintf(stderr, "PERF enabled: 1 Hz aggregate telemetry%s%s\n",
+    static int exit_hooked;
+    if (!exit_hooked) atexit(perf_exit);
+    exit_hooked = 1;
+    fprintf(stderr, "PERF enabled: %s%s%s\n",
+            s_perf_files_only ? "counters for the output files only" : "1 Hz aggregate telemetry",
             s_perf.csv ? " + CSV" : "",
             s_perf.json_path[0] ? " + JSON summary" : "");
 }
+
+#ifdef SR_PROFILER_SELFTEST
+void sr_perf_test_set_clocks(SrPerfTestClock wall_ns, SrPerfTestClock thread_cpu_ns) {
+    s_test_wall_clock = wall_ns;
+    s_test_thread_clock = thread_cpu_ns;
+}
+
+void sr_perf_test_reinit(void) {
+    if (s_perf.csv) fclose(s_perf.csv);
+    s_perf.csv = NULL;
+    s_perf.initialized = 0;
+    s_perf_files_only = 0;
+    sr_perf_init();
+}
+#endif
 
 void sr_perf_set_gpu_replay_source(SrPerfGpuReplaySource source) {
     s_gpu_replay_source = source;
@@ -1281,8 +1429,11 @@ uint32_t sr_rt_nid = 0u;
 uint32_t (*sr_rt_pc_fn)(void) = NULL;
 uint32_t (*sr_rt_uid_fn)(void) = NULL;
 
+/* The cumulative attribution lines, each formatted whole and written once (perf_emit_line: a
+ * formatted fprintf to the unbuffered stderr is one write per piece, which costs the guest tens of
+ * milliseconds a line). Not written at all when only the output files asked for the counters. */
 void sr_perf_phase_report(int force) {
-    if (!s_perf.enabled || s_perf.shutdown) return;
+    if (!s_perf.enabled || s_perf.shutdown || s_perf_files_only) return;
     uint64_t now = raw_now_ns();
     if (!force && now - s_perf.attrib_report_ns < 60000000000ull) return;
     s_perf.attrib_report_ns = now;
@@ -1291,43 +1442,52 @@ void sr_perf_phase_report(int force) {
         total_late += s_phase_attrib[i].late;
         total_lost += s_phase_attrib[i].lost_us;
     }
-    fprintf(stderr, "PERF_ATTRIB vblank_late total=%llu lost_ms=%llu masked_periods=%llu "
-                    "collapsed_periods=%llu\n",
-            (unsigned long long)total_late, (unsigned long long)(total_lost / 1000u),
-            (unsigned long long)s_periods_masked,
-            (unsigned long long)s_collapsed_periods);
+    perf_emit_format("PERF_ATTRIB vblank_late total=%llu lost_ms=%llu masked_periods=%llu "
+                     "collapsed_periods=%llu\n",
+                     (unsigned long long)total_late, (unsigned long long)(total_lost / 1000u),
+                     (unsigned long long)s_periods_masked,
+                     (unsigned long long)s_collapsed_periods);
     /* in_flight is the identity residual, computed rather than counted: episodes owed
      * and not yet delivered.  A bookkeeping bug shows up here as an absurd number
      * instead of a plausible one. */
-    fprintf(stderr, "PERF_ATTRIB vblank_owed owed=%llu coalesced=%llu delivered=%llu "
-                    "dropped=%llu in_flight=%llu late_owed=%llu late_delivered=%llu\n",
-            (unsigned long long)s_owed_total, (unsigned long long)s_coalesced_total,
-            (unsigned long long)s_delivered_total, (unsigned long long)s_dropped_total,
-            (unsigned long long)(s_owed_total + s_coalesced_total
-                                 - s_delivered_total - s_dropped_total),
-            (unsigned long long)s_late_owed_total, (unsigned long long)s_late_delivered);
+    perf_emit_format("PERF_ATTRIB vblank_owed owed=%llu coalesced=%llu delivered=%llu "
+                     "dropped=%llu in_flight=%llu late_owed=%llu late_delivered=%llu\n",
+                     (unsigned long long)s_owed_total, (unsigned long long)s_coalesced_total,
+                     (unsigned long long)s_delivered_total, (unsigned long long)s_dropped_total,
+                     (unsigned long long)(s_owed_total + s_coalesced_total
+                                          - s_delivered_total - s_dropped_total),
+                     (unsigned long long)s_late_owed_total, (unsigned long long)s_late_delivered);
     for (int i = 0; i < SR_RT_PHASE_COUNT; i++) {
         if (!s_dropped_by_phase[i]) continue;
-        fprintf(stderr, "  PERF_ATTRIB_DROP phase=%s episodes=%llu\n",
-                sr_rt_phase_name[i], (unsigned long long)s_dropped_by_phase[i]);
+        perf_emit_format("  PERF_ATTRIB_DROP phase=%s episodes=%llu\n",
+                         sr_rt_phase_name[i], (unsigned long long)s_dropped_by_phase[i]);
     }
     for (int i = 0; i < SR_RT_PHASE_COUNT; i++) {
         const SrPerfPhaseAttrib *a = &s_phase_attrib[i];
         if (!a->late) continue;
-        fprintf(stderr, "  PERF_ATTRIB_LATE phase=%s n=%llu lost_ms=%llu max_gap_ms=%llu periods=%llu",
-                sr_rt_phase_name[i], (unsigned long long)a->late,
-                (unsigned long long)(a->lost_us / 1000u),
-                (unsigned long long)(a->max_gap_us / 1000u),
-                (unsigned long long)a->periods_lost);
-        for (unsigned k = 0; k < SR_PERF_PHASE_SAMPLE_N; k++) {
+        char line[512];
+        int n = snprintf(line, sizeof line,
+                         "  PERF_ATTRIB_LATE phase=%s n=%llu lost_ms=%llu max_gap_ms=%llu periods=%llu",
+                         sr_rt_phase_name[i], (unsigned long long)a->late,
+                         (unsigned long long)(a->lost_us / 1000u),
+                         (unsigned long long)(a->max_gap_us / 1000u),
+                         (unsigned long long)a->periods_lost);
+        size_t used = n > 0 && (size_t)n < sizeof line ? (size_t)n : 0u;
+        for (unsigned k = 0; used && k < SR_PERF_PHASE_SAMPLE_N; k++) {
             if (!a->pc[k] && !a->nid[k] && !a->uid[k]) continue;
-            fprintf(stderr, " [uid=0x%" PRIx32 " pc=0x%08" PRIx32 "%s]",
-                    a->uid[k], a->pc[k], a->nid[k] ? " nid" : "");
-            if (a->nid[k]) fprintf(stderr, "=0x%08" PRIx32, a->nid[k]);
+            n = snprintf(line + used, sizeof line - used, " [uid=0x%" PRIx32 " pc=0x%08" PRIx32 "%s]",
+                         a->uid[k], a->pc[k], a->nid[k] ? " nid" : "");
+            used = n > 0 && (size_t)n < sizeof line - used ? used + (size_t)n : 0u;
+            if (used && a->nid[k]) {
+                n = snprintf(line + used, sizeof line - used, "=0x%08" PRIx32, a->nid[k]);
+                used = n > 0 && (size_t)n < sizeof line - used ? used + (size_t)n : 0u;
+            }
         }
-        fprintf(stderr, "\n");
-        fflush(stderr);
+        if (!used || used + 1u >= sizeof line) continue;   /* 4 samples always fit: never hit */
+        line[used++] = '\n';
+        perf_emit_line(line, used);
     }
+    fflush(stderr);
 }
 
 /* A source that cannot name the periods it crossed (a saturated deadline) collapses
@@ -1376,6 +1536,7 @@ void sr_perf_vblank_latch(uint64_t gap_us, uint32_t periods, int masked) {
     a->latches++;
     if (gap_us <= SR_PERF_DISPLAY_PERIOD_US) return;
     uint64_t lost = gap_us - SR_PERF_DISPLAY_PERIOD_US;
+    s_perf.late_since_frame = 1;
     a->late++;
     a->lost_us += lost;
     if (periods > 1u) a->periods_lost += periods - 1u;
@@ -1456,14 +1617,37 @@ void sr_perf_present_skip(void) {
 void sr_perf_present_frame(uint32_t buffer, uint32_t vcount) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     if (s_perf.frame_seen && buffer == s_perf.last_frame_buffer) return;
+    uint64_t cpu_ns = 0;
+    int cpu_valid = thread_cpu_now(&cpu_ns);
     ADD(new_frames, 1);
     if (s_perf.frame_seen) {
+        uint32_t vblanks = (uint32_t)(vcount - s_perf.last_new_frame_vcount);
         ADD(new_frame_intervals, 1);
-        ADD(new_frame_vblanks, (uint64_t)(uint32_t)(vcount - s_perf.last_new_frame_vcount));
+        ADD(new_frame_vblanks, (uint64_t)vblanks);
+        ADD_ARRAY(new_frame_iv, vblanks < SR_PERF_FRAME_IV_COUNT - 1u ? vblanks
+                                                                     : SR_PERF_FRAME_IV_COUNT - 1u, 1);
+        /* Owed periods are credited at the latch, so a frame that follows a catch-up can be one
+         * VBLANK after the previous one and still on time: count those apart. */
+        if (vblanks == 1u && s_perf.late_since_frame) ADD(new_frame_iv1_late, 1);
+        /* Host work for the frame: everything the scheduler thread ran since the previous new
+         * frame (guest code, HLE, GE lists, VBLANK service and the presents), none of its waits. */
+        if (cpu_valid && s_perf.frame_cpu_valid && cpu_ns >= s_perf.last_frame_cpu_ns) {
+            uint64_t work = cpu_ns - s_perf.last_frame_cpu_ns;
+            unsigned bucket = 0;
+            while (bucket < SR_PERF_FRAME_WORK_BUCKETS - 1u && work > s_frame_work_bound_ns[bucket])
+                bucket++;
+            ADD(frame_work_frames, 1);
+            ADD(frame_work_ns, work);
+            KEEP_MAX(frame_work_max_ns, work);
+            ADD_ARRAY(frame_work_bucket, bucket, 1);
+        }
     }
     s_perf.frame_seen = 1;
     s_perf.last_frame_buffer = buffer;
     s_perf.last_new_frame_vcount = vcount;
+    s_perf.late_since_frame = 0;
+    s_perf.frame_cpu_valid = cpu_valid;
+    s_perf.last_frame_cpu_ns = cpu_ns;
 }
 
 void sr_perf_aot_begin(uint32_t pc) {
@@ -1749,7 +1933,10 @@ void sr_perf_enable_counters(void) {
     int was_enabled = s_perf.enabled;
     s_perf.enabled = 1;
     sr_perf_enabled = 1;
-    if (!was_enabled) seed_gpu_replay_base();
+    if (!was_enabled) {
+        seed_gpu_replay_base();
+        thread_clock_start();
+    }
     if (s_perf.interval_start_ns == 0) s_perf.interval_start_ns = raw_now_ns();
 }
 
