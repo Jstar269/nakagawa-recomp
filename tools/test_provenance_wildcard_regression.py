@@ -14,7 +14,6 @@ classify this path via the deterministic fixture/test rule instead.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -54,7 +53,7 @@ class TestWildcardBackedClassificationRepair(unittest.TestCase):
         # authority for unrecorded test paths without this test noticing.
         self.assertTrue(PATH.startswith("tools/test_") or "/test_" in PATH)
 
-    def test_checked_in_entry_matches_classifier_and_current_bytes(self):
+    def test_checked_in_entry_matches_classifier_and_carries_no_hash(self):
         entries = {e["path"]: e for e in self._ledger()["entries"]}
         self.assertIn(PATH, entries)
         entry = entries[PATH]
@@ -67,12 +66,10 @@ class TestWildcardBackedClassificationRepair(unittest.TestCase):
         for forbidden in FORBIDDEN_WILDCARD_RECORDS:
             self.assertNotEqual(entry["evidence"].get("record_id"), forbidden)
             self.assertNotIn(forbidden, json.dumps(entry["evidence"]))
-        digest = hashlib.sha256((ROOT / PATH).read_bytes()).hexdigest()
-        self.assertEqual(
-            entry.get("sha256"),
-            digest,
-            "public ledger hash is stale for this tracked file; regenerate metadata",
-        )
+        # The committed ledger carries claims only (#1673): the hosted attestation
+        # regenerates this path's hash from the trusted authority at landing.
+        self.assertTrue(provenance_ledger.is_claims_ledger(self._ledger()))
+        self.assertNotIn("sha256", entry)
 
 
 if __name__ == "__main__":

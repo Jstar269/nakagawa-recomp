@@ -161,6 +161,7 @@ static int write_launch_environment_probe(void) {
     const char *ui_root = getenv("SR_UI_ROOT");
     const char *experimental_60hz = getenv("SR_EXPERIMENTAL_60HZ");
     const char *developer_mode = getenv("SR_DEVELOPER_MODE");
+    const char *reduce_motion = getenv("SR_REDUCE_MOTION");
     const char *host_time_zone = getenv("SR_HOST_TIME_ZONE");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
@@ -181,6 +182,7 @@ static int write_launch_environment_probe(void) {
                      "SR_UI_ROOT=%s\n"
                      "SR_EXPERIMENTAL_60HZ=%s\n"
                      "SR_DEVELOPER_MODE=%s\n"
+                     "SR_REDUCE_MOTION=%s\n"
                      "SR_HOST_TIME_ZONE=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
@@ -200,6 +202,7 @@ static int write_launch_environment_probe(void) {
                      ui_root ? ui_root : "<unset>",
                      experimental_60hz ? experimental_60hz : "<unset>",
                      developer_mode ? developer_mode : "<unset>",
+                     reduce_motion ? reduce_motion : "<unset>",
                      host_time_zone ? host_time_zone : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
@@ -373,6 +376,10 @@ static void test_no_iso_child_environment(const char *test_executable,
     bool had_developer;
     char *old_developer = capture_environment_value("SR_DEVELOPER_MODE", &had_developer);
     set_environment_value("SR_DEVELOPER_MODE", "1");
+    /* Nor an inherited Reduce motion choice: the launcher's setting decides. */
+    bool had_reduce_motion;
+    char *old_reduce_motion = capture_environment_value("SR_REDUCE_MOTION", &had_reduce_motion);
+    set_environment_value("SR_REDUCE_MOTION", "on");
     bool had_host_zone;
     char *old_host_zone = capture_environment_value("SR_HOST_TIME_ZONE", &had_host_zone);
     set_environment_value("SR_HOST_TIME_ZONE", "poisoned-parent-zone");
@@ -535,6 +542,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=0\n") != NULL);
     assert(strstr(observed, "SR_DEVELOPER_MODE=0\n") != NULL);
+    assert(strstr(observed, "SR_REDUCE_MOTION=system\n") != NULL);
     /* The host's local time zone for the runtime's first-run seed (#1382): "<minutes>,<0|1>"
        from the platform, never an inherited value. */
     {
@@ -555,6 +563,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     snprintf(session.enhancement_package_id, sizeof(session.enhancement_package_id),
              "fixture-60hz");
     session.config.developer_mode = true;
+    session.config.reduce_motion = NK_REDUCE_MOTION_OFF;
     session.config.fps_cap = -1;
     /* A launcher that does not know its display exports an empty value, which
        still masks the inherited one; the child then uses the primary display. */
@@ -574,12 +583,16 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_NOVBPACE=1\n") != NULL);
     assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=1\n") != NULL);
     assert(strstr(observed, "SR_DEVELOPER_MODE=1\n") != NULL);
+    assert(strstr(observed, "SR_REDUCE_MOTION=off\n") != NULL);
     assert(strstr(observed, "SR_LAUNCHER_DISPLAY_BOUNDS=\n") != NULL);
     assert(strstr(observed, "7,7,7,7") == NULL);
     session.enhancement_package_id[0] = '\0';
     session.config.developer_mode = false;
+    session.config.reduce_motion = NK_REDUCE_MOTION_SYSTEM;
 
     restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);
+    restore_environment_value("SR_REDUCE_MOTION", old_reduce_motion, had_reduce_motion);
+    free(old_reduce_motion);
     free(old_60hz);
     restore_environment_value("SR_DEVELOPER_MODE", old_developer, had_developer);
     free(old_developer);

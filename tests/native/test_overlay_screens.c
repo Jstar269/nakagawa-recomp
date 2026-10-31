@@ -37,6 +37,22 @@ static const uint8_t k_test_glyph_pixel = 0xFFu;
     } \
 } while (0)
 
+/* Every frame these tests draw is checked for an id two elements share (the id
+   scheme in nk_ui.h): Clay reports each as DUPLICATE_ID, laying the second out
+   empty, and the run fails naming it. */
+static void fail_on_duplicate_id(void *user, const NkUiLayoutError *error) {
+    (void)user;
+    if (strcmp(error->kind, "DUPLICATE_ID") != 0) return;
+    fprintf(stderr, "FAIL: two elements share an id in one frame: %.*s\n",
+            (int)(error->text_length > 300u ? 300u : error->text_length), error->text);
+    ++failures;
+}
+
+static NkUi *screen_ui_create(NkUiConfig *config) {
+    if (config->report_error == NULL) config->report_error = fail_on_duplicate_id;
+    return nk_ui_create(config);
+}
+
 static bool test_raster(void *user, int font, int px, uint32_t glyph, NkUiGlyphBitmap *out) {
     (void)user;
     (void)font;
@@ -63,7 +79,7 @@ static NkUi *overlay_ui(int width, int height, float display_scale) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_OVERLAY;
     config.text = &g_text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui != NULL) {
         /* The goldens are stills at a clock that never moves, where a
            transition would stay at its first frame: they cut motion, as
@@ -990,7 +1006,7 @@ static int capture_overlay(const char *directory) {
         memset(&config, 0, sizeof(config));
         config.host = NK_UI_HOST_OVERLAY;
         config.text = &text;
-        if (size_ok) ui = nk_ui_create(&config);
+        if (size_ok) ui = screen_ui_create(&config);
         size_ok = size_ok && ui != NULL;
         if (size_ok) {
             /* As the overlay host draws it: motion cut, keyboard prompts. */

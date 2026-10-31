@@ -379,6 +379,34 @@ add_test(NAME nk_ui_sdlr_test COMMAND test_nk_ui_sdlr)
 set_tests_properties(nk_ui_sdlr_test PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     SKIP_RETURN_CODE 77)
+
+# The Vulkan backend (lane C3c), drawing on a headless device into an offscreen image.
+# With the Vulkan headers found the test is built for real; without them it is the SKIP
+# variant. The backend and the test open the Vulkan loader at run time, so only the
+# headers matter to the build, and a host without a loader or a Vulkan 1.1 device
+# reports exit 77, which ctest shows as skipped.
+find_package(Vulkan QUIET)
+add_executable(test_nk_ui_vk
+    tests/native/test_nk_ui_vk.c
+    ${NK_UI_CORE_SOURCES}
+    src/ui/backend/nk_ui_vk.c
+)
+target_include_directories(test_nk_ui_vk PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+if(Vulkan_INCLUDE_DIR)
+    target_include_directories(test_nk_ui_vk PRIVATE ${Vulkan_INCLUDE_DIR})
+    target_compile_definitions(test_nk_ui_vk PRIVATE NK_UI_WITH_VULKAN)
+    target_link_libraries(test_nk_ui_vk PRIVATE ${CMAKE_DL_LIBS})
+endif()
+if(NOT WIN32)
+    target_link_libraries(test_nk_ui_vk PRIVATE m)
+endif()
+add_test(NAME nk_ui_vk_test COMMAND test_nk_ui_vk)
+set_tests_properties(nk_ui_vk_test PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    SKIP_RETURN_CODE 77)
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build")
 # Focus graph, input model and prompt glyphs: SDL-free. The SDL_Event translation leg is
 # registered after SDL3 is resolved below, and reports SKIP (exit 77) without it.

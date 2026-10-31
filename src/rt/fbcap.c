@@ -52,6 +52,9 @@ static uint32_t s_w, s_h;
 static int s_probe;                  /* the pending request is a probe: no file */
 static int s_probe_ready;            /* a probe result is waiting to be taken */
 static uint32_t s_probe_brightest;
+static int s_probe_in_flight;        /* a deferred probe's readback is still on the GPU */
+static uint32_t s_probe_w, s_probe_h;
+static SrCaptureProbeResolver s_probe_resolver;
 
 static int cap_is_sep(char c) { return c == '/' || c == '\\'; }
 
@@ -159,30 +162,43 @@ static int cap_write_file(const uint8_t *px, uint32_t row_bytes, sr_cap_order or
     return 1;
 }
 
-/* Validate the pixel description, publish the capture, then resolve it. The frame size is
+/* A w x h frame of row_bytes-long rows is a valid pixel description: the frame size is
  * checked in 64-bit arithmetic and bounded like the readback buffer (at most UINT32_MAX
- * source bytes), so no size computation below can wrap. */
+ * source bytes), so no size computation that follows can wrap. */
+static int cap_pixels_valid(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
+                            sr_cap_order order) {
+    return px && w != 0u && h != 0u && (uint64_t)row_bytes >= (uint64_t)w * 4u &&
+           (uint64_t)row_bytes * h <= UINT32_MAX &&
+           (order == SR_CAP_ORDER_BGRX || order == SR_CAP_ORDER_RGBX);
+}
+
+/* The probe's result: the brightest of the three colour bytes of any pixel. The ignored byte
+ * sits at offset 3 in both orders. Rows are scanned in order and the scan stops after the
+ * first row that holds a 255, the largest possible result. */
+static uint32_t probe_brightest(const uint8_t *px, uint32_t w, uint32_t h, uint32_t row_bytes) {
+    uint32_t brightest = 0;
+    for (uint32_t y = 0; y < h && brightest < 255u; y++) {
+        const uint8_t *row = px + (size_t)y * row_bytes;
+        uint32_t m = 0;
+        for (uint32_t x = 0; x < w; x++) {
+            const uint8_t *p = row + (size_t)x * 4u;
+            if (p[0] > m) m = p[0];
+            if (p[1] > m) m = p[1];
+            if (p[2] > m) m = p[2];
+        }
+        if (m > brightest) brightest = m;
+    }
+    return brightest;
+}
+
+/* Validate the pixel description, publish the capture, then resolve it. */
 static int cap_publish(const void *px, uint32_t row_bytes, sr_cap_order order) {
-    if (!px || s_w == 0u || s_h == 0u || (uint64_t)row_bytes < (uint64_t)s_w * 4u ||
-        (uint64_t)row_bytes * s_h > UINT32_MAX ||
-        (order != SR_CAP_ORDER_BGRX && order != SR_CAP_ORDER_RGBX)) {
+    if (!cap_pixels_valid(px, s_w, s_h, row_bytes, order)) {
         cap_finish(0, "invalid pixel description");
         return -1;
     }
     if (s_probe) {
-        /* The brightest of the three colour bytes; the ignored byte sits at offset 3 in
-         * both orders. */
-        uint32_t brightest = 0;
-        for (uint32_t y = 0; y < s_h && brightest < 255u; y++) {
-            const uint8_t *row = (const uint8_t *)px + (size_t)y * row_bytes;
-            for (uint32_t x = 0; x < s_w; x++) {
-                const uint8_t *p = row + (size_t)x * 4u;
-                uint8_t m = p[0] > p[1] ? p[0] : p[1];
-                if (p[2] > m) m = p[2];
-                if (m > brightest) brightest = m;
-            }
-        }
-        s_probe_brightest = brightest;
+        s_probe_brightest = probe_brightest((const uint8_t *)px, s_w, s_h, row_bytes);
         s_probe_ready = 1;
         cap_finish(1, NULL);
         return 1;
@@ -211,7 +227,7 @@ int sr_capture_arm(const char *path) {
 
 int sr_capture_arm_probe(void) {
     s_result = 0;
-    if (s_state == CAP_ARMED || s_state == CAP_RECORDED) return 0;
+    if (s_state == CAP_ARMED || s_state == CAP_RECORDED || s_probe_in_flight) return 0;
     s_path[0] = '\0';
     s_probe = 1;
     s_src = SR_CAP_SRC_NONE;
@@ -227,8 +243,51 @@ int sr_capture_probe_take(uint32_t *brightest) {
     return 1;
 }
 
+int sr_capture_pending_is_probe(void) {
+    return (s_state == CAP_ARMED || s_state == CAP_RECORDED) && s_probe;
+}
+
+void sr_capture_probe_defer(void) {
+    if (s_state != CAP_RECORDED || !s_probe) return;
+    s_probe_in_flight = 1;
+    s_probe_w = s_w;
+    s_probe_h = s_h;
+    /* The capture slot is free again; the probe has no reportable file result. */
+    s_probe = 0;
+    s_state = CAP_IDLE;
+    s_result = 0;
+}
+
+int sr_capture_probe_in_flight(void) { return s_probe_in_flight; }
+
+int sr_capture_publish_probe(const void *px, uint32_t row_bytes, sr_cap_order order) {
+    if (!s_probe_in_flight) return 0;
+    s_probe_in_flight = 0;
+    if (!cap_pixels_valid(px, s_probe_w, s_probe_h, row_bytes, order)) {
+        fprintf(stderr, "fbcap: picture probe failed: invalid pixel description\n");
+        return -1;
+    }
+    s_probe_brightest = probe_brightest((const uint8_t *)px, s_probe_w, s_probe_h, row_bytes);
+    s_probe_ready = 1;
+    return 1;
+}
+
+void sr_capture_probe_drop(const char *why) {
+    if (!s_probe_in_flight) return;
+    s_probe_in_flight = 0;
+    fprintf(stderr, "fbcap: picture probe dropped: %s\n", why ? why : "unknown reason");
+}
+
+void sr_capture_set_probe_resolver(SrCaptureProbeResolver resolver) { s_probe_resolver = resolver; }
+
+int sr_capture_probe_poll(int block) {
+    if (!s_probe_in_flight || !s_probe_resolver) return 0;
+    return s_probe_resolver(block);
+}
+
 int sr_picture_watch_probe(SrPictureWatch *w, uint32_t vcount, uint32_t brightest) {
     if (!w) return SR_PICTURE_WATCH_NONE;
+    w->pending = 0;
     w->last_vcount = vcount;
     if (brightest <= SR_PICTURE_DARK_MAX) {
         if (!w->dark) {
@@ -254,6 +313,34 @@ int sr_picture_watch_tick(SrPictureWatch *w, uint32_t vcount, uint32_t *dark_vbl
     w->reported = bucket;
     if (dark_vblanks) *dark_vblanks = elapsed;
     return SR_PICTURE_WATCH_REPORT;
+}
+
+void sr_picture_watch_probe_sent(SrPictureWatch *w, uint32_t vcount) {
+    if (!w) return;
+    w->pending = 1;
+    w->pending_vcount = vcount;
+}
+
+int sr_picture_watch_tick_needs_probe(const SrPictureWatch *w, uint32_t vcount) {
+    if (!w || !w->pending) return 0;
+    /* A dark result opens a stretch at the probe, due a report once a period has passed. */
+    if (vcount - w->pending_vcount >= SR_PICTURE_REPORT_EVERY) return 1;
+    /* Fed, the result either keeps the stretch (last_vcount becomes the probe's, so the tick
+     * is not quiet) or ends it; it matters only when a new report bucket is due. */
+    return w->dark && (vcount - w->first_vcount) / SR_PICTURE_REPORT_EVERY > w->reported;
+}
+
+int sr_picture_watch_collect(SrPictureWatch *w, int block, uint32_t *brightest) {
+    if (!w || !w->pending) return SR_PICTURE_WATCH_NONE;
+    uint32_t b = 0u;
+    (void)sr_capture_probe_poll(block);
+    if (sr_capture_probe_take(&b)) {
+        if (brightest) *brightest = b;
+        return sr_picture_watch_probe(w, w->pending_vcount, b);
+    }
+    if (block) sr_capture_probe_drop("no presenter finished the readback");
+    if (!sr_capture_probe_in_flight()) w->pending = 0;
+    return SR_PICTURE_WATCH_NONE;
 }
 
 int sr_capture_result(void) { return s_result; }
