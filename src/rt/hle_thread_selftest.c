@@ -1789,6 +1789,9 @@ static int write_runtime_module_prx(const char *path, uint8_t flavour) {
 static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
                                           uint32_t export_nid, const char *modname,
                                           uint32_t sdk_version);
+static int write_runtime_module_prx_lib(const char *path, uint8_t flavour, int with_start,
+                                        uint32_t export_nid, const char *modname,
+                                        uint32_t sdk_version, const char *libname);
 
 /* with_start == 0 writes a library module with no start routine: the system library
  * exports only module_stop and the ELF entry is 0xFFFFFFFF. The named library exports
@@ -1805,6 +1808,15 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
 static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int with_start,
                                           uint32_t export_nid, const char *modname,
                                           uint32_t sdk_version) {
+    return write_runtime_module_prx_lib(path, flavour, with_start, export_nid, modname,
+                                        sdk_version, "RtPlacedLib");
+}
+
+/* The named library is called `libname` (at most 15 characters, as the name slot before the
+ * module_sdk_version word holds). */
+static int write_runtime_module_prx_lib(const char *path, uint8_t flavour, int with_start,
+                                        uint32_t export_nid, const char *modname,
+                                        uint32_t sdk_version, const char *libname) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
     const int sdk_var = !with_start && sdk_version != 0u;
@@ -1816,7 +1828,7 @@ static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int
         with_start ? RT_SYSLIB_TABLE + 8u : sdk_var ? RT_SYSLIB_TABLE + 8u : RT_SYSLIB_TABLE + 4u,
         RT_SYSLIB_TABLE + 12u, RT_LIB_TABLE + 4u, RT_DATA_PTR,
     };
-    if (strlen(modname) >= 27u) return 0;
+    if (strlen(modname) >= 27u || strlen(libname) >= RT_SDK_VERSION_WORD - RT_LIBNAME) return 0;
     uint8_t image[SIZE];
     uint8_t *seg = image + RT_SEG_OFFSET;
     memset(image, 0, sizeof(image));
@@ -1864,7 +1876,7 @@ static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int
     seg[RT_LIBENT + 8] = 4;
     fixture_wr16(seg + RT_LIBENT + 10, 2);
     fixture_wr32(seg + RT_LIBENT + 12, RT_SYSLIB_TABLE);
-    /* Named library "RtPlacedLib": one function. */
+    /* Named library `libname`: one function. */
     fixture_wr32(seg + RT_LIBENT + 16, RT_LIBNAME);
     fixture_wr16(seg + RT_LIBENT + 20, 0x0011);
     fixture_wr16(seg + RT_LIBENT + 22, 0x0001);
@@ -1895,7 +1907,7 @@ static int write_runtime_module_prx_named(const char *path, uint8_t flavour, int
     }
     fixture_wr32(seg + RT_LIB_TABLE + 0, export_nid);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
-    memcpy(seg + RT_LIBNAME, "RtPlacedLib", 12);
+    memcpy(seg + RT_LIBNAME, libname, strlen(libname) + 1u);
     fixture_wr32(seg + RT_DATA_PTR, RT_QUERY);
     for (uint32_t i = 0; i < RT_RELOC_COUNT; i++) {
         fixture_wr32(image + RELOC_OFFSET + 8u * i, sites[i]);
@@ -2045,6 +2057,79 @@ static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
     sr_module_code_reset();
+}
+
+/* A library the guest owns (the SDK's scePsmfPlayer) is the title's own code when its module
+ * is staged and translated (#286): the module is not host-served, so under the shipped
+ * default its start links its exports, and the export takes the NID over from the host
+ * handler that test_runtime_placed_hle_shadow shows keeping it under another library name.
+ * The fixture is start-less, like the SDK player module. The operator kill switch
+ * (SR_REAL_MODULE_START=0) still keeps the host handler. */
+#define RT_OWNED_MARK 0x0A11CE11u
+static uint32_t s_rt_owned_base;
+static void rt_owned_query(CpuState *s) { s->r[2] = RT_OWNED_MARK; }
+static const SrModuleFunc s_rt_owned_funcs[] = {
+    {RT_STOP, 2u, rt_alpha_stop},
+    {RT_QUERY, 2u, rt_owned_query},
+};
+static SrModuleCode s_rt_owned_code = {
+    "rt-nostart.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_owned_base,
+    s_rt_owned_funcs, 2u, s_rt_alpha_spans, 1u, 0u, 0u,
+};
+
+static void test_runtime_placed_guest_owned_library(void) {
+    extern void sr_hle_test_partition_reset(void);
+    static const char owned_guest[] = "disc0:/PSP_GAME/USRDIR/rt-nostart.prx";
+    char owned_path[1024];
+    const char *out;
+    uint32_t base = 0;
+    runtime_module_path(owned_path, sizeof(owned_path), "rt-nostart.prx");
+    expect(write_runtime_module_prx_lib(owned_path, 6u, 0, RT_HLE_SHADOW_NID, "rtowned", 0u,
+                                        "scePsmfPlayer") &&
+               runtime_module_identity(owned_path, &s_rt_owned_code),
+           "guest-owned library: the start-less scePsmfPlayer module fixture is written");
+
+    for (int kill_switch = 0; kill_switch <= 1; kill_switch++) {
+        sr_hle_test_module_reset();
+        sr_hle_test_partition_reset();
+        sr_module_code_reset();
+        sr_module_code_register(&s_rt_owned_code);
+        hle_test_setenv("SR_REAL_MODULE_START", kill_switch ? "0" : NULL);
+        unsigned stops = s_rt_stop_calls;
+        uint32_t uid = rt_load(owned_guest, 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_owned_code, &base) &&
+                   sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+                   rt_shadow_import() == RT_HLE_SHADOW_HOST,
+               "guest-owned library: before start the import reaches host HLE");
+        rt_capture_begin();
+        uint32_t started = rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u);
+        uint32_t answer = rt_shadow_import();
+        out = rt_capture_end();
+        if (!kill_switch) {
+            expect(started == 0u && strstr(out, "host HLE serves") == NULL &&
+                       sr_hle_test_started_export(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+                       answer == RT_OWNED_MARK,
+                   "guest-owned library: by default the module starts and its export runs "
+                   "instead of the host handler");
+        } else {
+            expect(started == 0u && sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+                       answer == RT_HLE_SHADOW_HOST,
+                   "guest-owned library: SR_REAL_MODULE_START=0 keeps the host handler");
+        }
+        expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   s_rt_stop_calls == stops + (kill_switch ? 0u : 1u) &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+                   sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+                   rt_shadow_import() == RT_HLE_SHADOW_HOST,
+               "guest-owned library: unload hands the NID back to host HLE");
+    }
+
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+    remove(owned_path);
 }
 
 static TCB *fixture_thread(uint32_t uid, int state, int priority);
@@ -2585,6 +2670,7 @@ static void test_runtime_placed_modules(void) {
     }
 
     test_runtime_placed_hle_shadow(alpha_guest, alpha_path);
+    test_runtime_placed_guest_owned_library();
 
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();

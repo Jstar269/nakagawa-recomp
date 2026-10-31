@@ -5485,6 +5485,20 @@ static int loadexec_module_file_matches_translation(const char *file) {
     return size == code->file_size && digest == code->file_fnv1a64;
 }
 
+/* Libraries a title ships as its own module, for which host HLE only stands in. When the
+ * title's copy is staged and translated, its exports are the library (LLE first, AGENTS.md
+ * section 6): the module is not host-served, so it starts as any guest-placed module does
+ * and its exports take over the host handlers once it has started. The host handlers stay
+ * for a title that does not stage the module and for the public synthetic fixtures (#286).
+ * scePsmfPlayer is the SDK's libpsmfplayer.prx: user-mode code over sceMpeg, scePsmf and
+ * the kernel, all of which stay reachable beneath it. */
+static int guest_module_owns_library(const char *lib) {
+    static const char *const owned[] = { "scePsmfPlayer" };
+    for (size_t i = 0; i < sizeof(owned) / sizeof(owned[0]); i++)
+        if (strcmp(lib, owned[i]) == 0) return 1;
+    return 0;
+}
+
 /* Lay a guest-placed module out and bind its translation. On success `mod` holds the
  * module's entry points, image and $gp, and 0 is returned; otherwise the guest-visible
  * error is returned and nothing the attempt reserved stays reserved. */
@@ -5672,7 +5686,7 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
             continue;
         }
         if (sr_hle_register_late_import(e->nid, e->addr)) exported++;
-        if (hle_find(e->nid)) mod->host_served = 1;
+        if (hle_find(e->nid) && !guest_module_owns_library(e->lib)) mod->host_served = 1;
     }
     mod->runtime_placed = 1;
     mod->code = code;
@@ -15485,7 +15499,8 @@ static uint32_t h_StartModule(CpuState *s) {
     /* A guest-placed module is the game's own code laid out by the guest allocator: its
      * module_start runs by default, as libfont's does, unless host HLE implements one of
      * its exports -- then the host keeps serving them and the guest init is bypassed
-     * like every other host-served module's. */
+     * like every other host-served module's. An export of a library the guest owns
+     * (guest_module_owns_library) never makes its module host-served. */
     int guest_owned_start = is_libfont || (mod->runtime_placed && mod->code && !mod->host_served);
     int allow_entry = policy == MODULE_START_ALLOW_ALL ||
                       (policy == MODULE_START_LIBFONT_ONLY && guest_owned_start);
