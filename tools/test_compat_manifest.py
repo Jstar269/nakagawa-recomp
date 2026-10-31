@@ -131,7 +131,7 @@ from host_stubs import HST_SIMPLE_STUBS
 
 
 LIVE_CENSUS_DOC = ROOT / "docs" / "COMPATIBILITY.md"
-_CENSUS_SENTENCE = re.compile(r"runs with (\d+) title-specific compatibility patches")
+_CENSUS_SENTENCE = re.compile(r"runs with (\d+) title-specific compatibility patch(?:es)?\b")
 
 
 def _released_notes() -> list[tuple[Path, str]] | None:

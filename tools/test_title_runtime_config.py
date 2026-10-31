@@ -414,8 +414,8 @@ class CallbackTerminatorValidation(unittest.TestCase):
     def test_a_null_sentinel_is_rejected(self) -> None:
         """A transfer to 0 is a null code pointer that stops by name (#1375), so no
         configuration may report it as a completed callback walk."""
-        for entry in ({"sentinel": 0xFFFFFFFF, "ra": 0x08808000},
-                      {"sentinel": 0xFFFFFFFF, "pc": 0x08808100, "ra": 0x08808200}):
+        for entry in ({"sentinel": 0, "ra": 0x08808000},
+                      {"sentinel": 0, "pc": 0x08808100, "ra": 0x08808200}):
             with self.subTest(entry=entry):
                 self.assert_rejected([entry], "must not be 0: a transfer to 0 is a null code "
                                               "pointer")
@@ -768,13 +768,14 @@ class GeneratedCollections(unittest.TestCase):
 
     def test_the_two_fixtures_share_their_sentinel_values(self) -> None:
         """Deliberate: a sentinel is generic guest vocabulary, so both fixtures use the
-        SAME values at DIFFERENT sites. That is what makes 'same 0 elsewhere follows
-        generic behavior' an assertion the matrix can actually fail."""
+        SAME values at DIFFERENT sites. That is what makes 'the same sentinel elsewhere
+        follows generic behavior' an assertion the matrix can actually fail. Sentinel 0 is
+        refused (#1375), so -1 is the one they share."""
         def sentinels(path: Path) -> set[int]:
             return {t["sentinel"]
                     for t in self.config(path)["bindings"]["callback_terminators"]}
         self.assertEqual(sentinels(FIXTURE_A), sentinels(FIXTURE_B))
-        self.assertEqual(sentinels(FIXTURE_A), {0, 0xFFFFFFFF})
+        self.assertEqual(sentinels(FIXTURE_A), {0xFFFFFFFF})
 
     def test_a_changed_collection_changes_the_digest(self) -> None:
         """The build binds this digest into RUNTIME_PROFILE_HASH, so a changed binding
