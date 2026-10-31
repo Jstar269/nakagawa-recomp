@@ -1111,6 +1111,8 @@ class TestProductionSmokePackage(unittest.TestCase):
         )
 
         env = os.environ.copy()
+        for name in ("RECOMP_OPT", "RECOMP_FLAGS"):
+            env.pop(name, None)
         ucrt_bin = Path("C:/msys64/ucrt64/bin")
         if ucrt_bin.is_dir():
             env["PATH"] = str(ucrt_bin) + os.pathsep + env.get("PATH", "")
@@ -1129,6 +1131,9 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertTrue((package_dir / "build-report.json").is_file())
         report = json.loads((package_dir / "build-report.json").read_text(encoding="utf-8"))
         self.assertEqual(report.get("backends"), "public")
+        # #1730: the package level, and no unit holds a body over the fallback budget.
+        self.assertEqual(report.get("optimization"),
+                         {"recomp_opt": package_cache.PACKAGE_RECOMP_OPT, "fallback_units": []})
         self.assertIn("fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)", report.get("limits", []))
         self.assertIn("PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)", report.get("limits", []))
 

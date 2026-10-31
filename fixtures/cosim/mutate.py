@@ -404,6 +404,31 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
         target="generator",
     ),
+    # The body walk's straight-line ends (#1730). Each kill is a guest-visible
+    # divergence in a cell, never a build failure.
+    Mutant(
+        "codegen-walk-every-beq-ends",
+        "GENERATOR: the body walk gives every beq, not only `b`, no not-taken successor",
+        [(
+            "    if not is_cond_branch(w) or branch_kind(w) != BRANCH_UNCOND:\n",
+            "    if not is_cond_branch(w) or (w >> 26) != 4:\n",
+            1,
+        )],
+        target="generator",
+    ),
+    Mutant(
+        "codegen-walk-no-slot-continuation",
+        "GENERATOR: a branch into the delay slot of `b`/`j` does not continue after the slot",
+        [
+            ("        if pc in terminator_slots:\n",
+             "        if False and pc in terminator_slots:\n", 1),
+            # The emitter's own check would refuse the body at build time; a build
+            # failure is not a kill, so the check goes too and the cells must diverge.
+            ("                and in_ranges(label + 4, ranges)):\n",
+             "                and False):\n", 1),
+        ],
+        target="generator",
+    ),
     Mutant(
         "drop-fcr31-threading",
         "guest FCR31 not threaded into the scalar FPU helper path",
