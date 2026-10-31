@@ -316,5 +316,102 @@ class ZeroBasedOffsetZeroPointers(unittest.TestCase):
         self.assertNotIn("#20/#45", DISPATCH_H)
 
 
+def _strip_comments_keep_lines(src: str) -> str:
+    """_strip_comments, but a comment keeps its newlines so match offsets keep their line."""
+    src = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), src, flags=re.DOTALL)
+    return re.sub(r"//[^\n]*", "", src)
+
+
+_DEFINITION_LINE = re.compile(r"^[A-Za-z_][\w \t\*]*?\b(\w+)\s*\(")
+
+
+def _enclosing_function(lines: list[str], index: int) -> str:
+    """Name of the function whose definition encloses line ``index`` (column-0 header)."""
+    for line in reversed(lines[: index + 1]):
+        match = _DEFINITION_LINE.match(line)
+        if match and not line.rstrip().endswith(";"):
+            return match.group(1)
+    return "<file scope>"
+
+
+class HostEntriesReturnToTheHost(unittest.TestCase):
+    """#1375: the host enters guest code as a linked call that returns to SR_HOST_RETURN_PC.
+
+    A return address of 0 is a null code pointer, so no runtime source may seed one, and
+    every host-to-guest entry outside the dispatch core goes through a reviewed helper:
+    dispatch_from_host for thread entries, callbacks and handlers, and a direct body call or
+    linked call only where the guest itself supplies the return address.
+    """
+
+    # Entry calls the runtime may make outside recomp.c and guest_interp.c, by function.
+    ALLOWED_ENTRY_SITES = {
+        "dispatch_from_host": {
+            ("sched.c", "sched_dispatch_interrupt_guest"),  # VBLANK sub-interrupts, alarms
+            ("sched.c", "coro_body"),                        # thread entries
+            ("hle.c", "hle_dispatch_guest_scoped"),          # VTimer and GE callbacks
+            ("mpeg.c", "call_guest3"),                       # the ringbuffer callback
+        },
+        # The boot entry (seeded), a linked export (the importer's $ra) and a trace replay.
+        "sr_call_body": {
+            ("driver.c", "main"),
+            ("hle.c", "link_started_export"),
+            ("funcdiff.c", "main"),
+        },
+        "dispatch_call_try": {("domain_mode.c", "sr_import_call_guest")},  # the stub's resume
+        "dispatch_call": set(),
+        "dispatch": {("vfpu_fuzz.c", "check_unaligned_dispatch")},  # the VFPU fallback tag
+    }
+
+    @staticmethod
+    def _runtime_sources():
+        for path in sorted(RT.rglob("*.[ch]")):
+            if "selftest" in path.name or path.name in {"recomp.c", "guest_interp.c"}:
+                continue
+            yield path
+
+    def test_no_runtime_source_seeds_a_zero_return_address(self):
+        offenders = []
+        for path in self._runtime_sources():
+            code = _strip_comments_keep_lines(path.read_text(encoding="utf-8", errors="replace"))
+            for match in re.finditer(r"r\[31\]\s*=\s*0u?\s*;", code):
+                line = code.count("\n", 0, match.start()) + 1
+                offenders.append(f"{path.relative_to(ROOT).as_posix()}:{line}")
+        self.assertEqual(offenders, [], "a host entry seeds $ra = 0; seed SR_HOST_RETURN_PC")
+
+    def test_every_host_to_guest_entry_is_an_allowed_helper(self):
+        call = re.compile(r"(?<![\w.>])(dispatch_from_host|sr_call_body|dispatch_call_try|"
+                          r"dispatch_call|dispatch)\s*\(")
+        found = set()
+        stray = []
+        for path in self._runtime_sources():
+            if path.name == "recomp.h":
+                continue  # declarations and the core's own inline helpers
+            code = _strip_comments_keep_lines(path.read_text(encoding="utf-8", errors="replace"))
+            lines = code.split("\n")
+            for match in call.finditer(code):
+                index = code.count("\n", 0, match.start())
+                if _DEFINITION_LINE.match(lines[index]):
+                    continue  # a definition or prototype, not a call
+                site = (path.name, _enclosing_function(lines, index))
+                if site in self.ALLOWED_ENTRY_SITES[match.group(1)]:
+                    found.add((match.group(1), site))
+                else:
+                    stray.append(f"{match.group(1)} in {site[0]}:{site[1]} (line {index + 1})")
+        self.assertEqual(stray, [], "a host-to-guest entry outside the reviewed helpers")
+        expected = {(name, site) for name, sites in self.ALLOWED_ENTRY_SITES.items()
+                    for site in sites}
+        self.assertEqual(found, expected, "an allowed entry site moved or disappeared")
+
+    def test_the_callback_helper_enters_through_the_host_return(self):
+        recomp_h = _strip_comments((RT / "recomp.h").read_text(encoding="utf-8"))
+        helper = recomp_h[recomp_h.index("static inline uint32_t sr_callback_dispatch_one("):]
+        helper = helper[: helper.index("\n}\n")]
+        self.assertIn('if (entry == 0u) sr_null_code_entry(cpu, "callback");', helper)
+        self.assertIn("cpu->r[31] = SR_HOST_RETURN_PC;", helper)
+        hle_c = _strip_comments((RT / "hle.c").read_text(encoding="utf-8"))
+        self.assertRegex(hle_c, r"sr_callback_dispatch_one\(\s*cpu,[^;]*dispatch_from_host\);")
+        self.assertIn("#define SR_HOST_RETURN_PC 0xFFFFFFF0u", recomp_h)
+
+
 if __name__ == "__main__":
     unittest.main()

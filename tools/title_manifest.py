@@ -731,9 +731,10 @@ def validate_callback_terminators(value: Any, path: str) -> list[dict[str, int]]
     the sentinel as a permissive dispatch miss, which a circular walker would read as
     "keep going" and loop forever.
 
-    ``sentinel`` is a raw target value, not an address: the real ones are 0 and
-    0xFFFFFFFF, so neither the non-zero nor the alignment rule for a guest address
-    applies to it. Being a target value is also what subjects it to the core VFPU
+    ``sentinel`` is a raw target value, not an address: the real one is 0xFFFFFFFF, so
+    the alignment rule for a guest address does not apply to it. A sentinel of 0 is
+    refused (#1375): a transfer to 0 is a null code pointer, which stops the run by name
+    in every tier and backend, so it can never be a list terminator. Being a target value is also what subjects it to the core VFPU
     reservation, which ``pc``/``ra`` are not subject to. ``pc`` and ``ra`` are genuine guest addresses and *at least one*
     is required -- an entry with neither would make the sentinel terminate everywhere,
     which is exactly the address-global behavior this collection exists to avoid.
@@ -747,6 +748,12 @@ def validate_callback_terminators(value: Any, path: str) -> list[dict[str, int]]
         item = obj(item, item_path, {"sentinel", "pc", "ra"})
         require(item, item_path, "sentinel")
         entry: dict[str, int] = {"sentinel": uint(item["sentinel"], f"{item_path}.sentinel")}
+        if entry["sentinel"] == 0:
+            fail(
+                f"{item_path}.sentinel",
+                "must not be 0: a transfer to 0 is a null code pointer, which stops by "
+                "name (#1375), never a callback-list terminator",
+            )
         # The sentinel is compared against a dispatch TARGET. `pc`/`ra` are compared
         # against CpuState fields at the call site, never against a target, so the core
         # reservation does not apply to them.

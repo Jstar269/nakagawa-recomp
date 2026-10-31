@@ -4415,6 +4415,7 @@ static uint32_t h_CreateThread(CpuState *s) {
     char name[32] = {0};
     if (A0 && !guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t uid = sched_create_thread_ex(A1, (int)A2, A3, stack_arg(s, 0), name);
+    if (uid) sched_mark_code_pointer_entry(uid);   /* the entry is a guest code pointer (#1375) */
     return uid ? uid : 0x80020190u;   /* SCE_KERNEL_ERROR_NO_MEMORY */
 }
 static uint32_t h_StartThread(CpuState *s) {
@@ -15252,7 +15253,7 @@ static int sr_thread_dispatch_callback_uid(uint32_t thread_uid, CpuState *cpu,
     cb->notify_arg = 0;
 
     uint32_t ret = sr_callback_dispatch_one(
-        cpu, entry, (int)notify_count, notify_arg, common_arg, dispatch);
+        cpu, entry, (int)notify_count, notify_arg, common_arg, dispatch_from_host);
     ge_enqueue_trace_note_callback(cpu, uid, entry);
     /* Apply the auto-delete rule to the dispatched UID, not a slot: the body may have
      * deleted this callback and registered a replacement into the same slot. */
@@ -15322,7 +15323,7 @@ static int hle_dispatch_guest_scoped(CpuState *s, uint32_t fn,
                                      const char *owner, uint32_t *fatal_target) {
     SrAotReturnBoundaryScope scope;
     sr_aot_return_boundary_scope_begin(&scope);
-    dispatch(s, fn);
+    dispatch_from_host(s, fn);
     const uint32_t flow_kind = s->flow_kind;
     const uint32_t flow_target = s->flow_target;
     const int scope_failed = sr_aot_return_boundary_scope_end(s, &scope, owner);
@@ -15808,7 +15809,7 @@ static uint32_t vtimer_call_handler(CpuState *s, const VTimer *t, uint64_t sched
     s->r[7] = t->common;
     s->r[28] = save.r[28];
     s->r[29] = clocks - 16u;
-    s->r[31] = 0;
+    s->r[31] = SR_HOST_RETURN_PC;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = t->handler;
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
@@ -25451,7 +25452,7 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     s->r[6] = a2;
     s->r[28] = save.r[28];
     s->r[29] = frame_sp;
-    s->r[31] = 0;
+    s->r[31] = SR_HOST_RETURN_PC;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
@@ -25504,7 +25505,7 @@ static uint32_t ge_call_guest_gp_rv(CpuState *s, uint32_t fn, uint32_t gp,
     s->r[6] = a2;
     s->r[28] = gp;
     s->r[29] = frame_sp;
-    s->r[31] = 0;
+    s->r[31] = SR_HOST_RETURN_PC;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);

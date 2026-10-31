@@ -203,8 +203,10 @@ A **callback terminator** says that at one exact call site, `sentinel` as a disp
 target means the guest's callback walk is COMPLETE — report `v0 = 1`, return to `$ra` —
 instead of taking the permissive miss path, which answers 0 and which a circular walker
 reads as "continue" and loops on forever. `sentinel` is a raw target value, not an
-address: the real ones are `0` and `0xFFFFFFFF`, so neither the non-zero nor the
-alignment rule for a guest address applies to it. `pc` and `ra` are guest addresses and
+address: the real one is `0xFFFFFFFF`, so the alignment rule for a guest address does not
+apply to it. A sentinel of `0` is refused (#1375): a transfer to 0 is a null code pointer,
+which stops the run by name in every tier and backend, never a completed walk. `pc` and
+`ra` are guest addresses and
 **at least one is required** — an entry constraining neither would make the sentinel
 terminate at every call site in the program, which is precisely the address-global
 behavior this collection exists to prevent. Validation also rejects a duplicate entry
@@ -215,8 +217,8 @@ same thing produce the same digest and are not two different builds.
 
 Ordering inside `dispatch()` is deliberate. The terminator check sits **after** the VFPU
 tag check, because the VFPU dispatch encoding is core vocabulary a title configuration
-must never be able to shadow, and **before** the null-code-pointer stop for a target of 0
-(#1375), because a terminal callback is a normal completion even when its sentinel is 0. The alias check
+must never be able to shadow. No terminator can match a target of 0, which reaches the
+null-code-pointer stop (#1375). The alias check
 sits **after** the exact-hook table, so runtime policy hooks keep precedence over a title
 redirect, and before the lookup fixups, so an aliased target reaches the same code a
 direct target would.

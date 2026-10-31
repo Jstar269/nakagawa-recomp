@@ -145,6 +145,29 @@ class LoweringTests(unittest.TestCase):
         self.assertIn(f"i32 {latched}, i32 4104", lines[dispatch])
         self.assertVerifies(text)
 
+    def test_computed_transfer_refuses_a_null_target_before_the_link_and_slot(self):
+        # #1375: a latched computed target of 0 is a null code pointer, as in the C backend
+        # (codegen.emit_code_pointer_check): the stop comes before the link store and slot.
+        cases = (("jalr", program(jalr(31, 4), addiu(5, 0, 1), JR_RA, NOP)),
+                 ("jr", program(4 << 21 | 0x08, addiu(5, 0, 1))))
+        for name, words in cases:
+            with self.subTest(name):
+                _, text = self.ir(words)
+                lines = text.splitlines()
+                latch = next(i for i, l in enumerate(lines) if "load i32, ptr %r4" in l)
+                latched = re.search(r"(%r4\.\d+) = load", lines[latch]).group(1)
+                compare = next(i for i, l in enumerate(lines)
+                               if "icmp eq i32" in l and f"{latched}, 0" in l)
+                stop = next(i for i, l in enumerate(lines)
+                            if "call void @sr_null_code_pointer(ptr %s, i32 4096)" in l)
+                begin = next(i for i, l in enumerate(lines)
+                             if "@sr_llvm_begin(ptr %s, i32 4096," in l)
+                self.assertLess(latch, compare)
+                self.assertLess(compare, stop)
+                self.assertLess(stop, begin)
+                self.assertEqual(lines[stop + 1].strip(), "unreachable")
+                self.assertVerifies(text)
+
     def test_return_target_is_captured_before_the_slot_and_sp_restored(self):
         words = program(JR_RA, addiu(31, 0, 0))
         _, text = self.ir(words)

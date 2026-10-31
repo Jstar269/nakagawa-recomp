@@ -754,6 +754,8 @@ have_image:;
                stack prologue cannot overwrite the guest-visible argument. */
             s.r[29] = s.r[5];
         }
+        /* The entry returns to the host like every other host entry (#1375). */
+        s.r[31] = SR_HOST_RETURN_PC;
         if (sr_perf_enabled) sr_perf_guest_begin();
         if (sr_perf_enabled) sr_perf_aot_begin(entry);
         int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);

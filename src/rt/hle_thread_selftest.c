@@ -861,6 +861,20 @@ int sr_aot_return_boundary_scope_end(CpuState *s,
     (void)s; (void)scope; (void)owner;
     return 0;
 }
+int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target) {
+    (void)s; (void)target;
+    return 0;
+}
+/* recomp.c's null-code-pointer stops (#1375). Not linked here; a stand-in that ends the run
+ * the same way, so a regression cannot fall through into the harness. */
+void sr_null_return_address(CpuState *s) {
+    fprintf(stderr, "NULL_CODE_POINTER: jr $ra returns to 0x00000000 sp=0x%08x\n", s->r[29]);
+    exit(1);
+}
+void sr_null_code_entry(CpuState *s, const char *owner) {
+    fprintf(stderr, "NULL_CODE_POINTER: %s entry 0x00000000 sp=0x%08x\n", owner, s->r[29]);
+    exit(1);
+}
 #endif
 
 /* A test that needs a module image inside PSP user RAM sets this before
@@ -1032,6 +1046,12 @@ void dispatch(CpuState *cpu, uint32_t target) {
  * computed transfer runs through the stand-in above, which completes its own chain. */
 void dispatch_tail_step(CpuState *cpu, uint32_t target) {
     dispatch(cpu, target);
+}
+
+/* The host entry (#1375): a linked call that returns to the host. The stand-in runs the
+ * body to completion through the stand-in above, as the production call does. */
+void dispatch_from_host(CpuState *cpu, uint32_t entry) {
+    dispatch(cpu, entry);
 }
 
 #ifndef SR_HLE_AOT_BOUNDARY_TEST
@@ -21164,7 +21184,7 @@ static void cbabi_reset(void) {
  * argument registers, $gp and $sp.  Those four are asserted individually. */
 static int cbabi_other_gprs_zero(const CpuState *seen) {
     for (int i = 0; i < 32; i++) {
-        if (i == 4 || i == 5 || i == 6 || i == 28 || i == 29) continue;
+        if (i == 4 || i == 5 || i == 6 || i == 28 || i == 29 || i == 31) continue;
         if (seen->r[i] != 0u) return 0;
     }
     return 1;
@@ -21216,7 +21236,7 @@ static void test_nested_guest_call_abi(void) {
                "the callee runs on a reserved nested-call frame, not the caller's $sp");
         expect(seen->r[29] != before.r[29],
                "the nested frame is genuinely a different stack from the caller's");
-        expect(seen->r[31] == 0u, "$ra is zero: the callee has no guest return address to jump to");
+        expect(seen->r[31] == SR_HOST_RETURN_PC, "$ra is the host return address: the callee returns to the host");
         expect(seen->pc == CBABI_ENTRY, "$pc names the guest entry being dispatched");
         expect(cbabi_other_gprs_zero(seen),
                "every GPR the call does not populate is zeroed: no caller state leaks in");
@@ -42030,6 +42050,134 @@ static void test_aot_return_boundary_thread_isolation(void) {
     test_aot_return_boundary_nonlocal_return();
 }
 
+/* #1375: a thread created through sceKernelCreateThread with entry 0 holds a null code
+ * pointer. It stops by name when it is first scheduled, through the real coro_body and
+ * recomp.c's stop, before any guest code runs; on this zero-based registry the offset-0
+ * function would otherwise run as the thread. A loader entry of 0 (the boot thread's
+ * module_start at offset 0) is not a code pointer and runs. */
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
+enum {
+    NULLENTRY_LAUNCHER = 0x088a0400u,
+    NULLENTRY_NAME = 0x00250b80u,
+};
+static unsigned s_nullentry_offset0_runs;
+static uint32_t s_nullentry_create_result;
+static uint32_t s_nullentry_start_result;
+
+static void nullentry_offset0_body(CpuState *s) {
+    (void)s;
+    s_nullentry_offset0_runs++;
+}
+
+static void nullentry_launcher(CpuState *s) {
+    title_hle_write_cstr(NULLENTRY_NAME, "null-entry");
+    s->r[4] = NULLENTRY_NAME;
+    s->r[5] = 0u;       /* entry: NULL */
+    s->r[6] = 0x30u;    /* below the launcher's priority, so it runs once the launcher ends */
+    s->r[7] = 0x4000u;
+    s->r[8] = 0u;
+    s->r[9] = 0u;
+    s_nullentry_create_result = sr_syscall(s, NID_SCE_KERNEL_CREATE_THREAD);
+    s->r[4] = s_nullentry_create_result;
+    s->r[5] = 0u;
+    s->r[6] = 0u;
+    s_nullentry_start_result = sr_syscall(s, NID_SCE_KERNEL_START_THREAD);
+}
+
+static int run_null_thread_entry_child(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(0u, nullentry_offset0_body);
+    sr_test_register_guest_fn(NULLENTRY_LAUNCHER, nullentry_launcher);
+    s_cpu->r[4] = 0u;
+    s_cpu->r[5] = 0u;
+    sched_run(NULLENTRY_LAUNCHER, 0u, 0u);
+    if ((int32_t)s_nullentry_create_result <= 0 || s_nullentry_start_result != 0u) return 97;
+    return s_nullentry_offset0_runs ? 99 : 96; /* fail-open: the thread ran, or never started */
+}
+
+/* Re-execute this binary in `mode` and return its exit status, or -1 when it could not be
+ * started or waited for. The command line is quoted (exit_game_spawn_child says why). */
+static int aot_spawn_self(const char *self, const char *mode) {
+#ifdef _WIN32
+    wchar_t wide_self[EXITGAME_SPAWN_CAP];
+    wchar_t wide_mode[EXITGAME_SPAWN_CAP];
+    wchar_t command[EXITGAME_SPAWN_CAP];
+    if (MultiByteToWideChar(CP_ACP, 0, self, -1, wide_self, EXITGAME_SPAWN_CAP) <= 0 ||
+        MultiByteToWideChar(CP_ACP, 0, mode, -1, wide_mode, EXITGAME_SPAWN_CAP) <= 0) {
+        return -1;
+    }
+    size_t written = append_quoted_argument(command, EXITGAME_SPAWN_CAP, wide_self);
+    if (written == 0 || written + 1 >= EXITGAME_SPAWN_CAP) return -1;
+    command[written++] = L' ';
+    if (append_quoted_argument(command + written, EXITGAME_SPAWN_CAP - written, wide_mode) == 0)
+        return -1;
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION child;
+    DWORD status = 0;
+    ZeroMemory(&startup, sizeof(startup));
+    startup.cb = sizeof(startup);
+    if (!CreateProcessW(NULL, command, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &child))
+        return -1;
+    int waited = WaitForSingleObject(child.hProcess, INFINITE) == WAIT_OBJECT_0 &&
+                 GetExitCodeProcess(child.hProcess, &status);
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    return waited ? (int)status : -1;
+#else
+    pid_t child = fork();
+    if (child == 0) {
+        execl(self, self, mode, (char *)NULL);
+        _exit(127);
+    }
+    if (child < 0) return -1;
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) return -1;
+    return WEXITSTATUS(status);
+#endif
+}
+
+static void test_aot_null_thread_entry(const char *self) {
+    /* Absolute: the child enters its own scratch directory before the stop is written. */
+    char events_path[MAX_PATH];
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    if (!nk_platform_absolute_path(HLE_BUILD_ROOT "/null_thread_entry_events.txt",
+                                   events_path, sizeof events_path)) {
+        expect(0, "null thread entry: the event file path resolves");
+        return;
+    }
+    remove(events_path);
+    hle_test_setenv("SR_BOOT_EVENT_FILE", events_path);
+    int status = aot_spawn_self(self, "--null-thread-entry-child");
+    hle_test_setenv("SR_BOOT_EVENT_FILE", NULL);
+    expect(status == 1,
+           "null thread entry: a created thread with entry 0 stops the run with status 1");
+    char events[1024] = {0};
+    FILE *ev = fopen(events_path, "rb");
+    size_t got = ev ? fread(events, 1, sizeof(events) - 1u, ev) : 0u;
+    if (ev) fclose(ev);
+    events[got] = '\0';
+    expect(strstr(events, "boundary=null-code-pointer issue=1375") != NULL,
+           "null thread entry: the stop records its boot event naming #1375");
+    remove(events_path);
+
+    /* The loader's boot thread at offset 0 runs the offset-0 function. */
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    s_nullentry_offset0_runs = 0u;
+    sr_test_register_guest_fn(0u, nullentry_offset0_body);
+    s_cpu->r[4] = 0u;
+    s_cpu->r[5] = 0u;
+    sched_run(0u, 0u, 0u);
+    expect(s_nullentry_offset0_runs == 1u,
+           "null thread entry: a loader entry at offset 0 runs the offset-0 function");
+    sr_test_guest_fn_reset();
+}
+
 #undef AOT_THREAD_TEST_CHECKED_CALL
 #endif /* SR_HLE_AOT_BOUNDARY_TEST */
 
@@ -42787,8 +42935,11 @@ static int hle_selftest_main(int argc, char **argv) {
     }
 
 #ifdef SR_HLE_AOT_BOUNDARY_TEST
+    if (argc > 1 && strcmp(argv[1], "--null-thread-entry-child") == 0)
+        return run_null_thread_entry_child();
     if (argc > 1 && strcmp(argv[1], "--aot-return-boundary") == 0) {
         test_aot_return_boundary_thread_isolation();
+        test_aot_null_thread_entry(argv[0]);
         fprintf(stderr, "aot-return-boundary-selftest: %d checks, %d failures\n",
                 s_checks, s_failures);
         free(g_mem_base);
@@ -43208,6 +43359,7 @@ static int hle_selftest_main(int argc, char **argv) {
  * dispatcher exports here while leaving sr_aot_return_boundary_* unmodified. */
 void sr_recomp_test_unused_dispatch_tail_step(CpuState *s, uint32_t target);
 int sr_recomp_test_unused_dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
+void sr_recomp_test_unused_dispatch_from_host(CpuState *s, uint32_t entry);
 void sr_recomp_test_unused_profile_dump(void);
 void sr_recomp_test_unused_profile_block(uint32_t target_pc);
 void sr_recomp_test_unused_oor(uint32_t addr, uint32_t value, int store);
@@ -43222,6 +43374,7 @@ void sr_recomp_test_unused_trace_close(void);
 #define dispatch_call sr_recomp_test_unused_dispatch_call
 #define dispatch_call_try sr_recomp_test_unused_dispatch_call_try
 #define dispatch_tail_step sr_recomp_test_unused_dispatch_tail_step
+#define dispatch_from_host sr_recomp_test_unused_dispatch_from_host
 #define sr_profile_dump sr_recomp_test_unused_profile_dump
 #define sr_profile_block sr_recomp_test_unused_profile_block
 #define sr_oor sr_recomp_test_unused_oor
@@ -43245,6 +43398,7 @@ void sr_recomp_test_unused_trace_close(void);
 #undef sr_oor
 #undef sr_profile_block
 #undef sr_profile_dump
+#undef dispatch_from_host
 #undef dispatch_tail_step
 #undef dispatch_call_try
 #undef dispatch_call
