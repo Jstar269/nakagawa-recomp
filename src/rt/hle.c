@@ -8323,6 +8323,9 @@ int sr_exit_request_stop_due(void) {
         s_quit_stop_armed = 1;
         s_quit_stop_deadline_us = sched_vtime_us() + SR_EXIT_REQUEST_WINDOW_US;
     }
+    /* One window from the request: a callback the guest registers later is still notified,
+     * but it cannot open a second window past this one. */
+    if (sched_vtime_us() >= s_quit_stop_deadline_us) return 1;
     if (sr_exit_request_quit()) return 0;
     if (sched_vtime_us() < s_quit_stop_deadline_us && sr_savedata_pause_busy()) return 0;
     return 1;

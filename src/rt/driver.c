@@ -696,9 +696,10 @@ have_image:;
             sr_driver_boot_event("BOOT_EVENT phase=guest_start mode=scheduler entry=0x%08x", entry);
             sched_run(entry, s.r[4], s.r[5]);
 
-            /* A run stopped from outside the guest ends here, even with a LoadExec queued:
-             * the person quit, so no replacement program is booted. */
-            if (driver_stop_requested()) {
+            /* A run stopped from outside the guest ends here, even with a LoadExec queued, and
+             * so does one the person asked to quit before the stop was due (a LoadExec from the
+             * guest's exit callback): no replacement program is booted. */
+            if (driver_stop_requested() || gui_quit_requested()) {
                 sr_hle_loadexec_finish();
                 break;
             }

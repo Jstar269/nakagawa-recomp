@@ -1770,6 +1770,9 @@ uint32_t gui_headless_acceptance_presented_frames(void);
  * or the person quit and sr_exit_request_stop_due says the run should end now. A quit request
  * never exits from inside the presenter; the scheduler returns and the driver tears down. */
 int      gui_stop_requested(void);
+/* 1 once the person asked to quit, whether or not the stop is due yet: a run the scheduler hands
+ * back after that (a LoadExec from the guest's exit callback) is not continued. */
+int      gui_quit_requested(void);
 /* Releases the presenter, the SR_PERF summary first; idempotent. The driver calls it once the
  * scheduler returns, and gui_init registers it with atexit for a run that ends otherwise. */
 void     gui_shutdown(void);

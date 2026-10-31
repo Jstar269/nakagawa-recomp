@@ -18603,6 +18603,33 @@ static void test_quit_stop_decision(void) {
     s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
     expect(sr_savedata_pause_busy() && sr_exit_request_stop_due() == 1,
            "quit stop: a dialog still running when the window ends no longer holds the stop");
+
+    /* A callback the guest registers after the quit (during the hold) is notified, but the
+     * stop still comes at the end of the one window the quit opened. */
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_exit_request_reset();
+    sr_hle_test_osk_slot_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    s_vtime_us = 1000u;
+    owner = fixture_thread(0x3444u, TH_RUNNING, 0x30);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               sr_exit_request_stop_due() == 0,
+           "quit stop: a savedata dialog holds a quit made with no exit callback");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US / 2u;
+    cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "late-exit-callback",
+                                WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    expect(cb != 0u && exit_request_register(cb) == 0u && sr_exit_request_stop_due() == 0 &&
+               sr_thread_has_pending_callbacks(owner->uid),
+           "quit stop: a callback registered during the hold is notified");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
+    expect(sr_exit_request_stop_due() == 1,
+           "quit stop: the late callback does not open a second window past the first");
+    wakeup_delete_callback(cb);
     sr_hle_test_osk_slot_reset();
     sr_hle_test_exit_request_reset();
     sr_test_guest_fn_reset();

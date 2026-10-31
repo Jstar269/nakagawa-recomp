@@ -665,6 +665,10 @@ static void gui_quit_request(void) {
 }
 #endif
 
+int gui_quit_requested(void) {
+    return s_quit_requested;
+}
+
 int gui_stop_requested(void) {
     if (gui_headless_acceptance_complete()) return 1;
     if (!s_quit_requested || !sr_exit_request_stop_due()) return 0;

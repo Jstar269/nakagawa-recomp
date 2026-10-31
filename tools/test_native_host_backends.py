@@ -484,10 +484,22 @@ class NativeHostBackendTests(unittest.TestCase):
             self.assertNotIn(spawn, gui,
                              "gui.c started a host thread; its quit may no longer run on the "
                              "thread that owns the perf counters")
-        code = [line.split("//", 1)[0] for line in gui.splitlines()
-                if not line.lstrip().startswith("*")]
-        exits = [line for line in code if re.search(r"(?<![A-Za-z0-9_])(_Exit|exit|abort)\(", line)]
-        self.assertEqual(exits, [], "a gui.c quit path ends the process from inside the presenter")
+        # The quit paths themselves end nothing; a deliberate fail-closed stop elsewhere in gui.c
+        # would still be allowed (AGENTS.md section 6).
+        for head in ("void gui_pump(void) {",
+                     "int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {",
+                     "static void gui_pause_act(NkOverlayAction action) {",
+                     "SrPauseFrame gui_pause_frame(void) {",
+                     "void gui_pause_leave(void) {",
+                     "static void gui_quit_request(void) {",
+                     "static SrPauseFrame gui_pause_quit(void) {",
+                     "int gui_stop_requested(void) {"):
+            body = _function_body(gui, head)
+            code = [line.split("//", 1)[0] for line in body.splitlines()
+                    if not line.lstrip().startswith("*")]
+            exits = [line for line in code
+                     if re.search(r"(?<![A-Za-z0-9_])(_Exit|exit|abort)\(", line)]
+            self.assertEqual(exits, [], f"{head} ends the process from inside the presenter")
         self.assertNotIn("gui_window_closed_exit", gui)
         # gui_pump (SDL3, Win32), gui_present (GPU and software presenters), the pause overlay's
         # frame (poll, present) and leave (poll), its Quit to library (#1159), and the pause's
@@ -531,6 +543,8 @@ class NativeHostBackendTests(unittest.TestCase):
             self.assertIn(check, hook)
         self.assertIn("    if (use_sched) {\n        sr_sched_stop_requested = driver_stop_requested;\n"
                       "        ge_capture_exit_set_deferred(1);\n", driver)
+        self.assertIn("if (driver_stop_requested() || gui_quit_requested()) {", driver,
+                      "a run the person quit is continued after the scheduler returns")
         teardown = driver.index("    sr_perf_shutdown();\n    gui_shutdown();\n    sr_trace_close();\n")
         self.assertGreater(teardown, driver.index("sched_run(entry, s.r[4], s.r[5]);"),
                            "the driver must tear down after the scheduler returns")
