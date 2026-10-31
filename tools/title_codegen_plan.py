@@ -1366,6 +1366,10 @@ def _read_unit_fallbacks(opt_makefile: Path) -> list[dict[str, Any]]:
     def refuse(detail: str) -> PackageRouteError:
         return PackageRouteError("PACKAGE_INVALID_CODEGEN_REPORT", f"{opt_makefile.name}: {detail}")
 
+    if not opt_makefile.is_file():
+        # A missing generated-code output, as _record_aot_stage names one.
+        raise PackageRouteError(
+            "PACKAGE_BUILD_INCOMPLETE", f"missing generated-code outputs: {opt_makefile.name}")
     try:
         text = opt_makefile.read_text(encoding="ascii")
     except (OSError, UnicodeDecodeError) as exc:
@@ -2280,8 +2284,11 @@ def build_package(
         for target in _make_build_targets(native_only=pregenerated, aot_stage=aot_stage):
             jobs = build_jobs
             if target == "compile":
-                # Make executes the per-unit levels: refuse a file codegen did not write.
-                _read_unit_fallbacks(build_workspace / f"{selected_name}_recomp_opt.mk")
+                # Make executes the per-unit levels: refuse content codegen did not write. A
+                # missing file runs nothing, and is refused with the other missing outputs.
+                opt_makefile = build_workspace / f"{selected_name}_recomp_opt.mk"
+                if opt_makefile.is_file():
+                    _read_unit_fallbacks(opt_makefile)
                 # The units exist now: one larger than the chunk target needs its own budget.
                 largest = _largest_generated_unit(build_workspace, selected_name)
                 jobs, jobs_reason = _host_package_build_jobs(
