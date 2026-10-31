@@ -31,6 +31,7 @@ import argparse
 from collections import Counter
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -404,9 +405,20 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--date", default=None,
                         help="The date the summary names (default: the manifest's last update)")
     args = parser.parse_args(list(argv) if argv is not None else None)
-    outputs = [path.resolve() for path in (args.write_doc, args.output, args.json)
-               if path is not None]
-    if args.manifest.resolve() in outputs or len(set(outputs)) != len(outputs):
+    outputs = [path for path in (args.write_doc, args.output, args.json) if path is not None]
+
+    def same_file(first: Path, second: Path) -> bool:
+        # Two names of one file (the same path, or a hard link) are one file.
+        if first.resolve() == second.resolve():
+            return True
+        try:
+            return first.exists() and second.exists() and os.path.samefile(first, second)
+        except OSError:
+            return False
+
+    if any(same_file(path, args.manifest) for path in outputs) or any(
+            same_file(first, second) for index, first in enumerate(outputs)
+            for second in outputs[index + 1:]):
         parser.error("each output must be a file of its own, and never the manifest it reads")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     summary = summarize(manifest)

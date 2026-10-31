@@ -100,7 +100,8 @@ class DatafileTests(unittest.TestCase):
         # A list cut short is refused, at a game's end or inside one, as the C reader does.
         whole = datafile()
         last_game = whole.rindex("<game")
-        for cut in (whole[:last_game], whole[:whole.rindex("<rom")] + "</datafile>\n"):
+        for cut in (whole[:last_game], whole[:whole.rindex("<rom")] + "</datafile>\n",
+                    whole[:whole.rindex("</datafile>") + len("</datafile")]):
             with self.assertRaises(disc_verify.DiscVerifyError) as raised:
                 disc_verify.parse_dat_text(cut)
             self.assertEqual(raised.exception.boundary_code, "DISC_DAT_NOT_DATAFILE")

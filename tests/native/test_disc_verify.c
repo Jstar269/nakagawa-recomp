@@ -335,6 +335,12 @@ static void test_dat_reader_and_tiers(void) {
         snprintf(spliced + head, strlen(whole) + 1u - head, "</datafile>\n");
         CHECK(!nk_disc_dat_parse(spliced, strlen(spliced), &dat, &status));
         CHECK(strcmp(status.code, NK_DISC_DAT_NOT_DATAFILE) == 0 && dat.roms == NULL);
+        /* Cut inside the closing tag itself. */
+        const char *closing = strstr(whole, "</datafile>");
+        CHECK(closing != NULL);
+        CHECK(!nk_disc_dat_parse(whole, (size_t)(closing - whole) + strlen("</datafile"), &dat,
+                                 &status));
+        CHECK(strcmp(status.code, NK_DISC_DAT_NOT_DATAFILE) == 0 && dat.roms == NULL);
         free(spliced);
         free(whole);
     }
@@ -573,17 +579,23 @@ static void test_library_keys_by_disc_id_and_hash(void) {
     r = nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1);
     CHECK(r && strcmp(r->title_name, "Retail, renamed") == 0);
 
-    /* An update made without hashing, of the same file, keeps the hashes and
-       tier of that file's record, not the first record's. */
+    /* An update of the same file made without hashing replaces that file's
+       record, not the first record's, and leaves it unhashed: the file may hold
+       other bytes now. An update that carries the hashes keeps them. */
     seed(&entry, "TEST70001", "retail.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    snprintf(entry.last_played, sizeof(entry.last_played), "2026-10-31T00:00:00Z");
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 2);
+    CHECK(nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1) == NULL);
+    t = nk_library_find_by_key(&g_lib, "TEST70001", g_modified_digest.sha1);
+    CHECK(t && t->last_played[0] == '\0');
+    seed(&entry, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
     snprintf(entry.last_played, sizeof(entry.last_played), "2026-10-31T00:00:00Z");
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
     CHECK(nk_library_count(&g_lib) == 2);
     r = nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1);
     CHECK(r && strcmp(r->last_played, "2026-10-31T00:00:00Z") == 0 &&
           r->disc_verification == NK_DISC_TIER_VERIFIED_RETAIL);
-    t = nk_library_find_by_key(&g_lib, "TEST70001", g_modified_digest.sha1);
-    CHECK(t && t->last_played[0] == '\0');
 
     /* Saved and read back: both records, their hashes and tiers. */
     char path[NATIVE_TEST_PATH_MAX];
@@ -700,8 +712,8 @@ static void test_library_keys_by_disc_id_and_hash(void) {
           strcmp(nk_library_find_by_key(&g_lib, "TEST70004", g_retail_digest.sha1)->iso_path,
                  "games/third.iso") == 0);
 
-    /* A player re-add of a record a bring-up wrote, which records no size (0),
-       keeps the bring-up's hashes. */
+    /* A player re-add of a record a bring-up wrote replaces it, unhashed until
+       the player's check of the add ends: one record, never a stale tier. */
     nk_library_init(&g_lib);
     seed(&entry, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
     entry.iso_size_bytes = 0;
@@ -709,8 +721,8 @@ static void test_library_keys_by_disc_id_and_hash(void) {
     seed(&entry, "TEST70001", "retail.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
     CHECK(nk_library_count(&g_lib) == 1);
-    CHECK(strcmp(nk_library_get(&g_lib, 0)->content_sha1, g_retail_digest.sha1) == 0 &&
-          nk_library_get(&g_lib, 0)->disc_verification == NK_DISC_TIER_VERIFIED_RETAIL);
+    CHECK(nk_library_get(&g_lib, 0)->content_sha1[0] == '\0' &&
+          nk_library_get(&g_lib, 0)->disc_verification == NK_DISC_TIER_NOT_CHECKED);
     printf("PASS library keyed by disc ID plus hash: both discs kept, the modified one labelled\n");
 }
 
@@ -756,6 +768,32 @@ static void test_library_remove_never_takes_the_other_image(void) {
     CHECK(nk_library_count(&g_lib) == 0);
     CHECK(nk_library_load(&g_loaded, path) == NK_OK && nk_library_count(&g_loaded) == 0);
     printf("PASS library remove never takes the other image of a disc ID\n");
+}
+
+/* Two unhashed images of one disc ID (added before either was hashed): the
+   empty hash can't say which to remove, the file can, in memory and on disk. */
+static void test_library_remove_by_file(void) {
+    NkGameEntry one, two;
+    char path[NATIVE_TEST_PATH_MAX];
+    path_in(path, sizeof(path), "remove_by_file.json");
+    seed(&one, "TEST70005", "one.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    seed(&two, "TEST70005", "two.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    nk_library_init(&g_lib);
+    g_lib.entries[g_lib.count++] = one;
+    g_lib.entries[g_lib.count++] = two;
+    CHECK(nk_library_save(&g_lib, path) == NK_OK);
+    CHECK(nk_library_remove_by_key(&g_lib, "TEST70005", "") == NK_ERROR_AMBIGUOUS);
+    CHECK(nk_library_remove_by_file(&g_lib, "TEST70005", "games/two.iso") == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 1 &&
+          strcmp(nk_library_get(&g_lib, 0)->iso_path, "games/one.iso") == 0);
+    CHECK(nk_library_remove_by_file(&g_lib, "TEST70005", "games/two.iso") ==
+          NK_ERROR_FILE_NOT_FOUND);
+    CHECK(nk_library_commit_remove_by_file(&g_lib, "TEST70005", "games/two.iso", path) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 1);
+    CHECK(nk_library_load(&g_loaded, path) == NK_OK && nk_library_count(&g_loaded) == 1 &&
+          strcmp(nk_library_get(&g_loaded, 0)->iso_path, "games/one.iso") == 0);
+    remove(path);
+    printf("PASS library remove by file names one of two unhashed images\n");
 }
 
 static void test_library_commit_keeps_both_images(void) {
@@ -847,6 +885,7 @@ int main(void) {
     test_old_library_still_loads();
     test_library_keys_by_disc_id_and_hash();
     test_library_remove_never_takes_the_other_image();
+    test_library_remove_by_file();
     test_library_commit_keeps_both_images();
     test_library_hash_members_are_checked();
     printf("test_disc_verify: %d checks passed\n", g_checks);

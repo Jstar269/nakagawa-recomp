@@ -950,6 +950,23 @@ static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
     }
 }
 
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+/* The UI test points a card at its synthetic image, and the card's own library
+   record with it: the library tells two images of a disc ID apart by their
+   files, so a card and its record must name the same one. */
+static void ui_test_set_card_image(PlayerApp *app, int index, const char *iso_path) {
+    GameRecord *card = &app->games[index];
+    for (int j = 0; j < app->library.count; j++) {
+        NkGameEntry *record = &app->library.entries[j];
+        if (strcmp(record->disc_id, card->disc_id) == 0 &&
+            strcmp(record->iso_path, card->iso_path) == 0) {
+            snprintf(record->iso_path, sizeof(record->iso_path), "%s", iso_path);
+        }
+    }
+    snprintf(card->iso_path, sizeof(card->iso_path), "%s", iso_path);
+}
+#endif
+
 /* Saves the inspected title to the library and selects it, as the existing
    wizard's Ready step does. Returns the title's index, or -1. */
 static int player_ui_wizard_save_title(PlayerApp *app) {
@@ -4530,9 +4547,7 @@ int main(int argc, char *argv[]) {
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (ui_test_iso_path && app.selected_game_index >= 0 &&
         app.selected_game_index < app.game_count) {
-        snprintf(app.games[app.selected_game_index].iso_path,
-                 sizeof(app.games[app.selected_game_index].iso_path), "%s",
-                 ui_test_iso_path);
+        ui_test_set_card_image(&app, app.selected_game_index, ui_test_iso_path);
     }
     const char *bind_test_eboot = getenv("NK_UI_TEST_BIND_EBOOT");
     if (ui_test_mode && ui_test_iso_path && bind_test_eboot &&
@@ -4547,19 +4562,7 @@ int main(int argc, char *argv[]) {
     if (ui_test_iso_path) {
         for (int i = 0; i < app.game_count; i++) {
             if (strcmp(app.games[i].disc_id, "TEST00006") == 0) {
-                snprintf(app.games[i].iso_path, sizeof(app.games[i].iso_path),
-                         "%s", ui_test_iso_path);
-            }
-        }
-        /* The library's records name the same image as the cards: the library
-           tells two images of a disc ID apart by their files. */
-        for (int i = 0; i < app.game_count; i++) {
-            for (int j = 0; j < app.library.count; j++) {
-                if (strcmp(app.library.entries[j].disc_id, app.games[i].disc_id) == 0) {
-                    snprintf(app.library.entries[j].iso_path,
-                             sizeof(app.library.entries[j].iso_path), "%s",
-                             app.games[i].iso_path);
-                }
+                ui_test_set_card_image(&app, i, ui_test_iso_path);
             }
         }
     }
@@ -5642,12 +5645,14 @@ int main(int argc, char *argv[]) {
             !build_check_session_already_handled) {
             /* The card of the image built, not another image with its disc ID;
                a card that no longer names that file (added again from another
-               folder meanwhile) is found by its disc ID, as before. */
+               folder meanwhile) is found by its disc ID when it is the only
+               card with it. */
             int build_game_index = app.build_session.iso_path[0]
                 ? player_app_find_game_by_image(&app, app.build_session.disc_id,
                                                 app.build_session.iso_path)
                 : -1;
-            if (build_game_index < 0) {
+            if (build_game_index < 0 &&
+                player_app_count_games_with_disc_id(&app, app.build_session.disc_id) == 1) {
                 build_game_index = player_app_find_game_by_disc_id(&app, app.build_session.disc_id);
             }
             if (build_game_index >= 0 && build_game_index < app.game_count) {

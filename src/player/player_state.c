@@ -1026,6 +1026,14 @@ int player_app_find_game_by_image(const PlayerApp *app, const char *disc_id,
     return -1;
 }
 
+int player_app_count_games_with_disc_id(const PlayerApp *app, const char *disc_id) {
+    int count = 0;
+    for (int i = 0; app && disc_id && i < app->game_count; i++) {
+        count += strcmp(app->games[i].disc_id, disc_id) == 0;
+    }
+    return count;
+}
+
 int player_app_find_added_game(const PlayerApp *app, const GameRecord *game) {
     return game ? player_app_find_game_by_image(app, game->disc_id, game->iso_path) : -1;
 }
@@ -1144,16 +1152,18 @@ void player_app_disc_check_finish(PlayerApp *app, const NkDiscVerification *resu
            (size_t)result->result < sizeof(results) / sizeof(results[0])
                ? results[result->result] : "UNKNOWN",
            nk_disc_tier_name(result->tier));
+    if (cancelled) {
+        /* The library's Cancel: the checks waiting end too, even when the
+           running one finished first. */
+        memset(check->queue, 0, sizeof(check->queue));
+        check->count = 0;
+    }
     if (result->result == NK_DISC_VERIFY_HASHED || result->result == NK_DISC_VERIFY_LIST_UNUSABLE) {
         player_disc_check_record(app, &item, result);
         if (result->result == NK_DISC_VERIFY_LIST_UNUSABLE) {
             snprintf(check->note, sizeof(check->note), "Your disc list could not be read");
         }
-    } else if (cancelled) {
-        /* The library's Cancel: the checks waiting end too. */
-        memset(check->queue, 0, sizeof(check->queue));
-        check->count = 0;
-    } else {
+    } else if (!cancelled) {
         snprintf(check->note, sizeof(check->note), "A disc image could not be checked");
     }
 }
@@ -2929,15 +2939,24 @@ bool player_app_remove_game(PlayerApp *app, int game_index) {
     const char *disc_id = app->games[game_index].disc_id;
     if (!disc_id || disc_id[0] == '\0') return false;
     if (player_game_is_showcase(&app->games[game_index])) return false;
-    /* The card's own image, by its hash ("" names the unhashed record): two
-     * images can share a disc ID, and the disc ID alone could take the other. */
+    /* The card's own image: two images can share a disc ID, and the disc ID
+     * alone could take the other. Its file names it (one file holds one
+     * image), even beside another image not hashed yet; a record with no file
+     * is named by its hash ("" names the unhashed record). */
     char sha1[sizeof(app->games[game_index].content_sha1)];
+    char iso[sizeof(app->games[game_index].iso_path)];
     snprintf(sha1, sizeof(sha1), "%s", app->games[game_index].content_sha1);
+    snprintf(iso, sizeof(iso), "%s", app->games[game_index].iso_path);
     /* Only the library entry is removed. The user's ISO file on disk is
      * never touched. */
-    if (nk_library_remove_by_key(&app->library, disc_id, sha1) != NK_OK) return false;
+    NkResult removed = iso[0] ? nk_library_remove_by_file(&app->library, disc_id, iso)
+                              : nk_library_remove_by_key(&app->library, disc_id, sha1);
+    if (removed != NK_OK) return false;
     /* Under the library lock, from what the file holds now (#1768). */
-    if (nk_library_commit_remove_by_key(&app->library, disc_id, sha1, NULL) != NK_OK) {
+    NkResult committed = iso[0]
+        ? nk_library_commit_remove_by_file(&app->library, disc_id, iso, NULL)
+        : nk_library_commit_remove_by_key(&app->library, disc_id, sha1, NULL);
+    if (committed != NK_OK) {
         player_app_sync_library(app);
         return false;
     }
@@ -3090,21 +3109,40 @@ static bool player_library_file_path(const PlayerApp *app, char *out, size_t out
     return written > 0 && (size_t)written < out_size;
 }
 
+typedef enum {
+    PLAYER_LIBRARY_FILE_NO_OTHER_IMAGE = 0,
+    PLAYER_LIBRARY_FILE_OTHER_IMAGE,     /* the folders are its too */
+    PLAYER_LIBRARY_FILE_UNREADABLE       /* can't tell: nothing may be deleted */
+} PlayerLibraryFileImages;
+
 /* Whether the library file holds an image of the card's disc ID other than the
    card's own: another player or a bring-up may have added one since this
-   library was read. A file that can't be read holds none. */
-static bool player_library_file_has_other_image(const GameRecord *game, const char *path) {
+   library was read, or hashed the card's file in place to other bytes. A file
+   that can't be read (damaged, or a newer player's) can't say. */
+static PlayerLibraryFileImages player_library_file_other_image(const GameRecord *game,
+                                                               const char *path) {
     NkLibrary *disk = (NkLibrary *)malloc(sizeof(*disk));
-    if (!disk) return true; /* can't tell: keep the folders */
-    bool other = false;
-    if (nk_library_load(disk, path) == NK_OK) {
-        for (int i = 0; i < disk->count && !other; i++) {
-            other = strcmp(disk->entries[i].disc_id, game->disc_id) == 0 &&
-                    strcmp(disk->entries[i].iso_path, game->iso_path) != 0;
+    if (!disk) return PLAYER_LIBRARY_FILE_UNREADABLE;
+    PlayerLibraryFileImages found = PLAYER_LIBRARY_FILE_NO_OTHER_IMAGE;
+    if (nk_library_load(disk, path) != NK_OK) {
+        found = PLAYER_LIBRARY_FILE_UNREADABLE;
+    } else {
+        for (int i = 0; i < disk->count; i++) {
+            const NkGameEntry *record = &disk->entries[i];
+            if (strcmp(record->disc_id, game->disc_id) != 0) continue;
+            /* The card's own record names its file and, once either is hashed,
+               the same bytes. */
+            bool same_file = strcmp(record->iso_path, game->iso_path) == 0;
+            bool same_bytes = !record->content_sha1[0] || !game->content_sha1[0] ||
+                              strcmp(record->content_sha1, game->content_sha1) == 0;
+            if (!same_file || !same_bytes) {
+                found = PLAYER_LIBRARY_FILE_OTHER_IMAGE;
+                break;
+            }
         }
     }
     free(disk);
-    return other;
+    return found;
 }
 
 bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete_saves,
@@ -3138,7 +3176,17 @@ bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete
             return false;
         }
         locked = true;
-        if (player_library_file_has_other_image(&app->games[game_index], library_path)) {
+        PlayerLibraryFileImages images =
+            player_library_file_other_image(&app->games[game_index], library_path);
+        if (images == PLAYER_LIBRARY_FILE_UNREADABLE) {
+            nk_platform_file_lock_release(&lock);
+            if (error && error_size) {
+                snprintf(error, error_size, "The library file could not be read, so nothing "
+                         "was removed or deleted.");
+            }
+            return false;
+        }
+        if (images == PLAYER_LIBRARY_FILE_OTHER_IMAGE) {
             plan.path_count = 0;
             plan.files_shared = true;
         }

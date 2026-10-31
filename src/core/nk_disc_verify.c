@@ -478,7 +478,15 @@ bool nk_disc_dat_parse(const char *text, size_t length, NkDiscDat *out,
     }
     /* A list cut short (a download that stopped) is refused, never read as the
        whole list: its discs past the cut would all read as unknown. */
-    if (!span_find(text, end, "</datafile")) {
+    const char *closing = span_find(text, end, "</datafile");
+    if (closing) {
+        closing += strlen("</datafile");
+        while (closing < end && (*closing == ' ' || *closing == '\t' || *closing == '\r' ||
+                                 *closing == '\n')) {
+            closing++;
+        }
+    }
+    if (!closing || closing >= end || *closing != '>') {
         return verify_fail(status, NK_DISC_DAT_NOT_DATAFILE,
                            "The datafile is cut short: it has no closing </datafile>.");
     }

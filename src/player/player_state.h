@@ -1349,6 +1349,8 @@ int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id);
    failed. Two images can share a disc ID (a retail disc and a fan translation
    of it), so the disc ID alone could pick the other card. */
 int player_app_find_added_game(const PlayerApp *app, const GameRecord *game);
+/* How many cards carry disc_id (two images can share one). */
+int player_app_count_games_with_disc_id(const PlayerApp *app, const char *disc_id);
 /* The card of one image, by its disc ID and file, or -1. */
 int player_app_find_game_by_image(const PlayerApp *app, const char *disc_id,
                                   const char *iso_path);

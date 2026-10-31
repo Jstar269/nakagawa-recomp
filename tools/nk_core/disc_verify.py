@@ -53,6 +53,7 @@ DAT_RELATIVE_PATH = Path("verification") / "redump.dat"
 
 _GAME = re.compile(r"<game\b[^>]*>(.*?)</game\s*>", re.DOTALL)
 _GAME_OPEN = re.compile(r"<game\b")
+_DATAFILE_END = re.compile(r"</datafile\s*>")
 _ROM = re.compile(r"<rom\b([^>]*?)/?>")
 _ATTRIBUTE = re.compile(r'([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*"([^"]*)"')
 _SERIAL = re.compile(r"<serial>([^<]*)</serial\s*>")
@@ -134,7 +135,7 @@ def parse_dat_text(text: str) -> RedumpDat:
                               boundary_code="DISC_DAT_NOT_DATAFILE")
     # A list cut short (a download that stopped) is refused, never read as the whole list:
     # its discs past the cut would all read as unknown.
-    if "</datafile" not in text:
+    if not _DATAFILE_END.search(text):
         raise DiscVerifyError("The datafile is cut short: it has no closing </datafile>.",
                               boundary_code="DISC_DAT_NOT_DATAFILE")
     dat = RedumpDat()

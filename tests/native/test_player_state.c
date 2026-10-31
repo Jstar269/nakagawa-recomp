@@ -2597,6 +2597,29 @@ static void test_disc_check_after_add(void) {
     sample.is_sample = true;
     assert(!player_app_disc_check_queue(app, &sample));
 
+    /* A second image of the disc ID added before the first is checked, while
+       the first's file is still there: both cards stay, both are queued. */
+    {
+        GameRecord first = translated, second = translated;
+        snprintf(first.disc_id, sizeof(first.disc_id), "TEST70023");
+        snprintf(second.disc_id, sizeof(second.disc_id), "TEST70023");
+        assert(strlen(retail_iso) < sizeof(second.iso_path));
+        memcpy(second.iso_path, retail_iso, strlen(retail_iso) + 1u);
+        assert(player_app_add_game(app, &first));
+        assert(player_app_add_game(app, &second));
+        assert(player_app_count_games_with_disc_id(app, "TEST70023") == 2);
+        assert(app->disc_check.count == 3);
+        assert(strcmp(app->disc_check.queue[1].iso_path, translated_iso) == 0 &&
+               strcmp(app->disc_check.queue[2].iso_path, retail_iso) == 0);
+        app->disc_check.count = 1;
+        memset(&app->disc_check.queue[1], 0, 2u * sizeof(app->disc_check.queue[0]));
+        for (int i = app->game_count - 1; i >= 0; i--) {
+            if (strcmp(app->games[i].disc_id, "TEST70023") == 0) {
+                assert(player_app_remove_game(app, i));
+            }
+        }
+    }
+
     /* Nothing starts while a game runs; then the check is the running one. */
     PlayerDiscCheckItem item;
     bool verified_elsewhere = true;
@@ -2688,9 +2711,46 @@ static void test_disc_check_after_add(void) {
         assert(nk_library_load(&loaded, path) == NK_OK && nk_library_count(&loaded) == 1 &&
                strcmp(nk_library_get(&loaded, 0)->iso_path, "elsewhere.iso") == 0);
         assert(app->game_count == 1 && strcmp(app->games[0].iso_path, "elsewhere.iso") == 0);
+        /* Another player hashed the card's own file in place to other bytes: the
+           file's record is another image, so the folders stay too. */
+        assert(player_app_remove_game(app, 0));
+        assert(player_app_add_game(app, &retail_game));
+        assert(player_app_disc_check_take(app, &item, &verified_elsewhere));
+        assert(nk_disc_verify_image(item.iso_path, data_root, item.disc_id, verified_elsewhere,
+                                    NULL, &check));
+        player_app_disc_check_finish(app, &check);
+        assert(app->game_count == 1 && app->games[0].content_sha1[0] != '\0');
+        assert(nk_library_load(&loaded, path) == NK_OK && nk_library_count(&loaded) == 1);
+        NkGameEntry rehashed = *nk_library_get(&loaded, 0);
+        snprintf(rehashed.content_sha1, sizeof(rehashed.content_sha1),
+                 "0123456789abcdef0123456789abcdef01234567");
+        rehashed.disc_verification = NK_DISC_TIER_UNKNOWN;
+        loaded.entries[0] = rehashed;
+        assert(nk_library_save(&loaded, path) == NK_OK);
+        assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        kept = fopen(marker, "rb");
+        assert(kept != NULL);
+        fclose(kept);
+        /* A library file this player can't read (a newer player's): nothing is
+           removed or deleted, and the reason says so. */
+        while (app->game_count > 0) assert(player_app_remove_game(app, 0));
+        assert(player_app_add_game(app, &retail_game));
+        static const char newer[] = "{\"schema_version\": 99, \"games\": []}\n";
+        write_text_file(path, newer);
+        assert(!player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        assert(strstr(error, "could not be read") != NULL);
+        kept = fopen(marker, "rb");
+        assert(kept != NULL);
+        fclose(kept);
+        assert(app->game_count == 1);
+        remove(path);
+        nk_library_init(&app->library);
+        assert(strlen(path) < sizeof(app->library.library_path));
+        memcpy(app->library.library_path, path, strlen(path) + 1u);
+        player_app_sync_library(app);
         assert(nk_platform_remove_tree(extracted, NULL));
         /* The retail disc comes back for the checks below. */
-        assert(player_app_remove_game(app, 0));
+        assert(app->game_count == 0);
         assert(player_app_add_game(app, &retail_game));
         assert(player_app_disc_check_take(app, &item, &verified_elsewhere));
         assert(nk_disc_verify_image(item.iso_path, data_root, item.disc_id, verified_elsewhere,
@@ -2741,16 +2801,29 @@ static void test_disc_check_after_add(void) {
     assert(!player_app_disc_check_line(app, line, sizeof(line), &offers_cancel));
 
     /* A hashed image added again is checked again: its file may have changed in
-       place, at the same size. */
+       place, at the same size. Until that check ends the card claims no tier,
+       and a check cancelled or failed leaves it unchecked, never the old tier. */
     translated_index = player_app_find_added_game(app, &translated);
     assert(translated_index >= 0 && app->games[translated_index].content_sha1[0] != '\0');
+    char old_sha1[sizeof(app->games[0].content_sha1)];
+    snprintf(old_sha1, sizeof(old_sha1), "%s", app->games[translated_index].content_sha1);
     image[8192] ^= 0x33u;
     write_binary_file(translated_iso, image, sizeof(image));
     assert(player_app_add_game(app, &translated));
+    translated_index = player_app_find_added_game(app, &translated);
+    assert(translated_index >= 0 && app->games[translated_index].content_sha1[0] == '\0' &&
+           app->games[translated_index].disc_verification == NK_DISC_TIER_NOT_CHECKED);
     assert(app->disc_check.count == 1);
     assert(player_app_disc_check_take(app, &item, &verified_elsewhere));
-    char old_sha1[sizeof(app->games[0].content_sha1)];
-    snprintf(old_sha1, sizeof(old_sha1), "%s", app->games[translated_index].content_sha1);
+    player_app_disc_check_cancel(app);
+    memset(&check, 0, sizeof(check));
+    check.result = NK_DISC_VERIFY_CANCELLED;
+    player_app_disc_check_finish(app, &check);
+    translated_index = player_app_find_added_game(app, &translated);
+    assert(translated_index >= 0 &&
+           app->games[translated_index].disc_verification == NK_DISC_TIER_NOT_CHECKED);
+    assert(player_app_add_game(app, &translated));
+    assert(player_app_disc_check_take(app, &item, &verified_elsewhere));
     assert(nk_disc_verify_image(item.iso_path, data_root, item.disc_id, verified_elsewhere,
                                 NULL, &check));
     player_app_disc_check_finish(app, &check);
@@ -2758,6 +2831,23 @@ static void test_disc_check_after_add(void) {
     assert(translated_index >= 0 &&
            strcmp(app->games[translated_index].content_sha1, old_sha1) != 0 &&
            app->games[translated_index].disc_verification == NK_DISC_TIER_MODIFIED);
+
+    /* Cancel ends the checks waiting even when the running one finished first. */
+    assert(player_app_disc_check_queue(app, &translated));
+    assert(player_app_disc_check_queue(app, &retail_game));
+    assert(player_app_disc_check_take(app, &item, &verified_elsewhere));
+    player_app_disc_check_cancel(app);
+    assert(nk_disc_verify_image(item.iso_path, data_root, item.disc_id, verified_elsewhere,
+                                NULL, &check));
+    assert(check.result == NK_DISC_VERIFY_HASHED);
+    player_app_disc_check_finish(app, &check);
+    assert(app->disc_check.count == 0 && !app->disc_check.running);
+    assert(!player_app_disc_check_take(app, &item, &verified_elsewhere));
+
+    /* Two cards share the disc ID now: a build of either is found by its image,
+       never by the disc ID alone. */
+    assert(player_app_count_games_with_disc_id(app, "TEST70021") == 2);
+    assert(player_app_count_games_with_disc_id(app, "TEST70022") == 1);
 
     /* An add that failed finds no card, never the other image of its disc ID. */
     GameRecord missing = translated;

@@ -86,6 +86,10 @@ NkResult nk_library_commit_remove(NkLibrary *lib, const char *disc_id,
 NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
                                          const char *content_sha1, const char *file_path);
 
+/* The same, for the entry of disc_id's image at iso_path (nk_library_remove_by_file). */
+NkResult nk_library_commit_remove_by_file(NkLibrary *lib, const char *disc_id,
+                                          const char *iso_path, const char *file_path);
+
 /* The library is keyed by disc ID plus the image's content hash
    (content_sha1), so two images with one disc ID, a retail disc and a fan
    translation of it, are two records. An entry replaces the record with its
@@ -96,8 +100,8 @@ NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
    beside a record written before hashing, so no image's record is lost. A
    hashed entry that takes over its image's record from another file (the image
    moved, then was added again) also drops the record its new file had: one
-   file holds one image. An unhashed update of the same file keeps that
-   record's hashes. When an entry is
+   file holds one image. An unhashed update of the same file leaves the record
+   unhashed: the file may hold other bytes now (the player checks every add). When an entry is
    verified retail, the unknown records with its disc ID become modified: the
    disc ID is now known retail (nk_disc_verify.h). */
 NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry);
@@ -128,6 +132,11 @@ bool nk_library_has_verified_disc_id(const NkLibrary *lib, const char *disc_id);
    nk_library_remove. */
 NkResult nk_library_remove_by_key(NkLibrary *lib, const char *disc_id,
                                   const char *content_sha1);
+
+/* Remove the entry of disc_id's image at iso_path. One file holds one image, so
+   this names one record even when two unhashed images share the disc ID
+   (NK_ERROR_FILE_NOT_FOUND when none names that file). */
+NkResult nk_library_remove_by_file(NkLibrary *lib, const char *disc_id, const char *iso_path);
 
 /* Get game entry by index (0 .. count-1) */
 const NkGameEntry *nk_library_get(const NkLibrary *lib, int index);

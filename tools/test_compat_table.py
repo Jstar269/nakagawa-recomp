@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -215,6 +216,16 @@ class PrivacyTests(unittest.TestCase):
                             compat_table.main([str(source), *extra])
                     self.assertEqual(source.read_bytes(), before)
                     self.assertFalse((root / "same.md").exists())
+            # A hard link to the manifest is the manifest.
+            linked = root / "linked.json"
+            try:
+                os.link(source, linked)
+            except OSError:
+                self.skipTest("this filesystem makes no hard links")
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    compat_table.main([str(source), "--json", str(linked)])
+            self.assertEqual(source.read_bytes(), before)
 
     def test_the_compatibility_page_has_one_generated_block(self) -> None:
         text = (ROOT / "docs" / "COMPATIBILITY.md").read_text(encoding="utf-8")
