@@ -153,6 +153,7 @@ typedef struct {
     uint32_t headerAddr;         /* guest address of the PSMF header passed to QueryStreamOffset */
     int h264;                    /* host H.264 backend id (-1 = none) */
     int h264Init, h264Frames;
+    int avcFrameStatus;         /* 1 when the last AVC decode call produced a picture */
     int defaultFrameWidth, pixelMode;
     uint32_t streamWidth, streamHeight;
     int ycbcrWant;   /* pictures requested through sceMpegAvcDecodeYCbCr */
@@ -1029,6 +1030,7 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
             return mpeg_contract_error("sceMpegAvcDecode", "destination changed during validation", SCE_MPEG_ERROR_INVALID_VALUE);
     }
     MEM_W32(initAddr, gotFrame > 0 ? 1u : 0u);
+    ctx->avcFrameStatus = gotFrame > 0;
     if (gotFrame > 0) {
         int64_t auPts = au_read_pts(auAddr);
         sr_psmf_av_note_video_delivery(buffer, bytes, auPts, auPts >= 0);
@@ -1041,6 +1043,25 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
     }
     return gotFrame > 0 ? 0 : SCE_MPEG_ERROR_NO_DATA;
 }
+/* sceMpegAvcDecodeDetail(mpeg, detail): nine words about the AVC decoder.  Layout and values
+ * follow PPSSPP Core/HLE/sceMpeg.cpp (c9e2afb6) sceMpegAvcDecodeDetail: the decode result (1, the
+ * library's success value), the pictures decoded so far, the frame width and height (the PSMF
+ * header's macroblock counts times 16), four frame-crop words (0), and whether the last decode
+ * call produced a picture.  Not yet measured on this project's PSP (probe mpeg-ycbcr, #302). */
+uint32_t mpeg_avc_decode_detail(uint32_t mpegAddr, uint32_t detailAddr) {
+    if (!detailAddr || (detailAddr & 3u) || !sr_guest_span_writable(detailAddr, 36u))
+        return mpeg_contract_error("sceMpegAvcDecodeDetail", "invalid detail pointer", (uint32_t)-1);
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    MEM_W32(detailAddr + 0u, 1u);
+    MEM_W32(detailAddr + 4u, (uint32_t)ctx->h264Frames);
+    MEM_W32(detailAddr + 8u, ctx->streamWidth);
+    MEM_W32(detailAddr + 12u, ctx->streamHeight);
+    for (uint32_t off = 16u; off < 32u; off += 4u) MEM_W32(detailAddr + off, 0u);
+    MEM_W32(detailAddr + 32u, ctx->avcFrameStatus ? 1u : 0u);
+    return 0;
+}
+
 /* ---- YCbCr decode path (sceMpegAvc*YCbCr / sceMpegAvcCsc) ----
  * Guest-visible plane bytes are zero-filled modeled state, not an established PSP header/plane
  * layout. The H.264 backend's decoded RGBA picture is retained separately; Csc writes that
@@ -1236,6 +1257,7 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         }
     }
 #endif
+    ctx->avcFrameStatus = got > 0;
     if (got <= 0) {
         b->valid = 0;
         MEM_W32(initAddr, 0u);

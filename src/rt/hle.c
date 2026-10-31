@@ -10758,6 +10758,7 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
 uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth, uint32_t bufferAddr, uint32_t initAddr);
 uint32_t mpeg_atrac_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufferAddr, uint32_t init);
 uint32_t mpeg_avc_decode_stop(uint32_t mpegAddr, uint32_t frameWidth, uint32_t bufferAddr, uint32_t statusAddr);
+uint32_t mpeg_avc_decode_detail(uint32_t mpegAddr, uint32_t detailAddr);
 uint32_t mpeg_malloc_avc_es_buf(uint32_t mpegAddr);
 uint32_t mpeg_free_avc_es_buf(uint32_t mpegAddr, uint32_t esBuf);
 uint32_t mpeg_init_au(uint32_t mpegAddr, uint32_t esBuffer, uint32_t auAddr);
@@ -10835,6 +10836,7 @@ static uint32_t h_MpegAtracDecode(CpuState *s) {
     return r;
 }
 static uint32_t h_MpegAvcDecodeStop(CpuState *s) { return mpeg_avc_decode_stop(A0, A1, A2, A3); }
+static uint32_t h_MpegAvcDecodeDetail(CpuState *s) { return mpeg_avc_decode_detail(A0, A1); }
 /* sceMpegRingbufferDestruct(ring): drain a constructed ring buffer. The ring
  * layout is owned by src/rt/mpeg.c (RB_* field offsets); mpeg.c is not linked
  * into the executable HLE harness, so the harness-visible handler carries the
@@ -29244,6 +29246,7 @@ static void hle_register_mpeg_shared_handlers(void) {
  * movie frame writer behind the VRAM mirrors, #1049) through the production handler. */
 static void hle_register_mpeg_avc_decode_handler(void) {
     sr_hle_register(0x0e3c2e9d, "sceMpegAvcDecode", h_MpegAvcDecode);
+    sr_hle_register(0x0f6c18d7, "sceMpegAvcDecodeDetail", h_MpegAvcDecodeDetail);
 }
 
 static void hle_register_mpeg_ycbcr_handlers(void) {

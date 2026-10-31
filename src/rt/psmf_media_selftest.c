@@ -3706,6 +3706,46 @@ static void test_player_av_composited_presentation(void) {
     sr_hle_test_psmf_av_enable(0);
 }
 
+/* sceMpegAvcDecodeDetail (an import ten library titles stop at): through the production HLE
+ * dispatch it writes exactly nine words -- decode result 1, pictures decoded, frame width and
+ * height from the PSMF header, four zero crop words, the last decode's frame status -- and
+ * refuses an invalid pointer or an unknown handle. */
+#define DD_NID 0x0f6c18d7u
+static void test_mpeg_avc_decode_detail(void) {
+    enum {
+        DD_DESC = 0x09350000u, DD_DATA = 0x09360000u, DD_HDR = 0x09380000u, DD_OFF = 0x09381000u,
+        DD_DETAIL = 0x09382000u, DD_UNKNOWN = 0x09390000u,
+    };
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "decode-detail: the A/V container builds"); return; }
+    memcpy(SR_HOST(DD_HDR), image, 2048u);
+    memcpy(SR_HOST(DD_HDR + 4u), "0015", 4u);
+    free(image);
+    MEM_W32(DD_DESC, 0u);
+    CHECK(mpeg_create(DD_DESC, DD_DATA, 0x10000u, 0u, 512u, 0u, 0u) == 0u &&
+              mpeg_query_stream_offset(DD_DESC, DD_HDR, DD_OFF) == 0u,
+          "decode-detail: a context analyses the header");
+    memset(SR_HOST(DD_DETAIL), 0xa5, 64u);
+    CHECK(guest_mpeg_import(DD_NID, DD_DESC, DD_DETAIL, 0, 0, 0) == 0u,
+          "decode-detail: the import has a handler and succeeds");
+    CHECK(MEM_R32(DD_DETAIL + 0u) == 1u && MEM_R32(DD_DETAIL + 4u) == 0u &&
+              MEM_R32(DD_DETAIL + 8u) == FIX_W_MBS * 16u && MEM_R32(DD_DETAIL + 12u) == FIX_H_MBS * 16u &&
+              guest_bytes_are(DD_DETAIL + 16u, 16u, 0x00) && MEM_R32(DD_DETAIL + 32u) == 0u &&
+              guest_bytes_are(DD_DETAIL + 36u, 28u, 0xa5),
+          "decode-detail: nine words before any decode, nothing past them");
+    Mpeg *ctx = mpeg_find(DD_DESC);
+    if (ctx) { ctx->h264Frames = 2; ctx->avcFrameStatus = 1; }
+    CHECK(guest_mpeg_import(DD_NID, DD_DESC, DD_DETAIL, 0, 0, 0) == 0u &&
+              MEM_R32(DD_DETAIL + 4u) == 2u && MEM_R32(DD_DETAIL + 32u) == 1u,
+          "decode-detail: the picture count and the last decode's frame status");
+    CHECK(guest_mpeg_import(DD_NID, DD_DESC, 0u, 0, 0, 0) == (uint32_t)-1 &&
+              guest_mpeg_import(DD_NID, DD_DESC, DD_DETAIL + 2u, 0, 0, 0) == (uint32_t)-1 &&
+              guest_mpeg_import(DD_NID, DD_UNKNOWN, DD_DETAIL, 0, 0, 0) == (uint32_t)-1,
+          "decode-detail: a null or misaligned pointer and an unknown handle are refused");
+    CHECK(mpeg_delete(DD_DESC) == 0u, "decode-detail: the context is deleted");
+}
+
 /* The sceMpeg ATRAC path a guest PSMF player drives (#286): the registered ATRAC3+ stream is
  * demultiplexed from the ring packets, GetAtracAu hands out one frame per call, and AtracDecode
  * writes exactly what the ATRAC3+ decoder produces for that frame.  Before any data, and after
@@ -3927,6 +3967,7 @@ int main(int argc, char **argv) {
     test_player_av_composited_presentation();
     test_mpeg_csc_presentation_boundary();
     test_mpeg_atrac_au_decode();
+    test_mpeg_avc_decode_detail();
     test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 

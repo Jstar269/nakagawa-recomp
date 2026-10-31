@@ -425,10 +425,12 @@ HANDLER_METADATA = {
     # getter stages one decoded ATRAC3+ frame as 2048 stereo s16 samples. A
     # compressed access unit is never presented as a decoded frame or PCM, and
     # a stream that runs dry reports NO_MORE_DATA. They remain partial because
-    # the player above them is still host HLE (original guest PRX execution is
-    # the target), the picture path needs a host backend to exist at all (the
-    # null backend yields no pictures by design), and no hardware-comparison
-    # tier has been measured for either getter.
+    # the player above them is host HLE, the picture path needs a host backend to
+    # exist at all (the null backend yields no pictures by design), and no
+    # hardware-comparison tier has been measured for either getter. Since #286 they
+    # serve only a title that does not stage its own libpsmfplayer.prx: a staged,
+    # translated player module owns the scePsmfPlayer library and reaches the media
+    # boundary through sceMpeg.
     "h_PsmfGetVideo": {
         "status": "partial",
         "limitation": "host HLE player; requires host codec backend; no hardware comparison tier measured (#341)",
@@ -492,6 +494,29 @@ HANDLER_METADATA = {
     "h_NpDrmClearLicenseeKey": {
         "status": "partial",
         "limitation": "forgets the recorded key and returns 0; not hardware measured",
+    },
+    # sceMpegAvcDecodeDetail, and the ATRAC3+ access units a guest PSMF player decodes through
+    # sceMpeg (#286): see src/rt/mpeg.c.
+    "h_MpegAvcDecodeDetail": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_mpeg_avc_decode_detail",
+        ],
+        "limitation": "nine words in PPSSPP's layout (decode result 1, pictures decoded, the header's frame width and height, four zero crop words, the last decode's frame status); not yet measured on this project's PSP (#302, probe mpeg-ycbcr)",
+    },
+    "h_MpegGetAtracAu": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_mpeg_atrac_au_decode",
+        ],
+        "limitation": "one ATRAC3+ frame per call from an audio-only demux of the ring bytes the game fed; NO_DATA when none is demultiplexed; the AU clock is the media-engine model (first timestamp + 4180 per decoded block), not the stream's PES time; the ES buffer is a handle, as in PPSSPP, and is not written; not measured on this project's PSP",
+    },
+    "h_MpegAtracDecode": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_mpeg_atrac_au_decode",
+        ],
+        "limitation": "decodes the frame the last sceMpegGetAtracAu held with the project's ATRAC3+ bridge into 2048 stereo s16 samples (a mono stream duplicated); refuses with no held frame or an undecodable frame, with unmeasured error values; not measured on this project's PSP",
     },
     "h_MpegAvcQueryYCbCrSize": {
         "status": "partial",
