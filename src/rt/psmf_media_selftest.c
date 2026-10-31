@@ -4077,6 +4077,46 @@ static void test_mpeg_csc_presentation_boundary(void) {
     sr_hle_test_psmf_av_reset();
 }
 
+/* A guest PSMF player (#286) copies each block sceMpegAtracDecode writes into its own output
+ * buffer before the game plays it.  The copy the game plays meets its block by its bytes, also
+ * after the decode buffer was overwritten, and a silent block is never matched. */
+static void test_mpeg_av_audio_followed_by_content(void) {
+    enum { AC_DECODE = 0x086c0000u, AC_GAME = 0x086c4000u, AC_GAME2 = 0x086c8000u };
+    const uint32_t block = 8192u;
+    sr_hle_test_psmf_av_reset();
+    sr_hle_test_psmf_av_enable(1);
+    sr_hle_test_psmf_av_set_window_us(1000000);
+    sr_hle_test_psmf_av_set_queue_frames(PB_FRAMES);
+    sr_hle_test_psmf_av_set_clock_us(1000000);
+    int ch = (int)guest_mpeg_import(PB_NID_CH_RESERVE, 0xffffffffu, PB_FRAMES, 0u, 0, 0);
+    CHECK(ch >= 0 && ch < 8, "psmf-content: an audio channel is reserved");
+    for (uint32_t i = 0; i < block; i++) MEM_W8(AC_DECODE + i, (uint8_t)(i * 3u + 1u));
+    sr_psmf_av_note_audio_delivery(AC_DECODE, block, 90000, 1);
+    memcpy(SR_HOST(AC_GAME), SR_HOST(AC_DECODE), block);
+    for (uint32_t i = 0; i < block; i++) MEM_W8(AC_DECODE + i, (uint8_t)(i * 5u + 2u));
+    sr_psmf_av_note_audio_delivery(AC_DECODE, block, 90000 + 4180, 1);
+    memcpy(SR_HOST(AC_GAME2), SR_HOST(AC_DECODE), block);
+    CHECK(sr_hle_test_psmf_av_counter(1, "superseded") == 0,
+          "psmf-content: a block overwritten in the decode buffer is still pending");
+    sr_hle_test_psmf_av_set_clock_us(1010000);
+    CHECK(guest_mpeg_import(PB_NID_OUTPUT_BLOCK, (uint32_t)ch, 0x8000u, AC_GAME, 0, 0) == (uint32_t)PB_FRAMES &&
+              sr_hle_test_psmf_av_counter(1, "matched") == 1 &&
+              sr_hle_test_psmf_av_counter(1, "content_matched") == 1,
+          "psmf-content: the copy the game plays meets the first block by its bytes");
+    CHECK(guest_mpeg_import(PB_NID_OUTPUT_BLOCK, (uint32_t)ch, 0x8000u, AC_GAME2, 0, 0) == (uint32_t)PB_FRAMES &&
+              sr_hle_test_psmf_av_counter(1, "matched") == 2,
+          "psmf-content: the second copy meets the second block");
+    memset(SR_HOST(AC_DECODE), 0, block);
+    sr_psmf_av_note_audio_delivery(AC_DECODE, block, 90000 + 2 * 4180, 1);
+    memset(SR_HOST(AC_GAME), 0, block);
+    CHECK(guest_mpeg_import(PB_NID_OUTPUT_BLOCK, (uint32_t)ch, 0x8000u, AC_GAME, 0, 0) == (uint32_t)PB_FRAMES &&
+              sr_hle_test_psmf_av_counter(1, "matched") == 2,
+          "psmf-content: a silent block is not matched by its bytes");
+    (void)guest_mpeg_import(PB_NID_CH_RELEASE, (uint32_t)ch, 0, 0, 0, 0);
+    sr_hle_test_psmf_av_reset();
+    sr_hle_test_psmf_av_enable(0);
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     sr_flight_init();
@@ -4134,6 +4174,7 @@ int main(int argc, char **argv) {
     test_player_av_presentation_boundary();
     test_player_av_composited_presentation();
     test_mpeg_csc_presentation_boundary();
+    test_mpeg_av_audio_followed_by_content();
     test_mpeg_atrac_au_decode();
     test_mpeg_avc_decode_detail();
     test_psmf_contract_fragmentation_and_malformed_rejection();

@@ -6358,6 +6358,7 @@ static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEG
 #define PSMF_AV_PTS_LIMIT ((int64_t)1 << 48)
 #define PSMF_AV_DISPLAY_ROWS 272u
 #define PSMF_AV_LAT_LIMIT_US ((int64_t)1 << 32)
+#define PSMF_AV_CONTENT_MAX 8192u            /* one sceMpegAtracDecode block */
 enum { PSMF_AV_VIDEO = 0, PSMF_AV_AUDIO = 1 };
 
 typedef struct {
@@ -6368,6 +6369,8 @@ typedef struct {
     int pts_valid, live;
     int composited;             /* drawn by the GE into the render target [fb_lo, fb_hi) */
     uint32_t fb_lo, fb_hi;
+    uint64_t content;           /* audio followed by its bytes (FNV-1a), 0 when not */
+    uint32_t content_bytes;
 } PsmfAvEntry;
 
 typedef struct {
@@ -6375,6 +6378,7 @@ typedef struct {
     uint64_t delivered, matched, unmeasured, superseded, evicted, nospan;
     uint64_t boundary_calls, boundary_hits;
     uint64_t composited, composited_matched;   /* video only */
+    uint64_t content_matched;                  /* audio only */
     uint64_t lat_sum_us;
     int64_t lat_max_us;
     int64_t win_sum_x9;
@@ -6504,20 +6508,24 @@ static void psmf_av_texture_sampled(uint32_t tex_addr, uint32_t tex_bufw, uint32
                                     uint32_t tex_fmt, uint32_t fb_addr, uint32_t fb_stride,
                                     uint32_t fb_fmt);
 
-static void psmf_av_delivered(int stream, uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
-    if (!psmf_av_on()) return;
+static PsmfAvEntry *psmf_av_delivered(int stream, uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
+    if (!psmf_av_on()) return NULL;
     if (!s_psmf_av.exit_hooked) { s_psmf_av.exit_hooked = 1; atexit(psmf_av_exit_report); }
     if (stream == PSMF_AV_VIDEO) sr_ge_texture_sample_hook = psmf_av_texture_sampled;
     PsmfAvStream *st = &s_psmf_av.s[stream];
     st->delivered++;
     uint32_t lo, hi;
-    if (!psmf_av_range(first, bytes, &lo, &hi)) { st->nospan++; return; }
+    if (!psmf_av_range(first, bytes, &lo, &hi)) { st->nospan++; return NULL; }
     PsmfAvEntry *slot = NULL, *oldest = NULL;
     for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
         PsmfAvEntry *e = &st->pend[i];
         if (!e->live) { if (!slot) slot = e; continue; }
         if (!e->composited && e->lo < hi && lo < e->hi) {
-            e->live = 0; st->superseded++; if (!slot) slot = e; continue;
+            if (e->content) {
+                e->lo = e->hi = 0;   /* overwritten where it was written: followed by its bytes only */
+            } else {
+                e->live = 0; st->superseded++; if (!slot) slot = e; continue;
+            }
         }
         if (!oldest || e->seq < oldest->seq) oldest = e;
     }
@@ -6531,6 +6539,23 @@ static void psmf_av_delivered(int stream, uint32_t first, uint32_t bytes, int64_
     slot->live = 1;
     slot->composited = 0;
     slot->fb_lo = slot->fb_hi = 0;
+    slot->content = 0;
+    slot->content_bytes = 0;
+    return slot;
+}
+
+/* FNV-1a of [addr, +bytes), 0 when the bytes are all zero or cannot be read: a silent block is
+ * not told apart from any other. */
+static uint64_t psmf_av_content(uint32_t addr, uint32_t bytes) {
+    static uint8_t block[PSMF_AV_CONTENT_MAX];
+    if (!bytes || bytes > PSMF_AV_CONTENT_MAX || !sr_guest_copy_in(block, addr, bytes)) return 0;
+    uint64_t h = 1469598103934665603ull;
+    unsigned any = 0;
+    for (uint32_t i = 0; i < bytes; i++) {
+        any |= block[i];
+        h = (h ^ block[i]) * 1099511628211ull;
+    }
+    return any ? (h ? h : 1u) : 0;
 }
 
 /* Bytes of a level-0 texture: bufw texels per row, h rows, at the PSM's texel size.  0 for
@@ -6613,6 +6638,41 @@ static void psmf_av_video_presented(uint32_t addr, int32_t stride, int32_t fmt) 
     if (hit) st->boundary_hits++;
 }
 
+/* A submitted buffer that holds no pending block where it was written may hold one the guest
+ * copied there: each block-sized piece of it meets the oldest pending block with the same
+ * bytes. */
+static void psmf_av_audio_by_content(PsmfAvStream *st, int ch, uint32_t buf, uint32_t bytes,
+                                     uint32_t bytes_per_frame, uint32_t rate_hz) {
+    uint32_t size = 0;
+    for (unsigned i = 0; i < PSMF_AV_PENDING && !size; i++)
+        if (st->pend[i].live && st->pend[i].content) size = st->pend[i].content_bytes;
+    if (!size || bytes < size) return;
+    int ticked = 0, queued = -1;
+    int64_t now = 0, lead_us = 0;
+    for (uint32_t off = 0; bytes - off >= size; off += size) {
+        uint64_t h = psmf_av_content(buf + off, size);
+        if (!h) continue;
+        PsmfAvEntry *best = NULL;
+        for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
+            PsmfAvEntry *e = &st->pend[i];
+            if (e->live && e->content == h && e->content_bytes == size && (!best || e->seq < best->seq))
+                best = e;
+        }
+        if (!best) continue;
+        if (!ticked) {
+            queued = psmf_av_queue_frames(ch);      /* lead ahead of this buffer, read before the push */
+            now = psmf_av_now_us();
+            lead_us = queued >= 0 ? (int64_t)queued * 1000000 / 44100 : 0;
+            psmf_av_window_tick(now);
+            ticked = 1;
+        }
+        int64_t play = now + lead_us + (int64_t)(off / bytes_per_frame) * 1000000 / (int64_t)rate_hz;
+        st->content_matched++;
+        psmf_av_match(st, best, play, queued >= 0);
+    }
+    if (ticked) st->boundary_hits++;
+}
+
 /* An audio buffer reaches an sceAudioOutput* call.  rate_hz is the guest-side rate used to
  * place a block that begins part-way into the submitted buffer. */
 static void psmf_av_audio_submit(int ch, uint32_t buf, uint32_t bytes, uint32_t bytes_per_frame,
@@ -6627,7 +6687,10 @@ static void psmf_av_audio_submit(int ch, uint32_t buf, uint32_t bytes, uint32_t 
         PsmfAvEntry *e = &st->pend[i];
         if (e->live && e->lo < hi && lo < e->hi) { any = 1; break; }
     }
-    if (!any) return;
+    if (!any) {
+        psmf_av_audio_by_content(st, ch, buf, bytes, bytes_per_frame, rate_hz);
+        return;
+    }
     int queued = psmf_av_queue_frames(ch);          /* lead ahead of this buffer, read before the push */
     int64_t now = psmf_av_now_us();
     int64_t lead_us = queued >= 0 ? (int64_t)queued * 1000000 / 44100 : 0;
@@ -6669,6 +6732,7 @@ static void psmf_av_final(const char *reason) {
         " vdel=%llu vmatch=%llu vunmeas=%llu vsuper=%llu vevict=%llu vnospan=%llu vpend=%llu vbnd=%llu vhit=%llu"
         " vcomp=%llu vcompmatch=%llu"
         " adel=%llu amatch=%llu aunmeas=%llu asuper=%llu aevict=%llu anospan=%llu apend=%llu abnd=%llu ahit=%llu"
+        " acontent=%llu"
         " vlat_mean_us=%s vlat_max_us=%s alat_mean_us=%s alat_max_us=%s"
         " av_min_us=%s av_max_us=%s av_mean_us=%s av_first_us=%s av_last_us=%s drift_us=%s\n",
         reason, s_psmf_av.windows, s_psmf_av.paired,
@@ -6679,6 +6743,7 @@ static void psmf_av_final(const char *reason) {
         (unsigned long long)a->delivered, (unsigned long long)a->matched, (unsigned long long)a->unmeasured,
         (unsigned long long)a->superseded, (unsigned long long)a->evicted, (unsigned long long)a->nospan,
         (unsigned long long)pend[1], (unsigned long long)a->boundary_calls, (unsigned long long)a->boundary_hits,
+        (unsigned long long)a->content_matched,
         vlm, vlx, alm, alx, mn, mx, mean, first, last, drift);
     if (n > 0 && (size_t)n < sizeof(line)) {
         fputs(line, stderr);
@@ -6691,12 +6756,18 @@ static void psmf_av_final(const char *reason) {
 }
 
 /* Entry points for the sceMpeg path in mpeg.c (a separate translation unit in production):
- * sceMpegAvcDecode/Csc pictures and sceMpegAtracDecode blocks. */
+ * sceMpegAvcDecode/Csc pictures and sceMpegAtracDecode blocks.  A guest PSMF player copies each
+ * sceMpegAtracDecode block into its own output buffer before the game plays it, so a block is
+ * also followed by its bytes. */
 void sr_psmf_av_note_video_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
-    psmf_av_delivered(PSMF_AV_VIDEO, first, bytes, pts, pts_valid);
+    (void)psmf_av_delivered(PSMF_AV_VIDEO, first, bytes, pts, pts_valid);
 }
 void sr_psmf_av_note_audio_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
-    psmf_av_delivered(PSMF_AV_AUDIO, first, bytes, pts, pts_valid);
+    PsmfAvEntry *e = psmf_av_delivered(PSMF_AV_AUDIO, first, bytes, pts, pts_valid);
+    if (e) {
+        e->content = psmf_av_content(first, bytes);
+        e->content_bytes = e->content ? bytes : 0u;
+    }
 }
 
 #ifdef SR_MPEG_MEDIA_SELFTEST
@@ -6727,6 +6798,7 @@ int64_t sr_hle_test_psmf_av_counter(int audio, const char *key) {
     if (!strcmp(key, "superseded")) return (int64_t)st->superseded;
     if (!strcmp(key, "evicted")) return (int64_t)st->evicted;
     if (!strcmp(key, "nospan")) return (int64_t)st->nospan;
+    if (!strcmp(key, "content_matched")) return (int64_t)st->content_matched;
     if (!strcmp(key, "boundary")) return (int64_t)st->boundary_calls;
     if (!strcmp(key, "hits")) return (int64_t)st->boundary_hits;
     if (!strcmp(key, "composited")) return (int64_t)st->composited;
