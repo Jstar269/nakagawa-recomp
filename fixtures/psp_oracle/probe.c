@@ -10712,6 +10712,82 @@ static void at3s_one_delay(int emulated, uint32_t delay) {
     at3s_line(emulated, line);
 }
 
+/* A looped AT3 track (with an smpl chunk), staged whole as host0:/at3-loop-file.bin: SetData over the
+   whole file and over shorter prefixes, then the sound-sample and position queries and one decode. Its
+   8 KiB prefix was refused with 0x80630008 for every patched delay on 2026-10-31; this separates the
+   buffer length from the loop chunk. */
+#define AT3S_LOOP_PATH "host0:/at3-loop-file.bin"
+#define AT3S_LOOP_CAP (2u << 20)
+static unsigned char s_at3s_loop[AT3S_LOOP_CAP] __attribute__((aligned(64)));
+
+static void at3s_buffer_case(int emulated, const char *name, unsigned char *buf, uint32_t bytes) {
+    char step[48], line[360];
+    (void)snprintf(step, sizeof(step), "%s-get-atracid", name);
+    probe_step(emulated, "at3-delay-sweep", step);
+    const int id = sceAtracGetAtracID(PSP_ATRAC_AT3);
+    if (id < 0) {
+        (void)snprintf(line, sizeof(line), "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-%s status=RC "
+                       "result=0x%08x stage=get-atracid\n", name, (unsigned int)id);
+        at3s_line(emulated, line);
+        return;
+    }
+    (void)snprintf(step, sizeof(step), "%s-set-data", name);
+    probe_step(emulated, "at3-delay-sweep", step);
+    const int set_rc = sceAtracSetData(id, buf, bytes);
+    int end_sample = -1, loop_start = -1, loop_end = -1, remain = -1;
+    const int rc_sound = sceAtracGetSoundSample(id, &end_sample, &loop_start, &loop_end);
+    const int rc_remain = sceAtracGetRemainFrame(id, &remain);
+    u32 pos = 0xffffffffu;
+    const int rc_pos = sceAtracGetNextDecodePosition(id, &pos);
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-%s status=RC result=0x%08x "
+                   "bytes=%u rc_sound=0x%08x end=%d loop_start=%d loop_end=%d rc_remain=0x%08x remain=%d "
+                   "rc_pos=0x%08x pos=%u\n",
+                   name, (unsigned int)set_rc, (unsigned int)bytes, (unsigned int)rc_sound, end_sample, loop_start,
+                   loop_end, (unsigned int)rc_remain, remain, (unsigned int)rc_pos, (unsigned int)pos);
+    at3s_line(emulated, line);
+    if (set_rc == 0) {
+        int samples = -1, end_flag = -1, rem = -1, next = -1;
+        memset(s_at3s_pcm, 0, sizeof(s_at3s_pcm));
+        (void)snprintf(step, sizeof(step), "%s-decode0", name);
+        probe_step(emulated, "at3-delay-sweep", step);
+        const int rc = sceAtracDecodeData(id, s_at3s_pcm, &samples, &end_flag, &rem);
+        pos = 0xffffffffu;
+        const int rc_pos1 = sceAtracGetNextDecodePosition(id, &pos);
+        const int rc_next = sceAtracGetNextSample(id, &next);
+        (void)snprintf(line, sizeof(line),
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-%s-call0 status=RC result=0x%08x "
+                       "samples=%d end=%d remain=%d rc_pos=0x%08x pos=%u rc_next=0x%08x next=%d\n",
+                       name, (unsigned int)rc, samples, end_flag, rem, (unsigned int)rc_pos1, (unsigned int)pos,
+                       (unsigned int)rc_next, next);
+        at3s_line(emulated, line);
+    }
+    (void)snprintf(step, sizeof(step), "%s-release", name);
+    probe_step(emulated, "at3-delay-sweep", step);
+    (void)sceAtracReleaseAtracID(id);
+}
+
+static void run_at3_loop_file(int emulated) {
+    uint32_t total = 0;
+    SceUID fd = sceIoOpen(AT3S_LOOP_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) return;   /* not staged: the delay sweep alone */
+    while (total < AT3S_LOOP_CAP) {
+        const int n = sceIoRead(fd, s_at3s_loop + total, AT3S_LOOP_CAP - total);
+        if (n <= 0) break;
+        total += (uint32_t)n;
+    }
+    (void)sceIoClose(fd);
+    char line[200];
+    (void)snprintf(line, sizeof(line), "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-loop-input "
+                   "status=RC result=0x00000000 bytes=%u smpl=%d\n", (unsigned int)total,
+                   total > 112u && memcmp(s_at3s_loop + 68, "smpl", 4) == 0);
+    at3s_line(emulated, line);
+    if (total < 65536u) return;
+    at3s_buffer_case(emulated, "loop-full", s_at3s_loop, total);
+    at3s_buffer_case(emulated, "loop-prefix64k", s_at3s_loop, 65536u);
+    at3s_buffer_case(emulated, "loop-prefix8k", s_at3s_loop, AT3S_BYTES);
+}
+
 static void run_at3_delay_sweep(int emulated) {
     char line[320];
     int input_rc = -1;
@@ -10757,6 +10833,7 @@ static void run_at3_delay_sweep(int emulated) {
             if (atrac_rc == 0) {
                 for (size_t i = 0; i < sizeof(k_at3s_delays) / sizeof(k_at3s_delays[0]); i++)
                     at3s_one_delay(emulated, k_at3s_delays[i]);
+                run_at3_loop_file(emulated);
                 probe_step(emulated, "at3-delay-sweep", "unload-atrac3plus");
                 (void)sceUtilityUnloadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
             }
