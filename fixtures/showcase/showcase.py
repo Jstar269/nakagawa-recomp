@@ -69,6 +69,9 @@ CROSS_PRESS = (12, 0x4000, 4)
 START_PRESS = (240, 0x0008, 4)
 SAVE_START_PRESS = (120, 0x0008, 4)
 PAUSE_CROSS_PRESS = (121, 0x4000, 4)
+# Breakout's scheduler pause: requested at VCOUNT 120, held for 1500 ms of host time.
+PAUSE_TRIGGER_VCOUNT = 120
+PAUSE_HOLD_MS = 1500
 AUDIO_PAUSE_CROSS_PRESS = (12, 0x4000, 4)
 AUDIO_PAUSE_TRIGGER_VCOUNT = 12
 HEADLESS_PAUSE_SCRIPT = "30:500"
@@ -843,6 +846,11 @@ def _audio_stats(output: str, label: str) -> dict[str, str]:
 
 
 def _exit_at_vblank(output: str, label: str) -> int:
+    """The run ended through SR_EXIT_AT_VBLANK, at the first VCOUNT at or past its target.
+
+    VCOUNT follows the host clock in the paced smoke, and a host that falls behind advances
+    it by several periods at once, so the runtime can stop past the target; never before it.
+    """
     match = re.search(
         r"^BOOT_EVENT phase=exit_at_vblank vblanks=(\d+) \(SR_EXIT_AT_VBLANK=(\d+)\)",
         output, re.MULTILINE,
@@ -850,53 +858,82 @@ def _exit_at_vblank(output: str, label: str) -> int:
     if not match:
         raise ShowcaseError(f"{label} did not report its SR_EXIT_AT_VBLANK completion")
     actual, target = (int(value) for value in match.groups())
-    if actual != target:
-        raise ShowcaseError(f"{label} exited at VCOUNT {actual}, not its target {target}")
+    if actual < target:
+        raise ShowcaseError(f"{label} exited at VCOUNT {actual}, before its target {target}")
     return actual
 
 
+CTRL_LATCH = re.compile(
+    r"^ctrl_latch: vcount=(\d+) buttons 0x[0-9a-fA-F]{4} -> 0x([0-9a-fA-F]{4})\b")
+
+
 def _check_pause_input(output: str, press: tuple[int, int, int], label: str) -> None:
-    entered, resumed, _entry_index, resume_index = _pause_window(output, label)
-    target = int(entered["vcount"])
-    mask = press[1]
+    """The scripted press due around the pause reaches the guest, and never while paused.
+
+    Scripted input is delivered in guest time (src/rt/scripted_input.h): a segment never
+    starts before its row's VCOUNT, and it ends only once it has been latched for its width
+    and the guest has been handed it; the release that follows is a segment of its own that
+    cannot start before the row's end. This check holds those bounds exactly. No latch of the
+    press comes before its row, and none while paused. A press latched after the resume is
+    the first latch after it. The guest is handed that segment. The release comes after that
+    read and not before the row's end.
+
+    There is deliberately no upper bound on when the press is latched, read or released. In
+    this real-time smoke VCOUNT is host time: a host that falls behind services several
+    vblanks at once, so they come at later VCOUNTs than authored, several samples can share
+    one VCOUNT, and VCOUNT can even step past the pause trigger onto the press's row (the
+    press is then latched before the pause). A bound there would measure the host's load, not
+    the guest; the only limit left is the run's own exit, some 60 vblanks after the row. The
+    exact authored timing on a host that keeps up, and each press lasting its full width on a
+    starved one, are tested independently of host speed by tools/test_scripted_input.py, and
+    hle_thread_selftest drives the same mechanism through the scheduler. The controller
+    sampling contract beneath it (empty reads, partial consumption) is #1390.
+    """
+    _entered, _resumed, entry_index, resume_index = _pause_window(output, label)
+    start, mask, width = press
     lines = output.splitlines()
-    suffix = lines[resume_index + 1:]
-    latch = next((line for line in suffix if line.startswith("ctrl_latch:")), None)
-    if latch is None:
-        raise ShowcaseError(f"{label} has no controller latch after resume")
-    match = re.search(r"vcount=(\d+) buttons 0x[0-9a-fA-F]{4} -> 0x([0-9a-fA-F]{4})", latch)
-    if not match:
-        raise ShowcaseError(f"{label} has a malformed post-resume controller latch")
-    first_latch_vcount = int(match.group(1))
-    if (first_latch_vcount < press[0] or first_latch_vcount > target + 2 or
-            int(match.group(2), 16) != mask):
-        raise ShowcaseError(f"{label} did not latch the scheduled press immediately after resume")
+    latches = [(index, latch) for index, line in enumerate(lines)
+               if (latch := CTRL_LATCH.match(line))]
+    for _index, latch in latches:
+        if int(latch.group(2), 16) & mask and int(latch.group(1)) < start:
+            raise ShowcaseError(
+                f"{label} latched the press at VCOUNT {latch.group(1)}, before its row at {start}")
+    pressed = next(((index, latch) for index, latch in latches
+                    if int(latch.group(2), 16) & mask), None)
+    if pressed is None:
+        raise ShowcaseError(f"{label} never latched the scheduled press")
+    press_index, press_latch = pressed
+    first_latch_vcount = int(press_latch.group(1))
+    if entry_index < press_index < resume_index:
+        raise ShowcaseError(f"{label} latched the scheduled press while paused")
+    first_after_resume = next(index for index, _latch in latches if index > resume_index) \
+        if press_index > resume_index else press_index
+    if first_after_resume != press_index or int(press_latch.group(2), 16) != mask:
+        raise ShowcaseError(f"{label} did not latch the scheduled press first after resume")
     read_pattern = re.compile(
         rf"^ctrl_read: vcount=(\d+) guest read scripted 0x{mask:04x} "
         r"\(latched (\d+) samples since vblank (\d+)\)$"
     )
-    read = None
-    for line in suffix:
-        if line.startswith("ctrl_read:"):
-            read = read_pattern.search(line)
-            if read:
-                break
-    release_vblank = None
-    for line in suffix:
-        release = re.search(
-            r"^ctrl_latch: vcount=(\d+) buttons 0x[0-9a-fA-F]{4} -> 0x0000\b", line)
-        if release and int(release.group(1)) >= press[0]:
-            release_vblank = int(release.group(1))
-            break
-    if (not read or int(read.group(1)) != first_latch_vcount or
-            int(read.group(2)) < 1 or int(read.group(3)) != press[0] or
-            release_vblank != first_latch_vcount + press[2]):
-        read_values = read.groups() if read else None
+    read = next(((index, found) for index, line in enumerate(lines)
+                 if index > press_index and (found := read_pattern.match(line))), None)
+    if read is None:
+        raise ShowcaseError(f"{label} never handed the guest the scheduled press")
+    read_index, found = read
+    read_vcount, samples, since = (int(value) for value in found.groups())
+    if not start <= since <= first_latch_vcount or read_vcount < first_latch_vcount or samples < 1:
         raise ShowcaseError(
-            f"{label} did not preserve the scripted press width/read after resume "
-            f"(first_latch={first_latch_vcount}, read={read_values}, "
-            f"release_vblank={release_vblank}, width={press[2]})"
-        )
+            f"{label} handed the guest a press segment that does not match its latch "
+            f"(first_latch={first_latch_vcount}, read={found.groups()}, row={start})")
+    release = next(((index, int(latch.group(1))) for index, latch in latches
+                    if index > press_index and not int(latch.group(2), 16) & mask), None)
+    if release is None:
+        raise ShowcaseError(f"{label} never released the scheduled press before exit")
+    if release[0] < read_index:
+        raise ShowcaseError(f"{label} released the press before the guest was handed it")
+    if release[1] < start + width:
+        raise ShowcaseError(
+            f"{label} released the press at VCOUNT {release[1]}, before its row ended at "
+            f"{start + width}")
 
 
 def _check_scripted_pause_refusal(output: str, label: str) -> None:
@@ -1012,38 +1049,52 @@ def _run_pause_scenario(demo: dict[str, object], padscript: Path, smoke_dir: Pat
     return output, time.monotonic() - started, log_path
 
 
+def _check_pause_held(resumed: dict[str, str], requested_ms: int, elapsed_seconds: float,
+                      label: str) -> None:
+    """Check the scheduler's own record of how long it held the guest.
+
+    paused_ms is the host-clock time from the pause's entry to its resume. Without a
+    presenter (the headless smoke), a scripted pause resumes only once its deadline has
+    passed, so a pause that was skipped or cut short reports less than it asked for: no
+    tolerance is needed below the request. That the run's wall time contains the hold only
+    guards against a broken clock.
+    """
+    held = resumed.get("paused_ms", "")
+    if not held.isdigit():
+        raise ShowcaseError(f"{label} resume record carries no paused_ms")
+    if int(held) < requested_ms:
+        raise ShowcaseError(
+            f"{label} held the scheduler {held} ms, less than the requested {requested_ms} ms")
+    if elapsed_seconds * 1000 < int(held):
+        raise ShowcaseError(
+            f"{label} reported a {held} ms hold inside a {elapsed_seconds:.3f} s run")
+
+
 def _check_pause_timing_and_vblank(output: str, label: str,
-                                   baseline_output: str | None = None,
-                                   baseline_seconds: float | None = None,
+                                   requested_ms: int | None = None,
                                    elapsed_seconds: float | None = None) -> tuple[dict[str, str], dict[str, str]]:
     entered, resumed = _pause_pair_frozen(output, label)
     if entered.get("vtime_us") != resumed.get("vtime_us"):
         raise ShowcaseError(f"{label} advanced guest time while paused")
     if int(entered.get("latency_us", "-1")) > 2 * 16683:
         raise ShowcaseError(f"{label} request-to-entry latency exceeded two display periods")
-    if baseline_output is not None:
-        if baseline_seconds is None or elapsed_seconds is None or \
-                elapsed_seconds < baseline_seconds + 1.4:
-            raise ShowcaseError(
-                f"{label} host runtime did not include the requested pause interval "
-                f"(baseline={baseline_seconds}, paused={elapsed_seconds})"
-            )
-        baseline_exit = _exit_at_vblank(baseline_output, f"{label} unpaused baseline")
-        paused_exit = _exit_at_vblank(output, label)
-        if paused_exit != baseline_exit:
-            raise ShowcaseError(
-                f"{label} exited at VCOUNT {paused_exit}, baseline ended at {baseline_exit}"
-            )
+    if requested_ms is not None:
+        if elapsed_seconds is None:
+            raise ShowcaseError(f"{label} has no measured run time to hold the pause")
+        _check_pause_held(resumed, requested_ms, elapsed_seconds, label)
     return entered, resumed
 
 
-def _check_pause_smoke(output: str, baseline_output: str, baseline_seconds: float,
-                       elapsed_seconds: float, label: str) -> None:
+def _check_pause_smoke(output: str, elapsed_seconds: float, label: str) -> None:
     entered, _resumed = _check_pause_timing_and_vblank(
-        output, label, baseline_output, baseline_seconds, elapsed_seconds)
+        output, label, PAUSE_HOLD_MS, elapsed_seconds)
+    _exit_at_vblank(output, label)
     _check_pause_input(output, PAUSE_CROSS_PRESS, label)
-    if int(entered["vcount"]) != 120:
-        raise ShowcaseError(f"{label} entered at vcount {entered['vcount']}, expected 120")
+    # At or after the trigger: a host that falls behind can step VCOUNT past it.
+    if int(entered["vcount"]) < PAUSE_TRIGGER_VCOUNT:
+        raise ShowcaseError(
+            f"{label} entered at vcount {entered['vcount']}, before its trigger "
+            f"{PAUSE_TRIGGER_VCOUNT}")
 
 
 def _check_audio_pause_smoke(output: str, baseline_output: str, label: str,
@@ -1107,9 +1158,7 @@ def smoke_all() -> None:
                                                  encoding="ascii")
         command, env, package_dir = _runtime_command(demo, smoke_dir / "padscript.txt")
         log_path = smoke_dir / "runtime.log"
-        started = time.monotonic()
         output = _run_runtime(command, env, package_dir, log_path, f"{disc_id} runtime")
-        baseline_seconds = time.monotonic() - started
         checkpoint, ppm = first_frame_checkpoint(demo, output, package_dir, log_path)
         press_note = scripted_press_note(output, main_cross_press)
         if f"-> 0x{main_cross_press[1]:04x}" not in output:
@@ -1148,20 +1197,11 @@ def smoke_all() -> None:
         if disc_id == "TEST00008":
             pause_padscript = smoke_dir / "padscript-pause.txt"
             pause_padscript.write_text(_padscript(PAUSE_CROSS_PRESS, START_PRESS), encoding="ascii")
-            pause_base_command, pause_base_env, pause_base_package = _runtime_command(
-                demo, pause_padscript)
-            pause_base_log = smoke_dir / "runtime-pause-baseline.log"
-            pause_base_started = time.monotonic()
-            pause_base_output = _run_runtime(
-                pause_base_command, pause_base_env, pause_base_package, pause_base_log,
-                f"{disc_id} unpaused pause-route baseline")
-            pause_base_seconds = time.monotonic() - pause_base_started
             pause_output, pause_seconds, pause_log = _run_pause_scenario(
-                demo, pause_padscript, smoke_dir, "120:1500", "runtime-pause")
+                demo, pause_padscript, smoke_dir,
+                f"{PAUSE_TRIGGER_VCOUNT}:{PAUSE_HOLD_MS}", "runtime-pause")
             try:
-                _check_pause_smoke(pause_output, pause_base_output,
-                                   pause_base_seconds, pause_seconds,
-                                   f"{disc_id} scheduler pause")
+                _check_pause_smoke(pause_output, pause_seconds, f"{disc_id} scheduler pause")
             except ShowcaseError as exc:
                 raise ShowcaseError(f"{exc}; see {pause_log}") from exc
 
