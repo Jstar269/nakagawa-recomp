@@ -946,18 +946,19 @@ already the maintainer's:
 
 - a push to `main` of this repository;
 - a merge-queue group (`merge_group`) of `main`;
-- a pull request whose head branch is in this repository (not a fork), starts with
-  `batch/` (the integration desk's batches of already-reviewed pull requests), and was
-  opened by the repository owner.
+- a pull request whose head branch is in this repository (not a fork), which the
+  repository owner opened and whose event the owner sent. Branches that may carry an
+  outside contributor's commits are excluded: the desk's `carry/pr-<N>` branches for locked
+  fork pull requests and its `desk/` working branches. Only the owner can push to this
+  repository, and the code on the owner's own branches already runs on the owner's PC.
 
 Trusted CodeQL (`.github/workflows/codeql.yml`) sends its three analyses there for the
 same targets: its `prepare` job, which stays hosted, runs the default branch's
 classifier (`python tools/ci_paths.py --codeql-runner`) and the `analyze` jobs run on
 the runner it names. That workflow always runs the default branch's definition and
 reads the candidate tree as data (`build-mode: none`), and it takes the pool only when
-it was woken by a desk batch or a merge group, or for a push to `main`. Every other
-pull request's analysis stays on `ubuntu-26.04`, so ordinary traffic cannot fill the
-pool ahead of a landing.
+it was woken by one of the owner's own pull requests above or a merge group, or for a
+push to `main`. Every other pull request's analysis stays on `ubuntu-26.04`.
 
 Every other run, a fork's pull request above all, gets the job's hosted image (`ubuntu-24.04`
 or `ubuntu-26.04`, whichever that job names when it is not on the pool). Two repository
@@ -979,8 +980,9 @@ keeps this repository's own runs where they belong. What stops a fork is:
   values the runner provides: `GITHUB_REPOSITORY`, `GITHUB_EVENT_NAME`, `GITHUB_REF`,
   `GITHUB_WORKFLOW_REF` and the event payload at `GITHUB_EVENT_PATH`, never from a file
   in the repository. It refuses every job that is not one of the trusted runs above (for
-  `workflow_run`, only the default branch's `codeql.yml` woken by a desk batch or a merge
-  group), so a fork's job that asks for the pool fails before it runs anything.
+  `workflow_run`, only the default branch's `codeql.yml` woken by one of the owner's own
+  pull requests or a merge group), so a fork's job that asks for the pool fails before it
+  runs anything.
 - **The fork approval policy.** The repository requires approval before any workflow runs
   for an outside contributor's pull request (`all_external_contributors`).
 - **Isolation.** Each runner is an ephemeral container that takes one job and is
