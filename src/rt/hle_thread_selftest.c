@@ -8528,6 +8528,33 @@ static void test_savedata_encrypted_save_refused(void) {
     sdt_param(2u, "NKPLAIN", "SLOT", "DATA.BIN");
     expect(sr_savedata_execute(SDT_PARAM) == 0u && !strcmp(sdt_loaded(), "PLAIN"),
            "a save whose SAVEDATA_PARAMS marks it unencrypted loads");
+
+    /* A PARAM.SFO that cannot be parsed proves nothing about the data beside it: the save may
+     * be encrypted, so it is refused and kept like one. */
+    {
+        char sfo[600];
+        snprintf(sfo, sizeof(sfo), "%s/PSP/SAVEDATA/NKDAMAGEDSLOT/PARAM.SFO", root);
+        snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/NKDAMAGEDSLOT/DATA.BIN", root);
+        expect(sdt_plant(root, "NKDAMAGEDSLOT", "DATA.BIN", "MAYBE-CIPHER") &&
+                   sdt_write(sfo, "\0PSFtorn", 8u),
+               "a save with a truncated PARAM.SFO can be planted");
+        sdt_param(2u, "NKDAMAGED", "SLOT", "DATA.BIN");
+        memset(g_mem_base + SDT_BUF, 0xee, 0x100u);
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110306u && MEM_R8(SDT_BUF) == 0xeeu,
+               "a load beside an unreadable PARAM.SFO is refused and writes nothing");
+        sdt_param(3u, "NKDAMAGED", "SLOT", "DATA.BIN");
+        fd_guest_copy(SDT_BUF, "OVER", 4u);
+        MEM_W32(SDT_PARAM + 0x7cu, 4u);
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110385u && sdt_read(path, text, sizeof(text)) &&
+                   !strcmp(text, "MAYBE-CIPHER"),
+               "a SAVE over a save with an unreadable PARAM.SFO is refused and keeps it");
+        sdt_param(10u, "NKDAMAGED", "SLOT", "");
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110345u && nk_platform_file_exists(path),
+               "a DELETE of a save with an unreadable PARAM.SFO is refused");
+        sdt_param(20u /* ERASE */, "NKDAMAGED", "SLOT", "DATA.BIN");
+        expect(sr_savedata_execute(SDT_PARAM) == 0x80110321u && nk_platform_file_exists(path),
+               "an ERASE in a save with an unreadable PARAM.SFO is refused");
+    }
     (void)dir;
     sdt_root_end(root, old);
 }
@@ -8661,6 +8688,29 @@ static void test_savedata_commit_faults(void) {
                    sdt_live_bookkeeping(slot) == 0,
                "recovery of a committed record completes the lost renames: the new save stands");
         expect(sdt_full_save("OLDSAVE") == 0u && sdt_all(slot, 1), "the previous save is back again");
+
+        /* A committed record one of whose slots holds its new bytes nowhere (the member lost,
+         * no stage): recovery fails closed and keeps the record and every previous copy, so
+         * the save is never left partial with nothing to repair it from. */
+        char c[600];
+        snprintf(c, sizeof(c), "%s/.nakagawa-commit", slot);
+        sr_savedata_test_fault(SDT_FAULT_FROM, commit_step + 1);
+        expect(sdt_full_save("NEWSAVE") == 0u && nk_platform_file_exists(c) && nk_platform_file_exists(p),
+               "a committed SAVE whose cleanup failed keeps its record and previous copies");
+        sr_savedata_test_fault(SDT_FAULT_OFF, 0);
+        expect(remove(m) == 0, "the committed data file can be removed by hand");
+        expect(sdt_fault_load() == 0x80110305u && nk_platform_file_exists(c) && nk_platform_file_exists(p),
+               "a committed record that cannot be completed fails closed, record and copies kept");
+        expect(sdt_full_save("OLDSAVE") == 0x80110385u && nk_platform_file_exists(p),
+               "a SAVE over that directory is refused and the copies stay");
+        /* Repair by hand: put the previous data file back and drop the bookkeeping. */
+        expect(rename(p, m) == 0 && remove(c) == 0, "the directory can be repaired by hand");
+        for (int i = 1; i < 6; i++) {
+            char prev[600];
+            snprintf(prev, sizeof(prev), "%s/.nakagawa-prev-%s", slot, k_sdt_member[i]);
+            remove(prev);
+        }
+        expect(sdt_full_save("OLDSAVE") == 0u && sdt_all(slot, 1), "after the repair the previous save is back");
     }
 
     /* No record, but a previous copy that differs from its member: the record was lost, so the

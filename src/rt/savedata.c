@@ -1249,13 +1249,25 @@ static int sd_roll_back(SavedataDir *d, const SdRecord *r, int *leftover) {
     return 1;
 }
 
-/* Finish a committed SAVE (C valid), never undoing it: complete each lost rename, leave a slot
- * that cannot reach its new bytes as found, delete P only where the member holds the new bytes
- * (keep it under a K name when the record asks to keep the previous version). */
+/* Finish a committed SAVE (C valid), never undoing it: complete each lost rename, then delete
+ * P only where the member holds the new bytes (keep it under a K name when the record asks to
+ * keep the previous version). Every slot is checked first: when any slot can reach its new bytes
+ * neither in its member nor in its stage (a file system that lost a rename, or a member changed
+ * from outside), nothing is touched and the record, every copy and every stage stay where they
+ * are, so the save is never left partial with no record to repair it. */
 static int sd_roll_forward(SavedataDir *d, const SdRecord *r, int *leftover) {
     SdContent m[SAVEDATA_STAGE_MAX], p[SAVEDATA_STAGE_MAX], s[SAVEDATA_STAGE_MAX];
     const int keep_previous = (r->flags & SD_RECORD_FLAG_KEEP_PREVIOUS) != 0;
     if (!sd_classify(d, r, m, p, s)) return 0;
+    for (unsigned i = 0; i < r->n; i++) {
+        const SdSlot *sl = &r->s[i];
+        if (sd_is(&m[i], sl->new_size, sl->new_hash) || sd_is(&s[i], sl->new_size, sl->new_hash))
+            continue;
+        sd_log_slot("committed save cannot reach the new version of", d, sl, &m[i], &p[i], &s[i]);
+        fprintf(stderr, "savedata: %s fails closed: its commit record and every copy are kept\n",
+                d->dir);
+        return 0;
+    }
     for (unsigned i = 0; i < r->n; i++) {
         const SdSlot *sl = &r->s[i];
         char pn[40], sn[40];
@@ -1276,12 +1288,11 @@ static int sd_roll_forward(SavedataDir *d, const SdRecord *r, int *leftover) {
             s[i].present = 0;
             done = 1;
         }
-        if (!done) sd_log_slot("committed save could not reach the new version of", d, sl, &m[i], &p[i], &s[i]);
         if (p[i].present) {
             int ok = done && sd_is(&p[i], sl->old_size, sl->old_hash) && !keep_previous
                 ? sd_drop(d, pn, sl->name)
                 : sd_keep(d, pn, sl->name, keep_previous ? "the version an automatic list overwrite replaced"
-                                                         : "a previous copy of an unfinished slot");
+                                                         : "a previous copy it cannot prove superseded");
             if (!ok) *leftover = 1;
         }
         if (s[i].present &&
@@ -1376,14 +1387,19 @@ static int sd_recover(SavedataDir *d, int require_empty) {
 
 /* Recover the save directory `dir` for a read or a delete. 1 when it holds a whole save (or no
  * transaction), 0 when it failed closed. A directory that does not exist has nothing to do. */
-static int savedata_recover(const char *dir) {
+static int savedata_recover_dir(const char *dir, int require_empty) {
     SavedataDir d;
     if (!dir_exists(dir)) return 1;
     if (!sd_dir_open(&d, dir)) return 0;
-    const int r = sd_recover(&d, 0);
+    const int r = sd_recover(&d, require_empty);
     sd_dir_close(&d);
     return r != SD_RECOVER_FAILED;
 }
+
+static int savedata_recover(const char *dir) { return savedata_recover_dir(dir, 0); }
+
+/* As savedata_recover, and no record, P or S may remain afterwards (before a partial delete). */
+static int savedata_recover_settled(const char *dir) { return savedata_recover_dir(dir, 1); }
 
 /* ---- the root lock --------------------------------------------------------------------------
  * One savedata operation at a time per Memory Stick root, across processes too: two players
@@ -1693,23 +1709,40 @@ static int sfo_find(const uint8_t *b, uint32_t n, const char *key, uint16_t *fmt
 /* The save's encryption mode: the first byte of PARAM.SFO's SAVEDATA_PARAMS, which is 0 for an
  * unencrypted save and 0x01, 0x21 or 0x41 for one the PSP encrypted (PPSSPP
  * SavedataParam::GetSaveCryptMode, revision c9e2afb6: "save created in PPSSPP and not encrypted
- * has '0' in SAVEDATA_PARAMS"). No SFO, or no such entry, reads as unencrypted, as there. */
-static uint8_t savedata_crypt_mode(const char *dir) {
+ * has '0' in SAVEDATA_PARAMS"). No SFO at all, or a well-formed one without that entry, reads
+ * as unencrypted, as there. Returns 0 when the mode is not known: a PARAM.SFO is there but cannot
+ * be read or parsed (a link, a directory, a truncated or damaged file), which proves nothing
+ * about the data beside it. */
+static int savedata_crypt_mode(const char *dir, uint8_t *mode) {
+    SavedataDir d;
+    SdContent c;
     uint32_t n = 0, len = 0;
     uint16_t fmt = 0;
     const uint8_t *val = NULL;
-    uint8_t mode = 0;
+    *mode = 0;
+    if (!sd_dir_open(&d, dir)) return 0;
+    const int known = sd_content(&d, "PARAM.SFO", &c);
+    sd_dir_close(&d);
+    if (!known) return 0;
+    if (!c.present) return 1;
     uint8_t *b = sfo_read(dir, &n);
-    if (b && sfo_find(b, n, "SAVEDATA_PARAMS", &fmt, &val, &len) && len > 0) mode = val[0];
+    if (!b) return 0;
+    if (sfo_find(b, n, "SAVEDATA_PARAMS", &fmt, &val, &len) && len > 0) *mode = val[0];
     free(b);
-    return mode;
+    return 1;
 }
 
 /* A save this runtime cannot decrypt is never handed back as data, and never replaced or
- * deleted either: it may be the only copy of a save the player brought from a PSP. Logged on
- * every refusal. */
+ * deleted either: it may be the only copy of a save the player brought from a PSP. A save whose
+ * PARAM.SFO cannot be read is treated the same way, since it may be one. Logged on every
+ * refusal. */
 static int savedata_encrypted(const char *dir, const char *what) {
-    uint8_t mode = savedata_crypt_mode(dir);
+    uint8_t mode = 0;
+    if (!savedata_crypt_mode(dir, &mode)) {
+        fprintf(stderr, "savedata: %s refused: %s has a PARAM.SFO that cannot be read, so the save "
+                "may be encrypted; it is left exactly as it is\n", what, dir);
+        return 1;
+    }
     if (!mode) return 0;
     fprintf(stderr, "savedata: %s refused: %s is an encrypted save (SAVEDATA_PARAMS mode 0x%02x); "
             "decrypting it needs keys only the PSP's firmware holds, which this runtime does not "
@@ -2078,7 +2111,9 @@ static uint32_t do_erase(uint32_t param, const char *game, const char *save) {
         return ERR_RW_NO_DATA;
     if (!save_rel(rel, sizeof(rel), game, save) || !save_dir(dir, sizeof(dir), game, save))
         return ERR_RW_NO_DATA;
-    if (!savedata_recover(dir) || savedata_encrypted(dir, "ERASE"))
+    /* ERASE removes one member, so the directory must be fully settled first: no record or
+     * previous copy may still name the file it is about to delete. */
+    if (!savedata_recover_settled(dir) || savedata_encrypted(dir, "ERASE"))
         return ERR_RW_NO_MEMSTICK_UNMEASURED;
     sr_cd_root root;
     sr_cd_status st = sr_cd_root_open(ms_root(), &root);
