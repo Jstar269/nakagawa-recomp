@@ -27,10 +27,12 @@
 #define LIBRARY_ID_GRID LIBRARY_ID(0x000030u)
 #define LIBRARY_ID_ROW_BASE LIBRARY_ID(0x000100u)
 #define LIBRARY_ID_ROW_BASE_SPAN 0x20u
-/* Reserved: disc verification on the library (a card's Verified retail, Modified or
-   Unknown, an add's progress and cancel). */
+/* Disc verification on the library: an added image's check, its progress and
+   Cancel, or a check that could not finish and Hide, in the heading row. A
+   card's Verified retail, Modified disc or Unknown dump is its badge. */
 #define LIBRARY_ID_VERIFY LIBRARY_ID(0x000400u)
 #define LIBRARY_ID_VERIFY_SPAN 0x100u
+#define LIBRARY_ID_VERIFY_TEXT ((NkUiId)(LIBRARY_ID_VERIFY + 1u))
 #define LIBRARY_ID_PROMPTS LIBRARY_ID(0x000040u)
 #define LIBRARY_ID_WAVES LIBRARY_ID(0x000050u)
 #define LIBRARY_ID_BACKDROP LIBRARY_ID(0x000051u)
@@ -625,6 +627,12 @@ static bool library_heading_fits(NkUi *ui, const PlayerUiLibraryModel *model,
     if (model->update_notice != NULL) {
         used += NK_UI_SPACE_4 + nk_ui_button_width(ui, model->update_notice, small);
     }
+    if (model->verify_notice != NULL && model->verify_notice[0] != '\0') {
+        caption.wrap = false;
+        used += NK_UI_SPACE_4 + nk_ui_text_width(ui, model->verify_notice, &caption) +
+                NK_UI_SPACE_3 +
+                nk_ui_button_width(ui, model->verify_offers_cancel ? "Cancel" : "Hide", small);
+    }
     if (model->rebuild_notice != NULL && model->rebuild_notice[0] != '\0') {
         caption.wrap = false;
         used += NK_UI_SPACE_4 + nk_ui_text_width(ui, model->rebuild_notice, &caption);
@@ -763,6 +771,33 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                              NK_UI_BUTTON_SMALL)) {
                 result.kind = PLAYER_UI_ACTION_SETTINGS;
                 result.primary = (PlayerUiPrimaryAction)PLAYER_UI_SETTINGS_OPEN_UPDATES;
+            }
+            /* An added image's disc check: its progress with Cancel, or one
+               that could not finish with Hide. Never the default focus: that
+               stays on the first card. */
+            if (model->verify_notice != NULL && model->verify_notice[0] != '\0') {
+                NkUiLayout notice = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                                NK_UI_SPACE_3);
+                notice.align_y = NK_UI_ALIGN_CENTER;
+                if (nk_ui_begin_container(ui, LIBRARY_ID_VERIFY, &notice, NULL)) {
+                    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION,
+                                                    model->verify_offers_cancel ? theme->muted
+                                                                                : theme->warning);
+                    text.wrap = false;
+                    nk_ui_text(ui, LIBRARY_ID_VERIFY_TEXT, model->verify_notice, &text);
+                    if (model->verify_offers_cancel) {
+                        if (nk_ui_button(ui, PLAYER_UI_ID_DISC_VERIFY_CANCEL, "Cancel",
+                                         NK_UI_BUTTON_SMALL | NK_UI_BUTTON_NOT_DEFAULT)) {
+                            result.kind = PLAYER_UI_ACTION_DISC_VERIFY;
+                            result.primary = (PlayerUiPrimaryAction)PLAYER_UI_DISC_VERIFY_CANCEL;
+                        }
+                    } else if (nk_ui_button(ui, PLAYER_UI_ID_DISC_VERIFY_HIDE, "Hide",
+                                            NK_UI_BUTTON_SMALL | NK_UI_BUTTON_NOT_DEFAULT)) {
+                        result.kind = PLAYER_UI_ACTION_DISC_VERIFY;
+                        result.primary = (PlayerUiPrimaryAction)PLAYER_UI_DISC_VERIFY_HIDE;
+                    }
+                    nk_ui_end_container(ui);
+                }
             }
             /* Games an older Nakagawa built: one line with Rebuild all and
                Hide, or the queue's count while it runs. Never the default

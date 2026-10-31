@@ -689,7 +689,7 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "rebuild_reminder=%d rebuild_queue=%d rebuild_queue_active=%d "
            "rebuild_queue_paused=%d prompt_version=%s "
            "input_class=%s input_files=%zu next_input_class=%s next_input_files=%zu "
-           "backdrop=%d backdrop_shown=%d\n",
+           "backdrop=%d backdrop_shown=%d disc_check=%d\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -772,7 +772,7 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->wizard.preflight.input.files_needed,
            selected_input ? player_input_class_name(selected_input->input_class) : "none",
            selected_input ? selected_input->files_needed : (size_t)0,
-           backdrop_index, backdrop_shown ? 1 : 0);
+           backdrop_index, backdrop_shown ? 1 : 0, app->disc_check.running ? 1 : 0);
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {

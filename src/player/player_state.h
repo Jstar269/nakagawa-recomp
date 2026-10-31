@@ -9,6 +9,7 @@
 #include "nk_iso.h"
 #include "nk_disc_expand.h"
 #include "nk_library.h"
+#include "nk_disc_verify.h"
 #include "nk_launch.h"
 #include "nk_font.h"
 #include "input_settings.h"
@@ -683,6 +684,29 @@ typedef struct {
     uint64_t build_generation;
 } PlayerRebuildQueue;
 
+/* Disc verification (src/core/nk_disc_verify.h): each image the player adds is
+   hashed once, after the add, on a worker main.c owns, and compared with the
+   disc list the user imported; the result goes into its library record. One
+   image at a time. The library's line shows the progress, and its Cancel stops
+   the check and the ones waiting (the games stay, unchecked). */
+#define PLAYER_DISC_CHECK_QUEUE 16
+
+typedef struct {
+    char disc_id[MAX_DISC_ID_LEN];
+    char iso_path[MAX_PATH_LEN];
+} PlayerDiscCheckItem;
+
+typedef struct {
+    /* The images waiting, in order; while running, the first is being hashed. */
+    PlayerDiscCheckItem queue[PLAYER_DISC_CHECK_QUEUE];
+    int count;
+    bool running;
+    bool cancel_requested;
+    int percent;
+    /* The line after a check that could not finish, until Hide; empty for none. */
+    char note[96];
+} PlayerDiscCheckState;
+
 /* Also forward-declared by ui/player_ui_nk.h; C99 allows one typedef of a name. */
 #ifndef NK_PLAYER_APP_TYPEDEF
 #define NK_PLAYER_APP_TYPEDEF
@@ -866,6 +890,9 @@ struct PlayerApp {
     /* Games built by an older Nakagawa, and the Rebuild all queue. */
     PlayerOutdatedState outdated;
     PlayerRebuildQueue rebuild_queue;
+
+    /* The added images waiting for their disc check, and the one running. */
+    PlayerDiscCheckState disc_check;
 };
 
 /* State management API */
@@ -880,6 +907,34 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game);
  * prepared root and last-played time so re-adding never discards a completed
  * extraction. Returns true when anything was carried over. */
 bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming);
+
+/* Disc verification (PlayerDiscCheckState). Queue the image of a game in the
+ * library for a check: a disc the user added (not a sample or a showcase demo)
+ * with an image path. False when it is not one, is waiting already, or the
+ * queue is full (logged, and the library's line says so). */
+bool player_app_disc_check_queue(PlayerApp *app, const GameRecord *game);
+/* The next image to hash, when none is being hashed and nothing a whole-image
+ * read would slow down is running (a game, a launch or a package build); it is
+ * then the running check. verified_elsewhere: a verified image in the library
+ * has its disc ID. */
+bool player_app_disc_check_take(PlayerApp *app, PlayerDiscCheckItem *out,
+                                bool *verified_elsewhere);
+void player_app_disc_check_progress(PlayerApp *app, int percent);
+/* The running check ended. A hashed image's record gets its hashes and tier,
+ * under the library lock; a cancel the library asked for ends the checks
+ * waiting too; anything else leaves the record unchecked and sets the note.
+ * The reason goes to the developer log either way. */
+void player_app_disc_check_finish(PlayerApp *app, const NkDiscVerification *check);
+void player_app_disc_check_cancel(PlayerApp *app);
+void player_app_disc_check_hide_note(PlayerApp *app);
+/* The library's line: the running check's progress, else the note. False when
+ * there is nothing to show; *offers_cancel says its button is Cancel, not Hide. */
+bool player_app_disc_check_line(const PlayerApp *app, char *out, size_t out_size,
+                                bool *offers_cancel);
+/* A checked image's card badge ("Verified retail", "Modified disc", "Unknown
+ * dump") and the title page's sentence about it; NULL when it is not checked. */
+const char *player_disc_tier_badge(uint32_t tier);
+const char *player_disc_tier_note(uint32_t tier);
 
 /* Display-only text rules. They change what is drawn, never a stored value.
  *
@@ -938,6 +993,10 @@ typedef struct {
     bool kind_present[PLAYER_REMOVAL_KIND_COUNT];
     bool has_saves;
     uint64_t saves_bytes;
+    /* Another image in the library has this disc ID (a retail disc beside its
+       fan translation) and uses the same folders and saves, so only the
+       record goes and paths stays empty. */
+    bool files_shared;
 } PlayerRemovalPlan;
 
 /* Why a title cannot be removed now, or NULL when it can: a showcase demo,
@@ -1365,6 +1424,24 @@ void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
    just written is not necessarily the last one; callers that need the record
    they have just added must look it up rather than assume it was appended. */
 int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id);
+/* The card of the image just added, by its disc ID and file, or -1 when the add
+   failed. Two images can share a disc ID (a retail disc and a fan translation
+   of it), so the disc ID alone could pick the other card. */
+int player_app_find_added_game(const PlayerApp *app, const GameRecord *game);
+/* The card of the image a build made: by its file, or by its disc ID when one
+   card alone has it (a card added again from another folder meanwhile); -1
+   when two images share the disc ID and neither names the file. */
+int player_app_find_built_game(const PlayerApp *app, const char *disc_id,
+                               const char *iso_path);
+/* The card a package check of game is for: the same package and image, or else
+   the first card of that package. Two images of a disc ID share its package
+   folder, and each card's check lands on its own card. */
+int player_app_find_package_card(const PlayerApp *app, const GameRecord *game);
+/* How many cards carry disc_id (two images can share one). */
+int player_app_count_games_with_disc_id(const PlayerApp *app, const char *disc_id);
+/* The card of one image, by its disc ID and file, or -1. */
+int player_app_find_game_by_image(const PlayerApp *app, const char *disc_id,
+                                  const char *iso_path);
 
 /* Disc ID of the selected library card, or NULL when no card is selected. The
    per-title controller mapping choice (#520) needs one to name. */

@@ -18,8 +18,10 @@ extern "C" {
 #define NK_LIBRARY_MAX_BYTES (16L * 1024L * 1024L)
 
 /* The library.json schema this build reads and writes. Version 1 is the only
-   one so far (v0.0.1 and later; source_image_path is an optional member older
-   readers skip). A reader migrates every older version forward one step at a
+   one so far (v0.0.1 and later; source_image_path, content_sha1, content_crc32
+   and disc_verification are optional members older readers skip, and a
+   disc_verification name this build does not know reads as not checked). A
+   reader migrates every older version forward one step at a
    time; a newer file is refused with NK_ERROR_NEWER_SCHEMA and never rewritten
    (nk_user_data_schema.h). tools/nk_core/library.py holds the same number. */
 #define NK_LIBRARY_SCHEMA_VERSION 1
@@ -74,19 +76,76 @@ NkResult nk_library_lock_acquire(NkFileLock *lock, const char *library_path,
 NkResult nk_library_commit_entry(NkLibrary *lib, const NkGameEntry *entry,
                                  const char *file_path);
 
-/* Remove one entry from the library file the same way. An entry another writer
-   already removed is not an error. */
+/* Remove one entry from the library file the same way, under the rule of
+   nk_library_remove (NK_ERROR_AMBIGUOUS when the file holds several images of
+   disc_id). An entry another writer already removed is not an error. */
 NkResult nk_library_commit_remove(NkLibrary *lib, const char *disc_id,
                                   const char *file_path);
 
-/* Add or update a game entry in the library (keyed by disc_id) */
+/* nk_library_commit_entry for a fresh add (nk_library_add_fresh). */
+NkResult nk_library_commit_fresh(NkLibrary *lib, const NkGameEntry *entry,
+                                 const char *file_path);
+
+/* The same, for the entry with disc_id and content_sha1 (nk_library_remove_by_key). */
+NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
+                                         const char *content_sha1, const char *file_path);
+
+/* The same, for the entry of disc_id's image at iso_path (nk_library_remove_by_file). */
+NkResult nk_library_commit_remove_by_file(NkLibrary *lib, const char *disc_id,
+                                          const char *iso_path, const char *file_path);
+
+/* The library is keyed by disc ID plus the image's content hash
+   (content_sha1), so two images with one disc ID, a retail disc and a fan
+   translation of it, are two records. An entry replaces the record with its
+   disc ID and the same content_sha1, or else the record of the same file
+   (iso_path), which now holds it. An entry never hashed also replaces the
+   only record with its disc ID when that record was never hashed either and
+   its file is gone (the disc moved), as before hashing. Any other entry of another file is added, a hashed one even
+   beside a record written before hashing, so no image's record is lost. A
+   hashed entry that takes over its image's record from another file (the image
+   moved, then was added again) also drops the record its new file had: one
+   file holds one image. An unhashed update of the same file (its last-played
+   time, a build's result) keeps that record's hashes and tier. When an entry is
+   verified retail, the unknown records with its disc ID become modified: the
+   disc ID is now known retail (nk_disc_verify.h). */
 NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry);
 
-/* Remove a game entry from the library by disc_id */
+/* The same, for a disc added again as it is on disk now: an unhashed entry of
+   the same file leaves its record unhashed, with no tier, since the file may
+   hold other bytes (the player checks every add). */
+NkResult nk_library_add_fresh(NkLibrary *lib, const NkGameEntry *entry);
+
+/* The record nk_library_add_or_update(lib, entry) would replace, or NULL when it
+   would add entry: the record of the same image, as far as the library can tell. */
+const NkGameEntry *nk_library_find_replaced(const NkLibrary *lib, const NkGameEntry *entry);
+
+/* Remove the only game entry with disc_id. NK_ERROR_AMBIGUOUS, removing
+   nothing, when several images share the disc ID; nk_library_remove_by_key
+   names the one to remove. */
 NkResult nk_library_remove(NkLibrary *lib, const char *disc_id);
 
-/* Lookup game entry by disc_id */
+/* The first game entry with disc_id. */
 const NkGameEntry *nk_library_find_by_disc_id(const NkLibrary *lib, const char *disc_id);
+
+/* The entry with disc_id and content_sha1 (an empty or NULL content_sha1
+   finds the first with disc_id, as nk_library_find_by_disc_id does). */
+const NkGameEntry *nk_library_find_by_key(const NkLibrary *lib, const char *disc_id,
+                                          const char *content_sha1);
+
+/* Whether a record with disc_id is a verified retail image: then a modified
+   image with that disc ID is labelled modified, not unknown (nk_disc_verify.h). */
+bool nk_library_has_verified_disc_id(const NkLibrary *lib, const char *disc_id);
+
+/* Remove the entry with disc_id and content_sha1. An empty content_sha1 names
+   the record never hashed (NK_ERROR_AMBIGUOUS when several are); NULL is
+   nk_library_remove. */
+NkResult nk_library_remove_by_key(NkLibrary *lib, const char *disc_id,
+                                  const char *content_sha1);
+
+/* Remove the entry of disc_id's image at iso_path. One file holds one image, so
+   this names one record even when two unhashed images share the disc ID
+   (NK_ERROR_FILE_NOT_FOUND when none names that file). */
+NkResult nk_library_remove_by_file(NkLibrary *lib, const char *disc_id, const char *iso_path);
 
 /* Get game entry by index (0 .. count-1) */
 const NkGameEntry *nk_library_get(const NkLibrary *lib, int index);

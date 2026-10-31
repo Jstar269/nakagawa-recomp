@@ -2309,6 +2309,10 @@ NkResult package_builder_start(
        <user data>/enhancements/<disc id>-60hz.json and writes
        packages/<disc_id>-enhanced-<id>, never the authentic package. */
     if (session->enhancement_package_id[0]) argv[argc++] = "--experimental-60hz";
+    if (session->iso_path[0]) {
+        argv[argc++] = "--iso-path";
+        argv[argc++] = session->iso_path;
+    }
     argv[argc] = NULL;
 
     char path_override[32768];

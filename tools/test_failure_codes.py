@@ -138,6 +138,8 @@ PLAYER_NOT_CODES = {
     "DISC_ID", "DISC_VERSION", "PSP_GAME",
     # the success status of a decrypt (nk_psp_status_name for NK_PSP_OK)
     "VALIDATED_DECRYPTED",
+    # how a disc check ended, in the player's DISC_CHECK log line (NkDiscVerifyResult)
+    "READ_FAILED", "LIST_UNUSABLE",
     # gamepad and pointer names, UI actions and the UI test harness's tokens
     "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "DPAD_UP", "LEFT_SHOULDER", "RIGHT_SHOULDER",
     "MOUSE_DOWN", "MOUSE_UP", "MOUSE_X1", "MOUSE_X1_DOWN", "MOUSE_X1_UP", "OPEN_FOLDER",
@@ -299,7 +301,8 @@ class DecryptTests(unittest.TestCase):
 
 class DiscTests(unittest.TestCase):
     def test_every_disc_refusal_is_a_disc_code(self) -> None:
-        header = (ROOT / "src" / "core" / "nk_disc_expand.h").read_text(encoding="utf-8")
+        header = "".join((ROOT / "src" / "core" / name).read_text(encoding="utf-8")
+                         for name in ("nk_disc_expand.h", "nk_disc_verify.h"))
         source = (ROOT / "src" / "core" / "nk_disc_expand.c").read_text(encoding="utf-8")
         found = set(re.findall(r'#define NK_DISC_[A-Z_]+\s+"([A-Z_]+)"', header + source))
         iso = (ROOT / "src" / "core" / "nk_iso.c").read_text(encoding="utf-8")

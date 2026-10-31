@@ -357,6 +357,19 @@ two lines at most, and the status in `LABEL_S`). The cards are focusable, never 
 demo's title page like a game card. The grid gives up rows to fit the row; where the empty-library card and the row
 do not both fit (the 960 x 540 minimum), the card leaves out its icon.
 
+Disc check (#1731): each time the user adds a disc, its image is hashed after the add, on a worker, one disc at a
+time, and compared with the disc list the user imported ([COMPATIBILITY.md](COMPATIBILITY.md#whole-library)); so is
+any other image of its disc ID not hashed yet. None starts while a game starts or runs or a package builds. While
+one runs, the heading row carries a `CAPTION` `muted` line, "Checking disc image: 40%" ("Checking disc images: 40%,
+2 more" with more waiting), and a small CANCEL that stops it and the ones waiting (it stays while the check stops);
+the games stay, unchecked. A check that could not finish leaves a `warning` line ("A disc image could not be
+checked", "Your disc list could not be read", or "Some disc images were not checked" when too many wait) with HIDE,
+and the reason goes to the developer log. The line stays until HIDE; a later check shows its progress meanwhile.
+Neither button is ever the default focus. The progress is a number, not an animation, and it is on that line
+only: the card's badge, YOUR DISC until then, changes once, to VERIFIED RETAIL, MODIFIED DISC or UNKNOWN DUMP (a
+beta's BETA / UNOFFICIAL stays over UNKNOWN DUMP). A disc added again reads YOUR DISC until its new check ends,
+since its file may hold other bytes now.
+
 ### Title detail (C5, built)
 
 Aside: the hero, then a PACKAGE card (eyebrow, status pill, the status detail in `BODY_S` `muted`, and any input
@@ -364,7 +377,9 @@ note in an inset `info` box). The detail follows the package state (ready, check
 missing, starting, running), never the primary action: while its game runs, a ready package says "Running now.
 Stop the game to rebuild or change settings." The input note about decrypted files shows only while the package
 still needs them. Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in `DATA`, the status
-pill and tag (YOUR DISC, or BETA / UNOFFICIAL as on the card), one action row on the column's left edge with every button 52 px (the primary action, PLAY when
+pill and tag (YOUR DISC, BETA / UNOFFICIAL or the disc check's word, as on the card), then for a checked disc
+one `BODY_S` `muted` sentence on what the check found (for UNKNOWN DUMP: not shown to be retail, not modified,
+since Redump's PSP list names no disc IDs), one action row on the column's left edge with every button 52 px (the primary action, PLAY when
 the package is ready, STARTING... while the launch starts, STOP GAME while a game runs, then OPEN SAVE FOLDER and
 BACK), and the WHAT TO EXPECT card. Its eyebrow carries a player tier chip (PERFECT and PLAYABLE `ready`, IN-GAME
 and MENU `info`, TITLE SCREEN `warning`, WON'T BOOT `error`; no chip for a title no one has tried). Below it come
@@ -403,7 +418,10 @@ built and no saves says so. REMOVE (`DANGER`) removes the title, deletes those f
 ticked), and returns to the library. Focus lands on the tile that took the removed title's place, or on the add
 card when it was the last, and the page turns to it. The folders are found from the disc ID under the player's own
 roots, never from a path stored in the library. The disc image, the user's decrypted files and the shared
-manifests are never on the list. Prompt bar: MOVE, SELECT, CANCEL.
+manifests are never on the list. Those folders and saves are the disc ID's, so while another image with the same
+disc ID stays in the library (a retail disc beside its fan translation), the box is left out and the lead says
+what Nakagawa built for it and its saves stay, because the other image uses them; only the record goes. Prompt bar:
+MOVE, SELECT, CANCEL.
 
 ### About (built)
 

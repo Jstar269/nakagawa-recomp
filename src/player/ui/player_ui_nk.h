@@ -131,9 +131,18 @@ typedef enum {
     PLAYER_UI_ACTION_CYCLE_ACE,        /* the title page's Ace Mode: library, on, authentic */
     PLAYER_UI_ACTION_CYCLE_SORT,        /* the library's next sort */
     PLAYER_UI_ACTION_FIND_OPEN,         /* open the library's find box */
-    PLAYER_UI_ACTION_FIND_KEY           /* an on-screen key: title_index is a codepoint, or
+    PLAYER_UI_ACTION_FIND_KEY,          /* an on-screen key: title_index is a codepoint, or
                                            PLAYER_UI_FIND_DELETE or PLAYER_UI_FIND_DONE */
+    PLAYER_UI_ACTION_DISC_VERIFY        /* the library's disc check line; .primary carries
+                                           the op (PlayerUiDiscVerifyOp) */
 } PlayerUiActionKind;
+
+/* What the library's disc check line asks for (PLAYER_UI_ACTION_DISC_VERIFY). */
+typedef enum {
+    PLAYER_UI_DISC_VERIFY_NONE = 0,
+    PLAYER_UI_DISC_VERIFY_CANCEL,   /* stop the check and the ones waiting; the games stay */
+    PLAYER_UI_DISC_VERIFY_HIDE      /* hide the line about a check that could not finish */
+} PlayerUiDiscVerifyOp;
 
 /* The find box's keys that are not characters. */
 #define PLAYER_UI_FIND_DELETE 8u
@@ -250,6 +259,10 @@ typedef struct {
     const char *ace_line;
     const char *ace_last_session;
     bool ace_badge;             /* the library card's ACE badge */
+    /* Disc verification: one sentence about how the image compares with the
+       user's disc list, under the title page's tags; NULL when not checked. The
+       card's badge carries the short word. */
+    const char *disc_check_note;
 } PlayerUiTitle;
 
 typedef struct {
@@ -291,6 +304,11 @@ typedef struct {
        passed while it fades out after focus moves on. NULL draws nothing. */
     const struct NkUiImage *backdrop;
     bool backdrop_shown;
+    /* Disc verification: "Checking disc image: 40%" with Cancel while an added
+       image is hashed, or a check that could not finish with Hide. NULL draws
+       nothing. */
+    const char *verify_notice;
+    bool verify_offers_cancel;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
@@ -936,6 +954,11 @@ enum {
 #define PLAYER_UI_ID_LIBRARY_ITEM_BASE_SPAN 0x1000u    /* NK_MAX_GAMES */
 #define PLAYER_UI_ID_DISC_VERIFY_BASE_SPAN 0x100u      /* progress, cancel, results */
 
+/* Disc verification's controls and lines, in PLAYER_UI_ID_DISC_VERIFY_BASE's family. */
+#define PLAYER_UI_ID_DISC_VERIFY_CANCEL ((NkUiId)(PLAYER_UI_ID_DISC_VERIFY_BASE + 0x01u))
+#define PLAYER_UI_ID_DISC_VERIFY_HIDE ((NkUiId)(PLAYER_UI_ID_DISC_VERIFY_BASE + 0x02u))
+#define PLAYER_UI_ID_DISC_VERIFY_TITLE_NOTE ((NkUiId)(PLAYER_UI_ID_DISC_VERIFY_BASE + 0x10u))
+
 #define PLAYER_UI_ID_CONTROLLER_BUTTON(control) \
     ((NkUiId)(PLAYER_UI_ID_CONTROLLER_BUTTON_BASE + (uint32_t)(control)))
 #define PLAYER_UI_ID_CONTROLLER_GLYPH(control) \
@@ -1006,6 +1029,9 @@ typedef struct {
     bool has_saves;             /* the game has saves; false hides the saves box */
     uint64_t saves_bytes;
     bool delete_saves;          /* the saves box; off until the user ticks it */
+    /* Another image in the library has this disc ID and uses its folders and
+       saves: only the record goes, and the dialog says so. */
+    bool files_shared;
     float logical_width;
     float logical_height;
 } PlayerUiRemoveModel;
