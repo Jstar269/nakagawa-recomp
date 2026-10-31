@@ -54,11 +54,11 @@ static const char *const g_ui_core_files[] = {
     "src/ui/nk_ui_image.c",
     "src/ui/nk_ui_assets.h",
     "src/ui/nk_ui_assets.c",
-    "src/ui/nk_ui_sdl_input.c",
+    "src/ui/nk_ui_sdl_input.c"
     /* nk_ui_ttf.c and backend/nk_ui_sdlr.* are the SDL edge since lane C3b: they
-       include SDL headers behind NK_UI_WITH_SDL and are covered by test_nk_ui_sdlr.c. */
-    "src/ui/backend/nk_ui_vk.h",
-    "src/ui/backend/nk_ui_vk.c"
+       include SDL headers behind NK_UI_WITH_SDL and are covered by test_nk_ui_sdlr.c.
+       backend/nk_ui_vk.* is the Vulkan edge since lane C3c: it includes the Vulkan
+       headers behind NK_UI_WITH_VULKAN and is covered by test_nk_ui_vk.c. */
 };
 
 static int contains_ascii_case_insensitive(const char *text, const char *needle) {
@@ -277,7 +277,11 @@ static int test_container_return_contract(void) {
 }
 
 static int test_backend_declarations(void) {
-    CHECK(!nk_ui_vk_render(NULL, NULL), "Vulkan render entry point refuses a NULL list");
+    /* Built without NK_UI_WITH_VULKAN here: the Vulkan entry points are stubs. */
+    CHECK(!nk_ui_vk_available() && nk_ui_vk_create(NULL) == NULL,
+          "a build without the Vulkan backend reports it and creates nothing");
+    CHECK(!nk_ui_vk_prepare(NULL, NULL, NULL, 0u), "Vulkan prepare entry point refuses a NULL list");
+    CHECK(!nk_ui_vk_render(NULL, NULL, NULL, 0u, 0u), "Vulkan render entry point refuses a NULL list");
     CHECK(!nk_ui_sdlr_render(NULL, NULL), "SDL renderer entry point refuses a NULL list");
     return 1;
 }
@@ -1813,6 +1817,20 @@ static bool clip_is(const NkUiDrawList *list, uint32_t index, int x0, int y0, in
 static int test_draw_clips_nest(void) {
     NkUiDrawBuffer buffer;
     const NkUiDrawList *list;
+    /* A convex shape's bounds hold every pixel it touches, its 0.75 px fringe too, so
+       a backend clipping each command to them trims none of its ink. */
+    {
+        static const float triangle[6] = {10.5f, 10.5f, 20.5f, 10.5f, 15.5f, 20.5f};
+        const NkUiDrawCmd *shape;
+        memset(&buffer, 0, sizeof(buffer));
+        CHECK(nk_ui_draw_add_convex(&buffer, triangle, 3u, 0xFFFFFFFFu, 9u), "add a triangle");
+        shape = &buffer.list.cmd[buffer.list.ncmd - 1u];
+        CHECK(shape->bounds[0] <= 9 && shape->bounds[1] <= 10 && shape->bounds[2] >= 22 &&
+                  shape->bounds[3] >= 22 && shape->bounds[0] >= 8 && shape->bounds[1] >= 9 &&
+                  shape->bounds[2] <= 23 && shape->bounds[3] <= 23,
+              "a convex shape's bounds cover its fringe, and no more than a pixel past it");
+        nk_ui_draw_buffer_destroy(&buffer);
+    }
     memset(&buffer, 0, sizeof(buffer));
     CHECK(nk_ui_draw_add_rect(&buffer, (NkUiRect){0.0f, 0.0f, 300.0f, 300.0f}, 1.0f, 0.0f,
                               0xFFFFFFFFu, 1u), "add an unclipped rect");
