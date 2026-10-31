@@ -121,6 +121,9 @@ ENHANCEMENT_UPDATE_BOUNDARY: int | None = None
 ENHANCEMENT_DATA_PATCHES: list[tuple[str, bytes, bytes, str]] = []
 # Verified disc data files: (disc path, stock sha256, rewritten bytes, id).
 ENHANCEMENT_DATA_FILES: list[tuple[str, str, bytes, str]] = []
+# Callable entries whose body loads $sp (guest_owns_entry_sp): no exit restores their entry
+# $sp, so the stack census leaves them unwrapped, as it leaves resume bodies.
+GUEST_SP_ENTRIES: set[int] = set()
 
 
 def _enhancement_rewrite(addr: int) -> dict | None:
@@ -857,6 +860,23 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
         f.write("#endif\n")
 
 
+def guest_owns_entry_sp(elf, insns):
+    """True when a body loads $sp from memory, so its returns leave the guest's $sp.
+
+    A callable body owes its caller the entry $sp, and its returns restore it (F3E). A body
+    that loads $sp from memory is a longjmp or a context switch: it returns into the frame
+    whose $sp it loaded, and restoring the entry $sp there would undo it. Its returns, its
+    tail transfers and its fall-through end therefore leave $sp as the guest set it, as a
+    resume body's do. A frame adjustment (`addiu sp, sp, imm`) or `move sp, fp` keeps the
+    callable contract.
+    """
+    for addr in insns:
+        w = read32(elf, addr)
+        if w is not None and (w >> 26) == 0x23 and ((w >> 16) & 0x1F) == 29:
+            return True
+    return False
+
+
 def emit_host_return(resumable, comment=None, stack_census=False):
     """The single host-exit policy for callable and live-frame resume entries."""
     if resumable:
@@ -936,7 +956,7 @@ def emit_host_fallthrough(resumable, stack_census=False):
 def wrap_stack_census_functions(func_texts, emitted, resume_owners):
     """Wrap each callable generated entry with opt-in dynamic SP observation."""
     for addr in sorted(set(emitted)):
-        if addr in resume_owners:
+        if addr in resume_owners or addr in GUEST_SP_ENTRIES:
             continue
         symbol = f"f_{addr:08x}"
         body = f"_sr_stack_census_body_{addr:08x}"
@@ -3042,6 +3062,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elf, start, ranges, known, resume_owners=resume_owners,
             dispatch_boundaries=dispatch_boundaries)
     insns, labels, continuations = flow
+    # A body that loads $sp leaves it to the guest at every exit, as a resume body does.
+    if not resumable and guest_owns_entry_sp(elf, insns):
+        resumable = True
+        GUEST_SP_ENTRIES.add(start)
     for label in labels:
         # A label on the delay slot of a transfer that never falls through runs the slot
         # as an ordinary word; when that word goes on to the next one, the walk owns that
@@ -4482,6 +4506,7 @@ def main(argv):
     ENHANCEMENT_APPLIED.clear()
     ENHANCEMENT_DATA_PATCHES.clear()
     ENHANCEMENT_DATA_FILES.clear()
+    GUEST_SP_ENTRIES.clear()
     if enhancement_pkg_path is not None:
         import hashlib
         from pathlib import Path

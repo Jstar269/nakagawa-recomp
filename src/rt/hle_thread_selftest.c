@@ -41753,6 +41753,41 @@ static void test_aot_return_boundary_nonlocal_return(void) {
     if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
     expect(stray_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
            "AOT nonlocal return: a target outside every live call still fails closed");
+
+    /* A longjmp into a frame a dispatch_call frame lies above: that frame's caller would
+     * run its own continuation, so the return into the live frame fails closed too. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[29] = OUTER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    cpu.r[29] = MIDDLE_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    sr_aot_return_boundary_top->dispatch_owned = 1u;
+    cpu.r[29] = INNER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, INNER_RESUME, INNER_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, 0x08a00500u);
+    cpu.r[29] = MIDDLE_SP;  /* the jmp_buf's $sp: the middle frame */
+    capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int live_dispatch_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(live_dispatch_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT return into a live frame: never abandons a dispatch_call frame");
+
+    /* The callee returned with its own frame still allocated ($sp below its entry $sp):
+     * that is a jump inside the callee, not a return into an enclosing frame. */
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[29] = OUTER_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, OUTER_RESUME, OUTER_CALL, 1u);
+    cpu.r[29] = MIDDLE_SP;
+    (void)sr_aot_return_boundary_begin(&cpu, MIDDLE_RESUME, MIDDLE_CALL, 1u);
+    SR_AOT_RETURN_CAPTURE(&cpu, 0x08a00500u);
+    cpu.r[29] = MIDDLE_SP - 0x20u;
+    capturing = hle_data_stderr_capture_begin(&capture, &saved_fd);
+    int own_frame_end = sr_aot_return_boundary_end(&cpu);
+    if (capturing) hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof captured);
+    expect(own_frame_end == 1 && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT return into a live frame: a callee still inside its own frame fails closed");
     sr_aot_return_boundaries_reset();
 }
 
@@ -43008,6 +43043,7 @@ static int hle_selftest_main(int argc, char **argv) {
  * and dispatch adapters for the rest of the HLE suite; rename recomp.c's unused
  * dispatcher exports here while leaving sr_aot_return_boundary_* unmodified. */
 void sr_recomp_test_unused_dispatch_tail_step(CpuState *s, uint32_t target);
+int sr_recomp_test_unused_dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
 void sr_recomp_test_unused_profile_dump(void);
 void sr_recomp_test_unused_profile_block(uint32_t target_pc);
 void sr_recomp_test_unused_oor(uint32_t addr, uint32_t value, int store);
@@ -43050,4 +43086,21 @@ void sr_recomp_test_unused_trace_close(void);
 #undef dispatch_call
 #undef dispatch
 #undef sr_lookup
+
+/* A live-frame continuation (sr_aot_return_boundary_end) reaches recomp.c's dispatcher,
+ * which links the interpreter floor in. This variant runs no interpreted code: its VFPU
+ * entry and the interpreter's linked-call dispatch only have to exist, and the call
+ * dispatch stops the run by name if it is ever reached. */
+int sr_vfpu_interp(CpuState *s, uint32_t op) {
+    (void)s;
+    (void)op;
+    return SR_VFPU_OTHER;
+}
+
+void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {
+    fprintf(stderr, "hle_thread_selftest: the AOT boundary variant has no interpreted "
+                    "linked call (target 0x%08x, resume 0x%08x)\n", target, resume_pc);
+    s->flow_kind = SR_FLOW_FATAL;
+    s->flow_target = target;
+}
 #endif /* SR_HLE_AOT_BOUNDARY_TEST */

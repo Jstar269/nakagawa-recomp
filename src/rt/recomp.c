@@ -2107,6 +2107,38 @@ static int sr_aot_return_boundary_unwind_to(CpuState *s, uint32_t target) {
     return 0;
 }
 
+/* A guest `jr $ra` into the body of a live frame: longjmp. It reloads a frame's callee-saved
+ * registers, $sp and $ra from a jmp_buf and returns to the word after the setjmp call that
+ * filled it, a call that has long since returned, so no live linked call resumes there.
+ * The frame it returns into is running again inside the innermost live linked call whose
+ * callee entry $sp lies above the restored $sp; every call above that one is dead. Those
+ * are abandoned as sr_aot_return_boundary_unwind_to abandons them, and that call's own end
+ * runs the target as its continuation (sr_aot_return_boundary_end). The callee that
+ * returned must have left its own frame: a jump within it is not a return. Never crosses a
+ * callback or interrupt floor or a dispatch_call frame. */
+static int sr_aot_return_boundary_resume_live_frame(CpuState *s,
+                                                    const SrAotReturnBoundary *returned,
+                                                    uint32_t target) {
+    const uint32_t sp = s->r[29];
+    if (returned->call_sp > sp) return 0;
+    const size_t depth = sr_aot_return_boundary_depth;
+    for (size_t index = depth; index > sr_aot_return_boundary_floor; index--) {
+        SrAotReturnBoundary *enclosing = &sr_aot_return_boundaries[index - 1u];
+        if (enclosing->state != s) return 0;
+        if (enclosing->call_sp > sp) {
+            if (!enclosing->has_resume_pc) return 0;
+            for (size_t abandoned = index; abandoned < depth; abandoned++)
+                sr_aot_return_boundaries[abandoned].unwinding = 1u;
+            enclosing->observed_target = UINT64_C(0x100000000) | target;
+            enclosing->unwinding = 3u;  /* its callee runs again from the target */
+            s_aot_return_unwinds++;
+            return 1;
+        }
+        if (enclosing->dispatch_owned) return 0;
+    }
+    return 0;
+}
+
 int sr_aot_return_boundary_end(CpuState *s) {
     if (sr_aot_return_boundary_depth <= sr_aot_return_boundary_floor) {
         const uint32_t call_pc = s->pc;
@@ -2157,6 +2189,21 @@ int sr_aot_return_boundary_end(CpuState *s) {
         s->r[29] = boundary->call_sp;
         return 0;
     }
+    if (boundary->unwinding == 3u) {
+        /* The live frame a longjmp returned into (sr_aot_return_boundary_resume_live_frame).
+         * Its native body was abandoned mid-way, so the rest of the frame runs as this call's
+         * continuation, from the target with the $sp the guest restored, until it returns to
+         * this call's resume PC: a resume body or the interpreter floor runs it. */
+        const uint32_t target = (uint32_t)boundary->observed_target;
+        const int result = dispatch_call_try(s, target, boundary->resume_pc);
+        if (result < 0 && s->flow_kind != SR_FLOW_FATAL) {
+            s->flow_kind = SR_FLOW_FATAL;
+            s->flow_target = target;
+            sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, boundary->resume_pc - 8u, target,
+                            boundary->resume_pc);
+        }
+        return s->flow_kind == SR_FLOW_FATAL;
+    }
     if (!boundary->has_resume_pc || s->flow_kind != SR_FLOW_NONE ||
         boundary->observed_target == 0u) {
         return 0;
@@ -2165,6 +2212,9 @@ int sr_aot_return_boundary_end(CpuState *s) {
     const uint32_t actual_target = (uint32_t)boundary->observed_target;
     if (actual_target == boundary->resume_pc) return 0;
     if (!boundary->dispatch_owned && sr_aot_return_boundary_unwind_to(s, actual_target))
+        return 1;
+    if (!boundary->dispatch_owned &&
+        sr_aot_return_boundary_resume_live_frame(s, boundary, actual_target))
         return 1;
 
     fprintf(stderr,
