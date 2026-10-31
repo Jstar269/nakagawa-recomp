@@ -4028,6 +4028,10 @@ static void test_mpeg_atrac_au_decode(void) {
               samples == 2048 && memcmp(SR_HOST(AT_OUT), ref_pcm, sizeof(ref_pcm)) == 0,
           "mpeg-atrac: without the PSMF header a frame decodes from its own header");
     ctx = mpeg_find(AT_DESC);
+    if (ctx && ctx->h264 >= 0)
+        CHECK(au_read_pts(AT_AU) == FIX_BASE,
+              "mpeg-atrac: without the PSMF header the first ATRAC unit takes the first video picture's time");
+    ctx = mpeg_find(AT_DESC);
     CHECK(ctx && mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u && ctx->audioHeld,
           "mpeg-atrac: the next frame is held");
     if (ctx && ctx->audioHeld) ctx->audioHeld[2] = 0x20u;   /* 44.1 kHz, channel id 0 */

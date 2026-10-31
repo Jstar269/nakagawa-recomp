@@ -918,6 +918,17 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
      * it ahead of the first video AU, which can make libpsmfplayer reject the video as too early.
      * Keep the demuxer's firstAudioPts for diagnostics, but do not substitute it for the public
      * sceMpeg AU time base. */
+#if defined(SR_SDL3VK) || defined(SR_MPEG_MEDIA_SELFTEST)
+    /* A context that never saw the PSMF header (a guest PSMF player parses it with scePsmf) takes
+     * its presentation origin from the stream's first video picture, as its first sceMpegGetAvcAu
+     * would.  Without it the ATRAC units handed out before that carried a clock from 0: title X's
+     * guest libpsmfplayer drops audio frames timed more than one block before the movie's start,
+     * so its audio began late and every picture was then dropped as too slow. */
+    if (!ctx->firstTimestamp && ctx->h264Init && ctx->h264 >= 0) {
+        int64_t first = -1;
+        if (sr_h264_au_peek_pts(ctx->h264, &first) && first > 0) ctx->firstTimestamp = first;
+    }
+#endif
     int64_t pts = ctx->audioPts + ctx->firstTimestamp;
     if (mpeg_stream_skipped(ctx, sid)) {
         au_write_pts(auAddr, 0, pts);

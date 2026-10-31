@@ -112,6 +112,9 @@ int sr_h264_drain(int id, const SrH264FrameTarget *target,
 int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode);
 int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int maxH, int strideBytes);
 int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts);
+/* The presentation time of the access unit sr_h264_au_take would hand out next: 1 with *pts
+ * (-1 when the unit carries none), 0 when no complete unit is queued. */
+int sr_h264_au_peek_pts(int id, int64_t *pts);
 int64_t sr_h264_first_audio_pts(int id);
 
 #endif
