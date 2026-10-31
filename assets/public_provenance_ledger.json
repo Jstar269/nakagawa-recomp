@@ -1960,7 +1960,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ed7e399c6ad11da396f093ba5b7d728f62fa982d4e22b2ad586a6f4b7ef70cb6"
+      "sha256": "931b82214296aad97122d7f4d9f44d00f26287ffde3fb9ea81887c86cd15e7bf"
     },
     {
       "path": "docs/SETUP.md",
@@ -13126,7 +13126,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ce36bff4ba9a72dfc9ecfc957c0552127c3d45cb42650c6cc4636a4c7ad053e0"
+      "sha256": "79af63859d0a6df878f8558be968b958f7e508f1c32ed7609910a05fa372f8b0"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -15128,7 +15128,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c7543dd68fd0a00ffeec83695018a523ffc2de8122bf0e05615c2c8a90eb98cf"
+      "sha256": "07f0020612f529969b184bfb2156f4c080a54fb8ff475d231a297ea054ece257"
     },
     {
       "path": "tools/test_codegen_static_verify.py",
@@ -17158,7 +17158,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1cf582e70b38acd6efa5e272e2167b5097c1b9219fef407a8a3d740b036f5400"
+      "sha256": "8d4eac04d9f07d1e8139781db90c42ed1451d8a766d4152dead034c2f3d7db07"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -17602,7 +17602,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f2b5ff1c81239aaf73bb6fae57a8d1fd94f9f0821ff74a50bb8a52928fb55750"
+      "sha256": "e21b32b8a307107573cb0a279b457350b80e63aadd2a4c467e8f7dc47a0de7bc"
     },
     {
       "path": "tools/title_manager_plan.ps1",

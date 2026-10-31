@@ -89,9 +89,10 @@ OBJECT_KEY_MAX_WORKERS = 16
 #: file while it compiles, one line each time another object finishes.
 COMPILE_PROGRESS_FILE_ENV = "NK_COMPILE_PROGRESS_FILE"
 COMPILE_PROGRESS_POLL_SECONDS = 0.5
-#: A runtime-placed system library's own translation unit (tools/codegen.py
-#: shared_library_source_name): named by the module's bytes, never by the game.
-SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}\.c")
+#: A runtime-placed system library's own translation units (tools/codegen.py
+#: shared_library_units): named by the module's bytes, never by the game, with ``_<n>``
+#: when the module needs several. The same pattern as codegen.SHARED_LIBRARY_SOURCE_RE.
+SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}(?:_[0-9]+)?\.c")
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Manifest fields that carry no operational meaning and are therefore excluded
@@ -489,17 +490,26 @@ class CompiledObjectReuse:
         return list(self.reused)
 
     def library_report(self) -> list[str]:
-        """One build-log line per system library: reused, compiled, or not shared."""
+        """One build-log line per system library: reused, compiled, or not shared.
+
+        A library cut into several translation units (#1730) still gets one line.
+        """
         reused = set(self.reused)
-        lines = []
+        units: dict[str, list[bool]] = {}
         for command in self.libraries:
-            name = self.library_name(command)
+            units.setdefault(self.library_name(command), []).append(
+                _object_path(command.output, self.cwd) in reused)
+        lines = []
+        for name, hits in units.items():
             if self.library_cache is None:
                 lines.append(f"SHARED_LIBRARY: {name} compiled for this game only (sharing is off)")
-            elif _object_path(command.output, self.cwd) in reused:
+            elif all(hits):
                 lines.append(f"SHARED_LIBRARY: reused {name}")
-            else:
+            elif not any(hits):
                 lines.append(f"SHARED_LIBRARY: compiling {name}")
+            else:
+                lines.append(f"SHARED_LIBRARY: compiling {name} "
+                             f"({hits.count(False)} of {len(hits)} units; the rest reused)")
         return lines
 
     def store(self) -> int:

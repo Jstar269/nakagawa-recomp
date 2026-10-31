@@ -3940,17 +3940,52 @@ def write_coverage_report(path, images, module_translations):
           + f" translated_share={total['translated_share']}")
 
 
-SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}\.c")
+#: A shared module's translation units (tools/title_codegen_plan.py SHARED_LIBRARY_SOURCE_RE):
+#: ``nk_lib_<fnv1a64>.c``, or ``nk_lib_<fnv1a64>_<n>.c`` when the module needs several.
+SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}(?:_[0-9]+)?\.c")
+
+# A shared module's bodies are cut into units as the game's own are, so no system library is
+# one unbounded translation unit (#1730: one was 1.96 GB of C, and its cc1 passed 18 GB). The
+# budget is the library's own, not the build's --target-chunk-bytes / --funcs-per-chunk: those
+# differ between build routes, and every game carrying the module must write the same files
+# (#1306).
+LIBRARY_UNIT_TARGET_BYTES = 4_000_000
+LIBRARY_UNIT_MAX_FUNCS = 2000
 
 
-def shared_library_source_name(module):
-    """A shared module's translation unit, named by its bytes (tools/title_codegen_plan.py
-    SHARED_LIBRARY_SOURCE_RE)."""
-    return f"nk_lib_{module.file_fnv1a64:016x}.c"
+def partition_units(texts, target_bytes, max_funcs):
+    """Cut bodies into translation units, keeping their order.
+
+    A unit closes before the body that would take it past ``target_bytes`` of C or past
+    ``max_funcs`` bodies; a body larger than the budget is a unit of its own. A
+    ``target_bytes`` of 0 cuts by count only. An LLVM body weighs what its C body would
+    (``chunk_bytes``), so units fall where the C backend cuts them.
+    """
+    units, cur, cur_bytes = [], [], 0
+    for text in texts:
+        weight = getattr(text, "chunk_bytes", len(text))
+        if cur and ((target_bytes > 0 and cur_bytes + weight > target_bytes)
+                    or len(cur) >= max_funcs):
+            units.append(cur)
+            cur, cur_bytes = [], 0
+        cur.append(text)
+        cur_bytes += weight
+    if cur:
+        units.append(cur)
+    return units
 
 
-def shared_library_source_text(module):
-    """A shared module's translation unit: its bodies with their own declarations.
+def shared_library_units(module):
+    """``(file name, bodies)`` for each translation unit of a shared module, named by its bytes."""
+    units = partition_units(module.texts, LIBRARY_UNIT_TARGET_BYTES, LIBRARY_UNIT_MAX_FUNCS)
+    stem = f"nk_lib_{module.file_fnv1a64:016x}"
+    if len(units) == 1:
+        return [(f"{stem}.c", units[0])]
+    return [(f"{stem}_{n}.c", unit) for n, unit in enumerate(units)]
+
+
+def shared_library_source_text(module, texts):
+    """One translation unit of a shared module: some of its bodies, with every declaration.
 
     Nothing in it names the game, so the build of every game carrying this module writes
     the same bytes. The first comment names the module for the build log; comments do
@@ -3977,19 +4012,19 @@ def shared_library_source_text(module):
     lines.append("")
     if SV_ENABLED:
         lines += [SR_SV_CHECK, ""]
-    return "\n".join(lines) + "\n" + "\n\n".join(module.texts) + "\n"
+    return "\n".join(lines) + "\n" + "\n\n".join(texts) + "\n"
 
 
 def write_shared_library_sources(out_dir, module_translations):
-    """Write each shared module's translation unit and remove ones a previous run left."""
+    """Write each shared module's translation units and remove ones a previous run left."""
     written = set()
     for module in module_translations:
         if not module.shared or not module.texts:
             continue
-        name = shared_library_source_name(module)
-        written.add(name)
-        with open(os.path.join(out_dir, name), "w", encoding="ascii", newline="\n") as f:
-            f.write(shared_library_source_text(module))
+        for name, texts in shared_library_units(module):
+            written.add(name)
+            with open(os.path.join(out_dir, name), "w", encoding="ascii", newline="\n") as f:
+                f.write(shared_library_source_text(module, texts))
     for entry in os.listdir(out_dir):
         stem, suffix = os.path.splitext(entry)
         source = stem + ".c"
@@ -4906,29 +4941,10 @@ def main(argv):
             sys.stderr.write(f"codegen: {exc}\n")
             return 2
 
-    if chunk_target_bytes > 0:
-        # Deterministic size-aware partition: preserve emitted function order and
-        # close a chunk when adding the next function would exceed the byte budget
-        # (the function-count cap still bounds pathological single-function chunks).
-        boundaries = []
-        cur = []
-        cur_bytes = 0
-        for ft in func_texts:
-            # An LLVM body weighs what its C body would, so chunks fall where C cuts them.
-            w = getattr(ft, "chunk_bytes", len(ft))
-            if cur and (cur_bytes + w > chunk_target_bytes or len(cur) >= funcs_per_chunk):
-                boundaries.append(cur)
-                cur = []
-                cur_bytes = 0
-            cur.append(ft)
-            cur_bytes += w
-        if cur:
-            boundaries.append(cur)
-    else:
-        boundaries = [
-            func_texts[i * funcs_per_chunk : (i + 1) * funcs_per_chunk]
-            for i in range((len(func_texts) + funcs_per_chunk - 1) // funcs_per_chunk)
-        ]
+    # Deterministic size-aware partition: emitted function order is kept, and a chunk
+    # closes when the next function would take it past the byte budget (the function
+    # count still bounds a chunk of tiny functions). Without a byte budget, the count alone.
+    boundaries = partition_units(func_texts, chunk_target_bytes, funcs_per_chunk)
     num_files = len(boundaries)
     base_name = os.path.splitext(out_c)[0]
 

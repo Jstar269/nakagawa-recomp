@@ -355,7 +355,10 @@ compiles nothing.
 * `<user data>/cache/shared-libraries/` holds the system libraries a disc carries.
   Codegen writes a runtime-placed module that the build carries once to its own
   `nk_lib_<fnv1a64>.c`, named by the module's bytes, with symbols `l<fnv>_<link>` and
-  `sr_l<fnv>_base` and nothing that names the game. Another game with the same module
+  `sr_l<fnv>_base` and nothing that names the game. A module over the library budget
+  (`LIBRARY_UNIT_TARGET_BYTES` of C or `LIBRARY_UNIT_MAX_FUNCS` bodies, fixed in codegen
+  and independent of the build's own chunk settings) is cut into
+  `nk_lib_<fnv1a64>_<n>.c` units instead, each with every declaration (#1730). Another game with the same module
   compiles the identical file, and the build log names each library it reused or
   compiled. Settings > BUILD TOOLS AND CACHE turns this sharing off
   (`build-package --no-shared-libraries`) and clears the folder. A module carried

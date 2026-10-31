@@ -11,7 +11,8 @@ the platform ladder and pin the generated contract the runtime binds:
 
 * every guest address of the module's own image is ``(<base symbol> + link)``;
 * a module carried once is named by its bytes (``l<fnv>_...``, ``sr_l<fnv>_base``) and
-  written to its own ``nk_lib_<fnv>.c``, the same file whatever game carries it (#1306);
+  written to its own ``nk_lib_<fnv>.c``, the same file whatever game carries it (#1306),
+  or to ``nk_lib_<fnv>_<n>.c`` units when it is over the library's own budget (#1730);
 * an instruction whose immediate the loader relocates reads that immediate from
   the loaded image (``MEM_R16``), never from the link-time word;
 * the module's functions are reached only through its ``SrModuleCode``
@@ -27,7 +28,9 @@ import contextlib
 import importlib.util
 import io
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -218,6 +221,74 @@ class RuntimeModuleTranslation(unittest.TestCase):
             self.assertIn('#include "recomp.h"', text)
         # The module bodies stay out of the game's own chunks.
         self.assertNotRegex(self.chunks, r"(?m)^void [lm][0-9a-f]+_[0-9a-f]{8}\(")
+
+    def library_build(self, name, funcs_per_chunk, max_funcs):
+        """A build of both overlays with the library budget lowered to ``max_funcs`` bodies."""
+        out = Path(self.tmp.name) / name / "g_recomp.c"
+        out.parent.mkdir(exist_ok=True)
+        saved = codegen.LIBRARY_UNIT_MAX_FUNCS
+        codegen.LIBRARY_UNIT_MAX_FUNCS = max_funcs
+        try:
+            status, _out, err = run_codegen([
+                str(self.main), str(out), "--base=0x08940000",
+                f"--funcs-per-chunk={funcs_per_chunk}",
+                *[f"--extra-elf={path}@runtime" for _spec, path in self.overlays],
+            ])
+        finally:
+            codegen.LIBRARY_UNIT_MAX_FUNCS = saved
+        self.assertEqual(status, 0, err)
+        return out.parent, {path.name: path.read_text(encoding="ascii")
+                            for path in sorted(out.parent.glob("nk_lib_*.c"))}
+
+    def test_a_module_over_the_library_budget_is_cut_into_units(self):
+        # #1730: a library unit is bounded like the game's chunks, by the library's own
+        # budget, so the units are the same files whatever the game's chunk settings.
+        _dir, cut = self.library_build("cut4", funcs_per_chunk=4, max_funcs=4)
+        _dir, cut_other = self.library_build("cut7", funcs_per_chunk=7, max_funcs=4)
+        self.assertEqual(cut, cut_other)
+        body = re.compile(r"(?ms)^void ([lm][0-9a-f]+_[0-9a-f]{8})\(CpuState \*s\) \{.*?^\}$")
+        for index in range(len(self.overlays)):
+            stem = f"nk_lib_{self.hashes[index]:016x}"
+            whole = self.libraries[f"{stem}.c"]
+            names = sorted(name for name in cut if name.startswith(stem))
+            bodies = [m.group(1) for m in body.finditer(whole)]
+            self.assertEqual(names, [f"{stem}_{n}.c" for n in range((len(bodies) + 3) // 4)])
+            self.assertGreater(len(names), 1)
+            pieces = [m.group(0) for name in names for m in body.finditer(cut[name])]
+            self.assertEqual(pieces, [m.group(0) for m in body.finditer(whole)],
+                             "the units hold every body once, in order")
+            head = whole[:whole.index("\n\n", whole.index("extern uint32_t"))]
+            for name in names:
+                self.assertTrue(cut[name].startswith(head), f"{name} carries every declaration")
+                self.assertLessEqual(len(body.findall(cut[name])), 4)
+
+    @unittest.skipUnless(shutil.which("gcc"), "gcc not installed")
+    def test_library_units_compile_alone_and_define_each_body_once(self):
+        unit_dir, cut = self.library_build("compile", funcs_per_chunk=4, max_funcs=4)
+        defined = []
+        for name in cut:
+            obj = unit_dir / (name[:-2] + ".o")
+            proc = subprocess.run(
+                ["gcc", "-O0", "-w", "-Werror=implicit-function-declaration",
+                 f"-I{ROOT / 'src' / 'rt'}", "-DSR_SDL3VK", "-c", str(unit_dir / name),
+                 "-o", str(obj)], capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            symbols = subprocess.run(["nm", "--defined-only", str(obj)], capture_output=True,
+                                     text=True, check=True).stdout
+            defined += re.findall(r"(?m)^\S+ T _?(l[0-9a-f]{16}_[0-9a-f]{8})$", symbols)
+        expected = re.findall(r"(?m)^void (l[0-9a-f]{16}_[0-9a-f]{8})\(CpuState \*s\) \{",
+                              "\n".join(self.libraries.values()))
+        self.assertEqual(sorted(defined), sorted(expected))
+
+    def test_library_units_replace_each_other_without_stale_files(self):
+        unit_dir, single = self.library_build("swap", funcs_per_chunk=4, max_funcs=2000)
+        self.assertEqual(sorted(single), sorted(self.libraries))
+        _dir, cut = self.library_build("swap", funcs_per_chunk=4, max_funcs=4)
+        self.assertEqual(sorted(p.name for p in unit_dir.glob("nk_lib_*.c")), sorted(cut))
+        self.assertTrue(set(cut).isdisjoint(single))
+        _dir, again = self.library_build("swap", funcs_per_chunk=4, max_funcs=2000)
+        self.assertEqual(again, single)
+        self.assertEqual(sorted(p.name for p in unit_dir.glob("nk_lib_*.c")), sorted(single))
 
     def test_a_module_carried_twice_keeps_indexed_names_in_the_game_chunks(self):
         root = Path(self.tmp.name) / "twice"
