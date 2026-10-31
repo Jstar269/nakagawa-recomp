@@ -245,6 +245,9 @@ python -m tools.nk_core.prereq_fetcher --manifest (Join-Path $Source 'assets/pre
     --source-archive $SourceZip --download-cache $PrereqCache
 if ($LASTEXITCODE -ne 0) { throw 'Writing the prerequisite source archive failed.' }
 
+# A signed release signs the two executables here, on the signing machine, before anything below
+# describes them (RELEASE_SIGNING.md, "Sign the Windows binaries"):
+#   pwsh tools/sign_release_binaries.ps1 -Stage $Stage -Thumbprint <thumbprint> -TimestampUrl <RFC 3161 URL>
 python tools/generate_sbom.py --package-dir $Bin `
     --spdx-out (Join-Path $Stage 'SBOM.spdx.json') `
     --spdx3-out (Join-Path $Stage 'SBOM.spdx3.jsonld') `
@@ -260,10 +263,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $Bin 'runtime-manifest.json') -PathT
     python tools/stage_runtime_dlls.py --target $Bin --write-runtime-manifest-only
     if ($LASTEXITCODE -ne 0) { throw 'Recording the runtime manifest failed.' }
 }
+# The source export is a one-commit Git repository whose commit time and index timestamps change on every
+# run, so source/.git would make two builds differ. The installed source/ has no .git either (see below).
+Remove-Item -LiteralPath (Join-Path $Source '.git') -Recurse -Force
 # Writes SHA256SUMS.txt, checks bin/ against its runtime manifest, then writes the ZIP with
 # sorted entries dated at the candidate commit's time, fixed permissions and no extra fields,
 # so the same commit and staged inputs give the same ZIP bytes. Hidden files (.github,
-# .editorconfig) are included; a link anywhere in the stage is refused.
+# .editorconfig) are included; a link or a .git entry anywhere in the stage is refused.
 python tools/stage_install.py --portable-zip $Zip --zip-stage $Stage --revision $CandidateSha
 if ($LASTEXITCODE -ne 0) { throw 'Writing the portable ZIP failed.' }
 # The ZIP itself is a container, not an attested subject: publish its SHA-256 next to it so a
@@ -282,6 +288,40 @@ Then sign that checksum file on the offline signing machine, as [`RELEASE_SIGNIN
 `prereqs/` carries the pinned build prerequisites from `assets/prereq_manifest.json`, CPython and the MSYS2 UCRT64 packages, unpacked in the layout the per-user download installs, plus `installed.json` and `bundle-inventory.txt` ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). BUILD PACKAGE uses it without a consent card or a download ([`SETUP.md`](SETUP.md#player-build-package-prerequisites)). The staging step downloads each archive from its pinned host into the cache, or reuses a cached copy, checks its exact size and SHA-256, unpacks it with the per-user installer's path and link rules (a package link becomes a copy of its target, because a ZIP cannot carry links), removes the documentation folders `share/doc`, `share/info` and `share/man`, writes `notices/SOURCES.txt`, and then verifies the whole tree, file contents included. It prints the bundle's `file_count`, `unpacked_bytes` and `stripped_documentation`: record the first two and the ZIP size in the release notes. The bundled third-party executables keep their upstream bytes and are not re-signed. From the source checkout, `python -m tools.nk_core.prereq_fetcher --manifest assets/prereq_manifest.json --verify-bundle <extracted folder>/prereqs` repeats the full check on an extracted copy. A ZIP that contains `prereqs/` is published only together with its prerequisite source archive, in the same release ([policy below](#bundled-prerequisite-licensing-policy)).
 
 The source archive step writes `nakagawa-recomp-<version>-prerequisite-sources.zip` beside the ZIP, outside the stage. It downloads each pinned source file into the same cache, or reuses a cached copy, checks its exact size and SHA-256, stores it unchanged under one top-level folder with `SOURCES.txt`, and verifies the archive again, contents included. It prints `source_count`, `source_bytes`, `archive_bytes` and `archive_sha256`: record the archive size in the release notes next to the ZIP figures, and attach the archive and its `.sha256` to the same release as the ZIP. `python -m tools.nk_core.prereq_fetcher --manifest assets/prereq_manifest.json --verify-source-archive <archive>` repeats the check on a downloaded copy.
+
+### Check that the package is reproducible
+
+Two builds of one package must give the same bytes: the same commit, the same attested bundle, the same
+trusted ledger copy and the same prerequisite pins. Run the recipe twice, into two different artifact roots (the recipe writes under `$env:TEMP`; set
+`$env:TEMP` to another folder for the second run), and compare the results:
+
+```powershell
+python tools/package_repro_check.py $ZipFirst $ZipSecond
+python tools/package_repro_check.py $SourceZipFirst $SourceZipSecond
+```
+
+Identical files print `IDENTICAL` and the SHA-256 and exit 0. Anything else exits 1 and names each difference
+with its cause: an entry on one side only, an entry stored in another order, different content, a different
+time, permission bits or flags, or the same content deflated differently. Run the tool on the two staged
+folders next to find the file behind a content difference. The causes that are known and allowed are:
+
+- **Deflate output.** The bytes depend on the zlib build of the CPython that wrote the ZIP. Use the same
+  CPython for both runs; `--portable-zip` reports the zlib version it used.
+- **A different attested bundle.** Two workflow runs of one commit are two bundles. Both runs of the check use
+  the same downloaded bundle.
+- **A signature.** Two signed packages differ in the signatures and in every file that describes the signed
+  bytes ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md#sign-the-windows-binaries-authenticode)); check the unsigned
+  build instead.
+
+One cause was found by this check and is fixed rather than allowed. `tools/build_public_export.py` leaves a
+one-commit repository in `source/.git`, and its commit time and index timestamps change on every export, so two
+otherwise identical packages differed in five files and in `SHA256SUMS.txt`. The recipe deletes it before
+archiving and `--portable-zip` refuses a stage that still has a `.git` entry. The package stays complete: the
+installed `source/` (`tools/stage_install.py --dest`) has never had a `.git`, and the package identity, the
+export manifest and the prerequisite check do not use it. One consumer is the Makefile's build-identity lookup
+(`git rev-parse HEAD`): a title built from the packaged `source/` now records no build identity, the documented
+state for a source drop, where it used to record the export commit's id, which named no real commit and changed
+on every export. `tools/flight_diff.py` refuses a bundle without an identity.
 
 Before a maintainer treats the zip as publishable, inspect it with:
 

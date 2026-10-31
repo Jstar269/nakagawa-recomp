@@ -16,8 +16,9 @@
  * runs and *completes* identically. AVC pictures are decoded through the backend-neutral
  * sr_h264.h seam by whichever decoder the build selected; sceMpegAvcDecode clears the
  * destination until the first picture arrives, and without a usable decoder it fails closed
- * with the backend-unavailable error. ATRAC audio is not decoded here: sceMpegAtracDecode only
- * advances the audio clock.
+ * with the backend-unavailable error. The registered ATRAC3+ stream is demultiplexed from the
+ * same ring packets and decoded by the project's ATRAC3+ bridge, one frame per sceMpegAtracDecode
+ * (see "ATRAC3+ access units" below); the audio AU clock stays the media-engine model.
  *
  * This file is GPL-2.0-or-later because it is derived from PPSSPP; that licence covers this
  * runtime source only and says nothing about the user's game.
@@ -28,6 +29,8 @@
 #endif
 #include "recomp.h"
 #include "sr_h264.h"
+#include "psmf_producer.h"
+#include "atrac3p_bridge.h"
 /* Outside the SR_SDL3VK guard on purpose: call_guest3() is unconditional, so a
  * declaration that only exists in the SDL3 build is an implicit-declaration
  * error in every other one (portable-core caught exactly that). */
@@ -55,17 +58,19 @@
 
 #define MPEG_AVC_ES_SIZE   2048
 #define MPEG_ATRAC_ES_SIZE 2112
+#define MPEG_ATRAC_ES_OUTPUT_SIZE 8192u   /* 2048 stereo s16 samples per sceMpegAtracDecode */
 #define MPEG_PCM_ES_SIZE   320
 #define MPEG_PCM_OUTPUT_SIZE 320
 
-/* Public MPEG constants and return families are recorded in PSPSDK's src/mpeg/pspmpeg.h. The
- * YCbCr ABI details not stated there remain an explicit #302 physical-PSP hardware-oracle gap. */
+/* Public MPEG constants and return families are recorded in PSPSDK's src/mpeg/pspmpeg.h.  The
+ * mode-1 YCbCr buffer is measured (the YCbCr section below); the other modes remain a #302
+ * physical-PSP hardware-oracle gap. */
 #define MPEG_MEMSIZE_0105 0x10000u
 #define MPEG_MAX_DIMENSION 4096u
 #define MPEG_AU_MODE_DECODE 0u
 #define MPEG_AU_MODE_SKIP   1u
 
-#define SCE_MPEG_ERROR_INVALID_VALUE 0x806100FEu
+#define SCE_MPEG_ERROR_INVALID_VALUE 0x806101FEu   /* MEASURED (PSP-MPEG-001); was 0x806100FE */
 #define SCE_MPEG_ERROR_BAD_VERSION   0x806100A0u
 #define SCE_MPEG_ERROR_NO_DATA       0x80618001u
 #define SCE_MPEG_ERROR_NO_MEMORY     0x80610022u
@@ -130,6 +135,7 @@ static int rb_read_valid(uint32_t ring, RingState *out, int writable) {
 }
 
 /* ---- host-side MPEG context, keyed by guest mpeg handle ---- */
+#define MPEG_ATRAC_FIFO_DEPTH 64u   /* demuxed ATRAC3+ frames waiting for GetAtracAu (~3 s) */
 typedef struct {
     int used;
     uint32_t handle;            /* the value stored at *mpegAddr (dataPtr+0x30) */
@@ -148,6 +154,7 @@ typedef struct {
     uint32_t headerAddr;         /* guest address of the PSMF header passed to QueryStreamOffset */
     int h264;                    /* host H.264 backend id (-1 = none) */
     int h264Init, h264Frames;
+    int avcFrameStatus;         /* 1 when the last AVC decode call produced a picture */
     int defaultFrameWidth, pixelMode;
     uint32_t streamWidth, streamHeight;
     int ycbcrWant;   /* pictures requested through sceMpegAvcDecodeYCbCr */
@@ -156,6 +163,20 @@ typedef struct {
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
     /* stream map: small fixed table sid -> (type,num,needsReset,auMode) */
     struct { int used, type, num, needsReset, auMode; uint32_t sid; } streams[8];
+    /* ATRAC3+ access units: an audio-only demux of the fed ring bytes, its frames waiting in a
+     * FIFO, the frame GetAtracAu holds for the next AtracDecode, and the decoder. */
+    int audioStreamNum;          /* the registered ATRAC stream (its PS1 sub-stream id) */
+    SrPsmfProducer *audioDemux;
+    int audioDemuxFailed, audioDemuxEos;
+    uint32_t audioFedPackets;    /* ring packets fed to the demux since it (re)started */
+    struct { uint8_t *data; uint32_t bytes; } audioFifo[MPEG_ATRAC_FIFO_DEPTH];
+    uint32_t audioFifoHead, audioFifoCount;
+    uint8_t *audioHeld;
+    uint32_t audioHeldBytes;
+    Atrac3pBridge *atrac;
+    int atracAlign, atracChannels;
+    int16_t *audioPcm;
+    uint64_t audioAusOut, audioDecoded, audioRejected, audioSkipped;
 } Mpeg;
 
 static Mpeg s_mpeg[8];
@@ -174,6 +195,188 @@ static Mpeg *mpeg_find(uint32_t mpegAddr) {
  * frame policy with hle.c's GE marshallers: a per-owner, per-depth frame out of
  * the reserved region. The rest of the marshalling is zeroed state, inherited
  * $gp, $ra = 0, 0xe4 VFPU prefixes and a full caller restore. */
+/* ---- ATRAC3+ access units (sceMpegGetAtracAu / sceMpegAtracDecode) ----
+ * Registering an ATRAC stream opens an audio-only streaming PSMF producer over the ring packets
+ * the game feeds: RingbufferPut hands it the same bytes as the H.264 demux.  Its frames (one
+ * ATRAC3+ frame per access unit: an 8-byte 0x0FD0 header, then the frame) wait in a bounded FIFO.
+ * GetAtracAu holds the next one for the following AtracDecode, which decodes it with the
+ * project's ATRAC3+ bridge into the guest's 8192-byte block (2048 stereo s16 samples; a mono
+ * stream is duplicated into both channels, as the host player does).  With no frame ready
+ * GetAtracAu reports NO_DATA, and AtracDecode without a held frame, or with a frame the decoder
+ * refuses, returns an error: no block is filled with silence that no decoder produced.  The AU
+ * clock is the media-engine model as before (firstTimestamp + 4180 per decoded block). */
+void sr_psmf_av_note_audio_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid);
+static uint32_t mpeg_contract_error(const char *api, const char *boundary, uint32_t error);
+
+static void mpeg_audio_report(Mpeg *ctx, const char *what) {
+    static int reported;
+    if (reported) return;
+    reported = 1;
+    const char *why = ctx && ctx->audioDemux ? sr_psmf_producer_fail_reason(ctx->audioDemux) : NULL;
+    fprintf(stderr, "MPEG_ATRAC: %s%s%s\n", what, why ? ": " : "", why ? why : "");
+}
+
+static void mpeg_audio_fifo_clear(Mpeg *ctx) {
+    while (ctx->audioFifoCount) {
+        free(ctx->audioFifo[ctx->audioFifoHead].data);
+        ctx->audioFifo[ctx->audioFifoHead].data = NULL;
+        ctx->audioFifoHead = (ctx->audioFifoHead + 1u) % MPEG_ATRAC_FIFO_DEPTH;
+        ctx->audioFifoCount--;
+    }
+    ctx->audioFifoHead = 0;
+    free(ctx->audioHeld);
+    ctx->audioHeld = NULL;
+    ctx->audioHeldBytes = 0;
+}
+
+static void mpeg_audio_close(Mpeg *ctx) {
+    if (!ctx) return;
+    mpeg_audio_fifo_clear(ctx);
+    sr_psmf_producer_close(ctx->audioDemux);
+    ctx->audioDemux = NULL;
+    atrac3p_bridge_destroy(ctx->atrac);
+    ctx->atrac = NULL;
+    ctx->atracAlign = ctx->atracChannels = 0;
+    free(ctx->audioPcm);
+    ctx->audioPcm = NULL;
+    ctx->audioDemuxFailed = ctx->audioDemuxEos = 0;
+    ctx->audioFedPackets = 0;
+}
+
+/* The registered stream's frames carry PS1 sub-stream id 0x00 + its number. */
+static void mpeg_audio_open(Mpeg *ctx, int streamNum) {
+    mpeg_audio_close(ctx);
+    ctx->audioStreamNum = streamNum;
+    ctx->audioDemux = sr_psmf_producer_open_stream(0);
+    if (streamNum < 0 || streamNum > 0x0f || !ctx->audioDemux ||
+        !sr_psmf_producer_select_streams(ctx->audioDemux, SR_PSMF_STREAM_NONE, 0)) {
+        ctx->audioDemuxFailed = 1;
+        mpeg_audio_report(ctx, "the registered ATRAC stream cannot be demultiplexed");
+    }
+}
+
+/* The game refills the ring from another position (sceMpegFlushAllStream). */
+static void mpeg_audio_restart(Mpeg *ctx) {
+    if (!ctx || !ctx->audioDemux) return;
+    mpeg_audio_fifo_clear(ctx);
+    sr_psmf_producer_reset(ctx->audioDemux);
+    if (ctx->atrac) (void)atrac3p_bridge_reset(ctx->atrac);
+    ctx->audioDemuxFailed = sr_psmf_producer_failed(ctx->audioDemux);
+    ctx->audioDemuxEos = 0;
+    ctx->audioFedPackets = 0;
+}
+
+/* Parse what the demux holds and move the registered stream's frames into the FIFO until it is
+ * full; the demux keeps the remaining bytes until GetAtracAu makes room.  Each round parses a
+ * bounded number of elements and stops once the parser makes no progress. */
+static void mpeg_audio_pump(Mpeg *ctx) {
+    if (!ctx->audioDemux || ctx->audioDemuxFailed) return;
+    while (ctx->audioFifoCount < MPEG_ATRAC_FIFO_DEPTH) {
+        SrPsmfAu au;
+        if (sr_psmf_producer_pop(ctx->audioDemux, SR_PSMF_AU_AUDIO, &au)) {
+            if (au.stream_id != (uint8_t)ctx->audioStreamNum || !au.data || !au.size) {
+                ctx->audioSkipped++;
+                sr_psmf_au_release(&au);
+                continue;
+            }
+            uint8_t *copy = (uint8_t *)malloc(au.size);
+            if (!copy) {
+                sr_psmf_au_release(&au);
+                ctx->audioDemuxFailed = 1;
+                mpeg_audio_report(ctx, "no host memory for an ATRAC frame");
+                return;
+            }
+            memcpy(copy, au.data, au.size);
+            uint32_t tail = (ctx->audioFifoHead + ctx->audioFifoCount) % MPEG_ATRAC_FIFO_DEPTH;
+            ctx->audioFifo[tail].data = copy;
+            ctx->audioFifo[tail].bytes = au.size;
+            ctx->audioFifoCount++;
+            ctx->audioAusOut++;
+            sr_psmf_au_release(&au);
+            continue;
+        }
+        uint64_t before = sr_psmf_producer_stream_cursor(ctx->audioDemux);
+        int produced = sr_psmf_producer_pump(ctx->audioDemux, 64u);
+        if (sr_psmf_producer_failed(ctx->audioDemux)) {
+            ctx->audioDemuxFailed = 1;
+            mpeg_audio_report(ctx, "the ATRAC stream could not be demultiplexed");
+            return;
+        }
+        if (produced <= 0 && sr_psmf_producer_stream_cursor(ctx->audioDemux) == before) return;
+    }
+}
+
+static void mpeg_audio_feed(Mpeg *ctx, const uint8_t *bytes, uint32_t len) {
+    if (!ctx->audioDemux || ctx->audioDemuxFailed || ctx->audioDemuxEos) return;
+    if (sr_psmf_producer_feed_stream(ctx->audioDemux, bytes, len, 0) < 0) {
+        ctx->audioDemuxFailed = 1;
+        mpeg_audio_report(ctx, "the ATRAC stream demux refused the fed packets");
+        return;
+    }
+    ctx->audioFedPackets += len / MPEG_PACKET_SIZE;
+    if (ctx->totalPackets && ctx->audioFedPackets >= ctx->totalPackets) {
+        /* The whole movie has been fed since the demux (re)started: it may close its last frame. */
+        ctx->audioDemuxEos = 1;
+        if (sr_psmf_producer_feed_stream(ctx->audioDemux, NULL, 0, 1) < 0) {
+            ctx->audioDemuxFailed = 1;
+            mpeg_audio_report(ctx, "the ATRAC stream ended inside an incomplete packet");
+            return;
+        }
+    }
+    mpeg_audio_pump(ctx);
+}
+
+/* Decode one held frame into ctx->audioPcm as 2048 stereo samples.  Returns 0 or the error the
+ * caller reports. */
+static uint32_t mpeg_audio_decode_frame(Mpeg *ctx, const uint8_t *frame, uint32_t bytes, uint32_t init) {
+    if (bytes <= 8u || frame[0] != 0x0fu || frame[1] != 0xd0u)
+        return mpeg_contract_error("sceMpegAtracDecode", "the access unit is not an ATRAC3+ frame",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    uint32_t frame_size = (uint32_t)(((frame[2] & 3u) << 8) | ((uint32_t)frame[3] * 8u)) + 0x10u;
+    if (frame_size != bytes)
+        return mpeg_contract_error("sceMpegAtracDecode", "the frame header disagrees with the access unit",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    /* Bytes 2-3 are the low half of the ATRAC3+ codec word (sample-rate code, channel id, frame
+     * size; PSMF movies carry 0x285C, 44.1 kHz stereo), so the decoder is set up from the frame
+     * itself.  A guest PSMF player never hands sceMpeg the PSMF header, so the stream table is
+     * not available here. */
+    int channels = (frame[2] >> 2) & 7;
+    if (channels < 1 || channels > 2)
+        return mpeg_contract_error("sceMpegAtracDecode", "the frame header names no mono or stereo layout",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    int data = (int)(frame_size - 8u);
+    if (!ctx->atrac || ctx->atracAlign != data || ctx->atracChannels != channels) {
+        atrac3p_bridge_destroy(ctx->atrac);
+        ctx->atrac = NULL;
+        if (atrac3p_bridge_create(channels, data, &ctx->atrac) != 0) {
+            ctx->atrac = NULL;
+            return mpeg_contract_error("sceMpegAtracDecode", "no ATRAC3+ decoder for this frame size",
+                                       SCE_MPEG_ERROR_INVALID_VALUE);
+        }
+        ctx->atracAlign = data;
+        ctx->atracChannels = channels;
+    } else if (init) {
+        (void)atrac3p_bridge_reset(ctx->atrac);
+    }
+    if (!ctx->audioPcm &&
+        !(ctx->audioPcm = (int16_t *)malloc(MPEG_ATRAC_ES_OUTPUT_SIZE)))
+        return mpeg_contract_error("sceMpegAtracDecode", "no host memory for the decoded block",
+                                   SCE_MPEG_ERROR_NO_MEMORY);
+    int samples = 0;
+    if (atrac3p_bridge_decode(ctx->atrac, frame + 8, data, ctx->audioPcm, &samples) != 0 ||
+        samples != (int)(MPEG_ATRAC_ES_OUTPUT_SIZE / 4u)) {
+        ctx->audioRejected++;
+        return mpeg_contract_error("sceMpegAtracDecode", "the ATRAC3+ frame did not decode to one block",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    }
+    if (channels == 1)
+        for (int i = samples - 1; i >= 0; i--) {
+            ctx->audioPcm[i * 2] = ctx->audioPcm[i];
+            ctx->audioPcm[i * 2 + 1] = ctx->audioPcm[i];
+        }
+    return 0;
+}
+
 static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
     uint32_t frame_sp = 0;
     int frame = -1;
@@ -291,6 +494,7 @@ static int64_t au_read_pts(uint32_t auAddr) {
 /* Presentation-boundary measurement (hle.c, SR_MPEGAV): a decoded picture now sits in guest
  * memory at [first, first + bytes) with this 90 kHz presentation time. */
 void sr_psmf_av_note_video_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid);
+int sr_psmf_av_active(void);   /* SR_MPEGAV: the picture hashes below are kept only for it */
 
 static uint32_t h264_demux_error(Mpeg *ctx, uint32_t auAddr) {
     if (ctx && !ctx->h264DemuxErrorReported) {
@@ -313,7 +517,10 @@ uint32_t mpeg_finish(void) {
         s_mpeg[i].h264 = -1;
     }
 #endif
-    for (int i = 0; i < 8; i++) if (s_mpeg[i].used) ycbcr_reset_mpeg(s_mpeg[i].guestAddr);
+    for (int i = 0; i < 8; i++) if (s_mpeg[i].used) {
+        ycbcr_reset_mpeg(s_mpeg[i].guestAddr);
+        mpeg_audio_close(&s_mpeg[i]);
+    }
     memset(s_mpeg, 0, sizeof(s_mpeg));
     s_mpegInit = 0;
     return 0;
@@ -397,6 +604,7 @@ uint32_t mpeg_delete(uint32_t mpegAddr) {
     if (ctx->h264 >= 0) { sr_h264_destroy(ctx->h264); ctx->h264 = -1; }
 #endif
     ycbcr_reset_mpeg(ctx->guestAddr);
+    mpeg_audio_close(ctx);
     ctx->used = 0;
     return 0;
 }
@@ -428,7 +636,10 @@ uint32_t mpeg_regist_stream(uint32_t mpegAddr, uint32_t streamType, uint32_t str
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     if (streamType == MPEG_AVC_STREAM) ctx->avcRegistered = 1;
-    else if (streamType == MPEG_ATRAC_STREAM || streamType == MPEG_AUDIO_STREAM) ctx->atracRegistered = 1;
+    else if (streamType == MPEG_ATRAC_STREAM || streamType == MPEG_AUDIO_STREAM) {
+        ctx->atracRegistered = 1;
+        mpeg_audio_open(ctx, (int)streamNum);
+    }
     uint32_t sid = s_streamIdGen++;
     for (int i = 0; i < 8; i++) if (!ctx->streams[i].used) {
         ctx->streams[i].used = 1; ctx->streams[i].type = (int)streamType;
@@ -478,6 +689,8 @@ uint32_t mpeg_init_au(uint32_t mpegAddr, uint32_t esBuffer, uint32_t auAddr) {
 uint32_t mpeg_unregist_stream(uint32_t mpegAddr, uint32_t sid) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (ctx) for (int i = 0; i < 8; i++) if (ctx->streams[i].used && ctx->streams[i].sid == sid) {
+        if (ctx->streams[i].type == MPEG_ATRAC_STREAM || ctx->streams[i].type == MPEG_AUDIO_STREAM)
+            mpeg_audio_close(ctx);
         ctx->streams[i].used = 0;
         ctx->streams[i].auMode = MPEG_AU_MODE_DECODE;
     }
@@ -559,6 +772,7 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
                 ctx->h264DemuxFailed = 1;
         }
 #endif
+        if (ctx && got) mpeg_audio_feed(ctx, (const uint8_t *)SR_HOST(dst), gotBytes);
 
         addedTotal += got;
         writePos = (got == total - writePos) ? 0 : writePos + got;
@@ -578,6 +792,16 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
                     ring, numPackets, available, cb, addedTotal, rb_get(ring, RB_packetsAvail), total);
     }
     return addedTotal;
+}
+
+static int mpeg_stream_index(const Mpeg *ctx, uint32_t sid);
+/* sceMpegChangeGetAuMode(..., MPEG_AU_MODE_SKIP): the stream's AU getters hand out the clock and
+ * consume no stream data until the mode returns to decode (PPSSPP's streamIgnoreMap, c9e2afb6).
+ * UNMEASURED on this project's PSP; a guest PSMF player switches its streams this way when it
+ * resets its decoders. */
+static int mpeg_stream_skipped(const Mpeg *ctx, uint32_t sid) {
+    int index = mpeg_stream_index(ctx, sid);
+    return index >= 0 && ctx->streams[index].auMode == (int)MPEG_AU_MODE_SKIP;
 }
 
 static Mpeg *au_stream(uint32_t mpegAddr, uint32_t sid, int *needsReset, int *num) {
@@ -611,6 +835,14 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     }
     int needsReset = 0, num = 0;
     au_stream(mpegAddr, sid, &needsReset, &num);
+    if (mpeg_stream_skipped(ctx, sid)) {
+        int64_t clock = ctx->videoPts + ctx->firstTimestamp;
+        au_write_pts(auAddr, 0, clock);
+        au_write_pts(auAddr, 8, clock - videoTimestampStep);
+        MEM_W32(auAddr + 16, (uint32_t)num);
+        if (attrAddr) MEM_W32(attrAddr, 1);
+        return 0;
+    }
     uint32_t release = 1;   /* timestamp model: one packet per access unit */
 #if defined(SR_SDL3VK) || defined(SR_MPEG_MEDIA_SELFTEST)
     /* With a decoder, an access unit is one real picture of the demuxed stream: hand it out only
@@ -676,6 +908,8 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     if (!ctx) return (uint32_t)-1;
     uint32_t ring = ctx->ringAddr;
     if (!ring) return (uint32_t)-1;
+    if (!auAddr || (auAddr & 3u) || !sr_guest_span_writable(auAddr, 24u))
+        return mpeg_contract_error("sceMpegGetAtracAu", "invalid AU pointer", (uint32_t)-1);
     int needsReset = 0, num = 0;
     au_stream(mpegAddr, sid, &needsReset, &num);
     /* PSP/PPSSPP's libmpeg clock uses the PSMF presentation origin for ATRAC AUs.  In
@@ -685,7 +919,46 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
      * it ahead of the first video AU, which can make libpsmfplayer reject the video as too early.
      * Keep the demuxer's firstAudioPts for diagnostics, but do not substitute it for the public
      * sceMpeg AU time base. */
+#if defined(SR_SDL3VK) || defined(SR_MPEG_MEDIA_SELFTEST)
+    /* A context that never saw the PSMF header (a guest PSMF player parses it with scePsmf) takes
+     * its presentation origin from the stream's first video picture, as its first sceMpegGetAvcAu
+     * would.  Without it the ATRAC units handed out before that carried a clock from 0: title X's
+     * guest libpsmfplayer drops audio frames timed more than one block before the movie's start,
+     * so its audio began late and every picture was then dropped as too slow. */
+    if (!ctx->firstTimestamp && ctx->h264Init && ctx->h264 >= 0) {
+        int64_t first = -1;
+        if (sr_h264_au_peek_pts(ctx->h264, &first) && first > 0) ctx->firstTimestamp = first;
+    }
+#endif
     int64_t pts = ctx->audioPts + ctx->firstTimestamp;
+    if (mpeg_stream_skipped(ctx, sid)) {
+        au_write_pts(auAddr, 0, pts);
+        au_write_pts(auAddr, 8, pts);
+        MEM_W32(auAddr + 16, (uint32_t)num);
+        MEM_W32(auAddr + 20, MPEG_ATRAC_ES_SIZE);
+        if (attrAddr) MEM_W32(attrAddr, 0);
+        return 0;
+    }
+    if (!ctx->audioHeld) {
+        mpeg_audio_pump(ctx);
+        if (ctx->audioFifoCount) {
+            ctx->audioHeld = ctx->audioFifo[ctx->audioFifoHead].data;
+            ctx->audioHeldBytes = ctx->audioFifo[ctx->audioFifoHead].bytes;
+            ctx->audioFifo[ctx->audioFifoHead].data = NULL;
+            ctx->audioFifoHead = (ctx->audioFifoHead + 1u) % MPEG_ATRAC_FIFO_DEPTH;
+            ctx->audioFifoCount--;
+        }
+    }
+    if (!ctx->audioHeld) {
+        /* No frame is demultiplexed yet, the stream has ended, or there is no ATRAC stream to
+         * demultiplex: PPSSPP's no-audio-data result, the clock as the pts and no decode time. */
+        au_write_pts(auAddr, 0, pts);
+        au_write_pts(auAddr, 8, -1);
+        if (attrAddr) MEM_W32(attrAddr, 0);
+        if (!ctx->audioDemux || ctx->audioDemuxFailed)
+            mpeg_audio_report(ctx, "sceMpegGetAtracAu has no demultiplexed ATRAC stream; reporting no data");
+        return SCE_MPEG_ERROR_NO_DATA;
+    }
     au_write_pts(auAddr, 0, pts);
     au_write_pts(auAddr, 8, pts);
     MEM_W32(auAddr + 20, MPEG_ATRAC_ES_SIZE);
@@ -693,9 +966,10 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 16 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegGetAtracAu #%d pts=%lld\n", n, (long long)pts);
+            fprintf(stderr, "MpegGetAtracAu #%d pts=%lld frame=%" PRIu32 " queued=%" PRIu32 "\n",
+                    n, (long long)pts, ctx->audioHeldBytes, ctx->audioFifoCount);
     }
-    return 0;   /* audio AU available; the audio ring drains with the video at EOF */
+    return 0;
 }
 
 static int video_geometry(const Mpeg *ctx, uint32_t requestedWidth,
@@ -774,6 +1048,7 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
             return mpeg_contract_error("sceMpegAvcDecode", "destination changed during validation", SCE_MPEG_ERROR_INVALID_VALUE);
     }
     MEM_W32(initAddr, gotFrame > 0 ? 1u : 0u);
+    ctx->avcFrameStatus = gotFrame > 0;
     if (gotFrame > 0) {
         int64_t auPts = au_read_pts(auAddr);
         sr_psmf_av_note_video_delivery(buffer, bytes, auPts, auPts >= 0);
@@ -786,36 +1061,79 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
     }
     return gotFrame > 0 ? 0 : SCE_MPEG_ERROR_NO_DATA;
 }
+/* sceMpegAvcDecodeDetail(mpeg, detail), MEASURED on a PSP-3000 (6.61, 2026-10-31, PSP-MPEG-001,
+ * after one picture): 13 words -- 0, 1 (the pictures decoded so far, as PPSSPP has it; only one
+ * picture was measured), the frame width and height (the PSMF header's macroblock counts times 16,
+ * 480 x 224 there), four zero crop words, 1 (the last decode produced a picture), 0, a guest address
+ * the probe could not identify (written 0 here), 0, 0.  PPSSPP (c9e2afb6) writes nine words with a
+ * decode result of 1 in word 0. */
+uint32_t mpeg_avc_decode_detail(uint32_t mpegAddr, uint32_t detailAddr) {
+    if (!detailAddr || (detailAddr & 3u) || !sr_guest_span_writable(detailAddr, 52u))
+        return mpeg_contract_error("sceMpegAvcDecodeDetail", "invalid detail pointer", (uint32_t)-1);
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    MEM_W32(detailAddr + 0u, 0u);
+    MEM_W32(detailAddr + 4u, (uint32_t)ctx->h264Frames);
+    MEM_W32(detailAddr + 8u, ctx->streamWidth);
+    MEM_W32(detailAddr + 12u, ctx->streamHeight);
+    for (uint32_t off = 16u; off < 32u; off += 4u) MEM_W32(detailAddr + off, 0u);
+    MEM_W32(detailAddr + 32u, ctx->avcFrameStatus ? 1u : 0u);
+    for (uint32_t off = 36u; off < 52u; off += 4u) MEM_W32(detailAddr + off, 0u);
+    return 0;
+}
+
 /* ---- YCbCr decode path (sceMpegAvc*YCbCr / sceMpegAvcCsc) ----
- * Guest-visible plane bytes are zero-filled modeled state, not an established PSP header/plane
- * layout. The H.264 backend's decoded RGBA picture is retained separately; Csc writes that
- * decoded picture to the guest destination. Keep plane-layout and cache details under #302. */
+ * MEASURED on a PSP-3000 (firmware 6.61; PSP-MPEG-001, 2026-10-31: mode 1, a 480x224 stream in a
+ * 480x272 allocation; every sample of the dumped picture matched a reference decode).  The YCbCr
+ * buffer is guest data.  Its 128-byte header holds, once a picture is decoded, the picture height
+ * / 16 in word 0 and its width / 16 in word 1, and in words 4..11 eight plane pointers into the
+ * buffer; sceMpegAvcInitYCbCr writes only the header (words 0..3 zero) and leaves the planes as
+ * they are.  The planes hold the picture as 16-pixel column strips stored one after another: luma
+ * plane (s & 1) + 2 * (y & 1) holds the lines of parity y & 1 of the strips of parity s & 1, 16
+ * bytes per line and h / 2 lines per strip; chroma planes 4..7 do the same at half height with 8
+ * chroma samples per strip line, Cb and Cr byte-interleaved.  A decode writes only the picture's
+ * share of each plane.  sceMpegAvcCsc reads the planes through the header pointers (exchanging
+ * two pointers exchanges the output) and converts with sr_h264_psp_rgb.  Only mode 1 is mapped,
+ * the strip length from the decoded height rests on this one geometry, and an odd number of
+ * strips is not measured.  The host keeps only the sceMpegAvcInitYCbCr geometry of each buffer (a
+ * bound on the decode) and the presentation time of each decoded picture (the A/V measurement),
+ * keyed by a hash of its plane bytes: a guest PSMF player converts another buffer it filled from
+ * the decoded one, so the picture's bytes, not the buffer, name it.  Neither gates
+ * sceMpegAvcCsc. */
 #define YCBCR_HEADER_BYTES 128u
 #define YCBCR_ALIGNMENT 16u
 #define YCBCR_SLOT_COUNT 16
+#define YCBCR_MODE1_MAX_W 480u
+#define YCBCR_MODE1_MAX_H 272u
+#define YCBCR_SCRATCH_W 512u   /* wide enough to see a picture past the mode-1 limit */
+#define YCBCR_LUMA_PLANE_MAX ((YCBCR_MODE1_MAX_W / 32u) * 8u * YCBCR_MODE1_MAX_H)
+#define YCBCR_CHROMA_PLANE_MAX ((YCBCR_MODE1_MAX_W / 32u) * 4u * YCBCR_MODE1_MAX_H)
+/* MEASURED (PSP-MPEG-001): sceMpegAvcCsc's refusal of a zeroed header, of a range outside the
+ * picture and of a destination narrower than the range. */
+#define MPEG_ERROR_CSC_REFUSED 0x800001FEu
 
 typedef struct {
-    uint32_t mpeg, buf, width, height, size;
-    uint64_t guest_tag;
-    uint8_t *rgba;
-    int initialized, valid;
-    int64_t pts;     /* presentation time of the retained picture, -1 when its AU carried none */
+    uint32_t mpeg, buf, width, height;   /* the sceMpegAvcInitYCbCr geometry; 0 when unknown */
 } YcbcrBuf;
 static YcbcrBuf s_ycbcr[YCBCR_SLOT_COUNT];
+typedef struct {
+    uint32_t mpeg;
+    uint64_t bytes;          /* FNV-1a of the picture's planes; 0 = free */
+    int64_t pts;             /* its access unit's presentation time, -1 when it carried none */
+} YcbcrPicture;
+static YcbcrPicture s_ycbcr_pictures[YCBCR_SLOT_COUNT];
+static unsigned s_ycbcr_picture_next;
+/* The decoder's picture, and the guest planes while they are assembled or read. */
+static uint8_t s_ycbcr_y[YCBCR_SCRATCH_W * YCBCR_MODE1_MAX_H];
+static uint8_t s_ycbcr_cb[(YCBCR_SCRATCH_W / 2u) * (YCBCR_MODE1_MAX_H / 2u)];
+static uint8_t s_ycbcr_cr[(YCBCR_SCRATCH_W / 2u) * (YCBCR_MODE1_MAX_H / 2u)];
+static uint8_t s_ycbcr_planes[4u * YCBCR_LUMA_PLANE_MAX + 4u * YCBCR_CHROMA_PLANE_MAX];
 
-static int ycbcr_mode_valid(uint32_t mode) {
-    return mode == UINT32_MAX || mode <= 3u;
-}
-
-static int ycbcr_size_for(uint32_t width, uint32_t height, uint32_t *size) {
-    if (!size || !width || !height || width > MPEG_MAX_DIMENSION || height > MPEG_MAX_DIMENSION ||
-        (width & 15u) || (height & 15u)) return 0;
-    uint32_t pixels, bytes;
-    if (!u32_mul_checked(width / 2u, height / 2u, &pixels) ||
-        !u32_mul_checked(pixels, 6u, &bytes) || !u32_add_checked(bytes, YCBCR_HEADER_BYTES, size))
-        return 0;
-    return 1;
-}
+/* What a header describes: the plane pointers and the decoded geometry of words 0 and 1. */
+typedef struct {
+    uint32_t plane[8];
+    uint32_t width, height;     /* multiples of 16; 0 before the first decode */
+} YcbcrLayout;
 
 static YcbcrBuf *ycbcr_find(uint32_t mpegAddr, uint32_t buf) {
     for (int i = 0; i < YCBCR_SLOT_COUNT; i++)
@@ -824,102 +1142,204 @@ static YcbcrBuf *ycbcr_find(uint32_t mpegAddr, uint32_t buf) {
 }
 
 static void ycbcr_clear_slot(YcbcrBuf *b) {
-    if (!b) return;
-    free(b->rgba);
-    memset(b, 0, sizeof(*b));
+    if (b) memset(b, 0, sizeof(*b));
 }
 
 static void ycbcr_reset_mpeg(uint32_t mpegAddr) {
-    for (int i = 0; i < YCBCR_SLOT_COUNT; i++)
+    for (int i = 0; i < YCBCR_SLOT_COUNT; i++) {
         if (s_ycbcr[i].mpeg == mpegAddr) ycbcr_clear_slot(&s_ycbcr[i]);
-}
-
-static uint64_t ycbcr_fingerprint(uint32_t buf, uint32_t size) {
-    if (!sr_guest_span_readable_current(buf, size)) return 0u;
-    const uint8_t *p = (const uint8_t *)SR_HOST(buf);
-    uint64_t tag = UINT64_C(1469598103934665603);
-    for (uint32_t i = 0; i < size; i++) {
-        tag ^= p[i];
-        tag *= UINT64_C(1099511628211);
+        if (s_ycbcr_pictures[i].mpeg == mpegAddr) memset(&s_ycbcr_pictures[i], 0, sizeof(s_ycbcr_pictures[i]));
     }
-    return tag;
 }
 
-static int ycbcr_state_usable(const YcbcrBuf *b, int require_picture) {
-    uint32_t expected;
-    if (!b || !b->initialized || !b->rgba || !b->buf ||
-        !ycbcr_size_for(b->width, b->height, &expected) || expected != b->size ||
-        !sr_guest_span_readable_current(b->buf, b->size) ||
-        !sr_guest_span_writable(b->buf, b->size) ||
-        ycbcr_fingerprint(b->buf, b->size) != b->guest_tag) return 0;
-    return !require_picture || b->valid;
+/* Every decoded picture is an entry of its own; the oldest entry gives way to a new one. */
+static void ycbcr_picture_set(uint32_t mpegAddr, uint64_t bytes, int64_t pts) {
+    if (!bytes) return;
+    YcbcrPicture *p = &s_ycbcr_pictures[s_ycbcr_picture_next++ % YCBCR_SLOT_COUNT];
+    p->mpeg = mpegAddr;
+    p->bytes = bytes;
+    p->pts = pts;
 }
 
-static YcbcrBuf *ycbcr_slot_for_init(uint32_t mpegAddr, uint32_t buf, uint32_t width,
-                                     uint32_t height, uint32_t size) {
+/* The time of the decoded picture with these bytes, or -1 when there is none, or when identical
+ * pictures with different times are recorded (a still scene): which one is shown is unknown. */
+static int64_t ycbcr_picture_pts(uint32_t mpegAddr, uint64_t bytes) {
+    int64_t pts = -1;
+    int found = 0;
+    for (int i = 0; i < YCBCR_SLOT_COUNT; i++) {
+        const YcbcrPicture *p = &s_ycbcr_pictures[i];
+        if (!bytes || p->bytes != bytes || p->mpeg != mpegAddr) continue;
+        if (found && p->pts != pts) return -1;
+        pts = p->pts;
+        found = 1;
+    }
+    return pts;
+}
+
+/* The slot of (mpeg, buf), taking a free one when there is none. */
+static YcbcrBuf *ycbcr_slot(uint32_t mpegAddr, uint32_t buf) {
     YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
-    if (!b) {
-        for (int i = 0; i < YCBCR_SLOT_COUNT; i++) if (!s_ycbcr[i].buf) {
-            b = &s_ycbcr[i];
-            break;
-        }
-    }
-    if (!b) return NULL;
-    uint64_t rgbaBytes64 = (uint64_t)width * height * 4u;
-    if (rgbaBytes64 == 0 || rgbaBytes64 > (uint64_t)SIZE_MAX) return NULL;
-    uint8_t *rgba = (uint8_t *)calloc((size_t)rgbaBytes64, 1u);
-    if (!rgba) return NULL;
+    if (b) return b;
     for (int i = 0; i < YCBCR_SLOT_COUNT; i++)
-        if (s_ycbcr[i].buf == buf && s_ycbcr[i].mpeg != mpegAddr) ycbcr_clear_slot(&s_ycbcr[i]);
-    ycbcr_clear_slot(b);
-    b->mpeg = mpegAddr; b->buf = buf; b->width = width; b->height = height; b->size = size;
-    b->rgba = rgba; b->initialized = 1; b->valid = 0;
-    sr_guest_vram_write_prepare_bytes(buf, size);
-    memset(SR_HOST(buf), 0, size);
-    sr_guest_vram_write_commit_bytes(buf, size);
-    b->guest_tag = ycbcr_fingerprint(buf, size);
-    return b;
+        if (!s_ycbcr[i].buf) {
+            b = &s_ycbcr[i];
+            b->mpeg = mpegAddr;
+            b->buf = buf;
+            return b;
+        }
+    return NULL;
+}
+
+static int ycbcr_header_read(uint32_t buf, YcbcrLayout *l) {
+    memset(l, 0, sizeof(*l));
+    if (!buf || (buf & 3u) || !sr_guest_span_readable(buf, YCBCR_HEADER_BYTES)) return 0;
+    uint32_t rows = MEM_R32(buf), cols = MEM_R32(buf + 4u);
+    if (rows <= MPEG_MAX_DIMENSION / 16u && cols <= MPEG_MAX_DIMENSION / 16u) {
+        l->height = rows * 16u;
+        l->width = cols * 16u;
+    }
+    for (uint32_t i = 0; i < 8u; i++) l->plane[i] = MEM_R32(buf + 16u + 4u * i);
+    return 1;
+}
+
+/* Bytes plane i (luma 0..3, chroma 4..7) holds of a width x height picture. */
+static uint32_t ycbcr_plane_bytes(int i, uint32_t width, uint32_t height) {
+    uint32_t strips = width / 16u;
+    uint32_t mine = (strips + 1u - (uint32_t)(i & 1)) / 2u;
+    return mine * (i < 4 ? 8u : 4u) * height;
+}
+
+static uint8_t *ycbcr_scratch_plane(int i) {
+    return s_ycbcr_planes + (i < 4 ? (uint32_t)i * YCBCR_LUMA_PLANE_MAX
+                                   : 4u * YCBCR_LUMA_PLANE_MAX + (uint32_t)(i - 4) * YCBCR_CHROMA_PLANE_MAX);
+}
+
+/* Plane and byte offset of luma sample (x, y) and of chroma pair (cx, cy) (Cb, then Cr). */
+static uint32_t ycbcr_luma_at(uint32_t x, uint32_t y, uint32_t height, int *plane) {
+    uint32_t s = x >> 4;
+    *plane = (int)((s & 1u) + 2u * (y & 1u));
+    return (s >> 1) * 8u * height + (y >> 1) * 16u + (x & 15u);
+}
+static uint32_t ycbcr_chroma_at(uint32_t cx, uint32_t cy, uint32_t height, int *plane) {
+    uint32_t s = cx >> 3;
+    *plane = 4 + (int)((s & 1u) + 2u * (cy & 1u));
+    return (s >> 1) * 4u * height + (cy >> 1) * 16u + (cx & 7u) * 2u;
+}
+
+/* Copy the picture's share of every plane between guest memory and the scratch planes. */
+static int ycbcr_planes_in(const YcbcrLayout *l, uint32_t width, uint32_t height) {
+    for (int i = 0; i < 8; i++) {
+        uint32_t n = ycbcr_plane_bytes(i, width, height);
+        if (n && (!l->plane[i] || !sr_guest_copy_in(ycbcr_scratch_plane(i), l->plane[i], n))) return 0;
+    }
+    return 1;
+}
+static int ycbcr_planes_writable(const YcbcrLayout *l, uint32_t width, uint32_t height) {
+    for (int i = 0; i < 8; i++) {
+        uint32_t n = ycbcr_plane_bytes(i, width, height);
+        if (n && (!l->plane[i] || !sr_guest_span_writable_any_view(l->plane[i], n))) return 0;
+    }
+    return 1;
+}
+static void ycbcr_planes_out(const YcbcrLayout *l, uint32_t width, uint32_t height) {
+    for (int i = 0; i < 8; i++) {
+        uint32_t n = ycbcr_plane_bytes(i, width, height);
+        if (n) sr_guest_copy_out(l->plane[i], ycbcr_scratch_plane(i), n);
+    }
+}
+
+/* FNV-1a of the picture's share of the scratch planes (never 0). */
+static uint64_t ycbcr_planes_hash(uint32_t width, uint32_t height) {
+    uint64_t h = 1469598103934665603ull;
+    for (int i = 0; i < 8; i++) {
+        const uint8_t *p = ycbcr_scratch_plane(i);
+        for (uint32_t n = ycbcr_plane_bytes(i, width, height), k = 0; k < n; k++)
+            h = (h ^ p[k]) * 1099511628211ull;
+    }
+    return h ? h : 1u;
+}
+
+static int ycbcr_mode1_geometry(uint32_t width, uint32_t height) {
+    return width && height && !(width & 15u) && !(height & 15u) &&
+           width <= YCBCR_MODE1_MAX_W && height <= YCBCR_MODE1_MAX_H;
 }
 
 static int ycbcr_pointer_valid(uint32_t addr, uint32_t size, uint32_t alignment) {
     return addr && !(addr & (alignment - 1u)) && sr_guest_span_writable(addr, size);
 }
 
-/* This implementation currently sizes a 128-byte prefix plus tightly packed 4:2:0 plane spans.
- * No public source cited here establishes that shape as PSP ABI, so report it as a modeled
- * allocation and keep firmware layout values within the #302 partial boundary. */
+/* MEASURED (PSP-MPEG-001): mode 1 needs a width and height that are multiples of 16 within
+ * 480x272 and gives 128 + 1.5 w h; mode 2 gives 128 whatever the size; mode 3 gives 1.5 w h with
+ * no header (15x16 gives 360, 0x0 gives 0).  Every other mode, and mode 1 outside its limits, is
+ * refused with SCE_MPEG_ERROR_INVALID_VALUE and a size of 0.  The PSMF stream's own geometry is
+ * not checked.  Mode 3 wider than 480 does not follow 1.5 w h (496 and 512 both give the 512-wide
+ * size) and is not modeled. */
 uint32_t mpeg_avc_query_ycbcr_size(uint32_t mpegAddr, uint32_t mode, uint32_t width,
                                    uint32_t height, uint32_t resultAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     if (!resultAddr || (resultAddr & 3u) || !sr_guest_span_writable(resultAddr, 4u))
         return mpeg_contract_error("sceMpegAvcQueryYCbCrSize", "unaligned or invalid result pointer", SCE_MPEG_ERROR_INVALID_VALUE);
-    uint32_t size;
-    if (!ycbcr_mode_valid(mode) || !ycbcr_size_for(width, height, &size)) {
+    uint64_t size;
+    if (mode == 1u && ycbcr_mode1_geometry(width, height)) {
+        size = (uint64_t)width * height * 3u / 2u + YCBCR_HEADER_BYTES;
+    } else if (mode == 2u) {
+        size = YCBCR_HEADER_BYTES;
+    } else if (mode == 3u) {
+        if (width > YCBCR_MODE1_MAX_W || height > MPEG_MAX_DIMENSION) {
+            MEM_W32(resultAddr, 0);
+            return mpeg_contract_error("sceMpegAvcQueryYCbCrSize", "mode 3 sizes wider than 480 are not modeled",
+                                       SCE_MPEG_ERROR_INVALID_VALUE);
+        }
+        size = (uint64_t)width * height * 3u / 2u;
+    } else {
         MEM_W32(resultAddr, 0);
-        return mpeg_contract_error("sceMpegAvcQueryYCbCrSize", "unsupported mode or geometry", SCE_MPEG_ERROR_INVALID_VALUE);
+        return SCE_MPEG_ERROR_INVALID_VALUE;
     }
-    if (ctx->streamWidth && (width != ctx->streamWidth || height != ctx->streamHeight)) {
-        MEM_W32(resultAddr, 0);
-        return mpeg_contract_error("sceMpegAvcQueryYCbCrSize", "geometry disagrees with the PSMF stream", SCE_MPEG_ERROR_INVALID_VALUE);
-    }
-    MEM_W32(resultAddr, size);
+    MEM_W32(resultAddr, (uint32_t)size);
     return 0;
 }
 
+/* Mode 1 only: its header is MEASURED (above); a buffer of Wa x Ha gets the pointers, in memory
+ * order, P0 = buf + 128, P2, P4 (luma, Wa Ha / 4 bytes each), P6 (chroma, Wa Ha / 8), P1, P3, P5
+ * (luma), P7 (chroma).  Modes 2 and 3, and the PSP's own Init limits, are not measured; the
+ * query's mode-1 limits are applied. */
 uint32_t mpeg_avc_init_ycbcr(uint32_t mpegAddr, uint32_t mode, uint32_t width, uint32_t height,
                              uint32_t buf) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
-    uint32_t size;
-    if (!ycbcr_mode_valid(mode) || !ycbcr_size_for(width, height, &size))
-        return mpeg_contract_error("sceMpegAvcInitYCbCr", "unsupported mode or geometry", SCE_MPEG_ERROR_INVALID_VALUE);
-    if (ctx->streamWidth && (width != ctx->streamWidth || height != ctx->streamHeight))
-        return mpeg_contract_error("sceMpegAvcInitYCbCr", "geometry disagrees with the PSMF stream", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (getenv("SR_MPEGLOG"))
+        fprintf(stderr, "MpegAvcInitYCbCr mode=%" PRIu32 " %" PRIu32 "x%" PRIu32 " buf=0x%" PRIx32 "\n",
+                mode, width, height, buf);
+    if (mode != 1u)
+        return mpeg_contract_error("sceMpegAvcInitYCbCr", "only the mode-1 YCbCr layout is measured",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    if (!ycbcr_mode1_geometry(width, height)) return SCE_MPEG_ERROR_INVALID_VALUE;
+    if ((width / 16u) & 1u)
+        return mpeg_contract_error("sceMpegAvcInitYCbCr", "the layout of an odd number of 16-pixel strips is not measured",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    uint32_t size = width * height * 3u / 2u + YCBCR_HEADER_BYTES;
     if (!ycbcr_pointer_valid(buf, size, YCBCR_ALIGNMENT))
         return mpeg_contract_error("sceMpegAvcInitYCbCr", "unaligned or truncated guest allocation", SCE_MPEG_ERROR_INVALID_VALUE);
-    if (!ycbcr_slot_for_init(mpegAddr, buf, width, height, size))
-        return mpeg_contract_error("sceMpegAvcInitYCbCr", "host YCbCr state allocation failed", SCE_MPEG_ERROR_NO_MEMORY);
+    for (int i = 0; i < YCBCR_SLOT_COUNT; i++)
+        if (s_ycbcr[i].buf == buf && s_ycbcr[i].mpeg != mpegAddr) ycbcr_clear_slot(&s_ycbcr[i]);
+    YcbcrBuf *b = ycbcr_slot(mpegAddr, buf);
+    if (!b)
+        return mpeg_contract_error("sceMpegAvcInitYCbCr", "no host slot for another YCbCr buffer", SCE_MPEG_ERROR_NO_MEMORY);
+    b->width = width;
+    b->height = height;
+    const uint32_t q = width * height / 4u, e = width * height / 8u;
+    uint32_t p[8];
+    p[0] = buf + YCBCR_HEADER_BYTES;
+    p[2] = p[0] + q;
+    p[4] = p[2] + q;
+    p[6] = p[4] + e;
+    p[1] = p[6] + e;
+    p[3] = p[1] + q;
+    p[5] = p[3] + q;
+    p[7] = p[5] + e;
+    for (uint32_t off = 0; off < YCBCR_HEADER_BYTES; off += 4u)
+        MEM_W32(buf + off, off >= 16u && off < 48u ? p[(off - 16u) / 4u] : 0u);
     return 0;
 }
 
@@ -936,6 +1356,42 @@ uint32_t mpeg_avc_decode_mode(uint32_t mpegAddr, uint32_t modeAddr) {
     return 0;
 }
 
+/* Write the decoded picture (pw x ph samples in the scratch planes) through buf's header. */
+static uint32_t ycbcr_store_picture(uint32_t mpegAddr, uint32_t buf, const YcbcrLayout *l, int pw, int ph,
+                                    uint64_t *bytes) {
+    if (pw <= 0 || ph <= 0 || (uint32_t)pw > YCBCR_MODE1_MAX_W || (uint32_t)ph > YCBCR_MODE1_MAX_H)
+        return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "a picture larger than 480x272 is beyond the measured layout",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    const uint32_t w = ((uint32_t)pw + 15u) & ~15u, h = ((uint32_t)ph + 15u) & ~15u;
+    if ((w / 16u) & 1u)
+        return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "the layout of an odd number of 16-pixel strips is not measured",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    const YcbcrBuf *slot = ycbcr_find(mpegAddr, buf);
+    if (slot && slot->width && (w / 32u) * h > (slot->width / 32u) * slot->height)
+        return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "the picture is larger than the YCbCr allocation",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    if (!ycbcr_planes_writable(l, w, h) || !ycbcr_planes_in(l, w, h))
+        return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "the header's plane pointers do not reach guest memory",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    int plane;
+    for (uint32_t y = 0; y < (uint32_t)ph; y++)
+        for (uint32_t x = 0; x < (uint32_t)pw; x++) {
+            uint32_t off = ycbcr_luma_at(x, y, h, &plane);
+            ycbcr_scratch_plane(plane)[off] = s_ycbcr_y[y * YCBCR_SCRATCH_W + x];
+        }
+    for (uint32_t cy = 0; cy < ((uint32_t)ph + 1u) / 2u; cy++)
+        for (uint32_t cx = 0; cx < ((uint32_t)pw + 1u) / 2u; cx++) {
+            uint32_t off = ycbcr_chroma_at(cx, cy, h, &plane);
+            ycbcr_scratch_plane(plane)[off] = s_ycbcr_cb[cy * (YCBCR_SCRATCH_W / 2u) + cx];
+            ycbcr_scratch_plane(plane)[off + 1u] = s_ycbcr_cr[cy * (YCBCR_SCRATCH_W / 2u) + cx];
+        }
+    ycbcr_planes_out(l, w, h);
+    MEM_W32(buf, h / 16u);
+    MEM_W32(buf + 4u, w / 16u);
+    *bytes = sr_psmf_av_active() ? ycbcr_planes_hash(w, h) : 0u;
+    return 0;
+}
+
 /* sceMpegAvcDecodeYCbCr(mpeg, au, ycbcr*, init*): the buffer argument points at the YCbCr
  * allocation address, and init is the guest-visible picture-ready result. */
 uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufPtr, uint32_t initAddr) {
@@ -945,35 +1401,36 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         !sr_guest_span_writable(initAddr, 4u) || (bufPtr & 3u) || (initAddr & 3u))
         return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "invalid AU, buffer, or init pointer", (uint32_t)-1);
     uint32_t buf = MEM_R32(bufPtr);
-    YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
-    if (!b || !ycbcr_state_usable(b, 0))
-        return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "missing, stale, or modified guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
+    YcbcrLayout layout;
+    if (!ycbcr_header_read(buf, &layout))
+        return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "unaligned or unreadable YCbCr header", SCE_MPEG_ERROR_INVALID_VALUE);
     g_mpeg_avcdec++;
     if (!ctx->h264Init || ctx->h264 < 0) {
-        b->valid = 0;
         MEM_W32(initAddr, 0u);
         return h264_backend_error("sceMpegAvcDecodeYCbCr");
     }
     ctx->videoPts += videoTimestampStep;
     ctx->ycbcrWant++;
     int got = 0;
+    SrH264FrameInfo info = {0};
     int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
 #ifdef SR_SDL3VK
     while (ctx->h264Frames < ctx->ycbcrWant) {
         SrH264FrameTarget target;
-        SrH264FrameInfo info;
         memset(&target, 0, sizeof(target));
-        target.kind = SR_H264_TARGET_HOST;
-        target.host_buffer = b->rgba;
-        target.host_width = (int)b->width;
-        target.host_height = (int)b->height;   /* b->rgba holds width * height pixels */
-        target.host_stride = (int)b->width * 4;
+        target.kind = SR_H264_TARGET_HOST_YUV;
+        target.host_buffer = s_ycbcr_y;
+        target.host_width = (int)YCBCR_SCRATCH_W;
+        target.host_height = (int)YCBCR_MODE1_MAX_H;
+        target.host_stride = (int)YCBCR_SCRATCH_W;
+        target.host_cb = s_ycbcr_cb;
+        target.host_cr = s_ycbcr_cr;
+        target.host_c_stride = (int)(YCBCR_SCRATCH_W / 2u);
         int r = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
         if (r > 0) {
             got = r;
             ctx->h264Frames++;
         } else if (r < 0) {
-            b->valid = 0;
             MEM_W32(initAddr, 0u);
             return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "H.264 backend rejected the access unit", SCE_MPEG_ERROR_NO_DATA);
         } else {
@@ -981,15 +1438,20 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         }
     }
 #endif
+    ctx->avcFrameStatus = got > 0;
     if (got <= 0) {
-        b->valid = 0;
         MEM_W32(initAddr, 0u);
         if (eos)
             return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "no decoded picture at end of stream", SCE_MPEG_ERROR_NO_DATA);
         return 0;
     }
-    b->valid = 1;
-    b->pts = au_read_pts(auAddr);
+    uint64_t bytes = 0;
+    uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes);
+    if (stored) {
+        MEM_W32(initAddr, 0u);
+        return stored;
+    }
+    ycbcr_picture_set(mpegAddr, bytes, au_read_pts(auAddr));
     MEM_W32(initAddr, 1u);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
@@ -1000,60 +1462,114 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
     return 0;
 }
 
-uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t buf, uint32_t statusAddr) {
+/* sceMpegAvcDecodeStopYCbCr(mpeg, ycbcr*, status*): like sceMpegAvcDecodeYCbCr it takes the
+ * address of the buffer pointer, and it hands over the picture the decoder still holds.
+ * MEASURED (PSP-MPEG-001): given the buffer itself the call never returned; given the address
+ * of the buffer pointer after the last access unit it returned 0 with status 1, and the
+ * sceMpegAvcDecodeStop that followed returned status 0.  The PSP decoder runs one access unit
+ * behind (the first sceMpegAvcDecodeYCbCr gives no picture), so it holds one.  Here a picture
+ * the decoder can still give for an access unit the game took is written through the buffer's
+ * header with status 1; otherwise the status is 0 and nothing is written.  As in
+ * sceMpegAvcDecodeYCbCr the decoder is drained only once the whole stream has been fed: a
+ * decoder that holds its last picture until it is drained (Media Foundation) gives none before
+ * that, and what the PSP does after a stop in mid-stream is not measured. */
+uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t statusAddr) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
-    if (!statusAddr || (statusAddr & 3u) || !sr_guest_span_writable(statusAddr, 4u))
-        return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "invalid status pointer", (uint32_t)-1);
-    YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
-    if (!b || !ycbcr_state_usable(b, 0))
-        return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "missing, stale, or modified guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
-    b->valid = 0;
-    memset(b->rgba, 0, (size_t)b->width * b->height * 4u);
-    sr_guest_vram_write_prepare_bytes(b->buf, b->size);
-    memset(SR_HOST(b->buf), 0, b->size);
-    sr_guest_vram_write_commit_bytes(b->buf, b->size);
-    b->guest_tag = ycbcr_fingerprint(b->buf, b->size);
-    MEM_W32(statusAddr, 0u);
+    if (!statusAddr || (statusAddr & 3u) || !sr_guest_span_writable(statusAddr, 4u) ||
+        !bufPtr || (bufPtr & 3u) || !sr_guest_span_readable(bufPtr, 4u))
+        return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "invalid buffer or status pointer", (uint32_t)-1);
+    uint32_t buf = MEM_R32(bufPtr);
+    YcbcrLayout layout;
+    if (!ycbcr_header_read(buf, &layout))
+        return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "unaligned or unreadable YCbCr header", SCE_MPEG_ERROR_INVALID_VALUE);
+    int got = 0;
+    SrH264FrameInfo info = {0};
+#ifdef SR_SDL3VK
+    if (ctx->h264Init && ctx->h264 >= 0) {
+        SrH264FrameTarget target;
+        memset(&target, 0, sizeof(target));
+        target.kind = SR_H264_TARGET_HOST_YUV;
+        target.host_buffer = s_ycbcr_y;
+        target.host_width = (int)YCBCR_SCRATCH_W;
+        target.host_height = (int)YCBCR_MODE1_MAX_H;
+        target.host_stride = (int)YCBCR_SCRATCH_W;
+        target.host_cb = s_ycbcr_cb;
+        target.host_cr = s_ycbcr_cr;
+        target.host_c_stride = (int)(YCBCR_SCRATCH_W / 2u);
+        int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
+        if (sr_h264_frame_ex(ctx->h264, eos, &target, &info) > 0) {
+            got = 1;
+            ctx->h264Frames++;
+            ctx->ycbcrWant = ctx->h264Frames;
+        }
+    }
+#endif
+    if (got) {
+        uint64_t bytes = 0;
+        uint32_t stored = ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height, &bytes);
+        if (stored) {
+            MEM_W32(statusAddr, 0u);
+            return stored;
+        }
+        ycbcr_picture_set(mpegAddr, bytes, -1);
+    }
+    MEM_W32(statusAddr, got ? 1u : 0u);
     return 0;
 }
 
-static int ycbcr_ranges_overlap(uint32_t a, uint32_t b, uint32_t size) {
-    uint64_t a0 = a, a1 = a0 + size, b0 = b, b1 = b0 + size;
-    return a0 < b1 && b0 < a1;
+static int ycbcr_ranges_overlap(uint32_t a, uint32_t asize, uint32_t b, uint32_t bsize) {
+    uint64_t a0 = a, a1 = a0 + asize, b0 = b, b1 = b0 + bsize;
+    return asize && bsize && a0 < b1 && b0 < a1;
 }
 
+/* sceMpegAvcCopyYCbCr(mpeg, dst, src) is not measured: the decoded share of every plane and
+ * words 0 and 1 are copied through the two headers. */
 uint32_t mpeg_avc_copy_ycbcr(uint32_t mpegAddr, uint32_t dst, uint32_t src) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     if (!dst || !src || (dst & (YCBCR_ALIGNMENT - 1u)) || (src & (YCBCR_ALIGNMENT - 1u)))
         return mpeg_contract_error("sceMpegAvcCopyYCbCr", "unaligned source or destination", SCE_MPEG_ERROR_INVALID_VALUE);
-    YcbcrBuf *from = ycbcr_find(mpegAddr, src);
-    YcbcrBuf *to = ycbcr_find(mpegAddr, dst);
-    if (!from || !to || !ycbcr_state_usable(from, 1) || !ycbcr_state_usable(to, 0))
-        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "missing, stale, or undecoded guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
-    if (from->width != to->width || from->height != to->height || from->size != to->size)
-        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "source and destination geometry differ", SCE_MPEG_ERROR_INVALID_VALUE);
+    YcbcrLayout from, to;
+    if (!ycbcr_header_read(src, &from) || !ycbcr_header_read(dst, &to))
+        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "unreadable YCbCr header", SCE_MPEG_ERROR_INVALID_VALUE);
+    const uint32_t w = from.width, h = from.height;
+    if (!w || !h || w > YCBCR_MODE1_MAX_W || h > YCBCR_MODE1_MAX_H || ((w / 16u) & 1u))
+        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "the source holds no decoded picture", SCE_MPEG_ERROR_INVALID_VALUE);
     if (dst == src) return 0;
-    if (ycbcr_ranges_overlap(dst, src, from->size))
-        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "overlapping allocations are not modeled", SCE_MPEG_ERROR_INVALID_VALUE);
-    if (!sr_guest_span_readable_current(src, from->size))
-        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "source span is not readable", SCE_MPEG_ERROR_INVALID_VALUE);
-    sr_guest_vram_write_prepare_bytes(dst, from->size);
-    memcpy(SR_HOST(dst), SR_HOST(src), from->size);
-    sr_guest_vram_write_commit_bytes(dst, from->size);
-    memcpy(to->rgba, from->rgba, (size_t)from->width * from->height * 4u);
-    to->valid = from->valid;
-    to->guest_tag = from->guest_tag;
+    const YcbcrBuf *toInit = ycbcr_find(mpegAddr, dst);
+    if (toInit && toInit->width && (w / 32u) * h > (toInit->width / 32u) * toInit->height)
+        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "the picture is larger than the destination allocation",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    for (int i = 0; i < 8; i++)
+        for (int j = 0; j < 8; j++)
+            if (ycbcr_ranges_overlap(from.plane[i], ycbcr_plane_bytes(i, w, h),
+                                     to.plane[j], ycbcr_plane_bytes(j, w, h)) ||
+                ycbcr_ranges_overlap(dst, YCBCR_HEADER_BYTES, from.plane[i], ycbcr_plane_bytes(i, w, h)))
+                return mpeg_contract_error("sceMpegAvcCopyYCbCr", "overlapping planes are not modeled", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (!ycbcr_planes_writable(&to, w, h) || !ycbcr_planes_in(&from, w, h))
+        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "the header's plane pointers do not reach guest memory",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    ycbcr_planes_out(&to, w, h);
+    MEM_W32(dst, h / 16u);
+    MEM_W32(dst + 4u, w / 16u);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcCopyYCbCr #%d dst=0x%" PRIx32 " src=0x%" PRIx32 " size=%" PRIu32 "\n", n, dst, src, from->size);
+            fprintf(stderr, "MpegAvcCopyYCbCr #%d dst=0x%" PRIx32 " src=0x%" PRIx32 " %ux%u\n", n, dst, src,
+                    (unsigned)w, (unsigned)h);
     }
     return 0;
 }
 
-/* sceMpegAvcCsc(mpeg, ycbcr, range*, frameWidth, dest): range is {x, y, w, h} in pixels. */
+/* sceMpegAvcCsc(mpeg, ycbcr, range*, frameWidth, dest): range is {x, y, w, h} in pixels.
+ * MEASURED (PSP-MPEG-001, picture 480x224): an odd x or w is refused with
+ * SCE_MPEG_ERROR_INVALID_VALUE; a negative origin, a range past the picture (w 496, h 240), a
+ * frame width narrower than the range (256) or a zeroed header with MPEG_ERROR_CSC_REFUSED; an
+ * empty range succeeds.  The range {16, 16, 64, 64} wrote the destination from its first pixel
+ * with source columns 16..79 and rows 0..63: x selects the source columns, and y had no effect in
+ * that one case, so rows are taken from the top.  A y + h past the picture is refused like a
+ * wide range, which is not measured.  The 16-bit pixel modes are not measured. */
 uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint32_t frameWidth,
                       uint32_t dest) {
     Mpeg *ctx = mpeg_find(mpegAddr);
@@ -1064,44 +1580,48 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
     if (frameWidth == 0) frameWidth = (uint32_t)ctx->defaultFrameWidth;
     if (!frameWidth || frameWidth > MPEG_MAX_DIMENSION || ctx->pixelMode < 0 || ctx->pixelMode > 3)
         return mpeg_contract_error("sceMpegAvcCsc", "invalid stride or pixel mode", SCE_MPEG_ERROR_INVALID_VALUE);
-    YcbcrBuf *b = ycbcr_find(mpegAddr, buf);
-    if (!b || !ycbcr_state_usable(b, 1))
-        return mpeg_contract_error("sceMpegAvcCsc", "missing, stale, or undecoded guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
-    int32_t x = (int32_t)MEM_R32(rangeAddr);
-    int32_t y = (int32_t)MEM_R32(rangeAddr + 4u);
-    int32_t w = (int32_t)MEM_R32(rangeAddr + 8u);
-    int32_t h = (int32_t)MEM_R32(rangeAddr + 12u);
-    if (x < 0 || y < 0 || w <= 0 || h <= 0 || (uint32_t)x >= b->width || (uint32_t)y >= b->height)
-        return mpeg_contract_error("sceMpegAvcCsc", "negative or empty source range", SCE_MPEG_ERROR_INVALID_VALUE);
-    /* Firmware clipping is not measured; clip positive source overflow and reject invalid origins. */
-    if ((uint32_t)w > b->width - (uint32_t)x) w = (int32_t)(b->width - (uint32_t)x);
-    if ((uint32_t)h > b->height - (uint32_t)y) h = (int32_t)(b->height - (uint32_t)y);
-    if ((uint32_t)x >= frameWidth)
-        return mpeg_contract_error("sceMpegAvcCsc", "range starts beyond destination stride", SCE_MPEG_ERROR_INVALID_VALUE);
-    if ((uint32_t)w > frameWidth - (uint32_t)x)
-        return mpeg_contract_error("sceMpegAvcCsc", "range exceeds destination stride", SCE_MPEG_ERROR_INVALID_VALUE);
+    YcbcrLayout l;
+    if (!ycbcr_header_read(buf, &l))
+        return mpeg_contract_error("sceMpegAvcCsc", "unaligned or unreadable YCbCr header", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (!l.width || !l.height) return MPEG_ERROR_CSC_REFUSED;
+    if (l.width > YCBCR_MODE1_MAX_W || l.height > YCBCR_MODE1_MAX_H || ((l.width / 16u) & 1u))
+        return mpeg_contract_error("sceMpegAvcCsc", "the header describes a picture beyond the measured layout",
+                                   MPEG_ERROR_CSC_REFUSED);
+    const int64_t x = (int32_t)MEM_R32(rangeAddr), y = (int32_t)MEM_R32(rangeAddr + 4u);
+    const int64_t w = (int32_t)MEM_R32(rangeAddr + 8u), h = (int32_t)MEM_R32(rangeAddr + 12u);
+    if ((x & 1) || (w & 1)) return SCE_MPEG_ERROR_INVALID_VALUE;
+    if (x < 0 || y < 0 || w < 0 || h < 0 || x + w > (int64_t)l.width || y + h > (int64_t)l.height)
+        return MPEG_ERROR_CSC_REFUSED;
+    if (w == 0 || h == 0) return 0;
+    if ((uint64_t)w > frameWidth) return MPEG_ERROR_CSC_REFUSED;
+    if (!ycbcr_planes_in(&l, l.width, l.height))
+        return mpeg_contract_error("sceMpegAvcCsc", "the header's plane pointers do not reach guest memory",
+                                   MPEG_ERROR_CSC_REFUSED);
     uint32_t bpp = ctx->pixelMode == 3 ? 4u : 2u;
     SrGuestRectSpan span;
     /* The destination may be a swizzled VRAM mirror view (#1049), so each row is built in a
      * host scratch row and written with sr_guest_copy_out(), which translates it piece by
      * piece and prepares/commits the VRAM span of every piece. */
-    if (!sr_guest_rect_geometry(dest, (uint32_t)x, (uint32_t)y, frameWidth,
-                                (uint32_t)w, (uint32_t)h, bpp, &span) ||
+    if (!sr_guest_rect_geometry(dest, 0u, 0u, frameWidth, (uint32_t)w, (uint32_t)h, bpp, &span) ||
         !sr_guest_span_writable_any_view(span.first, span.total_bytes))
         return mpeg_contract_error("sceMpegAvcCsc", "destination rectangle is out of bounds", SCE_MPEG_ERROR_INVALID_VALUE);
     uint8_t *out = (uint8_t *)malloc(span.row_bytes);
     if (!out)
         return mpeg_contract_error("sceMpegAvcCsc", "no scratch row for the destination", SCE_MPEG_ERROR_INVALID_VALUE);
     for (uint32_t row = 0; row < (uint32_t)h; row++) {
-        const uint8_t *px = b->rgba + ((size_t)((uint32_t)y + row) * b->width + (uint32_t)x) * 4u;
         uint32_t rowAddr = span.first + row * span.row_pitch;
 #ifdef SR_MPEG_CSC_NO_WRITE_MUTANT
-        (void)px;
         (void)out;
         (void)rowAddr;
 #else
-        for (uint32_t col = 0; col < (uint32_t)w; col++, px += 4u) {
-            unsigned r = px[0], g = px[1], bl = px[2];
+        for (uint32_t col = 0; col < (uint32_t)w; col++) {
+            const uint32_t sx = (uint32_t)x + col, sy = row;
+            int lp, cp;
+            uint32_t lo = ycbcr_luma_at(sx, sy, l.height, &lp);
+            uint32_t co = ycbcr_chroma_at(sx >> 1, sy >> 1, l.height, &cp);
+            const uint8_t *chroma = ycbcr_scratch_plane(cp) + co;
+            uint8_t r, g, bl;
+            sr_h264_psp_rgb(ycbcr_scratch_plane(lp)[lo], chroma[0], chroma[1], &r, &g, &bl);
             uint16_t v16;
             switch (ctx->pixelMode) {
                 case 0:
@@ -1116,8 +1636,11 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
                     v16 = (uint16_t)((r >> 4) | ((g >> 4) << 4) | ((bl >> 4) << 8) | 0xF000u);
                     memcpy(out + col * 2u, &v16, 2u);
                     break;
-                default:
-                    memcpy(out + col * 4u, px, 4u);
+                default:   /* 8888: R, G, B and alpha 0 */
+                    out[col * 4u + 0] = r;
+                    out[col * 4u + 1] = g;
+                    out[col * 4u + 2] = bl;
+                    out[col * 4u + 3] = 0u;
                     break;
             }
         }
@@ -1128,10 +1651,11 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%" PRIx32 " dest=0x%" PRIx32 " fw=%" PRIu32 " range=%u,%u %ux%u\n",
-                    n, buf, dest, frameWidth, (unsigned)x, (unsigned)y, (unsigned)w, (unsigned)h);
+            fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%" PRIx32 " dest=0x%" PRIx32 " fw=%" PRIu32 " range=%d,%d %dx%d\n",
+                    n, buf, dest, frameWidth, (int)x, (int)y, (int)w, (int)h);
     }
-    sr_psmf_av_note_video_delivery(span.first, span.total_bytes, b->pts, b->pts >= 0);
+    const int64_t pts = sr_psmf_av_active() ? ycbcr_picture_pts(mpegAddr, ycbcr_planes_hash(l.width, l.height)) : -1;
+    sr_psmf_av_note_video_delivery(span.first, span.total_bytes, pts, pts >= 0);
     return 0;
 }
 
@@ -1179,21 +1703,39 @@ uint32_t mpeg_change_get_au_mode(uint32_t mpegAddr, uint32_t sid, uint32_t mode)
     int index = mpeg_stream_index(ctx, sid);
     if (index < 0)
         return mpeg_contract_error("sceMpegChangeGetAuMode", "unknown stream", SCE_MPEG_ERROR_INVALID_VALUE);
-    if (mode == MPEG_AU_MODE_SKIP)
-        return mpeg_contract_error("sceMpegChangeGetAuMode", "skip-mode queue and timestamp semantics are unmeasured", (uint32_t)-1);
-    ctx->streams[index].auMode = MPEG_AU_MODE_DECODE;
+    ctx->streams[index].auMode = (int)mode;
     return 0;
 }
 
+/* sceMpegAtracDecode(mpeg, au, buffer, init): decode the frame the last GetAtracAu held into the
+ * 8192-byte block at buffer; init (nonzero on a stream's first call) resets the decoder. */
 uint32_t mpeg_atrac_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufferAddr, uint32_t init) {
-    (void)auAddr; (void)bufferAddr; (void)init;
+    (void)auAddr;
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
+    if (!bufferAddr || (bufferAddr & 3u) ||
+        !sr_guest_span_writable_any_view(bufferAddr, MPEG_ATRAC_ES_OUTPUT_SIZE))
+        return mpeg_contract_error("sceMpegAtracDecode", "invalid output buffer", (uint32_t)-1);
+    if (!ctx->audioHeld)
+        return mpeg_contract_error("sceMpegAtracDecode", "no ATRAC access unit is held for decoding",
+                                   SCE_MPEG_ERROR_NO_DATA);
+    uint8_t *frame = ctx->audioHeld;
+    uint32_t bytes = ctx->audioHeldBytes;
+    ctx->audioHeld = NULL;
+    ctx->audioHeldBytes = 0;
+    uint32_t refused = mpeg_audio_decode_frame(ctx, frame, bytes, init);
+    free(frame);
+    if (refused) return refused;
+    int64_t pts = ctx->audioPts + ctx->firstTimestamp;
+    sr_guest_copy_out(bufferAddr, ctx->audioPcm, MPEG_ATRAC_ES_OUTPUT_SIZE);
+    sr_psmf_av_note_audio_delivery(bufferAddr, MPEG_ATRAC_ES_OUTPUT_SIZE, pts, 1);
     ctx->audioPts += audioTimestampStep;
+    ctx->audioDecoded++;
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 16 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAtracDecode #%d audioPts=%lld\n", n, (long long)ctx->audioPts);
+            fprintf(stderr, "MpegAtracDecode #%d pts=%lld audioPts=%lld decoded=%llu\n", n,
+                    (long long)pts, (long long)ctx->audioPts, (unsigned long long)ctx->audioDecoded);
     }
     return 0;
 }
@@ -1218,6 +1760,8 @@ uint32_t mpeg_flush_all_stream(uint32_t mpegAddr) {
         rb_set(ctx->ringAddr, RB_packetsWritePos, 0);
         rb_set(ctx->ringAddr, RB_packetsAvail, 0);
     }
+    /* The game refills the ring from a new position: the audio demux starts over with it. */
+    mpeg_audio_restart(ctx);
     return 0;
 }
 

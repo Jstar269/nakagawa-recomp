@@ -27,7 +27,10 @@
 
 #include <stdint.h>
 
-#include "atrac3p/atrac3p_api.h"
+/* The bridge's own interface needs only <stdint.h>: a caller that also uses the decoder's
+ * constants (ATRAC3P_FRAME_SAMPLES, ATRAC3P_MAX_CHANNELS, ...) includes atrac3p/atrac3p_api.h,
+ * which needs the FFmpeg subset's include paths; this header does not, so any runtime unit can
+ * include it. */
 
 /* Opaque bridge instance. NULL is never a valid instance. */
 typedef struct Atrac3pBridge Atrac3pBridge;

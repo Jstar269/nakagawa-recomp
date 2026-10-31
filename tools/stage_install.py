@@ -37,7 +37,8 @@ bytes (#324): ``SHA256SUMS.txt`` is rewritten over every file in ordinal path
 order, the runtime manifest in ``bin/`` is verified, and the archive stores its
 entries sorted by path, all dated ``SOURCE_DATE_EPOCH`` (the source commit's
 time unless set), with fixed permissions, no extra fields and no comment.
-Links and absolute or parent-relative names are refused.
+Links, absolute or parent-relative names and Git metadata (a `.git` entry,
+which the source export rewrites on every run) are refused.
 
 Usage::
 
@@ -363,6 +364,10 @@ def _stage_tree(stage: Path) -> tuple[list[tuple[str, Path]], list[str]]:
             for entry in entries:
                 children += 1
                 relative = _check_entry_name(prefix + entry.name)
+                if entry.name == ".git":
+                    raise InstallError(
+                        f"PORTABLE_STAGE_GIT_METADATA: {relative} is Git metadata, which differs on every "
+                        "export (commit time, index timestamps); delete it from the stage before archiving")
                 path = Path(entry.path)
                 if entry.is_symlink() or path.is_junction():
                     raise InstallError(f"PORTABLE_STAGE_LINK: {relative} is a link; stage real files")
