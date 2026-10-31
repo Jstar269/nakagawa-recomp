@@ -10321,6 +10321,33 @@ static void run_ge_sync_ids(int emulated) {
     emit_ge_sync(emulated, "ge-list-sync-after-reenqueue", qid_a >= 0 && qid_b >= 0 ? "PASS" : "SKIP",
                  out[6], out, 7);
 
+    /* Which call ends a completed list's id: three more lists, the first two waited for with
+       sceGeDrawSync(1) peeks only, the third with the ListSync and DrawSync peeks above, and
+       every earlier id read again after each. Outputs: qid, then each id's peek. */
+    int qid_s[3];
+    for (int k = 0; k < 3; k++) {
+        static const char *const steps[3] = {"stale-1", "stale-2", "stale-3"};
+        static const char *const cases[3] = {"ge-list-sync-stale-1", "ge-list-sync-stale-2",
+                                             "ge-list-sync-stale-3"};
+        probe_step(emulated, "ge-sync-ids", steps[k]);
+        if (k < 2) {
+            qid_s[k] = sceGeListEnQueue((const void *)(uintptr_t)list, NULL, -1, NULL);
+            const GeIdleWait w = ge_wait_idle(-1, qid_s[k] >= 0 ? GE_IDLE_DEADLINE_US : 0u);
+            if (!w.idle) qid_s[k] = -1;
+        } else {
+            qid_s[k] = gsi_run_list(emulated, steps[k], list, out);
+        }
+        out[0] = (uint32_t)qid_s[k];
+        out[1] = (uint32_t)(qid_s[k] >= 0 ? sceGeListSync(qid_s[k], 1) : qid_s[k]);
+        sceKernelDelayThread(1000);
+        out[2] = (uint32_t)(qid_s[k] >= 0 ? sceGeListSync(qid_s[k], 1) : qid_s[k]);
+        for (int j = 0; j < 3; j++) {
+            out[3 + j] = j < k ? (uint32_t)sceGeListSync(qid_s[j], 1) : 0u;
+        }
+        out[6] = (uint32_t)sceGeListSync(qid_b, 1);
+        emit_ge_sync(emulated, cases[k], qid_s[k] >= 0 ? "PASS" : "SKIP", out[1], out, 7);
+    }
+
     /* A list stalled at its start and removed by a reset: the poll form is the measured
        0x80000100 (PSP-GE-CONTROL-001); the blocking form is measured below. */
     probe_step(emulated, "ge-sync-ids", "cancelled");
@@ -10342,6 +10369,15 @@ static void run_ge_sync_ids(int emulated) {
     gsi_blocking(emulated, "ge-list-sync-cancelled-wait", 0, qid_c);
     gsi_blocking(emulated, "ge-list-sync-unknown-wait", 0, GSI_UNKNOWN_QID);
 
+    /* After a completed sceGeDrawSync(0): the last stale-sequence id's peek, and its wait. */
+    probe_step(emulated, "ge-sync-ids", "after-draw-wait");
+    out[0] = (uint32_t)qid_s[2];
+    out[1] = (uint32_t)(qid_s[2] >= 0 ? sceGeListSync(qid_s[2], 1) : qid_s[2]);
+    out[2] = (uint32_t)(qid_s[0] >= 0 ? sceGeListSync(qid_s[0], 1) : qid_s[0]);
+    emit_ge_sync(emulated, "ge-list-sync-after-draw-wait", qid_s[2] >= 0 ? "PASS" : "SKIP",
+                 out[1], out, 3);
+    gsi_blocking(emulated, "ge-list-sync-stale-wait", 0, qid_s[0]);
+
     /* Leave the GE idle whatever happened above. */
     probe_step(emulated, "ge-sync-ids", "quiesce");
     GeIdleWait w = ge_wait_idle(-1, 0u);
@@ -10358,7 +10394,7 @@ static void run_ge_sync_ids(int emulated) {
     emit_ge_sync(emulated, "ge-sync-quiesce", w.idle ? "PASS" : "TIMEOUT",
                  (uint32_t)quiesce_rc, out, 4);
 
-    uint32_t done = 10;
+    uint32_t done = 16;  /* the records above */
     emit_record_extended(emulated, "PSP-GE-SYNC-001", "ge-sync-ids-done", "PASS", 0, &done, 1);
 }
 #endif
