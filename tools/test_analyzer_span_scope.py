@@ -323,6 +323,69 @@ def write_elf_with_data_jal_in_text_to_rodata(path: Path) -> int:
     return target
 
 
+def write_zero_based_module(path: Path, *, relocatable: bool = True,
+                            unrelocated_call: int = 0x0C000005, data_pointer: int = 0x28) -> None:
+    """A zero-based PSP module (ET_SCE_PRX) whose loader relocations name its addresses.
+
+    .text holds three functions: 0x00 (the entry) calls 0x20 through a relocated jal and
+    makes an unrelocated jal whose target field reads 0x14, the shape a module linked
+    against its executable uses for a call into it; 0x20 is a leaf; 0x28 is a leaf reached
+    only through the relocated pointer in .data. .data also holds the integer 8, equal to
+    the text offset of a delay slot inside 0x00, with no relocation. `relocatable=False`
+    writes the same bytes as an ET_EXEC with no relocation section. `unrelocated_call`
+    and `data_pointer` replace the unrelocated jal word and the relocated pointer.
+    """
+    text = [
+        0x27BDFFF0,  # 0x00 addiu sp, sp, -16
+        0x0C000008,  # 0x04 jal 0x20 (R_MIPS_26)
+        0x00000000,  # 0x08 nop
+        unrelocated_call,  # 0x0c jal 0x14 (no relocation: outside the module)
+        0x00000000,  # 0x10 nop
+        0x27BD0010,  # 0x14 addiu sp, sp, 16
+        0x03E00008,  # 0x18 jr ra
+        0x00000000,  # 0x1c nop
+        0x03E00008,  # 0x20 jr ra
+        0x00000000,  # 0x24 nop
+        0x03E00008,  # 0x28 jr ra
+        0x00000000,  # 0x2c nop
+    ]
+    data = [data_pointer, 0x00000008]  # 0x40: relocated pointer; 0x44: unrelocated integer
+    relocations = [(0x04, 4), (0x40, 2)]  # type-A (offset, info): R_MIPS_26, R_MIPS_32
+    payload_off = 52 + 32
+    image = bytearray(0x48)
+    for index, word in enumerate(text):
+        struct.pack_into("<I", image, index * 4, word)
+    for index, word in enumerate(data):
+        struct.pack_into("<I", image, 0x40 + index * 4, word)
+    rel_off = payload_off + len(image)
+    rel = b"".join(struct.pack("<II", offset, info) for offset, info in relocations)
+    if not relocatable:
+        rel = b""
+    shstr = b"\x00.text\x00.data\x00.rel.text\x00.shstrtab\x00"
+    shstr_off = rel_off + len(rel)
+    shoff = shstr_off + len(shstr)
+    sections = 5 if relocatable else 4
+    blob = bytearray(shoff + 40 * sections)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        0xFFA0 if relocatable else 2, 8, 1, 0, 52, shoff, 0, 52, 32, 1, 40,
+        sections, sections - 1,
+    )
+    struct.pack_into("<8I", blob, 52, 1, payload_off, 0, 0, len(image), len(image), 7, 16)
+    blob[payload_off:payload_off + len(image)] = image
+    blob[rel_off:rel_off + len(rel)] = rel
+    blob[shstr_off:shstr_off + len(shstr)] = shstr
+    struct.pack_into("<10I", blob, shoff + 40, 1, 1, 6, 0, payload_off, 0x30, 0, 0, 4, 0)
+    struct.pack_into("<10I", blob, shoff + 80, 7, 1, 3, 0x40, payload_off + 0x40, 8, 0, 0, 4, 0)
+    if relocatable:
+        struct.pack_into("<10I", blob, shoff + 120,
+                         13, 0x700000A0, 0, 0, rel_off, len(rel), 0, 0, 4, 8)
+    struct.pack_into("<10I", blob, shoff + 40 * (sections - 1),
+                     23, 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0)
+    path.write_bytes(blob)
+
+
 class AnalyzerSpanScopeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._saved_environ = os.environ.copy()
@@ -447,6 +510,66 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         starts, _ = analyze.analyze(loaded)
 
         self.assertNotIn(target, starts)
+
+    def test_relocatable_module_takes_code_addresses_only_from_relocated_words(self) -> None:
+        # A relocatable module can load anywhere, so a word its loader does not relocate is
+        # no address in it: the integer 8 in .data is not a pointer to 0x08, and the
+        # unrelocated jal's target field (0x14) names code outside the module. Both used to
+        # seed functions inside 0x00, splitting it at a delay slot and at its epilogue.
+        module = self.root / "zero-based-module.prx"
+        write_zero_based_module(module)
+        loaded = analyze.Elf(str(module), base=0)
+        self.assertEqual(loaded.relocated_words, {0x04: "jump26", 0x40: "word32"})
+
+        starts, _ = analyze.analyze(loaded)
+
+        self.assertEqual(sorted(starts), [0x00, 0x20, 0x28])
+        evidence = analyze.code_pointer_evidence(loaded, analyze.exec_ranges(loaded))
+        self.assertEqual(evidence["jal"], frozenset({0x20}))
+        self.assertEqual(evidence["data"], frozenset({0x28}))
+
+    def test_unrelocated_call_in_a_relocatable_module_still_continues(self) -> None:
+        # The call into the executable returns: the code after its delay slot is the same
+        # function's, and the module's own epilogue stays owned.
+        module = self.root / "zero-based-module.prx"
+        write_zero_based_module(module)
+        loaded = analyze.Elf(str(module), base=0)
+        covered, calls, found = set(), set(), set()
+
+        analyze.trace_function(loaded, 0x00, analyze.exec_ranges(loaded), covered, calls, {0x00},
+                               unrelocated=found)
+
+        self.assertEqual(found, {0x0C})
+        self.assertEqual(calls, {0x20})
+        self.assertTrue({0x14, 0x18, 0x1C} <= covered)
+
+    def test_a_module_placed_at_a_load_address_keeps_its_unrelocated_calls(self) -> None:
+        # A module placed at a load address whose own calls carry no relocation was linked
+        # for that address: the unrelocated jal runs to its face value, 0x28 in the module
+        # there, so it is an edge. The pointer that also reached 0x28 is dropped here.
+        module = self.root / "placed-module.prx"
+        base = 0x08A00000
+        write_zero_based_module(module, unrelocated_call=0x0C000000 | ((base + 0x28) >> 2),
+                                data_pointer=0)
+        loaded = analyze.Elf(str(module), base=base)
+        self.assertTrue(loaded.relocated_words)
+
+        with redirect_stderr(io.StringIO()):
+            starts, _ = analyze.analyze(loaded)
+
+        self.assertIn(base + 0x28, set(starts))
+
+    def test_a_fixed_address_image_keeps_every_word_as_address_evidence(self) -> None:
+        # The same bytes as a fixed-address executable: its words are its addresses as they
+        # stand, so the jal to 0x14 and the data word 8 still count (the legacy rule).
+        image = self.root / "fixed-image.elf"
+        write_zero_based_module(image, relocatable=False)
+        loaded = analyze.Elf(str(image), base=0)
+        self.assertIsNone(loaded.relocated_words)
+
+        starts, _ = analyze.analyze(loaded)
+
+        self.assertTrue({0x08, 0x14} <= set(starts))
 
     def test_generic_analyzer_source_carries_no_title_constant(self) -> None:
         source = (TOOLS / "analyze.py").read_text(encoding="utf-8")
@@ -2200,6 +2323,135 @@ class DataSectionsInAnExecutableSegment(unittest.TestCase):
         with redirect_stderr(io.StringIO()):
             entries = set(analyze.analyze(elf)[0])
         self.assertNotIn(addresses[".rodata"], entries)
+
+
+def _lui(rt, imm):
+    return (0x0F << 26) | (rt << 16) | (imm & 0xFFFF)
+
+
+def _addiu(rt, rs, imm):
+    return (0x09 << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+
+def _jal(target):
+    return (0x03 << 26) | ((target >> 2) & 0x3FFFFFF)
+
+
+#: `for (p = a0; p < a1; p++) (*p)();` as an optimising compiler lays it out: the cursor
+#: and the end in s0/s3, the first load hoisted, the back edge a branch-likely.
+OPTIMISED_WALKER = (
+    0x27BDFFE0, 0xAFBF001C, 0xAFB30018, 0xAFB0000C,  # frame; save ra, s3, s0
+    0x00A09821, 0x0093082B, 0x10200008, 0x00808021,  # s3 = a1; if !(a0 < s3) exit; s0 = a0
+    0x8E020000, 0x0040F809, 0x00000000,              # v0 = *s0; call v0
+    0x26100004, 0x0213102B, 0x5440FFFB, 0x8E020000,  # s0 += 4; loop while s0 < s3
+    0x8FBF001C, 0x8FB30018, 0x8FB0000C, 0x03E00008, 0x27BD0020,  # restore, return
+)
+#: The same loop unoptimised: the cursor and the end live in stack slots.
+UNOPTIMISED_WALKER = (
+    0x27BDFFC0, 0xAFBF000C, 0xAFA40020, 0xAFA50030,  # frame; slot32 = a0, slot48 = a1
+    0x1000000A, 0x00000000,                          # branch to the test
+    0x8FA20020, 0x8C420000, 0xAFA2001C, 0x8FA2001C,  # v0 = *slot32 (through slot28)
+    0x0040F809, 0x00000000,                          # call v0
+    0x8FA30020, 0x24630004, 0xAFA30020,              # slot32 += 4
+    0x8FA40020, 0x8FA30030, 0x0083182B, 0x1460FFF3, 0x00000000,  # loop while slot32 < slot48
+    0x8FBF000C, 0x27BD0040, 0x03E00008, 0x00000000,  # restore, return
+)
+#: A loop over the same array that sums its words and calls none of them.
+SUMMING_LOOP = (
+    0x00001821, 0x0085082B, 0x10200007, 0x00000000,  # v1 = 0; if !(a0 < a1) exit
+    0x8C820000, 0x00621821, 0x24840004, 0x0085082B,  # v1 += *a0; a0 += 4
+    0x1420FFFB, 0x00000000, 0x03E00008, 0x00601021,  # loop while a0 < a1; return v1
+)
+
+
+class CalledPointerArrays(unittest.TestCase):
+    """Start-up code calls every word of a function-pointer array: those words are entries.
+
+    C++ static constructors are reached only through such an array, which start-up code
+    hands to a loop that calls each word. Some retail section tables name everything
+    after the import tables `.data`, the constructors included, so the data-section rule
+    above would leave them with no owner and the first constructor call would stop the
+    run. The call through the array is the evidence; a `.data` word that merely points
+    at a prologue is still no function.
+    """
+
+    def build(self, walker, *, wrapper=False, table_extra=()):
+        base = 0x08804000
+        start_at = base
+        start_len = 10 * 4
+        wrapper_words = ()
+        wrapper_at = start_at + start_len
+        if wrapper:
+            wrapper_len = 12 * 4
+        else:
+            wrapper_len = 0
+        walker_at = wrapper_at + wrapper_len
+        text_len = start_len + wrapper_len + 4 * len(walker)
+        data_at = base + text_len
+        ctor_at, helper_at, decoy_at = data_at, data_at + 0x20, data_at + 0x28
+        table_at = data_at + 0x38
+        table_end = table_at + 4 * (1 + len(table_extra))
+        callee = wrapper_at if wrapper else walker_at
+        start = (
+            0x27BDFFF0, 0xAFBF000C,                                  # frame; save ra
+            _lui(4, (table_at + 0x8000) >> 16), _lui(5, (table_end + 0x8000) >> 16),
+            _addiu(4, 4, table_at), _jal(callee), _addiu(5, 5, table_end),
+            0x8FBF000C, 0x03E00008, 0x27BD0010,                      # restore, return
+        )
+        if wrapper:  # passes its own a0 and a1 on through stack slots
+            wrapper_words = (
+                0x27BDFFB0, 0xAFBF000C, 0xAFA40010, 0xAFA50020, 0x8FA40010, 0x8FA50020,
+                _jal(walker_at), 0x00000000, 0x8FBF000C, 0x27BD0050, 0x03E00008, 0x00000000,
+            )
+        text = _words(*start, *wrapper_words, *walker)
+        data = _words(
+            0x27BDFFF0, 0xAFBF000C, _jal(helper_at), 0x00000000,    # the constructor
+            0x8FBF000C, 0x03E00008, 0x27BD0010, 0x00000000,
+            0x03E00008, 0x00000000,                                  # a helper it calls
+            0x27BDFFE0, 0x03E00008, 0x27BD0020, 0x00000000,          # prologue-shaped data
+            ctor_at, *table_extra,                                   # the called array
+            decoy_at,                                                # a plain data pointer
+        )
+        blob, _ = _sectioned_exec([(".text", 0x6, text), (".data", 0x3, data)], base=base)
+        layout = {"ctor": ctor_at, "helper": helper_at, "decoy": decoy_at, "data": data_at}
+        return analyze.Elf(blob, base=base), layout
+
+    def analyze(self, elf):
+        with redirect_stderr(io.StringIO()):
+            entries, owned = analyze.analyze(elf)
+        return set(entries), owned
+
+    def assert_constructor_owned(self, elf, layout):
+        entries, owned = self.analyze(elf)
+        self.assertIn(layout["ctor"], entries, "the array's word is a function entry")
+        self.assertIn(layout["helper"], entries, "a function the constructor calls is an entry")
+        for address in (layout["ctor"], layout["ctor"] + 0x18, layout["helper"] + 4):
+            self.assertTrue(analyze.in_ranges(address, owned), f"0x{address:08x} is not owned")
+        self.assertNotIn(layout["decoy"], entries,
+                         "a .data pointer outside the called array became a function")
+        self.assertFalse(analyze.in_ranges(layout["decoy"], owned),
+                         "the bytes between the proven functions became executable")
+
+    def test_an_array_passed_to_a_walker_seeds_its_words_in_data(self):
+        elf, layout = self.build(OPTIMISED_WALKER)
+        self.assertEqual(analyze.file_backed_exec_ranges(elf), [(0x08804000, layout["data"])])
+        self.assert_constructor_owned(elf, layout)
+
+    def test_an_unoptimised_walker_behind_a_forwarding_wrapper_is_still_a_walker(self):
+        elf, layout = self.build(UNOPTIMISED_WALKER, wrapper=True)
+        self.assert_constructor_owned(elf, layout)
+
+    def test_an_array_with_a_word_outside_the_executable_segment_seeds_nothing(self):
+        elf, layout = self.build(OPTIMISED_WALKER, table_extra=(0x09000000,))
+        entries, owned = self.analyze(elf)
+        self.assertNotIn(layout["ctor"], entries)
+        self.assertFalse(analyze.in_ranges(layout["ctor"], owned))
+
+    def test_a_loop_that_does_not_call_the_words_is_no_walker(self):
+        elf, layout = self.build(SUMMING_LOOP)
+        entries, owned = self.analyze(elf)
+        self.assertNotIn(layout["ctor"], entries)
+        self.assertFalse(analyze.in_ranges(layout["ctor"], owned))
 
 
 if __name__ == "__main__":

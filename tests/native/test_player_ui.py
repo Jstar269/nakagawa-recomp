@@ -3473,7 +3473,8 @@ class NativePlayerUiTests(unittest.TestCase):
 
         Failing-before: the showcase demos read NEEDS SETUP for the first 4-9 s of
         every start, until their checks finished, and then flipped to READY."""
-        # 4.5 s spans two of the main loop's 2 s rescans, each re-checking the title for 1.5 s.
+        # 4.5 s spans the first check (1.5 s) and the periodic re-check that starts after
+        # 2 s with no check running.
         run = self.run_player(
             "ready", ("WAIT_MS=4500",), wait_background=True, ui_mode="next",
             env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "1500"},
@@ -3494,6 +3495,29 @@ class NativePlayerUiTests(unittest.TestCase):
         # CHECKING (it did on every 2 s rescan, and made this test flaky on slow hosts).
         decided = statuses.index(next(s for s in statuses if s != "Checking"))
         self.assertNotIn("Checking", statuses[decided:], statuses)
+
+    def test_background_wait_ends_when_a_check_outlasts_the_rescan_period(self) -> None:
+        """A package check slower than the 2 s rescan period no longer repeats without pause.
+
+        The periodic rescan counted 2 s from the previous rescan, even while a check
+        ran. A check of 2 s or more (a large package, or 1.5 s of test delay on a
+        loaded CI runner) found the next one queued when it ended, so the launcher
+        re-checked back to back and never went idle, and a run that waits for
+        background work hit its timeout (the library-card test above, at 49.5 s on
+        hosted Windows). Failing-before: with a 2.5 s check this run never went idle
+        and timed out. Now the rescan waits for 2 s with no check running, so the run
+        ends when the check under way finishes."""
+        try:
+            run = self.run_player(
+                "ready", ("WAIT_MS=500",), wait_background=True, ui_mode="next",
+                env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "2500"},
+                timeout=30.0,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("the launcher never went idle: each 2.5 s package check queued the next")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(int(frames[-1]["package_status_thread_attempts"]), 1, run["stdout"])
 
     def test_failed_post_build_check_does_not_suppress_later_title_build(self) -> None:
         run = self.run_player(
