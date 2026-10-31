@@ -12,6 +12,16 @@
 
 #include "hle_internal.h"
 
+#ifdef _WIN32
+uint64_t sr_host_monotonic_ms(void) { return GetTickCount64(); }
+#else
+uint64_t sr_host_monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0u;
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+}
+#endif
+
 static int hle_present_trace_on(void) {
     static int enabled = -1;
     return hle_env_switch(&enabled, "SR_PRESENT_TRACE");
@@ -224,6 +234,14 @@ static void display_present_active(void) {
         s_vcount - s_picture_probe_vcount >= SR_PICTURE_PROBE_EVERY &&
         display_host_span_valid(&s_display_active))
         probe = sr_capture_arm_probe();
+    /* Ace Mode's 30 Hz detector (ace.h) sees every flip here, before the presenter's own slot
+     * rule can drop a second flip in one VBLANK. Off, nothing is read. */
+    if (g_ace_on && s_display_active.addr) {
+        uint32_t bytes = (uint32_t)(s_display_active.stride > 0 ? s_display_active.stride : 512) *
+                         272u * (s_display_active.fmt == 3 ? 4u : 2u);
+        (void)ace_flip(s_display_active.addr & 0x1FFFFFu, bytes, s_vcount,
+                       sr_host_monotonic_ms() * 1000000ull);
+    }
     display_present_frame();
     sr_capture_cancel();
     uint32_t brightest;

@@ -88,38 +88,45 @@ static const PlayerUiTitle k_titles[] = {
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0xC29AF4FFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0xC29AF4FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "", NULL}
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL}
 };
 
 /* A library with the demos that come with Nakagawa among the user's games, in
@@ -129,22 +136,26 @@ static const PlayerUiTitle k_demo_titles[] = {
      "Plays a synthetic game with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "", NULL}
+     PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL}
 };
 
 /* The demos alone: a first start with nothing added yet. */
@@ -153,12 +164,14 @@ static const PlayerUiTitle k_demo_only_titles[] = {
      "Plays a synthetic game with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "", NULL},
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "", NULL}
+     PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
+     false, NULL, false, false, NULL, NULL, false, NULL}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -199,7 +212,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
-               FLOW_SETTINGS_ACCESSIBILITY,
+               FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE, FLOW_SETTINGS_ACE_OFF,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -207,7 +220,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                /* Whole pages for the window-fit sweep only. */
                FLOW_PAGE_LIBRARY, FLOW_PAGE_LIBRARY_FIND, FLOW_PAGE_TITLE, FLOW_PAGE_ABOUT,
                FLOW_PAGE_REMOVE,
-               FLOW_PAGE_STOP,
+               FLOW_PAGE_STOP, FLOW_PAGE_TITLE_ACE,
                FLOW_CONSENT_FULL, FLOW_COUNT } FlowCase;
 
 /* The window size the game-found and Settings cases lay out for. */
@@ -332,11 +345,18 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
         : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
         : which == FLOW_SETTINGS_ACCESSIBILITY ? PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY
+        : which == FLOW_SETTINGS_ACE || which == FLOW_SETTINGS_ACE_OFF ? PLAYER_UI_SETTINGS_PAGE_ACE
         : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED ||
           which == FLOW_SETTINGS_UPDATE_NO_KEY || which == FLOW_SETTINGS_UPDATE_REFUSED
             ? PLAYER_UI_SETTINGS_PAGE_UPDATES
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
     settings.resolution = "2x (960x544)";
+    /* Ace Mode: on (off for its own off case), with the defaults beside it. */
+    settings.ace_enabled = which != FLOW_SETTINGS_ACE_OFF;
+    settings.ace_filtering = "16x";
+    settings.ace_text = true;
+    settings.ace_readout = false;
+    settings.ace_notice = true;
     settings.pacing = "PSP timing";
     settings.scaling = "Sharp";
     settings.vsync = true;
@@ -706,6 +726,27 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
         memset(&title, 0, sizeof(title));
         title.title = &fixture;
         title.title_index = 0u;
+        title.logical_width = g_flow_width;
+        title.logical_height = g_flow_height;
+        return player_ui_screen_title(ui, &title);
+    }
+    if (which == FLOW_PAGE_TITLE_ACE) {
+        /* The ENHANCEMENTS card at its fullest: Ace Mode with its line and last session,
+           and a 60 FPS package beside it. */
+        static PlayerUiTitle fixture;
+        PlayerUiTitleModel title;
+        fixture = k_titles[6];
+        fixture.ace_shown = true;
+        fixture.ace_label = "Ace Mode: On (library default)";
+        fixture.ace_in_effect = true;
+        fixture.ace_enabled = true;
+        fixture.ace_line = "On for this game: 16x texture filtering, crisp keyboard.";
+        fixture.ace_last_session = "Last session: 16x filtering; the game ran at 30 Hz.";
+        fixture.enhancement_shown = true;
+        fixture.enhancement_enabled = true;
+        memset(&title, 0, sizeof(title));
+        title.title = &fixture;
+        title.title_index = 6u;
         title.logical_width = g_flow_width;
         title.logical_height = g_flow_height;
         return player_ui_screen_title(ui, &title);
@@ -2523,6 +2564,24 @@ static void test_settings_pages(void) {
          PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION, "the reduce motion button steps its choice"},
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
          "Back leaves Accessibility"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ACE, PLAYER_UI_SETTINGS_TOGGLE_ACE,
+         "the GAME card's Ace Mode button switches it"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ACE_OPEN, PLAYER_UI_SETTINGS_OPEN_ACE,
+         "Ace Mode options opens its page"},
+        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ACE,
+         "the page's Ace Mode button switches it"},
+        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_FILTERING,
+         PLAYER_UI_SETTINGS_CYCLE_ACE_FILTERING, "the filtering button steps the level"},
+        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_TEXT, PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT,
+         "the crisp text button switches it"},
+        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_READOUT,
+         PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT, "the readout button switches it"},
+        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_NOTICE, PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE,
+         "the game badge button switches it"},
+        {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
+         "Done leaves Ace Mode"},
+        {FLOW_SETTINGS_ACE_OFF, PLAYER_UI_ID_SETTINGS_ACE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ACE,
+         "with Ace Mode off its own button still switches it on"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_LAUNCHER_FULLSCREEN,
          PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN, "the launcher fullscreen button toggles it"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_CONTROLLER, PLAYER_UI_SETTINGS_OPEN_CONTROLLER,
@@ -2586,7 +2645,8 @@ static void test_settings_pages(void) {
                                      FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE,
                                      FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                                      FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
-                                     FLOW_SETTINGS_ACCESSIBILITY};
+                                     FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE,
+                                     FLOW_SETTINGS_ACE_OFF};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -2612,6 +2672,41 @@ static void test_settings_pages(void) {
               strstr(dump, "Animations in Windows: on.\"") != NULL &&
               strstr(dump, "\xE2\x80\xA6\"") == NULL,
           "Accessibility shows each choice and, uncut, what Automatic follows now");
+    /* Ace Mode (src/rt/ace.h): every row with its value and, uncut, what it does and costs;
+       off, the feature rows cannot be changed or focused, and their values are kept. */
+    CHECK(flow_case_fits(FLOW_SETTINGS_ACE, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"ACE MODE: ON\"") != NULL &&
+              strstr(dump, "\"TEXTURE FILTERING: 16X\"") != NULL &&
+              strstr(dump, "\"CRISP SYSTEM TEXT: ON\"") != NULL &&
+              strstr(dump, "\"SPEED READOUT: OFF\"") != NULL &&
+              strstr(dump, "\"GAME BADGE: ON\"") != NULL &&
+              strstr(dump, "keep the filtering.\"") != NULL &&
+              strstr(dump, "Boost") == NULL &&
+              strstr(dump, "\xE2\x80\xA6\"") == NULL,
+          "Ace Mode shows each feature, what it does and what it costs, uncut");
+    {
+        static const NkUiId feature_rows[] = {
+            PLAYER_UI_ID_SETTINGS_ACE_FILTERING, PLAYER_UI_ID_SETTINGS_ACE_TEXT,
+            PLAYER_UI_ID_SETTINGS_ACE_READOUT, PLAYER_UI_ID_SETTINGS_ACE_NOTICE
+        };
+        for (size_t i = 0u; i < sizeof(feature_rows) / sizeof(feature_rows[0]); ++i) {
+            CHECK(activate_flow_button(feature_rows[i], FLOW_SETTINGS_ACE_OFF).kind ==
+                      PLAYER_UI_ACTION_NONE,
+                  "with Ace Mode off a feature row changes nothing");
+        }
+        CHECK(dump_flow_case(FLOW_SETTINGS_ACE_OFF, dump, sizeof(dump)) &&
+                  strstr(dump, "\"ACE MODE: OFF\"") != NULL &&
+                  strstr(dump, "\"TEXTURE FILTERING: 16X\"") != NULL,
+              "with Ace Mode off the features keep their values");
+    }
+    CHECK(flow_case_fits(FLOW_PAGE_TITLE_ACE, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"ACE MODE: ON (LIBRARY DEFAULT)\"") != NULL &&
+              strstr(dump, "the game ran at 30 Hz.") != NULL &&
+              strstr(dump, "\"60 FPS GAME LOGIC: OFF\"") != NULL,
+          "the title page's ENHANCEMENTS card shows Ace Mode, its last session and 60 FPS");
+    CHECK(activate_flow_button(PLAYER_UI_ID_TITLE_ACE, FLOW_PAGE_TITLE_ACE).kind ==
+              PLAYER_UI_ACTION_CYCLE_ACE,
+          "the title page's Ace Mode button steps library default, on, authentic");
     CHECK(dump_flow_case(FLOW_SETTINGS_NOTICES, dump, sizeof(dump)) &&
               strstr(dump, "synthetic-compiler 14.2") != NULL &&
               strstr(dump, "GPL-3.0-or-later; see LICENSE") != NULL,

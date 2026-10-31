@@ -473,6 +473,38 @@ def _linked_branch_into_own_tail() -> tuple[int, ...]:
     ])
 
 
+_A1 = 5
+
+
+def _longjmp_into_live_frame() -> tuple[int, ...]:
+    """setjmp in F, longjmp from G called by F: F's setjmp returns again, v0 = 0x107.
+
+    F saves $sp and $ra in a two-word jmp_buf on its frame, then calls G, which calls
+    longjmp(buf, 7). longjmp reloads $sp and $ra and returns to the word after F's setjmp
+    call with v0 = 7, a call that returned long before; F adds 0x100 and returns. The word
+    after `jal G` (v0 = 0xde0) runs only if G returns normally.
+    """
+    t, g, setjmp, longjmp, done = 0x1020, 0x1044, 0x1060, 0x1070, 0x1034
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x40), _sw(_RA, 0x3C, _SP),        # 0x1010 F
+        _jal(setjmp), _addiu(_A0, _SP, 0x10),                # 0x1018 setjmp(&buf)
+        _i(0x05, _V0, 0, (done - (t + 4)) >> 2), _NOP,       # 0x1020 bne v0, zero, done
+        _jal(g), _addiu(_A0, _SP, 0x10),                     # 0x1028 G(&buf)
+        _addiu(_V0, 0, 0x0DE0),                              # 0x1030 only if G returned
+        _addiu(_V0, _V0, 0x100),                             # 0x1034 done
+        _lw(_RA, 0x3C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x40),
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1044 G
+        _jal(longjmp), _addiu(_A1, 0, 7),                    # 0x104c longjmp(buf, 7)
+        _lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _sw(_SP, 0, _A0), _sw(_RA, 4, _A0),                  # 0x1060 setjmp
+        _jr(_RA), _addu(_V0, 0, 0),
+        _lw(_SP, 0, _A0), _lw(_RA, 4, _A0),                  # 0x1070 longjmp
+        _jr(_RA), _addu(_V0, _A1, 0),
+    ])
+    assert len(words) == (0x1080 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
 def _read_the_pc() -> tuple[int, ...]:
     """`bal .+8` in a frameless body: it only reads the PC (a0 = 0x101c), v0 = 110."""
     return _probe_program([
@@ -1172,6 +1204,40 @@ class GeneratedCallDepthTests(unittest.TestCase):
             results = [_run_depth_probe(exe, n) for n in iterations]
         self.assertTrue(check(results), f"{name}: MUTANT_SURVIVED {results}")
         print(f"{name}: MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED")
+
+    # --- longjmp: a guest return into the body of a live frame --------------------------
+
+    def test_longjmp_returns_into_the_live_setjmp_frame(self):
+        # F's setjmp returns a second time, with longjmp's value, in F's live frame, and F
+        # returns to the harness with its frame released. Before: longjmp's generated return
+        # restored its own entry $sp over the one it loaded, and no live linked call resumes
+        # at the setjmp return, so the run stopped at AOT_RETURN_TARGET_MISMATCH.
+        generated, results = self._probe(_longjmp_into_live_frame(), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 0x107, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self.assertGreater(fields.get("unwinds", 0), 0, output)
+        body = generated[generated.index("void f_00001070(CpuState *s) {"):]
+        body = body[:body.index("\n}")]
+        self.assertNotIn("_sp_entry", body, "longjmp's exits restore its entry $sp")
+
+    def test_longjmp_mutants_fail_for_their_semantic(self):
+        # J1: codegen restores longjmp's entry $sp again: the return no longer reaches F's
+        # frame, so the run stops or F's code runs on G's frame.
+        self._assert_mutant_fails(
+            "J1-longjmp-restores-its-entry-sp", _longjmp_into_live_frame(), (0,),
+            {"codegen.py": ("if w is not None and (w >> 26) == 0x23 and ((w >> 16) & 0x1F) == 29:",
+                            "if False:")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107
+            or r[0][2].get("v1") != _PROBE_SP,
+        )
+        # J2: the runtime does not continue the live frame: the return stops by name.
+        self._assert_mutant_fails(
+            "J2-no-live-frame-continuation", _longjmp_into_live_frame(), (0,),
+            {"recomp.c": ("    if (returned->call_sp > sp) return 0;", "    return 0;")},
+            lambda r: "AOT_RETURN_TARGET_MISMATCH" in r[0][1] and r[0][2].get("v0") != 0x107,
+        )
 
     def test_tail_protocol_mutants_fail_for_their_semantic(self):
         # The last recorded restore wins instead of the first: the caller sees C2's SP.

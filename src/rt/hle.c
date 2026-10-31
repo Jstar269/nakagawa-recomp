@@ -2105,6 +2105,64 @@ static uint32_t started_module_export(uint32_t nid) {
     return 0;
 }
 
+SrVarExport s_var_exports[SR_VAR_EXPORT_MAX];
+unsigned s_var_export_count;
+SrVarLink s_var_links[SR_VAR_LINK_MAX];
+unsigned s_var_link_count;
+
+/* Add `delta` (the address, or its negation to unlink) at every reference; checked first. */
+void var_import_patch(const SrVarImport *imp, uint32_t base, uint32_t delta) {
+    for (uint32_t i = 0; i < imp->nrefs;) {
+        const SrVarImportRef *ref = &imp->refs[i];
+        const uint32_t site = base + ref->site;
+        if (ref->kind == SR_VAR_REF_WORD32) {
+            var_import_write(site, MEM_R32(site) + delta);
+            i++;
+        } else if (ref->kind == SR_VAR_REF_LO16) {
+            const uint32_t word = MEM_R32(site);
+            var_import_write(site, (word & 0xFFFF0000u) | ((var_sext16(word) + delta) & 0xFFFFu));
+            i++;
+        } else {
+            uint32_t end = i;
+            while (imp->refs[end].kind == SR_VAR_REF_HI16) end++;
+            const uint32_t low = var_sext16(MEM_R32(base + imp->refs[end].site));
+            for (; i < end; i++) {
+                const uint32_t hi_site = base + imp->refs[i].site;
+                const uint32_t word = MEM_R32(hi_site);
+                const uint32_t full = ((word & 0xFFFFu) << 16) + low + delta;
+                var_import_write(hi_site, (word & 0xFFFF0000u) | (((full + 0x8000u) >> 16) & 0xFFFFu));
+            }
+        }
+    }
+}
+
+/* An image leaves: its own imports are dropped, every import linked to one of its exported
+ * variables is unlinked (and waits again), and its exports go. */
+void var_owner_remove(uint32_t owner) {
+    unsigned kept = 0;
+    for (unsigned i = 0; i < s_var_link_count; i++) {
+        SrVarLink link = s_var_links[i];
+        if (link.owner == owner) continue;
+        if (link.linked && link.exporter == owner) {
+            var_import_patch(link.imp, link.base, 0u - link.value);
+            link.linked = 0;
+            link.value = link.exporter = 0u;
+        }
+        s_var_links[kept++] = link;
+    }
+    s_var_link_count = kept;
+    kept = 0;
+    for (unsigned i = 0; i < s_var_export_count; i++)
+        if (s_var_exports[i].owner != owner) s_var_exports[kept++] = s_var_exports[i];
+    s_var_export_count = kept;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Selftest seams: the linker's state and its three entry points, driven without a loader. */
+void sr_hle_test_var_reset(void) { s_var_export_count = 0; s_var_link_count = 0; }
+void sr_hle_test_var_owner_remove(uint32_t owner) { var_owner_remove(owner); }
+#endif
+
 /* Retire one image: drop the export authority the kernel would unlink at unload, clear the
  * per-image started flag, release exactly the reservation this image owns, and reclaim the
  * table slot. Only the image's own [base,end) range and its own allocation are touched, so
@@ -2122,6 +2180,7 @@ void unload_prx_image(uint32_t base) {
          * bodies; then the exports and the memory go. */
         if (img.code) sr_module_code_unbind(img.code);
         sr_hle_unregister_late_imports_in_range(img.base, img.end);
+        var_owner_remove(img.base);
         if (img.alloc_uid != 0u && img.alloc_uid != 0xFFFFFFFFu) free_block(img.alloc_uid);
         for (unsigned j = i + 1; j < s_prx_image_count; j++) s_prx_images[j - 1] = s_prx_images[j];
         s_prx_image_count--;

@@ -27,6 +27,7 @@
 #include "title_config.h"
 #include "flight_recorder.h"
 #include "prx_loader.h"
+#include "ace.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -533,6 +534,14 @@ int main(int argc, char **argv) {
     /* Execution share at every exit: the _Exit paths reach it through sr_perf_shutdown. */
     sr_exec_share_arm();
     (void)atexit(sr_exec_share_report);
+    /* Ace Mode (ace.h): SR_ACE is read once, before any renderer or presenter starts, so the
+     * device, the samplers and the present path all see the run's one switch. An Ace run is
+     * stamped in the flight recorder, and its per-run report and exit line are written at an
+     * ordinary exit (exit(), the window closing); a fatal _Exit path writes no report. */
+    if (ace_init_from_env()) {
+        sr_flight_set_enhancements(ace_spec_text());
+        (void)atexit(ace_finish);
+    }
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--expect-u32", 12) != 0) continue;

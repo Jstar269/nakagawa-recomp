@@ -130,6 +130,12 @@ struct PlayerUiNk {
     char settings_controller[160];
     char settings_interface_size[16];
     char settings_saves[NK_MAX_PATH];
+    /* Ace Mode on the open title's page: what it turns on, and its last session, read at
+       most every two seconds (the runtime writes the report when a game ends). */
+    char ace_line[200];
+    char ace_last_session[200];
+    char ace_last_disc[NK_MAX_DISC_ID_LEN];
+    double ace_last_read_s;
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
     /* The factory reset check's folders, looked up when the check opens. */
     char reset_folders[PLAYER_UI_RESET_FOLDERS][NK_MAX_PATH];
@@ -419,7 +425,8 @@ static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
            view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES ||
-           view == VIEW_CONFIRM_FACTORY_RESET || view == VIEW_ACCESSIBILITY_SETTINGS;
+           view == VIEW_CONFIRM_FACTORY_RESET || view == VIEW_ACCESSIBILITY_SETTINGS ||
+           view == VIEW_ACE_SETTINGS;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -751,6 +758,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     switch (app->active_view) {
         case VIEW_ONLINE_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ONLINE; break;
         case VIEW_ACCESSIBILITY_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY; break;
+        case VIEW_ACE_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ACE; break;
         case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
@@ -795,6 +803,11 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.volume = app->settings.master_volume;
     model.ui_sounds = app->settings.ui_sounds;
     model.launcher_fullscreen = app->settings.launcher_fullscreen;
+    model.ace_enabled = app->settings.ace.enabled;
+    model.ace_filtering = player_ace_filtering_label(app->settings.ace.af);
+    model.ace_text = app->settings.ace.text;
+    model.ace_readout = app->settings.ace.readout;
+    model.ace_notice = app->settings.ace.notice;
     if (app->settings.interface_size_pct > 0) {
         snprintf(player->settings_interface_size, sizeof(player->settings_interface_size), "%d%%",
                  app->settings.interface_size_pct);
@@ -1324,6 +1337,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 focus = player->last_view == VIEW_ONLINE_SETTINGS ? PLAYER_UI_ID_SETTINGS_ONLINE
                     : player->last_view == VIEW_ACCESSIBILITY_SETTINGS
                         ? PLAYER_UI_ID_SETTINGS_ACCESSIBILITY
+                    : player->last_view == VIEW_ACE_SETTINGS ? PLAYER_UI_ID_SETTINGS_ACE_OPEN
                     : player->last_view == VIEW_PREREQ_ABOUT ? PLAYER_UI_ID_SETTINGS_NOTICES
                     : player->last_view == VIEW_BUILD_CACHE ||
                             player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
@@ -1376,6 +1390,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_ACCESSIBILITY_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE; break;
+            case VIEW_ACE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ACE_MODE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS:
             /* The safe answer, Keep everything, has the focus. */
@@ -1751,6 +1766,71 @@ static const char *player_ui_library_status_marker(const GameRecord *game,
     return "▲";
 }
 
+/* Ace Mode on a title (src/rt/ace.h): the library card's badge, and for the open title the
+   ENHANCEMENTS card's button, its line and the last session's line. */
+static void player_ui_title_ace(PlayerUiNk *player, const PlayerApp *app, int index,
+                                PlayerUiTitle *out) {
+    const GameRecord *game = &app->games[index];
+    PlayerAceResolved ace;
+    player_ace_resolve(&app->settings, game->disc_id, &ace);
+    out->ace_shown = !out->is_demo;
+    out->ace_in_effect = ace.on;
+    out->ace_badge = ace.on && !out->is_demo;
+    out->ace_label = ace.mode == PLAYER_ACE_TITLE_ON ? "Ace Mode: On"
+                   : ace.mode == PLAYER_ACE_TITLE_AUTHENTIC ? "Ace Mode: Authentic"
+                   : ace.on ? "Ace Mode: On (library default)" : "Ace Mode: Off (library default)";
+    out->ace_enabled = out->ace_shown && !app->launch_pending && !app->is_game_running &&
+        !(app->build_session.is_building &&
+          strcmp(app->build_session.disc_id, game->disc_id) == 0);
+    out->ace_line = "";
+    out->ace_last_session = "";
+    if (ace.mode == PLAYER_ACE_TITLE_AUTHENTIC) {
+        /* #1272's one Authentic switch: the 60 FPS game logic is off while it is chosen. */
+        out->enhancement_enabled = false;
+        out->enhancement_on = false;
+    }
+    if (index != app->selected_game_index || !out->ace_shown) return;
+    if (ace.mode == PLAYER_ACE_TITLE_AUTHENTIC) {
+        out->ace_line = out->enhancement_shown
+            ? "Plays exactly as released, with no enhancements. 60 FPS game logic is off while "
+              "Authentic is chosen."
+            : "Plays exactly as released, with no enhancements.";
+    } else if (!ace.on) {
+        out->ace_line = "Off: Ace Mode is off for the library. On turns it on for this game alone.";
+    } else {
+        char words[160] = "";
+        size_t used = 0;
+        const char *parts[4];
+        size_t count = 0;
+        char filtering[24];
+        if (ace.af > 0) {
+            snprintf(filtering, sizeof(filtering), "%dx texture filtering", ace.af);
+            parts[count++] = filtering;
+        }
+        if (ace.text) parts[count++] = "crisp keyboard";
+        if (ace.readout) parts[count++] = "speed readout";
+        if (ace.notice) parts[count++] = "game badge";
+        for (size_t i = 0; i < count; i++) {
+            int n = snprintf(words + used, sizeof(words) - used, "%s%s", i ? ", " : "", parts[i]);
+            if (n < 0 || used + (size_t)n >= sizeof(words)) break;
+            used += (size_t)n;
+        }
+        snprintf(player->ace_line, sizeof(player->ace_line), "On for this game: %s.",
+                 count ? words : "no features are chosen");
+        out->ace_line = player->ace_line;
+    }
+    {
+        double now_s = (double)SDL_GetTicksNS() / 1000000000.0;
+        if (strcmp(player->ace_last_disc, game->disc_id) != 0 || now_s - player->ace_last_read_s >= 2.0) {
+            snprintf(player->ace_last_disc, sizeof(player->ace_last_disc), "%s", game->disc_id);
+            player->ace_last_read_s = now_s;
+            (void)player_app_ace_last_session(app, index, player->ace_last_session,
+                                              sizeof(player->ace_last_session));
+        }
+        out->ace_last_session = player->ace_last_session;
+    }
+}
+
 static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
                                                    const PlayerApp *app,
                                                    int index,
@@ -1928,6 +2008,7 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
                                        : "Its enhancement package is missing.")
             : "";
     }
+    player_ui_title_ace(player, app, index, out);
     out->primary_action_enabled = false;
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
     if (app->launch_pending) {
@@ -2611,6 +2692,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                     player_app_set_title_60hz(app, index,
                                               !player->titles[index].enhancement_on);
                 }
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_CYCLE_ACE) {
+                if (player->titles[index].ace_enabled) player_app_cycle_title_ace_mode(app, index);
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TITLE) {
                 if (player_ui_open_remove(player, app, index)) {

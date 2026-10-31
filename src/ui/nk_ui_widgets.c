@@ -615,8 +615,22 @@ bool nk_ui_tile(NkUi *ui, NkUiId id, const NkUiTileSpec *spec) {
                        0u, NK_UI_RADIUS_TILE);
     style.square_corners = NK_UI_CORNER_SQUARE_BL | NK_UI_CORNER_SQUARE_BR;
     if (nk_ui_begin_container(ui, nk_ui_child_id(id, 1u), &layout, &style)) {
-        nk_ui_badge(ui, nk_ui_child_id(id, 2u),
-                    spec->badge != NULL && spec->badge[0] != '\0' ? spec->badge : "Your disc");
+        const char *badge = spec->badge != NULL && spec->badge[0] != '\0' ? spec->badge : "Your disc";
+        if (spec->badge_right != NULL && spec->badge_right[0] != '\0') {
+            /* The second badge sits at the top right, on the row of the first. */
+            NkUiLayout badges = nk_ui_row(nk_ui_grow(), nk_ui_fit(), NK_UI_SPACE_2);
+            if (nk_ui_begin_container(ui, nk_ui_child_id(id, 11u), &badges, NULL)) {
+                NkUiLayout gap = nk_ui_row(nk_ui_grow(), nk_ui_fixed(1.0f), 0.0f);
+                nk_ui_badge(ui, nk_ui_child_id(id, 2u), badge);
+                if (nk_ui_begin_container(ui, nk_ui_child_id(id, 12u), &gap, NULL)) {
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_badge(ui, nk_ui_child_id(id, 13u), spec->badge_right);
+                nk_ui_end_container(ui);
+            }
+        } else {
+            nk_ui_badge(ui, nk_ui_child_id(id, 2u), badge);
+        }
         nk_ui_art_content(ui, nk_ui_child_id(id, 3u), spec->art, spec->icon, NULL,
                           art_h - NK_UI_SPACE_2 * 2.0f -
                               nk_ui_chip_height(ui, NK_UI_BADGE_HEIGHT, NK_UI_TYPE_MICRO),

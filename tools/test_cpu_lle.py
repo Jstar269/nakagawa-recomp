@@ -814,6 +814,7 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
                 "recomp.c", "sched.c", "sr_coro.c", "nested_frames.c",
                 "flight_recorder.c", "guest_interp.c", "cpu_lle.c",
                 "domain_mode.c", "stale_code.c", "vfpu_tables.c", "perf.c",
+                "ace.c",
             )
             for name in production_sources:
                 obj = work / (Path(name).stem + ".o")

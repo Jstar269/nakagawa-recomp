@@ -57,6 +57,7 @@
 #include "vfpu_tables.h" /* sr_vfpu_sha256(): enhancement data-file digests */
 #include "prx_loader.h"  /* clean-room PRX image loader (G3) */
 #include "flight_recorder.h"
+#include "ace.h"            /* Ace Mode: the 30 Hz detector sees every flip (Ace on only) */
 #include "psmf_producer.h" /* bounded project-authored PSMF/MPEG-PS AU producer */
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
 #include "ge_shared.h"      /* GE state snapshot for headless VRAM diagnostics */
@@ -352,6 +353,27 @@ typedef struct {
     int started;
     const SrModuleCode *code;   /* translation bound at base (guest-placed images only) */
 } PrxImage;
+#define SR_VAR_EXPORT_MAX 1024u
+#define SR_VAR_LINK_MAX 4096u
+#define SR_VAR_REF_WORD32 2u
+#define SR_VAR_REF_HI16 5u
+#define SR_VAR_REF_LO16 6u
+
+typedef struct {
+    char lib[SR_PRX_LIBNAME_LEN];
+    uint32_t nid;
+    uint32_t addr;
+    uint32_t owner;        /* image base of the exporting module */
+} SrVarExport;
+
+typedef struct {
+    const SrVarImport *imp;
+    uint32_t base;         /* added to each site: the importer's bind base, 0 for absolute */
+    uint32_t owner;        /* image base of the importer, SR_VAR_OWNER_MAIN for the main image */
+    uint32_t value;        /* the address linked in, while linked */
+    uint32_t exporter;     /* the exporting module's image base, while linked */
+    int linked;
+} SrVarLink;
 #define SCE_ERROR_MODULE_BAD_ID             0x80111101u
 #define SCE_ERROR_MODULE_ALREADY_LOADED     0x80111102u
 enum { PSMF_TRACK_VIDEO = 0, PSMF_TRACK_AUDIO = 1, PSMF_TRACKS = 2 };
@@ -1171,6 +1193,12 @@ extern PrxImage s_prx_images[HLE_MAX_LOADED_MODULES];
 extern unsigned s_prx_image_count;
 extern atomic_int s_prx_started_count;
 void mark_module_started(uint32_t entry);
+extern SrVarExport s_var_exports[SR_VAR_EXPORT_MAX];
+extern unsigned s_var_export_count;
+extern SrVarLink s_var_links[SR_VAR_LINK_MAX];
+extern unsigned s_var_link_count;
+void var_import_patch(const SrVarImport *imp, uint32_t base, uint32_t delta);
+void var_owner_remove(uint32_t owner);
 void unload_prx_image(uint32_t base);
 int prx_image_bounds(uint32_t base, uint32_t *start_out, uint32_t *end_out);
 extern uint32_t s_psmfplayer_lib_version;
@@ -1571,6 +1599,17 @@ static inline int sreg_sync_file(FILE *f) {
 #else
     return fsync(fileno(f)) == 0;
 #endif
+}
+
+static inline uint32_t var_sext16(uint32_t word) { return (uint32_t)(int32_t)(int16_t)(word & 0xFFFFu); }
+
+static inline void var_import_write(uint32_t site, uint32_t word) {
+    MEM_W32(site, word);
+    if (sr_stale_enabled()) {
+        /* A loader patch, not a code overwrite: the patched word is the expected one now. */
+        sr_stale_forget_range(site, 4u);
+        sr_stale_register_word(site, word);
+    }
 }
 
 static inline int64_t psmf_av_x9_to_us(int64_t x9) { return (x9 >= 0 ? x9 + 4 : x9 - 4) / 9; }

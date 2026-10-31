@@ -846,6 +846,88 @@ def _cell_nonlocal_mid() -> list[int]:
     ]
 
 
+def _cell_lj() -> list[int]:
+    """longjmp into a live frame (#1034): the call into lj_f resumes here exactly once.
+
+    lj_f saves $sp and $ra with setjmp (lj_set, reached through `jalr`, so lane MIXED can
+    leave it to the interpreter), then calls lj_g, which calls longjmp (lj_jmp) with 7.
+    longjmp reloads lj_f's $sp and $ra and returns to the word after lj_f's setjmp call:
+    setjmp returns a second time, inside lj_f's live frame, and lj_f returns here. Every
+    lane must end with v0 = 7 + 0x100 + 0x1000 and a balanced $sp.
+    """
+    return [
+        _i(0x09, SP, SP, -16),              # 0x00 addiu sp, sp, -16
+        _i(0x2B, SP, RA, 12),               # 0x04 sw    ra, 12(sp)
+        _j(0x03, 0x00),                     # 0x08 jal   lj_f (patched + relocated)
+        NOP,                                # 0x0c delay slot
+        _i(0x09, V0, V0, 0x1000),           # 0x10 continuation: runs once
+        _i(0x23, SP, RA, 12),               # 0x14 lw    ra, 12(sp)
+        JR_RA,                              # 0x18
+        _i(0x09, SP, SP, 16),               # 0x1c addiu sp, sp, 16 (return slot)
+    ]
+
+
+def _cell_lj_f() -> list[int]:
+    """The setjmp frame: its setjmp returns 0, then 7 through longjmp from lj_g."""
+    return [
+        _i(0x09, SP, SP, -0x40),            # 0x00 addiu sp, sp, -0x40
+        _i(0x2B, SP, RA, 0x3C),             # 0x04 sw    ra, 0x3c(sp)
+        _i(0x0F, 0, T0, 0),                 # 0x08 lui   t0, %hi(lj_set) (patched)
+        _i(0x0D, T0, T0, 0),                # 0x0c ori   t0, t0, %lo(lj_set)
+        _r(T0, 0, RA, 0, 0x09),             # 0x10 jalr  ra, t0  setjmp(&buf)
+        _i(0x09, SP, A0, 0x10),             # 0x14 addiu a0, sp, 0x10 (slot: the jmp_buf)
+        _i(0x05, V0, ZERO, 4),              # 0x18 bne   v0, zero, 0x2c (second return)
+        NOP,                                # 0x1c slot
+        _j(0x03, 0x00),                     # 0x20 jal   lj_g (patched + relocated)
+        _i(0x09, SP, A0, 0x10),             # 0x24 addiu a0, sp, 0x10 (slot)
+        _i(0x09, ZERO, V0, 0x0DE0),         # 0x28 runs only if lj_g returned normally
+        _i(0x09, V0, V0, 0x100),            # 0x2c addiu v0, v0, 0x100
+        _i(0x23, SP, RA, 0x3C),             # 0x30 lw    ra, 0x3c(sp)
+        JR_RA,                              # 0x34
+        _i(0x09, SP, SP, 0x40),             # 0x38 addiu sp, sp, 0x40 (return slot)
+    ]
+
+
+def _cell_lj_g() -> list[int]:
+    """Calls longjmp(buf, 7); its own continuation never runs."""
+    return [
+        _i(0x09, SP, SP, -0x20),            # 0x00 addiu sp, sp, -0x20
+        _i(0x2B, SP, RA, 0x1C),             # 0x04 sw    ra, 0x1c(sp)
+        _j(0x03, 0x00),                     # 0x08 jal   lj_jmp (patched + relocated)
+        _i(0x09, ZERO, A1, 7),              # 0x0c addiu a1, zero, 7 (slot)
+        _i(0x23, SP, RA, 0x1C),             # 0x10 lw    ra, 0x1c(sp) (never reached)
+        JR_RA,                              # 0x14
+        _i(0x09, SP, SP, 0x20),             # 0x18 addiu sp, sp, 0x20
+    ]
+
+
+def _cell_lj_set() -> list[int]:
+    """setjmp: save the caller's $sp and $ra in the two-word jmp_buf at a0, return 0.
+
+    Its small frame gives it an entry's shape, so the analyzer finds it as the target
+    of the `la` lj_f calls through, and lane MIXED has a native body to leave out.
+    """
+    return [
+        _i(0x09, SP, SP, -8),               # 0x00 addiu sp, sp, -8
+        _i(0x09, SP, T1, 8),                # 0x04 addiu t1, sp, 8 (the caller's $sp)
+        _i(0x2B, A0, T1, 0),                # 0x08 sw    t1, 0(a0)
+        _i(0x2B, A0, RA, 4),                # 0x0c sw    ra, 4(a0)
+        _i(0x09, SP, SP, 8),                # 0x10 addiu sp, sp, 8
+        JR_RA,                              # 0x14
+        _r(ZERO, ZERO, V0, 0, 0x21),        # 0x18 addu  v0, zero, zero (slot)
+    ]
+
+
+def _cell_lj_jmp() -> list[int]:
+    """longjmp: reload $sp and $ra from the jmp_buf at a0, return a1 to setjmp's caller."""
+    return [
+        _i(0x23, A0, SP, 0),                # 0x00 lw    sp, 0(a0)
+        _i(0x23, A0, RA, 4),                # 0x04 lw    ra, 4(a0)
+        JR_RA,                              # 0x08
+        _r(A1, ZERO, V0, 0, 0x21),          # 0x0c addu  v0, a1, zero (slot)
+    ]
+
+
 def _cell_nonlocal_exit() -> list[int]:
     """Return for the middle function: restore its $ra and $sp, return to its caller.
 
@@ -1503,6 +1585,11 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("nonlocal", "guest return past its caller to an enclosing call", _cell_nonlocal),
     ("nonlocal_mid", "linked call whose callee returns past it", _cell_nonlocal_mid),
     ("nonlocal_exit", "exit block that returns for the middle frame", _cell_nonlocal_exit),
+    ("lj", "longjmp into a live frame: the setjmp frame returns once", _cell_lj),
+    ("lj_f", "the setjmp frame a longjmp returns into", _cell_lj_f),
+    ("lj_g", "a call whose callee longjmps past it", _cell_lj_g),
+    ("lj_set", "setjmp: saves $sp and $ra", _cell_lj_set),
+    ("lj_jmp", "longjmp: reloads $sp and $ra", _cell_lj_jmp),
     ("imm", "immediate ALU forms", _cell_imm),
     ("alu_more", "variable shifts, nor, add/sub, clz/clo, max/min", _cell_alu_more),
     ("muldiv", "div/divu, HI/LO moves and multiply-accumulate", _cell_muldiv),
@@ -1544,7 +1631,7 @@ CELLS: tuple[tuple[str, str, object], ...] = (
 NON_ENTRY_CELLS = frozenset(
     {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread", "fpu_aot",
      "xnestmid", "xnestleaf", "rarewrite_callee", "rarewrite_target", "nonlocal_mid",
-     "nonlocal_exit"}
+     "nonlocal_exit", "lj_f", "lj_g", "lj_set", "lj_jmp"}
 )
 
 # Discovered so codegen emits a native body, but entered only by the independent
@@ -1563,6 +1650,7 @@ CROSS_TIER_OMISSIONS: dict[str, str] = {
     "xcall": "xstore",
     "xtail": "xtailmid",
     "xnest": "xnestmid",
+    "lj": "lj_set",
 }
 
 # The trampoline is deliberately NOT called from the fixture entry: nothing in
@@ -1671,6 +1759,7 @@ def build_text_segment() -> bytes:
         ("xtail", 0x04, xtailmid),
         ("xnest", 0x0C, xnestmid),
         ("xnestmid", 0x08, xnestleaf),
+        ("lj_f", 0x08, BASE + layout["lj_set"][0]),
         ("linkr", 0x0C, leaf_a),
         ("jrslot", 0x0C, leaf_a),
         ("jrslot", 0x14, leaf_b),
@@ -1708,6 +1797,8 @@ def build_text_segment() -> bytes:
     struct.pack_into(
         "<I", text, layout["nonlocal_mid"][0] + 0x0C, _j(0x03, layout["nonlocal_exit"][0])
     )
+    for cell, at, callee in (("lj", 0x08, "lj_f"), ("lj_f", 0x20, "lj_g"), ("lj_g", 0x08, "lj_jmp")):
+        struct.pack_into("<I", text, layout[cell][0] + at, _j(0x03, layout[callee][0]))
     for slot in (0x10, 0x18):  # zlink's bltzal / bgezal reach leaf A
         branch = layout["zlink"][0] + slot
         word = struct.unpack_from("<I", text, branch)[0]

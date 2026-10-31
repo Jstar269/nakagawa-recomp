@@ -31,7 +31,6 @@ uint64_t sr_unix_time_to_filetime_ticks(int64_t sec, long nsec) {
 
 #ifdef _WIN32
 void sr_host_sleep_ms(uint32_t ms) { Sleep(ms); }
-uint64_t sr_host_monotonic_ms(void) { return GetTickCount64(); }
 /* 100 ns ticks since 1601-01-01, the same unit FILETIME carries, so the RTC
  * epoch arithmetic below is unchanged. */
 uint64_t sr_host_filetime_ticks(void) {
@@ -48,11 +47,6 @@ void sr_host_sleep_ms(uint32_t ms) {
     ts.tv_sec = (time_t)(ms / 1000u);
     ts.tv_nsec = (long)(ms % 1000u) * 1000000L;
     while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { }
-}
-uint64_t sr_host_monotonic_ms(void) {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0u;
-    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
 }
 /* CLOCK_REALTIME is seconds since 1970-01-01; scaled here into the same
  * 100 ns-since-1601 unit FILETIME carries so RTC_FILETIME_EPOCH_TICK stays the
