@@ -8,6 +8,7 @@
 
 #include "overlay_host.h"
 
+#include "nk_platform.h"
 #include "nk_ui_input.h"
 #include "nk_ui_theme.h"
 #include "backend/nk_ui_sdlr.h"
@@ -218,8 +219,14 @@ bool nk_overlay_host_event(NkOverlayHost *host, const SDL_Event *event) {
 bool nk_overlay_host_due(const NkOverlayHost *host, double now_s) {
     double at = 0.0;
     if (host == NULL || !host->state.open) return false;
-    if (host->page_frames < 2) return true;
+    if (host->page_frames < 2 || nk_ui_in_motion(host->ui)) return true;
     return nk_ui_input_next_wake(&host->input.input, &at) && now_s >= at;
+}
+
+bool nk_overlay_reduce_motion(const char *choice, bool system) {
+    if (choice != NULL && strcmp(choice, "on") == 0) return true;
+    if (choice != NULL && strcmp(choice, "off") == 0) return false;
+    return system;
 }
 
 bool nk_overlay_host_draw(NkOverlayHost *host, SDL_Renderer *renderer, float display_scale,
@@ -253,9 +260,9 @@ bool nk_overlay_host_draw(NkOverlayHost *host, SDL_Renderer *renderer, float dis
     scale = nk_ui_scale_for_viewport(&host->viewport);
     memset(&prefs, 0, sizeof(prefs));
     prefs.prompt_style = nk_ui_input_prompt_style(&host->input.input);
-    /* The runtime is not told the player's Reduce motion choice, so the
-       overlay never eases: a cut is right for everyone, a move is not. */
-    prefs.reduce_motion = true;
+    /* The player's choice, or with it on Automatic the system's setting as it is now. */
+    prefs.reduce_motion = nk_overlay_reduce_motion(getenv("SR_REDUCE_MOTION"),
+                                                   nk_platform_prefers_reduced_motion());
     nk_ui_set_prefs(host->ui, &prefs);
     nk_ui_sdl_input_set_event_scale(&host->input,
                                     (pixels_per_point > 0.0f ? pixels_per_point

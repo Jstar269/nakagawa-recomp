@@ -178,8 +178,21 @@ static void key_group(const int *keys, bool *taken, size_t count, const char *co
     key_words_add(words, list, word);
 }
 
+/* Adds a binding's keys to the list, each once, in order. */
+static void keys_collect(int *keys, size_t *count, const NkKeyBinding *binding) {
+    const int slots[2] = {binding->primary, binding->secondary};
+    size_t i;
+    for (i = 0; i < 2u; ++i) {
+        if (nk_host_key_name(slots[i]) != NULL && !key_listed(keys, *count, slots[i])) {
+            keys[(*count)++] = slots[i];
+        }
+    }
+}
+
+/* The keys of the PSP buttons in `bits`, or with `stick` the analog stick's four
+   keys (#1299), up, down, left and right. */
 static void describe_keys(NameList *list, KeyWords *words, const NkInputProfile *profile,
-                          uint32_t bits) {
+                          uint32_t bits, bool stick) {
     static const char *const k_arrows[] = {"up", "down", "left", "right"};
     static const char *const k_shift[] = {"lshift", "rshift"};
     static const char *const k_ctrl[] = {"lctrl", "rctrl"};
@@ -189,14 +202,12 @@ static void describe_keys(NameList *list, KeyWords *words, const NkInputProfile 
     size_t count = 0u;
     size_t i;
     int b;
+    if (stick) {
+        for (b = 0; b < NK_PSP_STICK_DIR_COUNT; ++b) keys_collect(keys, &count, &profile->stick_keys[b]);
+    }
     for (b = 0; b < NK_PSP_BTN_COUNT; ++b) {
-        const int slots[2] = {profile->psp_keys[b].primary, profile->psp_keys[b].secondary};
         if ((k_psp_bits[b] & bits) == 0u) continue;
-        for (i = 0; i < 2u; ++i) {
-            if (nk_host_key_name(slots[i]) != NULL && !key_listed(keys, count, slots[i])) {
-                keys[count++] = slots[i];
-            }
-        }
+        keys_collect(keys, &count, &profile->psp_keys[b]);
     }
     memset(taken, 0, sizeof(taken));
     key_group(keys, taken, count, k_arrows, 4u, "Arrow keys", words, list);
@@ -252,7 +263,7 @@ void nk_overlay_describe_controls(NkOverlayControls *out, const NkInputProfile *
         memset(&keyboard, 0, sizeof(keyboard));
         memset(&controller, 0, sizeof(controller));
         memset(&words, 0, sizeof(words));
-        if (!spec->stick) describe_keys(&keyboard, &words, keymap, spec->bits);
+        describe_keys(&keyboard, &words, keymap, spec->bits, spec->stick != 0);
         if (profile != NULL && spec->stick) {
             name_add(&controller, axis_stick_name(profile->axes[NK_PSP_AXIS_ANALOG_X].host_axis));
             name_add(&controller, axis_stick_name(profile->axes[NK_PSP_AXIS_ANALOG_Y].host_axis));

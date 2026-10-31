@@ -449,6 +449,292 @@ static void test_picture_watch(void) {
           "watch: an unreported stretch ends without RESUMED");
 }
 
+/* The probe's result through the host service (synchronous) and through the deferred GPU
+ * route (recorded, deferred, then published); both must give the same brightest byte. */
+static uint32_t probe_via_host(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
+                               sr_cap_order order) {
+    uint32_t b = 999u;
+    CHECK(sr_capture_arm_probe() == 1, "pinned: host arm");
+    CHECK(sr_capture_serve_host(px, w, h, row_bytes, order) == 1, "pinned: host service");
+    CHECK(sr_capture_probe_take(&b) == 1, "pinned: host result");
+    return b;
+}
+
+static uint32_t probe_via_deferred(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
+                                   sr_cap_order order) {
+    uint32_t b = 999u;
+    CHECK(sr_capture_arm_probe() == 1, "pinned: deferred arm");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, w, h);
+    sr_capture_probe_defer();
+    CHECK(sr_capture_probe_in_flight() == 1, "pinned: deferred in flight");
+    CHECK(sr_capture_publish_probe(px, row_bytes, order) == 1, "pinned: deferred publish");
+    CHECK(sr_capture_probe_take(&b) == 1, "pinned: deferred result");
+    return b;
+}
+
+/* The probe's result is pinned on a table of frames: the brightest of the three colour bytes,
+ * never the ignored byte or row padding, in either byte order, at the 4x frame size. */
+static void test_probe_result_pinned(void) {
+    static uint8_t big[2048u * 1088u * 4u];
+    static uint8_t small[16u * 4u * 6u];   /* 6 rows of 16 bytes: 3 pixels + 4 bytes padding */
+    const uint32_t row = 16u;
+    struct { const char *name; uint32_t px, byte; uint8_t value; uint32_t want; } cases[] = {
+        { "all zero", 0u, 0u, 0u, 0u },
+        { "dark maximum in the last pixel", 5u * 3u + 2u, 0u, 8u, 8u },
+        { "byte 1", 7u, 1u, 77u, 77u },
+        { "byte 2", 4u, 2u, 200u, 200u },
+        { "first-row 255", 1u, 2u, 255u, 255u },
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        memset(small, 0, sizeof small);
+        for (uint32_t y = 0; y < 6u; y++) {
+            for (uint32_t x = 0; x < 3u; x++) small[y * row + x * 4u + 3u] = 0xffu;  /* ignored */
+            memset(small + y * row + 12u, 0xff, 4u);                                  /* padding */
+        }
+        uint32_t p = cases[c].px;
+        small[(p / 3u) * row + (p % 3u) * 4u + cases[c].byte] = cases[c].value;
+        for (int o = 0; o < 2; o++) {
+            sr_cap_order order = o ? SR_CAP_ORDER_RGBX : SR_CAP_ORDER_BGRX;
+            uint32_t h = probe_via_host(small, 3u, 6u, row, order);
+            uint32_t d = probe_via_deferred(small, 3u, 6u, row, order);
+            if (h != cases[c].want || d != cases[c].want)
+                fprintf(stderr, "  pinned case '%s': host %u deferred %u, want %u\n",
+                        cases[c].name, h, d, cases[c].want);
+            CHECK(h == cases[c].want && d == cases[c].want, "pinned: brightest byte");
+        }
+    }
+    /* A 4x dark frame whose only non-zero colour byte is the last pixel's: a full scan. */
+    memset(big, 0, sizeof big);
+    for (size_t i = 0; i < 2048u * 1088u; i++) big[i * 4u + 3u] = 0xffu;
+    big[sizeof big - 4u] = 8u;
+    CHECK(probe_via_host(big, 2048u, 1088u, 2048u * 4u, SR_CAP_ORDER_RGBX) == 8u,
+          "pinned: 4x dark frame, host");
+    CHECK(probe_via_deferred(big, 2048u, 1088u, 2048u * 4u, SR_CAP_ORDER_RGBX) == 8u,
+          "pinned: 4x dark frame, deferred");
+}
+
+static int s_resolver_calls, s_resolver_blocking;
+static int s_resolver_finish;  /* what the test resolver does: 1 publish, 0 still running */
+static int test_resolver(int block) {
+    static const uint8_t frame[8] = { 0u, 0u, 9u, 0xffu, 0u, 0u, 0u, 0u };
+    s_resolver_calls++;
+    if (block) s_resolver_blocking++;
+    if (!block && !s_resolver_finish) return 0;
+    (void)sr_capture_publish_probe(frame, 8u, SR_CAP_ORDER_BGRX);
+    return 1;
+}
+
+/* The deferred probe protocol: the capture slot is free while a probe is in flight, a second
+ * probe is refused, the result arrives once, and a dropped or invalid probe has none. */
+static void test_deferred_probe(void) {
+    char path[600];
+    uint32_t b = 0u;
+    out_path(path, sizeof path, "while_probe_in_flight.ppm");
+    remove(path);
+    CHECK(sr_capture_pending_is_probe() == 0, "deferred: nothing pending");
+    CHECK(sr_capture_arm_probe() == 1, "deferred: arm");
+    CHECK(sr_capture_pending_is_probe() == 1, "deferred: the armed request is a probe");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, 2u, 1u);
+    CHECK(sr_capture_is_recorded() && sr_capture_pending_is_probe(), "deferred: recorded probe");
+    sr_capture_probe_defer();
+    CHECK(sr_capture_probe_in_flight() == 1, "deferred: in flight");
+    CHECK(!sr_capture_is_armed() && !sr_capture_is_recorded(), "deferred: the slot is free");
+    CHECK(sr_capture_probe_take(&b) == 0, "deferred: no result while in flight");
+    CHECK(sr_capture_arm_probe() == 0, "deferred: a second probe is refused while one is in flight");
+    CHECK(sr_capture_arm(path) == 1, "deferred: a file capture is accepted while a probe is in flight");
+    CHECK(sr_capture_pending_is_probe() == 0, "deferred: the armed request is a file capture");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1 &&
+          ppm_matches(path, PSP_W, PSP_H, s_frame_rgb),
+          "deferred: the file capture publishes exactly while the probe is in flight");
+    CHECK(sr_capture_probe_take(&b) == 0, "deferred: the file capture gave the probe no result");
+
+    /* Polling: nothing happens without a resolver; with one, a running readback stays in
+     * flight on a non-blocking poll and a blocking poll finishes it. */
+    CHECK(sr_capture_probe_poll(1) == 0 && sr_capture_probe_in_flight(), "deferred: no resolver");
+    sr_capture_set_probe_resolver(test_resolver);
+    s_resolver_finish = 0;
+    CHECK(sr_capture_probe_poll(0) == 0 && sr_capture_probe_in_flight(),
+          "deferred: a running readback stays in flight");
+    CHECK(sr_capture_probe_poll(1) == 1 && !sr_capture_probe_in_flight(),
+          "deferred: a blocking poll finishes it");
+    CHECK(sr_capture_probe_take(&b) == 1 && b == 9u, "deferred: the published result");
+    CHECK(sr_capture_probe_take(&b) == 0, "deferred: taken once");
+    CHECK(sr_capture_probe_poll(1) == 0, "deferred: nothing left to poll");
+    sr_capture_set_probe_resolver(NULL);
+
+    /* A dropped probe has no result; an invalid pixel description fails it without one. */
+    CHECK(sr_capture_arm_probe() == 1, "deferred: arm again");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, 2u, 1u);
+    sr_capture_probe_defer();
+    sr_capture_probe_drop("test drop");
+    CHECK(!sr_capture_probe_in_flight() && sr_capture_probe_take(&b) == 0,
+          "deferred: a dropped probe has no result");
+    CHECK(sr_capture_arm_probe() == 1, "deferred: arm after a drop");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, 2u, 1u);
+    sr_capture_probe_defer();
+    CHECK(sr_capture_publish_probe(s_frame, 4u, SR_CAP_ORDER_BGRX) == -1 &&
+          !sr_capture_probe_in_flight() && sr_capture_probe_take(&b) == 0,
+          "deferred: a short row fails the probe with no result");
+    CHECK(sr_capture_publish_probe(s_frame, 8u, SR_CAP_ORDER_BGRX) == 0,
+          "deferred: publishing with nothing in flight does nothing");
+
+    /* Deferring applies only to a recorded probe: a recorded file capture keeps its state. */
+    CHECK(sr_capture_arm(path) == 1, "deferred: file arm");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, PSP_W, PSP_H);
+    sr_capture_probe_defer();
+    CHECK(sr_capture_is_recorded() && !sr_capture_probe_in_flight(),
+          "deferred: a recorded file capture is not deferred");
+    CHECK(sr_capture_publish_recorded(s_frame, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "deferred: the file capture still publishes");
+    remove(path);
+}
+
+/* ---- deferred watch against the synchronous one -------------------------------------
+ * The reference feeds every probe result at its present, as display_present_active did when
+ * the presenter waited for the readback. The deferred side follows hle.c's present and
+ * VBLANK steps exactly: collect without waiting, collect with waiting only when the next
+ * probe is due or sr_picture_watch_tick_needs_probe() says so, then tick. Readbacks finish
+ * after random delays, mostly a few VBLANKs and sometimes more than a report period. Both
+ * must emit the same probes, RESUMED verdicts and reports, with the same values, in the same
+ * order. */
+typedef struct { char kind; uint32_t key, value; } WatchEvent;
+#define WATCH_EVENTS_MAX 8192
+static WatchEvent s_ref_ev[WATCH_EVENTS_MAX], s_def_ev[WATCH_EVENTS_MAX];
+static int s_ref_n, s_def_n;
+static uint32_t s_sim_now, s_sim_ready, s_sim_brightest;
+static int s_sim_blocking;
+
+static void watch_log(WatchEvent *ev, int *n, char kind, uint32_t key, uint32_t value) {
+    if (*n < WATCH_EVENTS_MAX) {
+        ev[*n].kind = kind;
+        ev[*n].key = key;
+        ev[*n].value = value;
+    }
+    (*n)++;
+}
+
+static uint32_t sim_rand(uint32_t *s) {
+    *s = *s * 1664525u + 1013904223u;
+    return *s >> 8;
+}
+
+static int sim_resolver(int block) {
+    uint8_t frame[8] = { 0u, 0u, 0u, 0xffu, 0u, 0u, 0u, 0xffu };
+    if (block) s_sim_blocking++;
+    if (!block && s_sim_now - s_sim_ready > 0x80000000u) return 0;   /* now < ready */
+    frame[5] = (uint8_t)s_sim_brightest;
+    (void)sr_capture_publish_probe(frame, 8u, SR_CAP_ORDER_BGRX);
+    return 1;
+}
+
+static void sim_collect(SrPictureWatch *w, int block) {
+    uint32_t key = w->pending_vcount, b = 0u;
+    int v = sr_picture_watch_collect(w, block, &b);
+    if (v == SR_PICTURE_WATCH_RESUMED) watch_log(s_def_ev, &s_def_n, 'R', key, b);
+}
+
+static void test_watch_deferred_matches_synchronous(void) {
+    enum { VBLANKS = 24000 };
+    static uint8_t present[VBLANKS], level[VBLANKS];
+    int reports = 0, resumed = 0, mismatched_trials = 0;
+    s_sim_blocking = 0;
+    sr_capture_set_probe_resolver(sim_resolver);
+    for (uint32_t trial = 1u; trial <= 48u; trial++) {
+        uint32_t seed = trial * 2654435761u;
+        /* Every fourth trial starts just below the VCOUNT wrap. */
+        uint32_t base = (trial % 4u == 0u) ? 0xffffffffu - 9000u : 1000u + trial;
+        /* Brightness in runs: dark runs long enough to be reported, bright runs between. */
+        int dark = 0;
+        uint32_t left = 0u;
+        for (uint32_t i = 0; i < VBLANKS; i++) {
+            if (left == 0u) {
+                dark = !dark;
+                left = dark ? 200u + sim_rand(&seed) % 4000u : 50u + sim_rand(&seed) % 1500u;
+            }
+            left--;
+            level[i] = dark ? (uint8_t)(sim_rand(&seed) % (SR_PICTURE_DARK_MAX + 1u))
+                            : (uint8_t)(SR_PICTURE_DARK_MAX + 1u + sim_rand(&seed) % 247u);
+        }
+        /* Presents every one or two VBLANKs, with occasional long gaps. */
+        memset(present, 0, sizeof present);
+        for (uint32_t i = 0; i < VBLANKS;) {
+            present[i] = 1u;
+            i += (sim_rand(&seed) % 100u < 3u) ? 300u + sim_rand(&seed) % 700u
+                                                : 1u + sim_rand(&seed) % 2u;
+        }
+        SrPictureWatch ref, def;
+        memset(&ref, 0, sizeof ref);
+        memset(&def, 0, sizeof def);
+        uint32_t ref_last = 0u, def_last = 0u, dd = 0u;
+        s_ref_n = s_def_n = 0;
+        for (uint32_t i = 0; i < VBLANKS; i++) {
+            uint32_t v = base + i;
+            s_sim_now = v;
+            if (present[i]) {
+                /* Reference: the result is fed inside the present. */
+                if (v - ref_last >= SR_PICTURE_PROBE_EVERY) {
+                    ref_last = v;
+                    watch_log(s_ref_ev, &s_ref_n, 'P', v, 0u);
+                    if (sr_picture_watch_probe(&ref, v, level[i]) == SR_PICTURE_WATCH_RESUMED)
+                        watch_log(s_ref_ev, &s_ref_n, 'R', v, level[i]);
+                }
+                /* Deferred: hle.c's display_present_active. */
+                sim_collect(&def, 0);
+                if (def.pending && v - def_last >= SR_PICTURE_PROBE_EVERY) sim_collect(&def, 1);
+                if (!def.pending && v - def_last >= SR_PICTURE_PROBE_EVERY &&
+                    sr_capture_arm_probe()) {
+                    sr_capture_mark_recorded(SR_CAP_SRC_GPU, 2u, 1u);
+                    sr_capture_probe_defer();
+                    def_last = v;
+                    sr_picture_watch_probe_sent(&def, v);
+                    watch_log(s_def_ev, &s_def_n, 'P', v, 0u);
+                    uint32_t r = sim_rand(&seed) % 100u;
+                    dd = r < 6u ? sim_rand(&seed) % 1300u : sim_rand(&seed) % 4u;
+                    s_sim_ready = v + dd;
+                    s_sim_brightest = level[i];
+                }
+            }
+            /* Reference tick. */
+            uint32_t d = 0u;
+            if (sr_picture_watch_tick(&ref, v, &d) == SR_PICTURE_WATCH_REPORT)
+                watch_log(s_ref_ev, &s_ref_n, 'T', v, d);
+            /* Deferred: hle.c's sr_vblank_tick. */
+            sim_collect(&def, 0);
+            if (sr_picture_watch_tick_needs_probe(&def, v)) sim_collect(&def, 1);
+            d = 0u;
+            if (sr_picture_watch_tick(&def, v, &d) == SR_PICTURE_WATCH_REPORT)
+                watch_log(s_def_ev, &s_def_n, 'T', v, d);
+        }
+        sr_capture_probe_drop("end of trial");
+        int same = s_ref_n == s_def_n && s_ref_n <= WATCH_EVENTS_MAX;
+        for (int k = 0; same && k < s_ref_n; k++)
+            same = s_ref_ev[k].kind == s_def_ev[k].kind && s_ref_ev[k].key == s_def_ev[k].key &&
+                   s_ref_ev[k].value == s_def_ev[k].value;
+        if (!same) {
+            mismatched_trials++;
+            int k = 0;
+            while (k < s_ref_n && k < s_def_n && s_ref_ev[k].kind == s_def_ev[k].kind &&
+                   s_ref_ev[k].key == s_def_ev[k].key && s_ref_ev[k].value == s_def_ev[k].value)
+                k++;
+            fprintf(stderr, "  watch trial %u: first difference at event %d of %d/%d\n",
+                    trial, k, s_ref_n, s_def_n);
+        }
+        for (int k = 0; k < s_ref_n && k < WATCH_EVENTS_MAX; k++) {
+            if (s_ref_ev[k].kind == 'T') reports++;
+            if (s_ref_ev[k].kind == 'R') resumed++;
+        }
+    }
+    sr_capture_set_probe_resolver(NULL);
+    CHECK(mismatched_trials == 0, "watch: deferred results give the synchronous verdicts and reports");
+    /* The trials must reach the cases that matter: reports, resumed stretches, and ticks that
+     * had to wait for a pending result. */
+    CHECK(reports >= 50 && resumed >= 10 && s_sim_blocking >= 10,
+          "watch: the trials reach reports, resumed stretches and blocking collects");
+    if (reports < 50 || resumed < 10 || s_sim_blocking < 10)
+        fprintf(stderr, "  watch coverage: reports %d resumed %d blocking %d\n",
+                reports, resumed, s_sim_blocking);
+}
+
 int main(int argc, char **argv) {
     snprintf(s_dir, sizeof s_dir, "%s", argc > 1 ? argv[1] : SR_SELFTEST_BUILD_ROOT "/fbcap_selftest");
     make_dir(s_dir);
@@ -466,6 +752,9 @@ int main(int argc, char **argv) {
     test_windows_imply_every_present();
     test_picture_probe();
     test_picture_watch();
+    test_probe_result_pinned();
+    test_deferred_probe();
+    test_watch_deferred_matches_synchronous();
     if (s_failures) {
         fprintf(stderr, "fbcap_selftest: %d check(s) failed\n", s_failures);
         return 1;

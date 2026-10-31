@@ -23565,16 +23565,39 @@ static void display_present_frame(void) {
     }
 }
 
+/* A probe verdict that ends a reported dark stretch is a boot event for the player. */
+static void picture_probe_resumed(int verdict, uint32_t brightest) {
+    if (verdict != SR_PICTURE_WATCH_RESUMED) return;
+    fprintf(stderr, "BOOT_EVENT phase=resumed observation=picture brightest=%u\n", brightest);
+    fflush(stderr);
+}
+
+/* Feed the result of a probe whose readback was still on the GPU when its present returned
+ * (fbcap.h, deferred probe results), under the VBLANK the probe was taken. With block, wait
+ * for the GPU: only when the result could change what the watch does next. */
+static void picture_probe_collect(int block) {
+    uint32_t brightest = 0u;
+    int verdict = sr_picture_watch_collect(&s_picture_watch, block, &brightest);
+    picture_probe_resumed(verdict, brightest);
+}
+
 /* Present the active framebuffer, then close this frame's capture (fbcap.h): the presenter
  * that showed the frame has already serviced an armed capture, and an arm nobody serviced
  * (a skipped output slot, a presenter that declined the frame) resolves here as "nothing
  * attempted", so a later present can never publish this frame's path with newer pixels. */
 static void display_present_active(void) {
     /* Dark-picture watch (fbcap.h): every SR_PICTURE_PROBE_EVERY VBLANKs, a present no file
-     * capture wanted carries a picture probe. The presenter services it inside this present,
-     * so its result is taken right after. */
+     * capture wanted carries a picture probe. A presenter that serves it from host memory
+     * does so inside this present, so its result is taken right after; one that reads it
+     * back from the GPU leaves it in flight, and its result is collected without waiting by
+     * a later present or VBLANK. A probe still in flight when the next one is due (a GPU
+     * more than SR_PICTURE_PROBE_EVERY VBLANKs behind) is waited for, so the cadence holds. */
+    picture_probe_collect(0);
+    if (s_picture_watch.pending && s_vcount - s_picture_probe_vcount >= SR_PICTURE_PROBE_EVERY)
+        picture_probe_collect(1);
     int probe = 0;
-    if (!sr_capture_is_armed() && gui_on() && s_display_active.addr &&
+    if (!s_picture_watch.pending && !sr_capture_is_armed() && gui_on() &&
+        s_display_active.addr &&
         s_vcount - s_picture_probe_vcount >= SR_PICTURE_PROBE_EVERY &&
         display_host_span_valid(&s_display_active))
         probe = sr_capture_arm_probe();
@@ -23583,12 +23606,11 @@ static void display_present_active(void) {
     uint32_t brightest;
     if (probe && sr_capture_probe_take(&brightest)) {
         s_picture_probe_vcount = s_vcount;
-        if (sr_picture_watch_probe(&s_picture_watch, s_vcount, brightest) ==
-            SR_PICTURE_WATCH_RESUMED) {
-            fprintf(stderr, "BOOT_EVENT phase=resumed observation=picture brightest=%u\n",
-                    brightest);
-            fflush(stderr);
-        }
+        picture_probe_resumed(sr_picture_watch_probe(&s_picture_watch, s_vcount, brightest),
+                              brightest);
+    } else if (probe && sr_capture_probe_in_flight()) {
+        s_picture_probe_vcount = s_vcount;
+        sr_picture_watch_probe_sent(&s_picture_watch, s_vcount);
     }
 }
 
@@ -24640,6 +24662,11 @@ void sr_vblank_tick(void) {
      * person to classify, not a hang verdict. */
     {
         uint32_t dark = 0u;
+        /* A probe still being read back is collected first, without waiting; it is waited
+         * for only when this tick's report could depend on its result. */
+        picture_probe_collect(0);
+        if (sr_picture_watch_tick_needs_probe(&s_picture_watch, s_vcount))
+            picture_probe_collect(1);
         if (sr_picture_watch_tick(&s_picture_watch, s_vcount, &dark) == SR_PICTURE_WATCH_REPORT) {
             uint32_t ready = 0u, delay = 0u, wait = 0u, spin = 0u;
             sched_watchdog_summary(&ready, &delay, &wait, &spin);
