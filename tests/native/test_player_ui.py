@@ -96,6 +96,9 @@ sys.exit(code.value)
 # is k modulo n. The Makefile's player-ui-regressions runs all n shards side by side,
 # so together they run every test exactly once; unset, every test runs here.
 PLAYER_UI_SHARD_ENV = "NAKAGAWA_PLAYER_UI_SHARD"
+# NAKAGAWA_PLAYER_UI_ECHO=1 copies each player run's own output to stderr, so a
+# repeat check can see the player's markers (UI_NEXT_ACTIVE) on passing runs too.
+PLAYER_UI_ECHO_ENV = "NAKAGAWA_PLAYER_UI_ECHO"
 
 
 def parse_shard(spec: str) -> tuple[int, int]:
@@ -1307,6 +1310,8 @@ class NativePlayerUiTests(unittest.TestCase):
                 check=False,
             )
             wall_seconds = time.perf_counter() - started
+            if os.environ.get(PLAYER_UI_ECHO_ENV) == "1":
+                sys.stderr.write(completed.stdout)
             if completed.returncode != 0:
                 self.fail(
                     f"player returned {completed.returncode}\n"
@@ -4127,17 +4132,31 @@ class NativePlayerUiTests(unittest.TestCase):
         """#1282: Restart game runs the same launch PLAY does for that game.
 
         The synthetic library game has no package, so the launch answers with
-        its own Game Not Ready card: the restart reached the launch path."""
+        its own Game Not Ready card: the restart reached the launch path.
+
+        Restart game goes back to the library and starts the launch on the
+        launch worker (#1298), so the script waits for that launch's card, not
+        for a fixed time. NK_UI_TEST_SLOW_START_MS holds the launch for 600 ms,
+        longer than any fixed wait the script could guess: the old WAIT_MS=100
+        ended on the stopped game's card whenever a slow runner took longer
+        than that to reach the package check."""
         run = self.run_player(
-            "library", ("WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100"),
+            "library", ("WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN", "WAIT_VIEW=error,10000"),
             error_code="RUNTIME_ERROR_EXIT", ui_mode="next",
+            env_extra={"NK_UI_TEST_SLOW_START_MS": "600"},
         )
-        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
-            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        # --ui=next exits 4 when the launcher can't start, so a run that got here
+        # drew the next UI; anything else is a failure, never a skip.
+        self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", str(run["stdout"]))
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["error"], "RUNTIME_ERROR_EXIT")
+        pending = [frame for frame in frames if frame["launch_pending"] == "1"]
+        self.assertTrue(pending, "Restart game started a launch")
+        self.assertEqual(pending[0]["view"], "library", "the restart left the stopped game's card")
+        self.assertEqual(frames[-1]["view"], "error", run["stdout"])
         self.assertIn(frames[-1]["error"], ("RUNTIME_PACKAGE_NOT_READY",), run["stdout"])
+        self.assertEqual(frames[-1]["launch_pending"], "0")
         self.assertNotEqual(frames[-1]["error_retry"], "Restart_game")
 
     # Enum values of PlayerUiPackageState (src/player/ui/player_ui_nk.h).
