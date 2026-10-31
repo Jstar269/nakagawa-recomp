@@ -269,7 +269,7 @@ CASE_ID = 120
 # that ran module_start, and free its stack, once module_start returns.
 else ifeq ($(CASE),module-start)
 CASE_ID = 124
-# 126: the v0.0.2 kernel semantics cells (probe_hle_issues.c): VBLANK sub-interrupt order,
+# 126: the v0.0.2 kernel semantics cells (probe_kernel_semantics.c): VBLANK sub-interrupt order,
 # controller sampling, volatile-lock types, Memory Stick exclusive create and 64-bit seeks,
 # WLAN state.
 else ifeq ($(CASE),kernel-semantics)
@@ -473,14 +473,17 @@ OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),vfpu-forms2)
 TARGET = $(BUILD_DIR)/vfpu_forms2
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
-else ifeq ($(CASE),kernel-semantics)
-TARGET = $(BUILD_DIR)/kernel_semantics
-OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE sample-point cells: their own source (raw display lists, no libpspgu) with the
 # same writer, ThreadManForUser block and module lifecycle as the HLE issue cells.
 else ifeq ($(CASE),ge-sample)
 TARGET = $(BUILD_DIR)/ge_sample
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The kernel semantics cells: their own source (they write and remove a Memory Stick
+# directory and allocate partition memory, which the HLE issue cells may not) with the same
+# writer, ThreadManForUser block and module lifecycle.
+else ifeq ($(CASE),kernel-semantics)
+TARGET = $(BUILD_DIR)/kernel_semantics
+OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports.o
 # The DMAC transfer-time cells: their own source with the same writer, ThreadManForUser
 # block and module lifecycle as the HLE issue cells.
 else ifeq ($(CASE),dma-timing)
@@ -664,6 +667,10 @@ endif
 ifneq ($(filter $(BUILD_DIR)/probe_ge_sample.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
+# And the kernel semantics cells (probe_kernel_semantics.c).
+ifneq ($(filter $(BUILD_DIR)/probe_kernel_semantics.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
 # And the DMAC transfer-time cells (probe_dmac_timing.c).
 ifneq ($(filter $(BUILD_DIR)/probe_dmac_timing.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
@@ -753,6 +760,8 @@ $(BUILD_DIR)/probe_insn_trace.o: probe_insn_trace.c insn_trace_fixtures.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_module_start.o: probe_module_start.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/probe_kernel_semantics.o: probe_kernel_semantics.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/insn_trace_tramp.o: insn_trace_tramp.S

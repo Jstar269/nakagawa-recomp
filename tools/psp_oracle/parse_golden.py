@@ -1824,7 +1824,7 @@ _register_campaign_probe(
     {case: 13 for case in VFPU_SORT_CASES},
 )
 
-# kernel-semantics (126, probe_hle_issues.c): the v0.0.2 kernel cells (#1287, #1390, #1383,
+# kernel-semantics (126, probe_kernel_semantics.c): the v0.0.2 kernel cells (#1287, #1390, #1383,
 # #1380, #1382). Every row is emitted on every run with a fixed word count; a word that does
 # not apply is 0xA5A5A5A5, and the io rows are SKIP when the probe-owned Memory Stick
 # directory already existed. The parser checks the stream's shape, never a PSP value.

@@ -8306,6 +8306,191 @@ class GeRasterProbeTests(unittest.TestCase):
         self.assertEqual(tuple(re.findall(r'\{"([a-z0-9-]+)", 0x[0-9a-f]{16}ull\}', table)), cells)
 
 
+class KernelSemanticsProbeTests(unittest.TestCase):
+    """CASE=kernel-semantics (126, PSP-KERNEL-SEM-001) in probe_kernel_semantics.c: the v0.0.2
+    kernel cells (#1287, #1390, #1383, #1380, #1382). The writer and module lifecycle are the HLE
+    issue cells' copies. The file may write the Memory Stick only inside its own directory, may
+    never read a console-bound value, and restores every state it changes."""
+
+    ROWS_PER_RECORD_CALL = {
+        "ks_subintr_order": ("subintr-register", "subintr-order", "subintr-times",
+                             "subintr-release"),
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_kernel_semantics.c").read_text(encoding="utf-8")
+        cls.issues = (fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        cls.code = _c_code(cls.probe)
+        cls.bodies = _c_function_bodies(cls.code)
+
+    def _case_block(self) -> str:
+        start = re.search(r"^ifeq \(\$\(CASE\),kernel-semantics\)\n", self.makefile,
+                          re.MULTILINE).start()
+        return self.makefile[start:self.makefile.index("\nendif\n", start)]
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),kernel-semantics)\nCASE_ID = 126\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),kernel-semantics)\nTARGET = $(BUILD_DIR)/kernel_semantics\n"
+                      "OBJS = $(BUILD_DIR)/probe_kernel_semantics.o "
+                      "$(BUILD_DIR)/threadman_user_imports.o\n", self.makefile)
+        self.assertIn("ifneq ($(filter $(BUILD_DIR)/probe_kernel_semantics.o,$(OBJS)),)\n"
+                      "PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp\n", self.makefile)
+        self.assertEqual(len(re.findall(r"^\$\(BUILD_DIR\)/probe_kernel_semantics\.o:",
+                                        self.makefile, re.MULTILINE)), 1)
+        self.assertIn("#define KS_CASE_KERNEL_SEM 126\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "kernel-semantics"\n'
+                      '#define HLE_TEST_ID "PSP-KERNEL-SEM-001"\n'
+                      '#define HLE_LOG "host0:/kernel_semantics_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "kernel-semantics").name,
+                         "kernel_semantics_log.txt")
+        self.assertEqual(_campaign_completeness_contract("kernel-semantics"),
+                         "strict-golden-sequence")
+        self.assertNotIn("kernel-semantics", CAMPAIGN_QUEUE_CASES)
+
+    def test_writer_round_trip_and_lifecycle_are_the_hle_issues_copies(self) -> None:
+        shared = self.issues[self.issues.index("#define HLE_SENTINEL 0xA5A5A5A5u\n"):
+                             self.issues.index("/* ---------------------------------------------"
+                                               "---------------------------- */\n#if PSP_ORACLE_CASE")]
+        self.assertIn(shared, self.probe)
+        self.assertIn("int module_stop(SceSize args, void *argp)", shared)
+
+    def test_import_gate_pins_every_extra_library_and_refuses_console_bound_reads(self) -> None:
+        block = self._case_block()
+        pins = {library: {int(nid, 16) for nid in nids.split(",")}
+                for library, nids in re.findall(r"--exact-library (\w+)=((?:0x[0-9A-F]{8},?)+)",
+                                                block)}
+        self.assertEqual(pins, {
+            "InterruptManager": {0xCA04A2B9, 0xD61E6961, 0xFB8E22EC, 0x8A389411},
+            "sceCtrl": {0x1F803938, 0x3A622550, 0x1F4011E6, 0xDA6B76A1, 0x6A2774F3, 0x02BAAD91},
+            "sceSuspendForUser": {0x3E0271D3, 0xA14F40B2, 0xA569E425},
+            # sceWlanGetSwitchState and sceWlanDevIsPowerOn only: never sceWlanGetEtherAddr.
+            "sceWlanDrv": {0xD7763699, 0x93440B11},
+        })
+        self.assertEqual(sorted(re.findall(r"--forbid-library (\w+)", block)),
+                         ["KUBridge", "SystemCtrlForUser", "sceOpenPSID"])
+        for banned in ("EtherAddr", "OpenPSID", "IdStorage", "Fuse", "sceNet", "sceReg",
+                       "sceUtility"):
+            self.assertNotIn(banned, self.code, banned)
+
+    def test_every_called_import_is_in_a_pinned_library_or_the_shared_glue(self) -> None:
+        called = set(re.findall(r"\b(sce\w+)\s*\(", self.code))
+        expected = {
+            # pinned
+            "sceKernelRegisterSubIntrHandler", "sceKernelReleaseSubIntrHandler",
+            "sceKernelEnableSubIntr", "sceKernelDisableSubIntr",
+            "sceCtrlReadBufferPositive", "sceCtrlPeekBufferPositive", "sceCtrlSetSamplingMode",
+            "sceCtrlGetSamplingMode", "sceCtrlSetSamplingCycle", "sceCtrlGetSamplingCycle",
+            "sceKernelVolatileMemLock", "sceKernelVolatileMemTryLock", "sceKernelVolatileMemUnlock",
+            "sceWlanGetSwitchState", "sceWlanDevIsPowerOn",
+            # SysMemUserForUser, as the PSPSDK libc glue already imports it
+            "sceKernelAllocPartitionMemory", "sceKernelFreePartitionMemory",
+            "sceKernelGetBlockHeadAddr",
+            # IoFileMgrForUser and ThreadManForUser
+            "sceIoOpen", "sceIoClose", "sceIoWrite", "sceIoRead", "sceIoLseek", "sceIoLseek32",
+            "sceIoGetstat", "sceIoDopen", "sceIoDclose", "sceIoMkdir", "sceIoRemove", "sceIoRmdir",
+            "sceKernelDelayThread", "sceKernelGetSystemTimeLow", "sceKernelSleepThread",
+            "sceKernelExitThread", "sceKernelWakeupThread", "sceKernelWaitThreadEnd",
+            "sceKernelDeleteThread", "sceKernelGetThreadId",
+        }
+        self.assertEqual(sorted(called - expected), [])
+
+    def test_memory_stick_writes_stay_inside_the_probe_directory(self) -> None:
+        self.assertIn('#define KS_DIR "ms0:/NKKSEM00"\n', self.probe)
+        self.assertIn('#define KS_FILE KS_DIR "/f.bin"\n', self.probe)
+        # Every path the probe names outside the shared writer is host0 or the probe's own.
+        literals = set(re.findall(r'"((?:ms0|host0|flash0|disc0|umd0):[^"]*)"', self.code))
+        self.assertEqual(literals, {"ms0:/NKKSEM00", "host0:/kernel_semantics_log.txt",
+                                    "host0:/nakagawa_transport_write.bin"})
+        io = self.bodies["ks_io"]
+        for call in re.findall(r"\b(sceIo(?:Open|Mkdir|Remove|Rmdir|Getstat))\(([^,)]+)", io):
+            self.assertIn(call[1].strip(), ("KS_FILE", "KS_DIR"), call)
+        # The directory must not exist before the probe touches anything: the precheck and
+        # its return come before the first create, write or remove.
+        precheck = io.index("const SceUID pre = sceIoDopen(KS_DIR);")
+        guard = io.index("if (pre >= 0) {")
+        first_write = min(io.index(token) for token in ("sceIoOpen(", "sceIoMkdir(", "sceIoRemove("))
+        self.assertLess(precheck, guard)
+        self.assertLess(io.index("return;", guard), first_write)
+        # Nothing is written past the 16-byte file's end: the one write is the 16 bytes.
+        self.assertEqual(io.count("sceIoWrite("), 1)
+        self.assertIn("sceIoWrite(fd, bytes, sizeof(bytes))", io)
+        self.assertIn("static const char bytes[16] = {", io)
+        # Cleanup removes the file and the directory and checks it is gone.
+        cleanup = io[io.index('hle_step("io-cleanup");'):]
+        for call in ("sceIoRemove(KS_FILE)", "sceIoRmdir(KS_DIR)", "sceIoDopen(KS_DIR)"):
+            self.assertIn(call, cleanup)
+
+    def test_every_loop_is_bounded_and_nothing_waits_without_a_bound(self) -> None:
+        self.assertEqual(sorted(re.findall(r"while \(([^{]*)\) \{", self.code)),
+                         ["!s_hle_stop_requested", "offset < length"])
+        for banned in ("for (;;)", "do {", "goto ", "malloc("):
+            self.assertNotIn(banned, self.code)
+        headers = [self.code[loop.end():_c_close(self.code, loop.end() - 1)]
+                   for loop in re.finditer(r"\bfor \(", self.code)]
+        self.assertGreaterEqual(len(headers), 15)
+        for header in headers:
+            with self.subTest(loop=header):
+                # The two shared-writer loops are bounded by the line and the round-trip buffer.
+                self.assertRegex(header, r"^(?:unsigned|int|uint32_t|size_t) (\w+) = \d+; \1 < "
+                                         r"(?:\d+u?|[A-Z][A-Z0-9_]*|k_ks_io_words\[r\]|"
+                                         r"sizeof\(\w+\)|count && n > 0 && .*); \1\+\+$")
+        for delay in re.findall(r"sceKernelDelayThread\((\w+)\)", self.code):
+            self.assertLessEqual(int(delay), 100000, delay)
+        # Every blocking controller read follows a sample at most one VBLANK or one cycle away;
+        # the volatile Lock is only ever taken while the lock is free (no other holder).
+        self.assertEqual(self.code.count("sceKernelVolatileMemLock("), 1)
+
+    def test_every_state_change_is_undone(self) -> None:
+        sub = self.bodies["ks_subintr_order"]
+        for call in ("sceKernelRegisterSubIntrHandler(", "sceKernelEnableSubIntr(",
+                     "sceKernelDisableSubIntr(", "sceKernelReleaseSubIntrHandler("):
+            self.assertEqual(sub.count(call), 1, call)
+        self.assertLess(sub.index("sceKernelDisableSubIntr("),
+                        sub.index("sceKernelReleaseSubIntrHandler("))
+        modes = self.bodies["ks_ctrl_modes"]
+        self.assertIn("(void)sceCtrlGetSamplingMode(&mode);", modes)
+        self.assertGreater(modes.index("(void)sceCtrlSetSamplingMode(mode);"),
+                           modes.rindex("hle_record("))
+        cycle = self.bodies["ks_ctrl_cycle"]
+        self.assertIn("(void)sceCtrlGetSamplingCycle(&cycle);", cycle)
+        self.assertGreater(cycle.index("(void)sceCtrlSetSamplingCycle(cycle);"),
+                           cycle.rindex("hle_record("))
+        vtype = self.bodies["ks_vmem_type"]
+        self.assertIn("w[3] = rc == 0 ? (uint32_t)sceKernelVolatileMemUnlock(0) : HLE_SENTINEL;",
+                      vtype)
+        alloc = self.bodies["ks_vmem_alloc"]
+        self.assertIn("uint32_t u = locked == 0 ? (uint32_t)sceKernelVolatileMemUnlock(0) "
+                      ": HLE_SENTINEL;", alloc)
+        cell = self.bodies["ks_alloc_cell"]
+        self.assertIn("w[2] = uid > 0 ? (uint32_t)sceKernelFreePartitionMemory(uid) : HLE_SENTINEL;",
+                      cell)
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["kernel-semantics"]
+        self.assertEqual(spec.test_id, "PSP-KERNEL-SEM-001")
+        self.assertEqual(spec.terminal_case, "kernel-semantics-done")
+        self.assertEqual(spec.ordered_cases[:-1], tuple(parse_golden.KERNEL_SEM_ROWS))
+        named = re.findall(r'"((?:subintr|ctrl|vmem|io|wlan)-[a-z0-9-]+)"', self.code)
+        self.assertEqual(set(named) - {"ctrl-mode", "ctrl-cycle", "io-precheck"},
+                         set(parse_golden.KERNEL_SEM_ROWS))
+        run = self.bodies["hle_run"]
+        order = [run.index(call) for call in (
+            "ks_subintr_order();", "ks_ctrl_empty_read();", "ks_ctrl_short_read();",
+            "ks_ctrl_peek_count();", "ks_ctrl_modes();", "ks_ctrl_cycle();",
+            'ks_vmem_type("vmem-trylock-type-1", 0, 1);', 'ks_vmem_type("vmem-lock-type-1", 1, 1);',
+            "ks_vmem_alloc();", "ks_io();", "ks_wlan();")]
+        self.assertEqual(order, sorted(order))
+        io_rows = re.search(r"k_ks_io_rows\[KS_IO_ROWS\] = \{([^}]*)\}", self.code).group(1)
+        io_words = re.search(r"k_ks_io_words\[KS_IO_ROWS\] = \{([^}]*)\}", self.code).group(1)
+        rows = re.findall(r'"([a-z0-9-]+)"', io_rows)
+        words = [int(w.rstrip("u")) for w in re.findall(r"\d+u", io_words)]
+        self.assertEqual([counts[row] for row in rows], words)
+
+
 class ModuleStartProbeTests(unittest.TestCase):
     """CASE=module-start (124, PSP-MODULE-START-001) in probe_module_start.c: a PRX with no
     main thread whose own module_start records its thread and starts a helper, which reads
