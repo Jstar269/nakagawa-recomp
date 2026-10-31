@@ -1060,18 +1060,39 @@ def package_chunking(environment: Mapping[str, str] | None = None) -> dict[str, 
     }
 
 
+def default_recomp_flags(recomp_opt: str) -> str:
+    """The generated-code flags Make uses when the caller sets no RECOMP_FLAGS
+    (``RECOMP_FLAGS ?= $(RECOMP_OPT) ...`` in the Makefile, with gcc's flag set)."""
+    return f"{recomp_opt} -w -fno-strict-aliasing -fno-var-tracking -ftrack-macro-expansion=0"
+
+
+def effective_recomp_opt(environment: Mapping[str, str] | None = None) -> str:
+    """The -O level Make compiles generated code with (#1730): the last -O in RECOMP_FLAGS
+    when the caller set them, which override RECOMP_OPT, otherwise RECOMP_OPT."""
+    env = os.environ if environment is None else environment
+    if "RECOMP_FLAGS" not in env:
+        return env.get("RECOMP_OPT", "-O0")
+    levels = [word for word in env["RECOMP_FLAGS"].split() if word.startswith("-O")]
+    if not levels:
+        return "-O0"
+    return "-O1" if levels[-1] == "-O" else levels[-1]
+
+
 def native_compile_flags(
     *,
     public_safe: bool = False,
     environment: Mapping[str, str] | None = None,
 ) -> str:
     env = os.environ if environment is None else environment
+    recomp_opt = env.get("RECOMP_OPT", "-O0")
     values = (
         env.get("CFLAGS", ""),
         env.get("RUNTIME_OPT", "-O0"),
         env.get("GE_CFLAGS", "-O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK"),
-        env.get("RECOMP_OPT", "-O0"),
-        env.get("RECOMP_FLAGS", "-O0 -w -fno-strict-aliasing -fno-var-tracking -ftrack-macro-expansion=0"),
+        recomp_opt,
+        # Unset, Make derives the flags from RECOMP_OPT, so the key must too: a hardcoded -O0
+        # here would match an explicit -O0 RECOMP_FLAGS that compiles differently.
+        env.get("RECOMP_FLAGS", default_recomp_flags(recomp_opt)),
         env.get("TRACE", "0"),
         env.get("SR_STALE_DETECT", "0"),
         env.get("LLE_CPU", ""),

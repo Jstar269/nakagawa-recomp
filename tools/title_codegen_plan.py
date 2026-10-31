@@ -2386,10 +2386,11 @@ def build_package(
             "instructions": unsupported_instructions,
             "regions": unsupported_regions,
         }
-        # The level Make compiled the generated code with, and each unit codegen gave a
-        # lower one because it holds a single oversized body (#1730).
+        # The level Make compiled the generated code with (a caller's RECOMP_FLAGS override
+        # RECOMP_OPT), and each unit codegen gave a lower one because it holds a single
+        # oversized body (#1730).
         optimization = {
-            "recomp_opt": build_environment["RECOMP_OPT"],
+            "recomp_opt": package_cache.effective_recomp_opt(build_environment),
             "fallback_units": _read_unit_fallbacks(
                 build_workspace / f"{selected_name}_recomp_opt.mk"),
         }

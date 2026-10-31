@@ -2120,6 +2120,42 @@ class PackageOptimizationTests(unittest.TestCase):
                 self.assertTrue(cli_flags.startswith("|-O2|"), cli_flags)
                 self.assertIn(f"|{recomp}|", cli_flags)
 
+    def test_unset_recomp_flags_are_keyed_at_the_level_make_derives_them_from(self):
+        # Make: RECOMP_FLAGS ?= $(RECOMP_OPT) ... Unset flags at -O1 compile at -O1, so they must
+        # not share a key with an explicit -O0 flag string under the same RECOMP_OPT.
+        unset = package_cache.native_compile_flags(environment={"RECOMP_OPT": "-O1"})
+        explicit_o0 = package_cache.native_compile_flags(environment={
+            "RECOMP_OPT": "-O1",
+            "RECOMP_FLAGS": "-O0 -w -fno-strict-aliasing -fno-var-tracking -ftrack-macro-expansion=0",
+        })
+        explicit_o1 = package_cache.native_compile_flags(environment={
+            "RECOMP_OPT": "-O1",
+            "RECOMP_FLAGS": "-O1 -w -fno-strict-aliasing -fno-var-tracking -ftrack-macro-expansion=0",
+        })
+        self.assertNotEqual(unset, explicit_o0)
+        self.assertEqual(unset, explicit_o1)
+
+    def test_default_recomp_flags_are_the_makefile_s(self):
+        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        line = re.search(r"^RECOMP_FLAGS \?= (.+)$", makefile, re.MULTILINE)
+        self.assertIsNotNone(line)
+        expanded = (line.group(1).replace("$(RECOMP_OPT)", "-O1")
+                    .replace("$(RECOMP_GCC_ONLY_FLAGS)", "-ftrack-macro-expansion=0")
+                    .replace("$(NAN_TRAP_CFLAG)", ""))
+        self.assertEqual(expanded.split(), package_cache.default_recomp_flags("-O1").split())
+
+    def test_the_reported_level_is_the_one_make_compiles_with(self):
+        for environment, level in (
+            ({"RECOMP_OPT": "-O1"}, "-O1"),
+            ({}, "-O0"),
+            ({"RECOMP_OPT": "-O1", "RECOMP_FLAGS": "-O0 -w"}, "-O0"),
+            ({"RECOMP_OPT": "-O0", "RECOMP_FLAGS": "-O2 -w -O1"}, "-O1"),
+            ({"RECOMP_OPT": "-O2", "RECOMP_FLAGS": "-w"}, "-O0"),
+            ({"RECOMP_FLAGS": "-O -w"}, "-O1"),
+        ):
+            with self.subTest(environment=environment):
+                self.assertEqual(package_cache.effective_recomp_opt(environment), level)
+
     def test_the_optimized_cosimulation_lane_runs_the_package_level(self):
         # cosim-selftest-opt proves AOT/interpreter parity for code built the way packages are.
         makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
