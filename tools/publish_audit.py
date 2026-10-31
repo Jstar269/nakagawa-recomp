@@ -36,6 +36,7 @@ from publication_policy import (  # noqa: E402
     Resolution,
     load_policy,
 )
+from provenance_ledger import claims_ledger_bytes, is_claims_ledger  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -2038,6 +2039,21 @@ def _source_control_bytes(
         return None, str(error)
 
 
+def _expected_audited_ledger(audited: bytes, trusted_raw: bytes, trusted_document: dict) -> bytes:
+    """The bytes an audited ledger must have to match the trusted copy, line endings normalized.
+
+    A committed claims-only ledger (#1673) matches the claims form of the hashed trusted copy;
+    a hashed audited ledger matches the trusted bytes themselves.
+    """
+    try:
+        audited_document = json.loads(audited.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        audited_document = None
+    if is_claims_ledger(audited_document):
+        return claims_ledger_bytes(trusted_document)
+    return trusted_raw.replace(b"\r\n", b"\n")
+
+
 def _provenance_ledger_findings(
     policy: Policy,
     entries: list[GitEntry],
@@ -2063,6 +2079,16 @@ def _provenance_ledger_findings(
     scope keeps the developer tripwire useful: coverage, resolution, and
     content hashes are still enforced against the audited ledger itself, but
     the audit makes no attestation claim and says so.
+
+    The committed ledger carries claims only (#1673, schema 2). Such a ledger
+    binds no bytes, so the self-consistency scope checks its coverage and claims
+    and makes no content check: content is bound by the hosted attestation,
+    which regenerates every hash from the trusted authority, and by a release's
+    ``--provenance-ledger``.  That trusted copy must be the hashed generation
+    (``PROVENANCE_LEDGER_UNHASHED`` otherwise); a claims-only audited ledger is
+    compared with its claims form, and every included path's bytes are checked
+    against the trusted hashes.  A hashed ledger with an entry that has no hash
+    is refused (``PROVENANCE_CONTENT_UNHASHED``) rather than skipped.
     """
     findings: list[Finding] = []
     if trusted_ledger_path is not None:
@@ -2098,6 +2124,16 @@ def _provenance_ledger_findings(
             ))
     if not isinstance(trusted_document, dict) or not isinstance(trusted_document.get("entries"), list):
         return [Finding("PROVENANCE_LEDGER_UNREADABLE", anchor_label, "trusted ledger has no entries array")]
+    # A claims-only anchor binds no content. It is acceptable only as the audited
+    # ledger itself under the self-consistency scope; an external trusted copy must
+    # carry the hashes the release checks every published file against.
+    anchor_binds_content = not is_claims_ledger(trusted_document)
+    if trusted_ledger_path is not None and not anchor_binds_content:
+        return findings + [Finding(
+            "PROVENANCE_LEDGER_UNHASHED", anchor_label,
+            "the externally trusted ledger is a claims-only ledger and binds no content; pass the "
+            "hashed generation (the verifier writes it as public_provenance_ledger.hashed.json)",
+        )]
 
     trusted_by_path: dict[str, dict] = {}
     for record in trusted_document["entries"]:
@@ -2108,6 +2144,11 @@ def _provenance_ledger_findings(
         if path in trusted_by_path:
             findings.append(Finding("PROVENANCE_LEDGER_INVALID", path, "duplicate trusted provenance record"))
         trusted_by_path[path] = record
+        if not anchor_binds_content and "sha256" in record:
+            findings.append(Finding(
+                "PROVENANCE_LEDGER_INVALID", path,
+                "a claims-only ledger carries a content hash; a half-converted ledger is neither form",
+            ))
         if record.get("classification") not in PROVENANCE_CLASSES:
             findings.append(Finding("PROVENANCE_LEDGER_INVALID", path, "unsupported provenance classification"))
         if not isinstance(record.get("evidence"), dict) or not record["evidence"]:
@@ -2119,7 +2160,9 @@ def _provenance_ledger_findings(
     if trusted_ledger_path is not None:
         if read_error or audited_ledger is None:
             findings.append(Finding("PROVENANCE_LEDGER_MISSING", PROVENANCE_LEDGER_REL, read_error or "missing"))
-        elif audited_ledger.replace(b"\r\n", b"\n") != trusted_raw.replace(b"\r\n", b"\n"):
+        elif audited_ledger.replace(b"\r\n", b"\n") != _expected_audited_ledger(
+            audited_ledger, trusted_raw, trusted_document,
+        ):
             findings.append(Finding(
                 "PROVENANCE_LEDGER_MISMATCH", PROVENANCE_LEDGER_REL,
                 "audited ledger differs from the externally trusted ledger; candidate content cannot self-authorize provenance",
@@ -2146,9 +2189,15 @@ def _provenance_ledger_findings(
             findings.append(Finding("PROVENANCE_UNRESOLVED", path, "trusted provenance record is explicitly unresolved"))
         raw, error = _source_control_bytes(path, entries, content_map, content_source, repo_root)
         expected = record.get("sha256")
+        content_checked = anchor_binds_content and path not in (PROVENANCE_LEDGER_REL, "PUBLIC_EXPORT.json")
         if path not in (PROVENANCE_LEDGER_REL, "PUBLIC_EXPORT.json") and (raw is None or error):
             findings.append(Finding("PROVENANCE_CONTENT_UNREADABLE", path, error or "missing audited bytes"))
-        elif path not in (PROVENANCE_LEDGER_REL, "PUBLIC_EXPORT.json") and expected and hashlib.sha256(raw).hexdigest() != expected:
+        elif content_checked and not expected:
+            findings.append(Finding(
+                "PROVENANCE_CONTENT_UNHASHED", path,
+                f"the {record_phrase} is in the hashed form but carries no hash for this path",
+            ))
+        elif content_checked and hashlib.sha256(raw).hexdigest() != expected:
             findings.append(Finding(
                 "PROVENANCE_CONTENT_MISMATCH", path,
                 f"audited bytes differ from the hash in the {record_phrase}",

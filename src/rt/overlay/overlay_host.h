@@ -39,9 +39,16 @@ bool nk_overlay_host_is_open(const NkOverlayHost *host);
    image must be drawn again. The pad's Guide button is the presenter's, never the
    pages': it is not passed here. */
 bool nk_overlay_host_event(NkOverlayHost *host, const union SDL_Event *event);
-/* True when time alone needs a new frame: a held direction repeating, or the frame
-   after a page change, which navigates by the page's own layout. */
+/* True when time alone needs a new frame: a held direction repeating, the frame
+   after a page change, which navigates by the page's own layout, or a transition
+   still easing. */
 bool nk_overlay_host_due(const NkOverlayHost *host, double now_s);
+
+/* Whether the pages cut instead of easing: the player's Reduce motion choice, which the
+   launcher exports as SR_REDUCE_MOTION ("on", "off", or "system" for its Automatic).
+   "system", unset (a run started by hand) or anything else follows `system`, the
+   system's own setting, which the host reads again for every frame it draws. */
+bool nk_overlay_reduce_motion(const char *choice, bool system);
 
 /* Draws one frame of the pages into `renderer`, whose output is the window's pixel
    size, at `display_scale`; `pixels_per_point` maps pointer events. The model's

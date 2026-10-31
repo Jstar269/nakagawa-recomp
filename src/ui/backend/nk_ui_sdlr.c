@@ -67,7 +67,8 @@ void nk_ui_sdlr_get_stats(const NkUiSdlr *renderer, NkUiSdlrStats *out) {
 #define NK_UI_SDLR_PAGE_SIZE 1024
 #define NK_UI_SDLR_MAX_PAGES 8
 #define NK_UI_SDLR_PAD 1
-#define NK_UI_SDLR_CLIP_DEPTH 32
+/* The whole target, then every scissor a draw list may nest (NK_UI_DRAW_CLIP_DEPTH). */
+#define NK_UI_SDLR_CLIP_DEPTH ((int)NK_UI_DRAW_CLIP_DEPTH + 1)
 #define NK_UI_SDLR_MAX_GLYPHS_PER_RUN 8192
 /* The waves are soft, so they render on the CPU at a third of the element's
    size (at most 480 px wide) and are scaled up with a linear filter. */

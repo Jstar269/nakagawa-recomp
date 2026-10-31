@@ -29,6 +29,22 @@ static const uint8_t k_test_glyph_pixel = 0xFFu;
     } \
 } while (0)
 
+/* Every frame these tests draw is checked for an id two elements share (the id
+   scheme in nk_ui.h): Clay reports each as DUPLICATE_ID, laying the second out
+   empty, and the run fails naming it. */
+static void fail_on_duplicate_id(void *user, const NkUiLayoutError *error) {
+    (void)user;
+    if (strcmp(error->kind, "DUPLICATE_ID") != 0) return;
+    fprintf(stderr, "FAIL: two elements share an id in one frame: %.*s\n",
+            (int)(error->text_length > 300u ? 300u : error->text_length), error->text);
+    ++failures;
+}
+
+static NkUi *screen_ui_create(NkUiConfig *config) {
+    if (config->report_error == NULL) config->report_error = fail_on_duplicate_id;
+    return nk_ui_create(config);
+}
+
 static bool screen_test_raster(void *user, int font, int px, uint32_t glyph,
                                NkUiGlyphBitmap *out) {
     (void)user;
@@ -197,6 +213,8 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
 /* The window size the game-found and Settings cases lay out for. */
 static float g_flow_width = 1280.0f;
 static float g_flow_height = 800.0f;
+/* The text size flow_case_layout lays a case out at (NkUiViewport.text_size_pct). */
+static int g_flow_text_size_pct = 100;
 
 /* The check rows player_state.c gives a disc, in its words (#1302). */
 static const PlayerUiCheckRow k_disc_rows_ready[] = {
@@ -331,6 +349,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     /* Accessibility: a size picked, high contrast following Windows (off), and
        Reduce motion turned on. */
     settings.interface_size = "125%";
+    settings.text_size = "Larger";
     settings.high_contrast_choice = "Automatic";
     settings.reduce_motion_choice = "On";
     settings.reduce_motion = true;
@@ -429,6 +448,16 @@ static const PlayerUiBindingGlyph k_key_glyphs[PLAYER_UI_CONTROLLER_BUTTONS] = {
     GLYPH(CONFIRM, "S"), GLYPH(CONFIRM, "Z"), GLYPH(CONFIRM, "X"), GLYPH(CONFIRM, "A"),
     NO_GLYPH, NO_GLYPH
 };
+/* The stick's four default keys (#1299), up, down, left and right. */
+static const char *const k_stick_key_names[PLAYER_UI_CONTROLLER_STICK_KEYS] = {
+    "Stick Up", "Stick Down", "Stick Left", "Stick Right"
+};
+static const char *const k_stick_key_bindings[PLAYER_UI_CONTROLLER_STICK_KEYS] = {
+    "I", "K", "J", "L"
+};
+static const PlayerUiBindingGlyph k_stick_key_glyphs[PLAYER_UI_CONTROLLER_STICK_KEYS] = {
+    GLYPH(CONFIRM, "I"), GLYPH(CONFIRM, "K"), GLYPH(CONFIRM, "J"), GLYPH(CONFIRM, "L")
+};
 #undef GLYPH
 #undef NO_GLYPH
 
@@ -444,6 +473,14 @@ static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
         pad.bindings[i] = which == FLOW_CONTROLLER_KEYS ? k_key_bindings[i] : k_pad_bindings[i];
         pad.glyphs[i] = which == FLOW_CONTROLLER_KEYS ? k_key_glyphs[i] : k_pad_glyphs[i];
     }
+    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_STICK_KEYS; ++i) {
+        pad.names[PLAYER_UI_CONTROLLER_STICK_KEY + i] = k_stick_key_names[i];
+        if (which == FLOW_CONTROLLER_KEYS) {
+            pad.bindings[PLAYER_UI_CONTROLLER_STICK_KEY + i] = k_stick_key_bindings[i];
+            pad.glyphs[PLAYER_UI_CONTROLLER_STICK_KEY + i] = k_stick_key_glyphs[i];
+        }
+    }
+    pad.noted = -1;
     pad.glyph_style = which == FLOW_CONTROLLER_KEYS ? NK_UI_PROMPT_KEYCAPS
                                                     : NK_UI_PROMPT_LETTERS_A_SOUTH;
     if (k_pad_bindings_override != NULL && which != FLOW_CONTROLLER_KEYS) {
@@ -639,9 +676,10 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
     if (which == FLOW_PAGE_LIBRARY || which == FLOW_PAGE_LIBRARY_FIND) {
         PlayerUiLibraryModel library;
         memset(&library, 0, sizeof(library));
-        library.page_size = which == FLOW_PAGE_LIBRARY_FIND
-            ? player_ui_library_page_size_finding(g_flow_width, g_flow_height, &library.columns)
-            : player_ui_library_page_size(g_flow_width, g_flow_height, &library.columns);
+        /* As the launcher works it out, at the case's text size. */
+        library.page_size = player_ui_library_page_size_at(
+            g_flow_width, g_flow_height, (float)g_flow_text_size_pct / 100.0f,
+            which == FLOW_PAGE_LIBRARY_FIND, 0u, &library.columns);
         library.logical_width = g_flow_width;
         library.logical_height = g_flow_height;
         library.titles = k_titles;
@@ -895,7 +933,7 @@ static void test_build_bar_shows_compiled_parts(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the build-card UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -946,7 +984,7 @@ static void test_build_bar_shows_compiled_parts(void) {
     used = 0u;
     out[0] = '\0';
     {
-        NkUi *plain = nk_ui_create(&config);
+        NkUi *plain = screen_ui_create(&config);
         CHECK(plain != NULL, "create the plain build-card UI");
         if (plain != NULL) {
             set_test_viewport(plain, 1280, 800);
@@ -969,7 +1007,7 @@ static bool build_library_golden(char *out, size_t cap, size_t *used) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     set_test_viewport(ui, 1280, 800);
     set_still_prefs(ui, NK_UI_PROMPT_NEUTRAL);
@@ -1101,7 +1139,7 @@ static void test_library_centres_in_a_wide_window(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a context for the wide library");
     if (ui == NULL) return;
     nk_ui_set_viewport(ui, &viewport);
@@ -1132,7 +1170,7 @@ static void test_library_sort_button(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a context for the sort button");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -1193,7 +1231,7 @@ static void test_library_find_box(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a context for the find box");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -1329,7 +1367,7 @@ static void test_library_demos(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a UI for the TEST THIS PC section");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -1498,7 +1536,7 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     set_test_viewport(ui, 1280, 800);
     set_still_prefs(ui, NK_UI_PROMPT_NEUTRAL);
@@ -1727,7 +1765,7 @@ static PlayerUiAction activate_library_button(NkUiId id,
                              PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -1751,7 +1789,7 @@ static PlayerUiAction activate_title_button(NkUiId id,
                              PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -1774,7 +1812,7 @@ static PlayerUiAction activate_flow_button(NkUiId id, FlowCase which) {
                              PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -1876,7 +1914,7 @@ static bool dump_flow_case(FlowCase which, char *dump, size_t cap) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     set_test_viewport(ui, 1280, 800);
     for (int frame = 0; frame < 2; ++frame) {
@@ -1995,11 +2033,12 @@ static const NkUiDrawList *flow_case_layout(FlowCase which, int width, int heigh
     NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
     const NkUiDrawList *draw = NULL;
     NkUi *ui;
+    viewport.text_size_pct = g_flow_text_size_pct;
     text.measure = screen_test_wide_measure;
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     *out_ui = ui;
     if (ui == NULL) return NULL;
     nk_ui_set_viewport(ui, &viewport);
@@ -2022,6 +2061,16 @@ static bool command_shows(const NkUiDrawCmd *cmd) {
            cmd->clip[2] > cmd->clip[0] && cmd->clip[3] > cmd->clip[1];
 }
 
+/* Names a command that broke the fit: its element, kind, clip and any text. */
+static void report_misfit(const char *what, const NkUiDrawCmd *cmd) {
+    const NkUiTextRun *run = cmd->kind == NK_UI_DRAW_TEXT ? (const NkUiTextRun *)cmd->custom
+                                                          : NULL;
+    fprintf(stderr, "  %s: %08X kind %d clip %d %d %d %d \"%.*s\"\n", what,
+            (unsigned)cmd->element_id, cmd->kind, cmd->clip[0], cmd->clip[1], cmd->clip[2],
+            cmd->clip[3], run != NULL ? (int)(run->length > 60u ? 60u : run->length) : 0,
+            run != NULL && run->text != NULL ? run->text : "");
+}
+
 static bool flow_case_fits(FlowCase which, int width, int height, char *dump, size_t cap) {
     NkUi *ui = NULL;
     const NkUiDrawList *draw = flow_case_layout(which, width, height, &ui);
@@ -2034,6 +2083,7 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
            scroll container clips away is not on screen. */
         if (shown[0] < 0 || shown[1] < 0 || shown[2] > width || shown[3] > height) {
             inside = false;
+            report_misfit("off the window", &draw->cmd[i]);
         }
         if (draw->cmd[i].kind != NK_UI_DRAW_TEXT) continue;
         /* A squeezed layout draws text, or a box's fill, over earlier text. */
@@ -2043,6 +2093,10 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
             if ((other->kind == NK_UI_DRAW_TEXT || other->kind == NK_UI_DRAW_RECTANGLE) &&
                 command_shows(other) && shown[0] < over[2] && over[0] < shown[2] &&
                 shown[1] < over[3] && over[1] < shown[3]) {
+                if (inside) {
+                    report_misfit("text", &draw->cmd[i]);
+                    report_misfit("painted over by", other);
+                }
                 inside = false;
             }
         }
@@ -2282,7 +2336,7 @@ static void test_input_guides(void) {
         memset(&config, 0, sizeof(config));
         config.host = NK_UI_HOST_LAUNCHER;
         config.text = &text;
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create the title page");
         if (ui != NULL) {
             set_test_viewport(ui, 1280, 800);
@@ -2323,7 +2377,7 @@ static bool display_waves_at(const PlayerUiDisplay *display, double now_s,
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     player_ui_apply_display(ui, &viewport, display, NK_UI_PROMPT_KEYCAPS);
     nk_ui_set_viewport(ui, &viewport);
@@ -2381,7 +2435,7 @@ static bool display_draws_black_keyline(const PlayerUiDisplay *display) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     player_ui_apply_display(ui, &viewport, display, NK_UI_PROMPT_KEYCAPS);
     nk_ui_set_viewport(ui, &viewport);
@@ -2413,7 +2467,7 @@ static void test_accessibility_settings_reach_the_design_system(void) {
           "high-contrast focus draws the ring between black keylines");
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a launcher context for the interface size");
     if (ui == NULL) return;
     display.interface_size_pct = 150;
@@ -2426,6 +2480,14 @@ static void test_accessibility_settings_reach_the_design_system(void) {
     player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
     CHECK(viewport.ui_scale_pct == 0 && nk_ui_scale_for_viewport(&viewport).density == 1.25f,
           "an Automatic interface size follows the display's scale");
+    display.text_size_pct = 150;
+    player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
+    CHECK(viewport.text_size_pct == 150 && nk_ui_text_scale_for_viewport(&viewport) == 1.5f &&
+              nk_ui_scale_for_viewport(&viewport).density == 1.25f,
+          "Text size Larger reaches the viewport as type at 1.5, leaving the density alone");
+    display.text_size_pct = 175;
+    player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
+    CHECK(viewport.text_size_pct == 100, "a text size the launcher does not offer is 100%");
     nk_ui_destroy(ui);
 }
 
@@ -2453,6 +2515,8 @@ static void test_settings_pages(void) {
          PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY, "Accessibility opens its page"},
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE,
          PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, "the interface size button steps the size"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_TEXT_SIZE,
+         PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE, "the text size button steps the text size"},
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST,
          PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST, "the high contrast button steps its choice"},
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION,
@@ -2538,9 +2602,11 @@ static void test_settings_pages(void) {
               strstr(dump, "saved as you make them") != NULL,
           "Settings shows each value on the button that changes it");
     CHECK(flow_case_fits(FLOW_SETTINGS_ACCESSIBILITY, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "\"INTERFACE SIZE: 125%\"") != NULL &&
-              strstr(dump, "\"HIGH CONTRAST: AUTOMATIC\"") != NULL &&
-              strstr(dump, "\"REDUCE MOTION: ON\"") != NULL &&
+              strstr(dump, "\"INTERFACE: 125%\"") != NULL &&
+              strstr(dump, "\"TEXT SIZE: LARGER\"") != NULL &&
+              strstr(dump, "size.\"") != NULL &&
+              strstr(dump, "\"CONTRAST: AUTOMATIC\"") != NULL &&
+              strstr(dump, "\"MOTION: ON\"") != NULL &&
               strstr(dump, "Windows: 150%.\"") != NULL &&
               strstr(dump, "Windows: off.\"") != NULL &&
               strstr(dump, "Animations in Windows: on.\"") != NULL &&
@@ -2652,8 +2718,8 @@ static void test_controller_and_developer_log_pages(void) {
          "plus raises the trigger point"},
         {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_CALIBRATE, PLAYER_UI_CONTROLLER_CALIBRATE,
          "Calibrate stick starts the guided calibration"},
-        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_SAVE, PLAYER_UI_CONTROLLER_SAVE,
-         "Save profile writes the mapping"},
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_STICK, PLAYER_UI_CONTROLLER_STICK,
+         "the stick button switches which controller stick drives the PSP stick"},
         {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_RESET, PLAYER_UI_CONTROLLER_RESET,
          "Reset to defaults resets the mapping"},
         {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_BACK, PLAYER_UI_CONTROLLER_BACK,
@@ -2710,8 +2776,10 @@ static void test_controller_and_developer_log_pages(void) {
     CHECK(dump_flow_case(FLOW_CONTROLLER, dump, sizeof(dump)) &&
               strstr(dump, "\"BUTTONS \xC2\xB7 GLOBAL MAPPING\"") != NULL &&
               strstr(dump, "\"Cross\"") != NULL && strstr(dump, "\"A (CROSS)\"") != NULL &&
-              strstr(dump, "\"Dead zone 24%\"") != NULL && strstr(dump, "\"SAVE PROFILE\"") != NULL,
-          "the mapping names each control beside its binding, and the mapping it edits");
+              strstr(dump, "\"Dead zone 24%\"") != NULL && strstr(dump, "\"LEFT STICK\"") != NULL &&
+              strstr(dump, "SAVE PROFILE") == NULL,
+          "the mapping names each control beside its binding, the stick it reads and the "
+          "mapping it edits, with no Save step");
     CHECK(dump_flow_case(FLOW_CONTROLLER_GAME, dump, sizeof(dump)) &&
               strstr(dump, "TEST00005 ONLY") != NULL &&
               strstr(dump, "\"PRESS A BUTTON...\"") != NULL &&
@@ -2831,14 +2899,24 @@ static void test_controller_keyboard_page(void) {
     CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_RESET, FLOW_CONTROLLER_KEYS),
                            PLAYER_UI_CONTROLLER_RESET, 0u),
           "Reset to defaults is offered for the keyboard keys");
-    CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_SAVE, FLOW_CONTROLLER_KEYS),
-                           PLAYER_UI_CONTROLLER_SAVE, 0u),
-          "Save profile saves the keys with the mapping");
+    CHECK(activate_flow_button(PLAYER_UI_ID_CONTROLLER_STICK, FLOW_CONTROLLER_KEYS).kind ==
+              PLAYER_UI_ACTION_NONE,
+          "the keyboard keys have no controller stick choice");
     for (size_t control = 0u; control < PLAYER_UI_CONTROLLER_BUTTONS; ++control) {
         CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_BUTTON(control),
                                                     FLOW_CONTROLLER_KEYS),
                                PLAYER_UI_CONTROLLER_REBIND, control),
               "each PSP control's key button rebinds that control's key");
+    }
+    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_STICK_KEYS; ++i) {
+        size_t control = PLAYER_UI_CONTROLLER_STICK_KEY + i;
+        CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_BUTTON(control),
+                                                    FLOW_CONTROLLER_KEYS),
+                               PLAYER_UI_CONTROLLER_REBIND, control),
+              "each of the stick's keys has a button that rebinds it (#1299)");
+        CHECK(activate_flow_button(PLAYER_UI_ID_CONTROLLER_BUTTON(control), FLOW_CONTROLLER).kind ==
+                  PLAYER_UI_ACTION_NONE,
+              "the controller buttons have no stick key rows");
     }
     CHECK(activate_flow_button(PLAYER_UI_ID_CONTROLLER_CALIBRATE, FLOW_CONTROLLER_KEYS).kind ==
               PLAYER_UI_ACTION_NONE,
@@ -2859,8 +2937,13 @@ static void test_controller_keyboard_page(void) {
               strstr(dump, "\"KEYS \xC2\xB7 TEST00005 ONLY\"") != NULL,
           "the control waiting for a key says so, and the mapping being edited is named");
     CHECK(strstr(dump, "Esc or F1 pauses the game.") != NULL &&
-              strstr(dump, "\"Dead zone 24%\"") == NULL,
-          "for the keyboard the stick card names the keys Nakagawa keeps");
+              strstr(dump, "\"Dead zone 24%\"") == NULL &&
+              strstr(dump, "\"ANALOG STICK\"") != NULL && strstr(dump, "\"Right\"") != NULL &&
+              dump_has_element(dump, PLAYER_UI_ID_CONTROLLER_GLYPH(PLAYER_UI_CONTROLLER_STICK_KEY),
+                               "TEXT", "I", NULL, NULL) &&
+              strstr(dump, "has no keys") == NULL,
+          "for the keyboard the stick card holds the stick's keys and names the keys "
+          "Nakagawa keeps");
     CHECK(dump_flow_case(FLOW_CONTROLLER, dump, sizeof(dump)) &&
               strstr(dump, "\"KEYBOARD\"") != NULL && strstr(dump, "\"Esc or F1") == NULL,
           "the controller buttons offer the keyboard keys");
@@ -2876,7 +2959,8 @@ static void test_controller_keyboard_page(void) {
    (logical px): no text outside the window, no text painted over, and so the
    buttons are all on screen. A wrapped paragraph used to be laid out one line
    tall when its page was overfull, and the next block painted over its later
-   lines (launcher review B2). */
+   lines (launcher review B2). The same holds at every text size: at Large
+   (125%) and Larger (150%) the type grows and the screens reflow around it. */
 static void test_every_screen_fits_the_window(void) {
     static char dump[CASE_DUMP_CAP];
     /* The default window, the minimum, a small laptop's maximised window, and
@@ -2884,6 +2968,7 @@ static void test_every_screen_fits_the_window(void) {
     static const struct { int w; int h; } sizes[] = {
         {1280, 720}, {960, 540}, {1366, 705}, {853, 480}
     };
+    static const int text_sizes[] = {100, 125, 150};
     {
         /* A window under the design size draws the 1280 x 720 layout smaller;
            a larger one keeps its density and gains room. */
@@ -2904,16 +2989,22 @@ static void test_every_screen_fits_the_window(void) {
         CHECK(d.density == 1.0f && d.logical_w == 1920.0f && d.logical_h == 1080.0f,
               "a large window keeps its density and gains room");
     }
-    for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
-        for (int which = FLOW_BUILD; which < FLOW_COUNT; ++which) {
-            char message[160];
-            if (which == FLOW_DEVLOG) continue; /* cuts its lines to the box by design */
-            (void)snprintf(message, sizeof(message),
-                           "screen case %d fits a %d x %d window", which, sizes[s].w, sizes[s].h);
-            CHECK(flow_case_fits((FlowCase)which, sizes[s].w, sizes[s].h, dump, sizeof(dump)),
-                  message);
+    for (size_t t = 0u; t < sizeof(text_sizes) / sizeof(text_sizes[0]); ++t) {
+        g_flow_text_size_pct = text_sizes[t];
+        for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+            for (int which = FLOW_BUILD; which < FLOW_COUNT; ++which) {
+                char message[160];
+                if (which == FLOW_DEVLOG) continue; /* cuts its lines to the box by design */
+                (void)snprintf(message, sizeof(message),
+                               "screen case %d fits a %d x %d window at %d%% text", which,
+                               sizes[s].w, sizes[s].h, text_sizes[t]);
+                CHECK(flow_case_fits((FlowCase)which, sizes[s].w, sizes[s].h, dump,
+                                     sizeof(dump)),
+                      message);
+            }
         }
     }
+    g_flow_text_size_pct = 100;
 }
 
 static void test_error_details_fit_the_minimum_window(void) {
@@ -2936,7 +3027,7 @@ static void test_error_details_fit_the_minimum_window(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a UI for the error card at the minimum window");
     if (ui == NULL) return;
     set_test_viewport(ui, 960, 540);
@@ -2991,7 +3082,7 @@ static void test_screen_actions(void) {
         NkUi *ui;
         memset(&config, 0, sizeof(config));
         config.host = NK_UI_HOST_LAUNCHER;
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create a UI for the Library's menu prompt");
         if (ui != NULL) {
             set_test_viewport(ui, 1280, 800);
@@ -3013,7 +3104,7 @@ static void test_screen_actions(void) {
         NkUi *ui;
         memset(&config, 0, sizeof(config));
         config.host = NK_UI_HOST_LAUNCHER;
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create a UI for the empty Library's default focus");
         if (ui != NULL) {
             set_test_viewport(ui, 1280, 800);
@@ -3098,7 +3189,7 @@ static void test_design_system_layout(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the design-system probe");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -3251,7 +3342,7 @@ static bool capture_scaled(const char *directory, const NkUiTextBackend *text,
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = text;
-    if (renderer != NULL) ui = nk_ui_create(&config);
+    if (renderer != NULL) ui = screen_ui_create(&config);
     if (ui != NULL) backend = nk_ui_sdlr_create(renderer, text);
     if (backend != NULL) {
         NkUiViewport viewport = launcher_viewport(pixel_w, pixel_h, display_scale);
@@ -3288,6 +3379,93 @@ static bool capture_scaled(const char *directory, const NkUiTextBackend *text,
             model.logical_height = scale.logical_h;
             ok = capture_one(&rig, name, NULL, &model);
         }
+    }
+    nk_ui_sdlr_destroy(backend);
+    nk_ui_destroy(ui);
+    if (renderer != NULL) SDL_DestroyRenderer(renderer);
+    if (surface != NULL) SDL_DestroySurface(surface);
+    return ok;
+}
+
+/* Captures at a text size (Settings > Accessibility > Text size) in a 1x window
+   of pixel_w x pixel_h: the library, a title page, Settings, Accessibility and
+   Controls, saved as text-<pct>-<w>x<h>-<screen>.bmp. */
+static bool capture_text_size(const char *directory, const NkUiTextBackend *text,
+                              int pixel_w, int pixel_h, int text_size_pct,
+                              const PlayerUiTitle *detail) {
+    static const struct { FlowCase which; const char *name; NkUiId focus; } flows[] = {
+        {FLOW_SETTINGS, "settings", PLAYER_UI_ID_SETTINGS_RESOLUTION},
+        {FLOW_SETTINGS_ACCESSIBILITY, "accessibility", PLAYER_UI_ID_SETTINGS_TEXT_SIZE},
+        {FLOW_CONTROLLER, "controls", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)}
+    };
+    SDL_Surface *surface = SDL_CreateSurface(pixel_w, pixel_h, SDL_PIXELFORMAT_RGBA32);
+    SDL_Renderer *renderer = surface != NULL ? SDL_CreateSoftwareRenderer(surface) : NULL;
+    NkUiConfig config;
+    NkUi *ui = NULL;
+    NkUiSdlr *backend = NULL;
+    CaptureRig rig;
+    bool ok = false;
+    char name[96];
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = text;
+    if (renderer != NULL) ui = screen_ui_create(&config);
+    if (ui != NULL) backend = nk_ui_sdlr_create(renderer, text);
+    if (backend != NULL) {
+        NkUiViewport viewport = launcher_viewport(pixel_w, pixel_h, 1.0f);
+        NkUiScale scale;
+        PlayerUiLibraryModel library;
+        PlayerUiTitleModel title;
+        size_t demos = player_ui_library_demo_count(k_titles, sizeof(k_titles) /
+                                                              sizeof(k_titles[0]));
+        viewport.text_size_pct = text_size_pct;
+        scale = nk_ui_scale_for_viewport(&viewport);
+        nk_ui_set_viewport(ui, &viewport);
+        nk_ui_sdlr_set_scale(backend, scale.density);
+        capture_prefs(ui, NK_UI_PROMPT_KEYCAPS, false);
+        rig.ui = ui;
+        rig.backend = backend;
+        rig.renderer = renderer;
+        rig.surface = surface;
+        rig.directory = directory;
+        memset(&library, 0, sizeof(library));
+        library.titles = k_titles;
+        library.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+        library.page_size = player_ui_library_page_size_at(
+            scale.logical_w, scale.logical_h, nk_ui_text_scale(ui), false, demos,
+            &library.columns);
+        library.logical_width = scale.logical_w;
+        library.logical_height = scale.logical_h;
+        if (library.title_count - demos + 1u > library.page_size) {
+            library.page_label = "Page 1 of 2";
+        }
+        library.sort_label = "Recently played";
+        nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(0u));
+        (void)snprintf(name, sizeof(name), "text-%d-%dx%d-library", text_size_pct, pixel_w,
+                       pixel_h);
+        ok = capture_one(&rig, name, &library, NULL);
+        memset(&title, 0, sizeof(title));
+        title.title = detail;
+        title.logical_width = scale.logical_w;
+        title.logical_height = scale.logical_h;
+        nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
+        (void)snprintf(name, sizeof(name), "text-%d-%dx%d-title", text_size_pct, pixel_w,
+                       pixel_h);
+        ok = ok && capture_one(&rig, name, NULL, &title);
+        g_flow_width = scale.logical_w;
+        g_flow_height = scale.logical_h;
+        g_flow_text_size_pct = text_size_pct;
+        for (size_t i = 0u; ok && i < sizeof(flows) / sizeof(flows[0]); ++i) {
+            g_flow_case = flows[i].which;
+            nk_ui_focus(ui, flows[i].focus);
+            (void)snprintf(name, sizeof(name), "text-%d-%dx%d-%s", text_size_pct, pixel_w,
+                           pixel_h, flows[i].name);
+            ok = capture_one(&rig, name, NULL, &title);
+        }
+        g_flow_case = FLOW_NONE;
+        g_flow_width = 1280.0f;
+        g_flow_height = 800.0f;
+        g_flow_text_size_pct = 100;
     }
     nk_ui_sdlr_destroy(backend);
     nk_ui_destroy(ui);
@@ -3363,7 +3541,7 @@ static int capture_screens(const char *directory) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) goto done;
     backend = nk_ui_sdlr_create(renderer, &text);
     if (backend == NULL) goto done;
@@ -3616,6 +3794,13 @@ static int capture_screens(const char *directory) {
                         k_titles, 0u, &title_fixture, PLAYER_UI_ID_TITLE_PRIMARY)) {
         goto done;
     }
+    /* Text size Larger (150%) in the default window and the minimum, and Large
+       (125%) in the default window. */
+    if (!capture_text_size(directory, &text, 1280, 720, 150, &title_fixture) ||
+        !capture_text_size(directory, &text, 960, 540, 150, &title_fixture) ||
+        !capture_text_size(directory, &text, 1280, 720, 125, &title_fixture)) {
+        goto done;
+    }
     {
         /* TEST THIS PC at the window sizes people start in: the 960x540
            minimum, the 1280x720 default, a 1366x705 laptop and 1920x1009. */
@@ -3686,7 +3871,7 @@ static void test_default_focus_lands_on_the_main_action(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the default-focus UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -3779,7 +3964,7 @@ static void test_stalled_game_offers_stop_once(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the stalled-game title UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -3833,7 +4018,7 @@ static void test_title_enhancement_card(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the enhancement-card UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -3912,7 +4097,7 @@ static void test_title_with_a_running_game(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the running-game title UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4029,7 +4214,7 @@ static PlayerUiAction activate_remove_button(NkUiId id, const PlayerUiRemoveMode
     PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -4062,7 +4247,7 @@ static void test_remove_from_library(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the remove-from-library UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4204,7 +4389,7 @@ static PlayerUiAction activate_stop_button(NkUiId id, const PlayerUiStopModel *m
     PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -4241,7 +4426,7 @@ static void test_stop_game_asks_first(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the stop-game UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4287,7 +4472,7 @@ static PlayerUiAction activate_rebuild_button(NkUiId id, const PlayerUiRebuildMo
     PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -4332,7 +4517,7 @@ static void test_rebuild_prompt_reminder_and_banner(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the rebuild prompt UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4356,7 +4541,7 @@ static void test_rebuild_prompt_reminder_and_banner(void) {
                         PLAYER_UI_REBUILD_NOW), "Rebuild now rebuilds the game");
     CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_SECOND, &reminder),
                         PLAYER_UI_REBUILD_PLAY_ANYWAY), "Play anyway plays it");
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the launch reminder UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4411,7 +4596,7 @@ static void test_rebuild_prompt_reminder_and_banner(void) {
         CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_ALL), "the library's Rebuild all");
         action = activate_library_button(PLAYER_UI_ID_LIBRARY_REBUILD_HIDE, &library);
         CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_HIDE_BANNER), "the library's Hide");
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create the library line UI");
         if (ui == NULL) return;
         set_test_viewport(ui, 1280, 800);
@@ -4466,7 +4651,7 @@ static void test_rebuild_prompt_reminder_and_banner(void) {
         CHECK(action.kind == PLAYER_UI_ACTION_PRIMARY &&
                   action.primary == PLAYER_UI_PRIMARY_PLAY,
               "an older build still plays");
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create the older-build title UI");
         if (ui == NULL) return;
         set_test_viewport(ui, 1280, 800);

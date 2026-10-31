@@ -69,6 +69,11 @@ so we use its contrast and target-size values as a guide for the launcher only.
   (Automatic), or makes text and targets 100, 125, 150 or 200% as large. The launcher keeps its 1280 x 720 layout,
   so a larger size needs a larger window: 150% needs 1920 x 1080, as launcher fullscreen (F11) on a 1080p screen. It is saved as
   `interface_size` in the player's `settings.json` (0 is Automatic).
+- **Text size.** *Settings > Accessibility > Text size* makes the launcher's text Standard (100%), Large (125%) or
+  Larger (150%) without growing the rest of the layout, in any window size. Controls keep their size, and the
+  screens make room for the text: columns widen, rows of buttons wrap, the Library shows fewer, wider cards, and a
+  page or card that no longer fits between the bars scrolls. It is saved as `text_size` in `settings.json` (100,
+  125 or 150). The in-game overlay keeps its own text at 100%.
 - **High-contrast focus.** *Settings > Accessibility > High contrast* draws the focus ring in white between black
   lines, so it shows on any background. Automatic, the default, turns it on while Windows uses a contrast theme. It
   is saved as `high_contrast_focus` (`auto`, `on` or `off`).
@@ -96,7 +101,8 @@ We know about each of these. They are open work, not a promise of dates. Each is
 | Limitation | What it means for you | Workaround |
 | --- | --- | --- |
 | **No screen-reader support.** The launcher draws its own interface with SDL3 and Vulkan and does not expose an accessibility tree to NVDA, JAWS or Narrator. | A screen reader cannot read the library, wizard, settings or error screens. | None inside the player. The documentation is plain Markdown. Setup can be done from the command line: see [`docs/SETUP.md`](docs/SETUP.md) and `python tools/nk_cli.py`. |
-| **Text cannot grow on its own.** *Interface size* scales text and controls together, and the launcher keeps its 1280 x 720 layout, so the size cannot grow beyond what the window holds. | In a 1280 x 720 window every size looks the same; text larger than the layout allows needs a larger window or display. | Maximise the window, or raise Windows' display scale. |
+| **Interface size needs room.** *Interface size* scales text and controls together, and the launcher keeps its 1280 x 720 layout, so it cannot grow beyond what the window holds. | In a 1280 x 720 window every interface size looks the same. | Use *Text size*, which works in any window, or maximise the window. |
+| **Text size stops at 150% and leaves the game alone.** *Text size* covers the launcher's screens; the in-game overlay and the game's own text stay as they are. Some dense rows, such as the Controls page's names and bindings, are cut short with an ellipsis at the larger sizes. | Very low vision may need more than 150%. | Combine it with a larger *Interface size* in a larger window, or with Windows' Magnifier. |
 | **Windows' contrast themes change only the focus ring.** A contrast theme turns on the high-contrast focus ring, but the launcher keeps its own colours. | The rest of the launcher does not take a contrast theme's colours. | None yet. |
 | **No light theme and no colour-blind palette.** | The launcher is always the dark theme. Status is already word-and-shape, so meaning is kept, but the accent and status colours are fixed. | None yet. |
 | **Launcher shortcuts are fixed.** The in-game keys mirror a PSP by default (`X`, `Z`, `A`, `S`, `Q`, `W`, Enter, Shift, arrow keys; see [`docs/SETUP.md`](docs/SETUP.md)), and you can change them on the Controls page in Settings (choose **KEYBOARD**, [#1467](https://github.com/Jstar269/nakagawa-recomp/pull/1467)). The launcher's own keys, and Esc, F1 and F3 in a game, can't be changed. | Moving around the launcher with other keys needs a controller or an external remapping tool. | Use a controller (any SDL3 pad), or a system-level key remapper. |
