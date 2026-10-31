@@ -232,8 +232,8 @@ cut motion too; the motion itself is tested at a moving clock in `tests/native/t
 
 Four project-authored ribbons drift behind every launcher screen (`nk_ui_waves_element`, drawn first and outside
 the layout), never in game. Their combined alpha is capped so every text colour keeps WCAG AA over the brightest
-point. The SDL_Renderer backend draws them through the CPU reference at a third of the window size and keeps the
-frame until the command changes; the Vulkan backend will use the shader.
+point. The SDL_Renderer and Vulkan backends both draw them through the CPU reference at a third of the window
+size, scaled up with a linear filter, and keep the frame until the command changes.
 
 ## Components
 
@@ -601,7 +601,11 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 ## Building and checking a screen
 
 1. Compose the screen from the components above; give every element a stable id (sub-parts use
-   `nk_ui_child_id`).
+   `nk_ui_child_id`). Ids follow one scheme (`src/ui/nk_ui.h`): a screen makes its ids with its own macro over
+   `NK_UI_ID(screen, offset)`, the screen's byte coming from the table there, so two screens never collide; a run of
+   ids made by adding to a base declares `<BASE>_SPAN`, and nothing else may fall inside it; ids that several screens
+   name are `PLAYER_UI_ID_*` in screen 0x00. `PlayerUiIdSourceTests` in `tests/native/test_player_ui.py` checks the
+   table, the ranges and the spans, and the screen tests fail on any id Clay reports twice in one frame.
 2. `mingw32-make nk-ui-player-screens-selftest` compares the draw-list dumps in `fixtures/nk_ui/*.golden` and runs
    the layout checks (ring outside the focused card, centred labels, grid gaps). After an intended change, run
    `build/test_player_screens --write-goldens` and say in the pull request why each golden changed.

@@ -738,6 +738,101 @@ class PlayerUiIdSourceTests(unittest.TestCase):
             seen[number] = name
         self.assertGreater(len(seen), 50)
 
+    # nk_ui.h's id scheme: the files that allocate element ids, each through its
+    # screen's macro.
+    ID_FILES = ("src/player/ui/*.c", "src/rt/overlay/*.c", "src/rt/overlay/*.h")
+
+    @staticmethod
+    def check_families(owner: str, ids: dict[str, int], spans: dict[str, int]) -> list[str]:
+        """Problems with one screen's ids: a value used twice, an id inside a family
+        that is not its own, or two families that overlap."""
+        problems = []
+        by_value: dict[int, str] = {}
+        for name, value in sorted(ids.items()):
+            if value in by_value:
+                problems.append(f"{owner}: {name} and {by_value[value]} are both {value:#x}")
+            by_value[value] = name
+        ranges = sorted((ids[name], ids[name] + span, name) for name, span in spans.items())
+        for (_, end, name), (next_start, _, next_name) in zip(ranges, ranges[1:], strict=False):
+            if next_start < end:
+                problems.append(f"{owner}: families {name} and {next_name} overlap")
+        for start, end, family in ranges:
+            for name, value in ids.items():
+                if name != family and start <= value < end:
+                    problems.append(f"{owner}: {name} ({value:#x}) is inside family {family}")
+        return problems
+
+    def test_every_screen_id_comes_from_the_central_table(self) -> None:
+        """One allocation scheme for every element id (nk_ui.h): a screen's ids are
+        NK_UI_ID(screen, offset) through one macro per screen, with the screen's
+        byte from the table; each id family made by adding to a base declares a
+        _SPAN that holds every id made from it, literal offsets included; no id
+        falls inside another's family, and no screen uses one value twice."""
+        header = (ROOT / "src" / "ui" / "nk_ui.h").read_text(encoding="utf-8")
+        table = {name: int(value, 16) for name, value in
+                 re.findall(r"^#define NK_UI_ID_SCREEN_(\w+) (0x[0-9A-Fa-f]+)u", header, re.M)}
+        self.assertEqual(table.pop("SHARED"), 0, "screen 0x00 is the shared ids'")
+        self.assertEqual(len(set(table.values())), len(table), "two screens share a byte")
+        self.assertTrue(all(0 < byte < 0x80 for byte in table.values()),
+                        "0x80 and up belong to nk_ui_child_id")
+        ids: dict[str, dict[str, int]] = {}
+        spans: dict[str, dict[str, int]] = {}
+        problems: list[str] = []
+        sources: list[tuple[Path, str]] = []
+        for pattern in self.ID_FILES:
+            for path in sorted(ROOT.glob(pattern)):
+                text = path.read_text(encoding="utf-8")
+                sources.append((path, text))
+                where = path.relative_to(ROOT).as_posix()
+                macros = {}
+                for prefix, screen in re.findall(
+                        r"^#define (\w+)_ID\(offset\) NK_UI_ID\(NK_UI_ID_SCREEN_(\w+), \(offset\)\)",
+                        text, re.M):
+                    self.assertIn(screen, table, f"{where}: {prefix}_ID names screen {screen}, "
+                                  "which nk_ui.h's table does not have")
+                    macros[prefix] = screen
+                for name in re.findall(r"^#define (\w+_ID_\w+)\s+0x[0-9A-Fa-f]+u?\b", text, re.M):
+                    if not name.endswith("_SPAN"):
+                        problems.append(f"{where}: {name} is a raw value; make it with its "
+                                        "screen's _ID(offset) macro")
+                for name, prefix, offset in re.findall(
+                        r"^#define (\w+_ID_\w+)\s+(\w+)_ID\(0x([0-9A-Fa-f]{6})u\)", text, re.M):
+                    self.assertIn(prefix, macros, f"{where}: {name} uses {prefix}_ID, which "
+                                  "this file does not define")
+                    screen = macros[prefix]
+                    ids.setdefault(screen, {})[name] = (table[screen] << 24) + int(offset, 16)
+                for name, span in re.findall(r"^#define (\w+_ID_\w+)_SPAN (0x[0-9A-Fa-f]+|\d+)u",
+                                             text, re.M):
+                    owner = next((s for s, named in ids.items() if name in named), None)
+                    self.assertIsNotNone(owner, f"{where}: {name}_SPAN has no id {name}")
+                    spans.setdefault(str(owner), {})[name] = int(span, 0)
+        self.assertGreater(sum(len(named) for named in ids.values()), 200)
+        every = {name: screen for screen, named in ids.items() for name in named}
+        for path, text in sources:
+            where = path.relative_to(ROOT).as_posix()
+            for name, literal in re.findall(r"\b(\w+_ID_\w+)\s*\+\s*(0x[0-9A-Fa-f]+|\d+)?", text):
+                if name not in every or name.endswith("_SPAN"):
+                    continue
+                span = spans.get(every[name], {}).get(name)
+                if span is None:
+                    problems.append(f"{where}: ids are made by adding to {name}, "
+                                    f"which declares no {name}_SPAN")
+                elif literal and int(literal, 0) >= span:
+                    problems.append(f"{where}: {name} + {literal} is past its span {span:#x}")
+        for screen, named in ids.items():
+            problems += self.check_families(screen, named, spans.get(screen, {}))
+
+        shared_header = (ROOT / "src" / "player" / "ui" / "player_ui_nk.h").read_text(encoding="utf-8")
+        shared = {name: int(value, 16) for name, value in
+                  re.findall(r"\b(PLAYER_UI_ID_\w+)\s*=\s*(0x[0-9A-Fa-f]+)u", shared_header)}
+        shared_spans = {name: int(span, 0) for name, span in
+                        re.findall(r"^#define (PLAYER_UI_ID_\w+)_SPAN (0x[0-9A-Fa-f]+)u",
+                                   shared_header, re.M)}
+        self.assertTrue(all(value < 0x01000000 for value in shared.values()),
+                        "the shared ids are screen 0x00's")
+        problems += self.check_families("shared", shared, shared_spans)
+        self.assertEqual(problems, [])
+
 
 class LegacyRendererSourceTests(unittest.TestCase):
     """The shipped player never reaches the old renderer (owner, v0.0.1)."""
@@ -4427,7 +4522,7 @@ class NativePlayerUiTests(unittest.TestCase):
     ROUTE_REMOVE = "4"
 
     def library_item(self, index: int) -> str:
-        return str(0x1100 + index)
+        return str(0x10000 + index)
 
     LIBRARY_ADD = str(0x1002)
 

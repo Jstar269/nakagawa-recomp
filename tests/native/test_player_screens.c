@@ -29,6 +29,22 @@ static const uint8_t k_test_glyph_pixel = 0xFFu;
     } \
 } while (0)
 
+/* Every frame these tests draw is checked for an id two elements share (the id
+   scheme in nk_ui.h): Clay reports each as DUPLICATE_ID, laying the second out
+   empty, and the run fails naming it. */
+static void fail_on_duplicate_id(void *user, const NkUiLayoutError *error) {
+    (void)user;
+    if (strcmp(error->kind, "DUPLICATE_ID") != 0) return;
+    fprintf(stderr, "FAIL: two elements share an id in one frame: %.*s\n",
+            (int)(error->text_length > 300u ? 300u : error->text_length), error->text);
+    ++failures;
+}
+
+static NkUi *screen_ui_create(NkUiConfig *config) {
+    if (config->report_error == NULL) config->report_error = fail_on_duplicate_id;
+    return nk_ui_create(config);
+}
+
 static bool screen_test_raster(void *user, int font, int px, uint32_t glyph,
                                NkUiGlyphBitmap *out) {
     (void)user;
@@ -913,7 +929,7 @@ static void test_build_bar_shows_compiled_parts(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the build-card UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -964,7 +980,7 @@ static void test_build_bar_shows_compiled_parts(void) {
     used = 0u;
     out[0] = '\0';
     {
-        NkUi *plain = nk_ui_create(&config);
+        NkUi *plain = screen_ui_create(&config);
         CHECK(plain != NULL, "create the plain build-card UI");
         if (plain != NULL) {
             set_test_viewport(plain, 1280, 800);
@@ -987,7 +1003,7 @@ static bool build_library_golden(char *out, size_t cap, size_t *used) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     set_test_viewport(ui, 1280, 800);
     set_still_prefs(ui, NK_UI_PROMPT_NEUTRAL);
@@ -1119,7 +1135,7 @@ static void test_library_centres_in_a_wide_window(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a context for the wide library");
     if (ui == NULL) return;
     nk_ui_set_viewport(ui, &viewport);
@@ -1150,7 +1166,7 @@ static void test_library_sort_button(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a context for the sort button");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -1211,7 +1227,7 @@ static void test_library_find_box(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a context for the find box");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -1347,7 +1363,7 @@ static void test_library_demos(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a UI for the TEST THIS PC section");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -1516,7 +1532,7 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     set_test_viewport(ui, 1280, 800);
     set_still_prefs(ui, NK_UI_PROMPT_NEUTRAL);
@@ -1745,7 +1761,7 @@ static PlayerUiAction activate_library_button(NkUiId id,
                              PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -1769,7 +1785,7 @@ static PlayerUiAction activate_title_button(NkUiId id,
                              PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -1792,7 +1808,7 @@ static PlayerUiAction activate_flow_button(NkUiId id, FlowCase which) {
                              PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -1894,7 +1910,7 @@ static bool dump_flow_case(FlowCase which, char *dump, size_t cap) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     set_test_viewport(ui, 1280, 800);
     for (int frame = 0; frame < 2; ++frame) {
@@ -2017,7 +2033,7 @@ static const NkUiDrawList *flow_case_layout(FlowCase which, int width, int heigh
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     *out_ui = ui;
     if (ui == NULL) return NULL;
     nk_ui_set_viewport(ui, &viewport);
@@ -2300,7 +2316,7 @@ static void test_input_guides(void) {
         memset(&config, 0, sizeof(config));
         config.host = NK_UI_HOST_LAUNCHER;
         config.text = &text;
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create the title page");
         if (ui != NULL) {
             set_test_viewport(ui, 1280, 800);
@@ -2341,7 +2357,7 @@ static bool display_waves_at(const PlayerUiDisplay *display, double now_s,
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     player_ui_apply_display(ui, &viewport, display, NK_UI_PROMPT_KEYCAPS);
     nk_ui_set_viewport(ui, &viewport);
@@ -2399,7 +2415,7 @@ static bool display_draws_black_keyline(const PlayerUiDisplay *display) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return false;
     player_ui_apply_display(ui, &viewport, display, NK_UI_PROMPT_KEYCAPS);
     nk_ui_set_viewport(ui, &viewport);
@@ -2431,7 +2447,7 @@ static void test_accessibility_settings_reach_the_design_system(void) {
           "high-contrast focus draws the ring between black keylines");
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a launcher context for the interface size");
     if (ui == NULL) return;
     display.interface_size_pct = 150;
@@ -2971,7 +2987,7 @@ static void test_error_details_fit_the_minimum_window(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create a UI for the error card at the minimum window");
     if (ui == NULL) return;
     set_test_viewport(ui, 960, 540);
@@ -3026,7 +3042,7 @@ static void test_screen_actions(void) {
         NkUi *ui;
         memset(&config, 0, sizeof(config));
         config.host = NK_UI_HOST_LAUNCHER;
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create a UI for the Library's menu prompt");
         if (ui != NULL) {
             set_test_viewport(ui, 1280, 800);
@@ -3048,7 +3064,7 @@ static void test_screen_actions(void) {
         NkUi *ui;
         memset(&config, 0, sizeof(config));
         config.host = NK_UI_HOST_LAUNCHER;
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create a UI for the empty Library's default focus");
         if (ui != NULL) {
             set_test_viewport(ui, 1280, 800);
@@ -3133,7 +3149,7 @@ static void test_design_system_layout(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the design-system probe");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -3286,7 +3302,7 @@ static bool capture_scaled(const char *directory, const NkUiTextBackend *text,
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = text;
-    if (renderer != NULL) ui = nk_ui_create(&config);
+    if (renderer != NULL) ui = screen_ui_create(&config);
     if (ui != NULL) backend = nk_ui_sdlr_create(renderer, text);
     if (backend != NULL) {
         NkUiViewport viewport = launcher_viewport(pixel_w, pixel_h, display_scale);
@@ -3398,7 +3414,7 @@ static int capture_screens(const char *directory) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) goto done;
     backend = nk_ui_sdlr_create(renderer, &text);
     if (backend == NULL) goto done;
@@ -3721,7 +3737,7 @@ static void test_default_focus_lands_on_the_main_action(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the default-focus UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -3814,7 +3830,7 @@ static void test_stalled_game_offers_stop_once(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the stalled-game title UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -3868,7 +3884,7 @@ static void test_title_enhancement_card(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the enhancement-card UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -3947,7 +3963,7 @@ static void test_title_with_a_running_game(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the running-game title UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4064,7 +4080,7 @@ static PlayerUiAction activate_remove_button(NkUiId id, const PlayerUiRemoveMode
     PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -4097,7 +4113,7 @@ static void test_remove_from_library(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the remove-from-library UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4239,7 +4255,7 @@ static PlayerUiAction activate_stop_button(NkUiId id, const PlayerUiStopModel *m
     PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -4276,7 +4292,7 @@ static void test_stop_game_asks_first(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the stop-game UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4322,7 +4338,7 @@ static PlayerUiAction activate_rebuild_button(NkUiId id, const PlayerUiRebuildMo
     PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     if (ui == NULL) return result;
     set_test_viewport(ui, 1280, 800);
     nk_ui_focus(ui, id);
@@ -4367,7 +4383,7 @@ static void test_rebuild_prompt_reminder_and_banner(void) {
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
     config.text = &text;
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the rebuild prompt UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4391,7 +4407,7 @@ static void test_rebuild_prompt_reminder_and_banner(void) {
                         PLAYER_UI_REBUILD_NOW), "Rebuild now rebuilds the game");
     CHECK(rebuild_op_is(activate_rebuild_button(PLAYER_UI_ID_REBUILD_SECOND, &reminder),
                         PLAYER_UI_REBUILD_PLAY_ANYWAY), "Play anyway plays it");
-    ui = nk_ui_create(&config);
+    ui = screen_ui_create(&config);
     CHECK(ui != NULL, "create the launch reminder UI");
     if (ui == NULL) return;
     set_test_viewport(ui, 1280, 800);
@@ -4446,7 +4462,7 @@ static void test_rebuild_prompt_reminder_and_banner(void) {
         CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_ALL), "the library's Rebuild all");
         action = activate_library_button(PLAYER_UI_ID_LIBRARY_REBUILD_HIDE, &library);
         CHECK(rebuild_op_is(action, PLAYER_UI_REBUILD_HIDE_BANNER), "the library's Hide");
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create the library line UI");
         if (ui == NULL) return;
         set_test_viewport(ui, 1280, 800);
@@ -4501,7 +4517,7 @@ static void test_rebuild_prompt_reminder_and_banner(void) {
         CHECK(action.kind == PLAYER_UI_ACTION_PRIMARY &&
                   action.primary == PLAYER_UI_PRIMARY_PLAY,
               "an older build still plays");
-        ui = nk_ui_create(&config);
+        ui = screen_ui_create(&config);
         CHECK(ui != NULL, "create the older-build title UI");
         if (ui == NULL) return;
         set_test_viewport(ui, 1280, 800);

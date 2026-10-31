@@ -13,39 +13,48 @@
 #include <stdio.h>
 #include <string.h>
 
-#define LIBRARY_ID_ROOT 0x10000001u
-#define LIBRARY_ID_TOP 0x10000010u
-#define LIBRARY_ID_BODY 0x10000020u
-#define LIBRARY_ID_HEAD 0x10000021u
-#define LIBRARY_ID_HEADING 0x10000022u
-#define LIBRARY_ID_COUNT 0x10000023u
-#define LIBRARY_ID_HEAD_SPACER 0x10000024u
-#define LIBRARY_ID_PAGER 0x10000025u
-#define LIBRARY_ID_PAGE_LABEL 0x10000007u
-#define LIBRARY_ID_GRID 0x10000030u
-#define LIBRARY_ID_ROW_BASE 0x10000100u
-#define LIBRARY_ID_PROMPTS 0x10000040u
-#define LIBRARY_ID_WAVES 0x10000050u
-#define LIBRARY_ID_EMPTY 0x10000005u
-#define LIBRARY_ID_EMPTY_ICON 0x10000060u
-#define LIBRARY_ID_EMPTY_TITLE 0x10000004u
-#define LIBRARY_ID_EMPTY_TEXT 0x10000006u
-#define LIBRARY_ID_EMPTY_WRAP 0x10000061u
-#define LIBRARY_ID_EMPTY_ACTIONS 0x10000062u
-#define LIBRARY_ID_EMPTY_NOTE 0x10000063u
-#define LIBRARY_ID_DEMOS 0x10000070u
-#define LIBRARY_ID_DEMOS_LABEL 0x10000071u
-#define LIBRARY_ID_DEMOS_EYEBROW 0x10000072u
-#define LIBRARY_ID_DEMOS_LEAD 0x10000073u
-#define LIBRARY_ID_DEMOS_ROW_BASE 0x10000080u
-#define LIBRARY_ID_FIND 0x10000090u
-#define LIBRARY_ID_FIND_FIELD 0x10000091u
-#define LIBRARY_ID_FIND_TEXT 0x10000092u
-#define LIBRARY_ID_FIND_KEYS 0x10000093u
-#define LIBRARY_ID_FIND_ROW_BASE 0x100000A0u
-#define LIBRARY_ID_NO_MATCH 0x100000B0u
-#define LIBRARY_ID_REBUILD 0x10000008u
-#define LIBRARY_ID_REBUILD_TEXT 0x10000009u
+#define LIBRARY_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_LIBRARY, (offset))
+#define LIBRARY_ID_ROOT LIBRARY_ID(0x000001u)
+#define LIBRARY_ID_TOP LIBRARY_ID(0x000010u)
+#define LIBRARY_ID_BODY LIBRARY_ID(0x000020u)
+#define LIBRARY_ID_HEAD LIBRARY_ID(0x000021u)
+#define LIBRARY_ID_HEADING LIBRARY_ID(0x000022u)
+#define LIBRARY_ID_COUNT LIBRARY_ID(0x000023u)
+#define LIBRARY_ID_COUNT_TEXT LIBRARY_ID(0x000123u)
+#define LIBRARY_ID_HEAD_SPACER LIBRARY_ID(0x000024u)
+#define LIBRARY_ID_PAGER LIBRARY_ID(0x000025u)
+#define LIBRARY_ID_PAGE_LABEL LIBRARY_ID(0x000007u)
+#define LIBRARY_ID_GRID LIBRARY_ID(0x000030u)
+#define LIBRARY_ID_ROW_BASE LIBRARY_ID(0x000100u)
+#define LIBRARY_ID_ROW_BASE_SPAN 0x20u
+#define LIBRARY_ID_PROMPTS LIBRARY_ID(0x000040u)
+#define LIBRARY_ID_WAVES LIBRARY_ID(0x000050u)
+#define LIBRARY_ID_EMPTY LIBRARY_ID(0x000005u)
+#define LIBRARY_ID_EMPTY_ICON LIBRARY_ID(0x000060u)
+#define LIBRARY_ID_EMPTY_ART LIBRARY_ID(0x000160u)
+#define LIBRARY_ID_EMPTY_TITLE LIBRARY_ID(0x000004u)
+#define LIBRARY_ID_EMPTY_TEXT LIBRARY_ID(0x000006u)
+#define LIBRARY_ID_EMPTY_WRAP LIBRARY_ID(0x000061u)
+#define LIBRARY_ID_EMPTY_ACTIONS LIBRARY_ID(0x000062u)
+#define LIBRARY_ID_EMPTY_NOTE LIBRARY_ID(0x000063u)
+#define LIBRARY_ID_DEMOS LIBRARY_ID(0x000070u)
+#define LIBRARY_ID_DEMOS_LABEL LIBRARY_ID(0x000071u)
+#define LIBRARY_ID_DEMOS_EYEBROW LIBRARY_ID(0x000072u)
+#define LIBRARY_ID_DEMOS_LEAD LIBRARY_ID(0x000073u)
+#define LIBRARY_ID_DEMOS_ROW_BASE LIBRARY_ID(0x000080u)
+#define LIBRARY_ID_DEMOS_ROW_BASE_SPAN 0x10u
+#define LIBRARY_ID_DEMOS_SPACERS LIBRARY_ID(0x0000C0u)
+#define LIBRARY_ID_DEMOS_SPACERS_SPAN 0x10u
+#define LIBRARY_ID_FIND LIBRARY_ID(0x000090u)
+#define LIBRARY_ID_FIND_FIELD LIBRARY_ID(0x000091u)
+#define LIBRARY_ID_FIND_BOX LIBRARY_ID(0x000191u)
+#define LIBRARY_ID_FIND_TEXT LIBRARY_ID(0x000092u)
+#define LIBRARY_ID_FIND_KEYS LIBRARY_ID(0x000093u)
+#define LIBRARY_ID_FIND_ROW_BASE LIBRARY_ID(0x0000A0u)
+#define LIBRARY_ID_FIND_ROW_BASE_SPAN 0x10u
+#define LIBRARY_ID_NO_MATCH LIBRARY_ID(0x0000B0u)
+#define LIBRARY_ID_REBUILD LIBRARY_ID(0x000008u)
+#define LIBRARY_ID_REBUILD_TEXT LIBRARY_ID(0x000009u)
 
 /* One row of the TEST THIS PC section: the section's name and one line about it
    in the first column, then a compact card per demo, each one grid column wide. */
@@ -64,7 +73,7 @@
      (float)LIBRARY_FIND_KEY_ROWS * NK_UI_CONTROL_HEIGHT +                               \
      (float)(LIBRARY_FIND_KEY_ROWS - 1u) * NK_UI_SPACE_1)
 /* The library notice under the heading (two NK_UI_TYPE_BODY lines) and its gap. */
-#define LIBRARY_ID_NOTICE 0x10000026u
+#define LIBRARY_ID_NOTICE LIBRARY_ID(0x000026u)
 #define LIBRARY_NOTICE_ROW_HEIGHT (44.0f + NK_UI_SPACE_4)
 
 static NkUiSizing sizing_grow(void) {
@@ -300,7 +309,7 @@ static PlayerUiAction library_find_box(NkUi *ui, const PlayerUiLibraryModel *mod
             field.align_y = NK_UI_ALIGN_CENTER;
             field.padding_left = NK_UI_SPACE_4;
             field.padding_right = NK_UI_SPACE_4;
-            if (nk_ui_begin_container(ui, LIBRARY_ID_FIND_FIELD + 0x100u, &field, &style)) {
+            if (nk_ui_begin_container(ui, LIBRARY_ID_FIND_BOX, &field, &style)) {
                 char shown[96];
                 NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY,
                                                 query[0] != '\0' ? theme->paper : theme->muted);
@@ -384,7 +393,7 @@ static PlayerUiAction library_empty(NkUi *ui, bool with_icon) {
         icon_style.corner_radius = NK_UI_RADIUS_DIALOG;
         if (with_icon &&
             nk_ui_begin_container(ui, LIBRARY_ID_EMPTY_ICON, &icon, &icon_style)) {
-            nk_ui_shapes(ui, LIBRARY_ID_EMPTY_ICON + 0x100u, sizing_grow(), sizing_grow(), &disc_art);
+            nk_ui_shapes(ui, LIBRARY_ID_EMPTY_ART, sizing_grow(), sizing_grow(), &disc_art);
             nk_ui_end_container(ui);
         }
         nk_ui_text_role(ui, LIBRARY_ID_EMPTY_TITLE, "Add your first game",
@@ -534,7 +543,7 @@ static PlayerUiAction library_demos(NkUi *ui, const PlayerUiLibraryModel *model,
                 nk_ui_end_container(ui);
             }
         } else {
-            nk_ui_spacer(ui, (NkUiId)(LIBRARY_ID_DEMOS_ROW_BASE + 0x40u + row),
+            nk_ui_spacer(ui, (NkUiId)(LIBRARY_ID_DEMOS_SPACERS + row),
                          sizing_fixed(cell), sizing_fixed(1.0f));
         }
         for (size_t placed = 0u; placed < per_row && next < model->title_count; ++next) {
@@ -632,7 +641,7 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                 if (nk_ui_begin_container(ui, LIBRARY_ID_COUNT, &count_box, NULL)) {
                     NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
                     text.wrap = false;
-                    nk_ui_text(ui, LIBRARY_ID_COUNT + 0x100u, count_text, &text);
+                    nk_ui_text(ui, LIBRARY_ID_COUNT_TEXT, count_text, &text);
                     nk_ui_end_container(ui);
                 }
             }

@@ -19,6 +19,34 @@ typedef struct NkUiTheme NkUiTheme;
 typedef struct NkUiDrawList NkUiDrawList;
 typedef uint32_t NkUiId;
 
+/* ---- Element ids: one allocation scheme --------------------------------------
+   An id names one element for one frame, and two elements of one frame must not
+   share one: Clay lays the second out empty. Every id comes from one of three
+   places, which can never collide:
+   - 0x80000000 and up: nk_ui_child_id, a widget's own parts. Never by hand.
+   - A screen's own ids: NK_UI_ID(screen, offset), the screen's byte from the table
+     below in the top 8 bits and a 24-bit offset under it. Each screen's file makes
+     its ids through one macro of its own (`#define PAD_ID(offset) NK_UI_ID(...)`),
+     so a screen's ids are allocated in one place.
+   - Ids that several screens, the router or tests name (PLAYER_UI_ID_* in
+     player_ui_nk.h): screen 0x00.
+   A run of ids made by adding to a base (a row per control, a part per row) is a
+   family: the base's `<NAME>_SPAN` says how many ids it holds, and no other id may
+   fall inside it. test_player_ui.py's PlayerUiIdSourceTests checks the table, the
+   ranges and the spans; the screen tests fail on any duplicate id Clay reports. */
+#define NK_UI_ID(screen, offset) ((NkUiId)(((uint32_t)(screen) << 24) + (uint32_t)(offset)))
+#define NK_UI_ID_SCREEN_SHARED 0x00u        /* PLAYER_UI_ID_*: named across screens */
+#define NK_UI_ID_SCREEN_LIBRARY 0x10u
+#define NK_UI_ID_SCREEN_TITLE 0x20u
+#define NK_UI_ID_SCREEN_ABOUT 0x50u
+#define NK_UI_ID_SCREEN_FLOW 0x60u          /* building, errors and the other one-card flows */
+#define NK_UI_ID_SCREEN_WIZARD 0x61u
+#define NK_UI_ID_SCREEN_DISC 0x62u          /* a disc found: the game-found card */
+#define NK_UI_ID_SCREEN_SETTINGS 0x63u
+#define NK_UI_ID_SCREEN_CONTROLS 0x64u
+#define NK_UI_ID_SCREEN_DEVELOPER_LOG 0x65u
+#define NK_UI_ID_SCREEN_OVERLAY 0x70u       /* the in-game overlay's pages (src/rt/overlay) */
+
 typedef enum {
     NK_UI_HOST_LAUNCHER = 0,
     NK_UI_HOST_OVERLAY = 1

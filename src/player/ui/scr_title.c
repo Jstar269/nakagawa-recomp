@@ -12,56 +12,57 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TITLE_ID_ROOT 0x20000001u
-#define TITLE_ID_TOP 0x20000010u
-#define TITLE_ID_BODY 0x20000020u
-#define TITLE_ID_ASIDE 0x20000021u
-#define TITLE_ID_MAIN 0x20000022u
-#define TITLE_ID_HERO 0x20000023u
-#define TITLE_ID_STATUS_CARD 0x20000009u
-#define TITLE_ID_STATUS_HEAD 0x20000024u
-#define TITLE_ID_STATUS_EYEBROW 0x20000025u
-#define TITLE_ID_STATUS_PILL 0x20000026u
-#define TITLE_ID_STATUS_DETAIL 0x2000000Au
-#define TITLE_ID_NOTE 0x2000000Bu
-#define TITLE_ID_NOTE_TEXT 0x2000000Cu
-#define TITLE_ID_CRUMB 0x20000002u
-#define TITLE_ID_NAME 0x20000003u
-#define TITLE_ID_DISC 0x20000004u
-#define TITLE_ID_CHIPS 0x20000027u
-#define TITLE_ID_CHIP_STATUS 0x20000028u
-#define TITLE_ID_CHIP_BADGE 0x20000029u
-#define TITLE_ID_ACTIONS 0x2000002Au
-#define TITLE_ID_BUILD_PREFLIGHT 0x20000030u
-#define TITLE_ID_BUILD_FOLDER 0x20000031u
-#define TITLE_ID_INPUT_ACTIONS 0x20000032u
-#define TITLE_ID_INPUT_GUIDE 0x20000100u
-#define TITLE_ID_STALL_NOTICE 0x20000035u
-#define TITLE_ID_STALL_EYEBROW 0x20000036u
-#define TITLE_ID_STALL_TEXT 0x20000037u
-#define TITLE_ID_STALL_ACTIONS 0x20000038u
-#define TITLE_ID_START_CARD 0x20000039u
-#define TITLE_ID_START_NAME 0x2000003Au
-#define TITLE_ID_START_TEXT 0x2000003Bu
-#define TITLE_ID_START_BAR 0x2000003Cu
-#define TITLE_ID_COMPAT 0x20000005u
-#define TITLE_ID_COMPAT_HEAD 0x2000002Cu
-#define TITLE_ID_COMPAT_EYEBROW 0x20000006u
-#define TITLE_ID_COMPAT_TIER 0x20000007u
-#define TITLE_ID_COMPAT_EXPECT 0x20000008u
-#define TITLE_ID_COMPAT_ISSUES 0x2000002Eu
-#define TITLE_ID_COMPAT_CATEGORY 0x2000002Du
-#define TITLE_ID_REMOVE_ROW 0x2000002Fu
-#define TITLE_ID_ENH_CARD 0x20000060u
-#define TITLE_ID_ENH_HEAD 0x20000061u
-#define TITLE_ID_ENH_EYEBROW 0x20000062u
-#define TITLE_ID_ENH_TAG 0x20000063u
-#define TITLE_ID_ENH_ROW 0x20000064u
-#define TITLE_ID_ENH_TEXT 0x20000065u
-#define TITLE_ID_ENH_PROBLEM 0x20000066u
-#define TITLE_ID_ENH_SESSION 0x20000067u
-#define TITLE_ID_PROMPTS 0x20000040u
-#define TITLE_ID_WAVES 0x20000050u
+#define TITLE_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_TITLE, (offset))
+#define TITLE_ID_ROOT TITLE_ID(0x000001u)
+#define TITLE_ID_TOP TITLE_ID(0x000010u)
+#define TITLE_ID_BODY TITLE_ID(0x000020u)
+#define TITLE_ID_ASIDE TITLE_ID(0x000021u)
+#define TITLE_ID_MAIN TITLE_ID(0x000022u)
+#define TITLE_ID_HERO TITLE_ID(0x000023u)
+#define TITLE_ID_STATUS_CARD TITLE_ID(0x000009u)
+#define TITLE_ID_STATUS_HEAD TITLE_ID(0x000024u)
+#define TITLE_ID_STATUS_EYEBROW TITLE_ID(0x000025u)
+#define TITLE_ID_STATUS_PILL TITLE_ID(0x000026u)
+#define TITLE_ID_STATUS_DETAIL TITLE_ID(0x00000Au)
+#define TITLE_ID_NOTE TITLE_ID(0x00000Bu)
+#define TITLE_ID_NOTE_TEXT TITLE_ID(0x00000Cu)
+#define TITLE_ID_CRUMB TITLE_ID(0x000002u)
+#define TITLE_ID_NAME TITLE_ID(0x000003u)
+#define TITLE_ID_DISC TITLE_ID(0x000004u)
+#define TITLE_ID_CHIPS TITLE_ID(0x000027u)
+#define TITLE_ID_CHIP_STATUS TITLE_ID(0x000028u)
+#define TITLE_ID_CHIP_BADGE TITLE_ID(0x000029u)
+#define TITLE_ID_ACTIONS TITLE_ID(0x00002Au)
+#define TITLE_ID_BUILD_PREFLIGHT TITLE_ID(0x000030u)
+#define TITLE_ID_BUILD_FOLDER TITLE_ID(0x000031u)
+#define TITLE_ID_INPUT_ACTIONS TITLE_ID(0x000032u)
+#define TITLE_ID_INPUT_GUIDE TITLE_ID(0x000100u)
+#define TITLE_ID_STALL_NOTICE TITLE_ID(0x000035u)
+#define TITLE_ID_STALL_EYEBROW TITLE_ID(0x000036u)
+#define TITLE_ID_STALL_TEXT TITLE_ID(0x000037u)
+#define TITLE_ID_STALL_ACTIONS TITLE_ID(0x000038u)
+#define TITLE_ID_START_CARD TITLE_ID(0x000039u)
+#define TITLE_ID_START_NAME TITLE_ID(0x00003Au)
+#define TITLE_ID_START_TEXT TITLE_ID(0x00003Bu)
+#define TITLE_ID_START_BAR TITLE_ID(0x00003Cu)
+#define TITLE_ID_COMPAT TITLE_ID(0x000005u)
+#define TITLE_ID_COMPAT_HEAD TITLE_ID(0x00002Cu)
+#define TITLE_ID_COMPAT_EYEBROW TITLE_ID(0x000006u)
+#define TITLE_ID_COMPAT_TIER TITLE_ID(0x000007u)
+#define TITLE_ID_COMPAT_EXPECT TITLE_ID(0x000008u)
+#define TITLE_ID_COMPAT_ISSUES TITLE_ID(0x00002Eu)
+#define TITLE_ID_COMPAT_CATEGORY TITLE_ID(0x00002Du)
+#define TITLE_ID_REMOVE_ROW TITLE_ID(0x00002Fu)
+#define TITLE_ID_ENH_CARD TITLE_ID(0x000060u)
+#define TITLE_ID_ENH_HEAD TITLE_ID(0x000061u)
+#define TITLE_ID_ENH_EYEBROW TITLE_ID(0x000062u)
+#define TITLE_ID_ENH_TAG TITLE_ID(0x000063u)
+#define TITLE_ID_ENH_ROW TITLE_ID(0x000064u)
+#define TITLE_ID_ENH_TEXT TITLE_ID(0x000065u)
+#define TITLE_ID_ENH_PROBLEM TITLE_ID(0x000066u)
+#define TITLE_ID_ENH_SESSION TITLE_ID(0x000067u)
+#define TITLE_ID_PROMPTS TITLE_ID(0x000040u)
+#define TITLE_ID_WAVES TITLE_ID(0x000050u)
 
 static NkUiSizing sizing_grow(void) {
     NkUiSizing sizing = {NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
@@ -687,28 +688,39 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
    progress), and the error card. Each is one centred dialog card over the
    launcher background, with the top bar's brand and the prompt bar. */
 
-#define FLOW_ID_ROOT 0x60000001u
-#define FLOW_ID_TOP 0x60000010u
-#define FLOW_ID_BODY 0x60000020u
-#define FLOW_ID_CARD 0x60000021u
-#define FLOW_ID_EYEBROW 0x60000022u
-#define FLOW_ID_TITLE 0x60000023u
-#define FLOW_ID_LEAD 0x60000024u
-#define FLOW_ID_STAGES 0x60000030u
-#define FLOW_ID_BAR 0x60000040u
-#define FLOW_ID_STATUS 0x60000041u
-#define FLOW_ID_MESSAGE 0x60000042u
-#define FLOW_ID_ELAPSED 0x60000043u
-#define FLOW_ID_NOTICE 0x60000044u
-#define FLOW_ID_LOG 0x60000050u
-#define FLOW_ID_ROWS 0x60000060u
-#define FLOW_ID_TOTAL 0x60000070u
-#define FLOW_ID_ACTIONS 0x60000080u
-#define FLOW_ID_DETAILS 0x60000090u
-#define FLOW_ID_REPORT_TEXT 0x60000098u
-#define FLOW_ID_REPORT_ROW 0x60000099u
-#define FLOW_ID_PROMPTS 0x600000A0u
-#define FLOW_ID_WAVES 0x600000B0u
+#define FLOW_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_FLOW, (offset))
+#define FLOW_ID_ROOT FLOW_ID(0x000001u)
+#define FLOW_ID_TOP FLOW_ID(0x000010u)
+#define FLOW_ID_BODY FLOW_ID(0x000020u)
+#define FLOW_ID_CARD FLOW_ID(0x000021u)
+#define FLOW_ID_EYEBROW FLOW_ID(0x000022u)
+#define FLOW_ID_TITLE FLOW_ID(0x000023u)
+#define FLOW_ID_LEAD FLOW_ID(0x000024u)
+#define FLOW_ID_STAGES FLOW_ID(0x000030u)
+#define FLOW_ID_STAGES_SPAN 0x10u
+#define FLOW_ID_STAGE_LABELS FLOW_ID(0x000130u)
+#define FLOW_ID_STAGE_LABELS_SPAN 0x10u
+#define FLOW_ID_BAR FLOW_ID(0x000040u)
+#define FLOW_ID_STATUS FLOW_ID(0x000041u)
+#define FLOW_ID_STATUS_SPACER FLOW_ID(0x000141u)
+#define FLOW_ID_MESSAGE FLOW_ID(0x000042u)
+#define FLOW_ID_ELAPSED FLOW_ID(0x000043u)
+#define FLOW_ID_NOTICE FLOW_ID(0x000044u)
+#define FLOW_ID_LOG FLOW_ID(0x000050u)
+#define FLOW_ID_LOG_SPAN 0x10u
+#define FLOW_ID_ROWS FLOW_ID(0x000060u)
+#define FLOW_ID_ROWS_SPAN 0x10u
+#define FLOW_ID_ROWS_MORE FLOW_ID(0x000150u)       /* "and 3 more" under the rows */
+#define FLOW_ID_ITEMS FLOW_ID(0x000200u)           /* Remove: + 0x10 * part + item */
+#define FLOW_ID_ITEMS_SPAN 0x40u
+#define FLOW_ID_TOTAL FLOW_ID(0x000070u)
+#define FLOW_ID_ACTIONS FLOW_ID(0x000080u)
+#define FLOW_ID_DETAILS FLOW_ID(0x000090u)
+#define FLOW_ID_DETAILS_SPAN 0x8u
+#define FLOW_ID_REPORT_TEXT FLOW_ID(0x000098u)
+#define FLOW_ID_REPORT_ROW FLOW_ID(0x000099u)
+#define FLOW_ID_PROMPTS FLOW_ID(0x0000A0u)
+#define FLOW_ID_WAVES FLOW_ID(0x0000B0u)
 
 #define FLOW_MARK_DIAMOND "\xE2\x97\x86"
 #define FLOW_MARK_DOT "\xE2\x97\x8F"
@@ -816,7 +828,7 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
                                stages[i]);
                 if (nk_ui_begin_container(ui, (NkUiId)(FLOW_ID_STAGES + 1u + (NkUiId)i),
                                           &chip, &style)) {
-                    nk_ui_text_role(ui, (NkUiId)(FLOW_ID_STAGES + 0x100u + (NkUiId)i),
+                    nk_ui_text_role(ui, (NkUiId)(FLOW_ID_STAGE_LABELS + (NkUiId)i),
                                     nk_ui_caps(ui, label), NK_UI_TYPE_LABEL_S,
                                     current ? theme->ink : done ? theme->ready : theme->muted);
                     nk_ui_end_container(ui);
@@ -839,7 +851,7 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
                            ? "Package written. Checking it before PLAY is offered."
                            : safe_text(model->message, "Building the package..."),
                            &text, inner - 140.0f, 2), &text);
-            nk_ui_spacer(ui, FLOW_ID_STATUS + 0x100u, sizing_grow(), sizing_fixed(1.0f));
+            nk_ui_spacer(ui, FLOW_ID_STATUS_SPACER, sizing_grow(), sizing_fixed(1.0f));
             (void)snprintf(elapsed, sizeof(elapsed), "%u.%u s",
                            model->elapsed_ms / 1000u, (model->elapsed_ms % 1000u) / 100u);
             nk_ui_text_role(ui, FLOW_ID_ELAPSED, elapsed, NK_UI_TYPE_DATA, theme->muted);
@@ -945,15 +957,15 @@ PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *mode
                 NkUiLayout line = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
                                               NK_UI_SPACE_3);
                 total += model->items[i].bytes;
-                if (nk_ui_begin_container(ui, (NkUiId)(FLOW_ID_ROWS + 0x10u + (NkUiId)i),
-                                          &line, NULL)) {
-                    nk_ui_text_role(ui, (NkUiId)(FLOW_ID_ROWS + 0x20u + (NkUiId)i),
+                if (nk_ui_begin_container(ui, (NkUiId)(FLOW_ID_ITEMS + (NkUiId)i), &line,
+                                          NULL)) {
+                    nk_ui_text_role(ui, (NkUiId)(FLOW_ID_ITEMS + 0x10u + (NkUiId)i),
                                     safe_text(model->items[i].label, "Built files"),
                                     NK_UI_TYPE_BODY_S, theme->paper);
-                    nk_ui_spacer(ui, (NkUiId)(FLOW_ID_ROWS + 0x30u + (NkUiId)i),
+                    nk_ui_spacer(ui, (NkUiId)(FLOW_ID_ITEMS + 0x20u + (NkUiId)i),
                                  sizing_grow(), sizing_fixed(1.0f));
                     flow_bytes(size, sizeof(size), model->items[i].bytes);
-                    nk_ui_text_role(ui, (NkUiId)(FLOW_ID_ROWS + 0x40u + (NkUiId)i),
+                    nk_ui_text_role(ui, (NkUiId)(FLOW_ID_ITEMS + 0x30u + (NkUiId)i),
                                     nk_ui_frame_text(ui, size), NK_UI_TYPE_DATA, theme->muted);
                     nk_ui_end_container(ui);
                 }
@@ -1158,7 +1170,7 @@ PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *mode
                 }
                 if (model->item_count > shown) {
                     (void)snprintf(text, sizeof(text), "and %zu more", model->item_count - shown);
-                    nk_ui_text(ui, FLOW_ID_ROWS + 0x40u, text, &line);
+                    nk_ui_text(ui, FLOW_ID_ROWS_MORE, text, &line);
                 }
                 nk_ui_end_container(ui);
             }
@@ -1340,25 +1352,26 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
    program is, which build this is, its licence and the notices, the credits,
    and that the project is independent. */
 
-#define ABOUT_ID_ROOT 0x50000001u
-#define ABOUT_ID_TOP 0x50000010u
-#define ABOUT_ID_BODY 0x50000020u
-#define ABOUT_ID_COLUMN 0x50000021u
-#define ABOUT_ID_HEAD 0x50000022u
-#define ABOUT_ID_MARK 0x50000023u
-#define ABOUT_ID_NAMES 0x50000024u
-#define ABOUT_ID_NAME 0x50000025u
-#define ABOUT_ID_VERSION 0x50000026u
-#define ABOUT_ID_LEAD 0x50000027u
-#define ABOUT_ID_CARDS 0x50000028u
-#define ABOUT_ID_LICENSE 0x50000029u
-#define ABOUT_ID_CREDITS 0x5000002Au
-#define ABOUT_ID_NOTICE 0x5000002Bu
-#define ABOUT_ID_LINK 0x5000002Cu
-#define ABOUT_ID_BUILD 0x5000002Du
-#define ABOUT_ID_FOOT 0x5000002Eu
-#define ABOUT_ID_PROMPTS 0x50000040u
-#define ABOUT_ID_WAVES 0x50000050u
+#define ABOUT_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_ABOUT, (offset))
+#define ABOUT_ID_ROOT ABOUT_ID(0x000001u)
+#define ABOUT_ID_TOP ABOUT_ID(0x000010u)
+#define ABOUT_ID_BODY ABOUT_ID(0x000020u)
+#define ABOUT_ID_COLUMN ABOUT_ID(0x000021u)
+#define ABOUT_ID_HEAD ABOUT_ID(0x000022u)
+#define ABOUT_ID_MARK ABOUT_ID(0x000023u)
+#define ABOUT_ID_NAMES ABOUT_ID(0x000024u)
+#define ABOUT_ID_NAME ABOUT_ID(0x000025u)
+#define ABOUT_ID_VERSION ABOUT_ID(0x000026u)
+#define ABOUT_ID_LEAD ABOUT_ID(0x000027u)
+#define ABOUT_ID_CARDS ABOUT_ID(0x000028u)
+#define ABOUT_ID_LICENSE ABOUT_ID(0x000029u)
+#define ABOUT_ID_CREDITS ABOUT_ID(0x00002Au)
+#define ABOUT_ID_NOTICE ABOUT_ID(0x00002Bu)
+#define ABOUT_ID_LINK ABOUT_ID(0x00002Cu)
+#define ABOUT_ID_BUILD ABOUT_ID(0x00002Du)
+#define ABOUT_ID_FOOT ABOUT_ID(0x00002Eu)
+#define ABOUT_ID_PROMPTS ABOUT_ID(0x000040u)
+#define ABOUT_ID_WAVES ABOUT_ID(0x000050u)
 
 static void about_lines(NkUi *ui, NkUiId base, const char *const *lines, size_t count,
                         NkUiTypeRole role, uint32_t rgba) {
@@ -1494,13 +1507,19 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
    returns PLAYER_UI_ACTION_WIZARD with the op main.c runs, the same handlers
    the existing renderer's wizard buttons call. */
 
-#define WIZ_ID_STEPS 0x61000001u
-#define WIZ_ID_BOX 0x61000010u
-#define WIZ_ID_ROWS 0x61000200u
-#define WIZ_ID_BUTTONS 0x61000030u
-#define WIZ_ID_EXTRA 0x61000031u
-#define WIZ_ID_TEXT 0x61001000u
-#define WIZ_ID_GUIDE 0x61000300u
+#define WIZ_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_WIZARD, (offset))
+#define WIZ_ID_STEPS WIZ_ID(0x000001u)
+#define WIZ_ID_STEPS_SPAN 0x8u
+#define WIZ_ID_STEP_LABELS WIZ_ID(0x000101u)
+#define WIZ_ID_STEP_LABELS_SPAN 0x8u
+#define WIZ_ID_BOX WIZ_ID(0x000010u)
+#define WIZ_ID_ROWS WIZ_ID(0x000200u)
+#define WIZ_ID_ROWS_SPAN 0x100u
+#define WIZ_ID_BUTTONS WIZ_ID(0x000030u)
+#define WIZ_ID_EXTRA WIZ_ID(0x000031u)
+#define WIZ_ID_TEXT WIZ_ID(0x001000u)
+#define WIZ_ID_TEXT_SPAN 0x1000u
+#define WIZ_ID_GUIDE WIZ_ID(0x000300u)
 
 static PlayerUiAction wizard_op(PlayerUiWizardOp op) {
     PlayerUiAction result;
@@ -1546,7 +1565,7 @@ static void wizard_steps(NkUi *ui, int step) {
             (void)snprintf(label, sizeof(label), "%d  %s", i + 1, names[i]);
         }
         if (nk_ui_begin_container(ui, (NkUiId)(WIZ_ID_STEPS + 1u + (NkUiId)i), &chip, &style)) {
-            nk_ui_text_role(ui, (NkUiId)(WIZ_ID_STEPS + 0x100u + (NkUiId)i),
+            nk_ui_text_role(ui, (NkUiId)(WIZ_ID_STEP_LABELS + (NkUiId)i),
                             nk_ui_caps(ui, label), NK_UI_TYPE_LABEL_S,
                             current ? theme->ink : done ? theme->ready : theme->muted);
             nk_ui_end_container(ui);
@@ -2064,12 +2083,17 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
    words, and Add to library when the disc can be added. Only a check that
    keeps the disc out of the library reads as an error. */
 
-#define DISC_ID_CHIPS 0x62000001u
-#define DISC_ID_BOX 0x62000010u
-#define DISC_ID_ROWS 0x62000100u
-#define DISC_ID_DETAILS 0x62000020u
-#define DISC_ID_TEXT 0x62001000u
-#define DISC_ID_GUIDE 0x62000300u
+#define DISC_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_DISC, (offset))
+#define DISC_ID_CHIPS DISC_ID(0x000001u)
+#define DISC_ID_CHIPS_SPAN 0x8u
+#define DISC_ID_BOX DISC_ID(0x000010u)
+#define DISC_ID_ROWS DISC_ID(0x000100u)
+#define DISC_ID_ROWS_SPAN 0x200u
+#define DISC_ID_DETAILS DISC_ID(0x000020u)
+#define DISC_ID_DETAILS_SPAN 0x8u
+#define DISC_ID_TEXT DISC_ID(0x001000u)
+#define DISC_ID_TEXT_SPAN 0x1000u
+#define DISC_ID_GUIDE DISC_ID(0x000300u)
 
 static PlayerUiAction disc_op(PlayerUiDiscOp op) {
     PlayerUiAction result;
@@ -2319,19 +2343,22 @@ PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model) {
    tools and cache, removing the build tools) are dialog cards like the rest of
    the flow. Every change is saved as it is made. */
 
-#define SET_ID_ROOT 0x63000001u
-#define SET_ID_TOP 0x63000010u
-#define SET_ID_BODY 0x63000020u
-#define SET_ID_COLUMN 0x63000021u
-#define SET_ID_HEAD 0x63000022u
-#define SET_ID_CARDS 0x63000023u
-#define SET_ID_GAME 0x63000024u
-#define SET_ID_LAUNCHER 0x63000025u
-#define SET_ID_ACTIONS 0x63000026u
-#define SET_ID_PROMPTS 0x63000040u
-#define SET_ID_WAVES 0x63000050u
-#define SET_ID_ROWS 0x63000100u
-#define SET_ID_TEXT 0x63001000u
+#define SET_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_SETTINGS, (offset))
+#define SET_ID_ROOT SET_ID(0x000001u)
+#define SET_ID_TOP SET_ID(0x000010u)
+#define SET_ID_BODY SET_ID(0x000020u)
+#define SET_ID_COLUMN SET_ID(0x000021u)
+#define SET_ID_HEAD SET_ID(0x000022u)
+#define SET_ID_CARDS SET_ID(0x000023u)
+#define SET_ID_GAME SET_ID(0x000024u)
+#define SET_ID_LAUNCHER SET_ID(0x000025u)
+#define SET_ID_ACTIONS SET_ID(0x000026u)
+#define SET_ID_PROMPTS SET_ID(0x000040u)
+#define SET_ID_WAVES SET_ID(0x000050u)
+#define SET_ID_ROWS SET_ID(0x000100u)
+#define SET_ID_ROWS_SPAN 0x100u
+#define SET_ID_TEXT SET_ID(0x001000u)
+#define SET_ID_TEXT_SPAN 0x1000u
 
 static PlayerUiAction settings_op(PlayerUiSettingsOp op) {
     PlayerUiAction result;
@@ -3238,26 +3265,32 @@ PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *
    its step replaces the cards. Under a top bar with SETTINGS active, as the
    Settings page. */
 
-#define PAD_ID_ROOT 0x64000001u
-#define PAD_ID_TOP 0x64000010u
-#define PAD_ID_BODY 0x64000020u
-#define PAD_ID_COLUMN 0x64000021u
-#define PAD_ID_HEAD 0x64000022u
-#define PAD_ID_CARDS 0x64000023u
-#define PAD_ID_BUTTONS 0x64000024u
-#define PAD_ID_STICK 0x64000025u
-#define PAD_ID_ACTIONS 0x64000026u
-#define PAD_ID_GRID 0x64000027u
-#define PAD_ID_LIVE 0x64000030u
-#define PAD_ID_SPACER 0x64000031u
-#define PAD_ID_DEVICE 0x64000032u
-#define PAD_ID_DEVICE_BUTTONS 0x64000033u
-#define PAD_ID_PROMPTS 0x64000040u
-#define PAD_ID_WAVES 0x64000050u
-#define PAD_ID_ROWS 0x64000100u         /* + control * 4, + 0-2: a binding row's parts */
-#define PAD_ID_GLYPH_CELLS 0x64000200u  /* + control: the cell a binding's glyph sits in */
-#define PAD_ID_STEPPERS 0x64000280u     /* + k * 4, + 0-2: a stick card row's parts */
-#define PAD_ID_TEXT 0x64001000u
+#define PAD_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_CONTROLS, (offset))
+#define PAD_ID_ROOT PAD_ID(0x000001u)
+#define PAD_ID_TOP PAD_ID(0x000010u)
+#define PAD_ID_BODY PAD_ID(0x000020u)
+#define PAD_ID_COLUMN PAD_ID(0x000021u)
+#define PAD_ID_HEAD PAD_ID(0x000022u)
+#define PAD_ID_CARDS PAD_ID(0x000023u)
+#define PAD_ID_BUTTONS PAD_ID(0x000024u)
+#define PAD_ID_STICK PAD_ID(0x000025u)
+#define PAD_ID_ACTIONS PAD_ID(0x000026u)
+#define PAD_ID_GRID PAD_ID(0x000027u)
+#define PAD_ID_GRID_SPAN 0x4u
+#define PAD_ID_LIVE PAD_ID(0x000030u)
+#define PAD_ID_SPACER PAD_ID(0x000031u)
+#define PAD_ID_DEVICE PAD_ID(0x000032u)
+#define PAD_ID_DEVICE_BUTTONS PAD_ID(0x000033u)
+#define PAD_ID_PROMPTS PAD_ID(0x000040u)
+#define PAD_ID_WAVES PAD_ID(0x000050u)
+#define PAD_ID_ROWS PAD_ID(0x000100u)         /* + control * 4, + 0-2: a binding row's parts */
+#define PAD_ID_ROWS_SPAN 0x80u
+#define PAD_ID_GLYPH_CELLS PAD_ID(0x000200u)  /* + control: the cell a binding's glyph sits in */
+#define PAD_ID_GLYPH_CELLS_SPAN 0x20u
+#define PAD_ID_STEPPERS PAD_ID(0x000280u)     /* + k * 4, + 0-2: a stick card row's parts */
+#define PAD_ID_STEPPERS_SPAN 0x10u
+#define PAD_ID_TEXT PAD_ID(0x001000u)
+#define PAD_ID_TEXT_SPAN 0x1000u
 
 static PlayerUiAction controller_op(PlayerUiControllerOp op, size_t control) {
     PlayerUiAction result;
@@ -3717,16 +3750,19 @@ PlayerUiAction player_ui_screen_controller(NkUi *ui, const PlayerUiControllerMod
    shows are laid out; spacers stand for the rest. player_state.c has already
    written the user's folders in the lines as %USERPROFILE%. */
 
-#define DEV_ID_ROOT 0x65000001u
-#define DEV_ID_TOP 0x65000010u
-#define DEV_ID_BODY 0x65000020u
-#define DEV_ID_CARD 0x65000021u
-#define DEV_ID_BOX 0x65000022u
-#define DEV_ID_ACTIONS 0x65000023u
-#define DEV_ID_PROMPTS 0x65000040u
-#define DEV_ID_WAVES 0x65000050u
-#define DEV_ID_TEXT 0x65000100u
-#define DEV_ID_LINES 0x65001000u
+#define DEV_ID(offset) NK_UI_ID(NK_UI_ID_SCREEN_DEVELOPER_LOG, (offset))
+#define DEV_ID_ROOT DEV_ID(0x000001u)
+#define DEV_ID_TOP DEV_ID(0x000010u)
+#define DEV_ID_BODY DEV_ID(0x000020u)
+#define DEV_ID_CARD DEV_ID(0x000021u)
+#define DEV_ID_BOX DEV_ID(0x000022u)
+#define DEV_ID_ACTIONS DEV_ID(0x000023u)
+#define DEV_ID_PROMPTS DEV_ID(0x000040u)
+#define DEV_ID_WAVES DEV_ID(0x000050u)
+#define DEV_ID_TEXT DEV_ID(0x000100u)
+#define DEV_ID_TEXT_SPAN 0x100u
+#define DEV_ID_LINES DEV_ID(0x001000u)
+#define DEV_ID_LINES_SPAN 0x1000u
 
 #define DEV_LINE_HEIGHT 16.0f
 /* The card around the log box: its padding, the eyebrow, the sentence, the
