@@ -1666,12 +1666,12 @@ static void stats_emit(int final) {
     if (!final && now - last_ms < 5000) return;
     last_ms = now;
     fprintf(stderr, "GEGPU stats: submits=%lu batches=%llu verts=%llu avg_batches=%.2f "
-            "tris=%lu spr=%lu lines=%lu tnl[prims=%lu tris=%lu] nonfinite=%lu rtt=%lu snap=%lu "
+            "tris=%lu spr=%lu lines=%lu nonfinite=%lu tnl[prims=%lu tris=%lu] rtt=%lu snap=%lu "
             "present[gpu=%lu cpu=%lu] upload=%lu readback=%lu texup=%lu dirty=%lu xferblit=%lu pipes=%d texs=%d "
             "shadow[invalidations=%llu checks=%llu hits=%llu misses=%llu bytes=%llu avoided=%llu required=%llu] final=%d\n",
             s_cnt_submit, (unsigned long long)s_cnt_batches, (unsigned long long)s_cnt_verts,
             s_cnt_submit ? (double)s_cnt_batches / (double)s_cnt_submit : 0.0,
-            s_cnt_tri, s_cnt_spr, s_cnt_line, s_cnt_tnl_prims, s_cnt_tnl_tris, s_cnt_nonfinite,
+            s_cnt_tri, s_cnt_spr, s_cnt_line, s_cnt_nonfinite, s_cnt_tnl_prims, s_cnt_tnl_tris,
             s_cnt_rtt, s_cnt_snap,
             s_cnt_present_gpu, s_cnt_present_cpu, s_cnt_upload, s_cnt_readback, s_cnt_texup,
             s_cnt_dirty, s_cnt_xferblit, s_pipe_n, s_tex_n,
