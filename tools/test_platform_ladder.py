@@ -41,6 +41,7 @@ generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
 from test_build_truth import _make_safe_temp_dir  # noqa: E402
 from ci_test_shards import nightly_tier  # noqa: E402
+import hle_sources  # noqa: E402
 
 
 EXPECTED_PRX_SHA256 = {
@@ -734,7 +735,6 @@ class Title2ContractTests(unittest.TestCase):
         self.assertNotIn(generator.TITLE2_UNSUPPORTED_NID, nids)
         needle = f"{generator.TITLE2_UNSUPPORTED_NID:08x}"
         paths = [
-            ROOT / "src" / "rt" / "hle.c",
             ROOT / "src" / "nid_names.h",
             ROOT / "src" / "rt" / "nid_names.h",
             ROOT / "tools" / "nid_corpus.json",
@@ -743,6 +743,7 @@ class Title2ContractTests(unittest.TestCase):
             if not path.is_file():
                 continue
             self.assertNotIn(needle, path.read_text(encoding="utf-8").lower(), str(path))
+        self.assertNotIn(needle, hle_sources.text().lower(), "runtime HLE sources")
 
     def test_title2_negative_acceptance_kills_h_ok_mutant(self):
         """Replacing the unsupported stub with h_ok semantics cannot pass the gate."""

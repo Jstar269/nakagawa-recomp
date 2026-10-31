@@ -137,7 +137,7 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `src/rt/stale_code.c` | FNV-32 | Self-modifying-code detection (`sr_stale_fnv1a`), checked per block | Keep: performance-critical change detector |
 | `tools/psp_oracle/insn_trace.py` | FNV-32 | Checks that the insn-trace probe ran the header's fixture words, against the probe's own FNV-1a report; the trace identity itself is SHA-256 | Keep: mirrors the on-device check |
 | `src/rt/mpeg.c` | FNV-64 | Names a decoded YCbCr picture by its plane bytes, so the `SR_MPEGAV` measurement gives a copy the player converts the picture's presentation time; computed only while `SR_MPEGAV` is on | Keep: measurement key, not integrity |
-| `src/rt/hle.c` | FNV-64 | Matches an audio block a guest player outputs to the sceMpeg block it copied (`psmf_av_content`, `SR_MPEGAV` only) | Keep: measurement key, not integrity |
+| `src/rt/hle_audio.c` | FNV-64 | Matches an audio block a guest player outputs to the sceMpeg block it copied (`psmf_av_content`, `SR_MPEGAV` only) | Keep: measurement key, not integrity |
 | `src/rt/savedata.c` | FNV-64 | Content identity in a SAVE's transaction record: crash recovery deletes or restores a save file only when its size and FNV-1a 64 match the recorded previous or new content, and the record's own hash finds a torn record | Keep: matches a save's own files after a crash, not a security check |
 | `src/rt/ge.c` | FNV-32 | GE transition trace draw identity and watched-buffer hash | Keep: trace key, not integrity |
 | `src/rt/gpu_sdl3vk/ge_gpu.c` | FNV-64 | Texture cache key | Keep: cache key, not integrity |

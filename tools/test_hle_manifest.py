@@ -256,14 +256,38 @@ static void more(void) {
         self.assertIn("static_unsupported", origins)
 
 
+class SubsystemOwnershipTests(unittest.TestCase):
+    """Every registration sits in its subsystem's file (#307, invariant I1).
+
+    tools/hle_registry_meta.py gives each NID a subsystem; the split gave each subsystem a
+    file, src/rt/hle_<subsystem>.c. hle.c keeps the registration API and calls the
+    subsystems' registration functions in order, and the infrastructure files register
+    nothing. Before the split, hle.c owned 635 registrations and this failed.
+    """
+
+    def test_each_registration_sits_in_its_subsystem_file(self) -> None:
+        for r in build_manifest()["registrations"]:
+            with self.subTest(nid=r["nid"], name=r["name"]):
+                self.assertEqual(r["owner_file"], f"src/rt/hle_{r['subsystem']}.c")
+
+    def test_core_and_infrastructure_files_register_nothing(self) -> None:
+        owners = {r["owner_file"] for r in build_manifest()["registrations"]}
+        for relative in ("src/rt/hle.c", "src/rt/hle_host.c", "src/rt/hle_data.c", "src/rt/hle_route.c"):
+            self.assertNotIn(relative, owners)
+
+    def test_every_subsystem_file_registers(self) -> None:
+        owners = {r["owner_file"] for r in build_manifest()["registrations"]}
+        for subsystem in sorted(set(meta.SUBSYSTEM_BY_PREFIX.values())):
+            self.assertIn(f"src/rt/hle_{subsystem}.c", owners)
+
+
 class PowerRegistrationOwnershipTests(unittest.TestCase):
     """scePower and sceKernelPower NIDs are registered from src/rt/hle_power.c (issue #307).
 
-    Their handlers already live in hle_power.c, so the registrations must too: one
-    obvious owner per NID, with hle.c left as composition glue. The NID set is pinned
-    here rather than derived from hle.c, so the test cannot pass by reading the old
-    location. scePower_469989ad stays in hle.c: its refusal uses hle.c's private
-    sr_hle_register_unsupported(), which hle_power.c cannot call.
+    Their handlers live in hle_power.c, so the registrations do too: one obvious owner per
+    NID. The NID set is pinned here rather than derived from the sources, so the test
+    cannot pass by reading the old location. scePower_469989ad and
+    scePowerCheckWlanCoexistenceClock joined when hle.c was split.
     """
 
     POWER_NIDS = frozenset({
@@ -275,6 +299,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         0xFEE03A2F, 0xBD681969, 0xEA382A27, 0xB1A52C83, 0x9BADB3EB,              # measured clock alias, Int and Float getters (PSP-3000 6.61 oracle 2026-10-15, PSP-HLE-POWER-001)
         0xB4432BC8, 0x8EFB3FA2, 0x843FBF43,                                      # charging status, battery life time, CPU clock setter (PSP-3000 6.61, 2026-10-24)
         0xB8D7B3FB,                                                              # scePowerSetBusClockFrequency (pspautotests power/freq.expected)
+        0x469989AD, 0xA85880D0,                                                  # scePower_469989ad refusal, WLAN coexistence clock (#307)
     })
 
     def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
@@ -284,15 +309,18 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         }
         self.assertEqual(owned, {f"0x{n:08x}" for n in self.POWER_NIDS})
 
-    def test_hle_c_registers_no_power_nid(self) -> None:
-        active = hle_manifest.active_source(hle_manifest.HLE_C.read_text(encoding="utf-8"))
-        registered = {
-            int(m.group(1), 16)
-            for m in re.finditer(
-                r"sr_hle_register(?:_unsupported)?\s*\(\s*0x([0-9a-fA-F]{1,8})[uU]?\s*,", active
-            )
-        }
-        self.assertEqual(registered & self.POWER_NIDS, set())
+    def test_no_other_runtime_source_registers_a_power_nid(self) -> None:
+        for relative, text in hle_manifest.runtime_hle_sources():
+            if relative == "src/rt/hle_power.c":
+                continue
+            active = hle_manifest.active_source(text)
+            registered = {
+                int(m.group(1), 16)
+                for m in re.finditer(
+                    r"sr_hle_register(?:_unsupported)?\s*\(\s*0x([0-9a-fA-F]{1,8})[uU]?\s*,", active
+                )
+            }
+            self.assertEqual(registered & self.POWER_NIDS, set(), relative)
 
 
 class RegistrationOwnerFileTests(unittest.TestCase):
@@ -1135,7 +1163,8 @@ citations (PSP-B1-01, no-colon forms) need their own check.
                 self.assertIsNotNone(reg, "public ad hoc NID has no production registration")
                 self.assertEqual(
                     (reg["origin"], reg["handler"], reg["owner_file"]),
-                    ("static_unsupported", "h_ControlledUnsupported", "src/rt/hle.c"),
+                    ("static_unsupported", "h_ControlledUnsupported",
+                     f"src/rt/hle_{hle_manifest.subsystem_for(name)}.c"),
                 )
 
     def test_committed_baseline_is_current_and_reproducible(self) -> None:
@@ -1368,7 +1397,7 @@ static uint32_t h_SynthReal(CpuState *s) {
 
 class ControlledRefusalDiagnosticTests(unittest.TestCase):
     def test_runtime_diagnostics_name_api_nid_issue_and_exit_summary(self) -> None:
-        source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        source = hle_manifest.runtime_hle_source()
         self.assertIn(
             "HLE: controlled refusal: %s (NID 0x%08x) returned 0x%08x; in the works (#341)",
             source,
@@ -1474,6 +1503,35 @@ class RegistrationScopeTests(unittest.TestCase):
 
     def test_registration_outside_any_conditional_is_reachable_from_both(self) -> None:
         self.assertEqual(self.scopes[0x80]["reachable_from"], ["production", "selftest"])
+
+    def test_helper_chains_resolve_to_the_outermost_call_site(self) -> None:
+        """A registration run called from a helper that only the selftest calls is not production."""
+        source = (
+            "static void register_inner(void) {\n"
+            '    sr_hle_register(0x00000090u, "synthInner", h_Prod);\n'
+            "}\n"
+            "static void register_outer(void) {\n"
+            "    register_inner();\n"
+            "}\n"
+            "static void register_both_inner(void) {\n"
+            '    sr_hle_register(0x000000a0u, "synthBothInner", h_Prod);\n'
+            "}\n"
+            "static void register_both_outer(void) {\n"
+            "    register_both_inner();\n"
+            "}\n"
+            "void sr_hle_init(void) {\n"
+            "#ifdef SR_HLE_THREAD_SELFTEST\n"
+            "    register_outer();\n"
+            "#endif\n"
+            "    register_both_outer();\n"
+            "}\n"
+        )
+        scopes = hle_manifest.registration_scopes(source)
+        self.assertEqual(scopes[0x90]["declared_in"], "register_inner")
+        self.assertEqual(scopes[0x90]["reachable_from"], ["selftest"],
+                         "one level of call sites sees register_outer() called unconditionally and "
+                         "would call a selftest-only registration production evidence")
+        self.assertEqual(scopes[0xA0]["reachable_from"], ["production", "selftest"])
 
     def test_unrelated_conditionals_do_not_narrow_production_reachability(self) -> None:
         source = CHAIN_SOURCE.replace(

@@ -24,6 +24,7 @@ TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 
 from nk_core import decrypt_tool  # noqa: E402
+import hle_sources  # noqa: E402
 
 REGISTRY = json.loads((ROOT / "assets" / "failure_codes.json").read_text(encoding="utf-8"))
 DOC = (ROOT / "docs" / "FAILURE_CODES.md").read_text(encoding="utf-8")
@@ -355,7 +356,7 @@ class StopBoundaryTests(unittest.TestCase):
             r'dispatch_record_semantic_stop_issue\(\s*"([a-z0-9-]+)",\s*(\d+)u\)', recomp))
         self.assertGreater(len(recorded), 1)
         names |= set(recorded)
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         names |= set(re.findall(r'#define HLE_LIBFONT_STARTUP_BOUNDARY\s+"([a-z0-9-]+)"', hle))
         prefixes = set(re.findall(r'"(unsupported-import-)"', hle))
         boundaries = REGISTRY["stop_boundaries"]

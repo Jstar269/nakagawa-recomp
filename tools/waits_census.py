@@ -36,7 +36,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hle_manifest import build_manifest  # noqa: E402
+from hle_manifest import MANIFEST_SOURCE, build_manifest  # noqa: E402
 
 MATRIX = ROOT / "docs" / "PSP_INTR_WAITS_MATRIX.md"
 OUT_MD = ROOT / "docs" / "PSP_INTR_WAITS_CENSUS.md"
@@ -130,7 +130,7 @@ def build_census(matrix_text: str | None = None, manifest: dict | None = None) -
     return {
         "schema": 1,
         "source": "docs/PSP_INTR_WAITS_MATRIX.md",
-        "manifest_source": "src/rt/hle.c",
+        "manifest_source": MANIFEST_SOURCE,
         "summary": {
             "total_apis": len(rows),
             "by_disposition": summary,
@@ -153,7 +153,7 @@ def render_markdown(census: dict) -> str:
         "Live join of every exact `sce*` / `__sce*` API named in",
         "`docs/PSP_INTR_WAITS_MATRIX.md` against",
         "`tools/hle_manifest.build_manifest()` (registrations extracted from",
-        "`src/rt/hle.c`). Regenerate with `python tools/waits_census.py`;",
+        "the runtime HLE sources, `tools/hle_sources.py`). Regenerate with `python tools/waits_census.py`;",
         "`--check` fails when this file is stale.",
         "",
         "## Dispositions and owners",

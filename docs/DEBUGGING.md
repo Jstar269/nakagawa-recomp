@@ -1136,7 +1136,7 @@ publish is reported as absent.
 
 **Audio drift** is the one that was unmeasurable until the telemetry published it. The runtime
 reads `sr_audio_queued()` — the queue depth the blocking output paces against — in
-`src/rt/hle.c`, in the same place it computes the delay from it, and prints one reading per
+`src/rt/hle_audio.c`, in the same place it computes the delay from it, and prints one reading per
 300 delivered vblanks (about five seconds) behind `SR_AUDIOSTAT`:
 
 ```text
@@ -1698,7 +1698,8 @@ player and game behave as they do for everyone ([#314](https://github.com/Jstar2
 ## Quick recipes
 
 - **Find an HLE handler.** `git grep -n "sr_hle_register(0x<nid>" src/rt/` names the handler for a NID
-  (`src/rt/nid_names.h` maps NIDs to names). Check its argument reads against the function's public signature
+  (`src/rt/nid_names.h` maps NIDs to names), and `python tools/hle_sources.py --defining-file <handler>`
+  names the `src/rt/hle_<subsystem>.c` file that defines it. Check its argument reads against the function's public signature
   (`AGENTS.md` section 7).
 - **Run one native self-test the way CI does.** `mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime CC=gcc
   hle-thread-selftest` (likewise `psmf-media-selftest`). Each prints a `<name>: N checks, M failures` summary; there is

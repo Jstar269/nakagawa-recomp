@@ -715,6 +715,8 @@ set_tests_properties(nk_ui_sdl_input_test PROPERTIES SKIP_RETURN_CODE 77
 # with CMake; the Android build (android/) uses it to make libnk_title_<id>.so. The inventory
 # mirrors the Makefile's RT_SRCS (public backends, POSIX platform), RT_GE_O, ATRAC3P_SRCS plus
 # the bridge, and H264_SUB_SRCS; tools/test_android_build.py checks that they agree.
+# The runtime HLE sources (the Makefile's HLE_SRCS, tools/hle_sources.py) stay together, from
+# src/rt/hle.c on; tools/test_hle_sources.py checks that the three lists agree.
 set(NK_RUNTIME_SOURCES
     src/rt/recomp.c
     src/rt/flight_recorder.c
@@ -735,11 +737,36 @@ set(NK_RUNTIME_SOURCES
     src/rt/ge_capture.c
     src/rt/vfpu_interp.c
     src/rt/hle.c
+    src/rt/hle_audio.c
+    src/rt/hle_audio_codec.c
+    src/rt/hle_cache_dma.c
+    src/rt/hle_data.c
+    src/rt/hle_display.c
+    src/rt/hle_font.c
+    src/rt/hle_ge.c
+    src/rt/hle_host.c
+    src/rt/hle_input.c
+    src/rt/hle_io.c
+    src/rt/hle_kernel_interrupt.c
+    src/rt/hle_kernel_memory.c
+    src/rt/hle_kernel_module.c
+    src/rt/hle_kernel_sync.c
+    src/rt/hle_kernel_thread.c
+    src/rt/hle_kernel_time.c
+    src/rt/hle_kernel_utils.c
+    src/rt/hle_mpeg.c
+    src/rt/hle_network.c
+    src/rt/hle_npdrm.c
+    src/rt/hle_power.c
+    src/rt/hle_route.c
+    src/rt/hle_rtc.c
+    src/rt/hle_system.c
+    src/rt/hle_umd.c
+    src/rt/hle_utility.c
     src/rt/audio_resample.c
     src/rt/flash0_font.c
     src/rt/mp3_bridge.c
     src/core/nk_xb.c
-    src/rt/hle_power.c
     src/rt/prx_loader.c
     src/rt/sched.c
     src/rt/sr_coro.c

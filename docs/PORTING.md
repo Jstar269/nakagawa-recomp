@@ -229,7 +229,9 @@ Watch `stderr` output for:
 
 When the recompiler hits a syscall it doesn't know, it stops. You have two options:
 
-1. **Add an HLE handler** in `src/rt/hle.c` — implement the syscall on the host side
+1. **Add an HLE handler** in its subsystem's file, `src/rt/hle_<subsystem>.c` (the subsystem comes from
+   the library prefix in `tools/hle_registry_meta.py`), and register it there — implement the syscall
+   on the host side
 2. Add or map the missing NID in the runtime/import tables; unknown calls must not be silently treated as successful.
 
 ### Codegen stubs

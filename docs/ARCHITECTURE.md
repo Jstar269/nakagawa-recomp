@@ -30,10 +30,10 @@ flowchart LR
         AOT["AOT dispatch<br/>src/rt/recomp.c"]
         FLOOR["Fail-closed interpreter floor<br/>src/rt/guest_interp.c<br/>analyzer-owned spans; unsupported forms stop"]
         SCHED["Scheduler<br/>src/rt/sched.c"]
-        HLE["HLE services<br/>src/rt/hle.c"]
+        HLE["HLE services<br/>src/rt/hle.c<br/>src/rt/hle_*.c (one per subsystem)"]
         GE["GE rendering<br/>src/rt/ge.c<br/>src/rt/gpu_sdl3vk/ge_gpu.c"]
         VK["Vulkan presenter<br/>src/rt/gpu_sdl3vk/sdl3vk.c"]
-        AUDIO["Audio output<br/>src/rt/hle.c<br/>src/rt/audio_unavailable.c"]
+        AUDIO["Audio output<br/>src/rt/hle_audio.c<br/>src/rt/audio_unavailable.c"]
     end
 
     INTAKE -->|"encrypted input with no decrypted copy"| REFUSE
@@ -286,7 +286,10 @@ The runtime executes generated guest functions and implements the host side of P
 
 | File | Purpose |
 | --- | --- |
-| `hle.c` | PSP syscall/NID dispatch and a large portion of kernel/user HLE behavior |
+| `hle.c` | PSP syscall/NID dispatch (`sr_syscall()`), the handler table and registration API, kernel object UIDs and the user-memory allocator, HLE code shared by two or more subsystems, and `sr_hle_init()`, which calls every subsystem's registrations in order |
+| `hle_<subsystem>.c` | One file per subsystem in `tools/hle_registry_meta.py` (`hle_audio.c`, `hle_io.c`, `hle_kernel_thread.c`, ...): its handlers, their state and its registrations (#307) |
+| `hle_host.c` / `hle_data.c` / `hle_route.c` | HLE infrastructure that registers no NIDs: host primitives and checked host paths; the data-root lookup and `/DATA/FONT`; acceptance routes and frame capture |
+| `hle_internal.h` | Private header of the runtime HLE files: shared types, macros and small helpers, and the declarations one file defines and another uses. `tools/hle_sources.py` lists the files |
 | `hle_thread_selftest.c` | Game-input-free Windows and Linux harness that executes selected production HLE handlers through registered NIDs against a synthetic scheduler world |
 | `audio_unavailable.c` | Public-safe SDL3 host audio backend linked under `PUBLIC_SAFE=1`; fails closed with a diagnostic when no device is available. Despite the historical file name it is a working backend, not a refusing stub; the lineage-sensitive `audio.c` backend was retired on 2026-10-25 and no build compiles it |
 | `iso_public.c` / `iso.h` | Public-tree UMD/ISO backend linked under `PUBLIC_SAFE=1` using `nk_iso`; `iso_unavailable.c` is kept as a stub alternative; the private `iso.c` backend was retired on 2026-10-25 |

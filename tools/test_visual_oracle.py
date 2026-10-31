@@ -20,12 +20,15 @@ import sys
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MANAGER = ROOT / "nk_manager.ps1"
 SUPPORT = ROOT / "tools" / "nk_safety.ps1"
 PS_TESTS = ROOT / "tools" / "test_visual_oracle.ps1"
-HLE = ROOT / "src" / "rt" / "hle.c"
 
 
 def _powershell() -> str | None:
@@ -209,7 +212,7 @@ class VisualOracleContractTests(unittest.TestCase):
         # The whole point of a two-window capture is comparing both ends of a transition
         # from the same run. The rotating 8-slot name would let the late window overwrite
         # the early one, silently destroying the reference the comparison depends on.
-        hle = HLE.read_text(encoding="utf-8")
+        hle = hle_sources.text()
         self.assertIn('getenv("SR_FBSNAP_WINDOWS")', hle)
         self.assertIn('"snap_v%u.ppm"', hle)
         self.assertIn("SnapWindows", self.manager)
@@ -219,7 +222,7 @@ class VisualOracleContractTests(unittest.TestCase):
         # The stop point must be a fully completed vblank tick: the controller sample for
         # vblank V has to be latched before the process exits, or a route's final press
         # can be dropped. Assert placement structurally, not by comment.
-        hle = HLE.read_text(encoding="utf-8")
+        hle = hle_sources.text()
         start = hle.index("void sr_vblank_tick(void) {")
         # The function ends at the first line-start closing brace after it.
         end = hle.index("\n}\n", start)

@@ -107,11 +107,11 @@ relative to `third_party/ppsspp/`.
 
 | File in this project | Translated/derived from (PPSSPP) | Nature |
 | --- | --- | --- |
-| `src/rt/mpeg.c`, `mpeg` wrappers in `src/rt/hle.c` | `Core/HLE/sceMpeg.cpp` (rev 4e109dd6) | Faithful port of PSMF header analysis, ring-buffer accounting, MPEG context/handle creation, stream registration, and AU getters. Excludes the ffmpeg-based MediaEngine sample decode. |
+| `src/rt/mpeg.c`, `mpeg` wrappers in `src/rt/hle_mpeg.c` | `Core/HLE/sceMpeg.cpp` (rev 4e109dd6) | Faithful port of PSMF header analysis, ring-buffer accounting, MPEG context/handle creation, stream registration, and AU getters. Excludes the ffmpeg-based MediaEngine sample decode. |
 | `src/rt/pgf.c`, `src/rt/pgf.h` | `Core/Font/PGF.cpp` | C port of the PGF font reader: PGF parse, `PGFFontInfo`/`PGFCharInfo`/`GlyphImage` layouts, glyph rasterisation. |
 | `src/rt/vfpu_interp.c`; VFPU prefix + transcendental helpers behind `src/rt/recomp.h`/`recomp.c` | `Core/MIPS/MIPS.cpp` and PPSSPP's VFPU kernels | Exact ports of the table-based VFPU transcendentals and the `vcst` constant table; source/destination prefix application ported from PPSSPP. |
 | `src/rt/ge.c` (software GE rasterizer) | `GPU/Software/*` (`Clipper`, `TransformUnit`, `Sampler.cpp`, `Lighting.cpp`, `DrawPixel.cpp`, `SoftGpu.cpp`), `GPU/Common/VertexDecoder*`, `GPU/ge_constants.h` / `GECommands.h`, `GPU/Common/TextureCacheCommon` | Algorithm-for-algorithm reimplementation of PPSSPP's software renderer: vertex decode, T&L, near-clipping, primitive acceptance, culling-by-submission-order, sampler/CLUT offsets, depth/fog semantics, command decode. |
-| `src/rt/hle.c` (kernel/HLE behaviour) | `Core/HLE/*` (`sceUtility.cpp`, `sceCtrl.cpp`, `sceAtrac.cpp`, kernel object/UID pool, `SetDeadbeefRegs`), `Core/HW/Display.cpp` | Modelled on PPSSPP: UID allocation, partition layout, `sceUtility` defaults, sceCtrl ring-buffer sampling, sceAtrac decode bookkeeping, deadbeef register poisoning, vblank/line timing. |
+| `src/rt/hle.c` and the subsystem files split from it (kernel/HLE behaviour; listed in `tools/hle_sources.py`) | `Core/HLE/*` (`sceUtility.cpp`, `sceCtrl.cpp`, `sceAtrac.cpp`, kernel object/UID pool, `SetDeadbeefRegs`), `Core/HW/Display.cpp` | Modelled on PPSSPP: UID allocation, partition layout, `sceUtility` defaults, sceCtrl ring-buffer sampling, sceAtrac decode bookkeeping, deadbeef register poisoning, vblank/line timing. |
 | `src/rt/nid_names.h` | `Core/HLE/*.cpp` function tables | Generated from PPSSPP's HLE NID tables (do not edit by hand). |
 | `src/rt/recomp.h` (`CpuState` layout, semantics) | `Core/MIPS/MIPS*` | VFPU `v[128]` physical ordering, `fpcond`/`fcr31` split, unaligned LWL/LWR/SWL/SWR, kernel object pool numbering all match PPSSPP. |
 
