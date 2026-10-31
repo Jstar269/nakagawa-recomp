@@ -1312,6 +1312,10 @@ static const char *const FIXTURE_SHA256 =
  * planner and so no build identity at all. */
 static const NkPackageBuildIdentity *g_fixture_build_identity = NULL;
 
+/* Extra build-report members the next fixture package carries, each with its leading
+ * comma; empty for none. */
+static const char *g_fixture_report_extra = "";
+
 /* `folder_enhancement_id` names the package folder (NULL: the authentic
    packages/<disc_id>, else packages/<disc_id>-enhanced-<id>), and
    `recorded_enhancement_id` the enhancement package the build's codegen options
@@ -1472,8 +1476,9 @@ static void write_runtime_package_fixture_variant(
         "\"input_hashes\":{\"manifest\":{\"sha256\":\"%064d\"},"
         "\"executable\":{\"sha256\":\"%s\"},\"modules\":[],\"psp_header\":null},"
         "\"tools\":{},\"coverage\":{},\"unsupported\":{\"imports\":[],"
-        "\"instructions\":[],\"regions\":[]},\"analysis_diagnostics\":[],\"artifacts\":{}}\n",
-        title_id, (unsigned)abi_version, cache_json, 0, input_executable_sha256);
+        "\"instructions\":[],\"regions\":[]},\"analysis_diagnostics\":[],\"artifacts\":{}%s}\n",
+        title_id, (unsigned)abi_version, cache_json, 0, input_executable_sha256,
+        g_fixture_report_extra);
     assert(report_length > 0 && (size_t)report_length < sizeof(report_json));
     char report_path[1100];
     snprintf(report_path, sizeof(report_path), "%s%cbuild-report.json", package_dir,
@@ -9766,6 +9771,37 @@ int main(int argc, char **argv) {
                    validation_root, &game, &changed_report_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_STALE);
         assert(!changed_report_info.validation_cache_hit);
+
+        /* #1730: a report may name the level the generated code compiled at and each unit
+           that compiled lower; a malformed section is refused like any other field. */
+        g_fixture_report_extra =
+            ",\"optimization\":{\"recomp_opt\":\"-O2\",\"fallback_units\":[{\"unit\":"
+            "\"g_recomp_3\",\"body\":\"f_08804000\",\"bytes\":5000000,\"level\":\"-O0\"}]}";
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        NkRuntimePackageInfo optimization_info;
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &optimization_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
+        static const char *const malformed_optimization[] = {
+            ",\"optimization\":{\"recomp_opt\":\"-O2\"}",
+            ",\"optimization\":{\"recomp_opt\":\"-O2\",\"fallback_units\":[],\"extra\":1}",
+            ",\"optimization\":{\"recomp_opt\":\"-O2\",\"fallback_units\":[{\"unit\":"
+            "\"g_recomp_3\",\"body\":\"f_08804000\",\"bytes\":\"5000000\",\"level\":\"-O0\"}]}",
+            ",\"optimization\":{\"recomp_opt\":\"-O2\",\"fallback_units\":[{\"unit\":"
+            "\"g_recomp_3\",\"body\":\"f_08804000\",\"bytes\":5000000}]}",
+        };
+        for (size_t i = 0; i < sizeof(malformed_optimization) / sizeof(malformed_optimization[0]); i++) {
+            g_fixture_report_extra = malformed_optimization[i];
+            write_runtime_package_fixture(validation_root, cached_disc_id,
+                                          "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
+                                          "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+            assert(nk_launch_validate_runtime_package(
+                       validation_root, &game, &optimization_info, reason,
+                       sizeof(reason)) == NK_RUNTIME_PACKAGE_STALE);
+        }
+        g_fixture_report_extra = "";
 
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,

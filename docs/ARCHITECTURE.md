@@ -537,10 +537,14 @@ profile dump; a nonzero value means the hotspot ranking is incomplete and must n
 authoritative. `make profiler-selftest` covers the zero-PC and saturated-probe cases without game
 inputs.
 
-The HST manifest adapter requests `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`; direct Make
-and generic manifests remain conservative `-O0/-O0`. Explicit overrides remain fully supported.
-Generated `-O2` is not being adopted; `-O1`'s
-measured build cost is higher but acceptable for HST.
+A package build compiles the runtime at `-O2` and generated code at `-O1` for every title
+(`PACKAGE_RUNTIME_OPT` and `PACKAGE_RECOMP_OPT` in
+[`tools/nk_core/package_cache.py`](../tools/nk_core/package_cache.py)); direct Make stays at
+`-O0/-O0`, and an explicit `RUNTIME_OPT` or `RECOMP_OPT` wins. The level was measured for #1730
+on HST and two other titles: `-O1` ran generated guest code 11-33% faster than `-O0` outside the
+GE, and `-O2` was no faster than `-O1` beyond run-to-run noise while taking up to 3.3 times the
+build CPU time. A body too large for its unit compiles alone at `-O0`
+([packaging](RUNTIME_PACKAGING_ARCHITECTURE.md)).
 Runtime, generated-code, and codegen profile changes have separate content-addressed invalidation
 stamps. C objects emit `-MMD -MP` dependency files so transitive headers participate in freshness.
 The [`Makefile`](../Makefile) is the source of truth for the current optimization split and
@@ -596,6 +600,16 @@ runs at the live SP.
 
 The slot is never live across a yield, syscall, dispatch entry or unwind; each of those refuses a
 live transfer with a named `TAIL_TRANSFER_FAULT`.
+
+**What a body owns.** A body owns exactly the words its entry can run. `j`, `jr`, `jalr $zero` and
+the `b` idiom (`beq $zero, $zero`, which the analyzer's CFG also gives no fall-through) end a
+straight line after their delay slot, so the words after it belong to the body only when another
+edge reaches them (#1730). Walking on past `b` used to copy the next function into every body that
+reached it: on one compilation disc a module of about 100,000 instructions became 2 GB of C. A
+branch may also land on the delay slot of such a transfer; on that path the slot is an ordinary
+instruction, so the body owns the word after it too, whichever the walk meets first. The emitter
+refuses a body whose slot label has no owned successor. `cosim-selftest` covers both (`bjoin`,
+`bslot`, `jslot`, `bself`).
 
 **Entry splitting.** A body owns the code it reaches from its entry. Straight-line fall-through and
 `j` into another entry already leave through TAIL transfers, but a conditional branch, taken or not

@@ -212,6 +212,9 @@ returns through its callee's `jr $ra` instead.
 | `zlink` | `bltzal` calling a leaf, and a not-taken `bgezal` that still links `$ra` |
 | `jump` | direct `j` with its slot, and a word only a mis-computed target could reach |
 | `jthunk` / `jtarget` | a known-entry direct `j` tail crossing with a this-adjusting delay slot |
+| `bjoin` | words after a `b` (`beq $zero, $zero`) that only a later backward branch reaches, beside a not-taken `beq` whose fall-through is the rest of the cell |
+| `bslot` / `jslot` | a branch into the delay slot of `b` / `j`: the slot runs as an ordinary word and the guest continues after it |
+| `bself` | `b` to its own delay slot: the slot runs twice |
 | `link` / `linkr` | `jal` and `jalr` link semantics with a conventional `$ra`-preserving frame |
 | `jrslot` / `jrtail` | a computed call and a computed tail call whose delay slots rewrite the target register |
 | `hilo` | `HI`/`LO` through signed and unsigned multiply (they differ in the high word only) |
@@ -329,7 +332,14 @@ The branch-likely and Allegrex bit-operation cells carry their own interpreter
 mutants (an unannulled slot, an inverted `bc1` sense, an inverted `movn`, an
 off-by-one `ext` size, an `ins` that ORs instead of replacing, a `seb` that does not
 sign-extend, and a `mov.s` that quiets a signaling NaN) and two generator mutants (a
-branch-likely slot that always runs, an `ins` that keeps the old field).
+branch-likely slot that always runs, an `ins` that keeps the old field). Two more
+generator mutants break the body walk (#1730): one gives every `beq` no not-taken
+successor, and one drops the continuation after a delay slot that a branch lands on,
+with the emitter's own refusal removed so the kill is a divergence, not a build failure.
+The campaign counts any divergence as a kill; the first it reports for these is in
+`bjoin` (its not-taken `beq`) and in `bslot` respectively, the cells built for them.
+Making `beql $zero, $zero` a terminator too would be an equivalent mutant (its slot
+and target are the same either way when taken) and is not claimed.
 
 Two interpreter guards are not killed by this gate, and each is layering rather than a
 hole:
