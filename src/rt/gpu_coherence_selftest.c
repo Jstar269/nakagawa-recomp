@@ -110,6 +110,20 @@ int main(void) {
 #else
     ok = gegpu_coherence_selftest();
 #endif
+    /* Ace Mode off (A2, src/rt/ace.h): every cell above ran with no anisotropic sampler,
+     * and the texture pool kept its MAX_TEX sets. */
+    {
+        GeGpuAceStats ace;
+        gegpu_ace_stats(&ace);
+        if (ace.af != 0 || ace.af_samplers != 0u || ace.tex_pool_sets == 0u) {
+            fprintf(stderr, "gpu coherence selftest: FAIL ace-off af=%d af_samplers=%llu pool=%u\n",
+                    ace.af, ace.af_samplers, ace.tex_pool_sets);
+            ok = 0;
+        } else {
+            printf("gpu coherence selftest: PASS ace-off af=0 af_samplers=0 pool=%u\n",
+                   ace.tex_pool_sets);
+        }
+    }
     gegpu_shutdown();
     sdl3vk_shutdown();
     free(arena);

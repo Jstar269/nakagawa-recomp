@@ -21,6 +21,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "../ace.h"   /* Ace Mode: texture filtering asks for samplerAnisotropy */
 #include "sdl3vk.h"
 #include "nk_platform.h"
 #include "../perf.h"
@@ -682,6 +683,27 @@ int sdl3vk_init(const char *title) {
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = s_denorm_preserve_f32 ? 2u : 1u;
     dci.ppEnabledExtensionNames = dev_ext;
+    /* Ace Mode's texture filtering (ace.h) is the only device feature the player ever asks
+     * for, and only in an Ace run that wants it: an authentic run creates the device with no
+     * features, as before. A device without it, or with less than 2x, runs without filtering
+     * and the run says why; a lower maximum clamps the level. */
+    VkPhysicalDeviceFeatures ace_features = {0};
+    if (g_ace_on && ace_effective()->af > 0) {
+        VkPhysicalDeviceFeatures have;
+        VkPhysicalDeviceProperties pp;
+        vkGetPhysicalDeviceFeatures(s_pdev, &have);
+        vkGetPhysicalDeviceProperties(s_pdev, &pp);
+        if (have.samplerAnisotropy && pp.limits.maxSamplerAnisotropy >= 2.0f) {
+            int device_max = pp.limits.maxSamplerAnisotropy >= 16.0f ? 16
+                           : pp.limits.maxSamplerAnisotropy >= 8.0f ? 8
+                           : pp.limits.maxSamplerAnisotropy >= 4.0f ? 4 : 2;
+            ace_features.samplerAnisotropy = VK_TRUE;
+            dci.pEnabledFeatures = &ace_features;
+            ace_set_af_effective(device_max < ace_effective()->af ? device_max : ace_effective()->af, NULL);
+        } else {
+            ace_set_af_effective(0, "this GPU has no anisotropic filtering");
+        }
+    }
     INIT_VK(vkCreateDevice(s_pdev, &dci, NULL, &s_dev));
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
 
