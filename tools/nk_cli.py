@@ -64,6 +64,7 @@ from nk_core.prep_engine import NativeTitleStager, SUPPORTED_ARCHIVE_FORMATS  # 
 from nk_core.title_registry import get_default_registry  # noqa: E402
 from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
 from nk_core import disc_expand_tool  # noqa: E402
+from nk_core import disc_verify  # noqa: E402
 from nk_core.library import (  # noqa: E402
     MAX_LIBRARY_GAMES,
     MAX_LIBRARY_JSON_BYTES,
@@ -1065,7 +1066,14 @@ def _read_library_json(path: Path):
     )
 
 
-def _load_library_entry(user_root: Path, disc_id: str) -> dict:
+def _load_library_entry(user_root: Path, disc_id: str, iso_path: Path | None = None) -> dict:
+    """The library record to build for ``disc_id``.
+
+    Two images can share a disc ID (a retail disc and a fan translation of it, told apart by
+    their content hash). ``iso_path`` picks the record of that image; without it, or when no
+    record names it, the first record with the disc ID is used, as the player's
+    ``nk_library_find_by_disc_id`` does.
+    """
     library_path = user_root / "library.json"
     # The per-user library is externally supplied: enforce the byte/depth/count
     # ceilings through the shared bounded-JSON helper before any field access.
@@ -1087,9 +1095,17 @@ def _load_library_entry(user_root: Path, disc_id: str) -> dict:
             f"The per-user library holds {len(games)} games, over the {MAX_LIBRARY_GAMES}-record limit."
         )
     matches = [game for game in games if isinstance(game, dict) and str(game.get("disc_id", "")).upper() == disc_id]
-    if len(matches) != 1:
-        raise PackageBuildError(f"Library entry {disc_id} was not found uniquely.")
-    entry = matches[0]
+    if not matches:
+        raise PackageBuildError(f"Library entry {disc_id} was not found.")
+    if len(matches) > 1 and len({_library_content_sha1(game) for game in matches}) != len(matches):
+        raise PackageBuildError(
+            f"Library entry {disc_id} is repeated for the same disc image; re-import the ISO."
+        )
+    named = [game for game in matches if iso_path is not None and
+             isinstance(game.get("iso_path"), str) and game["iso_path"] and
+             Path(game["iso_path"]).expanduser().resolve(strict=False) ==
+             Path(iso_path).expanduser().resolve(strict=False)]
+    entry = named[0] if named else matches[0]
     for field in ("title_id", "iso_path"):
         if not isinstance(entry.get(field), str) or not entry[field]:
             raise PackageBuildError(f"Library entry {disc_id} is missing {field}; re-import the ISO before building.")
@@ -2280,7 +2296,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
     try:
         reporter.report("preflight", "START", f"Inspecting library entry for {disc_id}...")
         user_root = _user_data_root(args.user_data_root)
-        entry = _load_library_entry(user_root, disc_id)
+        entry = _load_library_entry(user_root, disc_id, getattr(args, "iso_path", None))
         iso_path = Path(entry["iso_path"]).expanduser()
         if not iso_path.is_file():
             raise PackageBuildError(f"The library source ISO is unavailable at {iso_path}.")
@@ -2957,6 +2973,22 @@ def cmd_fonts_import(args: argparse.Namespace) -> int:
     except (FontValidationError, FontImportError, OSError, ValueError) as exc:
         sys.stderr.write(f"Font import error: {exc}\n")
         return 1
+
+
+def cmd_redump_import(args: argparse.Namespace) -> int:
+    """Import the user's own Redump PSP datafile into their data folder (nothing is uploaded)."""
+    try:
+        user_root = _user_data_root(args.user_data_root)
+        dat = disc_verify.import_dat(args.datafile, user_root)
+    except (disc_verify.DiscVerifyError, PackageBuildError, OSError) as exc:
+        code = getattr(exc, "boundary_code", None)
+        detail = f" [{code}]" if code else ""
+        sys.stderr.write(f"Redump list not imported{detail}: {exc}\n")
+        return 1
+    version = f" (version {dat.version})" if dat.version else ""
+    print(f"Imported a Redump list of {len(dat)} discs{version}. Discs added from now on are "
+          "checked against it.")
+    return 0
 
 
 def cmd_fonts_status(args: argparse.Namespace) -> int:
@@ -3742,17 +3774,40 @@ def _library_lock(user_root: Path, timeout_seconds: float = LIBRARY_LOCK_TIMEOUT
         handle.close()
 
 
+def _library_content_sha1(game: object) -> str:
+    """A library record's whole-image SHA-1, or "" for a record written before hashing."""
+    value = game.get("content_sha1") if isinstance(game, dict) else None
+    return value.lower() if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value) else ""
+
+
+def _library_same_image(game: object, disc_id: str, sha1: str, iso_path: Path) -> bool:
+    """Whether a record is the one a new record for this image replaces.
+
+    The library is keyed by disc ID plus content hash (src/core/nk_library.c): a record of
+    the same disc ID is replaced when it holds the same SHA-1, when either side was never
+    hashed (the record an older Nakagawa wrote, or an image that could not be read), or when
+    it names the same file, which now holds this image.
+    """
+    if not isinstance(game, dict) or str(game.get("disc_id", "")).upper() != disc_id:
+        return False
+    existing = _library_content_sha1(game)
+    return (not existing or not sha1 or existing == sha1
+            or game.get("iso_path") == str(iso_path))
+
+
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
                            selected: str, is_experimental: bool,
-                           boot_executable: str = "") -> None:
+                           boot_executable: str = "",
+                           digest: disc_verify.DiscDigest | None = None) -> None:
     with _library_lock(user_root):
         _write_bringup_library_locked(user_root, iso_path, metadata, title_id, selected,
-                                      is_experimental, boot_executable)
+                                      is_experimental, boot_executable, digest)
 
 
 def _write_bringup_library_locked(user_root: Path, iso_path: Path, metadata, title_id: str,
                                   selected: str, is_experimental: bool,
-                                  boot_executable: str) -> None:
+                                  boot_executable: str,
+                                  digest: disc_verify.DiscDigest | None = None) -> None:
     library_path = user_root / "library.json"
     games = []
     if library_path.exists():
@@ -3771,9 +3826,9 @@ def _write_bringup_library_locked(user_root: Path, iso_path: Path, metadata, tit
                 f"The bring-up user library holds {len(payload['games'])} games, "
                 f"over the {MAX_LIBRARY_GAMES}-record limit."
             )
+        sha1 = digest.sha1 if digest is not None else ""
         games = [game for game in payload["games"]
-                 if not isinstance(game, dict) or
-                 str(game.get("disc_id", "")).upper() != metadata.disc_id.upper()]
+                 if not _library_same_image(game, metadata.disc_id.upper(), sha1, iso_path)]
     record = {
         "disc_id": metadata.disc_id.upper(),
         "title_id": title_id,
@@ -3782,6 +3837,8 @@ def _write_bringup_library_locked(user_root: Path, iso_path: Path, metadata, tit
         "boot_executable": boot_executable,
         "is_experimental": is_experimental,
     }
+    if digest is not None:
+        _add_disc_verification(record, digest, games, _imported_dat(user_root))
     # The disc's own name and version, so the player's card names the game: a record
     # without them shows as an untitled disc.
     title = getattr(metadata, "title", "")
@@ -3812,6 +3869,38 @@ def _write_bringup_library_locked(user_root: Path, iso_path: Path, metadata, tit
     except ValueError as exc:
         raise PackageBuildError(f"The bring-up user library output exceeds a bounded-input limit: {exc}") from exc
     _write_private_file(library_path, data)
+
+
+def _imported_dat(user_root: Path) -> disc_verify.RedumpDat | None:
+    """The Redump list imported into this data folder; None (tier not checked) without one."""
+    try:
+        return disc_verify.load_imported_dat(user_root)
+    except disc_verify.DiscVerifyError as exc:
+        print(f"The imported Redump list was not used [{exc.boundary_code}]: {exc}")
+        return None
+
+
+def _add_disc_verification(record: dict, digest: disc_verify.DiscDigest, games: list,
+                           dat: disc_verify.RedumpDat | None) -> None:
+    """The image's hashes and verification tier on its new library record.
+
+    A disc ID is known retail when another record with it is verified, so a verified image
+    also turns an unknown record of its disc ID into a modified one.
+    """
+    disc_id = record["disc_id"]
+    verified_ids = {
+        str(game.get("disc_id", "")).upper() for game in games
+        if isinstance(game, dict) and game.get("disc_verification") == disc_verify.VERIFIED_RETAIL
+    }
+    tier = disc_verify.classify(disc_id, digest, dat, verified_ids)
+    record.update({"content_sha1": digest.sha1, "content_crc32": digest.crc32})
+    if tier != disc_verify.NOT_CHECKED:
+        record["disc_verification"] = tier
+    if tier == disc_verify.VERIFIED_RETAIL:
+        for game in games:
+            if (isinstance(game, dict) and str(game.get("disc_id", "")).upper() == disc_id
+                    and game.get("disc_verification") == disc_verify.UNKNOWN):
+                game["disc_verification"] = disc_verify.MODIFIED
 
 
 def _write_experimental_module_bindings(profile_path: Path, profile: dict,
@@ -4477,9 +4566,16 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 decrypted_module_dir(user_root, metadata.disc_id),
             )
         library_executable = "EBOOT.BIN" if selected == "EBOOT.elf" else str(selected).upper()
+        # The whole image is hashed on add (the expansion, for a compressed image), so the
+        # library keeps a fan translation beside its retail disc and labels it.
+        try:
+            digest = disc_verify.hash_image(iso_path)
+        except disc_verify.DiscVerifyError as exc:
+            print(f"The disc image was not hashed [{exc.boundary_code}]: {exc}")
+            digest = None
         _write_bringup_library(
             user_root, iso_path, metadata, title_id, library_executable,
-            is_experimental, str(preflight["selected_executable_source"]),
+            is_experimental, str(preflight["selected_executable_source"]), digest,
         )
     except Exception as exc:
         failure, issues, module_detail = _bringup_import_failure(exc, checks)
@@ -4590,6 +4686,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
 
     build_args = argparse.Namespace(
         disc_id=metadata.disc_id,
+        iso_path=iso_path,
         user_data_root=user_root,
         module_dir=module_dir,
         psp_header=None,
@@ -4885,6 +4982,14 @@ def main() -> int:
     _use_utf8_standard_streams()
     parser = argparse.ArgumentParser(description="Nakagawa Recomp Headless CLI")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
+
+    p_redump = subparsers.add_parser(
+        "redump-import",
+        help="Import your Redump PSP datafile: discs added later are checked against it",
+    )
+    p_redump.add_argument("datafile", type=Path, help="The Redump PSP datafile (.dat) you downloaded")
+    p_redump.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
+    p_redump.set_defaults(func=cmd_redump_import)
 
     p_fonts = subparsers.add_parser("fonts", help="Manage PSP firmware system fonts")
     fonts_subparsers = p_fonts.add_subparsers(dest="fonts_subcommand", required=True)

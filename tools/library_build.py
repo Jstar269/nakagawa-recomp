@@ -16,12 +16,24 @@ the same folder lists every title that built.
 The run never stops on one title: each disc ends with a record (built, or the exact failure)
 in ``library-build.json`` and ``library-build.md``, written after every title to the data
 folder and to ``--manifest-dir``. A stopped run resumes where it left off. Only ``.iso``
-files are discs; other files are counted by kind and skipped, and a disc ID seen before is
-recorded as a duplicate of the first file that has it. Builds run below normal priority, at
-most ``--jobs`` at a time, with no window. A ``PAUSE`` file in the work folder holds new
-titles until it goes; a ``STOP`` file ends the run after the titles already started.
+files are discs; other files are counted by kind and skipped.
+
+Discs are keyed by disc ID plus the hash of the whole image (``nk_core.disc_verify``): a
+file with the disc ID and the same SHA-1 as one seen before is recorded as a duplicate of the
+first, while a fan translation or other modified image with a retail disc's ID is built as a
+disc of its own. Only discs that share a disc ID are hashed, unless ``--redump-dat`` names the
+user's Redump PSP datafile: then every disc is hashed and given its verification tier
+(verified retail, modified or unknown), the list is imported into the data folder for the
+player, and ``--verify-only`` hashes and classifies without building. Hashes are kept in the
+manifest and reused while a file's size and modification time stay the same.
+
+Builds run below normal priority, at most ``--jobs`` at a time, with no window. A ``PAUSE``
+file in the work folder holds new titles until it goes; a ``STOP`` file ends the run after
+the titles already started. The manifest records the run's settings (time budget, launch
+timeout, source commit), so runs are compared like for like.
 
 The manifest names the user's own discs and files: it is a private record, never published.
+``tools/compat_table.py`` turns it into the public summary, which holds counts only.
 """
 
 from __future__ import annotations
@@ -41,7 +53,7 @@ import time
 from typing import Any, Callable
 
 from library_sweep import _read_bringup_progress, _terminate_process_tree
-from nk_core import decrypt_tool, inspect_iso
+from nk_core import decrypt_tool, disc_verify, inspect_iso
 
 ROOT = Path(__file__).resolve().parents[1]
 NK_CLI = ROOT / "tools" / "nk_cli.py"
@@ -103,6 +115,36 @@ def identify(path: Path) -> dict[str, Any]:
         "title": metadata.title,
         "disc_version": metadata.version,
     }
+
+
+def source_commit(root: Path = ROOT) -> str | None:
+    """The commit the tools run from, recorded with each title's settings; None outside git."""
+    try:
+        result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit if result.returncode == 0 and len(commit) == 40 else None
+
+
+def record_digest(record: dict[str, Any]) -> disc_verify.DiscDigest | None:
+    """The whole-image hashes a record holds, when they are for the file as it is now."""
+    verification = record.get("verification")
+    if not isinstance(verification, dict):
+        return None
+    sha1, crc32, size = (verification.get("sha1"), verification.get("crc32"),
+                         verification.get("size_bytes"))
+    if (not isinstance(sha1, str) or not isinstance(crc32, str) or type(size) is not int
+            or size != record.get("size_bytes")):
+        return None
+    return disc_verify.DiscDigest(sha1=sha1, crc32=crc32, size_bytes=size)
+
+
+def content_key(record: dict[str, Any]) -> tuple[str, str | None]:
+    """What makes two files the same disc: the disc ID and, once hashed, the image's SHA-1."""
+    digest = record_digest(record)
+    return (record["disc_id"], digest.sha1 if digest else None)
 
 
 class DiscDecryption:
@@ -220,7 +262,10 @@ class LibraryBuild:
                  decrypt: Callable[[Path, Path, str], list[dict]] | None = None,
                  command: Callable[[Path, Path, Path, int], list[str]] = bringup_command,
                  log: Callable[[str], None] = print,
-                 pause_poll_seconds: float = PAUSE_POLL_SECONDS) -> None:
+                 pause_poll_seconds: float = PAUSE_POLL_SECONDS,
+                 dat: disc_verify.RedumpDat | None = None, verify_only: bool = False,
+                 hash_disc: Callable[[Path], disc_verify.DiscDigest] = disc_verify.hash_image,
+                 commit: str | None = None) -> None:
         self.disc_root = disc_root.resolve(strict=True)
         self.user_data_root = user_data_root.resolve()
         self.work_root = work_root.resolve()
@@ -236,10 +281,15 @@ class LibraryBuild:
         self.command = command
         self.log = log
         self.pause_poll_seconds = pause_poll_seconds
+        self.dat = dat
+        self.verify_only = verify_only
+        self.hash_disc = hash_disc
+        self.commit = commit
         self.lock = threading.Lock()
         self.records: dict[str, dict[str, Any]] = {}
         self.skipped: Counter = Counter()
         self.started_at = _utc_now()
+        self.datafile: dict[str, Any] | None = None
 
     # -- state ---------------------------------------------------------------------------
 
@@ -254,6 +304,8 @@ class LibraryBuild:
                         self.records[record["source_key"]] = record
                 if isinstance(payload.get("started_at"), str):
                     self.started_at = payload["started_at"]
+                if isinstance(payload.get("datafile"), dict):
+                    self.datafile = payload["datafile"]
                 return
 
     def _manifest(self) -> dict[str, Any]:
@@ -266,7 +318,19 @@ class LibraryBuild:
             "disc_root": str(self.disc_root),
             "user_data_root": str(self.user_data_root),
             "skipped_files": dict(sorted(self.skipped.items())),
+            "settings": {
+                "title_timeout_seconds": self.title_timeout_seconds,
+                "launch_timeout_seconds": self.launch_timeout_seconds,
+                "jobs": self.jobs,
+                "priority": self.priority,
+                "decrypt": self.decrypt is not None,
+                "source_commit": self.commit,
+            },
+            "datafile": self.datafile,
             "counts": dict(sorted(Counter(record["outcome"] for record in titles).items())),
+            "verification_counts": dict(sorted(Counter(
+                (record.get("verification") or {}).get("tier") or disc_verify.NOT_CHECKED
+                for record in titles).items())),
             "titles": titles,
         }
 
@@ -290,15 +354,9 @@ class LibraryBuild:
         """Records for every disc, with the titles still to build in order."""
         self._load_previous()
         discs, self.skipped = discover(self.disc_root)
-        present = set()
-        first_by_disc_id: dict[str, str] = {}
-        for record in self.records.values():
-            if record.get("outcome") == "BUILT" and record.get("disc_id"):
-                first_by_disc_id.setdefault(record["disc_id"], record["source_key"])
-        todo: list[dict[str, Any]] = []
+        present: list[dict[str, Any]] = []
         for path in discs:
             key = _source_key(path, self.disc_root)
-            present.add(key)
             stat = path.stat()
             record = self.records.get(key)
             unchanged = (record is not None and record.get("size_bytes") == stat.st_size
@@ -321,28 +379,97 @@ class LibraryBuild:
                                    or "DISC_IDENTIFY_FAILED",
                                    "identify_detail": f"{type(exc).__name__}: {exc}"[:300]})
                 self.records[key] = record
-            disc_id = record.get("disc_id")
-            first = first_by_disc_id.get(disc_id) if disc_id else None
+            present.append(record)
+        keys = {record["source_key"] for record in present}
+        for key in list(self.records):
+            if key not in keys:
+                del self.records[key]  # the file is gone from the folder
+        self.hash_discs(present)
+        self.classify()
+        first_by_content: dict[tuple[str, str | None], str] = {}
+        for record in present:
+            if record.get("outcome") == "BUILT" and record.get("disc_id"):
+                first_by_content.setdefault(content_key(record), record["source_key"])
+        todo: list[dict[str, Any]] = []
+        for record in present:
+            key = record["source_key"]
+            content = content_key(record) if record.get("disc_id") else None
+            first = first_by_content.get(content) if content else None
             if first is not None and first != key:
                 record.update({"outcome": "DUPLICATE", "duplicate_of":
                                self.records[first]["source"]})
                 continue
-            if disc_id:
-                first_by_disc_id[disc_id] = key
+            if content:
+                first_by_content[content] = key
             if record.get("outcome") == "DUPLICATE":
                 record["outcome"] = "PENDING"
                 record.pop("duplicate_of", None)
             outcome = record.get("outcome")
-            if outcome in FINAL_OUTCOMES and not (self.retry_failed and outcome in RETRY_OUTCOMES):
+            if self.verify_only or (outcome in FINAL_OUTCOMES
+                                    and not (self.retry_failed and outcome in RETRY_OUTCOMES)):
                 continue
             record["outcome"] = "PENDING"
             todo.append(record)
-        for key in list(self.records):
-            if key not in present:
-                del self.records[key]  # the file is gone from the folder
         if self.limit is not None:
             todo = todo[:self.limit]
         return todo
+
+    # -- verification --------------------------------------------------------------------
+
+    def hash_discs(self, present: list[dict[str, Any]]) -> None:
+        """Hash the discs that need it: all of them with a datafile, else those sharing a disc ID.
+
+        A disc hashed before keeps its hashes while its file is unchanged. A file that cannot
+        be read records its boundary code and is hashed again on the next run.
+        """
+        shared = Counter(record.get("disc_id") for record in present if record.get("disc_id"))
+        wanted = [
+            record for record in present
+            if record_digest(record) is None and (
+                self.dat is not None or self.verify_only
+                or (record.get("disc_id") and shared[record["disc_id"]] > 1))
+        ]
+        if not wanted:
+            return
+        self.log(f"hashing {len(wanted)} discs")
+
+        def hash_one(record: dict[str, Any]) -> None:
+            if (self.work_root / "STOP").exists():
+                return
+            try:
+                digest = self.hash_disc(self.disc_root / record["source"])
+                verification: dict[str, Any] = digest.to_dict()
+            except disc_verify.DiscVerifyError as exc:
+                verification = {"error": exc.boundary_code}
+            with self.lock:
+                record["verification"] = verification
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs) as pool:
+            for done, _ in enumerate(pool.map(hash_one, wanted), start=1):
+                if done % 25 == 0 or done == len(wanted):
+                    self.log(f"hashed {done} of {len(wanted)} discs")
+                    self.write_manifest()
+
+    def classify(self) -> None:
+        """Give every record its tier against this run's datafile, for the whole set at once."""
+        if self.dat is None:
+            return
+        self.datafile = {"name": self.dat.name, "version": self.dat.version,
+                         "discs": len(self.dat), "checked_at": _utc_now()}
+        images = {key: (record.get("disc_id"), record_digest(record))
+                  for key, record in self.records.items()}
+        for key, tier in disc_verify.classify_all(images, self.dat).items():
+            record = self.records[key]
+            verification = record.get("verification")
+            if not isinstance(verification, dict):
+                verification = record["verification"] = {}
+            verification["tier"] = tier
+            digest = images[key][1]
+            rom = self.dat.roms_by_sha1.get(digest.sha1) if digest else None
+            if tier == disc_verify.VERIFIED_RETAIL and rom is not None:
+                verification["redump_name"] = rom.name
+            else:
+                verification.pop("redump_name", None)
 
     # -- building ------------------------------------------------------------------------
 
@@ -367,7 +494,13 @@ class LibraryBuild:
             (work_dir / name).unlink(missing_ok=True)
         with self.lock:
             record.update({"outcome": "RUNNING", "started_at": _utc_now(),
-                           "work_dir": str(work_dir)})
+                           "work_dir": str(work_dir),
+                           # This title's comparison identity: a later run compares like for like.
+                           "run_settings": {
+                               "title_timeout_seconds": self.title_timeout_seconds,
+                               "launch_timeout_seconds": self.launch_timeout_seconds,
+                               "source_commit": self.commit,
+                           }})
         self.write_manifest()
         iso = self.disc_root / record["source"]
         started = time.monotonic()
@@ -494,6 +627,14 @@ def render_markdown(manifest: dict[str, Any]) -> str:
     if skipped:
         lines += ["", "Other files skipped: "
                   + ", ".join(f"{suffix} {count}" for suffix, count in skipped.items()) + "."]
+    verification = manifest.get("verification_counts") or {}
+    if set(verification) - {disc_verify.NOT_CHECKED}:
+        datafile = manifest.get("datafile") or {}
+        lines += ["", "## Disc verification", "",
+                  f"Against {datafile.get('name') or 'the datafile'} "
+                  f"{datafile.get('version') or ''} ({datafile.get('discs', '?')} discs).",
+                  "", "| Tier | Discs |", "| --- | --- |"]
+        lines += [f"| {tier} | {verification.get(tier, 0)} |" for tier in disc_verify.TIERS]
     failures = Counter(
         (record.get("failed_stage") or "?", record.get("failure_class") or "?")
         for record in titles if record["outcome"] in RETRY_OUTCOMES
@@ -531,8 +672,8 @@ def render_markdown(manifest: dict[str, Any]) -> str:
                   "| Import | Titles |", "| --- | --- |"]
         lines += [f"| `{name}` | {count} |" for name, count in imports.most_common(40)]
     lines += ["", "## Titles", "",
-              "| Disc | Title | Outcome | Stage | Failure | Build s | Package MB | Launch |",
-              "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+              "| Disc | Title | Outcome | Stage | Failure | Build s | Package MB | Launch | Disc check |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for record in titles:
         launch = record.get("launch") or {}
         title = str(record.get("title") or record["source"]).replace("|", "/")
@@ -545,7 +686,7 @@ def render_markdown(manifest: dict[str, Any]) -> str:
             f"| {record.get('disc_id') or ''} | {title} | {record['outcome']} | "
             f"{record.get('failed_stage') or ''} | {failure or ''} | "
             f"{record.get('wall_seconds', '')} | {_megabytes(record.get('package_bytes'))} | "
-            f"{launch_text} |"
+            f"{launch_text} | {(record.get('verification') or {}).get('tier') or ''} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -572,17 +713,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None, help="Build at most this many titles")
     parser.add_argument("--no-decrypt", action="store_true",
                         help="Skip the disc check that decrypts each disc's executable and modules")
+    parser.add_argument("--redump-dat", type=Path, default=None,
+                        help="Your Redump PSP datafile: hash every disc and give it its "
+                             "verification tier; the list is imported into the data folder")
+    parser.add_argument("--verify-only", action="store_true",
+                        help="Hash and classify the discs without building any")
     args = parser.parse_args(argv)
     if args.jobs < 1 or args.title_timeout < 1 or args.launch_timeout < 1:
         parser.error("--jobs, --title-timeout and --launch-timeout must be positive")
+    dat = None
+    if args.redump_dat is not None:
+        try:
+            dat = disc_verify.import_dat(args.redump_dat, args.user_data_root)
+        except disc_verify.DiscVerifyError as exc:
+            parser.error(f"{exc} [{exc.boundary_code}]")
     build = LibraryBuild(
         args.disc_root, args.user_data_root, args.work_dir, args.manifest_dir,
         jobs=args.jobs, priority=args.priority, title_timeout_seconds=args.title_timeout,
         launch_timeout_seconds=args.launch_timeout, retry_failed=args.retry_failed,
         limit=args.limit, decrypt=None if args.no_decrypt else DiscDecryption(),
+        dat=dat, verify_only=args.verify_only, commit=source_commit(),
     )
     manifest = build.run()
-    print(json.dumps(manifest["counts"], sort_keys=True))
+    print(json.dumps({"counts": manifest["counts"],
+                      "verification": manifest["verification_counts"]}, sort_keys=True))
     return 0
 
 

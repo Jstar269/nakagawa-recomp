@@ -18,7 +18,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import library_build  # noqa: E402
-from nk_core import decrypt_tool  # noqa: E402
+from nk_core import decrypt_tool, disc_verify  # noqa: E402
 from test_iso_parity import create_test_iso, create_test_iso_with_executables  # noqa: E402
 
 # A stand-in for `nk_cli.py bringup`: what it does depends on the disc file's name.
@@ -152,6 +152,74 @@ class LibraryBuildTests(unittest.TestCase):
         self.assertEqual(records["b/ok-test70010.iso"]["outcome"], "DUPLICATE")
         self.assertEqual(records["b/ok-test70010.iso"]["duplicate_of"], "a/ok-test70010.iso")
         self.assertEqual(self.calls(), ["ok-test70010"])
+
+    def test_a_modified_image_with_a_retail_disc_id_builds_as_its_own_disc(self) -> None:
+        # A fan translation keeps its retail disc's ID; its contents (here, its title) differ.
+        self.disc("a/ok-test70011.iso", "TEST70011")
+        translated = self.discs / "b" / "ok-test70011.iso"
+        translated.parent.mkdir(parents=True)
+        create_test_iso(translated, disc_id="TEST70011", title="Title TEST70011 [T-En]")
+        result = self.build().run()
+        records = self.by_source(result)
+        self.assertEqual([records[key]["outcome"] for key in sorted(records)], ["BUILT", "BUILT"])
+        self.assertEqual(sorted(self.calls()), ["ok-test70011", "ok-test70011"])
+        hashes = {records[key]["verification"]["sha1"] for key in records}
+        self.assertEqual(len(hashes), 2)
+        # Without a datafile nothing is classified.
+        self.assertEqual(result["verification_counts"], {"NOT_CHECKED": 2})
+
+    def _redump_list(self, *images: Path) -> disc_verify.RedumpDat:
+        rows = "".join(
+            f'<game name="Disc {index}"><rom name="Disc {index}.iso" size="{digest.size_bytes}" '
+            f'crc="{digest.crc32}" sha1="{digest.sha1}"/></game>'
+            for index, digest in enumerate(disc_verify.hash_image(path) for path in images))
+        return disc_verify.parse_dat_text(
+            f"<datafile><header><name>Synthetic</name><version>1</version></header>{rows}"
+            "</datafile>")
+
+    def test_a_redump_list_gives_every_disc_its_tier_without_building(self) -> None:
+        retail = self.disc("retail/ok-test70012.iso", "TEST70012")
+        translated = self.discs / "translated" / "ok-test70012.iso"
+        translated.parent.mkdir(parents=True)
+        create_test_iso(translated, disc_id="TEST70012", title="Title TEST70012 [T-En]")
+        self.disc("other/ok-test70013.iso", "TEST70013")
+        hashed: list[Path] = []
+
+        def hash_disc(path: Path) -> disc_verify.DiscDigest:
+            hashed.append(path)
+            return disc_verify.hash_image(path)
+
+        dat = self._redump_list(retail)
+        result = self.build(dat=dat, verify_only=True, hash_disc=hash_disc).run()
+        self.assertEqual(self.calls(), [])  # nothing built
+        tiers = {key: record["verification"]["tier"]
+                 for key, record in self.by_source(result).items()}
+        self.assertEqual(tiers, {"retail/ok-test70012.iso": "VERIFIED_RETAIL",
+                                 "translated/ok-test70012.iso": "MODIFIED",
+                                 "other/ok-test70013.iso": "UNKNOWN"})
+        self.assertEqual(self.by_source(result)["retail/ok-test70012.iso"]["verification"]
+                         ["redump_name"], "Disc 0.iso")
+        self.assertEqual(result["verification_counts"],
+                         {"MODIFIED": 1, "UNKNOWN": 1, "VERIFIED_RETAIL": 1})
+        self.assertEqual({key: result["datafile"][key] for key in ("name", "version", "discs")},
+                         {"name": "Synthetic", "version": "1", "discs": 1})
+        markdown = (self.reports / "library-build.md").read_text(encoding="utf-8")
+        self.assertIn("## Disc verification", markdown)
+        self.assertEqual(len(hashed), 3)
+        # A second run reuses the hashes of the unchanged files.
+        self.build(dat=dat, verify_only=True, hash_disc=hash_disc).run()
+        self.assertEqual(len(hashed), 3)
+
+    def test_the_manifest_records_the_settings_each_title_was_built_with(self) -> None:
+        self.disc("ok-test70014.iso", "TEST70014")
+        commit = "0123456789abcdef0123456789abcdef01234567"
+        result = self.build(commit=commit).run()
+        self.assertEqual(result["settings"]["title_timeout_seconds"], 30)
+        self.assertEqual(result["settings"]["source_commit"], commit)
+        record = self.by_source(result)["ok-test70014.iso"]
+        self.assertEqual(record["run_settings"], {"title_timeout_seconds": 30,
+                                                  "launch_timeout_seconds": 5,
+                                                  "source_commit": commit})
 
     def test_a_stopped_run_resumes_and_redoes_only_what_did_not_end(self) -> None:
         self.disc("ok-test70020.iso", "TEST70020")

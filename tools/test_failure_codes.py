@@ -299,7 +299,8 @@ class DecryptTests(unittest.TestCase):
 
 class DiscTests(unittest.TestCase):
     def test_every_disc_refusal_is_a_disc_code(self) -> None:
-        header = (ROOT / "src" / "core" / "nk_disc_expand.h").read_text(encoding="utf-8")
+        header = "".join((ROOT / "src" / "core" / name).read_text(encoding="utf-8")
+                         for name in ("nk_disc_expand.h", "nk_disc_verify.h"))
         source = (ROOT / "src" / "core" / "nk_disc_expand.c").read_text(encoding="utf-8")
         found = set(re.findall(r'#define NK_DISC_[A-Z_]+\s+"([A-Z_]+)"', header + source))
         iso = (ROOT / "src" / "core" / "nk_iso.c").read_text(encoding="utf-8")

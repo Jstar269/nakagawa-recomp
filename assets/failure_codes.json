@@ -31,6 +31,36 @@
     "library"
   ],
   "codes": {
+    "DISC_DAT_EMPTY": {
+      "stage": "inspect",
+      "in": [
+        "disc"
+      ]
+    },
+    "DISC_DAT_NOT_DATAFILE": {
+      "stage": "inspect",
+      "in": [
+        "disc"
+      ]
+    },
+    "DISC_DAT_READ_FAILED": {
+      "stage": "inspect",
+      "in": [
+        "disc"
+      ]
+    },
+    "DISC_DAT_TOO_LARGE": {
+      "stage": "inspect",
+      "in": [
+        "disc"
+      ]
+    },
+    "DISC_DAT_WRITE_FAILED": {
+      "stage": "inspect",
+      "in": [
+        "disc"
+      ]
+    },
     "DISC_IDENTIFY_FAILED": {
       "stage": "inspect",
       "in": [
