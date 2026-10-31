@@ -106,11 +106,11 @@ typedef struct {
 } GeState;
 
 /* Mip levels are sampled (#1373) when TEXFILTER's minification field names a mipmap filter
- * (bit 2: GU_{NEAREST,LINEAR}_MIPMAP_{NEAREST,LINEAR}), TEXMODE's highest level is above 0
- * and TEXLEVEL is in its automatic (0) or constant (1) mode. Slope mode (2) and the unused
- * mode 3 stay on level 0: no public source gives their formula (unmeasured). The software
- * sampler (ge.c tex_lod) and the Vulkan texture cache (gpu_sdl3vk/ge_gpu.c) share this one
- * rule so the two GE paths turn mip levels on for the same states. */
+ * (bit 2: GU_{NEAREST,LINEAR}_MIPMAP_{NEAREST,LINEAR}) and TEXMODE's highest level is above
+ * 0, in every TEXLEVEL mode: automatic (0), constant (1), slope (2), and the unused mode 3,
+ * which a PSP-3000 treats as constant (PSP-GE-MIP-001 m3-b2, m3-b0-4x). The software
+ * sampler (ge.c tex_detail16) and the Vulkan texture cache (gpu_sdl3vk/ge_gpu.c) share this
+ * one rule so the two GE paths turn mip levels on for the same states. */
 /* Bytes per row of a linear (unswizzled) texture whose buffer width is `bufw` texels of
  * `bits` bits: whole 16-byte lines, the width's bytes rounded down to a multiple of 16 and at
  * least one line (PSP-GE-RASTER-001 tx-c4-4444, tx-c4-bw48, tx-c4-bw64, tx-c8-bw24,
@@ -121,7 +121,39 @@ static inline uint32_t ge_tex_row_bytes(uint32_t bufw, uint32_t bits) {
 }
 
 static inline int ge_tex_mip_active(const GeState *g) {
-    return (g->tex_filter & 4u) != 0u && g->tex_max_level > 0u && g->tex_level_mode <= 1u;
+    return (g->tex_filter & 4u) != 0u && g->tex_max_level > 0u;
+}
+
+/* The GE's level arithmetic, measured on a PSP-3000 (PSP-GE-MIP-001, #1373; 55 of its 57
+ * cells, docs/HARDWARE_ORACLE.md). A level of detail is an integer in 1/16 levels. Its
+ * logarithm is the float's exponent and top four mantissa bits, log2(1 + m) taken as m:
+ * 1.5 and 3 texels per pixel give 0.5 and 1.5 levels, not 0.585 and 1.585. The sign bit is
+ * dropped and 0 gives -2032. */
+static inline int ge_lod_log16(float f) {
+    union { float f; uint32_t u; } bits = { f };
+    return (int)((bits.u >> 19) & 0xFFFu) - 127 * 16;
+}
+
+/* The level and blend weight (in 1/16) a level of detail selects with highest level `max`.
+ * Up to 0 it is level 0. TEXFILTER bit 1 off (GU_*_MIPMAP_NEAREST) takes the nearest level,
+ * one half rounding up (c-b0f8); on (GU_*_MIPMAP_LINEAR) it blends level detail16 >> 4 with
+ * the next by detail16 & 15 (cl-b0f1, cl-b6ff). The highest level clamps both, with no blend
+ * (cl-b7f8, cl-max2-b2f8). */
+static inline void ge_tex_level_pick(int detail16, uint32_t tex_filter, uint32_t max,
+                                     uint32_t *level, int *frac) {
+    *level = 0u;
+    *frac = 0;
+    if (detail16 <= 0) return;
+    if (tex_filter & 2u) {
+        *level = (uint32_t)(detail16 >> 4);
+        *frac = detail16 & 15;
+    } else {
+        *level = (uint32_t)((detail16 + 8) >> 4);
+    }
+    if (*level >= max) {
+        *level = max;
+        *frac = 0;
+    }
 }
 
 /* A rasterized vertex: screen position, reciprocal clip-w (for persp-correct interp), UV,

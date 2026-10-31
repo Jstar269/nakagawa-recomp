@@ -38,12 +38,13 @@
  *    directly when the address/stride match (a snapshot copy for feedback loops).
  *  - Mip levels (#1373): when ge_tex_mip_active() turns them on, a cached texture holds
  *    levels 0..TEXMODE's highest level as one Vulkan mip chain, each level decoded by ge.c
- *    (ge_decode_tex_level_rgba). TEXLEVEL constant mode is a fixed level of detail (minLod =
- *    maxLod = the bias clamped to [0, highest level]); automatic mode is the sampler's own
- *    level of detail with the bias as mipLodBias, clamped the same way; TEXFILTER bit 1 is
- *    the mipmap mode. ge.c tex_lod makes the same choices. Slope mode samples level 0, as in
- *    ge.c. A level list a halving chain cannot hold, or a bias past maxSamplerLodBias, takes
- *    the software rasterizer (tex_mip_chain_supported). Per-level CLUTs are not modelled.
+ *    (ge_decode_tex_level_rgba). TEXLEVEL constant mode (and the unused mode 3) is one level
+ *    of detail per draw, the level and blend ge_tex_level_pick takes from the bias (minLod =
+ *    maxLod); TEXFILTER bit 1 is the mipmap mode. The automatic and slope modes' level of
+ *    detail is per fragment in the PSP's own arithmetic (ge.c tex_detail16, measured as
+ *    PSP-GE-MIP-001), which the sampler's exact log2 does not reproduce, so they take the
+ *    software rasterizer, as does a level list a halving chain cannot hold
+ *    (tex_mip_chain_supported). Per-level CLUTs are not modelled.
  *  - 16-bit precision (5650/5551/4444 framebuffers): the fragment shader snaps its
  *    output to the native lattice (pack-by-truncation + expand-by-bit-replication,
  *    identical to ge.c pack_fb/unpack_color) and applies the GE's 4x4 ordered dither,
@@ -189,7 +190,7 @@ typedef struct {
  * zero when mip levels are off, so a level-0-only entry compares equal to any other. */
 typedef struct {
     uint32_t max_level;                    /* TEXMODE highest level; 0 = level 0 only */
-    uint32_t mode;                         /* TEXLEVEL mode: 0 automatic, 1 constant */
+    uint32_t mode;                         /* TEXLEVEL mode: 1 or 3, constant */
     uint32_t linear;                       /* TEXFILTER bit 1: blend the two nearest levels */
     float bias;                            /* TEXLEVEL bias */
     uint32_t addr[7], bufw[7];             /* levels 1..max_level (index = level - 1) */
@@ -2662,23 +2663,15 @@ static int tex_decode_upload(VkImage img, int w, int h, uint32_t levels) {
     return 1;
 }
 
-/* VkPhysicalDeviceLimits::maxSamplerLodBias, read at init. */
-static float s_max_lod_bias;
-
-/* Automatic mode's sampler bias. Vulkan measures the footprint per device pixel, so at render
- * scale k it reads log2(k) lower than the guest pixel's: adding it back keeps the guest level. */
-static float tex_mip_auto_bias(float bias) {
-    return bias + log2f((float)s_scale);
-}
-
-/* Sampler level of detail of one cache entry. With a mip chain (#1373) the sampler makes
- * ge.c tex_lod's choice: constant mode is a fixed level of detail, minLod = maxLod = the bias
- * clamped to [0, highest level], whatever the footprint; automatic mode is log2 of the
- * footprint plus the bias (mipLodBias), clamped to [0, highest level] by minLod and maxLod.
- * TEXFILTER bit 1 is the mipmap mode: the nearest level (Vulkan's preferred rounding, up only
- * past one half, as ge.c rounds) or a blend of the two levels around the level of detail.
- * Vulkan then filters within a level by minFilter above level of detail 0 and by magFilter
- * otherwise; ge.c shade() makes that choice too while mip levels are on. */
+/* Sampler level of detail of one cache entry. With a mip chain (#1373) the state is in
+ * constant mode (tex_mip_chain_supported sends the per-fragment modes to the software
+ * rasterizer), so the level of detail is fixed: ge_tex_level_pick's level, plus its blend
+ * weight in 1/16 under TEXFILTER bit 1 (VK_SAMPLER_MIPMAP_MODE_LINEAR; the blend may differ
+ * from ge.c's truncated sixteenths by one U8 step). Vulkan filters within a level by
+ * minFilter above level of detail 0 and by magFilter otherwise, and ge.c shade() picks the
+ * minification field for any level of detail above 0: a positive bias that still selects
+ * level 0 samples at 0.25, which keeps nearest mipmap mode on level 0 and the minification
+ * filter on. */
 static void tex_sampler_lod(const TexMipKey *mip, VkSamplerCreateInfo *sci) {
     sci->mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     if (!mip->max_level) {
@@ -2688,16 +2681,14 @@ static void tex_sampler_lod(const TexMipKey *mip, VkSamplerCreateInfo *sci) {
         return;
     }
     if (mip->linear) sci->mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    if (mip->mode == 1u) {
-        float lod = mip->bias > 0.0f ? mip->bias : 0.0f;
-        if (lod > (float)mip->max_level) lod = (float)mip->max_level;
-        sci->minLod = lod;
-        sci->maxLod = lod;
-    } else {
-        sci->mipLodBias = tex_mip_auto_bias(mip->bias);
-        sci->minLod = 0.0f;
-        sci->maxLod = (float)mip->max_level;
-    }
+    int detail16 = (int)(mip->bias * 16.0f);
+    uint32_t level = 0u;
+    int frac = 0;
+    ge_tex_level_pick(detail16, mip->linear ? 2u : 0u, mip->max_level, &level, &frac);
+    float lod = (float)level + (float)frac / 16.0f;
+    if (detail16 > 0 && lod == 0.0f) lod = 0.25f;
+    sci->minLod = lod;
+    sci->maxLod = lod;
 }
 
 static int tex_make(int w, int h, uint32_t levels, int min_linear, int mag_linear,
@@ -2742,16 +2733,18 @@ static uint32_t log2_pow2(uint32_t v) {
     return l;
 }
 
-/* Whether the current state's mip levels fit one Vulkan mip chain (#1373). A chain halves
- * every level down to 1x1, while the GE takes each level's size from its own TEXSIZE: a level
- * whose size is not max(1, level-0 size >> level) on both axes, or more levels than a
- * halving chain of level 0 has, cannot be sampled from one image, and neither can an
- * automatic-mode bias past the device's maxSamplerLodBias. gpu_state_unsupported_reason()
- * sends such draws to the software rasterizer, which samples every level as given. A
- * state without mip levels, or one drawn untextured, always fits. */
+/* Whether the current state's mip levels fit one Vulkan mip chain and sampler (#1373). The
+ * automatic and slope modes do not: their level of detail is per fragment in the PSP's
+ * 1/16-level arithmetic (ge.c tex_detail16), not the sampler's. A chain halves every level
+ * down to 1x1, while the GE takes each level's size from its own TEXSIZE: a level whose
+ * size is not max(1, level-0 size >> level) on both axes, or more levels than a halving
+ * chain of level 0 has, cannot be sampled from one image either.
+ * gpu_state_unsupported_reason() sends such draws to the software rasterizer, which samples
+ * every level as given. A state without mip levels, or one drawn untextured, always fits. */
 static int tex_mip_chain_supported(void) {
     const GeState *g = s_ge;
     if (!g->tex_enable || g->clear || !g->tex_addr || !ge_tex_mip_active(g)) return 1;
+    if (g->tex_level_mode == 0u || g->tex_level_mode == 2u) return 0;
     if (g->tex_w <= 0 || g->tex_h <= 0 || g->tex_w > 512 || g->tex_h > 512) return 1;
     uint32_t wl = log2_pow2((uint32_t)g->tex_w), hl = log2_pow2((uint32_t)g->tex_h);
     if (g->tex_max_level > (wl > hl ? wl : hl)) return 0;
@@ -2760,8 +2753,6 @@ static int tex_mip_chain_supported(void) {
             g->tex_mip_hlog2[level - 1u] != (hl > level ? hl - level : 0u))
             return 0;
     }
-    if (g->tex_level_mode == 0u && fabsf(tex_mip_auto_bias(g->tex_lod_bias)) > s_max_lod_bias)
-        return 0;
     return 1;
 }
 
@@ -5336,15 +5327,17 @@ static int coherence_run_tflt_filters(void) {
 /* ---- texture mip levels (#1373) ----------------------------------------------------------
  *
  * The Vulkan backend samples TEXMODE/TEXLEVEL mip levels from one Vulkan mip chain per cached
- * texture and must choose what ge.c tex_lod chooses. Each case draws one through-mode sprite
+ * texture and must choose what ge.c tex_detail16 and ge_tex_level_pick choose. Each case draws one through-mode sprite
  * with the Vulkan backend and then with the software GE, and compares the framebuffers:
  * exactly for nearest-level cases, and within the one-U8-step tolerance of the TFLT linear
  * cases for a blend of two levels. Every texel names its level and position, so a wrong
  * level, a level decoded without its own buffer width, or a level coordinate one texel off
  * changes a pixel. The UV start of 0.25 texel keeps every sample off a texel edge at every
  * level, and the footprints (1/2, 2 and 4 texels per pixel) give exact levels of detail.
- * Software/Vulkan agreement is not a PSP measurement: the level-of-detail rules both paths
- * share are unmeasured on a PSP (ge.c tex_lod). */
+ * Software/Vulkan agreement is not a PSP measurement; the level rules both paths share are
+ * PSP-GE-MIP-001's (hle_thread_selftest.c test_ge_mip_cells_match_psp checks ge.c against
+ * the PSP). The automatic and slope cases take the software rasterizer, so they check that
+ * fallback. */
 #define COH_MIP_TEX   0x04040000u          /* level L at COH_MIP_TEX + L * 0x1000 */
 #define COH_MIP_ALT1  0x04045000u          /* a second level 1 (4x4) for the cache-key case */
 #define COH_MIP_LIST  0x00100800u
@@ -5720,10 +5713,13 @@ static int coherence_run_mip_level_dirty_same_state(void) {
 
 static int coherence_run_mip_levels(void) {
     static const CohMipCase cases[] = {
-        /* Constant mode: the bias is the level, clamped to the highest level. */
+        /* Constant mode: the bias is the level, clamped to the highest level; one half
+         * rounds up to the next level (PSP-GE-MIP-001 c-b0f8). */
         { "const-level-1",       0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 0 },
         { "const-level-2",       0x004u, 3u, 1u, 32u, 16, 0, 2, 0, 0 },
         { "const-clamped",       0x004u, 1u, 1u, 48u, 16, 0, 1, 0, 0 },
+        { "const-half-rounds-up", 0x004u, 3u, 1u, 8u, 16, 0, 1, 0, 0 },
+        { "const-mode-3",        0x004u, 3u, 3u, 32u, 16, 0, 2, 0, 0 },
         /* With mip levels on, the level of detail picks the filter within a level: a
          * magnified sprite at constant level 1 filters by the minification field
          * (nearest), and a minified one at constant level 0 by the magnification field. */
@@ -5731,7 +5727,8 @@ static int coherence_run_mip_levels(void) {
         { "const-0-mag-filter",  0x005u, 3u, 1u, 0u,   4, 0, 0, 0, 0 },
         /* GU_NEAREST_MIPMAP_LINEAR at constant level 0.5: half of level 0, half of level 1. */
         { "const-between",       0x006u, 3u, 1u, 8u,  16, 1, -1, 0, 0 },
-        /* Automatic mode: log2 of the footprint plus the bias, clamped to [0, highest]. */
+        /* Automatic mode: log2 of the footprint plus the bias, clamped to [0, highest]
+         * (software rasterizer). */
         { "auto-magnified",      0x004u, 3u, 0u, 0u,  16, 0, 0, 0, 0 },
         { "auto-level-1",        0x004u, 3u, 0u, 0u,   4, 0, 1, 0, 0 },
         { "auto-level-2",        0x004u, 3u, 0u, 0u,   2, 0, 2, 0, 0 },
@@ -5740,8 +5737,9 @@ static int coherence_run_mip_levels(void) {
         /* Bias -1.5 on a 2x minified sprite: level of detail -0.5, so level 0 through the
          * magnification field (nearest), not the minification field (linear). */
         { "auto-bias-mag-filter", 0x005u, 3u, 0u, 0xE8u, 4, 0, 0, 0, 0 },
-        /* Slope mode stays on level 0 in both paths (formula unmeasured). */
-        { "slope-level-0",       0x004u, 3u, 2u, 16u,  4, 0, 0, 0, 0 },
+        /* Slope mode with TEXLODSLOPE 0: its logarithm is -2032, so level 0 (software
+         * rasterizer). */
+        { "slope-zero",          0x004u, 3u, 2u, 16u,  4, 0, 0, 0, 0 },
         /* Level 1 declared 8x8 cannot sit in a halving chain: the software rasterizer draws. */
         { "chain-fallback",      0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 3u },
         /* Only level 1's address changes after const-level-1: the cache must not reuse it. */
@@ -8173,7 +8171,6 @@ int gegpu_init(void) {
     vkGetPhysicalDeviceProperties(s_pdev, &props);
     s_xfer_align = props.limits.optimalBufferCopyOffsetAlignment;
     if (s_xfer_align < 4) s_xfer_align = 4;
-    s_max_lod_bias = props.limits.maxSamplerLodBias;
 
     VkCommandPoolCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;

@@ -1062,6 +1062,46 @@ One console is one data point; see §11. Nothing here closes issue #70
     filtering, through-mode triangle coverage, points, 16-bit framebuffer conversion, dithering, pixel masks,
     the sixteen logic operations, and transform-mode triangles and sprites.
 
+- **PSP-3000 single-case runs of the `ge-mip` and `ge-sync-ids` probes on commit `66940d76` (2026-10-31)**:
+  firmware 6.61, PSPLink 3.2.1, operator-declared model PSP-3000, boot 86. PSPLink `pspver` read 6.6.0
+  (`0x06060010`) at the cited launch and 6.6.1 (`0x06060110`) at an earlier launch on the same boot; the
+  device's own `sceKernelDevkitVersion` answer changed between them, and the runner records what `pspver`
+  prints. One launch of case 126 in `fixtures/psp_oracle/probe_ge_sample.c` (`ge-mip`) and case 78 in
+  `fixtures/psp_oracle/probe.c` (`ge-sync-ids`) after the `transport-write` preflight (PSP-TRANSPORT-001 is not
+  re-cited). Both envelopes are acceptance-eligible with 0 blockers: evidence class `PSP_HARDWARE`, source
+  commit binding `MATCH` on a clean committed tree, strict golden sequences of 285 `ge-mip` records and 17
+  `ge-sync-ids` cells, each with its done record, all PASS; every `ge-mip` list reached GE idle. The earlier
+  launch of the same build (not eligible: the runner's checkout was not at the source commit) gave the same
+  `ge-mip` window for every cell. The raw envelopes and host0 logs stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-31, `66940d76`) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-MIP-001` | `c-b0-*`, `c-b1-*`, `c-b3-*`, `c-b7-*`, `c-b7f-*`, `c-bm1-*`, `c-b0f7-*`, `c-b0f8-*`, `c-b0f9-*`, `c-b1f8-*`, `cl-b0f1-*`, `cl-b0f4-*`, `cl-b0f8-*`, `cl-b1fc-*`, `cl-b6ff-*`, `cl-b7f8-*`, `c-max2-b4-*`, `cl-max2-b2f8-*`, `c-nomip-b3-*`, `c-f5-b2-*`, `c-f7-b2f8-*`, `m3-b2-*`, `m3-b0-4x-*`, `a-1x-*`, `a-2x-*`, `a-4x-*`, `a-8x-*`, `a-16x-*`, `a-1x5-*`, `a-3x-*`, `a-half-*`, `al-1x5-*`, `al-3x-*`, `al-6x-*`, `a-u4-*`, `a-v4-*`, `a-u4v2-*`, `al-u3v2-*`, `a-4x-b1-*`, `a-4x-bm1-*`, `al-2x-b0f8-*`, `a-quad-w2-*`, `s-s1-w1-*`, `s-s1-w2-*`, `s-s1-w3-*`, `s-s1-w4-*`, `s-s1-w8-*`, `s-s1-wh-*`, `s-s2-w1-*`, `s-s2-w4-*`, `s-sh-w8-*`, `s-s1-w2-b1-*`, `s-s1-w2-4x-*`, `sn-s1-w3-*`, `s-spr-s4-*`, `ge-mip-done` | `a-quad-w1to4-*` and `s-s1-w1to8-*` (w varies across the window), filtering within a level, the wait timings | MEASURED (`ge-mip`) |
+  | `PSP-GE-SYNC-001` | `ge-list-sync-unknown-poll`, `ge-list-dequeue-unknown`, `ge-sync-invalid-mode`, `ge-list-sync-after-draw-wait`, `ge-list-sync-cancelled-poll`, `ge-list-sync-completed-wait`, `ge-list-sync-cancelled-wait`, `ge-list-sync-unknown-wait`, `ge-list-sync-stale-wait`, `ge-sync-quiesce`, `ge-sync-ids-done` | A completed list's peek and dequeue before any `sceGeDrawSync(0)`, `sceGeDrawSync(0)` after a reset, the wait timings (see [PSP-GE-SYNC-001 runs 2026-10-31](#psp-ge-sync-001-runs-2026-10-31)) | MEASURED (`ge-sync-ids`) |
+
+  `ge-mip` (#1373): each cell is one display list of project-written command words (no game data) that draws
+  into the 16x4 window x 16..31, y 8..11 of a 64x32 8888 buffer, sampling a 64x64 texture of eight levels, each
+  one colour (red 32 x level, green 255 on even levels), so a pixel names the level it sampled or the two levels
+  and the weight of a blend. The table and list builder are one block that `src/rt/hle_thread_selftest.c`
+  carries byte for byte; `test_ge_mip_cells_match_psp` runs every cell through the software GE and compares its
+  window digest with the PSP's. What the cells establish, for these exact states only:
+  - *Level of detail in 1/16 levels.* Constant mode (TEXLEVEL 1) is the signed 4.4 bias (`c-*`); the unused
+    mode 3 behaves the same (`m3-b2`, `m3-b0-4x`). Automatic mode (0) is log(footprint) + bias, the footprint
+    being the larger axis's level-0 texels per pixel (`a-u4`, `a-v4`, `al-u3v2`). Slope mode (2) is
+    16 + log(TEXLODSLOPE) - log(1/w) + bias, whatever the texture size (`s-*`, `s-s1-w2-4x`); a through-mode
+    sprite has w = 1 (`s-spr-s4`).
+  - *The logarithm* is the float's exponent and top four mantissa bits, log2(1 + m) taken as m: footprints of
+    1.5, 3 and 6 texels give 0.5, 1.5 and 2.5 levels (`al-1x5`, `al-3x`, `al-6x`), and w = 3 gives 2 + 11/16
+    (`s-s1-w3`), as log(1/3) = -27/16.
+  - *Level choice.* With TEXFILTER bit 1 clear the level is (detail + 8) >> 4: one half rounds up (`c-b0f7`,
+    `c-b0f8`). With it set the GE blends level detail >> 4 with the next by the weight detail & 15, each channel
+    (c0 (16 - f) + c1 f) >> 4 (`cl-b0f1` .. `cl-b6ff`). A level of detail up to 0 is level 0 (`c-bm1`,
+    `a-half`); TEXMODE's highest level clamps it with no blend (`cl-b7f8`, `c-max2-b4`, `cl-max2-b2f8`); without
+    a mipmap filter the GE stays on level 0 (`c-nomip-b3`).
+  - *Where w varies across a triangle* (`a-quad-w1to4`, `s-s1-w1to8`) the PSP holds one level of detail per
+    4-pixel span of a row, aligned to the screen, at a point that differs between the strip's two triangles.
+    The software GE evaluates every fragment and does not reproduce those two windows.
+
 - **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
   `insn_trace_tramp.S` and `insn_trace_fixtures.h`. One launch on its own boot after the `transport-write`
@@ -2909,28 +2949,26 @@ not expected PSP values.
 | `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
 | `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |
 | `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
-| `ge-sync-ids` | `PSP-GE-SYNC-001` | `CAPTURED` (2026-10-31, PSP-3000 / PSPLink `pspver` 6.6.0; `96fe29f6` and `f6da6125`, boots 80 and 81; complete streams, not acceptance-eligible: bounded blocking cells were recorded as `TIMEOUT`; `5e301c98` records that as data and has not run) | #1374: `sceGeListSync`, `sceGeDrawSync` and `sceGeListDeQueue` on an unknown queue id, on completed lists before and after later lists, on a list a `sceGeBreak(1)` reset removed, and with sync types other than 0 and 1, each blocking call bounded in a helper thread. See [PSP-GE-SYNC-001 captured runs 2026-10-31](#psp-ge-sync-001-captured-runs-2026-10-31). |
+| `ge-sync-ids` | `PSP-GE-SYNC-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue; captured earlier from `96fe29f6` and `f6da6125`) | #1374: `sceGeListSync`, `sceGeDrawSync` and `sceGeListDeQueue` on an unknown queue id, on completed lists before and after later lists, on a list a `sceGeBreak(1)` reset removed, and with sync types other than 0 and 1, each blocking call bounded in a helper thread. See [PSP-GE-SYNC-001 runs 2026-10-31](#psp-ge-sync-001-runs-2026-10-31). |
+| `ge-mip` | `PSP-GE-MIP-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue) | #1373: the raw pixels of a 16x4 window after 57 textured draws over eight one-colour mip levels: constant, automatic, slope and the unused level mode, biases and their rounding, blends, the highest-level clamp, footprints along either axis, and transform-mode quads at fixed and varying w. 285 result records. |
 
-### PSP-GE-SYNC-001 captured runs 2026-10-31
+### PSP-GE-SYNC-001 runs 2026-10-31
 
-Two `ge-sync-ids` launches, each preceded by `transport-write`, ran on the project PSP-3000 (PSPLink
-`pspver` 6.6.0, `0x06060010`; standalone PSPLink after a soft reset) on 2026-10-31 under the
-hardware-lock protocol: revision `96fe29f6` on boot 80 and `f6da6125` on boot 81. Both streams are
-complete and their completion line is PASS, but neither envelope is acceptance-eligible: the bounded
-blocking cells that did not return were recorded with status `TIMEOUT`. Revision `5e301c98` records
-that outcome as data (`out1` = 0, the call had not returned within 200 ms) and is the eligible re-run;
-it has not run yet, so these cells are `CAPTURED` and establish nothing on their own. The runtime
-(`src/rt/hle.c`, #1374) follows the cells that agree in both runs and the GE driver's list
-lifecycle as uofw reconstructs it (`src/kd/ge/ge.c`, MIT). The raw logs stay private.
+Four `ge-sync-ids` launches, each preceded by `transport-write`, ran on the project PSP-3000 (firmware 6.61) on
+2026-10-31 under the hardware-lock protocol: revision `96fe29f6` on boot 80 and `f6da6125` on boot 81 (PSPLink
+`pspver` 6.6.0, standalone PSPLink after a soft reset; complete but not acceptance-eligible, their bounded
+blocking cells were recorded as `TIMEOUT`), then `66940d76`, which records that outcome as data (`out1` = 0, the
+call had not returned within 200 ms), twice on boot 86: first with `pspver` 6.6.1 (not eligible: the runner's
+checkout was not at the source commit) and then with `pspver` 6.6.0, the acceptance-eligible launch the
+measured index cites. The runtime (`src/rt/hle.c`, #1374) follows the cells that agree in every launch and the
+GE driver's list lifecycle as uofw reconstructs it (`src/kd/ge/ge.c`, MIT). The raw logs stay private.
 
-Agreeing in both runs:
+Agreeing in every launch (measured):
 
 - `ge-list-sync-unknown-poll`: `sceGeListSync(0x0badf00d, 1)` and `sceGeListSync(-1, 1)` return
   0x80000100; `sceGeDrawSync(1)` reads 0.
 - `ge-list-dequeue-unknown`: `sceGeListDeQueue(0x0badf00d)` returns 0x80000100.
 - `ge-list-sync-unknown-wait`: `sceGeListSync(0x0badf00d, 0)` returns 0x80000100 at once.
-- `ge-list-sync-completed-poll`: a list that ran to its FINISH and END peeks 0, and
-  `sceGeListDeQueue` on it returns 0x80000021 (BUSY).
 - `ge-sync-invalid-mode`: `sceGeListSync(qid, 2)`, `sceGeDrawSync(2)` and `sceGeDrawSync(-1)` return
   0x80000107.
 - `ge-list-sync-cancelled-poll`: a list stalled at its start and removed by `sceGeBreak(1)` peeks
@@ -2938,22 +2976,24 @@ Agreeing in both runs:
 - `ge-list-sync-cancelled-wait`: `sceGeListSync(qid, 0)` on that list did not return within 200 ms.
 - `ge-list-sync-completed-wait`, `ge-list-sync-stale-wait`: `sceGeListSync(qid, 0)` on a completed
   list returns 0 at once, also when its peek already reads 0x80000100.
+- `ge-list-sync-after-draw-wait` (the two `66940d76` launches): after a completed `sceGeDrawSync(0)`, a
+  completed list peeks 0x80000100.
 
-Not consistent, and not followed by the runtime:
+Not consistent, and not cited:
 
-- `ge-list-sync-after-reenqueue`, `ge-list-sync-stale-1`, `ge-list-sync-stale-2`,
-  `ge-list-sync-stale-3`: of seven completed lists over the two runs, three peeked 0 and four
-  0x80000100 within 1 ms of their completion, with no `sceGeDrawSync(0)` in between; each of the
-  three peeked 0x80000100 once a later list had run. Nothing in the driver's list lifecycle frees a slot there; the runtime
-  keeps a completed list's peek at 0 until a `sceGeDrawSync(0)` frees its slot.
-- `ge-draw-sync-idle-wait`, which in these two revisions ran after the reset (`5e301c98` moves it
-  before the reset and names the later cell `ge-draw-sync-after-reset-wait`): after the reset of a
-  stalled list, `sceGeDrawSync(0)` returned 0 in run 1 and did not return within 200 ms in run 2.
-  With no list active the runtime returns 0.
+- `ge-list-sync-completed-poll`, `ge-list-sync-after-reenqueue`, `ge-list-sync-stale-1`,
+  `ge-list-sync-stale-2`, `ge-list-sync-stale-3`: a completed list's peek before any `sceGeDrawSync(0)`.
+  In the `pspver` 6.6.1 launch every completed list peeked 0 and dequeued 0x80000021 (BUSY) until the
+  probe's own `sceGeDrawSync(0)`; in the `pspver` 6.6.0 launches some or most peeked 0x80000100 (and
+  dequeued 0x80000100) within 1 ms of their completion. Nothing in the driver's list lifecycle frees a slot
+  there unless another caller's `sceGeDrawSync(0)` or enqueue does; the runtime, where the game is the only
+  GE client, keeps a completed list's peek at 0 until a `sceGeDrawSync(0)` frees its slot, as the 6.6.1
+  launch shows.
+- `ge-draw-sync-after-reset-wait` (`ge-draw-sync-idle-wait` in the first two revisions, which ran it after
+  the reset): after the reset of a stalled list, `sceGeDrawSync(0)` returned 0 in some launches and did not
+  return within 200 ms in others. With no list active the runtime returns 0.
 
-Not measured yet: the peeks after a completed `sceGeDrawSync(0)` (`ge-list-sync-after-draw-wait`;
-run 2's wait did not return), a dequeue of a list that is queued behind another, and the queued
-peek.
+Not measured yet: a dequeue of a list that is queued behind another, and the queued peek.
 
 ### PSP-CPU-TIMING-001 measured run 2026-10-27
 

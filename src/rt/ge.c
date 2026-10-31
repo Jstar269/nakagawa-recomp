@@ -19,7 +19,8 @@
  *
  * Per-fragment: texturing (5650/5551/4444/8888/CLUT4/8/16/32/DXT1/3/5, swizzled or linear,
  * bilinear; DXT is inherently block-tiled and never swizzled; mip levels 0-7 chosen by the
- * TEXLEVEL constant or automatic level of detail, nearest or blended, in tex_lod),
+ * TEXLEVEL automatic, constant or slope level of detail, nearest or blended, in
+ * tex_detail16),
  * programmable alpha test, colour test, alpha blending (full factor/equation set), stencil
  * test/ops (PSP stencil lives in destination alpha), logic ops, 4x4 ordered dithering,
  * colour/alpha write masks, scissor, and a software 16-bit depth buffer.
@@ -1980,37 +1981,27 @@ static float tex_footprint_rho2(float du_dx, float dv_dx, float du_dy, float dv_
     return fmaxf(dx2, dy2);
 }
 
-/* Texture level of detail of one fragment (#1373): a level with its fraction, in
- * [0, highest level]. 0 samples level 0 exactly as before mip levels were modelled.
- *
- * Contract (PSPSDK): TEXMODE bits 16-18 hold the highest level (sceGuTexMode maxmips),
- * TEXLEVEL the mode (sceGuTexLevelMode: GU_TEXTURE_AUTO 0, CONST 1, SLOPE 2) and a signed
- * 4.4 bias, and TEXFILTER's minification field enables mip levels with the GL-named
- * GU_{NEAREST,LINEAR}_MIPMAP_{NEAREST,LINEAR} filters (4-7, bit 2). Without bit 2, or with a
- * highest level of 0, the sampler stays on level 0.
- *   constant:  lod = bias.
- *   automatic: lod = log2(rho) + bias, rho being the footprint the rasterizer already uses
- *              for its minification test (the GL scale factor those filter names mirror).
- *   slope:     no public source gives its formula, so it stays on level 0.
- * ge_tex_mip_active() (ge_shared.h) is that on/off rule, shared with the Vulkan backend.
- * Unmeasured on a PSP: the automatic mode's derivative approximation and whether it is
- * evaluated per pixel, the slope formula, and the nearest-level rounding and between-level
- * weights sample_tex_f applies. */
-static float tex_lod(float rho2) {
-    if (!(ge.tex_filter & 4u) || ge.tex_max_level == 0u) return 0.0f;
-    if (!ge_tex_mip_active(&ge)) {
-        static int s_mode_noted;
-        if (!s_mode_noted) {
-            s_mode_noted = 1;
-            fprintf(stderr, "GE: TEXLEVEL mode %" PRIu32 " samples level 0; its level-of-detail "
-                    "formula is unmeasured (#1373)\n", ge.tex_level_mode);
-        }
-        return 0.0f;
+/* Texture level of detail of one fragment (#1373) in 1/16 levels, before ge_tex_level_pick
+ * (ge_shared.h) clamps it and picks the level and blend. Measured on a PSP-3000
+ * (PSP-GE-MIP-001, docs/HARDWARE_ORACLE.md), every logarithm being ge_lod_log16's:
+ *   constant (1, and the unused 3):  the TEXLEVEL bias (signed 4.4), whatever the footprint;
+ *   automatic (0):  log16(rho) + bias, rho the footprint in level-0 texels per pixel, the larger
+ *                   axis (a-u4, a-v4, al-u3v2);
+ *   slope (2):      16 + log16(TEXLODSLOPE) - log16(q) + bias, q the fragment's 1/w (1 in
+ *                   through mode): one level above the slope at w = 1 (s-s1-w1), one more per
+ *                   doubling of w (s-s1-w2 .. s-s1-w8), and the texture size plays no part
+ *                   (s-s1-w2-4x). log16(1/3) = -27 gives w = 3 level 2 + 11/16 (s-s1-w3).
+ * Those cells draw with one footprint, or one w, per window. Where w varies across a
+ * triangle (a-quad-w1to4, s-s1-w1to8) the PSP holds one level of detail per 4-pixel span of
+ * a row, at a point that depends on the triangle, and the per-fragment value here differs
+ * from it; that rule is not modelled. */
+static int tex_detail16(float rho2, float q) {
+    int bias16 = (int)(ge.tex_lod_bias * 16.0f);
+    switch (ge.tex_level_mode) {
+    case 0u: return ge_lod_log16(sqrtf(rho2)) + bias16;
+    case 2u: return 16 + ge_lod_log16(ge.tex_lod_slope) - ge_lod_log16(q) + bias16;
+    default: return bias16;
     }
-    float lod = ge.tex_level_mode == 1u ? ge.tex_lod_bias
-                                        : 0.5f * log2f(rho2) + ge.tex_lod_bias;
-    if (!(lod > 0.0f)) return 0.0f;            /* magnified, a negative bias, or NaN */
-    return lod < (float)ge.tex_max_level ? lod : (float)ge.tex_max_level;
 }
 
 /* Filter one level at level-0 texel coordinates. The rule is measured on a PSP-3000
@@ -2056,29 +2047,20 @@ static void sample_level_f(uint32_t level, float fu, float fv_coord, int use_lin
 
 /* Sample at level-0 texel coordinates. `minifying` picks TEXFILTER's minification or
  * magnification field for filtering within a level (shade() decides it: the footprint test
- * with mip levels off, the level of detail with them on); `lod` (tex_lod) picks the level.
- * TEXFILTER bit 1 selects
- * between the nearest level (GL rounding: up only past one half) and a blend of the two
- * levels around `lod` by its fraction in 1/256 steps. */
-static void sample_tex_f(float fu, float fv_coord, int minifying, float lod,
+ * with mip levels off, the level of detail with them on); `level` and `frac` are
+ * ge_tex_level_pick's. A blend weighs each channel of the two levels by 16 - frac and frac
+ * and truncates the sum's sixteenth (PSP-GE-MIP-001 cl-b0f1: green 255 at 15/16 is 239). */
+static void sample_tex_f(float fu, float fv_coord, int minifying, uint32_t level, int frac,
                          int *r, int *g, int *b, int *a) {
     static int nobil = -1; if (nobil < 0) nobil = getenv("SR_NOBILINEAR") ? 1 : 0;
     int filter_linear = minifying ? (ge.tex_filter & 1) : ((ge.tex_filter >> 8) & 1);
     int use_linear = !nobil && filter_linear;
-    uint32_t level = lod > 0.0f ? (uint32_t)lod : 0u;
-    float frac = lod > 0.0f ? lod - (float)level : 0.0f;
-    if (!(ge.tex_filter & 2u)) {
-        if (frac > 0.5f) level++;
-        sample_level_f(level, fu, fv_coord, use_linear, r, g, b, a);
-        return;
-    }
-    int weight = (int)(frac * 256.0f);
     sample_level_f(level, fu, fv_coord, use_linear, r, g, b, a);
-    if (weight <= 0 || level >= ge.tex_max_level) return;
+    if (frac <= 0) return;
     int r1, g1, b1, a1;
     sample_level_f(level + 1u, fu, fv_coord, use_linear, &r1, &g1, &b1, &a1);
-    *r += ((r1 - *r) * weight) >> 8; *g += ((g1 - *g) * weight) >> 8;
-    *b += ((b1 - *b) * weight) >> 8; *a += ((a1 - *a) * weight) >> 8;
+    *r = (*r * (16 - frac) + r1 * frac) >> 4; *g = (*g * (16 - frac) + g1 * frac) >> 4;
+    *b = (*b * (16 - frac) + b1 * frac) >> 4; *a = (*a * (16 - frac) + a1 * frac) >> 4;
 }
 
 /* SR_TEXDUMP=1: write each distinct texture used by a draw once per run as
@@ -2650,9 +2632,10 @@ static int color_test(int r, int g, int b) {
 }
 
 /* Compute final pixel colour from interpolated texcoord+colour+fog.
- * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point).
+ * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point), `q` the fragment's
+ * interpolated 1/w (1 in through mode).
  * `fog` is fixed-point 0..256 (256 = no fog). Returns 0 if the alpha test rejects. */
-static int shade(float u, float fv, float rho2, int fog,
+static int shade(float u, float fv, float rho2, float q, int fog,
                  int vr, int vg, int vb, int va, int *or_, int *og, int *ob, int *oa) {
     int r, g, b, a;
     int dbg_ta = -1;
@@ -2663,11 +2646,16 @@ static int shade(float u, float fv, float rho2, int fog,
         /* With mip levels off the footprint picks the minification or magnification filter,
          * as before they were modelled. With them on, the level of detail picks it, as in
          * GL and Vulkan (above 0: minified), so a bias or a constant level moves the choice
-         * with the level and the Vulkan sampler makes the same one (#1373; unmeasured on a
-         * PSP). With a bias of 0 in automatic mode the two rules agree. */
-        float lod = tex_lod(rho2);
-        int minifying = ge_tex_mip_active(&ge) ? lod > 0.0f : rho2 > 1.0f;
-        sample_tex_f(u, fv, minifying, lod, &tr, &tg, &tb, &ta);
+         * with the level and the Vulkan sampler makes the same one (#1373; the filter choice
+         * is unmeasured on a PSP: every PSP-GE-MIP-001 level is one colour). */
+        uint32_t level = 0u;
+        int frac = 0, minifying = rho2 > 1.0f;
+        if (ge_tex_mip_active(&ge)) {
+            int detail16 = tex_detail16(rho2, q);
+            ge_tex_level_pick(detail16, ge.tex_filter, ge.tex_max_level, &level, &frac);
+            minifying = detail16 > 0;
+        }
+        sample_tex_f(u, fv, minifying, level, frac, &tr, &tg, &tb, &ta);
         dbg_ta = ta;
         switch (ge.tex_func & 7) {
             case 1: /* decal */
@@ -3231,7 +3219,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             int fog = use_fog ? (int)(clampf01(ifog) * 256.0f) : 256;
 
             int sr,sg,sb,sa;
-            if (!shade(u,fv,rho2,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+            if (!shade(u,fv,rho2,irw,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
 
             /* SR_PIXWHO=x,y: log every triangle that writes the chosen pixel — identifies
              * which draw owns a misrendered region without guessing from geometry. */
@@ -3308,7 +3296,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         t = clampf01(t);
         int x = xmajor ? p : q, y = xmajor ? q : p;
         float u=0, fv=0;
-        float rho2 = 0.0f;
+        float rho2 = 0.0f, lq = 1.0f;
         if (textured) {
             float du_dt = B->u - A->u;
             float dv_dt = B->v - A->v;
@@ -3316,6 +3304,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
             fv = A->v + dv_dt*t;
             if (persp) {
                 float rw = A->rw + (B->rw - A->rw)*t;
+                lq = rw;
                 if (rw != 0.0f) {
                     float drw_dt = B->rw - A->rw;
                     u /= rw; fv /= rw;
@@ -3333,7 +3322,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         if (!zrange_ok(lz, persp)) { if (s_stat_on > 0) s_stat.zrange++; continue; }
         int fog = use_fog ? (int)(clampf01(A->fog+(B->fog-A->fog)*t)*256.0f) : 256;
         int sr,sg,sb,sa;
-        if (!shade(u,fv,rho2,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+        if (!shade(u,fv,rho2,lq,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
         put_px_rgba_tested(x,y,clamp_z(lz),use_z,sr,sg,sb,sa);
     }
 }
@@ -3358,7 +3347,7 @@ static void draw_point_vtx(const Vtx *A, int persp) {
     int fog = (persp && ge.fog_enable && !ge.clear) ? (int)(clampf01(A->fog)*256.0f) : 256;
     s_in3d = persp;
     int sr,sg,sb,sa;
-    if (!shade(u,fv,0.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
+    if (!shade(u,fv,0.0f,persp ? A->rw : 1.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
     int use_z = persp ? ge.ztest_enable : thru_ztest();
     put_px_rgba_tested((int)A->x,(int)A->y,clamp_z(A->z),use_z,sr,sg,sb,sa);
 }
@@ -4095,6 +4084,9 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     float u_start = u_left + 0.5f * u_dir;
     float v_start = v_top + 0.5f * v_dir;
     float rho2 = tex_footprint_rho2(u_dir, 0.0f, 0.0f, v_dir);
+    /* The slope mode's 1/w: 1 in through mode; a transform-mode sprite takes its second
+     * vertex's, as it does for colour, depth and fog (unmeasured on a PSP). */
+    float sq = persp ? p1->rw : 1.0f;
 
     /* SR_PIXWHO probe: the sprite path owned only its clear-mode case, so a misrendered
      * row owned by a textured sprite had no way to name the draw. Name the full sampling
@@ -4120,7 +4112,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         for (int x = xa; x < xb; x++) {
             float u = u_start + (float)(x - xa) * u_dir;
             int r, g, b, a;
-            if (!shade(u, fv, rho2, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
+            if (!shade(u, fv, rho2, sq, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
             put_px_rgba_tested(x, y, pz, use_z, r, g, b, a);
         }
     }

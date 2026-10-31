@@ -21457,6 +21457,125 @@ static void test_ge_mip_cells_software_contract(void) {
     sr_hle_test_ge_lists_reset();
 }
 
+/* PSP-GE-MIP-001 (#1373): the window digest each cell left on a PSP-3000 (firmware 6.61; probe
+ * case ge-mip at 66940d76, docs/HARDWARE_ORACLE.md). Index k is gm_cells[k]. `modelled` is 0
+ * for the two cells whose w varies across the window: there the PSP holds one level of detail
+ * per 4-pixel span of a row at a triangle-dependent point (ge.c tex_detail16), which the
+ * software GE does not model, so their digests are recorded but not required. */
+static const struct {
+    const char *name;
+    uint64_t psp;
+} s_gm_psp[GM_CELL_COUNT] = {
+    {"c-b0", 0x41fc7ffbc5957d25ull},
+    {"c-b1", 0x435b12e96fc3b725ull},
+    {"c-b3", 0x9dc00e67ab07b725ull},
+    {"c-b7", 0x4f89008273cbb725ull},
+    {"c-b7f", 0x4f89008273cbb725ull},
+    {"c-bm1", 0x41fc7ffbc5957d25ull},
+    {"c-b0f7", 0x41fc7ffbc5957d25ull},
+    {"c-b0f8", 0x435b12e96fc3b725ull},
+    {"c-b0f9", 0x435b12e96fc3b725ull},
+    {"c-b1f8", 0x2eafad0013467d25ull},
+    {"cl-b0f1", 0xef4c02a4fd20d7a5ull},
+    {"cl-b0f4", 0xbeadf15fe1d49725ull},
+    {"cl-b0f8", 0xd97fa6a7a3f43d25ull},
+    {"cl-b1fc", 0xa137f6a565616725ull},
+    {"cl-b6ff", 0x8a1824de7a7d0fa5ull},
+    {"cl-b7f8", 0x4f89008273cbb725ull},
+    {"c-max2-b4", 0x2eafad0013467d25ull},
+    {"cl-max2-b2f8", 0x2eafad0013467d25ull},
+    {"c-nomip-b3", 0x41fc7ffbc5957d25ull},
+    {"c-f5-b2", 0x2eafad0013467d25ull},
+    {"c-f7-b2f8", 0x218f5318dc273d25ull},
+    {"m3-b2", 0x2eafad0013467d25ull},
+    {"m3-b0-4x", 0x41fc7ffbc5957d25ull},
+    {"a-1x", 0x41fc7ffbc5957d25ull},
+    {"a-2x", 0x435b12e96fc3b725ull},
+    {"a-4x", 0x2eafad0013467d25ull},
+    {"a-8x", 0x9dc00e67ab07b725ull},
+    {"a-16x", 0x52a140c78ecf7d25ull},
+    {"a-1x5", 0x435b12e96fc3b725ull},
+    {"a-3x", 0x2eafad0013467d25ull},
+    {"a-half", 0x41fc7ffbc5957d25ull},
+    {"al-1x5", 0xd97fa6a7a3f43d25ull},
+    {"al-3x", 0xdc49573f1e11bd25ull},
+    {"al-6x", 0x218f5318dc273d25ull},
+    {"a-u4", 0x2eafad0013467d25ull},
+    {"a-v4", 0x2eafad0013467d25ull},
+    {"a-u4v2", 0x2eafad0013467d25ull},
+    {"al-u3v2", 0xdc49573f1e11bd25ull},
+    {"a-4x-b1", 0x9dc00e67ab07b725ull},
+    {"a-4x-bm1", 0x435b12e96fc3b725ull},
+    {"al-2x-b0f8", 0xdc49573f1e11bd25ull},
+    {"a-quad-w2", 0x435b12e96fc3b725ull},
+    {"a-quad-w1to4", 0xe41dd15337611eadull},
+    {"s-s1-w1", 0x435b12e96fc3b725ull},
+    {"s-s1-w2", 0x2eafad0013467d25ull},
+    {"s-s1-w3", 0xe624f7106d8a8ea5ull},
+    {"s-s1-w4", 0x9dc00e67ab07b725ull},
+    {"s-s1-w8", 0x52a140c78ecf7d25ull},
+    {"s-s1-wh", 0x41fc7ffbc5957d25ull},
+    {"s-s2-w1", 0x2eafad0013467d25ull},
+    {"s-s2-w4", 0x52a140c78ecf7d25ull},
+    {"s-sh-w8", 0x9dc00e67ab07b725ull},
+    {"s-s1-w2-b1", 0x9dc00e67ab07b725ull},
+    {"s-s1-w2-4x", 0x2eafad0013467d25ull},
+    {"sn-s1-w3", 0x9dc00e67ab07b725ull},
+    {"s-s1-w1to8", 0xc96687bd2bfe7501ull},
+    {"s-spr-s4", 0x9dc00e67ab07b725ull},
+};
+
+static int gm_cell_modelled(const char *name) {
+    return strcmp(name, "a-quad-w1to4") != 0 && strcmp(name, "s-s1-w1to8") != 0;
+}
+
+/* Every PSP-GE-MIP-001 cell through production dispatch and the software GE, with the probe's
+ * own list, vertices and texture; each modelled cell's window must match the PSP's digest. A
+ * diverging cell prints its software window for comparison with the raw hardware rows. */
+static void test_ge_mip_cells_match_psp(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    const uint32_t list = 0x08900000u, vtx = 0x08904000u, tex = 0x08910000u;
+    const uint32_t fb = 0x04000000u + GM_FB_OFFSET;
+    (void)gm_texture((uint8_t *)SR_HOST(tex));
+    unsigned diverged = 0, modelled = 0, names_ok = 1, synced = 1;
+    for (uint32_t k = 0; k < GM_CELL_COUNT; k++) {
+        const struct gm_cell *c = &gm_cells[k];
+        uint32_t px[GM_N];
+        memset(SR_HOST(fb), 0, GM_STRIDE * GM_ROWS * 4u);
+        (void)gm_vertices(c, (uint32_t *)SR_HOST(vtx));
+        (void)gm_list(c, vtx, tex, (uint32_t *)SR_HOST(list));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = list;
+        const uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = qid;
+        if ((qid & 0xFF000000u) != 0x35000000u || sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) != 0u)
+            synced = 0;
+        for (uint32_t i = 0; i < GM_N; i++)
+            px[i] = MEM_R32(fb + ((GM_WY + i / GM_WW) * GM_STRIDE + GM_WX + i % GM_WW) * 4u);
+        if (strcmp(s_gm_psp[k].name, c->name) != 0) names_ok = 0;
+        if (!gm_cell_modelled(c->name)) continue;
+        modelled++;
+        const uint64_t digest = gm_digest(px);
+        if (digest != s_gm_psp[k].psp) {
+            diverged++;
+            fprintf(stderr, "GE-MIP %s software=0x%016llx psp=0x%016llx", c->name,
+                    (unsigned long long)digest, (unsigned long long)s_gm_psp[k].psp);
+            for (uint32_t i = 0; i < GM_N; i++)
+                fprintf(stderr, "%s%08x", i % GM_WW ? " " : "\n  ", (unsigned)px[i]);
+            fprintf(stderr, "\n");
+        }
+    }
+    expect(names_ok, "PSP-GE-MIP-001 digest table rows name the cells in table order");
+    expect(synced, "every PSP-GE-MIP-001 list is accepted and completes");
+    expect(modelled == GM_CELL_COUNT - 2u, "PSP-GE-MIP-001 leaves only the two varying-w cells unmodelled");
+    expect(diverged == 0, "every modelled PSP-GE-MIP-001 cell matches the PSP window digest");
+    sr_hle_test_ge_lists_reset();
+}
+
 /* PSP-GE-RASTER-001 (#343): the window digest each cell left on a PSP-3000 (firmware 6.6.1,
  * probe case ge-raster, docs/HARDWARE_ORACLE.md). Index k is gr_cells[k]. */
 static const struct {
@@ -40779,6 +40898,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_linear_filter_stays_inside_region();
     test_ge_raster_cells_match_psp();
     test_ge_mip_cells_software_contract();
+    test_ge_mip_cells_match_psp();
     test_ge_block_transfer_span_atomicity();
     test_dcache_maintenance_notifies_renderer();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);

@@ -3128,6 +3128,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 # The 2026-10-29 acceptance-eligible #325 runs: hle-intr-cells of 77a1a5e3 and
                 # intr-cause of 2c199df8.
                 "PSP-HLE-INTR-001", "PSP-INTR-CAUSE-001",
+                # The 2026-10-31 acceptance-eligible ge-mip (#1373) and ge-sync-ids (#1374) runs of
+                # 66940d76.
+                "PSP-GE-MIP-001", "PSP-GE-SYNC-001",
             },
         )
         self.assertEqual(
@@ -3140,9 +3143,6 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-NULL-OUT-001",
                 # 2026-10-17: raw UMD capture stopped before the 32768-byte seek/read result.
                 "PSP-UMDRAW-001",
-                # 96fe29f6 and f6da6125, 2026-10-31: complete streams whose bounded blocking
-                # cells were recorded as TIMEOUT (#1374).
-                "PSP-GE-SYNC-001",
             },
         )
 
@@ -8354,6 +8354,7 @@ class GeMipProbeTests(unittest.TestCase):
         self.assertEqual(set(re.findall(r"\b(sce\w+|sr_\w+|MEM_\w+)\s*\(", code)), set())
         self.assertNotIn("#include", block)
         self.assertIn("test_ge_mip_cells_software_contract();", self.selftest)
+        self.assertIn("test_ge_mip_cells_match_psp();", self.selftest)
 
     def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
         self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
