@@ -687,7 +687,12 @@ def _request_player_window_close(process: subprocess.Popen, what: str = "native 
         window_pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
         if window_pid.value == process.pid:
-            windows.append(hwnd)
+            # The window a person closes is a visible one: a graphics driver can own a hidden
+            # helper window in the same process, which ignores WM_CLOSE.
+            if user32.IsWindowVisible(hwnd):
+                windows.insert(0, hwnd)
+            else:
+                windows.append(hwnd)
         return True
 
     user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
