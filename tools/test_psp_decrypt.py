@@ -40,6 +40,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from typing import Any, ClassVar, cast
 from pathlib import Path
 from unittest import mock
 
@@ -582,7 +583,9 @@ def write_keyfile(path: Path, entries: dict) -> None:
     path.write_text(json.dumps(doc, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def synthetic_entries(tag: int = SYNTH_TAG, code: int = SYNTH_CODE) -> dict:
+def synthetic_entries(
+    tag: int = SYNTH_TAG, code: int = SYNTH_CODE
+) -> tuple[dict[str, Any], bytes]:
     """The complete, clearly-fake key set for the synthetic container."""
     tag_key = os.urandom(16)
     return {
@@ -601,7 +604,7 @@ SYNTH_TAG_ALPHA = 0x5EED2952
 SYNTH_TAG_BETA = 0x5EED2953
 
 
-def multi_tag_entries(tags: list[int], code: int = SYNTH_CODE) -> dict:
+def multi_tag_entries(tags: list[int], code: int = SYNTH_CODE) -> dict[str, Any]:
     """A clearly-fake key set covering several synthetic containers at once."""
     entries, _tag_key = synthetic_entries(tags[0], code)
     for tag in tags[1:]:
@@ -740,6 +743,8 @@ class TestKnownAnswers(unittest.TestCase):
 class TestSyntheticEndToEnd(unittest.TestCase):
     """A source-owned encrypted fixture is
     unwrapped end-to-end by the production boundary."""
+
+    elf: ClassVar[bytes]
 
     @classmethod
     def setUpClass(cls):
@@ -950,6 +955,14 @@ class TestBuiltinTables(unittest.TestCase):
     """nk_decrypt with no key file uses the built-in game tables; firmware is
     refused by name before any key lookup, whatever key store is loaded."""
 
+    tmp: ClassVar[Path]
+    exe: ClassVar[Path]
+    elf: ClassVar[bytes]
+    arrays: ClassVar[dict[str, bytes]]
+    recipes: ClassVar[dict[int, dict[str, Any]]]
+    values: ClassVar[dict[str, Any]]
+    firmware: ClassVar[dict[int, str]]
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_builtin_"))
@@ -1070,6 +1083,13 @@ class TestType01Containers(unittest.TestCase):
     tag of each type, read from the public table at run time.
     """
 
+    tmp: ClassVar[Path]
+    exe: ClassVar[Path]
+    elf: ClassVar[bytes]
+    arrays: ClassVar[dict[str, bytes]]
+    recipes: ClassVar[dict[int, dict[str, Any]]]
+    values: ClassVar[dict[str, Any]]
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_type01_"))
@@ -1148,6 +1168,10 @@ class TestType01Containers(unittest.TestCase):
 class TestMatchedTypeDiagnosis(unittest.TestCase):
     """The reported failure belongs to the container type whose
     shape matched, never to a later type's unmet key entry."""
+
+    tmp: ClassVar[Path]
+    exe: ClassVar[Path]
+    elf: ClassVar[bytes]
 
     @classmethod
     def setUpClass(cls):
@@ -1431,6 +1455,9 @@ class TestKeystoreErasure(unittest.TestCase):
     was not handing the block back.
     """
 
+    tmp: ClassVar[Path]
+    exe: ClassVar[Path]
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_erase_"))
@@ -1447,7 +1474,7 @@ class TestKeystoreErasure(unittest.TestCase):
         source = cls.tmp / "erase_harness.c"
         source.write_text(_ERASE_HARNESS_C, encoding="utf-8")
         exe = cls.tmp / "erase_harness.exe"
-        cmd = [CC, "-std=c99", "-O2", "-Wall", "-Wextra",
+        cmd = [cast(str, CC), "-std=c99", "-O2", "-Wall", "-Wextra",
                "-I", str(ROOT / "src" / "core"),
                str(source)]
         cmd.extend(str(ROOT / rel) for rel in decrypt_tool.SOURCES
@@ -1810,6 +1837,12 @@ class TestNpumdimg(unittest.TestCase):
     and refuses PSOne Classics, updaters, damaged headers and tables by name."""
 
     DISC = "TEST80901"
+
+    tmp: ClassVar[Path]
+    exe: ClassVar[Path]
+    entries: ClassVar[dict[str, Any]]
+    keyfile: ClassVar[Path]
+    iso: ClassVar[bytes]
 
     @classmethod
     def setUpClass(cls):

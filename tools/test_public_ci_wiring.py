@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import ModuleType
+from typing import ClassVar, TypedDict, cast
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +62,11 @@ def _ci_step(block: list[str], name: str) -> list[str] | None:
     return block[start:end]
 
 
+def _matched(match: re.Match[str] | None) -> re.Match[str]:
+    """Return a regex match at call sites that already rely on it being present."""
+    return cast(re.Match[str], match)
+
+
 # The private backends the retired PUBLIC_SAFE=0 mode compiled. No build file may name them.
 RETIRED_PRIVATE_BACKENDS = frozenset({"src/rt/pgf.c", "src/rt/pgd.c", "src/rt/iso.c", "src/rt/audio.c"})
 
@@ -103,6 +110,16 @@ def _cmake_sources_and_definitions() -> tuple[dict[str, set[str]], dict[str, set
 
 
 class PublicCiWiringTests(unittest.TestCase):
+    def test_python_tools_ci_enforces_mypy_baseline(self) -> None:
+        python_tools = _ci_job_blocks()["python_tools"]
+        step = _ci_step(python_tools, "Enforce tools mypy baseline")
+        self.assertIsNotNone(step, "python_tools must enforce the tracked mypy baseline")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("mypy==2.1.0", text)
+        self.assertIn("--require-hashes", text)
+        self.assertIn("python tools/mypy_baseline.py", text)
+
     def test_showcase_guest_build_uses_pspdev_compiler(self) -> None:
         demo = {"id": "synthetic-test", "folder": "ge_scene", "target": "fixture_app"}
         with tempfile.TemporaryDirectory(prefix="showcase_cc_") as tmp:
@@ -398,14 +415,14 @@ class PublicCiWiringTests(unittest.TestCase):
         commit = re.search(r"^\s*SDL3_COMMIT=([0-9a-f]{40})$", ci, re.MULTILINE)
         self.assertIsNotNone(version, "ci.yml must name the pinned SDL3 version")
         self.assertIsNotNone(commit, "ci.yml must pin SDL3 to a full commit id")
-        pinned = version.group(1)
+        pinned = _matched(version).group(1)
         self.assertIn('test "$(pkg-config --modversion sdl3)" = "$SDL3_VERSION"', ci)
 
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         url = re.search(
             r"releases/download/release-(\d+\.\d+\.\d+)/SDL3-(\d+\.\d+\.\d+)\.tar\.gz", cmake)
         self.assertIsNotNone(url, "CMakeLists.txt must bootstrap an official SDL3 release")
-        self.assertEqual({url.group(1), url.group(2)}, {pinned})
+        self.assertEqual({_matched(url).group(1), _matched(url).group(2)}, {pinned})
         self.assertRegex(cmake, r"URL_HASH SHA256=[0-9a-f]{64}\b")
         self.assertIn(f"pinned official release SDL3 {pinned}", cmake)
 
@@ -484,7 +501,10 @@ class PublicCiWiringTests(unittest.TestCase):
         native_tools = jobs["native_tools"]
         native_step = _ci_step(native_tools, "Run native player UI regressions headlessly")
         self.assertIsNotNone(native_step, "native_tools no longer runs player-ui-regressions")
-        self.assertIn("run: make CC=gcc player-ui-regressions", "\n".join(native_step))
+        self.assertIn(
+            "run: make CC=gcc player-ui-regressions",
+            "\n".join(cast(list[str], native_step)),
+        )
         self.assertLess(
             _ci_step_index(native_tools, "Build pinned SDL3 for headless Linux runtime"),
             _ci_step_index(native_tools, "Run native player UI regressions headlessly"),
@@ -495,7 +515,7 @@ class PublicCiWiringTests(unittest.TestCase):
             jobs["windows_runtime"], "Run native player UI regressions headlessly on Windows"
         )
         self.assertIsNotNone(windows_step, "windows_runtime no longer runs player-ui-regressions")
-        windows_text = "\n".join(windows_step)
+        windows_text = "\n".join(cast(list[str], windows_step))
         self.assertIn(
             "mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions",
             windows_text,
@@ -571,6 +591,10 @@ _WINDOWS_MAIN_SAVE_CONDITION = (
 class WindowsRuntimePartitionTests(unittest.TestCase):
     """#694: splitting windows_runtime into parallel parts must not weaken it."""
 
+    block: ClassVar[list[str]]
+    parts: ClassVar[list[str]]
+    steps: ClassVar[dict[str, list[str] | None]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.block = _ci_job_blocks()["windows_runtime"]
@@ -587,18 +611,20 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         }
 
     def part_of(self, name: str) -> str | None:
-        conditions = [line.strip() for line in self.steps[name] if line.strip().startswith("if:")]
+        conditions = [
+            line.strip() for line in cast(list[str], self.steps[name]) if line.strip().startswith("if:")
+        ]
         if not conditions:
             return None
         self.assertEqual(len(conditions), 1, name)
         match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'", conditions[0])
         self.assertIsNotNone(match, f"{name}: a part condition must name exactly one part")
-        return match.group(1)
+        return _matched(match).group(1)
 
     def test_windows_runtime_pins_windows_cpython_315_for_tools_and_make(self) -> None:
-        setup = "\n".join(self.steps["Set up Windows CPython 3.15.1"])
+        setup = "\n".join(cast(list[str], self.steps["Set up Windows CPython 3.15.1"]))
         self.assertIn('python-version: "3.15.1"', setup)
-        pin = "\n".join(self.steps["Pin the Windows Python toolchain (CPython 3.15.1)"])
+        pin = "\n".join(cast(list[str], self.steps["Pin the Windows Python toolchain (CPython 3.15.1)"]))
         self.assertIn("shell: pwsh", pin)
         self.assertIn("steps.windows-cpython.outputs.python-path", pin)
         self.assertIn('"PYTHON=$pythonPath`n"', pin)
@@ -606,7 +632,7 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         self.assertIn('cygpath -u "$PYTHON"', "\n".join(self.block))
 
     def test_flash0_python_path_assignment_is_separate_from_invocation(self) -> None:
-        step = "\n".join(self.steps["Build and run flash0 font device selftest"])
+        step = "\n".join(cast(list[str], self.steps["Build and run flash0 font device selftest"]))
         self.assertRegex(step, r"(?m)^\s+run: \|$")
         self.assertIn(
             'py="$(cygpath -u "$PYTHON")"\n'
@@ -624,7 +650,7 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         if name not in self.steps:
             self.fail(f"windows_runtime has no {name!r} step")
         self.assertEqual(self.part_of(name), "selftests")
-        step = "\n".join(self.steps[name])
+        step = "\n".join(cast(list[str], self.steps[name]))
         self.assertIn("shell: msys2 {0}", step)
         self.assertIn("set -euo pipefail", step)
         self.assertNotIn("continue-on-error", step)
@@ -648,7 +674,9 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         for name, command in _WINDOWS_SERIAL_GATES.items():
             with self.subTest(step=name):
                 self.assertIn(name, self.steps, "a serial Windows gate was dropped")
-                self.assertIn(command, " ".join(line.strip() for line in self.steps[name]))
+                self.assertIn(command, " ".join(
+                    line.strip() for line in cast(list[str], self.steps[name])
+                ))
                 self.assertIn(self.part_of(name), self.parts)
 
     def test_shared_steps_run_in_every_part_and_nothing_else_is_unconditional(self) -> None:
@@ -657,11 +685,13 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
                 if name in _WINDOWS_EVERY_PART:
                     self.assertIsNone(self.part_of(name), f"{name} must run in every part")
                 elif name in _WINDOWS_MAIN_SAVE:
-                    step = " ".join(line.strip() for line in self.steps[name])
+                    step = " ".join(line.strip() for line in cast(list[str], self.steps[name]))
                     self.assertIn(_WINDOWS_MAIN_SAVE_CONDITION, step, f"{name} runs only on main")
                 else:
                     self.assertIn(name, _WINDOWS_SERIAL_GATES, f"unclassified Windows step {name!r}")
-        compile_step = " ".join(self.steps["Compile Windows runtime objects through the default compiler path"])
+        compile_step = " ".join(cast(
+            list[str], self.steps["Compile Windows runtime objects through the default compiler path"]
+        ))
         self.assertIn("runtime-objects", compile_step)
 
     def test_every_part_runs_a_gate_and_dependent_steps_share_a_part(self) -> None:
@@ -795,6 +825,11 @@ _NATIVE_DEPENDENT_GATES = (
 class NativeToolsPartitionTests(unittest.TestCase):
     """Splitting native_tools into parallel parts must not drop, repeat or change a gate."""
 
+    block: ClassVar[list[str]]
+    names: ClassVar[list[str]]
+    parts: ClassVar[list[str]]
+    steps: ClassVar[dict[str, list[str] | None]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.block = _ci_job_blocks()["native_tools"]
@@ -809,7 +844,9 @@ class NativeToolsPartitionTests(unittest.TestCase):
         cls.steps = {name: _ci_step(cls.block, name) for name in names}
 
     def conditions(self, name: str) -> list[str]:
-        return [line.strip() for line in self.steps[name] if line.strip().startswith("if:")]
+        return [
+            line.strip() for line in cast(list[str], self.steps[name]) if line.strip().startswith("if:")
+        ]
 
     def part_of(self, name: str) -> str | None:
         conditions = self.conditions(name)
@@ -818,7 +855,7 @@ class NativeToolsPartitionTests(unittest.TestCase):
         self.assertEqual(len(conditions), 1, name)
         match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'", conditions[0])
         self.assertIsNotNone(match, f"{name}: a part condition must name exactly one part")
-        return match.group(1)
+        return _matched(match).group(1)
 
     def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
         self.assertEqual(len(self.parts), len(set(self.parts)))
@@ -826,7 +863,9 @@ class NativeToolsPartitionTests(unittest.TestCase):
         for name, command in _NATIVE_SERIAL_GATES.items():
             with self.subTest(step=name):
                 self.assertIn(name, self.steps, "a serial native gate was dropped")
-                self.assertIn(command, "\n".join(line.strip() for line in self.steps[name]))
+                self.assertIn(command, "\n".join(
+                    line.strip() for line in cast(list[str], self.steps[name])
+                ))
                 self.assertIn(self.part_of(name), self.parts)
 
     def test_shared_steps_run_in_every_part_and_nothing_else_is_unconditional(self) -> None:
@@ -873,6 +912,14 @@ class WindowsCompilerCacheTests(unittest.TestCase):
     masquerading `gcc` must resolve into the UCRT64 toolchain, whose location the build's
     SDL3 toolchain check reads.
     """
+
+    block: ClassVar[list[str]]
+    key: ClassVar[str]
+    restore: ClassVar[str]
+    setup: ClassVar[str]
+    trim: ClassVar[str]
+    save: ClassVar[str]
+    report: ClassVar[str]
 
     KEY = "Compute the persisted compiler cache key"
     RESTORE = "Restore the persisted compiler cache"
@@ -1018,6 +1065,10 @@ class WindowsPlayerStageSmokeTests(unittest.TestCase):
     so a Windows-only staging regression reached no hosted gate.
     """
 
+    block: ClassVar[list[str]]
+    step: ClassVar[list[str] | None]
+    text: ClassVar[str]
+
     STEP = "Smoke the Windows player staging headlessly"
 
     @classmethod
@@ -1075,6 +1126,10 @@ class PlayerUiShardTests(unittest.TestCase):
     PLAYER_UI_SHARDS, and tests/native/test_player_ui.py keeps the tests of its shard.
     These checks load the real module's tests, so a test added to it is covered too.
     """
+
+    module: ClassVar[ModuleType]
+    suite: ClassVar[unittest.TestSuite]
+    ids: ClassVar[list[str]]
 
     MODULE = ROOT / "tests" / "native" / "test_player_ui.py"
 
@@ -1175,12 +1230,12 @@ class VfpuFuzzShardTests(unittest.TestCase):
             with self.subTest(part=part):
                 lines = _ci_step(block, f"Build and run synthetic VFPU fuzzer (shard {index} of 2)")
                 self.assertIsNotNone(lines, f"no fuzz step for {part}")
-                text = "\n".join(lines)
+                text = "\n".join(cast(list[str], lines))
                 self.assertIn(f"if: matrix.part == '{part}'", text)
                 self.assertIn(f'FUZZ_CASE_SHARD: "{index}/2"', text)
         proof = _ci_step(block, "Prove the fuzz shards cover every case exactly once")
         self.assertIsNotNone(proof, "the shard proof step is missing")
-        self.assertIn("if: matrix.part == 'fuzz-0'", "\n".join(proof))
+        self.assertIn("if: matrix.part == 'fuzz-0'", "\n".join(cast(list[str], proof)))
 
     def test_ci_required_aggregates_every_windows_part(self) -> None:
         required = "\n".join(_ci_job_blocks()["ci_required"])
@@ -1204,10 +1259,10 @@ class VfpuFuzzShardTests(unittest.TestCase):
         self.assertIn(full.returncode, (0, 1), full.stderr[-2000:])
         summary = self.SUMMARY.search(full.stdout)
         self.assertIsNotNone(summary, "the default run printed no summary")
-        total = int(summary.group(2))
+        total = int(_matched(summary).group(2))
         default_cases = sorted(int(case) for case in self.PROGRESS.findall(full.stdout))
         self.assertEqual(default_cases, list(range(total)), "the default run did not test every case")
-        self.assertEqual(int(summary.group(1)), total)
+        self.assertEqual(int(_matched(summary).group(1)), total)
 
         covered: list[int] = []
         for shard_index in (0, 1):
@@ -1217,8 +1272,8 @@ class VfpuFuzzShardTests(unittest.TestCase):
                 shard = self.SUMMARY.search(run.stdout)
                 self.assertIsNotNone(shard, "the shard run printed no summary")
                 cases = [int(case) for case in self.PROGRESS.findall(run.stdout)]
-                self.assertEqual(int(shard.group(1)), len(cases), "a shard tested fewer cases than it printed")
-                self.assertEqual(int(shard.group(2)), len(cases), "a shard admitted a count it did not run")
+                self.assertEqual(int(_matched(shard).group(1)), len(cases), "a shard tested fewer cases than it printed")
+                self.assertEqual(int(_matched(shard).group(2)), len(cases), "a shard admitted a count it did not run")
                 self.assertTrue(all(case % 2 == shard_index for case in cases),
                                 "a shard ran a case it does not admit")
                 covered.extend(cases)
@@ -1430,7 +1485,7 @@ class PublicExportJobTests(unittest.TestCase):
                 )
                 needs_line = re.search(r"(?m)^    needs: (.+)$", block)
                 self.assertIsNotNone(needs_line, f"{job} declares no needs line")
-                self.assertNotIn("hygiene", needs_line.group(1))
+                self.assertNotIn("hygiene", _matched(needs_line).group(1))
                 self.assertNotIn("needs.hygiene.result", block)
                 self.assertIn("needs.public_export.result == 'success'", block)
 
@@ -2070,7 +2125,12 @@ class MergeQueueWakeWiringTests(unittest.TestCase):
 # `gh api repos/Jstar269/nakagawa-recomp/rulesets/20662430`. Refresh it only by reading the
 # ruleset again; nothing in the repository writes to GitHub. Each value is the integration id
 # the ruleset pins for that context (15368 is GitHub Actions).
-MAIN_RULESET_SNAPSHOT: dict[str, object] = {
+class MainRulesetSnapshot(TypedDict):
+    strict_required_status_checks_policy: bool
+    required_status_checks: dict[str, int]
+
+
+MAIN_RULESET_SNAPSHOT: MainRulesetSnapshot = {
     "strict_required_status_checks_policy": True,
     "required_status_checks": {
         "Trusted CI verdict": 15368,
@@ -2220,6 +2280,8 @@ class MainRulesetClaimsTests(unittest.TestCase):
 class BetterleaksAllowlistTests(unittest.TestCase):
     """Every Betterleaks exception names one file, one rule and one exact value, so a different
     secret-shaped value in the same file, or the same value elsewhere, still fails Hygiene."""
+
+    filter_body: ClassVar[str]
 
     # Built from pieces so this file itself holds no scanner-shaped literal.
     ALLOWED = "libadler." + "1951" + "c218" + ".prx"
