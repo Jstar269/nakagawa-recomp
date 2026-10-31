@@ -149,6 +149,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_THREAD_K0_BLOCK 116
 /* #1595: __sceSasInit on a core that is already initialized; see run_sas_init. */
 #define PSP_ORACLE_CASE_SAS_INIT 117
+/* #1096: the first AT3 decode against many fact-chunk delays in one launch; see run_at3_delay_sweep. */
+#define PSP_ORACLE_CASE_AT3_DELAY_SWEEP 150
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -382,6 +384,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/cpu_timing_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_K0_BLOCK
 #define PROBE_HOST0_LOG "host0:/thread_k0_block_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DELAY_SWEEP
+#define PROBE_HOST0_LOG "host0:/at3_delay_sweep_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
 #define PROBE_HOST0_LOG "host0:/sas_init_log.txt"
 #endif
@@ -10599,6 +10603,169 @@ static void run_at3_decode(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DELAY_SWEEP
+#include <pspatrac3.h>
+#include <psputility_avmodules.h>
+/* #1096: the first sceAtracDecodeData of a plain AT3 track against the delay word of its 8-byte RIFF fact
+   chunk, for many delays in one launch. The at3-decode case measured five delays, one launch each; this case
+   patches the delay word of one staged stream (host0:/at3-input-buffer.bin, the same private prefix) in a
+   copy and, per delay: sceAtracGetAtracID, sceAtracSetData, the next decode position, two decodes with their
+   sample counts, end flags, remaining frames and PCM fingerprints, the position and next-sample count after
+   each, and the release. Each call is preceded by a durable step marker. Ends in the normal teardown. */
+#define AT3S_INPUT_PATH "host0:/at3-input-buffer.bin"
+#define AT3S_BYTES 8192u
+#define AT3S_FACT_DELAY_OFFSET 64u
+static unsigned char s_at3s_input[AT3S_BYTES] __attribute__((aligned(64)));
+static unsigned char s_at3s_stream[AT3S_BYTES] __attribute__((aligned(64)));
+static unsigned short s_at3s_pcm[4096] __attribute__((aligned(64)));
+/* Around the measured points (0, 500, 955, 1024, 2048) and the decoder's own 69-sample delay, plus delays
+   that retail AT3 tracks carry (1024 + 9 .. 1024 + 954). */
+static const uint32_t k_at3s_delays[] = {
+    0u, 1u, 34u, 68u, 69u, 70u, 100u, 454u, 455u, 456u, 500u, 886u, 954u, 955u, 956u, 1000u,
+    1023u, 1024u, 1025u, 1033u, 1092u, 1093u, 1094u, 1153u, 1387u, 1489u, 1500u, 1652u, 1892u,
+    1978u, 1979u, 1980u, 2047u, 2048u, 2049u, 3072u,
+};
+
+static uint32_t at3s_le32(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void at3s_line(int emulated, const char *text) {
+    probe_emit_durable(emulated, text, strlen(text));
+}
+
+/* FNV-1a over the call's interleaved samples, its peak magnitude and four leading samples. */
+static void at3s_pcm_line(int emulated, uint32_t delay, int call, int rc, int samples, int end_flag,
+                          int remain, int rc_pos, uint32_t pos, int rc_next, int next) {
+    uint32_t hash = 2166136261u, peak = 0;
+    const int count = samples > 0 && samples <= 1024 ? samples * 2 : 0;
+    for (int i = 0; i < count; i++) {
+        const uint16_t v = s_at3s_pcm[i];
+        hash = (hash ^ (v & 0xffu)) * 16777619u;
+        hash = (hash ^ (v >> 8)) * 16777619u;
+        const uint32_t mag = (v & 0x8000u) ? (uint32_t)(0x10000u - v) : v;
+        if (mag > peak) peak = mag;
+    }
+    char line[360];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-d%u-call%d status=RC "
+                   "result=0x%08x samples=%d end=%d remain=%d fnv=0x%08x peak=%u s0=0x%04x s1=0x%04x "
+                   "s2=0x%04x s3=0x%04x rc_pos=0x%08x pos=%u rc_next=0x%08x next=%d\n",
+                   (unsigned int)delay, call, (unsigned int)rc, samples, end_flag, remain,
+                   (unsigned int)hash, (unsigned int)peak, s_at3s_pcm[0], s_at3s_pcm[1], s_at3s_pcm[2],
+                   s_at3s_pcm[3], (unsigned int)rc_pos, (unsigned int)pos, (unsigned int)rc_next, next);
+    at3s_line(emulated, line);
+}
+
+static void at3s_one_delay(int emulated, uint32_t delay) {
+    char step[40], line[320];
+    memcpy(s_at3s_stream, s_at3s_input, AT3S_BYTES);
+    s_at3s_stream[AT3S_FACT_DELAY_OFFSET + 0] = (unsigned char)(delay & 0xffu);
+    s_at3s_stream[AT3S_FACT_DELAY_OFFSET + 1] = (unsigned char)((delay >> 8) & 0xffu);
+    s_at3s_stream[AT3S_FACT_DELAY_OFFSET + 2] = (unsigned char)((delay >> 16) & 0xffu);
+    s_at3s_stream[AT3S_FACT_DELAY_OFFSET + 3] = (unsigned char)((delay >> 24) & 0xffu);
+    (void)snprintf(step, sizeof(step), "d%u-get-atracid", (unsigned int)delay);
+    probe_step(emulated, "at3-delay-sweep", step);
+    const int id = sceAtracGetAtracID(PSP_ATRAC_AT3);
+    if (id < 0) {
+        (void)snprintf(line, sizeof(line),
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-d%u-setup status=RC "
+                       "result=0x%08x stage=get-atracid\n", (unsigned int)delay, (unsigned int)id);
+        at3s_line(emulated, line);
+        return;
+    }
+    (void)snprintf(step, sizeof(step), "d%u-set-data", (unsigned int)delay);
+    probe_step(emulated, "at3-delay-sweep", step);
+    const int set_rc = sceAtracSetData(id, s_at3s_stream, AT3S_BYTES);
+    u32 pos0 = 0xffffffffu;
+    const int rc_pos0 = sceAtracGetNextDecodePosition(id, &pos0);
+    int next0 = -1;
+    const int rc_next0 = sceAtracGetNextSample(id, &next0);
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-d%u-setup status=RC "
+                   "result=0x%08x stage=set-data rc_pos=0x%08x pos=%u rc_next=0x%08x next=%d\n",
+                   (unsigned int)delay, (unsigned int)set_rc, (unsigned int)rc_pos0, (unsigned int)pos0,
+                   (unsigned int)rc_next0, next0);
+    at3s_line(emulated, line);
+    for (int call = 0; call < 3; call++) {
+        int samples = -1, end_flag = -1, remain = -1, next = -1;
+        u32 pos = 0xffffffffu;
+        memset(s_at3s_pcm, 0, sizeof(s_at3s_pcm));
+        (void)snprintf(step, sizeof(step), "d%u-decode%d", (unsigned int)delay, call);
+        probe_step(emulated, "at3-delay-sweep", step);
+        const int rc = sceAtracDecodeData(id, s_at3s_pcm, &samples, &end_flag, &remain);
+        const int rc_pos = sceAtracGetNextDecodePosition(id, &pos);
+        const int rc_next = sceAtracGetNextSample(id, &next);
+        at3s_pcm_line(emulated, delay, call, rc, samples, end_flag, remain, rc_pos, pos, rc_next, next);
+        if (rc != 0 && call > 0) break;
+    }
+    (void)snprintf(step, sizeof(step), "d%u-release", (unsigned int)delay);
+    probe_step(emulated, "at3-delay-sweep", step);
+    const int rel = sceAtracReleaseAtracID(id);
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-d%u-release status=RC "
+                   "result=0x%08x\n", (unsigned int)delay, (unsigned int)rel);
+    at3s_line(emulated, line);
+}
+
+static void run_at3_delay_sweep(int emulated) {
+    char line[320];
+    int input_rc = -1;
+    uint32_t total = 0;
+    probe_step(emulated, "at3-delay-sweep", "read-input");
+    SceUID fd = sceIoOpen(AT3S_INPUT_PATH, PSP_O_RDONLY, 0);
+    if (fd >= 0) {
+        while (total < AT3S_BYTES) {
+            const int n = sceIoRead(fd, s_at3s_input + total, AT3S_BYTES - total);
+            if (n <= 0) break;
+            total += (uint32_t)n;
+        }
+        (void)sceIoClose(fd);
+        input_rc = total == AT3S_BYTES ? 0 : -2;
+    } else {
+        input_rc = fd;
+    }
+    /* The delay word is patched only where an 8-byte fact chunk holds it, as the at3-decode header record
+       reads it: "fact" at byte 52, its size word 8 at 56. */
+    const int fact_ok = input_rc == 0 && memcmp(s_at3s_input + 52, "fact", 4) == 0 &&
+                        at3s_le32(s_at3s_input + 56) == 8u;
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-input status=RC "
+                   "result=0x%08x bytes=%u fact_ok=%d fact_samples=%u fact_delay=%u\n",
+                   (unsigned int)input_rc, (unsigned int)total, fact_ok,
+                   fact_ok ? (unsigned int)at3s_le32(s_at3s_input + 60) : 0u,
+                   fact_ok ? (unsigned int)at3s_le32(s_at3s_input + 64) : 0u);
+    at3s_line(emulated, line);
+    if (fact_ok) {
+        probe_step(emulated, "at3-delay-sweep", "load-avcodec");
+        const int avcodec_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+        (void)snprintf(line, sizeof(line),
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-load-avcodec status=RC "
+                       "result=0x%08x\n", (unsigned int)avcodec_rc);
+        at3s_line(emulated, line);
+        if (avcodec_rc == 0) {
+            probe_step(emulated, "at3-delay-sweep", "load-atrac3plus");
+            const int atrac_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
+            (void)snprintf(line, sizeof(line),
+                           "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-load-atrac3plus "
+                           "status=RC result=0x%08x\n", (unsigned int)atrac_rc);
+            at3s_line(emulated, line);
+            if (atrac_rc == 0) {
+                for (size_t i = 0; i < sizeof(k_at3s_delays) / sizeof(k_at3s_delays[0]); i++)
+                    at3s_one_delay(emulated, k_at3s_delays[i]);
+                probe_step(emulated, "at3-delay-sweep", "unload-atrac3plus");
+                (void)sceUtilityUnloadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
+            }
+            probe_step(emulated, "at3-delay-sweep", "unload-avcodec");
+            (void)sceUtilityUnloadAvModule(PSP_AV_MODULE_AVCODEC);
+        }
+    }
+    probe_step(emulated, "at3-delay-sweep", "park");
+    /* Normal teardown: parks until PSPLink modstop. Returning from main would drop PSPLink to the XMB. */
+    probe_teardown(emulated);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
 #include <pspsascore.h>
 #include <psputility_avmodules.h>
@@ -11890,6 +12057,8 @@ int main(int argc, char *argv[]) {
     run_thread_k0_block(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
     run_sas_init(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DELAY_SWEEP
+    run_at3_delay_sweep(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

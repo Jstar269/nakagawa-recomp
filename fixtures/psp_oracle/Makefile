@@ -231,6 +231,8 @@ else ifeq ($(CASE),late-prx-target)
 CASE_ID = 110
 else ifeq ($(CASE),at3-decode)
 CASE_ID = 111
+else ifeq ($(CASE),at3-delay-sweep)
+CASE_ID = 150
 else ifeq ($(CASE),fake-success)
 CASE_ID = 112
 else ifeq ($(CASE),font-userpgf)
@@ -516,8 +518,8 @@ LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
 ifneq ($(filter ge-nan vram-mirror ge-timing cpu-timing,$(CASE)),)
 LIBS := -lpspgum -lpspgu $(LIBS)
 endif
-# #1096: the AT3 decode probe links the user-mode ATRAC and utility stubs it calls.
-ifeq ($(CASE),at3-decode)
+# #1096: the AT3 decode probes link the user-mode ATRAC and utility stubs they call.
+ifneq ($(filter at3-decode at3-delay-sweep,$(CASE)),)
 LIBS += -lpspatrac3 -lpsputility
 endif
 # #1595: the SAS re-init probe links the user-mode sceSasCore and utility stubs it calls.
