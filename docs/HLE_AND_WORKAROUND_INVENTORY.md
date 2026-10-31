@@ -933,14 +933,14 @@ Title Configuration Overrides (src/rt/title_config.c):
 
 #### 1. `libfont.prx` Startup Refusal Boundary
 
-- **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and the runtime-binding validators.
+- **Location:** `src/rt/hle_kernel_module.c` (`h_LoadModule`, `h_StartModule`) and the runtime-binding validators.
 - **Mechanism:** `sceKernelLoadModule` leaves readiness untouched and resolves a relative path against the calling thread's current directory before it looks up the manifest's declared module, so a title that changes into its data directory and loads `libfont.prx` by a relative path gets the translated module, not an undeclared host-served record with no start entry. `sceKernelStartModule` runs a translated guest `libfont.prx` entry when the `SR_REAL_MODULE_START` gate allows it (`1` for any module, unset for `libfont` and for guest-placed modules whose exports host HLE does not serve, `0` never). If startup is unavailable (untranslated or refused image, no recorded entry, or the kill switch), it reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest memory unchanged and stops the run at the named semantic boundary `libfont-startup-unavailable`, which the player shows as a stopped-early card. A repeated successful start still refuses re-entry. Legacy manifests that set `libfont_ready_flag_addr` fail validation with `LIBFONT_READY_FLAG_RETIRED` and a migration sentence.
 - **Root Cause:** An earlier compatibility bypass skipped `module_start` and wrote readiness during load. Translated startup and export routing now have a source-owned production-path fixture. Real-title startup readiness remains unverified when no locally supplied decrypted executable and PRXs are available.
 - **Lower-Level Solution:** Provide translated guest startup and its kernel, thread, callback, heap and file dependencies; remove the retired field from existing manifests.
 
 #### 2. `psmf.prx` and `libpsmfplayer.prx` Start Module Skip
 
-- **Location:** `src/rt/hle.c` (`h_StartModule`).
+- **Location:** `src/rt/hle_kernel_module.c` (`h_StartModule`).
 - **Mechanism:** Explicitly skips calling `f_32280000` (`psmf`) and `f_322f8868` (`libpsmfplayer`). A guest-placed module (placed by the guest allocator at run time) keeps the same bypass when host HLE implements one of its named exports, so its importers stay on the host implementation.
 - **Root Cause:** Sony SDK initialization assumes low-level kernel callbacks and ring buffer allocation.
 - **Lower-Level Solution:** Provide faithful kernel memory partition allocation (`sceKernelAllocPartitionMemory`) and let the genuine PSMF modules execute their lifecycle.

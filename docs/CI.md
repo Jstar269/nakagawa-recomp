@@ -188,9 +188,10 @@ counted as a kill. Both are source-owned and need no game input. See
 limits of the evidence.
 
 Both hosts run `hle-thread-selftest`, the executable production-HLE suite that links
-`src/rt/hle.c` (#306): the Windows job in its `selftests` part, and the Linux `native_tools` job
-after the pinned SDL3 install, because the suite links SDL3 for the scheduler's host clock. Each
-host runs its own arms of `hle.c`'s file, directory and host-data seams. A few checks exist on
+the runtime HLE sources (`src/rt/hle.c` and its subsystem files, #306, #307): the Windows job in its
+`selftests` part, and the Linux `native_tools` job after the pinned SDL3 install, because the suite
+links SDL3 for the scheduler's host clock. Each host runs its own arms of the file, directory and
+host-data seams (`hle_host.c`, `hle_io.c`, `hle_data.c`). A few checks exist on
 Windows only, because what they check is Win32: the `FindFirstFileW` error classifier, the
 `CreateProcessW` command-line quoting of the exit-game respawn, and the `mklink` junction (Linux
 plants a symbolic link in its place).

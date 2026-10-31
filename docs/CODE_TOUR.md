@@ -133,7 +133,7 @@ highest-priority ready thread runs, and equal priorities take turns. Translated 
 and lets the scheduler switch. Threads that wait on a semaphore, an event flag or a delay block
 until the scheduler wakes them.
 
-## 10. System calls: `src/rt/hle.c`
+## 10. System calls: `src/rt/hle.c` and the subsystem files
 
 A game calls the PSP's system libraries through import stubs. Code generation turns each stub
 into a call to `sr_syscall()` with the function's NID, the number that identifies it.
@@ -142,14 +142,19 @@ Handlers read arguments 1-4 from `$a0`-`$a3` and 5-8 from `$t0`-`$t3`, and retur
 `$v0`. Each handler is registered by name with `sr_hle_register()`, for example
 `sr_hle_register(0x289d82fe, "sceDisplaySetFrameBuf", h_DisplaySetFrameBuf)`.
 
-`hle.c` is very large; its opening comment lists the groups in order, and each group starts with
-a `---- <name>` banner you can search for. An unknown NID is never answered with a made-up value:
-it is reported by name and the run stops.
+The handlers live in one file per subsystem, `src/rt/hle_<subsystem>.c` (`hle_display.c`,
+`hle_io.c`, `hle_kernel_thread.c` and so on; `tools/hle_registry_meta.py` says which library
+belongs to which subsystem). Each file registers its own NIDs, and `sr_hle_init()` in `hle.c`
+calls those registrations in a fixed order. `hle.c` keeps the handler table, the kernel object
+UIDs and the user-memory allocator, the code two or more subsystems share, and the dispatch;
+`hle_internal.h` is the files' private header. `python tools/hle_sources.py --defining-file
+h_DisplaySetFrameBuf` names the file that defines a handler. An unknown NID is never answered
+with a made-up value: it is reported by name and the run stops.
 
 ## 11. Drawing: `src/rt/ge.c`
 
 The PSP's graphics chip, the GE, reads display lists from memory. The game hands one over with
-`sceGeListEnQueue` (`h_GeListEnQueue` in `hle.c`), which calls `ge_run_list()` in `src/rt/ge.c`.
+`sceGeListEnQueue` (`h_GeListEnQueue` in `hle_ge.c`), which calls `ge_run_list()` in `src/rt/ge.c`.
 `ge.c` walks the list command by command, keeps the GE's state (matrices, lights, textures,
 blending), decodes vertices, transforms and clips them, and hands each finished screen-space
 primitive to the Vulkan backend in `src/rt/gpu_sdl3vk/ge_gpu.c` through the `GeGpuHooks` seam
@@ -160,7 +165,7 @@ something on the PSP side reads them.
 ## 12. A frame on screen
 
 When the game shows a finished frame it calls `sceDisplaySetFrameBuf` (`h_DisplaySetFrameBuf`
-in `hle.c`). The frame is presented at once or at the next vblank (`sr_vblank_tick()`); either
+in `hle_display.c`). The frame is presented at once or at the next vblank (`sr_vblank_tick()`); either
 way `display_present_active()` hands it to `gui_present()` in `src/rt/gui.c`. `gui_present()` paces output to the PSP's 59.94 Hz display rate, then asks the
 Vulkan backend for the frame: `gegpu_present()` in `ge_gpu.c` finds the GPU image for that
 framebuffer and `sdl3vk_present_image_ex()` in `src/rt/gpu_sdl3vk/sdl3vk.c` copies it to the
