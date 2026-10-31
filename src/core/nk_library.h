@@ -82,6 +82,10 @@ NkResult nk_library_commit_entry(NkLibrary *lib, const NkGameEntry *entry,
 NkResult nk_library_commit_remove(NkLibrary *lib, const char *disc_id,
                                   const char *file_path);
 
+/* nk_library_commit_entry for a fresh add (nk_library_add_fresh). */
+NkResult nk_library_commit_fresh(NkLibrary *lib, const NkGameEntry *entry,
+                                 const char *file_path);
+
 /* The same, for the entry with disc_id and content_sha1 (nk_library_remove_by_key). */
 NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
                                          const char *content_sha1, const char *file_path);
@@ -100,11 +104,16 @@ NkResult nk_library_commit_remove_by_file(NkLibrary *lib, const char *disc_id,
    beside a record written before hashing, so no image's record is lost. A
    hashed entry that takes over its image's record from another file (the image
    moved, then was added again) also drops the record its new file had: one
-   file holds one image. An unhashed update of the same file leaves the record
-   unhashed: the file may hold other bytes now (the player checks every add). When an entry is
+   file holds one image. An unhashed update of the same file (its last-played
+   time, a build's result) keeps that record's hashes and tier. When an entry is
    verified retail, the unknown records with its disc ID become modified: the
    disc ID is now known retail (nk_disc_verify.h). */
 NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry);
+
+/* The same, for a disc added again as it is on disk now: an unhashed entry of
+   the same file leaves its record unhashed, with no tier, since the file may
+   hold other bytes (the player checks every add). */
+NkResult nk_library_add_fresh(NkLibrary *lib, const NkGameEntry *entry);
 
 /* The record nk_library_add_or_update(lib, entry) would replace, or NULL when it
    would add entry: the record of the same image, as far as the library can tell. */

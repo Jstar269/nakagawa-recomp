@@ -579,23 +579,28 @@ static void test_library_keys_by_disc_id_and_hash(void) {
     r = nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1);
     CHECK(r && strcmp(r->title_name, "Retail, renamed") == 0);
 
-    /* An update of the same file made without hashing replaces that file's
-       record, not the first record's, and leaves it unhashed: the file may hold
-       other bytes now. An update that carries the hashes keeps them. */
+    /* An update of the same file made without hashing (a last-played time)
+       keeps the hashes and tier of that file's record, not the first record's:
+       another writer may have just recorded them. A fresh add of the file (a
+       disc added again, which the player checks again) leaves it unhashed. */
     seed(&entry, "TEST70001", "retail.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
-    snprintf(entry.last_played, sizeof(entry.last_played), "2026-10-31T00:00:00Z");
-    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
-    CHECK(nk_library_count(&g_lib) == 2);
-    CHECK(nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1) == NULL);
-    t = nk_library_find_by_key(&g_lib, "TEST70001", g_modified_digest.sha1);
-    CHECK(t && t->last_played[0] == '\0');
-    seed(&entry, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
     snprintf(entry.last_played, sizeof(entry.last_played), "2026-10-31T00:00:00Z");
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
     CHECK(nk_library_count(&g_lib) == 2);
     r = nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1);
     CHECK(r && strcmp(r->last_played, "2026-10-31T00:00:00Z") == 0 &&
           r->disc_verification == NK_DISC_TIER_VERIFIED_RETAIL);
+    t = nk_library_find_by_key(&g_lib, "TEST70001", g_modified_digest.sha1);
+    CHECK(t && t->last_played[0] == '\0');
+    {
+        NkGameEntry again;
+        seed(&again, "TEST70001", "retail.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+        static NkLibrary fresh;
+        fresh = g_lib;
+        CHECK(nk_library_add_fresh(&fresh, &again) == NK_OK);
+        CHECK(nk_library_count(&fresh) == 2 &&
+              nk_library_find_by_key(&fresh, "TEST70001", g_retail_digest.sha1) == NULL);
+    }
 
     /* Saved and read back: both records, their hashes and tiers. */
     char path[NATIVE_TEST_PATH_MAX];
@@ -712,14 +717,19 @@ static void test_library_keys_by_disc_id_and_hash(void) {
           strcmp(nk_library_find_by_key(&g_lib, "TEST70004", g_retail_digest.sha1)->iso_path,
                  "games/third.iso") == 0);
 
-    /* A player re-add of a record a bring-up wrote replaces it, unhashed until
-       the player's check of the add ends: one record, never a stale tier. */
+    /* An update of a record a bring-up wrote, which records no size (0), keeps
+       the bring-up's hashes; a fresh add of it (the player adding the disc
+       again) leaves it unhashed until the player's check of the add ends. */
     nk_library_init(&g_lib);
     seed(&entry, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
     entry.iso_size_bytes = 0;
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
     seed(&entry, "TEST70001", "retail.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 1);
+    CHECK(strcmp(nk_library_get(&g_lib, 0)->content_sha1, g_retail_digest.sha1) == 0 &&
+          nk_library_get(&g_lib, 0)->disc_verification == NK_DISC_TIER_VERIFIED_RETAIL);
+    CHECK(nk_library_add_fresh(&g_lib, &entry) == NK_OK);
     CHECK(nk_library_count(&g_lib) == 1);
     CHECK(nk_library_get(&g_lib, 0)->content_sha1[0] == '\0' &&
           nk_library_get(&g_lib, 0)->disc_verification == NK_DISC_TIER_NOT_CHECKED);

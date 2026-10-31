@@ -179,16 +179,29 @@ static void library_drop_stale_records_of_file(NkLibrary *lib, int keep) {
     }
 }
 
-NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
+/* nk_library_add_or_update, and with fresh set nk_library_add_fresh. */
+static NkResult library_put(NkLibrary *lib, const NkGameEntry *entry, bool fresh) {
     if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
 
     int index = library_index_for_entry(lib, entry);
     if (index >= 0) {
-        /* The entry replaces the record whole. An unhashed one of the same file
-           (a disc added again, which the player checks again) leaves it
-           unhashed: the file may hold other bytes now, at the same size. */
-        lib->entries[index] = *entry;
-        if (entry->content_sha1[0]) library_drop_stale_records_of_file(lib, index);
+        NkGameEntry *existing = &lib->entries[index];
+        NkGameEntry merged = *entry;
+        /* An update made without hashing, of the same file (its last-played
+           time, a build's result), keeps the record's hashes and tier, which
+           another writer may have just recorded. A fresh add of the file does
+           not: the file may hold other bytes now, and the player checks it
+           again. A size of 0 is one a writer didn't record, not another file. */
+        if (!fresh && !merged.content_sha1[0] && existing->content_sha1[0] &&
+            strcmp(existing->iso_path, merged.iso_path) == 0 &&
+            (existing->iso_size_bytes == merged.iso_size_bytes ||
+             existing->iso_size_bytes == 0 || merged.iso_size_bytes == 0)) {
+            memcpy(merged.content_sha1, existing->content_sha1, sizeof(merged.content_sha1));
+            memcpy(merged.content_crc32, existing->content_crc32, sizeof(merged.content_crc32));
+            merged.disc_verification = existing->disc_verification;
+        }
+        *existing = merged;
+        if (merged.content_sha1[0]) library_drop_stale_records_of_file(lib, index);
     } else {
         if (lib->count >= NK_MAX_GAMES) {
             return NK_ERROR_OUT_OF_MEMORY;
@@ -197,6 +210,14 @@ NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
     }
     library_label_modified(lib, entry->disc_id);
     return NK_OK;
+}
+
+NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
+    return library_put(lib, entry, false);
+}
+
+NkResult nk_library_add_fresh(NkLibrary *lib, const NkGameEntry *entry) {
+    return library_put(lib, entry, true);
 }
 
 NkResult nk_library_remove(NkLibrary *lib, const char *disc_id) {
@@ -999,11 +1020,12 @@ static void library_adopt(NkLibrary *lib, const NkLibrary *saved, const char *re
     lib->count = view->count;
 }
 
-/* Puts entry, or removes disc_id (the record of iso_path when it is given, else
-   the one with content_sha1) when entry is NULL, in the file under the lock. */
-static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, const char *disc_id,
-                               const char *content_sha1, const char *iso_path,
-                               const char *file_path) {
+/* Puts entry (as a fresh add when fresh is set), or removes disc_id (the record
+   of iso_path when it is given, else the one with content_sha1) when entry is
+   NULL, in the file under the lock. */
+static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, bool fresh,
+                               const char *disc_id, const char *content_sha1,
+                               const char *iso_path, const char *file_path) {
     char target[NK_MAX_PATH];
     if (file_path) {
         snprintf(target, sizeof(target), "%s", file_path);
@@ -1040,7 +1062,7 @@ static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, const c
                        (size_t)lib->count * sizeof(lib->entries[0]));
                 disk->count = lib->count;
             }
-            res = entry ? nk_library_add_or_update(disk, entry)
+            res = entry ? library_put(disk, entry, fresh)
                   : iso_path ? nk_library_remove_by_file(disk, disc_id, iso_path)
                              : nk_library_remove_by_key(disk, disc_id, content_sha1);
             if (res == NK_OK) {
@@ -1063,7 +1085,13 @@ static NkResult library_commit(NkLibrary *lib, const NkGameEntry *entry, const c
 NkResult nk_library_commit_entry(NkLibrary *lib, const NkGameEntry *entry,
                                  const char *file_path) {
     if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
-    return library_commit(lib, entry, NULL, NULL, NULL, file_path);
+    return library_commit(lib, entry, false, NULL, NULL, NULL, file_path);
+}
+
+NkResult nk_library_commit_fresh(NkLibrary *lib, const NkGameEntry *entry,
+                                 const char *file_path) {
+    if (!lib || !entry || entry->disc_id[0] == '\0') return NK_ERROR_GENERIC;
+    return library_commit(lib, entry, true, NULL, NULL, NULL, file_path);
 }
 
 NkResult nk_library_commit_remove(NkLibrary *lib, const char *disc_id,
@@ -1074,11 +1102,11 @@ NkResult nk_library_commit_remove(NkLibrary *lib, const char *disc_id,
 NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
                                          const char *content_sha1, const char *file_path) {
     if (!lib || !disc_id || !*disc_id) return NK_ERROR_GENERIC;
-    return library_commit(lib, NULL, disc_id, content_sha1, NULL, file_path);
+    return library_commit(lib, NULL, false, disc_id, content_sha1, NULL, file_path);
 }
 
 NkResult nk_library_commit_remove_by_file(NkLibrary *lib, const char *disc_id,
                                           const char *iso_path, const char *file_path) {
     if (!lib || !disc_id || !*disc_id || !iso_path || !*iso_path) return NK_ERROR_GENERIC;
-    return library_commit(lib, NULL, disc_id, NULL, iso_path, file_path);
+    return library_commit(lib, NULL, false, disc_id, NULL, iso_path, file_path);
 }

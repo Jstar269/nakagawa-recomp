@@ -1349,6 +1349,15 @@ int player_app_find_game_by_disc_id(const PlayerApp *app, const char *disc_id);
    failed. Two images can share a disc ID (a retail disc and a fan translation
    of it), so the disc ID alone could pick the other card. */
 int player_app_find_added_game(const PlayerApp *app, const GameRecord *game);
+/* The card of the image a build made: by its file, or by its disc ID when one
+   card alone has it (a card added again from another folder meanwhile); -1
+   when two images share the disc ID and neither names the file. */
+int player_app_find_built_game(const PlayerApp *app, const char *disc_id,
+                               const char *iso_path);
+/* The card a package check of game is for: the same package and image, or else
+   the first card of that package. Two images of a disc ID share its package
+   folder, and each card's check lands on its own card. */
+int player_app_find_package_card(const PlayerApp *app, const GameRecord *game);
 /* How many cards carry disc_id (two images can share one). */
 int player_app_count_games_with_disc_id(const PlayerApp *app, const char *disc_id);
 /* The card of one image, by its disc ID and file, or -1. */

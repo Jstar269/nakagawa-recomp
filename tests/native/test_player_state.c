@@ -2731,6 +2731,29 @@ static void test_disc_check_after_add(void) {
         kept = fopen(marker, "rb");
         assert(kept != NULL);
         fclose(kept);
+        /* The card goes by its own hash: the other bytes' record stays. */
+        assert(nk_library_load(&loaded, path) == NK_OK && nk_library_count(&loaded) == 1 &&
+               strcmp(nk_library_get(&loaded, 0)->content_sha1,
+                      "0123456789abcdef0123456789abcdef01234567") == 0);
+        assert(app->game_count == 1 && strcmp(app->games[0].content_sha1,
+                                              "0123456789abcdef0123456789abcdef01234567") == 0);
+        /* A card whose check hasn't run beside a record another player hashed
+           at its file: the bytes may differ, so the folders stay too. */
+        assert(player_app_remove_game(app, 0));
+        assert(player_app_add_game(app, &retail_game));
+        assert(app->game_count == 1 && app->games[0].content_sha1[0] == '\0');
+        assert(nk_library_load(&loaded, path) == NK_OK && nk_library_count(&loaded) == 1);
+        snprintf(loaded.entries[0].content_sha1, sizeof(loaded.entries[0].content_sha1),
+                 "%s", retail.sha1);
+        snprintf(loaded.entries[0].content_crc32, sizeof(loaded.entries[0].content_crc32),
+                 "%s", retail.crc32);
+        loaded.entries[0].disc_verification = NK_DISC_TIER_VERIFIED_RETAIL;
+        assert(nk_library_save(&loaded, path) == NK_OK);
+        assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+        kept = fopen(marker, "rb");
+        assert(kept != NULL);
+        fclose(kept);
+        player_app_disc_check_cancel(app);
         /* A library file this player can't read (a newer player's): nothing is
            removed or deleted, and the reason says so. */
         while (app->game_count > 0) assert(player_app_remove_game(app, 0));
@@ -2845,9 +2868,21 @@ static void test_disc_check_after_add(void) {
     assert(!player_app_disc_check_take(app, &item, &verified_elsewhere));
 
     /* Two cards share the disc ID now: a build of either is found by its image,
-       never by the disc ID alone. */
+       never by the disc ID alone, and a package check lands on its own card. */
     assert(player_app_count_games_with_disc_id(app, "TEST70021") == 2);
     assert(player_app_count_games_with_disc_id(app, "TEST70022") == 1);
+    {
+        int retail_index = player_app_find_added_game(app, &retail_game);
+        translated_index = player_app_find_added_game(app, &translated);
+        assert(retail_index >= 0 && translated_index >= 0 && retail_index != translated_index);
+        assert(player_app_find_built_game(app, "TEST70021", translated_iso) == translated_index);
+        assert(player_app_find_built_game(app, "TEST70021", "elsewhere.iso") == -1);
+        assert(player_app_find_built_game(app, "TEST70021", "") == -1);
+        assert(player_app_find_built_game(app, "TEST70022", "elsewhere.iso") >= 0);
+        assert(player_app_find_package_card(app, &app->games[translated_index]) ==
+               translated_index);
+        assert(player_app_find_package_card(app, &app->games[retail_index]) == retail_index);
+    }
 
     /* An add that failed finds no card, never the other image of its disc ID. */
     GameRecord missing = translated;

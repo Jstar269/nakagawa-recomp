@@ -2487,15 +2487,10 @@ static void player_package_status_finish(PlayerApp *app,
         }
     }
 #endif
-    int current_index = -1;
-    for (int i = 0; i < app->game_count; i++) {
-        /* A title whose package variant changed while the check ran is not
-           this result's title: the other variant has its own package. */
-        if (player_game_same_package(&app->games[i], &job->game)) {
-            current_index = i;
-            break;
-        }
-    }
+    /* A title whose package variant changed while the check ran is not this
+       result's title: the other variant has its own package. Of two images of
+       a disc ID, the one checked. */
+    int current_index = player_app_find_package_card(app, &job->game);
     bool cache_generation_matches =
         job->cache_generation == app->runtime_package_cache_generation;
     /* Any completed worker result resolves a prior worker-start failure for
@@ -2574,8 +2569,7 @@ static void player_package_status_finish(PlayerApp *app,
             nk_library_add_or_update(&app->library,
                                      &app->games[current_index]);
             player_app_sync_library(app);
-            current_index = player_app_find_game_by_disc_id(
-                app, job->game.disc_id);
+            current_index = player_app_find_package_card(app, &job->game);
             if (current_index >= 0) {
                 player_app_runtime_package_cache_store(
                     app, current_index, &job->game, job->identity_valid,
@@ -5643,18 +5637,9 @@ int main(int argc, char *argv[]) {
         player_app_poll_package_build(&app, SDL_GetTicks());
         if (app.build_session.is_complete && !build_check_pending &&
             !build_check_session_already_handled) {
-            /* The card of the image built, not another image with its disc ID;
-               a card that no longer names that file (added again from another
-               folder meanwhile) is found by its disc ID when it is the only
-               card with it. */
-            int build_game_index = app.build_session.iso_path[0]
-                ? player_app_find_game_by_image(&app, app.build_session.disc_id,
-                                                app.build_session.iso_path)
-                : -1;
-            if (build_game_index < 0 &&
-                player_app_count_games_with_disc_id(&app, app.build_session.disc_id) == 1) {
-                build_game_index = player_app_find_game_by_disc_id(&app, app.build_session.disc_id);
-            }
+            /* The card of the image built, not another image with its disc ID. */
+            int build_game_index = player_app_find_built_game(
+                &app, app.build_session.disc_id, app.build_session.iso_path);
             if (build_game_index >= 0 && build_game_index < app.game_count) {
                 /* The build may have bound the executable this entry was
                    saved without; the check validates against that one. */

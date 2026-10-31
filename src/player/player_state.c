@@ -977,7 +977,9 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
        user-data directory still reported success. The entry then vanished on
        the next start, having never been persisted. Report what actually
        happened instead. */
-    NkResult add_res = nk_library_add_or_update(&app->library, game);
+    /* A fresh add: the record's earlier hashes and tier go until the check below
+       ends, since the file may hold other bytes now. */
+    NkResult add_res = nk_library_add_fresh(&app->library, game);
     if (add_res != NK_OK) {
         player_app_sync_library(app);
         return false;
@@ -986,7 +988,7 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
     /* Written under the library lock from what the file holds now, so a title
        another writer (a bring-up building into this data folder) added since the
        library was loaded is kept (#1768). */
-    NkResult save_res = nk_library_commit_entry(&app->library, game, NULL);
+    NkResult save_res = nk_library_commit_fresh(&app->library, game, NULL);
     player_app_sync_library(app);
     /* Its image is hashed after the add, on main.c's worker, every time it is
        added: a file can change in place. So is any other image of its disc ID
@@ -1032,6 +1034,26 @@ int player_app_count_games_with_disc_id(const PlayerApp *app, const char *disc_i
         count += strcmp(app->games[i].disc_id, disc_id) == 0;
     }
     return count;
+}
+
+int player_app_find_built_game(const PlayerApp *app, const char *disc_id,
+                               const char *iso_path) {
+    int index = iso_path && iso_path[0]
+        ? player_app_find_game_by_image(app, disc_id, iso_path) : -1;
+    if (index < 0 && player_app_count_games_with_disc_id(app, disc_id) == 1) {
+        index = player_app_find_game_by_disc_id(app, disc_id);
+    }
+    return index;
+}
+
+int player_app_find_package_card(const PlayerApp *app, const GameRecord *game) {
+    int first = -1;
+    for (int i = 0; app && game && i < app->game_count; i++) {
+        if (!player_game_same_package(&app->games[i], game)) continue;
+        if (strcmp(app->games[i].iso_path, game->iso_path) == 0) return i;
+        if (first < 0) first = i;
+    }
+    return first;
 }
 
 int player_app_find_added_game(const PlayerApp *app, const GameRecord *game) {
@@ -2940,20 +2962,21 @@ bool player_app_remove_game(PlayerApp *app, int game_index) {
     if (!disc_id || disc_id[0] == '\0') return false;
     if (player_game_is_showcase(&app->games[game_index])) return false;
     /* The card's own image: two images can share a disc ID, and the disc ID
-     * alone could take the other. Its file names it (one file holds one
-     * image), even beside another image not hashed yet; a record with no file
-     * is named by its hash ("" names the unhashed record). */
+     * alone could take the other. Its hash names it when it has one, wherever
+     * it is now; an unhashed card is named by its file (one file holds one
+     * image), even beside another image not hashed yet. */
     char sha1[sizeof(app->games[game_index].content_sha1)];
     char iso[sizeof(app->games[game_index].iso_path)];
     snprintf(sha1, sizeof(sha1), "%s", app->games[game_index].content_sha1);
     snprintf(iso, sizeof(iso), "%s", app->games[game_index].iso_path);
     /* Only the library entry is removed. The user's ISO file on disk is
      * never touched. */
-    NkResult removed = iso[0] ? nk_library_remove_by_file(&app->library, disc_id, iso)
-                              : nk_library_remove_by_key(&app->library, disc_id, sha1);
+    bool by_file = !sha1[0] && iso[0];
+    NkResult removed = by_file ? nk_library_remove_by_file(&app->library, disc_id, iso)
+                               : nk_library_remove_by_key(&app->library, disc_id, sha1);
     if (removed != NK_OK) return false;
     /* Under the library lock, from what the file holds now (#1768). */
-    NkResult committed = iso[0]
+    NkResult committed = by_file
         ? nk_library_commit_remove_by_file(&app->library, disc_id, iso, NULL)
         : nk_library_commit_remove_by_key(&app->library, disc_id, sha1, NULL);
     if (committed != NK_OK) {
@@ -3130,11 +3153,11 @@ static PlayerLibraryFileImages player_library_file_other_image(const GameRecord 
         for (int i = 0; i < disk->count; i++) {
             const NkGameEntry *record = &disk->entries[i];
             if (strcmp(record->disc_id, game->disc_id) != 0) continue;
-            /* The card's own record names its file and, once either is hashed,
-               the same bytes. */
+            /* The card's own record names its file and the same bytes: both
+               unhashed or both one hash. A record hashed while the card isn't
+               (or the other way) may be other bytes, so its folders stay. */
             bool same_file = strcmp(record->iso_path, game->iso_path) == 0;
-            bool same_bytes = !record->content_sha1[0] || !game->content_sha1[0] ||
-                              strcmp(record->content_sha1, game->content_sha1) == 0;
+            bool same_bytes = strcmp(record->content_sha1, game->content_sha1) == 0;
             if (!same_file || !same_bytes) {
                 found = PLAYER_LIBRARY_FILE_OTHER_IMAGE;
                 break;
