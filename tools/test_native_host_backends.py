@@ -529,11 +529,8 @@ class NativeHostBackendTests(unittest.TestCase):
         hook = _function_body(driver, "static int driver_stop_requested(void) {")
         for check in ("gui_stop_requested()", "ge_capture_exit_due()"):
             self.assertIn(check, hook)
-        self.assertIn("    if (use_sched) {
-        sr_sched_stop_requested = driver_stop_requested;
-"
-                      "        ge_capture_exit_set_deferred(1);
-", driver)
+        self.assertIn("    if (use_sched) {\n        sr_sched_stop_requested = driver_stop_requested;\n"
+                      "        ge_capture_exit_set_deferred(1);\n", driver)
         teardown = driver.index("    sr_perf_shutdown();\n    gui_shutdown();\n    sr_trace_close();\n")
         self.assertGreater(teardown, driver.index("sched_run(entry, s.r[4], s.r[5]);"),
                            "the driver must tear down after the scheduler returns")

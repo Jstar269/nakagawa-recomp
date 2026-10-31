@@ -8315,8 +8315,9 @@ static uint64_t s_quit_stop_deadline_us;
  * run goes on: the guest's callback window is open, or a savedata dialog it started is still
  * running inside that window, so a quit does not cut off a save in progress (the pause
  * overlay's Quit is refused for the same reason). Returns 1 once the run should end; the window
- * bounds the wait, so a guest that never finishes cannot hold the player open. Ending a run
- * mid-dialog leaves the previous save, as savedata.c's staged write commits whole or not. */
+ * bounds the wait, so a guest that never finishes cannot hold the player open. The stop lands
+ * only between guest slices, never inside the sceUtilitySavedataUpdate call that writes the
+ * save (sr_savedata_execute_sized runs within it), so no write is cut off halfway. */
 int sr_exit_request_stop_due(void) {
     if (!s_quit_stop_armed) {
         s_quit_stop_armed = 1;
