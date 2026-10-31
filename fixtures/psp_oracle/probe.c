@@ -10974,7 +10974,7 @@ SceInt32 sceMpegAvcDecodeDetail(SceMpeg *mpeg, void *detail);
 SceInt32 sceMpegAvcQueryYCbCrSize(SceMpeg *mpeg, SceInt32 mode, SceInt32 width, SceInt32 height, SceInt32 *size);
 SceInt32 sceMpegAvcInitYCbCr(SceMpeg *mpeg, SceInt32 mode, SceInt32 width, SceInt32 height, void *ycbcr);
 SceInt32 sceMpegAvcDecodeYCbCr(SceMpeg *mpeg, SceMpegAu *au, void **ycbcr, SceInt32 *init);
-SceInt32 sceMpegAvcDecodeStopYCbCr(SceMpeg *mpeg, void *ycbcr, SceInt32 *status);
+SceInt32 sceMpegAvcDecodeStopYCbCr(SceMpeg *mpeg, void **ycbcr, SceInt32 *status);
 SceInt32 sceMpegAvcCsc(SceMpeg *mpeg, void *ycbcr, SceInt32 *range, SceInt32 frame_width, void *dest);
 
 #define MPY_INPUT_PATH "host0:/mpeg-input.pmf"
@@ -11258,8 +11258,10 @@ static void run_mpeg_ycbcr(int emulated) {
         if (init2) mpy_dump(emulated, "avc-decode", s_mpy_dest, MPY_DEST_BYTES);
 
         SceInt32 status = -1;
+        /* Like sceMpegAvcDecodeYCbCr it takes the address of the buffer pointer: given the buffer itself
+           (this case before 2026-10-31) the call never returned. */
         probe_step(emulated, "mpeg-ycbcr", "decode-stop-ycbcr");
-        rc = sceMpegAvcDecodeStopYCbCr(&mpeg, s_mpy_ycbcr, &status);
+        rc = sceMpegAvcDecodeStopYCbCr(&mpeg, &ycbcr_ptr, &status);
         (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
         mpy_rc(emulated, "decode-stop-ycbcr", rc, extra);
         status = -1;
