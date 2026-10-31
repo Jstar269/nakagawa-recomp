@@ -2140,6 +2140,23 @@ static void test_mpeg_ycbcr_measured_contract(void) {
     CHECK(ycbcr_find(YM_DESC, YM_SMALL) == NULL, "ycbcr: teardown frees the host YCbCr slots");
 }
 
+/* A picture's time for the A/V measurement is looked up by its bytes.  Identical pictures
+ * decoded with different times (a still scene) leave the time unknown rather than giving one
+ * of them; a picture with distinct bytes keeps its own time. */
+static void test_mpeg_ycbcr_picture_time_by_bytes(void) {
+    const uint32_t m = 0x08200000u;
+    ycbcr_reset_mpeg(m);
+    ycbcr_picture_set(m, 0x1111u, 90000);
+    CHECK(ycbcr_picture_pts(m, 0x1111u) == 90000 && ycbcr_picture_pts(m, 0x2222u) == -1,
+          "ycbcr-time: a decoded picture's bytes give its time, unknown bytes give none");
+    ycbcr_picture_set(m, 0x1111u, 93003);
+    ycbcr_picture_set(m, 0x3333u, 96006);
+    CHECK(ycbcr_picture_pts(m, 0x1111u) == -1 && ycbcr_picture_pts(m, 0x3333u) == 96006,
+          "ycbcr-time: identical pictures with different times leave the time unknown");
+    ycbcr_reset_mpeg(m);
+    CHECK(ycbcr_picture_pts(m, 0x3333u) == -1, "ycbcr-time: a reset forgets the pictures");
+}
+
 /* sceMpegAvcDecodeYCbCr through the production dispatch writes the decoder's own samples into
  * the measured strip layout (the textured I_PCM fixture, checked against a second decode of the
  * same units through the host YUV target), and sceMpegAvcCsc converts them. */
@@ -4191,6 +4208,7 @@ int main(int argc, char **argv) {
     test_video_eos_waits_for_all_access_units();
     test_mpeg_ps_demux_error_fails_closed();
     test_mpeg_ycbcr_measured_contract();
+    test_mpeg_ycbcr_picture_time_by_bytes();
     test_mpeg_ycbcr_guest_decode();
     test_mpeg_pcm_and_au_mode();
     test_mpeg_csc_swizzled_vram_mirrors();

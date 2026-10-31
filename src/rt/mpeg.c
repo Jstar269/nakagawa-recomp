@@ -1140,25 +1140,28 @@ static void ycbcr_reset_mpeg(uint32_t mpegAddr) {
     }
 }
 
-/* A picture with the same bytes as an earlier one takes over its entry: the newest time wins. */
+/* Every decoded picture is an entry of its own; the oldest entry gives way to a new one. */
 static void ycbcr_picture_set(uint32_t mpegAddr, uint64_t bytes, int64_t pts) {
     if (!bytes) return;
-    YcbcrPicture *p = NULL;
-    for (int i = 0; i < YCBCR_SLOT_COUNT && !p; i++)
-        if (s_ycbcr_pictures[i].bytes == bytes && s_ycbcr_pictures[i].mpeg == mpegAddr) p = &s_ycbcr_pictures[i];
-    for (int i = 0; i < YCBCR_SLOT_COUNT && !p; i++)
-        if (!s_ycbcr_pictures[i].bytes) p = &s_ycbcr_pictures[i];
-    if (!p) p = &s_ycbcr_pictures[s_ycbcr_picture_next++ % YCBCR_SLOT_COUNT];
+    YcbcrPicture *p = &s_ycbcr_pictures[s_ycbcr_picture_next++ % YCBCR_SLOT_COUNT];
     p->mpeg = mpegAddr;
     p->bytes = bytes;
     p->pts = pts;
 }
 
+/* The time of the decoded picture with these bytes, or -1 when there is none, or when identical
+ * pictures with different times are recorded (a still scene): which one is shown is unknown. */
 static int64_t ycbcr_picture_pts(uint32_t mpegAddr, uint64_t bytes) {
-    for (int i = 0; i < YCBCR_SLOT_COUNT; i++)
-        if (bytes && s_ycbcr_pictures[i].bytes == bytes && s_ycbcr_pictures[i].mpeg == mpegAddr)
-            return s_ycbcr_pictures[i].pts;
-    return -1;
+    int64_t pts = -1;
+    int found = 0;
+    for (int i = 0; i < YCBCR_SLOT_COUNT; i++) {
+        const YcbcrPicture *p = &s_ycbcr_pictures[i];
+        if (!bytes || p->bytes != bytes || p->mpeg != mpegAddr) continue;
+        if (found && p->pts != pts) return -1;
+        pts = p->pts;
+        found = 1;
+    }
+    return pts;
 }
 
 /* The slot of (mpeg, buf), taking a free one when there is none. */
