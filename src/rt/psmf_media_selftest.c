@@ -4011,7 +4011,7 @@ static void test_mpeg_csc_presentation_boundary(void) {
     enum {
         PC_DESC = 0x08100000u, PC_DATA = 0x08110000u, PC_YCBCR = 0x08130000u,
         PC_RANGE = 0x08140000u, PC_DEST = 0x08150000u, PC_PTR = 0x08160000u,
-        PC_INIT = 0x08170000u, PC_AU = 0x08180000u, PC_MODE = 0x08190000u,
+        PC_INIT = 0x08170000u, PC_AU = 0x08180000u, PC_MODE = 0x08190000u, PC_DISPLAY = 0x081a0000u,
     };
     if (!sr_h264_backend_available()) {
         fprintf(stderr, "SKIP: sceMpegAvcCsc presentation assertions need an H.264 backend\n");
@@ -4056,8 +4056,13 @@ static void test_mpeg_csc_presentation_boundary(void) {
           "sceMpeg presentation picture decodes");
     CHECK(sr_hle_test_psmf_av_counter(0, "delivered") == 0,
           "sceMpeg: a decoded YCbCr picture is not delivered to the guest until sceMpegAvcCsc");
-    CHECK(guest_mpeg_import(0x31bd0272u, PC_DESC, PC_YCBCR, PC_RANGE, width, PC_DEST) == 0,
-          "sceMpeg presentation Csc writes the picture");
+    /* A guest PSMF player converts another buffer whose header it copied from the decoded one:
+     * the header's planes name the picture and its time. */
+    memset(SR_HOST(PC_DISPLAY), 0, 128u);
+    memcpy(SR_HOST(PC_DISPLAY), SR_HOST(PC_YCBCR), 128u);
+    CHECK(guest_mpeg_import(0x31bd0272u, PC_DESC, PC_DISPLAY, PC_RANGE, width, PC_DEST) == 0 &&
+              ref_csc_matches(PC_YCBCR, PC_DEST, width, 0u, width, height),
+          "sceMpeg presentation Csc of a copied header writes the decoded picture");
     CHECK(sr_hle_test_psmf_av_counter(0, "delivered") == 1 && sr_hle_test_psmf_av_counter(0, "pending") == 1,
           "sceMpeg: sceMpegAvcCsc delivers the picture with the access unit's time");
     sr_hle_test_psmf_av_set_clock_us(2000000);
