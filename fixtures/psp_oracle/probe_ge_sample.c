@@ -1394,7 +1394,24 @@ static uint32_t gm_list(const struct gm_cell *c, uint32_t vtx, uint32_t tex, uin
     GM_W(0xe7, 1);              /* depth writes off */
     GM_W(0xe8, 0);
     GM_W(0xe9, 0);
+    GM_W(0xdb, 0x00ff0001u);    /* alpha test ALWAYS */
+    GM_W(0xd8, 1);              /* colour test ALWAYS */
+    GM_W(0xd9, 0);
+    GM_W(0xda, 0);
+    GM_W(0xdc, 0x00ff0001u);    /* stencil test ALWAYS */
+    GM_W(0xdd, 0);              /* KEEP, KEEP, KEEP */
+    GM_W(0xde, 1);              /* depth test ALWAYS */
+    GM_W(0xdf, 0x32u);
+    GM_W(0xe0, 0);
+    GM_W(0xe1, 0);
     GM_W(0xe6, 3);              /* logic op COPY */
+    GM_W(0xe2, 0x1d0cu);        /* the PSP SDK default dither matrix */
+    GM_W(0xe3, 0xf3e2u);
+    GM_W(0xe4, 0x0c1du);
+    GM_W(0xe5, 0xe2f3u);
+    GM_W(0xcf, 0);
+    GM_W(0xcd, 0);
+    GM_W(0xce, 0);
     GM_W(0x55, 0xffffffu);
     GM_W(0x58, 0xffu);
     GM_W(0x1e, 1);              /* texture on */

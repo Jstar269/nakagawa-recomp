@@ -2050,6 +2050,25 @@ _register_campaign_probe(
     {case: (9 if case.endswith("-draw") else 16) for case in GE_RASTER_CASES},
 )
 
+# ge-mip (126, probe_ge_sample.c): the #1373 GE level-of-detail cells. The cells are the gm_cells
+# table of the block probe_ge_sample.c shares with src/rt/hle_thread_selftest.c, in order, with
+# the ge-raster record shape: one `-draw` record (9 words) and one record per window row.
+GE_MIP_CELLS = (
+    "c-b0", "c-b1", "c-b3", "c-b7", "c-b7f", "c-bm1", "c-b0f7", "c-b0f8", "c-b0f9", "c-b1f8",
+    "cl-b0f1", "cl-b0f4", "cl-b0f8", "cl-b1fc", "cl-b6ff", "cl-b7f8", "c-max2-b4", "cl-max2-b2f8",
+    "c-nomip-b3", "c-f5-b2", "c-f7-b2f8", "m3-b2", "m3-b0-4x", "a-1x", "a-2x", "a-4x", "a-8x",
+    "a-16x", "a-1x5", "a-3x", "a-half", "al-1x5", "al-3x", "al-6x", "a-u4", "a-v4", "a-u4v2",
+    "al-u3v2", "a-4x-b1", "a-4x-bm1", "al-2x-b0f8", "a-quad-w2", "a-quad-w1to4", "s-s1-w1",
+    "s-s1-w2", "s-s1-w3", "s-s1-w4", "s-s1-w8", "s-s1-wh", "s-s2-w1", "s-s2-w4", "s-sh-w8",
+    "s-s1-w2-b1", "s-s1-w2-4x", "sn-s1-w3", "s-s1-w1to8", "s-spr-s4",
+)
+GE_MIP_CASES = tuple(case for cell in GE_MIP_CELLS
+                     for case in (f"{cell}-draw", *(f"{cell}-r{y}" for y in GE_RASTER_ROWS)))
+_register_campaign_probe(
+    "ge-mip", "PSP-GE-MIP-001", GE_MIP_CASES,
+    {case: (9 if case.endswith("-draw") else 16) for case in GE_MIP_CASES},
+)
+
 # module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape
 # stream of raw words: module_start's own sceKernelReferThreadStatus (return code and the
 # 26-word SceKernelThreadInfo), the user-partition free sizes before and after the helper
