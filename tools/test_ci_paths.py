@@ -1224,12 +1224,16 @@ NOW = 1_800_000_000
 
 
 def _pull_request(head_ref: str = "batch/desk-20261030T185810Z", *, head_repo: str = REPO,
-                  fork: object = False, author: str = OWNER, base_repo: str = REPO) -> dict[str, object]:
-    return {"pull_request": {
+                  fork: object = False, author: str = OWNER, base_repo: str = REPO,
+                  sender: str | None = OWNER) -> dict[str, object]:
+    event: dict[str, object] = {"pull_request": {
         "head": {"ref": head_ref, "repo": {"full_name": head_repo, "fork": fork}},
         "base": {"ref": "main", "repo": {"full_name": base_repo}},
         "user": {"login": author},
     }}
+    if sender is not None:
+        event["sender"] = {"login": sender}
+    return event
 
 
 def _wake(kind: str, head_branch: str, *, head_repo: str = REPO, actor: str = OWNER) -> dict[str, object]:
@@ -1256,15 +1260,19 @@ class CodeqlRunnerRoutingTests(unittest.TestCase):
                          SELF_HOSTED)
         self.assertEqual(self.route("workflow_run", _wake("merge_group", "gh-readonly-queue/main/pr-7-abc")),
                          SELF_HOSTED)
+        self.assertEqual(self.route("workflow_run", _wake("pull_request", "fix/thing")), SELF_HOSTED)
 
-    def test_ordinary_and_fork_pull_requests_stay_hosted(self) -> None:
+    def test_outside_and_fork_pull_requests_stay_hosted(self) -> None:
         cases = {
-            "ordinary branch": _wake("pull_request", "fix/thing"),
+            "carry branch of an outside pull request": _wake("pull_request", "carry/pr-1757"),
+            "desk working branch": _wake("pull_request", "desk/pr1757"),
+            "no head branch": _wake("pull_request", ""),
             "fork named like a batch": _wake("pull_request", "batch/desk-1", head_repo="evil/nakagawa-recomp",
                                              actor="evil"),
             "fork pushed as the owner's name": _wake("pull_request", "batch/desk-1",
                                                      head_repo="evil/nakagawa-recomp"),
             "batch branch pushed by someone else": _wake("pull_request", "batch/desk-1", actor="contributor"),
+            "task branch pushed by someone else": _wake("pull_request", "fix/thing", actor="contributor"),
             "merge group of another branch": _wake("merge_group", "gh-readonly-queue/dev/pr-1"),
             "wake of a push": _wake("push", "main"),
             "no payload": {},
@@ -1298,6 +1306,7 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
         self.assertEqual(self.route("merge_group", ref="refs/heads/gh-readonly-queue/main/pr-7-" + "a" * 40),
                          SELF_HOSTED)
         self.assertEqual(self.route("pull_request", _pull_request()), SELF_HOSTED)
+        self.assertEqual(self.route("pull_request", _pull_request("fix/kernel-semantics-20261031")), SELF_HOSTED)
 
     def test_a_fork_pull_request_never_routes_to_the_pool(self) -> None:
         cases = {
@@ -1312,12 +1321,19 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
             with self.subTest(label):
                 self.assertEqual(self.route("pull_request", event), HOSTED)
 
-    def test_an_ordinary_pull_request_never_routes_to_the_pool(self) -> None:
-        for head_ref in ("fix/thing-20261030", "main", "batchfix/x", "Batch/desk-1", "desk/batch/x", ""):
+    def test_the_owners_branches_use_the_pool_but_outside_ones_never_do(self) -> None:
+        for head_ref in ("fix/thing-20261030", "batchfix/x", "Batch/desk-1", "ui/launcher-v002-20261031"):
+            with self.subTest(head_ref=head_ref):
+                self.assertEqual(self.route("pull_request", _pull_request(head_ref)), SELF_HOSTED)
+        for head_ref in ("carry/pr-1757", "desk/pr1757", "desk/batch/x", ""):
             with self.subTest(head_ref=head_ref):
                 self.assertEqual(self.route("pull_request", _pull_request(head_ref)), HOSTED)
-        with self.subTest("batch branch opened by someone else"):
-            self.assertEqual(self.route("pull_request", _pull_request(author="contributor")), HOSTED)
+        with self.subTest("branch opened by someone else"):
+            self.assertEqual(self.route("pull_request", _pull_request("fix/x", author="contributor")), HOSTED)
+        with self.subTest("event sent by someone else"):
+            self.assertEqual(self.route("pull_request", _pull_request("fix/x", sender="contributor")), HOSTED)
+        with self.subTest("no sender"):
+            self.assertEqual(self.route("pull_request", _pull_request("fix/x", sender=None)), HOSTED)
         with self.subTest("base in another repository"):
             self.assertEqual(self.route("pull_request", _pull_request(base_repo="other/nakagawa-recomp")), HOSTED)
         for event in ({}, {"pull_request": None}, {"pull_request": {"head": {"ref": "batch/x"}}}):
@@ -1358,7 +1374,7 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
         for event_name, event, ref, expected in (
             ("pull_request", _pull_request(), "refs/pull/1/merge", SELF_HOSTED),
             ("push", {}, "refs/heads/main", SELF_HOSTED),
-            ("pull_request", _pull_request("fix/x"), "refs/pull/1/merge", hosted_2604),
+            ("pull_request", _pull_request("carry/pr-1"), "refs/pull/1/merge", hosted_2604),
             ("pull_request", _pull_request(head_repo="evil/nakagawa-recomp", fork=True, author="evil"),
              "refs/pull/1/merge", hosted_2604),
             ("push", {}, "refs/heads/feature", hosted_2604),
@@ -1390,7 +1406,10 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
             return values["linux_runner"]
 
         self.assertEqual(run_main("pull_request", _pull_request(), {"GITHUB_REF": "refs/pull/9/merge"}), SELF_HOSTED)
-        self.assertEqual(run_main("pull_request", _pull_request("fix/x"), {"GITHUB_REF": "refs/pull/9/merge"}), HOSTED)
+        self.assertEqual(run_main("pull_request", _pull_request("fix/x"), {"GITHUB_REF": "refs/pull/9/merge"}),
+                         SELF_HOSTED)
+        self.assertEqual(run_main("pull_request", _pull_request("carry/pr-9"), {"GITHUB_REF": "refs/pull/9/merge"}),
+                         HOSTED)
         self.assertEqual(
             run_main("pull_request", _pull_request(head_repo="evil/nakagawa-recomp", fork=True, author="evil"),
                      {"GITHUB_REF": "refs/pull/9/merge"}),
