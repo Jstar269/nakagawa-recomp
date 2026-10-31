@@ -79,23 +79,35 @@ class ShowcasePauseLogTests(unittest.TestCase):
             showcase._pause_pair_frozen(output, "synthetic")
 
     @staticmethod
-    def scheduler_pause_log(resume_fields: str | None, exited: bool = True) -> str:
+    def press_lines(latch: int, read: tuple[int, int, int] | None, release: int | None) -> str:
+        """The Cross press as the runtime logs it: latch, guest read (vcount, samples,
+        since), release."""
+        lines = f"ctrl_latch: vcount={latch} buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
+        if read is not None:
+            lines += (f"ctrl_read: vcount={read[0]} guest read scripted 0x4000 "
+                      f"(latched {read[1]} samples since vblank {read[2]})\n")
+        if release is not None:
+            lines += f"ctrl_latch: vcount={release} buttons 0x4000 -> 0x0000 lx=128 ly=128\n"
+        return lines
+
+    @classmethod
+    def scheduler_pause_log(cls, resume_fields: str | None, exited: bool = True, *,
+                            before: str = "", inside: str = "", after: str | None = None,
+                            exit_vblanks: int = 180, pause_vcount: int = 120) -> str:
         """Breakout's scheduler-pause route: entry at VCOUNT 120, the scripted Cross after it."""
         resumed = "" if resume_fields is None else (
-            f"SR_PAUSE: resumed vcount=120 vbl=120 vtime_us=200000 {resume_fields} "
-            "count=1 quit_allowed=1 reason=none\n")
+            f"SR_PAUSE: resumed vcount={pause_vcount} vbl={pause_vcount} vtime_us=200000 "
+            f"{resume_fields} count=1 quit_allowed=1 reason=none\n")
         exit_event = (
-            "BOOT_EVENT phase=exit_at_vblank vblanks=180 (SR_EXIT_AT_VBLANK=180)\n"
+            f"BOOT_EVENT phase=exit_at_vblank vblanks={exit_vblanks} (SR_EXIT_AT_VBLANK=180)\n"
             if exited else "")
+        if after is None:
+            after = cls.press_lines(122, (122, 1, 121), 126)
         return (
-            "SR_PAUSE: entered source=script vcount=120 vbl=120 vtime_us=200000 "
-            "latency_us=10 quit_allowed=1 reason=none\n"
-            + resumed +
-            "ctrl_latch: vcount=122 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
-            "ctrl_read: vcount=122 guest read scripted 0x4000 "
-            "(latched 1 samples since vblank 121)\n"
-            "ctrl_latch: vcount=126 buttons 0x4000 -> 0x0000 lx=128 ly=128\n"
-            + exit_event
+            before +
+            f"SR_PAUSE: entered source=script vcount={pause_vcount} vbl={pause_vcount} "
+            "vtime_us=200000 latency_us=10 quit_allowed=1 reason=none\n"
+            + inside + resumed + after + exit_event
         )
 
     def test_scheduler_pause_is_judged_by_its_own_hold_record(self) -> None:
@@ -124,6 +136,74 @@ class ShowcasePauseLogTests(unittest.TestCase):
         with self.assertRaisesRegex(showcase.ShowcaseError, "SR_EXIT_AT_VBLANK completion"):
             showcase._check_pause_smoke(
                 self.scheduler_pause_log("paused_ms=1500", exited=False), 4.0, "synthetic")
+        with self.assertRaisesRegex(showcase.ShowcaseError, "before its target 180"):
+            showcase._check_pause_smoke(
+                self.scheduler_pause_log("paused_ms=1500", exit_vblanks=179), 4.0, "synthetic")
+
+    def test_scheduler_pause_accepts_a_host_that_fell_behind(self) -> None:
+        # Each of these came from the WSL smoke with the host at 70-74% CPU: the guest read a
+        # frame or two late, a batch latched the press at 122, the exit stepped to 181.
+        for name, after, exit_vblanks in (
+                ("read a frame late", self.press_lines(121, (122, 2, 121), 125), 180),
+                ("read two frames late", self.press_lines(121, (123, 3, 121), 126), 180),
+                ("batched latch", self.press_lines(122, (123, 3, 122), 125), 180),
+                ("exit stepped past", self.press_lines(121, (121, 1, 121), 125), 181)):
+            with self.subTest(name):
+                showcase._check_pause_smoke(
+                    self.scheduler_pause_log("paused_ms=1500", after=after,
+                                             exit_vblanks=exit_vblanks), 4.2, "synthetic")
+        # VCOUNT stepped from 119 onto the press's row: the press was latched, then the pause
+        # was requested and entered at 121; the guest read the press after the resume.
+        showcase._check_pause_smoke(
+            self.scheduler_pause_log(
+                "paused_ms=1500", pause_vcount=121,
+                before="ctrl_latch: vcount=121 buttons 0x0000 -> 0x4000 lx=128 ly=128\n",
+                after="ctrl_read: vcount=122 guest read scripted 0x4000 "
+                      "(latched 2 samples since vblank 121)\n"
+                      "ctrl_latch: vcount=125 buttons 0x4000 -> 0x0000 lx=128 ly=128\n"),
+            4.36, "synthetic")
+
+    def test_scheduler_pause_input_keeps_its_exact_lower_bounds(self) -> None:
+        cases = (
+            ("a press latched before its row",
+             dict(before=self.press_lines(119, (119, 1, 119), None),
+                  after="ctrl_latch: vcount=123 buttons 0x4000 -> 0x0000 lx=128 ly=128\n"),
+             "latched the press at VCOUNT 119, before its row at 121"),
+            ("a press latched early after the resume",
+             dict(after=self.press_lines(120, (121, 1, 120), 124)),
+             "latched the press at VCOUNT 120, before its row at 121"),
+            ("a dropped press", dict(after=""), "never latched the scheduled press"),
+            ("another latch first after the resume",
+             dict(after="ctrl_latch: vcount=121 buttons 0x0000 -> 0x0008 lx=128 ly=128\n"
+                        + self.press_lines(122, (122, 1, 121), 126)),
+             "did not latch the scheduled press first after resume"),
+            ("a release before the row ended",
+             dict(after=self.press_lines(121, (121, 1, 121), 124)),
+             "released the press at VCOUNT 124, before its row ended at 125"),
+            ("a press never released", dict(after=self.press_lines(121, (122, 2, 121), None)),
+             "never released the scheduled press before exit"),
+            ("a pause entered before its trigger", dict(pause_vcount=119),
+             "entered at vcount 119, before its trigger 120"),
+            ("a latch during the pause",
+             dict(inside="ctrl_latch: vcount=121 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"),
+             "latched guest input or closed a GE window while paused"),
+            ("a press never handed to the guest",
+             dict(after=self.press_lines(121, None, 125)),
+             "never handed the guest the scheduled press"),
+            ("a read of a segment begun before its row",
+             dict(after=self.press_lines(121, (121, 1, 120), 125)),
+             "does not match its latch"),
+            ("a release before the guest read the press",
+             dict(after="ctrl_latch: vcount=121 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
+                        "ctrl_latch: vcount=125 buttons 0x4000 -> 0x0000 lx=128 ly=128\n"
+                        "ctrl_read: vcount=126 guest read scripted 0x4000 "
+                        "(latched 4 samples since vblank 121)\n"),
+             "released the press before the guest was handed it"),
+        )
+        for name, fields, message in cases:
+            with self.subTest(name), self.assertRaisesRegex(showcase.ShowcaseError, message):
+                showcase._check_pause_smoke(
+                    self.scheduler_pause_log("paused_ms=1500", **fields), 4.2, "synthetic")
 
     def test_user_pause_refusal_parses_without_an_entry(self) -> None:
         output = "SR_PAUSE: refused reason=automation source=user vcount=60\n"
