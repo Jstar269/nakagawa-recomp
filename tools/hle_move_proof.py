@@ -74,6 +74,14 @@ CONFIGS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
                        "SR_H264_FFMPEG", "NK_UI_WITH_SDL", "NK_UI_WITH_SDL3"), ()),
     "flash0-harness": ((), ("-std=gnu11",)),
 }
+#: The Android build compiles the runtime with NDK clang for the ABIs the app ships
+#: (``android/app/build.gradle.kts``: ``nk.abis`` arm64-v8a and x86_64, minSdk 29) and CMake's ``rt_defs``.
+_ANDROID = ("SR_SDL3VK", "SR_FLIGHT_RECORDER_LINKED", "PERF_AOT_INSTRUCTIONS=0", "SR_PUBLIC_SAFE", "SR_H264_FFMPEG",
+            "NK_UI_WITH_SDL", "NK_UI_WITH_SDL3")
+NDK_CONFIGS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "android-ndk-arm64": (_ANDROID, ("--target=aarch64-linux-android29",)),
+    "android-ndk-x86_64": (_ANDROID, ("--target=x86_64-linux-android29",)),
+}
 #: Flags under which a missing declaration is an error on every compiler (GCC 13 only warns).
 DECLARATION_ERRORS = ("-Werror=implicit-function-declaration", "-Werror=implicit-int", "-Werror=int-conversion")
 
@@ -613,7 +621,27 @@ def manifest_differences(base_text: str, new_text: str) -> list[str]:
     return out
 
 
-def run(rev: str, cc: str | None, configs: dict[str, tuple[str, ...]]) -> Report:
+def find_ndk_clang() -> str | None:
+    """The NDK clang the Android build pins (``ndkVersion``), from the usual SDK locations."""
+    import os
+
+    gradle = ROOT / "android" / "app" / "build.gradle.kts"
+    pinned = re.search(r'ndkVersion\s*=\s*"([^"]+)"', gradle.read_text(encoding="utf-8")) if gradle.is_file() else None
+    roots = [os.environ.get(v) for v in ("ANDROID_NDK_HOME", "ANDROID_NDK_ROOT")]
+    for sdk in (os.environ.get("ANDROID_HOME"), os.environ.get("ANDROID_SDK_ROOT"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "Sdk")):
+        if sdk and pinned:
+            roots.append(os.path.join(sdk, "ndk", pinned.group(1)))
+    for root in filter(None, roots):
+        for clang in sorted(Path(root).glob("toolchains/llvm/prebuilt/*/bin/clang*")):
+            if clang.stem == "clang":
+                return str(clang)
+    return None
+
+
+def run(rev: str, cc: str | None, configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]],
+        ndk_clang: str | None = None,
+        ndk_configs: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None) -> Report:
     base_paths, base_headers = base_unit_paths(rev)
     base = [(p, _git("show", f"{rev}:{p}")) for p in base_paths + base_headers]
     new = hle_sources.sources(headers=True)
@@ -625,14 +653,24 @@ def run(rev: str, cc: str | None, configs: dict[str, tuple[str, ...]]) -> Report
     if _git("show", f"{rev}:{baseline}") != (ROOT / baseline).read_text(encoding="utf-8"):
         report.errors.append(f"{baseline} differs from {rev}'s")
     if cc is None:
-        report.notes.append("L2/L3 NOT_RUN: no C compiler given")
+        report.notes.append("L2/L3/L5 NOT_RUN: no C compiler given")
         return report
+    ndk_configs = ndk_configs or {}
     with tempfile.TemporaryDirectory() as tmp:
         base_tree = Path(tmp)
         _extract_tree(rev, base_tree)
-        compare_preprocessed(base_tree, base_paths, tuple(base_headers), ROOT,
-                             list(hle_sources.RUNTIME_HLE_SOURCES), hle_sources.HLE_PRIVATE_HEADERS,
-                             report, cc, configs)
+        new_units = list(hle_sources.RUNTIME_HLE_SOURCES)
+        compare_preprocessed(base_tree, base_paths, tuple(base_headers), ROOT, new_units,
+                             hle_sources.HLE_PRIVATE_HEADERS, report, cc, configs)
+        if ndk_configs and ndk_clang:
+            compare_preprocessed(base_tree, base_paths, tuple(base_headers), ROOT, new_units,
+                                 hle_sources.HLE_PRIVATE_HEADERS, report, ndk_clang, ndk_configs)
+            report.notes.append(f"Android configurations ran with {ndk_clang}")
+        elif ndk_configs:
+            report.notes.append(
+                f"{', '.join(ndk_configs)} NOT_RUN: no NDK clang found; run "
+                f"`python tools/hle_move_proof.py --base {rev} --ndk-clang <ndk>/toolchains/llvm/prebuilt/<host>/bin/clang` "
+                f"{' '.join('--config ' + name for name in ndk_configs)}")
     return report
 
 
@@ -659,12 +697,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", required=True, help="the revision the move starts from")
     parser.add_argument("--cc", default=shutil.which("gcc"), help="C compiler for L2/L3 (default: gcc on PATH)")
     parser.add_argument("--no-preprocess", action="store_true", help="skip L2/L3 (reported NOT_RUN)")
-    parser.add_argument("--config", action="append", choices=sorted(CONFIGS), help="limit L2/L3 to these")
+    parser.add_argument("--config", action="append", choices=sorted(CONFIGS) + sorted(NDK_CONFIGS),
+                        help="limit L2/L3/L5 to these configurations")
+    parser.add_argument("--ndk-clang", help="NDK clang for the Android configurations (default: the pinned NDK, if found)")
     parser.add_argument("--report", type=Path, help="write the Markdown report here too")
     parser.add_argument("--map", type=Path, help="write the moved-name -> new file map as JSON")
     args = parser.parse_args(argv)
     configs = {k: v for k, v in CONFIGS.items() if not args.config or k in args.config}
-    report = run(args.base, None if args.no_preprocess else args.cc, configs)
+    ndk_configs = {k: v for k, v in NDK_CONFIGS.items() if not args.config or k in args.config}
+    report = run(args.base, None if args.no_preprocess else args.cc, configs,
+                 args.ndk_clang or find_ndk_clang(), ndk_configs)
     text = render(report, args.base)
     print(text)
     if args.report:
