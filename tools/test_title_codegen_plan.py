@@ -928,6 +928,13 @@ class CompileObjectReuseTests(unittest.TestCase):
                 path = build / "missing.mk" if text is None else write(text)
                 with self.assertRaises(title_codegen_plan.PackageRouteError):
                     title_codegen_plan._read_unit_fallbacks(path)
+        # Codegen writes ASCII; bytes it never writes are refused by name, not decoded.
+        path = build / "probe_opt.mk"
+        path.write_bytes(b"# unit g_recomp_1 body f bytes 1\xff\n")
+        with self.assertRaises(title_codegen_plan.PackageRouteError) as raised:
+            title_codegen_plan._read_unit_fallbacks(path)
+        self.assertEqual(raised.exception.code, "PACKAGE_INVALID_CODEGEN_REPORT")
+        self.assertIn("unreadable", str(raised.exception))
 
     def test_a_reused_copy_leaves_no_earlier_generated_unit_behind(self) -> None:
         # #1730: a package can build in its output folder; an earlier build's single library
