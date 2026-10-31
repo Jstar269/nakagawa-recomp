@@ -1032,6 +1032,7 @@ class SimpleFrontEndTests(unittest.TestCase):
             ROOT / "nk.ps1",
             ROOT / "nk_manager.ps1",
             ROOT / "tools" / "nk_safety.ps1",
+            ROOT / "tools" / "sign_release_binaries.ps1",
             ROOT / "tools" / "test_manager_safety.ps1",
             ROOT / "tools" / "test_visual_oracle.ps1",
             ROOT / "tools" / "title_manager_plan.ps1",
