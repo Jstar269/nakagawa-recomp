@@ -69,6 +69,9 @@ CROSS_PRESS = (12, 0x4000, 4)
 START_PRESS = (240, 0x0008, 4)
 SAVE_START_PRESS = (120, 0x0008, 4)
 PAUSE_CROSS_PRESS = (121, 0x4000, 4)
+# Breakout's scheduler pause: requested at VCOUNT 120, held for 1500 ms of host time.
+PAUSE_TRIGGER_VCOUNT = 120
+PAUSE_HOLD_MS = 1500
 AUDIO_PAUSE_CROSS_PRESS = (12, 0x4000, 4)
 AUDIO_PAUSE_TRIGGER_VCOUNT = 12
 HEADLESS_PAUSE_SCRIPT = "30:500"
@@ -1012,38 +1015,50 @@ def _run_pause_scenario(demo: dict[str, object], padscript: Path, smoke_dir: Pat
     return output, time.monotonic() - started, log_path
 
 
+def _check_pause_held(resumed: dict[str, str], requested_ms: int, elapsed_seconds: float,
+                      label: str) -> None:
+    """Check the scheduler's own record of how long it held the guest.
+
+    paused_ms is the host-clock time from the pause's entry to its resume. Without a
+    presenter (the headless smoke), a scripted pause resumes only once its deadline has
+    passed, so a pause that was skipped or cut short reports less than it asked for: no
+    tolerance is needed below the request. That the run's wall time contains the hold only
+    guards against a broken clock.
+    """
+    held = resumed.get("paused_ms", "")
+    if not held.isdigit():
+        raise ShowcaseError(f"{label} resume record carries no paused_ms")
+    if int(held) < requested_ms:
+        raise ShowcaseError(
+            f"{label} held the scheduler {held} ms, less than the requested {requested_ms} ms")
+    if elapsed_seconds * 1000 < int(held):
+        raise ShowcaseError(
+            f"{label} reported a {held} ms hold inside a {elapsed_seconds:.3f} s run")
+
+
 def _check_pause_timing_and_vblank(output: str, label: str,
-                                   baseline_output: str | None = None,
-                                   baseline_seconds: float | None = None,
+                                   requested_ms: int | None = None,
                                    elapsed_seconds: float | None = None) -> tuple[dict[str, str], dict[str, str]]:
     entered, resumed = _pause_pair_frozen(output, label)
     if entered.get("vtime_us") != resumed.get("vtime_us"):
         raise ShowcaseError(f"{label} advanced guest time while paused")
     if int(entered.get("latency_us", "-1")) > 2 * 16683:
         raise ShowcaseError(f"{label} request-to-entry latency exceeded two display periods")
-    if baseline_output is not None:
-        if baseline_seconds is None or elapsed_seconds is None or \
-                elapsed_seconds < baseline_seconds + 1.4:
-            raise ShowcaseError(
-                f"{label} host runtime did not include the requested pause interval "
-                f"(baseline={baseline_seconds}, paused={elapsed_seconds})"
-            )
-        baseline_exit = _exit_at_vblank(baseline_output, f"{label} unpaused baseline")
-        paused_exit = _exit_at_vblank(output, label)
-        if paused_exit != baseline_exit:
-            raise ShowcaseError(
-                f"{label} exited at VCOUNT {paused_exit}, baseline ended at {baseline_exit}"
-            )
+    if requested_ms is not None:
+        if elapsed_seconds is None:
+            raise ShowcaseError(f"{label} has no measured run time to hold the pause")
+        _check_pause_held(resumed, requested_ms, elapsed_seconds, label)
     return entered, resumed
 
 
-def _check_pause_smoke(output: str, baseline_output: str, baseline_seconds: float,
-                       elapsed_seconds: float, label: str) -> None:
+def _check_pause_smoke(output: str, elapsed_seconds: float, label: str) -> None:
     entered, _resumed = _check_pause_timing_and_vblank(
-        output, label, baseline_output, baseline_seconds, elapsed_seconds)
+        output, label, PAUSE_HOLD_MS, elapsed_seconds)
+    _exit_at_vblank(output, label)
     _check_pause_input(output, PAUSE_CROSS_PRESS, label)
-    if int(entered["vcount"]) != 120:
-        raise ShowcaseError(f"{label} entered at vcount {entered['vcount']}, expected 120")
+    if int(entered["vcount"]) != PAUSE_TRIGGER_VCOUNT:
+        raise ShowcaseError(
+            f"{label} entered at vcount {entered['vcount']}, expected {PAUSE_TRIGGER_VCOUNT}")
 
 
 def _check_audio_pause_smoke(output: str, baseline_output: str, label: str,
@@ -1107,9 +1122,7 @@ def smoke_all() -> None:
                                                  encoding="ascii")
         command, env, package_dir = _runtime_command(demo, smoke_dir / "padscript.txt")
         log_path = smoke_dir / "runtime.log"
-        started = time.monotonic()
         output = _run_runtime(command, env, package_dir, log_path, f"{disc_id} runtime")
-        baseline_seconds = time.monotonic() - started
         checkpoint, ppm = first_frame_checkpoint(demo, output, package_dir, log_path)
         press_note = scripted_press_note(output, main_cross_press)
         if f"-> 0x{main_cross_press[1]:04x}" not in output:
@@ -1148,20 +1161,11 @@ def smoke_all() -> None:
         if disc_id == "TEST00008":
             pause_padscript = smoke_dir / "padscript-pause.txt"
             pause_padscript.write_text(_padscript(PAUSE_CROSS_PRESS, START_PRESS), encoding="ascii")
-            pause_base_command, pause_base_env, pause_base_package = _runtime_command(
-                demo, pause_padscript)
-            pause_base_log = smoke_dir / "runtime-pause-baseline.log"
-            pause_base_started = time.monotonic()
-            pause_base_output = _run_runtime(
-                pause_base_command, pause_base_env, pause_base_package, pause_base_log,
-                f"{disc_id} unpaused pause-route baseline")
-            pause_base_seconds = time.monotonic() - pause_base_started
             pause_output, pause_seconds, pause_log = _run_pause_scenario(
-                demo, pause_padscript, smoke_dir, "120:1500", "runtime-pause")
+                demo, pause_padscript, smoke_dir,
+                f"{PAUSE_TRIGGER_VCOUNT}:{PAUSE_HOLD_MS}", "runtime-pause")
             try:
-                _check_pause_smoke(pause_output, pause_base_output,
-                                   pause_base_seconds, pause_seconds,
-                                   f"{disc_id} scheduler pause")
+                _check_pause_smoke(pause_output, pause_seconds, f"{disc_id} scheduler pause")
             except ShowcaseError as exc:
                 raise ShowcaseError(f"{exc}; see {pause_log}") from exc
 

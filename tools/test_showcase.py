@@ -78,6 +78,53 @@ class ShowcasePauseLogTests(unittest.TestCase):
         with self.assertRaisesRegex(showcase.ShowcaseError, "latched guest input"):
             showcase._pause_pair_frozen(output, "synthetic")
 
+    @staticmethod
+    def scheduler_pause_log(resume_fields: str | None, exited: bool = True) -> str:
+        """Breakout's scheduler-pause route: entry at VCOUNT 120, the scripted Cross after it."""
+        resumed = "" if resume_fields is None else (
+            f"SR_PAUSE: resumed vcount=120 vbl=120 vtime_us=200000 {resume_fields} "
+            "count=1 quit_allowed=1 reason=none\n")
+        exit_event = (
+            "BOOT_EVENT phase=exit_at_vblank vblanks=180 (SR_EXIT_AT_VBLANK=180)\n"
+            if exited else "")
+        return (
+            "SR_PAUSE: entered source=script vcount=120 vbl=120 vtime_us=200000 "
+            "latency_us=10 quit_allowed=1 reason=none\n"
+            + resumed +
+            "ctrl_latch: vcount=122 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
+            "ctrl_read: vcount=122 guest read scripted 0x4000 "
+            "(latched 1 samples since vblank 121)\n"
+            "ctrl_latch: vcount=126 buttons 0x4000 -> 0x0000 lx=128 ly=128\n"
+            + exit_event
+        )
+
+    def test_scheduler_pause_is_judged_by_its_own_hold_record(self) -> None:
+        # A run that held the full 1500 ms but took 4.129 s against a 2.753 s unpaused
+        # baseline: the old wall-time difference (1.376 s < 1.4 s) failed it on an idle host.
+        showcase._check_pause_smoke(self.scheduler_pause_log("paused_ms=1500"), 4.129,
+                                    "synthetic")
+
+    def test_scheduler_pause_rejects_a_skipped_or_short_hold(self) -> None:
+        for held in ("paused_ms=0", "paused_ms=16", "paused_ms=1499"):
+            with self.subTest(held=held), \
+                    self.assertRaisesRegex(showcase.ShowcaseError,
+                                           "less than the requested 1500 ms"):
+                showcase._check_pause_smoke(self.scheduler_pause_log(held), 4.0, "synthetic")
+        with self.assertRaisesRegex(showcase.ShowcaseError, "carries no paused_ms"):
+            showcase._check_pause_smoke(self.scheduler_pause_log(""), 4.0, "synthetic")
+        with self.assertRaisesRegex(showcase.ShowcaseError, "entered/resumed pair"):
+            showcase._check_pause_smoke(self.scheduler_pause_log(None), 4.0, "synthetic")
+
+    def test_scheduler_pause_hold_must_fit_inside_the_run(self) -> None:
+        with self.assertRaisesRegex(showcase.ShowcaseError, "hold inside a 1.200 s run"):
+            showcase._check_pause_smoke(self.scheduler_pause_log("paused_ms=1500"), 1.2,
+                                        "synthetic")
+
+    def test_scheduler_pause_run_must_still_reach_its_exit_vcount(self) -> None:
+        with self.assertRaisesRegex(showcase.ShowcaseError, "SR_EXIT_AT_VBLANK completion"):
+            showcase._check_pause_smoke(
+                self.scheduler_pause_log("paused_ms=1500", exited=False), 4.0, "synthetic")
+
     def test_user_pause_refusal_parses_without_an_entry(self) -> None:
         output = "SR_PAUSE: refused reason=automation source=user vcount=60\n"
         showcase._check_scripted_pause_refusal(output, "synthetic")
