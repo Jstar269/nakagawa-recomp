@@ -3365,6 +3365,10 @@ void sr_yield(CpuState *s) {
      * runnable guest. It uses the same legal switch path as an ordinary peer; the
      * interrupt, handler-context and dispatch-suspended gates above still defer it. */
     if (s_pause_requested) other = 1;
+    /* So is a stop request (the player quit, #1377): the scheduler loop sees it and returns
+     * before resuming anyone, where a lone runner would otherwise keep the CPU. */
+    const int stopping = sr_sched_stop_requested && sr_sched_stop_requested();
+    if (stopping) other = 1;
     /* If no other thread is runnable AND nothing is sleeping on a small timer, TURBO mode
      * advances virtual time so PSP timers (UMD-Ready, callback-drive, etc.) fire. uid 0x115
      * spinning in critically-fast SuspendIntr/ResumeIntr would otherwise burn CPU without
@@ -3482,7 +3486,10 @@ void sr_yield(CpuState *s) {
         sched_preempt_timer_arm();
         return;
     }
-    if (!s_dispatch_enabled) { sched_preempt_timer_arm(); return; }
+    /* A stop is terminal: the scheduler returns without resuming anyone, so it is honoured with
+     * dispatch suspended too, and a guest spinning in sceKernelSuspendDispatchThread can still be
+     * closed. */
+    if (!s_dispatch_enabled && !stopping) { sched_preempt_timer_arm(); return; }
     memcpy(&t->saved, s, sizeof(CpuState));
     if (t->state == TH_RUNNING) t->state = TH_READY;
     s_pause_switch_from_yield = 1;
@@ -5264,6 +5271,10 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
          * the switch-in below grants a fresh slice, which would let the woken
          * thread run a whole frame past the request boundary. */
         if (s_pause_requested) continue;
+        /* So is a stop raised in this pass (by the window pumped above, a pause that ended on
+         * a quit, a GE capture finished in an idle VBLANK): no thread gets a fresh slice after
+         * it (#1377). */
+        if (sr_sched_stop_requested && sr_sched_stop_requested()) break;
         TCB *t = &s_tcb[idx];
         uint32_t previous_uid = 0;
         if (sr_perf_enabled && s_cur >= 0 && s_cur < s_ntcb)
