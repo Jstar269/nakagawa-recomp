@@ -113,7 +113,7 @@ def _write_baseline(errors: Mapping[str, int]) -> None:
         "errors_by_module": dict(sorted(errors.items())),
     }
     temporary = BASELINE.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     temporary.replace(BASELINE)
 
 
