@@ -2289,14 +2289,16 @@ static int dispatch_try_with_boundary(
      * evidence: generated code writes it only at returns and recorded tail transfers, and
      * every host entry and interpreted transfer seeds it with the target it dispatches, so a
      * zero s->pc here means only that the target is 0. Address 0 holds code only on a
-     * zero-based image whose offset-0 function is registered, and a guest reaches that
-     * function only by a static transfer (a j/jal or branch, generated or interpreted) or as
-     * the module entry, which run it like any other address. With no code at address 0, a
-     * dispatch there is a null code pointer however it was formed (a host entry handed a
-     * null guest handler, for instance), and the run stops by name before any guest state
-     * changes. This replaces two `s->pc == 0` "collapsed thread" guards that silently
-     * terminated or exited the current thread and swallowed a static jal 0. */
-    if (target == 0u && !sr_lookup(0u)) {
+     * zero-based image: its offset-0 function is registered, or an analyzer-owned span
+     * covers it with no native body (an AOT gap, which the interpreter floor runs). A guest
+     * reaches that code only by a static transfer (a j/jal or branch, generated or
+     * interpreted) or as the module entry, which run it like any other address. With no
+     * code at address 0, a dispatch there is a null code pointer however it was formed (a
+     * host entry handed a null guest handler, for instance), and the run stops by name
+     * before any guest state changes. This replaces two `s->pc == 0` "collapsed thread"
+     * guards that silently terminated or exited the current thread and swallowed a static
+     * jal 0. */
+    if (target == 0u && !sr_lookup(0u) && !sr_exec_span_owns_fetch(0u)) {
         dispatch_report_null_dispatch(s);
         return SR_GUEST_INTERP_NULL_CODE_POINTER;
     }

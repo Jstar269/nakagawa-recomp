@@ -1953,10 +1953,30 @@ static void test_null_code_pointer_is_not_the_offset0_function(const char *self_
           "a dispatch to address 0 did not record its boot event naming #1375");
     remove(event_path);
 
-    own_synthetic_aot_word(0u);
-    sr_register(0u, offset0_body);
     own_synthetic_aot_word(PROBE_RA);
     sr_register(PROBE_RA, interp_handoff_body);
+
+    /* Address 0 owned by an analyzer span with no native body (an AOT gap on a zero-based
+     * image): a dispatch there is no null code pointer. The interpreter floor runs the
+     * words at 0 (jr ra ; addiu v0, zero, 0x5a) and hands back to the native resume. */
+    CHECK(sr_exec_span_register(0u, 8u), "address-0 executable span registration failed");
+    MEM_W32(0u, 0x03e00008u);
+    MEM_W32(4u, 0x2402005au);
+    g_interp_handoff_hits = 0;
+    g_interp_handoff_v0 = 0u;
+    s = nullptr_state(PROBE_PC);
+    s.r[31] = PROBE_RA;
+    dispatch_result = dispatch_try(&s, 0u);
+    CHECK(dispatch_result != SR_GUEST_INTERP_NULL_CODE_POINTER,
+          "a dispatch to span-owned address 0 with no native body was refused as a null "
+          "code pointer");
+    CHECK(g_interp_handoff_hits == 1 && g_interp_handoff_v0 == 0x5au,
+          "the interpreter did not run span-owned address 0 and resume at its return "
+          "(result=%d handoffs=%d v0=0x%08x)",
+          dispatch_result, g_interp_handoff_hits, g_interp_handoff_v0);
+
+    own_synthetic_aot_word(0u);
+    sr_register(0u, offset0_body);
     CHECK(sr_exec_span_register(NULLPTR_EXEC_START, NULLPTR_EXEC_END),
           "null-code-pointer executable span registration failed");
 
