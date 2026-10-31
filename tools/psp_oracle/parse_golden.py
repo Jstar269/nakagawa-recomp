@@ -1710,29 +1710,6 @@ _register_campaign_probe(
         "alarm-zero-cleanup": 1,
     },
 )
-# hle-savedata (#1387): each dialog cell carries InitStart's return as its result and nine
-# words (the common result word, the GetStatus change sequence, its change and poll counts,
-# the outcome, two ShutdownStart returns, the last GetStatus return and the Update count);
-# LIST adds resultCount and four words per row for four rows; each sceIoGetstat cell carries
-# st_mode and three encoded times. Every word is an observation.
-_HLE_SAVEDATA_DIALOG_CASES = (
-    "mode-23", "makedata-slotb", "makedata-slota", "writedata-slotb",
-)
-_HLE_SAVEDATA_STAT_CASES = (
-    "getstat-slota-dir", "getstat-slota-sfo", "getstat-slotb-dir", "getstat-slotb-sfo",
-)
-_HLE_SAVEDATA_CLEANUP_CASES = ("shutdown-during-init", "deletedata-slota", "deletedata-slotb")
-_register_campaign_probe(
-    "hle-savedata", "PSP-HLE-SAVEDATA-001",
-    (*_HLE_SAVEDATA_DIALOG_CASES, "list", *_HLE_SAVEDATA_STAT_CASES,
-     *_HLE_SAVEDATA_CLEANUP_CASES),
-    {
-        **{case_id: 9 for case_id in _HLE_SAVEDATA_DIALOG_CASES},
-        "list": 26,
-        **{case_id: 4 for case_id in _HLE_SAVEDATA_STAT_CASES},
-        **{case_id: 9 for case_id in _HLE_SAVEDATA_CLEANUP_CASES},
-    },
-)
 
 # hle-issues-batch (106, probe_hle_issues.c): the #356 model getters, then two passes of the
 # #326 vscmp cells and the vrndi.s carry grids. Every row is emitted on every run, so the
@@ -2280,7 +2257,7 @@ def validate_hle_edram_restore(text: str) -> None:
 #: completed and SKIP when the object it needs was not obtained, and never FAIL.
 HLE_MACHINERY_STATUS_CASES = frozenset({
     "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-pool-bounds", "hle-power-float-v0",
-    "hle-null-out-pointers", "hle-audio-src", "hle-timer-order", "hle-savedata",
+    "hle-null-out-pointers", "hle-audio-src", "hle-timer-order",
 })
 VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
 #: Cases whose every cell is an unconditional observation: each record is PASS.

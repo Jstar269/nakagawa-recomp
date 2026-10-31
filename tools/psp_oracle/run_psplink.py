@@ -335,10 +335,6 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
 # power cycle.
 CAMPAIGN_CASE_MIN_TIMEOUT_SECONDS = {
     "ge-timing": 180,
-    # hle-savedata runs nine savedata dialogs, each bounded at 360 vblanks (about 6 s), plus two
-    # 2.5 s settles: about 55 s at worst. Stopping it mid-dialog would leave the utility using the
-    # probe's parameter block.
-    "hle-savedata": 120,
 }
 
 
