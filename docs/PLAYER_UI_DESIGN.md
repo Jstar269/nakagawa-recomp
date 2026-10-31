@@ -171,10 +171,31 @@ again, and the pointer leaving the window clears it. Hover never moves focus, an
 | Minimum target | 44 px high (`NK_UI_CONTROL_HEIGHT`); large 52, small 34 |
 | Safe area | nothing closer than 16 px to a window edge |
 
-Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200%) times the text size gives the
-device density, and the logical width decides the columns. The text size scales the whole layout, as the UI scale
-does, so the launcher offers one control for both: Settings > Accessibility > Interface size sets the UI scale and
-the text size stays 100%. The launcher's screens are laid out on at least its
+Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200%) gives the device density, and
+the logical width decides the columns. The text size (`NkUiViewport.text_size_pct`: 90, 100, 125 or 150) scales type
+alone, on top of the density: each run is measured, given its letter spacing and line height, and drawn at
+`size x density x text size`, while boxes, gaps, padding and the logical size keep the density alone, and the layout
+reflows around the larger text. At 100% every screen is laid out exactly as before. A component designed around one
+line of text (a button, chip, badge, tab, row) keeps its height while the line fits with a quarter of a line above
+and below it, and grows past that (`nk_ui_line_box`); at 150% that is a chip or badge, never a button. Screens
+reserve room for text from its own measurements (`nk_ui_text_width`, `nk_ui_button_width`, `nk_ui_line_height`),
+not from constants. At a larger text size:
+
+- a column sized for its words grows to the widest of them (check rows, the setting rows' button column, the licence
+  card, the Controls page's CONTROLLER and KEYBOARD pair and stick button);
+- a row of buttons wraps onto a second row when it would run past its column (`nk_ui_flow_begin`: the Settings
+  actions, the title page's actions);
+- the setting rows on Accessibility, the online options, Updates and build tools put each sentence under its
+  button, at the full width, when beside it a sentence would be cut;
+- the Library's narrowest card grows with the text, so fewer columns fit and a page holds fewer cards
+  (`player_ui_library_page_size_at`), and its heading row leaves the LIBRARY heading out when the row's controls
+  would not fit beside it (the tab names the page);
+- the prompt bar's hint ends in an ellipsis in the room the prompts leave;
+- a page body (Library, title page, Settings, About) or a flow card taller than the room between the bars scrolls
+  there, and a control taking focus scrolls into view; at 100% every page fits, as the screen tests check.
+
+The launcher offers it as Settings > Accessibility > Text size; the in-game overlay stays at 100%. The launcher's
+screens are laid out on at least its
 1280 x 720 design size (`NkUiViewport.min_logical_w` / `min_logical_h`): a smaller window, down to the 960 x 540
 minimum, lowers the density so the same layout is drawn smaller, instead of pushing buttons and the prompt bar off
 the window. A larger window keeps its density and gains room. Clay clips at most 100 containers per layout: shorten
@@ -438,11 +459,13 @@ the controller and the saves folder as captions; CHECK FOR UPDATES opens the Upd
 [`SETUP.md`](SETUP.md#network-use)). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
 THIRD-PARTY NOTICES and BUILD TOOLS AND CACHE (#1306: the share libraries switch, CLEAR SHARED LIBRARY CACHE and
 REMOVE BUILD TOOLS); the online options, the notices, build tools and cache and the removal check are dialog cards.
-ACCESSIBILITY (#1739) is a dialog card of three settings, each a button that steps through its values beside a
+ACCESSIBILITY (#1739) is a dialog card of four settings, each a button that steps through its values beside a
 sentence saying what it does and what Windows asks for now: INTERFACE SIZE (Automatic follows the display scale, or
-100, 125, 150 or 200%; a larger size needs a window large enough for the 1280 x 720 layout at that size), HIGH
+100, 125, 150 or 200%; a larger size needs a window large enough for the 1280 x 720 layout at that size), TEXT SIZE
+(Standard, Large or Larger: 100, 125 or 150% type, with controls and the layout's spacing kept, in any window), HIGH
 CONTRAST and REDUCE MOTION (Automatic, On or Off; Automatic follows Windows' contrast themes and Animation effects,
-read every frame, so a change there applies at once).
+read every frame, so a change there applies at once). The four buttons share one column; at a larger text size it
+is as wide as the widest label, and the sentences go under the buttons when beside them one would be cut.
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
 SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
 page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:
@@ -602,7 +625,8 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 - Focus ring 7.2:1 on the ground, at least 6.1:1 on any surface, 4.4:1 over the brightest wave point and 3.7:1 on
   the scrim over a white game frame; high-contrast focus for any background, from Settings > Accessibility or a
   Windows contrast theme.
-- Targets are at least 44 px high; the interface size (100 to 200%) scales the whole layout through the density.
+- Targets are at least 44 px high; the interface size (100 to 200%) scales the whole layout through the density,
+  and the text size (100, 125 or 150%) scales type alone, with the layout reflowing around it.
 - Reduce motion holds the waves and makes transitions cuts; Automatic follows Windows' Animation effects.
 - Launcher sounds are off by default and never replace a visual cue.
 

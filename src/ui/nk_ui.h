@@ -232,7 +232,10 @@ typedef struct {
     float display_scale;
     int ui_scale_pct;   /* 0 = automatic (follow display_scale); explicit values: 100, 125, 150, 200.
                            100 forces 1x on a high-DPI display. Anything else is treated as 100. */
-    int text_size_pct;  /* 90, 100, 125 or 150. Anything else is treated as 100. */
+    /* 90, 100, 125 or 150. Anything else is treated as 100. Type only: the text
+       is measured, spaced, given line heights and drawn this much larger, while
+       the density, boxes, gaps and logical size follow ui_scale_pct alone. */
+    int text_size_pct;
     /* The smallest layout the host's screens are designed for, in layout units
        (0 = none). A window smaller than this at the chosen density lowers the
        density, down to NK_UI_MIN_FIT_DENSITY, so the layout keeps this size and
@@ -353,8 +356,11 @@ enum {
     NK_UI_BUTTON_OWNS_HORIZONTAL = 1u << 8
 };
 
-/* Device scale and edge rounding are shared helpers for hosts and tests. */
+/* Device scale and edge rounding are shared helpers for hosts and tests. The
+   density comes from the UI scale alone; the text size is a separate factor on
+   type (1.0 for anything but 90, 125 or 150). */
 NkUiScale nk_ui_scale_for_viewport(const NkUiViewport *viewport);
+float nk_ui_text_scale_for_viewport(const NkUiViewport *viewport);
 NkUiPixelRect nk_ui_round_rect(NkUiRect rect, float density);
 
 NkUi *nk_ui_create(const NkUiConfig *config);
@@ -400,6 +406,25 @@ const char *nk_ui_frame_text(NkUi *ui, const char *text);
    most ten containers per layout, so long names are shortened, not clipped. */
 const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *style,
                              float max_width, int max_lines);
+/* The text size the viewport set (1.0 at 100 %). Layout units are unchanged by
+   it: only type grows, so a screen that reserves room for a run of text in
+   logical px reserves it from the text's own measurements, not a constant. */
+float nk_ui_text_scale(const NkUi *ui);
+/* The width the layout has (NkUiScale.logical_w for the last viewport set). */
+float nk_ui_layout_width(const NkUi *ui);
+/* How wide `text` lays out in `style` on one line, in layout units, at the
+   current text size and after the host's display rules. */
+float nk_ui_text_width(const NkUi *ui, const char *text, const NkUiTextStyle *style);
+/* The logical height one line of `style` lays out in at the current text size,
+   or at `text_scale` (nk_ui_text_scale_for_viewport) for a host that works out a
+   layout before it has a frame. */
+float nk_ui_line_height(const NkUi *ui, const NkUiTextStyle *style);
+float nk_ui_line_height_at(const NkUiTextStyle *style, float text_scale);
+/* The height for a component designed `height` px tall around one line of
+   `style` (a button, chip, badge, tab, bar or row): `height` while the line
+   fits with a quarter of a line free above and below, else that much. At 100 %
+   text and smaller it is always `height`. */
+float nk_ui_line_box(const NkUi *ui, float height, const NkUiTextStyle *style);
 /* An empty element that takes space (a spacer or a fixed gap). */
 void nk_ui_spacer(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height);
 /* Draws the focus ring around element `id` this frame, outside its bounds, with

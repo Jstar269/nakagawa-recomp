@@ -1172,6 +1172,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->reduce_motion_choice = PLAYER_SYSTEM_CHOICE_AUTO;
     settings->high_contrast_choice = PLAYER_SYSTEM_CHOICE_AUTO;
     settings->interface_size_pct = 0;
+    settings->text_size_pct = 100;
     settings->ui_sounds = false;
     settings->library_sort = PLAYER_LIBRARY_SORT_PLAYED;
     settings->launcher_window_maximized = false;
@@ -1211,6 +1212,11 @@ static const char *const kPresentScalingNames[] = { "sharp", "integer", "bilinea
 
 static bool interface_size_valid(int64_t pct) {
     return pct == 0 || pct == 100 || pct == 125 || pct == 150 || pct == 200;
+}
+
+/* The launcher's text sizes (NkUiViewport.text_size_pct). */
+static bool text_size_valid(int64_t pct) {
+    return pct == 100 || pct == 125 || pct == 150;
 }
 
 static const char *player_system_choice_key(PlayerSystemChoice choice) {
@@ -1500,6 +1506,13 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
             interface_size_valid(size_val)) {
             app->settings.interface_size_pct = (int)size_val;
         }
+        /* A file from before the text size, or with a size this build does not
+           know, keeps Standard. Like interface_size, the key is an addition to
+           schema version 2: an older player reads the file and ignores it. */
+        if (nk_json_get_int64(nk_json_obj_get(root, "text_size"), &size_val) &&
+            text_size_valid(size_val)) {
+            app->settings.text_size_pct = (int)size_val;
+        }
     }
 
     NkJsonNode *share_node = nk_json_obj_get(root, "share_system_libraries");
@@ -1742,6 +1755,8 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"interface_size\": %d,\n",
             interface_size_valid(app->settings.interface_size_pct)
                 ? app->settings.interface_size_pct : 0);
+    fprintf(f, "  \"text_size\": %d,\n",
+            text_size_valid(app->settings.text_size_pct) ? app->settings.text_size_pct : 100);
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"library_sort\": \"%s\",\n",
             kLibrarySortKeys[(int)app->settings.library_sort >= 0 &&
@@ -2206,6 +2221,26 @@ void player_app_cycle_interface_size(PlayerApp *app) {
     }
     app->settings.interface_size_pct = sizes[next];
     maybe_persist_settings(app);
+}
+
+void player_app_cycle_text_size(PlayerApp *app) {
+    static const int sizes[] = {100, 125, 150};
+    const size_t count = sizeof(sizes) / sizeof(sizes[0]);
+    size_t next = 0u;
+    if (!app) return;
+    for (size_t i = 0u; i < count; ++i) {
+        if (sizes[i] == app->settings.text_size_pct) next = (i + 1u) % count;
+    }
+    app->settings.text_size_pct = sizes[next];
+    maybe_persist_settings(app);
+}
+
+const char *player_text_size_label(int text_size_pct) {
+    switch (text_size_pct) {
+        case 125: return "Large";
+        case 150: return "Larger";
+        default: return "Standard";
+    }
 }
 
 const char *player_system_choice_label(PlayerSystemChoice choice) {

@@ -213,6 +213,8 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
 /* The window size the game-found and Settings cases lay out for. */
 static float g_flow_width = 1280.0f;
 static float g_flow_height = 800.0f;
+/* The text size flow_case_layout lays a case out at (NkUiViewport.text_size_pct). */
+static int g_flow_text_size_pct = 100;
 
 /* The check rows player_state.c gives a disc, in its words (#1302). */
 static const PlayerUiCheckRow k_disc_rows_ready[] = {
@@ -347,6 +349,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     /* Accessibility: a size picked, high contrast following Windows (off), and
        Reduce motion turned on. */
     settings.interface_size = "125%";
+    settings.text_size = "Larger";
     settings.high_contrast_choice = "Automatic";
     settings.reduce_motion_choice = "On";
     settings.reduce_motion = true;
@@ -673,9 +676,10 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
     if (which == FLOW_PAGE_LIBRARY || which == FLOW_PAGE_LIBRARY_FIND) {
         PlayerUiLibraryModel library;
         memset(&library, 0, sizeof(library));
-        library.page_size = which == FLOW_PAGE_LIBRARY_FIND
-            ? player_ui_library_page_size_finding(g_flow_width, g_flow_height, &library.columns)
-            : player_ui_library_page_size(g_flow_width, g_flow_height, &library.columns);
+        /* As the launcher works it out, at the case's text size. */
+        library.page_size = player_ui_library_page_size_at(
+            g_flow_width, g_flow_height, (float)g_flow_text_size_pct / 100.0f,
+            which == FLOW_PAGE_LIBRARY_FIND, 0u, &library.columns);
         library.logical_width = g_flow_width;
         library.logical_height = g_flow_height;
         library.titles = k_titles;
@@ -2029,6 +2033,7 @@ static const NkUiDrawList *flow_case_layout(FlowCase which, int width, int heigh
     NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
     const NkUiDrawList *draw = NULL;
     NkUi *ui;
+    viewport.text_size_pct = g_flow_text_size_pct;
     text.measure = screen_test_wide_measure;
     memset(&config, 0, sizeof(config));
     config.host = NK_UI_HOST_LAUNCHER;
@@ -2056,6 +2061,16 @@ static bool command_shows(const NkUiDrawCmd *cmd) {
            cmd->clip[2] > cmd->clip[0] && cmd->clip[3] > cmd->clip[1];
 }
 
+/* Names a command that broke the fit: its element, kind, clip and any text. */
+static void report_misfit(const char *what, const NkUiDrawCmd *cmd) {
+    const NkUiTextRun *run = cmd->kind == NK_UI_DRAW_TEXT ? (const NkUiTextRun *)cmd->custom
+                                                          : NULL;
+    fprintf(stderr, "  %s: %08X kind %d clip %d %d %d %d \"%.*s\"\n", what,
+            (unsigned)cmd->element_id, cmd->kind, cmd->clip[0], cmd->clip[1], cmd->clip[2],
+            cmd->clip[3], run != NULL ? (int)(run->length > 60u ? 60u : run->length) : 0,
+            run != NULL && run->text != NULL ? run->text : "");
+}
+
 static bool flow_case_fits(FlowCase which, int width, int height, char *dump, size_t cap) {
     NkUi *ui = NULL;
     const NkUiDrawList *draw = flow_case_layout(which, width, height, &ui);
@@ -2068,6 +2083,7 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
            scroll container clips away is not on screen. */
         if (shown[0] < 0 || shown[1] < 0 || shown[2] > width || shown[3] > height) {
             inside = false;
+            report_misfit("off the window", &draw->cmd[i]);
         }
         if (draw->cmd[i].kind != NK_UI_DRAW_TEXT) continue;
         /* A squeezed layout draws text, or a box's fill, over earlier text. */
@@ -2077,6 +2093,10 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
             if ((other->kind == NK_UI_DRAW_TEXT || other->kind == NK_UI_DRAW_RECTANGLE) &&
                 command_shows(other) && shown[0] < over[2] && over[0] < shown[2] &&
                 shown[1] < over[3] && over[1] < shown[3]) {
+                if (inside) {
+                    report_misfit("text", &draw->cmd[i]);
+                    report_misfit("painted over by", other);
+                }
                 inside = false;
             }
         }
@@ -2460,6 +2480,14 @@ static void test_accessibility_settings_reach_the_design_system(void) {
     player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
     CHECK(viewport.ui_scale_pct == 0 && nk_ui_scale_for_viewport(&viewport).density == 1.25f,
           "an Automatic interface size follows the display's scale");
+    display.text_size_pct = 150;
+    player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
+    CHECK(viewport.text_size_pct == 150 && nk_ui_text_scale_for_viewport(&viewport) == 1.5f &&
+              nk_ui_scale_for_viewport(&viewport).density == 1.25f,
+          "Text size Larger reaches the viewport as type at 1.5, leaving the density alone");
+    display.text_size_pct = 175;
+    player_ui_apply_display(ui, &viewport, &display, NK_UI_PROMPT_KEYCAPS);
+    CHECK(viewport.text_size_pct == 100, "a text size the launcher does not offer is 100%");
     nk_ui_destroy(ui);
 }
 
@@ -2487,6 +2515,8 @@ static void test_settings_pages(void) {
          PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY, "Accessibility opens its page"},
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE,
          PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, "the interface size button steps the size"},
+        {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_TEXT_SIZE,
+         PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE, "the text size button steps the text size"},
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST,
          PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST, "the high contrast button steps its choice"},
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION,
@@ -2573,6 +2603,8 @@ static void test_settings_pages(void) {
           "Settings shows each value on the button that changes it");
     CHECK(flow_case_fits(FLOW_SETTINGS_ACCESSIBILITY, 960, 540, dump, sizeof(dump)) &&
               strstr(dump, "\"INTERFACE SIZE: 125%\"") != NULL &&
+              strstr(dump, "\"TEXT SIZE: LARGER\"") != NULL &&
+              strstr(dump, "size.\"") != NULL &&
               strstr(dump, "\"HIGH CONTRAST: AUTOMATIC\"") != NULL &&
               strstr(dump, "\"REDUCE MOTION: ON\"") != NULL &&
               strstr(dump, "Windows: 150%.\"") != NULL &&
@@ -2927,7 +2959,8 @@ static void test_controller_keyboard_page(void) {
    (logical px): no text outside the window, no text painted over, and so the
    buttons are all on screen. A wrapped paragraph used to be laid out one line
    tall when its page was overfull, and the next block painted over its later
-   lines (launcher review B2). */
+   lines (launcher review B2). The same holds at every text size: at Large
+   (125%) and Larger (150%) the type grows and the screens reflow around it. */
 static void test_every_screen_fits_the_window(void) {
     static char dump[CASE_DUMP_CAP];
     /* The default window, the minimum, a small laptop's maximised window, and
@@ -2935,6 +2968,7 @@ static void test_every_screen_fits_the_window(void) {
     static const struct { int w; int h; } sizes[] = {
         {1280, 720}, {960, 540}, {1366, 705}, {853, 480}
     };
+    static const int text_sizes[] = {100, 125, 150};
     {
         /* A window under the design size draws the 1280 x 720 layout smaller;
            a larger one keeps its density and gains room. */
@@ -2955,16 +2989,22 @@ static void test_every_screen_fits_the_window(void) {
         CHECK(d.density == 1.0f && d.logical_w == 1920.0f && d.logical_h == 1080.0f,
               "a large window keeps its density and gains room");
     }
-    for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
-        for (int which = FLOW_BUILD; which < FLOW_COUNT; ++which) {
-            char message[160];
-            if (which == FLOW_DEVLOG) continue; /* cuts its lines to the box by design */
-            (void)snprintf(message, sizeof(message),
-                           "screen case %d fits a %d x %d window", which, sizes[s].w, sizes[s].h);
-            CHECK(flow_case_fits((FlowCase)which, sizes[s].w, sizes[s].h, dump, sizeof(dump)),
-                  message);
+    for (size_t t = 0u; t < sizeof(text_sizes) / sizeof(text_sizes[0]); ++t) {
+        g_flow_text_size_pct = text_sizes[t];
+        for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+            for (int which = FLOW_BUILD; which < FLOW_COUNT; ++which) {
+                char message[160];
+                if (which == FLOW_DEVLOG) continue; /* cuts its lines to the box by design */
+                (void)snprintf(message, sizeof(message),
+                               "screen case %d fits a %d x %d window at %d%% text", which,
+                               sizes[s].w, sizes[s].h, text_sizes[t]);
+                CHECK(flow_case_fits((FlowCase)which, sizes[s].w, sizes[s].h, dump,
+                                     sizeof(dump)),
+                      message);
+            }
         }
     }
+    g_flow_text_size_pct = 100;
 }
 
 static void test_error_details_fit_the_minimum_window(void) {
@@ -3347,6 +3387,93 @@ static bool capture_scaled(const char *directory, const NkUiTextBackend *text,
     return ok;
 }
 
+/* Captures at a text size (Settings > Accessibility > Text size) in a 1x window
+   of pixel_w x pixel_h: the library, a title page, Settings, Accessibility and
+   Controls, saved as text-<pct>-<w>x<h>-<screen>.bmp. */
+static bool capture_text_size(const char *directory, const NkUiTextBackend *text,
+                              int pixel_w, int pixel_h, int text_size_pct,
+                              const PlayerUiTitle *detail) {
+    static const struct { FlowCase which; const char *name; NkUiId focus; } flows[] = {
+        {FLOW_SETTINGS, "settings", PLAYER_UI_ID_SETTINGS_RESOLUTION},
+        {FLOW_SETTINGS_ACCESSIBILITY, "accessibility", PLAYER_UI_ID_SETTINGS_TEXT_SIZE},
+        {FLOW_CONTROLLER, "controls", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)}
+    };
+    SDL_Surface *surface = SDL_CreateSurface(pixel_w, pixel_h, SDL_PIXELFORMAT_RGBA32);
+    SDL_Renderer *renderer = surface != NULL ? SDL_CreateSoftwareRenderer(surface) : NULL;
+    NkUiConfig config;
+    NkUi *ui = NULL;
+    NkUiSdlr *backend = NULL;
+    CaptureRig rig;
+    bool ok = false;
+    char name[96];
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = text;
+    if (renderer != NULL) ui = screen_ui_create(&config);
+    if (ui != NULL) backend = nk_ui_sdlr_create(renderer, text);
+    if (backend != NULL) {
+        NkUiViewport viewport = launcher_viewport(pixel_w, pixel_h, 1.0f);
+        NkUiScale scale;
+        PlayerUiLibraryModel library;
+        PlayerUiTitleModel title;
+        size_t demos = player_ui_library_demo_count(k_titles, sizeof(k_titles) /
+                                                              sizeof(k_titles[0]));
+        viewport.text_size_pct = text_size_pct;
+        scale = nk_ui_scale_for_viewport(&viewport);
+        nk_ui_set_viewport(ui, &viewport);
+        nk_ui_sdlr_set_scale(backend, scale.density);
+        capture_prefs(ui, NK_UI_PROMPT_KEYCAPS, false);
+        rig.ui = ui;
+        rig.backend = backend;
+        rig.renderer = renderer;
+        rig.surface = surface;
+        rig.directory = directory;
+        memset(&library, 0, sizeof(library));
+        library.titles = k_titles;
+        library.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+        library.page_size = player_ui_library_page_size_at(
+            scale.logical_w, scale.logical_h, nk_ui_text_scale(ui), false, demos,
+            &library.columns);
+        library.logical_width = scale.logical_w;
+        library.logical_height = scale.logical_h;
+        if (library.title_count - demos + 1u > library.page_size) {
+            library.page_label = "Page 1 of 2";
+        }
+        library.sort_label = "Recently played";
+        nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(0u));
+        (void)snprintf(name, sizeof(name), "text-%d-%dx%d-library", text_size_pct, pixel_w,
+                       pixel_h);
+        ok = capture_one(&rig, name, &library, NULL);
+        memset(&title, 0, sizeof(title));
+        title.title = detail;
+        title.logical_width = scale.logical_w;
+        title.logical_height = scale.logical_h;
+        nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
+        (void)snprintf(name, sizeof(name), "text-%d-%dx%d-title", text_size_pct, pixel_w,
+                       pixel_h);
+        ok = ok && capture_one(&rig, name, NULL, &title);
+        g_flow_width = scale.logical_w;
+        g_flow_height = scale.logical_h;
+        g_flow_text_size_pct = text_size_pct;
+        for (size_t i = 0u; ok && i < sizeof(flows) / sizeof(flows[0]); ++i) {
+            g_flow_case = flows[i].which;
+            nk_ui_focus(ui, flows[i].focus);
+            (void)snprintf(name, sizeof(name), "text-%d-%dx%d-%s", text_size_pct, pixel_w,
+                           pixel_h, flows[i].name);
+            ok = capture_one(&rig, name, NULL, &title);
+        }
+        g_flow_case = FLOW_NONE;
+        g_flow_width = 1280.0f;
+        g_flow_height = 800.0f;
+        g_flow_text_size_pct = 100;
+    }
+    nk_ui_sdlr_destroy(backend);
+    nk_ui_destroy(ui);
+    if (renderer != NULL) SDL_DestroyRenderer(renderer);
+    if (surface != NULL) SDL_DestroySurface(surface);
+    return ok;
+}
+
 /* A project-made stand-in for disc art: a diagonal gradient, so a capture shows
    how a disc's ICON0.PNG / PIC1.PNG sits on the card and the hero without any
    game image. */
@@ -3665,6 +3792,13 @@ static int capture_screens(const char *directory) {
                         PLAYER_UI_ID_LIBRARY_ITEM(0u)) ||
         !capture_scaled(directory, &text, "title-960x600", 960, 600, 1.0f,
                         k_titles, 0u, &title_fixture, PLAYER_UI_ID_TITLE_PRIMARY)) {
+        goto done;
+    }
+    /* Text size Larger (150%) in the default window and the minimum, and Large
+       (125%) in the default window. */
+    if (!capture_text_size(directory, &text, 1280, 720, 150, &title_fixture) ||
+        !capture_text_size(directory, &text, 960, 540, 150, &title_fixture) ||
+        !capture_text_size(directory, &text, 1280, 720, 125, &title_fixture)) {
         goto done;
     }
     {

@@ -131,7 +131,206 @@ static int test_scale_model(void) {
     viewport.ui_scale_pct = 200;
     viewport.text_size_pct = 150;
     scale = nk_ui_scale_for_viewport(&viewport);
-    CHECK(scale.density == 3.0f, "explicit UI and text scales multiply");
+    CHECK(scale.density == 2.0f && scale.logical_w == 320.0f && scale.logical_h == 200.0f,
+          "the text size is not a layout scale: density and logical size follow the UI scale");
+    CHECK(nk_ui_text_scale_for_viewport(&viewport) == 1.5f,
+          "a 150% text size scales type by 1.5");
+    viewport.text_size_pct = 125;
+    CHECK(nk_ui_text_scale_for_viewport(&viewport) == 1.25f,
+          "a 125% text size scales type by 1.25");
+    viewport.text_size_pct = 175;
+    CHECK(nk_ui_text_scale_for_viewport(&viewport) == 1.0f,
+          "an unsupported text size is treated as 100%");
+    CHECK(nk_ui_text_scale_for_viewport(NULL) == 1.0f, "no viewport: 100% text");
+    return 1;
+}
+
+/* One frame at a text size, laid out twice (as a screen is): a padded column
+   with a label, a button, a status pill, a fixed 120 x 30 box and a paragraph
+   wrapped in a 200 px column. */
+static const NkUiDrawList *text_size_frame(NkUi *ui, int text_size_pct) {
+    static const char paragraph[] = "Grows the type and lets the layout reflow around it.";
+    NkUiViewport viewport;
+    NkUiLayout layout;
+    NkUiStyle fill;
+    NkUiTextStyle body = nk_ui_type(NK_UI_TYPE_BODY, 0u);
+    const NkUiDrawList *list = NULL;
+    memset(&viewport, 0, sizeof(viewport));
+    viewport.pixel_w = 640;
+    viewport.pixel_h = 400;
+    viewport.display_scale = 1.0f;
+    viewport.ui_scale_pct = 100;
+    viewport.text_size_pct = text_size_pct;
+    nk_ui_set_viewport(ui, &viewport);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 37.0);
+        memset(&layout, 0, sizeof(layout));
+        layout.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+        layout.height = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
+        layout.direction = NK_UI_LAYOUT_COLUMN;
+        layout.gap = 10.0f;
+        layout.padding_left = layout.padding_top = 16.0f;
+        if (!nk_ui_begin_container(ui, 1u, &layout, NULL)) return NULL;
+        nk_ui_label(ui, 2u, "Core layout", 0, 16);
+        (void)nk_ui_button(ui, 3u, "Open library", 0u);
+        nk_ui_status_pill(ui, 4u, NULL, "Ready", 0x2DD4BFFFu);
+        memset(&layout, 0, sizeof(layout));
+        layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 120.0f, 0.0f, 0.0f};
+        layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, 30.0f, 0.0f, 0.0f};
+        memset(&fill, 0, sizeof(fill));
+        fill.fill_rgba = 0x18202BFFu;
+        if (nk_ui_begin_container(ui, 5u, &layout, &fill)) nk_ui_end_container(ui);
+        memset(&layout, 0, sizeof(layout));
+        layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 200.0f, 0.0f, 0.0f};
+        layout.height = (NkUiSizing){NK_UI_SIZE_FIT, 0.0f, 0.0f, 0.0f};
+        layout.direction = NK_UI_LAYOUT_COLUMN;
+        if (nk_ui_begin_container(ui, 6u, &layout, NULL)) {
+            nk_ui_text(ui, 7u, paragraph, &body);
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+        list = nk_ui_end(ui);
+    }
+    return list;
+}
+
+/* The first command of `kind` element `id` drew, or NULL. A border is drawn
+   in pieces (edges and corners), so for a border the command returned is the
+   first piece in the edge colour with its bounds grown over all of them. */
+static const NkUiDrawCmd *text_size_command(const NkUiDrawList *list, uint32_t id, int kind) {
+    static NkUiDrawCmd border;
+    const NkUiDrawCmd *first = NULL;
+    for (uint32_t i = 0u; list != NULL && i < list->ncmd; ++i) {
+        const NkUiDrawCmd *cmd = &list->cmd[i];
+        if (cmd->element_id != id || cmd->kind != kind) continue;
+        if (kind != NK_UI_DRAW_BORDER) return cmd;
+        if (first == NULL) {
+            first = cmd;
+            border = *cmd;
+        } else if (cmd->rgba_pm == first->rgba_pm) {
+            if (cmd->bounds[0] < border.bounds[0]) border.bounds[0] = cmd->bounds[0];
+            if (cmd->bounds[1] < border.bounds[1]) border.bounds[1] = cmd->bounds[1];
+            if (cmd->bounds[2] > border.bounds[2]) border.bounds[2] = cmd->bounds[2];
+            if (cmd->bounds[3] > border.bounds[3]) border.bounds[3] = cmd->bounds[3];
+        }
+    }
+    return first != NULL ? &border : NULL;
+}
+
+static int text_size_height(const NkUiDrawCmd *cmd) {
+    return cmd != NULL ? cmd->bounds[3] - cmd->bounds[1] : -1;
+}
+
+static int text_size_width(const NkUiDrawCmd *cmd) {
+    return cmd != NULL ? cmd->bounds[2] - cmd->bounds[0] : -1;
+}
+
+static int text_size_runs(const NkUiDrawList *list, uint32_t id) {
+    int runs = 0;
+    for (uint32_t i = 0u; list != NULL && i < list->ncmd; ++i) {
+        if (list->cmd[i].element_id == id && list->cmd[i].kind == NK_UI_DRAW_TEXT) ++runs;
+    }
+    return runs;
+}
+
+/* The text size scales type only: the glyphs, their measured width, the line
+   boxes and the wrapping grow, while the density, the padding, the gaps and a
+   fixed box stay. A one-line component keeps its height while its text fits
+   (a button) and grows when it would not (a chip). Before, the text size was a
+   second whole-layout scale: a 150% text size laid everything out at 1.5. */
+static int test_text_size_scales_type_only(void) {
+    NkUiConfig config;
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiTextStyle body = nk_ui_type(NK_UI_TYPE_BODY, 0u);
+    NkUiTextStyle label_s = nk_ui_type(NK_UI_TYPE_LABEL_S, 0u);
+    NkUiTextStyle label = nk_ui_type(NK_UI_TYPE_LABEL, 0u);
+    NkUiDrawCmd normal[8];
+    NkUiDrawCmd large[8];
+    int normal_text_px;
+    int large_text_px;
+    int normal_runs;
+    int large_runs;
+    const NkUiDrawList *list;
+    NkUi *ui;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a context for the text size");
+    list = text_size_frame(ui, 100);
+    CHECK(list != NULL, "lay out the frame at 100% text");
+    CHECK(nk_ui_text_scale(ui) == 1.0f && nk_ui_line_height(ui, &body) == 22.0f &&
+              nk_ui_line_box(ui, NK_UI_CHIP_HEIGHT, &label_s) == NK_UI_CHIP_HEIGHT,
+          "at 100% a line is its style's line height and a chip keeps its height");
+    {
+        static const uint32_t ids[8] = {2u, 3u, 3u, 4u, 5u, 7u, 3u, 4u};
+        static const int kinds[8] = {NK_UI_DRAW_TEXT, NK_UI_DRAW_BORDER, NK_UI_DRAW_TEXT,
+                                     NK_UI_DRAW_BORDER, NK_UI_DRAW_RECTANGLE, NK_UI_DRAW_TEXT,
+                                     NK_UI_DRAW_BORDER, NK_UI_DRAW_BORDER};
+        for (int i = 0; i < 8; ++i) {
+            const NkUiDrawCmd *found = text_size_command(list, ids[i], kinds[i]);
+            CHECK(found != NULL, "every element draws at 100% text");
+            normal[i] = *found;
+        }
+    }
+    normal_text_px = ((const NkUiTextRun *)normal[0].custom)->size_px;
+    normal_runs = text_size_runs(list, 7u);
+    list = text_size_frame(ui, 150);
+    CHECK(list != NULL, "lay out the frame at 150% text");
+    CHECK(nk_ui_text_scale(ui) == 1.5f && nk_ui_line_height(ui, &body) == 33.0f &&
+              nk_ui_line_box(ui, NK_UI_CHIP_HEIGHT, &label_s) == 32.0f &&
+              nk_ui_line_box(ui, NK_UI_CONTROL_HEIGHT, &label) == NK_UI_CONTROL_HEIGHT,
+          "at 150% a line is 1.5 times as tall, a chip grows to fit it, a control need not");
+    {
+        static const uint32_t ids[8] = {2u, 3u, 3u, 4u, 5u, 7u, 3u, 4u};
+        static const int kinds[8] = {NK_UI_DRAW_TEXT, NK_UI_DRAW_BORDER, NK_UI_DRAW_TEXT,
+                                     NK_UI_DRAW_BORDER, NK_UI_DRAW_RECTANGLE, NK_UI_DRAW_TEXT,
+                                     NK_UI_DRAW_BORDER, NK_UI_DRAW_BORDER};
+        for (int i = 0; i < 8; ++i) {
+            const NkUiDrawCmd *found = text_size_command(list, ids[i], kinds[i]);
+            CHECK(found != NULL, "every element draws at 150% text");
+            large[i] = *found;
+        }
+    }
+    large_text_px = ((const NkUiTextRun *)large[0].custom)->size_px;
+    large_runs = text_size_runs(list, 7u);
+    CHECK(normal_text_px == 16 && large_text_px == 24,
+          "the glyphs are drawn at 1.5 times the size at density 1");
+    CHECK(text_size_width(&large[0]) >= text_size_width(&normal[0]) * 3 / 2 - 1 &&
+              text_size_height(&large[0]) == text_size_height(&normal[0]) * 3 / 2,
+          "a run is measured 1.5 times as wide, in a line box 1.5 times as tall");
+    CHECK(normal[0].bounds[0] == 16 && large[0].bounds[0] == 16 &&
+              normal[0].bounds[1] == 16 && large[0].bounds[1] == 16,
+          "the column's padding stays 16 px");
+    CHECK(text_size_height(&normal[1]) == 44 && text_size_height(&large[1]) == 44 &&
+              text_size_width(&large[1]) > text_size_width(&normal[1]),
+          "the button keeps its 44 px height and widens around its larger label");
+    CHECK(large[1].bounds[1] - (normal[0].bounds[1] + text_size_height(&large[0])) ==
+              normal[1].bounds[1] - (normal[0].bounds[1] + text_size_height(&normal[0])),
+          "the gap under the label stays 10 px");
+    CHECK(text_size_height(&normal[3]) == 26 && text_size_height(&large[3]) == 32,
+          "the status pill grows from 26 to 32 px to fit its larger word");
+    CHECK(text_size_width(&normal[4]) == 120 && text_size_height(&normal[4]) == 30 &&
+              text_size_width(&large[4]) == 120 && text_size_height(&large[4]) == 30,
+          "a fixed box keeps its size");
+    CHECK(normal_runs >= 2 && large_runs > normal_runs,
+          "the paragraph wraps into more lines in its 200 px column");
+    CHECK(normal[5].bounds[0] == large[5].bounds[0], "the paragraph starts at the same x");
+    CHECK(strcmp(nk_ui_text_clamp(ui, "Open library settings", &body, 170.0f, 1),
+                 "Open library settings") != 0,
+          "a run that fits one 170 px line at 100% is clamped with an ellipsis at 150%");
+    list = text_size_frame(ui, 100);
+    {
+        const NkUiDrawCmd *button = list != NULL ? text_size_command(list, 3u, NK_UI_DRAW_BORDER)
+                                                 : NULL;
+        const NkUiDrawCmd *label = list != NULL ? text_size_command(list, 2u, NK_UI_DRAW_TEXT)
+                                                : NULL;
+        CHECK(button != NULL && label != NULL &&
+                  memcmp(button->bounds, normal[1].bounds, sizeof(normal[1].bounds)) == 0 &&
+                  ((const NkUiTextRun *)label->custom)->size_px == 16,
+              "back at 100% the frame is laid out as before");
+    }
+    nk_ui_destroy(ui);
     return 1;
 }
 
@@ -2031,6 +2230,7 @@ int main(int argc, char **argv) {
     char actual[32768];
     size_t actual_size;
     if (!test_no_platform_headers() || !test_theme_tokens() || !test_scale_model() ||
+        !test_text_size_scales_type_only() ||
         !test_explicit_ui_scale_values() || !test_typed_prefs_and_events() ||
         !test_theme_access() || !test_overlay_rejects_waves() ||
         !test_container_return_contract() || !test_backend_declarations() ||

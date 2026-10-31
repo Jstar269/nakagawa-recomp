@@ -801,6 +801,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     } else {
         model.interface_size = "Automatic";
     }
+    model.text_size = player_text_size_label(app->settings.text_size_pct);
     model.high_contrast_choice = player_system_choice_label(app->settings.high_contrast_choice);
     model.reduce_motion_choice = player_system_choice_label(app->settings.reduce_motion_choice);
     model.high_contrast = player_app_high_contrast_focus(app);
@@ -2240,6 +2241,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         display.reduce_motion = player_app_reduce_motion(app);
         display.high_contrast_focus = player_app_high_contrast_focus(app);
         display.interface_size_pct = app->settings.interface_size_pct;
+        display.text_size_pct = app->settings.text_size_pct;
         player_ui_apply_display(player->ui, &player->viewport, &display,
                                 nk_ui_input_prompt_style(&player->input.input));
     }
@@ -2375,10 +2377,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         games = player->library_grid_count;
         /* While finding, the box takes TEST THIS PC's room, and the grid is the
            matches alone, without the add card. */
-        page_size = player->find_open
-            ? player_ui_library_page_size_finding(scale.logical_w, scale.logical_h, &columns)
-            : player_ui_library_page_size_with_demos(scale.logical_w, scale.logical_h,
-                                                     demo_count, &columns);
+        page_size = player_ui_library_page_size_at(scale.logical_w, scale.logical_h,
+                                                   nk_ui_text_scale(player->ui),
+                                                   player->find_open, demo_count, &columns);
         slots = player->find_open ? games : games > 0u ? games + 1u : 0u;
         {
             size_t focused_index = player_ui_focused_title_index(

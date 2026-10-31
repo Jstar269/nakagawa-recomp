@@ -103,6 +103,15 @@ static const char *safe_text(const char *text, const char *fallback) {
     return text != NULL && text[0] != '\0' ? text : fallback;
 }
 
+/* Whether a page's body between the top bar and the prompt bar scrolls. At the
+   design text size every page fits the window, and the screen tests hold it to
+   that; a larger text size can make one taller than the room, and then its
+   body scrolls (with the focused control brought into view) instead of pushing
+   the prompt bar off the window. */
+static bool page_scrolls(const NkUi *ui) {
+    return nk_ui_text_scale(ui) > 1.0f;
+}
+
 /* An outcome line's colour: only a warning is amber, and only a failure red. */
 static uint32_t note_rgba(const NkUiTheme *theme, PlayerUiNoteKind kind) {
     switch (kind) {
@@ -337,6 +346,7 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
     layout.padding_bottom = NK_UI_BODY_PAD_BOTTOM;
     layout.padding_left = gutter;
     layout.padding_right = gutter;
+    layout.scroll = page_scrolls(ui);
     if (nk_ui_begin_container(ui, TITLE_ID_BODY, &layout, NULL)) {
         /* Left column: the art and what the package needs. */
         layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(aside), sizing_grow(),
@@ -460,39 +470,53 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
             row.align_y = NK_UI_ALIGN_CENTER;
             row.padding_top = NK_UI_SPACE_2;
             row.padding_bottom = NK_UI_SPACE_2;
-            if (nk_ui_begin_container(ui, TITLE_ID_ACTIONS, &row, NULL)) {
-                /* While the no-new-frames card is up, its STOP GAME is the only
-                   one on the page. */
-                bool stop_in_stall_card = model->stalled_game_notice_visible &&
-                    title->primary_action == PLAYER_UI_PRIMARY_STOP_GAME;
-                if (!stop_in_stall_card &&
-                    nk_ui_button(ui, PLAYER_UI_ID_TITLE_PRIMARY,
-                                 safe_text(title->primary_action_label, "Unavailable"),
-                                 NK_UI_BUTTON_LARGE |
-                                 (title->primary_action_enabled
-                                      ? NK_UI_BUTTON_PRIMARY : NK_UI_BUTTON_DISABLED))) {
-                    result = action(PLAYER_UI_ACTION_PRIMARY, model->title_index,
-                                    title->primary_action);
+            {
+                /* A larger text size can wrap the row onto a second one. */
+                NkUiFlowRow flow;
+                if (nk_ui_flow_begin(ui, &flow, TITLE_ID_ACTIONS, &row,
+                                     width - 2.0f * gutter - NK_UI_DETAIL_GAP - aside)) {
+                    /* While the no-new-frames card is up, its STOP GAME is the only
+                       one on the page. */
+                    bool stop_in_stall_card = model->stalled_game_notice_visible &&
+                        title->primary_action == PLAYER_UI_PRIMARY_STOP_GAME;
+                    const char *primary = safe_text(title->primary_action_label, "Unavailable");
+                    uint32_t primary_flags = NK_UI_BUTTON_LARGE |
+                        (title->primary_action_enabled ? NK_UI_BUTTON_PRIMARY
+                                                       : NK_UI_BUTTON_DISABLED);
+                    uint32_t save_flags = NK_UI_BUTTON_LARGE |
+                        (title->save_folder_enabled ? 0u : NK_UI_BUTTON_DISABLED);
+                    if (!stop_in_stall_card) {
+                        nk_ui_flow_item(ui, &flow, nk_ui_button_width(ui, primary, primary_flags));
+                        if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_PRIMARY, primary, primary_flags)) {
+                            result = action(PLAYER_UI_ACTION_PRIMARY, model->title_index,
+                                            title->primary_action);
+                        }
+                    }
+                    /* An older Nakagawa built the package: PLAY stays first, and
+                       Rebuild sits beside it (the package card says why). */
+                    if (title->rebuild_offered) {
+                        nk_ui_flow_item(ui, &flow,
+                                        nk_ui_button_width(ui, "Rebuild", NK_UI_BUTTON_LARGE));
+                        if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_REBUILD, "Rebuild",
+                                         NK_UI_BUTTON_LARGE | NK_UI_BUTTON_NOT_DEFAULT)) {
+                            result = action(PLAYER_UI_ACTION_REBUILD, model->title_index,
+                                            (PlayerUiPrimaryAction)PLAYER_UI_REBUILD_TITLE);
+                        }
+                    }
+                    nk_ui_flow_item(ui, &flow,
+                                    nk_ui_button_width(ui, "Open save folder", save_flags));
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_SAVE_FOLDER, "Open save folder",
+                                     save_flags)) {
+                        result = action(PLAYER_UI_ACTION_OPEN_SAVE_FOLDER,
+                                        model->title_index, PLAYER_UI_PRIMARY_NONE);
+                    }
+                    nk_ui_flow_item(ui, &flow, nk_ui_button_width(ui, "Back", NK_UI_BUTTON_LARGE));
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_BACK, "Back", NK_UI_BUTTON_LARGE)) {
+                        result = action(PLAYER_UI_ACTION_BACK, model->title_index,
+                                        PLAYER_UI_PRIMARY_NONE);
+                    }
+                    nk_ui_flow_end(ui, &flow);
                 }
-                /* An older Nakagawa built the package: PLAY stays first, and
-                   Rebuild sits beside it (the package card says why). */
-                if (title->rebuild_offered &&
-                    nk_ui_button(ui, PLAYER_UI_ID_TITLE_REBUILD, "Rebuild",
-                                 NK_UI_BUTTON_LARGE | NK_UI_BUTTON_NOT_DEFAULT)) {
-                    result = action(PLAYER_UI_ACTION_REBUILD, model->title_index,
-                                    (PlayerUiPrimaryAction)PLAYER_UI_REBUILD_TITLE);
-                }
-                if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_SAVE_FOLDER, "Open save folder",
-                                 NK_UI_BUTTON_LARGE |
-                                 (title->save_folder_enabled ? 0u : NK_UI_BUTTON_DISABLED))) {
-                    result = action(PLAYER_UI_ACTION_OPEN_SAVE_FOLDER,
-                                    model->title_index, PLAYER_UI_PRIMARY_NONE);
-                }
-                if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_BACK, "Back", NK_UI_BUTTON_LARGE)) {
-                    result = action(PLAYER_UI_ACTION_BACK, model->title_index,
-                                    PLAYER_UI_PRIMARY_NONE);
-                }
-                nk_ui_end_container(ui);
             }
             if (input_guide_present(&model->input_guide)) {
                 /* The build waits for decrypted copies from the user's disc
@@ -752,7 +776,13 @@ static float flow_begin(NkUi *ui, float width, float height, float card_width) {
     }
     card = width - 2.0f * NK_UI_GUTTER_NARROW;
     if (card > card_width) card = card_width;
-    if (!nk_ui_dialog_begin(ui, FLOW_ID_CARD, card)) {
+    /* A card taller than the room between the bars scrolls there instead of
+       covering them (page_scrolls). */
+    if (!nk_ui_dialog_begin_scroll(ui, FLOW_ID_CARD, card,
+                                   page_scrolls(ui)
+                                       ? height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
+                                             2.0f * NK_UI_SPACE_4
+                                       : 0.0f)) {
         nk_ui_end_container(ui);
         nk_ui_end_container(ui);
         return 0.0f;
@@ -1409,6 +1439,7 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
     layout.align_x = NK_UI_ALIGN_CENTER;
     layout.padding_top = NK_UI_SPACE_8;
     layout.padding_left = layout.padding_right = NK_UI_GUTTER;
+    layout.scroll = page_scrolls(ui);
     if (nk_ui_begin_container(ui, ABOUT_ID_BODY, &layout, NULL)) {
         float column = width - 2.0f * NK_UI_GUTTER;
         if (column > 880.0f) column = 880.0f;
@@ -1440,7 +1471,11 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
                             NK_UI_TYPE_BODY_L, theme->muted);
             row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
             if (nk_ui_begin_container(ui, ABOUT_ID_CARDS, &row, NULL)) {
-                if (nk_ui_card_begin(ui, ABOUT_ID_LICENSE, sizing_fixed(300.0f), sizing_grow(),
+                /* 300 px, or wide enough for its button at a larger text size. */
+                float licence = nk_ui_button_width(ui, "Third-party notices", 0u) +
+                                2.0f * NK_UI_SPACE_5;
+                if (licence < 300.0f) licence = 300.0f;
+                if (nk_ui_card_begin(ui, ABOUT_ID_LICENSE, sizing_fixed(licence), sizing_grow(),
                                      NK_UI_SPACE_3)) {
                     nk_ui_eyebrow(ui, 0x50000200u, "Licence");
                     nk_ui_text_role(ui, 0x50000201u, "GPL-3.0-or-later",
@@ -1574,6 +1609,23 @@ static void wizard_steps(NkUi *ui, int step) {
     nk_ui_end_container(ui);
 }
 
+/* The width a column of check rows takes: its design width, or the widest of
+   its entries (the status words in caps, or the names) in `role` when a larger
+   text size makes one wider. */
+static float check_column_width(NkUi *ui, const PlayerUiCheckRow *checks, size_t count,
+                                bool status, NkUiTypeRole role, const char *fallback,
+                                float design) {
+    NkUiTextStyle style = nk_ui_type(role, 0u);
+    float width = design;
+    for (size_t i = 0u; checks != NULL && i < count; ++i) {
+        const char *text = status ? nk_ui_caps(ui, safe_text(checks[i].status, fallback))
+                                  : safe_text(checks[i].name, fallback);
+        float need = ceilf(nk_ui_text_width(ui, text, &style));
+        if (need > width) width = need;
+    }
+    return width;
+}
+
 /* A dark inset panel for the step's facts. Returns true when opened. */
 static bool wizard_box_begin(NkUi *ui, uint32_t edge) {
     const NkUiTheme *theme = nk_ui_theme(ui);
@@ -1585,29 +1637,104 @@ static bool wizard_box_begin(NkUi *ui, uint32_t edge) {
     return nk_ui_begin_container(ui, WIZ_ID_BOX, &box, &style);
 }
 
+/* The button column of a setting row, and the least room its sentence keeps
+   beside it before the sentences move under the buttons. */
+#define WIZARD_VALUE_CELL 220.0f
+#define WIZARD_VALUE_SENTENCE_MIN 260.0f
+
+/* What one setting row shows: its button reads "name: value". */
+typedef struct {
+    const char *name;
+    const char *value;
+    const char *sentence;
+} WizardRow;
+
+/* How a group of setting rows shares its box: the button column they line up on,
+   and whether each sentence sits under its button instead of beside it. */
+typedef struct {
+    float cell;
+    bool stacked;
+} WizardColumn;
+
+/* Whether nk_ui_text_clamp cut `text` short to give `shown`. */
+static bool text_was_cut(const char *shown, const char *text) {
+    static const char ellipsis[] = "\xE2\x80\xA6";
+    size_t n = sizeof(ellipsis) - 1u;
+    size_t shown_length = strlen(shown);
+    size_t text_length = strlen(text);
+    return shown_length >= n && memcmp(shown + shown_length - n, ellipsis, n) == 0 &&
+           !(text_length >= n && memcmp(text + text_length - n, ellipsis, n) == 0);
+}
+
+/* The column a group of rows `width` px across shares. At the design text size
+   that is the design: a 220 px column with each sentence beside its button. At
+   a larger text size the column is as wide as the widest label, so the buttons
+   line up, and when that leaves a sentence too little room beside its button,
+   or would cut one short of its two lines, every sentence goes under its
+   button at the full width. */
+static WizardColumn wizard_column(NkUi *ui, const WizardRow *rows, size_t count, float width) {
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, 0u);
+    WizardColumn column = {WIZARD_VALUE_CELL, false};
+    char label[48];
+    float room;
+    if (!(nk_ui_text_scale(ui) > 1.0f)) {
+        return column;
+    }
+    for (size_t i = 0u; i < count; ++i) {
+        float need;
+        (void)snprintf(label, sizeof(label), "%s: %s", rows[i].name, rows[i].value);
+        need = nk_ui_button_width(ui, label, 0u);
+        if (need > column.cell) column.cell = need;
+    }
+    room = width - column.cell - NK_UI_SPACE_4;
+    column.stacked = room < WIZARD_VALUE_SENTENCE_MIN;
+    for (size_t i = 0u; i < count && !column.stacked; ++i) {
+        column.stacked = text_was_cut(nk_ui_text_clamp(ui, rows[i].sentence, &text, room, 2),
+                                      rows[i].sentence);
+    }
+    return column;
+}
+
 /* A setting's button, "Name: value", with the sentence that explains it beside
-   it; the button is filled while the setting is in effect. Returns true when
-   the button is activated. */
+   it (or under it, as `column` says; NULL lays the row out on its own); the
+   button is filled while the setting is in effect. Returns true when the
+   button is activated. */
 static bool wizard_value(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
-                         const char *value, const char *sentence, bool on, float width) {
+                         const char *value, const char *sentence, bool on, float width,
+                         const WizardColumn *column) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
     NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
+    WizardColumn own;
     char label[48];
+    float room;
     bool pressed = false;
-    row.align_y = NK_UI_ALIGN_CENTER;
+    if (column == NULL) {
+        WizardRow self = {name, value, sentence};
+        own = wizard_column(ui, &self, 1u, width);
+        column = &own;
+    }
     (void)snprintf(label, sizeof(label), "%s: %s", name, value);
+    room = width - column->cell - NK_UI_SPACE_4;
+    if (column->stacked) {
+        /* The sentence sits close under its own button, and the next row's
+           button further off, so each pair reads as one. */
+        row = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(), NK_UI_SPACE_1);
+        row.padding_bottom = NK_UI_SPACE_3;
+        room = width;
+    }
+    row.align_y = NK_UI_ALIGN_CENTER;
     if (!nk_ui_begin_container(ui, text_id, &row, NULL)) return false;
     {
-        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(220.0f), sizing_fit(), 0.0f);
+        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(column->cell), sizing_fit(),
+                                      0.0f);
         if (nk_ui_begin_container(ui, text_id + 1u, &cell, NULL)) {
             pressed = nk_ui_button(ui, id, label,
                                    NK_UI_BUTTON_GROW | (on ? NK_UI_BUTTON_PRIMARY : 0u));
             nk_ui_end_container(ui);
         }
     }
-    nk_ui_text(ui, text_id + 2u,
-               nk_ui_text_clamp(ui, sentence, &text, width - 220.0f - NK_UI_SPACE_4, 2), &text);
+    nk_ui_text(ui, text_id + 2u, nk_ui_text_clamp(ui, sentence, &text, room, 2), &text);
     nk_ui_end_container(ui);
     return pressed;
 }
@@ -1615,8 +1742,24 @@ static bool wizard_value(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
 /* One option switch: a button reading "Name: On" or "Name: Off" (accent while
    on) with its sentence beside it. Returns true when activated. */
 static bool wizard_switch(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
-                          const char *sentence, bool on, float width) {
-    return wizard_value(ui, id, text_id, name, on ? "On" : "Off", sentence, on, width);
+                          const char *sentence, bool on, float width,
+                          const WizardColumn *column) {
+    return wizard_value(ui, id, text_id, name, on ? "On" : "Off", sentence, on, width, column);
+}
+
+/* The online and developer switches, in the wizard and in Settings. */
+#define WIZARD_ONLINE_SENTENCE                                                    \
+    "Check nakagawa.jaycast.net for news and let you send reports. Nothing is " \
+    "sent without you."
+#define WIZARD_DEVELOPER_SENTENCE \
+    "Show a developer log on screen to help track down problems. Stays on this PC."
+
+static WizardColumn online_developer_column(NkUi *ui, bool online, bool developer, float width) {
+    const WizardRow rows[] = {
+        {"Online mode", online ? "On" : "Off", WIZARD_ONLINE_SENTENCE},
+        {"Developer mode", developer ? "On" : "Off", WIZARD_DEVELOPER_SENTENCE}
+    };
+    return wizard_column(ui, rows, sizeof(rows) / sizeof(rows[0]), width);
 }
 
 typedef struct {
@@ -1696,17 +1839,16 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         wizard_text(ui, 1u, "Both start off. You can change either one later in Settings.",
                     NK_UI_TYPE_BODY, theme->muted);
         if (wizard_box_begin(ui, 0u)) {
+            WizardColumn column = online_developer_column(ui, model->online_mode,
+                                                          model->developer_mode, inner - 32.0f);
             if (wizard_switch(ui, PLAYER_UI_ID_WIZARD_ONLINE, WIZ_ID_TEXT + 0x80u, "Online mode",
-                              "Check nakagawa.jaycast.net for news and let you send reports. "
-                              "Nothing is sent without you.",
-                              model->online_mode, inner - 32.0f)) {
+                              WIZARD_ONLINE_SENTENCE, model->online_mode, inner - 32.0f,
+                              &column)) {
                 result = wizard_op(PLAYER_UI_WIZARD_TOGGLE_ONLINE);
             }
             if (wizard_switch(ui, PLAYER_UI_ID_WIZARD_DEVELOPER, WIZ_ID_TEXT + 0x90u,
-                              "Developer mode",
-                              "Show a developer log on screen to help track down problems. "
-                              "Stays on this PC.",
-                              model->developer_mode, inner - 32.0f)) {
+                              "Developer mode", WIZARD_DEVELOPER_SENTENCE,
+                              model->developer_mode, inner - 32.0f, &column)) {
                 result = wizard_op(PLAYER_UI_WIZARD_TOGGLE_DEVELOPER);
             }
             nk_ui_end_container(ui);
@@ -1872,13 +2014,19 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                                 model->logical_height >= 800.0f ? PLAYER_UI_INPUT_FILES
                                 : model->logical_height >= 680.0f ? 2u : 1u);
             } else {
-                for (size_t i = 0u; i < model->check_count && i < PLAYER_UI_WIZARD_CHECKS; ++i) {
+                size_t rows = model->check_count < PLAYER_UI_WIZARD_CHECKS
+                    ? model->check_count : PLAYER_UI_WIZARD_CHECKS;
+                float status_w = check_column_width(ui, model->checks, rows, true,
+                                                    NK_UI_TYPE_LABEL_S, "", 110.0f);
+                float name_w = check_column_width(ui, model->checks, rows, false,
+                                                  NK_UI_TYPE_DATA, "", 150.0f);
+                for (size_t i = 0u; i < rows; ++i) {
                     const PlayerUiCheckRow *check = &model->checks[i];
                     NkUiLayout crow = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
                                                   NK_UI_SPACE_3);
                     NkUiId base = (NkUiId)(WIZ_ID_ROWS + (NkUiId)i * 8u);
                     if (nk_ui_begin_container(ui, base, &crow, NULL)) {
-                        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(110.0f),
+                        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(status_w),
                                                       sizing_fit(), 0.0f);
                         NkUiTextStyle msg = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
                         if (nk_ui_begin_container(ui, base + 1u, &cell, NULL)) {
@@ -1886,7 +2034,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                                             NK_UI_TYPE_LABEL_S, check->rgba);
                             nk_ui_end_container(ui);
                         }
-                        cell.width = sizing_fixed(150.0f);
+                        cell.width = sizing_fixed(name_w);
                         if (nk_ui_begin_container(ui, base + 2u, &cell, NULL)) {
                             nk_ui_text_role(ui, base + 5u, safe_text(check->name, ""),
                                             NK_UI_TYPE_DATA, theme->paper);
@@ -1894,7 +2042,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                         }
                         nk_ui_text(ui, base + 3u,
                                    nk_ui_text_clamp(ui, safe_text(check->message, ""), &msg,
-                                                    inner - 32.0f - 284.0f, 1), &msg);
+                                                    inner - 32.0f - status_w - name_w -
+                                                        2.0f * NK_UI_SPACE_3, 1), &msg);
                         nk_ui_end_container(ui);
                     }
                 }
@@ -2115,17 +2264,23 @@ static void disc_rows(NkUi *ui, const PlayerUiDiscModel *model, float inner, int
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout box = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(), 4.0f);
     NkUiStyle style = flow_box_style(theme, theme->surface);
-    float message = inner - 32.0f - 132.0f - 124.0f - 2.0f * NK_UI_SPACE_3;
+    size_t rows = model->check_count < PLAYER_UI_DISC_CHECKS ? model->check_count
+                                                              : PLAYER_UI_DISC_CHECKS;
+    float status_w = check_column_width(ui, model->checks, rows, true, NK_UI_TYPE_LABEL,
+                                        "Checked", 132.0f);
+    float name_w = check_column_width(ui, model->checks, rows, false, NK_UI_TYPE_BODY_S, "Check",
+                                      124.0f);
+    float message = inner - 32.0f - status_w - name_w - 2.0f * NK_UI_SPACE_3;
     box.padding_top = box.padding_bottom = lines > 1 ? 12.0f : 8.0f;
     box.padding_left = box.padding_right = 16.0f;
     if (lines < 2) box.gap = 2.0f;
     if (model->check_count == 0u || !nk_ui_begin_container(ui, DISC_ID_BOX, &box, &style)) return;
-    for (size_t i = 0u; i < model->check_count && i < PLAYER_UI_DISC_CHECKS; ++i) {
+    for (size_t i = 0u; i < rows; ++i) {
         const PlayerUiCheckRow *check = &model->checks[i];
         NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_3);
         NkUiId base = (NkUiId)(DISC_ID_ROWS + (NkUiId)i * 8u);
         if (nk_ui_begin_container(ui, base, &row, NULL)) {
-            NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(132.0f), sizing_fit(),
+            NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(status_w), sizing_fit(),
                                           0.0f);
             NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
             cell.padding_top = 2.0f;
@@ -2134,7 +2289,7 @@ static void disc_rows(NkUi *ui, const PlayerUiDiscModel *model, float inner, int
                                 NK_UI_TYPE_LABEL, check->rgba);
                 nk_ui_end_container(ui);
             }
-            cell.width = sizing_fixed(124.0f);
+            cell.width = sizing_fixed(name_w);
             cell.padding_top = 0.0f;
             if (nk_ui_begin_container(ui, base + 2u, &cell, NULL)) {
                 nk_ui_text_role(ui, base + 5u, safe_text(check->name, "Check"), NK_UI_TYPE_BODY_S,
@@ -2409,7 +2564,21 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
     NkUiLayout layout;
     if (column > 1040.0f) column = 1040.0f;
     card = (column - NK_UI_SPACE_4) * 0.5f;
-    name_width = card - 40.0f - NK_UI_SPACE_3 - 190.0f;
+    {
+        /* The names take what the widest value button leaves, at least its
+           design 190 px; at a larger text size the names wrap instead. */
+        const char *values[] = {
+            safe_text(model->resolution, "2x"), safe_text(model->pacing, "PSP timing"),
+            safe_text(model->scaling, "Sharp"), "Size, contrast, motion",
+            "Controller and keyboard", "Check for updates", "Off"
+        };
+        float buttons = 190.0f;
+        for (size_t i = 0u; i < sizeof(values) / sizeof(values[0]); ++i) {
+            float need = nk_ui_button_width(ui, values[i], NK_UI_BUTTON_SMALL);
+            if (need > buttons) buttons = need;
+        }
+        name_width = card - 40.0f - NK_UI_SPACE_3 - buttons;
+    }
     if (name_width > 200.0f) name_width = 200.0f;
     if (name_width < 110.0f) name_width = 110.0f;
     layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(column), sizing_fit(), NK_UI_SPACE_4);
@@ -2540,27 +2709,36 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         nk_ui_end_container(ui);
     }
     layout = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
-    if (nk_ui_begin_container(ui, SET_ID_ACTIONS, &layout, NULL)) {
-        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_DONE, "Done", NK_UI_BUTTON_PRIMARY)) {
-            *result = settings_op(PLAYER_UI_SETTINGS_DONE);
+    {
+        /* One row at the design text size; a larger one wraps it. */
+        static const struct {
+            NkUiId id;
+            const char *label;
+            uint32_t flags;
+            PlayerUiSettingsOp op;
+        } actions[] = {
+            {PLAYER_UI_ID_SETTINGS_DONE, "Done", NK_UI_BUTTON_PRIMARY, PLAYER_UI_SETTINGS_DONE},
+            {PLAYER_UI_ID_SETTINGS_ONLINE, "Online and developer", 0u,
+             PLAYER_UI_SETTINGS_OPEN_ONLINE},
+            {PLAYER_UI_ID_SETTINGS_NOTICES, "Third-party notices", 0u,
+             PLAYER_UI_SETTINGS_OPEN_NOTICES},
+            {PLAYER_UI_ID_SETTINGS_BUILD_CACHE, "Build tools and cache", 0u,
+             PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE},
+            {PLAYER_UI_ID_SETTINGS_FONTS, "PSP fonts", 0u, PLAYER_UI_SETTINGS_OPEN_FONTS},
+            {PLAYER_UI_ID_SETTINGS_FACTORY_RESET, "Factory reset", NK_UI_BUTTON_DANGER,
+             PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET}
+        };
+        NkUiFlowRow flow;
+        if (nk_ui_flow_begin(ui, &flow, SET_ID_ACTIONS, &layout, column)) {
+            for (size_t i = 0u; i < sizeof(actions) / sizeof(actions[0]); ++i) {
+                nk_ui_flow_item(ui, &flow,
+                                nk_ui_button_width(ui, actions[i].label, actions[i].flags));
+                if (nk_ui_button(ui, actions[i].id, actions[i].label, actions[i].flags)) {
+                    *result = settings_op(actions[i].op);
+                }
+            }
+            nk_ui_flow_end(ui, &flow);
         }
-        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_ONLINE, "Online and developer", 0u)) {
-            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_ONLINE);
-        }
-        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_NOTICES, "Third-party notices", 0u)) {
-            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_NOTICES);
-        }
-        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BUILD_CACHE, "Build tools and cache", 0u)) {
-            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE);
-        }
-        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_FONTS, "PSP fonts", 0u)) {
-            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_FONTS);
-        }
-        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_FACTORY_RESET, "Factory reset",
-                         NK_UI_BUTTON_DANGER)) {
-            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET);
-        }
-        nk_ui_end_container(ui);
     }
     nk_ui_end_container(ui);
 }
@@ -2752,7 +2930,7 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
                           "Check at start",
                           "Asks GitHub once each time Nakagawa starts. Off unless you turn it "
                           "on.",
-                          model->check_updates_at_start, inner - 32.0f)) {
+                          model->check_updates_at_start, inner - 32.0f, NULL)) {
             *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_UPDATE_AT_START);
         }
         nk_ui_end_container(ui);
@@ -2831,46 +3009,64 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
     }
 }
 
-/* Settings > Accessibility: the interface size, the high-contrast focus ring and
-   Reduce motion. Each button steps through its values; Automatic follows the
-   system, and the sentence says what the system asks for now. */
+/* Settings > Accessibility: the interface size, the text size, the
+   high-contrast focus ring and Reduce motion. Each button steps through its
+   values; Automatic follows the system, and the sentence says what the system
+   asks for now. */
 static void settings_accessibility(NkUi *ui, const PlayerUiSettingsModel *model, float inner,
                                    PlayerUiAction *result) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     const char *system = safe_text(model->system_name, "your system");
-    char sentence[256];
+    char interface_line[256];
+    char contrast_line[256];
+    char motion_line[256];
     flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
     nk_ui_text_role(ui, FLOW_ID_TITLE, "Accessibility", NK_UI_TYPE_TITLE, theme->paper);
     nk_ui_text_role(ui, FLOW_ID_LEAD,
                     "These change the launcher, not a running game. Automatic follows the "
                     "matching setting of your system, and changes when it does.",
                     NK_UI_TYPE_BODY_S, theme->muted);
+    (void)snprintf(interface_line, sizeof(interface_line),
+                   "Grows text and controls in a large enough window. Display scale in "
+                   "%s: %d%%.",
+                   system, model->system_scale_pct);
+    (void)snprintf(contrast_line, sizeof(contrast_line),
+                   "A white ring between black lines marks the selection. High contrast "
+                   "in %s: %s.",
+                   system, model->system_high_contrast ? "on" : "off");
+    (void)snprintf(motion_line, sizeof(motion_line),
+                   "Holds the background still; pulses and sweeps become cuts. "
+                   "Animations in %s: %s.",
+                   system, model->system_reduced_motion ? "off" : "on");
     if (wizard_box_begin(ui, 0u)) {
-        (void)snprintf(sentence, sizeof(sentence),
-                       "Grows text and controls in a large enough window. Display scale in "
-                       "%s: %d%%.",
-                       system, model->system_scale_pct);
+        const WizardRow rows[] = {
+            {"Interface size", safe_text(model->interface_size, "Automatic"), interface_line},
+            {"Text size", safe_text(model->text_size, "Standard"),
+             "Makes the launcher's text larger. Controls keep their size."},
+            {"High contrast", safe_text(model->high_contrast_choice, "Automatic"), contrast_line},
+            {"Reduce motion", safe_text(model->reduce_motion_choice, "Automatic"), motion_line}
+        };
+        /* The four buttons line up on one column at every text size. */
+        WizardColumn column = wizard_column(ui, rows, sizeof(rows) / sizeof(rows[0]),
+                                            inner - 32.0f);
         if (wizard_value(ui, PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE, SET_ID_TEXT + 0x300u,
-                         "Interface size", safe_text(model->interface_size, "Automatic"),
-                         sentence, false, inner - 32.0f)) {
+                         rows[0].name, rows[0].value, rows[0].sentence, false, inner - 32.0f,
+                         &column)) {
             *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE);
         }
-        (void)snprintf(sentence, sizeof(sentence),
-                       "A white ring between black lines marks the selection. High contrast "
-                       "in %s: %s.",
-                       system, model->system_high_contrast ? "on" : "off");
+        if (wizard_value(ui, PLAYER_UI_ID_SETTINGS_TEXT_SIZE, SET_ID_TEXT + 0x30Cu,
+                         rows[1].name, rows[1].value, rows[1].sentence, false, inner - 32.0f,
+                         &column)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE);
+        }
         if (wizard_value(ui, PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST, SET_ID_TEXT + 0x304u,
-                         "High contrast", safe_text(model->high_contrast_choice, "Automatic"),
-                         sentence, model->high_contrast, inner - 32.0f)) {
+                         rows[2].name, rows[2].value, rows[2].sentence, model->high_contrast,
+                         inner - 32.0f, &column)) {
             *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST);
         }
-        (void)snprintf(sentence, sizeof(sentence),
-                       "Holds the background still; pulses and sweeps become cuts. "
-                       "Animations in %s: %s.",
-                       system, model->system_reduced_motion ? "off" : "on");
         if (wizard_value(ui, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION, SET_ID_TEXT + 0x308u,
-                         "Reduce motion", safe_text(model->reduce_motion_choice, "Automatic"),
-                         sentence, model->reduce_motion, inner - 32.0f)) {
+                         rows[3].name, rows[3].value, rows[3].sentence, model->reduce_motion,
+                         inner - 32.0f, &column)) {
             *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION);
         }
         nk_ui_end_container(ui);
@@ -2907,11 +3103,11 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                         "connection. Your choice is kept for when they arrive.",
                         NK_UI_TYPE_BODY_S, theme->warning);
         if (wizard_box_begin(ui, 0u)) {
+            WizardColumn column = online_developer_column(ui, model->online_mode,
+                                                          model->developer_mode, inner - 32.0f);
             if (wizard_switch(ui, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, SET_ID_TEXT + 0x80u,
-                              "Online mode",
-                              "Check nakagawa.jaycast.net for news and let you send reports. "
-                              "Nothing is sent without you.",
-                              model->online_mode, inner - 32.0f)) {
+                              "Online mode", WIZARD_ONLINE_SENTENCE, model->online_mode,
+                              inner - 32.0f, &column)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ONLINE);
             }
             if (model->online_mode) {
@@ -2937,10 +3133,8 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                 }
             }
             if (wizard_switch(ui, PLAYER_UI_ID_SETTINGS_DEVELOPER, SET_ID_TEXT + 0x90u,
-                              "Developer mode",
-                              "Show a developer log on screen to help track down problems. "
-                              "Stays on this PC.",
-                              model->developer_mode, inner - 32.0f)) {
+                              "Developer mode", WIZARD_DEVELOPER_SENTENCE,
+                              model->developer_mode, inner - 32.0f, &column)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER);
             }
             nk_ui_end_container(ui);
@@ -3022,7 +3216,7 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                               "Share libraries",
                               "Builds keep each compiled library and reuse it for another game "
                               "with the same one, so those builds finish sooner.",
-                              model->share_system_libraries, inner - 32.0f)) {
+                              model->share_system_libraries, inner - 32.0f, NULL)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_SHARE_LIBRARIES);
             }
             if (nk_ui_begin_container(ui, SET_ID_TEXT + 0xC8u, &row, NULL)) {
@@ -3245,6 +3439,7 @@ PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *
     layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_grow(), 0.0f);
     layout.align_x = NK_UI_ALIGN_CENTER;
     layout.padding_top = height >= 680.0f ? NK_UI_SPACE_7 : NK_UI_SPACE_4;
+    layout.scroll = page_scrolls(ui);
     if (nk_ui_begin_container(ui, SET_ID_BODY, &layout, NULL)) {
         settings_main(ui, model, width, height, &result);
         nk_ui_end_container(ui);
@@ -3394,7 +3589,8 @@ static void controller_stepper(NkUi *ui, uint32_t k, const char *value, float wi
     nk_ui_end_container(ui);
 }
 
-/* Which controller stick drives the PSP stick, named on the button that switches it. */
+/* Which controller stick drives the PSP stick, named on the button that switches it:
+   124 px, or as wide as its longer word at a larger text size. */
 #define PAD_STICK_BUTTON_WIDTH 124.0f
 static void controller_stick_choice(NkUi *ui, const PlayerUiControllerModel *model, float width,
                                     PlayerUiAction *result) {
@@ -3402,26 +3598,32 @@ static void controller_stick_choice(NkUi *ui, const PlayerUiControllerModel *mod
     NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_2);
     NkUiId base = (NkUiId)(PAD_ID_STEPPERS + 2u * 4u);
     NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
+    float button = PAD_STICK_BUTTON_WIDTH;
+    {
+        /* controller_button_label keeps 2 px spare beside the padding. */
+        float need = nk_ui_button_width(ui, "Right stick", NK_UI_BUTTON_SMALL) + 2.0f;
+        if (need > button) button = need;
+    }
     row.align_y = NK_UI_ALIGN_CENTER;
     if (!nk_ui_begin_container(ui, base, &row, NULL)) return;
     {
         NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), 0.0f);
         if (nk_ui_begin_container(ui, base + 1u, &cell, NULL)) {
             nk_ui_text(ui, base + 2u,
-                       nk_ui_text_clamp(ui, "PSP stick", &text,
-                                        width - PAD_STICK_BUTTON_WIDTH - NK_UI_SPACE_2, 1),
+                       nk_ui_text_clamp(ui, "PSP stick", &text, width - button - NK_UI_SPACE_2,
+                                        1),
                        &text);
             nk_ui_end_container(ui);
         }
     }
     {
-        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(PAD_STICK_BUTTON_WIDTH),
-                                      sizing_fit(), 0.0f);
+        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(button), sizing_fit(),
+                                      0.0f);
         if (nk_ui_begin_container(ui, base + 3u, &cell, NULL)) {
             if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_STICK,
                              controller_button_label(ui, model->stick_right ? "Right stick"
                                                                             : "Left stick",
-                                                     PAD_STICK_BUTTON_WIDTH),
+                                                     button),
                              NK_UI_BUTTON_SMALL | NK_UI_BUTTON_GROW)) {
                 *result = controller_op(PLAYER_UI_CONTROLLER_STICK, 0u);
             }
@@ -3443,13 +3645,22 @@ static void controller_live(NkUi *ui, const PlayerUiControllerModel *model, floa
     nk_ui_end_container(ui);
 }
 
-/* CONTROLLER and KEYBOARD: whose bindings the rows show, the one shown filled. */
+/* CONTROLLER and KEYBOARD: whose bindings the rows show, the one shown filled. The
+   pair is 240 px, or as wide as a larger text size makes its two words. */
 #define PAD_DEVICE_WIDTH 240.0f
+static float controller_device_width(NkUi *ui) {
+    /* controller_button_label keeps 2 px spare beside the padding. */
+    float each = nk_ui_button_width(ui, "Controller", NK_UI_BUTTON_SMALL) + 2.0f;
+    float pair = 2.0f * each + NK_UI_SPACE_2;
+    return pair > PAD_DEVICE_WIDTH ? pair : PAD_DEVICE_WIDTH;
+}
+
 static void controller_device(NkUi *ui, const PlayerUiControllerModel *model,
                               PlayerUiAction *result) {
-    NkUiLayout pair = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(PAD_DEVICE_WIDTH), sizing_fit(),
+    float width = controller_device_width(ui);
+    NkUiLayout pair = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(width), sizing_fit(),
                                   NK_UI_SPACE_2);
-    float each = (PAD_DEVICE_WIDTH - NK_UI_SPACE_2) * 0.5f;
+    float each = (width - NK_UI_SPACE_2) * 0.5f;
     uint32_t flags = NK_UI_BUTTON_SMALL | NK_UI_BUTTON_GROW | NK_UI_BUTTON_ROW;
     if (!nk_ui_begin_container(ui, PAD_ID_DEVICE_BUTTONS, &pair, NULL)) return;
     if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_SHOW_PAD,
@@ -3539,7 +3750,9 @@ static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, f
                            nk_ui_text_clamp(ui, safe_text(model->status,
                                                           "Choose a button to change it, then "
                                                           "press the controller button to use."),
-                                            &text, column - PAD_DEVICE_WIDTH - NK_UI_SPACE_3, 1),
+                                            &text,
+                                            column - controller_device_width(ui) - NK_UI_SPACE_3,
+                                            1),
                            &text);
                 nk_ui_end_container(ui);
             }
@@ -3764,11 +3977,26 @@ PlayerUiAction player_ui_screen_controller(NkUi *ui, const PlayerUiControllerMod
 #define DEV_ID_LINES DEV_ID(0x001000u)
 #define DEV_ID_LINES_SPAN 0x1000u
 
+/* A log line at the design text size; dev_line_height grows it with the text. */
 #define DEV_LINE_HEIGHT 16.0f
+
+/* The log's line height at the current text size. */
+static float dev_line_height(const NkUi *ui) {
+    NkUiTextStyle data = nk_ui_type(NK_UI_TYPE_DATA, 0u);
+    data.line_height = DEV_LINE_HEIGHT;
+    return nk_ui_line_height(ui, &data);
+}
+
 /* The card around the log box: its padding, the eyebrow, the sentence, the
-   buttons, the gaps between them and the box's own padding. */
-#define DEV_CARD_CHROME (34.0f + 14.0f + 21.0f + NK_UI_CONTROL_HEIGHT + 3.0f * NK_UI_SPACE_3 + \
-                         20.0f)
+   buttons, the gaps between them and the box's own padding (169 px at the
+   design text size). */
+static float dev_card_chrome(const NkUi *ui) {
+    NkUiTextStyle eyebrow = nk_ui_type(NK_UI_TYPE_EYEBROW, 0u);
+    NkUiTextStyle sentence = nk_ui_type(NK_UI_TYPE_BODY_S, 0u);
+    NkUiTextStyle label = nk_ui_type(NK_UI_TYPE_LABEL, 0u);
+    return 34.0f + nk_ui_line_height(ui, &eyebrow) + nk_ui_line_height(ui, &sentence) +
+           nk_ui_line_box(ui, NK_UI_CONTROL_HEIGHT, &label) + 3.0f * NK_UI_SPACE_3 + 20.0f;
+}
 
 static PlayerUiAction developer_log_op(PlayerUiDeveloperLogOp op) {
     PlayerUiAction result;
@@ -3791,6 +4019,7 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
     float column;
     float inner;
     float lines_height;
+    float line_h;
     float end;
     float offset;
     NkUiScrollState scroll;
@@ -3804,13 +4033,14 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
     height = model->logical_height > 80.0f ? model->logical_height : 800.0f;
     column = width - 2.0f * (width < NK_UI_NARROW_WIDTH ? NK_UI_GUTTER_NARROW : NK_UI_GUTTER);
     inner = column - 2.0f * NK_UI_SPACE_5;
+    line_h = dev_line_height(ui);
     lines_height = height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
-                   2.0f * NK_UI_SPACE_4 - DEV_CARD_CHROME;
-    if (lines_height < 4.0f * DEV_LINE_HEIGHT) lines_height = 4.0f * DEV_LINE_HEIGHT;
+                   2.0f * NK_UI_SPACE_4 - dev_card_chrome(ui);
+    if (lines_height < 4.0f * line_h) lines_height = 4.0f * line_h;
     count = model->line_count < PLAYER_UI_DEVELOPER_LOG_LINES ? model->line_count
                                                                : PLAYER_UI_DEVELOPER_LOG_LINES;
-    end = (float)count * DEV_LINE_HEIGHT > lines_height
-        ? (float)count * DEV_LINE_HEIGHT - lines_height : 0.0f;
+    end = (float)count * line_h > lines_height
+        ? (float)count * line_h - lines_height : 0.0f;
     /* The log opens on its newest lines and follows new ones while it shows the
        end; scrolled up, it stays where it was put. Page Up and Page Down (the
        pad's triggers) move it a box less one line, so a line carries over. */
@@ -3819,8 +4049,7 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
         offset = scroll.offset;
     }
     while (nk_ui_take_event(ui, NK_UI_EV_PAGE, &page)) {
-        offset += page == NK_UI_DIR_RIGHT ? lines_height - DEV_LINE_HEIGHT
-                                          : DEV_LINE_HEIGHT - lines_height;
+        offset += page == NK_UI_DIR_RIGHT ? lines_height - line_h : line_h - lines_height;
     }
     if (offset > end) offset = end;
     if (offset < 0.0f) offset = 0.0f;
@@ -3828,8 +4057,8 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
     /* Where Clay will draw the log this frame, which holds new lines back a
        frame while their room is laid out. */
     if (nk_ui_scroll_state(ui, DEV_ID_BOX, &scroll)) offset = scroll.offset;
-    first = (size_t)(offset / DEV_LINE_HEIGHT);
-    last = (size_t)ceilf((offset + lines_height) / DEV_LINE_HEIGHT);
+    first = (size_t)(offset / line_h);
+    last = (size_t)ceilf((offset + lines_height) / line_h);
     if (first > count) first = count;
     if (last > count) last = count;
     (void)nk_ui_waves_element(ui, DEV_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
@@ -3861,14 +4090,14 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
                     NkUiTextStyle data = nk_ui_type(NK_UI_TYPE_DATA, theme->muted);
                     data.line_height = DEV_LINE_HEIGHT;
                     nk_ui_spacer(ui, DEV_ID_TEXT + 4u, sizing_fixed(1.0f),
-                                 sizing_fixed((float)first * DEV_LINE_HEIGHT));
+                                 sizing_fixed((float)first * line_h));
                     for (size_t i = first; i < last; ++i) {
                         nk_ui_text(ui, (NkUiId)(DEV_ID_LINES + (NkUiId)i),
                                    nk_ui_text_clamp(ui, safe_text(model->lines[i], " "), &data,
                                                     inner - 28.0f, 1), &data);
                     }
                     nk_ui_spacer(ui, DEV_ID_TEXT + 5u, sizing_fixed(1.0f),
-                                 sizing_fixed((float)(count - last) * DEV_LINE_HEIGHT));
+                                 sizing_fixed((float)(count - last) * line_h));
                     if (model->line_count == 0u) {
                         nk_ui_text(ui, DEV_ID_TEXT + 2u, "Nothing logged yet.", &data);
                     }
@@ -3895,10 +4124,16 @@ PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperL
                 }
                 if (model->notice != NULL && model->notice[0] != '\0') {
                     NkUiTextStyle note = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
-                    /* The four buttons take about 480 px of the row. */
+                    /* The four buttons take about 480 px of the row, more at a
+                       larger text size. */
+                    float buttons = nk_ui_button_width(ui, "Copy", 0u) +
+                                    nk_ui_button_width(ui, "Save", 0u) +
+                                    nk_ui_button_width(ui, "Layout inspector: Off", 0u) +
+                                    nk_ui_button_width(ui, "Close", NK_UI_BUTTON_PRIMARY) +
+                                    4.0f * NK_UI_SPACE_3;
+                    float room = inner - (buttons > 500.0f ? buttons : 500.0f);
                     nk_ui_text(ui, DEV_ID_TEXT + 3u,
-                               nk_ui_text_clamp(ui, model->notice, &note, inner - 500.0f, 1),
-                               &note);
+                               nk_ui_text_clamp(ui, model->notice, &note, room, 1), &note);
                 }
                 nk_ui_end_container(ui);
             }

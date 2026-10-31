@@ -495,7 +495,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_PSP_FONTS,          /* find a connected PSP's fonts and import them */
     PLAYER_UI_SETTINGS_OPEN_ACCESSIBILITY,
     PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE, /* Automatic, 100, 125, 150, 200% */
-    PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST   /* Automatic, On, Off */
+    PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST,  /* Automatic, On, Off */
+    PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE       /* Standard, Large, Larger (100, 125, 150%) */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -528,6 +529,7 @@ typedef struct {
     /* Accessibility (VIEW_ACCESSIBILITY_SETTINGS): each setting's word, whether it
        is in effect, and what Automatic follows now */
     const char *interface_size;         /* "Automatic" or "125%" */
+    const char *text_size;              /* "Standard", "Large" or "Larger" */
     const char *high_contrast_choice;   /* "Automatic", "On" or "Off" */
     const char *reduce_motion_choice;
     bool high_contrast;                 /* in effect */
@@ -871,6 +873,7 @@ enum {
     PLAYER_UI_ID_SETTINGS_ACCESSIBILITY = 0x452Cu,    /* Settings: opens Accessibility */
     PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE = 0x452Du,
     PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST = 0x452Eu,
+    PLAYER_UI_ID_SETTINGS_TEXT_SIZE = 0x452Fu,
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the control, 0-18 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
@@ -929,6 +932,13 @@ size_t player_ui_library_page_size(float logical_width, float logical_height,
    height from the grid's. */
 size_t player_ui_library_page_size_with_demos(float logical_width, float logical_height,
                                               size_t demo_count, size_t *columns_out);
+/* Any of those at a text scale (nk_ui_text_scale_for_viewport): the functions
+   above are 1, the design text size. A larger text size widens the narrowest
+   card and makes cards, the heading row and TEST THIS PC taller, so a page
+   holds fewer cards. `finding` is the find box's page; it ignores demo_count. */
+size_t player_ui_library_page_size_at(float logical_width, float logical_height,
+                                      float text_scale, bool finding, size_t demo_count,
+                                      size_t *columns_out);
 /* How many titles are demos (PlayerUiTitle.is_demo). */
 size_t player_ui_library_demo_count(const PlayerUiTitle *titles, size_t count);
 /* The grid of the user's games, as the model orders it: how many it holds, the
@@ -1003,15 +1013,15 @@ typedef struct {
     bool reduce_motion;        /* hold the waves on one frame, and every pulse and sweep */
     bool high_contrast_focus;  /* the white ring between black keylines */
     int interface_size_pct;    /* NkUiViewport.ui_scale_pct: 0 follows the display */
+    int text_size_pct;         /* NkUiViewport.text_size_pct: 100, 125 or 150 (0 is 100) */
 } PlayerUiDisplay;
 
 /* Gives the design system the launcher's display settings and the prompt
-   style: its preferences, and the UI scale in the viewport, which the caller
-   then sets with nk_ui_set_viewport. The text size stays 100%: the design
-   system scales the whole layout for it, as it does for the UI scale, so the
-   interface size is the one control for both. Every launcher frame goes
-   through here, so no setting is left out on the way (Reduce motion was, and
-   the waves kept moving). */
+   style: its preferences, and the UI scale and text size in the viewport, which
+   the caller then sets with nk_ui_set_viewport. The interface size scales the
+   whole layout; the text size scales the type alone, and the screens reflow
+   around it. Every launcher frame goes through here, so no setting is left out
+   on the way (Reduce motion was, and the waves kept moving). */
 void player_ui_apply_display(NkUi *ui, NkUiViewport *viewport, const PlayerUiDisplay *display,
                              NkUiPromptStyle prompt_style);
 

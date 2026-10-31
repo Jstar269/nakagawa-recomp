@@ -2086,7 +2086,7 @@ class NativePlayerUiTests(unittest.TestCase):
         "controller": str(0x450B), "scaling": str(0x4505),
         "launcher_fullscreen": str(0x450A), "accessibility": str(0x452C),
         "interface_size": str(0x452D), "high_contrast": str(0x452E),
-        "reduce_motion": str(0x4509),
+        "reduce_motion": str(0x4509), "text_size": str(0x452F),
     }
     # From Resolution, Down runs through the Game card's five rows to the button
     # row, which it enters at Third-party notices.
@@ -2155,22 +2155,53 @@ class NativePlayerUiTests(unittest.TestCase):
         focus = self.SETTINGS_FOCUS
         run = self.next_ui_run(
             "accessibility-settings",
-            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN",
-             "KEY_ESCAPE", "WAIT_MS=100"),
+            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_DOWN", "KEY_RETURN", "KEY_DOWN",
+             "KEY_RETURN", "KEY_ESCAPE", "WAIT_MS=100"),
         )
         self.assertEqual([view for view, _ in self.screens(run)],
                          ["accessibility_settings", "settings"])
         self.assertEqual(self.focus_trail(run),
-                         [focus["interface_size"], focus["high_contrast"],
+                         [focus["interface_size"], focus["text_size"], focus["high_contrast"],
                           focus["reduce_motion"], focus["accessibility"]],
                          "the page opens on its first setting and Back focuses its row")
         settings = run["settings"]
         assert isinstance(settings, dict)
         self.assertEqual(settings.get("interface_size"), 100, "Automatic steps to 100%")
+        self.assertEqual(settings.get("text_size"), 100, "the text size was not stepped")
         self.assertEqual(settings.get("high_contrast_focus"), "on", "Automatic steps to On")
         self.assertEqual(settings.get("reduce_motion_choice"), "off", "On steps to Off")
         self.assertIs(settings.get("reduce_motion"), False,
                       "older players read Off as reduce_motion false")
+
+    def test_next_ui_text_size_steps_and_is_saved(self) -> None:
+        """Settings > Accessibility's Text size, under Interface size, steps Standard
+        (100%), Large (125%) and Larger (150%) and saves each step as text_size in
+        settings.json, without touching the interface size. The page keeps drawing
+        and taking input at the larger sizes: Down still moves on to High contrast."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "accessibility-settings",
+            ("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN",
+             "WAIT_MS=100", "KEY_DOWN", "WAIT_MS=100"),
+        )
+        self.assertEqual(self.focus_trail(run),
+                         [focus["interface_size"], focus["text_size"], focus["high_contrast"]],
+                         "Text size is the second setting, and focus moves on past it")
+        self.assertEqual([view for view, _ in self.screens(run)], ["accessibility_settings"])
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("text_size"), 150, "Standard steps to Large, then Larger")
+        self.assertEqual(settings.get("interface_size"), 0,
+                         "the interface size stays Automatic")
+
+        wrapped = self.next_ui_run(
+            "accessibility-settings",
+            ("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "KEY_RETURN", "KEY_RETURN",
+             "WAIT_MS=100"),
+        )
+        settings = wrapped["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("text_size"), 100, "Larger steps back to Standard")
 
     def test_next_ui_settings_pages_open_and_return(self) -> None:
         """#1302: the online, notices, build tools and cache (#1306) and removal pages are
