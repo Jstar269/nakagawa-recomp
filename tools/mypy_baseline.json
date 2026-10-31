@@ -104,7 +104,6 @@
     "tools/test_cosim_fixture.py": 3,
     "tools/test_cosim_mutation_gate_outcome.py": 7,
     "tools/test_direct_j_omission_mutation.py": 1,
-    "tools/test_disc_expand.py": 36,
     "tools/test_dispatch_call_boundary.py": 2,
     "tools/test_dmac_semantics.py": 3,
     "tools/test_enhancement_package.py": 13,
@@ -161,7 +160,6 @@
     "tools/test_provenance_ledger.py": 50,
     "tools/test_provenance_record_gap.py": 1,
     "tools/test_provenance_wildcard_regression.py": 1,
-    "tools/test_psp_decrypt.py": 34,
     "tools/test_psp_issue_matrix.py": 18,
     "tools/test_psp_threading_oracle.py": 1,
     "tools/test_pspdev_lock.py": 26,
@@ -190,7 +188,6 @@
     "tools/test_title_runtime_config.py": 12,
     "tools/test_tree_lint.py": 2,
     "tools/test_validate_assets.py": 1,
-    "tools/test_verification_ledger.py": 35,
     "tools/test_vfpu_addressing.py": 5,
     "tools/test_vfpu_domain_boundary.py": 1,
     "tools/test_vfpu_nan_payload.py": 1,
@@ -216,5 +213,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 1324
+  "total_errors": 1219
 }
