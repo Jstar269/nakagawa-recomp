@@ -207,6 +207,12 @@ void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate)) {
     s_logic_slowed_cb = cb;
 }
 
+static void (*s_ui_pass)(const Sdl3VkUiPass *frame);
+
+void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame)) {
+    s_ui_pass = pass;
+}
+
 static uint32_t s_buttons;
 static uint8_t  s_lx = 128, s_ly = 128;
 static int      s_pad_present;
@@ -1173,6 +1179,7 @@ int sdl3vk_get_vk(Sdl3VkInfo *out) {
     out->queue    = (void *)s_queue;
     out->queue_family = s_qfam;
     out->denorm_preserve_f32 = s_denorm_preserve_f32;
+    out->get_instance_proc_addr = (void *)vkGetInstanceProcAddr;
     return 1;
 }
 
@@ -1943,6 +1950,20 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         if ((s_hud_enabled || s_logic_slowed_cb) && f->hud_staging_map) {
             draw_hud_overlay(cmd, f, s_swap_img[idx], dw, dh);
+        }
+        if (s_ui_pass) {
+            Sdl3VkUiPass ui;
+            ui.cmd = (void *)cmd;
+            ui.frame_slot = (uint32_t)s_frame_cursor;
+            ui.frames_in_flight = PRESENT_FRAMES;
+            ui.format = (int)s_swap_fmt;
+            ui.width = (uint32_t)dw;
+            ui.height = (uint32_t)dh;
+            ui.images = (void *const *)s_swap_img;
+            ui.image_count = s_swap_n;
+            ui.image_index = idx;
+            ui.swapchain_gen = s_swapchain_gen;
+            s_ui_pass(&ui);
         }
 
         barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,

@@ -38,6 +38,8 @@
 #if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
 #include "nk_ui_theme.h"         /* the pause overlay's scrim token */
 #include "overlay/overlay_host.h" /* the pause overlay's pages (C9c) */
+#include "gpu_sdl3vk/ace_ui.h"   /* Ace Mode's in-game UI: notice, readout, crisp keyboard */
+#include "nk_platform.h"         /* the system's Reduce motion, for the Ace UI */
 #include "ge_shared.h"           /* the developer VRAM viewer's decoders (#314) */
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_render.h>
@@ -359,6 +361,122 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 #if defined(SR_SDL3VK) || defined(_WIN32)
 static void gui_release_presenter(void);
+
+#if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
+/* ---- Ace Mode's in-game UI (ace.h, gpu_sdl3vk/ace_ui.h) ---------------------------------------
+ * Made once at start in an Ace run that shows any of it; an authentic run never makes it and
+ * never registers the presenter's UI pass. Without SDL3_ttf, the UI fonts or the Vulkan backend
+ * the three features are off for the run, said once, and the keyboard keeps today's path. */
+#define ACE_NOTICE_NS 3000000000ull              /* the launch notice stays 3 s */
+static NkOverlayFonts *s_ace_fonts;
+static AceUi *s_ace_ui;
+static int s_ace_ui_ready;
+static int s_ace_keyboard_now;                    /* this present's keyboard is the UI pass's */
+static uint64_t s_ace_first_frame_ns;             /* the first accepted present: the notice starts */
+static char s_ace_words[160];
+
+static void gui_ace_ui_pass(const Sdl3VkUiPass *p) {
+    const AceConfig *ace = ace_effective();
+    AceUiFrame f;
+    AceReadoutView view;
+    uint64_t now = SDL_GetTicksNS();
+    memset(&f, 0, sizeof(f));
+    f.pixel_w = (int)p->width;
+    f.pixel_h = (int)p->height;
+    {
+        float pixels_per_point = 1.0f;
+        f.display_scale = 1.0f;
+        (void)sdl3vk_window_scales(&f.display_scale, &pixels_per_point);
+    }
+    f.now_s = (double)now / 1e9;
+    /* The player's Reduce motion choice, as the pause overlay reads it. */
+    f.reduce_motion = nk_overlay_reduce_motion(getenv("SR_REDUCE_MOTION"),
+                                               nk_platform_prefers_reduced_motion());
+    /* The readout steps aside while the developer HUD shows. */
+    if (ace->readout && sdl3vk_hud_mode() == SDL3VK_HUD_OFF && ace_readout_view(&view)) {
+        f.readout = view.text;
+        f.readout_warning = view.pc_limited;
+    }
+    if (ace->notice && s_ace_first_frame_ns && now - s_ace_first_frame_ns < ACE_NOTICE_NS) {
+        double left = (double)(ACE_NOTICE_NS - (now - s_ace_first_frame_ns)) / 1e9;
+        double shown = (double)(now - s_ace_first_frame_ns) / 1e9;
+        f.notice = s_ace_words[0] ? s_ace_words : "On";
+        /* It eases in and out over NK_UI_MOTION_BASE, or cuts with Reduce motion. */
+        f.notice_alpha = 1.0f;
+        if (!f.reduce_motion) {
+            double edge = shown < left ? shown : left;
+            if (edge < NK_UI_MOTION_BASE) f.notice_alpha = (float)(edge / NK_UI_MOTION_BASE);
+        }
+    }
+    if (s_ace_keyboard_now) f.keyboard = sr_osk_overlay_view();
+    if (!ace_ui_frame_wants(&f)) return;
+    AceUiTarget t;
+    memset(&t, 0, sizeof(t));
+    t.cmd = (VkCommandBuffer)p->cmd;
+    t.frame_slot = p->frame_slot;
+    t.format = (VkFormat)p->format;
+    t.extent.width = p->width;
+    t.extent.height = p->height;
+    t.images = (const VkImage *)p->images;
+    t.image_count = p->image_count;
+    t.image_index = p->image_index;
+    t.swapchain_gen = p->swapchain_gen;
+    (void)ace_ui_record(s_ace_ui, &t, &f);
+}
+
+static void gui_ace_ui_off(const char *why) {
+    char reason[200];
+    snprintf(reason, sizeof(reason), "the in-game UI is unavailable: %s", why);
+    if (ace_effective()->text) ace_feature_unavailable(ACE_FEATURE_TEXT, reason);
+    if (ace_effective()->readout) ace_feature_unavailable(ACE_FEATURE_READOUT, reason);
+    if (ace_effective()->notice) ace_feature_unavailable(ACE_FEATURE_NOTICE, reason);
+}
+
+static void gui_ace_ui_init(void) {
+    const AceConfig *ace = ace_effective();
+    char error[256] = "";
+    Sdl3VkInfo vi;
+    if (!g_ace_on || !(ace->text || ace->readout || ace->notice)) return;
+    memset(&vi, 0, sizeof(vi));
+    if (!sdl3vk_get_vk(&vi) || !vi.get_instance_proc_addr) {
+        gui_ace_ui_off("no Vulkan device");
+        return;
+    }
+    s_ace_fonts = nk_overlay_fonts_create(getenv("SR_UI_ROOT"), error, sizeof(error));
+    if (s_ace_fonts) {
+        AceUiInit init;
+        memset(&init, 0, sizeof(init));
+        init.get_instance_proc_addr = (PFN_vkGetInstanceProcAddr)vi.get_instance_proc_addr;
+        init.instance = (VkInstance)vi.instance;
+        init.physical_device = (VkPhysicalDevice)vi.physical;
+        init.device = (VkDevice)vi.device;
+        init.queue = (VkQueue)vi.queue;
+        init.queue_family = vi.queue_family;
+        init.frames_in_flight = 3u;   /* sdl3vk.c PRESENT_FRAMES; the pass checks every slot */
+        init.text = nk_overlay_fonts_text(s_ace_fonts);
+        s_ace_ui = ace_ui_create(&init, error, sizeof(error));
+    }
+    if (!s_ace_ui) {
+        nk_overlay_fonts_destroy(s_ace_fonts);
+        s_ace_fonts = NULL;
+        gui_ace_ui_off(error[0] ? error : "unknown");
+        return;
+    }
+    (void)ace_feature_words(s_ace_words, sizeof(s_ace_words));
+    sdl3vk_set_ui_pass(gui_ace_ui_pass);
+    s_ace_ui_ready = 1;
+}
+
+static void gui_ace_ui_release(void) {
+    if (s_ace_ui_ready) sdl3vk_set_ui_pass(NULL);
+    s_ace_ui_ready = 0;
+    ace_ui_destroy(s_ace_ui);
+    s_ace_ui = NULL;
+    nk_overlay_fonts_destroy(s_ace_fonts);
+    s_ace_fonts = NULL;
+}
+#endif
+
 static void gui_exit_cleanup(void) {
     sr_perf_shutdown();
     gui_release_presenter();
@@ -437,6 +555,9 @@ void gui_init(const char *title) {
                 /* The window draws the on-screen keyboard, so no native box is needed; a
                  * presenter that cannot draw keeps the box as the fallback (osk_text_entry.c). */
                 sr_osk_overlay_set_host(osk_overlay_paint_available());
+#ifndef SR_GUI_PRESENT_SELFTEST
+                gui_ace_ui_init();
+#endif
                 sync_sdl_input();
                 /* Phase 1 GPU rasterizer (opt-in): captures GE triangles/sprites and
                  * renders them on the GPU, writing results back to guest VRAM. */
@@ -734,7 +855,17 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
          * keyboard is drawn on, so the GPU fast path steps aside (the CPU path below). The
          * decision is taken once: osk_open also gates the guest-VRAM sync before that copy. */
         int osk_open = sr_osk_overlay_active();
-        int res = osk_open ? GEGPU_PRESENT_NOT_RESIDENT : gegpu_present(fbaddr, fmt, stride);
+        /* Ace Mode's crisp keyboard (ace.h): the GPU frame stays on and the UI pass draws the
+         * keyboard over it at the window's resolution. A file or evidence capture takes the
+         * CPU path for its frame, so the capture holds the keyboard; the picture probe changes
+         * nothing. Off, or with the UI unavailable, this is today's path. */
+        int osk_cpu = osk_open;
+#ifndef SR_GUI_PRESENT_SELFTEST
+        s_ace_keyboard_now = osk_open && s_ace_ui_ready && ace_effective()->text &&
+                             !(sr_capture_is_armed() && !sr_capture_pending_is_probe());
+        if (s_ace_keyboard_now) osk_cpu = 0;
+#endif
+        int res = osk_cpu ? GEGPU_PRESENT_NOT_RESIDENT : gegpu_present(fbaddr, fmt, stride);
         sync_sdl_input();
         if (res == GEGPU_PRESENT_WINDOW_CLOSED) { gui_window_closed_exit(); }
         if (res == GEGPU_PRESENT_SHOWN) {
@@ -754,7 +885,7 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         }
 
         /* 2. CPU-rendered fallback: convert guest VRAM to BGRA and blit through SDL3/Vulkan. */
-        if (osk_open) {
+        if (osk_cpu) {
             /* The GPU fast path was skipped for this frame, so a frame the rasterizer produced
              * may exist only in its Vulkan image. Materialize that target into guest VRAM before
              * convert_fb reads it, the boundary hle.c snapshot_sync_ok() enforces before a dump.
@@ -798,7 +929,8 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         convert_fb(fbaddr, fmt, stride);
         /* The keyboard is drawn on the host copy only: the same pixels the window and the
          * frame capture receive, and guest VRAM is untouched. */
-        if (sr_osk_overlay_active()) osk_overlay_paint(sr_osk_overlay_view(), s_px, PSP_W, PSP_H);
+        if (osk_cpu && sr_osk_overlay_active())
+            osk_overlay_paint(sr_osk_overlay_view(), s_px, PSP_W, PSP_H);
         int present_result = sdl3vk_present_rgba(s_px);
         sync_sdl_input();
         if (present_result == 0) { gui_window_closed_exit(); }
@@ -834,6 +966,9 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 
 #ifdef SR_SDL3VK
 pace:
+#endif
+#if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
+    if (accepted && s_ace_ui_ready && !s_ace_first_frame_ns) s_ace_first_frame_ns = SDL_GetTicksNS();
 #endif
     if (accepted) {
         s_shown_fb.addr = fbaddr;
@@ -1367,6 +1502,9 @@ static void gui_release_presenter(void) {
         s_pause_vram.image = NULL;
         free(s_pause_vram_px);
         s_pause_vram_px = NULL;
+#ifndef SR_GUI_PRESENT_SELFTEST
+        gui_ace_ui_release();
+#endif
         gegpu_shutdown();
         sdl3vk_shutdown();
         s_sdl3 = 0;

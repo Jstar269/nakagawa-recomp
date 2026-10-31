@@ -864,8 +864,10 @@ endif
 
 RT_GE_O    := $(BUILD_DIR)/ge.o
 # The pause overlay (#1159): nk_ui, its SDL edge and SDL_Renderer backend, the overlay's pages
+# and their runtime host; Ace Mode's in-game UI draws through the Vulkan backend.
 # and their runtime host. SDL3_ttf is loaded at run time, so the runtime needs only its headers.
 RT_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c \
+                 src/ui/backend/nk_ui_vk.c \
                  $(NK_UI_OVERLAY_C9C_SRCS) $(NK_UI_OVERLAY_HOST_SRCS)
 
 RT_SRCS    := src/rt/recomp.c \
@@ -911,6 +913,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/driver.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
               src/rt/gpu_sdl3vk/ge_gpu.c \
+              src/rt/gpu_sdl3vk/ace_ui.c \
               src/core/nk_input_profile.c \
               src/core/nk_font.c \
               src/core/nk_json.c \
@@ -2026,6 +2029,14 @@ $(BUILD_DIR)/%.o: src/rt/overlay/%.c $(RUNTIME_PROFILE_STAMP)
 
 $(BUILD_DIR)/gui.o: src/rt/gui.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) $(DEPFLAGS) -c $< -o $@
+
+# Ace Mode's in-game UI (src/rt/gpu_sdl3vk/ace_ui.c) and the nk_ui Vulkan backend it draws
+# through, which is built in only here (NK_UI_WITH_VULKAN; it loads Vulkan at run time).
+$(BUILD_DIR)/ace_ui.o: src/rt/gpu_sdl3vk/ace_ui.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) $(DEPFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/nk_ui_vk.o: src/ui/backend/nk_ui_vk.c $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) $(RT_NK_UI_FLAGS) -DNK_UI_WITH_VULKAN $(DEPFLAGS) -c $< -o $@
 
 # The one translation unit that reads the build-local generated configuration. Every
 # other runtime source consumes the generic accessors in src/rt/title_config.h, so the
@@ -3548,6 +3559,34 @@ nk-ui-vk-selftest:
 		echo "FAIL nk-ui-vk-selftest (exit 77, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
 	elif [ $$rc -eq 77 ]; then echo "SKIP nk-ui-vk-selftest (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL nk-ui-vk-selftest (exit $$rc)"; exit $$rc; fi
+
+# ace-ui-selftest - Ace Mode's in-game UI (src/rt/gpu_sdl3vk/ace_ui.c): the readout, the launch
+# notice and the crisp keyboard laid out at the overlay's sizes and two ultrawide windows (inside
+# the 16 px safe area, apart from each other), then drawn on a headless Vulkan device over a
+# cleared image, which keeps every pixel outside them; the image is written for review. Linked
+# from the UI pass, the keyboard model and nk_ui alone (invariant S1). With SDL3_ttf the picture
+# uses the launcher's fonts. No Vulkan headers, loader or device: SKIP (exit 77), visible in
+# the log; NK_UI_VK_REQUIRE=1 makes a skip fail.
+native-core-tests: ace-ui-selftest
+.PHONY: ace-ui-selftest
+ace-ui-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		echo "SKIP ace-ui-selftest (the Vulkan headers were not found)"; \
+		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
+	fi; \
+	ttf_defs=""; ttf_srcs=""; ttf_libs=""; \
+	if printf '%s\n' '#include <SDL3/SDL.h>' '#include <SDL3_ttf/SDL_ttf.h>' '#include <SDL3_ttf/SDL_textengine.h>' | $(CC) -E -x c $(SDL3_INC_FLAGS) - >/dev/null 2>&1; then \
+		ttf_defs="-DNK_UI_WITH_SDL -DNK_UI_WITH_SDL_TTF"; ttf_srcs="src/ui/nk_ui_ttf.c"; ttf_libs="$(LDFLAGS) -lSDL3"; \
+	fi; \
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Isrc/rt -Isrc/rt/gpu_sdl3vk -Ithird_party/clay \
+		$(VULKAN_INC_FLAGS) $(SDL3_INC_FLAGS) -DNK_UI_WITH_VULKAN $$ttf_defs \
+		$(NK_UI_CORE_SRCS) src/ui/backend/nk_ui_vk.c $$ttf_srcs src/rt/osk_overlay.c \
+		src/rt/gpu_sdl3vk/ace_ui.c src/rt/gpu_sdl3vk/ace_ui_selftest.c \
+		$$ttf_libs -lm $(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_ROOT)/ace_ui_selftest$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_ROOT_RUN)/ace_ui_selftest$(EXE_EXT) $(BUILD_ROOT) --fonts . || rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "FAIL ace-ui-selftest (exit $$rc)"; exit $$rc; fi; \
+	if [ "$(NK_UI_VK_REQUIRE)" = 1 ] && grep -q "gpu SKIP" /dev/null; then exit 1; fi
 
 .PHONY: nk-ui-focus-selftest
 # The focus, input and glyph checks are SDL-free. The SDL_Event translation leg is built from
