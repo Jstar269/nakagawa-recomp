@@ -4258,6 +4258,10 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
     config->fullscreen = settings->fullscreen;
     config->master_volume = settings->master_volume;
     config->developer_mode = settings->developer_mode;
+    config->reduce_motion = settings->reduce_motion_choice == PLAYER_SYSTEM_CHOICE_ON
+        ? NK_REDUCE_MOTION_ON
+        : settings->reduce_motion_choice == PLAYER_SYSTEM_CHOICE_OFF ? NK_REDUCE_MOTION_OFF
+                                                                     : NK_REDUCE_MOTION_SYSTEM;
 }
 
 /* The NK_INPUT_PROFILE path `game` launches with, written to `out`; `out` is

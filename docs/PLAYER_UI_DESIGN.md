@@ -219,13 +219,14 @@ first frame and its last are cuts. Under Reduce motion nk_ui leaves the transiti
   A picture is an nk_ui custom element, which Clay transitions cannot fade, so nk_ui eases the alpha it draws it
   with, on Clay's ease-out curve.
 
-Clay counts a frame's time into a transition from the frame it starts on. The time since the last frame was idle
-when nothing moved then, so a transition starting now is given one display frame of it (`NK_UI_MOTION_FRAME`) and
-starts its course at the beginning. nk_ui gives Clay the layout's size at the start of every frame, as Clay's
-lifecycle asks: Clay holds moves back on a frame whose size changed, and given the size only on a resize it took
-every frame for one. The in-game overlay keeps its motion cut: the runtime is not told the player's Reduce motion
-choice. The goldens are stills at a clock that never moves, so their contexts cut motion too; the motion itself is
-tested at a moving clock in `tests/native/test_nk_ui_core.c`.
+Clay counts a frame's time into a transition from the frame it starts on. The time since the last frame was idle when
+nothing moved then, so a transition starting now is given one display frame of it (`NK_UI_MOTION_FRAME`) and starts
+its course at the beginning. nk_ui gives Clay the layout's size at the start of every frame, as Clay's lifecycle asks:
+Clay holds moves back on a frame whose size changed, and given the size only on a resize it took every frame for one.
+The in-game overlay follows the player's Reduce motion choice too: the launcher exports it as `SR_REDUCE_MOTION`
+(`on`, `off`, or `system` for Automatic, which the overlay resolves against Windows' setting as it draws), and the
+overlay keeps drawing while a transition eases. The goldens are stills at a clock that never moves, so their contexts
+cut motion too; the motion itself is tested at a moving clock in `tests/native/test_nk_ui_core.c`.
 
 ### Background waves
 

@@ -5889,6 +5889,14 @@ int main(int argc, char **argv) {
         assert(cfg.fullscreen == true);
         assert(cfg.master_volume == 55);
         assert(cfg.developer_mode == true);   /* the runtime's developer pages follow it (#314) */
+        /* The pause overlay eases or cuts as the launcher does (SR_REDUCE_MOTION). */
+        assert(cfg.reduce_motion == NK_REDUCE_MOTION_ON);
+        applied.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_OFF;
+        player_app_apply_settings_to_session(&applied, &cfg);
+        assert(cfg.reduce_motion == NK_REDUCE_MOTION_OFF);
+        applied.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_AUTO;
+        player_app_apply_settings_to_session(&applied, &cfg);
+        assert(cfg.reduce_motion == NK_REDUCE_MOTION_SYSTEM);
         assert(cfg.gui_mode == true);   /* untouched by the mapping */
         /* NULL arguments are safe no-ops. */
         player_app_apply_settings_to_session(NULL, &cfg);
