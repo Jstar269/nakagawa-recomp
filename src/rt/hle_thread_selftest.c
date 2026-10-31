@@ -2692,6 +2692,74 @@ static void test_prx_export_relocation_behavior(void) {
     remove(path);
 }
 
+int sr_hle_test_last_prx_host_served(void);
+void sr_hle_test_unregister_late_imports(uint32_t lo, uint32_t hi);
+int sr_hle_test_module_host_served(uint32_t uid);
+
+/* Replaces the first little-endian copy of `from` in the file with `to`. */
+static int fixture_patch_u32(const char *path, uint32_t from, uint32_t to) {
+    FILE *f = fopen(path, "r+b");
+    if (!f) return 0;
+    uint8_t buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    int done = 0;
+    for (size_t i = 0; !done && i + 4u <= n; i += 4u) {
+        uint32_t v = (uint32_t)buf[i] | (uint32_t)buf[i + 1] << 8 | (uint32_t)buf[i + 2] << 16 |
+                     (uint32_t)buf[i + 3] << 24;
+        if (v != from) continue;
+        uint8_t w[4] = { (uint8_t)to, (uint8_t)(to >> 8), (uint8_t)(to >> 16), (uint8_t)(to >> 24) };
+        done = fseek(f, (long)i, SEEK_SET) == 0 && fwrite(w, 1, 4, f) == 4;
+    }
+    return fclose(f) == 0 && done;
+}
+
+/* #1385: what the runtime knows of a module is its export table, never a substring of its
+ * path. A module that exports a function host HLE implements (scePsmfPlayerCreate here, as
+ * the PSMF-player library does) is host-served whatever it is called; one that exports none
+ * is not. A look-alike file name loaded from a path no manifest declares (notpsmf.prx,
+ * libpsmfplayer.prx.bak) is not host-served, and starting it runs no entry. */
+#define NID_PSMF_PLAYER_CREATE 0x235d8787u
+static void test_module_identity_is_its_export_table(void) {
+    const char *path = HLE_BUILD_ROOT "/hle_prx_identity_fixture.bin";
+    const uint32_t base = 0x30000000u;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_module_reset();
+
+    expect(write_synthetic_prx(path, 0) &&
+               sr_hle_test_register_prx_exports(path, base) == 2u &&
+               !sr_hle_test_last_prx_host_served(),
+           "module identity: exports host HLE does not implement leave a module guest-served");
+    expect(fixture_patch_u32(path, 0x22222222u, NID_PSMF_PLAYER_CREATE) &&
+               sr_hle_test_register_prx_exports(path, base) == 2u &&
+               sr_hle_test_last_prx_host_served(),
+           "module identity: an export host HLE implements makes the module host-served");
+    sr_hle_test_unregister_late_imports(base, base + 0x100u);
+    remove(path);
+
+    static const char *const lookalikes[] = {
+        "disc0:/PSP_GAME/USRDIR/notpsmf.prx",
+        "disc0:/PSP_GAME/USRDIR/libpsmfplayer.prx.bak",
+    };
+    for (size_t i = 0; i < sizeof(lookalikes) / sizeof(lookalikes[0]); i++) {
+        CpuState cpu;
+        char what[160];
+        title_hle_write_cstr(0x08906000u, lookalikes[i]);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0x08906000u;
+        const uint32_t uid = sr_hle_test_load_module(&cpu);
+        snprintf(what, sizeof(what), "module identity: %s loads as a record that is not host-served",
+                 lookalikes[i]);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u && sr_hle_test_module_host_served(uid) == 0,
+               what);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        snprintf(what, sizeof(what), "module identity: starting %s runs no entry", lookalikes[i]);
+        expect(sr_hle_test_start_module(&cpu) == 0u, what);
+    }
+    sr_hle_test_module_reset();
+}
+
 static CpuState s_cpu_store;
 
 /* Production-dispatch regression for utility AV module identity and lifecycle.  The
@@ -40236,6 +40304,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_aot_return_boundary_thread_isolation();
 #endif
     test_prx_export_relocation_behavior();
+    test_module_identity_is_its_export_table();
     test_fd_namespace();
     test_umd_io_console_model();
     test_ms0_unified_namespace();
