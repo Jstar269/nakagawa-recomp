@@ -1292,6 +1292,7 @@
           "hle-savedata"
         ],
         "case_ids": [
+          "mode-23",
           "makedata-slotb",
           "makedata-slota",
           "writedata-slotb",
@@ -1303,10 +1304,9 @@
           "shutdown-during-init",
           "deletedata-slota",
           "deletedata-slotb",
-          "mode-23",
           "hle-savedata-done"
         ],
-        "invariant": "The savedata utility driven as a game drives it, under the probe-owned game name NKPROBE01: InitStart, then GetStatus once a vblank, Update(1) while RUNNING and ShutdownStart once FINISHED, at most 360 polls. Cells: MAKEDATA of SLOTB, then of SLOTA 2.5 s later; WRITEDATA of SLOTB 2.5 s after that; LIST with the pattern * and maxCount 4 (resultCount, each row's name bytes 0 and 4, and its created, accessed and modified times as day-of-month and second-of-day); sceIoGetstat of each save directory and its PARAM.SFO in the same encoding; ShutdownStart straight after a LIST InitStart; DELETEDATA of both saves; last, an unknown mode (23), which holds the slot at INIT. Each dialog records InitStart's return, the common result word, the status sequence, the poll count and the outcome.",
+        "invariant": "The savedata utility driven as a game drives it, under the probe-owned game name NKPROBE01: InitStart, then GetStatus once a vblank, Update(1) while RUNNING and ShutdownStart once FINISHED, at most 360 polls. Cells: an unknown mode (23); MAKEDATA of SLOTB, then of SLOTA 2.5 s later; WRITEDATA of SLOTB 2.5 s after that; LIST with the pattern * and maxCount 4 (resultCount, each row's name bytes 0 and 4, and its created, accessed and modified times as day-of-month and second-of-day); sceIoGetstat of each save directory and its PARAM.SFO in the same encoding; ShutdownStart straight after a LIST InitStart; DELETEDATA of both saves. Each dialog records InitStart's return, the common result word, the status sequence, the poll count and the outcome.",
         "issues": [
           1387
         ],

@@ -2167,6 +2167,7 @@ static void hle_sd_settle(const char *step)
 
 static int hle_run(void)
 {
+    hle_sd_dialog("mode-23", HLE_SD_MODE_UNKNOWN, "SLOTA", 0u, 0, 0);
     hle_sd_dialog("makedata-slotb", HLE_SD_MODE_MAKEDATA, "SLOTB", HLE_SD_DATA_SLOTB_MAKE, 1, 0);
     hle_sd_settle("settle-after-makedata-slotb");
     hle_sd_dialog("makedata-slota", HLE_SD_MODE_MAKEDATA, "SLOTA", HLE_SD_DATA_SLOTA_MAKE, 1, 0);
@@ -2182,10 +2183,6 @@ static int hle_run(void)
     hle_sd_dialog("shutdown-during-init", HLE_SD_MODE_LIST, "*", 0u, 0, 1);
     hle_sd_dialog("deletedata-slota", HLE_SD_MODE_DELETEDATA, "SLOTA", 0u, 0, 0);
     hle_sd_dialog("deletedata-slotb", HLE_SD_MODE_DELETEDATA, "SLOTB", 0u, 0, 0);
-    /* Last: on a PSP-3000 (6.60, 2026-10-31) an unknown mode is accepted by InitStart and then
-     * stays at INIT past the 360-poll bound, holding the utility slot, so every later InitStart
-     * in the launch would be refused with INVALID_STATUS. */
-    hle_sd_dialog("mode-23", HLE_SD_MODE_UNKNOWN, "SLOTA", 0u, 0, 0);
     return s_hle_sd_timeouts == 0u;
 }
 
