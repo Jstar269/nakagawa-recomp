@@ -8,15 +8,18 @@
 // before it exits. Every import is user-mode and comes from a per-family import
 // block (hle_*_imports.S) or the shared threadman_user_imports.S.
 //
-// Seven single-launch cases share this file: CASE=hle-vtimer-unit
+// Eight single-launch cases share this file: CASE=hle-vtimer-unit
 // (PSP-HLE-VTIMER-002), hle-vtimer-errors (PSP-HLE-VTIMER-003),
 // hle-kernel-pool-bounds (PSP-HLE-KERNEL-STATUS-002), hle-power-float-v0
 // (PSP-HLE-POWER-002), hle-null-out-pointers (PSP-HLE-NULL-OUT-001),
-// hle-audio-src (PSP-HLE-AUDIO-SRC-001) and hle-timer-order
-// (PSP-HLE-TIMER-ORDER-001). Cases 97-101 have recorded PSP-3000 runs from
-// 2026-10-15: the VTimer and power cases were measured; pool-bounds was captured
-// only in its earlier revision, and the revised form has not run; null-out was
-// captured incomplete. Cases 102-103 have not run on hardware.
+// hle-audio-src (PSP-HLE-AUDIO-SRC-001), hle-timer-order
+// (PSP-HLE-TIMER-ORDER-001) and hle-savedata (PSP-HLE-SAVEDATA-001). Cases 97-101
+// have recorded PSP-3000 runs from 2026-10-15: the VTimer and power cases were
+// measured; pool-bounds was captured only in its earlier revision, and the revised
+// form has not run; null-out was captured incomplete. Cases 102-103 were measured on
+// 2026-10-15 (docs/HARDWARE_ORACLE.md). Case 104, hle-savedata, has not run on
+// hardware; it is the one case that changes console state: it makes, rewrites and
+// then deletes its own two saves (game name NKPROBE01) on the Memory Stick.
 // Their pass rule is machinery only: a record is PASS when its calls completed and were
 // recorded in order, and SKIP only when the object a cell needs (a timer, pool or
 // block UID) was not obtained. A fixed-pool delete after a refused create is PASS
@@ -44,6 +47,8 @@
 #include <psphprm.h>
 #include <pspctrl.h>
 #include <psputility_sysparam.h>
+#include <psputility.h>
+#include <pspdisplay.h>
 #include <pspge.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -71,6 +76,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_NULL_OUT_POINTERS 101
 #define HLE_CASE_AUDIO_SRC 102
 #define HLE_CASE_TIMER_ORDER 103
+#define HLE_CASE_SAVEDATA 104
 
 #if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
 #define HLE_CAMPAIGN_ID "hle-kernel-status"
@@ -128,6 +134,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "hle-timer-order"
 #define HLE_TEST_ID "PSP-HLE-TIMER-ORDER-001"
 #define HLE_LOG "host0:/hle_timer_order_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_SAVEDATA
+#define HLE_CAMPAIGN_ID "hle-savedata"
+#define HLE_TEST_ID "PSP-HLE-SAVEDATA-001"
+#define HLE_LOG "host0:/hle_savedata_log.txt"
 #else
 #error probe_hle_measure.c has no family for this PSP_ORACLE_CASE
 #endif
@@ -1895,6 +1905,288 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_TIMER_ORDER */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_SAVEDATA
+
+/* #1387: the savedata utility driven the way a game drives it, for what src/rt/savedata.c
+   labels UNMEASURED: what InitStart returns for an unknown mode (23) and which result the
+   dialog finishes with; which times LIST reports for a save, its directory's or its
+   PARAM.SFO's (sceIoGetstat reads both), and in which order it lists saves (SLOTB is made
+   before SLOTA, and its PARAM.SFO is rewritten after both); and what ShutdownStart returns
+   while the dialog is still starting. The probe owns every save it touches: game name
+   NKPROBE01, saves SLOTA and SLOTB under ms0:/PSP/SAVEDATA, made with MAKEDATA, rewritten
+   with WRITEDATA and removed with DELETEDATA at the end. None of these modes shows a
+   dialog, no button is pressed, and no secure mode (MAKEDATASECURE or another) is used.
+   The parameter block is a raw 0x600-byte SceUtilitySavedataParam built by offset, at the
+   offsets src/rt/savedata.c reads (its SDP_* enum).
+
+   Each dialog runs as in a game's frame loop, at most HLE_SD_POLL_VBLANKS polls one vblank
+   apart: GetStatus; Update(1) when RUNNING; ShutdownStart once FINISHED; done when NONE
+   follows an accepted ShutdownStart. A dialog not done by the bound is recorded with the
+   TIMEOUT outcome and makes COMPLETE report FAIL, because the utility may still be using
+   the probe's block. Dialog record words (result is InitStart's return):
+     out0 the common result word (block + 0x1c, preset to HLE_SENTINEL) after the dialog
+     out1 the GetStatus values, one nibble per change, the first change in the highest
+          nibble (0-4 as returned, 0xE for any other value; the first eight changes)
+     out2 the number of changes, out3 the number of GetStatus polls
+     out4 the outcome: 0 NONE after an accepted ShutdownStart, 1 TIMEOUT, 2 InitStart
+          refused (one GetStatus sample, then no Update or ShutdownStart)
+     out5, out6 the first and second ShutdownStart returns (HLE_SENTINEL when not called)
+     out7 the last GetStatus return, out8 the number of Update calls */
+#define HLE_SD_PARAM_BYTES 0x600u
+#define HLE_SD_MODE_LIST 11u
+#define HLE_SD_MODE_MAKEDATA 14u
+#define HLE_SD_MODE_WRITEDATA 18u
+#define HLE_SD_MODE_DELETEDATA 21u
+#define HLE_SD_MODE_UNKNOWN 23u
+#define HLE_SD_STATUS_NONE 0
+#define HLE_SD_STATUS_RUNNING 2
+#define HLE_SD_STATUS_FINISHED 3
+#define HLE_SD_POLL_VBLANKS 360u
+#define HLE_SD_SETTLE_US 2500000u
+#define HLE_SD_DATA_BYTES 4u
+#define HLE_SD_DATA_SLOTB_MAKE 0x31424B4Eu
+#define HLE_SD_DATA_SLOTA_MAKE 0x31414B4Eu
+#define HLE_SD_DATA_SLOTB_WRITE 0x32424B4Eu
+#define HLE_SD_LIST_ROWS 4u
+#define HLE_SD_ENTRY_BYTES 72u
+#define HLE_SD_DIALOG_WORDS 9u
+#define HLE_SD_LIST_WORDS 26u
+#define HLE_SD_STAT_WORDS 4u
+#define HLE_SD_SHUTDOWN_SLOTS 2u
+#define HLE_SD_SEQ_NIBBLES 8u
+#define HLE_SD_OUTCOME_COMPLETE 0u
+#define HLE_SD_OUTCOME_TIMEOUT 1u
+#define HLE_SD_OUTCOME_INIT_REFUSED 2u
+#define HLE_SD_GAME_NAME "NKPROBE01"
+#define HLE_SD_SAVE_ROOT "ms0:/PSP/SAVEDATA/" HLE_SD_GAME_NAME
+_Static_assert(HLE_SD_LIST_WORDS == HLE_SD_DIALOG_WORDS + 1u + 4u * HLE_SD_LIST_ROWS,
+               "a LIST record is the dialog words, resultCount and four words per row");
+
+static uint8_t s_hle_sd_param[HLE_SD_PARAM_BYTES] __attribute__((aligned(64)));
+static uint8_t s_hle_sd_data[HLE_SD_DATA_BYTES] __attribute__((aligned(64)));
+/* SceUtilitySavedataIdListInfo: maxCount, resultCount, entries. */
+static uint32_t s_hle_sd_id_list[3] __attribute__((aligned(16)));
+/* SceUtilitySavedataIdListEntry, 72 bytes: st_mode, then ctime at +4, atime at +20 and
+   mtime at +36 (16-byte ScePspDateTime each), then name[20] at +52. */
+static uint8_t s_hle_sd_entries[HLE_SD_LIST_ROWS * HLE_SD_ENTRY_BYTES] __attribute__((aligned(64)));
+static uint32_t s_hle_sd_timeouts;
+
+static void hle_sd_put32(uint32_t offset, uint32_t value)
+{
+    memcpy(s_hle_sd_param + offset, &value, sizeof(value));
+}
+
+static uint32_t hle_sd_get32(uint32_t offset)
+{
+    uint32_t value;
+    memcpy(&value, s_hle_sd_param + offset, sizeof(value));
+    return value;
+}
+
+/* A NUL-terminated text into a zeroed field; every text here is shorter than its field. */
+static void hle_sd_put_text(uint32_t offset, const char *text)
+{
+    memcpy(s_hle_sd_param + offset, text, strlen(text) + 1u);
+}
+
+/* The block one dialog reads. A field not set here is zero: no icons, no secure key, no
+   file or size list. A MAKEDATA or WRITEDATA writes `data_word` as its 4-byte DATA.BIN;
+   a LIST also gets the probe-owned idList, its rows prefilled with 0xA5. */
+static void hle_sd_param(uint32_t mode, const char *save_name, uint32_t data_word,
+                         int with_data, int with_list)
+{
+    memset(s_hle_sd_param, 0, sizeof(s_hle_sd_param));
+    hle_sd_put32(0x00u, HLE_SD_PARAM_BYTES); /* common size */
+    hle_sd_put32(0x04u, 1u);                 /* language: English */
+    hle_sd_put32(0x08u, 1u);                 /* buttonSwap: cross accepts */
+    hle_sd_put32(0x0cu, 17u);                /* graphics thread priority */
+    hle_sd_put32(0x10u, 19u);                /* access thread priority */
+    hle_sd_put32(0x14u, 18u);                /* font thread priority */
+    hle_sd_put32(0x18u, 16u);                /* sound thread priority */
+    hle_sd_put32(0x1cu, HLE_SENTINEL);       /* common result: an unwritten word shows */
+    hle_sd_put32(0x30u, mode);
+    hle_sd_put_text(0x3cu, HLE_SD_GAME_NAME);
+    hle_sd_put_text(0x4cu, save_name);
+    hle_sd_put_text(0x64u, "DATA.BIN");
+    if (with_data) {
+        memcpy(s_hle_sd_data, &data_word, sizeof(s_hle_sd_data));
+        hle_sd_put32(0x74u, (uint32_t)(uintptr_t)s_hle_sd_data); /* dataBuf */
+        hle_sd_put32(0x78u, HLE_SD_DATA_BYTES);                 /* dataBufSize */
+        hle_sd_put32(0x7cu, HLE_SD_DATA_BYTES);                 /* dataSize */
+    }
+    hle_sd_put_text(0x80u, "Nakagawa oracle probe");            /* PARAM.SFO TITLE */
+    hle_sd_put_text(0x100u, save_name);                         /* SAVEDATA_TITLE */
+    hle_sd_put_text(0x180u, "Probe-owned save, deleted by the probe"); /* SAVEDATA_DETAIL */
+    hle_sd_put32(0x580u, 1u);                                   /* parental level */
+    if (with_list) {
+        memset(s_hle_sd_entries, 0xA5, sizeof(s_hle_sd_entries));
+        s_hle_sd_id_list[0] = HLE_SD_LIST_ROWS;
+        s_hle_sd_id_list[1] = HLE_SENTINEL;
+        s_hle_sd_id_list[2] = (uint32_t)(uintptr_t)s_hle_sd_entries;
+        hle_sd_put32(0x5f4u, (uint32_t)(uintptr_t)s_hle_sd_id_list); /* idList */
+    }
+}
+
+static uint32_t hle_sd_nibble(int status)
+{
+    return (status >= 0 && status <= 4) ? (uint32_t)status : 0xEu;
+}
+
+/* One dialog on the block hle_sd_param built: fills the HLE_SD_DIALOG_WORDS words above and
+   returns InitStart's return. With `early_shutdown`, ShutdownStart follows InitStart at
+   once; its return is out5, and a FINISHED dialog still gets its own ShutdownStart. */
+static int hle_sd_run(const char *step, int early_shutdown, uint32_t *words)
+{
+    for (uint32_t i = 0; i < HLE_SD_DIALOG_WORDS; i++) {
+        words[i] = 0;
+    }
+    words[5] = HLE_SENTINEL;
+    words[6] = HLE_SENTINEL;
+    uint32_t shutdowns = 0;
+    int accepted = 0;
+    int finish_shutdown = 0;
+    hle_step(step);
+    const int init = sceUtilitySavedataInitStart((SceUtilitySavedataParam *)(void *)s_hle_sd_param);
+    if (early_shutdown && init >= 0) {
+        const int rc = sceUtilitySavedataShutdownStart();
+        words[5] = (uint32_t)rc;
+        shutdowns = 1;
+        accepted = rc >= 0;
+    }
+    uint32_t outcome = init >= 0 ? HLE_SD_OUTCOME_TIMEOUT : HLE_SD_OUTCOME_INIT_REFUSED;
+    const uint32_t bound = init >= 0 ? HLE_SD_POLL_VBLANKS : 1u;
+    int last = 0;
+    for (uint32_t i = 0; i < bound; i++) {
+        const int status = sceUtilitySavedataGetStatus();
+        words[3]++;
+        words[7] = (uint32_t)status;
+        if (i == 0 || status != last) {
+            if (words[2] < HLE_SD_SEQ_NIBBLES) {
+                words[1] = (words[1] << 4) | hle_sd_nibble(status);
+            }
+            words[2]++;
+            last = status;
+        }
+        if (init < 0) {
+            break;
+        }
+        if (status == HLE_SD_STATUS_RUNNING) {
+            sceUtilitySavedataUpdate(1);
+            words[8]++;
+        } else if (status == HLE_SD_STATUS_FINISHED && !finish_shutdown &&
+                   shutdowns < HLE_SD_SHUTDOWN_SLOTS) {
+            const int rc = sceUtilitySavedataShutdownStart();
+            words[5 + shutdowns] = (uint32_t)rc;
+            shutdowns++;
+            finish_shutdown = 1;
+            accepted = accepted || rc >= 0;
+        } else if (status == HLE_SD_STATUS_NONE && accepted) {
+            outcome = HLE_SD_OUTCOME_COMPLETE;
+            break;
+        }
+        (void)sceDisplayWaitVblankStart();
+    }
+    if (outcome == HLE_SD_OUTCOME_TIMEOUT) {
+        s_hle_sd_timeouts++;
+    }
+    words[0] = hle_sd_get32(0x1cu);
+    words[4] = outcome;
+    return init;
+}
+
+static void hle_sd_dialog(const char *case_id, uint32_t mode, const char *save_name,
+                          uint32_t data_word, int with_data, int early_shutdown)
+{
+    uint32_t words[HLE_SD_DIALOG_WORDS];
+    hle_sd_param(mode, save_name, data_word, with_data, mode == HLE_SD_MODE_LIST);
+    const int init = hle_sd_run(case_id, early_shutdown, words);
+    hle_record(case_id, "PASS", (uint32_t)init, words, HLE_SD_DIALOG_WORDS);
+}
+
+/* One ScePspDateTime (u16 year, month, day, hour, minute, second; u32 microsecond) as
+   one word: the day of the month in bits 24-31 and the second of the day (hour * 3600 +
+   minute * 60 + second) in bits 0-16. A field that is not a time of day, such as the
+   0xA5 prefill, reads as HLE_SENTINEL. */
+static uint32_t hle_sd_time(const uint8_t *field)
+{
+    uint16_t v[6];
+    memcpy(v, field, sizeof(v));
+    if (v[2] > 0xFFu || v[3] > 23u || v[4] > 59u || v[5] > 59u) {
+        return HLE_SENTINEL;
+    }
+    return ((uint32_t)v[2] << 24) | ((uint32_t)v[3] * 3600u + (uint32_t)v[4] * 60u + v[5]);
+}
+
+/* LIST with the saveName pattern "*" and maxCount HLE_SD_LIST_ROWS: the dialog words,
+   then resultCount, then for each of the four rows in row order its name's first and fifth
+   bytes (name[0] << 8 | name[4]: 0x5341 for SLOTA if a row holds the save name only) and
+   its created, accessed and modified times. A row the utility did not write keeps its
+   0xA5 prefill: 0xA5A5 and three HLE_SENTINEL words. */
+static void hle_sd_list(const char *case_id)
+{
+    uint32_t out[HLE_SD_LIST_WORDS];
+    hle_sd_param(HLE_SD_MODE_LIST, "*", 0u, 0, 1);
+    const int init = hle_sd_run(case_id, 0, out);
+    out[HLE_SD_DIALOG_WORDS] = s_hle_sd_id_list[1];
+    for (uint32_t row = 0; row < HLE_SD_LIST_ROWS; row++) {
+        const uint8_t *entry = s_hle_sd_entries + row * HLE_SD_ENTRY_BYTES;
+        uint32_t *cell = out + HLE_SD_DIALOG_WORDS + 1u + row * 4u;
+        cell[0] = ((uint32_t)entry[52] << 8) | entry[56];
+        cell[1] = hle_sd_time(entry + 4);
+        cell[2] = hle_sd_time(entry + 20);
+        cell[3] = hle_sd_time(entry + 36);
+    }
+    hle_record(case_id, "PASS", (uint32_t)init, out, HLE_SD_LIST_WORDS);
+}
+
+/* sceIoGetstat of a probe-owned path: st_mode and the created, accessed and modified times
+   in the LIST encoding, from a stat prefilled with 0xA5. */
+static void hle_sd_getstat(const char *case_id, const char *path)
+{
+    SceIoStat st;
+    memset(&st, 0xA5, sizeof(st));
+    hle_step(case_id);
+    const int rc = sceIoGetstat(path, &st);
+    const uint32_t out[HLE_SD_STAT_WORDS] = {
+        (uint32_t)st.st_mode,
+        hle_sd_time((const uint8_t *)&st.sce_st_ctime),
+        hle_sd_time((const uint8_t *)&st.sce_st_atime),
+        hle_sd_time((const uint8_t *)&st.sce_st_mtime),
+    };
+    hle_record(case_id, "PASS", (uint32_t)rc, out, HLE_SD_STAT_WORDS);
+}
+
+/* A gap longer than the 2 s FAT modification-time step, so each save's times differ. */
+static void hle_sd_settle(const char *step)
+{
+    hle_step(step);
+    (void)sceKernelDelayThread(HLE_SD_SETTLE_US);
+}
+
+static int hle_run(void)
+{
+    hle_sd_dialog("mode-23", HLE_SD_MODE_UNKNOWN, "SLOTA", 0u, 0, 0);
+    hle_sd_dialog("makedata-slotb", HLE_SD_MODE_MAKEDATA, "SLOTB", HLE_SD_DATA_SLOTB_MAKE, 1, 0);
+    hle_sd_settle("settle-after-makedata-slotb");
+    hle_sd_dialog("makedata-slota", HLE_SD_MODE_MAKEDATA, "SLOTA", HLE_SD_DATA_SLOTA_MAKE, 1, 0);
+    hle_sd_settle("settle-after-makedata-slota");
+    /* SLOTB's PARAM.SFO is now newer than its directory and than SLOTA. */
+    hle_sd_dialog("writedata-slotb", HLE_SD_MODE_WRITEDATA, "SLOTB", HLE_SD_DATA_SLOTB_WRITE, 1,
+                  0);
+    hle_sd_list("list");
+    hle_sd_getstat("getstat-slota-dir", HLE_SD_SAVE_ROOT "SLOTA");
+    hle_sd_getstat("getstat-slota-sfo", HLE_SD_SAVE_ROOT "SLOTA/PARAM.SFO");
+    hle_sd_getstat("getstat-slotb-dir", HLE_SD_SAVE_ROOT "SLOTB");
+    hle_sd_getstat("getstat-slotb-sfo", HLE_SD_SAVE_ROOT "SLOTB/PARAM.SFO");
+    hle_sd_dialog("shutdown-during-init", HLE_SD_MODE_LIST, "*", 0u, 0, 1);
+    hle_sd_dialog("deletedata-slota", HLE_SD_MODE_DELETEDATA, "SLOTA", 0u, 0, 0);
+    hle_sd_dialog("deletedata-slotb", HLE_SD_MODE_DELETEDATA, "SLOTB", 0u, 0, 0);
+    return s_hle_sd_timeouts == 0u;
+}
+
+#endif /* HLE_CASE_SAVEDATA */
 
 /* ------------------------------------------------------------------------- */
 

@@ -1262,6 +1262,58 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-HLE-SAVEDATA-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware capture exists. It is built from fixtures/psp_oracle/probe_hle_measure.c as hle_savedata.prx and its stream is strictly parsed (12 records and the done record). Its cells are machinery-only: PASS when the calls completed and were recorded; no cell is SKIP. A dialog still running at its poll bound is recorded with the TIMEOUT outcome and makes the COMPLETE line FAIL. Every returned value is an observation and is UNMEASURED for the console. Runs as a single launch, not in the campaign queue.",
+        "group": "system",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_savedata.prx",
+        "apis": [
+          "sceDisplayWaitVblankStart",
+          "sceIoClose",
+          "sceIoGetstat",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDelayThread",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "sceUtilitySavedataGetStatus",
+          "sceUtilitySavedataInitStart",
+          "sceUtilitySavedataShutdownStart",
+          "sceUtilitySavedataUpdate"
+        ],
+        "diagnostic_case_ids": [
+          "hle-savedata"
+        ],
+        "case_ids": [
+          "mode-23",
+          "makedata-slotb",
+          "makedata-slota",
+          "writedata-slotb",
+          "list",
+          "getstat-slota-dir",
+          "getstat-slota-sfo",
+          "getstat-slotb-dir",
+          "getstat-slotb-sfo",
+          "shutdown-during-init",
+          "deletedata-slota",
+          "deletedata-slotb",
+          "hle-savedata-done"
+        ],
+        "invariant": "The savedata utility driven as a game drives it, under the probe-owned game name NKPROBE01: InitStart, then GetStatus once a vblank, Update(1) while RUNNING and ShutdownStart once FINISHED, at most 360 polls. Cells: an unknown mode (23); MAKEDATA of SLOTB, then of SLOTA 2.5 s later; WRITEDATA of SLOTB 2.5 s after that; LIST with the pattern * and maxCount 4 (resultCount, each row's name bytes 0 and 4, and its created, accessed and modified times as day-of-month and second-of-day); sceIoGetstat of each save directory and its PARAM.SFO in the same encoding; ShutdownStart straight after a LIST InitStart; DELETEDATA of both saves. Each dialog records InitStart's return, the common result word, the status sequence, the poll count and the outcome.",
+        "issues": [
+          1387
+        ],
+        "risk": "medium; writes, rewrites and then deletes two probe-owned saves (ms0:/PSP/SAVEDATA/NKPROBE01SLOTA and NKPROBE01SLOTB) and touches no other save; no secure mode, no dialog UI and no button press; each of the eight dialogs is polled at most 360 vblanks (about 6 s), so a launch can take about a minute: run it with a runner --timeout of at least 120 s; a save left by an interrupted launch changes the MAKEDATA cells of the next one",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-HLE-ISSUES-001",
         "status": "implemented",
         "hardware_evidence": "NOT_RUN",
