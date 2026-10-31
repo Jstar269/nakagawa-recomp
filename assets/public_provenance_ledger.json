@@ -2776,6 +2776,17 @@
       }
     },
     {
+      "path": "fixtures/psp_oracle/probe_kernel_semantics.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "kernel-semantics-probe-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "fixtures/psp_oracle/probe_module_start.c",
       "classification": "project_authored_attested",
       "evidence": {
