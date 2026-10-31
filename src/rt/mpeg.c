@@ -16,8 +16,9 @@
  * runs and *completes* identically. AVC pictures are decoded through the backend-neutral
  * sr_h264.h seam by whichever decoder the build selected; sceMpegAvcDecode clears the
  * destination until the first picture arrives, and without a usable decoder it fails closed
- * with the backend-unavailable error. ATRAC audio is not decoded here: sceMpegAtracDecode only
- * advances the audio clock.
+ * with the backend-unavailable error. The registered ATRAC3+ stream is demultiplexed from the
+ * same ring packets and decoded by the project's ATRAC3+ bridge, one frame per sceMpegAtracDecode
+ * (see "ATRAC3+ access units" below); the audio AU clock stays the media-engine model.
  *
  * This file is GPL-2.0-or-later because it is derived from PPSSPP; that licence covers this
  * runtime source only and says nothing about the user's game.
@@ -28,6 +29,8 @@
 #endif
 #include "recomp.h"
 #include "sr_h264.h"
+#include "psmf_producer.h"
+#include "atrac3p_bridge.h"
 /* Outside the SR_SDL3VK guard on purpose: call_guest3() is unconditional, so a
  * declaration that only exists in the SDL3 build is an implicit-declaration
  * error in every other one (portable-core caught exactly that). */
@@ -55,6 +58,7 @@
 
 #define MPEG_AVC_ES_SIZE   2048
 #define MPEG_ATRAC_ES_SIZE 2112
+#define MPEG_ATRAC_ES_OUTPUT_SIZE 8192u   /* 2048 stereo s16 samples per sceMpegAtracDecode */
 #define MPEG_PCM_ES_SIZE   320
 #define MPEG_PCM_OUTPUT_SIZE 320
 
@@ -130,6 +134,7 @@ static int rb_read_valid(uint32_t ring, RingState *out, int writable) {
 }
 
 /* ---- host-side MPEG context, keyed by guest mpeg handle ---- */
+#define MPEG_ATRAC_FIFO_DEPTH 64u   /* demuxed ATRAC3+ frames waiting for GetAtracAu (~3 s) */
 typedef struct {
     int used;
     uint32_t handle;            /* the value stored at *mpegAddr (dataPtr+0x30) */
@@ -156,6 +161,23 @@ typedef struct {
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
     /* stream map: small fixed table sid -> (type,num,needsReset,auMode) */
     struct { int used, type, num, needsReset, auMode; uint32_t sid; } streams[8];
+    /* ATRAC3+ access units: the header's channel count per audio stream, an audio-only demux of
+     * the fed ring bytes, its frames waiting in a FIFO, the frame GetAtracAu holds for the next
+     * AtracDecode, and the decoder. */
+    uint8_t audioChannelsByStream[16];
+    uint32_t audioStreamsInHeader;
+    int audioStreamNum;          /* the registered ATRAC stream (its PS1 sub-stream id) */
+    SrPsmfProducer *audioDemux;
+    int audioDemuxFailed, audioDemuxEos;
+    uint32_t audioFedPackets;    /* ring packets fed to the demux since it (re)started */
+    struct { uint8_t *data; uint32_t bytes; } audioFifo[MPEG_ATRAC_FIFO_DEPTH];
+    uint32_t audioFifoHead, audioFifoCount;
+    uint8_t *audioHeld;
+    uint32_t audioHeldBytes;
+    Atrac3pBridge *atrac;
+    int atracAlign, atracChannels;
+    int16_t *audioPcm;
+    uint64_t audioAusOut, audioDecoded, audioRejected, audioSkipped;
 } Mpeg;
 
 static Mpeg s_mpeg[8];
@@ -174,6 +196,185 @@ static Mpeg *mpeg_find(uint32_t mpegAddr) {
  * frame policy with hle.c's GE marshallers: a per-owner, per-depth frame out of
  * the reserved region. The rest of the marshalling is zeroed state, inherited
  * $gp, $ra = 0, 0xe4 VFPU prefixes and a full caller restore. */
+/* ---- ATRAC3+ access units (sceMpegGetAtracAu / sceMpegAtracDecode) ----
+ * Registering an ATRAC stream opens an audio-only streaming PSMF producer over the ring packets
+ * the game feeds: RingbufferPut hands it the same bytes as the H.264 demux.  Its frames (one
+ * ATRAC3+ frame per access unit: an 8-byte 0x0FD0 header, then the frame) wait in a bounded FIFO.
+ * GetAtracAu holds the next one for the following AtracDecode, which decodes it with the
+ * project's ATRAC3+ bridge into the guest's 8192-byte block (2048 stereo s16 samples; a mono
+ * stream is duplicated into both channels, as the host player does).  With no frame ready
+ * GetAtracAu reports NO_DATA, and AtracDecode without a held frame, or with a frame the decoder
+ * refuses, returns an error: no block is filled with silence that no decoder produced.  The AU
+ * clock is the media-engine model as before (firstTimestamp + 4180 per decoded block). */
+void sr_psmf_av_note_audio_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid);
+static uint32_t mpeg_contract_error(const char *api, const char *boundary, uint32_t error);
+
+static void mpeg_audio_report(Mpeg *ctx, const char *what) {
+    static int reported;
+    if (reported) return;
+    reported = 1;
+    const char *why = ctx && ctx->audioDemux ? sr_psmf_producer_fail_reason(ctx->audioDemux) : NULL;
+    fprintf(stderr, "MPEG_ATRAC: %s%s%s\n", what, why ? ": " : "", why ? why : "");
+}
+
+static void mpeg_audio_fifo_clear(Mpeg *ctx) {
+    while (ctx->audioFifoCount) {
+        free(ctx->audioFifo[ctx->audioFifoHead].data);
+        ctx->audioFifo[ctx->audioFifoHead].data = NULL;
+        ctx->audioFifoHead = (ctx->audioFifoHead + 1u) % MPEG_ATRAC_FIFO_DEPTH;
+        ctx->audioFifoCount--;
+    }
+    ctx->audioFifoHead = 0;
+    free(ctx->audioHeld);
+    ctx->audioHeld = NULL;
+    ctx->audioHeldBytes = 0;
+}
+
+static void mpeg_audio_close(Mpeg *ctx) {
+    if (!ctx) return;
+    mpeg_audio_fifo_clear(ctx);
+    sr_psmf_producer_close(ctx->audioDemux);
+    ctx->audioDemux = NULL;
+    atrac3p_bridge_destroy(ctx->atrac);
+    ctx->atrac = NULL;
+    ctx->atracAlign = ctx->atracChannels = 0;
+    free(ctx->audioPcm);
+    ctx->audioPcm = NULL;
+    ctx->audioDemuxFailed = ctx->audioDemuxEos = 0;
+    ctx->audioFedPackets = 0;
+}
+
+/* The registered stream's frames carry PS1 sub-stream id 0x00 + its number. */
+static void mpeg_audio_open(Mpeg *ctx, int streamNum) {
+    mpeg_audio_close(ctx);
+    ctx->audioStreamNum = streamNum;
+    ctx->audioDemux = sr_psmf_producer_open_stream(0);
+    if (streamNum < 0 || streamNum > 0x0f || !ctx->audioDemux ||
+        !sr_psmf_producer_select_streams(ctx->audioDemux, SR_PSMF_STREAM_NONE, 0)) {
+        ctx->audioDemuxFailed = 1;
+        mpeg_audio_report(ctx, "the registered ATRAC stream cannot be demultiplexed");
+    }
+}
+
+/* The game refills the ring from another position (sceMpegFlushAllStream). */
+static void mpeg_audio_restart(Mpeg *ctx) {
+    if (!ctx || !ctx->audioDemux) return;
+    mpeg_audio_fifo_clear(ctx);
+    sr_psmf_producer_reset(ctx->audioDemux);
+    if (ctx->atrac) (void)atrac3p_bridge_reset(ctx->atrac);
+    ctx->audioDemuxFailed = sr_psmf_producer_failed(ctx->audioDemux);
+    ctx->audioDemuxEos = 0;
+    ctx->audioFedPackets = 0;
+}
+
+/* Parse what the demux holds and move the registered stream's frames into the FIFO until it is
+ * full; the demux keeps the remaining bytes until GetAtracAu makes room.  Each round parses a
+ * bounded number of elements and stops once the parser makes no progress. */
+static void mpeg_audio_pump(Mpeg *ctx) {
+    if (!ctx->audioDemux || ctx->audioDemuxFailed) return;
+    while (ctx->audioFifoCount < MPEG_ATRAC_FIFO_DEPTH) {
+        SrPsmfAu au;
+        if (sr_psmf_producer_pop(ctx->audioDemux, SR_PSMF_AU_AUDIO, &au)) {
+            if (au.stream_id != (uint8_t)ctx->audioStreamNum || !au.data || !au.size) {
+                ctx->audioSkipped++;
+                sr_psmf_au_release(&au);
+                continue;
+            }
+            uint8_t *copy = (uint8_t *)malloc(au.size);
+            if (!copy) {
+                sr_psmf_au_release(&au);
+                ctx->audioDemuxFailed = 1;
+                mpeg_audio_report(ctx, "no host memory for an ATRAC frame");
+                return;
+            }
+            memcpy(copy, au.data, au.size);
+            uint32_t tail = (ctx->audioFifoHead + ctx->audioFifoCount) % MPEG_ATRAC_FIFO_DEPTH;
+            ctx->audioFifo[tail].data = copy;
+            ctx->audioFifo[tail].bytes = au.size;
+            ctx->audioFifoCount++;
+            ctx->audioAusOut++;
+            sr_psmf_au_release(&au);
+            continue;
+        }
+        uint64_t before = sr_psmf_producer_stream_cursor(ctx->audioDemux);
+        int produced = sr_psmf_producer_pump(ctx->audioDemux, 64u);
+        if (sr_psmf_producer_failed(ctx->audioDemux)) {
+            ctx->audioDemuxFailed = 1;
+            mpeg_audio_report(ctx, "the ATRAC stream could not be demultiplexed");
+            return;
+        }
+        if (produced <= 0 && sr_psmf_producer_stream_cursor(ctx->audioDemux) == before) return;
+    }
+}
+
+static void mpeg_audio_feed(Mpeg *ctx, const uint8_t *bytes, uint32_t len) {
+    if (!ctx->audioDemux || ctx->audioDemuxFailed || ctx->audioDemuxEos) return;
+    if (sr_psmf_producer_feed_stream(ctx->audioDemux, bytes, len, 0) < 0) {
+        ctx->audioDemuxFailed = 1;
+        mpeg_audio_report(ctx, "the ATRAC stream demux refused the fed packets");
+        return;
+    }
+    ctx->audioFedPackets += len / MPEG_PACKET_SIZE;
+    if (ctx->totalPackets && ctx->audioFedPackets >= ctx->totalPackets) {
+        /* The whole movie has been fed since the demux (re)started: it may close its last frame. */
+        ctx->audioDemuxEos = 1;
+        if (sr_psmf_producer_feed_stream(ctx->audioDemux, NULL, 0, 1) < 0) {
+            ctx->audioDemuxFailed = 1;
+            mpeg_audio_report(ctx, "the ATRAC stream ended inside an incomplete packet");
+            return;
+        }
+    }
+    mpeg_audio_pump(ctx);
+}
+
+/* Decode one held frame into ctx->audioPcm as 2048 stereo samples.  Returns 0 or the error the
+ * caller reports. */
+static uint32_t mpeg_audio_decode_frame(Mpeg *ctx, const uint8_t *frame, uint32_t bytes, uint32_t init) {
+    if (bytes <= 8u || frame[0] != 0x0fu || frame[1] != 0xd0u)
+        return mpeg_contract_error("sceMpegAtracDecode", "the access unit is not an ATRAC3+ frame",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    uint32_t frame_size = (uint32_t)(((frame[2] & 3u) << 8) | ((uint32_t)frame[3] * 8u)) + 0x10u;
+    if (frame_size != bytes)
+        return mpeg_contract_error("sceMpegAtracDecode", "the frame header disagrees with the access unit",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    int channels = ctx->audioStreamNum >= 0 && (uint32_t)ctx->audioStreamNum < 16u
+                       ? ctx->audioChannelsByStream[ctx->audioStreamNum] : 0;
+    if (channels < 1 || channels > 2)
+        return mpeg_contract_error("sceMpegAtracDecode", "the PSMF header gives no mono or stereo channel count",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    int data = (int)(frame_size - 8u);
+    if (!ctx->atrac || ctx->atracAlign != data || ctx->atracChannels != channels) {
+        atrac3p_bridge_destroy(ctx->atrac);
+        ctx->atrac = NULL;
+        if (atrac3p_bridge_create(channels, data, &ctx->atrac) != 0) {
+            ctx->atrac = NULL;
+            return mpeg_contract_error("sceMpegAtracDecode", "no ATRAC3+ decoder for this frame size",
+                                       SCE_MPEG_ERROR_INVALID_VALUE);
+        }
+        ctx->atracAlign = data;
+        ctx->atracChannels = channels;
+    } else if (init) {
+        (void)atrac3p_bridge_reset(ctx->atrac);
+    }
+    if (!ctx->audioPcm &&
+        !(ctx->audioPcm = (int16_t *)malloc(MPEG_ATRAC_ES_OUTPUT_SIZE)))
+        return mpeg_contract_error("sceMpegAtracDecode", "no host memory for the decoded block",
+                                   SCE_MPEG_ERROR_NO_MEMORY);
+    int samples = 0;
+    if (atrac3p_bridge_decode(ctx->atrac, frame + 8, data, ctx->audioPcm, &samples) != 0 ||
+        samples != (int)(MPEG_ATRAC_ES_OUTPUT_SIZE / 4u)) {
+        ctx->audioRejected++;
+        return mpeg_contract_error("sceMpegAtracDecode", "the ATRAC3+ frame did not decode to one block",
+                                   SCE_MPEG_ERROR_INVALID_VALUE);
+    }
+    if (channels == 1)
+        for (int i = samples - 1; i >= 0; i--) {
+            ctx->audioPcm[i * 2] = ctx->audioPcm[i];
+            ctx->audioPcm[i * 2 + 1] = ctx->audioPcm[i];
+        }
+    return 0;
+}
+
 static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
     uint32_t frame_sp = 0;
     int frame = -1;
@@ -266,6 +467,27 @@ static void analyze(uint32_t buffer, Mpeg *ctx) {
               ctx->streamWidth <= MPEG_MAX_DIMENSION && ctx->streamHeight <= MPEG_MAX_DIMENSION))
             ctx->streamWidth = ctx->streamHeight = 0;
     }
+    /* The stream table at 0x80: a 16-bit count, then 16-byte entries; an audio entry carries
+     * its ATRAC3+ channel count at byte 14 (what scePsmfGetAudioInfo reports). */
+    memset(ctx->audioChannelsByStream, 0, sizeof(ctx->audioChannelsByStream));
+    ctx->audioStreamsInHeader = 0;
+    if (sr_guest_span_readable(buffer, 0x82u)) {
+        uint32_t streams = ((uint32_t)MEM_R8(buffer + 0x80u) << 8) | MEM_R8(buffer + 0x81u);
+        uint32_t tableBytes;
+        if (streams <= 128u && u32_mul_checked(streams, 16u, &tableBytes) &&
+            sr_guest_span_readable(buffer, 0x82u + tableBytes)) {
+            for (uint32_t i = 0; i < streams; i++) {
+                uint32_t e = buffer + 0x82u + i * 16u;
+                uint32_t id = MEM_R8(e);
+                if ((id & 0xe0u) == 0xe0u) continue;
+                if ((id & 0xf0u) == 0xb0u || (id & 0xf0u) == 0xf0u || id == 0xbdu) {
+                    if (ctx->audioStreamsInHeader < 16u)
+                        ctx->audioChannelsByStream[ctx->audioStreamsInHeader] = MEM_R8(e + 14u);
+                    ctx->audioStreamsInHeader++;
+                }
+            }
+        }
+    }
     ctx->fedPackets = 0;
     /* Whole-movie packet count from the PSMF stream size; the movie ends when the game has fed
      * this many packets into the ring and they have been consumed (real EOF, not a header
@@ -313,7 +535,10 @@ uint32_t mpeg_finish(void) {
         s_mpeg[i].h264 = -1;
     }
 #endif
-    for (int i = 0; i < 8; i++) if (s_mpeg[i].used) ycbcr_reset_mpeg(s_mpeg[i].guestAddr);
+    for (int i = 0; i < 8; i++) if (s_mpeg[i].used) {
+        ycbcr_reset_mpeg(s_mpeg[i].guestAddr);
+        mpeg_audio_close(&s_mpeg[i]);
+    }
     memset(s_mpeg, 0, sizeof(s_mpeg));
     s_mpegInit = 0;
     return 0;
@@ -397,6 +622,7 @@ uint32_t mpeg_delete(uint32_t mpegAddr) {
     if (ctx->h264 >= 0) { sr_h264_destroy(ctx->h264); ctx->h264 = -1; }
 #endif
     ycbcr_reset_mpeg(ctx->guestAddr);
+    mpeg_audio_close(ctx);
     ctx->used = 0;
     return 0;
 }
@@ -428,7 +654,10 @@ uint32_t mpeg_regist_stream(uint32_t mpegAddr, uint32_t streamType, uint32_t str
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     if (streamType == MPEG_AVC_STREAM) ctx->avcRegistered = 1;
-    else if (streamType == MPEG_ATRAC_STREAM || streamType == MPEG_AUDIO_STREAM) ctx->atracRegistered = 1;
+    else if (streamType == MPEG_ATRAC_STREAM || streamType == MPEG_AUDIO_STREAM) {
+        ctx->atracRegistered = 1;
+        mpeg_audio_open(ctx, (int)streamNum);
+    }
     uint32_t sid = s_streamIdGen++;
     for (int i = 0; i < 8; i++) if (!ctx->streams[i].used) {
         ctx->streams[i].used = 1; ctx->streams[i].type = (int)streamType;
@@ -478,6 +707,8 @@ uint32_t mpeg_init_au(uint32_t mpegAddr, uint32_t esBuffer, uint32_t auAddr) {
 uint32_t mpeg_unregist_stream(uint32_t mpegAddr, uint32_t sid) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (ctx) for (int i = 0; i < 8; i++) if (ctx->streams[i].used && ctx->streams[i].sid == sid) {
+        if (ctx->streams[i].type == MPEG_ATRAC_STREAM || ctx->streams[i].type == MPEG_AUDIO_STREAM)
+            mpeg_audio_close(ctx);
         ctx->streams[i].used = 0;
         ctx->streams[i].auMode = MPEG_AU_MODE_DECODE;
     }
@@ -559,6 +790,7 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
                 ctx->h264DemuxFailed = 1;
         }
 #endif
+        if (ctx && got) mpeg_audio_feed(ctx, (const uint8_t *)SR_HOST(dst), gotBytes);
 
         addedTotal += got;
         writePos = (got == total - writePos) ? 0 : writePos + got;
@@ -676,6 +908,8 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     if (!ctx) return (uint32_t)-1;
     uint32_t ring = ctx->ringAddr;
     if (!ring) return (uint32_t)-1;
+    if (!auAddr || (auAddr & 3u) || !sr_guest_span_writable(auAddr, 24u))
+        return mpeg_contract_error("sceMpegGetAtracAu", "invalid AU pointer", (uint32_t)-1);
     int needsReset = 0, num = 0;
     au_stream(mpegAddr, sid, &needsReset, &num);
     /* PSP/PPSSPP's libmpeg clock uses the PSMF presentation origin for ATRAC AUs.  In
@@ -686,6 +920,26 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
      * Keep the demuxer's firstAudioPts for diagnostics, but do not substitute it for the public
      * sceMpeg AU time base. */
     int64_t pts = ctx->audioPts + ctx->firstTimestamp;
+    if (!ctx->audioHeld) {
+        mpeg_audio_pump(ctx);
+        if (ctx->audioFifoCount) {
+            ctx->audioHeld = ctx->audioFifo[ctx->audioFifoHead].data;
+            ctx->audioHeldBytes = ctx->audioFifo[ctx->audioFifoHead].bytes;
+            ctx->audioFifo[ctx->audioFifoHead].data = NULL;
+            ctx->audioFifoHead = (ctx->audioFifoHead + 1u) % MPEG_ATRAC_FIFO_DEPTH;
+            ctx->audioFifoCount--;
+        }
+    }
+    if (!ctx->audioHeld) {
+        /* No frame is demultiplexed yet, the stream has ended, or there is no ATRAC stream to
+         * demultiplex: PPSSPP's no-audio-data result, the clock as the pts and no decode time. */
+        au_write_pts(auAddr, 0, pts);
+        au_write_pts(auAddr, 8, -1);
+        if (attrAddr) MEM_W32(attrAddr, 0);
+        if (!ctx->audioDemux || ctx->audioDemuxFailed)
+            mpeg_audio_report(ctx, "sceMpegGetAtracAu has no demultiplexed ATRAC stream; reporting no data");
+        return SCE_MPEG_ERROR_NO_DATA;
+    }
     au_write_pts(auAddr, 0, pts);
     au_write_pts(auAddr, 8, pts);
     MEM_W32(auAddr + 20, MPEG_ATRAC_ES_SIZE);
@@ -693,9 +947,10 @@ uint32_t mpeg_get_atrac_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uin
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 16 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegGetAtracAu #%d pts=%lld\n", n, (long long)pts);
+            fprintf(stderr, "MpegGetAtracAu #%d pts=%lld frame=%" PRIu32 " queued=%" PRIu32 "\n",
+                    n, (long long)pts, ctx->audioHeldBytes, ctx->audioFifoCount);
     }
-    return 0;   /* audio AU available; the audio ring drains with the video at EOF */
+    return 0;
 }
 
 static int video_geometry(const Mpeg *ctx, uint32_t requestedWidth,
@@ -1185,15 +1440,35 @@ uint32_t mpeg_change_get_au_mode(uint32_t mpegAddr, uint32_t sid, uint32_t mode)
     return 0;
 }
 
+/* sceMpegAtracDecode(mpeg, au, buffer, init): decode the frame the last GetAtracAu held into the
+ * 8192-byte block at buffer; init (nonzero on a stream's first call) resets the decoder. */
 uint32_t mpeg_atrac_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufferAddr, uint32_t init) {
-    (void)auAddr; (void)bufferAddr; (void)init;
+    (void)auAddr;
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
+    if (!bufferAddr || (bufferAddr & 3u) ||
+        !sr_guest_span_writable_any_view(bufferAddr, MPEG_ATRAC_ES_OUTPUT_SIZE))
+        return mpeg_contract_error("sceMpegAtracDecode", "invalid output buffer", (uint32_t)-1);
+    if (!ctx->audioHeld)
+        return mpeg_contract_error("sceMpegAtracDecode", "no ATRAC access unit is held for decoding",
+                                   SCE_MPEG_ERROR_NO_DATA);
+    uint8_t *frame = ctx->audioHeld;
+    uint32_t bytes = ctx->audioHeldBytes;
+    ctx->audioHeld = NULL;
+    ctx->audioHeldBytes = 0;
+    uint32_t refused = mpeg_audio_decode_frame(ctx, frame, bytes, init);
+    free(frame);
+    if (refused) return refused;
+    int64_t pts = ctx->audioPts + ctx->firstTimestamp;
+    sr_guest_copy_out(bufferAddr, ctx->audioPcm, MPEG_ATRAC_ES_OUTPUT_SIZE);
+    sr_psmf_av_note_audio_delivery(bufferAddr, MPEG_ATRAC_ES_OUTPUT_SIZE, pts, 1);
     ctx->audioPts += audioTimestampStep;
+    ctx->audioDecoded++;
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 16 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAtracDecode #%d audioPts=%lld\n", n, (long long)ctx->audioPts);
+            fprintf(stderr, "MpegAtracDecode #%d pts=%lld audioPts=%lld decoded=%llu\n", n,
+                    (long long)pts, (long long)ctx->audioPts, (unsigned long long)ctx->audioDecoded);
     }
     return 0;
 }
@@ -1218,6 +1493,8 @@ uint32_t mpeg_flush_all_stream(uint32_t mpegAddr) {
         rb_set(ctx->ringAddr, RB_packetsWritePos, 0);
         rb_set(ctx->ringAddr, RB_packetsAvail, 0);
     }
+    /* The game refills the ring from a new position: the audio demux starts over with it. */
+    mpeg_audio_restart(ctx);
     return 0;
 }
 

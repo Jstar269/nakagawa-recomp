@@ -3706,6 +3706,97 @@ static void test_player_av_composited_presentation(void) {
     sr_hle_test_psmf_av_enable(0);
 }
 
+/* The sceMpeg ATRAC path a guest PSMF player drives (#286): the registered ATRAC3+ stream is
+ * demultiplexed from the ring packets, GetAtracAu hands out one frame per call, and AtracDecode
+ * writes exactly what the ATRAC3+ decoder produces for that frame.  Before any data, and after
+ * the last frame, GetAtracAu reports NO_DATA; AtracDecode with no held frame refuses and leaves
+ * the block untouched.  A flush restarts the stream. */
+static void test_mpeg_atrac_au_decode(void) {
+    enum {
+        AT_DESC = 0x09300000u, AT_DATA = 0x09310000u, AT_RING = 0x09330000u, AT_HDR = 0x09340000u,
+        AT_AU = 0x09341000u, AT_OUT = 0x09342000u, AT_ATTR = 0x09344000u, AT_OFF = 0x09344010u,
+        AT_RING_DATA = 0x09400000u,
+    };
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "mpeg-atrac: the A/V container builds"); return; }
+    const uint32_t packets = (size - 2048u + MPEG_PACKET_SIZE - 1u) / MPEG_PACKET_SIZE;
+    uint8_t frame[64];
+    uint32_t frame_bytes = make_audio_frame(frame, sizeof(frame), 0x00, 0x00, 0x00);
+    frame[8] = 0x60u;                                 /* the fixture's decodable frame */
+    Atrac3pBridge *ref = NULL;
+    int16_t ref_pcm[2 * 2048];
+    CHECK(atrac3p_bridge_create(2, (int)frame_bytes - 8, &ref) == 0 && ref,
+          "mpeg-atrac: a reference ATRAC3+ decoder for the fixture frame");
+    if (!ref) { free(image); return; }
+
+    /* A PSMF file holds whole 2048-byte packets: the fixture's program stream is completed with
+     * an MPEG padding packet (stream 0xBE), and the header gets a version sceMpeg accepts and
+     * the padded stream size. */
+    const uint32_t ps = size - 2048u;
+    const uint32_t pad = packets * MPEG_PACKET_SIZE - ps;
+    CHECK(pad == 0u || pad >= 6u, "mpeg-atrac: the tail is long enough for a padding packet");
+    memcpy(SR_HOST(AT_RING_DATA), image + 2048u, ps);
+    if (pad >= 6u) {
+        uint8_t *tail = (uint8_t *)SR_HOST(AT_RING_DATA + ps);
+        tail[0] = 0x00; tail[1] = 0x00; tail[2] = 0x01; tail[3] = 0xbe;
+        tail[4] = (uint8_t)((pad - 6u) >> 8); tail[5] = (uint8_t)(pad - 6u);
+        memset(tail + 6, 0xff, pad - 6u);
+    }
+    memcpy(SR_HOST(AT_HDR), image, 2048u);
+    memcpy(SR_HOST(AT_HDR + 4u), "0015", 4u);
+    be32_at((uint8_t *)SR_HOST(AT_HDR + 12u), packets * MPEG_PACKET_SIZE);
+    MEM_W32(AT_DESC, 0u);
+    CHECK(mpeg_ringbuffer_construct(AT_RING, packets, AT_RING_DATA, packets * MPEG_RING_BYTES_PER_PKT,
+                                    0u, 0u) == 0u &&
+              mpeg_create(AT_DESC, AT_DATA, 0x10000u, AT_RING, 512u, 0u, 0u) == 0u &&
+              mpeg_query_stream_offset(AT_DESC, AT_HDR, AT_OFF) == 0u,
+          "mpeg-atrac: the ring, the context and the header are set up");
+    uint32_t sid = mpeg_regist_stream(AT_DESC, MPEG_ATRAC_STREAM, 0u);
+    CHECK(mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == SCE_MPEG_ERROR_NO_DATA,
+          "mpeg-atrac: before any packet GetAtracAu reports no data");
+    memset(SR_HOST(AT_OUT), 0xa5, MPEG_ATRAC_ES_OUTPUT_SIZE);
+    CHECK(mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 1u) == SCE_MPEG_ERROR_NO_DATA &&
+              MEM_R32(AT_OUT) == 0xa5a5a5a5u && MEM_R32(AT_OUT + MPEG_ATRAC_ES_OUTPUT_SIZE - 4u) == 0xa5a5a5a5u,
+          "mpeg-atrac: AtracDecode with no access unit refuses and writes nothing");
+
+    CHECK(mpeg_ringbuffer_put(NULL, AT_RING, packets, packets) == packets,
+          "mpeg-atrac: the whole stream is put into the ring");
+    Mpeg *ctx = mpeg_find(AT_DESC);
+    int blocks = 0, exact = 1, clock = 1;
+    for (int guard = 0; ctx && guard < 4 * AV_AUDIO_BLOCKS; guard++) {
+        uint32_t r = mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR);
+        if (r == SCE_MPEG_ERROR_NO_DATA) break;
+        CHECK(r == 0u, "mpeg-atrac: GetAtracAu returns a frame or no data");
+        if (r) break;
+        if (au_read_pts(AT_AU) != ctx->firstTimestamp + (int64_t)blocks * 4180) clock = 0;
+        memset(SR_HOST(AT_OUT), 0xa5, MPEG_ATRAC_ES_OUTPUT_SIZE);
+        r = mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, blocks == 0 ? 1u : 0u);
+        CHECK(r == 0u, "mpeg-atrac: a held frame decodes");
+        if (r) break;
+        int samples = 0;
+        if (atrac3p_bridge_decode(ref, frame + 8, (int)frame_bytes - 8, ref_pcm, &samples) != 0 ||
+            samples != 2048 || memcmp(SR_HOST(AT_OUT), ref_pcm, sizeof(ref_pcm)) != 0)
+            exact = 0;
+        blocks++;
+    }
+    CHECK(blocks == AV_AUDIO_BLOCKS, "mpeg-atrac: every authored ATRAC3+ frame comes out once");
+    CHECK(exact, "mpeg-atrac: each block is exactly the ATRAC3+ decoder's output for its frame");
+    CHECK(clock, "mpeg-atrac: each AU carries the clock, first timestamp + 4180 per decoded block");
+    CHECK(mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == SCE_MPEG_ERROR_NO_DATA,
+          "mpeg-atrac: after the last frame GetAtracAu reports no data");
+
+    /* A flush starts the stream over: refed packets give the first frame again. */
+    CHECK(mpeg_flush_all_stream(AT_DESC) == 0u, "mpeg-atrac: the streams are flushed");
+    CHECK(mpeg_ringbuffer_put(NULL, AT_RING, packets, packets) == packets &&
+              mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u &&
+              mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 1u) == 0u,
+          "mpeg-atrac: after a flush the refed stream decodes again");
+    CHECK(mpeg_delete(AT_DESC) == 0u, "mpeg-atrac: the context is deleted");
+    atrac3p_bridge_destroy(ref);
+    free(image);
+}
+
 /* The sceMpeg path: a picture decoded by sceMpegAvcDecodeYCbCr carries its access unit's
  * time, and sceMpegAvcCsc is where it lands in guest memory. */
 static void test_mpeg_csc_presentation_boundary(void) {
@@ -3835,6 +3926,7 @@ int main(int argc, char **argv) {
     test_player_av_presentation_boundary();
     test_player_av_composited_presentation();
     test_mpeg_csc_presentation_boundary();
+    test_mpeg_atrac_au_decode();
     test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 

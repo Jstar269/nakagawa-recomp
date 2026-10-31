@@ -61,6 +61,7 @@
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
 #include "hle_evidence.h" /* generated: NIDs with no recorded evidence (docs/HLE_COVERAGE.md) */
 #include "atrac3p_bridge.h" /* HLE bridges for separate ATRAC3+ and AT3 decoding */
+#include "atrac3p/atrac3p_api.h" /* ATRAC3P_MAX_CHANNELS, ATRAC3P_PADDING_SIZE */
 #include "mp3_bridge.h"     /* minimp3 frame decoder behind sceMp3 */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
 #include "fbcap.h"           /* presenter-neutral frame capture service (issue #57) */
@@ -6689,9 +6690,13 @@ static void psmf_av_final(const char *reason) {
     psmf_av_clear();
 }
 
-/* Entry point for the sceMpeg path in mpeg.c (a separate translation unit in production). */
+/* Entry points for the sceMpeg path in mpeg.c (a separate translation unit in production):
+ * sceMpegAvcDecode/Csc pictures and sceMpegAtracDecode blocks. */
 void sr_psmf_av_note_video_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
     psmf_av_delivered(PSMF_AV_VIDEO, first, bytes, pts, pts_valid);
+}
+void sr_psmf_av_note_audio_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid) {
+    psmf_av_delivered(PSMF_AV_AUDIO, first, bytes, pts, pts_valid);
 }
 
 #ifdef SR_MPEG_MEDIA_SELFTEST
