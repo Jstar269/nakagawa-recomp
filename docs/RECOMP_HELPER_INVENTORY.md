@@ -38,7 +38,7 @@ does not make this file stale. `--details` prints them to stdout.
 
 - helpers: **407** (declared in `recomp.h`: 346)
 - reach class: emitter-reached 71, production-runtime-only 303, selftest-only 17, address-only 7, none 9
-- provenance class of the home definition: declared-only 1, not-in-public-ledger 12, project_authored_attested 27, upstream_derived 367
+- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 379
 
 ## Helpers
 
@@ -243,13 +243,13 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_cp0_status_ptr` | `rt/recomp.h` | yes | none | `rt/recomp.h`: upstream_derived |
 | `sr_cpu_for_callbacks` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sr_cpu_link_clear` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_display_advance_vcount` | `rt/hle_route.c` | yes | production-runtime-only | `rt/hle_route.c`: not-in-public-ledger |
+| `sr_display_advance_vcount` | `rt/hle_route.c` | yes | production-runtime-only | `rt/hle_route.c`: upstream_derived |
 | `sr_display_bounds_field` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_display_vcount` | `rt/hle_route.c` | yes | production-runtime-only | `rt/hle_route.c`: not-in-public-ledger |
+| `sr_display_vcount` | `rt/hle_route.c` | yes | production-runtime-only | `rt/hle_route.c`: upstream_derived |
 | `sr_end_impl` | `rt/recomp.c` | yes | emitter-reached (via `sr_end`) | `rt/recomp.c`: upstream_derived |
-| `sr_enhancement_file_register` | `rt/hle_data.c` | yes | emitter-reached (direct) | `rt/hle_data.c`: not-in-public-ledger |
-| `sr_enhancement_logic_slowed` | `rt/hle_route.c` | yes | selftest-only | `rt/hle_route.c`: not-in-public-ledger |
-| `sr_enhancement_register_updates` | `rt/hle_route.c` | yes | emitter-reached (direct) | `rt/hle_route.c`: not-in-public-ledger |
+| `sr_enhancement_file_register` | `rt/hle_data.c` | yes | emitter-reached (direct) | `rt/hle_data.c`: upstream_derived |
+| `sr_enhancement_logic_slowed` | `rt/hle_route.c` | yes | selftest-only | `rt/hle_route.c`: upstream_derived |
+| `sr_enhancement_register_updates` | `rt/hle_route.c` | yes | emitter-reached (direct) | `rt/hle_route.c`: upstream_derived |
 | `sr_exec_span_owns_fetch` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_exec_span_register` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |
 | `sr_exec_span_reset` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |
@@ -312,15 +312,15 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_hle_loadexec_boot_module` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_hle_loadexec_finish` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_hle_loadexec_release` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
-| `sr_hle_loadexec_reset_guest_state` | `rt/hle_utility.c` | yes | production-runtime-only | `rt/hle_utility.c`: not-in-public-ledger |
-| `sr_hle_loadexec_take` | `rt/hle_kernel_module.c` | yes | production-runtime-only | `rt/hle_kernel_module.c`: not-in-public-ledger |
+| `sr_hle_loadexec_reset_guest_state` | `rt/hle_utility.c` | yes | production-runtime-only | `rt/hle_utility.c`: upstream_derived |
+| `sr_hle_loadexec_take` | `rt/hle_kernel_module.c` | yes | production-runtime-only | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_hle_register` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
-| `sr_hle_register_late_import` | `rt/hle_kernel_module.c` | yes | production-runtime-only | `rt/hle_kernel_module.c`: not-in-public-ledger |
+| `sr_hle_register_late_import` | `rt/hle_kernel_module.c` | yes | production-runtime-only | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_hle_release_thread_resources` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_hle_resolve_late_import` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_host_address` | `rt/recomp.h` | yes | emitter-reached (direct, via `SR_HOST`) | `rt/recomp.h`: upstream_derived |
-| `sr_host_data_entry_count` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: not-in-public-ledger |
-| `sr_host_data_prepare` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: not-in-public-ledger |
+| `sr_host_data_entry_count` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: upstream_derived |
+| `sr_host_data_prepare` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: upstream_derived |
 | `sr_host_stack_entry_slow` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_host_stack_window_clear` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_inrange` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
@@ -336,7 +336,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_lookup` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_lwl` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_lwr` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
-| `sr_main_module_register` | `rt/hle_kernel_module.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: not-in-public-ledger |
+| `sr_main_module_register` | `rt/hle_kernel_module.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_mem_init` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_mem_reset` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_module_bind_result_name` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
@@ -415,7 +415,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_unimplemented` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vblank_dispatch_registered` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_vblank_quantum_due` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sr_vblank_tick` | `rt/hle_display.c` | yes | production-runtime-only | `rt/hle_display.c`: not-in-public-ledger |
+| `sr_vblank_tick` | `rt/hle_display.c` | yes | production-runtime-only | `rt/hle_display.c`: upstream_derived |
 | `sr_vcount_window_crossed` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_asin` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_c2i` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
