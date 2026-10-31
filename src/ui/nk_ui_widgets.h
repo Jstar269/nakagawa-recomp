@@ -34,6 +34,11 @@ bool nk_ui_take_activation(NkUi *ui, NkUiId id);
 /* Label colour of a button with these flags. */
 uint32_t nk_ui_button_text_rgba(const NkUi *ui, uint32_t flags);
 
+/* How wide nk_ui_button lays out a button with this label and these flags when
+   it fits its label (no NK_UI_BUTTON_GROW room), at the current text size. A
+   screen that gives buttons a fixed column sizes the column from it. */
+float nk_ui_button_width(NkUi *ui, const char *label, uint32_t flags);
+
 /* A stable child id for the k-th part of component `id`. */
 NkUiId nk_ui_child_id(NkUiId id, uint32_t k);
 
@@ -111,6 +116,8 @@ bool nk_ui_app_icon_rgba(int size, unsigned char *rgba, size_t stride);
 /* ---- Prompt glyphs ---------------------------------------------------------- */
 /* One prompt glyph in the current prompt style, `height` px tall (24 in bars). */
 bool nk_ui_prompt_glyph(NkUi *ui, NkUiId id, NkUiPromptAction action, float height);
+/* The width nk_ui_prompt_glyph lays that glyph out at, in the current prompt style. */
+float nk_ui_prompt_glyph_size(const NkUi *ui, NkUiPromptAction action, float height);
 /* One glyph in `style`, whatever the current one, for a binding shown in its own
    device's set (#1299). A non-NULL `label` is drawn as given in place of the action's
    own text (a key's legend on a keycap, a pad button's name on a pill) and keeps the
@@ -125,6 +132,28 @@ void nk_ui_text_role(NkUi *ui, NkUiId id, const char *text, NkUiTypeRole role,
                      uint32_t rgba);
 /* An eyebrow: the small tracked caps line that names a section. */
 void nk_ui_eyebrow(NkUi *ui, NkUiId id, const char *text);
+
+/* ---- Wrapping rows ---------------------------------------------------------------- */
+/* A row of controls that carries on in a new row under it when the next one would
+   run past `width` (the room across, in layout units), as a line of text wraps.
+   The first row is container `id` with the given layout, exactly as a plain row
+   would be, so a row that fits is laid out as before; each further row is a
+   sibling under it with the same layout and a child id of `id`. Call
+   nk_ui_flow_item with each item's width before drawing it, and nk_ui_flow_end
+   after the last. */
+typedef struct {
+    NkUiId id;
+    NkUiLayout layout;
+    float width;
+    float used;      /* this row's width so far; < 0 before its first item */
+    uint32_t rows;   /* rows opened */
+    bool open;       /* a row is open now */
+} NkUiFlowRow;
+
+bool nk_ui_flow_begin(NkUi *ui, NkUiFlowRow *flow, NkUiId id, const NkUiLayout *row,
+                      float width);
+void nk_ui_flow_item(NkUi *ui, NkUiFlowRow *flow, float item_width);
+void nk_ui_flow_end(NkUi *ui, NkUiFlowRow *flow);
 
 /* ---- Containers --------------------------------------------------------------- */
 /* A card: raised surface, hairline edge, tile radius. Returns true when opened;
@@ -174,6 +203,9 @@ const char *nk_ui_input_label(NkUiPromptStyle style);
 /* A dialog card: raised surface, strong edge, dialog radius, 26/28/22 px
    padding, 14 px between blocks. Close it with nk_ui_end_container. */
 bool nk_ui_dialog_begin(NkUi *ui, NkUiId id, float width);
+/* The same card at most max_height px tall (0: no limit); content past that
+   scrolls inside it, and a control that takes focus there scrolls into view. */
+bool nk_ui_dialog_begin_scroll(NkUi *ui, NkUiId id, float width, float max_height);
 /* A 6 px progress track `width` px wide: fraction 0..1 fills it in accent; a
    negative fraction is indeterminate, a sweeping segment driven by phase_s
    (pass 0 under reduced motion to hold it still). */
@@ -200,6 +232,10 @@ typedef struct {
 /* A focusable game card: art panel with badge, two-line title, status and disc
    id. Returns true on the frame it is activated. */
 bool nk_ui_tile(NkUi *ui, NkUiId id, const NkUiTileSpec *spec);
+/* The card's body under its art at a text scale (nk_ui_text_scale):
+   NK_UI_TILE_BODY_HEIGHT at 1, taller by what its two name lines and its meta
+   row grow at a larger text size. */
+float nk_ui_tile_body_height(float text_scale);
 /* The dashed-feel "add" card at the end of the grid. */
 bool nk_ui_add_tile(NkUi *ui, NkUiId id, const char *title, const char *detail,
                     float width, float height);

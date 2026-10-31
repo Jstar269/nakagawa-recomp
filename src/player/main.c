@@ -776,7 +776,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
              event->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
             event->gaxis.value > 16000) {
-            NkBindingSource src;
+            NkBindingSource src = {NK_BINDING_NONE, 0, 0};
             src.type = NK_BINDING_HOST_TRIGGER;
             src.index = event->gaxis.axis;
             input_settings_feed_capture_source(&app->input_settings, src);
@@ -804,7 +804,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
            both launchers. */
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
-            NkBindingSource src;
+            NkBindingSource src = {NK_BINDING_NONE, 0, 0};
             if (app->input_settings.device == INPUT_DEVICE_KEYBOARD) {
                 /* A controller has no keys: its press stops the wait for one. */
                 input_settings_cancel_capture(&app->input_settings);
@@ -950,13 +950,30 @@ static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
     }
 }
 
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+/* The UI test points a card at its synthetic image, and the card's own library
+   record with it: the library tells two images of a disc ID apart by their
+   files, so a card and its record must name the same one. */
+static void ui_test_set_card_image(PlayerApp *app, int index, const char *iso_path) {
+    GameRecord *card = &app->games[index];
+    for (int j = 0; j < app->library.count; j++) {
+        NkGameEntry *record = &app->library.entries[j];
+        if (strcmp(record->disc_id, card->disc_id) == 0 &&
+            strcmp(record->iso_path, card->iso_path) == 0) {
+            snprintf(record->iso_path, sizeof(record->iso_path), "%s", iso_path);
+        }
+    }
+    snprintf(card->iso_path, sizeof(card->iso_path), "%s", iso_path);
+}
+#endif
+
 /* Saves the inspected title to the library and selects it, as the existing
    wizard's Ready step does. Returns the title's index, or -1. */
 static int player_ui_wizard_save_title(PlayerApp *app) {
     int idx;
     if (app->inspecting_game.disc_id[0] == '\0') return -1;
     player_app_add_game(app, &app->inspecting_game);
-    idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+    idx = player_app_find_added_game(app, &app->inspecting_game);
     if (idx >= 0) app->selected_game_index = idx;
     return idx;
 }
@@ -1534,6 +1551,7 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             player_app_set_view(app, VIEW_ACCESSIBILITY_SETTINGS);
             break;
         case PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE: player_app_cycle_interface_size(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE: player_app_cycle_text_size(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST: player_app_cycle_high_contrast_focus(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION: player_app_cycle_reduce_motion(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:
@@ -1598,7 +1616,10 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
     InputSettingsState *input = &app->input_settings;
     switch (op) {
         case PLAYER_UI_CONTROLLER_REBIND:
-            if (control >= (size_t)INPUT_CONTROL_DIGITAL_COUNT) break;
+            if (control >= (size_t)INPUT_CONTROL_TOTAL_COUNT ||
+                !input_settings_control_bindable(input, (int)control)) {
+                break;
+            }
             /* Choosing the button that is waiting stops the wait. */
             if (input->capturing && input->capture_control == (int)control) {
                 input_settings_cancel_capture(input);
@@ -1619,12 +1640,8 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
             (void)input_settings_adjust_trigger_threshold(input, 1000);
             break;
         case PLAYER_UI_CONTROLLER_CALIBRATE: (void)input_settings_start_calibration(input); break;
-        case PLAYER_UI_CONTROLLER_SAVE:
-            if (input_settings_save(input, NULL) == NK_OK) {
-                snprintf(input->save_diagnostic, sizeof(input->save_diagnostic),
-                         "Profile successfully saved to disk");
-                input->has_save_diagnostic = true;
-            }
+        case PLAYER_UI_CONTROLLER_STICK:
+            input_settings_set_stick(input, !input_settings_stick_is_right(input));
             break;
         case PLAYER_UI_CONTROLLER_RESET:
             /* The defaults of the device shown: the other device keeps its own. */
@@ -1638,8 +1655,17 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
             break;
         case PLAYER_UI_CONTROLLER_BACK:
         case PLAYER_UI_CONTROLLER_CLOSE:
-            if (input_settings_is_capturing(input)) input_settings_cancel_capture(input);
-            if (input_settings_is_calibrating(input)) input_settings_cancel_calibration(input);
+            /* Leaving the page writes what is not on disk yet, a failed write included.
+               If that fails, the page stays once to say so; Back again leaves without
+               saving. */
+        {
+            bool leave_anyway = input->leave_unsaved;   /* the write clears it */
+            if (input_settings_flush(input) != NK_OK && !leave_anyway) {
+                input->leave_unsaved = true;
+                break;
+            }
+            input->leave_unsaved = false;
+        }
             player_app_set_view(app, op == PLAYER_UI_CONTROLLER_BACK ? VIEW_SETTINGS
                                                                      : VIEW_LIBRARY);
             break;
@@ -1715,6 +1741,15 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
     if (action->kind == PLAYER_UI_ACTION_DEVELOPER_LOG) {
         player_ui_developer_log_apply(app, (PlayerUiDeveloperLogOp)action->primary);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_DISC_VERIFY) {
+        /* The library's disc check line: the worker sees the cancel in main's loop. */
+        if ((PlayerUiDiscVerifyOp)action->primary == PLAYER_UI_DISC_VERIFY_CANCEL) {
+            player_app_disc_check_cancel(app);
+        } else if ((PlayerUiDiscVerifyOp)action->primary == PLAYER_UI_DISC_VERIFY_HIDE) {
+            player_app_disc_check_hide_note(app);
+        }
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_REBUILD) {
@@ -2452,15 +2487,10 @@ static void player_package_status_finish(PlayerApp *app,
         }
     }
 #endif
-    int current_index = -1;
-    for (int i = 0; i < app->game_count; i++) {
-        /* A title whose package variant changed while the check ran is not
-           this result's title: the other variant has its own package. */
-        if (player_game_same_package(&app->games[i], &job->game)) {
-            current_index = i;
-            break;
-        }
-    }
+    /* A title whose package variant changed while the check ran is not this
+       result's title: the other variant has its own package. Of two images of
+       a disc ID, the one checked. */
+    int current_index = player_app_find_package_card(app, &job->game);
     bool cache_generation_matches =
         job->cache_generation == app->runtime_package_cache_generation;
     /* Any completed worker result resolves a prior worker-start failure for
@@ -2539,8 +2569,7 @@ static void player_package_status_finish(PlayerApp *app,
             nk_library_add_or_update(&app->library,
                                      &app->games[current_index]);
             player_app_sync_library(app);
-            current_index = player_app_find_game_by_disc_id(
-                app, job->game.disc_id);
+            current_index = player_app_find_package_card(app, &job->game);
             if (current_index >= 0) {
                 player_app_runtime_package_cache_store(
                     app, current_index, &job->game, job->identity_valid,
@@ -2975,6 +3004,154 @@ static void destroy_psn_job(PlayerPsnJob **job_slot) {
     *job_slot = NULL;
 }
 
+/* A disc check (nk_disc_verify.h): one added image, hashed whole on its own
+   worker, never the UI thread. Progress and completion come back as SDL user
+   events (data1 is the job), and the library's Cancel stops it between 1 MiB
+   reads. A cancelled or failed check keeps nothing. */
+typedef struct {
+    SDL_Thread *thread;
+    SDL_Mutex *mutex;
+    PlayerDiscCheckItem item;
+    bool verified_elsewhere;
+    char data_root[NK_MAX_PATH];
+    bool cancel_requested;
+    bool finished;
+    int percent;
+    NkDiscVerification check;
+} PlayerDiscCheckJob;
+
+static void disc_check_push_event(PlayerDiscCheckJob *job, int code) {
+    SDL_Event event;
+    memset(&event, 0, sizeof(event));
+    event.type = SDL_EVENT_USER;
+    event.user.code = code;
+    event.user.data1 = job;
+    SDL_PushEvent(&event);
+}
+
+static bool disc_check_cancelled(void *userdata) {
+    PlayerDiscCheckJob *job = (PlayerDiscCheckJob *)userdata;
+    if (!job || !job->mutex) return true;
+    SDL_LockMutex(job->mutex);
+    bool cancelled = job->cancel_requested;
+    SDL_UnlockMutex(job->mutex);
+    return cancelled;
+}
+
+static void disc_check_progress(uint64_t done_bytes, uint64_t total_bytes, void *userdata) {
+    PlayerDiscCheckJob *job = (PlayerDiscCheckJob *)userdata;
+    int percent = total_bytes ? (int)((done_bytes * 100u) / total_bytes) : 0;
+    bool changed;
+    if (!job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    changed = job->percent != percent;
+    job->percent = percent;
+    SDL_UnlockMutex(job->mutex);
+    if (changed) disc_check_push_event(job, PLAYER_STAGING_EVENT_PROGRESS);
+}
+
+static int SDLCALL disc_check_thread_main(void *userdata) {
+    PlayerDiscCheckJob *job = (PlayerDiscCheckJob *)userdata;
+    if (!job) return -1;
+    NkDiscExpandCallbacks callbacks = { disc_check_progress, disc_check_cancelled, job };
+    NkDiscVerification check;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* The UI test holds the worker, to see the library draw frames while a
+       check runs. */
+    const char *hold = getenv("NK_UI_TEST_DISC_CHECK_HOLD_MS");
+    if (hold && hold[0]) SDL_Delay((Uint32)strtoul(hold, NULL, 10));
+#endif
+    bool hashed = nk_disc_verify_image(job->item.iso_path, job->data_root, job->item.disc_id,
+                                       job->verified_elsewhere, &callbacks, &check);
+    SDL_LockMutex(job->mutex);
+    job->check = check;
+    job->finished = true;
+    SDL_UnlockMutex(job->mutex);
+    disc_check_push_event(job, PLAYER_STAGING_EVENT_COMPLETE);
+    return hashed ? 0 : 1;
+}
+
+/* The next added image's check, when one waits and nothing it would slow down
+   runs (player_app_disc_check_take). */
+static void start_disc_check_job(PlayerApp *app, PlayerDiscCheckJob **job_slot) {
+    PlayerDiscCheckItem item;
+    bool verified_elsewhere = false;
+    if (!app || !job_slot || *job_slot) return;
+    if (!player_app_disc_check_take(app, &item, &verified_elsewhere)) return;
+    NkDiscVerification failed;
+    memset(&failed, 0, sizeof(failed));
+    failed.result = NK_DISC_VERIFY_READ_FAILED;
+    PlayerDiscCheckJob *job = (PlayerDiscCheckJob *)calloc(1, sizeof(*job));
+    if (job && !nk_platform_get_app_data_dir(job->data_root, sizeof(job->data_root))) {
+        free(job);
+        snprintf(failed.reason, sizeof(failed.reason),
+                 "Nakagawa's data folder could not be found, so the disc was not checked.");
+        player_app_disc_check_finish(app, &failed);
+        return;
+    }
+    if (job) {
+        job->item = item;
+        job->verified_elsewhere = verified_elsewhere;
+        job->mutex = SDL_CreateMutex();
+    }
+    if (job && job->mutex) {
+        job->thread = SDL_CreateThread(disc_check_thread_main, "nakagawa-disc-check", job);
+    }
+    if (!job || !job->mutex || !job->thread) {
+        if (job && job->mutex) SDL_DestroyMutex(job->mutex);
+        free(job);
+        snprintf(failed.reason, sizeof(failed.reason),
+                 "Nakagawa could not start the disc check.");
+        player_app_disc_check_finish(app, &failed);
+        return;
+    }
+    *job_slot = job;
+}
+
+static void request_disc_check_cancel(PlayerDiscCheckJob *job) {
+    if (!job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    job->cancel_requested = true;
+    SDL_UnlockMutex(job->mutex);
+}
+
+static void sync_disc_check_progress(PlayerApp *app, PlayerDiscCheckJob *job) {
+    if (!app || !job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    int percent = job->percent;
+    SDL_UnlockMutex(job->mutex);
+    player_app_disc_check_progress(app, percent);
+}
+
+/* A finished check's result goes into the library on the UI thread. */
+static void finish_disc_check_job(PlayerApp *app, PlayerDiscCheckJob **job_slot) {
+    if (!app || !job_slot || !*job_slot) return;
+    PlayerDiscCheckJob *job = *job_slot;
+    SDL_LockMutex(job->mutex);
+    bool finished = job->finished;
+    NkDiscVerification check = job->check;
+    SDL_UnlockMutex(job->mutex);
+    if (!finished) return;
+    if (job->thread) SDL_WaitThread(job->thread, NULL);
+    SDL_DestroyMutex(job->mutex);
+    free(job);
+    *job_slot = NULL;
+    player_app_disc_check_finish(app, &check);
+}
+
+static void destroy_disc_check_job(PlayerDiscCheckJob **job_slot) {
+    if (!job_slot || !*job_slot) return;
+    PlayerDiscCheckJob *job = *job_slot;
+    request_disc_check_cancel(job);
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    if (job->mutex) SDL_DestroyMutex(job->mutex);
+    free(job);
+    *job_slot = NULL;
+}
+
 static void destroy_staging_job(PlayerStagingJob **job_slot) {
     if (!job_slot || !*job_slot) return;
     PlayerStagingJob *job = *job_slot;
@@ -3125,9 +3302,10 @@ static int player_stage_inspected_title(PlayerApp *app) {
  * the library keeps its staged files: re-adding it merges the earlier record,
  * and a complete staged tree is reused rather than extracted again. */
 static int player_stage_for_launch_now(PlayerApp *app) {
-    int existing = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
-    if (existing >= 0) {
-        (void)player_merge_readded_game(&app->games[existing], &app->inspecting_game);
+    /* The same image's record, not another image with its disc ID. */
+    const GameRecord *existing = nk_library_find_replaced(&app->library, &app->inspecting_game);
+    if (existing) {
+        (void)player_merge_readded_game(existing, &app->inspecting_game);
     }
     NkLaunchDataRootStatus status = player_app_game_data_root_status(
         app, &app->inspecting_game, NULL, 0, NULL, 0);
@@ -4019,8 +4197,9 @@ int main(int argc, char *argv[]) {
                        place rather than appending it, so in a library holding
                        several games the last entry is a DIFFERENT title
                        whenever this disc was already known. Find the entry by
-                       its inspected disc ID. */
-                    int game_idx = player_app_find_game_by_disc_id(&app, app.inspecting_game.disc_id);
+                       its inspected disc ID and file: another image (a fan
+                       translation) can have the same disc ID. */
+                    int game_idx = player_app_find_added_game(&app, &app.inspecting_game);
                     if (game_idx < 0) {
                         fprintf(stderr, "[PLAYER] Disc %s is not in the library after adding it.\n",
                                 app.inspecting_game.disc_id);
@@ -4362,9 +4541,7 @@ int main(int argc, char *argv[]) {
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (ui_test_iso_path && app.selected_game_index >= 0 &&
         app.selected_game_index < app.game_count) {
-        snprintf(app.games[app.selected_game_index].iso_path,
-                 sizeof(app.games[app.selected_game_index].iso_path), "%s",
-                 ui_test_iso_path);
+        ui_test_set_card_image(&app, app.selected_game_index, ui_test_iso_path);
     }
     const char *bind_test_eboot = getenv("NK_UI_TEST_BIND_EBOOT");
     if (ui_test_mode && ui_test_iso_path && bind_test_eboot &&
@@ -4379,8 +4556,7 @@ int main(int argc, char *argv[]) {
     if (ui_test_iso_path) {
         for (int i = 0; i < app.game_count; i++) {
             if (strcmp(app.games[i].disc_id, "TEST00006") == 0) {
-                snprintf(app.games[i].iso_path, sizeof(app.games[i].iso_path),
-                         "%s", ui_test_iso_path);
+                ui_test_set_card_image(&app, i, ui_test_iso_path);
             }
         }
     }
@@ -4468,7 +4644,11 @@ int main(int argc, char *argv[]) {
 #endif
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (ui_test_mode) app.settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
+    /* Scripted runs cut motion so their frames are steady; NK_UI_TEST_MOTION keeps the
+       settings' choice, for the tests of motion itself. */
+    if (ui_test_mode && getenv("NK_UI_TEST_MOTION") == NULL) {
+        app.settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
+    }
 #endif
 
     app.window_width = override_w;
@@ -4820,6 +5000,7 @@ int main(int argc, char *argv[]) {
     }
     PlayerStagingJob *staging_job = NULL;
     PlayerPsnJob *psn_job = NULL;
+    PlayerDiscCheckJob *disc_check_job = NULL;
     PlayerPackageStatusJob *package_status_job = NULL;
     bool package_status_requested[MAX_LIBRARY_GAMES] = { false };
     bool package_status_force_requested[MAX_LIBRARY_GAMES] = { false };
@@ -5199,6 +5380,9 @@ int main(int argc, char *argv[]) {
         if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
             input_settings_update_capture(&app.input_settings, delta_ms > 0 ? delta_ms : 1);
         }
+        /* The Controls page has no Save step: a binding, a reset or a stick setting
+           changed last frame is written to the input profile now (#1299). */
+        (void)input_settings_save_if_dirty(&app.input_settings);
 
         input.mouse_clicked = false;
         input.activate_pressed = false;
@@ -5277,6 +5461,12 @@ int main(int argc, char *argv[]) {
                                 sync_psn_progress(&app, psn_job);
                             } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
                                 finish_psn_job(&app, psn_job);
+                            }
+                        } else if (disc_check_job && event.user.data1 == disc_check_job) {
+                            if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
+                                sync_disc_check_progress(&app, disc_check_job);
+                            } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
+                                finish_disc_check_job(&app, &disc_check_job);
                             }
                         } else if (event.user.data1 == staging_job) {
                             if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
@@ -5368,6 +5558,14 @@ int main(int argc, char *argv[]) {
         if (psn_job_finished(psn_job)) {
             finish_psn_job(&app, psn_job);
         }
+        /* Each added image is hashed once, on its own worker: the library's
+           Cancel reaches it here, a completion whose event was lost is
+           finished here, and the next image waiting starts. */
+        if (disc_check_job && app.disc_check.cancel_requested) {
+            request_disc_check_cancel(disc_check_job);
+        }
+        finish_disc_check_job(&app, &disc_check_job);
+        start_disc_check_job(&app, &disc_check_job);
 
         if (app.selected_game_index != last_package_selection) {
             last_package_selection = app.selected_game_index;
@@ -5439,8 +5637,9 @@ int main(int argc, char *argv[]) {
         player_app_poll_package_build(&app, SDL_GetTicks());
         if (app.build_session.is_complete && !build_check_pending &&
             !build_check_session_already_handled) {
-            int build_game_index = player_app_find_game_by_disc_id(
-                &app, app.build_session.disc_id);
+            /* The card of the image built, not another image with its disc ID. */
+            int build_game_index = player_app_find_built_game(
+                &app, app.build_session.disc_id, app.build_session.iso_path);
             if (build_game_index >= 0 && build_game_index < app.game_count) {
                 /* The build may have bound the executable this entry was
                    saved without; the check validates against that one. */
@@ -5619,7 +5818,7 @@ int main(int argc, char *argv[]) {
         if (app.request_factory_reset) {
             app.request_factory_reset = false;
             /* A finished staging or PSN job stays allocated until the next one. */
-            if (launch_job || package_status_job || s_update_job ||
+            if (launch_job || package_status_job || s_update_job || disc_check_job ||
                 (staging_job && !staging_job->completion_handled) ||
                 (psn_job && !psn_job->completion_handled)) {
                 /* A worker may still have a file in the user data open. */
@@ -5670,6 +5869,13 @@ int main(int argc, char *argv[]) {
 #endif
     }
 
+    /* A binding made in the same moment as the quit is written before closing; a
+       write that fails now has nowhere left to be shown, so it goes to the log. */
+    if (input_settings_flush(&app.input_settings) != NK_OK) {
+        fprintf(stderr, "[PLAYER] Controls not saved: %s\n",
+                app.input_settings.save_diagnostic);
+    }
+
     /* Closing: a package check still hashing stops at its next read, so the
        window does not hang until every startup check is done. */
     SDL_SetAtomicInt(&s_player_closing, 1);
@@ -5707,6 +5913,7 @@ int main(int argc, char *argv[]) {
     player_update_shutdown();
     destroy_staging_job(&staging_job);
     destroy_psn_job(&psn_job);
+    destroy_disc_check_job(&disc_check_job);
     if (package_status_job) {
         if (package_status_job->thread) {
             SDL_WaitThread(package_status_job->thread, NULL);

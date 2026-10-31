@@ -1501,6 +1501,32 @@ _register_campaign_probe(
      "ge-quiesce-after-cancel": 4, "ge-list-dequeue-stalled": 4,
      "ge-quiesce-after-dequeue": 4},
 )
+# ge-sync-ids (78, probe.c, #1374): GE sync results for a queue id no enqueue returned, the id
+# of a completed list (before and after later lists, and after a sceGeDrawSync(0)) and a list
+# a reset removed, in the poll form and in the bounded blocking form, and sync types other
+# than 0 and 1 on an idle GE. A blocking record is qid, returned (0: no return within the
+# 200 ms bound), result, wait result, delete result and elapsed us.
+GE_SYNC_IDS_CASES = (
+    "ge-list-sync-unknown-poll", "ge-list-dequeue-unknown", "ge-list-sync-completed-poll",
+    "ge-sync-invalid-mode", "ge-list-sync-after-reenqueue", "ge-list-sync-stale-1",
+    "ge-list-sync-stale-2", "ge-list-sync-stale-3", "ge-draw-sync-idle-wait",
+    "ge-list-sync-after-draw-wait", "ge-list-sync-cancelled-poll",
+    "ge-draw-sync-after-reset-wait", "ge-list-sync-completed-wait",
+    "ge-list-sync-cancelled-wait", "ge-list-sync-unknown-wait", "ge-list-sync-stale-wait",
+    "ge-sync-quiesce",
+)
+GE_SYNC_IDS_OUT_COUNTS = {
+    "ge-list-sync-unknown-poll": 4, "ge-list-dequeue-unknown": 2,
+    "ge-list-sync-completed-poll": 7, "ge-sync-invalid-mode": 4,
+    "ge-list-sync-after-reenqueue": 7, "ge-list-sync-stale-1": 7, "ge-list-sync-stale-2": 7,
+    "ge-list-sync-stale-3": 7, "ge-draw-sync-idle-wait": 6, "ge-list-sync-after-draw-wait": 4,
+    "ge-list-sync-cancelled-poll": 4, "ge-draw-sync-after-reset-wait": 6,
+    "ge-list-sync-completed-wait": 6, "ge-list-sync-cancelled-wait": 6,
+    "ge-list-sync-unknown-wait": 6, "ge-list-sync-stale-wait": 6, "ge-sync-quiesce": 4,
+}
+_register_campaign_probe(
+    "ge-sync-ids", "PSP-GE-SYNC-001", GE_SYNC_IDS_CASES, GE_SYNC_IDS_OUT_COUNTS,
+)
 _register_campaign_probe(
     "kernel-misc", "PSP-KERNEL-MISC-001",
     ("sysclock-wide", "ctrl-sampling-mode", "thread-profiler",
@@ -1835,6 +1861,24 @@ _register_campaign_probe(
     {case: 13 for case in VFPU_SORT_CASES},
 )
 
+# kernel-semantics (127, probe_kernel_semantics.c): the v0.0.2 kernel cells (#1287, #1390, #1383,
+# #1380, #1382). Every row is emitted on every run with a fixed word count; a word that does
+# not apply is 0xA5A5A5A5, and the io rows are SKIP when the probe-owned Memory Stick
+# directory already existed. The parser checks the stream's shape, never a PSP value.
+KERNEL_SEM_ROWS = {
+    "subintr-register": 8, "subintr-order": 24, "subintr-times": 24, "subintr-release": 8,
+    "ctrl-empty-read": 6, "ctrl-short-read-peek": 8, "ctrl-short-read": 3,
+    "ctrl-short-read-next": 3, "ctrl-peek-count": 3, "ctrl-mode-digital": 9,
+    "ctrl-mode-analog": 9, "ctrl-mode-digital-again": 9, "ctrl-cycle-5555": 13, "ctrl-cycle-wait": 3,
+    "vmem-trylock-type-1": 4, "vmem-trylock-type-2": 4, "vmem-trylock-type-m1": 4,
+    "vmem-lock-type-1": 4, "vmem-alloc-free": 6, "vmem-alloc-held": 6, "vmem-unlock": 1,
+    "io-missing-parent": 4, "io-mkdir": 1, "io-excl-new": 3, "io-excl-existing": 5,
+    "io-seek64": 16, "io-seek64-rdwr": 4, "io-cleanup": 3, "wlan-state": 2,
+}
+_register_campaign_probe(
+    "kernel-semantics", "PSP-KERNEL-SEM-001", tuple(KERNEL_SEM_ROWS), dict(KERNEL_SEM_ROWS),
+)
+
 # vfpu-forms2 (121, probe_hle_issues.c): the second #326 batch of VFPU forms, two passes. Every
 # row is emitted on every run, so the stream is fixed-shape. Per pass: vrnds.s over 24 seed
 # words from two RCX states (rnds-p<pass>-<i>-<a|b>, 25 words), vrndi, vrndf1 and vrndf2 at
@@ -2033,6 +2077,25 @@ GE_RASTER_CASES = tuple(case for cell in GE_RASTER_CELLS
 _register_campaign_probe(
     "ge-raster", "PSP-GE-RASTER-001", GE_RASTER_CASES,
     {case: (9 if case.endswith("-draw") else 16) for case in GE_RASTER_CASES},
+)
+
+# ge-mip (126, probe_ge_sample.c): the #1373 GE level-of-detail cells. The cells are the gm_cells
+# table of the block probe_ge_sample.c shares with src/rt/hle_thread_selftest.c, in order, with
+# the ge-raster record shape: one `-draw` record (9 words) and one record per window row.
+GE_MIP_CELLS = (
+    "c-b0", "c-b1", "c-b3", "c-b7", "c-b7f", "c-bm1", "c-b0f7", "c-b0f8", "c-b0f9", "c-b1f8",
+    "cl-b0f1", "cl-b0f4", "cl-b0f8", "cl-b1fc", "cl-b6ff", "cl-b7f8", "c-max2-b4", "cl-max2-b2f8",
+    "c-nomip-b3", "c-f5-b2", "c-f7-b2f8", "m3-b2", "m3-b0-4x", "a-1x", "a-2x", "a-4x", "a-8x",
+    "a-16x", "a-1x5", "a-3x", "a-half", "al-1x5", "al-3x", "al-6x", "a-u4", "a-v4", "a-u4v2",
+    "al-u3v2", "a-4x-b1", "a-4x-bm1", "al-2x-b0f8", "a-quad-w2", "a-quad-w1to4", "s-s1-w1",
+    "s-s1-w2", "s-s1-w3", "s-s1-w4", "s-s1-w8", "s-s1-wh", "s-s2-w1", "s-s2-w4", "s-sh-w8",
+    "s-s1-w2-b1", "s-s1-w2-4x", "sn-s1-w3", "s-s1-w1to8", "s-spr-s4",
+)
+GE_MIP_CASES = tuple(case for cell in GE_MIP_CELLS
+                     for case in (f"{cell}-draw", *(f"{cell}-r{y}" for y in GE_RASTER_ROWS)))
+_register_campaign_probe(
+    "ge-mip", "PSP-GE-MIP-001", GE_MIP_CASES,
+    {case: (9 if case.endswith("-draw") else 16) for case in GE_MIP_CASES},
 )
 
 # module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape

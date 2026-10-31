@@ -960,9 +960,10 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
 class PublicationCoverageInvariantTests(unittest.TestCase):
     """Publication integrity must never become path-gated.
 
-    Every tracked file is inside the published surface and the ledger carries a
-    content hash for each one, so *any* tracked change invalidates the generated
-    public metadata until it is refreshed. The only reason a docs-only change can
+    Every tracked file is inside the published surface and needs a policy decision
+    and a ledger claim, so a change that adds, removes or reclassifies any path
+    invalidates the generated public metadata until it is refreshed; its bytes are
+    bound by the trusted attestation's regeneration (#1673). The only reason a docs-only change can
     safely skip the Python suite is that the publication audit runs ungated on
     every event. If someone ever path-gates the hygiene job, or drops the audit
     from the shared pre-commit run, a stale public ledger becomes mergeable --

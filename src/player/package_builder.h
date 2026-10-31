@@ -113,6 +113,11 @@ typedef struct {
        the enhanced build to write, packages/<disc_id>-enhanced-<id>; the build
        runs with --experimental-60hz. Empty builds the authentic package. */
     char enhancement_package_id[NK_MAX_ENHANCEMENT_PACKAGE_ID];
+    /* Set by the caller before package_builder_start: the disc image to build,
+       passed as --iso-path. Two images can share a disc ID (a retail disc and a
+       fan translation of it), and nk_cli.py then builds only the one named.
+       Empty builds the disc ID's only image. */
+    char iso_path[NK_MAX_PATH];
     /* Set by the caller before package_builder_start: the verified release bundle
        (#1285) whose msys64/ucrt64/bin leads the build child's PATH. Empty selects
        <user data root>/prerequisites, the per-user download. */

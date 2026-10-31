@@ -96,6 +96,9 @@ sys.exit(code.value)
 # is k modulo n. The Makefile's player-ui-regressions runs all n shards side by side,
 # so together they run every test exactly once; unset, every test runs here.
 PLAYER_UI_SHARD_ENV = "NAKAGAWA_PLAYER_UI_SHARD"
+# NAKAGAWA_PLAYER_UI_ECHO=1 copies each player run's own output to stderr, so a
+# repeat check can see the player's markers (UI_NEXT_ACTIVE) on passing runs too.
+PLAYER_UI_ECHO_ENV = "NAKAGAWA_PLAYER_UI_ECHO"
 
 
 def parse_shard(spec: str) -> tuple[int, int]:
@@ -735,6 +738,101 @@ class PlayerUiIdSourceTests(unittest.TestCase):
             seen[number] = name
         self.assertGreater(len(seen), 50)
 
+    # nk_ui.h's id scheme: the files that allocate element ids, each through its
+    # screen's macro.
+    ID_FILES = ("src/player/ui/*.c", "src/rt/overlay/*.c", "src/rt/overlay/*.h")
+
+    @staticmethod
+    def check_families(owner: str, ids: dict[str, int], spans: dict[str, int]) -> list[str]:
+        """Problems with one screen's ids: a value used twice, an id inside a family
+        that is not its own, or two families that overlap."""
+        problems = []
+        by_value: dict[int, str] = {}
+        for name, value in sorted(ids.items()):
+            if value in by_value:
+                problems.append(f"{owner}: {name} and {by_value[value]} are both {value:#x}")
+            by_value[value] = name
+        ranges = sorted((ids[name], ids[name] + span, name) for name, span in spans.items())
+        for (_, end, name), (next_start, _, next_name) in zip(ranges, ranges[1:], strict=False):
+            if next_start < end:
+                problems.append(f"{owner}: families {name} and {next_name} overlap")
+        for start, end, family in ranges:
+            for name, value in ids.items():
+                if name != family and start <= value < end:
+                    problems.append(f"{owner}: {name} ({value:#x}) is inside family {family}")
+        return problems
+
+    def test_every_screen_id_comes_from_the_central_table(self) -> None:
+        """One allocation scheme for every element id (nk_ui.h): a screen's ids are
+        NK_UI_ID(screen, offset) through one macro per screen, with the screen's
+        byte from the table; each id family made by adding to a base declares a
+        _SPAN that holds every id made from it, literal offsets included; no id
+        falls inside another's family, and no screen uses one value twice."""
+        header = (ROOT / "src" / "ui" / "nk_ui.h").read_text(encoding="utf-8")
+        table = {name: int(value, 16) for name, value in
+                 re.findall(r"^#define NK_UI_ID_SCREEN_(\w+) (0x[0-9A-Fa-f]+)u", header, re.M)}
+        self.assertEqual(table.pop("SHARED"), 0, "screen 0x00 is the shared ids'")
+        self.assertEqual(len(set(table.values())), len(table), "two screens share a byte")
+        self.assertTrue(all(0 < byte < 0x80 for byte in table.values()),
+                        "0x80 and up belong to nk_ui_child_id")
+        ids: dict[str, dict[str, int]] = {}
+        spans: dict[str, dict[str, int]] = {}
+        problems: list[str] = []
+        sources: list[tuple[Path, str]] = []
+        for pattern in self.ID_FILES:
+            for path in sorted(ROOT.glob(pattern)):
+                text = path.read_text(encoding="utf-8")
+                sources.append((path, text))
+                where = path.relative_to(ROOT).as_posix()
+                macros = {}
+                for prefix, screen in re.findall(
+                        r"^#define (\w+)_ID\(offset\) NK_UI_ID\(NK_UI_ID_SCREEN_(\w+), \(offset\)\)",
+                        text, re.M):
+                    self.assertIn(screen, table, f"{where}: {prefix}_ID names screen {screen}, "
+                                  "which nk_ui.h's table does not have")
+                    macros[prefix] = screen
+                for name in re.findall(r"^#define (\w+_ID_\w+)\s+0x[0-9A-Fa-f]+u?\b", text, re.M):
+                    if not name.endswith("_SPAN"):
+                        problems.append(f"{where}: {name} is a raw value; make it with its "
+                                        "screen's _ID(offset) macro")
+                for name, prefix, offset in re.findall(
+                        r"^#define (\w+_ID_\w+)\s+(\w+)_ID\(0x([0-9A-Fa-f]{6})u\)", text, re.M):
+                    self.assertIn(prefix, macros, f"{where}: {name} uses {prefix}_ID, which "
+                                  "this file does not define")
+                    screen = macros[prefix]
+                    ids.setdefault(screen, {})[name] = (table[screen] << 24) + int(offset, 16)
+                for name, span in re.findall(r"^#define (\w+_ID_\w+)_SPAN (0x[0-9A-Fa-f]+|\d+)u",
+                                             text, re.M):
+                    owner = next((s for s, named in ids.items() if name in named), None)
+                    self.assertIsNotNone(owner, f"{where}: {name}_SPAN has no id {name}")
+                    spans.setdefault(str(owner), {})[name] = int(span, 0)
+        self.assertGreater(sum(len(named) for named in ids.values()), 200)
+        every = {name: screen for screen, named in ids.items() for name in named}
+        for path, text in sources:
+            where = path.relative_to(ROOT).as_posix()
+            for name, literal in re.findall(r"\b(\w+_ID_\w+)\s*\+\s*(0x[0-9A-Fa-f]+|\d+)?", text):
+                if name not in every or name.endswith("_SPAN"):
+                    continue
+                span = spans.get(every[name], {}).get(name)
+                if span is None:
+                    problems.append(f"{where}: ids are made by adding to {name}, "
+                                    f"which declares no {name}_SPAN")
+                elif literal and int(literal, 0) >= span:
+                    problems.append(f"{where}: {name} + {literal} is past its span {span:#x}")
+        for screen, named in ids.items():
+            problems += self.check_families(screen, named, spans.get(screen, {}))
+
+        shared_header = (ROOT / "src" / "player" / "ui" / "player_ui_nk.h").read_text(encoding="utf-8")
+        shared = {name: int(value, 16) for name, value in
+                  re.findall(r"\b(PLAYER_UI_ID_\w+)\s*=\s*(0x[0-9A-Fa-f]+)u", shared_header)}
+        shared_spans = {name: int(span, 0) for name, span in
+                        re.findall(r"^#define (PLAYER_UI_ID_\w+)_SPAN (0x[0-9A-Fa-f]+)u",
+                                   shared_header, re.M)}
+        self.assertTrue(all(value < 0x01000000 for value in shared.values()),
+                        "the shared ids are screen 0x00's")
+        problems += self.check_families("shared", shared, shared_spans)
+        self.assertEqual(problems, [])
+
 
 class LegacyRendererSourceTests(unittest.TestCase):
     """The shipped player never reaches the old renderer (owner, v0.0.1)."""
@@ -1017,6 +1115,7 @@ class NativePlayerUiTests(unittest.TestCase):
         dedicated_data_root: bool = False,
         settings: dict[str, object] | None = None,
         package_built_by: str | None = None,
+        disc_list: str | None = None,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
             scratch = Path(tmp)
@@ -1028,6 +1127,14 @@ class NativePlayerUiTests(unittest.TestCase):
             legacy_root = userprofile / "Nakagawa" / "data"
             if legacy_data:
                 legacy_root.mkdir(parents=True)
+            # The player's data folder (LOCALAPPDATA on Windows, XDG_DATA_HOME elsewhere), with
+            # a disc list the user imported (nk_disc_verify.h).
+            data_folder = (localappdata / "Nakagawa" / "data" if os.name == "nt"
+                           else userprofile / "data" / "nakagawa-recomp")
+            if disc_list is not None:
+                (data_folder / "verification").mkdir(parents=True)
+                (data_folder / "verification" / "redump.dat").write_text(disc_list,
+                                                                        encoding="utf-8")
             profile = scratch / "controller-profile.json"
             if invalid_profile:
                 profile.write_text("{ definitely not a valid controller profile", encoding="utf-8")
@@ -1307,6 +1414,8 @@ class NativePlayerUiTests(unittest.TestCase):
                 check=False,
             )
             wall_seconds = time.perf_counter() - started
+            if os.environ.get(PLAYER_UI_ECHO_ENV) == "1":
+                sys.stderr.write(completed.stdout)
             if completed.returncode != 0:
                 self.fail(
                     f"player returned {completed.returncode}\n"
@@ -1333,6 +1442,10 @@ class NativePlayerUiTests(unittest.TestCase):
                     persisted_settings = candidate
                     break
 
+            library_file = data_folder / "library.json"
+            persisted_library = (json.loads(library_file.read_text(encoding="utf-8"))
+                                 if library_file.is_file() else None)
+
             def files_under(folder: Path) -> list[str]:
                 return sorted(path.relative_to(folder).as_posix()
                               for path in folder.rglob("*") if path.is_file())
@@ -1347,6 +1460,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 "legacy_root": legacy_root,
                 "legacy_root_exists": legacy_root.is_dir(),
                 "settings": persisted_settings,
+                "library": persisted_library,
                 "default_profile_files": files_under(localappdata / "Nakagawa"),
                 "dedicated_files": files_under(dedicated),
                 "downloaded_tool_marker_exists": (
@@ -1518,6 +1632,64 @@ class NativePlayerUiTests(unittest.TestCase):
                       "the disc's 1 x 1 ICON0.PNG is decoded and shown on its card")
         self.assertNotIn("next_ui_disc_icon", missing["stdout"],
                          "an unreadable disc keeps the placeholder")
+
+    @staticmethod
+    def backdrops(run: dict[str, object]) -> list[tuple[int, str, str]]:
+        """Each frame's (ticks, backdrop game, shown) on the library."""
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        return [(int(frame["ticks_ms"]), frame["backdrop"], frame["backdrop_shown"])
+                for frame in frames if frame["view"] in ("library", "ready_library")]
+
+    def test_next_ui_art_rest_shows_the_rested_cards_picture_behind_the_library(self) -> None:
+        """The 0.6 s art rest: focus resting on a game's card for 0.6 s brings its
+        PIC1 in behind the library; focus that moves on sooner reads no picture, and
+        moving on fades the picture out. Reduce motion leaves it out altogether."""
+        motion = {"reduce_motion_choice": "off"}
+        # Scripted runs cut motion unless NK_UI_TEST_MOTION keeps the settings' choice.
+        keep = {"NK_UI_TEST_MOTION": "1"}
+        # The waits only bound how long the picture may take to be read on a busy machine.
+        rest = self.run_player("ready", ("WAIT_MS=4000",), art_iso="available", ui_mode="next",
+                               settings=motion, env_extra=keep, wait_background=True)
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(rest["stdout"]):
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        frames = self.backdrops(rest)
+        start = frames[0][0]
+        self.assertTrue(all(game == "-1" for ticks, game, _ in frames if ticks - start < 550),
+                        f"nothing behind the library before the rest: {frames[:6]}")
+        self.assertIn(("0", "1"), [(game, shown) for _, game, shown in frames],
+                      "after resting on the first card, its picture is behind the library")
+
+        browse = self.run_player("ready", ("WAIT_MS=300", "KEY_RIGHT", "WAIT_MS=1500"),
+                                 art_iso="available", ui_mode="next", settings=motion,
+                                 env_extra=keep)
+        self.assertNotIn("0", [game for _, game, _ in self.backdrops(browse)],
+                         "focus that moved on before the rest brings no picture in")
+
+        leave = self.run_player("ready", ("WAIT_MS=4000", "KEY_RIGHT", "WAIT_MS=1500"),
+                                art_iso="available", ui_mode="next", settings=motion,
+                                env_extra=keep)
+        states = [(game, shown) for _, game, shown in self.backdrops(leave)]
+        if ("0", "1") in states:
+            # Once focus moves on the picture is never shown again (it fades out, which
+            # test_backdrop_rests_and_fades times; a busy machine may draw no frame of
+            # the fade), and it is gone at the end.
+            last_shown = len(states) - 1 - states[::-1].index(("0", "1"))
+            self.assertNotIn(("0", "1"), states[last_shown + 1:])
+            self.assertEqual(states[-1], ("-1", "0"), "moving on takes the picture away")
+
+        bare = self.run_player("ready", ("WAIT_MS=1500",), art_iso="icon-only", ui_mode="next",
+                               settings=motion, env_extra=keep)
+        bare_frames = self.backdrops(bare)
+        self.assertEqual({game for _, game, _ in bare_frames}, {"-1"},
+                         "a disc with no picture has nothing to show")
+        self.assertLess(len(bare_frames), 100,
+                        "after the rest on a disc with no picture the loop sleeps between frames")
+
+        still = self.run_player("ready", ("WAIT_MS=1500",), art_iso="available", ui_mode="next",
+                                settings={"reduce_motion_choice": "on"}, env_extra=keep)
+        self.assertEqual({game for _, game, _ in self.backdrops(still)}, {"-1"},
+                         "Reduce motion: no picture behind the library")
 
     def test_a_library_of_hundreds_of_titles_loads_pages_and_checks_what_it_shows(self) -> None:
         """A library of 300 titles: every one loads (the player held 64, and one
@@ -1923,6 +2095,50 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual((card.get("kind"), card.get("add")), ("4", "0"), unsupported["stdout"])
         self.assertEqual(self.screens(unsupported)[-1][0], "library")
 
+    def test_next_ui_checks_an_added_disc_once_on_a_worker(self) -> None:
+        """#1731: a disc added from the game-found card is hashed once after the add, on the
+        disc check worker (never the UI thread), and compared with the disc list the user
+        imported; its library record keeps the hashes and the tier. With no list it is
+        hashed and left unchecked. The worker is held for a moment: the library draws frames
+        meanwhile, with the check running."""
+        with tempfile.TemporaryDirectory(prefix=".disc-check-", dir=ROOT) as tmp:
+            iso_path = Path(tmp) / "synthetic.iso"
+            create_test_iso_with_executables(
+                iso_path, build_plain_mips_elf(), disc_id="TEST00043",
+                title="Synthetic Checked Disc",
+            )
+            iso = iso_path.read_bytes()
+        sha1 = hashlib.sha1(iso).hexdigest()
+        crc = f"{zlib.crc32(iso):08x}"
+        disc_list = ("<?xml version=\"1.0\"?>\n<datafile>\n<header><name>Synthetic</name>"
+                     "<version>1</version></header>\n<game name=\"Synthetic Checked Disc\">"
+                     f"<rom name=\"synthetic.iso\" size=\"{len(iso)}\" crc=\"{crc}\" "
+                     f"sha1=\"{sha1}\"/></game>\n</datafile>\n")
+        events = ("WAIT_VIEW=experimental|unsupported|supported|error,15000", "WAIT_MS=100",
+                  "KEY_RETURN", "WAIT_MS=2000")
+        for listed, tier in ((True, "VERIFIED_RETAIL"), (False, "NOT_CHECKED")):
+            with self.subTest(listed=listed):
+                run = self.next_ui_run("library", events, drop_bytes=("source-owned.iso", iso),
+                                       disc_list=disc_list if listed else None,
+                                       env_extra={"NK_UI_TEST_DISC_CHECK_HOLD_MS": "700"})
+                frames = run["frames"]
+                stdout = run["stdout"]
+                assert isinstance(frames, list) and isinstance(stdout, str)
+                self.assertEqual(frames[-1]["view"], "library", stdout)
+                checking = [frame for frame in frames
+                            if frame["view"] == "library" and frame["disc_check"] == "1"]
+                self.assertGreaterEqual(len(checking), 2, stdout)
+                self.assertEqual(frames[-1]["disc_check"], "0", stdout)
+                checks = re.findall(
+                    r"^\[PLAYER\] DISC_CHECK disc=(\S+) result=(\S+) tier=(\S+)$", stdout, re.M)
+                self.assertEqual(checks, [("TEST00043", "HASHED", tier)], stdout)
+                library = run["library"]
+                assert isinstance(library, dict)
+                records = [game for game in library["games"] if game["disc_id"] == "TEST00043"]
+                self.assertEqual(len(records), 1, library)
+                self.assertEqual(records[0].get("content_sha1"), sha1)
+                self.assertEqual(records[0].get("disc_verification", "NOT_CHECKED"), tier)
+
     # The next UI's Settings controls (player_ui_nk.h), as the frame line prints them.
     SETTINGS_FOCUS = {
         "resolution": str(0x4501), "pacing": str(0x4502), "done": str(0x450C),
@@ -1932,7 +2148,7 @@ class NativePlayerUiTests(unittest.TestCase):
         "controller": str(0x450B), "scaling": str(0x4505),
         "launcher_fullscreen": str(0x450A), "accessibility": str(0x452C),
         "interface_size": str(0x452D), "high_contrast": str(0x452E),
-        "reduce_motion": str(0x4509),
+        "reduce_motion": str(0x4509), "text_size": str(0x452F),
     }
     # From Resolution, Down runs through the Game card's five rows to the button
     # row, which it enters at Third-party notices.
@@ -2001,22 +2217,53 @@ class NativePlayerUiTests(unittest.TestCase):
         focus = self.SETTINGS_FOCUS
         run = self.next_ui_run(
             "accessibility-settings",
-            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN",
-             "KEY_ESCAPE", "WAIT_MS=100"),
+            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_DOWN", "KEY_RETURN", "KEY_DOWN",
+             "KEY_RETURN", "KEY_ESCAPE", "WAIT_MS=100"),
         )
         self.assertEqual([view for view, _ in self.screens(run)],
                          ["accessibility_settings", "settings"])
         self.assertEqual(self.focus_trail(run),
-                         [focus["interface_size"], focus["high_contrast"],
+                         [focus["interface_size"], focus["text_size"], focus["high_contrast"],
                           focus["reduce_motion"], focus["accessibility"]],
                          "the page opens on its first setting and Back focuses its row")
         settings = run["settings"]
         assert isinstance(settings, dict)
         self.assertEqual(settings.get("interface_size"), 100, "Automatic steps to 100%")
+        self.assertEqual(settings.get("text_size"), 100, "the text size was not stepped")
         self.assertEqual(settings.get("high_contrast_focus"), "on", "Automatic steps to On")
         self.assertEqual(settings.get("reduce_motion_choice"), "off", "On steps to Off")
         self.assertIs(settings.get("reduce_motion"), False,
                       "older players read Off as reduce_motion false")
+
+    def test_next_ui_text_size_steps_and_is_saved(self) -> None:
+        """Settings > Accessibility's Text size, under Interface size, steps Standard
+        (100%), Large (125%) and Larger (150%) and saves each step as text_size in
+        settings.json, without touching the interface size. The page keeps drawing
+        and taking input at the larger sizes: Down still moves on to High contrast."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "accessibility-settings",
+            ("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN",
+             "WAIT_MS=100", "KEY_DOWN", "WAIT_MS=100"),
+        )
+        self.assertEqual(self.focus_trail(run),
+                         [focus["interface_size"], focus["text_size"], focus["high_contrast"]],
+                         "Text size is the second setting, and focus moves on past it")
+        self.assertEqual([view for view, _ in self.screens(run)], ["accessibility_settings"])
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("text_size"), 150, "Standard steps to Large, then Larger")
+        self.assertEqual(settings.get("interface_size"), 0,
+                         "the interface size stays Automatic")
+
+        wrapped = self.next_ui_run(
+            "accessibility-settings",
+            ("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "KEY_RETURN", "KEY_RETURN",
+             "WAIT_MS=100"),
+        )
+        settings = wrapped["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("text_size"), 100, "Larger steps back to Standard")
 
     def test_next_ui_settings_pages_open_and_return(self) -> None:
         """#1302: the online, notices, build tools and cache (#1306) and removal pages are
@@ -2093,14 +2340,35 @@ class NativePlayerUiTests(unittest.TestCase):
 
     # The next UI's controller page (player_ui_nk.h), as the frame line prints it.
     CONTROLLER_FOCUS = {
-        "select": str(0x4600), "start": str(0x4601), "calibrate": str(0x4625),
+        "select": str(0x4600), "start": str(0x4601), "rtrigger": str(0x4607),
+        "stick_up": str(0x460F), "stick": str(0x4626), "calibrate": str(0x4625),
         "back": str(0x4628), "scope": str(0x4629), "calibration_cancel": str(0x462B),
     }
-    # From the first binding, two steps right and two down reach Calibrate stick.
-    TO_CALIBRATE = ("KEY_RIGHT", "KEY_RIGHT", "KEY_DOWN", "KEY_DOWN")
+    # From the first binding, two steps right reach the stick choice, and three down
+    # from it Calibrate stick.
+    TO_STICK = ("KEY_RIGHT", "KEY_RIGHT")
+    TO_CALIBRATE = TO_STICK + ("KEY_DOWN", "KEY_DOWN", "KEY_DOWN")
+
+    @staticmethod
+    def saved_profile(run: dict[str, object]) -> dict[str, object]:
+        """The input profile the run left on disk: each Controls change saves it."""
+        assert run["profile_exists"], "the change was saved without a Save step"
+        profile = json.loads(str(run["profile_text"]))
+        assert isinstance(profile, dict)
+        return profile
+
+    @staticmethod
+    def keys_of(profile: dict[str, object]) -> dict[str, str]:
+        entries = profile["keyboard_bindings"]
+        assert isinstance(entries, list)
+        return {entry["control"]: entry["primary"] for entry in entries}
 
     def test_next_ui_controller_rebind_calibrate_save_and_back(self) -> None:
-        """Controller settings in the next UI run the same handlers as the existing renderer."""
+        """Controller settings in the next UI run the same handlers as the existing renderer.
+
+        #1299: a button another control uses moves to the chosen one, and that control
+        takes the chosen one's button, so the mapping never conflicts; every change is
+        written to the input profile at once."""
         focus = self.CONTROLLER_FOCUS
         bind = self.next_ui_run(
             "controller", ("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "PAD_SOUTH", "WAIT_MS=100"),
@@ -2113,8 +2381,21 @@ class NativePlayerUiTests(unittest.TestCase):
                       "choosing a binding waits for a button")
         self.assertEqual(frames[-1]["controller_capturing"], "0",
                          "the controller's button is taken, not routed to the page")
-        self.assertEqual(frames[-1]["controller_conflicts"], "1")
+        self.assertEqual(frames[-1]["controller_conflicts"], "0", "a taken button swaps")
+        self.assertEqual(frames[-1]["key_note"], "1", "the page names the control that changed")
         self.assertNotEqual(frames[0]["start_binding"], frames[-1]["start_binding"])
+        buttons = {entry["control"]: entry["primary"]
+                   for entry in self.saved_profile(bind)["psp_bindings"]}  # type: ignore[union-attr]
+        self.assertEqual((buttons["start"], buttons["cross"]), ("south", "start"))
+
+        stick = self.next_ui_run(
+            "controller", ("WAIT_MS=100",) + self.TO_STICK + ("KEY_RETURN", "WAIT_MS=100"),
+        )
+        self.assertEqual(self.focus_trail(stick)[-1], focus["stick"])
+        calibration = self.saved_profile(stick)["calibration"]
+        assert isinstance(calibration, dict)
+        self.assertEqual((calibration["analog_x"]["host_axis"], calibration["analog_y"]["host_axis"]),
+                         ("rightx", "righty"), "the PSP stick follows the right stick")
 
         cancel = self.next_ui_run(
             "controller", ("WAIT_MS=100", "KEY_RETURN", "KEY_ESCAPE", "WAIT_MS=100"),
@@ -2141,7 +2422,7 @@ class NativePlayerUiTests(unittest.TestCase):
                          "the rest step opens on Cancel and Esc returns to Calibrate stick")
 
         # Down from Calibrate stick reaches Back, at the right end of the button
-        # row; the mapping choice is next to it and Save profile is first.
+        # row; the mapping choice is next to it and Reset to defaults is first.
         scope = self.next_ui_run(
             "controller",
             ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_LEFT", "KEY_RETURN",
@@ -2154,16 +2435,6 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[0]["input_scope"], "global")
         self.assertEqual(frames[-1]["input_scope"], "TEST00005")
 
-        save = self.next_ui_run(
-            "controller",
-            ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN",) + ("KEY_LEFT",) * 3 +
-            ("KEY_RETURN", "WAIT_MS=100"),
-        )
-        frames = save["frames"]
-        assert isinstance(frames, list)
-        self.assertEqual(frames[-1]["profile_save_notice"], "1")
-        self.assertTrue(save["profile_exists"])
-
         back = self.next_ui_run(
             "controller",
             ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_RETURN", "WAIT_MS=100"),
@@ -2172,49 +2443,95 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(self.focus_trail(back)[-1], self.SETTINGS_FOCUS["controller"],
                          "Back returns to Settings on Controls")
 
+        # A profile that cannot be written (its folder is a file): the binding's write
+        # fails and says so, the first Back keeps the page to show it, and Back again
+        # leaves without saving.
+        unwritable = {"NK_INPUT_PROFILE": str(PLAYER_EXE / "input_profile.json")}
+        rebind_and_back = (("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "PAD_SOUTH", "WAIT_MS=100",
+                            "KEY_UP") + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_RETURN", "WAIT_MS=100"))
+        stay = self.next_ui_run("controller", rebind_and_back, env_extra=unwritable)
+        frames = stay["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["profile_save_notice"], "1", "the failed write is shown")
+        self.assertEqual(frames[-1]["view"], "controller", "the first Back stays to show it")
+        leave = self.next_ui_run("controller", rebind_and_back + ("KEY_RETURN", "WAIT_MS=100"),
+                                 env_extra=unwritable)
+        self.assertEqual([view for view, _ in self.screens(leave)], ["controller", "settings"],
+                         "Back again leaves without saving")
+
     def test_next_ui_keyboard_keys_rebind_refuse_reset_and_save(self) -> None:
         """#1299: KEYBOARD shows the keys; a chosen button takes the next key pressed,
-        a key another button uses is refused, Reset to defaults resets the keys, and
-        Save profile writes them to the profile the game is handed."""
+        a key another control uses moves to it and that control takes its old key,
+        the stick's four keys rebind the same way, Reset to defaults resets the keys,
+        and every change is written to the profile the game is handed."""
         # Up from the first binding is KEYBOARD; Down twice from it is Start's key.
         to_start = ("WAIT_MS=100", "KEY_UP", "KEY_RETURN", "WAIT_MS=100", "KEY_DOWN", "KEY_DOWN")
-        # Down from L Trigger, the last row of the first column, is Reset to defaults.
-        to_reset = ("KEY_DOWN",) * 6
+        # Down from L Trigger, the last row of the first column, then Left, is Reset to
+        # defaults, the first of the buttons under the cards.
+        to_reset = ("KEY_DOWN",) * 6 + ("KEY_LEFT",)
         save = self.next_ui_run(
-            "controller",
-            to_start + ("KEY_RETURN", "KEY_C", "WAIT_MS=100") + to_reset +
-            ("KEY_LEFT", "KEY_RETURN", "WAIT_MS=100"),
+            "controller", to_start + ("KEY_RETURN", "KEY_C", "WAIT_MS=100"),
         )
         frames = save["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(self.focus_trail(save)[1:4], [str(0x462D), str(0x4600), str(0x4601)])
+        # Under load the two Downs can land in one drawn frame (input waits for the
+        # new page's layout), so Select may not be drawn focused on the way.
+        trail = self.focus_trail(save)
+        self.assertEqual(trail[1], str(0x462D), "Up from the first binding is KEYBOARD")
+        on_the_way = trail[2:] if trail[2:3] != [str(0x4600)] else trail[3:]
+        self.assertEqual(on_the_way[:1], [str(0x4601)], "two Downs from KEYBOARD reach Start")
         self.assertEqual(frames[0]["input_device"], "controller")
         self.assertEqual(frames[-1]["input_device"], "keyboard")
         self.assertIn("1", [frame["controller_capturing"] for frame in frames],
                       "choosing Start's key waits for a key")
         self.assertEqual((frames[0]["start_key"], frames[-1]["start_key"]), ("40", "6"),
                          "the C key pressed is Start's key, not routed to the page")
-        self.assertEqual(frames[-1]["profile_save_notice"], "1")
-        profile = json.loads(str(save["profile_text"]))
-        keys = {entry["control"]: entry["primary"] for entry in profile["keyboard_bindings"]}
-        self.assertEqual(keys["start"], "c")
+        self.assertEqual(self.keys_of(self.saved_profile(save))["start"], "c")
 
-        refuse = self.next_ui_run(
+        swap = self.next_ui_run(
             "controller",
             to_start + ("KEY_RETURN", "KEY_X", "WAIT_MS=100", "KEY_RETURN", "PAD_SOUTH",
-                        "WAIT_MS=100", "KEY_RETURN", "KEY_C", "WAIT_MS=100") + to_reset +
+                        "WAIT_MS=100"),
+        )
+        frames = swap["frames"]
+        assert isinstance(frames, list)
+        noted = [frame for frame in frames if frame["key_note"] == "1"]
+        self.assertTrue(noted, "X, Cross's key, moves to Start with a note naming Cross")
+        self.assertEqual({frame["start_key"] for frame in noted}, {"27"})
+        self.assertEqual(frames[-1]["controller_capturing"], "0",
+                         "a controller press stops the wait for a key")
+        keys = self.keys_of(self.saved_profile(swap))
+        self.assertEqual((keys["start"], keys["cross"]), ("x", "return"),
+                         "Cross takes Start's old key: nothing is left without one")
+
+        stick = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100", "KEY_UP", "KEY_RETURN", "WAIT_MS=100", "KEY_DOWN", "KEY_RIGHT",
+             "KEY_RIGHT", "KEY_RETURN", "KEY_W", "WAIT_MS=100"),
+        )
+        focus = self.CONTROLLER_FOCUS
+        trail = self.focus_trail(stick)
+        self.assertEqual(trail[-1], focus["stick_up"],
+                         "the stick's keys sit beside the buttons, on the stick card")
+        self.assertLess(trail.index(focus["select"]), len(trail) - 1,
+                        "reached from the buttons: Down, then Right twice")
+        keys = self.keys_of(self.saved_profile(stick))
+        self.assertEqual((keys["stick_up"], keys["rtrigger"]), ("w", "i"),
+                         "the stick's up key is W now, and R takes I")
+
+        reset = self.next_ui_run(
+            "controller",
+            to_start + ("KEY_RETURN", "KEY_C", "WAIT_MS=100") + to_reset +
             ("KEY_RETURN", "WAIT_MS=100"),
         )
-        frames = refuse["frames"]
+        frames = reset["frames"]
         assert isinstance(frames, list)
-        refused = [frame for frame in frames if frame["key_note"] == "1"]
-        self.assertTrue(refused, "X, Cross's key, is refused with a note")
-        self.assertEqual({frame["start_key"] for frame in refused}, {"40"})
-        self.assertEqual({frame["controller_capturing"] for frame in refused}, {"0"})
         self.assertIn("6", [frame["start_key"] for frame in frames])
         self.assertEqual(frames[-1]["start_key"], "40", "Reset to defaults resets the keys")
         self.assertEqual(frames[-1]["start_binding"], frames[0]["start_binding"])
         self.assertEqual(frames[-1]["view"], "controller")
+        self.assertEqual(self.keys_of(self.saved_profile(reset))["start"], "return",
+                         "the reset is saved too")
 
     def test_next_ui_settings_opens_controls_and_esc_returns(self) -> None:
         """Settings > Controls opens the next UI's controller page; Esc comes back.
@@ -3575,7 +3892,8 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(bind_frames, list)
         self.assertEqual(bind_frames[2]["controller_capturing"], "1")
         self.assertEqual(bind_frames[3]["controller_capturing"], "0")
-        self.assertEqual(bind_frames[3]["controller_conflicts"], "1")
+        # A taken button swaps with the chosen control's (#1299): no conflict is left.
+        self.assertEqual(bind_frames[3]["controller_conflicts"], "0")
         self.assertNotEqual(bind_frames[0]["start_binding"], bind_frames[3]["start_binding"])
 
         calibrate = self.run_player(
@@ -4127,17 +4445,31 @@ class NativePlayerUiTests(unittest.TestCase):
         """#1282: Restart game runs the same launch PLAY does for that game.
 
         The synthetic library game has no package, so the launch answers with
-        its own Game Not Ready card: the restart reached the launch path."""
+        its own Game Not Ready card: the restart reached the launch path.
+
+        Restart game goes back to the library and starts the launch on the
+        launch worker (#1298), so the script waits for that launch's card, not
+        for a fixed time. NK_UI_TEST_SLOW_START_MS holds the launch for 600 ms,
+        longer than any fixed wait the script could guess: the old WAIT_MS=100
+        ended on the stopped game's card whenever a slow runner took longer
+        than that to reach the package check."""
         run = self.run_player(
-            "library", ("WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100"),
+            "library", ("WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN", "WAIT_VIEW=error,10000"),
             error_code="RUNTIME_ERROR_EXIT", ui_mode="next",
+            env_extra={"NK_UI_TEST_SLOW_START_MS": "600"},
         )
-        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
-            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        # --ui=next exits 4 when the launcher can't start, so a run that got here
+        # drew the next UI; anything else is a failure, never a skip.
+        self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", str(run["stdout"]))
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["error"], "RUNTIME_ERROR_EXIT")
+        pending = [frame for frame in frames if frame["launch_pending"] == "1"]
+        self.assertTrue(pending, "Restart game started a launch")
+        self.assertEqual(pending[0]["view"], "library", "the restart left the stopped game's card")
+        self.assertEqual(frames[-1]["view"], "error", run["stdout"])
         self.assertIn(frames[-1]["error"], ("RUNTIME_PACKAGE_NOT_READY",), run["stdout"])
+        self.assertEqual(frames[-1]["launch_pending"], "0")
         self.assertNotEqual(frames[-1]["error_retry"], "Restart_game")
 
     # Enum values of PlayerUiPackageState (src/player/ui/player_ui_nk.h).
@@ -4360,7 +4692,7 @@ class NativePlayerUiTests(unittest.TestCase):
     ROUTE_REMOVE = "4"
 
     def library_item(self, index: int) -> str:
-        return str(0x1100 + index)
+        return str(0x10000 + index)
 
     LIBRARY_ADD = str(0x1002)
 

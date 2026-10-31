@@ -238,7 +238,8 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `build_graph_snapshot.py` | Read-only snapshot of the current Make build graph. |
 | `record_toolchain.py` | Record observed live toolchain identities using the doctor's detection functions. |
 | `vulkan_sdk.py` | Vulkan SDK validation and discovery shared by the workspace doctor. |
-| `library_build.py` | Build every disc in a folder into one player data folder, with a per-title manifest. |
+| `library_build.py` | Build every disc in a folder into one player data folder, with a per-title manifest, keyed by disc ID and image hash and checked against your Redump list. |
+| `compat_table.py` | Turn a private library build into the public whole-library summary in `docs/COMPATIBILITY.md`: counts only, refusing any disc identifier. |
 | `library_sweep.py` | Run the production ISO bring-up route across a library and aggregate blockers. |
 | `progress_tracker.py` | Run concrete gating checks against real outputs and emit a structured progress record. |
 
@@ -500,6 +501,8 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_incident_regression_private.py` | Exact-incident regression against preserved private evidence. |
 | `test_intr_waits_matrix.py` | Guards for the interrupt and dispatch-context conformance matrix. |
 | `test_library_build.py` | Regressions for the resumable whole-folder library build and its disc check. |
+| `test_compat_table.py` | The whole-library summary's tier rules, and that no title, disc ID, file name or hash reaches it. |
+| `test_disc_verify.py` | Whole-image hashing, the Redump datafile reader, the verified retail / modified / unknown tiers, and bring-up library records keyed by disc ID plus hash. |
 | `test_library_sweep.py` | Regressions for the private, resumable library compatibility sweep. |
 | `test_matrix_disposition.py` | Guard the evidence-matrix disposition field against becoming uninformative. |
 | `test_matrix_report.py` | Generate a conservative, machine-readable unittest evidence matrix. |

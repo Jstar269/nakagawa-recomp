@@ -381,7 +381,7 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
             { "X", SDLK_X, SDL_SCANCODE_X }, { "F1", SDLK_F1, SDL_SCANCODE_F1 },
             { "BACKSPACE", SDLK_BACKSPACE, SDL_SCANCODE_BACKSPACE },
             { "D", SDLK_D, SDL_SCANCODE_D }, { "SLASH", SDLK_SLASH, SDL_SCANCODE_SLASH },
-            { "F12", SDLK_F12, SDL_SCANCODE_F12 }
+            { "F12", SDLK_F12, SDL_SCANCODE_F12 }, { "W", SDLK_W, SDL_SCANCODE_W }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             if (strcmp(token + 4, keys[i].name) == 0) {
@@ -652,6 +652,9 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     if (app->active_view == VIEW_BUILDING_PACKAGE && ui_test_build_bar_fraction() >= 0.0f) {
         build_bar_permille = (int)(ui_test_build_bar_fraction() * 1000.0f + 0.5f);
     }
+    bool backdrop_shown = false;
+    int backdrop_index = g_ui_test_next_ui != NULL
+        ? player_ui_nk_test_backdrop(g_ui_test_next_ui, &backdrop_shown) : -1;
     printf("[PLAYER_UI_TEST] frame=%d ticks_ms=%llu view=%s "
            "selected=%d selected_disc=%s selected_title_id=%s "
            "focus=%d focus_count=%d settings_two_col=%d wizard_step=%s "
@@ -683,7 +686,8 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "outdated=%d outdated_scanned=%d rebuild_prompt=%d rebuild_banner=%d "
            "rebuild_reminder=%d rebuild_queue=%d rebuild_queue_active=%d "
            "rebuild_queue_paused=%d prompt_version=%s "
-           "input_class=%s input_files=%zu next_input_class=%s next_input_files=%zu\n",
+           "input_class=%s input_files=%zu next_input_class=%s next_input_files=%zu "
+           "backdrop=%d backdrop_shown=%d disc_check=%d\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -718,7 +722,7 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->input_profile_notice[0] ? 1 : 0,
            app->input_settings.device == INPUT_DEVICE_KEYBOARD ? "keyboard" : "controller",
            app->input_settings.profile.psp_keys[INPUT_CONTROL_BTN_START].primary,
-           app->input_settings.key_note[0] ? 1 : 0,
+           app->input_settings.note[0] ? 1 : 0,
            selected && selected->is_experimental ? 1 : 0,
            selected && selected->is_prepared ? 1 : 0,
            selected && selected->assets_staged ? 1 : 0,
@@ -765,7 +769,8 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            player_input_class_name(app->wizard.preflight.input.input_class),
            app->wizard.preflight.input.files_needed,
            selected_input ? player_input_class_name(selected_input->input_class) : "none",
-           selected_input ? selected_input->files_needed : (size_t)0);
+           selected_input ? selected_input->files_needed : (size_t)0,
+           backdrop_index, backdrop_shown ? 1 : 0, app->disc_check.running ? 1 : 0);
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {

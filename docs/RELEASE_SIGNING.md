@@ -118,6 +118,69 @@ The public key is compiled into each player, so a player trusts exactly the key 
   Players built with the leaked key keep trusting it until their users update by hand, so the advisory tells
   users to download the new version from the release page.
 
+## Sign the Windows binaries (Authenticode)
+
+This is a second, separate signature. The minisign signature above protects the player's update download.
+An Authenticode signature is what Windows reads: it names the publisher in the file's Properties and in
+SmartScreen. v0.0.1 shipped without one; the release notes explain the SmartScreen prompt. The procedure below
+is ready for the day the maintainer has a code-signing certificate. It signs on the maintainer's machine:
+no certificate, key or password is in the repository, CI or a script argument.
+
+**What is signed.** `bin/nakagawa_player.exe` and `bin/production_smoke.exe`, the two executables this
+project builds. Third-party DLLs keep the bytes their upstream shipped. The showcase demo executables under
+`bin/demos/` stay unsigned: each demo's `completion-manifest.json` lists its executable's SHA-256, and the
+player hides a demo whose file no longer matches.
+
+**What the attestations cover.** The SLSA Build L2 attestations cover the bytes the workflow built, which
+are unsigned. A signature changes a file's SHA-256, so `gh attestation verify` passes on the unsigned file and
+fails on the signed one. Re-keying `bin/runtime-manifest.json` (below) changes a third attested file the same
+way. The tool therefore writes `signing-record.json` at the package root: the unsigned and the signed SHA-256
+of each signed file, the attested and the refreshed SHA-256 of the runtime manifest, and the signer. A
+downloader checks the attestations on the unsigned bundle, which the maintainer keeps with the release
+records (a workflow artifact expires after 90 days), and matches its hashes to the record. The release notes
+say so.
+
+**Requirements.** The Windows SDK (`signtool.exe`), PowerShell 7.4 or later, Python on `PATH` (or
+`$env:PYTHON`) for the runtime manifest, and one of:
+
+- a code-signing certificate in a Windows certificate store, chosen by its SHA-1 thumbprint. A certificate on a
+  hardware token or behind a cloud signing provider's key storage provider shows up there too;
+- a cloud signing provider that signtool drives through a plug-in: pass its `/dlib` and `/dmdf` arguments
+  with `-ExtraSigntoolArgument`.
+
+A certificate file (`.pfx`) is imported into the store as non-exportable first. The script does not take
+passwords.
+
+**Steps.** Run these on the signing machine, after the binaries are copied into the staged folder and before
+`generate_sbom.py` and `stage_install.py --portable-zip` in
+[`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#recreate-the-package), so that the SBOMs, `bin/runtime-manifest.json`
+and `SHA256SUMS.txt` describe the signed bytes:
+
+```powershell
+pwsh tools/sign_release_binaries.ps1 -Stage $Stage -Thumbprint <certificate SHA-1 thumbprint> `
+    -TimestampUrl <RFC 3161 timestamp service URL>
+```
+
+The script refuses a stage that is already signed or has a `signing-record.json`, signs with SHA-256 digests
+and an RFC 3161 timestamp, checks every file with `signtool verify /pa /all`, refreshes
+`bin/runtime-manifest.json` and verifies it, and writes `signing-record.json`. The timestamp service is the
+maintainer's choice. To check a package again later, run the script with `-VerifyOnly`.
+
+`-TestCertificate` rehearses the steps with a self-signed certificate (no timestamp, no trust check). Such a
+package is never published.
+
+Signing the binaries in the attestation workflow, so that the attestation covers the signed bytes, needs the
+key to be reachable from CI. That is a separate decision and is not part of this procedure.
+
+**If a step fails**, the script restores the unsigned executables and the previous runtime manifest and
+removes the record, so the stage is either untouched or completely signed.
+
+**Reproducibility.** An unsigned package is byte-for-byte reproducible
+([check](PREVIEW_RELEASE.md#check-that-the-package-is-reproducible)). Two signed runs differ in the two
+signatures (each timestamp is different) and in everything that describes the signed bytes: the three SBOMs,
+`bin/runtime-manifest.json`, `SHA256SUMS.txt` and `signing-record.json`. Check a signed package by building the
+same inputs unsigned and comparing it with the unsigned bundle's hashes in `signing-record.json`.
+
 ## Tests
 
 The tests never touch the internet and never use the update-signing key. `tests/native/test_nk_sig.c` checks

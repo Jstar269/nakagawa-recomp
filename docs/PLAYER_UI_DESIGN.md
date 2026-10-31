@@ -171,10 +171,31 @@ again, and the pointer leaving the window clears it. Hover never moves focus, an
 | Minimum target | 44 px high (`NK_UI_CONTROL_HEIGHT`); large 52, small 34 |
 | Safe area | nothing closer than 16 px to a window edge |
 
-Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200%) times the text size gives the
-device density, and the logical width decides the columns. The text size scales the whole layout, as the UI scale
-does, so the launcher offers one control for both: Settings > Accessibility > Interface size sets the UI scale and
-the text size stays 100%. The launcher's screens are laid out on at least its
+Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200%) gives the device density, and
+the logical width decides the columns. The text size (`NkUiViewport.text_size_pct`: 90, 100, 125 or 150) scales type
+alone, on top of the density: each run is measured, given its letter spacing and line height, and drawn at
+`size x density x text size`, while boxes, gaps, padding and the logical size keep the density alone, and the layout
+reflows around the larger text. At 100% every screen is laid out exactly as before. A component designed around one
+line of text (a button, chip, badge, tab, row) keeps its height while the line fits with a quarter of a line above
+and below it, and grows past that (`nk_ui_line_box`); at 150% that is a chip or badge, never a button. Screens
+reserve room for text from its own measurements (`nk_ui_text_width`, `nk_ui_button_width`, `nk_ui_line_height`),
+not from constants. At a larger text size:
+
+- a column sized for its words grows to the widest of them (check rows, the setting rows' button column, the licence
+  card, the Controls page's CONTROLLER and KEYBOARD pair and stick button);
+- a row of buttons wraps onto a second row when it would run past its column (`nk_ui_flow_begin`: the Settings
+  actions, the title page's actions);
+- the setting rows on Accessibility, the online options, Updates and build tools put each sentence under its
+  button, at the full width, when beside it a sentence would be cut;
+- the Library's narrowest card grows with the text, so fewer columns fit and a page holds fewer cards
+  (`player_ui_library_page_size_at`), and its heading row leaves the LIBRARY heading out when the row's controls
+  would not fit beside it (the tab names the page);
+- the prompt bar's hint ends in an ellipsis in the room the prompts leave;
+- a page body (Library, title page, Settings, About) or a flow card taller than the room between the bars scrolls
+  there, and a control taking focus scrolls into view; at 100% every page fits, as the screen tests check.
+
+The launcher offers it as Settings > Accessibility > Text size; the in-game overlay stays at 100%. The launcher's
+screens are laid out on at least its
 1280 x 720 design size (`NkUiViewport.min_logical_w` / `min_logical_h`): a smaller window, down to the 960 x 540
 minimum, lowers the density so the same layout is drawn smaller, instead of pushing buttons and the prompt bar off
 the window. A larger window keeps its density and gains room. Clay clips at most 100 containers per layout: shorten
@@ -197,9 +218,17 @@ is painted over.
 ### Motion
 
 Tokens are in seconds (`NK_UI_MOTION_*`): fast 0.12 (focus, press), base 0.20 (toast, tab rule), slow 0.50 (art
-crossfade); art appears after a 0.6 s rest, preview music after 1.1 s, fading in over 1.0 s and out over 0.45 s.
-The waves step at 30 Hz. Reduce motion (the setting, or with it on Automatic, Windows' Animation effects turned
-off) makes every duration a cut and holds the waves on one frame. Nothing ever needs motion to be understood.
+crossfade); art appears after a 0.6 s rest. The preview-music tokens (after 1.1 s, fading in over 1.0 s and out
+over 0.45 s) are reserved: the player has no preview music. The waves step at 30 Hz. Reduce motion (the setting, or
+with it on Automatic, Windows' Animation effects turned off) makes every duration a cut and holds the waves on one
+frame. Nothing ever needs motion to be understood.
+
+The art rest: once focus has rested on a game's card for 0.6 s (`NK_UI_MOTION_ART_REST`), the player reads that
+disc's PIC1 and it fades in behind the library over slow (`nk_ui_backdrop`), over the waves and under a scrim of the
+page colour. Moving on fades it out, so browsing past cards reads no pictures and changes nothing behind them. The
+scrim is solved for every step of the fade so that a white picture over the brightest waves stays as dark as the
+waves' own limit, and every text colour keeps its contrast (`nk_ui_backdrop_scrim`, `test_backdrop_rests_and_fades`).
+The demos (their art is the project's own drawing), the find box and Reduce motion leave it out: it is decoration.
 
 The launcher's loop asks nk_ui how long it may wait for input (`nk_ui_wait_s`, `test_wait_follows_motion`): one
 display frame while something moves, until the waves' next 30 Hz step while they play, else 50 ms. It used to wait
@@ -219,20 +248,21 @@ first frame and its last are cuts. Under Reduce motion nk_ui leaves the transiti
   A picture is an nk_ui custom element, which Clay transitions cannot fade, so nk_ui eases the alpha it draws it
   with, on Clay's ease-out curve.
 
-Clay counts a frame's time into a transition from the frame it starts on. The time since the last frame was idle
-when nothing moved then, so a transition starting now is given one display frame of it (`NK_UI_MOTION_FRAME`) and
-starts its course at the beginning. nk_ui gives Clay the layout's size at the start of every frame, as Clay's
-lifecycle asks: Clay holds moves back on a frame whose size changed, and given the size only on a resize it took
-every frame for one. The in-game overlay keeps its motion cut: the runtime is not told the player's Reduce motion
-choice. The goldens are stills at a clock that never moves, so their contexts cut motion too; the motion itself is
-tested at a moving clock in `tests/native/test_nk_ui_core.c`.
+Clay counts a frame's time into a transition from the frame it starts on. The time since the last frame was idle when
+nothing moved then, so a transition starting now is given one display frame of it (`NK_UI_MOTION_FRAME`) and starts
+its course at the beginning. nk_ui gives Clay the layout's size at the start of every frame, as Clay's lifecycle asks:
+Clay holds moves back on a frame whose size changed, and given the size only on a resize it took every frame for one.
+The in-game overlay follows the player's Reduce motion choice too: the launcher exports it as `SR_REDUCE_MOTION`
+(`on`, `off`, or `system` for Automatic, which the overlay resolves against Windows' setting as it draws), and the
+overlay keeps drawing while a transition eases. The goldens are stills at a clock that never moves, so their contexts
+cut motion too; the motion itself is tested at a moving clock in `tests/native/test_nk_ui_core.c`.
 
 ### Background waves
 
 Four project-authored ribbons drift behind every launcher screen (`nk_ui_waves_element`, drawn first and outside
 the layout), never in game. Their combined alpha is capped so every text colour keeps WCAG AA over the brightest
-point. The SDL_Renderer backend draws them through the CPU reference at a third of the window size and keeps the
-frame until the command changes; the Vulkan backend will use the shader.
+point. The SDL_Renderer and Vulkan backends both draw them through the CPU reference at a third of the window
+size, scaled up with a linear filter, and keep the frame until the command changes.
 
 ## Components
 
@@ -327,6 +357,19 @@ two lines at most, and the status in `LABEL_S`). The cards are focusable, never 
 demo's title page like a game card. The grid gives up rows to fit the row; where the empty-library card and the row
 do not both fit (the 960 x 540 minimum), the card leaves out its icon.
 
+Disc check (#1731): each time the user adds a disc, its image is hashed after the add, on a worker, one disc at a
+time, and compared with the disc list the user imported ([COMPATIBILITY.md](COMPATIBILITY.md#whole-library)); so is
+any other image of its disc ID not hashed yet. None starts while a game starts or runs or a package builds. While
+one runs, the heading row carries a `CAPTION` `muted` line, "Checking disc image: 40%" ("Checking disc images: 40%,
+2 more" with more waiting), and a small CANCEL that stops it and the ones waiting (it stays while the check stops);
+the games stay, unchecked. A check that could not finish leaves a `warning` line ("A disc image could not be
+checked", "Your disc list could not be read", or "Some disc images were not checked" when too many wait) with HIDE,
+and the reason goes to the developer log. The line stays until HIDE; a later check shows its progress meanwhile.
+Neither button is ever the default focus. The progress is a number, not an animation, and it is on that line
+only: the card's badge, YOUR DISC until then, changes once, to VERIFIED RETAIL, MODIFIED DISC or UNKNOWN DUMP (a
+beta's BETA / UNOFFICIAL stays over UNKNOWN DUMP). A disc added again reads YOUR DISC until its new check ends,
+since its file may hold other bytes now.
+
 ### Title detail (C5, built)
 
 Aside: the hero, then a PACKAGE card (eyebrow, status pill, the status detail in `BODY_S` `muted`, and any input
@@ -334,7 +377,9 @@ note in an inset `info` box). The detail follows the package state (ready, check
 missing, starting, running), never the primary action: while its game runs, a ready package says "Running now.
 Stop the game to rebuild or change settings." The input note about decrypted files shows only while the package
 still needs them. Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in `DATA`, the status
-pill and tag (YOUR DISC, or BETA / UNOFFICIAL as on the card), one action row on the column's left edge with every button 52 px (the primary action, PLAY when
+pill and tag (YOUR DISC, BETA / UNOFFICIAL or the disc check's word, as on the card), then for a checked disc
+one `BODY_S` `muted` sentence on what the check found (for UNKNOWN DUMP: not shown to be retail, not modified,
+since Redump's PSP list names no disc IDs), one action row on the column's left edge with every button 52 px (the primary action, PLAY when
 the package is ready, STARTING... while the launch starts, STOP GAME while a game runs, then OPEN SAVE FOLDER and
 BACK), and the WHAT TO EXPECT card. Its eyebrow carries a player tier chip (PERFECT and PLAYABLE `ready`, IN-GAME
 and MENU `info`, TITLE SCREEN `warning`, WON'T BOOT `error`; no chip for a title no one has tried). Below it come
@@ -373,7 +418,10 @@ built and no saves says so. REMOVE (`DANGER`) removes the title, deletes those f
 ticked), and returns to the library. Focus lands on the tile that took the removed title's place, or on the add
 card when it was the last, and the page turns to it. The folders are found from the disc ID under the player's own
 roots, never from a path stored in the library. The disc image, the user's decrypted files and the shared
-manifests are never on the list. Prompt bar: MOVE, SELECT, CANCEL.
+manifests are never on the list. Those folders and saves are the disc ID's, so while another image with the same
+disc ID stays in the library (a retail disc beside its fan translation), the box is left out and the lead says
+what Nakagawa built for it and its saves stay, because the other image uses them; only the record goes. Prompt bar:
+MOVE, SELECT, CANCEL.
 
 ### About (built)
 
@@ -429,11 +477,13 @@ the controller and the saves folder as captions; CHECK FOR UPDATES opens the Upd
 [`SETUP.md`](SETUP.md#network-use)). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
 THIRD-PARTY NOTICES and BUILD TOOLS AND CACHE (#1306: the share libraries switch, CLEAR SHARED LIBRARY CACHE and
 REMOVE BUILD TOOLS); the online options, the notices, build tools and cache and the removal check are dialog cards.
-ACCESSIBILITY (#1739) is a dialog card of three settings, each a button that steps through its values beside a
+ACCESSIBILITY (#1739) is a dialog card of four settings, each a button that steps through its values beside a
 sentence saying what it does and what Windows asks for now: INTERFACE SIZE (Automatic follows the display scale, or
-100, 125, 150 or 200%; a larger size needs a window large enough for the 1280 x 720 layout at that size), HIGH
+100, 125, 150 or 200%; a larger size needs a window large enough for the 1280 x 720 layout at that size), TEXT SIZE
+(Standard, Large or Larger: 100, 125 or 150% type, with controls and the layout's spacing kept, in any window), HIGH
 CONTRAST and REDUCE MOTION (Automatic, On or Off; Automatic follows Windows' contrast themes and Animation effects,
-read every frame, so a change there applies at once).
+read every frame, so a change there applies at once). The four buttons share one column; at a larger text size it
+is as wide as the widest label, and the sentences go under the buttons when beside them one would be cut.
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
 SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
 page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:
@@ -460,26 +510,34 @@ page) so every row fits 960 x 540. The tabbed layout below is the target for a l
 
 Settings > Controls opens one page under the top bar with SETTINGS active. Under the `CONTROLS` heading (left out
 below 680 px tall), CONTROLLER and KEYBOARD (the one shown filled; Up from the first binding) choose whose bindings the
-page shows, beside one status line: a conflict in `error`, a load or save message, the prompt while a button is
-awaited, or which controller is connected. Two cards side by side:
+page shows, beside one status line: what the last binding changed, a load or save problem in `error`, the prompt
+while a button is awaited, or which controller is connected. Two cards side by side:
 
 - BUTTONS: the eyebrow names the mapping being edited (`BUTTONS · GLOBAL MAPPING`, or the game's own in `ready`),
   then the 14 PSP controls in two columns of name and binding. The binding is a small button with the host button's
-  name; a conflicted control's name is `error`; the control waiting for a press shows `Press a button...` as the
-  primary button. Choosing it again, or Esc, cancels the wait. Between the name and the button a 20 px prompt glyph
+  name; the control the status line names is in `accent` (`error` when it was left with nothing); the control waiting
+  for a press shows `Press a button...` as the primary button. Choosing it again, or Esc, cancels the wait. Between the name and the button a 20 px prompt glyph
   (`nk_ui_prompt_glyph_in`, #1299) shows the binding as the device shown prints it, whatever device drives the page:
   the controller in the set of the pad last used or connected (the neutral position dots with none), its face
   buttons by position, the shoulders, Start and the D-pad as the prompt bar draws them, and any other input as a pill
   named the way that pad names it (VIEW, ZL, L3); the keyboard as a keycap with the key's printed legend (SHIFT, ENTER,
   X) or the arrow keys. A control with nothing bound has no glyph.
-- STICK AND TRIGGERS: dead zone and trigger threshold with - and +, CALIBRATE STICK, and LIVE INPUT in `DATA`: the
-  raw stick, the PSP value it maps to, the triggers and the buttons held.
+- STICK AND TRIGGERS: PSP STICK with LEFT STICK or RIGHT STICK (which controller stick drives it), dead zone and
+  trigger threshold with - and +, CALIBRATE STICK, and LIVE INPUT in `DATA`: the raw stick, the PSP value it maps to,
+  the triggers and the buttons held.
+
+An input another control already uses moves to the control chosen, and that control takes the chosen one's input in
+its place, so one input never drives two controls and every mapping can be saved. The status line names what changed
+("A (Cross) was Cross's. Cross now uses B (Circle)."); a control left with nothing (the chosen one had no input to
+give) is named in `error` so it can be bound next. Nothing a player does here can take the launcher's own keys and
+buttons, which are fixed: the arrows, Enter and Esc, and the pad's D-pad, south and east buttons.
 
 With KEYBOARD (#1299) the rows show each control's keys by their names on a US keyboard (`KEYS · GLOBAL MAPPING`),
 the waiting control shows `Press a key...`, and the next key pressed is its key; Esc or a controller press stops the
-wait. A key another control already uses, or one that cannot be bound (the function keys), is refused and the status
-line says why in `error`: the profile refuses a key bound to two controls, and the runtime keeps Esc, F1 and F3. The
-stick card names the keys Nakagawa keeps and says the analog stick has no keys.
+wait. A key another control uses moves as a controller input does; a key that cannot be bound (Esc and the function
+keys, which the runtime keeps) is refused and the status line says why in `error`. The stick card is ANALOG STICK:
+the stick's four keys (UP, DOWN, LEFT, RIGHT; I, K, J and L by default) as rows like the buttons', where a held key
+pushes that axis to its edge in game, then the keys Nakagawa keeps.
 
 A host input is named by the label a pad prints on it, with its other common name in brackets (`A (Cross)`,
 `LB (L1)`, `RT (R2)`), and a key pair of one modifier reads as the modifier alone (`Shift` for Left and Right Shift), so
@@ -487,8 +545,9 @@ every default binding, two inputs included, and any one input fit their button w
 (`INPUT_SETTINGS_BINDING_TEXT_MAX`), the width `test_binding_labels_fit` checks at every launcher size. The margin
 leaves room for the prompt glyph beside the binding (#1299).
 
-Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS (the device shown only) and, with a game selected, USE THIS
-GAME'S OWN MAPPING or USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the
+Under the cards RESET TO DEFAULTS (the device shown only) and, with a game selected, USE THIS GAME'S OWN MAPPING or
+USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. There is no save step: every change is
+written to the input profile as it is made, and a write that fails says so in the status line. The page opens on the
 first binding.
 Calibration replaces the cards with a 720 px dialog card per step: rest (a progress bar, CANCEL only), range
 (FINISH) and result (ACCEPT), each with its live numbers. Esc or East cancels a step and returns to CALIBRATE STICK.
@@ -584,14 +643,19 @@ Drawn by the runtime over the frozen game frame under the `scrim` while the game
 - Focus ring 7.2:1 on the ground, at least 6.1:1 on any surface, 4.4:1 over the brightest wave point and 3.7:1 on
   the scrim over a white game frame; high-contrast focus for any background, from Settings > Accessibility or a
   Windows contrast theme.
-- Targets are at least 44 px high; the interface size (100 to 200%) scales the whole layout through the density.
+- Targets are at least 44 px high; the interface size (100 to 200%) scales the whole layout through the density,
+  and the text size (100, 125 or 150%) scales type alone, with the layout reflowing around it.
 - Reduce motion holds the waves and makes transitions cuts; Automatic follows Windows' Animation effects.
 - Launcher sounds are off by default and never replace a visual cue.
 
 ## Building and checking a screen
 
 1. Compose the screen from the components above; give every element a stable id (sub-parts use
-   `nk_ui_child_id`).
+   `nk_ui_child_id`). Ids follow one scheme (`src/ui/nk_ui.h`): a screen makes its ids with its own macro over
+   `NK_UI_ID(screen, offset)`, the screen's byte coming from the table there, so two screens never collide; a run of
+   ids made by adding to a base declares `<BASE>_SPAN`, and nothing else may fall inside it; ids that several screens
+   name are `PLAYER_UI_ID_*` in screen 0x00. `PlayerUiIdSourceTests` in `tests/native/test_player_ui.py` checks the
+   table, the ranges and the spans, and the screen tests fail on any id Clay reports twice in one frame.
 2. `mingw32-make nk-ui-player-screens-selftest` compares the draw-list dumps in `fixtures/nk_ui/*.golden` and runs
    the layout checks (ring outside the focused card, centred labels, grid gaps). After an intended change, run
    `build/test_player_screens --write-goldens` and say in the pull request why each golden changed.

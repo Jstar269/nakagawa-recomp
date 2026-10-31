@@ -255,6 +255,12 @@
     "name": "sceKernelDeleteNotifyCallback",
     "status": "unreviewed"
   },
+  "0x0f6c18d7": {
+    "classification": "dedicated",
+    "handler": "h_MpegAvcDecodeDetail",
+    "name": "sceMpegAvcDecodeDetail",
+    "status": "partial"
+  },
   "0x0facab19": {
     "classification": "dedicated",
     "handler": "h_IoWriteAsync",
@@ -1255,6 +1261,12 @@
     "name": "sceKernelIsCpuIntrSuspended",
     "status": "unreviewed"
   },
+  "0x48293280": {
+    "classification": "dedicated",
+    "handler": "h_FontSetResolution",
+    "name": "sceFontSetResolution",
+    "status": "unreviewed"
+  },
   "0x4928bd96": {
     "classification": "dedicated",
     "handler": "h_MsgDialogAbort",
@@ -2057,7 +2069,7 @@
     "classification": "dedicated",
     "handler": "h_MpegAtracDecode",
     "name": "sceMpegAtracDecode",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x809ce29b": {
     "classification": "dedicated",
@@ -3572,7 +3584,7 @@
     "classification": "dedicated",
     "handler": "h_MpegGetAtracAu",
     "name": "sceMpegGetAtracAu",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xe1d621d7": {
     "classification": "controlled_unsupported",

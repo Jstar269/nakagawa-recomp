@@ -130,6 +130,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_UMD_RAW_READ 77
 #define PSP_ORACLE_CASE_FONT_LIST 75
 #define PSP_ORACLE_CASE_VRAM_MIRROR 76
+#define PSP_ORACLE_CASE_GE_SYNC_IDS 78
 /* #1106: a late-loaded PRX that owns a semaphore-blocked waiter, an event flag and a callback. Its
    module_stop returns 0 without deleting, waking or otherwise touching them. PSPLink's modstop and
    modunld then measure what survives. Never returns from main, so the probe teardown never runs. */
@@ -149,6 +150,10 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_THREAD_K0_BLOCK 116
 /* #1595: __sceSasInit on a core that is already initialized; see run_sas_init. */
 #define PSP_ORACLE_CASE_SAS_INIT 117
+/* #1096: the first AT3 decode against many fact-chunk delays in one launch; see run_at3_delay_sweep. */
+#define PSP_ORACLE_CASE_AT3_DELAY_SWEEP 150
+/* #302: the sceMpeg YCbCr, CSC and decode-detail path on a real AVC stream; see run_mpeg_ycbcr. */
+#define PSP_ORACLE_CASE_MPEG_YCBCR 151
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -322,6 +327,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/wait_outcomes_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 #define PROBE_HOST0_LOG "host0:/ge_break_continue_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS
+#define PROBE_HOST0_LOG "host0:/ge_sync_ids_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REFER_STATUS_SIZE
 #define PROBE_HOST0_LOG "host0:/refer_status_size_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_READONLY
@@ -382,6 +389,10 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/cpu_timing_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_K0_BLOCK
 #define PROBE_HOST0_LOG "host0:/thread_k0_block_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DELAY_SWEEP
+#define PROBE_HOST0_LOG "host0:/at3_delay_sweep_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MPEG_YCBCR
+#define PROBE_HOST0_LOG "host0:/mpeg_ycbcr_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
 #define PROBE_HOST0_LOG "host0:/sas_init_log.txt"
 #endif
@@ -2858,6 +2869,7 @@ static void run_display_mask_duty(int emulated) {
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING || \
@@ -2980,7 +2992,8 @@ static inline void ge_gu_teardown_outs(const GeGuTeardown *t,
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS
 
 /* Does the PSP GE make forward progress while CPU interrupt delivery is masked?
  *
@@ -10191,6 +10204,213 @@ static void run_ge_break_continue(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS
+/* #1374: what sceGeListSync and sceGeDrawSync return for a queue id that names no list, for
+ * the id of a list that has completed, and in the blocking form (sync type 0) for those ids, an
+ * idle GE and a list a sceGeBreak(1) reset removed. PSP-GE-CONTROL-001 measured only the poll
+ * form (sync type 1) on paused, cancelled and stalled lists.
+ *
+ * Every list is the transfer list of ge-break-continue, enqueued with callback id -1 (no
+ * callback), so no handler in this PRX is registered with the GE driver. Poll cells come
+ * first. A blocking call runs in a thread of its own, and the case waits for that thread with
+ * a bound: a call that does not return is a measured TIMEOUT, its thread is terminated, and
+ * the case goes on. The blocking cells come last for that reason. */
+#define GSI_UNKNOWN_QID 0x0badf00d
+#define GSI_BLOCK_TIMEOUT_US 200000u
+#define GSI_BLOCK_PRIORITY 0x18
+#define GSI_BLOCK_STACK 0x1000
+
+static void emit_ge_sync(int emulated, const char *case_id, const char *status,
+                         uint32_t result, const uint32_t *out, size_t count) {
+    emit_record_extended(emulated, "PSP-GE-SYNC-001", case_id, status, result, out, count);
+}
+
+static volatile int s_gsi_draw;       /* 1: sceGeDrawSync(0); 0: sceGeListSync(qid, 0) */
+static volatile int s_gsi_qid;
+static volatile int s_gsi_result;
+static volatile int s_gsi_returned;
+
+static int gsi_block_thread(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    s_gsi_result = s_gsi_draw ? sceGeDrawSync(0) : sceGeListSync(s_gsi_qid, 0);
+    s_gsi_returned = 1;
+    return 0;
+}
+
+/* One blocking sync, bounded. Outputs: qid, returned, result, the wait result, the delete
+ * result and the elapsed system time. */
+#define GSI_BLOCK_OUTS 6
+static void gsi_blocking(int emulated, const char *case_id, int draw, int qid) {
+    probe_step(emulated, "ge-sync-ids", case_id);
+    s_gsi_draw = draw;
+    s_gsi_qid = qid;
+    s_gsi_result = 0;
+    s_gsi_returned = 0;
+    const uint32_t start = sceKernelGetSystemTimeLow();
+    const SceUID th = sceKernelCreateThread("gsi_block", gsi_block_thread, GSI_BLOCK_PRIORITY,
+                                            GSI_BLOCK_STACK, PSP_THREAD_ATTR_USER, NULL);
+    int wait_rc = (int)th;
+    int delete_rc = (int)th;
+    if (th >= 0) {
+        const int start_rc = sceKernelStartThread(th, 0, NULL);
+        SceUInt timeout = GSI_BLOCK_TIMEOUT_US;
+        wait_rc = start_rc < 0 ? start_rc : sceKernelWaitThreadEnd(th, &timeout);
+        delete_rc = wait_rc >= 0 ? sceKernelDeleteThread(th) : sceKernelTerminateDeleteThread(th);
+    }
+    const uint32_t elapsed = (uint32_t)(sceKernelGetSystemTimeLow() - start);
+    uint32_t out[GSI_BLOCK_OUTS] = {
+        (uint32_t)qid, (uint32_t)s_gsi_returned, (uint32_t)s_gsi_result,
+        (uint32_t)wait_rc, (uint32_t)delete_rc, elapsed,
+    };
+    /* A call that has not returned within the bound is the measurement (out1 = 0), so the
+       record passes once the bounded wait itself ran. */
+    emit_ge_sync(emulated, case_id, th < 0 ? "SKIP" : "PASS", (uint32_t)s_gsi_result, out,
+                 GSI_BLOCK_OUTS);
+}
+
+/* Enqueue the transfer list with no stall address and wait, bounded, for the GE to go idle.
+ * Outputs: qid, last list state, last draw state, elapsed. */
+static int gsi_run_list(int emulated, const char *step, uint32_t list, uint32_t *out) {
+    probe_step(emulated, "ge-sync-ids", step);
+    const int qid = sceGeListEnQueue((const void *)(uintptr_t)list, NULL, -1, NULL);
+    const GeIdleWait w = ge_wait_idle(qid, qid >= 0 ? GE_IDLE_DEADLINE_US : 0u);
+    out[0] = (uint32_t)qid;
+    out[1] = (uint32_t)w.list_state;
+    out[2] = (uint32_t)w.draw_state;
+    out[3] = w.elapsed_us;
+    return qid >= 0 && w.idle ? qid : -1;
+}
+
+static void run_ge_sync_ids(int emulated) {
+    uint32_t out[8];
+
+    /* An id no enqueue returned, and a negative one. */
+    probe_step(emulated, "ge-sync-ids", "unknown-poll");
+    out[0] = (uint32_t)GSI_UNKNOWN_QID;
+    out[1] = (uint32_t)sceGeListSync(GSI_UNKNOWN_QID, 1);
+    out[2] = (uint32_t)sceGeListSync(-1, 1);
+    out[3] = (uint32_t)sceGeDrawSync(1);
+    emit_ge_sync(emulated, "ge-list-sync-unknown-poll", "PASS", out[1], out, 4);
+    out[1] = (uint32_t)sceGeListDeQueue(GSI_UNKNOWN_QID);
+    emit_ge_sync(emulated, "ge-list-dequeue-unknown", "PASS", out[1], out, 2);
+
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    const uint32_t src = (uint32_t)(uintptr_t)s_ge_src;
+    const uint32_t dst = vram + 0x00100000u;
+    for (uint32_t i = 0; i < GE_TILE_W * GE_TILE_H; i++) {
+        s_ge_src[i] = 0x5a5a5a5au;
+    }
+    /* Build the list, then write the data cache back (see run_ge_break_continue). */
+    (void)ge_build_list(src, dst);
+    sceKernelDcacheWritebackAll();
+    const uint32_t list = (uint32_t)(uintptr_t)s_ge_list;
+
+    /* A list that ran to its FINISH and END: its own id afterwards. */
+    const int qid_a = gsi_run_list(emulated, "completed-a", list, out);
+    out[4] = (uint32_t)(qid_a >= 0 ? sceGeListSync(qid_a, 1) : qid_a);
+    out[5] = (uint32_t)(qid_a >= 0 ? sceGeListDeQueue(qid_a) : qid_a);
+    out[6] = (uint32_t)sceGeDrawSync(1);
+    emit_ge_sync(emulated, "ge-list-sync-completed-poll", qid_a >= 0 ? "PASS" : "SKIP",
+                 out[4], out, 7);
+
+    /* Sync types other than 0 and 1, read with the GE idle so a type taken as a wait
+       returns at once. */
+    probe_step(emulated, "ge-sync-ids", "invalid-mode");
+    out[0] = (uint32_t)qid_a;
+    out[1] = (uint32_t)(qid_a >= 0 ? sceGeListSync(qid_a, 2) : qid_a);
+    out[2] = (uint32_t)sceGeDrawSync(2);
+    out[3] = (uint32_t)sceGeDrawSync(-1);
+    emit_ge_sync(emulated, "ge-sync-invalid-mode", qid_a >= 0 ? "PASS" : "SKIP", out[1], out, 4);
+
+    /* A second list after it: whether the first id comes back, and what each id reads. */
+    const int qid_b = gsi_run_list(emulated, "completed-b", list, out);
+    out[4] = (uint32_t)qid_a;
+    out[5] = (uint32_t)(qid_a >= 0 ? sceGeListSync(qid_a, 1) : qid_a);
+    out[6] = (uint32_t)(qid_b >= 0 ? sceGeListSync(qid_b, 1) : qid_b);
+    emit_ge_sync(emulated, "ge-list-sync-after-reenqueue", qid_a >= 0 && qid_b >= 0 ? "PASS" : "SKIP",
+                 out[6], out, 7);
+
+    /* Which call ends a completed list's id: three more lists, the first two waited for with
+       sceGeDrawSync(1) peeks only, the third with the ListSync and DrawSync peeks above, and
+       every earlier id read again after each. Outputs: qid, then each id's peek. */
+    int qid_s[3];
+    for (int k = 0; k < 3; k++) {
+        static const char *const steps[3] = {"stale-1", "stale-2", "stale-3"};
+        static const char *const cases[3] = {"ge-list-sync-stale-1", "ge-list-sync-stale-2",
+                                             "ge-list-sync-stale-3"};
+        probe_step(emulated, "ge-sync-ids", steps[k]);
+        if (k < 2) {
+            qid_s[k] = sceGeListEnQueue((const void *)(uintptr_t)list, NULL, -1, NULL);
+            const GeIdleWait w = ge_wait_idle(-1, qid_s[k] >= 0 ? GE_IDLE_DEADLINE_US : 0u);
+            if (!w.idle) qid_s[k] = -1;
+        } else {
+            qid_s[k] = gsi_run_list(emulated, steps[k], list, out);
+        }
+        out[0] = (uint32_t)qid_s[k];
+        out[1] = (uint32_t)(qid_s[k] >= 0 ? sceGeListSync(qid_s[k], 1) : qid_s[k]);
+        sceKernelDelayThread(1000);
+        out[2] = (uint32_t)(qid_s[k] >= 0 ? sceGeListSync(qid_s[k], 1) : qid_s[k]);
+        for (int j = 0; j < 3; j++) {
+            out[3 + j] = j < k ? (uint32_t)sceGeListSync(qid_s[j], 1) : 0u;
+        }
+        out[6] = (uint32_t)sceGeListSync(qid_b, 1);
+        emit_ge_sync(emulated, cases[k], qid_s[k] >= 0 ? "PASS" : "SKIP", out[1], out, 7);
+    }
+
+    /* A blocking sceGeDrawSync on the GE idle after those lists, then the ids' peeks after it. */
+    gsi_blocking(emulated, "ge-draw-sync-idle-wait", 1, 0);
+    probe_step(emulated, "ge-sync-ids", "after-draw-wait");
+    out[0] = (uint32_t)qid_s[2];
+    out[1] = (uint32_t)(qid_s[2] >= 0 ? sceGeListSync(qid_s[2], 1) : qid_s[2]);
+    out[2] = (uint32_t)(qid_s[1] >= 0 ? sceGeListSync(qid_s[1], 1) : qid_s[1]);
+    out[3] = (uint32_t)(qid_s[1] >= 0 ? sceGeListDeQueue(qid_s[1]) : qid_s[1]);
+    emit_ge_sync(emulated, "ge-list-sync-after-draw-wait", qid_s[2] >= 0 ? "PASS" : "SKIP",
+                 out[1], out, 4);
+
+    /* A list stalled at its start and removed by a reset: the poll form is the measured
+       0x80000100 (PSP-GE-CONTROL-001); the blocking form is measured below. */
+    probe_step(emulated, "ge-sync-ids", "cancelled");
+    const int qid_c = sceGeListEnQueue((const void *)(uintptr_t)list,
+                                       (void *)(uintptr_t)list, -1, NULL);
+    PspGeBreakParam param;
+    memset(&param, 0, sizeof(param));
+    const int reset_rc = qid_c >= 0 ? sceGeBreak(1, &param) : qid_c;
+    out[0] = (uint32_t)qid_c;
+    out[1] = (uint32_t)reset_rc;
+    out[2] = (uint32_t)(qid_c >= 0 ? sceGeListSync(qid_c, 1) : qid_c);
+    out[3] = (uint32_t)sceGeDrawSync(1);
+    emit_ge_sync(emulated, "ge-list-sync-cancelled-poll", qid_c >= 0 ? "PASS" : "SKIP",
+                 out[2], out, 4);
+
+    /* Blocking forms, each bounded, after the reset. */
+    gsi_blocking(emulated, "ge-draw-sync-after-reset-wait", 1, 0);
+    gsi_blocking(emulated, "ge-list-sync-completed-wait", 0, qid_b);
+    gsi_blocking(emulated, "ge-list-sync-cancelled-wait", 0, qid_c);
+    gsi_blocking(emulated, "ge-list-sync-unknown-wait", 0, GSI_UNKNOWN_QID);
+    gsi_blocking(emulated, "ge-list-sync-stale-wait", 0, qid_s[0]);
+
+    /* Leave the GE idle whatever happened above. */
+    probe_step(emulated, "ge-sync-ids", "quiesce");
+    GeIdleWait w = ge_wait_idle(-1, 0u);
+    uint32_t reset_issued = 0u;
+    int quiesce_rc = 0;
+    if (!w.idle) {
+        reset_issued = 1u;
+        quiesce_rc = ge_reset_queues(&w);
+    }
+    out[0] = reset_issued;
+    out[1] = (uint32_t)quiesce_rc;
+    out[2] = (uint32_t)w.draw_state;
+    out[3] = w.elapsed_us;
+    emit_ge_sync(emulated, "ge-sync-quiesce", w.idle ? "PASS" : "TIMEOUT",
+                 (uint32_t)quiesce_rc, out, 4);
+
+    uint32_t done = 17;  /* the records above */
+    emit_record_extended(emulated, "PSP-GE-SYNC-001", "ge-sync-ids-done", "PASS", 0, &done, 1);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
 static void run_kernel_misc(int emulated) {
     const SceInt64 clock = (SceInt64)1234567890;
@@ -10595,6 +10815,699 @@ static void run_at3_decode(int emulated) {
     probe_step(emulated, "at3-decode", "park");
     /* Normal teardown: parks until PSPLink modstop, which ends main cleanly. Returning from main would
        drop PSPLink to the XMB. */
+    probe_teardown(emulated);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DELAY_SWEEP
+#include <pspatrac3.h>
+#include <psputility_avmodules.h>
+/* #1096: the first sceAtracDecodeData of a plain AT3 track against the delay word of its 8-byte RIFF fact
+   chunk, for many delays in one launch. The at3-decode case measured five delays, one launch each; this case
+   patches the delay word of one staged stream (host0:/at3-input-buffer.bin, the same private prefix) in a
+   copy and, per delay: sceAtracGetAtracID, sceAtracSetData, the next decode position, two decodes with their
+   sample counts, end flags, remaining frames and PCM fingerprints, the position and next-sample count after
+   each, and the release. Each call is preceded by a durable step marker. Ends in the normal teardown. */
+#define AT3S_INPUT_PATH "host0:/at3-input-buffer.bin"
+#define AT3S_BYTES 8192u
+#define AT3S_FACT_DELAY_OFFSET 64u
+static unsigned char s_at3s_input[AT3S_BYTES] __attribute__((aligned(64)));
+static unsigned char s_at3s_stream[AT3S_BYTES] __attribute__((aligned(64)));
+static unsigned short s_at3s_pcm[4096] __attribute__((aligned(64)));
+/* Around the measured points (0, 500, 955, 1024, 2048) and the decoder's own 69-sample delay, plus delays
+   that retail AT3 tracks carry (1024 + 9 .. 1024 + 954). */
+static const uint32_t k_at3s_delays[] = {
+    0u, 1u, 34u, 68u, 69u, 70u, 100u, 454u, 455u, 456u, 500u, 886u, 954u, 955u, 956u, 1000u,
+    1023u, 1024u, 1025u, 1033u, 1092u, 1093u, 1094u, 1153u, 1387u, 1489u, 1500u, 1652u, 1892u,
+    1978u, 1979u, 1980u, 2047u, 2048u, 2049u, 3072u,
+};
+
+static uint32_t at3s_le32(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void at3s_line(int emulated, const char *text) {
+    probe_emit_durable(emulated, text, strlen(text));
+}
+
+/* FNV-1a over the call's interleaved samples, its peak magnitude and four leading samples. */
+static void at3s_pcm_line(int emulated, uint32_t delay, int call, int rc, int samples, int end_flag,
+                          int remain, int rc_pos, uint32_t pos, int rc_next, int next) {
+    uint32_t hash = 2166136261u, peak = 0;
+    const int count = samples > 0 && samples <= 1024 ? samples * 2 : 0;
+    for (int i = 0; i < count; i++) {
+        const uint16_t v = s_at3s_pcm[i];
+        hash = (hash ^ (v & 0xffu)) * 16777619u;
+        hash = (hash ^ (v >> 8)) * 16777619u;
+        const uint32_t mag = (v & 0x8000u) ? (uint32_t)(0x10000u - v) : v;
+        if (mag > peak) peak = mag;
+    }
+    char line[360];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-d%u-call%d status=RC "
+                   "result=0x%08x samples=%d end=%d remain=%d fnv=0x%08x peak=%u s0=0x%04x s1=0x%04x "
+                   "s2=0x%04x s3=0x%04x rc_pos=0x%08x pos=%u rc_next=0x%08x next=%d\n",
+                   (unsigned int)delay, call, (unsigned int)rc, samples, end_flag, remain,
+                   (unsigned int)hash, (unsigned int)peak, s_at3s_pcm[0], s_at3s_pcm[1], s_at3s_pcm[2],
+                   s_at3s_pcm[3], (unsigned int)rc_pos, (unsigned int)pos, (unsigned int)rc_next, next);
+    at3s_line(emulated, line);
+}
+
+static void at3s_one_delay(int emulated, uint32_t delay) {
+    char step[40], line[320];
+    memcpy(s_at3s_stream, s_at3s_input, AT3S_BYTES);
+    s_at3s_stream[AT3S_FACT_DELAY_OFFSET + 0] = (unsigned char)(delay & 0xffu);
+    s_at3s_stream[AT3S_FACT_DELAY_OFFSET + 1] = (unsigned char)((delay >> 8) & 0xffu);
+    s_at3s_stream[AT3S_FACT_DELAY_OFFSET + 2] = (unsigned char)((delay >> 16) & 0xffu);
+    s_at3s_stream[AT3S_FACT_DELAY_OFFSET + 3] = (unsigned char)((delay >> 24) & 0xffu);
+    (void)snprintf(step, sizeof(step), "d%u-get-atracid", (unsigned int)delay);
+    probe_step(emulated, "at3-delay-sweep", step);
+    const int id = sceAtracGetAtracID(PSP_ATRAC_AT3);
+    if (id < 0) {
+        (void)snprintf(line, sizeof(line),
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-d%u-setup status=RC "
+                       "result=0x%08x stage=get-atracid\n", (unsigned int)delay, (unsigned int)id);
+        at3s_line(emulated, line);
+        return;
+    }
+    (void)snprintf(step, sizeof(step), "d%u-set-data", (unsigned int)delay);
+    probe_step(emulated, "at3-delay-sweep", step);
+    /* The patched copy is written by the CPU: push it out of the data cache before the library reads it. */
+    sceKernelDcacheWritebackInvalidateAll();
+    const int set_rc = sceAtracSetData(id, s_at3s_stream, AT3S_BYTES);
+    u32 pos0 = 0xffffffffu;
+    const int rc_pos0 = sceAtracGetNextDecodePosition(id, &pos0);
+    int next0 = -1;
+    const int rc_next0 = sceAtracGetNextSample(id, &next0);
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-d%u-setup status=RC "
+                   "result=0x%08x stage=set-data rc_pos=0x%08x pos=%u rc_next=0x%08x next=%d\n",
+                   (unsigned int)delay, (unsigned int)set_rc, (unsigned int)rc_pos0, (unsigned int)pos0,
+                   (unsigned int)rc_next0, next0);
+    at3s_line(emulated, line);
+    for (int call = 0; call < 3; call++) {
+        int samples = -1, end_flag = -1, remain = -1, next = -1;
+        u32 pos = 0xffffffffu;
+        memset(s_at3s_pcm, 0, sizeof(s_at3s_pcm));
+        (void)snprintf(step, sizeof(step), "d%u-decode%d", (unsigned int)delay, call);
+        probe_step(emulated, "at3-delay-sweep", step);
+        const int rc = sceAtracDecodeData(id, s_at3s_pcm, &samples, &end_flag, &remain);
+        const int rc_pos = sceAtracGetNextDecodePosition(id, &pos);
+        const int rc_next = sceAtracGetNextSample(id, &next);
+        at3s_pcm_line(emulated, delay, call, rc, samples, end_flag, remain, rc_pos, pos, rc_next, next);
+        if (rc != 0 && call > 0) break;
+    }
+    (void)snprintf(step, sizeof(step), "d%u-release", (unsigned int)delay);
+    probe_step(emulated, "at3-delay-sweep", step);
+    const int rel = sceAtracReleaseAtracID(id);
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-d%u-release status=RC "
+                   "result=0x%08x\n", (unsigned int)delay, (unsigned int)rel);
+    at3s_line(emulated, line);
+}
+
+/* A looped AT3 track (with an smpl chunk), staged whole as host0:/at3-loop-file.bin: SetData over the
+   whole file and over shorter prefixes, then the sound-sample and position queries and one decode. Its
+   8 KiB prefix was refused with 0x80630008 for every patched delay on 2026-10-31; this separates the
+   buffer length from the loop chunk. */
+#define AT3S_LOOP_PATH "host0:/at3-loop-file.bin"
+#define AT3S_LOOP_CAP (2u << 20)
+static unsigned char s_at3s_loop[AT3S_LOOP_CAP] __attribute__((aligned(64)));
+
+static void at3s_buffer_case(int emulated, const char *name, unsigned char *buf, uint32_t bytes) {
+    char step[48], line[360];
+    (void)snprintf(step, sizeof(step), "%s-get-atracid", name);
+    probe_step(emulated, "at3-delay-sweep", step);
+    const int id = sceAtracGetAtracID(PSP_ATRAC_AT3);
+    if (id < 0) {
+        (void)snprintf(line, sizeof(line), "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-%s status=RC "
+                       "result=0x%08x stage=get-atracid\n", name, (unsigned int)id);
+        at3s_line(emulated, line);
+        return;
+    }
+    (void)snprintf(step, sizeof(step), "%s-set-data", name);
+    probe_step(emulated, "at3-delay-sweep", step);
+    /* A patched copy is written by the CPU: push it out of the data cache before the library reads it
+       (without this, 8 KiB prefixes of a memcpy'd file were refused with 0x80630006 on 2026-10-31). */
+    sceKernelDcacheWritebackInvalidateAll();
+    const int set_rc = sceAtracSetData(id, buf, bytes);
+    int end_sample = -1, loop_start = -1, loop_end = -1, remain = -1;
+    const int rc_sound = sceAtracGetSoundSample(id, &end_sample, &loop_start, &loop_end);
+    const int rc_remain = sceAtracGetRemainFrame(id, &remain);
+    u32 pos = 0xffffffffu;
+    const int rc_pos = sceAtracGetNextDecodePosition(id, &pos);
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-%s status=RC result=0x%08x "
+                   "bytes=%u rc_sound=0x%08x end=%d loop_start=%d loop_end=%d rc_remain=0x%08x remain=%d "
+                   "rc_pos=0x%08x pos=%u\n",
+                   name, (unsigned int)set_rc, (unsigned int)bytes, (unsigned int)rc_sound, end_sample, loop_start,
+                   loop_end, (unsigned int)rc_remain, remain, (unsigned int)rc_pos, (unsigned int)pos);
+    at3s_line(emulated, line);
+    if (set_rc == 0) {
+        int samples = -1, end_flag = -1, rem = -1, next = -1;
+        memset(s_at3s_pcm, 0, sizeof(s_at3s_pcm));
+        (void)snprintf(step, sizeof(step), "%s-decode0", name);
+        probe_step(emulated, "at3-delay-sweep", step);
+        const int rc = sceAtracDecodeData(id, s_at3s_pcm, &samples, &end_flag, &rem);
+        pos = 0xffffffffu;
+        const int rc_pos1 = sceAtracGetNextDecodePosition(id, &pos);
+        const int rc_next = sceAtracGetNextSample(id, &next);
+        (void)snprintf(line, sizeof(line),
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-%s-call0 status=RC result=0x%08x "
+                       "samples=%d end=%d remain=%d rc_pos=0x%08x pos=%u rc_next=0x%08x next=%d\n",
+                       name, (unsigned int)rc, samples, end_flag, rem, (unsigned int)rc_pos1, (unsigned int)pos,
+                       (unsigned int)rc_next, next);
+        at3s_line(emulated, line);
+    }
+    (void)snprintf(step, sizeof(step), "%s-release", name);
+    probe_step(emulated, "at3-delay-sweep", step);
+    (void)sceAtracReleaseAtracID(id);
+}
+
+static void run_at3_loop_file(int emulated) {
+    uint32_t total = 0;
+    SceUID fd = sceIoOpen(AT3S_LOOP_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) return;   /* not staged: the delay sweep alone */
+    while (total < AT3S_LOOP_CAP) {
+        const int n = sceIoRead(fd, s_at3s_loop + total, AT3S_LOOP_CAP - total);
+        if (n <= 0) break;
+        total += (uint32_t)n;
+    }
+    (void)sceIoClose(fd);
+    char line[200];
+    (void)snprintf(line, sizeof(line), "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-loop-input "
+                   "status=RC result=0x00000000 bytes=%u smpl=%d\n", (unsigned int)total,
+                   total > 112u && memcmp(s_at3s_loop + 68, "smpl", 4) == 0);
+    at3s_line(emulated, line);
+    if (total < 65536u) return;
+    at3s_buffer_case(emulated, "loop-full", s_at3s_loop, total);
+    at3s_buffer_case(emulated, "loop-prefix64k", s_at3s_loop, 65536u);
+    at3s_buffer_case(emulated, "loop-prefix48k", s_at3s_loop, 49152u);
+    at3s_buffer_case(emulated, "loop-prefix32k", s_at3s_loop, 32768u);
+    at3s_buffer_case(emulated, "loop-prefix24k", s_at3s_loop, 24576u);
+    at3s_buffer_case(emulated, "loop-prefix16k", s_at3s_loop, 16384u);
+    at3s_buffer_case(emulated, "loop-prefix12k", s_at3s_loop, 12288u);
+    at3s_buffer_case(emulated, "loop-prefix8k", s_at3s_loop, AT3S_BYTES);
+}
+
+/* The unlooped track staged whole as host0:/at3-original-file.bin, its delay word patched to values
+   between the last accepted (1652) and the first refused (1892) delay of the 8 KiB sweep and past it,
+   each over the whole file and over an 8 KiB prefix: whether the SetData refusal depends on the
+   buffered amount. */
+#define AT3S_WHOLE_PATH "host0:/at3-original-file.bin"
+#define AT3S_WHOLE_CAP (128u << 10)
+static unsigned char s_at3s_whole[AT3S_WHOLE_CAP] __attribute__((aligned(64)));
+static unsigned char s_at3s_whole_work[AT3S_WHOLE_CAP] __attribute__((aligned(64)));
+static const uint32_t k_at3s_whole_delays[] = {
+    955u, 1387u, 1652u, 1653u, 1692u, 1704u, 1754u, 1775u, 1792u, 1797u, 1855u, 1864u, 1891u,
+    1892u, 1937u, 1956u, 1976u, 1978u, 1979u, 2047u, 2048u,
+};
+
+static void run_at3_whole_file(int emulated) {
+    uint32_t total = 0;
+    SceUID fd = sceIoOpen(AT3S_WHOLE_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) return;
+    while (total < AT3S_WHOLE_CAP) {
+        const int n = sceIoRead(fd, s_at3s_whole + total, AT3S_WHOLE_CAP - total);
+        if (n <= 0) break;
+        total += (uint32_t)n;
+    }
+    (void)sceIoClose(fd);
+    char line[200];
+    (void)snprintf(line, sizeof(line), "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-whole-input "
+                   "status=RC result=0x00000000 bytes=%u\n", (unsigned int)total);
+    at3s_line(emulated, line);
+    if (total <= AT3S_BYTES || memcmp(s_at3s_whole + 52, "fact", 4) != 0 || at3s_le32(s_at3s_whole + 56) != 8u)
+        return;
+    for (size_t i = 0; i < sizeof(k_at3s_whole_delays) / sizeof(k_at3s_whole_delays[0]); i++) {
+        const uint32_t delay = k_at3s_whole_delays[i];
+        char name[32];
+        memcpy(s_at3s_whole_work, s_at3s_whole, total);
+        for (unsigned b = 0; b < 4u; b++)
+            s_at3s_whole_work[AT3S_FACT_DELAY_OFFSET + b] = (unsigned char)((delay >> (8u * b)) & 0xffu);
+        (void)snprintf(name, sizeof(name), "whole-d%u", (unsigned int)delay);
+        at3s_buffer_case(emulated, name, s_at3s_whole_work, total);
+        (void)snprintf(name, sizeof(name), "prefix8k-d%u", (unsigned int)delay);
+        at3s_buffer_case(emulated, name, s_at3s_whole_work, AT3S_BYTES);
+    }
+}
+
+static void run_at3_delay_sweep(int emulated) {
+    char line[320];
+    int input_rc = -1;
+    uint32_t total = 0;
+    probe_step(emulated, "at3-delay-sweep", "read-input");
+    SceUID fd = sceIoOpen(AT3S_INPUT_PATH, PSP_O_RDONLY, 0);
+    if (fd >= 0) {
+        while (total < AT3S_BYTES) {
+            const int n = sceIoRead(fd, s_at3s_input + total, AT3S_BYTES - total);
+            if (n <= 0) break;
+            total += (uint32_t)n;
+        }
+        (void)sceIoClose(fd);
+        input_rc = total == AT3S_BYTES ? 0 : -2;
+    } else {
+        input_rc = fd;
+    }
+    /* The delay word is patched only where an 8-byte fact chunk holds it, as the at3-decode header record
+       reads it: "fact" at byte 52, its size word 8 at 56. */
+    const int fact_ok = input_rc == 0 && memcmp(s_at3s_input + 52, "fact", 4) == 0 &&
+                        at3s_le32(s_at3s_input + 56) == 8u;
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-input status=RC "
+                   "result=0x%08x bytes=%u fact_ok=%d fact_samples=%u fact_delay=%u\n",
+                   (unsigned int)input_rc, (unsigned int)total, fact_ok,
+                   fact_ok ? (unsigned int)at3s_le32(s_at3s_input + 60) : 0u,
+                   fact_ok ? (unsigned int)at3s_le32(s_at3s_input + 64) : 0u);
+    at3s_line(emulated, line);
+    if (fact_ok) {
+        probe_step(emulated, "at3-delay-sweep", "load-avcodec");
+        const int avcodec_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+        (void)snprintf(line, sizeof(line),
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-load-avcodec status=RC "
+                       "result=0x%08x\n", (unsigned int)avcodec_rc);
+        at3s_line(emulated, line);
+        if (avcodec_rc == 0) {
+            probe_step(emulated, "at3-delay-sweep", "load-atrac3plus");
+            const int atrac_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
+            (void)snprintf(line, sizeof(line),
+                           "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-002 case_id=at3s-load-atrac3plus "
+                           "status=RC result=0x%08x\n", (unsigned int)atrac_rc);
+            at3s_line(emulated, line);
+            if (atrac_rc == 0) {
+                for (size_t i = 0; i < sizeof(k_at3s_delays) / sizeof(k_at3s_delays[0]); i++)
+                    at3s_one_delay(emulated, k_at3s_delays[i]);
+                run_at3_loop_file(emulated);
+                run_at3_whole_file(emulated);
+                probe_step(emulated, "at3-delay-sweep", "unload-atrac3plus");
+                (void)sceUtilityUnloadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
+            }
+            probe_step(emulated, "at3-delay-sweep", "unload-avcodec");
+            (void)sceUtilityUnloadAvModule(PSP_AV_MODULE_AVCODEC);
+        }
+    }
+    probe_step(emulated, "at3-delay-sweep", "park");
+    /* Normal teardown: parks until PSPLink modstop. Returning from main would drop PSPLink to the XMB. */
+    probe_teardown(emulated);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MPEG_YCBCR
+#include <pspmpeg.h>
+#include <psputility_avmodules.h>
+/* #302: what the PSP's sceMpeg YCbCr path does with a real AVC stream. The private PSMF prefix staged as
+   host0:/mpeg-input.pmf is fed through a ring buffer to one registered AVC stream; the case records the
+   sceMpegAvcQueryYCbCrSize / sceMpegAvcInitYCbCr results over a matrix of modes and sizes, the buffer
+   bytes InitYCbCr writes, the sceMpegAvcDecodeYCbCr results up to the first picture, the raw YCbCr buffer
+   of that picture, sceMpegAvcDecodeDetail's words, sceMpegAvcCsc of the buffer as decoded, with its plane
+   bytes overwritten, and with its first 128 bytes cleared (whether CSC reads guest memory), CSC range and
+   stride refusals, and one direct sceMpegAvcDecode for comparison. The picture bytes go to private host0
+   files only. Every call is preceded by a durable step marker; loops are bounded. Ends in the normal
+   teardown with the AV modules unloaded. */
+/* PSPSDK's libpspmpeg.a has no YCbCr, CSC or decode-detail stubs, so this case links one complete sceMpeg
+   import block of its own instead (libpspmpeg.a is not linked: two blocks for one library leave the stubs out
+   of order). Library name and version word match libpspmpeg.a; the NIDs are the ones src/rt/nid_names.h names.
+   Same layout as PSPSDK's pspimport.s IMPORT_START / IMPORT_FUNC. */
+#define MPY_STUB(nid, name)                                                   \
+    ".set push\n\t.set noreorder\n\t"                                         \
+    ".section .sceStub.text, \"ax\", @progbits\n\t"                          \
+    ".globl " #name "\n\t.type " #name ", @function\n\t"                     \
+    ".ent " #name ", 0\n" #name ":\n\t"                                      \
+    ".word __stub_module_mpy_sceMpeg\n\t.word " #nid "\n\t"                \
+    ".end " #name "\n\t.size " #name ", .-" #name "\n\t"                     \
+    ".section .rodata.sceNid, \"a\"\n\t"                                     \
+    ".word " #nid "\n\t.set pop\n\t"
+__asm__(
+    ".set push\n\t"
+    ".section .rodata.sceResident, \"a\"\n\t"
+    ".word 0\n"
+    "__stub_modulestr_mpy_sceMpeg:\n\t"
+    ".asciz \"sceMpeg\"\n\t"
+    ".align 2\n\t"
+    ".section .lib.stub, \"a\", @progbits\n\t"
+    ".global __stub_module_mpy_sceMpeg\n"
+    "__stub_module_mpy_sceMpeg:\n\t"
+    ".word __stub_modulestr_mpy_sceMpeg\n\t"
+    ".word 0x00090000\n\t"
+    ".word 0x5\n\t"
+    ".word __executable_start\n\t"
+    ".word __executable_start\n\t"
+    ".set pop\n\t"
+    MPY_STUB(0x682A619B, sceMpegInit)
+    MPY_STUB(0x874624D6, sceMpegFinish)
+    MPY_STUB(0xD7A29F46, sceMpegRingbufferQueryMemSize)
+    MPY_STUB(0x37295ED8, sceMpegRingbufferConstruct)
+    MPY_STUB(0x13407F13, sceMpegRingbufferDestruct)
+    MPY_STUB(0xB240A59E, sceMpegRingbufferPut)
+    MPY_STUB(0xB5F6DC87, sceMpegRingbufferAvailableSize)
+    MPY_STUB(0xC132E22F, sceMpegQueryMemSize)
+    MPY_STUB(0xD8C5F121, sceMpegCreate)
+    MPY_STUB(0x606A4649, sceMpegDelete)
+    MPY_STUB(0x21FF80E4, sceMpegQueryStreamOffset)
+    MPY_STUB(0x611E9E11, sceMpegQueryStreamSize)
+    MPY_STUB(0x42560F23, sceMpegRegistStream)
+    MPY_STUB(0x591A4AA2, sceMpegUnRegistStream)
+    MPY_STUB(0xA780CF7E, sceMpegMallocAvcEsBuf)
+    MPY_STUB(0xCEB870B1, sceMpegFreeAvcEsBuf)
+    MPY_STUB(0x167AFD9E, sceMpegInitAu)
+    MPY_STUB(0xFE246728, sceMpegGetAvcAu)
+    MPY_STUB(0xA11C7026, sceMpegAvcDecodeMode)
+    MPY_STUB(0x0E3C2E9D, sceMpegAvcDecode)
+    MPY_STUB(0x740FCCD1, sceMpegAvcDecodeStop)
+    MPY_STUB(0x0F6C18D7, sceMpegAvcDecodeDetail)
+    MPY_STUB(0x211A057C, sceMpegAvcQueryYCbCrSize)
+    MPY_STUB(0x67179B1B, sceMpegAvcInitYCbCr)
+    MPY_STUB(0xF0EB1125, sceMpegAvcDecodeYCbCr)
+    MPY_STUB(0xF2930C9C, sceMpegAvcDecodeStopYCbCr)
+    MPY_STUB(0x31BD0272, sceMpegAvcCsc)
+    MPY_STUB(0x707B7629, sceMpegFlushAllStream)
+    ".text\n");
+SceInt32 sceMpegAvcDecodeDetail(SceMpeg *mpeg, void *detail);
+SceInt32 sceMpegAvcQueryYCbCrSize(SceMpeg *mpeg, SceInt32 mode, SceInt32 width, SceInt32 height, SceInt32 *size);
+SceInt32 sceMpegAvcInitYCbCr(SceMpeg *mpeg, SceInt32 mode, SceInt32 width, SceInt32 height, void *ycbcr);
+SceInt32 sceMpegAvcDecodeYCbCr(SceMpeg *mpeg, SceMpegAu *au, void **ycbcr, SceInt32 *init);
+SceInt32 sceMpegAvcDecodeStopYCbCr(SceMpeg *mpeg, void **ycbcr, SceInt32 *status);
+SceInt32 sceMpegAvcCsc(SceMpeg *mpeg, void *ycbcr, SceInt32 *range, SceInt32 frame_width, void *dest);
+
+#define MPY_INPUT_PATH "host0:/mpeg-input.pmf"
+#define MPY_FILE_CAP (2u << 20)
+#define MPY_PACKETS 256
+#define MPY_RING_CAP (640u << 10)
+#define MPY_MPEG_CAP (256u << 10)
+#define MPY_YCBCR_CAP (256u << 10)
+#define MPY_W 480
+#define MPY_H 272
+#define MPY_STRIDE 512
+#define MPY_DEST_BYTES (MPY_STRIDE * MPY_H * 4u)
+#define MPY_MAX_AUS 400
+/* The movie's first pictures are a fade from black: the buffer is dumped at a textured picture. */
+#define MPY_TARGET_PICTURE 240
+static unsigned char s_mpy_file[MPY_FILE_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_ring[MPY_RING_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_mpeg[MPY_MPEG_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_ycbcr[MPY_YCBCR_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_ycbcr_copy[MPY_YCBCR_CAP] __attribute__((aligned(64)));
+static unsigned char s_mpy_dest[MPY_DEST_BYTES] __attribute__((aligned(64)));
+static uint32_t s_mpy_detail[32] __attribute__((aligned(64)));
+static uint32_t s_mpy_file_bytes;
+static uint32_t s_mpy_cursor;
+static SceMpegRingbuffer s_mpy_rb __attribute__((aligned(64)));
+static SceMpegAu s_mpy_au __attribute__((aligned(64)));
+
+static void mpy_rc(int emulated, const char *step, int rc, const char *extra) {
+    char line[360];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-MPEG-001 case_id=mpy-%s status=RC result=0x%08x%s%s\n",
+                   step, (unsigned int)rc, extra && extra[0] ? " " : "", extra ? extra : "");
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
+/* A private host0 file of raw picture bytes; the log carries its size and FNV-1a. */
+static void mpy_dump(int emulated, const char *name, const void *bytes, uint32_t size) {
+    char path[64], extra[160];
+    uint32_t hash = 2166136261u;
+    for (uint32_t i = 0; i < size; i++) hash = (hash ^ ((const unsigned char *)bytes)[i]) * 16777619u;
+    (void)snprintf(path, sizeof(path), "host0:/mpy_%s.bin", name);
+    SceUID fd = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    int wrote = fd >= 0 ? sceIoWrite(fd, bytes, size) : fd;
+    if (fd >= 0) (void)sceIoClose(fd);
+    (void)snprintf(extra, sizeof(extra), "bytes=%u fnv=0x%08x wrote=%d", (unsigned int)size, (unsigned int)hash,
+                   wrote);
+    char step[48];
+    (void)snprintf(step, sizeof(step), "dump-%s", name);
+    mpy_rc(emulated, step, 0, extra);
+}
+
+static SceInt32 mpy_ring_cb(ScePVoid data, SceInt32 packets, ScePVoid param) {
+    (void)param;
+    SceInt32 done = 0;
+    while (done < packets && s_mpy_cursor + 2048u <= s_mpy_file_bytes) {
+        memcpy((unsigned char *)data + (uint32_t)done * 2048u, s_mpy_file + s_mpy_cursor, 2048u);
+        s_mpy_cursor += 2048u;
+        done++;
+    }
+    return done;
+}
+
+static void mpy_csc(int emulated, SceMpeg *mpeg, const char *name, SceInt32 x, SceInt32 y, SceInt32 w, SceInt32 h,
+                    SceInt32 frame_width, int dump) {
+    SceInt32 range[4] __attribute__((aligned(16))) = {x, y, w, h};
+    char step[48], extra[96];
+    memset(s_mpy_dest, 0x5a, sizeof(s_mpy_dest));
+    sceKernelDcacheWritebackInvalidateAll();
+    (void)snprintf(step, sizeof(step), "csc-%s", name);
+    probe_step(emulated, "mpeg-ycbcr", step);
+    const int rc = sceMpegAvcCsc(mpeg, s_mpy_ycbcr, range, frame_width, s_mpy_dest);
+    sceKernelDcacheWritebackInvalidateAll();
+    (void)snprintf(extra, sizeof(extra), "x=%d y=%d w=%d h=%d fw=%d", (int)x, (int)y, (int)w, (int)h,
+                   (int)frame_width);
+    mpy_rc(emulated, step, rc, extra);
+    if (dump && rc == 0) mpy_dump(emulated, name, s_mpy_dest, MPY_DEST_BYTES);
+}
+
+static void run_mpeg_ycbcr(int emulated) {
+    char extra[200];
+    probe_step(emulated, "mpeg-ycbcr", "read-input");
+    SceUID fd = sceIoOpen(MPY_INPUT_PATH, PSP_O_RDONLY, 0);
+    if (fd >= 0) {
+        while (s_mpy_file_bytes < MPY_FILE_CAP) {
+            const int n = sceIoRead(fd, s_mpy_file + s_mpy_file_bytes, MPY_FILE_CAP - s_mpy_file_bytes);
+            if (n <= 0) break;
+            s_mpy_file_bytes += (uint32_t)n;
+        }
+        (void)sceIoClose(fd);
+    }
+    (void)snprintf(extra, sizeof(extra), "bytes=%u magic_ok=%d", (unsigned int)s_mpy_file_bytes,
+                   s_mpy_file_bytes >= 2048u && memcmp(s_mpy_file, "PSMF", 4) == 0);
+    mpy_rc(emulated, "input", fd < 0 ? fd : 0, extra);
+    if (fd < 0 || s_mpy_file_bytes < (64u << 10) || memcmp(s_mpy_file, "PSMF", 4) != 0) goto park;
+
+    probe_step(emulated, "mpeg-ycbcr", "load-avcodec");
+    int rc = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+    mpy_rc(emulated, "load-avcodec", rc, NULL);
+    if (rc != 0) goto park;
+    probe_step(emulated, "mpeg-ycbcr", "load-mpegbase");
+    rc = sceUtilityLoadAvModule(PSP_AV_MODULE_MPEGBASE);
+    mpy_rc(emulated, "load-mpegbase", rc, NULL);
+    if (rc != 0) goto unload_avcodec;
+    probe_step(emulated, "mpeg-ycbcr", "init");
+    rc = sceMpegInit();
+    mpy_rc(emulated, "init", rc, NULL);
+    if (rc != 0) goto unload_mpeg;
+
+    {
+        SceMpeg mpeg = NULL;
+        const SceInt32 ring_size = sceMpegRingbufferQueryMemSize(MPY_PACKETS);
+        const SceInt32 mpeg_size = sceMpegQueryMemSize(0);
+        (void)snprintf(extra, sizeof(extra), "ring_size=%d mpeg_size=%d", (int)ring_size, (int)mpeg_size);
+        mpy_rc(emulated, "query-mem", 0, extra);
+        if (ring_size <= 0 || (uint32_t)ring_size > MPY_RING_CAP || mpeg_size <= 0 ||
+            (uint32_t)mpeg_size > MPY_MPEG_CAP)
+            goto finish;
+        probe_step(emulated, "mpeg-ycbcr", "ring-construct");
+        rc = sceMpegRingbufferConstruct(&s_mpy_rb, MPY_PACKETS, s_mpy_ring, ring_size, mpy_ring_cb, NULL);
+        mpy_rc(emulated, "ring-construct", rc, NULL);
+        if (rc != 0) goto finish;
+        probe_step(emulated, "mpeg-ycbcr", "create");
+        rc = sceMpegCreate(&mpeg, s_mpy_mpeg, mpeg_size, &s_mpy_rb, MPY_STRIDE, 0, 0);
+        mpy_rc(emulated, "create", rc, NULL);
+        if (rc != 0) goto ring_destruct;
+
+        SceInt32 offset = -1, stream_size = -1;
+        const int rc_off = sceMpegQueryStreamOffset(&mpeg, s_mpy_file, &offset);
+        const int rc_size = sceMpegQueryStreamSize(s_mpy_file, &stream_size);
+        (void)snprintf(extra, sizeof(extra), "rc_off=0x%08x offset=%d rc_size=0x%08x size=%d",
+                       (unsigned int)rc_off, (int)offset, (unsigned int)rc_size, (int)stream_size);
+        mpy_rc(emulated, "stream-info", 0, extra);
+        if (rc_off != 0 || offset <= 0 || (uint32_t)offset >= s_mpy_file_bytes) goto delete_mpeg;
+        s_mpy_cursor = (uint32_t)offset;
+
+        probe_step(emulated, "mpeg-ycbcr", "regist-stream");
+        SceMpegStream *stream = sceMpegRegistStream(&mpeg, 0, 0);
+        mpy_rc(emulated, "regist-stream", stream ? 0 : -1, NULL);
+        if (!stream) goto delete_mpeg;
+        ScePVoid es = sceMpegMallocAvcEsBuf(&mpeg);
+        mpy_rc(emulated, "malloc-es", es ? 0 : -1, NULL);
+        if (!es) goto unregist;
+        rc = sceMpegInitAu(&mpeg, es, &s_mpy_au);
+        mpy_rc(emulated, "init-au", rc, NULL);
+        SceMpegAvcMode mode = {-1, SCE_MPEG_AVC_FORMAT_8888};
+        rc = sceMpegAvcDecodeMode(&mpeg, &mode);
+        mpy_rc(emulated, "decode-mode", rc, NULL);
+
+        /* Size and init over a matrix of modes and geometries. */
+        static const SceInt32 dims[][2] = {
+            {480, 272}, {16, 16}, {480, 288}, {496, 272}, {512, 272}, {720, 480}, {15, 16}, {16, 15}, {0, 0},
+        };
+        static const SceInt32 modes[] = {1, 0, 2, 3, 4, -1};
+        for (unsigned m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+            for (unsigned d = 0; d < sizeof(dims) / sizeof(dims[0]); d++) {
+                SceInt32 size = -1;
+                char step[48];
+                (void)snprintf(step, sizeof(step), "qsize-m%d-%dx%d", (int)modes[m], (int)dims[d][0],
+                               (int)dims[d][1]);
+                probe_step(emulated, "mpeg-ycbcr", step);
+                rc = sceMpegAvcQueryYCbCrSize(&mpeg, modes[m], dims[d][0], dims[d][1], &size);
+                (void)snprintf(extra, sizeof(extra), "size=%d", (int)size);
+                mpy_rc(emulated, step, rc, extra);
+            }
+        }
+        SceInt32 ysize = -1;
+        rc = sceMpegAvcQueryYCbCrSize(&mpeg, 1, MPY_W, MPY_H, &ysize);
+        if (rc != 0 || ysize <= 0 || (uint32_t)ysize > MPY_YCBCR_CAP) goto free_es;
+        memset(s_mpy_ycbcr, 0xa5, MPY_YCBCR_CAP);
+        sceKernelDcacheWritebackInvalidateAll();
+        probe_step(emulated, "mpeg-ycbcr", "init-ycbcr");
+        rc = sceMpegAvcInitYCbCr(&mpeg, 1, MPY_W, MPY_H, s_mpy_ycbcr);
+        sceKernelDcacheWritebackInvalidateAll();
+        mpy_rc(emulated, "init-ycbcr", rc, NULL);
+        if (rc != 0) goto free_es;
+        mpy_dump(emulated, "ycbcr-after-init", s_mpy_ycbcr, (uint32_t)ysize + 64u);
+
+        /* Feed and decode into the YCbCr buffer up to the target picture; the first few calls and every
+           100th are recorded. */
+        SceInt32 init = 0;
+        void *ycbcr_ptr = s_mpy_ycbcr;
+        int aus = 0, pictures = 0;
+        for (int iter = 0; iter < 4 * MPY_MAX_AUS && aus < MPY_MAX_AUS && pictures < MPY_TARGET_PICTURE; iter++) {
+            const SceInt32 avail = sceMpegRingbufferAvailableSize(&s_mpy_rb);
+            if (avail > 0) (void)sceMpegRingbufferPut(&s_mpy_rb, avail, avail);
+            SceInt32 attr = -1;
+            rc = sceMpegGetAvcAu(&mpeg, stream, &s_mpy_au, &attr);
+            if (rc != 0) {
+                if (s_mpy_cursor + 2048u > s_mpy_file_bytes && avail <= 0) break;
+                continue;
+            }
+            char step[32];
+            (void)snprintf(step, sizeof(step), "decode-ycbcr%d", aus);
+            probe_step(emulated, "mpeg-ycbcr", step);
+            rc = sceMpegAvcDecodeYCbCr(&mpeg, &s_mpy_au, &ycbcr_ptr, &init);
+            if (init) pictures++;
+            if (aus < 4 || aus % 100 == 0 || rc != 0 || pictures == MPY_TARGET_PICTURE) {
+                (void)snprintf(extra, sizeof(extra), "init=%d pictures=%d pts=0x%08x%08x au_size=%u", (int)init,
+                               pictures, (unsigned int)s_mpy_au.iPtsMSB, (unsigned int)s_mpy_au.iPts,
+                               (unsigned int)s_mpy_au.iAuSize);
+                mpy_rc(emulated, step, rc, extra);
+            }
+            aus++;
+            if (rc != 0) break;
+        }
+        if (init == 0) goto free_es;
+        /* The decoded size, as the buffer's first two words give it in macroblocks. */
+        const SceInt32 pic_h = (SceInt32)(((const uint32_t *)s_mpy_ycbcr)[0] * 16u);
+        const SceInt32 pic_w = (SceInt32)(((const uint32_t *)s_mpy_ycbcr)[1] * 16u);
+        sceKernelDcacheWritebackInvalidateAll();
+        mpy_dump(emulated, "ycbcr-picture", s_mpy_ycbcr, (uint32_t)ysize + 64u);
+        memcpy(s_mpy_ycbcr_copy, s_mpy_ycbcr, (uint32_t)ysize);
+
+        for (unsigned i = 0; i < 32; i++) s_mpy_detail[i] = 0xcafe0000u | i;
+        sceKernelDcacheWritebackInvalidateAll();
+        probe_step(emulated, "mpeg-ycbcr", "decode-detail");
+        rc = sceMpegAvcDecodeDetail(&mpeg, s_mpy_detail);
+        sceKernelDcacheWritebackInvalidateAll();
+        {
+            int n = snprintf(extra, sizeof(extra), "w=");
+            for (unsigned i = 0; i < 16 && n > 0 && n < (int)sizeof(extra) - 10; i++)
+                n += snprintf(extra + n, sizeof(extra) - (size_t)n, "%08x%s", (unsigned int)s_mpy_detail[i],
+                              i < 15 ? "," : "");
+            mpy_rc(emulated, "decode-detail", rc, extra);
+        }
+
+        /* CSC of the picture as decoded, of the same buffer with every byte past the first 128 set to
+           0x80, and of the decoded buffer with its first 128 bytes cleared. */
+        mpy_csc(emulated, &mpeg, "full", 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
+        memset(s_mpy_ycbcr + 128, 0x80, (uint32_t)ysize - 128u);
+        mpy_csc(emulated, &mpeg, "planes80", 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
+        memcpy(s_mpy_ycbcr, s_mpy_ycbcr_copy, (uint32_t)ysize);
+        memset(s_mpy_ycbcr, 0, 128);
+        mpy_csc(emulated, &mpeg, "head0", 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
+        memcpy(s_mpy_ycbcr, s_mpy_ycbcr_copy, (uint32_t)ysize);
+        /* The first two plane pointers exchanged: whether CSC reads the planes the header names. */
+        {
+            uint32_t *hdr = (uint32_t *)s_mpy_ycbcr;
+            const uint32_t t = hdr[4];
+            hdr[4] = hdr[6];
+            hdr[6] = t;
+            mpy_csc(emulated, &mpeg, "swap02", 0, 0, pic_w, pic_h, MPY_STRIDE, 1);
+            memcpy(s_mpy_ycbcr, s_mpy_ycbcr_copy, (uint32_t)ysize);
+        }
+        /* Range and stride: a sub-rectangle (dumped), then refusals or clips (results only). */
+        mpy_csc(emulated, &mpeg, "sub", 16, 16, 64, 64, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "x-odd", 1, 0, 64, 64, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "x16", 16, 0, pic_w - 16, pic_h, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "w-odd", 0, 0, 63, 64, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "wide", 0, 0, pic_w + 16, pic_h, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "tall", 0, 0, pic_w, pic_h + 16, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "neg", -16, 0, 64, 64, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "empty", 0, 0, 0, 0, MPY_STRIDE, 0);
+        mpy_csc(emulated, &mpeg, "fw480", 0, 0, pic_w, pic_h, 480, 0);
+        mpy_csc(emulated, &mpeg, "fw256", 0, 0, pic_w, pic_h, 256, 0);
+
+        /* One direct sceMpegAvcDecode of the following pictures into the destination buffer. */
+        SceInt32 init2 = 0;
+        void *dest_ptr = s_mpy_dest;
+        memset(s_mpy_dest, 0x5a, sizeof(s_mpy_dest));
+        sceKernelDcacheWritebackInvalidateAll();
+        for (int iter = 0; iter < 4 * MPY_MAX_AUS && aus < MPY_MAX_AUS + 64 && init2 == 0; iter++) {
+            const SceInt32 avail = sceMpegRingbufferAvailableSize(&s_mpy_rb);
+            if (avail > 0) (void)sceMpegRingbufferPut(&s_mpy_rb, avail, avail);
+            SceInt32 attr = -1;
+            if (sceMpegGetAvcAu(&mpeg, stream, &s_mpy_au, &attr) != 0) {
+                if (s_mpy_cursor + 2048u > s_mpy_file_bytes && avail <= 0) break;
+                continue;
+            }
+            char step[32];
+            (void)snprintf(step, sizeof(step), "avc-decode%d", aus);
+            probe_step(emulated, "mpeg-ycbcr", step);
+            rc = sceMpegAvcDecode(&mpeg, &s_mpy_au, MPY_STRIDE, &dest_ptr, &init2);
+            (void)snprintf(extra, sizeof(extra), "init=%d pts=0x%08x%08x", (int)init2,
+                           (unsigned int)s_mpy_au.iPtsMSB, (unsigned int)s_mpy_au.iPts);
+            mpy_rc(emulated, step, rc, extra);
+            aus++;
+            if (rc != 0) break;
+        }
+        sceKernelDcacheWritebackInvalidateAll();
+        if (init2) mpy_dump(emulated, "avc-decode", s_mpy_dest, MPY_DEST_BYTES);
+
+        SceInt32 status = -1;
+        /* Like sceMpegAvcDecodeYCbCr it takes the address of the buffer pointer: given the buffer itself
+           (this case before 2026-10-31) the call never returned. */
+        probe_step(emulated, "mpeg-ycbcr", "decode-stop-ycbcr");
+        rc = sceMpegAvcDecodeStopYCbCr(&mpeg, &ycbcr_ptr, &status);
+        (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
+        mpy_rc(emulated, "decode-stop-ycbcr", rc, extra);
+        status = -1;
+        probe_step(emulated, "mpeg-ycbcr", "decode-stop");
+        rc = sceMpegAvcDecodeStop(&mpeg, MPY_STRIDE, &dest_ptr, &status);
+        (void)snprintf(extra, sizeof(extra), "status=%d", (int)status);
+        mpy_rc(emulated, "decode-stop", rc, extra);
+free_es:
+        probe_step(emulated, "mpeg-ycbcr", "free-es");
+        sceMpegFreeAvcEsBuf(&mpeg, es);
+        mpy_rc(emulated, "free-es", 0, NULL);
+unregist:
+        probe_step(emulated, "mpeg-ycbcr", "unregist");
+        /* PSPSDK declares the handle by value; the library takes the handle's address like every other call. */
+        sceMpegUnRegistStream((SceMpeg)&mpeg, stream);
+delete_mpeg:
+        probe_step(emulated, "mpeg-ycbcr", "delete");
+        sceMpegDelete(&mpeg);
+ring_destruct:
+        probe_step(emulated, "mpeg-ycbcr", "ring-destruct");
+        sceMpegRingbufferDestruct(&s_mpy_rb);
+    }
+finish:
+    probe_step(emulated, "mpeg-ycbcr", "finish");
+    sceMpegFinish();
+unload_mpeg:
+    probe_step(emulated, "mpeg-ycbcr", "unload-mpegbase");
+    mpy_rc(emulated, "unload-mpegbase", sceUtilityUnloadAvModule(PSP_AV_MODULE_MPEGBASE), NULL);
+unload_avcodec:
+    probe_step(emulated, "mpeg-ycbcr", "unload-avcodec");
+    mpy_rc(emulated, "unload-avcodec", sceUtilityUnloadAvModule(PSP_AV_MODULE_AVCODEC), NULL);
+park:
+    probe_step(emulated, "mpeg-ycbcr", "park");
+    /* Normal teardown: parks until PSPLink modstop. Returning from main would drop PSPLink to the XMB. */
     probe_teardown(emulated);
 }
 #endif
@@ -11852,6 +12765,8 @@ int main(int argc, char *argv[]) {
     run_wait_outcomes(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
     run_ge_break_continue(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_SYNC_IDS
+    run_ge_sync_ids(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REFER_STATUS_SIZE
     run_refer_status_size(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_READONLY
@@ -11890,6 +12805,10 @@ int main(int argc, char *argv[]) {
     run_thread_k0_block(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SAS_INIT
     run_sas_init(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DELAY_SWEEP
+    run_at3_delay_sweep(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MPEG_YCBCR
+    run_mpeg_ycbcr(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

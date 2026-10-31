@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -18,7 +21,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import library_build  # noqa: E402
-from nk_core import decrypt_tool  # noqa: E402
+from nk_core import decrypt_tool, disc_verify  # noqa: E402
 from test_iso_parity import create_test_iso, create_test_iso_with_executables  # noqa: E402
 
 # A stand-in for `nk_cli.py bringup`: what it does depends on the disc file's name.
@@ -44,6 +47,17 @@ if name.startswith("slow"):
         "duration_ms": 0}}}
     (work / "bringup-progress.json").write_text(json.dumps(progress), encoding="utf-8")
     time.sleep(60)
+if name.startswith("busy"):
+    # Two bring-ups of one disc ID at once would share its folders: say so in the log.
+    marker = work.parent / ("running-" + name)
+    try:
+        marker.touch(exist_ok=False)
+    except FileExistsError:
+        with open(log, "a", encoding="utf-8") as stream:
+            stream.write("OVERLAP\n")
+    else:
+        time.sleep(1)
+        marker.unlink()
 if name.startswith("crash"):
     sys.exit(3)
 for stage in ("inspect", "prepare_import", "analyze", "codegen"):
@@ -152,6 +166,124 @@ class LibraryBuildTests(unittest.TestCase):
         self.assertEqual(records["b/ok-test70010.iso"]["outcome"], "DUPLICATE")
         self.assertEqual(records["b/ok-test70010.iso"]["duplicate_of"], "a/ok-test70010.iso")
         self.assertEqual(self.calls(), ["ok-test70010"])
+
+    def test_a_modified_image_with_a_retail_disc_id_builds_as_its_own_disc(self) -> None:
+        # A fan translation keeps its retail disc's ID; its contents (here, its title) differ.
+        self.disc("a/ok-test70011.iso", "TEST70011")
+        translated = self.discs / "b" / "ok-test70011.iso"
+        translated.parent.mkdir(parents=True)
+        create_test_iso(translated, disc_id="TEST70011", title="Title TEST70011 [T-En]")
+        result = self.build().run()
+        records = self.by_source(result)
+        self.assertEqual([records[key]["outcome"] for key in sorted(records)], ["BUILT", "BUILT"])
+        self.assertEqual(sorted(self.calls()), ["ok-test70011", "ok-test70011"])
+        hashes = {records[key]["verification"]["sha1"] for key in records}
+        self.assertEqual(len(hashes), 2)
+        # Without a datafile nothing is classified.
+        self.assertEqual(result["verification_counts"], {"NOT_CHECKED": 2})
+
+    def test_images_sharing_a_disc_id_never_build_at_once(self) -> None:
+        self.disc("a/busy-test70016.iso", "TEST70016")
+        translated = self.discs / "b" / "busy-test70016.iso"
+        translated.parent.mkdir(parents=True)
+        create_test_iso(translated, disc_id="TEST70016", title="Title TEST70016 [T-En]")
+        self.disc("c/ok-test70017.iso", "TEST70017")
+        result = self.build(jobs=2).run()
+        records = self.by_source(result)
+        self.assertEqual([records[key]["outcome"] for key in sorted(records)], ["BUILT"] * 3)
+        # No overlap was logged: the second image started only after the first one ended.
+        self.assertEqual(sorted(self.calls()), ["busy-test70016", "busy-test70016", "ok-test70017"])
+
+    def test_two_discs_that_could_not_be_hashed_both_build(self) -> None:
+        self.disc("a/ok-test70015.iso", "TEST70015")
+        self.disc("b/ok-test70015.iso", "TEST70015")
+
+        def unreadable(_path: Path) -> disc_verify.DiscDigest:
+            raise disc_verify.DiscVerifyError("unreadable", boundary_code="DISC_IMAGE_READ_FAILED")
+
+        result = self.build(hash_disc=unreadable).run()
+        records = self.by_source(result)
+        self.assertEqual([records[key]["outcome"] for key in sorted(records)], ["BUILT", "BUILT"])
+        self.assertEqual(records["a/ok-test70015.iso"]["verification"],
+                         {"error": "DISC_IMAGE_READ_FAILED"})
+
+    def _redump_list(self, *images: Path) -> disc_verify.RedumpDat:
+        rows = "".join(
+            f'<game name="Disc {index}"><rom name="Disc {index}.iso" size="{digest.size_bytes}" '
+            f'crc="{digest.crc32}" sha1="{digest.sha1}"/></game>'
+            for index, digest in enumerate(disc_verify.hash_image(path) for path in images))
+        return disc_verify.parse_dat_text(
+            f"<datafile><header><name>Synthetic</name><version>1</version></header>{rows}"
+            "</datafile>")
+
+    def test_a_redump_list_gives_every_disc_its_tier_without_building(self) -> None:
+        retail = self.disc("retail/ok-test70012.iso", "TEST70012")
+        translated = self.discs / "translated" / "ok-test70012.iso"
+        translated.parent.mkdir(parents=True)
+        create_test_iso(translated, disc_id="TEST70012", title="Title TEST70012 [T-En]")
+        self.disc("other/ok-test70013.iso", "TEST70013")
+        hashed: list[Path] = []
+
+        def hash_disc(path: Path) -> disc_verify.DiscDigest:
+            hashed.append(path)
+            return disc_verify.hash_image(path)
+
+        dat = self._redump_list(retail)
+        result = self.build(dat=dat, verify_only=True, hash_disc=hash_disc).run()
+        self.assertEqual(self.calls(), [])  # nothing built
+        tiers = {key: record["verification"]["tier"]
+                 for key, record in self.by_source(result).items()}
+        self.assertEqual(tiers, {"retail/ok-test70012.iso": "VERIFIED_RETAIL",
+                                 "translated/ok-test70012.iso": "MODIFIED",
+                                 "other/ok-test70013.iso": "UNKNOWN"})
+        self.assertEqual(self.by_source(result)["retail/ok-test70012.iso"]["verification"]
+                         ["redump_name"], "Disc 0.iso")
+        self.assertEqual(result["verification_counts"],
+                         {"MODIFIED": 1, "UNKNOWN": 1, "VERIFIED_RETAIL": 1})
+        self.assertEqual({key: result["datafile"][key]
+                          for key in ("name", "version", "discs", "serials")},
+                         {"name": "Synthetic", "version": "1", "discs": 1, "serials": 0})
+        markdown = (self.reports / "library-build.md").read_text(encoding="utf-8")
+        self.assertIn("## Disc verification", markdown)
+        self.assertEqual(len(hashed), 3)
+        # A second run reuses the hashes of the unchanged files.
+        self.build(dat=dat, verify_only=True, hash_disc=hash_disc).run()
+        self.assertEqual(len(hashed), 3)
+
+    def test_the_manifest_records_the_settings_each_title_was_built_with(self) -> None:
+        self.disc("ok-test70014.iso", "TEST70014")
+        commit = "0123456789abcdef0123456789abcdef01234567"
+        result = self.build(commit=commit).run()
+        self.assertEqual(result["settings"]["title_timeout_seconds"], 30)
+        self.assertEqual(result["settings"]["source_commit"], commit)
+        record = self.by_source(result)["ok-test70014.iso"]
+        self.assertEqual(record["run_settings"], {"title_timeout_seconds": 30,
+                                                  "launch_timeout_seconds": 5,
+                                                  "source_commit": commit,
+                                                  "decrypt": False})
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_a_tree_that_differs_from_its_commit_records_no_commit(self) -> None:
+        repo = self.root / "repo"
+        repo.mkdir()
+        env = dict(os.environ, GIT_AUTHOR_NAME="Synthetic", GIT_AUTHOR_EMAIL="synthetic@example.invalid",
+                   GIT_COMMITTER_NAME="Synthetic", GIT_COMMITTER_EMAIL="synthetic@example.invalid")
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", "-C", str(repo), *args], check=True, env=env,
+                           capture_output=True)
+
+        git("init", "-q")
+        (repo / "tracked.txt").write_text("one\n", encoding="utf-8")
+        git("add", "tracked.txt")
+        git("commit", "-q", "-m", "synthetic")
+        commit = library_build.source_commit(repo)
+        self.assertRegex(commit or "", r"^[0-9a-f]{40}$")
+        # An untracked file is not the build's source; a changed tracked one is.
+        (repo / "notes.txt").write_text("private\n", encoding="utf-8")
+        self.assertEqual(library_build.source_commit(repo), commit)
+        (repo / "tracked.txt").write_text("two\n", encoding="utf-8")
+        self.assertIsNone(library_build.source_commit(repo))
 
     def test_a_stopped_run_resumes_and_redoes_only_what_did_not_end(self) -> None:
         self.disc("ok-test70020.iso", "TEST70020")

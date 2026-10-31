@@ -44,6 +44,7 @@ set(CORE_SOURCES
     src/core/nk_psp_lzrc.c
     src/core/nk_psp_npumdimg.c
     src/core/nk_disc_expand.c
+    src/core/nk_disc_verify.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -164,6 +165,13 @@ add_executable(test_disc_expand
 )
 target_link_libraries(test_disc_expand PRIVATE nakagawa_core nk_libchdr)
 add_test(NAME disc_expand_test COMMAND test_disc_expand)
+
+add_executable(test_disc_verify
+    tests/native/test_disc_verify.c
+    tests/native/native_test_isolation.c
+)
+target_link_libraries(test_disc_verify PRIVATE nakagawa_core)
+add_test(NAME disc_verify_test COMMAND test_disc_verify)
 
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c
@@ -369,6 +377,34 @@ if(NOT WIN32)
 endif()
 add_test(NAME nk_ui_sdlr_test COMMAND test_nk_ui_sdlr)
 set_tests_properties(nk_ui_sdlr_test PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    SKIP_RETURN_CODE 77)
+
+# The Vulkan backend (lane C3c), drawing on a headless device into an offscreen image.
+# With the Vulkan headers found the test is built for real; without them it is the SKIP
+# variant. The backend and the test open the Vulkan loader at run time, so only the
+# headers matter to the build, and a host without a loader or a Vulkan 1.1 device
+# reports exit 77, which ctest shows as skipped.
+find_package(Vulkan QUIET)
+add_executable(test_nk_ui_vk
+    tests/native/test_nk_ui_vk.c
+    ${NK_UI_CORE_SOURCES}
+    src/ui/backend/nk_ui_vk.c
+)
+target_include_directories(test_nk_ui_vk PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+if(Vulkan_INCLUDE_DIR)
+    target_include_directories(test_nk_ui_vk PRIVATE ${Vulkan_INCLUDE_DIR})
+    target_compile_definitions(test_nk_ui_vk PRIVATE NK_UI_WITH_VULKAN)
+    target_link_libraries(test_nk_ui_vk PRIVATE ${CMAKE_DL_LIBS})
+endif()
+if(NOT WIN32)
+    target_link_libraries(test_nk_ui_vk PRIVATE m)
+endif()
+add_test(NAME nk_ui_vk_test COMMAND test_nk_ui_vk)
+set_tests_properties(nk_ui_vk_test PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     SKIP_RETURN_CODE 77)
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build")

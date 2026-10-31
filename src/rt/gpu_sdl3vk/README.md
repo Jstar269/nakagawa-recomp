@@ -97,9 +97,26 @@ Enabled with `SR_GPU_GE=1`. Implementation:
 
 ### Phase 3 — full GE on GPU / cleanup
 
-- Move T&L (world/view/proj, skinning, morphing, lighting, texgen) into the vertex shader;
-  CPU then only decodes vertex formats. Validate against `transform_vtx_clip` with the
-  existing SR_VDUMP machinery.
+- T&L in the vertex shader (#318), opt-in with `SR_GPU_TNL=1`. ge.c decodes the vertices of a
+  transform-mode triangle draw (morphing included) and hands them, with the draw's matrices,
+  fog and light constants, to `hook_tnl_prim`; `shaders/psp_tnl.vert` then skins, transforms,
+  fogs, lights (ambient and diffuse, directional and point) and projects them. ge.c offers a
+  draw only when a clip-space bound shows that no vertex is clipped, dropped or non-finite, and
+  only in states the shader repeats exactly: no specular or powered-diffuse light (host `powf`
+  has no exact shader counterpart), texture map mode 0, gouraud shading, no clear mode, every
+  float input zero or of magnitude 2^-40..2^40. The shader evaluates ge.c's arithmetic in C's
+  order with `precise` (Vulkan rounds add and multiply correctly; the reference has no fused
+  multiply-add) and divides and takes square roots exactly in integer arithmetic, subnormal
+  operands included, so its vertices reach the rasterizer with the bits the CPU T&L gives them.
+  Intermediate values can be subnormal even with every input in range (the squared length of
+  a small transformed normal), and the CPU keeps them, so the shader declares DenormPreserve:
+  the stage runs only on a device that enables `VK_KHR_shader_float_controls` with
+  `shaderDenormPreserveFloat32`. On other devices, NVIDIA's among them, ge.c keeps T&L and
+  `SR_GPU_TNL=1` says so once. Everything else, and a draw the fragment state sends to
+  software, keeps ge.c's T&L. The `tnl-parity` cells of `gpu-coherence-selftest` compare the
+  two routes byte for byte (on a device without the feature, every cell on ge.c's route). Left:
+  texgen, flat shading, specular light, sprites, lines, points, clipped draws, and devices that
+  flush fp32 subnormals.
 - Render-to-texture chains (the hangar uses fbp swaps), depth readbacks if any game code
   reads zbuf, small-tri rasterization rules (top-left bias already documented in
   raster_tri) via conservative settings.
@@ -117,6 +134,8 @@ Enabled with `SR_GPU_GE=1`. Implementation:
   flush + guest-VRAM writeback. Hooks defined in `src/rt/ge_shared.h`.
 - `shaders/psp.vert`, `shaders/psp.frag` — compiled by glslc (`GLSLC` in the Makefile)
   into `psp_{vert,frag}.inc` at build time.
+- `shaders/psp_tnl.vert` — the GPU transform-and-lighting vertex stage (`SR_GPU_TNL=1`, #318), a GLSL
+  translation of ge.c's T&L; compiled the same way into `psp_tnl_vert.inc`.
 - `tools/ppmdiff.py`, `tools/ppm2png.py` (repo root) — A/B snapshot comparison.
 
 ## Present-truthful frame capture
@@ -145,6 +164,33 @@ UNDEFINED-layout image and published a PPM under a `.png` name. It is gone. In i
   PPMs; under `SR_VULKAN_VALIDATION=1` it also asserts zero validation-layer errors. Exit 77
   means SKIP (Vulkan unavailable). `fbcap-selftest` covers the presenter-neutral service itself
   without a GPU.
+
+## Present and swapchain failures (#1377)
+
+Every state-changing Vulkan result on the present, pause-overlay and swapchain paths is checked.
+A failed present returns -1 and resolves an armed capture as failed. Whether the renderer can
+go on decides the transition:
+
+- Nothing is lost when an acquire fails with out-of-memory (no image was acquired), or a present
+  fails before it is enqueued: `recover_unenqueued_present` waits for the frame and replaces its
+  semaphore, and the swapchain is rebuilt, which hands back the image the present still held.
+  The next present tries again.
+- The renderer turns terminal (`sdl3vk_renderer_terminal()`; every later present returns -1 at
+  once) when the device or surface is lost, a fence wait fails (the frame's work may still run),
+  or any step between a successful acquire and the submit fails (the image stays acquired and its
+  semaphore stays to be signalled, and neither can be handed back without a present). It also
+  turns terminal when the swapchain cannot be rebuilt: the queue-idle wait fails,
+  `vkCreateSwapchainKHR` fails (the old swapchain is retired anyway, so it is destroyed), or
+  its images cannot be read.
+- A suboptimal acquire has acquired its image: the frame is presented and the present, which
+  reports it again, rebuilds the swapchain.
+- Only `sdl3vk_shutdown` leaves the terminal state, and a later `sdl3vk_init` starts afresh.
+
+`sdl3vk_lifecycle_selftest` (inside `gpu-capture-selftest`) checks two kinds of fault with the
+validation layer on, and expects no leaked object and no validation error from either:
+
+- an init failure at each step;
+- a failure at each checked present step, through a one-shot present-step fault seam.
 
 ## Environment variables
 

@@ -1067,6 +1067,7 @@ PUBLIC_TARGETS := \
 	display-smoke \
 	display-smoke-run \
 	display-smoke-gui \
+	display-smoke-quit \
 	display-smoke-player \
 	display-smoke-clean \
 	title-qualification \
@@ -1116,6 +1117,7 @@ PUBLIC_TARGETS := \
 	nk-ui-overlay-screens-capture \
 	nk-ui-overlay-host-selftest \
 	nk-ui-sdlr-selftest \
+	nk-ui-vk-selftest \
 	nk-ui-focus-selftest \
 	coro-selftest \
 	coro-selftest-asm \
@@ -1209,6 +1211,7 @@ HELP_DESCRIPTION_showcase-linux := build and smoke the showcase demos on this PO
 HELP_DESCRIPTION_display-smoke := build the display smoke fixture
 HELP_DESCRIPTION_display-smoke-run := run display smoke and compare its GE/present flight bundle
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
+HELP_DESCRIPTION_display-smoke-quit := close the display smoke window mid-run and check the orderly quit
 HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
 HELP_DESCRIPTION_display-smoke-clean := remove display smoke artifacts
 HELP_DESCRIPTION_title-qualification := validate public title manifests, input profiles and staging declarations
@@ -1258,6 +1261,7 @@ HELP_DESCRIPTION_nk-ui-overlay-screens-selftest := build and run the in-game ove
 HELP_DESCRIPTION_nk-ui-overlay-screens-capture := save offscreen captures of every in-game overlay page at three sizes (set NK_UI_CAPTURE_DIR)
 HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (synthetic layout, focus and scale)
 HELP_DESCRIPTION_nk-ui-sdlr-selftest := build and run the nk_ui SDL_Renderer and SDL3_ttf selftest (software snapshots; SKIPs without SDL3_ttf)
+HELP_DESCRIPTION_nk-ui-vk-selftest := build and run the nk_ui Vulkan backend selftest (headless device, offscreen readback; SKIPs without Vulkan)
 HELP_DESCRIPTION_nk-ui-focus-selftest := build and run the nk_ui focus graph, input model and prompt glyph selftest (SDL translation leg SKIPs without SDL3)
 HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
 HELP_DESCRIPTION_coro-selftest-asm := run the coroutine selftest on the Android stack-switch backend (POSIX hosts)
@@ -1606,6 +1610,13 @@ display-smoke-run: display-smoke
 display-smoke-gui:
 	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui
+
+# display-smoke-quit closes the window while the long guest still runs: the quit must stop the
+# scheduler and end through the driver's teardown with exit 0 (#1377). It needs a display, so it
+# is not part of any aggregate gate either. SR_VIDEO=gdi runs it on the GDI fallback.
+display-smoke-quit:
+	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) quit --build-dir $(DISPLAY_SMOKE_DIR)
 
 # Drive the actual native-player PLAY NOW path against the launchable fixture.
 # The child opens a real window, so this is a developer/display gate rather than
@@ -2125,7 +2136,7 @@ $(LIBCHDR_LIB): $(LIBCHDR_OBJS)
 
 PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_builtin_keys.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/nk_psp_amctrl.c src/core/nk_psp_lzrc.c src/core/nk_psp_npumdimg.c src/core/nk_disc_expand.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_builtin_keys.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/nk_psp_amctrl.c src/core/nk_psp_lzrc.c src/core/nk_psp_npumdimg.c src/core/nk_disc_expand.c src/core/nk_disc_verify.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS) $(NK_UI_PLAYER_HOST_SRCS)
 # The player's About page shows "v<version> (MM-DD-YYYY)" (the version itself is
@@ -2784,9 +2795,9 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
 	@$(BUILD_DIR)/psmf_media_selftest_csc_mutant.exe > $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log 2>&1; result=$$?; \
 		if test $$result -eq 0; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc no-write mutant unexpectedly passed" >&2; exit 1; fi; \
-		if ! grep -Fq "FAIL: CSC writes the retained host picture deterministically" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the decoder-independent CSC write assertion" >&2; exit 1; fi; \
-		if ! grep -Fq "SKIP: guest Decode/Copy/CSC pixel assertions need an H.264 backend" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log && \
-		   ! grep -Fq "FAIL: guest CSC writes decoded I_PCM pixels into the guest destination" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the guest pixel assertion" >&2; exit 1; fi; \
+		if ! grep -Fq "FAIL: ycbcr: CSC converts every pixel of a varied picture from the guest planes, nearest chroma" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the decoder-independent CSC write assertion" >&2; exit 1; fi; \
+		if ! grep -Fq "SKIP: the YCbCr decode layout needs a real H.264 backend" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log && \
+		   ! grep -Fq "FAIL: ycbcr-decode: CSC writes the measured conversion of the decoded samples" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the guest pixel assertion" >&2; exit 1; fi; \
 		echo "psmf-media-selftest-csc-mutant: killed by the CSC write assertions"
 
 audio-selftest:
@@ -3492,6 +3503,35 @@ nk-ui-sdlr-selftest:
 	if [ $$rc -eq 77 ]; then echo "SKIP nk-ui-sdlr-selftest (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL nk-ui-sdlr-selftest (exit $$rc)"; exit $$rc; fi
 
+# nk-ui-vk-selftest - the nk_ui Vulkan backend (lane C3c): draw lists rendered on a headless Vulkan
+# device into an offscreen image and read back, checking scissors, text, images, waves and
+# premultiplied blending pixel by pixel, with the Khronos validation layer on when it is installed.
+# The backend and the test open the Vulkan loader at run time, so only the headers are needed to
+# build. A host without the Vulkan headers builds the SKIP variant, and a host without a loader or
+# a Vulkan 1.1 device skips at run time. Both exit 77; this recipe then prints
+# "SKIP nk-ui-vk-selftest" and succeeds, so a skip is visible in the log but does not fail
+# native-core-tests. NK_UI_VK_REQUIRE=1 makes a skip fail, for a job that provides a device.
+NK_UI_VK_REQUIRE ?=
+NK_UI_VK_SELFTEST_LIBS := $(if $(filter Windows_NT,$(OS)),,-ldl)
+.PHONY: nk-ui-vk-selftest
+nk-ui-vk-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@vk_defs=""; \
+	if printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		vk_defs="-DNK_UI_WITH_VULKAN"; \
+	else \
+		echo "nk-ui-vk-selftest: Vulkan headers not found; building the SKIP variant"; \
+	fi; \
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Ithird_party/clay $(VULKAN_INC_FLAGS) $$vk_defs \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) src/ui/backend/nk_ui_vk.c tests/native/test_nk_ui_vk.c \
+		-lm $(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_ROOT)/test_nk_ui_vk$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_ROOT_RUN)/test_nk_ui_vk$(EXE_EXT) || rc=$$?; \
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL nk-ui-vk-selftest (exit 77, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP nk-ui-vk-selftest (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL nk-ui-vk-selftest (exit $$rc)"; exit $$rc; fi
+
 .PHONY: nk-ui-focus-selftest
 # The focus, input and glyph checks are SDL-free. The SDL_Event translation leg is built from
 # the same sources: with SDL3 (as found by build discovery) it translates real SDL events;
@@ -3514,7 +3554,7 @@ nk-ui-focus-selftest:
 		if [ "$$rc" = 77 ]; then echo "SKIP nk-ui-focus-selftest SDL translation leg (exit 77): SDL3 not found by build discovery"; \
 		elif [ "$$rc" != 0 ]; then exit "$$rc"; fi
 
-native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player $(LIBCHDR_LIB) clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-overlay-screens-selftest nk-ui-overlay-host-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
+native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player $(LIBCHDR_LIB) clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-overlay-screens-selftest nk-ui-overlay-host-selftest nk-ui-sdlr-selftest nk-ui-vk-selftest nk-ui-focus-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" src/rt/pgf_public.c \
 		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)
@@ -3545,6 +3585,8 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 	$(CC) $(NC_CFLAGS_CORE) -Werror $(LIBCHDR_INC) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) $(PLAYER_CHD_SRCS) \
 		tests/native/native_test_isolation.c tests/native/test_disc_expand.c $(LIBCHDR_LIB) $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_disc_expand$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_disc_expand$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) 		tests/native/native_test_isolation.c tests/native/test_disc_verify.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_disc_verify$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_disc_verify$(EXE_EXT)
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" tests/native/test_safe_math.c \
 		-o $(BUILD_ROOT)/test_safe_math$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_safe_math$(EXE_EXT)

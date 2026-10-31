@@ -49,6 +49,7 @@
 #endif
 
 #include "atrac3p_bridge.h"
+#include "atrac3p/atrac3p_api.h"
 #include "libavutil/common.h"
 #include "libavutil/error.h"
 #include "vfpu_tables.h"

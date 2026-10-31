@@ -46,16 +46,16 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **659** (dedicated **553**, fake_success **5**, controlled_unsupported **101**).
-Semantic handler census: **532** handlers across **26** API families, covering **559** handler-associated NID registrations.
+Registered NIDs: **661** (dedicated **555**, fake_success **5**, controlled_unsupported **101**).
+Semantic handler census: **534** handlers across **26** API families, covering **561** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 212 | 217 |
+| `partial` | 215 | 220 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 303 | 312 |
+| `unreviewed` | 302 | 311 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -66,14 +66,14 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 | `sceCtrl` | 0 | 6 | 0 | 0 | 6 | 12 | 12 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
-| `sceFont` | 0 | 3 | 0 | 0 | 10 | 13 | 13 |
+| `sceFont` | 0 | 3 | 0 | 0 | 11 | 14 | 14 |
 | `sceGe` | 2 | 8 | 0 | 0 | 4 | 14 | 14 |
 | `sceHprm` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
 | `sceKernel` | 3 | 93 | 0 | 0 | 93 | 189 | 207 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
-| `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
+| `sceMpeg` | 0 | 11 | 0 | 1 | 25 | 37 | 37 |
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
@@ -85,7 +85,7 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 | `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
 | `sceUtility` | 0 | 7 | 0 | 0 | 27 | 34 | 34 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **212** | **1** | **2** | **303** | **532** | **559** |
+| **Total** | **14** | **215** | **1** | **2** | **302** | **534** | **561** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -259,28 +259,35 @@ Semantic handler census: **532** handlers across **26** API families, covering *
   - Limitation: resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0 result when no list is paused is PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
 - **`h_GeDrawSync`** (`sceGe`): `sceGeDrawSync` (0xb287bd61)
-  - Limitation: the mode 1 peeks (paused 2, stalled 3, 0 after a reset) are measured; mode 0 blocking is the PSPSDK contract and is source-selftested, and modes other than 0 and 1 take the wait path without a measurement
+  - Limitation: the mode 1 peeks (paused 2, stalled 3, 0 after a reset) and the 0x80000107 for modes 2 and -1 are measured (PSP-GE-CONTROL-001, PSP-GE-SYNC-001); the mode 0 wait frees completed lists' slots, so their peeks read 0x80000100 afterwards (measured); after a reset of a stalled list the PSP's mode 0 returned in some launches and did not return in others, and the runtime returns
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-draw-sync-paused, ge-draw-sync-cancelled, ge-list-dequeue-stalled)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-SYNC-001: ge-sync-invalid-mode, ge-list-sync-after-draw-wait, ge-draw-sync-after-reset-wait)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_sync_ids_match_psp
 - **`h_GeEdramSetAddrTranslation`** (`sceGe`): `sceGeEdramSetAddrTranslation` (0xb77905ea)
   - Limitation: replacement-width returns and restoration to boot width 1024 are measured; width 0 as an input, unsupported-width error 0x80000107 (a project choice), and applying the setting to actual GE address translation are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-GE-EDRAM-001: initial width, 512/1024/2048/4096 replacements, restore and final query)
 - **`h_GeListDeQueue`** (`sceGe`): `sceGeListDeQueue` (0x5fb86ab0)
-  - Limitation: a stalled list returns BUSY (0x80000021) and stays queued, PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run); paused, completed, cancelled and unknown queue ids are refused as NOT_IMPLEMENTED because no dequeue result is measured for them (#341)
+  - Limitation: a stalled list returns BUSY (0x80000021) and stays queued (PSP-GE-CONTROL-001), and so does a completed list until a sceGeDrawSync(0) frees it; an unknown id is 0x80000100 (PSP-GE-SYNC-001, measured); a queued list that has not started is removed and its waiters released, and a freed slot is 0x80000100, following uofw src/kd/ge/ge.c (unmeasured)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_sync_ids_match_psp
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_queued_lists_run_in_order
 - **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
-  - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)
+  - Limitation: display-smoke covers one unstalled synchronous list; a list enqueued behind an active one waits its turn and runs in enqueue order once the head completes, slots come from a FIFO of free slots and ids name slots (uofw src/kd/ge/ge.c; the queued peek 1 and the 64-list 0x80000022 refusal are unmeasured), and argument and priority validation and asynchronous execution timing remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
   - Evidence: fixtures/display_smoke/generate.py:flight_smoke
   - Evidence: src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_queued_lists_run_in_order
 - **`h_GeListEnQueueHead`** (`sceGe`): `sceGeListEnQueueHead` (0x1c0d95a6)
   - Limitation: idle-list execution follows the shared enqueue path; head ordering is refused while a list is stalled, and asynchronous queue behavior remains unmodeled
 - **`h_GeListSync`** (`sceGe`): `sceGeListSync` (0x03444eb4)
-  - Limitation: the syncType 1 peeks (paused 4, stalled 3) and the reset-removed 0x80000100 are measured; syncType 0 blocking is the PSPSDK contract and is source-selftested, an unknown queue id returns 0 without a measurement, and command-boundary timing is not measured
+  - Limitation: the syncType 1 peeks (paused 4, stalled 3, 0x80000100 for an unknown id, a reset-removed list or a list after a sceGeDrawSync(0)), the 0x80000107 for other sync types and the syncType 0 results (0 at once for a completed list, no return for a list a reset removed) are measured (PSP-GE-CONTROL-001, PSP-GE-SYNC-001); the queued peek 1 follows uofw unmeasured; a completed list's peek before any sceGeDrawSync(0) read 0 in one PSP launch and often 0x80000100 in others, and the runtime keeps 0 until a sceGeDrawSync(0); command-boundary timing is not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-list-sync-paused, ge-list-sync-cancelled, ge-list-dequeue-stalled)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-SYNC-001: ge-list-sync-unknown-poll, ge-sync-invalid-mode, ge-list-sync-cancelled-wait, ge-list-sync-stale-wait, ge-list-sync-after-draw-wait)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_sync_ids_match_psp
 - **`h_HprmIsHeadphoneExist`** (`sceHprm`): `sceHprmIsHeadphoneExist` (0x7e69eda4)
   - Limitation: reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the conditions under which firmware reports 1 are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-headphone-first, hprm-headphone-second)
@@ -328,8 +335,9 @@ Semantic handler census: **532** handlers across **26** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoLseek`** (`sceIo`): `sceIoLseek` (0x27eb27b8)
-  - Limitation: PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; pspautotests revision f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 before zero and permits past-EOF seeks; positions beyond 32 bits fail closed with IO_LSEEK_OUT_OF_RANGE (#1380); invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred
+  - Limitation: PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; pspautotests revision f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 before zero and permits past-EOF seeks; PSP-KERNEL-SEM-001 measures a Memory Stick position as 32 bits wide (0xFFFFFFFF accepted, beyond it EINVAL with the position unchanged); other devices keep IO_LSEEK_OUT_OF_RANGE there (#1380); invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-seek64, io-seek64-rdwr)
   - Evidence: src/rt/hle_thread_selftest.c:test_umd_block_device_sectors
 - **`h_IoLseek32Async`** (`sceIo`): `sceIoLseek32Async` (0x1b385d8f)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
@@ -338,9 +346,10 @@ Semantic handler census: **532** handlers across **26** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; 64-bit seek timing and callback ordering are not hardware-measured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoOpen`** (`sceIo`): `sceIoOpen` (0x109f50bc)
-  - Limitation: measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; an open without PSP_O_CREAT never creates a file, and PSP_O_CREAT|PSP_O_EXCL on an existing file fails closed with IO_OPEN_EXCL_EXISTING (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek
+  - Limitation: measured coverage is one host0 file's create/write/read/append/missing-file path, PSP-UMDIO-001's fixed open paths and flags, and PSP-KERNEL-SEM-001's Memory Stick exclusive create; an open without PSP_O_CREAT never creates a file, a create under a missing directory is 0x80010002, and PSP_O_CREAT|PSP_O_EXCL on an existing file is EEXIST with the file unchanged (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-missing-parent, io-excl-new, io-excl-existing)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
 - **`h_IoOpenAsync`** (`sceIo`): `sceIoOpenAsync` (0x89aa9906)
   - Limitation: open runs its host lookup at submission to return the PSP-visible fd, then completes as a pending request on the import-boundary service and notifies the fd's async callback; async timing and callback ordering are synthetic, not hardware-measured, and a failed open returns its error directly instead of an fd carrying it
@@ -680,20 +689,42 @@ Semantic handler census: **532** handlers across **26** API families, covering *
 - **`h_WakeupThread`** (`sceKernel`): `sceKernelWakeupThread` (0xd59ead2f)
   - Limitation: the cited cells cover wakeup-count accumulation and a sleeping target; specific invalid-target errors, repeated wakeup order, and interactions with termination are not all established
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: wakeups accumulate while the target is not sleeping)
+- **`h_MpegAtracDecode`** (`sceMpeg`): `sceMpegAtracDecode` (0x800c44df)
+  - Limitation: decodes the frame the last sceMpegGetAtracAu held with the project's ATRAC3+ bridge into 2048 stereo s16 samples (a mono stream duplicated); refuses with no held frame or an undecodable frame, with unmeasured error values; not measured on this project's PSP
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_atrac_au_decode
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
-  - Limitation: Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)
+  - Limitation: copies the decoded share of every plane and words 0 and 1 through both headers; not measured on the PSP, and overlapping planes are refused (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcCsc`** (`sceMpeg`): `sceMpegAvcCsc` (0x31bd0272)
-  - Limitation: Csc writes the retained decoded picture; guest plane bytes are modeled, not the PSP layout, and range/coherency behavior remains open (#302)
+  - Limitation: converts the guest planes, read through the header's pointers, with the MEASURED PSP matrix and gives the MEASURED range refusals; the destination is written from its first pixel with rows from the top of the picture (one measured sub-range), and the 16-bit pixel modes are not measured (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_csc_swizzled_vram_mirrors
+- **`h_MpegAvcDecodeDetail`** (`sceMpeg`): `sceMpegAvcDecodeDetail` (0x0f6c18d7)
+  - Limitation: the 13 words MEASURED on a PSP-3000 (PSP-MPEG-001): word 0 is 0, words 2 and 3 the header's frame width and height, words 4-7 zero, word 8 the last decode's frame status; word 1 is written as the pictures decoded, which the PSP's is not (0 after 240 pictures), and words 9-12 as 0, one of which holds an unidentified pointer on the PSP (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_avc_decode_detail
 - **`h_MpegAvcDecodeStopYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeStopYCbCr` (0xf2930c9c)
-  - Limitation: Stop clears tracked state, but the firmware buffered-picture status is explicitly unmeasured rather than reported as a guessed frame count (#302)
+  - Limitation: takes the address of the buffer pointer and hands over the picture the decoder still holds with status 1, as MEASURED after the last access unit (PSP-MPEG-001); the PSP decoder runs one access unit behind and this one does not, the decoder is drained only once the whole stream was fed, and a stop in mid-stream is not measured (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcDecodeYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeYCbCr` (0xf0eb1125)
-  - Limitation: Decode marks decoded pictures ready; guest plane bytes remain modeled zeroes, not the PSP layout, while Csc writes the retained decoded picture (#302)
+  - Limitation: writes the decoder's samples into the MEASURED mode-1 strip layout through the header's plane pointers and sets words 0 and 1; a picture larger than its InitYCbCr allocation or than 480x272 is refused as not measured, and the strip length from the decoded height rests on one measured geometry (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcInitYCbCr`** (`sceMpeg`): `sceMpegAvcInitYCbCr` (0x67179b1b)
-  - Limitation: Init zeroes a modeled guest allocation; its plane bytes are not asserted to match the PSP header/plane layout (#302)
+  - Limitation: writes the MEASURED mode-1 header (eight plane pointers into the buffer) and leaves the planes; modes 2 and 3 and an odd number of 16-pixel strips are refused as not measured, and the query's mode-1 limits stand in for Init's own (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcQueryYCbCrSize`** (`sceMpeg`): `sceMpegAvcQueryYCbCrSize` (0x211a057c)
-  - Limitation: the YCbCr size formula, pointer preflight, and guest geometry are source-tested; firmware mode coverage and the hardware-oracle contract remain open (#302)
+  - Limitation: the sizes and refusals MEASURED for modes 0-4 and -1 (PSP-MPEG-001); a mode-3 size wider than 480, which does not follow 1.5 w h on the PSP, is refused as not modeled (#302)
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegChangeGetAuMode`** (`sceMpeg`): `sceMpegChangeGetAuMode` (0x9dcfb7ea)
   - Limitation: decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)
+- **`h_MpegGetAtracAu`** (`sceMpeg`): `sceMpegGetAtracAu` (0xe1ce83a7)
+  - Limitation: one ATRAC3+ frame per call from an audio-only demux of the ring bytes the game fed; NO_DATA when none is demultiplexed; the AU clock is the media-engine model (first timestamp + 4180 per decoded block), not the stream's PES time; the ES buffer is a handle, as in PPSSPP, and is not written; not measured on this project's PSP
+  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_atrac_au_decode
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
 - **`h_NetEtherNtostr`** (`sceNet`): `sceNetEtherNtostr` (0x89360950)

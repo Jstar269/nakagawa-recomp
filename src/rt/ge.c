@@ -19,7 +19,8 @@
  *
  * Per-fragment: texturing (5650/5551/4444/8888/CLUT4/8/16/32/DXT1/3/5, swizzled or linear,
  * bilinear; DXT is inherently block-tiled and never swizzled; mip levels 0-7 chosen by the
- * TEXLEVEL constant or automatic level of detail, nearest or blended, in tex_lod),
+ * TEXLEVEL automatic, constant or slope level of detail, nearest or blended, in
+ * tex_detail16),
  * programmable alpha test, colour test, alpha blending (full factor/equation set), stencil
  * test/ops (PSP stencil lives in destination alpha), logic ops, 4x4 ordered dithering,
  * colour/alpha write masks, scissor, and a software 16-bit depth buffer.
@@ -1364,7 +1365,17 @@ static unsigned long s_capture_min_prims = 1;
 static unsigned long s_capture_total_prims = 0;
 static int s_capture_done = 0;
 static int s_capture_exit = 0;
+static int s_capture_exit_due = 0;       /* SR_GE_CAPTURE_EXIT: the capture was written */
+static int s_capture_exit_deferred = 0;  /* a scheduler loop polls ge_capture_exit_due */
 static const char *s_capture_path = NULL;
+
+int ge_capture_exit_due(void) {
+    return s_capture_exit_due;
+}
+
+void ge_capture_exit_set_deferred(int deferred) {
+    s_capture_exit_deferred = deferred != 0;
+}
 
 static void ge_capture_configure(void) {
     if (s_capture_configured) return;
@@ -1610,6 +1621,13 @@ static void ge_transition_trace_configure(void) {
 }
 
 static uint32_t ge_fb_addr(void);   /* defined with the framebuffer accessors below */
+
+/* Set by hle.c only while its SR_MPEGAV measurement runs (#279): each textured GE_PRIM reports
+ * its level-0 texture and its render target, so a movie picture a title composites through
+ * the GE can be followed to the flip that shows it. NULL otherwise, so a draw pays one test. */
+void (*sr_ge_texture_sample_hook)(uint32_t tex_addr, uint32_t tex_bufw, uint32_t tex_h,
+                                  uint32_t tex_fmt, uint32_t fb_addr, uint32_t fb_stride,
+                                  uint32_t fb_fmt);
 static uint32_t ge_transition_hash_u32(uint32_t h, uint32_t w) {
     for (int i = 0; i < 4; i++) {
         h ^= (w >> (8 * i)) & 0xFFu;
@@ -1768,9 +1786,15 @@ void ge_set_frame(uint32_t frame) {
         } else {
             s_capture_done = ge_capture_end(&ge);
             if (s_capture_done && s_capture_exit) {
-                sr_perf_shutdown();
-                fflush(NULL);
-                _Exit(0);
+                /* The capture is what this run was for. A scheduler run ends at its next
+                 * boundary (ge_capture_exit_due, which the driver's stop check polls), so the
+                 * driver's teardown and every atexit handler run (#1377). With no scheduler
+                 * loop to return to, the run ends here, still through exit(). */
+                s_capture_exit_due = 1;
+                if (!s_capture_exit_deferred) {
+                    sr_perf_shutdown();
+                    exit(0);
+                }
             }
         }
     }
@@ -1980,37 +2004,27 @@ static float tex_footprint_rho2(float du_dx, float dv_dx, float du_dy, float dv_
     return fmaxf(dx2, dy2);
 }
 
-/* Texture level of detail of one fragment (#1373): a level with its fraction, in
- * [0, highest level]. 0 samples level 0 exactly as before mip levels were modelled.
- *
- * Contract (PSPSDK): TEXMODE bits 16-18 hold the highest level (sceGuTexMode maxmips),
- * TEXLEVEL the mode (sceGuTexLevelMode: GU_TEXTURE_AUTO 0, CONST 1, SLOPE 2) and a signed
- * 4.4 bias, and TEXFILTER's minification field enables mip levels with the GL-named
- * GU_{NEAREST,LINEAR}_MIPMAP_{NEAREST,LINEAR} filters (4-7, bit 2). Without bit 2, or with a
- * highest level of 0, the sampler stays on level 0.
- *   constant:  lod = bias.
- *   automatic: lod = log2(rho) + bias, rho being the footprint the rasterizer already uses
- *              for its minification test (the GL scale factor those filter names mirror).
- *   slope:     no public source gives its formula, so it stays on level 0.
- * ge_tex_mip_active() (ge_shared.h) is that on/off rule, shared with the Vulkan backend.
- * Unmeasured on a PSP: the automatic mode's derivative approximation and whether it is
- * evaluated per pixel, the slope formula, and the nearest-level rounding and between-level
- * weights sample_tex_f applies. */
-static float tex_lod(float rho2) {
-    if (!(ge.tex_filter & 4u) || ge.tex_max_level == 0u) return 0.0f;
-    if (!ge_tex_mip_active(&ge)) {
-        static int s_mode_noted;
-        if (!s_mode_noted) {
-            s_mode_noted = 1;
-            fprintf(stderr, "GE: TEXLEVEL mode %" PRIu32 " samples level 0; its level-of-detail "
-                    "formula is unmeasured (#1373)\n", ge.tex_level_mode);
-        }
-        return 0.0f;
+/* Texture level of detail of one fragment (#1373) in 1/16 levels, before ge_tex_level_pick
+ * (ge_shared.h) clamps it and picks the level and blend. Measured on a PSP-3000
+ * (PSP-GE-MIP-001, docs/HARDWARE_ORACLE.md), every logarithm being ge_lod_log16's:
+ *   constant (1, and the unused 3):  the TEXLEVEL bias (signed 4.4), whatever the footprint;
+ *   automatic (0):  log16(rho) + bias, rho the footprint in level-0 texels per pixel, the larger
+ *                   axis (a-u4, a-v4, al-u3v2);
+ *   slope (2):      16 + log16(TEXLODSLOPE) - log16(q) + bias, q the fragment's 1/w (1 in
+ *                   through mode): one level above the slope at w = 1 (s-s1-w1), one more per
+ *                   doubling of w (s-s1-w2 .. s-s1-w8), and the texture size plays no part
+ *                   (s-s1-w2-4x). log16(1/3) = -27 gives w = 3 level 2 + 11/16 (s-s1-w3).
+ * Those cells draw with one footprint, or one w, per window. Where w varies across a
+ * triangle (a-quad-w1to4, s-s1-w1to8) the PSP holds one level of detail per 4-pixel span of
+ * a row, at a point that depends on the triangle, and the per-fragment value here differs
+ * from it; that rule is not modelled. */
+static int tex_detail16(float rho2, float q) {
+    int bias16 = (int)(ge.tex_lod_bias * 16.0f);
+    switch (ge.tex_level_mode) {
+    case 0u: return ge_lod_log16(sqrtf(rho2)) + bias16;
+    case 2u: return 16 + ge_lod_log16(ge.tex_lod_slope) - ge_lod_log16(q) + bias16;
+    default: return bias16;
     }
-    float lod = ge.tex_level_mode == 1u ? ge.tex_lod_bias
-                                        : 0.5f * log2f(rho2) + ge.tex_lod_bias;
-    if (!(lod > 0.0f)) return 0.0f;            /* magnified, a negative bias, or NaN */
-    return lod < (float)ge.tex_max_level ? lod : (float)ge.tex_max_level;
 }
 
 /* Filter one level at level-0 texel coordinates. The rule is measured on a PSP-3000
@@ -2056,29 +2070,20 @@ static void sample_level_f(uint32_t level, float fu, float fv_coord, int use_lin
 
 /* Sample at level-0 texel coordinates. `minifying` picks TEXFILTER's minification or
  * magnification field for filtering within a level (shade() decides it: the footprint test
- * with mip levels off, the level of detail with them on); `lod` (tex_lod) picks the level.
- * TEXFILTER bit 1 selects
- * between the nearest level (GL rounding: up only past one half) and a blend of the two
- * levels around `lod` by its fraction in 1/256 steps. */
-static void sample_tex_f(float fu, float fv_coord, int minifying, float lod,
+ * with mip levels off, the level of detail with them on); `level` and `frac` are
+ * ge_tex_level_pick's. A blend weighs each channel of the two levels by 16 - frac and frac
+ * and truncates the sum's sixteenth (PSP-GE-MIP-001 cl-b0f1: green 255 at 15/16 is 239). */
+static void sample_tex_f(float fu, float fv_coord, int minifying, uint32_t level, int frac,
                          int *r, int *g, int *b, int *a) {
     static int nobil = -1; if (nobil < 0) nobil = getenv("SR_NOBILINEAR") ? 1 : 0;
     int filter_linear = minifying ? (ge.tex_filter & 1) : ((ge.tex_filter >> 8) & 1);
     int use_linear = !nobil && filter_linear;
-    uint32_t level = lod > 0.0f ? (uint32_t)lod : 0u;
-    float frac = lod > 0.0f ? lod - (float)level : 0.0f;
-    if (!(ge.tex_filter & 2u)) {
-        if (frac > 0.5f) level++;
-        sample_level_f(level, fu, fv_coord, use_linear, r, g, b, a);
-        return;
-    }
-    int weight = (int)(frac * 256.0f);
     sample_level_f(level, fu, fv_coord, use_linear, r, g, b, a);
-    if (weight <= 0 || level >= ge.tex_max_level) return;
+    if (frac <= 0) return;
     int r1, g1, b1, a1;
     sample_level_f(level + 1u, fu, fv_coord, use_linear, &r1, &g1, &b1, &a1);
-    *r += ((r1 - *r) * weight) >> 8; *g += ((g1 - *g) * weight) >> 8;
-    *b += ((b1 - *b) * weight) >> 8; *a += ((a1 - *a) * weight) >> 8;
+    *r = (*r * (16 - frac) + r1 * frac) >> 4; *g = (*g * (16 - frac) + g1 * frac) >> 4;
+    *b = (*b * (16 - frac) + b1 * frac) >> 4; *a = (*a * (16 - frac) + a1 * frac) >> 4;
 }
 
 /* SR_TEXDUMP=1: write each distinct texture used by a draw once per run as
@@ -2650,9 +2655,10 @@ static int color_test(int r, int g, int b) {
 }
 
 /* Compute final pixel colour from interpolated texcoord+colour+fog.
- * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point).
+ * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point), `q` the fragment's
+ * interpolated 1/w (1 in through mode).
  * `fog` is fixed-point 0..256 (256 = no fog). Returns 0 if the alpha test rejects. */
-static int shade(float u, float fv, float rho2, int fog,
+static int shade(float u, float fv, float rho2, float q, int fog,
                  int vr, int vg, int vb, int va, int *or_, int *og, int *ob, int *oa) {
     int r, g, b, a;
     int dbg_ta = -1;
@@ -2663,11 +2669,16 @@ static int shade(float u, float fv, float rho2, int fog,
         /* With mip levels off the footprint picks the minification or magnification filter,
          * as before they were modelled. With them on, the level of detail picks it, as in
          * GL and Vulkan (above 0: minified), so a bias or a constant level moves the choice
-         * with the level and the Vulkan sampler makes the same one (#1373; unmeasured on a
-         * PSP). With a bias of 0 in automatic mode the two rules agree. */
-        float lod = tex_lod(rho2);
-        int minifying = ge_tex_mip_active(&ge) ? lod > 0.0f : rho2 > 1.0f;
-        sample_tex_f(u, fv, minifying, lod, &tr, &tg, &tb, &ta);
+         * with the level and the Vulkan sampler makes the same one (#1373; the filter choice
+         * is unmeasured on a PSP: every PSP-GE-MIP-001 level is one colour). */
+        uint32_t level = 0u;
+        int frac = 0, minifying = rho2 > 1.0f;
+        if (ge_tex_mip_active(&ge)) {
+            int detail16 = tex_detail16(rho2, q);
+            ge_tex_level_pick(detail16, ge.tex_filter, ge.tex_max_level, &level, &frac);
+            minifying = detail16 > 0;
+        }
+        sample_tex_f(u, fv, minifying, level, frac, &tr, &tg, &tb, &ta);
         dbg_ta = ta;
         switch (ge.tex_func & 7) {
             case 1: /* decal */
@@ -3231,7 +3242,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             int fog = use_fog ? (int)(clampf01(ifog) * 256.0f) : 256;
 
             int sr,sg,sb,sa;
-            if (!shade(u,fv,rho2,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+            if (!shade(u,fv,rho2,irw,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
 
             /* SR_PIXWHO=x,y: log every triangle that writes the chosen pixel — identifies
              * which draw owns a misrendered region without guessing from geometry. */
@@ -3308,7 +3319,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         t = clampf01(t);
         int x = xmajor ? p : q, y = xmajor ? q : p;
         float u=0, fv=0;
-        float rho2 = 0.0f;
+        float rho2 = 0.0f, lq = 1.0f;
         if (textured) {
             float du_dt = B->u - A->u;
             float dv_dt = B->v - A->v;
@@ -3316,6 +3327,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
             fv = A->v + dv_dt*t;
             if (persp) {
                 float rw = A->rw + (B->rw - A->rw)*t;
+                lq = rw;
                 if (rw != 0.0f) {
                     float drw_dt = B->rw - A->rw;
                     u /= rw; fv /= rw;
@@ -3333,7 +3345,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         if (!zrange_ok(lz, persp)) { if (s_stat_on > 0) s_stat.zrange++; continue; }
         int fog = use_fog ? (int)(clampf01(A->fog+(B->fog-A->fog)*t)*256.0f) : 256;
         int sr,sg,sb,sa;
-        if (!shade(u,fv,rho2,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+        if (!shade(u,fv,rho2,lq,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
         put_px_rgba_tested(x,y,clamp_z(lz),use_z,sr,sg,sb,sa);
     }
 }
@@ -3358,7 +3370,7 @@ static void draw_point_vtx(const Vtx *A, int persp) {
     int fog = (persp && ge.fog_enable && !ge.clear) ? (int)(clampf01(A->fog)*256.0f) : 256;
     s_in3d = persp;
     int sr,sg,sb,sa;
-    if (!shade(u,fv,0.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
+    if (!shade(u,fv,0.0f,persp ? A->rw : 1.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
     int use_z = persp ? ge.ztest_enable : thru_ztest();
     put_px_rgba_tested((int)A->x,(int)A->y,clamp_z(A->z),use_z,sr,sg,sb,sa);
 }
@@ -3514,6 +3526,18 @@ typedef struct {
     int r,g,b,a;
 } ModelVtx;
 
+/* SR_NOFOG / SR_NOLIGHT: diagnostic switches that turn fog or lighting off in the T&L. */
+static int ge_env_nofog(void) {
+    static int nofog = -1;
+    if (nofog < 0) nofog = getenv("SR_NOFOG") ? 1 : 0;
+    return nofog;
+}
+static int ge_env_nolight(void) {
+    static int nolight = -1;
+    if (nolight < 0) nolight = getenv("SR_NOLIGHT") ? 1 : 0;
+    return nolight;
+}
+
 /* Decode morph targets first, then apply all active bone weights.  Patch tessellation consumes
  * these model-space values; doing either operation after tessellation changes the surface. */
 static void decode_model_vtx(uint32_t addr, const VFmt *vf, ModelVtx *m) {
@@ -3590,9 +3614,7 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
 
     /* Fog factor from view-space depth: 1 = no fog, 0 = full fog (PPSSPP convention).
      * Linear in cz, so interpolating the factor across a clipped edge stays exact. */
-    static int nofog = -1;
-    if (nofog < 0) nofog = getenv("SR_NOFOG") ? 1 : 0;
-    if (ge.fog_enable && !nofog) {
+    if (ge.fog_enable && !ge_env_nofog()) {
         /* Inf/NaN fog coefficients are VALID on the PSP: games leave fog enabled but set
          * fog-end to inf/nan to force a constant factor (PPSSPP TransformUnit ComputeState,
          * "required for Outrun to render proper skies"). Plain float math turns these into
@@ -3668,9 +3690,7 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
         transform_started = 0;
     }
 
-    static int nolight = -1;
-    if (nolight < 0) nolight = getenv("SR_NOLIGHT") ? 1 : 0;
-    if (ge.lighting_enable && !nolight) {
+    if (ge.lighting_enable && !ge_env_nolight()) {
         uint64_t lighting_started = profile_phase == GE_PRIM_PROFILE_LIGHTING
             ? SDL_GetTicksNS() : 0;
         float nx=m->nx, ny=m->ny, nz=m->nz;
@@ -4087,6 +4107,9 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     float u_start = u_left + 0.5f * u_dir;
     float v_start = v_top + 0.5f * v_dir;
     float rho2 = tex_footprint_rho2(u_dir, 0.0f, 0.0f, v_dir);
+    /* The slope mode's 1/w: 1 in through mode; a transform-mode sprite takes its second
+     * vertex's, as it does for colour, depth and fog (unmeasured on a PSP). */
+    float sq = persp ? p1->rw : 1.0f;
 
     /* SR_PIXWHO probe: the sprite path owned only its clear-mode case, so a misrendered
      * row owned by a textured sprite had no way to name the draw. Name the full sampling
@@ -4112,7 +4135,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         for (int x = xa; x < xb; x++) {
             float u = u_start + (float)(x - xa) * u_dir;
             int r, g, b, a;
-            if (!shade(u, fv, rho2, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
+            if (!shade(u, fv, rho2, sq, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
             put_px_rgba_tested(x, y, pz, use_z, r, g, b, a);
         }
     }
@@ -4257,6 +4280,288 @@ static void draw_patch(uint32_t op,int spline){
         }
     }
     free(all);
+}
+
+/* ---- GPU transform and lighting (#318, ge_shared.h GeTnlPrim) ----
+ *
+ * draw_prim offers a transform-mode triangle PRIM to the backend's tnl_prim hook when
+ * ge_tnl_try_prim proves that the backend's vertex shader, repeating transform_model_vtx_clip,
+ * project_cvtx and the backend's own vertex capture, reaches the rasterizer with the bits this
+ * file would give it. Everything below either establishes that or declines, and a declined PRIM
+ * takes the CPU path exactly as before. */
+static int s_tnl_on = -1;                   /* SR_GPU_TNL=1, read once */
+static unsigned long long s_tnl_taken, s_tnl_cpu;
+static GeTnlVtx *s_tnl_refs;
+static uint32_t *s_tnl_tri;
+static uint32_t s_tnl_refs_cap, s_tnl_tri_cap;
+
+void ge_tnl_set_enabled(int on) { s_tnl_on = on; }
+
+void ge_tnl_counts(unsigned long long *taken, unsigned long long *cpu, int reset) {
+    if (taken) *taken = s_tnl_taken;
+    if (cpu) *cpu = s_tnl_cpu;
+    if (reset) s_tnl_taken = s_tnl_cpu = 0;
+}
+
+static int tnl_enabled(void) {
+    if (s_tnl_on < 0) {
+        const char *on = getenv("SR_GPU_TNL");
+        s_tnl_on = on && strcmp(on, "1") == 0;
+    }
+    return s_tnl_on;
+}
+
+/* 0, or a normal number of magnitude 2^-40..2^40: the range in which no product or sum the
+ * shader forms from these inputs can overflow or become subnormal (a GPU may flush a subnormal
+ * to zero where the host keeps it). */
+static int tnl_num_ok(float f) {
+    if (f == 0.0f) return 1;
+    float a = fabsf(f);
+    return a >= 0x1p-40f && a <= 0x1p40f;
+}
+
+static int tnl_nums_ok(const float *f, int n) {
+    for (int i = 0; i < n; i++)
+        if (!tnl_num_ok(f[i])) return 0;
+    return 1;
+}
+
+/* State that changes nothing per vertex: the parts of the PRIM's state the shader supports. */
+static int tnl_state_ok(int type, const VFmt *vf) {
+    if (type < 3 || type > 5 || vf->through || ge.clear || !ge.shade_gouraud) return 0;
+    if (s_ge_timing_model || s_rtrace > 0 || s_primitive_profile > 0) return 0;
+    if (ge.tex_enable && (ge.tex_map_mode & 3u) != 0u) return 0;
+    if (!tnl_nums_ok(ge.world, 12) || !tnl_nums_ok(ge.view, 12) || !tnl_nums_ok(ge.proj, 16))
+        return 0;
+    if (vf->w_n && !tnl_nums_ok(ge.bone, 12 * vf->w_n)) return 0;
+    for (int i = 0; i < 6; i++)
+        if (!tnl_num_ok(decode_float24(ge.viewport_raw[i]))) return 0;
+    float tex[4] = { ge.tex_scale_u, ge.tex_scale_v, ge.tex_off_u, ge.tex_off_v };
+    if (!tnl_nums_ok(tex, 4)) return 0;
+    if (ge.fog_enable && !ge_env_nofog()) {
+        /* An infinite or NaN end is a constant factor and an infinite or NaN slope is
+         * rewritten (transform_model_vtx_clip); a finite one has to be in range. */
+        if (isfinite(ge.fog_end) && !tnl_num_ok(ge.fog_end)) return 0;
+        if (isfinite(ge.fog_end) && isfinite(ge.fog_slope) && !tnl_num_ok(ge.fog_slope)) return 0;
+    }
+    if (ge.lighting_enable && !ge_env_nolight()) {
+        for (int i = 0; i < GE_TNL_LIGHTS; i++) {
+            if (!ge.light_on[i]) continue;
+            int comp = (int)(ge.light_type[i] & 3u);
+            if ((comp & 1) || (comp == 2 && ge.spec_coef > 0.0f)) return 0;   /* powf */
+            if (!tnl_nums_ok(ge.light_pos[i], 3) || !tnl_nums_ok(ge.light_att[i], 3)) return 0;
+        }
+    }
+    return 1;
+}
+
+/* Corner test of the PRIM's position bound. lo/hi bound the positions the T&L transforms
+ * (skinned when the format has weights). Every tested quantity is affine in the position or a
+ * ratio of affine ones with cw > 0, so its extremes over the box are at corners; the margins
+ * are far wider than float rounding. */
+static int tnl_corners_ok(const double lo[3], const double hi[3], float box[4]) {
+    const double vxs = decode_float24(ge.viewport_raw[0]), vys = decode_float24(ge.viewport_raw[1]);
+    const double vzs = decode_float24(ge.viewport_raw[2]), vxc = decode_float24(ge.viewport_raw[3]);
+    const double vyc = decode_float24(ge.viewport_raw[4]), vzc = decode_float24(ge.viewport_raw[5]);
+    const double offx = (double)(ge.offsetx & 0xFFFF) / 16.0, offy = (double)(ge.offsety & 0xFFFF) / 16.0;
+    double bx0 = HUGE_VAL, by0 = HUGE_VAL, bx1 = -HUGE_VAL, by1 = -HUGE_VAL;
+    for (int k = 0; k < 8; k++) {
+        double p[3] = { (k & 1) ? hi[0] : lo[0], (k & 2) ? hi[1] : lo[1], (k & 4) ? hi[2] : lo[2] };
+        double w[3], e[3], c[4];
+        for (int a = 0; a < 3; a++)
+            w[a] = (double)ge.world[a] * p[0] + (double)ge.world[3 + a] * p[1] +
+                   (double)ge.world[6 + a] * p[2] + (double)ge.world[9 + a];
+        for (int a = 0; a < 3; a++) {
+            if (!(fabs(w[a]) <= 0x1p40)) return 0;
+            e[a] = (double)ge.view[a] * w[0] + (double)ge.view[3 + a] * w[1] +
+                   (double)ge.view[6 + a] * w[2] + (double)ge.view[9 + a];
+        }
+        for (int a = 0; a < 4; a++)
+            c[a] = (double)ge.proj[a] * e[0] + (double)ge.proj[4 + a] * e[1] +
+                   (double)ge.proj[8 + a] * e[2] + (double)ge.proj[12 + a];
+        if (!(c[3] >= 1e-2) || !(c[2] + c[3] >= 1e-3 * c[3]) || !(fabs(c[2] / c[3]) <= 0.999))
+            return 0;
+        double sx = c[0] * vxs / c[3] + vxc, sy = c[1] * vys / c[3] + vyc;
+        if (!(sx >= 8.0 && sx <= 4088.0 && sy >= 8.0 && sy <= 4088.0)) return 0;
+        bx0 = fmin(bx0, sx - offx); bx1 = fmax(bx1, sx - offx);
+        by0 = fmin(by0, sy - offy); by1 = fmax(by1, sy - offy);
+        if (!ge.depth_clip) {
+            double sz = c[2] * vzs / c[3] + vzc;
+            if (!(sz >= 8.0 && sz <= 65528.0)) return 0;
+        }
+    }
+    /* A pixel of margin beyond the corners covers the float rounding of each vertex. */
+    box[0] = (float)(bx0 - 1.0); box[1] = (float)(by0 - 1.0);
+    box[2] = (float)(bx1 + 1.0); box[3] = (float)(by1 + 1.0);
+    return 1;
+}
+
+static int tnl_grow(void **buf, uint32_t *cap, uint32_t need, size_t elem) {
+    if (need <= *cap) return 1;
+    uint32_t n = *cap ? *cap : 1024u;
+    while (n < need) n *= 2u;
+    void *p = realloc(*buf, (size_t)n * elem);
+    if (!p) return 0;
+    *buf = p;
+    *cap = n;
+    return 1;
+}
+
+/* The parameter record: every value ge.c's T&L reads for this PRIM, derived exactly as
+ * transform_model_vtx_clip and light_vertex derive it. */
+static void tnl_params(const VFmt *vf, GeTnlParams *p) {
+    memset(p, 0, sizeof(*p));
+    memcpy(p->world, ge.world, sizeof(p->world));
+    memcpy(p->view, ge.view, sizeof(p->view));
+    memcpy(p->proj, ge.proj, sizeof(p->proj));
+    memcpy(p->bone, ge.bone, sizeof(p->bone));
+    for (int i = 0; i < 6; i++) p->vp[i] = decode_float24(ge.viewport_raw[i]);
+    p->off[0] = (float)(ge.offsetx & 0xFFFF) / 16.0f;
+    p->off[1] = (float)(ge.offsety & 0xFFFF) / 16.0f;
+    p->tex[0] = ge.tex_scale_u; p->tex[1] = ge.tex_scale_v;
+    p->tex[2] = ge.tex_off_u;   p->tex[3] = ge.tex_off_v;
+    p->tex[4] = (float)ge.tex_w; p->tex[5] = (float)ge.tex_h;
+    if (ge.fog_enable && !ge_env_nofog()) {
+        float fend = ge.fog_end, fslope = ge.fog_slope;
+        if (isinf(fend) || isnan(fend)) {
+            int sign = signbit(fend) ? 1 : 0;
+            if (signbit(fslope)) sign = !sign;
+            if (fslope == 0.0f) sign = 1;
+            p->fog_mode = 1;
+            p->fog[2] = sign ? 0.0f : 1.0f;
+        } else {
+            if (isinf(fslope) || isnan(fslope))
+                fslope = signbit(fslope) ? -262144.0f : 262144.0f;
+            p->fog_mode = 2;
+            p->fog[0] = fend;
+            p->fog[1] = fslope;
+        }
+    }
+    p->weights = (uint32_t)vf->w_n;
+    if (ge.lighting_enable && !ge_env_nolight()) {
+        const LightConsts *lc = light_consts();
+        p->lighting = 1;
+        p->mat_update = ge.mat_update;
+        int maa = ge.material_alpha_set ? ge.material_alpha : 255;
+        p->lit_alpha = (uint32_t)clamp8((maa * ge.amb_alpha + 127) / 255);
+        p->amb_alpha = (uint32_t)ge.amb_alpha;
+        for (int ch = 0; ch < 3; ch++) {
+            p->mat_amb[ch] = lc->mat_amb[ch];
+            p->mat_dif[ch] = lc->mat_dif[ch];
+            p->emissive[ch] = lc->emissive[ch];
+            p->amb[ch] = lc->amb[ch];
+        }
+        for (int i = 0; i < GE_TNL_LIGHTS; i++) {
+            const LightConst *l = &lc->light[i];
+            GeTnlLight *o = &p->light[i];
+            o->on = (uint32_t)l->on;
+            o->point = l->type != 0;
+            o->l[0] = l->lx; o->l[1] = l->ly; o->l[2] = l->lz;
+            for (int ch = 0; ch < 3; ch++) {
+                o->acol[ch] = l->acol[ch];
+                o->dcol[ch] = l->dcol[ch];
+                o->att[ch] = ge.light_att[i][ch];
+            }
+        }
+    }
+}
+
+/* Offer the PRIM to the backend. Returns 1 when the backend drew it (or, as raster_tri would
+ * for every triangle, the depth surface could not be prepared), 0 to run the CPU path. */
+static int ge_tnl_try_prim(int type, int count, const VFmt *vf, uint32_t vbase, uint32_t ibase,
+                           int idxfmt) {
+    if (!s_gpu || !s_gpu->tnl_prim || !tnl_enabled() || count < 3) return 0;
+    if (!tnl_state_ok(type, vf)) { s_tnl_cpu++; return 0; }
+    uint32_t ntri = type == 3 ? (uint32_t)(count / 3) : (uint32_t)(count - 2);
+    if (!tnl_grow((void **)&s_tnl_refs, &s_tnl_refs_cap, (uint32_t)count, sizeof(GeTnlVtx)) ||
+        !tnl_grow((void **)&s_tnl_tri, &s_tnl_tri_cap, ntri * 3u, sizeof(uint32_t))) {
+        s_tnl_cpu++;
+        return 0;
+    }
+    /* Decode every reference once (with morphing, without skinning) and bound the positions. */
+    double lo[3] = { HUGE_VAL, HUGE_VAL, HUGE_VAL }, hi[3] = { -HUGE_VAL, -HUGE_VAL, -HUGE_VAL };
+    double wlo[GE_TNL_MAX_WEIGHTS], whi[GE_TNL_MAX_WEIGHTS];
+    for (int i = 0; i < GE_TNL_MAX_WEIGHTS; i++) { wlo[i] = HUGE_VAL; whi[i] = -HUGE_VAL; }
+    int lit = ge.lighting_enable && !ge_env_nolight();
+    for (int i = 0; i < count; i++) {
+        uint32_t a = prim_vtx_addr(vbase, ibase, idxfmt, i, vf->stride);
+        GeTnlVtx *o = &s_tnl_refs[i];
+        memset(o, 0, sizeof(*o));
+        int r, g, b, al;
+        read_pos(a, vf, &o->x, &o->y, &o->z);
+        read_nrm(a, vf, &o->nx, &o->ny, &o->nz);
+        read_tc(a, vf, &o->u, &o->v);
+        read_color(a, vf, &r, &g, &b, &al);
+        o->rgba = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
+                  ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(al & 0xFF) << 24);
+        if (vf->w_n) read_weights(a, vf, o->w);
+        float pos[3] = { o->x, o->y, o->z }, nrm[3] = { o->nx, o->ny, o->nz };
+        if (!tnl_nums_ok(pos, 3) || (lit && !tnl_nums_ok(nrm, 3)) || !tnl_nums_ok(o->w, vf->w_n) ||
+            (ge.tex_enable && (!tnl_num_ok(o->u) || !tnl_num_ok(o->v)))) {
+            s_tnl_cpu++;
+            return 0;
+        }
+        for (int k = 0; k < 3; k++) {
+            if (pos[k] < lo[k]) lo[k] = pos[k];
+            if (pos[k] > hi[k]) hi[k] = pos[k];
+        }
+        for (int k = 0; k < vf->w_n; k++) {
+            if (o->w[k] < wlo[k]) wlo[k] = o->w[k];
+            if (o->w[k] > whi[k]) whi[k] = o->w[k];
+        }
+    }
+    if (vf->w_n) {
+        /* Skinned position = sum over bones of w_i * (B_i p): bound each B_i p over the box,
+         * scale by the weight's range, and add. */
+        double slo[3] = { 0, 0, 0 }, shi[3] = { 0, 0, 0 };
+        for (int b = 0; b < vf->w_n; b++) {
+            const float *m = ge.bone + 12 * b;
+            for (int ax = 0; ax < 3; ax++) {
+                double c = m[9 + ax], e = 0.0;
+                for (int k = 0; k < 3; k++) {
+                    double mid = 0.5 * (lo[k] + hi[k]), half = 0.5 * (hi[k] - lo[k]);
+                    c += (double)m[3 * k + ax] * mid;
+                    e += fabs((double)m[3 * k + ax]) * half;
+                }
+                double blo = c - e, bhi = c + e;
+                double p0 = wlo[b] * blo, p1 = wlo[b] * bhi, p2 = whi[b] * blo, p3 = whi[b] * bhi;
+                slo[ax] += fmin(fmin(p0, p1), fmin(p2, p3));
+                shi[ax] += fmax(fmax(p0, p1), fmax(p2, p3));
+            }
+        }
+        memcpy(lo, slo, sizeof(lo));
+        memcpy(hi, shi, sizeof(hi));
+    }
+    float box[4];
+    if (!tnl_corners_ok(lo, hi, box)) { s_tnl_cpu++; return 0; }
+    /* The triangles, in the order draw_prim submits them. */
+    uint32_t n = 0;
+    for (int i = 2; i < count; i++) {
+        int i0, i1, i2;
+        if      (type == 3) { if (i % 3 != 2) continue; i0 = i - 2; i1 = i - 1; i2 = i; }
+        else if (type == 4) { i0 = i - 2; i1 = i - 1; i2 = i; }
+        else                { i0 = 0;     i1 = i - 1; i2 = i; }
+        if (ge.cull_enable) {
+            int flip = ((ge.cull & 1) == 0) ^ ((type == 4) ? (i & 1) : 0);
+            if (flip) { int t = i0; i0 = i1; i1 = t; }
+        }
+        s_tnl_tri[n++] = (uint32_t)i0;
+        s_tnl_tri[n++] = (uint32_t)i1;
+        s_tnl_tri[n++] = (uint32_t)i2;
+    }
+    /* raster_tri prepares the depth surface before every triangle it hands the backend. */
+    if (ge.ztest_enable && !ge_zbuf_prepare_current()) return 1;
+    GeTnlParams params;
+    tnl_params(vf, &params);
+    GeTnlPrim prim = { &params, s_tnl_refs, (uint32_t)count, s_tnl_tri, n / 3u,
+                       { box[0], box[1], box[2], box[3] } };
+    uint64_t profile_started = ge_cpu_profile_begin();
+    int taken = s_gpu->tnl_prim(&prim);
+    ge_cpu_profile_end(GE_CPU_GPU_HOOK, profile_started);
+    if (!taken) { s_tnl_cpu++; return 0; }
+    s_tnl_taken++;
+    s_stat.gpuprim += n / 3u;
+    return 1;
 }
 
 /* When an entire 3D primitive lands behind the near plane (all clip-w <= NEAR_W), dump the raw
@@ -4688,6 +4993,9 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
             project_cvtx(&ca,&a); project_cvtx(&cb,&b);
             draw_line_vtx(&a,&b,1);
         }
+    } else if ((type == 3 || type == 4 || type == 5) &&
+               ge_tnl_try_prim(type, count, &vf, vbase, ibase, idxfmt)) {
+        /* Transformed, lit and drawn by the backend's GPU T&L (#318). */
     } else if (type == 3 || type == 4 || type == 5) {
         /* SR_RTRACE per-draw bookkeeping: per-reason triangle counters plus a snapshot of the
          * pixel-level stat counters so the TRIDRW+ line can report this draw's pixel outcome. */
@@ -5682,6 +5990,10 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case GE_PRIM: {
                 uint64_t profile_started = ge_cpu_profile_begin();
                 uint32_t prim_cmd = addr - 4;   /* op word address (addr already advanced) */
+                if (sr_ge_texture_sample_hook && ge.tex_enable && !ge.clear && ge.tex_addr)
+                    sr_ge_texture_sample_hook(ge.tex_addr, ge.tex_bufw, (uint32_t)ge.tex_h,
+                                              ge.tex_fmt & 0xFu, ge_fb_addr(),
+                                              ge.fbw ? ge.fbw : 512u, ge.fbfmt & 3u);
                 if (flight_ge_enabled)
                     sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW,
                                      list_addr, prim_cmd, (op >> 16) & 7u, op & 0xffffu);
