@@ -381,7 +381,7 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
             { "X", SDLK_X, SDL_SCANCODE_X }, { "F1", SDLK_F1, SDL_SCANCODE_F1 },
             { "BACKSPACE", SDLK_BACKSPACE, SDL_SCANCODE_BACKSPACE },
             { "D", SDLK_D, SDL_SCANCODE_D }, { "SLASH", SDLK_SLASH, SDL_SCANCODE_SLASH },
-            { "F12", SDLK_F12, SDL_SCANCODE_F12 }
+            { "F12", SDLK_F12, SDL_SCANCODE_F12 }, { "W", SDLK_W, SDL_SCANCODE_W }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             if (strcmp(token + 4, keys[i].name) == 0) {
@@ -718,7 +718,7 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->input_profile_notice[0] ? 1 : 0,
            app->input_settings.device == INPUT_DEVICE_KEYBOARD ? "keyboard" : "controller",
            app->input_settings.profile.psp_keys[INPUT_CONTROL_BTN_START].primary,
-           app->input_settings.key_note[0] ? 1 : 0,
+           app->input_settings.note[0] ? 1 : 0,
            selected && selected->is_experimental ? 1 : 0,
            selected && selected->is_prepared ? 1 : 0,
            selected && selected->assets_staged ? 1 : 0,

@@ -3232,9 +3232,11 @@ PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *
    rebinds it, beside the stick and trigger card with the live input. The
    mapping being edited is named on the buttons card, so the scope is stated,
    never implied (#520). CONTROLLER and KEYBOARD above the cards choose whose
-   bindings the rows show; for the keyboard the stick card names the keys
-   Nakagawa keeps (#1299). While a guided calibration runs, its step replaces the
-   cards. Under a top bar with SETTINGS active, as the Settings page. */
+   bindings the rows show; for the keyboard the stick card holds the stick's four
+   keys and names the keys Nakagawa keeps, for the controller it chooses the stick
+   (#1299). Every change is saved as it is made. While a guided calibration runs,
+   its step replaces the cards. Under a top bar with SETTINGS active, as the
+   Settings page. */
 
 #define PAD_ID_ROOT 0x64000001u
 #define PAD_ID_TOP 0x64000010u
@@ -3252,7 +3254,9 @@ PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *
 #define PAD_ID_DEVICE_BUTTONS 0x64000033u
 #define PAD_ID_PROMPTS 0x64000040u
 #define PAD_ID_WAVES 0x64000050u
-#define PAD_ID_ROWS 0x64000100u
+#define PAD_ID_ROWS 0x64000100u         /* + control * 4, + 0-2: a binding row's parts */
+#define PAD_ID_GLYPH_CELLS 0x64000200u  /* + control: the cell a binding's glyph sits in */
+#define PAD_ID_STEPPERS 0x64000280u     /* + k * 4, + 0-2: a stick card row's parts */
 #define PAD_ID_TEXT 0x64001000u
 
 static PlayerUiAction controller_op(PlayerUiControllerOp op, size_t control) {
@@ -3280,7 +3284,7 @@ static void controller_glyph(NkUi *ui, const PlayerUiControllerModel *model, siz
                                   0.0f);
     cell.align_x = NK_UI_ALIGN_CENTER;
     cell.align_y = NK_UI_ALIGN_CENTER;
-    if (!nk_ui_begin_container(ui, (NkUiId)(PAD_ID_ROWS + 0x40u + (NkUiId)control), &cell,
+    if (!nk_ui_begin_container(ui, (NkUiId)(PAD_ID_GLYPH_CELLS + (NkUiId)control), &cell,
                                NULL)) {
         return;
     }
@@ -3292,15 +3296,20 @@ static void controller_glyph(NkUi *ui, const PlayerUiControllerModel *model, siz
 }
 
 /* One PSP control: its name, the glyph of what it is bound to, then its binding in
-   words on the button that rebinds it. */
+   words on the button that rebinds it. The control the status note names (it gave
+   its input to the last binding) has its name in the note's colour. */
 static void controller_row(NkUi *ui, const PlayerUiControllerModel *model, size_t control,
-                           float name_width, float button_width, PlayerUiAction *result) {
+                           const char *name, float name_width, float button_width,
+                           PlayerUiAction *result) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_2);
     NkUiId base = (NkUiId)(PAD_ID_ROWS + (NkUiId)control * 4u);
     bool capturing = model->capturing == (int)control;
-    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, model->conflicted[control] ? theme->error
-                                                                                  : theme->paper);
+    bool noted = model->noted == (int)control;
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S,
+                                    model->conflicted[control] || (noted && model->status_error)
+                                        ? theme->error
+                                        : noted ? theme->accent_dark : theme->paper);
     row.align_y = NK_UI_ALIGN_CENTER;
     if (!nk_ui_begin_container(ui, base, &row, NULL)) return;
     {
@@ -3308,8 +3317,8 @@ static void controller_row(NkUi *ui, const PlayerUiControllerModel *model, size_
                                       0.0f);
         if (nk_ui_begin_container(ui, base + 1u, &cell, NULL)) {
             nk_ui_text(ui, base + 2u,
-                       nk_ui_text_clamp(ui, safe_text(model->names[control], "Button"), &text,
-                                        name_width, 1), &text);
+                       nk_ui_text_clamp(ui, safe_text(name, "Button"), &text, name_width, 1),
+                       &text);
             nk_ui_end_container(ui);
         }
     }
@@ -3333,7 +3342,7 @@ static void controller_stepper(NkUi *ui, uint32_t k, const char *value, float wi
                                PlayerUiControllerOp up_op, PlayerUiAction *result) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_2);
-    NkUiId base = (NkUiId)(PAD_ID_ROWS + 0x80u + k * 4u);
+    NkUiId base = (NkUiId)(PAD_ID_STEPPERS + k * 4u);
     NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
     row.align_y = NK_UI_ALIGN_CENTER;
     if (!nk_ui_begin_container(ui, base, &row, NULL)) return;
@@ -3349,6 +3358,43 @@ static void controller_stepper(NkUi *ui, uint32_t k, const char *value, float wi
     }
     if (nk_ui_button(ui, down, "-", NK_UI_BUTTON_SMALL)) *result = controller_op(down_op, 0u);
     if (nk_ui_button(ui, up, "+", NK_UI_BUTTON_SMALL)) *result = controller_op(up_op, 0u);
+    nk_ui_end_container(ui);
+}
+
+/* Which controller stick drives the PSP stick, named on the button that switches it. */
+#define PAD_STICK_BUTTON_WIDTH 124.0f
+static void controller_stick_choice(NkUi *ui, const PlayerUiControllerModel *model, float width,
+                                    PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_2);
+    NkUiId base = (NkUiId)(PAD_ID_STEPPERS + 2u * 4u);
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
+    row.align_y = NK_UI_ALIGN_CENTER;
+    if (!nk_ui_begin_container(ui, base, &row, NULL)) return;
+    {
+        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), 0.0f);
+        if (nk_ui_begin_container(ui, base + 1u, &cell, NULL)) {
+            nk_ui_text(ui, base + 2u,
+                       nk_ui_text_clamp(ui, "PSP stick", &text,
+                                        width - PAD_STICK_BUTTON_WIDTH - NK_UI_SPACE_2, 1),
+                       &text);
+            nk_ui_end_container(ui);
+        }
+    }
+    {
+        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(PAD_STICK_BUTTON_WIDTH),
+                                      sizing_fit(), 0.0f);
+        if (nk_ui_begin_container(ui, base + 3u, &cell, NULL)) {
+            if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_STICK,
+                             controller_button_label(ui, model->stick_right ? "Right stick"
+                                                                            : "Left stick",
+                                                     PAD_STICK_BUTTON_WIDTH),
+                             NK_UI_BUTTON_SMALL | NK_UI_BUTTON_GROW)) {
+                *result = controller_op(PLAYER_UI_CONTROLLER_STICK, 0u);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
     nk_ui_end_container(ui);
 }
 
@@ -3386,24 +3432,32 @@ static void controller_device(NkUi *ui, const PlayerUiControllerModel *model,
     nk_ui_end_container(ui);
 }
 
-/* For the keyboard, the stick card says which keys stay with Nakagawa. */
-static void controller_keyboard_card(NkUi *ui, float card) {
+/* For the keyboard, the stick card holds the stick's four keys, each rebound like a
+   button's (#1299), then says which keys stay with Nakagawa. */
+#define PAD_STICK_NAME_WIDTH 48.0f
+static void controller_keyboard_card(NkUi *ui, const PlayerUiControllerModel *model, float card,
+                                     PlayerUiAction *result) {
     static const char *const kept[] = {"Esc or F1 pauses the game.", "F3 shows the frame rate."};
+    static const char *const directions[PLAYER_UI_CONTROLLER_STICK_KEYS] = {"Up", "Down", "Left",
+                                                                            "Right"};
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
     float inner = card - 2.0f * NK_UI_SPACE_5;
     if (!nk_ui_card_begin(ui, PAD_ID_STICK, sizing_fixed(card), sizing_grow(), NK_UI_SPACE_2)) {
         return;
     }
+    nk_ui_eyebrow(ui, PAD_ID_TEXT + 0x21u, "Analog stick");
+    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_STICK_KEYS; ++i) {
+        controller_row(ui, model, PLAYER_UI_CONTROLLER_STICK_KEY + i, directions[i],
+                       PAD_STICK_NAME_WIDTH,
+                       inner - PAD_STICK_NAME_WIDTH - PAD_GLYPH_CELL - 2.0f * NK_UI_SPACE_2,
+                       result);
+    }
     nk_ui_eyebrow(ui, PAD_ID_TEXT + 0x20u, "Keys Nakagawa keeps");
     for (size_t i = 0u; i < sizeof(kept) / sizeof(kept[0]); ++i) {
         nk_ui_text(ui, (NkUiId)(PAD_ID_TEXT + 0x50u + (NkUiId)i),
                    nk_ui_text_clamp(ui, kept[i], &text, inner, 2), &text);
     }
-    nk_ui_eyebrow(ui, PAD_ID_TEXT + 0x21u, "Analog stick");
-    nk_ui_text(ui, PAD_ID_TEXT + 0x58u,
-               nk_ui_text_clamp(ui, "The stick has no keys. Use a controller for it.", &text,
-                                inner, 2), &text);
     nk_ui_end_container(ui);
 }
 
@@ -3481,8 +3535,8 @@ static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, f
                         continue;
                     }
                     for (size_t row = 0u; row < PLAYER_UI_CONTROLLER_BUTTONS / 2u; ++row) {
-                        controller_row(ui, model, col * (PLAYER_UI_CONTROLLER_BUTTONS / 2u) + row,
-                                       name_width,
+                        size_t control = col * (PLAYER_UI_CONTROLLER_BUTTONS / 2u) + row;
+                        controller_row(ui, model, control, model->names[control], name_width,
                                        half - name_width - PAD_GLYPH_CELL - 2.0f * NK_UI_SPACE_2,
                                        result);
                     }
@@ -3493,11 +3547,12 @@ static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, f
             nk_ui_end_container(ui);
         }
         if (model->keyboard) {
-            controller_keyboard_card(ui, stick_card);
+            controller_keyboard_card(ui, model, stick_card, result);
         } else if (nk_ui_card_begin(ui, PAD_ID_STICK, sizing_fixed(stick_card), sizing_grow(),
                                     NK_UI_SPACE_2)) {
             float inner = stick_card - 2.0f * NK_UI_SPACE_5;
             nk_ui_eyebrow(ui, PAD_ID_TEXT + 0x20u, "Stick and triggers");
+            controller_stick_choice(ui, model, inner, result);
             controller_stepper(ui, 0u, model->deadzone, inner,
                                PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN,
                                PLAYER_UI_ID_CONTROLLER_DEADZONE_UP,
@@ -3522,10 +3577,6 @@ static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, f
        reaches it rather than a binding in the grid; Left and Right stay in the row. */
     layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_3);
     if (nk_ui_begin_container(ui, PAD_ID_ACTIONS, &layout, NULL)) {
-        if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_SAVE, "Save profile",
-                         NK_UI_BUTTON_PRIMARY | NK_UI_BUTTON_ROW)) {
-            *result = controller_op(PLAYER_UI_CONTROLLER_SAVE, 0u);
-        }
         if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_RESET, "Reset to defaults",
                          NK_UI_BUTTON_ROW)) {
             *result = controller_op(PLAYER_UI_CONTROLLER_RESET, 0u);

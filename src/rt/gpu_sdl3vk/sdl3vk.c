@@ -1027,6 +1027,17 @@ static void poll_input_on_this_stack(void *arg) {
         sdl3vk_map_gamepad(prof, host_buttons, host_axes, &pad_buttons, &lx, &ly);
         b |= pad_buttons;
     }
+    /* The stick's keyboard keys (#1299): an axis with one of its two keys held goes
+     * to its edge; otherwise the controller's stick keeps it. */
+    {
+        NkInputProfile def_profile;
+        const NkInputProfile *stick_prof = key_prof;
+        if (!stick_prof) {
+            nk_input_profile_init_default(&def_profile);
+            stick_prof = &def_profile;
+        }
+        (void)nk_input_profile_eval_key_analog(stick_prof, k, key_count, &lx, &ly);
+    }
     s_raw_buttons = b;
     s_raw_lx = lx; s_raw_ly = ly;
     nk_input_gate_apply(&s_gate, &b, &s_button_pulse, &lx, &ly);

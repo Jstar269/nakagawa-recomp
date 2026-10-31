@@ -1598,7 +1598,10 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
     InputSettingsState *input = &app->input_settings;
     switch (op) {
         case PLAYER_UI_CONTROLLER_REBIND:
-            if (control >= (size_t)INPUT_CONTROL_DIGITAL_COUNT) break;
+            if (control >= (size_t)INPUT_CONTROL_TOTAL_COUNT ||
+                !input_settings_control_bindable(input, (int)control)) {
+                break;
+            }
             /* Choosing the button that is waiting stops the wait. */
             if (input->capturing && input->capture_control == (int)control) {
                 input_settings_cancel_capture(input);
@@ -1619,12 +1622,8 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
             (void)input_settings_adjust_trigger_threshold(input, 1000);
             break;
         case PLAYER_UI_CONTROLLER_CALIBRATE: (void)input_settings_start_calibration(input); break;
-        case PLAYER_UI_CONTROLLER_SAVE:
-            if (input_settings_save(input, NULL) == NK_OK) {
-                snprintf(input->save_diagnostic, sizeof(input->save_diagnostic),
-                         "Profile successfully saved to disk");
-                input->has_save_diagnostic = true;
-            }
+        case PLAYER_UI_CONTROLLER_STICK:
+            input_settings_set_stick(input, !input_settings_stick_is_right(input));
             break;
         case PLAYER_UI_CONTROLLER_RESET:
             /* The defaults of the device shown: the other device keeps its own. */
@@ -5199,6 +5198,9 @@ int main(int argc, char *argv[]) {
         if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
             input_settings_update_capture(&app.input_settings, delta_ms > 0 ? delta_ms : 1);
         }
+        /* The Controls page has no Save step: a binding, a reset or a stick setting
+           changed last frame is written to the input profile now (#1299). */
+        (void)input_settings_save_if_dirty(&app.input_settings);
 
         input.mouse_clicked = false;
         input.activate_pressed = false;

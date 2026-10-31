@@ -17,7 +17,8 @@ extern "C" {
 #define INPUT_SETTINGS_MAX_CONFLICTS 32
 
 /**
- * Control items editable in the UI: 14 digital PSP buttons + analog stick.
+ * Control items editable in the UI: the 14 digital PSP buttons, the analog stick
+ * (its controller stick and calibration), and the stick's four keyboard keys (#1299).
  */
 typedef enum {
     INPUT_CONTROL_BTN_SELECT = 0,
@@ -36,7 +37,11 @@ typedef enum {
     INPUT_CONTROL_BTN_HOLD,
     INPUT_CONTROL_DIGITAL_COUNT = 14,
     INPUT_CONTROL_ANALOG_STICK = 14,
-    INPUT_CONTROL_TOTAL_COUNT = 15
+    INPUT_CONTROL_STICK_UP = 15,   /* the stick's keyboard keys, NkPspStickDir order */
+    INPUT_CONTROL_STICK_DOWN,
+    INPUT_CONTROL_STICK_LEFT,
+    INPUT_CONTROL_STICK_RIGHT,
+    INPUT_CONTROL_TOTAL_COUNT = 19
 } InputControlIndex;
 
 /**
@@ -131,12 +136,19 @@ typedef struct {
 
     /* Capture state: a capture binds the device being edited */
     bool capturing;
-    int capture_control; /* InputControlIndex (0..13) */
+    int capture_control; /* a control the device being edited can bind */
     int capture_elapsed_ms;
     int capture_timeout_ms;
     InputSettingsDevice device;
-    /* Why the last key was refused, in plain words, or empty */
-    char key_note[160];
+    /* What the last binding did, in plain words, or empty: an input taken from
+     * another control (note_control, which now has the input this one had), or
+     * why an input was refused (note_error). */
+    char note[160];
+    bool note_error;
+    int note_control; /* the other control the last binding changed, or -1 */
+    /* The mapping changed since it was last written: input_settings_save_if_dirty
+     * writes it, so every change persists without a Save step (#1299). */
+    bool dirty;
 
     /* Guided calibration state (#357) */
     GuidedCalibrationState calib;
@@ -239,9 +251,22 @@ NkResult input_settings_write_disc_profile(
 void input_settings_reset_to_defaults(InputSettingsState *state);
 
 /**
- * @brief Get human-readable display name for a control index (0..14).
+ * @brief Get human-readable display name for a control index (InputControlIndex).
  */
 const char *input_settings_control_name(int control_idx);
+
+/**
+ * @brief True for a control that has keyboard keys: a PSP button or one of the
+ * stick's four directions.
+ */
+bool input_settings_control_has_keys(int control_idx);
+
+/**
+ * @brief True for a control the device being edited can bind: on the keyboard a
+ * control with keys, on the controller a PSP button (the stick is chosen with
+ * input_settings_set_stick).
+ */
+bool input_settings_control_bindable(const InputSettingsState *state, int control_idx);
 
 /**
  * The most characters a default binding's words take, and any one input's: what the Controls
@@ -256,8 +281,8 @@ const char *input_settings_control_name(int control_idx);
 void input_settings_format_binding(const InputSettingsState *state, int control_idx, char *buf, size_t buf_sz);
 
 /**
- * @brief Start a "press a button to bind" capture for a digital control (0..13),
- * on the device being edited: a controller button, or a key.
+ * @brief Start a "press a button to bind" capture for a control the device being
+ * edited can bind (input_settings_control_bindable): a controller button, or a key.
  */
 bool input_settings_start_capture(InputSettingsState *state, int control_idx);
 
@@ -295,8 +320,12 @@ bool input_settings_update_capture(InputSettingsState *state, int delta_ms);
 bool input_settings_feed_capture_source(InputSettingsState *state, NkBindingSource source);
 
 /**
- * @brief Assign a binding source directly to a digital control and re-evaluate conflicts.
- * Does not overwrite other controls (conflicts are preserved without dropping either).
+ * @brief Make `source` a digital control's (0..13) controller binding.
+ *
+ * A source another PSP button already uses moves here, and that button takes
+ * the one this control had in its place (none, when it had none): the mapping
+ * never holds one input twice, so every change can be saved, and `note` names
+ * the other button. A NK_BINDING_NONE source unbinds the control.
  */
 bool input_settings_assign_binding(InputSettingsState *state, int control_idx, NkBindingSource source);
 
@@ -398,12 +427,13 @@ void input_settings_pad_glyph(const InputSettingsState *state, int control_idx,
                               InputPadNames names, InputBindingGlyph *out);
 
 /**
- * @brief Make `key` a digital control's (0..13) keyboard key, keeping its second key.
+ * @brief Make `key` the keyboard key of a control with keys, keeping its second key.
  *
- * A key that cannot be bound, or that another PSP control already uses, is
- * refused: the mapping is left as it was and key_note says why. The profile
- * validator refuses a key bound to two controls, so the refusal keeps every
- * mapping the user can save one the runtime will load.
+ * A key another control already uses moves here, and that control takes the key
+ * this one had in its place (no key, when it had none), so one key never drives
+ * two controls (the profile refuses that) and the change can always be saved;
+ * `note` names the other control. A key that cannot be bound (Esc, the function
+ * keys) is refused: the mapping is left as it was and `note` says why.
  */
 bool input_settings_assign_key(InputSettingsState *state, int control_idx, int key);
 
@@ -415,9 +445,30 @@ bool input_settings_feed_capture_key(InputSettingsState *state, int key);
 
 /**
  * @brief Reset the bindings of the device being edited to defaults, keeping the
- * other device's: the keyboard keys, or the controller mapping and calibration.
+ * other device's: the keyboard keys (buttons and stick), or the controller
+ * mapping and calibration.
  */
 void input_settings_reset_device_to_defaults(InputSettingsState *state);
+
+/**
+ * @brief Drive the PSP stick with the controller's right stick (true) or its left
+ * stick (false), both axes, keeping their calibration.
+ */
+void input_settings_set_stick(InputSettingsState *state, bool right);
+
+/**
+ * @brief True when the PSP stick follows the controller's right stick.
+ */
+bool input_settings_stick_is_right(const InputSettingsState *state);
+
+/**
+ * @brief Write the mapping when it changed since it was last written, unless a
+ * capture or calibration is still running (it is written once that ends).
+ *
+ * The write is input_settings_save's; a failed write leaves save_diagnostic set
+ * and is not retried until the next change. NK_OK when nothing needed writing.
+ */
+NkResult input_settings_save_if_dirty(InputSettingsState *state);
 
 /**
  * @brief Adjust inner deadzone within validated bounds [0, 32766].

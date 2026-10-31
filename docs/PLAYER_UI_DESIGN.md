@@ -460,26 +460,34 @@ page) so every row fits 960 x 540. The tabbed layout below is the target for a l
 
 Settings > Controls opens one page under the top bar with SETTINGS active. Under the `CONTROLS` heading (left out
 below 680 px tall), CONTROLLER and KEYBOARD (the one shown filled; Up from the first binding) choose whose bindings the
-page shows, beside one status line: a conflict in `error`, a load or save message, the prompt while a button is
-awaited, or which controller is connected. Two cards side by side:
+page shows, beside one status line: what the last binding changed, a load or save problem in `error`, the prompt
+while a button is awaited, or which controller is connected. Two cards side by side:
 
 - BUTTONS: the eyebrow names the mapping being edited (`BUTTONS · GLOBAL MAPPING`, or the game's own in `ready`),
   then the 14 PSP controls in two columns of name and binding. The binding is a small button with the host button's
-  name; a conflicted control's name is `error`; the control waiting for a press shows `Press a button...` as the
-  primary button. Choosing it again, or Esc, cancels the wait. Between the name and the button a 20 px prompt glyph
+  name; the control the status line names is in `accent` (`error` when it was left with nothing); the control waiting
+  for a press shows `Press a button...` as the primary button. Choosing it again, or Esc, cancels the wait. Between the name and the button a 20 px prompt glyph
   (`nk_ui_prompt_glyph_in`, #1299) shows the binding as the device shown prints it, whatever device drives the page:
   the controller in the set of the pad last used or connected (the neutral position dots with none), its face
   buttons by position, the shoulders, Start and the D-pad as the prompt bar draws them, and any other input as a pill
   named the way that pad names it (VIEW, ZL, L3); the keyboard as a keycap with the key's printed legend (SHIFT, ENTER,
   X) or the arrow keys. A control with nothing bound has no glyph.
-- STICK AND TRIGGERS: dead zone and trigger threshold with - and +, CALIBRATE STICK, and LIVE INPUT in `DATA`: the
-  raw stick, the PSP value it maps to, the triggers and the buttons held.
+- STICK AND TRIGGERS: PSP STICK with LEFT STICK or RIGHT STICK (which controller stick drives it), dead zone and
+  trigger threshold with - and +, CALIBRATE STICK, and LIVE INPUT in `DATA`: the raw stick, the PSP value it maps to,
+  the triggers and the buttons held.
+
+An input another control already uses moves to the control chosen, and that control takes the chosen one's input in
+its place, so one input never drives two controls and every mapping can be saved. The status line names what changed
+("A (Cross) was Cross's. Cross now uses B (Circle)."); a control left with nothing (the chosen one had no input to
+give) is named in `error` so it can be bound next. Nothing a player does here can take the launcher's own keys and
+buttons, which are fixed: the arrows, Enter and Esc, and the pad's D-pad, south and east buttons.
 
 With KEYBOARD (#1299) the rows show each control's keys by their names on a US keyboard (`KEYS · GLOBAL MAPPING`),
 the waiting control shows `Press a key...`, and the next key pressed is its key; Esc or a controller press stops the
-wait. A key another control already uses, or one that cannot be bound (the function keys), is refused and the status
-line says why in `error`: the profile refuses a key bound to two controls, and the runtime keeps Esc, F1 and F3. The
-stick card names the keys Nakagawa keeps and says the analog stick has no keys.
+wait. A key another control uses moves as a controller input does; a key that cannot be bound (Esc and the function
+keys, which the runtime keeps) is refused and the status line says why in `error`. The stick card is ANALOG STICK:
+the stick's four keys (UP, DOWN, LEFT, RIGHT; I, K, J and L by default) as rows like the buttons', where a held key
+pushes that axis to its edge in game, then the keys Nakagawa keeps.
 
 A host input is named by the label a pad prints on it, with its other common name in brackets (`A (Cross)`,
 `LB (L1)`, `RT (R2)`), and a key pair of one modifier reads as the modifier alone (`Shift` for Left and Right Shift), so
@@ -487,8 +495,9 @@ every default binding, two inputs included, and any one input fit their button w
 (`INPUT_SETTINGS_BINDING_TEXT_MAX`), the width `test_binding_labels_fit` checks at every launcher size. The margin
 leaves room for the prompt glyph beside the binding (#1299).
 
-Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS (the device shown only) and, with a game selected, USE THIS
-GAME'S OWN MAPPING or USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the
+Under the cards RESET TO DEFAULTS (the device shown only) and, with a game selected, USE THIS GAME'S OWN MAPPING or
+USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. There is no save step: every change is
+written to the input profile as it is made, and a write that fails says so in the status line. The page opens on the
 first binding.
 Calibration replaces the cards with a 720 px dialog card per step: rest (a progress bar, CANCEL only), range
 (FINISH) and result (ACCEPT), each with its live numbers. Esc or East cancels a step and returns to CALIBRATE STICK.

@@ -429,6 +429,16 @@ static const PlayerUiBindingGlyph k_key_glyphs[PLAYER_UI_CONTROLLER_BUTTONS] = {
     GLYPH(CONFIRM, "S"), GLYPH(CONFIRM, "Z"), GLYPH(CONFIRM, "X"), GLYPH(CONFIRM, "A"),
     NO_GLYPH, NO_GLYPH
 };
+/* The stick's four default keys (#1299), up, down, left and right. */
+static const char *const k_stick_key_names[PLAYER_UI_CONTROLLER_STICK_KEYS] = {
+    "Stick Up", "Stick Down", "Stick Left", "Stick Right"
+};
+static const char *const k_stick_key_bindings[PLAYER_UI_CONTROLLER_STICK_KEYS] = {
+    "I", "K", "J", "L"
+};
+static const PlayerUiBindingGlyph k_stick_key_glyphs[PLAYER_UI_CONTROLLER_STICK_KEYS] = {
+    GLYPH(CONFIRM, "I"), GLYPH(CONFIRM, "K"), GLYPH(CONFIRM, "J"), GLYPH(CONFIRM, "L")
+};
 #undef GLYPH
 #undef NO_GLYPH
 
@@ -444,6 +454,14 @@ static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
         pad.bindings[i] = which == FLOW_CONTROLLER_KEYS ? k_key_bindings[i] : k_pad_bindings[i];
         pad.glyphs[i] = which == FLOW_CONTROLLER_KEYS ? k_key_glyphs[i] : k_pad_glyphs[i];
     }
+    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_STICK_KEYS; ++i) {
+        pad.names[PLAYER_UI_CONTROLLER_STICK_KEY + i] = k_stick_key_names[i];
+        if (which == FLOW_CONTROLLER_KEYS) {
+            pad.bindings[PLAYER_UI_CONTROLLER_STICK_KEY + i] = k_stick_key_bindings[i];
+            pad.glyphs[PLAYER_UI_CONTROLLER_STICK_KEY + i] = k_stick_key_glyphs[i];
+        }
+    }
+    pad.noted = -1;
     pad.glyph_style = which == FLOW_CONTROLLER_KEYS ? NK_UI_PROMPT_KEYCAPS
                                                     : NK_UI_PROMPT_LETTERS_A_SOUTH;
     if (k_pad_bindings_override != NULL && which != FLOW_CONTROLLER_KEYS) {
@@ -2652,8 +2670,8 @@ static void test_controller_and_developer_log_pages(void) {
          "plus raises the trigger point"},
         {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_CALIBRATE, PLAYER_UI_CONTROLLER_CALIBRATE,
          "Calibrate stick starts the guided calibration"},
-        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_SAVE, PLAYER_UI_CONTROLLER_SAVE,
-         "Save profile writes the mapping"},
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_STICK, PLAYER_UI_CONTROLLER_STICK,
+         "the stick button switches which controller stick drives the PSP stick"},
         {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_RESET, PLAYER_UI_CONTROLLER_RESET,
          "Reset to defaults resets the mapping"},
         {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_BACK, PLAYER_UI_CONTROLLER_BACK,
@@ -2710,8 +2728,10 @@ static void test_controller_and_developer_log_pages(void) {
     CHECK(dump_flow_case(FLOW_CONTROLLER, dump, sizeof(dump)) &&
               strstr(dump, "\"BUTTONS \xC2\xB7 GLOBAL MAPPING\"") != NULL &&
               strstr(dump, "\"Cross\"") != NULL && strstr(dump, "\"A (CROSS)\"") != NULL &&
-              strstr(dump, "\"Dead zone 24%\"") != NULL && strstr(dump, "\"SAVE PROFILE\"") != NULL,
-          "the mapping names each control beside its binding, and the mapping it edits");
+              strstr(dump, "\"Dead zone 24%\"") != NULL && strstr(dump, "\"LEFT STICK\"") != NULL &&
+              strstr(dump, "SAVE PROFILE") == NULL,
+          "the mapping names each control beside its binding, the stick it reads and the "
+          "mapping it edits, with no Save step");
     CHECK(dump_flow_case(FLOW_CONTROLLER_GAME, dump, sizeof(dump)) &&
               strstr(dump, "TEST00005 ONLY") != NULL &&
               strstr(dump, "\"PRESS A BUTTON...\"") != NULL &&
@@ -2831,14 +2851,24 @@ static void test_controller_keyboard_page(void) {
     CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_RESET, FLOW_CONTROLLER_KEYS),
                            PLAYER_UI_CONTROLLER_RESET, 0u),
           "Reset to defaults is offered for the keyboard keys");
-    CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_SAVE, FLOW_CONTROLLER_KEYS),
-                           PLAYER_UI_CONTROLLER_SAVE, 0u),
-          "Save profile saves the keys with the mapping");
+    CHECK(activate_flow_button(PLAYER_UI_ID_CONTROLLER_STICK, FLOW_CONTROLLER_KEYS).kind ==
+              PLAYER_UI_ACTION_NONE,
+          "the keyboard keys have no controller stick choice");
     for (size_t control = 0u; control < PLAYER_UI_CONTROLLER_BUTTONS; ++control) {
         CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_BUTTON(control),
                                                     FLOW_CONTROLLER_KEYS),
                                PLAYER_UI_CONTROLLER_REBIND, control),
               "each PSP control's key button rebinds that control's key");
+    }
+    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_STICK_KEYS; ++i) {
+        size_t control = PLAYER_UI_CONTROLLER_STICK_KEY + i;
+        CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_BUTTON(control),
+                                                    FLOW_CONTROLLER_KEYS),
+                               PLAYER_UI_CONTROLLER_REBIND, control),
+              "each of the stick's keys has a button that rebinds it (#1299)");
+        CHECK(activate_flow_button(PLAYER_UI_ID_CONTROLLER_BUTTON(control), FLOW_CONTROLLER).kind ==
+                  PLAYER_UI_ACTION_NONE,
+              "the controller buttons have no stick key rows");
     }
     CHECK(activate_flow_button(PLAYER_UI_ID_CONTROLLER_CALIBRATE, FLOW_CONTROLLER_KEYS).kind ==
               PLAYER_UI_ACTION_NONE,
@@ -2859,8 +2889,13 @@ static void test_controller_keyboard_page(void) {
               strstr(dump, "\"KEYS \xC2\xB7 TEST00005 ONLY\"") != NULL,
           "the control waiting for a key says so, and the mapping being edited is named");
     CHECK(strstr(dump, "Esc or F1 pauses the game.") != NULL &&
-              strstr(dump, "\"Dead zone 24%\"") == NULL,
-          "for the keyboard the stick card names the keys Nakagawa keeps");
+              strstr(dump, "\"Dead zone 24%\"") == NULL &&
+              strstr(dump, "\"ANALOG STICK\"") != NULL && strstr(dump, "\"Right\"") != NULL &&
+              dump_has_element(dump, PLAYER_UI_ID_CONTROLLER_GLYPH(PLAYER_UI_CONTROLLER_STICK_KEY),
+                               "TEXT", "I", NULL, NULL) &&
+              strstr(dump, "has no keys") == NULL,
+          "for the keyboard the stick card holds the stick's keys and names the keys "
+          "Nakagawa keeps");
     CHECK(dump_flow_case(FLOW_CONTROLLER, dump, sizeof(dump)) &&
               strstr(dump, "\"KEYBOARD\"") != NULL && strstr(dump, "\"Esc or F1") == NULL,
           "the controller buttons offer the keyboard keys");

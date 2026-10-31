@@ -130,8 +130,8 @@ struct PlayerUiNk {
     bool reset_folders_ready;
     char update_folder[NK_MAX_PATH];
     char update_notice[96];
-    char pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS][128];
-    InputBindingGlyph pad_glyphs[PLAYER_UI_CONTROLLER_BUTTONS];
+    char pad_bindings[PLAYER_UI_CONTROLLER_CONTROLS][128];
+    InputBindingGlyph pad_glyphs[PLAYER_UI_CONTROLLER_CONTROLS];
     char pad_scope[96];
     char pad_status[400];
     char pad_deadzone[48];
@@ -949,10 +949,15 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
        even while the keyboard drives the page. */
     model.glyph_style = model.keyboard ? NK_UI_PROMPT_KEYCAPS
                                        : nk_ui_input_pad_prompt_style(&player->input.input);
-    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
+    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_CONTROLS; ++i) {
         model.names[i] = input_settings_control_name((int)i);
-        if (model.keyboard) {
-            /* A key used twice is refused when it is pressed, so keys never conflict. */
+        player->pad_bindings[i][0] = '\0';
+        memset(&player->pad_glyphs[i], 0, sizeof(player->pad_glyphs[i]));
+        if (!input_settings_control_bindable(input, (int)i)) {
+            /* The stick's own entry, and on the controller its keys: no row. */
+        } else if (model.keyboard) {
+            /* A key taken from another control swaps with this one's, so keys never
+               conflict. */
             input_settings_format_key_binding(input, (int)i, player->pad_bindings[i],
                                               sizeof(player->pad_bindings[i]));
             input_settings_key_glyph(input, (int)i, &player->pad_glyphs[i]);
@@ -975,17 +980,21 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
         snprintf(player->pad_scope, sizeof(player->pad_scope), "global mapping");
     }
     model.scope = player->pad_scope;
-    if (model.keyboard && input->key_note[0] != '\0') {
-        model.status = input->key_note;
+    model.noted = input->note[0] != '\0' ? input->note_control : -1;
+    model.stick_right = input_settings_stick_is_right(input);
+    if (input->note[0] != '\0') {
+        model.status = input->note;
+        model.status_error = input->note_error;
+    } else if (input->has_save_diagnostic) {
+        snprintf(player->pad_status, sizeof(player->pad_status), "Not saved: %s",
+                 input->save_diagnostic);
+        model.status = player->pad_status;
         model.status_error = true;
     } else if (!model.keyboard && input_settings_has_conflicts(input)) {
         model.status = input_settings_get_conflict_summary(input);
         model.status_error = true;
     } else if (input->has_load_diagnostic) {
         snprintf(player->pad_status, sizeof(player->pad_status), "%s", input->load_diagnostic);
-        model.status = player->pad_status;
-    } else if (input->has_save_diagnostic) {
-        snprintf(player->pad_status, sizeof(player->pad_status), "%s", input->save_diagnostic);
         model.status = player->pad_status;
     } else if (model.capturing >= 0) {
         snprintf(player->pad_status, sizeof(player->pad_status),
@@ -996,7 +1005,7 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
                  (input_settings_get_capture_remaining_ms(input) + 999) / 1000);
         model.status = player->pad_status;
     } else if (model.keyboard) {
-        model.status = "Choose a button, then press the key to use for it.";
+        model.status = "Choose a control, then press its key. Changes save as you make them.";
     } else if (app->settings.controller_connected) {
         snprintf(player->pad_status, sizeof(player->pad_status),
                  "Connected: %s. Choose a button to change it.",

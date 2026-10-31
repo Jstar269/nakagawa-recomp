@@ -2098,14 +2098,35 @@ class NativePlayerUiTests(unittest.TestCase):
 
     # The next UI's controller page (player_ui_nk.h), as the frame line prints it.
     CONTROLLER_FOCUS = {
-        "select": str(0x4600), "start": str(0x4601), "calibrate": str(0x4625),
+        "select": str(0x4600), "start": str(0x4601), "rtrigger": str(0x4607),
+        "stick_up": str(0x460F), "stick": str(0x4626), "calibrate": str(0x4625),
         "back": str(0x4628), "scope": str(0x4629), "calibration_cancel": str(0x462B),
     }
-    # From the first binding, two steps right and two down reach Calibrate stick.
-    TO_CALIBRATE = ("KEY_RIGHT", "KEY_RIGHT", "KEY_DOWN", "KEY_DOWN")
+    # From the first binding, two steps right reach the stick choice, and three down
+    # from it Calibrate stick.
+    TO_STICK = ("KEY_RIGHT", "KEY_RIGHT")
+    TO_CALIBRATE = TO_STICK + ("KEY_DOWN", "KEY_DOWN", "KEY_DOWN")
+
+    @staticmethod
+    def saved_profile(run: dict[str, object]) -> dict[str, object]:
+        """The input profile the run left on disk: each Controls change saves it."""
+        assert run["profile_exists"], "the change was saved without a Save step"
+        profile = json.loads(str(run["profile_text"]))
+        assert isinstance(profile, dict)
+        return profile
+
+    @staticmethod
+    def keys_of(profile: dict[str, object]) -> dict[str, str]:
+        entries = profile["keyboard_bindings"]
+        assert isinstance(entries, list)
+        return {entry["control"]: entry["primary"] for entry in entries}
 
     def test_next_ui_controller_rebind_calibrate_save_and_back(self) -> None:
-        """Controller settings in the next UI run the same handlers as the existing renderer."""
+        """Controller settings in the next UI run the same handlers as the existing renderer.
+
+        #1299: a button another control uses moves to the chosen one, and that control
+        takes the chosen one's button, so the mapping never conflicts; every change is
+        written to the input profile at once."""
         focus = self.CONTROLLER_FOCUS
         bind = self.next_ui_run(
             "controller", ("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "PAD_SOUTH", "WAIT_MS=100"),
@@ -2118,8 +2139,21 @@ class NativePlayerUiTests(unittest.TestCase):
                       "choosing a binding waits for a button")
         self.assertEqual(frames[-1]["controller_capturing"], "0",
                          "the controller's button is taken, not routed to the page")
-        self.assertEqual(frames[-1]["controller_conflicts"], "1")
+        self.assertEqual(frames[-1]["controller_conflicts"], "0", "a taken button swaps")
+        self.assertEqual(frames[-1]["key_note"], "1", "the page names the control that changed")
         self.assertNotEqual(frames[0]["start_binding"], frames[-1]["start_binding"])
+        buttons = {entry["control"]: entry["primary"]
+                   for entry in self.saved_profile(bind)["psp_bindings"]}  # type: ignore[union-attr]
+        self.assertEqual((buttons["start"], buttons["cross"]), ("south", "start"))
+
+        stick = self.next_ui_run(
+            "controller", ("WAIT_MS=100",) + self.TO_STICK + ("KEY_RETURN", "WAIT_MS=100"),
+        )
+        self.assertEqual(self.focus_trail(stick)[-1], focus["stick"])
+        calibration = self.saved_profile(stick)["calibration"]
+        assert isinstance(calibration, dict)
+        self.assertEqual((calibration["analog_x"]["host_axis"], calibration["analog_y"]["host_axis"]),
+                         ("rightx", "righty"), "the PSP stick follows the right stick")
 
         cancel = self.next_ui_run(
             "controller", ("WAIT_MS=100", "KEY_RETURN", "KEY_ESCAPE", "WAIT_MS=100"),
@@ -2146,7 +2180,7 @@ class NativePlayerUiTests(unittest.TestCase):
                          "the rest step opens on Cancel and Esc returns to Calibrate stick")
 
         # Down from Calibrate stick reaches Back, at the right end of the button
-        # row; the mapping choice is next to it and Save profile is first.
+        # row; the mapping choice is next to it and Reset to defaults is first.
         scope = self.next_ui_run(
             "controller",
             ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_LEFT", "KEY_RETURN",
@@ -2159,16 +2193,6 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[0]["input_scope"], "global")
         self.assertEqual(frames[-1]["input_scope"], "TEST00005")
 
-        save = self.next_ui_run(
-            "controller",
-            ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN",) + ("KEY_LEFT",) * 3 +
-            ("KEY_RETURN", "WAIT_MS=100"),
-        )
-        frames = save["frames"]
-        assert isinstance(frames, list)
-        self.assertEqual(frames[-1]["profile_save_notice"], "1")
-        self.assertTrue(save["profile_exists"])
-
         back = self.next_ui_run(
             "controller",
             ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_RETURN", "WAIT_MS=100"),
@@ -2179,16 +2203,16 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_next_ui_keyboard_keys_rebind_refuse_reset_and_save(self) -> None:
         """#1299: KEYBOARD shows the keys; a chosen button takes the next key pressed,
-        a key another button uses is refused, Reset to defaults resets the keys, and
-        Save profile writes them to the profile the game is handed."""
+        a key another control uses moves to it and that control takes its old key,
+        the stick's four keys rebind the same way, Reset to defaults resets the keys,
+        and every change is written to the profile the game is handed."""
         # Up from the first binding is KEYBOARD; Down twice from it is Start's key.
         to_start = ("WAIT_MS=100", "KEY_UP", "KEY_RETURN", "WAIT_MS=100", "KEY_DOWN", "KEY_DOWN")
-        # Down from L Trigger, the last row of the first column, is Reset to defaults.
-        to_reset = ("KEY_DOWN",) * 6
+        # Down from L Trigger, the last row of the first column, then Left, is Reset to
+        # defaults, the first of the buttons under the cards.
+        to_reset = ("KEY_DOWN",) * 6 + ("KEY_LEFT",)
         save = self.next_ui_run(
-            "controller",
-            to_start + ("KEY_RETURN", "KEY_C", "WAIT_MS=100") + to_reset +
-            ("KEY_LEFT", "KEY_RETURN", "WAIT_MS=100"),
+            "controller", to_start + ("KEY_RETURN", "KEY_C", "WAIT_MS=100"),
         )
         frames = save["frames"]
         assert isinstance(frames, list)
@@ -2199,27 +2223,50 @@ class NativePlayerUiTests(unittest.TestCase):
                       "choosing Start's key waits for a key")
         self.assertEqual((frames[0]["start_key"], frames[-1]["start_key"]), ("40", "6"),
                          "the C key pressed is Start's key, not routed to the page")
-        self.assertEqual(frames[-1]["profile_save_notice"], "1")
-        profile = json.loads(str(save["profile_text"]))
-        keys = {entry["control"]: entry["primary"] for entry in profile["keyboard_bindings"]}
-        self.assertEqual(keys["start"], "c")
+        self.assertEqual(self.keys_of(self.saved_profile(save))["start"], "c")
 
-        refuse = self.next_ui_run(
+        swap = self.next_ui_run(
             "controller",
             to_start + ("KEY_RETURN", "KEY_X", "WAIT_MS=100", "KEY_RETURN", "PAD_SOUTH",
-                        "WAIT_MS=100", "KEY_RETURN", "KEY_C", "WAIT_MS=100") + to_reset +
+                        "WAIT_MS=100"),
+        )
+        frames = swap["frames"]
+        assert isinstance(frames, list)
+        noted = [frame for frame in frames if frame["key_note"] == "1"]
+        self.assertTrue(noted, "X, Cross's key, moves to Start with a note naming Cross")
+        self.assertEqual({frame["start_key"] for frame in noted}, {"27"})
+        self.assertEqual(frames[-1]["controller_capturing"], "0",
+                         "a controller press stops the wait for a key")
+        keys = self.keys_of(self.saved_profile(swap))
+        self.assertEqual((keys["start"], keys["cross"]), ("x", "return"),
+                         "Cross takes Start's old key: nothing is left without one")
+
+        stick = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100", "KEY_UP", "KEY_RETURN", "WAIT_MS=100", "KEY_DOWN", "KEY_RIGHT",
+             "KEY_RIGHT", "KEY_RETURN", "KEY_W", "WAIT_MS=100"),
+        )
+        focus = self.CONTROLLER_FOCUS
+        self.assertEqual(self.focus_trail(stick)[-3:],
+                         [focus["select"], focus["rtrigger"], focus["stick_up"]],
+                         "the stick's keys sit beside the buttons, on the stick card")
+        keys = self.keys_of(self.saved_profile(stick))
+        self.assertEqual((keys["stick_up"], keys["rtrigger"]), ("w", "i"),
+                         "the stick's up key is W now, and R takes I")
+
+        reset = self.next_ui_run(
+            "controller",
+            to_start + ("KEY_RETURN", "KEY_C", "WAIT_MS=100") + to_reset +
             ("KEY_RETURN", "WAIT_MS=100"),
         )
-        frames = refuse["frames"]
+        frames = reset["frames"]
         assert isinstance(frames, list)
-        refused = [frame for frame in frames if frame["key_note"] == "1"]
-        self.assertTrue(refused, "X, Cross's key, is refused with a note")
-        self.assertEqual({frame["start_key"] for frame in refused}, {"40"})
-        self.assertEqual({frame["controller_capturing"] for frame in refused}, {"0"})
         self.assertIn("6", [frame["start_key"] for frame in frames])
         self.assertEqual(frames[-1]["start_key"], "40", "Reset to defaults resets the keys")
         self.assertEqual(frames[-1]["start_binding"], frames[0]["start_binding"])
         self.assertEqual(frames[-1]["view"], "controller")
+        self.assertEqual(self.keys_of(self.saved_profile(reset))["start"], "return",
+                         "the reset is saved too")
 
     def test_next_ui_settings_opens_controls_and_esc_returns(self) -> None:
         """Settings > Controls opens the next UI's controller page; Esc comes back.
@@ -3580,7 +3627,8 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(bind_frames, list)
         self.assertEqual(bind_frames[2]["controller_capturing"], "1")
         self.assertEqual(bind_frames[3]["controller_capturing"], "0")
-        self.assertEqual(bind_frames[3]["controller_conflicts"], "1")
+        # A taken button swaps with the chosen control's (#1299): no conflict is left.
+        self.assertEqual(bind_frames[3]["controller_conflicts"], "0")
         self.assertNotEqual(bind_frames[0]["start_binding"], bind_frames[3]["start_binding"])
 
         calibrate = self.run_player(

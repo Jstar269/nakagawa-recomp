@@ -23,7 +23,11 @@ static const char *kControlDisplayNames[INPUT_CONTROL_TOTAL_COUNT] = {
     "Square",
     "Home",
     "Hold",
-    "Analog Stick"
+    "Analog Stick",
+    "Stick Up",
+    "Stick Down",
+    "Stick Left",
+    "Stick Right"
 };
 
 const char *input_settings_control_name(int control_idx) {
@@ -31,6 +35,29 @@ const char *input_settings_control_name(int control_idx) {
         return kControlDisplayNames[control_idx];
     }
     return "Unknown Control";
+}
+
+bool input_settings_control_has_keys(int control_idx) {
+    return (control_idx >= 0 && control_idx < INPUT_CONTROL_DIGITAL_COUNT) ||
+           (control_idx >= INPUT_CONTROL_STICK_UP && control_idx <= INPUT_CONTROL_STICK_RIGHT);
+}
+
+bool input_settings_control_bindable(const InputSettingsState *state, int control_idx) {
+    if (!state) return false;
+    if (state->device == INPUT_DEVICE_KEYBOARD) return input_settings_control_has_keys(control_idx);
+    return control_idx >= 0 && control_idx < INPUT_CONTROL_DIGITAL_COUNT;
+}
+
+/* The keyboard keys of a control that has them: a PSP button's, or a stick
+   direction's (InputControlIndex keeps NkPspStickDir's order). */
+static NkKeyBinding *control_keys(NkInputProfile *profile, int control_idx) {
+    if (!input_settings_control_has_keys(control_idx)) return NULL;
+    if (control_idx < INPUT_CONTROL_DIGITAL_COUNT) return &profile->psp_keys[control_idx];
+    return &profile->stick_keys[control_idx - INPUT_CONTROL_STICK_UP];
+}
+
+static const NkKeyBinding *control_keys_const(const NkInputProfile *profile, int control_idx) {
+    return control_keys((NkInputProfile *)profile, control_idx);
 }
 
 /* A host input by the label a pad prints on it, with its other common name in brackets
@@ -161,11 +188,11 @@ void input_settings_format_key_binding(const InputSettingsState *state, int cont
     char primary[32];
     char secondary[32];
     if (!buf || buf_sz == 0) return;
-    if (!state || control_idx < 0 || control_idx >= INPUT_CONTROL_DIGITAL_COUNT) {
+    const NkKeyBinding *keys = state ? control_keys_const(&state->profile, control_idx) : NULL;
+    if (!keys) {
         snprintf(buf, buf_sz, "None");
         return;
     }
-    const NkKeyBinding *keys = &state->profile.psp_keys[control_idx];
     const char *pair = input_settings_key_pair_word(keys->primary, keys->secondary);
     if (pair) {
         snprintf(buf, buf_sz, "%s", pair);
@@ -226,11 +253,13 @@ void input_settings_key_glyph(const InputSettingsState *state, int control_idx,
     const char *text = words;
     const char *name;
     int key;
+    const NkKeyBinding *keys;
     if (!out) return;
     memset(out, 0, sizeof(*out));
-    if (!state || control_idx < 0 || control_idx >= INPUT_CONTROL_DIGITAL_COUNT) return;
-    key = state->profile.psp_keys[control_idx].primary;
-    if (key == NK_HOST_KEY_NONE) key = state->profile.psp_keys[control_idx].secondary;
+    keys = state ? control_keys_const(&state->profile, control_idx) : NULL;
+    if (!keys) return;
+    key = keys->primary;
+    if (key == NK_HOST_KEY_NONE) key = keys->secondary;
     name = nk_host_key_name(key);
     if (!name) return;
     if (strcmp(name, "up") == 0 || strcmp(name, "down") == 0 || strcmp(name, "left") == 0 ||
@@ -324,7 +353,14 @@ void input_settings_init(InputSettingsState *state) {
     nk_input_profile_resolve_path(state->profile_path, sizeof(state->profile_path));
     state->capture_control = -1;
     state->capture_timeout_ms = INPUT_SETTINGS_CAPTURE_TIMEOUT_MS;
+    state->note_control = -1;
     input_settings_refresh_conflicts(state);
+}
+
+static void clear_note(InputSettingsState *state) {
+    state->note[0] = '\0';
+    state->note_error = false;
+    state->note_control = -1;
 }
 
 /* Copy the mapping being edited back into the document slot it belongs to, so a
@@ -345,11 +381,12 @@ void input_settings_reset_to_defaults(InputSettingsState *state) {
     state->capturing = false;
     state->capture_control = -1;
     state->capture_elapsed_ms = 0;
-    state->key_note[0] = '\0';
+    clear_note(state);
     state->save_diagnostic[0] = '\0';
     state->has_save_diagnostic = false;
     store_current_scope(state);
     input_settings_refresh_conflicts(state);
+    state->dirty = true;
 }
 
 void input_settings_reset_device_to_defaults(InputSettingsState *state) {
@@ -358,18 +395,39 @@ void input_settings_reset_device_to_defaults(InputSettingsState *state) {
         NkInputProfile defaults;
         nk_input_profile_init_default(&defaults);
         memcpy(state->profile.psp_keys, defaults.psp_keys, sizeof(state->profile.psp_keys));
+        memcpy(state->profile.stick_keys, defaults.stick_keys,
+               sizeof(state->profile.stick_keys));
         input_settings_cancel_capture(state);
         state->save_diagnostic[0] = '\0';
         state->has_save_diagnostic = false;
         store_current_scope(state);
+        state->dirty = true;
         return;
     }
     /* The controller's defaults leave the keyboard keys as the user set them. */
     NkKeyBinding keys[NK_PSP_BTN_COUNT];
+    NkKeyBinding stick[NK_PSP_STICK_DIR_COUNT];
     memcpy(keys, state->profile.psp_keys, sizeof(keys));
+    memcpy(stick, state->profile.stick_keys, sizeof(stick));
     input_settings_reset_to_defaults(state);
     memcpy(state->profile.psp_keys, keys, sizeof(keys));
+    memcpy(state->profile.stick_keys, stick, sizeof(stick));
     store_current_scope(state);
+}
+
+void input_settings_set_stick(InputSettingsState *state, bool right) {
+    if (!state) return;
+    state->profile.axes[NK_PSP_AXIS_ANALOG_X].host_axis = right ? NK_HOST_AXIS_RIGHTX
+                                                                : NK_HOST_AXIS_LEFTX;
+    state->profile.axes[NK_PSP_AXIS_ANALOG_Y].host_axis = right ? NK_HOST_AXIS_RIGHTY
+                                                                : NK_HOST_AXIS_LEFTY;
+    store_current_scope(state);
+    state->dirty = true;
+}
+
+bool input_settings_stick_is_right(const InputSettingsState *state) {
+    return state && state->profile.axes[NK_PSP_AXIS_ANALOG_X].host_axis == NK_HOST_AXIS_RIGHTX &&
+           state->profile.axes[NK_PSP_AXIS_ANALOG_Y].host_axis == NK_HOST_AXIS_RIGHTY;
 }
 
 void input_settings_set_device(InputSettingsState *state, InputSettingsDevice device) {
@@ -379,29 +437,72 @@ void input_settings_set_device(InputSettingsState *state, InputSettingsDevice de
     state->device = device;
 }
 
+/* What the other control was left with after a binding took its input: "X was
+   Circle's. Circle now uses Z." (it took this control's input), "... Circle keeps
+   Left Shift." (this control had none to give, and it has another), or "... Circle
+   has no key now: choose one." A control left with nothing is the one thing to fix,
+   so that note reads as an error. */
+static void note_moved(InputSettingsState *state, const char *taken, int other,
+                       const char *given, const char *kept, const char *nothing) {
+    const char *name = input_settings_control_name(other);
+    state->note_error = false;
+    if (given) {
+        snprintf(state->note, sizeof(state->note), "%s was %s's. %s now uses %s.", taken, name,
+                 name, given);
+    } else if (kept) {
+        snprintf(state->note, sizeof(state->note), "%s was %s's. %s keeps %s.", taken, name,
+                 name, kept);
+    } else {
+        snprintf(state->note, sizeof(state->note), "%s was %s's. %s has %s now: choose one.",
+                 taken, name, name, nothing);
+        state->note_error = true;
+    }
+    state->note_control = other;
+}
+
 bool input_settings_assign_key(InputSettingsState *state, int control_idx, int key) {
     char words[32];
-    if (!state || control_idx < 0 || control_idx >= INPUT_CONTROL_DIGITAL_COUNT) return false;
+    char left_with[32];
+    NkKeyBinding *keys;
+    if (!state) return false;
+    keys = control_keys(&state->profile, control_idx);
+    if (!keys) return false;
+    clear_note(state);
     if (key <= NK_HOST_KEY_NONE || key >= NK_HOST_KEY_LIMIT || !nk_host_key_name(key)) {
-        snprintf(state->key_note, sizeof(state->key_note),
-                 "That key can't be used for a PSP button. Choose another key.");
+        snprintf(state->note, sizeof(state->note),
+                 "That key can't be used for a PSP control. Choose another key.");
+        state->note_error = true;
         return false;
     }
+    if (keys->primary == key) return true;
+    int previous = keys->primary;
     input_settings_format_key(key, words, sizeof(words));
-    for (int i = 0; i < INPUT_CONTROL_DIGITAL_COUNT; i++) {
-        if (i == control_idx) continue;
-        if (state->profile.psp_keys[i].primary == key ||
-            state->profile.psp_keys[i].secondary == key) {
-            snprintf(state->key_note, sizeof(state->key_note),
-                     "%s is already the key for %s. Choose another key, or change %s first.",
-                     words, input_settings_control_name(i), input_settings_control_name(i));
-            return false;
+    for (int i = 0; i < INPUT_CONTROL_TOTAL_COUNT; i++) {
+        NkKeyBinding *other = i == control_idx ? NULL : control_keys(&state->profile, i);
+        if (!other || (other->primary != key && other->secondary != key)) continue;
+        /* The other control takes this one's key in the slot the key leaves. */
+        if (other->primary == key) {
+            other->primary = previous;
+        } else {
+            other->secondary = previous;
         }
+        int kept = other->primary != NK_HOST_KEY_NONE ? other->primary : other->secondary;
+        if (previous != NK_HOST_KEY_NONE) {
+            input_settings_format_key(previous, left_with, sizeof(left_with));
+            note_moved(state, words, i, left_with, NULL, "no key");
+        } else if (kept != NK_HOST_KEY_NONE) {
+            input_settings_format_key(kept, left_with, sizeof(left_with));
+            note_moved(state, words, i, NULL, left_with, "no key");
+        } else {
+            note_moved(state, words, i, NULL, NULL, "no key");
+        }
+        break;
     }
-    NkKeyBinding *keys = &state->profile.psp_keys[control_idx];
+    /* A key that was this control's second key swaps with its first. */
+    if (keys->secondary == key) keys->secondary = previous;
     keys->primary = key;
-    if (keys->secondary == key) keys->secondary = NK_HOST_KEY_NONE;
-    state->key_note[0] = '\0';
+    store_current_scope(state);
+    state->dirty = true;
     return true;
 }
 
@@ -484,9 +585,14 @@ bool input_settings_toggle_scope(InputSettingsState *state, const char *disc_id)
         char leaving[NK_MAX_DISC_ID_LEN];
         snprintf(leaving, sizeof(leaving), "%s", state->editing_disc_id);
         if (!input_settings_set_scope(state, NULL)) return false;
-        return nk_input_profile_file_remove_title(&state->file, leaving);
+        if (!nk_input_profile_file_remove_title(&state->file, leaving)) return false;
+        state->dirty = true;
+        return true;
     }
-    return input_settings_set_scope(state, disc_id);
+    if (!input_settings_set_scope(state, disc_id)) return false;
+    /* A disc that had no entry has one now, seeded from the global mapping. */
+    state->dirty = true;
+    return true;
 }
 
 NkResult input_settings_write_disc_profile(
@@ -689,16 +795,26 @@ NkResult input_settings_save(InputSettingsState *state, const char *custom_path)
     if (res != NK_OK) {
         state->has_save_diagnostic = true;
     }
+    /* Written, or refused with its reason shown: either way the next change
+       writes again, and a refusal is not retried every frame. */
+    state->dirty = false;
     return res;
 }
 
+NkResult input_settings_save_if_dirty(InputSettingsState *state) {
+    if (!state || !state->dirty) return NK_OK;
+    /* A capture or a calibration still running may change the mapping again. */
+    if (state->capturing || input_settings_is_calibrating(state)) return NK_OK;
+    return input_settings_save(state, NULL);
+}
+
 bool input_settings_start_capture(InputSettingsState *state, int control_idx) {
-    if (!state || control_idx < 0 || control_idx >= INPUT_CONTROL_DIGITAL_COUNT) return false;
+    if (!input_settings_control_bindable(state, control_idx)) return false;
     state->capturing = true;
     state->capture_control = control_idx;
     state->capture_elapsed_ms = 0;
     state->capture_timeout_ms = INPUT_SETTINGS_CAPTURE_TIMEOUT_MS;
-    state->key_note[0] = '\0';
+    clear_note(state);
     return true;
 }
 
@@ -707,7 +823,7 @@ void input_settings_cancel_capture(InputSettingsState *state) {
     state->capturing = false;
     state->capture_control = -1;
     state->capture_elapsed_ms = 0;
-    state->key_note[0] = '\0';
+    clear_note(state);
 }
 
 bool input_settings_is_capturing(const InputSettingsState *state) {
@@ -747,9 +863,48 @@ bool input_settings_feed_capture_source(InputSettingsState *state, NkBindingSour
 }
 
 bool input_settings_assign_binding(InputSettingsState *state, int control_idx, NkBindingSource source) {
+    char words[96];
+    char left_with[96];
     if (!state || control_idx < 0 || control_idx >= INPUT_CONTROL_DIGITAL_COUNT) return false;
-    state->profile.psp_buttons[control_idx].primary = source;
+    NkDigitalBinding *bind = &state->profile.psp_buttons[control_idx];
+    clear_note(state);
+    if (source.type != NK_BINDING_NONE && sources_equal(&bind->primary, &source)) return true;
+    NkBindingSource previous = bind->primary;
+    if (source.type != NK_BINDING_NONE) {
+        format_single_source(&source, words, sizeof(words));
+        for (int i = 0; i < INPUT_CONTROL_DIGITAL_COUNT; i++) {
+            NkDigitalBinding *other = &state->profile.psp_buttons[i];
+            if (i == control_idx ||
+                (!sources_equal(&other->primary, &source) &&
+                 !sources_equal(&other->secondary, &source))) {
+                continue;
+            }
+            /* The other button takes this one's input in the slot the input leaves. */
+            if (sources_equal(&other->primary, &source)) {
+                other->primary = previous;
+            } else {
+                other->secondary = previous;
+            }
+            const NkBindingSource *kept = other->primary.type != NK_BINDING_NONE
+                ? &other->primary : &other->secondary;
+            if (previous.type != NK_BINDING_NONE) {
+                format_single_source(&previous, left_with, sizeof(left_with));
+                note_moved(state, words, i, left_with, NULL, "no button");
+            } else if (kept->type != NK_BINDING_NONE) {
+                format_single_source(kept, left_with, sizeof(left_with));
+                note_moved(state, words, i, NULL, left_with, "no button");
+            } else {
+                note_moved(state, words, i, NULL, NULL, "no button");
+            }
+            break;
+        }
+        /* An input that was this button's second one swaps with its first. */
+        if (sources_equal(&bind->secondary, &source)) bind->secondary = previous;
+    }
+    bind->primary = source;
     input_settings_refresh_conflicts(state);
+    store_current_scope(state);
+    state->dirty = true;
     return true;
 }
 
@@ -767,6 +922,7 @@ bool input_settings_adjust_deadzone(InputSettingsState *state, int axis_idx, int
         if (val > max_allowed) val = max_allowed;
         state->profile.axes[i].deadzone_inner = (int16_t)val;
     }
+    state->dirty = true;
     return true;
 }
 
@@ -784,6 +940,7 @@ bool input_settings_set_deadzone(InputSettingsState *state, int axis_idx, int32_
         if (val > max_allowed) val = max_allowed;
         state->profile.axes[i].deadzone_inner = (int16_t)val;
     }
+    state->dirty = true;
     return true;
 }
 
@@ -793,6 +950,7 @@ bool input_settings_adjust_trigger_threshold(InputSettingsState *state, int32_t 
     if (val < 0) val = 0;
     if (val > 32767) val = 32767;
     state->profile.trigger_threshold = (int16_t)val;
+    state->dirty = true;
     return true;
 }
 
@@ -802,6 +960,7 @@ bool input_settings_set_trigger_threshold(InputSettingsState *state, int32_t val
     if (val < 0) val = 0;
     if (val > 32767) val = 32767;
     state->profile.trigger_threshold = (int16_t)val;
+    state->dirty = true;
     return true;
 }
 
@@ -809,6 +968,7 @@ bool input_settings_toggle_axis_inversion(InputSettingsState *state, int axis_id
     if (!state) return false;
     if (axis_idx < 0 || axis_idx >= NK_PSP_AXIS_COUNT) return false;
     state->profile.axes[axis_idx].inverted = !state->profile.axes[axis_idx].inverted;
+    state->dirty = true;
     return true;
 }
 
@@ -940,5 +1100,6 @@ bool input_settings_accept_calibration(InputSettingsState *state) {
 
     memset(&state->calib, 0, sizeof(state->calib));
     state->calib.stage = CALIBRATION_STAGE_INACTIVE;
+    state->dirty = true;
     return true;
 }

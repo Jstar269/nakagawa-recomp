@@ -20,12 +20,17 @@ extern "C" {
  * per-title entries, so the global mapping keeps working unchanged.
  * Schema 3 adds the optional keyboard_bindings list to every mapping (#1299). A
  * schema 1 or 2 file still loads, with the default keyboard keys, and cannot
- * carry keyboard_bindings: an older build would ignore them silently. */
-#define NK_INPUT_PROFILE_SCHEMA_VERSION 3
+ * carry keyboard_bindings: an older build would ignore them silently.
+ * Schema 4 adds the analog stick's four directions to keyboard_bindings
+ * (controls stick_up, stick_down, stick_left, stick_right). A schema 3 file still
+ * loads, with the default stick keys (a default a button key of the file already
+ * uses is left unbound), and cannot carry stick entries. */
+#define NK_INPUT_PROFILE_SCHEMA_VERSION 4
 #define NK_INPUT_PROFILE_MIN_SCHEMA_VERSION 1
 /* The schema that introduced each optional member. */
 #define NK_INPUT_PROFILE_PER_TITLE_SCHEMA_VERSION 2
 #define NK_INPUT_PROFILE_KEYBOARD_SCHEMA_VERSION 3
+#define NK_INPUT_PROFILE_STICK_KEYS_SCHEMA_VERSION 4 /* first version with stick keys */
 /* The largest profile file the loader reads. A newer schema_version than this
  * build's is refused with NK_ERROR_NEWER_SCHEMA and the save path will not
  * replace it; an older file is kept as <file>.v<n>.bak by the first save. */
@@ -83,6 +88,18 @@ typedef enum {
     NK_PSP_BTN_HOLD,
     NK_PSP_BTN_COUNT /* 14 */
 } NkPspButton;
+
+/**
+ * The four directions of the analog stick, as keyboard controls. Each is bound to
+ * host keys in NkInputProfile.stick_keys, separately from the 14 digital buttons.
+ */
+typedef enum {
+    NK_PSP_STICK_UP = 0,
+    NK_PSP_STICK_DOWN,
+    NK_PSP_STICK_LEFT,
+    NK_PSP_STICK_RIGHT,
+    NK_PSP_STICK_DIR_COUNT /* 4 */
+} NkPspStickDir;
 
 /**
  * Standard PSP analog stick axes (2 total).
@@ -177,8 +194,8 @@ typedef struct {
 #define NK_HOST_KEY_LIMIT 512 /* every bindable key code is below this */
 
 /**
- * Keyboard binding for one PSP button: up to two host keys, NK_HOST_KEY_NONE
- * when a slot is unbound.
+ * Keyboard binding for one PSP button or stick direction: up to two host keys,
+ * NK_HOST_KEY_NONE when a slot is unbound.
  */
 typedef struct {
     int primary;
@@ -230,6 +247,7 @@ typedef struct {
     NkDigitalBinding psp_buttons[NK_PSP_BTN_COUNT];
     NkDigitalBinding nav_bindings[NK_NAV_ACTION_COUNT];
     NkKeyBinding psp_keys[NK_PSP_BTN_COUNT]; /* host keyboard keys per PSP button (schema 3) */
+    NkKeyBinding stick_keys[NK_PSP_STICK_DIR_COUNT]; /* host keys that push the analog stick (schema 4) */
 } NkInputProfile;
 
 /**
@@ -326,6 +344,11 @@ uint32_t nk_psp_button_bitmask(NkPspButton btn);
  */
 const char *nk_psp_button_name(NkPspButton btn);
 NkPspButton nk_psp_button_from_name(const char *name);
+
+/* "stick_up", "stick_down", "stick_left", "stick_right"; "unknown" otherwise. */
+const char *nk_psp_stick_dir_name(NkPspStickDir dir);
+/* Case-insensitive; (NkPspStickDir)-1 when `name` is not a stick direction. */
+NkPspStickDir nk_psp_stick_dir_from_name(const char *name);
 
 const char *nk_psp_axis_name(NkPspAxis axis);
 NkPspAxis nk_psp_axis_from_name(const char *name);
@@ -545,8 +568,33 @@ uint32_t nk_input_profile_eval_keys(
 
 /**
  * @brief PSP button bits bound to one host key, for a key-down event.
+ *
+ * Stick keys are not buttons: they never appear in the bits this returns, nor in
+ * nk_input_profile_eval_keys.
  */
 uint32_t nk_input_profile_key_buttons(const NkInputProfile *profile, int key);
+
+/**
+ * @brief The analog stick from the keyboard.
+ *
+ * For each axis, when exactly one of its two directions has a key held, that axis
+ * goes to full deflection (up and left 0, down and right 255). With neither or both
+ * held the axis keeps the value passed in, so a controller's stick still works.
+ * `key_down`/`key_count` are as for nk_input_profile_eval_keys: codes at or beyond
+ * `key_count` read as released.
+ *
+ * A NULL `lx` or `ly` is skipped. A NULL profile or `key_down`, or a `key_count`
+ * of zero or less, changes nothing and returns false.
+ *
+ * @return true when a stick key moved an axis.
+ */
+bool nk_input_profile_eval_key_analog(
+    const NkInputProfile *profile,
+    const bool *key_down,
+    int key_count,
+    uint8_t *lx,
+    uint8_t *ly
+);
 
 /**
  * @brief Evaluate player navigation actions from host gamepad state.

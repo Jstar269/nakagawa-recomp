@@ -600,7 +600,7 @@ typedef enum {
     PLAYER_UI_CONTROLLER_TRIGGER_DOWN,
     PLAYER_UI_CONTROLLER_TRIGGER_UP,
     PLAYER_UI_CONTROLLER_CALIBRATE,
-    PLAYER_UI_CONTROLLER_SAVE,
+    PLAYER_UI_CONTROLLER_STICK,              /* the PSP stick follows the other controller stick */
     PLAYER_UI_CONTROLLER_RESET,
     PLAYER_UI_CONTROLLER_BACK,               /* back to Settings */
     PLAYER_UI_CONTROLLER_CLOSE,              /* a top-bar tab or Start: Settings closes */
@@ -613,6 +613,11 @@ typedef enum {
 } PlayerUiControllerOp;
 
 #define PLAYER_UI_CONTROLLER_BUTTONS 14u   /* INPUT_CONTROL_DIGITAL_COUNT */
+/* Every control the page names, by InputControlIndex: the buttons, the stick (14, which
+   has no row of its own) and the stick's four keys (15-18, keyboard only). */
+#define PLAYER_UI_CONTROLLER_CONTROLS 19u  /* INPUT_CONTROL_TOTAL_COUNT */
+#define PLAYER_UI_CONTROLLER_STICK_KEY 15u /* INPUT_CONTROL_STICK_UP, then down, left, right */
+#define PLAYER_UI_CONTROLLER_STICK_KEYS 4u
 /* The characters a binding's button shows whole at every launcher size: the
    label is mono caps, so this is a width (INPUT_SETTINGS_BINDING_TEXT_MAX). */
 #define PLAYER_UI_CONTROLLER_BINDING_CHARS 20u
@@ -630,19 +635,22 @@ typedef struct {
     PlayerUiControllerPage page;
     bool keyboard;                  /* the mapping shows the keyboard keys, not the controller */
     /* Mapping: each PSP control's name and what it is bound to, in words */
-    const char *names[PLAYER_UI_CONTROLLER_BUTTONS];
-    const char *bindings[PLAYER_UI_CONTROLLER_BUTTONS];
+    const char *names[PLAYER_UI_CONTROLLER_CONTROLS];
+    const char *bindings[PLAYER_UI_CONTROLLER_CONTROLS];
     /* and as the glyph the device shown prints: keycaps for the keys, the pad's own set
        for the controller */
     NkUiPromptStyle glyph_style;
-    PlayerUiBindingGlyph glyphs[PLAYER_UI_CONTROLLER_BUTTONS];
-    bool conflicted[PLAYER_UI_CONTROLLER_BUTTONS];
+    PlayerUiBindingGlyph glyphs[PLAYER_UI_CONTROLLER_CONTROLS];
+    bool conflicted[PLAYER_UI_CONTROLLER_CONTROLS];
     int capturing;                  /* the control waiting for a press, or -1 */
+    int noted;                      /* the control the status note names (it gave up its
+                                       input to the last binding), or -1 */
+    bool stick_right;               /* the PSP stick follows the controller's right stick */
     const char *scope;              /* "global mapping", "TEST00005 only" */
     bool scope_title;               /* editing one game's own mapping */
     bool offer_scope;               /* a game is selected, so the choice is offered */
-    const char *status;             /* a conflict, a load or save note, or the pad */
-    bool status_error;              /* status is a conflict */
+    const char *status;             /* a binding's note, a load or save problem, or the pad */
+    bool status_error;              /* status is something to fix */
     const char *deadzone;           /* "Dead zone 9%" */
     const char *trigger;            /* "Trigger point 49%" */
     /* The live input, and on a calibration page its numbers */
@@ -858,13 +866,13 @@ enum {
     PLAYER_UI_ID_SETTINGS_ACCESSIBILITY = 0x452Cu,    /* Settings: opens Accessibility */
     PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE = 0x452Du,
     PLAYER_UI_ID_SETTINGS_HIGH_CONTRAST = 0x452Eu,
-    PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
+    PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the control, 0-18 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
     PLAYER_UI_ID_CONTROLLER_TRIGGER_DOWN = 0x4623u,
     PLAYER_UI_ID_CONTROLLER_TRIGGER_UP = 0x4624u,
     PLAYER_UI_ID_CONTROLLER_CALIBRATE = 0x4625u,
-    PLAYER_UI_ID_CONTROLLER_SAVE = 0x4626u,
+    PLAYER_UI_ID_CONTROLLER_STICK = 0x4626u,         /* LEFT STICK / RIGHT STICK */
     PLAYER_UI_ID_CONTROLLER_RESET = 0x4627u,
     PLAYER_UI_ID_CONTROLLER_BACK = 0x4628u,
     PLAYER_UI_ID_CONTROLLER_SCOPE = 0x4629u,
@@ -872,7 +880,7 @@ enum {
     PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL = 0x462Bu,
     PLAYER_UI_ID_CONTROLLER_SHOW_PAD = 0x462Cu,
     PLAYER_UI_ID_CONTROLLER_SHOW_KEYBOARD = 0x462Du,
-    PLAYER_UI_ID_CONTROLLER_GLYPH_BASE = 0x4640u,    /* + the PSP control, 0-13; not focusable */
+    PLAYER_UI_ID_CONTROLLER_GLYPH_BASE = 0x4640u,    /* + the control, 0-18; not focusable */
     PLAYER_UI_ID_DEVELOPER_LOG_COPY = 0x4701u,
     PLAYER_UI_ID_DEVELOPER_LOG_SAVE = 0x4702u,
     PLAYER_UI_ID_DEVELOPER_LOG_CLOSE = 0x4703u,
