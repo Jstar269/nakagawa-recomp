@@ -451,7 +451,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "918d4fe41a69a38290147a3fdcf02cbdf0991bdf49d98ca50cc94cad1f5ba010"
+      "sha256": "7357ee3c38ccfdf733c858c60b7be86bd5e8b235267f079664743f14d27fe815"
     },
     {
       "path": "NOTICE.md",
@@ -1705,7 +1705,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "532824a64efe2a168d2f2d13d8d482da8ba7b918222fdb1acfd46b63592204d5"
+      "sha256": "6c5a4e697f33c8520c44cd9e9588bef7296d16efc71ffa0b157080caee540c1d"
     },
     {
       "path": "docs/HLE_COVERAGE.md",
@@ -1717,7 +1717,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4d5747105e4edb22b256455eda23f56c6b4e4a6271f620b1c34a3fb20e98879"
+      "sha256": "024e1e13373be308bd94220777d269b1b41865aee72997c5463656ad4d744eeb"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -2963,7 +2963,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aad19712691cc5dcd3c311fcf6b55c26d08688a624a5ced4c8943fb8417a330b"
+      "sha256": "2db8d80f0d96d1eea2a407bace44ab5eaf1258b012ec47cadf1fb65022dcaad5"
     },
     {
       "path": "fixtures/psp_oracle/probe_dmac_timing.c",
@@ -6655,7 +6655,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4e07667f7a88c18bfc50c6be897ff8dc752307f9f8de7a404b94c3d4cbf0777"
+      "sha256": "3bd7db5b0f4ec15759bd9b2e7ad496d9082ee5f8cf46a76db9d45f87ec748cea"
     },
     {
       "path": "src/rt/h264_ffmpeg_sub/LICENSE.LGPLv2.1.txt",
@@ -9502,7 +9502,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9b5181fd2cd5a04f8014f80e05db3e2c4251eab96a85fb72eae023d75602491e"
+      "sha256": "69d3ad57cc6054e616babf6b65860036ec3f7077ae8abacf75b0cb8a663d7af1"
     },
     {
       "path": "src/rt/h264_null.c",
@@ -9539,7 +9539,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e8b107daa0cc8e1ac7f2114da0ad5d4e0502eb9c0ee104d0cd3550f4439a3cd4"
+      "sha256": "cc7efbe3553596e5d8d4a24558bc7ebda4afb12a8d980b898adc662f18e15e1d"
     },
     {
       "path": "src/rt/hle_evidence.h",
@@ -9737,7 +9737,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "153cdd2fd0fdb23756b5fbb2c73426e89f187abf0bf59d04c97e69b6225a5fe9"
+      "sha256": "cdc9b3b6c0cfdb5662a4aecb4ec01af612fc15f9d2cd1d03093f107c41fb6917"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -10122,7 +10122,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e60220324621541c19ba8c515e379e92621fecbce23f1df8c982b36b96517d3f"
+      "sha256": "ef584f055b6439088b78d9284b09fbb94e96c96010598db009f46fd876959a4f"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -10306,7 +10306,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c37f85bb7698eb2b98ac6dfc24fb74f6049408156cc8d8a325d3d945e5ed295"
+      "sha256": "5546bdd2eb69be134875f2adfab0f6fb33deeaa6e8db8aa96e942605cfd7eb4b"
     },
     {
       "path": "src/rt/stale_code.c",
@@ -13573,7 +13573,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dcc609ca833f1a09753439d55fa69cddc934983afaef2c9a24e78387614ccd90"
+      "sha256": "71953652e114cb6edccf0a6b4ecf4b9d28c97a7f6faf5c7be40b8b654d531b69"
     },
     {
       "path": "tools/host_stubs.py",
@@ -16125,7 +16125,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6e14112d7b7a4d356474ee57dc4e7c99b7dbaf9629b868cdcc13d4e441818535"
+      "sha256": "f87cb3774f2494c6d496707343c5e6fc6588be3ee9da5f57e34f9cd64446d661"
     },
     {
       "path": "tools/test_native_core_build.py",
