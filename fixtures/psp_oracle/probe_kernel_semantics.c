@@ -362,23 +362,27 @@ static void ks_ctrl_peek_count(void)
     hle_record("ctrl-peek-count", "PASS", 0u, w, 3u);
 }
 
-/* Rows ctrl-mode-digital and ctrl-mode-analog (9 words: the SetSamplingMode result, then the
-   newest eight samples' Lx | Ly << 8 | Rsrv0 << 16 | Rsrv1 << 24, 50 ms after the change). The
-   stick is not touched. The mode is restored afterwards. */
+/* Rows ctrl-mode-digital, ctrl-mode-analog and ctrl-mode-digital-again (9 words: the
+   SetSamplingMode result, then the newest eight samples' Lx | Ly << 8 | Rsrv0 << 16 |
+   Rsrv1 << 24, 50 ms after the change): digital, analog, then digital again, which tells a
+   centred stick from the last analog position kept. The stick is not touched. The mode is
+   restored afterwards. */
 static void ks_ctrl_modes(void)
 {
     uint32_t w[9];
     int mode = -1;
     hle_step("ctrl-mode");
     (void)sceCtrlGetSamplingMode(&mode);
-    for (int pass = 0; pass < 2; pass++) {
-        w[0] = (uint32_t)sceCtrlSetSamplingMode(pass);
+    static const char *const rows[3] = { "ctrl-mode-digital", "ctrl-mode-analog",
+                                         "ctrl-mode-digital-again" };
+    for (int pass = 0; pass < 3; pass++) {
+        w[0] = (uint32_t)sceCtrlSetSamplingMode(pass == 1 ? 1 : 0);
         sceKernelDelayThread(50000);
         const int peeked = sceCtrlPeekBufferPositive(s_ks_pad, 8);
         for (unsigned i = 0; i < 8u; i++) {
             w[1u + i] = peeked == 8 ? ks_analog_word(&s_ks_pad[i]) : HLE_SENTINEL;
         }
-        hle_record(pass ? "ctrl-mode-analog" : "ctrl-mode-digital", "PASS", (uint32_t)mode, w, 9u);
+        hle_record(rows[pass], "PASS", (uint32_t)mode, w, 9u);
     }
     if (mode == 0 || mode == 1) {
         (void)sceCtrlSetSamplingMode(mode);

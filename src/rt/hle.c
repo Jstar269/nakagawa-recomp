@@ -35,6 +35,9 @@
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
+#ifndef _CRT_RAND_S
+#define _CRT_RAND_S      /* rand_s(): the console profile's random identity (#1382) */
+#endif
 #ifndef _MSC_EXTENSIONS
 #define _MSC_EXTENSIONS  /* for _Exit on MSVC; harmless under MinGW */
 #endif
@@ -652,7 +655,8 @@ static void user_partition_init(void) {
  * writes malloc chunk metadata at the start of its UserSbrk block. */
 /* `high` marks a High block (sceKernelAllocMemoryBlock placement 1): it lives in the top-down
  * arena the thread stacks share (sched_partition_alloc_high) and goes back there when freed. */
-typedef struct { uint32_t uid, addr, size, slot_size, prev, next; int high; } Block;
+/* `part5` marks a block of partition 5, the volatile region (volatile_part_alloc). */
+typedef struct { uint32_t uid, addr, size, slot_size, prev, next; int high, part5; } Block;
 #define HLE_MAX_PARTITION_BLOCKS 256
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
 
@@ -884,6 +888,7 @@ static uint32_t alloc_block(uint32_t size) {
         s_blocks[slot].prev      = prev;
         s_blocks[slot].next      = next;
         s_blocks[slot].high      = 0;
+        s_blocks[slot].part5     = 0;
     }
 
     return uid;
@@ -937,6 +942,7 @@ static uint32_t alloc_block_high(uint32_t size) {
     s_blocks[slot].prev      = 0xFFFFFFFFu;
     s_blocks[slot].next      = 0u;
     s_blocks[slot].high      = 1;
+    s_blocks[slot].part5     = 0;
     return uid;
 }
 
@@ -1095,6 +1101,7 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     s_blocks[slot].prev      = prev;
     s_blocks[slot].next      = next;
     s_blocks[slot].high      = 0;
+    s_blocks[slot].part5     = 0;
 
     return uid;
 }
@@ -2089,6 +2096,69 @@ static const char *sreg_type_name(uint32_t type) {
     return type == SREG_TYPE_INT ? "int" : type == SREG_TYPE_STR ? "str" : "bin";
 }
 
+/* ---- console profile: the WLAN MAC address and OpenPSID this installation reports (#1382) ----
+ * Both are console-bound values on a PSP (the WLAN chip's address and the per-console ID in
+ * idStorage), so none is ever read from a console, copied from one, or derived from the host's
+ * hardware identifiers or a game. Each installation gets its own: generated once from the host's
+ * random source the first time a game asks, and kept in the per-user registry overlay file's
+ * "console" object, so it is the same on every run. A MAC has the two low bits of its first
+ * octet clear (unicast and universally administered, as a console's own address is: games have
+ * been seen to mishandle the multicast and locally administered bits, which PPSSPP clears for
+ * the same reason); an OpenPSID is 16 bytes, never all zero. The user (or a test)
+ * can set either in the overlay: {"console": {"wlan_mac_hex": "<12 hex>", "open_psid_hex":
+ * "<32 hex>"}}; a malformed console object makes the overlay invalid, as any malformed record does.
+ * The object is not part of the sceReg tree: a PSP's registry holds neither value. */
+typedef struct {
+    int have_identity;
+    uint8_t mac[6];
+    uint8_t psid[16];
+} PspConsoleProfile;
+static PspConsoleProfile s_console;
+
+static int sreg_hex_bytes(const char *hex, uint8_t *out, size_t bytes);
+
+static int console_identity_ok(const uint8_t mac[6], const uint8_t psid[16]) {
+    int psid_set = 0;
+    for (int i = 0; i < 16; i++) psid_set |= psid[i] != 0u;
+    return (mac[0] & 0x03u) == 0u && psid_set;   /* see PspConsoleProfile */
+}
+
+static int console_profile_apply(const NkJsonNode *console, char *why, size_t why_len) {
+    const NkJsonNode *jmac = nk_json_obj_get(console, "wlan_mac_hex");
+    const NkJsonNode *jpsid = nk_json_obj_get(console, "open_psid_hex");
+    PspConsoleProfile next;
+    memset(&next, 0, sizeof(next));
+    if (!nk_json_is_object(console) || !nk_json_is_string(jmac) || !nk_json_is_string(jpsid) ||
+        !sreg_hex_bytes(nk_json_get_string(jmac), next.mac, sizeof(next.mac)) ||
+        !sreg_hex_bytes(nk_json_get_string(jpsid), next.psid, sizeof(next.psid)) ||
+        !console_identity_ok(next.mac, next.psid)) {
+        snprintf(why, why_len, "its console object does not hold a wlan_mac_hex (12 hex digits, "
+                               "first octet's two low bits clear) and a non-zero open_psid_hex "
+                               "(32 hex digits)");
+        return 0;
+    }
+    next.have_identity = 1;
+    s_console = next;
+    return 1;
+}
+
+/* The host's random source: rand_s() (RtlGenRandom) on Windows, /dev/urandom elsewhere. */
+static int console_random_bytes(uint8_t *out, size_t n) {
+#ifdef _WIN32
+    for (size_t i = 0; i < n; i++) {
+        unsigned int r = 0;
+        if (rand_s(&r) != 0) return 0;
+        out[i] = (uint8_t)r;
+    }
+    return 1;
+#else
+    FILE *f = fopen("/dev/urandom", "rb");
+    int ok = f && fread(out, 1u, n, f) == n;
+    if (f) fclose(f);
+    return ok;
+#endif
+}
+
 /* Apply a parsed overlay onto the defaults. Returns 1, or 0 with *why set; the caller discards a
  * partial application and serves the defaults. */
 static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) {
@@ -2187,6 +2257,20 @@ static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) 
         }
         memcpy(s_sreg_nodes[node].value, value, bytes);
     }
+    if (nk_json_obj_get(doc, "console") &&
+        !console_profile_apply(nk_json_obj_get(doc, "console"), why, why_len))
+        return 0;
+    return 1;
+}
+
+/* Exactly `bytes` bytes from 2 * bytes hexadecimal digits. */
+static int sreg_hex_bytes(const char *hex, uint8_t *out, size_t bytes) {
+    if (!hex || strlen(hex) != 2u * bytes) return 0;
+    for (size_t b = 0; b < bytes; b++) {
+        int hi = sreg_hex_nibble(hex[2u * b]), lo = sreg_hex_nibble(hex[2u * b + 1u]);
+        if (hi < 0 || lo < 0) return 0;
+        out[b] = (uint8_t)((hi << 4) | lo);
+    }
     return 1;
 }
 
@@ -2252,6 +2336,7 @@ static void sreg_ensure_loaded(void) {
     if (s_sreg_loaded) return;
     s_sreg_loaded = 1;
     s_sreg_corrupt_on_disk = 0;
+    memset(&s_console, 0, sizeof(s_console));
     sreg_clear_nodes();
     sreg_build_defaults();
     path = sreg_overlay_path();
@@ -2274,6 +2359,7 @@ static void sreg_ensure_loaded(void) {
                         "defaults (the next flush moves it to %s.corrupt)\n", path, why, path);
         sreg_clear_nodes();
         sreg_build_defaults();
+        memset(&s_console, 0, sizeof(s_console));
         s_sreg_corrupt_on_disk = 1;
     }
     s_sreg_dirty = 0;
@@ -2364,7 +2450,22 @@ static void sreg_overlay_render(SregText *t) {
         sreg_text_str(t, "\"}");
         first = 0;
     }
-    sreg_text_str(t, "\n  ]\n}\n");
+    sreg_text_str(t, "\n  ]");
+    if (s_console.have_identity) {
+        static const char digits[] = "0123456789abcdef";
+        sreg_text_str(t, ",\n  \"console\": {\"wlan_mac_hex\": \"");
+        for (size_t b = 0; b < sizeof(s_console.mac); b++) {
+            char pair[2] = { digits[s_console.mac[b] >> 4], digits[s_console.mac[b] & 0x0fu] };
+            sreg_text_add(t, pair, 2u);
+        }
+        sreg_text_str(t, "\", \"open_psid_hex\": \"");
+        for (size_t b = 0; b < sizeof(s_console.psid); b++) {
+            char pair[2] = { digits[s_console.psid[b] >> 4], digits[s_console.psid[b] & 0x0fu] };
+            sreg_text_add(t, pair, 2u);
+        }
+        sreg_text_str(t, "\"}");
+    }
+    sreg_text_str(t, "\n}\n");
 }
 
 static int sreg_sync_file(FILE *f) {
@@ -2619,6 +2720,7 @@ static uint32_t h_GetSystemParamString(CpuState *s) {
 /* Drop the live registry and every handle, as a new process starts: the next sceReg call or
  * system-param read loads the defaults and the overlay file again. */
 void sr_hle_test_sysreg_reset(void) {
+    memset(&s_console, 0, sizeof(s_console));
     sreg_clear_nodes();
     memset(s_sreg_reg, 0, sizeof(s_sreg_reg));
     memset(s_sreg_cat, 0, sizeof(s_sreg_cat));
@@ -2943,14 +3045,16 @@ static uint32_t h_ImposeGetLanguageMode(CpuState *s) {
  * argument (issue #1390): the accepted ranges and the two error codes are
  * pinned by PSPAutotests tests/ctrl/sampling and tests/ctrl/sampling2 (.expected
  * files recorded on a PSP), corroborated by PPSSPP Core/HLE/sceCtrl.cpp; there
- * is no project oracle case for them yet. The stored mode and cycle do not yet
- * change what is sampled or how often (also #1390). */
+ * is no project oracle case for them yet. The mode decides whether a sample carries
+ * the stick's position, and the cycle how often samples are taken (sr_ctrl_sample,
+ * ctrl_cycle_set). */
 #define SCE_CTRL_ERROR_INVALID_MODE 0x80000107u  /* SCE_KERNEL_ERROR_INVALID_MODE */
 #define SCE_CTRL_ERROR_INVALID_VALUE 0x800001feu /* SCE_KERNEL_ERROR_INVALID_VALUE */
 static uint32_t s_ctrl_sampling_mode = 0u;
 static uint32_t s_ctrl_sampling_cycle = 0u;
 static uint32_t s_ctrl_idle_reset = 0xFFFFFFFFu;
 static uint32_t s_ctrl_idle_back = 0xFFFFFFFFu;
+static void ctrl_cycle_set(uint32_t cycle);
 /* sceHprmIsRemoteExist(void): 1 when the infrared remote is plugged in, else 0 (PSPSDK
  * psphprm.h). The runtime models the accessory as absent by default, so the answer comes from that
  * modeled state and is 0 until a model attaches a remote. The state is a model, not a measurement. */
@@ -3017,7 +3121,7 @@ static uint32_t h_CtrlSetSamplingMode(CpuState *s) {
 static uint32_t h_CtrlSetSamplingCycle(CpuState *s) {
     if ((A0 > 0u && A0 < 5555u) || A0 > 20000u) return SCE_CTRL_ERROR_INVALID_VALUE;
     uint32_t prev = s_ctrl_sampling_cycle;
-    s_ctrl_sampling_cycle = A0;
+    ctrl_cycle_set(A0);
     return prev;
 }
 /* sceCtrlSetIdleCancelThreshold(idlereset, idleback): store both thresholds.
@@ -3037,6 +3141,7 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_ILLEGAL_ADDR 0x800200d3u     /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
 #define HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE 0x800200d8u /* SCE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE */
 #define HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED 0x800200d9u /* SCE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED */
+#define HLE_KERNEL_ERROR_ILLEGAL_PARTITION 0x800200d6u /* SCE_KERNEL_ERROR_ILLEGAL_PARTITION */
 #define HLE_KERNEL_ERROR_ILLEGAL_SIZE 0x800201bcu   /* SCE_KERNEL_ERROR_ILLEGAL_SIZE */
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
@@ -3114,6 +3219,84 @@ static uint32_t h_CtrlGetSamplingCycle(CpuState *s) {
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* SysMemUserForUser */
+/* Partition 5 is the 4 MiB volatile region [0x08400000, 0x08800000), the memory
+ * sceKernelVolatileMemLock hands out (#1383). It has its own allocator, measured on a PSP by
+ * pspautotests tests/sysmem/volatile.expected at f573fe8c9122a8ff5db4f030d74557bed644b4e0:
+ * Low (0) blocks start at 0x08400000 and High (1) blocks end at 0x08800000 (a 0x100-byte block
+ * at 0x087fff00); sizes round up to 0x100 bytes and the whole 4 MiB can be allocated (0x3fff00
+ * beside a 0x100 block, and no more); an Addr (2) block lies exactly at its address inside the
+ * region (0x08500000), anything else is MEMBLOCK_ALLOC_FAILED, as is size 0 or 0xFFFFFFFF; the
+ * aligned types (3 Low, 4 High) take the alignment in the address argument, which must be a
+ * power of two (0, 3, 6 and 0xFFFFFFFF are ILLEGAL_ALIGNMENT_SIZE), and a High block aligned to
+ * 0x200, 0x400 or 0x800 ends below the top on that boundary; any other type is
+ * ILLEGAL_MEMBLOCKTYPE, which wins over a NULL name and a zero size. The allocations do not
+ * depend on the volatile lock: pspautotests allocates partition 5 with the lock free and creates
+ * pools there while holding it. */
+#define VOLATILE_PART_ID   5u
+#define VOLATILE_PART_BASE 0x08400000u
+#define VOLATILE_PART_END  0x08800000u
+#define HLE_KERNEL_ERROR_ILLEGAL_ALIGNMENT_SIZE 0x800200e4u /* SCE_KERNEL_ERROR_ILLEGAL_ALIGNMENT_SIZE */
+
+/* 1 when [addr, addr + size) lies in the region and overlaps no live partition-5 block. */
+static int volatile_part_range_free(uint64_t addr, uint64_t size) {
+    if (addr < VOLATILE_PART_BASE || addr + size > VOLATILE_PART_END) return 0;
+    for (int i = 0; i < s_nblocks; i++) {
+        const Block *b = &s_blocks[i];
+        if (b->uid && b->part5 && addr < (uint64_t)b->addr + b->slot_size && b->addr < addr + size)
+            return 0;
+    }
+    return 1;
+}
+
+/* A partition-5 block of `size` bytes (type 0-4, `arg` the address or alignment): its UID, or
+ * the measured refusal. A Low block's best start is the region's base or the end of a live
+ * block, a High block's best end the region's top or the start of one, each moved to the
+ * alignment; the lowest (or highest) of those that is free wins. */
+static uint32_t volatile_part_alloc(uint32_t type, uint32_t size, uint32_t arg) {
+    if (size == 0u || size > UINT32_MAX - 0xffu) return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+    uint64_t slot_size = (size + 0xffu) & ~0xffu, align = 0x100u;
+    if (type == 3u || type == 4u) {
+        if (arg == 0u || (arg & (arg - 1u)) != 0u) return HLE_KERNEL_ERROR_ILLEGAL_ALIGNMENT_SIZE;
+        if (arg > align) align = arg;
+    }
+    int slot = -1;
+    for (int i = 0; i < s_nblocks; i++)
+        if (s_blocks[i].uid == 0u) { slot = i; break; }
+    if (slot < 0) {
+        if (s_nblocks >= HLE_MAX_PARTITION_BLOCKS) return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+        slot = s_nblocks;
+    }
+    int found = 0;
+    uint64_t addr = 0u;
+    if (type == 2u) {
+        addr = arg;
+        found = volatile_part_range_free(addr, slot_size);
+    } else {
+        int high = type == 1u || type == 4u;
+        for (int i = -1; i < s_nblocks; i++) {
+            const Block *b = i >= 0 ? &s_blocks[i] : NULL;
+            if (b && (!b->uid || !b->part5)) continue;
+            uint64_t candidate;
+            if (high) {
+                uint64_t end = b ? b->addr : VOLATILE_PART_END;
+                if (end < VOLATILE_PART_BASE + slot_size) continue;
+                candidate = (end - slot_size) & ~(align - 1u);
+            } else {
+                uint64_t start = b ? (uint64_t)b->addr + b->slot_size : VOLATILE_PART_BASE;
+                candidate = (start + align - 1u) & ~(align - 1u);
+            }
+            if (!volatile_part_range_free(candidate, slot_size)) continue;
+            if (!found || (high ? candidate > addr : candidate < addr)) addr = candidate;
+            found = 1;
+        }
+    }
+    if (!found) return HLE_KERNEL_ERROR_MEMBLOCK_ALLOC_FAILED;
+    if (slot == s_nblocks) s_nblocks++;
+    uint32_t uid = sr_alloc_uid();
+    s_blocks[slot] = (Block){ uid, (uint32_t)addr, size, (uint32_t)slot_size, 0xFFFFFFFFu, 0u, 0, 1 };
+    return uid;
+}
+
 /* sceKernelAllocPartitionMemory(partition, name, type, size, addr): the 5th
  * argument arrives in t0 (r8) under MIPS EABI (see stack_arg), not at sp+16.
  * Type dispatch today:
@@ -3131,11 +3314,22 @@ static int guest_cstr(uint32_t addr, char *out, int max);
  *                   the current OOM path already does).
  *   3 LowAligned / 4 HighAligned -> fall through to the Low path, ignoring the
  *                   alignment argument (pre-existing behaviour, unchanged).
- * The partition argument is ignored: the kernel hands the game one user
- * partition (pre-existing behaviour, unchanged). */
+ * Partitions (pspautotests tests/sysmem/partition.expected at f573fe8c, recorded on a PSP): 2,
+ * 5 and 6 allocate; 1, 3 and 4 answer ILLEGAL_PARTITION (0x800200D6) and every other number
+ * ILLEGAL_ARGUMENT (0x800200D2), and a type past 4 ILLEGAL_MEMBLOCKTYPE. Partition 5 is the
+ * volatile region (volatile_part_alloc), where a NULL name answers 0x80020001 as measured; 2 and 6
+ * are the one user partition this runtime models (where a PSP places a partition-6 block is
+ * UNMEASURED), which still takes a NULL name as no name although the PSP refuses it there too
+ * (partition.expected "NULL name"; existing callers rely on it, #341). */
 static uint32_t h_AllocPartitionMemory(CpuState *s) {
     /* a0=partition, a1=name, a2=type, a3=size, t0(r8)=addr. Returns a block UID. */
     char name[64];
+    uint32_t partition = A0;
+    if (partition == 1u || partition == 3u || partition == 4u) return HLE_KERNEL_ERROR_ILLEGAL_PARTITION;
+    if (partition != 2u && partition != VOLATILE_PART_ID && partition != 6u)
+        return HLE_KERNEL_ERROR_ILLEGAL_ARGUMENT;
+    if (A2 > 4u) return HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE;
+    if (!A1 && partition == VOLATILE_PART_ID) return HLE_KERNEL_ERROR_ERROR;
     if (A1) {
         if (!guest_cstr(A1, name, sizeof(name)))
             return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -3144,6 +3338,7 @@ static uint32_t h_AllocPartitionMemory(CpuState *s) {
     }
     uint32_t type = A2;
     uint32_t size = A3;
+    if (partition == VOLATILE_PART_ID) return volatile_part_alloc(type, size, stack_arg(s, 0));
     uint32_t uid = (type == 2u)
         ? sr_alloc_block_at(stack_arg(s, 0), size, name)
         : alloc_block(size ? size : 16);
@@ -3161,6 +3356,7 @@ static uint32_t free_block(uint32_t uid) {
             uint32_t addr = s_blocks[i].addr;
             uint32_t slot_sz = s_blocks[i].slot_size;
             int high = s_blocks[i].high;
+            int part5 = s_blocks[i].part5;
             s_blocks[i].uid = 0;                  /* slot now free */
             s_blocks[i].addr = 0;
             s_blocks[i].size = 0;
@@ -3168,7 +3364,10 @@ static uint32_t free_block(uint32_t uid) {
             s_blocks[i].prev = 0;
             s_blocks[i].next = 0;
             s_blocks[i].high = 0;
-            if (high) sched_partition_release_high(addr, slot_sz);
+            s_blocks[i].part5 = 0;
+            /* A partition-5 block is only its s_blocks entry (volatile_part_alloc). */
+            if (part5) { /* nothing else to return */ }
+            else if (high) sched_partition_release_high(addr, slot_sz);
             else partition_free_block(addr, slot_sz);
             if (getenv("SR_ALLOC_TRACE")) {
                 fprintf(stderr, "FreePartitionMemory: uid=0x%x addr=0x%08x marked free\n", uid, addr);
@@ -13775,12 +13974,36 @@ static void hle_register_utility_dialog_handlers(void) {
     sr_hle_register(0xefc6f80f, "sceUtilityGameSharingShutdownStart", h_SharingDialogShutdown);
 }
 
-/* sceWlanGetEtherAddr: 6-byte MAC out through a0. Fixed value so save/profile stamps stay
- * stable across runs. */
+/* The console profile's identity, generated and persisted on first use (see PspConsoleProfile).
+ * Returns 0 only when the host has no random source, which leaves the caller nothing to report. */
+static int console_profile_identity(void) {
+    sreg_ensure_loaded();
+    if (s_console.have_identity) return 1;
+    PspConsoleProfile next;
+    memset(&next, 0, sizeof(next));
+    if (!console_random_bytes(next.mac, sizeof(next.mac)) ||
+        !console_random_bytes(next.psid, sizeof(next.psid)))
+        return 0;
+    next.mac[0] = (uint8_t)(next.mac[0] & 0xfcu);   /* unicast, universally administered */
+    if (!console_identity_ok(next.mac, next.psid)) next.psid[15] = 1u;
+    next.have_identity = 1;
+    s_console = next;
+    s_sreg_dirty = 1;
+    fprintf(stderr, "system profile: generated this installation's WLAN MAC address and OpenPSID; "
+                    "kept in the registry overlay\n");
+    (void)sreg_persist("system profile");
+    return 1;
+}
+
+/* sceWlanGetEtherAddr(u8 *addr): the 6-byte MAC address of the console profile. The whole
+ * output span must be guest memory; NULL or an unwritable span answers ILLEGAL_ADDR and writes
+ * nothing (the PSP's answer is not measured: the console's own address is never read). */
 static uint32_t h_WlanGetEtherAddr(CpuState *s) {
-    static const uint8_t mac[6] = { 0x00, 0x13, 0x37, 0xAC, 0xC5, 0x10 };
-    if (!A0) return 0x80000103u;              /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
-    for (int i = 0; i < 6; i++) MEM_W8(A0 + (uint32_t)i, mac[i]);
+    if (!A0 || !sr_guest_span_writable(A0, 6u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!console_profile_identity())
+        return hle_unmodelled_stop("sceWlanGetEtherAddr", "has no address: the host's random "
+                                   "source is unavailable");
+    for (int i = 0; i < 6; i++) MEM_W8(A0 + (uint32_t)i, s_console.mac[i]);
     return 0;
 }
 /* PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384 models this as a
@@ -13792,16 +14015,14 @@ static uint32_t h_PowerCheckWlanCoexistenceClock(CpuState *s) {
 
 static uint32_t h_WlanOn(CpuState *s) { (void)s; return 1; }   /* powered on / switch up */
 
+/* sceOpenPSIDGetOpenPSID(SceOpenPSID *psid): the console profile's 16-byte OpenPSID. As with the
+ * MAC address, NULL or an unwritable span answers ILLEGAL_ADDR and writes nothing (UNMEASURED). */
 static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
-    /* sceOpenPSIDGetOpenPSID(SceOpenPSID *psid): writes 16-byte console unique ID.
-     * Zero-fill is fine for boot; the game only checks non-zero to confirm the call worked. */
-    uint32_t ptr = s->r[4];
-    if (ptr && ptr < 0x0c000000u) {
-        MEM_W32(ptr, 0x00000000u);
-        MEM_W32(ptr + 4, 0x00000000u);
-        MEM_W32(ptr + 8, 0x00000000u);
-        MEM_W32(ptr + 12, 0x00000000u);
-    }
+    if (!A0 || !sr_guest_span_writable(A0, 16u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!console_profile_identity())
+        return hle_unmodelled_stop("sceOpenPSIDGetOpenPSID", "has no OpenPSID: the host's random "
+                                   "source is unavailable");
+    for (int i = 0; i < 16; i++) MEM_W8(A0 + (uint32_t)i, s_console.psid[i]);
     return 0;
 }
 
@@ -13837,7 +14058,11 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
  *  - Output spans are validated before anything is written or queued (ILLEGAL_ADDR for an
  *    unwritable non-NULL span); NULL outputs are tolerated. CAN_NOT_WAIT and ILLEGAL_CONTEXT write
  *    no output. A blocked Lock latches no ReferThreadStatus wait type.
- *  - No guest-memory reservation is recorded for the region while the lock is held. */
+ *
+ * The region is partition 5 of the guest-memory model (volatile_part_alloc), with its own
+ * allocator. The lock does not reserve it against that allocator: pspautotests
+ * tests/sysmem/volatile.expected (f573fe8c, recorded on a PSP) allocates partition-5 blocks with
+ * the lock free and creates pools there while holding it, so neither waits on the other. */
 #define VOLATILE_MEM_BASE      0x08400000u
 #define VOLATILE_MEM_SIZE      0x00400000u
 #define VOLATILE_MEM_WAIT_OBJ  0x564d454du   /* "VMEM": the scheduler object a blocked Lock waits on */
@@ -21231,6 +21456,63 @@ static uint32_t s_ctrl_sample_count = 0u;
 static uint32_t s_latch_prev_btn = 0u;
 static uint32_t s_latch_seen_count = 0u;
 
+/* The input the next sample carries: buttons, stick and scripted-input id, latched once per
+ * VBLANK by sr_ctrl_sample() (the host's input is polled once per frame). */
+static CtrlSample s_ctrl_live = { 0, 0, 128, 128, 0 };
+/* The stick position samples report in digital mode (sampling mode 0): the last position read
+ * in analog mode, centred (0x80) until then. The console reads no analog data in digital mode
+ * and keeps the last values it had (uOFW src/kd/ctrl/ctrl.c: the digital-only syscon command
+ * returns no axes, so g_ctrl.analogX/Y, centred at init, are reused). Measured by
+ * PSP-KERNEL-SEM-001 ctrl-mode-digital, ctrl-mode-analog and ctrl-mode-digital-again. */
+static uint8_t s_ctrl_last_lx = 128u, s_ctrl_last_ly = 128u;
+/* Sampling cycle (#1390): with cycle 0 the controller is sampled once per VBLANK. With a cycle
+ * of 5555 to 20000 us it is sampled every `cycle` microseconds of guest time instead, and a
+ * VBLANK adds no sample: pspautotests tests/ctrl/sampling2 at f573fe8c (recorded on a PSP)
+ * counts 3 samples per VBLANK at 5555, 2 at 9999 and 1 at 16666 and at 20000. Those samples
+ * are latched lazily: whatever looks at the ring first latches every sample due by the current
+ * guest time, each stamped at its own cycle boundary and carrying s_ctrl_live. A blocked read
+ * sleeps until the next boundary. s_ctrl_cycle_next_us is that boundary, 0 with cycle 0. */
+static uint64_t s_ctrl_cycle_next_us;
+
+static void ctrl_push(const CtrlSample *smp, uint32_t ts) {
+    s_ctrl_ring[s_ctrl_w] = *smp;
+    s_ctrl_ring[s_ctrl_w].ts = ts;
+    s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
+    if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;  /* drop oldest on overflow */
+    s_ctrl_sample_count++;
+}
+
+/* Latch every cycle sample due by now, and wake the blocked readers when one was latched. */
+static void ctrl_cycle_catch_up(void) {
+    if (!s_ctrl_cycle_next_us || !s_ctrl_sampling_cycle) return;
+    uint64_t now = sched_vtime_us();
+    if (s_ctrl_cycle_next_us > now) return;
+    uint64_t due = (now - s_ctrl_cycle_next_us) / s_ctrl_sampling_cycle + 1u;
+    /* Only the newest CTRL_RING samples can still be in the ring: the older ones are counted
+     * (sceCtrlReadLatch reports every cycle since its last read) but never written. */
+    if (due > CTRL_RING) {
+        uint64_t skipped = due - CTRL_RING;
+        s_ctrl_sample_count += (uint32_t)skipped;
+        s_ctrl_cycle_next_us += skipped * s_ctrl_sampling_cycle;
+        due = CTRL_RING;
+    }
+    for (uint64_t i = 0; i < due; i++) {
+        ctrl_push(&s_ctrl_live, (uint32_t)s_ctrl_cycle_next_us);
+        s_ctrl_cycle_next_us += s_ctrl_sampling_cycle;
+    }
+    sched_wake(CTRL_WAIT_OBJ);
+}
+
+/* sceCtrlSetSamplingCycle's effect: the samples due under the old cycle are latched first, then
+ * the first sample of a non-zero cycle is one cycle from now. When on the PSP the first timer
+ * sample follows the call is UNMEASURED; the spacing after it is measured. */
+static void ctrl_cycle_set(uint32_t cycle) {
+    ctrl_cycle_catch_up();
+    s_ctrl_sampling_cycle = cycle;
+    s_ctrl_cycle_next_us = cycle ? sched_vtime_us() + cycle : 0u;
+}
+
+
 /* ---- state-qualified acceptance routes (issue #64) --------------------------------
  *
  * A pad script written as "press CROSS at vblank 8600" is a bet that the guest is on the
@@ -22539,6 +22821,7 @@ void sr_hle_test_ctrl_sampling_reset(void) {
     s_ctrl_sampling_cycle = 0u;
     s_ctrl_idle_reset = 0xFFFFFFFFu;
     s_ctrl_idle_back = 0xFFFFFFFFu;
+    s_ctrl_cycle_next_us = 0u;
 }
 /* Exercise the exact production gate with synthetic key masks (the harness stubs
  * gui_on()/gui_buttons() to neutral, so production keys are always 0 there). */
@@ -22652,8 +22935,13 @@ void sr_ctrl_sample(void) {
      * sample at the request boundary; the first post-resume sample owns that
      * guest-time input transition. */
     if (sched_pause_pending()) return;
-    uint8_t lx = 128, ly = 128;
-    if (gui_on()) gui_analog(&lx, &ly);
+    uint8_t lx = s_ctrl_last_lx, ly = s_ctrl_last_ly;
+    if (s_ctrl_sampling_mode == 1u) {
+        lx = ly = 128u;
+        if (gui_on()) gui_analog(&lx, &ly);
+        s_ctrl_last_lx = lx;
+        s_ctrl_last_ly = ly;
+    }
     uint32_t buttons = h_CtrlButtons();
     /* The on-screen keyboard is a system dialog: while it is open the title's pad reads
      * nothing, and the keyboard takes the pad instead. The scripted route reaches it as the
@@ -22682,15 +22970,14 @@ void sr_ctrl_sample(void) {
      * polls the pad on a PSP, so a scripted press it took counts as read and the route moves
      * on; without this the route would wait for a guest read that the keyboard now holds back. */
     if (keyboard_took_sample) (void)sr_input_read(&s_input, input_id);
-    s_ctrl_ring[s_ctrl_w].btn = buttons;
-    s_ctrl_ring[s_ctrl_w].input_id = input_id;
-    s_ctrl_ring[s_ctrl_w].ts = (uint32_t)sched_vtime_us();   /* low 32 bits of guest microsecond clock at latch */
-    s_ctrl_ring[s_ctrl_w].lx = lx;
-    s_ctrl_ring[s_ctrl_w].ly = ly;
+    /* With a sampling cycle the samples due before this VBLANK keep the previous input, and
+     * the VBLANK itself latches none. */
+    if (s_ctrl_sampling_cycle) ctrl_cycle_catch_up();
+    s_ctrl_live = (CtrlSample){ buttons, 0u, lx, ly, input_id };
     if (gui_on()) gui_consume_button_pulses();
-    s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
-    if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;  /* drop oldest on overflow */
-    s_ctrl_sample_count++;
+    if (s_ctrl_sampling_cycle) return;
+    /* Stamped with the low 32 bits of the guest microsecond clock at latch. */
+    ctrl_push(&s_ctrl_live, (uint32_t)sched_vtime_us());
     sched_wake(CTRL_WAIT_OBJ);
 }
 
@@ -22708,21 +22995,39 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
      * which #311 tracks for PSP-SYSTEM-001). PPSSPP and the uOFW reconstruction
      * return 0 here instead. Refusing writes nothing and consumes nothing. */
     if (nbufs == 0) return SCE_CTRL_ERROR_INVALID_SIZE;
-    int avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
-    /* Blocking ReadBuffer waits for at least one fresh sample (delivered each VBLANK). */
-    if (!peek) {
-        int guard = 0;
-        while (avail == 0 && sr_sched_on && guard++ < 4) {
-            sched_block_on(CTRL_WAIT_OBJ);
+    ctrl_cycle_catch_up();
+    int avail;
+    if (peek) {
+        /* A peek reports the newest `nbufs` samples, read before or not, and never blocks:
+         * pspautotests tests/ctrl/sampling and ctrl/vblank at f573fe8c (recorded on a PSP)
+         * answer 64 to a peek of 64, also right after a read and inside a VBLANK handler. */
+        avail = (int)nbufs;
+    } else {
+        /* A read returns the samples latched since the previous read, the newest `nbufs` of
+         * them, and consumes all of them (uOFW _sceCtrlReadBuf and PPSSPP __CtrlReadBuffer;
+         * PSP-KERNEL-SEM-001 ctrl-short-read). With none it waits for the next sample, and
+         * returns it: a read right after a read answers 1 (pspautotests ctrl/sampling and
+         * ctrl/vblank). A read that would wait answers ILLEGAL_CONTEXT in an interrupt handler
+         * and CAN_NOT_WAIT with interrupts or dispatch disabled (pspautotests
+         * tests/intr/waits.expected L222, L223 and L390). */
+        avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
+        if (avail == 0) {
+            if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;
+            if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+        }
+        while (avail == 0) {
+            if (s_ctrl_cycle_next_us) {
+                uint64_t now = sched_vtime_us();
+                uint64_t wait = s_ctrl_cycle_next_us > now ? s_ctrl_cycle_next_us - now : 1u;
+                (void)sched_block_on_timeout(CTRL_WAIT_OBJ, (uint32_t)wait);
+                ctrl_cycle_catch_up();
+            } else {
+                sched_block_on(CTRL_WAIT_OBJ);   /* sr_ctrl_sample() wakes it at the next VBLANK */
+            }
             avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
         }
+        if (avail > (int)nbufs) avail = (int)nbufs;
     }
-    /* Divergence kept deliberately visible rather than quietly changed: PPSSPP
-     * returns 0 here, this runtime hands back one stale sample. That sits on the
-     * per-frame hot path of every run, not on an error path, so retiring it needs
-     * its own evidence rather than riding along with the contract fixes above. */
-    if (avail < 1) avail = 1;                      /* always give at least the latest */
-    if (avail > (int)nbufs) avail = (int)nbufs;
     /* Whole-span preflight with checked arithmetic. The scalar accessors reject an
      * out-of-range store one word at a time, so without this a partially valid
      * destination gets part of the history written -- and a base near the top of
@@ -22794,6 +23099,7 @@ static uint32_t h_CtrlPeekBufferNegative(CpuState *s) {
  * no-input words are make/break/press 0 and release 0xFFFFFFFF. The clear-or-keep distinction is not
  * measured there (the release field stays saturated). */
 static uint32_t ctrl_latch_compute(uint32_t out, int consume) {
+    ctrl_cycle_catch_up();
     uint32_t produced = s_ctrl_sample_count - s_latch_seen_count;
     uint32_t retained = produced < (uint32_t)(CTRL_RING - 1) ? produced : (uint32_t)(CTRL_RING - 1);
     uint32_t prev = s_latch_prev_btn, cur = prev, make = 0u, brk = 0u;
@@ -22825,14 +23131,22 @@ static uint32_t h_CtrlPeekLatch(CpuState *s) { (void)s; return ctrl_latch_comput
 /* Test-build-only: push one sampling cycle with the given button field, as sr_ctrl_sample stores
  * it, without scripted input, the guest-time stamp or the wake. */
 void sr_hle_test_ctrl_push_sample(uint32_t buttons) {
-    s_ctrl_ring[s_ctrl_w].btn = buttons;
-    s_ctrl_ring[s_ctrl_w].input_id = 0u;
-    s_ctrl_ring[s_ctrl_w].ts = 0u;
-    s_ctrl_ring[s_ctrl_w].lx = 128u;
-    s_ctrl_ring[s_ctrl_w].ly = 128u;
-    s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
-    if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;
-    s_ctrl_sample_count++;
+    const CtrlSample smp = { buttons, 0u, 128u, 128u, 0u };
+    ctrl_push(&smp, 0u);
+}
+
+/* Test-build-only: the power-on ring (one neutral sample available, no history), so a test that
+ * needs an empty or a known ring does not depend on what ran before it in the process. */
+void sr_hle_test_ctrl_ring_reset(void) {
+    for (int i = 0; i < CTRL_RING; i++) s_ctrl_ring[i] = (CtrlSample){ 0, 0, 128, 128, 0 };
+    s_ctrl_w = 1;
+    s_ctrl_r = 0;
+    s_ctrl_sample_count = 0u;
+    s_latch_prev_btn = 0u;
+    s_latch_seen_count = 0u;
+    s_ctrl_live = (CtrlSample){ 0, 0, 128, 128, 0 };
+    s_ctrl_last_lx = s_ctrl_last_ly = 128u;
+    s_ctrl_cycle_next_us = s_ctrl_sampling_cycle ? sched_vtime_us() + s_ctrl_sampling_cycle : 0u;
 }
 
 /* Test-build-only: start the latch from the current sample count and an all-released state. */
@@ -29482,6 +29796,15 @@ static void hle_register_impose_handlers(void) {
  * mapping and the named media boundaries are reachable from a production-path test. */
 /* sceLibFont: one mapping for the production registry and the executable harness, so the
  * harness dispatches the production handlers (issue #1384). */
+/* The console profile's getters (#1382): one helper for the production registry and the
+ * selftest, so both dispatch the same mapping. */
+static void hle_register_console_profile_handlers(void) {
+    sr_hle_register(0x0c622081, "sceWlanGetEtherAddr", h_WlanGetEtherAddr);
+    sr_hle_register(0x93440b11, "sceWlanDevIsPowerOn", h_WlanOn);
+    sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
+    sr_hle_register(0xc69bebce, "sceOpenPSIDGetOpenPSID", h_OpenPSIDGetOpenPSID);
+}
+
 static void hle_register_font_handlers(void) {
     sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
     sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);
@@ -29926,6 +30249,7 @@ void sr_hle_init(void) {
     hle_register_utility_module_handlers();
     hle_register_kernel_module_handlers();
     hle_register_font_handlers();
+    hle_register_console_profile_handlers();
     hle_register_msgpipe_handlers();
     hle_register_mbx_handlers();
     /* PSP-B2-01 / PSP-B3-01 cancel/release family: one definition for both
@@ -30000,12 +30324,7 @@ void sr_hle_init(void) {
     hle_register_impose_handlers();
     hle_register_osk_handlers();
     hle_register_utility_dialog_handlers();
-    /* sceWlan: the game stamps saves/profiles with the console's MAC. A stable fake works
-     * (PPSSPP behaviour); low 2 bits of byte 0 must be clear (locally-administered/multicast
-     * OUI bits confuse some games -- PPSSPP masks them too). */
-    sr_hle_register(0x0c622081, "sceWlanGetEtherAddr", h_WlanGetEtherAddr);
-    sr_hle_register(0x93440b11, "sceWlanDevIsPowerOn", h_WlanOn);
-    sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
+    hle_register_console_profile_handlers();
     sr_hle_power_register_callback();
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
@@ -30102,8 +30421,6 @@ void sr_hle_init(void) {
 
     /* The sceReg family and sceUtilityGetSystemParamInt: see hle_register_sysreg_handlers(). */
     hle_register_sysreg_handlers();
-    /* sceOpenPSID: returns 16-byte console unique ID; zero-fill is fine for boot. */
-    sr_hle_register(0xc69bebce, "sceOpenPSIDGetOpenPSID", h_OpenPSIDGetOpenPSID);
 #endif
 
     hle_register_time_handlers();

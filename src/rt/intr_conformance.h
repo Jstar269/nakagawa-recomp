@@ -463,21 +463,16 @@ static const IcProbe kIcMatrix[] = {
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_WOULD_BLOCK},
 
 /* ---- group J: controller ------------------------------------------------ */
-/* Declared but NOT executed. ctrl_fill_n() reads hle.c's file-static sample ring
- * (s_ctrl_r / s_ctrl_w), which reset_fixture() cannot clear, so the result
- * depends on what ran earlier in the process: the first measurement returned 36
- * samples in normal context and blocked with interrupts disabled, from residue
- * rather than from context. Pinning a baseline on that would pin test order, not
- * behavior. Executing these needs a small test-only ring reset exported from
- * hle.c -- see the prerequisite list on issue #88. */
+/* The fixture resets hle.c's sample ring (sr_hle_test_ctrl_ring_reset) and, for the valid
+ * count, drains it as waits.cpp does, so the measured read would wait. In normal context it
+ * then blocks (no VBLANK is delivered here), which also gates the interrupt-context leg. */
 { "sceCtrlReadBufferPositive", 0x1f803938u, "Bad count", ICG_CTRL, 0,
-  {0, 220, 389, 221}, {ICU, IC_RET(0x80000104u), IC_RET(0x80000104u), IC_RET(0x80000104u)}, {IC_NOTRUN, IC_NOTRUN, IC_NOTRUN, IC_NOTRUN},
-  {IC_PREC_NA, IC_PREC_PARAM, IC_PREC_PARAM, IC_PREC_PARAM}, IC_HW_IMMEDIATE,
-  "fixture-state: hle.c controller ring is not resettable" },
+  {0, 220, 389, 221}, {ICU, IC_RET(0x80000104u), IC_RET(0x80000104u), IC_RET(0x80000104u)},
+  {IC_RET(0x80000104u), IC_RET(0x80000104u), IC_RET(0x80000104u), IC_RET(0x80000104u)},
+  {IC_PREC_NA, IC_PREC_PARAM, IC_PREC_PARAM, IC_PREC_PARAM}, IC_HW_IMMEDIATE },
 { "sceCtrlReadBufferPositive", 0x1f803938u, "Valid", ICG_CTRL, 1,
-  {0, 222, 390, 223}, {ICU, CNW, ILCTX, CNW}, {IC_NOTRUN, IC_NOTRUN, IC_NOTRUN, IC_NOTRUN},
-  {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_WOULD_BLOCK,
-  "fixture-state: hle.c controller ring is not resettable" },
+  {0, 222, 390, 223}, {ICU, CNW, ILCTX, CNW}, {ICB, CNW, IC_NOTRUN, CNW},
+  {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_WOULD_BLOCK },
 
 /* ---- group K: IoFileMgr, bad descriptor only ---------------------------- */
 /* Only the bad-fd column is exercised: the valid-fd cells need a real host file,
@@ -676,6 +671,14 @@ static int ic_arrange(const IcProbe *p, CpuState *cpu) {
         return 1;
 
     case ICG_CTRL:
+        /* A known ring, then for the valid count the drain waits.cpp does first, so the
+         * measured read finds no unread sample and would wait (#1390). */
+        sr_hle_test_ctrl_ring_reset();
+        if (p->variant == 1) {
+            setup.r[4] = IC_PADBUF;
+            setup.r[5] = 64u;
+            if (sr_syscall(&setup, 0x1f803938u) != 1u) return 0;
+        }
         cpu->r[4] = IC_PADBUF;
         cpu->r[5] = (p->variant == 0) ? 256u : 64u;      /* 256 is over the hw limit */
         return 1;

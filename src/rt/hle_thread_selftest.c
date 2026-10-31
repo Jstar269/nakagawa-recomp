@@ -276,6 +276,7 @@ extern uint32_t sr_hle_test_guest_fault_count(void);
 extern uint32_t sr_hle_test_guest_fault_addr(void);
 extern void sr_hle_test_guest_fault_reset(void);
 int sr_vblank_subintr(uint32_t no, uint32_t *handler, uint32_t *arg);
+extern void sr_hle_test_ctrl_ring_reset(void);
 
 /* The handler the scheduler would deliver for VBLANK sub-interrupt `no` (0 when none), and its
  * arg through *arg when one is delivered. */
@@ -3535,6 +3536,30 @@ static void test_fd_namespace(void) {
                    "an open without PSP_O_CREAT of a missing file fails and creates nothing");
             remove(flags_host);
         }
+        /* Under a missing directory every create, exclusive or not, is not-found and creates
+         * neither the file nor the directory: pspautotests tests/io/open/badparent at f573fe8c
+         * (recorded on a PSP) answers 0x80010002 for PSP_O_CREAT|PSP_O_WRONLY under
+         * ms0:/noexist, and PSP-KERNEL-SEM-001 io-missing-parent for PSP_O_CREAT|PSP_O_EXCL. */
+        {
+            static const char parent_guest[] = "ms0:/NAKAGAWA_NO_PARENT/item.txt";
+            static const uint32_t creates[] = {
+                0x0202u, 0x0203u, 0x0A02u, 0x0A03u, 0x0E02u, 0x0B02u  /* CREAT, +EXCL, +TRUNC, +APPEND */
+            };
+            char dir_host[256];
+            fd_host_path(dir_host, sizeof(dir_host), "ms0:/NAKAGAWA_NO_PARENT");
+            for (size_t i = 0; i < sizeof(creates) / sizeof(creates[0]); i++) {
+                fd_set_path(&cpu, path_addr, parent_guest);
+                cpu.r[5] = creates[i];
+                uint32_t rc = sr_hle_test_io_open(&cpu);
+                if (rc < 64u) {
+                    memset(&cpu, 0, sizeof(cpu));
+                    cpu.r[4] = rc;
+                    (void)sr_hle_test_io_close(&cpu);
+                }
+                expect(rc == 0x80010002u && nk_platform_path_missing(dir_host),
+                       "a create under a missing directory is not-found and creates nothing");
+            }
+        }
         fd_set_path(&cpu, path_addr, flags_guest);
         cpu.r[5] = 0x0A02u;
         uint32_t excl_fd = sr_hle_test_io_open(&cpu);
@@ -5345,6 +5370,98 @@ static char *sysreg_read_file(const char *path) {
  * defaults and the overlay file. */
 static void sysreg_restart(void) {
     sr_hle_test_sysreg_reset();
+}
+
+/* #1382: the console profile's WLAN MAC address and OpenPSID. A configured identity in the overlay
+ * is what both getters report; without one, an identity is generated once (a unicast, universally
+ * administered MAC and a non-zero OpenPSID), written to the overlay and reported the same after a restart;
+ * a malformed console object makes the overlay invalid; a NULL or unwritable output answers
+ * ILLEGAL_ADDR and writes nothing. No value comes from a console. */
+#define PROFILE_NID_ETHER_ADDR 0x0c622081u
+#define PROFILE_NID_OPEN_PSID  0xc69bebceu
+#define PROFILE_OUT            0x08a40000u
+#define PROFILE_ILLEGAL_ADDR   0x80000103u
+
+static uint32_t profile_call(uint32_t nid, uint32_t out) {
+    CpuState cpu = {0};
+    cpu.r[4] = out;
+    return sr_syscall(&cpu, nid);
+}
+
+static void profile_read(uint8_t mac[6], uint8_t psid[16]) {
+    for (uint32_t i = 0; i < 32u; i++) MEM_W8(PROFILE_OUT + i, 0xa5u);
+    expect(profile_call(PROFILE_NID_ETHER_ADDR, PROFILE_OUT) == 0u &&
+               profile_call(PROFILE_NID_OPEN_PSID, PROFILE_OUT + 16u) == 0u,
+           "both console-profile getters answer 0");
+    for (uint32_t i = 0; i < 6u; i++) mac[i] = MEM_R8(PROFILE_OUT + i);
+    for (uint32_t i = 0; i < 16u; i++) psid[i] = MEM_R8(PROFILE_OUT + 16u + i);
+}
+
+static void test_console_profile_identity(void) {
+    static const char configured[] =
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
+        "\"categories\": [], \"keys\": [], \"console\": {\"wlan_mac_hex\": \"00a1b2c3d4e5\", "
+        "\"open_psid_hex\": \"00112233445566778899aabbccddeeff\"}}";
+    static const uint8_t want_mac[6] = { 0x00, 0xa1, 0xb2, 0xc3, 0xd4, 0xe5 };
+    static const uint8_t want_psid[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+                                           0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff };
+    uint8_t mac[6], psid[16], mac2[6], psid2[16];
+    reset_fixture();
+    sr_hle_init();
+    sysreg_scratch_clean();
+    sysreg_env(SYSREG_SCRATCH_FILE);
+
+    expect(sysreg_write_file(SYSREG_SCRATCH_FILE, configured, sizeof(configured) - 1u),
+           "the configured-identity overlay is written");
+    sysreg_restart();
+    profile_read(mac, psid);
+    expect(memcmp(mac, want_mac, 6) == 0 && memcmp(psid, want_psid, 16) == 0,
+           "a configured identity in the overlay is the MAC address and OpenPSID reported");
+
+    /* No identity yet: one is generated, persisted and stable. */
+    sysreg_scratch_clean();
+    sysreg_restart();
+    profile_read(mac, psid);
+    int psid_set = 0;
+    for (int i = 0; i < 16; i++) psid_set |= psid[i] != 0u;
+    expect((mac[0] & 0x03u) == 0u && psid_set,
+           "a generated MAC is unicast and universally administered, a generated OpenPSID non-zero");
+    char *text = sysreg_read_file(SYSREG_SCRATCH_FILE);
+    expect(text && strstr(text, "\"console\": {\"wlan_mac_hex\": \""),
+           "the generated identity is written to the overlay's console object");
+    free(text);
+    sysreg_restart();
+    profile_read(mac2, psid2);
+    expect(memcmp(mac, mac2, 6) == 0 && memcmp(psid, psid2, 16) == 0,
+           "the generated identity is the same after a restart");
+
+    /* A malformed console object makes the overlay invalid: it is not served. */
+    static const char multicast[] =
+        "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
+        "\"categories\": [], \"keys\": [], \"console\": {\"wlan_mac_hex\": \"01a1b2c3d4e5\", "
+        "\"open_psid_hex\": \"00112233445566778899aabbccddeeff\"}}";
+    sysreg_scratch_clean();
+    expect(sysreg_write_file(SYSREG_SCRATCH_FILE, multicast, sizeof(multicast) - 1u),
+           "the multicast-MAC overlay is written");
+    sysreg_restart();
+    profile_read(mac, psid);
+    expect(mac[0] != 0x01u && (mac[0] & 0x03u) == 0u,
+           "an overlay with a multicast MAC is refused, and a valid identity is generated instead");
+
+    /* Invalid outputs are refused before anything is written. */
+    MEM_W32(PROFILE_OUT, 0xa5a5a5a5u);
+    expect(profile_call(PROFILE_NID_ETHER_ADDR, 0u) == PROFILE_ILLEGAL_ADDR &&
+               profile_call(PROFILE_NID_OPEN_PSID, 0u) == PROFILE_ILLEGAL_ADDR,
+           "NULL outputs answer ILLEGAL_ADDR");
+    uint32_t tail = 0x0c000000u - 4u;
+    MEM_W32(tail, 0x5a5a5a5au);
+    expect(profile_call(PROFILE_NID_ETHER_ADDR, tail) == PROFILE_ILLEGAL_ADDR &&
+               profile_call(PROFILE_NID_OPEN_PSID, tail) == PROFILE_ILLEGAL_ADDR &&
+               MEM_R32(tail) == 0x5a5a5a5au,
+           "outputs that end past guest memory answer ILLEGAL_ADDR and write nothing");
+
+    sysreg_scratch_clean();   /* the process-wide scratch overlay main() set stays selected */
+    sysreg_restart();
 }
 
 /* Read model against the tree measured on PSP-3000 6.6.1 (2026-10-09, read-only enumeration):
@@ -31608,7 +31725,8 @@ static void check_coroutine_lifecycle(void) {
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks;
+        extern int s_ctrlc_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -31625,9 +31743,9 @@ static void check_coroutine_lifecycle(void) {
                  "+ 3 flight thread-snapshot waiters "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs + %d volatile-memory Lock waiters "
-                 "= %d, observed %lu)",
+                 "+ %d controller read waiters = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
-                 s_msgpipe_parks, s_vm_parks, expected_parks, s_parks);
+                 s_msgpipe_parks, s_vm_parks, s_ctrlc_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -35465,6 +35583,234 @@ static void test_volatile_mem_lock_blocks_and_hands_off(void) {
     liveness_finish_waiter(w[0]);
     liveness_finish_waiter(w[1]);
     sr_hle_test_volatile_mem_reset();
+}
+
+/* #1383: partition 5, the volatile region, through production dispatch, against pspautotests
+ * tests/sysmem/volatile.expected and partition.expected at f573fe8c (recorded on a PSP): the
+ * partition numbers' answers, the NULL name, and partition 5's own placement, alignment, size
+ * and type answers, all inside [0x08400000, 0x08800000). */
+#define P5_NID_ALLOC 0x237dbd4fu
+#define P5_NID_FREE  0xb6d61d02u
+#define P5_NID_HEAD  0x9d9a5ba1u
+#define P5_NAME      0x08a41000u
+
+static uint32_t p5_alloc_named(uint32_t partition, uint32_t name, uint32_t type, uint32_t size,
+                               uint32_t arg) {
+    CpuState cpu = {0};
+    cpu.r[4] = partition;
+    cpu.r[5] = name;
+    cpu.r[6] = type;
+    cpu.r[7] = size;
+    cpu.r[8] = arg;   /* the 5th argument (MIPS EABI t0) */
+    return sr_syscall(&cpu, P5_NID_ALLOC);
+}
+
+static uint32_t p5_call1(uint32_t nid, uint32_t a0) {
+    CpuState cpu = {0};
+    cpu.r[4] = a0;
+    return sr_syscall(&cpu, nid);
+}
+
+/* The head address of a new partition-5 block, freed again; or the refusal code. */
+static uint32_t p5_try(uint32_t type, uint32_t size, uint32_t arg) {
+    uint32_t uid = p5_alloc_named(5u, P5_NAME, type, size, arg);
+    if ((int32_t)uid < 0) return uid;
+    uint32_t head = p5_call1(P5_NID_HEAD, uid);
+    expect(p5_call1(P5_NID_FREE, uid) == 0u, "a partition-5 block frees");
+    return head;
+}
+
+static void test_volatile_partition_allocator(void) {
+    extern void sr_hle_test_partition_reset(void);
+    char msg[128];
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_partition_reset();
+    const char name[] = "test";
+    for (uint32_t i = 0; i < sizeof(name); i++) MEM_W8(P5_NAME + i, (uint8_t)name[i]);
+
+    static const struct { int32_t partition; uint32_t want; } parts[] = {
+        { -5, 0x800200d2u }, { -1, 0x800200d2u }, { 0, 0x800200d2u }, { 1, 0x800200d6u },
+        { 2, 0u }, { 3, 0x800200d6u }, { 4, 0x800200d6u }, { 5, 0u }, { 6, 0u },
+        { 7, 0x800200d2u }, { 8, 0x800200d2u }, { 9, 0x800200d2u }, { 10, 0x800200d2u },
+    };
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        uint32_t uid = p5_alloc_named((uint32_t)parts[i].partition, P5_NAME, 0u, 0x1000u, 0u);
+        int ok = parts[i].want ? uid == parts[i].want : (int32_t)uid > 0;
+        if (!parts[i].want && (int32_t)uid > 0) (void)p5_call1(P5_NID_FREE, uid);
+        snprintf(msg, sizeof(msg), "partition %d answers its measured code (got 0x%08x)",
+                 (int)parts[i].partition, uid);
+        expect(ok, msg);
+    }
+    expect(p5_alloc_named(5u, 0u, 1u, 0x100u, 0u) == 0x80020001u,
+           "a NULL name answers 0x80020001 in partition 5");
+
+    static const struct { uint32_t type, arg, want; } types[] = {
+        { 0xffffffffu, 0u, 0x800200d8u }, { 0u, 0u, 0x08400000u }, { 1u, 0u, 0x087fff00u },
+        { 2u, 0u, 0x800200d9u }, { 3u, 0u, 0x800200e4u }, { 4u, 0u, 0x800200e4u },
+        { 5u, 0u, 0x800200d8u }, { 0x11u, 0u, 0x800200d8u }, { 0x10000001u, 0u, 0x800200d8u },
+        { 2u, 0x08500000u, 0x08500000u }, { 2u, 0x08900000u, 0x800200d9u },
+        { 3u, 128u, 0x08400000u },
+    };
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        uint32_t got = p5_try(types[i].type, 0x100u, types[i].arg);
+        snprintf(msg, sizeof(msg), "partition 5 type 0x%x arg 0x%x: 0x%08x (want 0x%08x)",
+                 types[i].type, types[i].arg, got, types[i].want);
+        expect(got == types[i].want, msg);
+    }
+    expect(p5_alloc_named(5u, 0u, 0x30u, 0u, 0x08500000u) == 0x800200d8u,
+           "a bad type wins over a NULL name and a zero size");
+
+    static const struct { uint32_t align, want; } aligns[] = {
+        { 0xffffffffu, 0x800200e4u }, { 1u, 0x087fff00u }, { 2u, 0x087fff00u },
+        { 3u, 0x800200e4u }, { 4u, 0x087fff00u }, { 6u, 0x800200e4u }, { 8u, 0x087fff00u },
+        { 16u, 0x087fff00u }, { 512u, 0x087ffe00u }, { 1024u, 0x087ffc00u },
+        { 2048u, 0x087ff800u },
+    };
+    for (size_t i = 0; i < sizeof(aligns) / sizeof(aligns[0]); i++) {
+        uint32_t got = p5_try(4u, 0x100u, aligns[i].align);
+        snprintf(msg, sizeof(msg), "partition 5 High align 0x%x: 0x%08x (want 0x%08x)",
+                 aligns[i].align, got, aligns[i].want);
+        expect(got == aligns[i].want, msg);
+    }
+
+    static const struct { uint32_t size, delta, addr; } sizes[] = {
+        { 0xffffffffu, 0u, 0x800200d9u }, { 0u, 0u, 0x800200d9u }, { 1u, 0x100u, 0x087ffe00u },
+        { 0x11u, 0x100u, 0x087ffe00u }, { 0x101u, 0x200u, 0x087ffd00u },
+        { 0x1001u, 0x1100u, 0x087fee00u }, { 0x10001u, 0x10100u, 0x087efe00u },
+        { 0x3fff00u, 0x3fff00u, 0x08400000u }, { 0x400000u, 0u, 0x800200d9u },
+    };
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        uint32_t uid1 = p5_alloc_named(5u, P5_NAME, 1u, 0x100u, 0u);
+        uint32_t uid2 = p5_alloc_named(5u, P5_NAME, 1u, sizes[i].size, 0u);
+        int ok;
+        if ((int32_t)uid2 >= 0) {
+            uint32_t ptr1 = p5_call1(P5_NID_HEAD, uid1), ptr2 = p5_call1(P5_NID_HEAD, uid2);
+            ok = ptr1 - ptr2 == sizes[i].delta && ptr2 == sizes[i].addr;
+            (void)p5_call1(P5_NID_FREE, uid2);
+        } else {
+            ok = uid2 == sizes[i].addr;
+        }
+        if ((int32_t)uid1 > 0) (void)p5_call1(P5_NID_FREE, uid1);
+        snprintf(msg, sizeof(msg), "partition 5 High size 0x%x below a 0x100 block answers as measured",
+                 sizes[i].size);
+        expect(ok, msg);
+    }
+
+    /* The volatile lock does not gate partition-5 allocations. */
+    expect(vm_call(NID_VM_TRYLOCK, 0u, 0u) == 0u, "the volatile lock is taken");
+    expect(p5_try(0u, 0x100u, 0u) == 0x08400000u, "partition 5 still allocates while it is held");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u, "the volatile lock is released");
+    sr_hle_test_volatile_mem_reset();
+}
+
+/* #1390: the controller read contract, through production dispatch. A read with no unread
+ * sample waits for the next one and returns it (pspautotests tests/ctrl/sampling and ctrl/vblank
+ * at f573fe8c, recorded on a PSP: a read right after a read answers 1) instead of handing back a
+ * stale one; where it cannot wait (host context is the scheduler's interrupt context) it answers
+ * ILLEGAL_CONTEXT. A peek reports the newest `count` samples (a peek of 64 answers 64). A read
+ * returns the newest unread samples and consumes all of them. With a sampling cycle the samples
+ * come every `cycle` microseconds of guest time, stamped at their boundaries, and a VBLANK adds
+ * none (ctrl/sampling2: 3 per VBLANK at 5555); sceCtrlReadLatch counts them. */
+#define CTRLC_NID_READ_LATCH 0x0b588501u
+#define CTRLC_ILLEGAL_CONTEXT 0x80020064u
+static uint32_t s_ctrlc_ret;
+static int s_ctrlc_returned;
+int s_ctrlc_parks = 0;   /* controller read waiters that returned and parked; check_coroutine_lifecycle */
+
+static uint32_t ctrlc_call(uint32_t nid, uint32_t a0, uint32_t a1) {
+    CpuState cpu = {0};
+    cpu.r[4] = a0;
+    cpu.r[5] = a1;
+    return sr_syscall(&cpu, nid);
+}
+
+static void ctrlc_read_waiter(void *arg) {
+    (void)arg;
+    s_ctrlc_ret = ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u);
+    s_ctrlc_returned = 1;
+    s_ctrlc_parks++;
+    selftest_park_on_scheduler();
+}
+
+static void test_ctrl_sampling_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_sampling_reset();
+    sr_hle_test_ctrl_ring_reset();
+
+    /* The power-on ring holds one sample; the next read has none to give. */
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 1u,
+           "the first read returns the power-on sample");
+    MEM_W32(CTRL_OK_BUF, 0xa5a5a5a5u);
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 1u) == CTRLC_ILLEGAL_CONTEXT &&
+               MEM_R32(CTRL_OK_BUF) == 0xa5a5a5a5u,
+           "a read with no unread sample that cannot wait answers ILLEGAL_CONTEXT, not a stale sample");
+
+    /* On a guest thread it waits for the next sample and returns exactly that one. */
+    s_ctrlc_returned = 0;
+    s_ctrlc_ret = 0xffffffffu;
+    TCB *reader = liveness_start_waiter(ctrlc_read_waiter, 0x2c10u, 30);
+    expect(reader && reader->state == TH_WAIT_OBJ && reader->wait_obj == CTRL_WAIT_OBJ &&
+               !s_ctrlc_returned,
+           "a read with no unread sample blocks on the controller object");
+    sr_hle_test_ctrl_push_sample(0x00004000u);
+    sched_wake(CTRL_WAIT_OBJ);
+    vm_run(reader);
+    expect(s_ctrlc_returned && s_ctrlc_ret == 1u && MEM_R32(CTRL_OK_BUF + 4u) == 0x00004000u,
+           "the blocked read returns the one new sample once it is latched");
+    liveness_finish_waiter(reader);
+    s_cur = -1;
+
+    /* A peek reports `count` samples whether or not they were read before. */
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 5u) == 5u,
+           "a peek of 5 right after a read answers 5");
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 64u &&
+               MEM_R32(CTRL_OK_BUF + 63u * 16u + 4u) == 0x00004000u,
+           "a peek of 64 answers 64, the newest sample last");
+
+    /* A short read returns the newest unread samples and consumes all of them. */
+    sr_hle_test_ctrl_push_sample(0x1u);
+    sr_hle_test_ctrl_push_sample(0x2u);
+    sr_hle_test_ctrl_push_sample(0x4u);
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 2u) == 2u &&
+               MEM_R32(CTRL_OK_BUF + 4u) == 0x2u && MEM_R32(CTRL_OK_BUF + 16u + 4u) == 0x4u,
+           "a read of 2 with 3 unread returns the newest two, oldest first");
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == CTRLC_ILLEGAL_CONTEXT,
+           "that read consumed the third sample too");
+
+    /* Cycle 5555: a sample every 5555 us of guest time, none at VBLANK. */
+    sr_hle_test_ctrl_latch_reset();
+    expect(ctrlc_call(NID_SCE_CTRL_SET_SAMPLING_CYCLE, 5555u, 0u) == 0u, "cycle 5555 is set");
+    uint64_t t0 = s_vtime_us;
+    s_vtime_us = t0 + 50000u;
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 9u,
+           "50 ms at cycle 5555 latches nine samples");
+    int spaced = 1;
+    for (uint32_t i = 0; i < 9u; i++)
+        if (MEM_R32(CTRL_OK_BUF + i * 16u) != (uint32_t)(t0 + 5555u * (i + 1u))) spaced = 0;
+    expect(spaced, "each cycle sample is stamped at its own 5555 us boundary");
+    uint32_t latch_out = 0x00241d00u;
+    expect(ctrlc_call(CTRLC_NID_READ_LATCH, latch_out, 0u) == 9u,
+           "sceCtrlReadLatch counts the nine cycle samples");
+    sr_ctrl_sample();
+    expect(ctrlc_call(NID_SCE_CTRL_PEEK_BUFFER_POSITIVE, CTRL_OK_BUF, 1u) == 1u &&
+               MEM_R32(CTRL_OK_BUF) == (uint32_t)(t0 + 5555u * 9u),
+           "a VBLANK latches no sample of its own at a non-zero cycle");
+    s_vtime_us = t0 + 50000u + 100u * 5555u;
+    expect(ctrlc_call(CTRLC_NID_READ_LATCH, latch_out, 0u) == 100u,
+           "a long gap still counts every cycle, past the ring's size");
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 63u,
+           "and the ring keeps the newest 63 of them unread");
+
+    /* Back to cycle 0: one sample per VBLANK again. */
+    expect(ctrlc_call(NID_SCE_CTRL_SET_SAMPLING_CYCLE, 0u, 0u) == 5555u, "cycle 0 is set");
+    sr_ctrl_sample();
+    expect(ctrlc_call(NID_SCE_CTRL_READ_BUFFER_POSITIVE, CTRL_OK_BUF, 64u) == 1u &&
+               MEM_R32(CTRL_OK_BUF) == (uint32_t)s_vtime_us,
+           "at cycle 0 a VBLANK latches one sample, stamped at the VBLANK");
+    sr_hle_test_ctrl_sampling_reset();
+    sr_hle_test_ctrl_ring_reset();
 }
 
 /* Departures: a deleted waiter and a released waiter leave the queue and are never handed the
@@ -40417,6 +40763,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();
     test_sysreg_virtual_registry();
+    test_console_profile_identity();
     test_sysreg_write_model();
     test_sysparam_nickname_string();
     test_ge_edram_addr_translation();
@@ -40675,6 +41022,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_volatile_mem_unlock_states();
     test_volatile_mem_lock_blocks_and_hands_off();
     test_volatile_mem_lock_departures_and_type();
+    test_ctrl_sampling_contract();
+    test_volatile_partition_allocator();
     test_late_prx_unload_keeps_module_owned_objects();
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();

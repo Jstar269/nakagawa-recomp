@@ -1832,7 +1832,7 @@ KERNEL_SEM_ROWS = {
     "subintr-register": 8, "subintr-order": 24, "subintr-times": 24, "subintr-release": 8,
     "ctrl-empty-read": 6, "ctrl-short-read-peek": 8, "ctrl-short-read": 3,
     "ctrl-short-read-next": 3, "ctrl-peek-count": 3, "ctrl-mode-digital": 9,
-    "ctrl-mode-analog": 9, "ctrl-cycle-5555": 13, "ctrl-cycle-wait": 3,
+    "ctrl-mode-analog": 9, "ctrl-mode-digital-again": 9, "ctrl-cycle-5555": 13, "ctrl-cycle-wait": 3,
     "vmem-trylock-type-1": 4, "vmem-trylock-type-2": 4, "vmem-trylock-type-m1": 4,
     "vmem-lock-type-1": 4, "vmem-alloc-free": 6, "vmem-alloc-held": 6, "vmem-unlock": 1,
     "io-missing-parent": 4, "io-mkdir": 1, "io-excl-new": 3, "io-excl-existing": 5,
