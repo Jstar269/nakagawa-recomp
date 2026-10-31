@@ -350,17 +350,24 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 #if defined(SR_SDL3VK) || defined(_WIN32)
 static void gui_release_presenter(void);
-static void gui_exit_cleanup(void) {
+#endif
+
+/* Releases what gui_init set up: called by the driver once the scheduler has returned, and at
+ * process exit for a run that ends any other way (sceKernelExitGame's exit()). The SR_PERF
+ * summary is written first, while the GPU GE it samples still exists; each step clears what it
+ * released, so a second call does nothing (#1072, #1377). */
+void gui_shutdown(void) {
+#if defined(SR_SDL3VK) || defined(_WIN32)
     sr_perf_shutdown();
     gui_release_presenter();
-}
 #endif
+}
 
 void gui_init(const char *title) {
     (void)title;
 #if defined(SR_SDL3VK) || defined(_WIN32)
     static int cleanup_registered;
-    if (!cleanup_registered && atexit(gui_exit_cleanup) == 0) cleanup_registered = 1;
+    if (!cleanup_registered && atexit(gui_shutdown) == 0) cleanup_registered = 1;
 #endif
     gui_headless_acceptance_parse();
     if (s_headless_accept_requested && s_headless_accept_invalid) {
@@ -416,8 +423,16 @@ void gui_init(const char *title) {
                 sdl3vk_set_audio_active_cb(sr_audio_is_active);
 #endif
                 sdl3vk_set_logic_slowed_cb(sr_enhancement_logic_slowed);
-                s_sdl3 = 1;
                 s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
+                if (!s_px) {
+                    /* No frame copy, so nothing can be presented: the presenter just created
+                     * is released again rather than left half set up (#1377). */
+                    fprintf(stderr, "gui_init: frame copy allocation failed\n");
+                    sdl3vk_shutdown();
+                    sr_gui_boot_event("BOOT_EVENT phase=window_unavailable backend=vulkan");
+                    return;
+                }
+                s_sdl3 = 1;
                 s_last_ns = SDL_GetTicksNS();
                 s_on = 1;
                 if (s_headless_accept_requested) s_headless_accept_ready = 1;
@@ -488,6 +503,13 @@ void gui_init(const char *title) {
         WS_OVERLAPPEDWINDOW | WS_VISIBLE, win_x, win_y,
         r.right - r.left, r.bottom - r.top, 0, 0, GetModuleHandleA(0), 0);
     s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
+    if (!s_px) {
+        fprintf(stderr, "gui_init: frame copy allocation failed\n");
+        if (s_hwnd) DestroyWindow(s_hwnd);
+        s_hwnd = NULL;
+        sr_gui_boot_event("BOOT_EVENT phase=window_unavailable backend=gdi");
+        return;
+    }
     s_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     s_bmi.bmiHeader.biWidth = PSP_W;
     s_bmi.bmiHeader.biHeight = -PSP_H;          /* top-down */
@@ -620,27 +642,58 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
     }
 }
 
-#if defined(SR_SDL3VK) || defined(_WIN32)
-static void gui_window_closed_exit(void);   /* after the pause presenter, whose canvas it frees */
+/* ---- quit (#1377, #1392) ---------------------------------------------------------------
+ * Every way the person asks to quit goes through gui_quit_request: the window's close (SDL3,
+ * or a Win32 WM_QUIT), a presenter that reports the window closed, and the pause overlay's
+ * Quit or a close while paused. Nothing here exits the process. The first request notifies the
+ * guest's registered exit callback (hle.c); once sr_exit_request_stop_due says the run should
+ * end, gui_stop_requested reports it to the scheduler (the driver polls it through
+ * sr_sched_stop_requested), which stops at its next boundary. sched_run then returns to the
+ * driver, which writes the SR_PERF summary, releases the presenter (gui_shutdown) and returns
+ * from main, so every stdio stream is flushed and every atexit handler runs. The guest threads
+ * are coroutines left suspended at a scheduler boundary; no atexit handler resumes one. */
+static int s_quit_requested;
+static int s_quit_stop_reported;
+
+#if defined(SR_SDL3VK) || defined(_WIN32)   /* the presenters that have a window to close */
+static void gui_quit_request(void) {
+    if (!s_quit_requested) {
+        s_quit_requested = 1;
+        sr_gui_boot_event("BOOT_EVENT phase=quit_requested");
+    }
+    (void)sr_exit_request_stop_due();
+}
 #endif
+
+int gui_quit_requested(void) {
+    return s_quit_requested;
+}
+
+int gui_stop_requested(void) {
+    if (gui_headless_acceptance_complete()) return 1;
+    if (!s_quit_requested || !sr_exit_request_stop_due()) return 0;
+    if (!s_quit_stop_reported) {
+        s_quit_stop_reported = 1;
+        fprintf(stderr, "SR_QUIT: the run stops at the scheduler's next boundary\n");
+        fflush(stderr);
+    }
+    return 1;
+}
 
 void gui_pump(void) {
     if (!s_on) return;
     if (s_offscreen) return;
 #ifdef SR_SDL3VK
     if (s_sdl3) {
-        /* A window close first notifies the guest's exit callback; the run goes on while the
-         * guest has its bounded window to call sceKernelExitGame (hle.c, #1392). */
-        int alive = sdl3vk_poll() ? !sr_exit_request_expired() : sr_exit_request_quit();
+        if (!sdl3vk_poll()) gui_quit_request();
         sync_sdl_input();
-        if (!alive) { gui_window_closed_exit(); }
         return;
     }
 #endif
 #ifdef _WIN32
     MSG msg;
     while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
-        if (msg.message == WM_QUIT) { gui_window_closed_exit(); }
+        if (msg.message == WM_QUIT) { gui_quit_request(); continue; }
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
@@ -680,6 +733,12 @@ static int display_cpu_source_current(uint32_t fbaddr, int fmt, uint32_t stride)
 int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!s_on) return 0;
     if (stride == 0) stride = 512;
+    if (s_quit_requested) {
+        /* After a quit no frame is presented: the window keeps the last one while the guest
+         * runs its exit callback, until the scheduler stops. The window is still pumped. */
+        gui_pump();
+        return 0;
+    }
 
     if (!present_slot_due()) {
         /* No presenter runs, so an armed capture stays unserviced; the caller resolves it
@@ -723,7 +782,10 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         int osk_open = sr_osk_overlay_active();
         int res = osk_open ? GEGPU_PRESENT_NOT_RESIDENT : gegpu_present(fbaddr, fmt, stride);
         sync_sdl_input();
-        if (res == GEGPU_PRESENT_WINDOW_CLOSED) { gui_window_closed_exit(); }
+        if (res == GEGPU_PRESENT_WINDOW_CLOSED) {
+            gui_quit_request();
+            goto pace;
+        }
         if (res == GEGPU_PRESENT_SHOWN) {
             /* The GPU fast path never reaches convert_fb, which is the only emitter of
              * the first_frame boot milestone. Without this, boot_gate.py can never pass
@@ -788,7 +850,7 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (sr_osk_overlay_active()) osk_overlay_paint(sr_osk_overlay_view(), s_px, PSP_W, PSP_H);
         int present_result = sdl3vk_present_rgba(s_px);
         sync_sdl_input();
-        if (present_result == 0) { gui_window_closed_exit(); }
+        if (present_result == 0) gui_quit_request();
         accepted = present_result == 1;
         goto pace;
     }
@@ -1094,11 +1156,13 @@ static void gui_pause_act(NkOverlayAction action) {
         s_pause_resume = 1;
         break;
     case NK_OVERLAY_ACT_QUIT:
-        /* Confirmed, and refused by the page while a save is in progress: the run ends the
-         * way a window close ends it, and the player is back in the library. */
+        /* Confirmed, and refused by the page while a save is in progress: the same quit
+         * request a window close makes. The game resumes when it has an exit callback to
+         * run; otherwise the pause loop's stop check ends the run (gui_pause_quit). */
         fprintf(stderr, "SR_PAUSE: quit to library\n");
         fflush(stderr);
-        gui_window_closed_exit();
+        gui_quit_request();
+        if (!gui_stop_requested()) s_pause_resume = 1;
         break;
     case NK_OVERLAY_ACT_SET_SCALING:
         if (sdl3vk_set_present_scaling(gui_pause_scaling_from_overlay(action.value)))
@@ -1270,6 +1334,17 @@ void gui_pause_enter(void) {
 #endif
 }
 
+#ifdef SR_SDL3VK
+/* A window close while paused, or a presenter that reports the window gone: a quit request.
+ * The game resumes when it has an exit callback to run (or a save to finish); otherwise the
+ * pause continues for one more pass, where sched.c's pause loop sees the stop and ends the
+ * run without resuming the guest. */
+static SrPauseFrame gui_pause_quit(void) {
+    gui_quit_request();
+    return gui_stop_requested() ? SR_PAUSE_FRAME_CONTINUE : SR_PAUSE_FRAME_RESUME;
+}
+#endif
+
 SrPauseFrame gui_pause_frame(void) {
 #ifdef SR_SDL3VK
     if (!s_sdl3 || !s_pause_open) return SR_PAUSE_FRAME_RESUME;
@@ -1278,7 +1353,7 @@ SrPauseFrame gui_pause_frame(void) {
     if (!sdl3vk_window_minimized())
         wait_ms = s_pause_next_ns > now ? (uint32_t)((s_pause_next_ns - now + 999999u) / 1000000u) : 0u;
     if (wait_ms) sdl3vk_wait_events(wait_ms);
-    if (!sdl3vk_poll()) { gui_window_closed_exit(); }
+    if (!sdl3vk_poll()) return gui_pause_quit();
     if (s_pause_resume) return SR_PAUSE_FRAME_RESUME;
     now = SDL_GetTicksNS();
     if (sdl3vk_window_minimized() || now < s_pause_next_ns) return SR_PAUSE_FRAME_CONTINUE;
@@ -1307,7 +1382,7 @@ SrPauseFrame gui_pause_frame(void) {
         pitch = s_pause_surface->pitch;
     }
     int presented = sdl3vk_present_overlay(px, pitch);
-    if (presented == 0) { gui_window_closed_exit(); }
+    if (presented == 0) return gui_pause_quit();
     if (presented == 2) {
         s_pause_dirty = 1;
         s_pause_base_dirty = 1;
@@ -1328,8 +1403,8 @@ void gui_pause_leave(void) {
 #ifdef SR_SDL3VK
     if (!s_sdl3 || !s_pause_open) return;
     /* Events queued since the last frame are still the overlay's; the held state they leave
-     * is what the release mask hides. A window close among them still ends the run. */
-    if (!sdl3vk_poll()) { gui_window_closed_exit(); }
+     * is what the release mask hides. A window close among them is still a quit request. */
+    if (!sdl3vk_poll()) gui_quit_request();
     sdl3vk_set_input_claim(NULL, NULL);
     sdl3vk_overlay_release();
     nk_overlay_host_close(s_pause_host);
@@ -1366,22 +1441,6 @@ static void gui_release_presenter(void) {
     free(s_px);
     s_px = NULL;
     s_on = 0;
-}
-
-/* The user closed the window. The run ends through exit(), not _Exit: exit() flushes and closes
- * every stdio stream and runs the atexit handlers (the audio device and SR_AUDIODUMP close, the
- * flight-recorder bundle, the HLE, compatibility, profiling and stack-census reports), which
- * _Exit skipped. The guest threads are coroutines suspended on this OS thread (sr_coro.h) and are
- * not unwound; no atexit handler touches a guest thread, its stack or the scheduler, and the
- * runtime has no C++ static destructors. No cross-thread handshake is needed: gui_pump,
- * gui_present and the pause overlay's frame and leave hooks (called from sched.c) run on this
- * thread, which owns the perf counters, the CSV handle and the presenter. The SR_PERF summary is
- * written first, while the GPU GE it samples still exists; the presenter is then released here,
- * so no Vulkan device outlives exit() into the driver's own process teardown (#1072, #1377). */
-static void gui_window_closed_exit(void) {
-    sr_perf_shutdown();
-    gui_release_presenter();
-    exit(0);
 }
 #endif
 #endif /* !SR_GUI_PRESENT_SELFTEST */
