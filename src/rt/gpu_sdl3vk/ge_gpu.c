@@ -38,12 +38,13 @@
  *    directly when the address/stride match (a snapshot copy for feedback loops).
  *  - Mip levels (#1373): when ge_tex_mip_active() turns them on, a cached texture holds
  *    levels 0..TEXMODE's highest level as one Vulkan mip chain, each level decoded by ge.c
- *    (ge_decode_tex_level_rgba). TEXLEVEL constant mode is a fixed level of detail (minLod =
- *    maxLod = the bias clamped to [0, highest level]); automatic mode is the sampler's own
- *    level of detail with the bias as mipLodBias, clamped the same way; TEXFILTER bit 1 is
- *    the mipmap mode. ge.c tex_lod makes the same choices. Slope mode samples level 0, as in
- *    ge.c. A level list a halving chain cannot hold, or a bias past maxSamplerLodBias, takes
- *    the software rasterizer (tex_mip_chain_supported). Per-level CLUTs are not modelled.
+ *    (ge_decode_tex_level_rgba). TEXLEVEL constant mode (and the unused mode 3) is one level
+ *    of detail per draw, the level and blend ge_tex_level_pick takes from the bias (minLod =
+ *    maxLod); TEXFILTER bit 1 is the mipmap mode. The automatic and slope modes' level of
+ *    detail is per fragment in the PSP's own arithmetic (ge.c tex_detail16, measured as
+ *    PSP-GE-MIP-001), which the sampler's exact log2 does not reproduce, so they take the
+ *    software rasterizer, as does a level list a halving chain cannot hold
+ *    (tex_mip_chain_supported). Per-level CLUTs are not modelled.
  *  - 16-bit precision (5650/5551/4444 framebuffers): the fragment shader snaps its
  *    output to the native lattice (pack-by-truncation + expand-by-bit-replication,
  *    identical to ge.c pack_fb/unpack_color) and applies the GE's 4x4 ordered dither,
@@ -135,6 +136,12 @@ static int s_scale = 1;     /* integer render scale (SR_GPU_SCALE), 1..MAX_SCALE
  * a disjoint range; exhaustion submits early rather than overwriting vertices that an
  * earlier vkCmdDraw in the same command buffer still references. */
 #define VERT_ARENA_VERTS (MAX_VERTS * 2u)
+/* GPU transform and lighting (#318): staged vertex references and PRIM parameter records,
+ * and their per-slot arenas, allocated the first time a PRIM arrives (SR_GPU_TNL is opt-in). */
+#define MAX_TNL_VERTS  65536u
+#define MAX_TNL_PARAMS 2048u
+#define TNL_ARENA_VERTS (MAX_TNL_VERTS * 2u)
+#define TNL_ARENA_PARAMS (MAX_TNL_PARAMS * 2u)
 
 static const uint32_t k_vert_spv[] =
 #include "psp_vert.inc"
@@ -142,6 +149,13 @@ static const uint32_t k_vert_spv[] =
 static const uint32_t k_frag_spv[] =
 #include "psp_frag.inc"
 ;
+static const uint32_t k_tnl_vert_spv[] =
+#include "psp_tnl_vert.inc"
+;
+/* psp_tnl.vert reads GeTnlParams as P_WORDS 32-bit words and GeTnlVtx as the vertex layout
+ * pipe_create gives it. */
+_Static_assert(sizeof(GeTnlParams) == 227u * 4u, "psp_tnl.vert P_WORDS");
+_Static_assert(sizeof(GeTnlVtx) == 72u, "psp_tnl.vert vertex layout");
 
 /* ---- captured vertex (must match psp.vert input layout) ------------------------------ */
 typedef struct { float x, y, z, rw, u, v, fog; uint32_t rgba; } GpuVert;
@@ -160,6 +174,7 @@ typedef struct {
     uint8_t cull;                          /* VkCullModeFlagBits */
     uint8_t ztest, zwrite, zfunc;          /* VkCompareOp */
     uint8_t cmask;                         /* VkColorComponentFlags */
+    uint8_t tnl;                           /* 1: psp_tnl.vert over GeTnlVtx (#318) */
 } PipeKey;
 
 typedef struct {
@@ -175,7 +190,7 @@ typedef struct {
  * zero when mip levels are off, so a level-0-only entry compares equal to any other. */
 typedef struct {
     uint32_t max_level;                    /* TEXMODE highest level; 0 = level 0 only */
-    uint32_t mode;                         /* TEXLEVEL mode: 0 automatic, 1 constant */
+    uint32_t mode;                         /* TEXLEVEL mode: 1 or 3, constant */
     uint32_t linear;                       /* TEXFILTER bit 1: blend the two nearest levels */
     float bias;                            /* TEXLEVEL bias */
     uint32_t addr[7], bufw[7];             /* levels 1..max_level (index = level - 1) */
@@ -277,6 +292,13 @@ typedef struct {
     uint32_t reason_mask;
     uint32_t recorded_ops;
     uint32_t vused;
+    /* GPU T&L arenas (#318): vertex references, parameter records, and the set binding them. */
+    VkBuffer tbuf, pbuf;
+    VkDeviceMemory tbuf_mem, pbuf_mem;
+    GeTnlVtx *tmap;
+    GeTnlParams *pmap;
+    VkDescriptorSet tset;
+    uint32_t tused, pused;
     int in_flight;
 } SubmitSlot;
 
@@ -314,6 +336,17 @@ static VkDescriptorSetLayout s_dlayout;
 static VkDescriptorPool s_dpool_tex, s_dpool_fix;
 static VkPipelineLayout s_playout;
 static VkShaderModule s_vs, s_fs;
+static VkShaderModule s_vs_tnl;
+static VkDescriptorSetLayout s_tnl_dlayout;   /* set 1: the slot's GeTnlParams arena */
+static VkDescriptorPool s_tnl_dpool;
+static int s_tnl_ready;                       /* arenas and sets allocated */
+static GeTnlVtx *s_tnl_vcpu;                  /* staged references, three per triangle */
+static GeTnlParams *s_tnl_pcpu;               /* staged parameter records */
+static uint32_t s_ntnl, s_ntnlp;
+/* Screen box of each staged T&L PRIM (from ge.c's clip-space bound), for batch_rect. */
+typedef struct { uint32_t first, end; float x0, y0, x1, y1; } TnlBox;
+static TnlBox *s_tnl_box;
+static unsigned long s_cnt_tnl_prims, s_cnt_tnl_tris;
 
 static TexEnt  s_tex[MAX_TEX];
 static int     s_tex_n = 0;
@@ -689,6 +722,7 @@ static int cmd_wait_slot(SubmitSlot *slot, GeGpuReplayBoundaryKind boundary) {
     slot->reason_mask = 0;
     slot->recorded_ops = 0;
     slot->vused = 0;
+    slot->tused = slot->pused = 0;
     slot->xfer_used = 0;
     return 1;
 }
@@ -737,6 +771,7 @@ static int cmd_drain(GeGpuReplayBoundaryKind boundary) {
         slot->reason_mask = 0;
         slot->recorded_ops = 0;
         slot->vused = 0;
+        slot->tused = slot->pused = 0;
         slot->xfer_used = 0;
     }
     return 1;
@@ -753,6 +788,7 @@ static int cmd_begin_fresh(void) {
     slot->reason_mask = 0;
     slot->recorded_ops = 0;
     slot->vused = 0;
+    slot->tused = slot->pused = 0;
     slot->xfer_used = 0;
     s_cmd_slot = slot;
     s_cmd = slot->cmd;
@@ -805,15 +841,22 @@ static int cmd_begin(void) {
     return cmd_begin_fresh();
 }
 
-static int cmd_batch_begin(uint32_t vertices) {
-    if (vertices > VERT_ARENA_VERTS) return 0;
+/* `tverts` and `tparams` are the T&L arena space the op needs; tparams counts the records
+ * from the start of the staged array, as submit_range may place them past the slot's cursor. */
+static int cmd_batch_begin_tnl(uint32_t vertices, uint32_t tverts, uint32_t tparams) {
+    if (vertices > VERT_ARENA_VERTS || tverts > TNL_ARENA_VERTS || tparams > TNL_ARENA_PARAMS)
+        return 0;
     if (s_cmd_slot && (s_cmd_slot->recorded_ops >= s_submit_batch_ops ||
-                       s_cmd_slot->vused + vertices > VERT_ARENA_VERTS)) {
+                       s_cmd_slot->vused + vertices > VERT_ARENA_VERTS ||
+                       s_cmd_slot->tused + tverts > TNL_ARENA_VERTS ||
+                       s_cmd_slot->pused + tparams > TNL_ARENA_PARAMS)) {
         if (!cmd_batch_flush()) return 0;
     }
     if (!s_cmd_slot && !cmd_begin_fresh()) return 0;
     return 1;
 }
+
+static int cmd_batch_begin(uint32_t vertices) { return cmd_batch_begin_tnl(vertices, 0u, 0u); }
 
 static int cmd_batch_record(SrPerfGeReason reason) {
     if (!s_cmd_slot) return 0;
@@ -1078,7 +1121,7 @@ static VkPipeline pipe_create(const PipeKey *k) {
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
     };
-    st[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   st[0].module = s_vs; st[0].pName = "main";
+    st[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   st[0].module = k->tnl ? s_vs_tnl : s_vs; st[0].pName = "main";
     st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = s_fs; st[1].pName = "main";
 
     VkVertexInputBindingDescription bind = { 0, sizeof(GpuVert), VK_VERTEX_INPUT_RATE_VERTEX };
@@ -1088,9 +1131,22 @@ static VkPipeline pipe_create(const PipeKey *k) {
         { 2, 0, VK_FORMAT_R32_SFLOAT,          24 },
         { 3, 0, VK_FORMAT_R8G8B8A8_UNORM,      28 },
     };
+    /* GeTnlVtx for psp_tnl.vert */
+    VkVertexInputBindingDescription tbind = { 0, sizeof(GeTnlVtx), VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription tat[7] = {
+        { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(GeTnlVtx, x) },
+        { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,    (uint32_t)offsetof(GeTnlVtx, nx) },
+        { 2, 0, VK_FORMAT_R32G32_SFLOAT,       (uint32_t)offsetof(GeTnlVtx, u) },
+        { 3, 0, VK_FORMAT_R8G8B8A8_UINT,       (uint32_t)offsetof(GeTnlVtx, rgba) },
+        { 4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(GeTnlVtx, w) },
+        { 5, 0, VK_FORMAT_R32G32B32A32_SFLOAT, (uint32_t)offsetof(GeTnlVtx, w) + 16u },
+        { 6, 0, VK_FORMAT_R32_UINT,            (uint32_t)offsetof(GeTnlVtx, param) },
+    };
     VkPipelineVertexInputStateCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-    vi.vertexBindingDescriptionCount = 1;   vi.pVertexBindingDescriptions = &bind;
-    vi.vertexAttributeDescriptionCount = 4; vi.pVertexAttributeDescriptions = at;
+    vi.vertexBindingDescriptionCount = 1;
+    vi.pVertexBindingDescriptions = k->tnl ? &tbind : &bind;
+    vi.vertexAttributeDescriptionCount = k->tnl ? 7u : 4u;
+    vi.pVertexAttributeDescriptions = k->tnl ? tat : at;
 
     VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1224,6 +1280,7 @@ static uint32_t s_flushgen = 1;            /* bumped per submit: invalidates sta
 
 static void batches_reset(void) {
     s_nbatch = 0; s_nverts = 0;
+    s_ntnl = 0; s_ntnlp = 0;
     s_flushgen++;
     for (int i = 0; i < s_tex_n; i++) s_tex[i].pending = 0;
 }
@@ -1276,8 +1333,43 @@ static SnapRect verts_rect(const Batch *b, uint32_t first, uint32_t count) {
     return r;
 }
 
+/* A T&L batch's box: the union of its PRIMs' screen boxes (ge.c's clip-space bound, which
+ * holds every vertex), clamped to the scissor like verts_rect. */
+static SnapRect tnl_rect(const Batch *b, uint32_t first, uint32_t count) {
+    SnapRect r = k_snap_rect_empty;
+    if (!count) return r;
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    /* The boxes are in staging order, so by first reference: find the first PRIM that ends
+     * past `first`, then walk while PRIMs start before the range's end. */
+    uint32_t lo = 0, hi = s_ntnlp;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if (s_tnl_box[mid].end <= first) lo = mid + 1u; else hi = mid;
+    }
+    for (uint32_t i = lo; i < s_ntnlp && s_tnl_box[i].first < first + count; i++) {
+        const TnlBox *t = &s_tnl_box[i];
+        if (t->x0 < x0) x0 = t->x0;
+        if (t->y0 < y0) y0 = t->y0;
+        if (t->x1 > x1) x1 = t->x1;
+        if (t->y1 > y1) y1 = t->y1;
+    }
+    if (x0 > x1) return r;
+    int sx0 = b->sx, sy0 = b->sy, sx1 = b->sx + b->sw, sy1 = b->sy + b->sh;
+    if (sx0 < 0) sx0 = 0;
+    if (sy0 < 0) sy0 = 0;
+    if (sx1 > FB_W) sx1 = FB_W;
+    if (sy1 > FB_H) sy1 = FB_H;
+    float fx0 = floorf(x0) - 1.0f, fy0 = floorf(y0) - 1.0f;
+    float fx1 = ceilf(x1) + 2.0f, fy1 = ceilf(y1) + 2.0f;
+    r.x0 = fx0 <= (float)sx0 ? sx0 : (fx0 >= (float)sx1 ? sx1 : (int)fx0);
+    r.y0 = fy0 <= (float)sy0 ? sy0 : (fy0 >= (float)sy1 ? sy1 : (int)fy0);
+    r.x1 = fx1 >= (float)sx1 ? sx1 : (fx1 <= (float)sx0 ? sx0 : (int)fx1);
+    r.y1 = fy1 >= (float)sy1 ? sy1 : (fy1 <= (float)sy0 ? sy0 : (int)fy1);
+    return r;
+}
+
 static SnapRect batch_rect(const Batch *b) {
-    return verts_rect(b, b->first, b->count);
+    return b->key.tnl ? tnl_rect(b, b->first, b->count) : verts_rect(b, b->first, b->count);
 }
 
 static int batch_reads_dst(const Batch *b) {
@@ -1361,12 +1453,38 @@ static int snapshot_copy_op(Target *t) {
 
 /* Record batches [b0, b1) as one render op into `t`. Leaves the color image SHADER_READ_ONLY. */
 static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
-    const uint32_t v0 = s_batch[b0].first;
-    const uint32_t nverts = s_batch[b1 - 1u].first + s_batch[b1 - 1u].count - v0;
-    if (!cmd_batch_begin(nverts)) return 0;
+    /* Captured vertices and T&L references are two arrays; batches of each kind are in
+     * order within it. */
+    uint32_t v0 = UINT32_MAX, v1 = 0, tv0 = UINT32_MAX, tv1 = 0;
+    for (uint32_t i = b0; i < b1; i++) {
+        const Batch *b = &s_batch[i];
+        uint32_t *lo = b->key.tnl ? &tv0 : &v0, *hi = b->key.tnl ? &tv1 : &v1;
+        if (b->first < *lo) *lo = b->first;
+        if (b->first + b->count > *hi) *hi = b->first + b->count;
+    }
+    if (v0 == UINT32_MAX) v0 = v1 = 0;
+    if (tv0 == UINT32_MAX) tv0 = tv1 = 0;
+    const uint32_t nverts = v1 - v0, ntverts = tv1 - tv0;
+    /* The parameter records the range's references name: those of the PRIMs it holds. */
+    uint32_t p0 = UINT32_MAX, p1 = 0;
+    for (uint32_t i = 0; ntverts && i < s_ntnlp; i++) {
+        if (s_tnl_box[i].end <= tv0 || s_tnl_box[i].first >= tv1) continue;
+        if (i < p0) p0 = i;
+        p1 = i + 1u;
+    }
+    if (p0 == UINT32_MAX) p0 = p1 = 0;
+    if (!cmd_batch_begin_tnl(nverts, ntverts, p1)) return 0;
     uint32_t vertex_base = s_cmd_slot->vused;
+    uint32_t tvertex_base = s_cmd_slot->tused;
+    /* Records go where their staged index plus a non-negative delta lands, and the delta is
+     * the draws' firstInstance, which psp_tnl.vert adds to each reference's index. */
+    uint32_t param_base = s_cmd_slot->pused > p0 ? s_cmd_slot->pused : p0;
     uint64_t memcpy_started = cpu_profile_now();
     memcpy(s_cmd_slot->vmap + vertex_base, s_vcpu + v0, (size_t)nverts * sizeof(GpuVert));
+    if (ntverts) {
+        memcpy(s_cmd_slot->tmap + tvertex_base, s_tnl_vcpu + tv0, (size_t)ntverts * sizeof(GeTnlVtx));
+        memcpy(s_cmd_slot->pmap + param_base, s_tnl_pcpu + p0, (size_t)(p1 - p0) * sizeof(GeTnlParams));
+    }
     if (s_cpu_profile) {
         cpu_profile_add(GEGPU_CPU_MEMCPY, memcpy_started);
         s_cpu_profile_stats.memcpy_bytes += (uint64_t)nverts * sizeof(GpuVert);
@@ -1394,7 +1512,11 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
     VkViewport vp = { 0, 0, (float)SCL_W, (float)SCL_H, 0.0f, 1.0f };
     vkCmdSetViewport(s_cmd, 0, 1, &vp);
     VkDeviceSize vertex_offset = (VkDeviceSize)vertex_base * sizeof(GpuVert);
-    vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_cmd_slot->vbuf, &vertex_offset);
+    VkDeviceSize tvertex_offset = (VkDeviceSize)tvertex_base * sizeof(GeTnlVtx);
+    int bound_tnl = -1;
+    if (ntverts)
+        vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 1, 1,
+                                &s_cmd_slot->tset, 0, NULL);
 
     VkPipeline cur = VK_NULL_HANDLE;
     VkDescriptorSet cur_set = VK_NULL_HANDLE;
@@ -1434,7 +1556,15 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
             if (b->dset == cur_set) s_cpu_profile_stats.descriptor_bind_redundant++;
         }
         cur_set = b->dset;
-        vkCmdDraw(s_cmd, b->count, 1, b->first - v0, 0);
+        if (bound_tnl != (int)b->key.tnl) {
+            vkCmdBindVertexBuffers(s_cmd, 0, 1, b->key.tnl ? &s_cmd_slot->tbuf : &s_cmd_slot->vbuf,
+                                   b->key.tnl ? &tvertex_offset : &vertex_offset);
+            bound_tnl = (int)b->key.tnl;
+        }
+        if (b->key.tnl)
+            vkCmdDraw(s_cmd, b->count, 1, b->first - tv0, param_base - p0);
+        else
+            vkCmdDraw(s_cmd, b->count, 1, b->first - v0, 0);
     }
     vkCmdEndRenderPass(s_cmd);
     if (s_cpu_profile) {
@@ -1454,6 +1584,8 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
     s_replay_stats.batches += b1 - b0;
     s_replay_stats.draws += b1 - b0;
     s_cmd_slot->vused += nverts;
+    s_cmd_slot->tused += ntverts;
+    if (ntverts) s_cmd_slot->pused = param_base + (p1 - p0);
     int ok = cmd_batch_record(SR_PERF_GE_RENDER_BATCH);
     t->gpu_valid = 1;
     t->render_gen++;
@@ -1534,12 +1666,13 @@ static void stats_emit(int final) {
     if (!final && now - last_ms < 5000) return;
     last_ms = now;
     fprintf(stderr, "GEGPU stats: submits=%lu batches=%llu verts=%llu avg_batches=%.2f "
-            "tris=%lu spr=%lu lines=%lu nonfinite=%lu rtt=%lu snap=%lu "
+            "tris=%lu spr=%lu lines=%lu nonfinite=%lu tnl[prims=%lu tris=%lu] rtt=%lu snap=%lu "
             "present[gpu=%lu cpu=%lu] upload=%lu readback=%lu texup=%lu dirty=%lu xferblit=%lu pipes=%d texs=%d "
             "shadow[invalidations=%llu checks=%llu hits=%llu misses=%llu bytes=%llu avoided=%llu required=%llu] final=%d\n",
             s_cnt_submit, (unsigned long long)s_cnt_batches, (unsigned long long)s_cnt_verts,
             s_cnt_submit ? (double)s_cnt_batches / (double)s_cnt_submit : 0.0,
-            s_cnt_tri, s_cnt_spr, s_cnt_line, s_cnt_nonfinite, s_cnt_rtt, s_cnt_snap,
+            s_cnt_tri, s_cnt_spr, s_cnt_line, s_cnt_nonfinite, s_cnt_tnl_prims, s_cnt_tnl_tris,
+            s_cnt_rtt, s_cnt_snap,
             s_cnt_present_gpu, s_cnt_present_cpu, s_cnt_upload, s_cnt_readback, s_cnt_texup,
             s_cnt_dirty, s_cnt_xferblit, s_pipe_n, s_tex_n,
             (unsigned long long)s_cnt_tex_invalidations,
@@ -2530,23 +2663,15 @@ static int tex_decode_upload(VkImage img, int w, int h, uint32_t levels) {
     return 1;
 }
 
-/* VkPhysicalDeviceLimits::maxSamplerLodBias, read at init. */
-static float s_max_lod_bias;
-
-/* Automatic mode's sampler bias. Vulkan measures the footprint per device pixel, so at render
- * scale k it reads log2(k) lower than the guest pixel's: adding it back keeps the guest level. */
-static float tex_mip_auto_bias(float bias) {
-    return bias + log2f((float)s_scale);
-}
-
-/* Sampler level of detail of one cache entry. With a mip chain (#1373) the sampler makes
- * ge.c tex_lod's choice: constant mode is a fixed level of detail, minLod = maxLod = the bias
- * clamped to [0, highest level], whatever the footprint; automatic mode is log2 of the
- * footprint plus the bias (mipLodBias), clamped to [0, highest level] by minLod and maxLod.
- * TEXFILTER bit 1 is the mipmap mode: the nearest level (Vulkan's preferred rounding, up only
- * past one half, as ge.c rounds) or a blend of the two levels around the level of detail.
- * Vulkan then filters within a level by minFilter above level of detail 0 and by magFilter
- * otherwise; ge.c shade() makes that choice too while mip levels are on. */
+/* Sampler level of detail of one cache entry. With a mip chain (#1373) the state is in
+ * constant mode (tex_mip_chain_supported sends the per-fragment modes to the software
+ * rasterizer), so the level of detail is fixed: ge_tex_level_pick's level, plus its blend
+ * weight in 1/16 under TEXFILTER bit 1 (VK_SAMPLER_MIPMAP_MODE_LINEAR; the blend may differ
+ * from ge.c's truncated sixteenths by one U8 step). Vulkan filters within a level by
+ * minFilter above level of detail 0 and by magFilter otherwise, and ge.c shade() picks the
+ * minification field for any level of detail above 0: a positive bias that still selects
+ * level 0 samples at 0.25, which keeps nearest mipmap mode on level 0 and the minification
+ * filter on. */
 static void tex_sampler_lod(const TexMipKey *mip, VkSamplerCreateInfo *sci) {
     sci->mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     if (!mip->max_level) {
@@ -2556,16 +2681,14 @@ static void tex_sampler_lod(const TexMipKey *mip, VkSamplerCreateInfo *sci) {
         return;
     }
     if (mip->linear) sci->mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    if (mip->mode == 1u) {
-        float lod = mip->bias > 0.0f ? mip->bias : 0.0f;
-        if (lod > (float)mip->max_level) lod = (float)mip->max_level;
-        sci->minLod = lod;
-        sci->maxLod = lod;
-    } else {
-        sci->mipLodBias = tex_mip_auto_bias(mip->bias);
-        sci->minLod = 0.0f;
-        sci->maxLod = (float)mip->max_level;
-    }
+    int detail16 = (int)(mip->bias * 16.0f);
+    uint32_t level = 0u;
+    int frac = 0;
+    ge_tex_level_pick(detail16, mip->linear ? 2u : 0u, mip->max_level, &level, &frac);
+    float lod = (float)level + (float)frac / 16.0f;
+    if (detail16 > 0 && lod == 0.0f) lod = 0.25f;
+    sci->minLod = lod;
+    sci->maxLod = lod;
 }
 
 static int tex_make(int w, int h, uint32_t levels, int min_linear, int mag_linear,
@@ -2610,16 +2733,18 @@ static uint32_t log2_pow2(uint32_t v) {
     return l;
 }
 
-/* Whether the current state's mip levels fit one Vulkan mip chain (#1373). A chain halves
- * every level down to 1x1, while the GE takes each level's size from its own TEXSIZE: a level
- * whose size is not max(1, level-0 size >> level) on both axes, or more levels than a
- * halving chain of level 0 has, cannot be sampled from one image, and neither can an
- * automatic-mode bias past the device's maxSamplerLodBias. gpu_state_unsupported_reason()
- * sends such draws to the software rasterizer, which samples every level as given. A
- * state without mip levels, or one drawn untextured, always fits. */
+/* Whether the current state's mip levels fit one Vulkan mip chain and sampler (#1373). The
+ * automatic and slope modes do not: their level of detail is per fragment in the PSP's
+ * 1/16-level arithmetic (ge.c tex_detail16), not the sampler's. A chain halves every level
+ * down to 1x1, while the GE takes each level's size from its own TEXSIZE: a level whose
+ * size is not max(1, level-0 size >> level) on both axes, or more levels than a halving
+ * chain of level 0 has, cannot be sampled from one image either.
+ * gpu_state_unsupported_reason() sends such draws to the software rasterizer, which samples
+ * every level as given. A state without mip levels, or one drawn untextured, always fits. */
 static int tex_mip_chain_supported(void) {
     const GeState *g = s_ge;
     if (!g->tex_enable || g->clear || !g->tex_addr || !ge_tex_mip_active(g)) return 1;
+    if (g->tex_level_mode == 0u || g->tex_level_mode == 2u) return 0;
     if (g->tex_w <= 0 || g->tex_h <= 0 || g->tex_w > 512 || g->tex_h > 512) return 1;
     uint32_t wl = log2_pow2((uint32_t)g->tex_w), hl = log2_pow2((uint32_t)g->tex_h);
     if (g->tex_max_level > (wl > hl ? wl : hl)) return 0;
@@ -2628,8 +2753,6 @@ static int tex_mip_chain_supported(void) {
             g->tex_mip_hlog2[level - 1u] != (hl > level ? hl - level : 0u))
             return 0;
     }
-    if (g->tex_level_mode == 0u && fabsf(tex_mip_auto_bias(g->tex_lod_bias)) > s_max_lod_bias)
-        return 0;
     return 1;
 }
 
@@ -3228,7 +3351,8 @@ static void append(Batch *b, uint32_t first, uint32_t count) {
     if ((((uint32_t)b->pc.cfg[0] >> 8) & F_SHBLEND) && sr_perf_enabled)
         sr_perf_ge_event(SR_PERF_GE_SHBLEND_DRAW, 1);
     const int self_dep = stencil_reads_own_writes(b);
-    SnapRect prim = self_dep ? verts_rect(b, first, count) : k_snap_rect_empty;
+    SnapRect prim = !self_dep ? k_snap_rect_empty
+                  : b->key.tnl ? tnl_rect(b, first, count) : verts_rect(b, first, count);
     if (s_nbatch) {
         Batch *last = &s_batch[s_nbatch - 1];
         if (s_cpu_profile) s_cpu_profile_stats.append_compare_calls++;
@@ -3378,6 +3502,86 @@ static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     cpu_profile_vertex_done(vertex_started, 3);
     append(&b, first, 3);
     s_cnt_tri++;
+    return cpu_profile_hook_leave(1);
+}
+
+/* GPU transform and lighting (#318). The arenas exist only once a PRIM has arrived: the
+ * route is opt-in, and a default run allocates nothing for it. */
+static int tnl_alloc(void) {
+    s_tnl_vcpu = (GeTnlVtx *)malloc((size_t)MAX_TNL_VERTS * sizeof(GeTnlVtx));
+    s_tnl_pcpu = (GeTnlParams *)malloc((size_t)MAX_TNL_PARAMS * sizeof(GeTnlParams));
+    s_tnl_box = (TnlBox *)malloc((size_t)MAX_TNL_PARAMS * sizeof(TnlBox));
+    if (!s_tnl_vcpu || !s_tnl_pcpu || !s_tnl_box) return 0;
+    for (int i = 0; i < SUBMIT_FRAMES; i++) {
+        SubmitSlot *slot = &s_submit[i];
+        if (!make_buffer((VkDeviceSize)TNL_ARENA_VERTS * sizeof(GeTnlVtx),
+                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &slot->tbuf, &slot->tbuf_mem,
+                         (void **)&slot->tmap)) return 0;
+        if (!make_buffer((VkDeviceSize)TNL_ARENA_PARAMS * sizeof(GeTnlParams),
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &slot->pbuf, &slot->pbuf_mem,
+                         (void **)&slot->pmap)) return 0;
+        VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        dai.descriptorPool = s_tnl_dpool; dai.descriptorSetCount = 1; dai.pSetLayouts = &s_tnl_dlayout;
+        if (vkAllocateDescriptorSets(s_dev, &dai, &slot->tset) != VK_SUCCESS) return 0;
+        VkDescriptorBufferInfo bi = { slot->pbuf, 0, VK_WHOLE_SIZE };
+        VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.dstSet = slot->tset; w.dstBinding = 0; w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w.pBufferInfo = &bi;
+        vkUpdateDescriptorSets(s_dev, 1, &w, 0, NULL);
+    }
+    s_tnl_ready = 1;
+    return 1;
+}
+
+/* ge.c proved the PRIM's triangles reach the rasterizer from psp_tnl.vert with the bits its
+ * own T&L and hook_tri would give them; the fragment state and batching are hook_tri's. */
+static int hook_tnl_prim(const GeTnlPrim *p) {
+    if (!s_ready) return 0;
+    if (!s_vs_tnl) {
+        static int device_reported;
+        if (!device_reported) {
+            device_reported = 1;
+            fprintf(stderr, "gegpu: SR_GPU_TNL: this device does not keep fp32 subnormals in shaders "
+                            "(shaderDenormPreserveFloat32), which GPU T&L needs to match ge.c bit for "
+                            "bit; ge.c keeps T&L (#318)\n");
+        }
+        return 0;
+    }
+    const uint32_t nv = p->ntri * 3u;
+    if (!nv || nv > MAX_TNL_VERTS) return 0;
+    if (!s_tnl_ready && !tnl_alloc()) {
+        static int alloc_reported;
+        if (!alloc_reported) {
+            alloc_reported = 1;
+            fprintf(stderr, "gegpu: GPU T&L arenas could not be allocated; ge.c keeps T&L\n");
+        }
+        return 0;
+    }
+    cpu_profile_hook_enter();
+    if (software_fallback_begin(-1)) return cpu_profile_hook_leave(0);
+    static int nocull = -1;
+    if (nocull < 0) nocull = getenv("SR_NOCULL") ? 1 : 0;
+    Batch b;
+    state_get(1, 0, &b);
+    if (nocull) b.key.cull = VK_CULL_MODE_NONE;
+    b.key.tnl = 1;
+    /* Without a target, decline: ge.c's own T&L then reaches hook_tri, which decides the
+     * draw exactly as it does when GPU T&L is off. */
+    if (!begin_target()) return cpu_profile_hook_leave(0);
+    if (s_ntnl + nv > MAX_TNL_VERTS || s_ntnlp >= MAX_TNL_PARAMS || s_nbatch >= MAX_BATCH - 1)
+        submit_pending();
+    const uint32_t pi = s_ntnlp++;
+    s_tnl_pcpu[pi] = *p->params;
+    const uint32_t first = s_ntnl;
+    for (uint32_t k = 0; k < nv; k++) {
+        GeTnlVtx *o = &s_tnl_vcpu[s_ntnl++];
+        *o = p->refs[p->tri[k]];
+        o->param = pi;
+    }
+    s_tnl_box[pi] = (TnlBox){ first, s_ntnl, p->box[0], p->box[1], p->box[2], p->box[3] };
+    append(&b, first, nv);
+    s_cnt_tnl_prims++;
+    s_cnt_tnl_tris += p->ntri;
     return cpu_profile_hook_leave(1);
 }
 
@@ -3902,6 +4106,7 @@ int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
 static const GeGpuHooks k_hooks = {
     hook_tri, hook_sprite, hook_line, hook_point, gegpu_flush, hook_vram_dirty, hook_xfer,
     gegpu_capture_materialize, hook_vram_read, hook_vram_write_prepare, hook_vram_pending,
+    hook_tnl_prim,
 };
 
 #ifdef SR_GPU_COHERENCE_SELFTEST
@@ -5132,15 +5337,17 @@ static int coherence_run_tflt_filters(void) {
 /* ---- texture mip levels (#1373) ----------------------------------------------------------
  *
  * The Vulkan backend samples TEXMODE/TEXLEVEL mip levels from one Vulkan mip chain per cached
- * texture and must choose what ge.c tex_lod chooses. Each case draws one through-mode sprite
+ * texture and must choose what ge.c tex_detail16 and ge_tex_level_pick choose. Each case draws one through-mode sprite
  * with the Vulkan backend and then with the software GE, and compares the framebuffers:
  * exactly for nearest-level cases, and within the one-U8-step tolerance of the TFLT linear
  * cases for a blend of two levels. Every texel names its level and position, so a wrong
  * level, a level decoded without its own buffer width, or a level coordinate one texel off
  * changes a pixel. The UV start of 0.25 texel keeps every sample off a texel edge at every
  * level, and the footprints (1/2, 2 and 4 texels per pixel) give exact levels of detail.
- * Software/Vulkan agreement is not a PSP measurement: the level-of-detail rules both paths
- * share are unmeasured on a PSP (ge.c tex_lod). */
+ * Software/Vulkan agreement is not a PSP measurement; the level rules both paths share are
+ * PSP-GE-MIP-001's (hle_thread_selftest.c test_ge_mip_cells_match_psp checks ge.c against
+ * the PSP). The automatic and slope cases take the software rasterizer, so they check that
+ * fallback. */
 #define COH_MIP_TEX   0x04040000u          /* level L at COH_MIP_TEX + L * 0x1000 */
 #define COH_MIP_ALT1  0x04045000u          /* a second level 1 (4x4) for the cache-key case */
 #define COH_MIP_LIST  0x00100800u
@@ -5516,10 +5723,13 @@ static int coherence_run_mip_level_dirty_same_state(void) {
 
 static int coherence_run_mip_levels(void) {
     static const CohMipCase cases[] = {
-        /* Constant mode: the bias is the level, clamped to the highest level. */
+        /* Constant mode: the bias is the level, clamped to the highest level; one half
+         * rounds up to the next level (PSP-GE-MIP-001 c-b0f8). */
         { "const-level-1",       0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 0 },
         { "const-level-2",       0x004u, 3u, 1u, 32u, 16, 0, 2, 0, 0 },
         { "const-clamped",       0x004u, 1u, 1u, 48u, 16, 0, 1, 0, 0 },
+        { "const-half-rounds-up", 0x004u, 3u, 1u, 8u, 16, 0, 1, 0, 0 },
+        { "const-mode-3",        0x004u, 3u, 3u, 32u, 16, 0, 2, 0, 0 },
         /* With mip levels on, the level of detail picks the filter within a level: a
          * magnified sprite at constant level 1 filters by the minification field
          * (nearest), and a minified one at constant level 0 by the magnification field. */
@@ -5527,7 +5737,8 @@ static int coherence_run_mip_levels(void) {
         { "const-0-mag-filter",  0x005u, 3u, 1u, 0u,   4, 0, 0, 0, 0 },
         /* GU_NEAREST_MIPMAP_LINEAR at constant level 0.5: half of level 0, half of level 1. */
         { "const-between",       0x006u, 3u, 1u, 8u,  16, 1, -1, 0, 0 },
-        /* Automatic mode: log2 of the footprint plus the bias, clamped to [0, highest]. */
+        /* Automatic mode: log2 of the footprint plus the bias, clamped to [0, highest]
+         * (software rasterizer). */
         { "auto-magnified",      0x004u, 3u, 0u, 0u,  16, 0, 0, 0, 0 },
         { "auto-level-1",        0x004u, 3u, 0u, 0u,   4, 0, 1, 0, 0 },
         { "auto-level-2",        0x004u, 3u, 0u, 0u,   2, 0, 2, 0, 0 },
@@ -5536,8 +5747,9 @@ static int coherence_run_mip_levels(void) {
         /* Bias -1.5 on a 2x minified sprite: level of detail -0.5, so level 0 through the
          * magnification field (nearest), not the minification field (linear). */
         { "auto-bias-mag-filter", 0x005u, 3u, 0u, 0xE8u, 4, 0, 0, 0, 0 },
-        /* Slope mode stays on level 0 in both paths (formula unmeasured). */
-        { "slope-level-0",       0x004u, 3u, 2u, 16u,  4, 0, 0, 0, 0 },
+        /* Slope mode with TEXLODSLOPE 0: its logarithm is -2032, so level 0 (software
+         * rasterizer). */
+        { "slope-zero",          0x004u, 3u, 2u, 16u,  4, 0, 0, 0, 0 },
         /* Level 1 declared 8x8 cannot sit in a halving chain: the software rasterizer draws. */
         { "chain-fallback",      0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 3u },
         /* Only level 1's address changes after const-level-1: the cache must not reuse it. */
@@ -7138,6 +7350,563 @@ static int coherence_run_fallback_reasons(void) {
     return ok;
 }
 
+/* GPU transform and lighting parity (#318). Each cell is one display list of project-written
+ * command words and generated vertices (no game data) drawing transform-mode triangles into a
+ * cleared 512x272 8888 target with a depth buffer. It runs three ways: through the backend with
+ * GPU T&L on, through the backend with it off (ge.c's T&L, then hook_tri), and in software.
+ * The first two must leave byte-identical colour and depth, and the T&L run must count every
+ * transform PRIM as drawn by psp_tnl.vert, or, for a cell whose state ge.c declines (a
+ * near-plane crossing, specular light, texgen, flat shading), as declined: a run that silently
+ * took the other route would prove nothing. The software run is reported, not asserted: the
+ * Vulkan rasterizer's own tolerances against ge.c are the blend and sample-point fixtures'. On a
+ * device without fp32 subnormal preservation there is no T&L stage, and every cell must take
+ * ge.c's route and match: the fallback is what that device can show. */
+enum {
+    TNLC_STATIC, TNLC_STRIP_CULL0, TNLC_STRIP_CULL1, TNLC_FAN_IDX16, TNLC_LIST_IDX8,
+    TNLC_TEXTURED, TNLC_FOG_LINEAR, TNLC_FOG_INF, TNLC_DEPTH, TNLC_RAMP, TNLC_FIXED_FMT,
+    TNLC_MORPH2, TNLC_SKIN1, TNLC_SKIN2_U8, TNLC_SKIN4_U16, TNLC_SKIN8_F, TNLC_LIGHT_DIR,
+    TNLC_LIGHT_POINT, TNLC_LIGHT4_MATUPD, TNLC_LIGHT_SKIN, TNLC_OFFSET_VIEWPORT,
+    TNLC_NEAR_CROSS, TNLC_SPECULAR, TNLC_FLAT, TNLC_TEXGEN, TNLC_LIGHT_SUBNORMAL,
+};
+
+typedef struct TnlCell {
+    const char *name;
+    int kind;
+    int gpu;          /* 1: drawn by psp_tnl.vert, 0: declined to ge.c */
+} TnlCell;
+
+#define TNLP_FBA     0x00000000u                 /* VRAM-relative colour buffer */
+#define TNLP_ZBA     0x00100000u                 /* VRAM-relative depth buffer */
+#define TNLP_TEX     0x04180000u                 /* 8x8 8888 texture */
+#define TNLP_LIST    0x00200000u                 /* the harness arena, as the other fixtures */
+#define TNLP_VTX     0x00210000u
+#define TNLP_IDX     0x00280000u
+#define TNLP_STRIDE  512u
+
+static uint32_t tnlp_f24(float f) { uint32_t u; memcpy(&u, &f, 4); return u >> 8; }
+
+/* Vertex writer following decode_vtype's order and alignment: weights, texture coordinate,
+ * colour (8888 only), normal, position; each field aligned to its own size, the vertex to the
+ * largest. fmt values are the vertex type's field codes (0 none, 1 8-bit, 2 16-bit, 3 float). */
+typedef struct { int wfmt, wn, tc, col, nrm, pos, morph; } TnlpFmt;
+
+static uint32_t tnlp_vtype(const TnlpFmt *f, int idx) {
+    uint32_t vt = (uint32_t)f->tc | ((uint32_t)(f->col ? 7 : 0) << 2) | ((uint32_t)f->nrm << 5) |
+                  ((uint32_t)f->pos << 7) | ((uint32_t)idx << 11);
+    if (f->wfmt) vt |= ((uint32_t)f->wfmt << 9) | ((uint32_t)(f->wn - 1) << 14);
+    if (f->morph > 1) vt |= (uint32_t)(f->morph - 1) << 18;
+    return vt;
+}
+
+static uint32_t tnlp_align(uint32_t off, uint32_t a) { return (off + a - 1u) & ~(a - 1u); }
+
+static void tnlp_put(uint8_t *d, uint32_t off, int fmt, float v, int is_unsigned) {
+    if (fmt == 3) { memcpy(d + off, &v, 4); return; }
+    if (fmt == 2) {
+        int32_t q = (int32_t)lrintf(v * 32768.0f);
+        if (is_unsigned) { if (q < 0) q = 0; if (q > 65535) q = 65535; }
+        else { if (q < -32768) q = -32768; if (q > 32767) q = 32767; }
+        uint16_t s = (uint16_t)q; memcpy(d + off, &s, 2); return;
+    }
+    int32_t q = (int32_t)lrintf(v * 128.0f);
+    if (is_unsigned) { if (q < 0) q = 0; if (q > 255) q = 255; }
+    else { if (q < -128) q = -128; if (q > 127) q = 127; }
+    d[off] = (uint8_t)q;
+}
+
+/* One morph target of one vertex at d; returns the target's stride. */
+static uint32_t tnlp_vertex(uint8_t *d, const TnlpFmt *f, const float *w, float u, float v,
+                            uint32_t col, const float *n, const float *p) {
+    static const uint32_t sz[4] = { 0, 1, 2, 4 };
+    uint32_t off = 0, maxa = 1;
+    if (f->wfmt) {
+        uint32_t a = sz[f->wfmt];
+        off = tnlp_align(off, a);
+        for (int i = 0; i < f->wn; i++) tnlp_put(d, off + a * (uint32_t)i, f->wfmt, w[i], 1);
+        off += a * (uint32_t)f->wn;
+        if (a > maxa) maxa = a;
+    }
+    if (f->tc) {
+        uint32_t a = sz[f->tc];
+        off = tnlp_align(off, a);
+        tnlp_put(d, off, f->tc, u, 1); tnlp_put(d, off + a, f->tc, v, 1);
+        off += 2u * a;
+        if (a > maxa) maxa = a;
+    }
+    if (f->col) {
+        off = tnlp_align(off, 4u);
+        memcpy(d + off, &col, 4);
+        off += 4u;
+        if (maxa < 4u) maxa = 4u;
+    }
+    if (f->nrm) {
+        uint32_t a = sz[f->nrm];
+        off = tnlp_align(off, a);
+        for (int i = 0; i < 3; i++) tnlp_put(d, off + a * (uint32_t)i, f->nrm, n[i], 0);
+        off += 3u * a;
+        if (a > maxa) maxa = a;
+    }
+    uint32_t a = sz[f->pos];
+    off = tnlp_align(off, a);
+    for (int i = 0; i < 3; i++) tnlp_put(d, off + a * (uint32_t)i, f->pos, p[i], 0);
+    off += 3u * a;
+    if (a > maxa) maxa = a;
+    return tnlp_align(off, maxa);
+}
+
+typedef struct { uint32_t *dl; int n; } TnlpList;
+#define TNLP_W(L, cmd, data) ((L)->dl[(L)->n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00FFFFFFu))
+
+static void tnlp_matrix(TnlpList *L, uint32_t num_cmd, const float *m, int count) {
+    TNLP_W(L, num_cmd, 0);
+    for (int i = 0; i < count; i++) TNLP_W(L, num_cmd + 1u, tnlp_f24(m[i]));
+}
+
+/* A deterministic pseudo-random sequence: the same vertices on every run and host. */
+static uint32_t s_tnlp_seed;
+static float tnlp_rand(float lo, float hi) {
+    s_tnlp_seed = s_tnlp_seed * 1664525u + 1013904223u;
+    return lo + (hi - lo) * (float)(s_tnlp_seed >> 8) * (1.0f / 16777216.0f);
+}
+
+/* A rotation about the axis (ax, ay, az) by `ang` radians, translated by t, as a 4x3 matrix. */
+static void tnlp_rot(float *m, float ax, float ay, float az, float ang, float tx, float ty, float tz) {
+    float l = sqrtf(ax * ax + ay * ay + az * az);
+    ax /= l; ay /= l; az /= l;
+    float c = cosf(ang), s = sinf(ang), k = 1.0f - c;
+    m[0] = c + ax * ax * k;      m[1] = ay * ax * k + az * s; m[2] = az * ax * k - ay * s;
+    m[3] = ax * ay * k - az * s; m[4] = c + ay * ay * k;      m[5] = az * ay * k + ax * s;
+    m[6] = ax * az * k + ay * s; m[7] = ay * az * k - ax * s; m[8] = c + az * az * k;
+    m[9] = tx; m[10] = ty; m[11] = tz;
+}
+
+/* Build cell `c`'s list; returns the list address. */
+static uint32_t tnlp_build(const TnlCell *c) {
+    TnlpList L = { (uint32_t *)SR_HOST(TNLP_LIST), 0 };
+    s_tnlp_seed = 0x1234567u + (uint32_t)c->kind * 7919u;
+    const uint32_t fb = 0x04000000u | TNLP_FBA;
+    TNLP_W(&L, 0x10, 0);
+    TNLP_W(&L, 0x9C, fb & 0x00FFFFFFu);
+    TNLP_W(&L, 0x9D, TNLP_STRIDE | ((fb & 0xFF000000u) >> 8));
+    TNLP_W(&L, 0xD2, 3);
+    TNLP_W(&L, 0x9E, TNLP_ZBA);
+    TNLP_W(&L, 0x9F, TNLP_STRIDE);
+    TNLP_W(&L, 0x15, 0);
+    TNLP_W(&L, 0x16, ((FB_H - 1u) << 10) | (480u - 1u));
+    TNLP_W(&L, 0xD4, 0);
+    TNLP_W(&L, 0xD5, ((FB_H - 1u) << 10) | (480u - 1u));
+    TNLP_W(&L, 0xD6, 0);
+    TNLP_W(&L, 0xD7, 0xFFFF);
+    for (uint32_t cmd = 0x17; cmd <= 0x28; cmd++) TNLP_W(&L, cmd, 0);   /* every unit off */
+    TNLP_W(&L, 0xE7, 0);                  /* depth writes on */
+    TNLP_W(&L, 0xDE, 1);                  /* depth test ALWAYS when enabled */
+    TNLP_W(&L, 0x50, c->kind == TNLC_FLAT ? 0 : 1);
+    TNLP_W(&L, 0xE8, 0);
+    TNLP_W(&L, 0xE9, 0);
+
+    /* Clear colour and depth with a through-mode clear sprite. */
+    const uint32_t clear_vtx = TNLP_VTX + 0x60000u;
+    {
+        uint8_t *d = (uint8_t *)SR_HOST(clear_vtx);
+        const uint32_t bg = 0xff302010u;
+        const float cz = c->kind == TNLC_DEPTH ? 65535.0f : 0.0f;
+        float p0[3] = { 0.0f, 0.0f, cz }, p1[3] = { 480.0f, 272.0f, cz };
+        memcpy(d, &bg, 4); memcpy(d + 4, p0, 12);
+        memcpy(d + 16, &bg, 4); memcpy(d + 20, p1, 12);
+        TNLP_W(&L, 0xD3, 0x701);
+        TNLP_W(&L, 0x12, (7u << 2) | (3u << 7) | (1u << 23));
+        TNLP_W(&L, 0x10, (clear_vtx >> 8) & 0x000F0000u);
+        TNLP_W(&L, 0x01, clear_vtx);
+        TNLP_W(&L, 0x04, (6u << 16) | 2u);
+        TNLP_W(&L, 0xD3, 0);
+    }
+
+    /* Matrices: a perspective camera looking at the origin from +z. */
+    float world[12], view[12], proj[16];
+    tnlp_rot(world, 0.3f, 1.0f, 0.2f, 0.6f, 0.0f, 0.0f, 0.0f);
+    tnlp_rot(view, 1.0f, 0.0f, 0.0f, 0.15f, 0.05f, -0.1f, -6.0f);
+    {
+        const float fov = 1.0f, aspect = 480.0f / 272.0f, zn = 0.5f, zf = 100.0f;
+        float f = 1.0f / tanf(fov * 0.5f);
+        memset(proj, 0, sizeof(proj));
+        proj[0] = f / aspect; proj[5] = f;
+        proj[10] = (zf + zn) / (zn - zf); proj[11] = -1.0f;
+        proj[14] = 2.0f * zf * zn / (zn - zf);
+    }
+    if (c->kind == TNLC_NEAR_CROSS) view[11] = -1.2f;   /* the mesh reaches through the near plane */
+    if (c->kind == TNLC_LIGHT_SUBNORMAL) {
+        /* World 3x3 scaled by 2^-30 and view 3x3 by 2^30: the same screen positions (powers of
+         * two scale exactly), but world-space normals near 2^-66, whose squared length is
+         * subnormal before light_vertex normalises them. */
+        for (int i = 0; i < 9; i++) { world[i] = ldexpf(world[i], -30); view[i] = ldexpf(view[i], 30); }
+    }
+    tnlp_matrix(&L, 0x3A, world, 12);
+    tnlp_matrix(&L, 0x3C, view, 12);
+    tnlp_matrix(&L, 0x3E, proj, 16);
+    const float vxs = c->kind == TNLC_OFFSET_VIEWPORT ? 230.0f : 240.0f;
+    const float vys = c->kind == TNLC_OFFSET_VIEWPORT ? -130.0f : -136.0f;
+    TNLP_W(&L, 0x42, tnlp_f24(vxs));
+    TNLP_W(&L, 0x43, tnlp_f24(vys));
+    TNLP_W(&L, 0x44, tnlp_f24(-32000.0f));
+    TNLP_W(&L, 0x45, tnlp_f24(2048.0f));
+    TNLP_W(&L, 0x46, tnlp_f24(2048.0f));
+    TNLP_W(&L, 0x47, tnlp_f24(32767.5f));
+    if (c->kind == TNLC_OFFSET_VIEWPORT) {
+        TNLP_W(&L, 0x4C, ((2048u - 240u) << 4) + 5u);   /* a sub-pixel offset */
+        TNLP_W(&L, 0x4D, ((2048u - 136u) << 4) + 11u);
+    } else {
+        TNLP_W(&L, 0x4C, (2048u - 240u) << 4);
+        TNLP_W(&L, 0x4D, (2048u - 136u) << 4);
+    }
+    TNLP_W(&L, 0x48, tnlp_f24(1.0f));
+    TNLP_W(&L, 0x49, tnlp_f24(1.0f));
+    TNLP_W(&L, 0x4A, 0);
+    TNLP_W(&L, 0x4B, 0);
+    TNLP_W(&L, 0xC0, c->kind == TNLC_TEXGEN ? 1u : 0u);
+
+    /* Texture for the textured cells. */
+    if (c->kind == TNLC_TEXTURED || c->kind == TNLC_TEXGEN || c->kind == TNLC_FIXED_FMT) {
+        uint32_t *tex = (uint32_t *)SR_HOST(TNLP_TEX);
+        for (int v = 0; v < 8; v++)
+            for (int u = 0; u < 8; u++)
+                tex[v * 8 + u] = 0xff000000u | ((uint32_t)(v * 32) << 8) | (uint32_t)(u * 32) |
+                                 (((u ^ v) & 1) ? 0x00c00000u : 0x00200000u);
+        sr_gpu_vram_dirty(TNLP_TEX, 8u * 8u * 4u);
+        TNLP_W(&L, 0x1E, 1);
+        TNLP_W(&L, 0xA0, TNLP_TEX & 0x00FFFFFFu);
+        TNLP_W(&L, 0xA8, 8u | ((TNLP_TEX & 0xFF000000u) >> 8));
+        TNLP_W(&L, 0xB8, (3u << 8) | 3u);
+        TNLP_W(&L, 0xC2, 0);
+        TNLP_W(&L, 0xC3, 3);
+        TNLP_W(&L, 0xC6, 0);
+        TNLP_W(&L, 0xC7, 0);                   /* repeat */
+        TNLP_W(&L, 0xC9, 0x100u | 0u);         /* MODULATE, RGBA */
+        TNLP_W(&L, 0xCB, 0);
+        if (c->kind == TNLC_TEXTURED) {
+            TNLP_W(&L, 0x48, tnlp_f24(1.75f));
+            TNLP_W(&L, 0x49, tnlp_f24(-0.5f));
+            TNLP_W(&L, 0x4A, tnlp_f24(0.125f));
+            TNLP_W(&L, 0x4B, tnlp_f24(0.3f));
+        }
+        if (c->kind == TNLC_TEXGEN) {
+            float tg[12]; tnlp_rot(tg, 0.0f, 0.0f, 1.0f, 0.4f, 0.5f, 0.5f, 1.0f);
+            tnlp_matrix(&L, 0x40, tg, 12);
+            TNLP_W(&L, 0xC0, 1u | (0u << 8));
+        }
+    }
+
+    if (c->kind == TNLC_FOG_LINEAR || c->kind == TNLC_FOG_INF) {
+        TNLP_W(&L, 0x1F, 1);
+        TNLP_W(&L, 0xCF, 0x00406080u);
+        if (c->kind == TNLC_FOG_LINEAR) {
+            TNLP_W(&L, 0xCD, tnlp_f24(7.5f));
+            TNLP_W(&L, 0xCE, tnlp_f24(0.37f));
+        } else {
+            TNLP_W(&L, 0xCD, 0x7F8000u);           /* +infinity */
+            TNLP_W(&L, 0xCE, tnlp_f24(1.0f));
+        }
+    }
+
+    if (c->kind == TNLC_DEPTH || c->kind == TNLC_STATIC) {
+        TNLP_W(&L, 0x23, 1);
+        TNLP_W(&L, 0xDE, c->kind == TNLC_DEPTH ? 4u : 6u);   /* LESS / GREATER */
+    }
+    if (c->kind == TNLC_STRIP_CULL0 || c->kind == TNLC_STRIP_CULL1) {
+        TNLP_W(&L, 0x1D, 1);
+        TNLP_W(&L, 0x9B, c->kind == TNLC_STRIP_CULL1 ? 1u : 0u);
+    }
+
+    /* Bones: each a rotation with a translation. */
+    int skin_w = c->kind == TNLC_SKIN1 ? 1 : c->kind == TNLC_SKIN2_U8 ? 2 :
+                 c->kind == TNLC_SKIN4_U16 ? 4 : c->kind == TNLC_SKIN8_F ? 8 :
+                 c->kind == TNLC_LIGHT_SKIN ? 3 : 0;
+    if (skin_w) {
+        TNLP_W(&L, 0x2A, 0);
+        for (int b = 0; b < 8; b++) {
+            float m[12];
+            tnlp_rot(m, tnlp_rand(-1, 1), tnlp_rand(-1, 1), tnlp_rand(0.2f, 1), tnlp_rand(-0.5f, 0.5f),
+                     tnlp_rand(-0.3f, 0.3f), tnlp_rand(-0.3f, 0.3f), tnlp_rand(-0.3f, 0.3f));
+            for (int i = 0; i < 12; i++) TNLP_W(&L, 0x2B, tnlp_f24(m[i]));
+        }
+    }
+    if (c->kind == TNLC_MORPH2) {
+        TNLP_W(&L, 0x2C, tnlp_f24(0.625f));
+        TNLP_W(&L, 0x2D, tnlp_f24(0.375f));
+    }
+
+    /* Lighting. */
+    int lit = c->kind == TNLC_LIGHT_DIR || c->kind == TNLC_LIGHT_POINT ||
+              c->kind == TNLC_LIGHT4_MATUPD || c->kind == TNLC_LIGHT_SKIN || c->kind == TNLC_SPECULAR ||
+              c->kind == TNLC_LIGHT_SUBNORMAL;
+    if (lit) {
+        TNLP_W(&L, 0x17, 1);
+        TNLP_W(&L, 0x53, c->kind == TNLC_LIGHT4_MATUPD ? 3u : 0u);
+        TNLP_W(&L, 0x54, 0x00080402u);
+        TNLP_W(&L, 0x55, 0x00405060u);
+        TNLP_W(&L, 0x56, 0x00c0a0e0u);
+        TNLP_W(&L, 0x57, 0x00ffffffu);
+        TNLP_W(&L, 0x58, 0xb0);
+        /* A positive power only where the cell means to decline (powf); the powered-diffuse
+           light of the four-light cell then lights as plain diffuse. */
+        TNLP_W(&L, 0x5B, tnlp_f24(c->kind == TNLC_SPECULAR ? 8.0f : 0.0f));
+        TNLP_W(&L, 0x5C, 0x00303030u);
+        TNLP_W(&L, 0x5D, 0xc0);
+        int nl = c->kind == TNLC_LIGHT4_MATUPD ? 4 : 1;
+        for (int i = 0; i < nl; i++) {
+            int point = c->kind == TNLC_LIGHT_POINT || (c->kind == TNLC_LIGHT4_MATUPD && (i & 1));
+            uint32_t comp = c->kind == TNLC_SPECULAR ? 1u : (c->kind == TNLC_LIGHT4_MATUPD && i == 2 ? 2u : 0u);
+            TNLP_W(&L, 0x18 + (uint32_t)i, 1);
+            TNLP_W(&L, 0x5F + (uint32_t)i, comp | ((uint32_t)(point ? 1 : 0) << 8));
+            float pos[3] = { tnlp_rand(-3, 3), tnlp_rand(-3, 3), tnlp_rand(1, 4) };
+            for (int k = 0; k < 3; k++) TNLP_W(&L, 0x63 + (uint32_t)(3 * i + k), tnlp_f24(pos[k]));
+            float att[3] = { 0.6f, 0.15f, 0.02f };
+            for (int k = 0; k < 3; k++) TNLP_W(&L, 0x7B + (uint32_t)(3 * i + k), tnlp_f24(att[k]));
+            TNLP_W(&L, 0x8F + (uint32_t)(3 * i), 0x00201810u + (uint32_t)i * 0x00080402u);
+            TNLP_W(&L, 0x90 + (uint32_t)(3 * i), 0x00c0d0e0u - (uint32_t)i * 0x00102030u);
+            TNLP_W(&L, 0x91 + (uint32_t)(3 * i), 0x00ffffffu);
+        }
+    }
+
+    /* The mesh: a grid of 12 x 8 quads over [-1.6, 1.6] x [-1.1, 1.1], displaced in z, with
+     * colours, normals, texture coordinates and weights from the sequence. */
+    TnlpFmt f = { 0, 0, 3, 1, 3, 3, 1 };
+    if (skin_w) {
+        f.wfmt = c->kind == TNLC_SKIN2_U8 ? 1 : c->kind == TNLC_SKIN4_U16 ? 2 : 3;
+        f.wn = skin_w;
+    }
+    if (c->kind == TNLC_FIXED_FMT) { f.tc = 2; f.nrm = 1; f.pos = 2; }
+    if (c->kind == TNLC_MORPH2) f.morph = 2;
+    const int gw = 12, gh = 8;
+    uint8_t *vd = (uint8_t *)SR_HOST(TNLP_VTX);
+    uint32_t stride = 0, nverts = 0;
+    for (int y = 0; y <= gh; y++) {
+        for (int x = 0; x <= gw; x++) {
+            float scale = c->kind == TNLC_FIXED_FMT ? 0.5f : 1.0f;
+            float p[3] = { (-1.6f + 3.2f * (float)x / (float)gw) * scale,
+                           (-1.1f + 2.2f * (float)y / (float)gh) * scale,
+                           tnlp_rand(-0.3f, 0.3f) * scale };
+            float n[3] = { tnlp_rand(-0.5f, 0.5f), tnlp_rand(-0.5f, 0.5f), 0.8f };
+            if (c->kind == TNLC_LIGHT_SUBNORMAL)
+                for (int i = 0; i < 3; i++)   /* every component at least 2^-40, as ge.c requires */
+                    n[i] = ldexpf(n[i] < 0.0f ? n[i] - 0.1f : n[i] + 0.1f, -35);
+            float w[8];
+            float sum = 0.0f;
+            for (int i = 0; i < 8; i++) { w[i] = i < skin_w ? tnlp_rand(0.0f, 1.0f) : 0.0f; sum += w[i]; }
+            if (skin_w) for (int i = 0; i < skin_w; i++) w[i] = w[i] / sum;
+            if (skin_w > 1) w[0] = 0.0f;   /* a zero weight: skipped */
+            uint32_t col = 0xff000000u | ((uint32_t)(tnlp_rand(0, 255)) << 16) |
+                           ((uint32_t)(tnlp_rand(0, 255)) << 8) | (uint32_t)(tnlp_rand(0, 255));
+            if (c->kind == TNLC_RAMP) {
+                uint32_t k = (uint32_t)(y * (gw + 1) + x) * 2u;
+                col = 0xff000000u | ((k & 255u) << 16) | (((k * 3u) & 255u) << 8) | ((255u - k) & 255u);
+            }
+            float u = (float)x / (float)gw, v = (float)y / (float)gh;
+            uint8_t *at = vd + (size_t)nverts * (stride ? stride : 0);
+            stride = 0;
+            for (int m = 0; m < f.morph; m++) {
+                float pm[3] = { p[0] + 0.2f * (float)m, p[1] - 0.1f * (float)m, p[2] };
+                stride += tnlp_vertex(at + stride, &f, w, u, v, col, n, pm);
+            }
+            nverts++;
+        }
+    }
+    uint32_t vt_idx = 0;
+    uint32_t prim = 0, count = 0;
+    TNLP_W(&L, 0x10, (TNLP_VTX >> 8) & 0x000F0000u);
+    if (c->kind == TNLC_FAN_IDX16 || c->kind == TNLC_LIST_IDX8) {
+        /* An index buffer over the grid's vertices. */
+        uint8_t *ib = (uint8_t *)SR_HOST(TNLP_IDX);
+        uint32_t ni = 0;
+        if (c->kind == TNLC_FAN_IDX16) {
+            /* A fan around the grid's centre through a ring of vertices. */
+            uint16_t centre = (uint16_t)((gh / 2) * (gw + 1) + gw / 2);
+            memcpy(ib + 2u * ni++, &centre, 2);
+            for (int k = 0; k <= 16; k++) {
+                float a = 6.2831853f * (float)k / 16.0f;
+                int gx = gw / 2 + (int)lrintf(5.0f * cosf(a)), gy = gh / 2 + (int)lrintf(3.0f * sinf(a));
+                uint16_t ix = (uint16_t)(gy * (gw + 1) + gx);
+                memcpy(ib + 2u * ni++, &ix, 2);
+            }
+            vt_idx = 2; prim = 5;
+        } else {
+            for (int y = 0; y < gh && ni + 6u <= 255u * 3u; y += 2) {
+                for (int x = 0; x < gw; x += 2) {
+                    uint8_t a = (uint8_t)(y * (gw + 1) + x), b = (uint8_t)(a + 1);
+                    uint8_t c2 = (uint8_t)(a + gw + 1), d2 = (uint8_t)(c2 + 1);
+                    ib[ni++] = a; ib[ni++] = b; ib[ni++] = c2;
+                    ib[ni++] = b; ib[ni++] = d2; ib[ni++] = c2;
+                }
+            }
+            vt_idx = 1; prim = 3;
+        }
+        count = ni;
+        TNLP_W(&L, 0x12, tnlp_vtype(&f, (int)vt_idx));
+        TNLP_W(&L, 0x02, TNLP_IDX & 0x00FFFFFFu);
+        TNLP_W(&L, 0x01, TNLP_VTX & 0x00FFFFFFu);
+        TNLP_W(&L, 0x04, (prim << 16) | count);
+    } else if (c->kind == TNLC_STRIP_CULL0 || c->kind == TNLC_STRIP_CULL1 || c->kind == TNLC_FLAT ||
+               c->kind == TNLC_MORPH2 || c->kind == TNLC_FIXED_FMT) {
+        /* One strip per grid row pair, through indices: vertices (y, x), (y + 1, x), ... */
+        uint8_t *ib = (uint8_t *)SR_HOST(TNLP_IDX);
+        TNLP_W(&L, 0x12, tnlp_vtype(&f, 2));
+        TNLP_W(&L, 0x01, TNLP_VTX & 0x00FFFFFFu);
+        for (int y = 0; y < gh; y++) {
+            uint32_t at = TNLP_IDX + (uint32_t)y * 0x100u;
+            uint16_t *row = (uint16_t *)(ib + (size_t)y * 0x100u);
+            for (int x = 0; x <= gw; x++) {
+                row[2 * x] = (uint16_t)(y * (gw + 1) + x);
+                row[2 * x + 1] = (uint16_t)((y + 1) * (gw + 1) + x);
+            }
+            TNLP_W(&L, 0x02, at & 0x00FFFFFFu);
+            TNLP_W(&L, 0x04, (4u << 16) | (uint32_t)(2 * (gw + 1)));
+        }
+    } else {
+        /* A triangle list over the grid, two triangles per quad, written out vertex by vertex. */
+        uint8_t *ld = (uint8_t *)SR_HOST(TNLP_VTX + 0x20000u);
+        uint32_t nl = 0;
+        for (int y = 0; y < gh; y++) {
+            for (int x = 0; x < gw; x++) {
+                int q[6] = { y * (gw + 1) + x, y * (gw + 1) + x + 1, (y + 1) * (gw + 1) + x,
+                             y * (gw + 1) + x + 1, (y + 1) * (gw + 1) + x + 1, (y + 1) * (gw + 1) + x };
+                for (int k = 0; k < 6; k++)
+                    memcpy(ld + (size_t)nl++ * stride, vd + (size_t)q[k] * stride, stride);
+            }
+        }
+        TNLP_W(&L, 0x12, tnlp_vtype(&f, 0));
+        TNLP_W(&L, 0x10, ((TNLP_VTX + 0x20000u) >> 8) & 0x000F0000u);
+        TNLP_W(&L, 0x01, (TNLP_VTX + 0x20000u) & 0x00FFFFFFu);
+        TNLP_W(&L, 0x04, (3u << 16) | nl);
+    }
+    TNLP_W(&L, 0x0F, 0);
+    TNLP_W(&L, 0x0C, 0);
+    return TNLP_LIST;
+}
+
+typedef struct { uint32_t *color; uint16_t *depth; } TnlpOut;
+
+/* Run cell c's list one way (mode 0: software, 1: backend with ge.c's T&L, 2: backend with
+ * GPU T&L) and copy the colour and depth buffers out. */
+static int tnlp_run(const TnlCell *c, int mode, TnlpOut *out, unsigned long long *taken) {
+    const uint32_t fb = 0x04000000u | TNLP_FBA, zb = 0x04000000u | TNLP_ZBA;
+    coherence_reset_targets();
+    memset(SR_HOST(fb), 0, TNLP_STRIDE * FB_H * 4u);
+    memset(SR_HOST(zb), 0, TNLP_STRIDE * FB_H * 2u);
+    sr_gpu_vram_dirty(fb, TNLP_STRIDE * FB_H * 4u);
+    sr_gpu_vram_dirty(zb, TNLP_STRIDE * FB_H * 2u);
+    uint32_t list = tnlp_build(c);
+    ge_tnl_set_enabled(mode == 2);
+    ge_tnl_counts(NULL, NULL, 1);
+    ge_set_gpu_hooks(mode ? &k_hooks : NULL);
+    ge_run_list(list, 0);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_tnl_counts(taken, NULL, 0);
+    ge_tnl_set_enabled(-1);
+    if (mode) {
+        GeGpuFbDescriptor desc = { .addr = fb, .format = 3, .stride = TNLP_STRIDE, .width = 480, .height = FB_H };
+        if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) return 0;
+        if (s_nbatch && !submit_pending()) return 0;
+        /* Only this fixture's depth surface: ge.c has one depth mirror, and reading an earlier
+         * fixture's surface back into it would overwrite this one's. */
+        for (int i = 0; i < MAX_DEP; i++)
+            if (s_deps[i].used && s_deps[i].zba == TNLP_ZBA && !depth_to_cpu(&s_deps[i])) return 0;
+    }
+    memcpy(out->color, SR_HOST(fb), TNLP_STRIDE * FB_H * 4u);
+    /* ge.c's depth surface: the software GE's own, or the backend's depth image read back. */
+    const uint16_t *z = ge_zbuf_ptr();
+    for (uint32_t y = 0; y < FB_H; y++)
+        memcpy(out->depth + (size_t)y * TNLP_STRIDE, z + (size_t)y * ge_zbuf_stride(), TNLP_STRIDE * 2u);
+    return 1;
+}
+
+static int coherence_run_tnl_parity(void) {
+    static const TnlCell cells[] = {
+        { "static-list-ztest", TNLC_STATIC, 1 },
+        { "strip-cull0", TNLC_STRIP_CULL0, 1 },
+        { "strip-cull1", TNLC_STRIP_CULL1, 1 },
+        { "fan-index16", TNLC_FAN_IDX16, 1 },
+        { "list-index8", TNLC_LIST_IDX8, 1 },
+        { "textured-scale-offset", TNLC_TEXTURED, 1 },
+        { "fog-linear", TNLC_FOG_LINEAR, 1 },
+        { "fog-infinite-end", TNLC_FOG_INF, 1 },
+        { "depth-less", TNLC_DEPTH, 1 },
+        { "colour-ramp", TNLC_RAMP, 1 },
+        { "fixed-formats", TNLC_FIXED_FMT, 1 },
+        { "morph-2", TNLC_MORPH2, 1 },
+        { "skin-1-float", TNLC_SKIN1, 1 },
+        { "skin-2-u8", TNLC_SKIN2_U8, 1 },
+        { "skin-4-u16", TNLC_SKIN4_U16, 1 },
+        { "skin-8-float", TNLC_SKIN8_F, 1 },
+        { "light-directional", TNLC_LIGHT_DIR, 1 },
+        { "light-point", TNLC_LIGHT_POINT, 1 },
+        { "light-4-matupdate", TNLC_LIGHT4_MATUPD, 1 },
+        { "light-skinned", TNLC_LIGHT_SKIN, 1 },
+        { "offset-viewport", TNLC_OFFSET_VIEWPORT, 1 },
+        { "near-crossing", TNLC_NEAR_CROSS, 0 },
+        { "specular", TNLC_SPECULAR, 0 },
+        { "flat", TNLC_FLAT, 0 },
+        { "texgen", TNLC_TEXGEN, 0 },
+        { "light-subnormal-length", TNLC_LIGHT_SUBNORMAL, 1 },
+    };
+    const size_t px = (size_t)TNLP_STRIDE * FB_H;
+    TnlpOut sw = { (uint32_t *)malloc(px * 4u), (uint16_t *)malloc(px * 2u) };
+    TnlpOut cpu = { (uint32_t *)malloc(px * 4u), (uint16_t *)malloc(px * 2u) };
+    TnlpOut gpu = { (uint32_t *)malloc(px * 4u), (uint16_t *)malloc(px * 2u) };
+    int ok = sw.color && sw.depth && cpu.color && cpu.depth && gpu.color && gpu.depth;
+    unsigned taken_cells = 0;
+    const int buffers_ok = ok;
+    for (size_t k = 0; buffers_ok && k < sizeof(cells) / sizeof(cells[0]); k++) {
+        const TnlCell *c = &cells[k];
+        unsigned long long t_sw = 0, t_cpu = 0, t_gpu = 0;
+        if (!tnlp_run(c, 0, &sw, &t_sw) || !tnlp_run(c, 1, &cpu, &t_cpu) ||
+            !tnlp_run(c, 2, &gpu, &t_gpu)) {
+            fprintf(stderr, "gpu coherence selftest [tnl-parity/%s]: a run failed\n", c->name);
+            ok = 0;
+            break;
+        }
+        size_t cdiff = 0, zdiff = 0, first = px, zfirst = px;
+        for (size_t i = 0; i < px; i++) {
+            if (cpu.color[i] != gpu.color[i]) { cdiff++; if (first == px) first = i; }
+            if (cpu.depth[i] != gpu.depth[i]) { zdiff++; if (zfirst == px) zfirst = i; }
+        }
+        size_t swdiff = 0, drawn = 0;
+        int swmax = 0;
+        for (size_t i = 0; i < px; i++) {
+            if (cpu.color[i] != 0xff302010u) drawn++;
+            if (sw.color[i] == cpu.color[i]) continue;
+            swdiff++;
+            for (int ch = 0; ch < 32; ch += 8) {
+                int d = abs((int)((sw.color[i] >> ch) & 255u) - (int)((cpu.color[i] >> ch) & 255u));
+                if (d > swmax) swmax = d;
+            }
+        }
+        const int want_gpu = c->gpu && s_vs_tnl != VK_NULL_HANDLE;
+        const int route_ok = want_gpu ? t_gpu > 0 : t_gpu == 0;
+        if (cdiff || zdiff || !route_ok || !drawn) {
+            fprintf(stderr, "gpu coherence selftest [tnl-parity/%s]: FAIL colour_diff=%zu depth_diff=%zu "
+                    "gpu_tnl_prims=%llu (want %s) drawn=%zu",
+                    c->name, cdiff, zdiff, t_gpu, want_gpu ? ">0" : "0", drawn);
+            if (first < px)
+                fprintf(stderr, " first=(%zu,%zu) cpu=%08x gpu=%08x", first % TNLP_STRIDE,
+                        first / TNLP_STRIDE, (unsigned)cpu.color[first], (unsigned)gpu.color[first]);
+            if (zfirst < px)
+                fprintf(stderr, " zfirst=(%zu,%zu) cpu=%04x gpu=%04x sw=%04x", zfirst % TNLP_STRIDE,
+                        zfirst / TNLP_STRIDE, cpu.depth[zfirst], gpu.depth[zfirst], sw.depth[zfirst]);
+            fprintf(stderr, "\n");
+            ok = 0;
+            continue;
+        }
+        if (want_gpu) taken_cells++;
+        printf("gpu coherence selftest: PASS tnl-parity %-22s gpu_tnl_prims=%llu drawn=%zu "
+               "software_diff=%zu max_delta=%d\n", c->name, t_gpu, drawn, swdiff, swmax);
+    }
+    free(sw.color); free(sw.depth); free(cpu.color); free(cpu.depth); free(gpu.color); free(gpu.depth);
+    if (ok)
+        printf("gpu coherence selftest: PASS %-22s cells=%zu gpu_tnl_cells=%u%s\n", "tnl-parity",
+               sizeof(cells) / sizeof(cells[0]), taken_cells,
+               s_vs_tnl ? "" : " (no fp32 subnormal preservation: every cell checked on ge.c's route)");
+    return ok;
+}
+
 int gegpu_coherence_selftest(void) {
     static const CoherenceCase cases[] = {
         { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
@@ -7190,6 +7959,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_psp_sample_points()) ok = 0;
     /* After the mip fixtures: it rewrites the depth buffer they start from. */
     if (!coherence_run_stencil_parity()) ok = 0;
+    if (!coherence_run_tnl_parity()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
@@ -7426,7 +8196,6 @@ int gegpu_init(void) {
     vkGetPhysicalDeviceProperties(s_pdev, &props);
     s_xfer_align = props.limits.optimalBufferCopyOffsetAlignment;
     if (s_xfer_align < 4) s_xfer_align = 4;
-    s_max_lod_bias = props.limits.maxSamplerLodBias;
 
     VkCommandPoolCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -7506,9 +8275,23 @@ int gegpu_init(void) {
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_fix));
 
+    /* Set 1: the GPU T&L parameter arena (#318). Every pipeline shares the one layout; only
+     * psp_tnl.vert reads set 1, and only its draws bind it. */
+    VkDescriptorSetLayoutBinding tdb = {0};
+    tdb.binding = 0; tdb.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    tdb.descriptorCount = 1; tdb.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    VkDescriptorSetLayoutCreateInfo tdlc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    tdlc.bindingCount = 1; tdlc.pBindings = &tdb;
+    VKC(vkCreateDescriptorSetLayout(s_dev, &tdlc, NULL, &s_tnl_dlayout));
+    VkDescriptorPoolSize tdps = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, SUBMIT_FRAMES };
+    VkDescriptorPoolCreateInfo tdpc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    tdpc.maxSets = SUBMIT_FRAMES; tdpc.poolSizeCount = 1; tdpc.pPoolSizes = &tdps;
+    VKC(vkCreateDescriptorPool(s_dev, &tdpc, NULL, &s_tnl_dpool));
+
     VkPushConstantRange pcr = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushPC) };
+    VkDescriptorSetLayout set_layouts[2] = { s_dlayout, s_tnl_dlayout };
     VkPipelineLayoutCreateInfo plc = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-    plc.setLayoutCount = 1; plc.pSetLayouts = &s_dlayout;
+    plc.setLayoutCount = 2; plc.pSetLayouts = set_layouts;
     plc.pushConstantRangeCount = 1; plc.pPushConstantRanges = &pcr;
     VKC(vkCreatePipelineLayout(s_dev, &plc, NULL, &s_playout));
 
@@ -7517,6 +8300,15 @@ int gegpu_init(void) {
     VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_vs));
     smc.codeSize = sizeof(k_frag_spv); smc.pCode = k_frag_spv;
     VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_fs));
+    /* psp_tnl.vert declares DenormPreserve (it must keep fp32 subnormals to match ge.c bit for
+     * bit), which a device may run only with VK_KHR_shader_float_controls and
+     * shaderDenormPreserveFloat32. Without them there is no T&L stage: hook_tnl_prim declines
+     * and ge.c keeps T&L. */
+    s_vs_tnl = VK_NULL_HANDLE;
+    if (vi.denorm_preserve_f32) {
+        smc.codeSize = sizeof(k_tnl_vert_spv); smc.pCode = k_tnl_vert_spv;
+        VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_vs_tnl));
+    }
 
     /* Shared clamp samplers for render-target and snapshot sampling. The min and mag
      * fields stay independent so Vulkan selects the PSP TFLT field from the footprint. */
@@ -7655,6 +8447,12 @@ void gegpu_shutdown(void) {
         if (slot->xfer_map) vkUnmapMemory(s_dev, slot->xfer_mem);
         if (slot->xfer) vkDestroyBuffer(s_dev, slot->xfer, NULL);
         if (slot->xfer_mem) vkFreeMemory(s_dev, slot->xfer_mem, NULL);
+        if (slot->tmap) vkUnmapMemory(s_dev, slot->tbuf_mem);
+        if (slot->tbuf) vkDestroyBuffer(s_dev, slot->tbuf, NULL);
+        if (slot->tbuf_mem) vkFreeMemory(s_dev, slot->tbuf_mem, NULL);
+        if (slot->pmap) vkUnmapMemory(s_dev, slot->pbuf_mem);
+        if (slot->pbuf) vkDestroyBuffer(s_dev, slot->pbuf, NULL);
+        if (slot->pbuf_mem) vkFreeMemory(s_dev, slot->pbuf_mem, NULL);
         if (slot->fence) vkDestroyFence(s_dev, slot->fence, NULL);
         memset(slot, 0, sizeof(*slot));
     }
@@ -7669,6 +8467,13 @@ void gegpu_shutdown(void) {
 
     if (s_vs) vkDestroyShaderModule(s_dev, s_vs, NULL);
     if (s_fs) vkDestroyShaderModule(s_dev, s_fs, NULL);
+    if (s_vs_tnl) vkDestroyShaderModule(s_dev, s_vs_tnl, NULL);
+    if (s_tnl_dpool) vkDestroyDescriptorPool(s_dev, s_tnl_dpool, NULL);
+    if (s_tnl_dlayout) vkDestroyDescriptorSetLayout(s_dev, s_tnl_dlayout, NULL);
+    s_vs_tnl = VK_NULL_HANDLE; s_tnl_dpool = VK_NULL_HANDLE; s_tnl_dlayout = VK_NULL_HANDLE;
+    free(s_tnl_vcpu); free(s_tnl_pcpu); free(s_tnl_box);
+    s_tnl_vcpu = NULL; s_tnl_pcpu = NULL; s_tnl_box = NULL;
+    s_tnl_ready = 0; s_ntnl = s_ntnlp = 0;
     if (s_playout) vkDestroyPipelineLayout(s_dev, s_playout, NULL);
     if (s_rp) vkDestroyRenderPass(s_dev, s_rp, NULL);
     if (s_dlayout) vkDestroyDescriptorSetLayout(s_dev, s_dlayout, NULL);

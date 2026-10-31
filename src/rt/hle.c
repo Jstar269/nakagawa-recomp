@@ -5200,8 +5200,12 @@ static void retire_loaded_module(LoadedModule *mod) {
 static uint32_t s_last_prx_entry = 0;
 static uint32_t s_last_prx_stop = 0;
 static uint32_t s_last_prx_base = 0;
+/* The last module register_prx_exports read exports a function host HLE implements: its
+ * identity is the export table, never its path (#1385). */
+static int s_last_prx_host_served = 0;
 
 static unsigned register_prx_exports(const char *host_path, uint32_t base) {
+    s_last_prx_host_served = 0;
     FILE *f = fopen(host_path, "rb");
     if (!f) {
         char temp_path[512];
@@ -5301,6 +5305,7 @@ static unsigned register_prx_exports(const char *host_path, uint32_t base) {
                      * nonzero base; only reject the final absolute-address wrap. */
                     if (target <= UINT32_MAX - base &&
                         sr_hle_register_late_import(pairs[i], base + target)) registered++;
+                    if (hle_find(pairs[i])) s_last_prx_host_served = 1;
                     if (target <= UINT32_MAX - base) {
                         if (pairs[i] == 0xd632acdbu) {
                             s_last_prx_entry = base + target;
@@ -5329,6 +5334,10 @@ out:
  * on test-only loader entry points. */
 unsigned sr_hle_test_register_prx_exports(const char *host_path, uint32_t base) {
     return register_prx_exports(host_path, base);
+}
+int sr_hle_test_last_prx_host_served(void) { return s_last_prx_host_served; }
+void sr_hle_test_unregister_late_imports(uint32_t lo, uint32_t hi) {
+    sr_hle_unregister_late_imports_in_range(lo, hi);
 }
 #endif
 
@@ -5945,6 +5954,7 @@ static uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
     s_last_prx_base = 0;
+    s_last_prx_host_served = 0;
     if (declared && placement == SR_GUEST_MODULE_RUNTIME) {
         uint32_t error = load_guest_placed_module(file, required, option, mod);
         if (error) {
@@ -5966,6 +5976,7 @@ static uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
         mod->module_start = s_last_prx_entry;
         mod->module_stop = s_last_prx_stop;
         mod->image_base = s_last_prx_base;
+        mod->host_served = s_last_prx_host_served;
         (void)prx_image_bounds(mod->image_base, NULL, &mod->image_end);
     }
     uint32_t uid = sr_alloc_uid();
@@ -8510,6 +8521,43 @@ int sr_exit_request_quit(void) {
 int sr_exit_request_expired(void) {
     return s_exit_request_pending && sched_vtime_us() >= s_exit_request_deadline_us;
 }
+
+int sr_savedata_pause_busy(void);   /* the savedata dialog is running (defined below) */
+static int s_quit_stop_armed;
+static uint64_t s_quit_stop_deadline_us;
+
+/* The player's stop decision for a quit request, polled at scheduler boundaries (#1377). The
+ * first call notifies the exit callback (sr_exit_request_quit) and opens one window of guest
+ * time, SR_EXIT_REQUEST_WINDOW_US, whether or not a callback is registered. Returns 0 while the
+ * run goes on: the guest's callback window is open, or a savedata dialog it started is still
+ * running inside that window, so a quit does not cut off a save in progress (the pause
+ * overlay's Quit is refused for the same reason). Returns 1 once the run should end; the window
+ * bounds the wait, so a guest that never finishes cannot hold the player open. The stop lands
+ * only between guest slices, never inside the sceUtilitySavedataUpdate call that writes the
+ * save (sr_savedata_execute_sized runs within it), so no write is cut off halfway. */
+int sr_exit_request_stop_due(void) {
+    if (!s_quit_stop_armed) {
+        s_quit_stop_armed = 1;
+        s_quit_stop_deadline_us = sched_vtime_us() + SR_EXIT_REQUEST_WINDOW_US;
+    }
+    /* One window from the request: a callback the guest registers later is still notified,
+     * but it cannot open a second window past this one. */
+    if (sched_vtime_us() >= s_quit_stop_deadline_us) return 1;
+    if (sr_exit_request_quit()) return 0;
+    if (sched_vtime_us() < s_quit_stop_deadline_us && sr_savedata_pause_busy()) return 0;
+    return 1;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* A fresh quit for each test: nothing in the runtime resets a quit request, which lasts for
+ * the process (a LoadExec in the window does not give the next program a new one). */
+void sr_hle_test_exit_request_reset(void) {
+    s_exit_request_pending = 0;
+    s_exit_request_deadline_us = 0u;
+    s_quit_stop_armed = 0;
+    s_quit_stop_deadline_us = 0u;
+}
+#endif
 /* sceKernelStopUnloadSelfModuleWithStatus(status, ...): on hardware the kernel stops the
  * module's threads and reclaims its memory -- control NEVER returns to the caller. The
  * runtime loads exactly one game module and its threads are the only execution surface,
@@ -16036,14 +16084,11 @@ static uint32_t h_StartModule(CpuState *s) {
      * unavailable, so it reaches the fail-closed startup boundary below. */
     int refuse_unavailable_libfont = policy == MODULE_START_NONE && is_libfont;
 
-    /* Same root cause as the sceUtilityLoadModule fix above (see the long comment on
-     * h_UtilityLoadModule): psmf.prx and libpsmfplayer.prx are fully host-side HLE'd, and their
-     * real module_start entries (f_32280000/f_322f8868) are genuine Sony SDK init code that
-     * assumes a real PSP kernel underneath -- running them hangs on an unconditional WaitSema.
-     * This is a second, independent call path into the same PRXs (via sceKernelLoadModule +
-     * sceKernelStartModule instead of sceUtilityLoadModule), so it needs the identical skip.
-     * populate_known_module(path) was already called in h_LoadModule when the module was
-     * recorded, so it is not repeated here. */
+    /* A module whose exports host HLE implements (the PSMF and PSMF-player libraries, for
+     * example) keeps the host bypass: its real module_start is SDK init code that assumes a
+     * real PSP kernel underneath and hangs on an unconditional WaitSema. What the record knows
+     * of a module is its export table (host_served), never a substring of its path, so a
+     * look-alike file name changes nothing (#1385). */
     if (!allow_entry && !refuse_unavailable_libfont) {
         if (policy == MODULE_START_NONE) {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> "
@@ -16052,14 +16097,9 @@ static uint32_t h_StartModule(CpuState *s) {
         } else if (mod->runtime_placed) {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> host HLE serves "
                             "this module's exports; module_start not executed\n", uid, path);
-        } else if (path) {
-            if (strstr(path, "psmf.prx")) {
-                fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-            } else if (strstr(path, "libpsmfplayer.prx")) {
-                fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
-            } else {
-                fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
-            }
+        } else if (mod->host_served) {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> host HLE serves this "
+                            "module's exports; module_start not executed\n", uid, path ? path : "");
         } else {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown module path, skipping entry\n", uid);
         }
@@ -16120,10 +16160,9 @@ static uint32_t h_StartModule(CpuState *s) {
     static int s_logged_untranslated = 0;
     if (!is_libfont && !s_logged_untranslated) {
         s_logged_untranslated = 1;
-        if (strstr(mod->path, "psmf.prx")) {
-            fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
-        } else if (strstr(mod->path, "libpsmfplayer.prx")) {
-            fprintf(stderr, "sceKernelStartModule: recognized libpsmfplayer.prx (module_start not executed; scePsmfPlayer* is fully host-HLE'd)\n");
+        if (mod->host_served) {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> host HLE serves this "
+                            "module's exports; module_start not executed\n", uid, mod->path);
         } else {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x) -> unknown or untranslated entry, skipping\n", uid);
         }
@@ -16218,6 +16257,11 @@ void sr_hle_test_module_reset(void) {
 uint32_t sr_hle_test_started_export(uint32_t nid) { return started_module_export(nid); }
 unsigned sr_hle_test_image_count(void) { return s_prx_image_count; }
 unsigned sr_hle_test_module_count(void) { return (unsigned)s_nloaded_modules; }
+/* -1 when no live record has the UID; else whether host HLE serves its exports. */
+int sr_hle_test_module_host_served(uint32_t uid) {
+    LoadedModule *mod = find_loaded_module(uid);
+    return mod ? mod->host_served : -1;
+}
 int sr_hle_test_started_image_count(void) {
     return atomic_load_explicit(&s_prx_started_count, memory_order_acquire);
 }
@@ -24751,14 +24795,13 @@ static uint32_t h_DisplayGetAccumulatedHcount(CpuState *s) {
     return sched_display_accumulated_hcount();
 }
 
-/* sceGe_user: pretend the GE finishes immediately (DrawSync returns done). eDRAM at 0x04000000. */
+/* sceGe_user: the GE list queue and its callbacks. eDRAM at 0x04000000. */
 typedef struct {
     int used;
     uint32_t signal_func, signal_arg;
     uint32_t finish_func, finish_arg;
 } GeCallback;
 static GeCallback s_ge_cb[16];
-static uint32_t s_ge_list_next = 0;
 
 /* Every nested guest call this runtime makes -- GE callbacks here and the MPEG
  * ring-refill callback in mpeg.c -- runs on a guest stack that is NOT the
@@ -24977,21 +25020,45 @@ static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t finish_id, u
 #define GE_ERROR_NO_ACTIVE_LIST 0x80000020u /* sceGeBreak(0) with no active list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
 #define GE_ERROR_INVALID_BREAK_MODE 0x80000107u /* sceGeBreak(-1), parameter untouched; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
 #define GE_ERROR_INVALID_LIST_ID 0x80000100u /* sceGeListSync(qid, 1) on a list a sceGeBreak(1) reset removed; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
-#define GE_ERROR_LIST_BUSY 0x80000021u /* sceGeListDeQueue on a stalled list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_ERROR_LIST_BUSY 0x80000021u /* sceGeListDeQueue on a stalled list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). On a completed list too: PSP-GE-SYNC-001 ge-list-sync-completed-poll, captured */
+#define GE_ERROR_INVALID_MODE 0x80000107u /* sceGeListSync(qid, 2), sceGeDrawSync(2) and sceGeDrawSync(-1); PSP-GE-SYNC-001 ge-sync-invalid-mode, captured 2026-10-31 */
+#define GE_ERROR_OUT_OF_MEMORY 0x80000022u /* sceGeListEnQueue with all 64 lists in use; uofw src/kd/ge/ge.c _sceGeListEnQueue, UNMEASURED */
 
+/* The GE driver's display lists (#1374). PSP-GE-SYNC-001 cells cited here and below are
+ * captured on a PSP-3000 (two runs on 2026-10-31, not yet acceptance-eligible: see
+ * tools/psp_oracle/manifest.json). The structure follows the driver as uofw
+ * reconstructs it (github.com/uofw/uofw src/kd/ge/ge.c, MIT): 64 list slots, a queue of
+ * active lists that the GE runs one at a time in enqueue order, and a FIFO of free slots
+ * that a list joins when it completes or is dequeued, and that an enqueue takes from the
+ * front. A queue id names a slot, so an id stays in range after its list is gone and then
+ * reads whatever the slot holds, as on a PSP.
+ *   GE_LIST_FREE       no list. A peek names no list (0x80000100): PSP-GE-CONTROL-001 and
+ *                      PSP-GE-SYNC-001 ge-list-sync-cancelled-poll.
+ *   GE_LIST_STALLED    the active head, waiting at its stall address.
+ *   GE_LIST_COMPLETED  ran to its END. Its slot is free for reuse already, and a
+ *                      sceGeDrawSync(0) turns it FREE (uofw sceGeDrawSync).
+ *   GE_LIST_PAUSED     the head, paused by sceGeBreak(0).
+ *   GE_LIST_DRAWING    reached its END; the opt-in timing model has not completed it yet.
+ *   GE_LIST_QUEUED     enqueued behind the head; it has not started.
+ * The blocking sceGeListSync waits on a completion bit per slot, as the driver waits on an
+ * event flag bit per list: an enqueue clears the slot's bit, the list's completion or its
+ * dequeue sets it, and a sceGeBreak(1) reset leaves it alone, so a list the reset removed
+ * keeps its waiter parked (PSP-GE-SYNC-001 ge-list-sync-cancelled-wait: no return) while a
+ * completed list answers at once even after its slot was freed (ge-list-sync-stale-wait).
+ * The bits start set: the driver creates its event flags with every bit set. */
 enum {
     GE_LIST_FREE = 0,
     GE_LIST_STALLED = 1,
     GE_LIST_COMPLETED = 2,
     GE_LIST_PAUSED = 3,
-    GE_LIST_CANCELLED = 4,
     GE_LIST_DRAWING = 5, /* reached its END; the opt-in timing model has not completed it yet */
+    GE_LIST_QUEUED = 6,
 };
 
 /* Blocking sceGeListSync/sceGeDrawSync park the caller on this object and
  * re-read the list table each time it is woken (#1374). Every transition that can
- * end such a wait wakes it: a list reaching its END, a sceGeBreak(1) reset, and an
- * enqueue that reuses a slot. */
+ * end such a wait wakes it: a list completing or being dequeued, and a sceGeBreak(1)
+ * reset. */
 #define GE_SYNC_WAIT_OBJ 0x47455359u /* "GESY" */
 
 static void ge_sync_wake(void) { sched_wake(GE_SYNC_WAIT_OBJ); }
@@ -25026,12 +25093,79 @@ typedef struct {
     uint32_t cbarg;
     int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
+    int busy; // the list has started; only sceGeDrawSync(0) or a reset clears it (uofw isBusy)
+    uint64_t order; // enqueue order: the active queue runs the oldest first
     uint32_t finish_id; // the 16-bit argument of the FINISH that ended it: the callback's id
     uint64_t done_us; // GE_LIST_DRAWING: modelled completion time (guest us)
     uint64_t finish_seq; // GE_LIST_DRAWING: completion order between equal times
 } GeListInfo;
 
 static GeListInfo s_ge_lists[GE_LIST_MAX];
+static uint64_t s_ge_list_done_bits = UINT64_MAX; /* completion bit per slot */
+static uint8_t s_ge_free_slots[GE_LIST_MAX];      /* FIFO of free slots */
+static unsigned s_ge_free_head, s_ge_free_count;
+static int s_ge_free_ready;                      /* the FIFO has been built */
+static uint64_t s_ge_list_order;
+
+/* Queue ids: GE_LIST_ID_BASE with the slot in bits 6-11. The driver's ids are the list's
+ * address XOR a per-boot mask (uofw sceGeInit); these keep their 0x35 prefix and name the
+ * slot the same way, so ids repeat when slots do. */
+#define GE_LIST_ID_BASE 0x35000000u
+#define GE_LIST_ID_SLOT_SHIFT 6u
+
+static uint32_t ge_list_id(int slot) { return GE_LIST_ID_BASE | ((uint32_t)slot << GE_LIST_ID_SLOT_SHIFT); }
+
+/* The slot an id names, or -1 for an id no enqueue can return: 0x0badf00d and -1 read
+ * 0x80000100 in both sync forms (PSP-GE-SYNC-001 ge-list-sync-unknown-poll and -wait). */
+static int ge_list_slot(uint32_t id) {
+    if ((id & ~((uint32_t)(GE_LIST_MAX - 1) << GE_LIST_ID_SLOT_SHIFT)) != GE_LIST_ID_BASE) return -1;
+    return (int)((id >> GE_LIST_ID_SLOT_SHIFT) & (GE_LIST_MAX - 1u));
+}
+
+/* Every slot free, in slot order: the driver's queue at boot and after sceGeBreak(1). */
+static void ge_free_rebuild(void) {
+    for (int i = 0; i < GE_LIST_MAX; i++) s_ge_free_slots[i] = (uint8_t)i;
+    s_ge_free_head = 0;
+    s_ge_free_count = GE_LIST_MAX;
+    s_ge_free_ready = 1;
+}
+
+static void ge_free_push(int slot) {
+    s_ge_free_slots[(s_ge_free_head + s_ge_free_count) % GE_LIST_MAX] = (uint8_t)slot;
+    s_ge_free_count++;
+}
+
+static int ge_free_pop(void) {
+    if (!s_ge_free_ready) ge_free_rebuild();
+    if (s_ge_free_count == 0u) return -1;
+    int slot = s_ge_free_slots[s_ge_free_head];
+    s_ge_free_head = (s_ge_free_head + 1u) % GE_LIST_MAX;
+    s_ge_free_count--;
+    return slot;
+}
+
+static uint64_t ge_slot_bit(int slot) { return (uint64_t)1 << slot; }
+
+/* The active queue's head: the oldest list that is queued, stalled or paused, else -1. A list
+ * that is drawing in the timing model has run its commands and does not hold the queue. */
+static int ge_queue_head(void) {
+    int head = -1;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        int st = s_ge_lists[i].status;
+        if ((st == GE_LIST_QUEUED || st == GE_LIST_STALLED || st == GE_LIST_PAUSED) &&
+            (head < 0 || s_ge_lists[i].order < s_ge_lists[head].order))
+            head = i;
+    }
+    return head;
+}
+
+/* A list completed: its slot joins the free FIFO, its waiters are released. */
+static void ge_list_completed(int slot) {
+    s_ge_lists[slot].status = GE_LIST_COMPLETED;
+    ge_free_push(slot);
+    s_ge_list_done_bits |= ge_slot_bit(slot);
+    ge_sync_wake();
+}
 
 /* ---- opt-in GE completion timing (SR_GE_TIMING=1, issue #1296) ----------------------------
  *
@@ -25119,7 +25253,7 @@ static void ge_list_reached_end(CpuState *s, int slot) {
                     l->uid, (unsigned long long)l->done_us);
         return;
     }
-    l->status = GE_LIST_COMPLETED;
+    ge_list_completed(slot);
     ge_finish_callback(s, l->cbid, l->finish_id, l->cbarg);
 }
 
@@ -25148,7 +25282,7 @@ static void ge_timing_service_due(void) {
         }
         if (best < 0) return;
         GeListInfo *l = &s_ge_lists[best];
-        l->status = GE_LIST_COMPLETED;
+        ge_list_completed(best);
         s_ge_timing_drawing--;
         if (ge_log_on())
             fprintf(stderr, "GE_TIMING: list_id=0x%08x completed at %llu us (modelled %llu us)\n",
@@ -25199,86 +25333,91 @@ static uint32_t h_GeGetCmd(CpuState *s) {
  * chunks than the list has commands is normal traffic, not an error. */
 static unsigned s_ge_late_stall_ignored;
 
+/* Start the list in `slot`: it becomes the head and the GE runs it until it stalls or reaches
+ * its END. stall == list is an empty ring: running it now would read uninitialised eDRAM, so it
+ * stays stalled for sceGeListUpdateStallAddr to drive. A stall address of 0 runs it to its END. */
+static void ge_list_start(CpuState *s, int slot) {
+    GeListInfo *l = &s_ge_lists[slot];
+    l->status = GE_LIST_STALLED;
+    l->busy = 1;
+    if (ge_timing_on()) ge_timing_add_clk(ge_timing_list_clk());
+    if (l->stall_addr != 0 && l->stall_addr == l->start_pc) {
+        ge_enqueue_trace_result(s, "enqueue", l->uid, "deferred", l->start_pc, 0);
+        if (ge_log_on())
+            fprintf(stderr, "GE_ENQ: list_id=0x%08x list=0x%08x stall=0x%08x cbid=%u -> DEFERRED (stall==list)\n",
+                    l->uid, l->start_pc, l->stall_addr, l->cbid);
+        return;
+    }
+    g_ge_stall_addr = l->stall_addr;
+    uint32_t next_pc = ge_run_list(l->start_pc, 0);
+    g_ge_stall_addr = 0;
+    if (ge_timing_on()) ge_timing_charge_run();
+
+    ge_enqueue_trace_result(s, "enqueue", l->uid, next_pc == 0 ? "done" : "stalled", next_pc, next_pc == 0);
+    if (ge_log_on())
+        fprintf(stderr, "GE_ENQ: list_id=0x%08x list=0x%08x stall=0x%08x cbid=%u -> next_pc=0x%08x %s\n",
+                l->uid, l->start_pc, l->stall_addr, l->cbid, next_pc, next_pc == 0 ? "(DONE)" : "(stalled)");
+    if (next_pc == 0) {
+        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
+                               l->uid, l->start_pc, l->stall_addr, next_pc);
+        ge_list_reached_end(s, slot);
+    } else {
+        /* Stalled short of its END: the guest advances it with sceGeListUpdateStallAddr. Do NOT
+         * drain here: that runs past the game's write head into uninitialised eDRAM. */
+        l->current_pc = next_pc;
+    }
+}
+
+/* Run the queue: while the head is a list that has not started, start it. A head that stalls or
+ * is paused holds the lists behind it, as the GE runs one list at a time (uofw
+ * _sceGeFinishInterrupt starts the next active list once one completes). */
+static void ge_queue_run(CpuState *s) {
+    for (;;) {
+        int head = ge_queue_head();
+        if (head < 0 || s_ge_lists[head].status != GE_LIST_QUEUED) return;
+        ge_list_start(s, head);
+    }
+}
+
 static uint32_t h_GeListEnQueue(CpuState *s) {
     uint32_t list = A0;
     uint32_t stall = A1;
     uint32_t cbid = A2;
     uint32_t cbarg = A3;
-    uint32_t list_id = 0x35000000u | (s_ge_list_next++ & 0x00ffffffu);
+    int slot = ge_free_pop();
+    uint32_t list_id = slot >= 0 ? ge_list_id(slot) : GE_ERROR_OUT_OF_MEMORY;
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_ENQUEUE,
                            list, stall, list_id, cbid);
 
     ge_enqueue_trace_emit(s, "enqueue", list_id, list, stall, cbid);
-
-    int slot = -1;
-    for (int i = 0; i < GE_LIST_MAX; i++) {
-        if (s_ge_lists[i].status == 0) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot == -1 && ge_timing_on()) {
-        /* With lists left drawing, reuse a finished slot first so no completion is lost. */
-        for (int i = 0; i < GE_LIST_MAX; i++) {
-            if (s_ge_lists[i].status == GE_LIST_COMPLETED || s_ge_lists[i].status == GE_LIST_CANCELLED) {
-                slot = i;
-                break;
-            }
-        }
-    }
-    if (slot == -1) {
-        slot = 0;
-        /* The reused slot drops a list a blocking sync may be waiting on. */
-        ge_sync_wake();
-    }
-    if (s_ge_lists[slot].status == GE_LIST_DRAWING) s_ge_timing_drawing--;
-
-    s_ge_lists[slot].uid = list_id;
-    s_ge_lists[slot].start_pc = list;
-    s_ge_lists[slot].current_pc = list;
-    s_ge_lists[slot].stall_addr = stall;
-    s_ge_lists[slot].cbid = cbid;
-    s_ge_lists[slot].cbarg = cbarg;
-    s_ge_lists[slot].executed = 0;
-    s_ge_lists[slot].status = 1;
-    if (ge_timing_on()) ge_timing_add_clk(ge_timing_list_clk());
-
-    /* stall == list means the ring buffer is empty — the game will fill it and advance the
-     * stall via sceGeListUpdateStallAddr. Running it now would read uninitialized eDRAM;
-     * just record as stalled and let UpdateStallAddr drive it.
-     * Also treat stall == 0 as "run to completion" (no stall fence). */
-    if (stall != 0 && stall == list) {
-        ge_enqueue_trace_result(s, "enqueue", list_id, "deferred", list, 0);
+    if (slot < 0) {
         if (ge_log_on())
-            fprintf(stderr, "GE_ENQ: list_id=0x%08x list=0x%08x stall=0x%08x cbid=%u -> DEFERRED (stall==list)\n",
+            fprintf(stderr, "GE_ENQ: list=0x%08x refused: all %d lists in use\n", list, GE_LIST_MAX);
+        return GE_ERROR_OUT_OF_MEMORY;
+    }
+
+    GeListInfo *l = &s_ge_lists[slot];
+    memset(l, 0, sizeof(*l));
+    l->uid = list_id;
+    l->start_pc = list;
+    l->current_pc = list;
+    l->stall_addr = stall;
+    l->cbid = cbid;
+    l->cbarg = cbarg;
+    l->order = ++s_ge_list_order;
+    s_ge_list_done_bits &= ~ge_slot_bit(slot);
+
+    if (ge_queue_head() >= 0) {
+        /* Another list holds the GE: this one waits its turn. */
+        l->status = GE_LIST_QUEUED;
+        ge_enqueue_trace_result(s, "enqueue", list_id, "queued", list, 0);
+        if (ge_log_on())
+            fprintf(stderr, "GE_ENQ: list_id=0x%08x list=0x%08x stall=0x%08x cbid=%u -> QUEUED\n",
                     list_id, list, stall, cbid);
         return list_id;
     }
-
-    g_ge_stall_addr = stall;
-    uint32_t next_pc = ge_run_list(list, 0);
-    g_ge_stall_addr = 0;
-    if (ge_timing_on()) ge_timing_charge_run();
-
-    ge_enqueue_trace_result(s, "enqueue", list_id,
-                            next_pc == 0 ? "done" : "stalled",
-                            next_pc, next_pc == 0);
-
-    if (ge_log_on())
-        fprintf(stderr, "GE_ENQ: list_id=0x%08x list=0x%08x stall=0x%08x cbid=%u -> next_pc=0x%08x %s\n",
-                list_id, list, stall, cbid, next_pc, next_pc == 0 ? "(DONE)" : "(stalled)");
-
-    if (next_pc == 0) {
-        SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
-                               list_id, list, stall, next_pc);
-        ge_list_reached_end(s, slot);
-    } else {
-        /* List stalled at a non-start stall — game will advance via UpdateStallAddr.
-         * Do NOT drain here: that runs past the game's write head into uninitialized eDRAM. */
-        s_ge_lists[slot].current_pc = next_pc;
-        /* status stays 1 (stalled) */
-    }
-
+    ge_list_start(s, slot);
+    ge_queue_run(s);
     return list_id;
 }
 
@@ -25300,18 +25439,10 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
     uint32_t list_id = A0;
     uint32_t new_stall = A1;
 
-    int slot = -1;
-    for (int i = 0; i < GE_LIST_MAX; i++) {
-        /* A list the GE already ran to its END is found too: the stall address
-         * that follows its consumption is a defined no-op, not an unknown list. */
-        if (s_ge_lists[i].uid == list_id &&
-            (s_ge_lists[i].status == GE_LIST_STALLED ||
-             s_ge_lists[i].status == GE_LIST_PAUSED ||
-             s_ge_lists[i].executed)) {
-            slot = i;
-            break;
-        }
-    }
+    /* A list the GE already ran to its END is found too: the stall address that follows its
+     * consumption is a defined no-op, not an unknown list. */
+    int slot = ge_list_slot(list_id);
+    if (slot >= 0 && s_ge_lists[slot].status == GE_LIST_FREE) slot = -1;
 
     ge_enqueue_trace_emit(s, "update_stall", list_id,
                           slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
@@ -25342,12 +25473,16 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
         return 0;
     }
 
-    if (s_ge_lists[slot].status == GE_LIST_PAUSED) {
+    if (s_ge_lists[slot].status == GE_LIST_PAUSED || s_ge_lists[slot].status == GE_LIST_QUEUED) {
+        /* A paused list keeps the new stall address until it is continued, a queued one
+         * until its turn comes. */
         s_ge_lists[slot].stall_addr = new_stall;
-        ge_enqueue_trace_result(s, "update_stall", list_id, "paused", s_ge_lists[slot].current_pc, 0);
+        ge_enqueue_trace_result(s, "update_stall", list_id,
+                                s_ge_lists[slot].status == GE_LIST_PAUSED ? "paused" : "queued",
+                                s_ge_lists[slot].current_pc, 0);
         if (ge_log_on())
-            fprintf(stderr, "GE_UPDATE_STALL: list_id=0x%08x is paused; updated stall=0x%08x without resuming\n",
-                    list_id, new_stall);
+            fprintf(stderr, "GE_UPDATE_STALL: list_id=0x%08x is %s; updated stall=0x%08x without running it\n",
+                    list_id, s_ge_lists[slot].status == GE_LIST_PAUSED ? "paused" : "queued", new_stall);
         return 0;
     }
 
@@ -25376,8 +25511,8 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
                                s_ge_lists[slot].stall_addr, next_pc);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list DONE, firing finish callback cbid=%u\n", s_ge_lists[slot].cbid);
-        ge_sync_wake();
         ge_list_reached_end(s, slot);
+        ge_queue_run(s);
     } else {
         s_ge_lists[slot].current_pc = next_pc;
     }
@@ -25389,62 +25524,73 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
  * already run to its END. */
 unsigned sr_hle_test_ge_late_stall_ignored(void) { return s_ge_late_stall_ignored; }
 
+/* sceGeListSync(qid, syncType). An id that names no slot is 0x80000100 in both forms, and a
+ * sync type other than 0 or 1 is 0x80000107 (PSP-GE-SYNC-001 ge-list-sync-unknown-poll,
+ * ge-list-sync-unknown-wait, ge-sync-invalid-mode; the id is checked first, as in uofw).
+ *   1, the peek: the list's state. Completed 0, queued behind the head 1 (uofw, UNMEASURED),
+ *      drawing in the timing model 2 (CASE=ge-timing C3), stalled 3 and paused 4
+ *      (PSP-GE-CONTROL-001), and 0x80000100 once the slot holds no list: after a
+ *      sceGeBreak(1) reset (PSP-GE-CONTROL-001, PSP-GE-SYNC-001 ge-list-sync-cancelled-poll)
+ *      or a sceGeDrawSync(0) (uofw, UNMEASURED). Known divergence: the PSP also
+ *      read some lists as 0x80000100 within 1 ms of their completion, with no
+ *      sceGeDrawSync(0) in between, and others as 0 (ge-list-sync-after-reenqueue,
+ *      ge-list-sync-stale-1..3); the driver's list lifecycle has no transition that frees
+ *      a slot there, so this keeps 0 until a sceGeDrawSync(0).
+ *   0, the wait: returns 0 once the slot's completion bit is set, as the driver waits on the
+ *      list's event flag bit (see GE_LIST_FREE above). A caller with no guest thread to park
+ *      stops the run by name instead. */
 static uint32_t h_GeListSync(CpuState *s) {
     uint32_t qid = A0;
     uint32_t syncType = A1;
-    int recorded = 0;
-rescan:
-    for (int i = 0; i < GE_LIST_MAX; i++) {
-        if (s_ge_lists[i].uid == qid) {
-            if (!recorded) {
-                SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
-                                       qid, s_ge_lists[i].start_pc,
-                                       s_ge_lists[i].stall_addr, syncType);
-                recorded = 1;
-            }
-            if (ge_log_on())
-                fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
-                        qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
-            if (s_ge_lists[i].status == GE_LIST_DRAWING) {
-                /* Opt-in timing model.  The peek reads 2 until the completion interrupt has
-                 * been handled (PSP-3000, CASE=ge-timing C3). */
-                if (syncType == 1) return GE_SYNC_DRAWING;
-                ge_timing_wait(i);
-                ge_transition_trace_check("listsync", s_vcount);
-                return 0;
-            }
-            if (s_ge_lists[i].status == GE_LIST_COMPLETED) {
-                ge_transition_trace_check("listsync", s_vcount);
-                return 0;
-            }
-            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
-                if (syncType == 1)
-                    return s_ge_lists[i].status == GE_LIST_STALLED ? GE_LIST_SYNC_STALLED
-                                                                   : GE_LIST_SYNC_PAUSED;
-                /* The blocking form (PSPSDK pspge.h) returns once the list completes, so
-                 * the caller waits until a producer thread advances the stall address or
-                 * resumes the pause, or a reset removes the list. probe.c records that a
-                 * blocking sync on a paused list did not return on PSP-3000. */
-                uint32_t result = 0;
-                if (!ge_sync_block("sceGeListSync", &result)) return result;
-                goto rescan;
-            }
-            if (s_ge_lists[i].status == GE_LIST_CANCELLED) {
-                /* A sceGeBreak(1) reset removes the list, so its id is no longer valid:
-                 * measured with syncType 1 on a list the reset removed while it stalled
-                 * (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run). syncType 0 and a list
-                 * the reset removed while paused are UNMEASURED and take the same code. */
-                return GE_ERROR_INVALID_LIST_ID;
-            }
-        }
-    }
+    int slot = ge_list_slot(qid);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
-                           qid, 0u, 0u, syncType);
+                           qid, slot >= 0 ? s_ge_lists[slot].start_pc : 0u,
+                           slot >= 0 ? s_ge_lists[slot].stall_addr : 0u, syncType);
+    if (slot < 0) {
+        if (ge_log_on())
+            fprintf(stderr, "GE_SYNC: qid=0x%08x names no list slot\n", qid);
+        return GE_ERROR_INVALID_LIST_ID;
+    }
+    GeListInfo *l = &s_ge_lists[slot];
     if (ge_log_on())
-        fprintf(stderr, "GE_SYNC: qid=0x%08x NOT FOUND in list table\n", qid);
-    /* An unknown queue id returns 0. This predates the eligible re-run and is UNMEASURED: the
-     * measured 0x80000100 covers only a list that a sceGeBreak(1) reset removed. */
-    return 0;
+        fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
+                qid, syncType, l->status, l->current_pc);
+    if (syncType == 0u) {
+        for (;;) {
+            if (l->status == GE_LIST_DRAWING) {
+                /* Opt-in timing model: delay until the modelled completion has been delivered.
+                 * A caller that cannot be delayed (interrupt context), or whose completion
+                 * interrupt cannot be delivered (interrupts suspended), would otherwise be told
+                 * the list is done before its finish callback ran; that has no measured result,
+                 * so the run stops by name. */
+                ge_timing_wait(slot);
+                if (l->status == GE_LIST_DRAWING)
+                    return hle_unmodelled_stop(
+                        "sceGeListSync",
+                        "blocking wait for a drawing list whose completion cannot be delivered here "
+                        "has no measured result");
+                continue;
+            }
+            if (s_ge_list_done_bits & ge_slot_bit(slot)) break;
+            /* probe.c records that a blocking sync on a paused list did not return on PSP-3000;
+             * a stalled or queued list returns once a producer thread lets it complete. */
+            uint32_t result = 0;
+            if (!ge_sync_block("sceGeListSync", &result)) return result;
+        }
+        ge_transition_trace_check("listsync", s_vcount);
+        return 0;
+    }
+    if (syncType != 1u) return GE_ERROR_INVALID_MODE;
+    switch (l->status) {
+    case GE_LIST_QUEUED: return 1u; /* uofw SCE_GE_LIST_QUEUED */
+    case GE_LIST_STALLED: return GE_LIST_SYNC_STALLED;
+    case GE_LIST_PAUSED: return GE_LIST_SYNC_PAUSED;
+    case GE_LIST_DRAWING: return GE_SYNC_DRAWING;
+    case GE_LIST_COMPLETED:
+        ge_transition_trace_check("listsync", s_vcount);
+        return 0;
+    default: return GE_ERROR_INVALID_LIST_ID;
+    }
 }
 
 static uint32_t h_GeUnsetCallback(CpuState *s) {
@@ -25485,52 +25631,63 @@ static uint32_t h_GeEdramSetAddrTranslation(CpuState *s) {
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only reset to the measured boot width. */
 void sr_hle_test_ge_edram_reset(void) { s_ge_edram_width = GE_EDRAM_WIDTH_BOOT; }
-/* Test-build-only: empty the GE list table, so a blocking-sync test does not wait
+/* Test-build-only: the GE list queue as at boot, so a blocking-sync test does not wait
  * on a list an earlier test left stalled. */
-void sr_hle_test_ge_lists_reset(void) { memset(s_ge_lists, 0, sizeof(s_ge_lists)); }
+void sr_hle_test_ge_lists_reset(void) {
+    memset(s_ge_lists, 0, sizeof(s_ge_lists));
+    s_ge_list_done_bits = UINT64_MAX;
+    s_ge_list_order = 0;
+    s_ge_timing_drawing = 0;
+    ge_free_rebuild();
+}
 #endif
 static uint32_t h_GeDrawSync(CpuState *s) {
-    /* sceGeDrawSync(mode): wait for (mode 0) or peek at (mode 1) the
-     * completion of every queued GE list. Public behaviour reference: the
-     * PSPSDK GE interface (pspge.h) and PPSSPP Core/HLE/sceGe.cpp. The queue
-     * state is the same s_ge_lists table h_GeListSync reads: status 1 is a
-     * list still owned by the GE (stalled on its stall address), status 2 is
-     * completed, status 3 is paused. Peek reports the measured sync status
-     * (2 while any list is paused, 3 while any list is stalled, else 0;
-     * PSP-GE-CONTROL-001, measured in the eligible 2026-10-15 re-run);
-     * wait parks the caller until no list is stalled or paused (#1374): a stalled
-     * list advances only when a guest thread calls sceGeListUpdateStallAddr, so the
-     * waiter blocks through the scheduler and lets that producer run. Which
-     * non-{0,1} modes firmware accepts is UNMEASURED: anything but the documented
-     * peek takes the wait path. */
+    /* sceGeDrawSync(mode): wait for (mode 0) or peek at (mode 1) the end of every queued GE
+     * list. Any other mode is 0x80000107 (PSP-GE-SYNC-001 ge-sync-invalid-mode: 2 and -1).
+     * The peek reads the active queue's head, as the driver does (uofw sceGeDrawSync): 0 with
+     * no active list, 2 for a paused head and 3 for a stalled one (PSP-GE-CONTROL-001), 2
+     * while the timing model has a list drawing (CASE=ge-timing C3). The wait parks the caller
+     * until no list is active (#1374): a stalled list advances only when a guest thread calls
+     * sceGeListUpdateStallAddr, so the waiter blocks through the scheduler and lets that
+     * producer run. It returns 0 with every completed list's slot freed, so their peeks then
+     * read 0x80000100 (uofw, UNMEASURED). Known divergence:
+     * after a sceGeBreak(1) reset of a stalled list the PSP's wait returned in one run and did
+     * not return in another (ge-draw-sync-after-reset-wait); with no list active this returns. */
     uint32_t mode = A0;
+    if (mode > 1u) return GE_ERROR_INVALID_MODE;
     int recorded = 0;
     for (;;) {
-        /* Opt-in timing model: wait for every drawing list first.  The peek reads 2 until the
-         * completion interrupt has been handled (PSP-3000, CASE=ge-timing C3). A list a
-         * producer released while this call waited can be drawing on the next pass. */
+        /* Opt-in timing model: wait for every drawing list first. A list a producer released
+         * while this call waited can be drawing on the next pass. */
         if (s_ge_timing_drawing) {
             if (mode == 1u) return GE_SYNC_DRAWING;
             ge_timing_wait(-1);
+            /* As sceGeListSync: a completion this caller cannot wait for is never reported. */
+            if (s_ge_timing_drawing)
+                return hle_unmodelled_stop(
+                    "sceGeDrawSync",
+                    "blocking wait for drawing lists whose completion cannot be delivered here "
+                    "has no measured result");
         }
-        int busy = 0;
-        int paused = 0;
-        for (int i = 0; i < GE_LIST_MAX; i++) {
-            if (s_ge_lists[i].status == GE_LIST_STALLED) busy = 1;
-            if (s_ge_lists[i].status == GE_LIST_PAUSED) paused = 1;
-        }
+        int head = ge_queue_head();
         if (!recorded) {
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
-                                   mode, (uint32_t)(busy || paused), 0u, 0u);
+                                   mode, (uint32_t)(head >= 0), 0u, 0u);
             recorded = 1;
         }
         if (mode == 1u) {
-            if (paused) return GE_DRAW_SYNC_PAUSED;
-            return busy ? GE_DRAW_SYNC_STALLED : 0u;
+            if (head < 0) return 0u;
+            return s_ge_lists[head].status == GE_LIST_PAUSED ? GE_DRAW_SYNC_PAUSED : GE_DRAW_SYNC_STALLED;
         }
-        if (!busy && !paused) break;
+        if (head < 0) break;
         uint32_t result = 0;
         if (!ge_sync_block("sceGeDrawSync", &result)) return result;
+    }
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].status == GE_LIST_COMPLETED) {
+            s_ge_lists[i].status = GE_LIST_FREE;
+            s_ge_lists[i].busy = 0;
+        }
     }
     ge_transition_trace_check("drawsync", s_vcount);
     return 0;
@@ -25582,15 +25739,18 @@ static uint32_t h_GeBreak(CpuState *s) {
          * 2026-10-15 re-run): a reset with one list stalled at its stall address returned 0,
          * not that list's queue id. A reset with a paused list is UNMEASURED and returns 0 by
          * the same rule. */
+        /* The driver frees every slot and rebuilds its free list; it sets no list's event flag
+         * bit, so a blocking sync on a removed list stays parked (PSP-GE-SYNC-001
+         * ge-list-sync-cancelled-wait: no return). */
         for (int i = 0; i < GE_LIST_MAX; i++) {
-            if (s_ge_lists[i].status == GE_LIST_DRAWING) s_ge_timing_drawing--;
-            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED ||
-                s_ge_lists[i].status == GE_LIST_DRAWING) {
-                s_ge_lists[i].status = GE_LIST_CANCELLED;
-                if (ge_log_on())
-                    fprintf(stderr, "GE_BREAK: cancelled queue list_id=0x%08x\n", s_ge_lists[i].uid);
-            }
+            if (ge_log_on() && s_ge_lists[i].status != GE_LIST_FREE &&
+                s_ge_lists[i].status != GE_LIST_COMPLETED)
+                fprintf(stderr, "GE_BREAK: cancelled queue list_id=0x%08x\n", s_ge_lists[i].uid);
+            s_ge_lists[i].status = GE_LIST_FREE;
+            s_ge_lists[i].busy = 0;
         }
+        s_ge_timing_drawing = 0;
+        ge_free_rebuild();
         ge_sync_wake();
         return 0u;
     }
@@ -25626,8 +25786,8 @@ static uint32_t h_GeContinue(CpuState *s) {
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
                                    s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].start_pc,
                                    s_ge_lists[paused_slot].stall_addr, next_pc);
-            ge_sync_wake();
             ge_list_reached_end(s, paused_slot);
+            ge_queue_run(s);
         } else {
             s_ge_lists[paused_slot].current_pc = next_pc;
             s_ge_lists[paused_slot].status = GE_LIST_STALLED;
@@ -25637,21 +25797,22 @@ static uint32_t h_GeContinue(CpuState *s) {
     return 0;
 }
 
-/* sceGeListDeQueue(qid). The one measured result is a stalled list: the dequeue
- * returns BUSY and leaves the list in place, so the next list and draw sync peeks
- * still read 3 (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run). A paused, completed,
- * cancelled or unknown queue id has no measured result, so it is refused as
- * NOT_IMPLEMENTED with the same unsupported line h_GeListEnQueueHead uses, never
- * reported as success. */
+/* sceGeListDeQueue(qid): an id that names no list is 0x80000100 (PSP-GE-SYNC-001
+ * ge-list-dequeue-unknown). A list that has started is BUSY (0x80000021) and stays where it
+ * is, whether stalled (PSP-GE-CONTROL-001: the next peeks still read 3) or completed and not
+ * yet freed by a sceGeDrawSync(0) (PSP-GE-SYNC-001 ge-list-sync-completed-poll). A queued
+ * list that has not started leaves the queue, its slot is freed and its waiters return 0
+ * (uofw sceGeListDeQueue, UNMEASURED). */
 static uint32_t h_GeListDeQueue(CpuState *s) {
     uint32_t qid = A0;
-    for (int i = 0; i < GE_LIST_MAX; i++) {
-        if (s_ge_lists[i].uid == qid && s_ge_lists[i].status == GE_LIST_STALLED) {
-            return GE_ERROR_LIST_BUSY;
-        }
-    }
-    return hle_unmodelled_stop("sceGeListDeQueue",
-                               "(0x%08x) has no measured result for this list state", qid);
+    int slot = ge_list_slot(qid);
+    if (slot < 0 || s_ge_lists[slot].status == GE_LIST_FREE) return GE_ERROR_INVALID_LIST_ID;
+    if (s_ge_lists[slot].busy) return GE_ERROR_LIST_BUSY;
+    s_ge_lists[slot].status = GE_LIST_FREE;
+    ge_free_push(slot);
+    s_ge_list_done_bits |= ge_slot_bit(slot);
+    ge_sync_wake();
+    return 0;
 }
 
 static uint32_t h_GeEdramGetAddr(CpuState *s) { (void)s; return 0x04000000; }

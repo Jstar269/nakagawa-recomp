@@ -1131,6 +1131,87 @@ static void test_waiting_guest_keeps_host_window_pumped(void) {
            "no gap between window pumps exceeds one display period plus one poll");
 }
 
+/* A quit seen while the only runnable thread holds the CPU (#1377): the window is pumped from
+ * that thread's sr_yield, and the stop it raises is a scheduler rendezvous there, as a pause is.
+ * sr_yield returns the lone runner to the scheduler, whose loop sees the stop and returns
+ * without resuming it, so the driver's teardown runs at a scheduler boundary. The second run
+ * suspends thread dispatch first, as a guest stuck in sceKernelSuspendDispatchThread does: the
+ * stop is terminal and is honoured anyway.
+ *
+ * MUTANT: drop the stop check from sr_yield's switch decision -- with no other thread ready,
+ *   sr_yield keeps the runner on the CPU and it runs on past the stop.
+ * MUTANT: check s_dispatch_enabled before the stop again -- the second run never stops. */
+enum { QS_ENTRY = 0x09320000u, QS_STOP_AT = 3, QS_CAP = 64 };
+static int g_qs_yields, g_qs_stop, g_qs_ran_past_stop, g_qs_suspend_dispatch;
+static void quit_stop_body(CpuState *s) {
+    if (g_qs_suspend_dispatch) s_dispatch_enabled = 0;
+    for (g_qs_yields = 0; g_qs_yields < QS_CAP; g_qs_yields++) {
+        if (g_qs_stop) g_qs_ran_past_stop++;
+        if (g_qs_yields == QS_STOP_AT) g_qs_stop = 1;   /* the close, seen before this yield */
+        sr_yield(s);
+    }
+}
+static int quit_stop_requested(void) { return g_qs_stop; }
+
+static void test_stop_request_returns_a_lone_runner_to_the_scheduler(void) {
+    for (int suspended = 0; suspended <= 1; suspended++) {
+        reset_sched();
+        begin_clock_fixture(1, 1000u);
+        g_qs_yields = 0;
+        g_qs_stop = 0;
+        g_qs_ran_past_stop = 0;
+        g_qs_suspend_dispatch = suspended;
+        g_test_body = quit_stop_body;
+        sr_sched_stop_requested = quit_stop_requested;
+        sched_run(QS_ENTRY, 0u, 0u);
+        sr_sched_stop_requested = NULL;
+        s_dispatch_enabled = 1;
+        s_host_ns_fn = NULL;
+        expect(g_qs_stop == 1 && g_qs_yields == QS_STOP_AT,
+               suspended ? "stop: with dispatch suspended the yield that saw the stop still "
+                           "returned the runner to the scheduler for good"
+                         : "stop: the lone runner's yield that saw the stop returned it to the "
+                           "scheduler for good");
+        expect(g_qs_ran_past_stop == 0,
+               suspended ? "stop: with dispatch suspended no guest code ran after the stop"
+                         : "stop: no guest code ran after the stop was raised");
+    }
+    g_qs_suspend_dispatch = 0;
+}
+
+/* A stop raised in the scheduler's own pass is honoured before any thread gets a fresh slice
+ * (#1377): here a pause whose presenter takes the quit and ends the pause (a quit while paused
+ * when the guest has an exit callback to run would do the same, but this run's stop is due at
+ * once). The guest thread must not run.
+ *
+ * MUTANT: drop the stop check before the switch-in in sched_run -- the entry thread runs one
+ *   slice after the stop. */
+enum { QP_ENTRY = 0x09330000u };
+static int g_qp_runs;
+static void quit_pause_body(CpuState *s) {
+    (void)s;
+    g_qp_runs++;
+}
+
+static void test_stop_raised_in_a_pause_resumes_no_thread(void) {
+    pause_test_reset(1, 2000u);
+    g_qp_runs = 0;
+    g_pause_test_resume_after = 1;      /* the presenter ends the pause on its first frame */
+    g_pause_test_stop_after_frame = 1;  /* and raises the stop in that same frame */
+    sr_sched_stop_requested = pause_test_stop_requested;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "stop in pause: the pause request is accepted before the quit");
+    g_test_body = quit_pause_body;
+    sched_run(QP_ENTRY, 0u, 0u);
+    sr_sched_stop_requested = NULL;
+    sr_sched_pause_host = NULL;
+    s_host_ns_fn = NULL;
+    expect(g_pause_test_frame_calls == 1 && g_pause_test_stop == 1,
+           "stop in pause: the presenter ran one frame and raised the stop");
+    expect(g_qp_runs == 0,
+           "stop in pause: no thread got a slice after a pause that ended with the stop due");
+}
+
 /* The module-start thread sched_run creates takes the module's declared
  * module_start_thread_parameter (uOFW modulemgr.c _StartModule), here {0x20, 0x400,
  * 0x80000000} as a retail main module declares it, and the module's gp when the driver seeded
@@ -5426,6 +5507,8 @@ int main(int argc, char **argv) {
     test_interrupt_frame_is_restored();
     test_vblank_runs_every_enabled_subintr();
     test_waiting_guest_keeps_host_window_pumped();
+    test_stop_request_returns_a_lone_runner_to_the_scheduler();
+    test_stop_raised_in_a_pause_resumes_no_thread();
     test_module_start_thread_uses_declared_parameters();
     test_module_start_thread_is_deleted_on_return();
     test_paced_vtime_is_host_anchored();

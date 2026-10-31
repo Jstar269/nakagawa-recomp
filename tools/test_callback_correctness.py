@@ -160,11 +160,15 @@ class CallbackCorrectnessTests(unittest.TestCase):
         self.assertIn("sr_callback_notify(s_exit_cb_uid, 0u)", quit_body)
         notifies = re.findall(r"sr_callback_notify\(\s*s_exit_cb_uid\b", strip_comments(HLE_SOURCE))
         self.assertEqual(len(notifies), 1)
+        # The player's quit goes through the stop decision, which is the only caller of the
+        # quit request: a window close or the overlay's Quit notifies once, and the scheduler
+        # stops when the decision says so (gui.c, #1377).
+        stop_body = strip_comments(function_body(HLE_SOURCE, "sr_exit_request_stop_due"))
+        self.assertIn("sr_exit_request_quit()", stop_body)
         gui = strip_comments((ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8"))
-        self.assertIn(
-            "int alive = sdl3vk_poll() ? !sr_exit_request_expired() : sr_exit_request_quit();",
-            gui,
-        )
+        self.assertNotIn("sr_exit_request_quit", gui)
+        self.assertIn("sr_exit_request_stop_due()", function_body(gui, "gui_quit_request"))
+        self.assertIn("sr_exit_request_stop_due()", function_body(gui, "gui_stop_requested"))
         reg = strip_comments(function_body(HLE_SOURCE, "h_RegisterExitCallback"))
         self.assertIn("0x03090510u", reg)
         self.assertIn("0x800200D2u", reg)

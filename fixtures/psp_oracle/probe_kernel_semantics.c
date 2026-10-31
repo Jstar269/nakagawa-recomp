@@ -38,7 +38,7 @@ PSP_HEAP_SIZE_KB(64);
 #error PROBE_BUILD_COMMIT is required
 #endif
 
-#define KS_CASE_KERNEL_SEM 126
+#define KS_CASE_KERNEL_SEM 127
 #if PSP_ORACLE_CASE != KS_CASE_KERNEL_SEM
 #error probe_kernel_semantics.c has no case for this PSP_ORACLE_CASE
 #endif
