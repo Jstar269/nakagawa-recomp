@@ -1525,11 +1525,11 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         }
         snprintf(env_ace, sizeof(env_ace), "SR_ACE=%s", ace);
         envp[env_count++] = env_ace;
-        if (ace_on && session->config.ace_report_path[0]) {
-            snprintf(env_ace_report, sizeof(env_ace_report), "SR_ACE_REPORT=%s",
-                     session->config.ace_report_path);
-            envp[env_count++] = env_ace_report;
-        }
+        /* Always set too: empty unless this Ace run has a report path, so an inherited path
+           can never receive (and replace a file with) the runtime's report. */
+        snprintf(env_ace_report, sizeof(env_ace_report), "SR_ACE_REPORT=%s",
+                 ace_on ? session->config.ace_report_path : "");
+        envp[env_count++] = env_ace_report;
     }
     if (session->config.headless_accept_presented_frames > 0u) {
         snprintf(env_headless_accept_frames, sizeof(env_headless_accept_frames),

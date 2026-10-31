@@ -95,6 +95,13 @@ class BootGateTests(unittest.TestCase):
         )
         self.assertTrue(refused["ok"])
         self.assertFalse(refused["aceMode"])
+        # SR_QUIET silences stderr; the boot-event file alone still says Ace was on.
+        events_only = self.parse(
+            [event("ace_mode", on=1)] + self.ordered_prefix()
+            + [event("first_frame", source="cpu", nonzero_pixels=9)]
+        )
+        self.assertFalse(events_only["ok"])
+        self.assertEqual(events_only["disqualifyingReasons"], ["ace-mode-run"])
 
     def test_runtime_fault_is_disqualifying(self) -> None:
         result = self.parse(

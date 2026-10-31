@@ -561,6 +561,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "ace-ui-selftest: %d check(s) FAILED\n", s_fail);
         return 1;
     }
-    printf("ace-ui-selftest: PASS (layout%s)\n", gpu == 77 ? "; gpu SKIP" : ", gpu");
+    if (gpu == 77) {
+        /* The layout passed; the GPU leg did not run. 77 keeps that visible. */
+        printf("ace-ui-selftest: layout PASS; gpu SKIP\n");
+        return 77;
+    }
+    printf("ace-ui-selftest: PASS (layout, gpu)\n");
     return 0;
 }

@@ -34,8 +34,9 @@ PAIR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|\S+)')
 # backend uses the same phase with ``backend=offscreen`` and makes no window claim.
 EXPECTED = ("image_loaded", "runtime_registered", "window_ready", "guest_start", "display_flip", "first_frame")
 FAULT_MARKERS = ("ERROR:", "MEM OOR", "Unhandled")
-# An Ace Mode run (src/rt/ace.h) says so on its first line of runtime output. Its pictures are
-# enhanced, so it is never boot evidence, whatever else the log shows.
+# An Ace Mode run (src/rt/ace.h) says so on its first line of runtime output and in a
+# phase=ace_mode boot event. Its pictures are enhanced, so it is never boot evidence, whatever
+# else the log shows.
 ACE_ON_RE = re.compile(r"(?:^|\s)ACE_MODE: on \(")
 
 
@@ -87,6 +88,8 @@ def parse_log(path: str, *, allow_present_only: bool = False) -> dict:
                 ace_mode = True
 
     phases = [event.get("phase", "unknown") for event in events]
+    # The structured event says it as well, for a run whose stderr was silenced.
+    ace_mode = ace_mode or "ace_mode" in phases
     reached = {phase: phase in phases for phase in EXPECTED}
     sequence_ok = milestones_in_order(phases, EXPECTED)
 

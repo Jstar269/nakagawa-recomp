@@ -465,6 +465,9 @@ static void gui_ace_ui_init(void) {
     (void)ace_feature_words(s_ace_words, sizeof(s_ace_words));
     sdl3vk_set_ui_pass(gui_ace_ui_pass);
     s_ace_ui_ready = 1;
+    ace_confirm(ACE_FEATURE_TEXT);
+    ace_confirm(ACE_FEATURE_READOUT);
+    ace_confirm(ACE_FEATURE_NOTICE);
 }
 
 static void gui_ace_ui_release(void) {
@@ -490,6 +493,9 @@ void gui_init(const char *title) {
     if (!cleanup_registered && atexit(gui_exit_cleanup) == 0) cleanup_registered = 1;
 #endif
     gui_headless_acceptance_parse();
+    /* An Ace Mode run (ace.h) says so in the structured boot events too, so a log whose stderr
+     * was silenced (SR_QUIET) still tells tools/boot_gate.py it is not authentic evidence. */
+    if (g_ace_on) sr_gui_boot_event("BOOT_EVENT phase=ace_mode on=1");
     if (s_headless_accept_requested && s_headless_accept_ace) {
         sr_gui_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=ace_mode");
         return;

@@ -391,6 +391,9 @@ static void test_no_iso_child_environment(const char *test_executable,
     bool had_ace;
     char *old_ace = capture_environment_value("SR_ACE", &had_ace);
     set_environment_value("SR_ACE", "v1;af=16;text=on;readout=on;notice=on;wide=off;smooth=off");
+    bool had_ace_report;
+    char *old_ace_report = capture_environment_value("SR_ACE_REPORT", &had_ace_report);
+    set_environment_value("SR_ACE_REPORT", "poisoned-parent-report.json");
     bool had_host_zone;
     char *old_host_zone = capture_environment_value("SR_HOST_TIME_ZONE", &had_host_zone);
     set_environment_value("SR_HOST_TIME_ZONE", "poisoned-parent-zone");
@@ -556,7 +559,8 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed, "SR_REDUCE_MOTION=system\n") != NULL);
     assert(strcmp(session.config.ace_spec, "off") == 0);   /* prepare_session's default */
     assert(strstr(observed, "SR_ACE=off\n") != NULL);
-    assert(strstr(observed, "SR_ACE_REPORT=<unset>\n") != NULL);
+    assert(strstr(observed, "SR_ACE_REPORT=\n") != NULL);   /* the parent's path is masked */
+    assert(strstr(observed, "poisoned-parent-report") == NULL);
     /* The host's local time zone for the runtime's first-run seed (#1382): "<minutes>,<0|1>"
        from the platform, never an inherited value. */
     {
@@ -625,6 +629,8 @@ static void test_no_iso_child_environment(const char *test_executable,
 
     restore_environment_value("SR_ACE", old_ace, had_ace);
     free(old_ace);
+    restore_environment_value("SR_ACE_REPORT", old_ace_report, had_ace_report);
+    free(old_ace_report);
     restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);
     restore_environment_value("SR_REDUCE_MOTION", old_reduce_motion, had_reduce_motion);
     free(old_reduce_motion);

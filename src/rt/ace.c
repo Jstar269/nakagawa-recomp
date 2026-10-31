@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <windows.h>   /* MoveFileExA: the report's atomic replace */
+#endif
 
 /* ---- the launch line ------------------------------------------------------------------------ */
 
@@ -120,6 +123,8 @@ static char s_spec[ACE_SPEC_MAX] = "off";
 static char s_report_path[1024];
 static char s_unavailable[ACE_FEATURE_COUNT][96];
 static int s_af_device;          /* the device's level when lower than the request, else 0 */
+static int s_confirmed[ACE_FEATURE_COUNT];
+static uint64_t s_af_failures;
 
 static const char *const k_feature_key[ACE_FEATURE_COUNT] = {
     "af", "text", "readout", "notice", "wide", "smooth"
@@ -166,6 +171,8 @@ int ace_init_spec(const char *spec, const char *report_path) {
     memset(&s_req, 0, sizeof(s_req));
     memset(&s_eff, 0, sizeof(s_eff));
     memset(s_unavailable, 0, sizeof(s_unavailable));
+    memset(s_confirmed, 0, sizeof(s_confirmed));
+    s_af_failures = 0;
     s_af_device = 0;
     s_report_path[0] = '\0';
     snprintf(s_spec, sizeof(s_spec), "off");
@@ -209,6 +216,14 @@ void ace_feature_unavailable(AceFeature feature, const char *reason) {
     default: s_eff.smooth = 0; break;
     }
     fprintf(stderr, "ACE_MODE: %s unavailable (%s)\n", k_feature_key[feature], s_unavailable[feature]);
+}
+
+void ace_confirm(AceFeature feature) {
+    if (g_ace_on && (unsigned)feature < ACE_FEATURE_COUNT) s_confirmed[feature] = 1;
+}
+
+void ace_note_af_failure(void) {
+    if (g_ace_on) s_af_failures++;
 }
 
 void ace_set_readout(int on) {
@@ -261,13 +276,13 @@ AceRate ace_det_window_class(const AceDetector *d) {
     uint32_t sum = 0;
     for (uint32_t i = 0; i < ACE_DET_WINDOW; i++) sum += d->interval[i];
     for (uint32_t k = 1; k <= 4; k++) {
-        uint32_t lo = ACE_DET_WINDOW * k - 2u, hi = ACE_DET_WINDOW * k + 4u, near = 0;
+        uint32_t lo = ACE_DET_WINDOW * k - 2u, hi = ACE_DET_WINDOW * k + 4u, close_by = 0;
         if (sum < lo || sum > hi) continue;
         for (uint32_t i = 0; i < ACE_DET_WINDOW; i++) {
             uint32_t v = d->interval[i];
-            if (v + 1u >= k && v <= k + 1u) near++;
+            if (v + 1u >= k && v <= k + 1u) close_by++;
         }
-        if (near >= ACE_DET_WINDOW - 4u) return (AceRate)k;
+        if (close_by >= ACE_DET_WINDOW - 4u) return (AceRate)k;
     }
     return ACE_RATE_VARIABLE;
 }
@@ -561,6 +576,7 @@ size_t ace_report_json(char *out, size_t cap) {
     }
     ACE_PUT("},\n");
     if (s_af_device) ACE_PUT("  \"af_device_max\": %d,\n", s_af_device);
+    if (s_af_failures) ACE_PUT("  \"af_sampler_failures\": %llu,\n", (unsigned long long)s_af_failures);
     ACE_PUT("  \"rate\": {\"dominant\": \"%s\", \"seconds\": {", ace_rate_name(dominant_rate()));
     first = 1;
     for (int r = ACE_RATE_K1; r < ACE_RATE_COUNT; r++) {
@@ -580,6 +596,14 @@ size_t ace_report_json(char *out, size_t cap) {
 void ace_finish(void) {
     char json[ACE_REPORT_MAX];
     if (!g_ace_on) return;
+    /* A feature that is on but never ran: its renderer or presenter did not start. */
+    static const int has[ACE_FEATURE_COUNT] = { 1, 1, 1, 1, ACE_HAS_WIDE, ACE_HAS_SMOOTH };
+    const int on[ACE_FEATURE_COUNT] = { s_eff.af > 0, s_eff.text, s_eff.readout, s_eff.notice,
+                                        s_eff.wide, s_eff.smooth };
+    for (int f = 0; f < ACE_FEATURE_COUNT; f++) {
+        if (has[f] && on[f] && !s_confirmed[f])
+            ace_feature_unavailable((AceFeature)f, "did not run: its renderer or presenter did not start");
+    }
     size_t len = ace_report_json(json, sizeof(json));
     fprintf(stderr, "ACE_MODE: exit (%s; rate %s)\n", s_spec, ace_rate_name(dominant_rate()));
     if (!len || !s_report_path[0]) return;
@@ -592,11 +616,15 @@ void ace_finish(void) {
     }
     int ok = fwrite(json, 1, len, f) == len;
     ok = fclose(f) == 0 && ok;
-    /* rename() does not replace an existing file on Windows: drop the old report first. A
-     * crash in between leaves no report, which the launcher reads as "no last session". */
+    /* The new report replaces the old one in one step, so a crash or a failure leaves the old
+     * report whole. rename() replaces atomically on POSIX; on Windows it refuses an existing
+     * target, and MoveFileEx replaces it. */
     if (ok) {
-        (void)remove(s_report_path);
+#if defined(_WIN32)
+        ok = MoveFileExA(tmp, s_report_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
         ok = rename(tmp, s_report_path) == 0;
+#endif
     }
     if (!ok) {
         (void)remove(tmp);

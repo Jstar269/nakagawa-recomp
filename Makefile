@@ -3585,8 +3585,10 @@ ace-ui-selftest:
 		src/rt/gpu_sdl3vk/ace_ui.c src/rt/gpu_sdl3vk/ace_ui_selftest.c \
 		$$ttf_libs -lm $(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_ROOT)/ace_ui_selftest$(EXE_EXT) || exit 1; \
 	rc=0; $(BUILD_ROOT_RUN)/ace_ui_selftest$(EXE_EXT) $(BUILD_ROOT) --fonts . || rc=$$?; \
-	if [ $$rc -ne 0 ]; then echo "FAIL ace-ui-selftest (exit $$rc)"; exit $$rc; fi; \
-	if [ "$(NK_UI_VK_REQUIRE)" = 1 ] && grep -q "gpu SKIP" /dev/null; then exit 1; fi
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL ace-ui-selftest (the GPU leg skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP ace-ui-selftest GPU leg (exit 77; the layout cells passed)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL ace-ui-selftest (exit $$rc)"; exit $$rc; fi
 
 .PHONY: nk-ui-focus-selftest
 # The focus, input and glyph checks are SDL-free. The SDL_Event translation leg is built from

@@ -20,8 +20,9 @@
  * unchanged; host presentation changes, and the run says so ("ACE_MODE: on (...)" at start, an
  * exit line, and the flight recorder's runtime.enhancements block).
  *
- * This unit uses the C library only. ace-link-selftest links it with nothing else, so no code
- * path here can reach a guest-visible function (invariant S1). Callers pass the clock in.
+ * This unit uses the C library only, and on Windows MoveFileEx for the report's atomic replace.
+ * ace-selftest links it with nothing else, so no code path here can reach a guest-visible
+ * function (invariant S1). Callers pass the clock in.
  */
 #ifndef SR_ACE_H
 #define SR_ACE_H
@@ -83,6 +84,13 @@ const char *ace_spec_text(void);
 /* A feature this host cannot provide: off for the run, named once on stderr and in the report.
  * The others stay on. */
 void ace_feature_unavailable(AceFeature feature, const char *reason);
+/* A feature that really ran: texture filtering once the GPU renderer made its pool for it, the
+ * in-game UI's three once its pass is registered. At exit a feature that is on but was never
+ * confirmed is reported unavailable (its renderer or presenter did not start), so the report
+ * never claims what did not happen. */
+void ace_confirm(AceFeature feature);
+/* An anisotropic sampler the renderer could not make: that draw kept the plain one. */
+void ace_note_af_failure(void);
 /* The pause menu's live Speed readout switch (Ace on only; a readout this host cannot draw
  * stays off). */
 void ace_set_readout(int on);
@@ -202,8 +210,9 @@ void ace_counters(AceCounters *out);
 #define ACE_REPORT_MAX 4096u
 /* The report's JSON for the run so far; 0 when it would not fit. */
 size_t ace_report_json(char *out, size_t cap);
-/* Writes the report (SR_ACE_REPORT, replaced through a temporary file) and the exit stamp.
- * Ace off: does nothing. Safe to call more than once; the last call wins. */
+/* Settles the features that never ran (ace_confirm), then writes the report (SR_ACE_REPORT,
+ * through a temporary file that atomically replaces the old report) and the exit stamp. An
+ * empty SR_ACE_REPORT writes no file. Ace off: does nothing. Safe to call more than once. */
 void ace_finish(void);
 
 #endif /* SR_ACE_H */

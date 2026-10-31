@@ -2746,12 +2746,14 @@ static VkDescriptorSet tex_entry_set(TexEnt *e) {
         sci.maxAnisotropy = (float)s_ace_af;
         if (vkCreateSampler(s_dev, &sci, NULL, &e->smp_af) != VK_SUCCESS) {
             e->smp_af = VK_NULL_HANDLE;
+            ace_note_af_failure();
             return e->set;
         }
         e->set_af = make_descriptor(e->view, e->smp_af, s_dpool_tex);
         if (!e->set_af) {
             vkDestroySampler(s_dev, e->smp_af, NULL);
             e->smp_af = VK_NULL_HANDLE;
+            ace_note_af_failure();
             return e->set;
         }
         s_cnt_af_samplers++;
@@ -8377,6 +8379,7 @@ int gegpu_init(void) {
     s_ace_af = g_ace_on ? ace_effective()->af : 0;
     const uint32_t tex_sets = s_ace_af ? 2u * MAX_TEX : MAX_TEX;
     s_tex_pool_sets = tex_sets;
+    if (s_ace_af) ace_confirm(ACE_FEATURE_AF);   /* the renderer that filters is up */
     VkDescriptorPoolSize dps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2u * tex_sets };
     VkDescriptorPoolCreateInfo dpc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     dpc.maxSets = tex_sets; dpc.poolSizeCount = 1; dpc.pPoolSizes = &dps;

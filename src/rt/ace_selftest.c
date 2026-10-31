@@ -378,12 +378,20 @@ static void cell_report(const char *dir) {
     if (old) { fputs("stale", old); fclose(old); }
     (void)ace_init_spec(k_good, path);
     for (uint32_t vc = 1; vc <= 100; vc++) { ace_note_target_draw(0x0u); (void)ace_flip(0x0u, 0x22000u, vc, vc * 16683333ull); }
+    /* Filtering ran; the in-game UI never started (an offscreen run, say). */
+    ace_confirm(ACE_FEATURE_AF);
+    ace_note_af_failure();
     ace_finish();
+    CHECK(ace_effective()->af == 16 && ace_effective()->text == 0 && ace_effective()->notice == 0,
+          "at exit, features that never ran are off and named");
     FILE *f = fopen(path, "rb");
     char back[ACE_REPORT_MAX] = {0};
     size_t got = f ? fread(back, 1, sizeof(back) - 1, f) : 0;
     if (f) fclose(f);
     CHECK(got > 0 && strncmp(back, "{\n  \"schema\": 1", 15) == 0, "report file replaced (%zu bytes)", got);
+    CHECK(strstr(back, "\"text\": \"did not run") != NULL && strstr(back, "\"af\": 16") != NULL &&
+          strstr(back, "\"af_sampler_failures\": 1") != NULL,
+          "the report names what did not run and counts sampler failures:\n%s", back);
     (void)remove(path);
     /* An off run writes nothing. */
     (void)ace_init_spec("off", path);

@@ -2152,6 +2152,15 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(ace, dict), settings
         self.assertIs(ace.get("enabled"), True, "Ace Mode switched on and saved")
         self.assertEqual(ace.get("af"), 16, "the features keep their defaults")
+        pad = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + ("PAD_DPAD_DOWN",) * 5 + ("PAD_SOUTH", "WAIT_MS=100", "PAD_EAST"),
+        )
+        pad_settings = pad["settings"]
+        assert isinstance(pad_settings, dict)
+        pad_ace = pad_settings.get("ace")
+        assert isinstance(pad_ace, dict), pad_settings
+        self.assertIs(pad_ace.get("enabled"), True, "a controller's d-pad and south do the same")
         page = self.next_ui_run(
             "settings",
             ("WAIT_MS=100",) + ("KEY_DOWN",) * 6 + ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE",
