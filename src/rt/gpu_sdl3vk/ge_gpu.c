@@ -7366,9 +7366,9 @@ typedef struct TnlCell {
 #define TNLP_FBA     0x00000000u                 /* VRAM-relative colour buffer */
 #define TNLP_ZBA     0x00100000u                 /* VRAM-relative depth buffer */
 #define TNLP_TEX     0x04180000u                 /* 8x8 8888 texture */
-#define TNLP_LIST    0x08800000u
-#define TNLP_VTX     0x08810000u
-#define TNLP_IDX     0x08880000u
+#define TNLP_LIST    0x00200000u                 /* the harness arena, as the other fixtures */
+#define TNLP_VTX     0x00210000u
+#define TNLP_IDX     0x00280000u
 #define TNLP_STRIDE  512u
 
 static uint32_t tnlp_f24(float f) { uint32_t u; memcpy(&u, &f, 4); return u >> 8; }
