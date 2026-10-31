@@ -950,8 +950,10 @@ already the maintainer's:
 - a pull request whose head branch is in this repository (not a fork), which the
   repository owner opened and whose event the owner sent. Branches that may carry an
   outside contributor's commits are excluded: the desk's `carry/pr-<N>` branches for locked
-  fork pull requests and its `desk/` working branches. Only the owner can push to this
-  repository, and the code on the owner's own branches already runs on the owner's PC.
+  fork pull requests and its `desk/` working branches. The owner is the only collaborator
+  with push access. Apps the owner installed, such as a coding agent, can also push branches,
+  but a pull request they open or a push they make isn't the owner's event, so its runs stay on
+  hosted runners. The code on the owner's own branches already runs on the owner's PC.
 
 Trusted CodeQL (`.github/workflows/codeql.yml`) sends its three analyses there for the
 same targets: its `prepare` job, which stays hosted, runs the default branch's
