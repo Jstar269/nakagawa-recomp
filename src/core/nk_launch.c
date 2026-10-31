@@ -1080,6 +1080,8 @@ NkResult nk_launch_prepare_session(
     session->config.benchmark_mode = false;
     session->config.gui_mode = false;
     session->config.master_volume = 100;
+    snprintf(session->config.ace_spec, sizeof(session->config.ace_spec), "off");
+    session->config.ace_report_path[0] = '\0';
 
     NkRuntimePackageInfo package_info;
     char package_error[1024] = "";
@@ -1434,6 +1436,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_input_profile[NK_MAX_PATH + 32];
     char env_headless_accept_frames[64];
     char env_disc_id[NK_MAX_DISC_ID_LEN + 16];
+    char env_ace[sizeof(session->config.ace_spec) + 8];
+    char env_ace_report[NK_MAX_PATH + 16];
     char env_ui_root[NK_MAX_PATH + 16];
     char env_launcher_display[96];
     char sep = nk_platform_path_separator();
@@ -1509,6 +1513,24 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = session->config.reduce_motion == NK_REDUCE_MOTION_ON ? "SR_REDUCE_MOTION=on"
         : session->config.reduce_motion == NK_REDUCE_MOTION_OFF ? "SR_REDUCE_MOTION=off"
         : "SR_REDUCE_MOTION=system";
+    /* And Ace Mode (src/rt/ace.h): "off" unless the player resolved it on for this title. The
+       acceptance route needs an authentic run, so a session with it refuses an Ace line. */
+    {
+        const char *ace = session->config.ace_spec[0] ? session->config.ace_spec : "off";
+        bool ace_on = strcmp(ace, "off") != 0;
+        if (ace_on && session->config.headless_accept_presented_frames > 0u) {
+            snprintf(session->last_error, sizeof(session->last_error),
+                     "Ace Mode is on; the acceptance checkpoint needs an authentic run.");
+            return NK_ERROR_GENERIC;
+        }
+        snprintf(env_ace, sizeof(env_ace), "SR_ACE=%s", ace);
+        envp[env_count++] = env_ace;
+        /* Always set too: empty unless this Ace run has a report path, so an inherited path
+           can never receive (and replace a file with) the runtime's report. */
+        snprintf(env_ace_report, sizeof(env_ace_report), "SR_ACE_REPORT=%s",
+                 ace_on ? session->config.ace_report_path : "");
+        envp[env_count++] = env_ace_report;
+    }
     if (session->config.headless_accept_presented_frames > 0u) {
         snprintf(env_headless_accept_frames, sizeof(env_headless_accept_frames),
                  "SR_HEADLESS_ACCEPT_PRESENTED_FRAMES=%u",
@@ -1635,6 +1657,13 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         if (w > 0 && (size_t)w < sizeof(env_boot_event)) {
             envp[env_count++] = env_boot_event;
         }
+    }
+    /* Every entry above is one of a fixed set, so this holds by construction; it is checked
+       here so a new entry that would overrun the array fails loudly instead. */
+    if (env_count >= (int)(sizeof(envp) / sizeof(envp[0]))) {
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "Internal error: the launch environment has too many entries.");
+        return NK_ERROR_GENERIC;
     }
     envp[env_count] = NULL;
 

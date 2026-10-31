@@ -217,6 +217,7 @@ static uint64_t s_flight_recorded;
 static uint64_t s_flight_last_sequence;
 static uint32_t s_flight_last_kind;
 static int s_flight_init_state;
+static char s_flight_ace[96];          /* Ace Mode's line for an enhanced run, else empty */
 static int s_flight_exit_registered;
 static int s_flight_dumped;
 static uint32_t s_flight_dump_count;
@@ -460,6 +461,18 @@ static void register_exit(void) {
         return;
     }
     s_flight_exit_registered = 1;
+}
+
+void sr_flight_set_enhancements(const char *ace_line) {
+    size_t n = 0;
+    /* The launch line is "off" or "v1;key=value;...": copy only those characters, so the
+     * bundle's JSON string needs no escaping. */
+    for (; ace_line && ace_line[n] && n + 1 < sizeof(s_flight_ace); n++) {
+        char ch = ace_line[n];
+        int plain = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == ';' || ch == '=';
+        s_flight_ace[n] = plain ? ch : '?';
+    }
+    s_flight_ace[n] = '\0';
 }
 
 void sr_flight_init(void) {
@@ -1140,7 +1153,11 @@ static int write_bundle(int reason) {
         }
     }
     ok = ok && fprintf(file, "{\n  \"schema_version\": %u,\n", SR_FLIGHT_SCHEMA_VERSION) >= 0;
-    ok = ok && fprintf(file, "  \"runtime\": {\"name\": \"nakagawa-recomp\", \"cpu_state_abi\": %u},\n",
+    /* An authentic run writes the same bytes as before; an Ace Mode run adds its line. */
+    ok = ok && fputs("  \"runtime\": {\"name\": \"nakagawa-recomp\", ", file) != EOF;
+    if (s_flight_ace[0])
+        ok = ok && fprintf(file, "\"enhancements\": {\"ace\": \"%s\"}, ", s_flight_ace) >= 0;
+    ok = ok && fprintf(file, "\"cpu_state_abi\": %u},\n",
                        (unsigned)SR_CPUSTATE_ABI_VERSION) >= 0;
     ok = ok && fprintf(file,
                        "  \"build\": {\"compiler\": \"%s\", \"source_date_epoch\": %s, "

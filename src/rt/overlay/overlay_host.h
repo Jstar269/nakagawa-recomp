@@ -60,6 +60,14 @@ bool nk_overlay_host_draw(NkOverlayHost *host, struct SDL_Renderer *renderer,
 /* Lets go of the renderer the last frame drew into, before it is destroyed. */
 void nk_overlay_host_unbind(NkOverlayHost *host);
 
+/* The overlay's text engine and UI fonts on their own, for the runtime's other nk_ui surface,
+   Ace Mode's in-game UI (src/rt/gpu_sdl3vk/ace_ui.h): the same search as
+   nk_overlay_host_create. NULL, with the reason, when SDL3_ttf or the fonts are missing. */
+typedef struct NkOverlayFonts NkOverlayFonts;
+NkOverlayFonts *nk_overlay_fonts_create(const char *ui_root, char *error, size_t error_size);
+const NkUiTextBackend *nk_overlay_fonts_text(const NkOverlayFonts *fonts);
+void nk_overlay_fonts_destroy(NkOverlayFonts *fonts);
+
 /* The controller family the controls page names buttons for, and whether a pad is
    connected now. */
 NkUiPadFamily nk_overlay_host_pad_family(const NkOverlayHost *host);

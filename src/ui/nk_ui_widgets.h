@@ -222,6 +222,7 @@ typedef struct {
     const char *status_word;
     uint32_t status_rgba;
     const char *badge;        /* NULL: YOUR DISC */
+    const char *badge_right;  /* a second badge at the art's top right (ACE); NULL: none */
     NkUiArtKind art;
     const char *art_key;      /* picks the art tint; NULL uses disc_id */
     const NkUiImage *icon;    /* the disc's ICON0.PNG, when read; NULL keeps the placeholder */

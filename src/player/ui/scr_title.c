@@ -61,6 +61,8 @@
 #define TITLE_ID_ENH_TEXT TITLE_ID(0x000065u)
 #define TITLE_ID_ENH_PROBLEM TITLE_ID(0x000066u)
 #define TITLE_ID_ENH_SESSION TITLE_ID(0x000067u)
+#define TITLE_ID_ACE_ROW TITLE_ID(0x000068u)
+#define TITLE_ID_ACE_TEXT TITLE_ID(0x000069u)
 #define TITLE_ID_PROMPTS TITLE_ID(0x000040u)
 #define TITLE_ID_WAVES TITLE_ID(0x000050u)
 
@@ -620,56 +622,101 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 }
                 nk_ui_end_container(ui);
             }
-            /* An optional enhancement made for this game (60 FPS game logic,
-               docs/ENHANCEMENT_CONTRACT.md section 9), apart from what to
-               expect of the game as released. Off is the original game. */
-            if (title->enhancement_shown &&
+            /* Enhancements, apart from what to expect of the game as released:
+               Ace Mode for every game (src/rt/ace.h), and an optional enhancement
+               made for this game (60 FPS game logic, docs/ENHANCEMENT_CONTRACT.md
+               section 9). Off, and Authentic, are the original game. */
+            if ((title->enhancement_shown || title->ace_shown) &&
                 nk_ui_card_begin(ui, TITLE_ID_ENH_CARD, sizing_grow(), sizing_fit(),
                                  NK_UI_SPACE_3)) {
                 NkUiLayout head = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
                                               NK_UI_SPACE_3);
-                char label[48];
                 head.align_y = NK_UI_ALIGN_CENTER;
                 if (nk_ui_begin_container(ui, TITLE_ID_ENH_HEAD, &head, NULL)) {
                     nk_ui_eyebrow(ui, TITLE_ID_ENH_EYEBROW, "Enhancements");
-                    nk_ui_tag(ui, TITLE_ID_ENH_TAG, "Experimental");
+                    if (title->enhancement_shown) nk_ui_tag(ui, TITLE_ID_ENH_TAG, "Experimental");
                     nk_ui_end_container(ui);
                 }
-                (void)snprintf(label, sizeof(label), "60 FPS game logic: %s",
-                               title->enhancement_on ? "On" : "Off");
-                row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
-                if (nk_ui_begin_container(ui, TITLE_ID_ENH_ROW, &row, NULL)) {
-                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_60FPS, label,
-                                     NK_UI_BUTTON_NOT_DEFAULT |
-                                     (title->enhancement_on ? NK_UI_BUTTON_PRIMARY : 0u) |
-                                     (title->enhancement_enabled ? 0u
-                                                                 : NK_UI_BUTTON_DISABLED))) {
-                        result = action(PLAYER_UI_ACTION_TOGGLE_60FPS, model->title_index,
-                                        PLAYER_UI_PRIMARY_NONE);
+                /* Ace Mode (src/rt/ace.h): library default, on, or authentic for this game;
+                   then the 60 FPS switch on the same row where the game has a package. */
+                {
+                    float inner = width - 2.0f * gutter - NK_UI_DETAIL_GAP - aside -
+                                  2.0f * NK_UI_SPACE_5;
+                    NkUiFlowRow buttons;
+                    char label[48];
+                    (void)snprintf(label, sizeof(label), "60 FPS game logic: %s",
+                                   title->enhancement_on ? "On" : "Off");
+                    row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+                    if (nk_ui_flow_begin(ui, &buttons, TITLE_ID_ACE_ROW, &row, inner)) {
+                        if (title->ace_shown) {
+                            const char *ace = safe_text(title->ace_label, "Ace Mode");
+                            nk_ui_flow_item(ui, &buttons, nk_ui_button_width(ui, ace, 0u));
+                            if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_ACE, ace,
+                                             NK_UI_BUTTON_NOT_DEFAULT |
+                                                 (title->ace_in_effect ? NK_UI_BUTTON_PRIMARY : 0u) |
+                                                 (title->ace_enabled ? 0u
+                                                                     : NK_UI_BUTTON_DISABLED))) {
+                                result = action(PLAYER_UI_ACTION_CYCLE_ACE, model->title_index,
+                                                PLAYER_UI_PRIMARY_NONE);
+                            }
+                        }
+                        if (title->enhancement_shown) {
+                            nk_ui_flow_item(ui, &buttons, nk_ui_button_width(ui, label, 0u));
+                            if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_60FPS, label,
+                                             NK_UI_BUTTON_NOT_DEFAULT |
+                                             (title->enhancement_on ? NK_UI_BUTTON_PRIMARY : 0u) |
+                                             (title->enhancement_enabled ? 0u
+                                                                         : NK_UI_BUTTON_DISABLED))) {
+                                result = action(PLAYER_UI_ACTION_TOGGLE_60FPS, model->title_index,
+                                                PLAYER_UI_PRIMARY_NONE);
+                            }
+                        }
+                        nk_ui_flow_end(ui, &buttons);
                     }
-                    nk_ui_end_container(ui);
+                    /* What Ace Mode turns on, then what it did last time: one paragraph of
+                       two lines at most. Beside the 60 FPS paragraph it has one line, the last
+                       session when there is one (the button already says the state), so the
+                       card fits the smallest window. */
+                    if (title->ace_shown && title->ace_line != NULL && title->ace_line[0] != '\0') {
+                        NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
+                        char paragraph[480];
+                        bool last = title->ace_last_session != NULL &&
+                                    title->ace_last_session[0] != '\0';
+                        if (title->enhancement_shown) {
+                            (void)snprintf(paragraph, sizeof(paragraph), "%s",
+                                           last ? title->ace_last_session : title->ace_line);
+                        } else {
+                            (void)snprintf(paragraph, sizeof(paragraph), "%s%s%s", title->ace_line,
+                                           last ? " " : "", last ? title->ace_last_session : "");
+                        }
+                        nk_ui_text(ui, TITLE_ID_ACE_TEXT,
+                                   nk_ui_text_clamp(ui, paragraph, &text, inner,
+                                                    title->enhancement_shown ? 1 : 2),
+                                   &text);
+                    }
                 }
-                nk_ui_text_role(ui, TITLE_ID_ENH_TEXT,
-                                "An optional enhancement made for this game: its game logic "
-                                "runs 60 times a second instead of 30, from a separate "
-                                "package built for it. Off plays the original game as "
-                                "released. Experimental: where this PC cannot keep 60 a "
-                                "second, the game says SLOWED.",
-                                NK_UI_TYPE_BODY_S, theme->paper);
-                if (title->enhancement_problem != NULL &&
-                    title->enhancement_problem[0] != '\0') {
-                    char line[256];
-                    (void)snprintf(line, sizeof(line),
-                                   "%s Turn it off to play the original game.",
-                                   title->enhancement_problem);
-                    nk_ui_text_role(ui, TITLE_ID_ENH_PROBLEM, nk_ui_frame_text(ui, line),
-                                    NK_UI_TYPE_BODY_S, theme->error);
-                }
-                if (title->enhancement_session) {
-                    nk_ui_text_role(ui, TITLE_ID_ENH_SESSION,
-                                    "On for this session: Nakagawa was started with "
-                                    "--experimental-60hz.",
-                                    NK_UI_TYPE_CAPTION, theme->muted);
+                if (title->enhancement_shown) {
+                    nk_ui_text_role(ui, TITLE_ID_ENH_TEXT,
+                                    "An optional enhancement made for this game: its logic runs "
+                                    "60 times a second instead of 30, from its own package. Off "
+                                    "plays the original game as released. If this PC falls "
+                                    "behind, it says SLOWED.",
+                                    NK_UI_TYPE_BODY_S, theme->paper);
+                    if (title->enhancement_problem != NULL &&
+                        title->enhancement_problem[0] != '\0') {
+                        char line[256];
+                        (void)snprintf(line, sizeof(line),
+                                       "%s Turn it off to play the original game.",
+                                       title->enhancement_problem);
+                        nk_ui_text_role(ui, TITLE_ID_ENH_PROBLEM, nk_ui_frame_text(ui, line),
+                                        NK_UI_TYPE_BODY_S, theme->error);
+                    }
+                    if (title->enhancement_session) {
+                        nk_ui_text_role(ui, TITLE_ID_ENH_SESSION,
+                                        "On for this session: Nakagawa was started with "
+                                        "--experimental-60hz.",
+                                        NK_UI_TYPE_CAPTION, theme->muted);
+                    }
                 }
                 nk_ui_end_container(ui);
             }
@@ -1710,12 +1757,23 @@ static WizardColumn wizard_column(NkUi *ui, const WizardRow *rows, size_t count,
    it (or under it, as `column` says; NULL lays the row out on its own); the
    button is filled while the setting is in effect. Returns true when the
    button is activated. */
+static bool wizard_value_state(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
+                               const char *value, const char *sentence, bool on, bool disabled,
+                               float width, const WizardColumn *column);
+
 static bool wizard_value(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
                          const char *value, const char *sentence, bool on, float width,
                          const WizardColumn *column) {
+    return wizard_value_state(ui, id, text_id, name, value, sentence, on, false, width, column);
+}
+
+/* As wizard_value; a disabled row cannot be focused and its words are dim, sentence included. */
+static bool wizard_value_state(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
+                               const char *value, const char *sentence, bool on, bool disabled,
+                               float width, const WizardColumn *column) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
-    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, disabled ? theme->dim : theme->muted);
     WizardColumn own;
     char label[48];
     float room;
@@ -1741,7 +1799,8 @@ static bool wizard_value(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
                                       0.0f);
         if (nk_ui_begin_container(ui, text_id + 1u, &cell, NULL)) {
             pressed = nk_ui_button(ui, id, label,
-                                   NK_UI_BUTTON_GROW | (on ? NK_UI_BUTTON_PRIMARY : 0u));
+                                   NK_UI_BUTTON_GROW | (on && !disabled ? NK_UI_BUTTON_PRIMARY : 0u) |
+                                       (disabled ? NK_UI_BUTTON_DISABLED : 0u));
             nk_ui_end_container(ui);
         }
     }
@@ -2581,7 +2640,7 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         const char *values[] = {
             safe_text(model->resolution, "2x"), safe_text(model->pacing, "PSP timing"),
             safe_text(model->scaling, "Sharp"), "Size, contrast, motion",
-            "Controller and keyboard", "Check for updates", "Off"
+            "Controller and keyboard", "Check for updates", "Off", "Filtering and more"
         };
         float buttons = 190.0f;
         for (size_t i = 0u; i < sizeof(values) / sizeof(values[0]); ++i) {
@@ -2638,6 +2697,15 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
             if (settings_row(ui, 4u, PLAYER_UI_ID_SETTINGS_SCALING, "Scaling",
                              safe_text(model->scaling, "Sharp"), false, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_SCALING);
+            }
+            /* Ace Mode (src/rt/ace.h): the library's switch, and its page. */
+            if (settings_row(ui, 11u, PLAYER_UI_ID_SETTINGS_ACE, "Ace Mode",
+                             settings_on_off(model->ace_enabled), model->ace_enabled, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE);
+            }
+            if (settings_row(ui, 12u, PLAYER_UI_ID_SETTINGS_ACE_OPEN, "Ace Mode options",
+                             "Filtering and more", false, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_OPEN_ACE);
             }
             nk_ui_end_container(ui);
         }
@@ -2744,7 +2812,9 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
             for (size_t i = 0u; i < sizeof(actions) / sizeof(actions[0]); ++i) {
                 nk_ui_flow_item(ui, &flow,
                                 nk_ui_button_width(ui, actions[i].label, actions[i].flags));
-                if (nk_ui_button(ui, actions[i].id, actions[i].label, actions[i].flags)) {
+                /* Left and Right stay on this row: the cards' last rows end just above it. */
+                if (nk_ui_button(ui, actions[i].id, actions[i].label,
+                                 actions[i].flags | NK_UI_BUTTON_ROW)) {
                     *result = settings_op(actions[i].op);
                 }
             }
@@ -3094,6 +3164,74 @@ static void settings_accessibility(NkUi *ui, const PlayerUiSettingsModel *model,
     }
 }
 
+/* Settings > Ace Mode (src/rt/ace.h): the library's switch and each feature, a sentence beside
+   each that says what it does and what it costs. While the switch is off the feature rows are
+   dim and cannot be focused; their values are kept. Features this build does not carry
+   (ultrawide, smooth motion) have no row. */
+static void settings_ace(NkUi *ui, const PlayerUiSettingsModel *model, float inner,
+                         PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    const bool off = !model->ace_enabled;
+    flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
+    nk_ui_text_role(ui, FLOW_ID_TITLE, "Ace Mode", NK_UI_TYPE_TITLE, theme->paper);
+    nk_ui_text_role(ui, FLOW_ID_LEAD,
+                    "Modern touches for every game. The games themselves run as released. "
+                    "Each game's page can turn it on or off for that game alone.",
+                    NK_UI_TYPE_BODY_S, theme->muted);
+    if (wizard_box_begin(ui, 0u)) {
+        const WizardRow rows[] = {
+            {"Ace Mode", settings_on_off(model->ace_enabled),
+             "Turns all of these on or off together."},
+            {"Texture filtering", safe_text(model->ace_filtering, "16x"),
+             "Keeps slanted surfaces clear and steady. Save pictures a game takes keep the "
+             "filtering."},
+            {"Crisp system text", settings_on_off(model->ace_text),
+             "Draws the on-screen keyboard at your screen's resolution."},
+            {"Speed readout", settings_on_off(model->ace_readout),
+             "Shows the game's speed and frame rate in a corner, over the game's own HUD."},
+            {"Game badge", settings_on_off(model->ace_notice),
+             "Says Ace Mode is on for a few seconds when a game starts."}
+        };
+        WizardColumn column = wizard_column(ui, rows, sizeof(rows) / sizeof(rows[0]), inner - 32.0f);
+        if (wizard_value(ui, PLAYER_UI_ID_SETTINGS_ACE_MODE, SET_ID_TEXT + 0x400u, rows[0].name,
+                         rows[0].value, rows[0].sentence, model->ace_enabled, inner - 32.0f,
+                         &column)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE);
+        }
+        if (wizard_value_state(ui, PLAYER_UI_ID_SETTINGS_ACE_FILTERING, SET_ID_TEXT + 0x404u,
+                               rows[1].name, rows[1].value, rows[1].sentence,
+                               strcmp(rows[1].value, "Off") != 0, off, inner - 32.0f, &column)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_ACE_FILTERING);
+        }
+        if (wizard_value_state(ui, PLAYER_UI_ID_SETTINGS_ACE_TEXT, SET_ID_TEXT + 0x408u,
+                               rows[2].name, rows[2].value, rows[2].sentence, model->ace_text, off,
+                               inner - 32.0f, &column)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT);
+        }
+        if (wizard_value_state(ui, PLAYER_UI_ID_SETTINGS_ACE_READOUT, SET_ID_TEXT + 0x40Cu,
+                               rows[3].name, rows[3].value, rows[3].sentence, model->ace_readout,
+                               off, inner - 32.0f, &column)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT);
+        }
+        if (wizard_value_state(ui, PLAYER_UI_ID_SETTINGS_ACE_NOTICE, SET_ID_TEXT + 0x410u,
+                               rows[4].name, rows[4].value, rows[4].sentence, model->ace_notice,
+                               off, inner - 32.0f, &column)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE);
+        }
+        nk_ui_end_container(ui);
+    }
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+        row.padding_top = NK_UI_SPACE_1;
+        if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+            if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Done", NK_UI_BUTTON_PRIMARY)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
+}
+
 /* The Settings pages that are a dialog card over the flow frame. */
 static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float width,
                             float height, PlayerUiAction *result) {
@@ -3169,6 +3307,9 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         break;
     case PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY:
         settings_accessibility(ui, model, inner, result);
+        break;
+    case PLAYER_UI_SETTINGS_PAGE_ACE:
+        settings_ace(ui, model, inner, result);
         break;
     case PLAYER_UI_SETTINGS_PAGE_NOTICES:
         flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Third-party notices", theme->accent_dark);

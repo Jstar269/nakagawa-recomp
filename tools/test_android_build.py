@@ -73,7 +73,8 @@ class AndroidRuntimeInventoryTests(unittest.TestCase):
         make_rt = _expand(self.make["RT_SRCS"][0], self.make, self.choose)
         self.assertIn("src/core/nk_platform_posix.c", make_rt)
         ui = (_cmake_list(self.cmake, "NK_UI_CORE_SOURCES") +
-              _cmake_list(self.cmake, "NK_UI_EDGE_SOURCES") + ["src/ui/backend/nk_ui_sdlr.c"] +
+              _cmake_list(self.cmake, "NK_UI_EDGE_SOURCES") +
+              ["src/ui/backend/nk_ui_sdlr.c", "src/ui/backend/nk_ui_vk.c"] +
               _cmake_list(self.cmake, "NK_UI_OVERLAY_C9C_SOURCES") +
               ["src/rt/overlay/overlay_host.c"])
         cmake_rt = _cmake_list(self.cmake, "NK_RUNTIME_SOURCES") + ui

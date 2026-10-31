@@ -235,7 +235,17 @@ void gegpu_cpu_profile_stats_get(GeGpuCpuProfileStats *out);
  * declared unconditionally so no translation unit ever sees an implicit
  * declaration under any flag combination. */
 int gegpu_coherence_selftest(void);
+/* Ace Mode's texture filtering (src/rt/ace.h): the anisotropy level the renderer uses (0 in an
+ * authentic run), the anisotropic samplers it has made, and its texture descriptor pool's
+ * size. Invariant A2: an authentic run makes none and keeps MAX_TEX sets. */
+typedef struct {
+    int af;
+    unsigned long long af_samplers;
+    unsigned tex_pool_sets;
+} GeGpuAceStats;
+void gegpu_ace_stats(GeGpuAceStats *out);
 int gegpu_snapshot_sync_selftest(void);
+int gegpu_ace_af_selftest(void);   /* 1 pass, 0 fail, 77 no anisotropic filtering */
 
 void gegpu_shutdown(void);
 

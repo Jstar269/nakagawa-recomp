@@ -276,6 +276,10 @@ uint64_t sr_watch_match_count(void);
 } while (0)
 
 void sr_flight_init(void);
+/* Marks the run as enhanced (Ace Mode, ace.h): the bundle's runtime block then carries
+ * "enhancements": {"ace": "<line>"}, and tools/flight_diff.py refuses to compare it. NULL or ""
+ * clears it; an authentic run never calls this, so its bundle is unchanged. */
+void sr_flight_set_enhancements(const char *ace_line);
 int sr_flight_class_enabled(uint32_t event_class);
 void sr_flight_record(uint32_t event_class, uint32_t kind, uint32_t arg0, uint32_t arg1,
                       uint32_t arg2, uint32_t arg3);
@@ -346,6 +350,7 @@ static inline void sr_watch_store(uint32_t pc, uint32_t addr, uint32_t value, ui
 static inline uint64_t sr_watch_match_count(void) { return 0u; }
 
 static inline void sr_flight_init(void) {}
+static inline void sr_flight_set_enhancements(const char *ace_line) { (void)ace_line; }
 static inline int sr_flight_class_enabled(uint32_t event_class) {
     (void)event_class;
     return 0;

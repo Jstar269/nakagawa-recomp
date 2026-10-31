@@ -108,6 +108,7 @@ class TestGateStubLink(unittest.TestCase):
                 str(RT / "stale_code.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
+                str(RT / "ace.c"),
                 str(RT / "title_config.c"),
                 str(GATE_STUB),
                 "-lm",
@@ -165,6 +166,7 @@ class TestGateStubLink(unittest.TestCase):
                 str(RT / "stale_code.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
+                str(RT / "ace.c"),
                 str(GATE_STUB),
                 "-lm",
             ]
@@ -212,6 +214,7 @@ class TestGateStubLink(unittest.TestCase):
                 str(RT / "stale_code.c"),
                 str(RT / "vfpu_tables.c"),
                 str(RT / "driver.c"),
+                str(RT / "ace.c"),
                 str(RT / "title_config.c"),
                 str(GATE_STUB),
                 "-lm",
