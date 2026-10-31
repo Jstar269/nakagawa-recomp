@@ -8,7 +8,7 @@ candidate does not replace qualified human provenance and distribution review.
 Companions: [NOTICE.md](../../NOTICE.md) (what the project *tells the world*),
 [`PUBLIC_SOURCE_PROFILE.md`](../PUBLIC_SOURCE_PROFILE.md) (candidate scope),
 [`../../assets/public_provenance_ledger.json`](../../assets/public_provenance_ledger.json)
-(the path-hashed public provenance ledger), and
+(the per-path public provenance ledger), and
 [`PUBLICATION_READINESS.md`](../PUBLICATION_READINESS.md) (release gates).
 
 ## Goal, stated precisely

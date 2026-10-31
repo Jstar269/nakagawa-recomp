@@ -5,19 +5,21 @@
 """Refresh the two public provenance controls from the public controls alone.
 
 ``assets/public_provenance_ledger.json`` and ``PUBLIC_EXPORT.json`` are derived
-from the tracked tree, so almost any change makes them stale: the ledger records
-a SHA-256 per included path, and the export records the publication policy and
-its digest.  Until now the only tool that could regenerate them needed the
-private trusted detailed ledger, so an outside contributor could not make their
-own pull request green and a maintainer had to push a refresh commit onto the
-branch.
+from the tracked tree. The ledger records a claim (classification and evidence)
+per included path, in the claims-only form (#1673): it carries no content hash,
+so a change to an existing path leaves it unchanged; the hosted attestation
+regenerates the hashes from the trusted authority at landing. The export
+records the publication policy and its digest. Until #849 the only tool that
+could regenerate them needed the private trusted detailed ledger, so an outside
+contributor could not make their own pull request green.
 
 This tool regenerates both files from inputs a contributor already has: the
 committed public ledger, the committed publication policy, and the candidate
 tree (the staged index, exactly as the maintainer's refresh and the publication
-audit read it).  It is the *same generation* every time: for every changed path
-that already has a public entry it keeps that entry verbatim and replaces only
-its ``sha256``; the export is rebuilt through the verifier's own
+audit read it).  It is the *same generation* every time: every changed path
+that already has a public entry keeps that entry's claim verbatim, and the
+ledger is written in the committed claims form (a base still on the hashed
+schema-1 form is converted); the export is rebuilt through the verifier's own
 ``_generate_ephemeral_export`` and ``public_export.build_control_document``, so
 no part of the control format is reimplemented here.
 
@@ -64,7 +66,7 @@ claim is backed.
 It **cannot see** two things, because the public ledger does not carry them:
 
 * **frozen debt** — a public entry whose claim disagrees with trusted derivation.
-  The tool copies such an entry forward with a fresh hash, exactly as an honest
+  The tool copies such an entry forward unchanged, exactly as an honest
   refresh would; the landing verifier reports ``CLAIM_UNBACKED`` /
   ``CLASSIFICATION_DOWNGRADE`` / ``CONTENT_UNATTESTED`` for it.
 * **a changed executable/security-sensitive path with no exact trusted record** —
@@ -80,7 +82,6 @@ from __future__ import annotations
 import argparse
 import copy
 from pathlib import Path
-import hashlib
 import subprocess
 import sys
 import tempfile
@@ -156,8 +157,13 @@ def _changed_paths(base_blobs: dict[str, bytes], candidate_blobs: dict[str, byte
     )
 
 
-def _generate(repo: Path, base: str) -> tuple[bytes, bytes, list[tuple[str, str, str]]]:
-    """Return (ledger bytes, export bytes, rehash log) for the staged candidate."""
+def _generate(repo: Path, base: str) -> tuple[bytes, bytes, list[tuple[str, str]]]:
+    """Return (ledger bytes, export bytes, kept claims) for the staged candidate.
+
+    The ledger is written in its committed claims form (#1673), which carries no content
+    hash, so a change to an existing path keeps every claim and leaves the ledger's bytes as
+    the base's. The third value names each changed path with the claim it keeps.
+    """
 
     if _git(repo, "diff", "--quiet").returncode:
         raise RefreshRefused(
@@ -194,7 +200,7 @@ def _generate(repo: Path, base: str) -> tuple[bytes, bytes, list[tuple[str, str,
     )
 
     changed = _changed_paths(base_blobs, candidate_blobs)
-    rehashed: list[tuple[str, str, str]] = []
+    kept: list[tuple[str, str]] = []
     for path in changed:
         if path not in base_blobs:
             raise RefreshRefused(
@@ -206,7 +212,7 @@ def _generate(repo: Path, base: str) -> tuple[bytes, bytes, list[tuple[str, str,
             raise RefreshRefused(
                 "REMOVED_PUBLIC_PATH", path,
                 "this file left the tree; removing a public path is a maintainer decision, not a "
-                "hash refresh",
+                "refresh",
             )
         entry = base_entries.get(path)
         if entry is None:
@@ -220,14 +226,13 @@ def _generate(repo: Path, base: str) -> tuple[bytes, bytes, list[tuple[str, str,
                 "the committed public entry is unresolved and cannot be refreshed; a maintainer "
                 "must record its provenance first",
             )
-        rehashed.append((path, str(entry.get("sha256")), hashlib.sha256(candidate_blobs[path]).hexdigest()))
+        kept.append((path, str(entry.get("classification"))))
 
-    new_ledger = copy.deepcopy(base_ledger)
-    by_path = {entry["path"]: entry for entry in new_ledger["entries"]}
-    for path in changed:
-        by_path[path]["sha256"] = hashlib.sha256(candidate_blobs[path]).hexdigest()
-
-    errors = ledger_tool.validate_ledger(new_ledger, require_hashes=True, require_resolved=True)
+    # A base still on the hashed schema-1 ledger is validated in that form first, so a
+    # malformed base is refused rather than silently converted.
+    errors = ledger_tool.validate_ledger(base_ledger, require_hashes=True, require_resolved=True)
+    new_ledger = ledger_tool.claims_ledger(copy.deepcopy(base_ledger))
+    errors += ledger_tool.validate_ledger(new_ledger, require_resolved=True)
     if errors:
         raise RefreshRefused("GENERATED_LEDGER_INVALID", "", errors[0])
     ledger_bytes = ledger_tool._canonical_json_bytes(new_ledger)
@@ -244,7 +249,7 @@ def _generate(repo: Path, base: str) -> tuple[bytes, bytes, list[tuple[str, str,
     export_bytes = ledger_tool._canonical_json_bytes(
         public_export.build_control_document(export_document)
     )
-    return ledger_bytes, export_bytes, rehashed
+    return ledger_bytes, export_bytes, kept
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -259,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
 
     repo = args.repo.resolve()
     try:
-        ledger_bytes, export_bytes, rehashed = _generate(repo, args.base)
+        ledger_bytes, export_bytes, kept = _generate(repo, args.base)
     except RefreshRefused as error:
         print("contrib-refresh: REFUSED", file=sys.stderr)
         print(f"  {error.code}: {error.path or '<repository>'}: {error.detail}", file=sys.stderr)
@@ -268,11 +273,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"contrib-refresh: {error.code}: {error}", file=sys.stderr)
         return 2
 
-    for path, old, new in rehashed:
-        print(f"rehash {path} {old} -> {new}")
+    for path, classification in kept:
+        print(f"claim kept {path} ({classification})")
+    changes = [
+        name for name, raw in ((LEDGER, ledger_bytes), (EXPORT, export_bytes))
+        if not (repo / name).is_file() or (repo / name).read_bytes() != raw
+    ]
 
     if args.check:
-        print(f"contrib-refresh: would rehash {len(rehashed)} path(s); wrote nothing (--check)")
+        print(f"contrib-refresh: {len(kept)} changed path(s) keep their claims; "
+              f"{', '.join(changes) or 'no control'} would change; wrote nothing (--check)")
         return 0
 
     ledger_target = repo / LEDGER
@@ -284,7 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     if staged.returncode:
         print("contrib-refresh: GIT_ERROR: could not stage the refreshed controls", file=sys.stderr)
         return 3
-    print(f"contrib-refresh: OK ({len(rehashed)} path(s) rehashed; controls staged)")
+    print(f"contrib-refresh: OK ({len(kept)} changed path(s) keep their claims; "
+          f"{', '.join(changes) or 'no control'} changed; controls staged)")
     print("  the maintainer's trusted attestation re-derives these files at landing")
     return 0
 

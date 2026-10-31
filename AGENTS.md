@@ -128,9 +128,10 @@ the full rules.
 
 ### New files: what to put in the pull request
 
-Every public file has a provenance entry: where it came from, the evidence, and a hash of its bytes.
-The record behind those entries is kept privately by the maintainer, so you cannot add an entry, and
-you do not need to. **The maintainer admits new paths.** For each file you add, say in the pull
+Every public file has a provenance entry: where it came from and the evidence for that. Its bytes are
+bound by the trusted attestation, which regenerates each file's hash from the record behind those
+entries. That record is kept privately by the maintainer, so you cannot add an entry, and you do not
+need to. **The maintainer admits new paths.** For each file you add, say in the pull
 request:
 
 - that you wrote it (with which AI tool, if any); or
@@ -217,8 +218,8 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   themselves. Never fabricate a private record, expand a wildcard, edit hashes to
   self-attest, or use `--no-verify` to bypass publication failure.
 - `--provenance-self-consistency` is a developer tripwire only. It checks coverage,
-  resolution, and hashes but does not attest provenance. Release readiness requires the
-  external trusted ledger.
+  resolution and claims (and hashes, on a ledger still in the older hashed form) but does
+  not attest provenance. Release readiness requires the external trusted ledger.
 - Preserve SPDX, copyright, upstream, and third-party notices (sign-off identity: Section 3).
 - End agent commits with `Assisted-by: <tool> (<model>)`, never `Co-Authored-By:` ([form and tools](docs/AI_USAGE.md#disclosing-ai-help-in-commits)).
 - Keep public source correctness, provenance/publication readiness, private title
@@ -247,7 +248,7 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   label (see `docs/provenance/INDEPENDENCE_MODEL.md`); prefer "project-authored".
 - Adding or removing a public path changes `assets/public_source_profile.json`, which only the
   maintainer's admission can authorize. `provenance-refresh` and `tools/contrib_refresh.py` refuse
-  added or removed paths and only re-key admitted ones. A commit carries the regenerated controls
+  added or removed paths and only refresh admitted ones. A commit carries the regenerated controls
   for the paths it changes and nothing more; a refresh after merging `main` is a commit of its own.
   Never hand-edit them.
 
@@ -499,8 +500,9 @@ covers the maintainer's workspace, how new paths are admitted, and how pull requ
   worktree. Do not edit, stage, commit, merge or push there.
 - The integrator lands from one landing run, one PR at a time. When the queue is long, the desk lands
   pull requests in batches instead: a linear batch branch with one commit per folded PR, one CI and
-  CodeQL run for the batch, then a rebase-merge. A path-adding PR needs a re-key after
-  another path-adding PR lands unless both were batch-admitted
+  CodeQL run for the batch, then a rebase-merge. A path-adding PR admitted with a V3 policy
+  delta needs no re-key when another path-adding PR lands first; one admitted before V3
+  deltas existed needs one `--rekey`, and a batch carries at most one profile-changing PR
   ([landing order](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
   Never hold a ready pull request for an unrelated one.
 - At the end of a mission, also state whether canonical main was fast-forwarded or left
