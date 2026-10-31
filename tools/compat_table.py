@@ -76,8 +76,9 @@ VERIFICATION_LABELS = {
 BUILD_FAILURES = frozenset({"BUILD_FAILED", "TIMED_OUT", "NO_REPORT"})
 NOT_RUN_YET = frozenset({"PENDING", "RUNNING"})
 # The issue that owns each named cause. A cause not listed belongs to the end-to-end
-# ISO-to-play work (#308); compile memory and time belong to the bounded-compile work.
-CAUSE_ISSUES = {"COMPILE_FAILED": 1730, "TITLE_TIME_BUDGET": 1730}
+# ISO-to-play work (#308); compile memory and time belong to the bounded-compile work, and
+# instructions the generated code does not cover to the VFPU coverage work.
+CAUSE_ISSUES = {"COMPILE_FAILED": 1730, "TITLE_TIME_BUDGET": 1730, "UNSUPPORTED_INSTRUCTION": 326}
 DEFAULT_CAUSE_ISSUE = 308
 # A cause name outside the failure-code taxonomy is never printed: it is counted as this.
 OTHER_CAUSE = "OTHER"
@@ -86,6 +87,10 @@ NO_CAUSE = "NONE"
 CAUSE_NOTES = {
     "LAUNCH_TIMEOUT": "still running when its first launch ended",
 }
+# A datafile version is published only in one of these shapes (Redump's is a date and time);
+# anything else in that free-text field is left out.
+_DATAFILE_VERSION = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}[-:][0-9]{2}[-:][0-9]{2})?|[0-9]+(?:\.[0-9]+){0,3}")
 # Text that looks like a private identifier: a disc ID, a SHA-1 or a host path.
 _IDENTIFIER_SHAPES = (
     re.compile(r"\b[A-Z]{4}-?[0-9]{5}\b"),
@@ -140,12 +145,18 @@ def verification_of(record: dict[str, Any]) -> str:
     return tier if tier in VERIFICATION_COLUMNS else disc_verify.NOT_CHECKED
 
 
-def _settings_key(record: dict[str, Any], manifest: dict[str, Any]) -> tuple:
+def _seconds(value: Any) -> int | None:
+    return value if type(value) is int and value > 0 else None
+
+
+def _settings_key(record: dict[str, Any]) -> tuple:
+    """The settings a disc was built with; a value of any other shape counts as unrecorded."""
     settings = record.get("run_settings")
     if not isinstance(settings, dict):
         return (None, None, None)
     commit = settings.get("source_commit")
-    return (settings.get("title_timeout_seconds"), settings.get("launch_timeout_seconds"),
+    return (_seconds(settings.get("title_timeout_seconds")),
+            _seconds(settings.get("launch_timeout_seconds")),
             commit if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit) else None)
 
 
@@ -170,8 +181,9 @@ def summarize(manifest: dict[str, Any], codes: frozenset[str] | None = None) -> 
             continue
         grid[(tier, verification_of(record))] += 1
         causes[(tier, cause_of(record, codes))] += 1
-        settings[_settings_key(record, manifest)] += 1
+        settings[_settings_key(record)] += 1
     datafile = manifest.get("datafile") if isinstance(manifest.get("datafile"), dict) else {}
+    version = datafile.get("version")
     return {
         "format": "nakagawa-compat-summary",
         "schema_version": 1,
@@ -194,8 +206,10 @@ def summarize(manifest: dict[str, Any], codes: frozenset[str] | None = None) -> 
             for key, count in sorted(settings.items(), key=lambda item: -item[1])
         ],
         "datafile": {
-            "version": datafile.get("version") if isinstance(datafile.get("version"), str) else None,
+            "version": version if isinstance(version, str) and _DATAFILE_VERSION.fullmatch(version)
+            else None,
             "discs": datafile.get("discs") if type(datafile.get("discs")) is int else None,
+            "serials": datafile.get("serials") if type(datafile.get("serials")) is int else None,
         },
     }
 
@@ -231,7 +245,7 @@ def render_markdown(summary: dict[str, Any], date: str) -> str:
         "",
         f"Whole library, {date}: {_number(summary['counted'])} disc images counted. "
         + _settings_sentence(summary["settings"]),
-        "Each disc had one hidden first launch with no input.",
+        "`tools/library_build.py` gives each disc one hidden first launch with no input.",
         "",
     ]
     datafile = summary["datafile"]
@@ -239,8 +253,14 @@ def render_markdown(summary: dict[str, Any], date: str) -> str:
         lines += [
             f"Disc verification compared each whole image with a Redump PSP list "
             f"({_number(datafile['discs'])} discs, version {datafile.get('version') or 'unknown'}).",
-            "",
         ]
+        if not datafile.get("serials"):
+            lines += [
+                "That list names no disc IDs, so an image counts as **Modified** only when its retail "
+                "disc is verified in the same library. A lone fan translation counts as **Unknown**: "
+                "unknown means not shown to be retail, not modified.",
+            ]
+        lines += [""]
     else:
         lines += ["No Redump list was imported for this run, so every disc is **Not checked**.", ""]
     header = "| Tier | " + " | ".join(VERIFICATION_LABELS[column] for column in VERIFICATION_COLUMNS)
@@ -308,14 +328,46 @@ def identifiers(manifest: dict[str, Any]) -> set[str]:
     return found
 
 
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[0-9a-z]+", text.casefold()))
+
+
+def template_words() -> frozenset[str]:
+    """Every word the summary's own text can hold, whatever the data: its sentences, labels
+    and cause names. A folder or disc named only with these words ("Modified", "Library")
+    does not identify anything when they appear."""
+    codes = load_codes()
+    sample = {
+        "format": MANIFEST_FORMAT, "datafile": {"version": "1", "discs": 1, "serials": 0},
+        "titles": [
+            {"outcome": outcome, "failure_class": cause, "launch": {"frame_submissions": frames,
+                                                                    "failure_class": cause},
+             "run_settings": settings, "verification": {"tier": tier}}
+            for outcome, frames in (("BUILT", 1), ("BUILT", 0), ("BUILD_FAILED", 0))
+            for cause in ("LAUNCH_TIMEOUT", "NOT_A_CODE", None)
+            for settings in ({}, {"title_timeout_seconds": 1, "launch_timeout_seconds": 1,
+                                  "source_commit": "0" * 40})
+            for tier in VERIFICATION_COLUMNS
+        ] + [{"outcome": "PENDING"}, {"outcome": "DUPLICATE"}],
+    }
+    summary = summarize(sample, codes)
+    text = render_markdown(summary, "2000-01-01") + json.dumps(summary)
+    text += " ".join(code.replace("_", " ") for code in codes)
+    no_list = dict(summary, datafile={"version": None, "discs": None, "serials": None})
+    text += render_markdown(no_list, "2000-01-01")
+    return frozenset(_words(text))
+
+
 def check_public(text: str, manifest: dict[str, Any]) -> None:
     """Refuse a summary that carries any identifier of the input, or anything shaped like one."""
     # Whole words only: a disc named like part of a cause name ("EXIT" in EXITED_...) is not
-    # in the summary, but the same word standing alone would be.
+    # in the summary, but the same word standing alone would be. A name made only of the
+    # summary's own words can appear without coming from the data.
     folded = text.casefold()
+    vocabulary = template_words()
     leaked = sorted(
         value for value in identifiers(manifest)
-        if value.casefold() in folded and re.search(
+        if value.casefold() in folded and not _words(value) <= vocabulary and re.search(
             r"(?<![0-9a-z])" + re.escape(value.casefold()) + r"(?![0-9a-z])", folded)
     )
     if leaked:

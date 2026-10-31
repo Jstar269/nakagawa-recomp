@@ -7,6 +7,7 @@
 
 #include "nk_disc_verify.h"
 
+#include "nk_json.h"
 #include "nk_platform.h"
 #include "nk_types.h"
 
@@ -134,38 +135,44 @@ void nk_sha1_finish(NkSha1 *ctx, uint8_t digest[20]) {
 
 /* ---- CRC-32 ------------------------------------------------------------ */
 
-/* Slicing-by-four tables, built once: table[0] is the classic byte table. */
-static uint32_t g_crc_table[4][256];
-static bool g_crc_ready = false;
+/* Slicing-by-four tables: table[0] is the classic byte table. Each caller
+   builds its own (4 KiB, a few microseconds), so concurrent workers never share
+   a table that is still being filled. */
+typedef uint32_t NkCrc32Tables[4][256];
 
-static void crc32_build_tables(void) {
+static void crc32_build_tables(NkCrc32Tables table) {
     for (uint32_t n = 0; n < 256u; n++) {
         uint32_t c = n;
         for (unsigned k = 0; k < 8u; k++) c = (c & 1u) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-        g_crc_table[0][n] = c;
+        table[0][n] = c;
     }
     for (uint32_t n = 0; n < 256u; n++) {
         for (unsigned t = 1; t < 4u; t++) {
-            uint32_t prev = g_crc_table[t - 1u][n];
-            g_crc_table[t][n] = g_crc_table[0][prev & 0xFFu] ^ (prev >> 8);
+            uint32_t prev = table[t - 1u][n];
+            table[t][n] = table[0][prev & 0xFFu] ^ (prev >> 8);
         }
     }
-    g_crc_ready = true;
 }
 
-uint32_t nk_crc32_update(uint32_t crc, const uint8_t *data, size_t len) {
-    if (!g_crc_ready) crc32_build_tables();
+static uint32_t crc32_with_tables(NkCrc32Tables table, uint32_t crc, const uint8_t *data,
+                                  size_t len) {
     uint32_t c = ~crc;
     while (len >= 4u) {
         c ^= (uint32_t)data[0] | ((uint32_t)data[1] << 8) | ((uint32_t)data[2] << 16) |
              ((uint32_t)data[3] << 24);
-        c = g_crc_table[3][c & 0xFFu] ^ g_crc_table[2][(c >> 8) & 0xFFu] ^
-            g_crc_table[1][(c >> 16) & 0xFFu] ^ g_crc_table[0][c >> 24];
+        c = table[3][c & 0xFFu] ^ table[2][(c >> 8) & 0xFFu] ^ table[1][(c >> 16) & 0xFFu] ^
+            table[0][c >> 24];
         data += 4u;
         len -= 4u;
     }
-    while (len-- > 0) c = g_crc_table[0][(c ^ *data++) & 0xFFu] ^ (c >> 8);
+    while (len-- > 0) c = table[0][(c ^ *data++) & 0xFFu] ^ (c >> 8);
     return ~c;
+}
+
+uint32_t nk_crc32_update(uint32_t crc, const uint8_t *data, size_t len) {
+    NkCrc32Tables table;
+    crc32_build_tables(table);
+    return crc32_with_tables(table, crc, data, len);
 }
 
 /* ---- whole-image hash -------------------------------------------------- */
@@ -199,6 +206,8 @@ bool nk_disc_hash_file(const char *path, const NkDiscExpandCallbacks *callbacks,
     }
     NkSha1 sha1;
     nk_sha1_init(&sha1);
+    NkCrc32Tables crc_table;
+    crc32_build_tables(crc_table);
     uint32_t crc = 0;
     uint64_t done = 0;
     bool ok = true;
@@ -210,7 +219,7 @@ bool nk_disc_hash_file(const char *path, const NkDiscExpandCallbacks *callbacks,
         size_t got = fread(buffer, 1, NK_DISC_HASH_CHUNK, f);
         if (got > 0) {
             nk_sha1_update(&sha1, buffer, got);
-            crc = nk_crc32_update(crc, buffer, got);
+            crc = crc32_with_tables(crc_table, crc, buffer, got);
             done += got;
             if (callbacks && callbacks->on_progress) {
                 callbacks->on_progress(done, total > 0 ? (uint64_t)total : done, callbacks->user);
@@ -409,6 +418,15 @@ static int rom_compare(const void *a, const void *b) {
     return memcmp(((const NkDiscDatRom *)a)->sha1, ((const NkDiscDatRom *)b)->sha1, 20u);
 }
 
+/* SHA-1, then the order the list gives: qsort is not stable, so the order is
+   part of the key and a SHA-1 listed twice keeps its first entry. */
+static int rom_compare_listed(const void *a, const void *b) {
+    int by_sha1 = rom_compare(a, b);
+    if (by_sha1 != 0) return by_sha1;
+    uint32_t x = ((const NkDiscDatRom *)a)->listed, y = ((const NkDiscDatRom *)b)->listed;
+    return (x > y) - (x < y);
+}
+
 static int serial_compare(const void *a, const void *b) {
     return memcmp(a, b, 9u);
 }
@@ -450,6 +468,9 @@ bool nk_disc_dat_parse(const char *text, size_t length, NkDiscDat *out,
     if (!out) return verify_fail(status, NK_DISC_INTERNAL, "No datafile result was given.");
     memset(out, 0, sizeof(*out));
     if (!text) return verify_fail(status, NK_DISC_INTERNAL, "No datafile text was given.");
+    if (!nk_json_validate_utf8((const uint8_t *)text, length)) {
+        return verify_fail(status, NK_DISC_DAT_NOT_DATAFILE, "The datafile isn't UTF-8 text.");
+    }
     const char *end = text + length;
     if (!find_tag(text, end, "datafile")) {
         return verify_fail(status, NK_DISC_DAT_NOT_DATAFILE,
@@ -514,6 +535,7 @@ bool nk_disc_dat_parse(const char *text, size_t length, NkDiscDat *out,
                 }
                 entry.crc32 = ((uint32_t)crc_bytes[0] << 24) | ((uint32_t)crc_bytes[1] << 16) |
                               ((uint32_t)crc_bytes[2] << 8) | (uint32_t)crc_bytes[3];
+                entry.listed = (uint32_t)out->rom_count;
                 if (!dat_push_rom(out, &rom_capacity, &entry)) {
                     nk_disc_dat_free(out);
                     return verify_fail(status, NK_DISC_INTERNAL,
@@ -530,7 +552,7 @@ bool nk_disc_dat_parse(const char *text, size_t length, NkDiscDat *out,
         nk_disc_dat_free(out);
         return verify_fail(status, NK_DISC_DAT_EMPTY, "The datafile lists no disc with a SHA-1 hash.");
     }
-    qsort(out->roms, out->rom_count, sizeof(out->roms[0]), rom_compare);
+    qsort(out->roms, out->rom_count, sizeof(out->roms[0]), rom_compare_listed);
     /* A SHA-1 listed twice keeps its first entry, as the Python reader does. */
     size_t kept = 0;
     for (size_t i = 0; i < out->rom_count; i++) {
@@ -677,4 +699,68 @@ NkDiscTier nk_disc_classify(const NkDiscDat *dat, const char *disc_id,
         return NK_DISC_TIER_MODIFIED;
     }
     return NK_DISC_TIER_UNKNOWN;
+}
+
+/* ---- one call for an add worker ----------------------------------------- */
+
+static const char *tier_reason(NkDiscTier tier) {
+    switch (tier) {
+    case NK_DISC_TIER_VERIFIED_RETAIL:
+        return "Verified retail: the whole image matches a retail disc in your Redump list.";
+    case NK_DISC_TIER_MODIFIED:
+        return "Modified: the image isn't in your Redump list, but its disc ID is a retail disc's "
+               "(a fan translation, patch or trimmed image).";
+    case NK_DISC_TIER_UNKNOWN:
+        return "Unknown: the image isn't in your Redump list, and nothing shows its disc ID is "
+               "a retail disc's.";
+    case NK_DISC_TIER_NOT_CHECKED:
+    default:
+        return "Not checked: no Redump list is imported.";
+    }
+}
+
+bool nk_disc_verify_image(const char *iso_path, const char *data_root, const char *disc_id,
+                          bool disc_id_verified_elsewhere,
+                          const NkDiscExpandCallbacks *callbacks, NkDiscVerification *out) {
+    NkDiscExpandStatus status;
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    out->tier = NK_DISC_TIER_NOT_CHECKED;
+    if (!nk_disc_hash_file(iso_path, callbacks, &out->digest, &status)) {
+        out->result = strcmp(status.code, NK_DISC_CANCELLED) == 0 ? NK_DISC_VERIFY_CANCELLED
+                                                                   : NK_DISC_VERIFY_READ_FAILED;
+        snprintf(out->code, sizeof(out->code), "%s", status.code);
+        snprintf(out->reason, sizeof(out->reason), "Not checked: %s", status.message);
+        return false;
+    }
+    out->result = NK_DISC_VERIFY_HASHED;
+    char dat_path[NK_MAX_PATH];
+    if (!data_root || !data_root[0] || !nk_disc_dat_path(data_root, dat_path, sizeof(dat_path)) ||
+        !nk_platform_file_exists(dat_path)) {
+        snprintf(out->reason, sizeof(out->reason), "%s", tier_reason(NK_DISC_TIER_NOT_CHECKED));
+        return true;
+    }
+    NkDiscDat dat;
+    if (!nk_disc_dat_load(dat_path, &dat, &status)) {
+        out->result = NK_DISC_VERIFY_LIST_UNUSABLE;
+        snprintf(out->code, sizeof(out->code), "%s", status.code);
+        snprintf(out->reason, sizeof(out->reason),
+                 "Not checked: the imported Redump list can't be used (%s). Import it again.",
+                 status.code);
+        return true;
+    }
+    out->tier = nk_disc_classify(&dat, disc_id, &out->digest, disc_id_verified_elsewhere);
+    nk_disc_dat_free(&dat);
+    snprintf(out->reason, sizeof(out->reason), "%s", tier_reason(out->tier));
+    return true;
+}
+
+void nk_disc_verification_to_entry(const NkDiscVerification *check, NkGameEntry *entry) {
+    if (!check || !entry) return;
+    if (check->result != NK_DISC_VERIFY_HASHED && check->result != NK_DISC_VERIFY_LIST_UNUSABLE) {
+        return;
+    }
+    memcpy(entry->content_sha1, check->digest.sha1, sizeof(entry->content_sha1));
+    memcpy(entry->content_crc32, check->digest.crc32, sizeof(entry->content_crc32));
+    entry->disc_verification = (uint32_t)check->tier;
 }

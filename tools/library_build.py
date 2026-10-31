@@ -455,7 +455,8 @@ class LibraryBuild:
         if self.dat is None:
             return
         self.datafile = {"name": self.dat.name, "version": self.dat.version,
-                         "discs": len(self.dat), "checked_at": _utc_now()}
+                         "discs": len(self.dat), "serials": len(self.dat.serials),
+                         "checked_at": _utc_now()}
         images = {key: (record.get("disc_id"), record_digest(record))
                   for key, record in self.records.items()}
         for key, tier in disc_verify.classify_all(images, self.dat).items():

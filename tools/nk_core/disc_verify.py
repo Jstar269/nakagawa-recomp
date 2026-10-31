@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
-import html
 import os
 from pathlib import Path
 import re
@@ -44,6 +43,9 @@ TIERS = (VERIFIED_RETAIL, MODIFIED, UNKNOWN, NOT_CHECKED)
 # The largest datafile read: Redump's biggest lists are a few MiB.
 MAX_DAT_BYTES = 64 * 1024 * 1024
 MAX_DAT_ROMS = 200_000
+# Serials kept per <game>, as the C reader keeps them.
+MAX_GAME_SERIALS = 16
+_XML_ENTITIES = {"&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos;": "'"}
 HASH_CHUNK_BYTES = 1024 * 1024
 # The imported list, relative to the user's data folder (nk_disc_verify.h has the same path).
 DAT_RELATIVE_PATH = Path("verification") / "redump.dat"
@@ -60,6 +62,12 @@ _SHA1 = re.compile(r"[0-9a-fA-F]{40}")
 _CRC32 = re.compile(r"[0-9a-fA-F]{8}")
 _SIZE = re.compile(r"[0-9]{1,20}")
 _RETAIL_DISC_ID = re.compile(r"[A-Z]{4}[0-9]{5}")
+_ENTITY = re.compile("|".join(re.escape(entity) for entity in _XML_ENTITIES))
+
+
+def _xml_text(text: str) -> str:
+    """Element or attribute text with XML's five predefined entities decoded, and no others."""
+    return _ENTITY.sub(lambda match: _XML_ENTITIES[match.group(0)], text)
 
 
 class DiscVerifyError(ValueError):
@@ -125,16 +133,16 @@ def parse_dat_text(text: str) -> RedumpDat:
     dat = RedumpDat()
     header_name = _HEADER_NAME.search(text)
     header_version = _HEADER_VERSION.search(text)
-    dat.name = html.unescape(header_name.group(1)).strip() if header_name else ""
-    dat.version = html.unescape(header_version.group(1)).strip() if header_version else ""
+    dat.name = _xml_text(header_name.group(1)).strip() if header_name else ""
+    dat.version = _xml_text(header_version.group(1)).strip() if header_version else ""
     serials: set[str] = set()
     for game in _GAME.finditer(text):
         dat.games += 1
         body = game.group(1)
         game_serials: list[str] = []
         for serial in _SERIAL.finditer(body):
-            for disc_id in normalize_serials(html.unescape(serial.group(1))):
-                if disc_id not in game_serials:
+            for disc_id in normalize_serials(_xml_text(serial.group(1))):
+                if disc_id not in game_serials and len(game_serials) < MAX_GAME_SERIALS:
                     game_serials.append(disc_id)
         serials.update(game_serials)
         for rom in _ROM.finditer(body):
@@ -142,13 +150,14 @@ def parse_dat_text(text: str) -> RedumpDat:
             sha1 = attributes.get("sha1", "")
             crc = attributes.get("crc", "")
             size = attributes.get("size", "")
-            if not (_SHA1.fullmatch(sha1) and _CRC32.fullmatch(crc) and _SIZE.fullmatch(size)):
+            if not (_SHA1.fullmatch(sha1) and _CRC32.fullmatch(crc) and _SIZE.fullmatch(size)
+                    and int(size) < 2**64):
                 dat.rejected_roms += 1
                 continue
             if len(dat.roms_by_sha1) >= MAX_DAT_ROMS:
                 raise DiscVerifyError(f"The datafile lists more than {MAX_DAT_ROMS} discs.",
                                       boundary_code="DISC_DAT_TOO_LARGE")
-            entry = DatRom(name=html.unescape(attributes.get("name", "")), size_bytes=int(size),
+            entry = DatRom(name=_xml_text(attributes.get("name", "")), size_bytes=int(size),
                            crc32=crc.lower(), sha1=sha1.lower(), serials=tuple(game_serials))
             dat.roms_by_sha1.setdefault(entry.sha1, entry)
     dat.serials = frozenset(serials)

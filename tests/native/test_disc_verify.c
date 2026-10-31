@@ -297,6 +297,25 @@ static void test_dat_reader_and_tiers(void) {
     nk_disc_dat_free(&dat);
     free(text);
 
+    /* The first of a repeated SHA-1 is the one kept, whatever qsort does. */
+    char repeated[1024];
+    snprintf(repeated, sizeof(repeated),
+             "<datafile><game name=\"a\"><rom size=\"%u\" crc=\"%s\" sha1=\"%s\"/></game>"
+             "<game name=\"b\"><rom size=\"4\" crc=\"00000000\" sha1=\"%s\"/></game>"
+             "<game name=\"c\"><rom size=\"5\" crc=\"00000001\" sha1=\"%s\"/></game>"
+             "</datafile>",
+             IMAGE_BYTES, g_retail_digest.crc32, g_retail_digest.sha1, g_retail_digest.sha1,
+             g_retail_digest.sha1);
+    CHECK(nk_disc_dat_parse(repeated, strlen(repeated), &dat, &status));
+    CHECK(dat.rom_count == 1 && dat.roms[0].size_bytes == IMAGE_BYTES);
+    CHECK(nk_disc_classify(&dat, "TEST70001", &g_retail_digest, false) ==
+          NK_DISC_TIER_VERIFIED_RETAIL);
+    nk_disc_dat_free(&dat);
+    /* A datafile that isn't UTF-8 text is refused by name. */
+    const char latin1[] = "<datafile><header><name>Caf\xe9</name></header></datafile>";
+    CHECK(!nk_disc_dat_parse(latin1, strlen(latin1), &dat, &status));
+    CHECK(strcmp(status.code, NK_DISC_DAT_NOT_DATAFILE) == 0);
+
     const char *not_dat = "<html><body>nothing</body></html>";
     CHECK(!nk_disc_dat_parse(not_dat, strlen(not_dat), &dat, &status));
     CHECK(strcmp(status.code, NK_DISC_DAT_NOT_DATAFILE) == 0);
@@ -356,6 +375,77 @@ static void test_dat_import(void) {
     nk_disc_dat_free(&dat);
     free(text);
     printf("PASS datafile import into the data folder\n");
+}
+
+/* ---- the one call an add worker makes --------------------------------- */
+
+static void test_verify_image_for_an_add_worker(void) {
+    char root[NATIVE_TEST_PATH_MAX], retail[NATIVE_TEST_PATH_MAX], modified[NATIVE_TEST_PATH_MAX];
+    char other[NATIVE_TEST_PATH_MAX], source[NATIVE_TEST_PATH_MAX], imported[NATIVE_TEST_PATH_MAX];
+    NkDiscVerification check;
+    NkDiscExpandStatus status;
+    path_in(root, sizeof(root), "worker-data");
+    path_in(retail, sizeof(retail), "worker-retail.iso");
+    path_in(modified, sizeof(modified), "worker-modified.iso");
+    path_in(other, sizeof(other), "worker-other.iso");
+    write_bytes(retail, g_retail, IMAGE_BYTES);
+    write_bytes(modified, g_modified, IMAGE_BYTES);
+    write_bytes(other, g_other, IMAGE_BYTES);
+
+    /* No list imported yet: hashed, not checked, and it says so. */
+    CHECK(nk_disc_verify_image(retail, root, "TEST70001", false, NULL, &check));
+    CHECK(check.result == NK_DISC_VERIFY_HASHED && check.tier == NK_DISC_TIER_NOT_CHECKED);
+    CHECK(strcmp(check.digest.sha1, g_retail_digest.sha1) == 0 && check.code[0] == '\0');
+    CHECK(strstr(check.reason, "no Redump list") != NULL);
+
+    path_in(source, sizeof(source), "worker.dat");
+    char *text = build_dat(false); /* serial-less, as Redump's PSP list is */
+    write_bytes(source, text, strlen(text));
+    free(text);
+    CHECK(nk_disc_dat_import(source, root, NULL, &status));
+
+    Progress progress = {0, 0, 0, -1};
+    NkDiscExpandCallbacks callbacks = {on_progress, on_cancel, &progress};
+    CHECK(nk_disc_verify_image(retail, root, "TEST70001", false, &callbacks, &check));
+    CHECK(check.tier == NK_DISC_TIER_VERIFIED_RETAIL && progress.last_done == IMAGE_BYTES);
+    CHECK(strncmp(check.reason, "Verified retail", 15) == 0);
+    /* A lone modified image is unknown; beside its verified retail disc, modified. */
+    CHECK(nk_disc_verify_image(modified, root, "TEST70001", false, NULL, &check));
+    CHECK(check.tier == NK_DISC_TIER_UNKNOWN && strncmp(check.reason, "Unknown", 7) == 0);
+    CHECK(nk_disc_verify_image(modified, root, "TEST70001", true, NULL, &check));
+    CHECK(check.tier == NK_DISC_TIER_MODIFIED && strncmp(check.reason, "Modified", 8) == 0);
+    CHECK(nk_disc_verify_image(other, root, "TEST70009", false, NULL, &check));
+    CHECK(check.tier == NK_DISC_TIER_UNKNOWN);
+
+    NkGameEntry entry;
+    memset(&entry, 0, sizeof(entry));
+    CHECK(nk_disc_verify_image(retail, root, "TEST70001", false, NULL, &check));
+    nk_disc_verification_to_entry(&check, &entry);
+    CHECK(strcmp(entry.content_sha1, g_retail_digest.sha1) == 0 &&
+          strcmp(entry.content_crc32, g_retail_digest.crc32) == 0 &&
+          entry.disc_verification == NK_DISC_TIER_VERIFIED_RETAIL);
+
+    /* A cancel or an unreadable image keeps nothing, and the entry stays unhashed. */
+    Progress stop = {0, 0, 0, 0};
+    NkDiscExpandCallbacks cancel = {on_progress, on_cancel, &stop};
+    CHECK(!nk_disc_verify_image(retail, root, "TEST70001", false, &cancel, &check));
+    CHECK(check.result == NK_DISC_VERIFY_CANCELLED && check.digest.sha1[0] == '\0');
+    CHECK(strcmp(check.code, NK_DISC_CANCELLED) == 0);
+    memset(&entry, 0, sizeof(entry));
+    nk_disc_verification_to_entry(&check, &entry);
+    CHECK(entry.content_sha1[0] == '\0' && entry.disc_verification == NK_DISC_TIER_NOT_CHECKED);
+    char missing[NATIVE_TEST_PATH_MAX];
+    path_in(missing, sizeof(missing), "worker-missing.iso");
+    CHECK(!nk_disc_verify_image(missing, root, "TEST70001", false, NULL, &check));
+    CHECK(check.result == NK_DISC_VERIFY_READ_FAILED && strcmp(check.code, NK_DISC_READ_FAILED) == 0);
+
+    /* A damaged imported list: still hashed, not checked, with the list's code. */
+    CHECK(nk_disc_dat_path(root, imported, sizeof(imported)));
+    write_bytes(imported, "damaged", 7);
+    CHECK(nk_disc_verify_image(retail, root, "TEST70001", false, NULL, &check));
+    CHECK(check.result == NK_DISC_VERIFY_LIST_UNUSABLE && check.tier == NK_DISC_TIER_NOT_CHECKED);
+    CHECK(strcmp(check.code, NK_DISC_DAT_NOT_DATAFILE) == 0 && check.digest.sha1[0] != '\0');
+    printf("PASS one call for an add worker: tier, reason, cancel, damaged list\n");
 }
 
 /* ---- library keyed by disc ID plus content hash ------------------------ */
@@ -453,6 +543,8 @@ static void test_library_keys_by_disc_id_and_hash(void) {
     CHECK(r->disc_verification == NK_DISC_TIER_VERIFIED_RETAIL);
     /* The disc-ID API still answers, with the first record. */
     CHECK(nk_library_find_by_disc_id(&g_lib, "TEST70001") == t);
+    CHECK(nk_library_has_verified_disc_id(&g_lib, "TEST70001"));
+    CHECK(!nk_library_has_verified_disc_id(&g_lib, "TEST70002"));
 
     /* The same image again replaces its own record only. */
     seed(&entry, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
@@ -492,21 +584,106 @@ static void test_library_keys_by_disc_id_and_hash(void) {
     CHECK(nk_library_remove_by_key(&g_lib, "TEST70001", g_modified_digest.sha1) ==
           NK_ERROR_FILE_NOT_FOUND);
 
-    /* A record written before hashing is replaced by the hashed image of its
-       disc ID, as the disc-ID library did, and so is the record of a file a
-       new image now fills (a compressed image expanded over the same path). */
+    /* A record written before hashing (a library built before this change, its
+       retail disc unhashed) is kept when a hashed image of another file
+       arrives: nothing shows they are the same image. */
     nk_library_init(&g_lib);
     seed(&entry, "TEST70002", "old.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
     seed(&entry, "TEST70002", "new.iso", &g_other_digest, NK_DISC_TIER_UNKNOWN);
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
-    CHECK(nk_library_count(&g_lib) == 1 &&
-          strcmp(nk_library_get(&g_lib, 0)->content_sha1, g_other_digest.sha1) == 0);
+    CHECK(nk_library_count(&g_lib) == 2);
+    CHECK(nk_library_find_by_key(&g_lib, "TEST70002", "") ==
+          nk_library_get(&g_lib, 0)); /* the old record, still there */
+    /* The record of the same file is replaced: the file holds this image now
+       (a compressed image expanded over the same path), and the old record of
+       that file is hashed by the new one. */
     seed(&entry, "TEST70002", "new.iso", &g_retail_digest, NK_DISC_TIER_UNKNOWN);
     CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 2 &&
+          strcmp(nk_library_get(&g_lib, 1)->content_sha1, g_retail_digest.sha1) == 0);
+    seed(&entry, "TEST70002", "old.iso", &g_modified_digest, NK_DISC_TIER_UNKNOWN);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 2 &&
+          strcmp(nk_library_get(&g_lib, 0)->content_sha1, g_modified_digest.sha1) == 0);
+
+    /* An unhashed entry of a new file replaces the record its disc ID alone
+       picks out, as before hashing; with two hashed images of the disc ID it
+       can pick out neither, so it is added and both images stay. */
+    nk_library_init(&g_lib);
+    seed(&entry, "TEST70003", "one.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    seed(&entry, "TEST70003", "moved.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 1 &&
+          strcmp(nk_library_get(&g_lib, 0)->iso_path, "games/moved.iso") == 0);
+    nk_library_init(&g_lib);
+    seed(&entry, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    seed(&entry, "TEST70001", "translation.iso", &g_modified_digest, NK_DISC_TIER_MODIFIED);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    seed(&entry, "TEST70001", "third.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 3);
+    CHECK(nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1) != NULL);
+    CHECK(nk_library_find_by_key(&g_lib, "TEST70001", g_modified_digest.sha1) != NULL);
+
+    /* A player re-add of a record a bring-up wrote, which records no size (0),
+       keeps the bring-up's hashes. */
+    nk_library_init(&g_lib);
+    seed(&entry, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
+    entry.iso_size_bytes = 0;
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    seed(&entry, "TEST70001", "retail.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    CHECK(nk_library_add_or_update(&g_lib, &entry) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 1);
+    CHECK(strcmp(nk_library_get(&g_lib, 0)->content_sha1, g_retail_digest.sha1) == 0 &&
+          nk_library_get(&g_lib, 0)->disc_verification == NK_DISC_TIER_VERIFIED_RETAIL);
+    printf("PASS library keyed by disc ID plus hash: both discs kept, the modified one labelled\n");
+}
+
+static void test_library_remove_never_takes_the_other_image(void) {
+    NkGameEntry retail, translation;
+    seed(&retail, "TEST70001", "retail.iso", &g_retail_digest, NK_DISC_TIER_VERIFIED_RETAIL);
+    seed(&translation, "TEST70001", "translation.iso", &g_modified_digest, NK_DISC_TIER_MODIFIED);
+    nk_library_init(&g_lib);
+    CHECK(nk_library_add_or_update(&g_lib, &retail) == NK_OK);
+    CHECK(nk_library_add_or_update(&g_lib, &translation) == NK_OK);
+    /* The disc ID alone can't say which image to remove: refused, nothing changed. */
+    CHECK(nk_library_remove(&g_lib, "TEST70001") == NK_ERROR_AMBIGUOUS);
+    CHECK(nk_library_remove_by_key(&g_lib, "TEST70001", NULL) == NK_ERROR_AMBIGUOUS);
+    /* An empty hash names the unhashed record, and neither image is one. */
+    CHECK(nk_library_remove_by_key(&g_lib, "TEST70001", "") == NK_ERROR_FILE_NOT_FOUND);
+    CHECK(nk_library_count(&g_lib) == 2);
+    /* Beside an unhashed record of another file (a library built before
+       hashing), removing a hashed card by disc ID alone still takes nothing,
+       and the empty hash takes the unhashed record only. */
+    NkGameEntry legacy;
+    seed(&legacy, "TEST70001", "legacy.iso", NULL, NK_DISC_TIER_NOT_CHECKED);
+    g_lib.entries[g_lib.count++] = legacy;
+    CHECK(nk_library_remove(&g_lib, "TEST70001") == NK_ERROR_AMBIGUOUS);
+    CHECK(nk_library_remove_by_key(&g_lib, "TEST70001", "") == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 2 &&
+          nk_library_find_by_key(&g_lib, "TEST70001", g_retail_digest.sha1) != NULL &&
+          nk_library_find_by_key(&g_lib, "TEST70001", g_modified_digest.sha1) != NULL);
+    char path[NATIVE_TEST_PATH_MAX];
+    path_in(path, sizeof(path), "remove_ambiguous.json");
+    CHECK(nk_library_save(&g_lib, path) == NK_OK);
+    CHECK(nk_library_commit_remove(&g_lib, "TEST70001", path) == NK_ERROR_AMBIGUOUS);
+    CHECK(nk_library_load(&g_loaded, path) == NK_OK && nk_library_count(&g_loaded) == 2);
+    /* By key, the named image goes and the other stays, in memory and on disk. */
+    CHECK(nk_library_remove_by_key(&g_lib, "TEST70001", g_modified_digest.sha1) == NK_OK);
+    CHECK(nk_library_commit_remove_by_key(&g_lib, "TEST70001", g_modified_digest.sha1, path) ==
+          NK_OK);
     CHECK(nk_library_count(&g_lib) == 1 &&
           strcmp(nk_library_get(&g_lib, 0)->content_sha1, g_retail_digest.sha1) == 0);
-    printf("PASS library keyed by disc ID plus hash: both discs kept, the modified one labelled\n");
+    CHECK(nk_library_load(&g_loaded, path) == NK_OK && nk_library_count(&g_loaded) == 1 &&
+          strcmp(nk_library_get(&g_loaded, 0)->content_sha1, g_retail_digest.sha1) == 0);
+    /* With one image left, the disc ID alone picks it out again. */
+    CHECK(nk_library_commit_remove(&g_lib, "TEST70001", path) == NK_OK);
+    CHECK(nk_library_count(&g_lib) == 0);
+    CHECK(nk_library_load(&g_loaded, path) == NK_OK && nk_library_count(&g_loaded) == 0);
+    printf("PASS library remove never takes the other image of a disc ID\n");
 }
 
 static void test_library_commit_keeps_both_images(void) {
@@ -594,8 +771,10 @@ int main(void) {
     test_hash_file();
     test_dat_reader_and_tiers();
     test_dat_import();
+    test_verify_image_for_an_add_worker();
     test_old_library_still_loads();
     test_library_keys_by_disc_id_and_hash();
+    test_library_remove_never_takes_the_other_image();
     test_library_commit_keeps_both_images();
     test_library_hash_members_are_checked();
     printf("test_disc_verify: %d checks passed\n", g_checks);

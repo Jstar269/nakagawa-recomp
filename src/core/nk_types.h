@@ -45,7 +45,11 @@ typedef enum {
     NK_ERROR_PATH_TOO_LONG = -13,
     /* A per-user file carries a schema_version newer than this build reads: a
        later player wrote it. It is left exactly as it is (nk_user_data_schema.h). */
-    NK_ERROR_NEWER_SCHEMA = -14
+    NK_ERROR_NEWER_SCHEMA = -14,
+    /* A disc ID alone names more than one library record (a retail disc and a
+       modified copy of it share the ID): the caller names the image's content
+       hash instead (nk_library.h). Nothing was changed. */
+    NK_ERROR_AMBIGUOUS = -15
 } NkResult;
 
 typedef enum {

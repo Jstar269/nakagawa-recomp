@@ -67,30 +67,41 @@ static int library_index_of_key(const NkLibrary *lib, const char *disc_id,
 }
 
 /* The record an incoming entry replaces (nk_library.h), or -1 to add it. */
-static int library_index_for_entry(const NkLibrary *lib, const NkGameEntry *entry) {
-    if (!entry->content_sha1[0]) {
-        /* Never hashed: the record of the same file, else the first with its disc ID. */
-        int first = -1;
-        for (int i = 0; i < lib->count; i++) {
-            if (strcmp(lib->entries[i].disc_id, entry->disc_id) != 0) continue;
-            if (strcmp(lib->entries[i].iso_path, entry->iso_path) == 0) return i;
-            if (first < 0) first = i;
-        }
-        return first;
-    }
-    int same = library_index_of_key(lib, entry->disc_id, entry->content_sha1);
-    if (same >= 0) return same;
-    /* A record written before hashing is the same disc until shown otherwise,
-       and one whose file this image now is (a compressed image expanded over
-       the same path) is replaced by it. */
+/* The record a disc ID alone picks out: the only one with it (unhashed_only:
+   the only unhashed one), or -1 when there is none or it can't say which. */
+static int library_index_of_disc_id_alone(const NkLibrary *lib, const char *disc_id,
+                                          bool unhashed_only) {
+    int only = -1, count = 0;
     for (int i = 0; i < lib->count; i++) {
-        const NkGameEntry *other = &lib->entries[i];
-        if (strcmp(other->disc_id, entry->disc_id) == 0 &&
-            (!other->content_sha1[0] || strcmp(other->iso_path, entry->iso_path) == 0)) {
+        if (strcmp(lib->entries[i].disc_id, disc_id) != 0) continue;
+        if (unhashed_only && lib->entries[i].content_sha1[0]) continue;
+        if (count++ == 0) only = i;
+    }
+    return count == 1 ? only : -1;
+}
+
+/* The record an incoming entry replaces (nk_library.h), or -1 to add it. A
+   record is replaced only when it is the same image as far as the library can
+   tell; when it can't tell, both are kept, so no image's record is lost. */
+static int library_index_for_entry(const NkLibrary *lib, const NkGameEntry *entry) {
+    if (entry->content_sha1[0]) {
+        int same = library_index_of_key(lib, entry->disc_id, entry->content_sha1);
+        if (same >= 0) return same;
+    }
+    /* The record of the same file: this image is what that file holds now
+       (re-added, or a compressed image expanded over the same path). */
+    for (int i = 0; i < lib->count; i++) {
+        if (strcmp(lib->entries[i].disc_id, entry->disc_id) == 0 &&
+            strcmp(lib->entries[i].iso_path, entry->iso_path) == 0) {
             return i;
         }
     }
-    return -1;
+    /* A hashed image of another file is another image, even beside a record
+       written before hashing. An unhashed one replaces the only record of its
+       disc ID, as before hashing; beside several, it can't say which, so it is
+       added. */
+    return entry->content_sha1[0] ? -1
+                                  : library_index_of_disc_id_alone(lib, entry->disc_id, false);
 }
 
 const NkGameEntry *nk_library_find_by_disc_id(const NkLibrary *lib, const char *disc_id) {
@@ -103,15 +114,21 @@ const NkGameEntry *nk_library_find_by_key(const NkLibrary *lib, const char *disc
     return index >= 0 ? &lib->entries[index] : NULL;
 }
 
+bool nk_library_has_verified_disc_id(const NkLibrary *lib, const char *disc_id) {
+    if (!lib || !disc_id || !*disc_id) return false;
+    for (int i = 0; i < lib->count; i++) {
+        if (strcmp(lib->entries[i].disc_id, disc_id) == 0 &&
+            lib->entries[i].disc_verification == NK_DISC_TIER_VERIFIED_RETAIL) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* A verified retail record makes its disc ID known retail: the unknown
    records with it are modified images of that disc. */
 static void library_label_modified(NkLibrary *lib, const char *disc_id) {
-    bool verified = false;
-    for (int i = 0; i < lib->count && !verified; i++) {
-        verified = strcmp(lib->entries[i].disc_id, disc_id) == 0 &&
-                   lib->entries[i].disc_verification == NK_DISC_TIER_VERIFIED_RETAIL;
-    }
-    if (!verified) return;
+    if (!nk_library_has_verified_disc_id(lib, disc_id)) return;
     for (int i = 0; i < lib->count; i++) {
         if (strcmp(lib->entries[i].disc_id, disc_id) == 0 &&
             lib->entries[i].disc_verification == NK_DISC_TIER_UNKNOWN) {
@@ -127,10 +144,12 @@ NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry) {
     if (index >= 0) {
         NkGameEntry *existing = &lib->entries[index];
         NkGameEntry merged = *entry;
-        /* An update made without hashing, of the same file, keeps its hashes. */
+        /* An update made without hashing, of the same file, keeps its hashes. A
+           size of 0 is one a writer didn't record, not a different file. */
         if (!merged.content_sha1[0] && existing->content_sha1[0] &&
             strcmp(existing->iso_path, merged.iso_path) == 0 &&
-            existing->iso_size_bytes == merged.iso_size_bytes) {
+            (existing->iso_size_bytes == merged.iso_size_bytes ||
+             existing->iso_size_bytes == 0 || merged.iso_size_bytes == 0)) {
             memcpy(merged.content_sha1, existing->content_sha1, sizeof(merged.content_sha1));
             memcpy(merged.content_crc32, existing->content_crc32, sizeof(merged.content_crc32));
             merged.disc_verification = existing->disc_verification;
@@ -154,7 +173,24 @@ NkResult nk_library_remove_by_key(NkLibrary *lib, const char *disc_id,
                                   const char *content_sha1) {
     if (!lib || !disc_id || !*disc_id) return NK_ERROR_GENERIC;
 
-    int i = library_index_of_key(lib, disc_id, content_sha1);
+    int i;
+    if (content_sha1 && content_sha1[0]) {
+        i = library_index_of_key(lib, disc_id, content_sha1);
+    } else {
+        /* Never remove a record the disc ID alone doesn't pick out: with a
+           retail disc and a modified copy, that could be the other one. An
+           empty content_sha1 names the unhashed record. */
+        bool unhashed_only = content_sha1 != NULL;
+        i = library_index_of_disc_id_alone(lib, disc_id, unhashed_only);
+        if (i < 0) {
+            int candidates = 0;
+            for (int j = 0; j < lib->count; j++) {
+                candidates += strcmp(lib->entries[j].disc_id, disc_id) == 0 &&
+                              (!unhashed_only || !lib->entries[j].content_sha1[0]);
+            }
+            if (candidates > 1) return NK_ERROR_AMBIGUOUS;
+        }
+    }
     if (i < 0) return NK_ERROR_FILE_NOT_FOUND;
     for (int j = i; j < lib->count - 1; j++) {
         lib->entries[j] = lib->entries[j + 1];
@@ -885,15 +921,18 @@ static void library_adopt(NkLibrary *lib, const NkLibrary *saved, const char *re
                           const char *removed_sha1, NkLibrary *view, bool *taken) {
     view->count = 0;
     memset(taken, 0, (size_t)NK_MAX_GAMES * sizeof(*taken));
-    /* The removed record is the one nk_library_remove_by_key takes out. */
-    int removed_index = removed ? library_index_of_key(lib, removed, removed_sha1) : -1;
+    bool removed_any_image = !removed_sha1 || !removed_sha1[0];
     for (int i = 0; i < lib->count && view->count < NK_MAX_GAMES; i++) {
         const NkGameEntry *own = &lib->entries[i];
-        if (i == removed_index) continue;
         /* Its record in the file, by the key add_or_update uses; each record
            in the file is taken by one own record at most. */
         int on_disk = own->is_sample ? -1 : library_index_for_entry(saved, own);
         if (on_disk >= 0 && taken[on_disk]) on_disk = -1;
+        /* The removed record: gone from the file, and named by the removal. */
+        if (on_disk < 0 && removed && !own->is_sample && strcmp(own->disc_id, removed) == 0 &&
+            (removed_any_image || strcmp(own->content_sha1, removed_sha1) == 0)) {
+            continue;
+        }
         if (on_disk >= 0) taken[on_disk] = true;
         view->entries[view->count++] = on_disk >= 0 ? saved->entries[on_disk] : *own;
     }

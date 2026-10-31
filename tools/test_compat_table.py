@@ -108,6 +108,13 @@ class TierRuleTests(unittest.TestCase):
         self.assertIn("commit `0123456789ab`, with a 2400 s time budget per disc and a 30 s "
                       "first launch", block)
         self.assertIn("3,500 discs, version 2026-06-13", block)
+        # The list in SAMPLE records no serials, so the summary says Unknown is not Modified.
+        self.assertIn("A lone fan translation counts as **Unknown**", block)
+        with_serials = json.loads(json.dumps(SAMPLE))
+        with_serials["datafile"]["serials"] = 12
+        self.assertNotIn("lone fan translation",
+                         compat_table.render_markdown(compat_table.summarize(with_serials),
+                                                      "2026-10-31"))
         mixed = json.loads(json.dumps(SAMPLE))
         mixed["titles"][0]["run_settings"]["title_timeout_seconds"] = 5400
         self.assertIn("not all built with the same settings",
@@ -138,6 +145,25 @@ class PrivacyTests(unittest.TestCase):
                      "G:\\Private Games", "Lantern Road (Japan)"):
             with self.subTest(leak=leak), self.assertRaises(compat_table.PrivacyError):
                 compat_table.check_public(block + f"\n{leak}\n", SAMPLE)
+        # Folders named only with the summary's own words don't stop it.
+        plain = manifest([record("TEST71008", "Quiet Field", "BUILT", frames=1)])
+        plain["titles"][0]["source"] = "Library/Modified/Redump/Quiet Field (Japan).iso"
+        compat_table.check_public(
+            compat_table.render_markdown(compat_table.summarize(plain), "2026-10-31"), plain)
+        # Free text in the datafile's version field is never published.
+        noted = json.loads(json.dumps(SAMPLE))
+        noted["datafile"]["version"] = "my private note"
+        self.assertIsNone(compat_table.summarize(noted)["datafile"]["version"])
+        self.assertNotIn("private note", compat_table.render_markdown(
+            compat_table.summarize(noted), "2026-10-31"))
+        # Settings of another shape count as unrecorded, never as text or a crash.
+        odd = json.loads(json.dumps(SAMPLE))
+        odd["titles"][0]["run_settings"] = {"title_timeout_seconds": "2400 private",
+                                            "launch_timeout_seconds": [30],
+                                            "source_commit": "x"}
+        rows = compat_table.summarize(odd)["settings"]
+        self.assertIn({"title_timeout_seconds": None, "launch_timeout_seconds": None,
+                       "source_commit": None, "discs": 1}, rows)
         # A disc named like part of a cause name is not a leak by itself.
         named_exit = manifest([record("TEST71007", "EXIT", "BUILT", failure="EXITED_ZERO_BEFORE_HLE")])
         compat_table.check_public(

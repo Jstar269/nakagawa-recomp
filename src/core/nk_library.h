@@ -76,8 +76,9 @@ NkResult nk_library_lock_acquire(NkFileLock *lock, const char *library_path,
 NkResult nk_library_commit_entry(NkLibrary *lib, const NkGameEntry *entry,
                                  const char *file_path);
 
-/* Remove one entry from the library file the same way: the first with disc_id.
-   An entry another writer already removed is not an error. */
+/* Remove one entry from the library file the same way, under the rule of
+   nk_library_remove (NK_ERROR_AMBIGUOUS when the file holds several images of
+   disc_id). An entry another writer already removed is not an error. */
 NkResult nk_library_commit_remove(NkLibrary *lib, const char *disc_id,
                                   const char *file_path);
 
@@ -88,15 +89,20 @@ NkResult nk_library_commit_remove_by_key(NkLibrary *lib, const char *disc_id,
 /* The library is keyed by disc ID plus the image's content hash
    (content_sha1), so two images with one disc ID, a retail disc and a fan
    translation of it, are two records. An entry replaces the record with its
-   disc ID and the same content_sha1; one with an empty content_sha1 (never
-   hashed) on either side matches the first record with its disc ID, as before
-   hashing, and an unhashed update of the same file (same iso_path and size)
-   keeps the record's hashes. Anything else is added. When an entry is
+   disc ID and the same content_sha1, or else the record of the same file
+   (iso_path), which now holds it. An entry never hashed also replaces the
+   only record with its disc ID, as before hashing; a hashed entry of another
+   file is added, even beside a record written before hashing, and so is an
+   unhashed one beside several records of its disc ID, so no image's record is
+   lost. An unhashed
+   update of the same file keeps that record's hashes. When an entry is
    verified retail, the unknown records with its disc ID become modified: the
    disc ID is now known retail (nk_disc_verify.h). */
 NkResult nk_library_add_or_update(NkLibrary *lib, const NkGameEntry *entry);
 
-/* Remove the first game entry with disc_id. */
+/* Remove the only game entry with disc_id. NK_ERROR_AMBIGUOUS, removing
+   nothing, when several images share the disc ID; nk_library_remove_by_key
+   names the one to remove. */
 NkResult nk_library_remove(NkLibrary *lib, const char *disc_id);
 
 /* The first game entry with disc_id. */
@@ -107,8 +113,13 @@ const NkGameEntry *nk_library_find_by_disc_id(const NkLibrary *lib, const char *
 const NkGameEntry *nk_library_find_by_key(const NkLibrary *lib, const char *disc_id,
                                           const char *content_sha1);
 
-/* Remove the entry with disc_id and content_sha1 (empty: the first with
-   disc_id). */
+/* Whether a record with disc_id is a verified retail image: then a modified
+   image with that disc ID is labelled modified, not unknown (nk_disc_verify.h). */
+bool nk_library_has_verified_disc_id(const NkLibrary *lib, const char *disc_id);
+
+/* Remove the entry with disc_id and content_sha1. An empty content_sha1 names
+   the record never hashed (NK_ERROR_AMBIGUOUS when several are); NULL is
+   nk_library_remove. */
 NkResult nk_library_remove_by_key(NkLibrary *lib, const char *disc_id,
                                   const char *content_sha1);
 

@@ -126,6 +126,7 @@ typedef struct {
     uint8_t sha1[20];
     uint32_t crc32;
     uint64_t size_bytes;
+    uint32_t listed; /* its place in the datafile, so a repeated SHA-1 keeps the first */
 } NkDiscDatRom;
 
 /* The parts of one datafile verification uses. roms is sorted by SHA-1 and
@@ -172,6 +173,54 @@ NkDiscTier nk_disc_classify(const NkDiscDat *dat, const char *disc_id,
    many were written. */
 size_t nk_disc_normalize_serials(const char *text, size_t length, char (*out_ids)[10],
                                  size_t max_ids);
+
+/* ---- one call for an add worker ----------------------------------------- */
+
+/* How one disc check ended. HASHED and later fill digest; tier says how the
+   image compares with the imported list (NOT_CHECKED when none is imported). */
+typedef enum {
+    NK_DISC_VERIFY_HASHED = 0,     /* hashed; tier is set */
+    NK_DISC_VERIFY_CANCELLED,      /* callbacks->is_cancelled said stop; nothing kept */
+    NK_DISC_VERIFY_READ_FAILED,    /* the image could not be read whole; nothing kept */
+    NK_DISC_VERIFY_LIST_UNUSABLE   /* hashed, but the imported list is damaged: tier NOT_CHECKED */
+} NkDiscVerifyResult;
+
+typedef struct {
+    NkDiscVerifyResult result;
+    NkDiscTier tier;
+    NkDiscDigest digest;
+    char code[48];     /* empty, or the NK_DISC_* / DISC_DAT_* code behind a failure */
+    char reason[400];  /* one plain sentence for the card and the log */
+} NkDiscVerification;
+
+/* Hash the image at iso_path (for a compressed disc, the expansion the import
+   made) and compare it with the list imported into data_root. Reads the whole
+   image once, so call it from a worker, never the UI thread. callbacks may be
+   NULL; its on_progress gets bytes done of the total and is_cancelled is polled
+   between 1 MiB reads. disc_id_verified_elsewhere: a verified image in the same
+   library has this disc ID (nk_library_has_verified_disc_id), which makes a
+   modified image MODIFIED rather than UNKNOWN. Returns true for HASHED and
+   LIST_UNUSABLE. The image is never changed and nothing leaves the machine.
+
+       NkDiscVerification check;
+       NkDiscExpandCallbacks cb = { on_progress, is_cancelled, job };
+       if (nk_disc_verify_image(game.iso_path, data_root, game.disc_id,
+                                nk_library_has_verified_disc_id(&app->library, game.disc_id),
+                                &cb, &check)) {
+           nk_disc_verification_to_entry(&check, &game);   (hashes and tier)
+       }
+       log or show check.reason either way, then add the game as today.
+
+   Redump's PSP list names no disc IDs, so with it a modified image is MODIFIED
+   only when its retail disc is verified in the same library; a lone fan
+   translation is UNKNOWN, which means "not shown to be retail", not "modified". */
+bool nk_disc_verify_image(const char *iso_path, const char *data_root, const char *disc_id,
+                          bool disc_id_verified_elsewhere,
+                          const NkDiscExpandCallbacks *callbacks, NkDiscVerification *out);
+
+/* Copy a hashed check's hashes and tier into a library entry; anything else
+   leaves the entry unhashed. */
+void nk_disc_verification_to_entry(const NkDiscVerification *check, NkGameEntry *entry);
 
 #ifdef __cplusplus
 }

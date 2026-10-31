@@ -201,8 +201,9 @@ class LibraryBuildTests(unittest.TestCase):
                          ["redump_name"], "Disc 0.iso")
         self.assertEqual(result["verification_counts"],
                          {"MODIFIED": 1, "UNKNOWN": 1, "VERIFIED_RETAIL": 1})
-        self.assertEqual({key: result["datafile"][key] for key in ("name", "version", "discs")},
-                         {"name": "Synthetic", "version": "1", "discs": 1})
+        self.assertEqual({key: result["datafile"][key]
+                          for key in ("name", "version", "discs", "serials")},
+                         {"name": "Synthetic", "version": "1", "discs": 1, "serials": 0})
         markdown = (self.reports / "library-build.md").read_text(encoding="utf-8")
         self.assertIn("## Disc verification", markdown)
         self.assertEqual(len(hashed), 3)

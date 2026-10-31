@@ -67,6 +67,23 @@ class DatafileTests(unittest.TestCase):
         self.assertEqual((rom.name, rom.size_bytes, rom.serials),
                          ("Retail Disc (USA).iso", 8192, ("TEST70001",)))
 
+    def test_the_reader_follows_the_c_reader_on_edge_cases(self) -> None:
+        retail = digest(RETAIL)
+        rom = f'<rom name="A &amp; B &#38; C" size="{{size}}" crc="{retail.crc32}" sha1="{retail.sha1}"/>'
+        many = ", ".join(f"TEST-7{index:04d}" for index in range(20))
+        text = (f"<datafile><game name=\"x\"><serial>{many}</serial>"
+                f"<serial>TEST&#45;79999</serial>{rom.format(size=len(RETAIL))}</game>"
+                f"<game name=\"y\">{rom.format(size=2**64).replace(retail.sha1, 'f' * 40)}"
+                "</game></datafile>")
+        dat = disc_verify.parse_dat_text(text)
+        # Only the five predefined entities are decoded, as in C.
+        self.assertEqual(dat.roms_by_sha1[retail.sha1].name, "A & B &#38; C")
+        # At most 16 serials per game, and a numeric entity is not decoded into one.
+        self.assertEqual(len(dat.serials), 16)
+        self.assertNotIn("TEST79999", dat.serials)
+        # A size past 64 bits is a malformed row.
+        self.assertEqual((len(dat), dat.rejected_roms), (1, 1))
+
     def test_serials_normalize_to_the_disc_id_param_sfo_holds(self) -> None:
         self.assertEqual(
             disc_verify.normalize_serials("TEST-71002, TEST-71002GA, test 71003,BAD,TEST-7100"),
@@ -183,44 +200,88 @@ class BringupLibraryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def write(self, iso: str, data: bytes | None, disc_id: str = "TEST70001") -> None:
+    def write(self, iso: str, data: bytes | None, disc_id: str = "TEST70001", *,
+              hashed: bool = True) -> None:
+        """A bring-up adding the image `data` at `iso`; hashed=False is one whose hash failed
+        (or a record an older Nakagawa wrote, which never hashed)."""
+        path = self.root / iso
+        if data is not None:
+            path.write_bytes(data)
         metadata = mock.Mock(disc_id=disc_id, title=f"Title {iso}", version="1.00")
         self.nk_cli._write_bringup_library_locked(
-            self.root, self.root / iso, metadata, f"{disc_id}-id", "EBOOT.BIN", True, "",
-            digest(data) if data is not None else None)
+            self.root, path, metadata, f"{disc_id}-id", "EBOOT.BIN", True, "",
+            digest(path.read_bytes()) if hashed else None)
 
     def games(self) -> list[dict]:
         return json.loads((self.root / "library.json").read_text(encoding="utf-8"))["games"]
+
+    def by_file(self) -> dict[str, dict]:
+        return {Path(game["iso_path"]).name: game for game in self.games()}
 
     def test_a_fan_translation_and_its_retail_disc_are_both_kept(self) -> None:
         self.write("translation.iso", MODIFIED)
         self.assertEqual([game["disc_verification"] for game in self.games()],
                          [disc_verify.UNKNOWN])
         self.write("retail.iso", RETAIL)
-        games = {Path(game["iso_path"]).name: game for game in self.games()}
+        games = self.by_file()
         self.assertEqual(sorted(games), ["retail.iso", "translation.iso"])
         self.assertEqual(games["retail.iso"]["disc_verification"], disc_verify.VERIFIED_RETAIL)
         self.assertEqual(games["translation.iso"]["disc_verification"], disc_verify.MODIFIED)
         self.assertEqual(games["retail.iso"]["content_sha1"], digest(RETAIL).sha1)
         self.assertEqual(games["retail.iso"]["content_crc32"], digest(RETAIL).crc32)
+        self.assertEqual(games["retail.iso"]["iso_size_bytes"], len(RETAIL))
         # The same image again replaces its own record only.
         self.write("retail.iso", RETAIL)
         self.assertEqual(len(self.games()), 2)
-        # The build picks the record of the image it was given.
+        # The build picks the record of the image it was given, and refuses to guess.
         entry = self.nk_cli._load_library_entry(self.root, "TEST70001",
                                                 self.root / "translation.iso")
         self.assertEqual(entry["content_sha1"], digest(MODIFIED).sha1)
-        self.assertEqual(self.nk_cli._load_library_entry(self.root, "TEST70001")["iso_path"],
-                         str(self.root / "translation.iso"))
+        with self.assertRaisesRegex(self.nk_cli.PackageBuildError, "--iso-path"):
+            self.nk_cli._load_library_entry(self.root, "TEST70001")
+        with self.assertRaisesRegex(self.nk_cli.PackageBuildError, "--iso-path"):
+            self.nk_cli._load_library_entry(self.root, "TEST70001", self.root / "other.iso")
 
-    def test_records_written_before_hashing_are_replaced_as_before(self) -> None:
-        self.write("old.iso", None)
+    def test_a_library_built_before_hashing_keeps_its_retail_record(self) -> None:
+        # Resuming an older build: the retail record has no hash, then its fan translation
+        # (once a duplicate) is built. The retail file is hashed now and both are kept.
+        self.write("retail.iso", RETAIL, hashed=False)
         self.assertNotIn("content_sha1", self.games()[0])
+        self.write("translation.iso", MODIFIED)
+        games = self.by_file()
+        self.assertEqual(sorted(games), ["retail.iso", "translation.iso"])
+        self.assertEqual(games["retail.iso"]["content_sha1"], digest(RETAIL).sha1)
+        self.assertEqual(games["retail.iso"]["disc_verification"], disc_verify.VERIFIED_RETAIL)
+        self.assertEqual(games["translation.iso"]["disc_verification"], disc_verify.MODIFIED)
+
+    def test_an_older_record_of_the_same_image_elsewhere_is_replaced(self) -> None:
+        self.write("old.iso", RETAIL, hashed=False)
+        self.write("copy.iso", RETAIL)
+        self.assertEqual(sorted(self.by_file()), ["copy.iso"])
+
+    def test_an_older_record_whose_file_is_gone_is_kept(self) -> None:
+        self.write("gone.iso", RETAIL, hashed=False)
+        (self.root / "gone.iso").unlink()
         self.write("new.iso", OTHER)
-        self.assertEqual([Path(game["iso_path"]).name for game in self.games()], ["new.iso"])
-        # A file another image now fills (an expansion over the same path) is replaced too.
-        self.write("new.iso", RETAIL)
-        self.assertEqual([game["content_sha1"] for game in self.games()], [digest(RETAIL).sha1])
+        self.assertEqual(sorted(self.by_file()), ["gone.iso", "new.iso"])
+
+    def test_a_failed_hash_replaces_one_record_at_most(self) -> None:
+        self.write("retail.iso", RETAIL)
+        self.write("translation.iso", MODIFIED)
+        # Its own file again, unhashed this time: that record only.
+        self.write("translation.iso", MODIFIED, hashed=False)
+        games = self.by_file()
+        self.assertEqual(sorted(games), ["retail.iso", "translation.iso"])
+        self.assertEqual(games["retail.iso"]["content_sha1"], digest(RETAIL).sha1)
+        self.assertNotIn("content_sha1", games["translation.iso"])
+        # A new file, unhashed, beside two images of its disc ID: added, nothing dropped.
+        self.write("third.iso", OTHER, hashed=False)
+        self.assertEqual(sorted(self.by_file()), ["retail.iso", "third.iso", "translation.iso"])
+
+    def test_the_file_another_image_now_fills_is_replaced(self) -> None:
+        self.write("disc.iso", RETAIL)
+        self.write("disc.iso", OTHER)  # e.g. a compressed image expanded over the same path
+        self.assertEqual([game["content_sha1"] for game in self.games()], [digest(OTHER).sha1])
 
 
 if __name__ == "__main__":

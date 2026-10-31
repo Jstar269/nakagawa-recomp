@@ -1097,15 +1097,18 @@ def _load_library_entry(user_root: Path, disc_id: str, iso_path: Path | None = N
     matches = [game for game in games if isinstance(game, dict) and str(game.get("disc_id", "")).upper() == disc_id]
     if not matches:
         raise PackageBuildError(f"Library entry {disc_id} was not found.")
-    if len(matches) > 1 and len({_library_content_sha1(game) for game in matches}) != len(matches):
-        raise PackageBuildError(
-            f"Library entry {disc_id} is repeated for the same disc image; re-import the ISO."
-        )
-    named = [game for game in matches if iso_path is not None and
-             isinstance(game.get("iso_path"), str) and game["iso_path"] and
-             Path(game["iso_path"]).expanduser().resolve(strict=False) ==
-             Path(iso_path).expanduser().resolve(strict=False)]
-    entry = named[0] if named else matches[0]
+    entry = matches[0]
+    if len(matches) > 1:
+        # Two images share the disc ID (a retail disc and a modified copy): build the one
+        # named, never whichever comes first.
+        named = [game for game in matches if iso_path is not None
+                 and _library_same_path(game, Path(iso_path).expanduser())]
+        if len(named) != 1:
+            raise PackageBuildError(
+                f"Library entry {disc_id} names {len(matches)} disc images (a retail disc and a "
+                "modified copy can share a disc ID); build with --iso-path naming the image."
+            )
+        entry = named[0]
     for field in ("title_id", "iso_path"):
         if not isinstance(entry.get(field), str) or not entry[field]:
             raise PackageBuildError(f"Library entry {disc_id} is missing {field}; re-import the ISO before building.")
@@ -2986,8 +2989,8 @@ def cmd_redump_import(args: argparse.Namespace) -> int:
         sys.stderr.write(f"Redump list not imported{detail}: {exc}\n")
         return 1
     version = f" (version {dat.version})" if dat.version else ""
-    print(f"Imported a Redump list of {len(dat)} discs{version}. Discs added from now on are "
-          "checked against it.")
+    print(f"Imported a Redump list of {len(dat)} discs{version}. Discs nk_cli.py bringup adds "
+          "from now on are checked against it.")
     return 0
 
 
@@ -3780,19 +3783,54 @@ def _library_content_sha1(game: object) -> str:
     return value.lower() if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value) else ""
 
 
-def _library_same_image(game: object, disc_id: str, sha1: str, iso_path: Path) -> bool:
-    """Whether a record is the one a new record for this image replaces.
+def _library_same_path(game: dict, iso_path: Path) -> bool:
+    value = game.get("iso_path")
+    return (isinstance(value, str) and bool(value)
+            and Path(value).expanduser().resolve(strict=False) == iso_path.resolve(strict=False))
 
-    The library is keyed by disc ID plus content hash (src/core/nk_library.c): a record of
-    the same disc ID is replaced when it holds the same SHA-1, when either side was never
-    hashed (the record an older Nakagawa wrote, or an image that could not be read), or when
-    it names the same file, which now holds this image.
+
+def _library_record_to_replace(games: list, disc_id: str, digest: disc_verify.DiscDigest | None,
+                               iso_path: Path, dat: disc_verify.RedumpDat | None) -> int | None:
+    """The one record a new record for this image replaces, or None to add it.
+
+    The rules of src/core/nk_library.c's add_or_update: the record with the same disc ID and
+    SHA-1, else the record of the same file (which now holds this image). An image that could
+    not be hashed also replaces the only record with its disc ID, as before hashing, and is
+    added beside several. A hashed image of another file never replaces a
+    record it is not shown to be: a record written before hashing is hashed now, from its own
+    file, and replaced only when that file is this image (the player cannot hash on its UI
+    thread, so it keeps both instead). No record of another image is ever dropped.
     """
-    if not isinstance(game, dict) or str(game.get("disc_id", "")).upper() != disc_id:
-        return False
-    existing = _library_content_sha1(game)
-    return (not existing or not sha1 or existing == sha1
-            or game.get("iso_path") == str(iso_path))
+    same_id = [index for index, game in enumerate(games) if isinstance(game, dict)
+               and str(game.get("disc_id", "")).upper() == disc_id]
+    sha1 = digest.sha1 if digest is not None else ""
+    if sha1:
+        for index in same_id:
+            if _library_content_sha1(games[index]) == sha1:
+                return index
+    for index in same_id:
+        if _library_same_path(games[index], iso_path):
+            return index
+    if not sha1:
+        return same_id[0] if len(same_id) == 1 else None
+    for index in (index for index in same_id if not _library_content_sha1(games[index])):
+        game = games[index]
+        other = Path(str(game.get("iso_path") or "")).expanduser()
+        try:
+            if not game.get("iso_path") or not other.is_file() or \
+                    other.stat().st_size != digest.size_bytes:
+                continue  # gone, unreachable or another size: kept, never guessed at
+            other_digest = disc_verify.hash_image(other)
+        except (OSError, disc_verify.DiscVerifyError):
+            continue
+        if other_digest.sha1 == sha1:
+            return index
+        # Another image: the record is kept, and now carries its own hashes and tier.
+        game.update({"content_sha1": other_digest.sha1, "content_crc32": other_digest.crc32})
+        tier = disc_verify.classify(disc_id, other_digest, dat)
+        if tier != disc_verify.NOT_CHECKED:
+            game["disc_verification"] = tier
+    return None
 
 
 def _write_bringup_library(user_root: Path, iso_path: Path, metadata, title_id: str,
@@ -3826,9 +3864,11 @@ def _write_bringup_library_locked(user_root: Path, iso_path: Path, metadata, tit
                 f"The bring-up user library holds {len(payload['games'])} games, "
                 f"over the {MAX_LIBRARY_GAMES}-record limit."
             )
-        sha1 = digest.sha1 if digest is not None else ""
-        games = [game for game in payload["games"]
-                 if not _library_same_image(game, metadata.disc_id.upper(), sha1, iso_path)]
+        games = list(payload["games"])
+    dat = _imported_dat(user_root) if digest is not None else None
+    replaced = _library_record_to_replace(games, metadata.disc_id.upper(), digest, iso_path, dat)
+    if replaced is not None:
+        del games[replaced]
     record = {
         "disc_id": metadata.disc_id.upper(),
         "title_id": title_id,
@@ -3837,8 +3877,13 @@ def _write_bringup_library_locked(user_root: Path, iso_path: Path, metadata, tit
         "boot_executable": boot_executable,
         "is_experimental": is_experimental,
     }
+    # The player keeps a record's hashes on a re-add only while the size matches.
+    size = digest.size_bytes if digest is not None else (
+        iso_path.stat().st_size if iso_path.is_file() else None)
+    if size is not None:
+        record["iso_size_bytes"] = size
     if digest is not None:
-        _add_disc_verification(record, digest, games, _imported_dat(user_root))
+        _add_disc_verification(record, digest, games, dat)
     # The disc's own name and version, so the player's card names the game: a record
     # without them shows as an untitled disc.
     title = getattr(metadata, "title", "")
@@ -5054,6 +5099,9 @@ def main() -> int:
         "build-package", help="Build the generated runtime package for a library disc ID"
     )
     p_build.add_argument("disc_id", help="Nine-character disc ID from the player library")
+    p_build.add_argument("--iso-path", type=Path, default=None,
+                         help="The disc image to build when two images in the library share "
+                              "the disc ID (a retail disc and a modified copy)")
     p_build.add_argument("--user-data-root", type=Path,
                          help="Override the player per-user data directory")
     p_build.add_argument("--module-dir", type=Path,
