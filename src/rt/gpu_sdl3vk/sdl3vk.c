@@ -61,7 +61,7 @@
 typedef struct PresentFrame {
     VkCommandBuffer cmd;
     VkFence fence;
-    VkSemaphore sem_acq, sem_done;
+    VkSemaphore sem_acq;   /* its submit's wait, covered by the fence; the present's is per image */
     VkBuffer staging;
     VkDeviceMemory staging_mem;
     void *staging_map;
@@ -97,6 +97,10 @@ static VkExtent2D     s_swap_ext;
 static uint32_t       s_swap_n;
 static VkImage        s_swap_img[8];
 static VkFence        s_swap_img_fence[8];
+/* The semaphore a present of each image waits on (#1799). No fence covers that wait: it is
+ * known to be over only once the image is acquired again, so the semaphore belongs to the
+ * image, not to the frame slot that drew it, and lives as long as the swapchain does. */
+static VkSemaphore    s_swap_sem_done[8];
 
 static int      s_renderer_terminal = 0;
 static int      s_denorm_preserve_f32 = 0;   /* see sdl3vk_init: VK_KHR_shader_float_controls */
@@ -283,6 +287,14 @@ static void destroy_swapchain(void) {
     if (s_swap) { vkDestroySwapchainKHR(s_dev, s_swap, NULL); s_swap = VK_NULL_HANDLE; }
 }
 
+/* After the swapchain whose presents waited on them is gone (#1799). */
+static void destroy_present_semaphores(void) {
+    for (size_t i = 0; i < sizeof(s_swap_sem_done) / sizeof(s_swap_sem_done[0]); i++) {
+        if (s_swap_sem_done[i]) vkDestroySemaphore(s_dev, s_swap_sem_done[i], NULL);
+        s_swap_sem_done[i] = VK_NULL_HANDLE;
+    }
+}
+
 /* Queue-idle fault seam for the selftest: a nonzero VkResult stands in for the next wait. */
 static VkResult s_idle_fault_result = VK_SUCCESS;
 
@@ -305,8 +317,13 @@ static int wait_swapchain_unused(void) {
     return 0;
 }
 
+static int init_step_fails(void);
+/* Set while sdl3vk_init creates its swapchain: each present semaphore is then one of its fallible
+ * steps, as it was when the semaphores were per frame, so the init unwind reaches every one. */
+static int s_swapchain_in_init = 0;
+
 /* Creates the swapchain, or replaces the current one: the old swapchain is retired into the new
- * one and destroyed once its images are no longer in use. */
+ * one and destroyed once its images are no longer in use, and its present semaphores with it. */
 static int create_swapchain(void) {
     if (s_swap && !wait_swapchain_unused()) return 0;
     VkSurfaceCapabilitiesKHR caps;
@@ -390,6 +407,7 @@ static int create_swapchain(void) {
         fprintf(stderr, "sdl3vk: vkCreateSwapchainKHR failed: %d; the renderer is terminal\n",
                 (int)cr);
         if (old) vkDestroySwapchainKHR(s_dev, old, NULL);
+        destroy_present_semaphores();
         s_swap = VK_NULL_HANDLE;
         s_swap_n = 0;
         memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
@@ -398,6 +416,9 @@ static int create_swapchain(void) {
     }
     s_swap = made;
     if (old) vkDestroySwapchainKHR(s_dev, old, NULL);
+    /* Every present that waited on these was to the old swapchain, and the queue was idle
+     * before it was replaced (wait_swapchain_unused). */
+    destroy_present_semaphores();
 
     uint32_t n_img = (uint32_t)(sizeof(s_swap_img) / sizeof(s_swap_img[0]));
     VkResult ir = vkGetSwapchainImagesKHR(s_dev, s_swap, &n_img, s_swap_img);
@@ -409,6 +430,23 @@ static int create_swapchain(void) {
         memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
         s_renderer_terminal = 1;
         return 0;
+    }
+    VkSemaphoreCreateInfo semi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    for (uint32_t i = 0; i < n_img; i++) {
+        VkResult sr = s_swapchain_in_init && init_step_fails()
+                    ? VK_ERROR_INITIALIZATION_FAILED
+                    : vkCreateSemaphore(s_dev, &semi, NULL, &s_swap_sem_done[i]);
+        if (sr != VK_SUCCESS) {
+            /* Those already made are destroyed with the swapchain, by the next creation or
+             * by shutdown. */
+            fprintf(stderr, "sdl3vk: vkCreateSemaphore for swapchain image %u failed: %d; "
+                            "the renderer is terminal\n", (unsigned)i, (int)sr);
+            s_swap_sem_done[i] = VK_NULL_HANDLE;
+            s_swap_n = 0;
+            memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
+            s_renderer_terminal = 1;
+            return 0;
+        }
     }
     s_swap_n = n_img;
     memset(s_swap_img_fence,0,sizeof(s_swap_img_fence));
@@ -733,7 +771,6 @@ int sdl3vk_init(const char *title) {
         INIT_VK(vkAllocateCommandBuffers(s_dev,&cbi,&f->cmd));
         INIT_VK(vkCreateFence(s_dev,&fci,NULL,&f->fence));
         INIT_VK(vkCreateSemaphore(s_dev,&sci2,NULL,&f->sem_acq));
-        INIT_VK(vkCreateSemaphore(s_dev,&sci2,NULL,&f->sem_done));
 
         VkBufferCreateInfo bci={.sType=VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bci.size=PSP_W*PSP_H*4;bci.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -777,7 +814,9 @@ int sdl3vk_init(const char *title) {
         INIT_VK(vkBindImageMemory(s_dev,f->fbimg,f->fbimg_mem,0));
     }
 
+    s_swapchain_in_init = 1;
     INIT_OK(create_swapchain(), "sdl3vk: no swapchain for the new window\n");
+    s_swapchain_in_init = 0;
 
     /* The launcher always says, so a run it starts is a developer run only when its setting
      * is on; a run started by hand is one when SR_DEVELOPER_MODE is set and not 0. */
@@ -802,6 +841,7 @@ int sdl3vk_init(const char *title) {
 fail:
     /* Release exactly what the steps above created, in reverse order, so a caller that falls
      * back to another presenter (gui_init's GDI window) holds no SDL or Vulkan object. */
+    s_swapchain_in_init = 0;
     sdl3vk_shutdown();
     return 0;
 }
@@ -1526,7 +1566,9 @@ static PresentDisposition classify_present(VkResult pr, int *out_presented, cons
     }
 }
 
-static int recover_unenqueued_present(PresentFrame *f) {
+/* A present that was not enqueued left image idx's present semaphore signalled with no wait
+ * pending: once the frame's submit (the signal) is done, the semaphore is replaced. */
+static int recover_unenqueued_present(PresentFrame *f, uint32_t idx) {
     if (!s_dev) return 0;
     if (f->submitted) {
         if (vkWaitForFences(s_dev, 1, &f->fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
@@ -1536,12 +1578,12 @@ static int recover_unenqueued_present(PresentFrame *f) {
         f->submitted = 0;
         f->source = VK_NULL_HANDLE;
     }
-    if (f->sem_done) {
-        vkDestroySemaphore(s_dev, f->sem_done, NULL);
-        f->sem_done = VK_NULL_HANDLE;
+    if (s_swap_sem_done[idx]) {
+        vkDestroySemaphore(s_dev, s_swap_sem_done[idx], NULL);
+        s_swap_sem_done[idx] = VK_NULL_HANDLE;
     }
     VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-    if (vkCreateSemaphore(s_dev, &sci, NULL, &f->sem_done) != VK_SUCCESS) {
+    if (vkCreateSemaphore(s_dev, &sci, NULL, &s_swap_sem_done[idx]) != VK_SUCCESS) {
         s_renderer_terminal = 1;
         return 0;
     }
@@ -2000,7 +2042,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         si.commandBufferCount = 1;
         si.pCommandBuffers = &cmd;
         si.signalSemaphoreCount = 1;
-        si.pSignalSemaphores = &f->sem_done;
+        si.pSignalSemaphores = &s_swap_sem_done[idx];
         if (PSTEP_VK(PSTEP_RESET_FENCE, vkResetFences(s_dev, 1, &f->fence)) != VK_SUCCESS) {
             why = "vkResetFences failed"; goto fail_acquired;
         }
@@ -2018,7 +2060,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         pi.waitSemaphoreCount = 1;
-        pi.pWaitSemaphores = &f->sem_done;
+        pi.pWaitSemaphores = &s_swap_sem_done[idx];
         pi.swapchainCount = 1;
         pi.pSwapchains = &s_swap;
         pi.pImageIndices = &idx;
@@ -2034,7 +2076,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                 VkPipelineStageFlags wstage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
                 VkSubmitInfo esi = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
                 esi.waitSemaphoreCount = 1;
-                esi.pWaitSemaphores = &f->sem_done;
+                esi.pWaitSemaphores = &s_swap_sem_done[idx];
                 esi.pWaitDstStageMask = &wstage;
                 if (vkQueueSubmit(s_queue, 1, &esi, VK_NULL_HANDLE) != VK_SUCCESS) {
                     fprintf(stderr, "sdl3vk: fault harness could not emulate semaphore wait\n");
@@ -2072,7 +2114,8 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             presented = 0;
             s_renderer_terminal = 1;
             /* Surface is lost: present request was enqueued (semaphore waited), but surface is gone.
-             * Do NOT call recover_unenqueued_present because f->sem_done WAS consumed. */
+             * Do NOT call recover_unenqueued_present because the image's present semaphore WAS
+             * consumed. */
             why = disp_why;
             goto fail;
 
@@ -2080,9 +2123,9 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             presented = 0;
             /* The image is still acquired: only a present or the swapchain's destruction hands
              * it back, and a few such failures in a row would leave no image to acquire (#1377).
-             * The frame is recovered (its fence waited, sem_done replaced) and the swapchain
-             * rebuilt; if either fails, the renderer is terminal. */
-            if (!recover_unenqueued_present(f) || !create_swapchain()) s_renderer_terminal = 1;
+             * The frame is recovered (its fence waited, the image's present semaphore replaced)
+             * and the swapchain rebuilt; if either fails, the renderer is terminal. */
+            if (!recover_unenqueued_present(f, idx) || !create_swapchain()) s_renderer_terminal = 1;
             why = disp_why;
             goto fail;
 
@@ -2434,7 +2477,7 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
     si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores = &f->sem_done;
+    si.pSignalSemaphores = &s_swap_sem_done[idx];
     if (!fail_why && vkResetFences(s_dev, 1, &f->fence) != VK_SUCCESS) fail_why = "vkResetFences failed";
     if (!fail_why && vkQueueSubmit(s_queue, 1, &si, f->fence) != VK_SUCCESS) fail_why = "vkQueueSubmit failed";
     if (fail_why) {
@@ -2447,7 +2490,7 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
 
     VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &f->sem_done;
+    pi.pWaitSemaphores = &s_swap_sem_done[idx];
     pi.swapchainCount = 1;
     pi.pSwapchains = &s_swap;
     pi.pImageIndices = &idx;
@@ -2469,7 +2512,7 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     case PRESENT_NOT_ENQUEUED:
         /* The image is still acquired: recover the frame and rebuild the swapchain to hand it
          * back, as present_common does (#1377). */
-        if (!recover_unenqueued_present(f) || !create_swapchain()) s_renderer_terminal = 1;
+        if (!recover_unenqueued_present(f, idx) || !create_swapchain()) s_renderer_terminal = 1;
         fprintf(stderr, "sdl3vk: pause overlay present failed: %s\n", why ? why : "not enqueued");
         return -1;
     case PRESENT_SURFACE_LOST:
@@ -3263,6 +3306,8 @@ static int lifecycle_live_objects(void) {
             (s_fence != VK_NULL_HANDLE) + (s_swap != VK_NULL_HANDLE) + s_sdl_subsystems;
     for (int i = 0; i < PRESENT_FRAMES; i++)
         n += memcmp(&s_frame[i], &empty, sizeof empty) != 0;
+    for (size_t i = 0; i < sizeof(s_swap_sem_done) / sizeof(s_swap_sem_done[0]); i++)
+        n += s_swap_sem_done[i] != VK_NULL_HANDLE;
     return n + (SDL_WasInit(s_lifecycle_test_holds_video ? SDL_INIT_GAMEPAD
                                                          : SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) != 0);
 }
@@ -3980,6 +4025,17 @@ static int sdl3vk_capture_selftest_body(void) {
                     sdl3vk_validation_error_count() - errors0);
             ok = 0;
         }
+        /* Each image has one of its own, made with the swapchain; no slot past its images. */
+        for (size_t i = 0; i < sizeof(s_swap_sem_done) / sizeof(s_swap_sem_done[0]); i++) {
+            int dup = 0;
+            for (size_t k = 0; k < i; k++) dup |= s_swap_sem_done[k] == s_swap_sem_done[i];
+            if ((s_swap_sem_done[i] != VK_NULL_HANDLE) != (i < s_swap_n) ||
+                (s_swap_sem_done[i] != VK_NULL_HANDLE && dup)) {
+                fprintf(stderr, "present semaphores: slot %u of %u swapchain image(s) is wrong\n",
+                        (unsigned)i, (unsigned)s_swap_n);
+                ok = 0;
+            }
+        }
     }
 
     /* ---- present error recovery and disposition tests ------------------------------- */
@@ -4191,6 +4247,7 @@ void sdl3vk_shutdown(void) {
             fprintf(stderr, "sdl3vk: shutdown vkQueueWaitIdle failed: %d\n", (int)idle);
     }
     destroy_swapchain();
+    destroy_present_semaphores();
     s_swap_n = 0;
     memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
     if (s_hud_ren)  { SDL_DestroyRenderer(s_hud_ren); s_hud_ren = NULL; }
@@ -4215,7 +4272,6 @@ void sdl3vk_shutdown(void) {
         if (f->staging_map) vkUnmapMemory(s_dev, f->staging_mem);
         if (f->staging)     vkDestroyBuffer(s_dev, f->staging, NULL);
         if (f->staging_mem) vkFreeMemory(s_dev, f->staging_mem, NULL);
-        if (f->sem_done)    vkDestroySemaphore(s_dev, f->sem_done, NULL);
         if (f->sem_acq)     vkDestroySemaphore(s_dev, f->sem_acq, NULL);
         if (f->fence)       vkDestroyFence(s_dev, f->fence, NULL);
         memset(f, 0, sizeof(*f));   /* its command buffer is freed with the pool */
