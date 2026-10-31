@@ -3003,10 +3003,10 @@ class PolicyDeltaV3DocumentTests(unittest.TestCase):
 
     def _derive(self, candidate: dict, files: dict[str, bytes] | None = None) -> dict:
         files = files or {}
-        return provenance_ledger.derive_policy_delta_v3(
+        return cast(dict[str, Any], provenance_ledger.derive_policy_delta_v3(
             self.BASE, candidate,
             lambda path: hashlib.sha256(files[path]).hexdigest() if path in files else None,
-        )
+        ))
 
     def _parse(self, document: dict) -> None:
         provenance_ledger._read_policy_delta_v3_document(provenance_ledger.policy_delta_v3_bytes(document))

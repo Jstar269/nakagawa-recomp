@@ -14,7 +14,7 @@
     "tools"
   ],
   "errors_by_module": {
-    "tools/admit_paths.py": 2,
+    "tools/admit_paths.py": 3,
     "tools/analysis_ir.py": 5,
     "tools/audit_public_issue_links.py": 2,
     "tools/betterleaks_canary.py": 1,
@@ -45,7 +45,7 @@
     "tools/llvm_ir.py": 16,
     "tools/microtest_gate.py": 5,
     "tools/nidseq.py": 1,
-    "tools/nk_cli.py": 24,
+    "tools/nk_cli.py": 25,
     "tools/nk_core/decrypt_tool.py": 1,
     "tools/nk_core/fonts.py": 9,
     "tools/nk_core/iso_inspect.py": 21,
@@ -59,7 +59,7 @@
     "tools/perf_summary_diff.py": 4,
     "tools/pgf_writer.py": 1,
     "tools/progress_tracker.py": 1,
-    "tools/provenance_attest_verify.py": 21,
+    "tools/provenance_attest_verify.py": 27,
     "tools/provenance_ledger.py": 19,
     "tools/provenance_record_gap.py": 5,
     "tools/provenance_refresh.py": 4,
@@ -75,7 +75,7 @@
     "tools/pspsdk_source.py": 5,
     "tools/public_candidate.py": 3,
     "tools/public_export.py": 1,
-    "tools/publish_audit.py": 7,
+    "tools/publish_audit.py": 8,
     "tools/recomp_helper_inventory.py": 3,
     "tools/regen_all.py": 2,
     "tools/shader_embed.py": 1,
@@ -149,14 +149,12 @@
     "tools/test_production_smoke.py": 8,
     "tools/test_profile_zero_e2e.py": 1,
     "tools/test_progress_tracker.py": 1,
-    "tools/test_provenance_attest_verify.py": 13,
     "tools/test_provenance_attestation_gate.py": 2,
     "tools/test_provenance_control_merge.py": 1,
     "tools/test_provenance_record_gap.py": 1,
     "tools/test_provenance_wildcard_regression.py": 1,
     "tools/test_psp_issue_matrix.py": 18,
     "tools/test_psp_threading_oracle.py": 1,
-    "tools/test_public_export.py": 17,
     "tools/test_public_title_isolation.py": 1,
     "tools/test_publication_policy_gate.py": 2,
     "tools/test_publish_audit.py": 1,
@@ -205,5 +203,5 @@
   "platform": "linux",
   "python_version": "3.15",
   "schema_version": 1,
-  "total_errors": 998
+  "total_errors": 977
 }

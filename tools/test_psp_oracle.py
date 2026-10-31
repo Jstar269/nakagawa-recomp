@@ -8412,6 +8412,11 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         "ks_subintr_order": ("subintr-register", "subintr-order", "subintr-times",
                              "subintr-release"),
     }
+    probe: ClassVar[str]
+    issues: ClassVar[str]
+    makefile: ClassVar[str]
+    code: ClassVar[str]
+    bodies: ClassVar[dict[str, str]]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -8424,8 +8429,9 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         cls.bodies = _c_function_bodies(cls.code)
 
     def _case_block(self) -> str:
-        start = re.search(r"^ifeq \(\$\(CASE\),kernel-semantics\)\n", self.makefile,
-                          re.MULTILINE).start()
+        start = cast(re.Match[str], re.search(
+            r"^ifeq \(\$\(CASE\),kernel-semantics\)\n", self.makefile, re.MULTILINE
+        )).start()
         return self.makefile[start:self.makefile.index("\nendif\n", start)]
 
     def test_route_registration_and_log(self) -> None:
@@ -8580,8 +8586,12 @@ class KernelSemanticsProbeTests(unittest.TestCase):
             'ks_vmem_type("vmem-trylock-type-1", 0, 1);', 'ks_vmem_type("vmem-lock-type-1", 1, 1);',
             "ks_vmem_alloc();", "ks_io();", "ks_wlan();")]
         self.assertEqual(order, sorted(order))
-        io_rows = re.search(r"k_ks_io_rows\[KS_IO_ROWS\] = \{([^}]*)\}", self.code).group(1)
-        io_words = re.search(r"k_ks_io_words\[KS_IO_ROWS\] = \{([^}]*)\}", self.code).group(1)
+        io_rows = cast(re.Match[str], re.search(
+            r"k_ks_io_rows\[KS_IO_ROWS\] = \{([^}]*)\}", self.code
+        )).group(1)
+        io_words = cast(re.Match[str], re.search(
+            r"k_ks_io_words\[KS_IO_ROWS\] = \{([^}]*)\}", self.code
+        )).group(1)
         rows = re.findall(r'"([a-z0-9-]+)"', io_rows)
         words = [int(w.rstrip("u")) for w in re.findall(r"\d+u", io_words)]
         self.assertEqual([counts[row] for row in rows], words)
@@ -8595,6 +8605,10 @@ class GeMipProbeTests(unittest.TestCase):
 
     START = "/* ==== GE mip cells (PSP-GE-MIP-001, #1373) ===="
     END = "/* ==== end of the GE mip cells ==== */\n"
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    selftest: ClassVar[str]
+    section: ClassVar[str]
 
     @classmethod
     def setUpClass(cls) -> None:
