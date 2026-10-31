@@ -22,7 +22,11 @@ typedef enum {
 
 typedef enum {
     SR_H264_TARGET_GUEST = 0,
-    SR_H264_TARGET_HOST = 1
+    SR_H264_TARGET_HOST = 1,
+    /* The decoded 4:2:0 samples, unconverted: luma in host_buffer (host_stride bytes per row),
+     * Cb and Cr at half width and half height in host_cb / host_cr (host_c_stride bytes per
+     * row).  A backend writes at most host_width x host_height luma samples. */
+    SR_H264_TARGET_HOST_YUV = 2
 } SrH264TargetKind;
 
 typedef struct {
@@ -36,7 +40,24 @@ typedef struct {
     int host_width;
     int host_height;
     int host_stride;
+    uint8_t *host_cb;
+    uint8_t *host_cr;
+    int host_c_stride;
 } SrH264FrameTarget;
+
+/* The PSP's movie colour conversion, used for sceMpegAvcCsc and for the RGBA output of
+ * sceMpegAvcDecode.  MEASURED exactly on a PSP-3000 (firmware 6.61; PSP-MPEG-001, 2026-10-31,
+ * every pixel of a 480x224 picture): BT.601 limited range to full-range RGB in 7-bit fixed point,
+ * luma floored at 16, chroma taken from the nearest 4:2:0 sample.  The common 8-bit form
+ * (298/409/100/208/516) differs on dozens of pixels of the same picture.  Clamps of luma above
+ * 235 and of chroma outside 16..240 are not measured. */
+static inline uint8_t sr_h264_psp_clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
+static inline void sr_h264_psp_rgb(int y, int cb, int cr, uint8_t *r, uint8_t *g, uint8_t *b) {
+    int c = 149 * ((y < 16 ? 16 : y) - 16), du = cb - 128, dv = cr - 128;
+    *r = sr_h264_psp_clamp8((c + 204 * dv + 64) >> 7);
+    *g = sr_h264_psp_clamp8((c - 50 * du - 104 * dv + 64) >> 7);
+    *b = sr_h264_psp_clamp8((c + 258 * du + 64) >> 7);
+}
 
 typedef struct {
     int width;

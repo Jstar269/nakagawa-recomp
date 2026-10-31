@@ -11,8 +11,10 @@
  *
  * The backend receives complete access units from the common PSMF producer. submit_au() queues
  * one validated Annex-B unit with its normalized timestamp; frame() decodes until one picture
- * comes out and converts it into the target: a guest video buffer in a PSP pixel format, or a
- * host RGBA8888 buffer. eos != 0 drains the decoder after all submitted units.
+ * comes out and converts it into the target: a guest video buffer in a PSP pixel format, a host
+ * RGBA8888 buffer, or host 4:2:0 planes holding the decoded samples unconverted.  Colour
+ * conversion is the PSP's own (sr_h264_psp_rgb).  eos != 0 drains the decoder after all
+ * submitted units.
  * A picture that was decoded but could not be written is reported as -1 without poisoning the
  * decoder; only decoder-level failures mark the instance failed.
  */
@@ -155,30 +157,11 @@ static int ff_send_next(FfDec *d) {
     return 1;
 }
 
-static uint8_t ff_clamp(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
-
-/* BT.601 YCbCr -> RGB, limited (studio) range for H.264 movies, full range for JPEG-range
- * pixel formats. Integer coefficients in 8.8 fixed point. */
-static void ff_rgb(int y, int cb, int cr, int full, uint8_t *r, uint8_t *g, uint8_t *b) {
-    int du = cb - 128, dv = cr - 128;
-    if (full) {
-        *r = ff_clamp(y + ((359 * dv + 128) >> 8));
-        *g = ff_clamp(y - ((88 * du + 183 * dv + 128) >> 8));
-        *b = ff_clamp(y + ((454 * du + 128) >> 8));
-    } else {
-        int c = 298 * (y - 16);
-        *r = ff_clamp((c + 409 * dv + 128) >> 8);
-        *g = ff_clamp((c - 100 * du - 208 * dv + 128) >> 8);
-        *b = ff_clamp((c + 516 * du + 128) >> 8);
-    }
-}
-
 /* Chroma access for the 4:2:0 layouts libavcodec produces for PSP movies. */
 typedef struct {
     const uint8_t *y, *u, *v;
     int y_stride, u_stride, v_stride;
     int interleaved;      /* NV12: u points at Cb, v = u + 1, step 2 */
-    int full_range;
     SrH264PixelFormat native;
 } FfPlanes;
 
@@ -199,22 +182,27 @@ static int ff_planes(const NkH264Picture *f, FfPlanes *pl) {
         default:
             return 0;
     }
-    pl->full_range = f->full_range;
     return pl->y && pl->u && pl->v && pl->y_stride > 0 && pl->u_stride > 0 && pl->v_stride > 0;
 }
 
-static void ff_pixel(const FfPlanes *pl, int x, int y, uint8_t *r, uint8_t *g, uint8_t *b) {
-    int cx = x >> 1, cy = y >> 1;
-    int luma = pl->y[(size_t)y * (size_t)pl->y_stride + (size_t)x];
-    int cb, cr;
+/* The chroma pair at chroma sample (cx, cy). */
+static void ff_chroma(const FfPlanes *pl, int cx, int cy, uint8_t *cb, uint8_t *cr) {
     if (pl->interleaved) {
         const uint8_t *uv = pl->u + (size_t)cy * (size_t)pl->u_stride + (size_t)cx * 2u;
-        cb = uv[0]; cr = uv[1];
+        *cb = uv[0]; *cr = uv[1];
     } else {
-        cb = pl->u[(size_t)cy * (size_t)pl->u_stride + (size_t)cx];
-        cr = pl->v[(size_t)cy * (size_t)pl->v_stride + (size_t)cx];
+        *cb = pl->u[(size_t)cy * (size_t)pl->u_stride + (size_t)cx];
+        *cr = pl->v[(size_t)cy * (size_t)pl->v_stride + (size_t)cx];
     }
-    ff_rgb(luma, cb, cr, pl->full_range, r, g, b);
+}
+
+/* The samples are converted whatever range the stream signals: sceMpegAvcCsc receives only the
+ * YCbCr buffer, so the PSP's conversion cannot depend on it, and the same matrix reproduced
+ * sceMpegAvcDecode's RGBA output exactly (PSP-MPEG-001). */
+static void ff_pixel(const FfPlanes *pl, int x, int y, uint8_t *r, uint8_t *g, uint8_t *b) {
+    uint8_t cb, cr;
+    ff_chroma(pl, x >> 1, y >> 1, &cb, &cr);
+    sr_h264_psp_rgb(pl->y[(size_t)y * (size_t)pl->y_stride + (size_t)x], cb, cr, r, g, b);
 }
 
 static SrH264PixelFormat ff_guest_format(int mode) {
@@ -259,11 +247,11 @@ static int ff_to_guest(const NkH264Picture *f, const FfPlanes *pl, const SrH264F
                 case 0: px16 = (uint16_t)((r >> 3) | ((g >> 2) << 5) | ((b >> 3) << 11)); break;
                 case 1: px16 = (uint16_t)((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10) | 0x8000); break;
                 case 2: px16 = (uint16_t)((r >> 4) | ((g >> 4) << 4) | ((b >> 4) << 8) | 0xF000); break;
-                default:
+                default:   /* 8888: alpha 0, as the PSP writes it (PSP-MPEG-001) */
                     row[(size_t)x * 4u + 0] = r;
                     row[(size_t)x * 4u + 1] = g;
                     row[(size_t)x * 4u + 2] = b;
-                    row[(size_t)x * 4u + 3] = 0xFF;
+                    row[(size_t)x * 4u + 3] = 0x00;
                     continue;
             }
             memcpy(row + (size_t)x * 2u, &px16, sizeof px16);
@@ -305,13 +293,37 @@ static int ff_to_host(const NkH264Picture *f, const FfPlanes *pl, const SrH264Fr
     return 1;
 }
 
+/* The decoded samples into host planes, unconverted. */
+static int ff_to_host_yuv(const NkH264Picture *f, const FfPlanes *pl, const SrH264FrameTarget *t,
+                          SrH264FrameInfo *info) {
+    int w = f->width < t->host_width ? f->width : t->host_width;
+    int h = f->height < FF_MOVIE_ROWS ? f->height : FF_MOVIE_ROWS;
+    if (h > t->host_height) h = t->host_height;
+    if (w <= 0 || h <= 0) return 0;
+    for (int y = 0; y < h; y++)
+        memcpy(t->host_buffer + (size_t)y * (size_t)t->host_stride,
+               pl->y + (size_t)y * (size_t)pl->y_stride, (size_t)w);
+    for (int cy = 0; cy < (h + 1) / 2; cy++)
+        for (int cx = 0; cx < (w + 1) / 2; cx++)
+            ff_chroma(pl, cx, cy, &t->host_cb[(size_t)cy * (size_t)t->host_c_stride + (size_t)cx],
+                      &t->host_cr[(size_t)cy * (size_t)t->host_c_stride + (size_t)cx]);
+    if (info) {
+        info->width = w;
+        info->height = h;
+        info->stride = t->host_stride;
+        info->delivered_format = pl->native;
+    }
+    return 1;
+}
+
 /* Deliver a decoded picture. 1 = written, 2 = decoded but not writable. */
 static int ff_deliver(const NkH264Picture *pic, const SrH264FrameTarget *t, SrH264FrameInfo *info) {
     FfPlanes pl;
     int ok = 0;
     if (pic->width > 0 && pic->height > 0 && ff_planes(pic, &pl)) {
         ok = t->kind == SR_H264_TARGET_HOST ? ff_to_host(pic, &pl, t, info)
-                                            : ff_to_guest(pic, &pl, t, info);
+             : t->kind == SR_H264_TARGET_HOST_YUV ? ff_to_host_yuv(pic, &pl, t, info)
+                                                  : ff_to_guest(pic, &pl, t, info);
         if (ok && info) {
             info->native_format = pl.native;
             /* The decoder reports the decoded frame PTS (the source PTS of the access unit it
@@ -400,6 +412,11 @@ static int ff_frame(int id, int eos, const SrH264FrameTarget *t, SrH264FrameInfo
     } else if (t->kind == SR_H264_TARGET_HOST) {
         if (!t->host_buffer || t->host_width <= 0 || t->host_width > INT_MAX / 4 ||
             t->host_height <= 0 || t->host_stride < t->host_width * 4)
+            return -1;
+    } else if (t->kind == SR_H264_TARGET_HOST_YUV) {
+        if (!t->host_buffer || !t->host_cb || !t->host_cr || t->host_width <= 0 ||
+            t->host_height <= 0 || t->host_stride < t->host_width ||
+            t->host_c_stride < (t->host_width + 1) / 2)
             return -1;
     } else {
         return -1;

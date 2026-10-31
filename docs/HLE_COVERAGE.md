@@ -99,7 +99,7 @@ belongs to without the census's own grouping.
 | `0x0e2a73ab` | `sceAtracSetData` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x0e3c2e9d` | `sceMpegAvcDecode` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x0ed48fe2` | `sceKernelDeleteNotifyCallback` | kernel_thread | `unverified` | no recorded evidence |
-| `0x0f6c18d7` | `sceMpegAvcDecodeDetail` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c; registry notes name PPSSPP |
+| `0x0f6c18d7` | `sceMpegAvcDecodeDetail` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x0facab19` | `sceIoWriteAsync` | io | `synthetic` | registry evidence `src/rt/hle_thread_selftest.c:test_io_async_and_path_imports` |
 | `0x0fae370e` | `sceAtracSetHalfwayBufferAndGetID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x1078c008` | `scePsmfPlayerStop` | mpeg | `synthetic` | HLE selftest dispatch |

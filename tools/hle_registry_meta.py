@@ -502,7 +502,7 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/psmf_media_selftest.c:test_mpeg_avc_decode_detail",
         ],
-        "limitation": "nine words in PPSSPP's layout (decode result 1, pictures decoded, the header's frame width and height, four zero crop words, the last decode's frame status); not yet measured on this project's PSP (#302, probe mpeg-ycbcr)",
+        "limitation": "the 13 words MEASURED on a PSP-3000 (PSP-MPEG-001): word 0 is 0, words 2 and 3 the header's frame width and height, words 4-7 zero, word 8 the last decode's frame status; word 1 is written as the pictures decoded, which the PSP's is not (0 after 240 pictures), and words 9-12 as 0, one of which holds an unidentified pointer on the PSP (#302)",
     },
     "h_MpegGetAtracAu": {
         "status": "partial",
@@ -520,27 +520,52 @@ HANDLER_METADATA = {
     },
     "h_MpegAvcQueryYCbCrSize": {
         "status": "partial",
-        "limitation": "the YCbCr size formula, pointer preflight, and guest geometry are source-tested; firmware mode coverage and the hardware-oracle contract remain open (#302)",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
+        ],
+        "limitation": "the sizes and refusals MEASURED for modes 0-4 and -1 (PSP-MPEG-001); a mode-3 size wider than 480, which does not follow 1.5 w h on the PSP, is refused as not modeled (#302)",
     },
     "h_MpegAvcInitYCbCr": {
         "status": "partial",
-        "limitation": "Init zeroes a modeled guest allocation; its plane bytes are not asserted to match the PSP header/plane layout (#302)",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
+        ],
+        "limitation": "writes the MEASURED mode-1 header (eight plane pointers into the buffer) and leaves the planes; modes 2 and 3 and an odd number of 16-pixel strips are refused as not measured, and the query's mode-1 limits stand in for Init's own (#302)",
     },
     "h_MpegAvcDecodeYCbCr": {
         "status": "partial",
-        "limitation": "Decode marks decoded pictures ready; guest plane bytes remain modeled zeroes, not the PSP layout, while Csc writes the retained decoded picture (#302)",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
+        ],
+        "limitation": "writes the decoder's samples into the MEASURED mode-1 strip layout through the header's plane pointers and sets words 0 and 1; a picture larger than its InitYCbCr allocation or than 480x272 is refused as not measured, and the strip length from the decoded height rests on one measured geometry (#302)",
     },
     "h_MpegAvcDecodeStopYCbCr": {
         "status": "partial",
-        "limitation": "Stop clears tracked state, but the firmware buffered-picture status is explicitly unmeasured rather than reported as a guessed frame count (#302)",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
+        ],
+        "limitation": "takes the address of the buffer pointer, as DecodeYCbCr does (the probe's call with the buffer itself never returned on the PSP); reports status 0 and writes nothing, and whether the PSP delivers a picture the decoder still holds is not measured (#302)",
     },
     "h_MpegAvcCopyYCbCr": {
         "status": "partial",
-        "limitation": "Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
+        ],
+        "limitation": "copies the decoded share of every plane and words 0 and 1 through both headers; not measured on the PSP, and overlapping planes are refused (#302)",
     },
     "h_MpegAvcCsc": {
         "status": "partial",
-        "limitation": "Csc writes the retained decoded picture; guest plane bytes are modeled, not the PSP layout, and range/coherency behavior remains open (#302)",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract",
+            "src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode",
+            "src/rt/psmf_media_selftest.c:test_mpeg_csc_swizzled_vram_mirrors",
+        ],
+        "limitation": "converts the guest planes, read through the header's pointers, with the MEASURED PSP matrix and gives the MEASURED range refusals; the destination is written from its first pixel with rows from the top of the picture (one measured sub-range), and the 16-bit pixel modes are not measured (#302)",
     },
     "h_MpegQueryPcmEsSize": {
         "status": "partial",

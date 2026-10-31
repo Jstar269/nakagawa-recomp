@@ -303,6 +303,10 @@ static void write_pps(BitW *w) {
     bw_trailing(w);
 }
 
+/* When set, every I_PCM sample differs with its position (the YCbCr layout test); otherwise each
+ * picture is flat. */
+static int s_fixture_textured;
+
 /* One IDR picture, every macroblock I_PCM, so luma and chroma are exactly (y, cb, cr). */
 static void write_idr_ex(BitW *w, int picture, uint32_t w_mbs, uint32_t h_mbs, uint8_t y, uint8_t cb, uint8_t cr) {
     uint8_t pcm[256 + 64 + 64];
@@ -319,6 +323,9 @@ static void write_idr_ex(BitW *w, int picture, uint32_t w_mbs, uint32_t h_mbs, u
     bw_bit(w, 0);                       /* dec_ref_pic_marking.long_term_reference_flag */
     bw_ue(w, 0u);                       /* slice_qp_delta (se(0)) */
     for (uint32_t mb = 0; mb < w_mbs * h_mbs; mb++) {
+        if (s_fixture_textured)         /* 1..254: no sample is 0 */
+            for (uint32_t i = 0; i < (uint32_t)sizeof(pcm); i++)
+                pcm[i] = (uint8_t)(1u + (y + i * 7u + mb * 29u) % 254u);
         bw_ue(w, 25u);                  /* mb_type: I_PCM */
         bw_raw(w, pcm, (uint32_t)sizeof(pcm));
     }
@@ -1269,7 +1276,7 @@ static void guest_vram_write_coherence_case(const VramDest *dest, const uint8_t 
               "the VRAM-targeted picture reports exact fixture geometry");
         if (frames < FIX_PICTURES) {
             uint8_t expected[4] = {
-                expected_rgb[frames][0], expected_rgb[frames][1], expected_rgb[frames][2], 0xFFu,
+                expected_rgb[frames][0], expected_rgb[frames][1], expected_rgb[frames][2], 0x00u,   /* PSP alpha */
             };
             int match = vram_rgba_matches(dest->base, 64, 64, expected);
             if (!match) fprintf(stderr, "  destination: %s, picture %d\n", dest->name, frames);
@@ -1884,115 +1891,277 @@ static void test_psmf_contract_fragmentation_and_malformed_rejection(void) {
           "malformed PSMF input yields a named PSMF_CONTRACT refusal and no AU");
 }
 
-/* Decoder-independent fail-closed paths of the #302 YCbCr contract. These run on every host,
- * including ones without an H.264 backend, so the refusals and the hidden-state guard keep
- * runtime coverage when the guest-picture probe below SKIPs. */
-static void test_mpeg_ycbcr_fail_closed_paths(void) {
-    enum {
-        FC_DESC = 0x08200000u,
-        FC_DATA = 0x08210000u,
-        FC_SIZE = 0x08220000u,
-        FC_YCBCR = 0x08230000u,
-        FC_RANGE = 0x08240000u,
-        FC_DEST = 0x08250000u,
-        FC_PTR = 0x08260000u,
-        FC_INIT = 0x08270000u,
-        FC_AU = 0x08280000u,
-    };
-    MEM_W32(FC_DESC, 0u);
-    CHECK(mpeg_create(FC_DESC, FC_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
-          "fail-closed fixture creates a decoder-less MPEG context");
-    CHECK(mpeg_avc_query_ycbcr_size(FC_DESC, UINT32_MAX, 64u, 32u, FC_SIZE) == 0 &&
-              MEM_R32(FC_SIZE) == 3200u,
-          "YCbCr query returns the checked planar size");
-    CHECK(mpeg_avc_query_ycbcr_size(FC_DESC, UINT32_MAX, 17u, 32u, FC_SIZE) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "YCbCr query rejects unsupported geometry");
-    CHECK(mpeg_avc_query_ycbcr_size(FC_DESC, UINT32_MAX, 64u, 32u, FC_SIZE + 1u) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "YCbCr query rejects an unaligned result pointer");
-    CHECK(mpeg_avc_init_ycbcr(FC_DESC, UINT32_MAX, 64u, 32u, FC_YCBCR) == 0,
-          "YCbCr init accepts an aligned allocation");
-    CHECK(mpeg_avc_init_ycbcr(FC_DESC, UINT32_MAX, 64u, 32u, FC_YCBCR + 1u) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "YCbCr init rejects an unaligned allocation");
-    YcbcrBuf *state = ycbcr_find(FC_DESC, FC_YCBCR);
-    CHECK(state != NULL && state->rgba != NULL, "YCbCr init retains host picture state");
-    if (state) {
-        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
-        state->valid = 1;
-    }
-    MEM_W32(FC_PTR, FC_YCBCR);
-    MEM_W32(FC_RANGE, 0u);
-    MEM_W32(FC_RANGE + 4u, 0u);
-    MEM_W32(FC_RANGE + 8u, 64u);
-    MEM_W32(FC_RANGE + 12u, 32u);
-    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, 0u, 64u, FC_DEST) == SCE_MPEG_ERROR_INVALID_VALUE,
-          "CSC rejects an invalid range pointer");
-    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, FC_RANGE, 64u, FC_DEST) == 0 &&
-              MEM_R8(FC_DEST) == 0x40u,
-          "CSC writes the retained host picture deterministically");
-    CHECK(mpeg_avc_copy_ycbcr(FC_DESC, FC_YCBCR, FC_YCBCR + 0x10000u) ==
-              SCE_MPEG_ERROR_INVALID_VALUE,
-          "Copy rejects an uninitialized source");
-    MEM_W32(FC_INIT, 0xdeadbeefu);
-    CHECK(mpeg_avc_decode_ycbcr(FC_DESC, FC_AU, FC_PTR, FC_INIT) == SCE_MPEG_ERROR_NO_DATA &&
-              MEM_R32(FC_INIT) == 0u,
-          "Decode reports no picture and clears ready without a decoder");
-    state = ycbcr_find(FC_DESC, FC_YCBCR);
-    if (state) state->valid = 1;
-    MEM_W32(FC_RANGE + 8u, 80u);
-    MEM_W32(FC_RANGE + 12u, 40u);
-    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, FC_RANGE, 64u, FC_DEST) == 0,
-          "CSC clips a partial source range");
-    MEM_W32(FC_INIT, 0xdeadbeefu);
-    CHECK(mpeg_avc_decode_stop_ycbcr(FC_DESC, FC_YCBCR, FC_INIT) == 0 && MEM_R32(FC_INIT) == 0u,
-          "Stop clears the tracked picture state");
-    CHECK(mpeg_avc_init_ycbcr(FC_DESC, UINT32_MAX, 64u, 32u, FC_YCBCR) == 0,
-          "YCbCr reinitialization resets the allocation");
-    state = ycbcr_find(FC_DESC, FC_YCBCR);
-    if (state) {
-        memset(state->rgba, 0x40, (size_t)state->width * state->height * 4u);
-        state->valid = 1;
-    }
-    MEM_W32(FC_RANGE + 8u, 64u);
-    MEM_W32(FC_RANGE + 12u, 32u);
-    MEM_W8(FC_YCBCR, 0xa5u);
-    CHECK(mpeg_avc_csc(FC_DESC, FC_YCBCR, FC_RANGE, 64u, FC_DEST) == SCE_MPEG_ERROR_INVALID_VALUE,
-          "guest mutation cannot reuse hidden RGBA state");
+/* ---- the measured mode-1 YCbCr buffer (#302, PSP-MPEG-001) ---------------------------------
+ * A reference model written from the measured layout and colour conversion, independently of
+ * mpeg.c.  It reads the planes through the header's own pointers, so it follows any header. */
+#define PSP_MPEG_INVALID 0x806101FEu   /* MEASURED SCE_MPEG_ERROR_INVALID_VALUE */
+#define PSP_CSC_REFUSED  0x800001FEu   /* MEASURED sceMpegAvcCsc refusal */
+#define NID_QUERY_YCBCR  0x211a057cu
+#define NID_INIT_YCBCR   0x67179b1bu
+#define NID_DECODE_YCBCR 0xf0eb1125u
+#define NID_STOP_YCBCR   0xf2930c9cu
+#define NID_COPY_YCBCR   0x0558b075u
+#define NID_CSC          0x31bd0272u
+#define NID_DECODE_MODE  0xa11c7026u
+
+static uint32_t ref_ycbcr_luma(uint32_t buf, uint32_t x, uint32_t y) {
+    uint32_t h = MEM_R32(buf) * 16u, s = x >> 4, p = (s & 1u) + 2u * (y & 1u);
+    return MEM_R32(buf + 16u + 4u * p) + (s >> 1) * 16u * (h / 2u) + (y >> 1) * 16u + (x & 15u);
+}
+static uint32_t ref_ycbcr_chroma(uint32_t buf, uint32_t cx, uint32_t cy) {
+    uint32_t h = MEM_R32(buf) * 16u, s = cx >> 3, p = 4u + (s & 1u) + 2u * (cy & 1u);
+    return MEM_R32(buf + 16u + 4u * p) + (s >> 1) * 16u * (h / 4u) + (cy >> 1) * 16u + (cx & 7u) * 2u;
+}
+static uint8_t ref_clamp(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
+/* The measured RGBA8888 conversion of one sample triple: R, G, B, alpha 0. */
+static void ref_psp_rgba(int luma, int cb, int cr, uint8_t px[4]) {
+    int l = 149 * ((luma < 16 ? 16 : luma) - 16);
+    px[0] = ref_clamp((l + 204 * (cr - 128) + 64) >> 7);
+    px[1] = ref_clamp((l - 50 * (cb - 128) - 104 * (cr - 128) + 64) >> 7);
+    px[2] = ref_clamp((l + 258 * (cb - 128) + 64) >> 7);
+    px[3] = 0u;
+}
+static void ref_ycbcr_rgba(uint32_t buf, uint32_t x, uint32_t y, uint8_t px[4]) {
+    uint32_t c = ref_ycbcr_chroma(buf, x >> 1, y >> 1);
+    ref_psp_rgba(MEM_R8(ref_ycbcr_luma(buf, x, y)), MEM_R8(c), MEM_R8(c + 1u), px);
+}
+/* Give an initialized buffer a decoded width x height picture whose samples vary with position;
+ * flat != 0 writes every luma sample as luma and every chroma pair as (cb, cr) instead. */
+static void ref_ycbcr_fill(uint32_t buf, uint32_t width, uint32_t height, int flat,
+                           uint8_t luma, uint8_t cb, uint8_t cr) {
+    MEM_W32(buf, height / 16u);
+    MEM_W32(buf + 4u, width / 16u);
+    for (uint32_t y = 0; y < height; y++)
+        for (uint32_t x = 0; x < width; x++)
+            MEM_W8(ref_ycbcr_luma(buf, x, y), flat ? luma : (uint8_t)(x * 7u + y * 13u));
+    for (uint32_t cy = 0; cy < height / 2u; cy++)
+        for (uint32_t cx = 0; cx < width / 2u; cx++) {
+            uint32_t c = ref_ycbcr_chroma(buf, cx, cy);
+            MEM_W8(c, flat ? cb : (uint8_t)(cx * 11u + cy * 5u + 40u));
+            MEM_W8(c + 1u, flat ? cr : (uint8_t)(cx * 3u + cy * 17u + 90u));
+        }
+}
+/* The RGBA8888 destination (stride frame_width) holds, from its first pixel, the source columns
+ * x .. x + w - 1 of rows 0 .. h - 1. */
+static int ref_csc_matches(uint32_t buf, uint32_t dest, uint32_t frame_width, uint32_t x,
+                           uint32_t w, uint32_t h) {
+    for (uint32_t r = 0; r < h; r++)
+        for (uint32_t c = 0; c < w; c++) {
+            uint8_t px[4];
+            ref_ycbcr_rgba(buf, x + c, r, px);
+            if (memcmp(SR_HOST(dest + (r * frame_width + c) * 4u), px, 4u) != 0) return 0;
+        }
+    return 1;
+}
+static void set_range(uint32_t addr, int32_t x, int32_t y, int32_t w, int32_t h) {
+    MEM_W32(addr, (uint32_t)x);
+    MEM_W32(addr + 4u, (uint32_t)y);
+    MEM_W32(addr + 8u, (uint32_t)w);
+    MEM_W32(addr + 12u, (uint32_t)h);
 }
 
-static void test_mpeg_ycbcr_guest_contract(void) {
+/* The measured sceMpegAvcQueryYCbCrSize / InitYCbCr / Csc / DecodeStopYCbCr / CopyYCbCr
+ * contract on hand-built pictures, through the production HLE dispatch.  It needs no H.264
+ * backend, so it runs on every host. */
+static void test_mpeg_ycbcr_measured_contract(void) {
     enum {
-        TD_MPEG_DESC = 0x08100000u,
-        TD_MPEG_DATA = 0x08110000u,
-        TD_MPEG_SIZE = 0x08120000u,
-        TD_MPEG_YCBCR = 0x08130000u,
-        TD_MPEG_COPY = 0x08134000u,
-        TD_MPEG_RANGE = 0x08140000u,
-        TD_MPEG_DEST = 0x08150000u,
-        TD_MPEG_PTR = 0x08160000u,
-        TD_MPEG_INIT = 0x08170000u,
-        TD_MPEG_AU = 0x08180000u,
-        TD_MPEG_MODE = 0x08190000u,
-        TD_MPEG_COPY_DEST = 0x081a0000u,
+        YM_DESC = 0x08200000u, YM_DATA = 0x08210000u, YM_SIZE = 0x08220000u, YM_RANGE = 0x08220100u,
+        YM_PTR = 0x08220200u, YM_INIT = 0x08220300u, YM_AU = 0x08220400u, YM_MODE = 0x08220500u,
+        YM_FULL = 0x08230000u,                       /* 480x272: 195968 bytes */
+        YM_SMALL = 0x08260000u, YM_COPY = 0x08262000u, /* 64x32: 3200 bytes each */
+        YM_DEST = 0x08270000u,                       /* 64x32 RGBA8888 */
     };
-    const uint32_t width = 64u, height = 64u;
-    const uint32_t header_bytes = 128u;
-    const uint32_t y_bytes = width * height;
-    const uint32_t chroma_bytes = y_bytes / 4u;
-    const uint32_t allocation_size = header_bytes + y_bytes + 2u * chroma_bytes;
-    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
-    uint8_t es[65536];
-    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
-          "MPEG YCbCr fixture builds the existing synthetic I_PCM stream");
-    if (!es_len) return;
+    const uint32_t full_size = 195968u, small_size = 3200u, dest_bytes = 64u * 32u * 4u;
+    MEM_W32(YM_DESC, 0u);
+    CHECK(mpeg_create(YM_DESC, YM_DATA, 0x10000u, 0, 64u, 0, 0) == 0, "ycbcr: a decoder-less context");
+    Mpeg *ctx = mpeg_find(YM_DESC);
+    CHECK(ctx != NULL, "ycbcr: the context is found");
+    if (!ctx) return;
+    ctx->streamWidth = 480u;   /* the measured stream: 480x224 */
+    ctx->streamHeight = 224u;
 
-    MEM_W32(TD_MPEG_DESC, 0u);
-    CHECK(mpeg_create(TD_MPEG_DESC, TD_MPEG_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
-          "MPEG YCbCr fixture creates a context");
-    Mpeg *ctx = mpeg_find(TD_MPEG_DESC);
-    CHECK(ctx != NULL, "MPEG YCbCr fixture finds its context");
+    static const struct { uint32_t mode, w, h, rc, size; } q[] = {
+        { 1u, 480u, 272u, 0u, 195968u }, { 1u, 16u, 16u, 0u, 512u },
+        { 1u, 480u, 288u, PSP_MPEG_INVALID, 0u }, { 1u, 496u, 272u, PSP_MPEG_INVALID, 0u },
+        { 1u, 15u, 16u, PSP_MPEG_INVALID, 0u }, { 1u, 16u, 15u, PSP_MPEG_INVALID, 0u },
+        { 1u, 0u, 0u, PSP_MPEG_INVALID, 0u }, { 0u, 480u, 272u, PSP_MPEG_INVALID, 0u },
+        { 4u, 480u, 272u, PSP_MPEG_INVALID, 0u }, { UINT32_MAX, 480u, 272u, PSP_MPEG_INVALID, 0u },
+        { 2u, 480u, 272u, 0u, 128u }, { 2u, 720u, 480u, 0u, 128u }, { 2u, 0u, 0u, 0u, 128u },
+        { 3u, 480u, 272u, 0u, 195840u }, { 3u, 480u, 288u, 0u, 207360u }, { 3u, 15u, 16u, 0u, 360u },
+        { 3u, 0u, 0u, 0u, 0u },
+    };
+    int query_ok = 1;
+    for (size_t i = 0; i < sizeof(q) / sizeof(q[0]); i++) {
+        MEM_W32(YM_SIZE, 0xffffffffu);
+        uint32_t rc = guest_mpeg_import(NID_QUERY_YCBCR, YM_DESC, q[i].mode, q[i].w, q[i].h, YM_SIZE);
+        if (rc != q[i].rc || MEM_R32(YM_SIZE) != q[i].size) {
+            fprintf(stderr, "  QueryYCbCrSize mode %d %ux%u: 0x%08x size %u\n", (int)q[i].mode,
+                    (unsigned)q[i].w, (unsigned)q[i].h, (unsigned)rc, (unsigned)MEM_R32(YM_SIZE));
+            query_ok = 0;
+        }
+    }
+    CHECK(query_ok, "ycbcr: QueryYCbCrSize gives the measured size, or the measured refusal and a size "
+                    "of 0, for every mode and size (the stream's own 480x224 is not checked)");
+    MEM_W32(YM_SIZE, 0xffffffffu);
+    CHECK(guest_mpeg_import(NID_QUERY_YCBCR, YM_DESC, 3u, 512u, 272u, YM_SIZE) == PSP_MPEG_INVALID &&
+              MEM_R32(YM_SIZE) == 0u,
+          "ycbcr: a mode-3 size wider than 480 (not 1.5 w h on the PSP) is refused as not modeled");
+
+    memset(SR_HOST(YM_FULL), 0xa5, full_size);
+    CHECK(guest_mpeg_import(NID_INIT_YCBCR, YM_DESC, 1u, 480u, 272u, YM_FULL) == 0u,
+          "ycbcr: InitYCbCr mode 1 480x272 initializes on the 480x224 stream");
+    static const uint32_t k_plane_off[8] = { 0x80u, 0x17F00u, 0x8000u, 0x1FE80u,
+                                             0xFF80u, 0x27E00u, 0x13F40u, 0x2BDC0u };
+    int header = guest_bytes_are(YM_FULL, 16u, 0u) && guest_bytes_are(YM_FULL + 48u, 80u, 0u);
+    for (uint32_t i = 0; i < 8u; i++)
+        if (MEM_R32(YM_FULL + 16u + 4u * i) != YM_FULL + k_plane_off[i]) header = 0;
+    CHECK(header, "ycbcr: InitYCbCr writes the measured header: words 0-3 zero, the eight plane "
+                  "pointers, the rest zero");
+    CHECK(guest_bytes_are(YM_FULL + 128u, full_size - 128u, 0xa5u),
+          "ycbcr: InitYCbCr leaves every plane byte as it was");
+    CHECK(guest_mpeg_import(NID_INIT_YCBCR, YM_DESC, 2u, 480u, 272u, YM_FULL) == PSP_MPEG_INVALID &&
+              guest_mpeg_import(NID_INIT_YCBCR, YM_DESC, 3u, 480u, 272u, YM_FULL) == PSP_MPEG_INVALID &&
+              guest_mpeg_import(NID_INIT_YCBCR, YM_DESC, 1u, 480u, 288u, YM_FULL) == PSP_MPEG_INVALID &&
+              guest_mpeg_import(NID_INIT_YCBCR, YM_DESC, 1u, 16u, 16u, YM_FULL) == PSP_MPEG_INVALID &&
+              guest_mpeg_import(NID_INIT_YCBCR, YM_DESC, 1u, 480u, 272u, YM_FULL + 4u) == PSP_MPEG_INVALID,
+          "ycbcr: InitYCbCr refuses modes 2 and 3 and an odd strip count (not measured), a size past "
+          "the mode-1 limits and an unaligned buffer");
+    CHECK(MEM_R32(YM_FULL + 16u) == YM_FULL + 0x80u, "ycbcr: a refused InitYCbCr writes nothing");
+
+    MEM_W32(YM_MODE, 0u);
+    MEM_W32(YM_MODE + 4u, 3u);
+    CHECK(guest_mpeg_import(NID_DECODE_MODE, YM_DESC, YM_MODE, 0u, 0u, 0u) == 0u,
+          "ycbcr: RGBA8888 output is selected");
+    set_range(YM_RANGE, 0, 0, 480, 224);
+    CHECK(guest_mpeg_import(NID_CSC, YM_DESC, YM_FULL, YM_RANGE, 512u, YM_DEST) == PSP_CSC_REFUSED,
+          "ycbcr: CSC of a buffer with no decoded picture (words 0 and 1 zero) is refused");
+    memset(SR_HOST(YM_FULL), 0, 128u);
+    CHECK(guest_mpeg_import(NID_CSC, YM_DESC, YM_FULL, YM_RANGE, 512u, YM_DEST) == PSP_CSC_REFUSED,
+          "ycbcr: CSC of a zeroed header is refused with the measured code");
+
+    /* A hand-built 64x32 picture in an initialized buffer. */
+    memset(SR_HOST(YM_SMALL), 0xa5, small_size);
+    CHECK(guest_mpeg_import(NID_INIT_YCBCR, YM_DESC, 1u, 64u, 32u, YM_SMALL) == 0u,
+          "ycbcr: a 64x32 buffer initializes");
+    ref_ycbcr_fill(YM_SMALL, 64u, 32u, 1, 0x80u, 0x80u, 0x80u);
+    static const uint8_t k_gray[4] = { 130u, 130u, 130u, 0u };
+    set_range(YM_RANGE, 0, 0, 64, 32);
+    memset(SR_HOST(YM_DEST), 0x5a, dest_bytes);
+    CHECK(guest_mpeg_import(NID_CSC, YM_DESC, YM_SMALL, YM_RANGE, 64u, YM_DEST) == 0u &&
+              guest_rgba_matches(YM_DEST, 64u, 32u, k_gray),
+          "ycbcr: planes of 0x80 convert to 130/130/130 with alpha 0, as measured");
+    ref_ycbcr_fill(YM_SMALL, 64u, 32u, 1, 5u, 128u, 200u);
+    static const uint8_t k_floor[4] = { 115u, 0u, 0u, 0u };   /* 8-bit 298/409 form: R 102 */
+    CHECK(guest_mpeg_import(NID_CSC, YM_DESC, YM_SMALL, YM_RANGE, 64u, YM_DEST) == 0u &&
+              guest_rgba_matches(YM_DEST, 64u, 32u, k_floor),
+          "ycbcr: luma below 16 converts as 16 (the measured floor), in 7-bit fixed point");
+    ref_ycbcr_fill(YM_SMALL, 64u, 32u, 0, 0u, 0u, 0u);
+    memset(SR_HOST(YM_DEST), 0x5a, dest_bytes);
+    CHECK(guest_mpeg_import(NID_CSC, YM_DESC, YM_SMALL, YM_RANGE, 64u, YM_DEST) == 0u &&
+              ref_csc_matches(YM_SMALL, YM_DEST, 64u, 0u, 64u, 32u),
+          "ycbcr: CSC converts every pixel of a varied picture from the guest planes, nearest chroma");
+
+    set_range(YM_RANGE, 16, 16, 32, 16);
+    memset(SR_HOST(YM_DEST), 0x5a, dest_bytes);
+    CHECK(guest_mpeg_import(NID_CSC, YM_DESC, YM_SMALL, YM_RANGE, 64u, YM_DEST) == 0u &&
+              ref_csc_matches(YM_SMALL, YM_DEST, 64u, 16u, 32u, 16u) &&
+              MEM_R8(YM_DEST + 32u * 4u) == 0x5au && MEM_R8(YM_DEST + 16u * 64u * 4u) == 0x5au,
+          "ycbcr: a sub-range writes from the destination's first pixel, source columns from x and "
+          "rows from the top, as measured for {16, 16, 64, 64}");
+
+    static uint8_t before[64u * 32u * 4u];
+    set_range(YM_RANGE, 0, 0, 64, 32);
+    CHECK(guest_mpeg_import(NID_CSC, YM_DESC, YM_SMALL, YM_RANGE, 64u, YM_DEST) == 0u,
+          "ycbcr: the picture converts before its plane pointers are exchanged");
+    memcpy(before, SR_HOST(YM_DEST), sizeof(before));
+    const uint32_t p0 = MEM_R32(YM_SMALL + 16u), p2 = MEM_R32(YM_SMALL + 24u);
+    MEM_W32(YM_SMALL + 16u, p2);
+    MEM_W32(YM_SMALL + 24u, p0);
+    CHECK(guest_mpeg_import(NID_CSC, YM_DESC, YM_SMALL, YM_RANGE, 64u, YM_DEST) == 0u &&
+              ref_csc_matches(YM_SMALL, YM_DEST, 64u, 0u, 64u, 32u) &&
+              memcmp(before, SR_HOST(YM_DEST), sizeof(before)) != 0,
+          "ycbcr: CSC reads the planes through the header: exchanging P0 and P2 exchanges what it reads");
+    MEM_W32(YM_SMALL + 16u, p0);
+    MEM_W32(YM_SMALL + 24u, p2);
+
+    static const struct { int32_t x, y, w, h; uint32_t fw, rc; } k_ranges[] = {
+        { 1, 0, 32, 16, 64u, PSP_MPEG_INVALID }, { 0, 0, 63, 16, 64u, PSP_MPEG_INVALID },
+        { 0, 0, 66, 16, 64u, PSP_CSC_REFUSED }, { 0, 0, 64, 34, 64u, PSP_CSC_REFUSED },
+        { -16, 0, 32, 16, 64u, PSP_CSC_REFUSED }, { 0, 0, 64, 32, 32u, PSP_CSC_REFUSED },
+        { 0, 0, 0, 0, 64u, 0u },
+    };
+    memset(SR_HOST(YM_DEST), 0x5a, dest_bytes);
+    int ranges_ok = 1;
+    for (size_t i = 0; i < sizeof(k_ranges) / sizeof(k_ranges[0]); i++) {
+        set_range(YM_RANGE, k_ranges[i].x, k_ranges[i].y, k_ranges[i].w, k_ranges[i].h);
+        uint32_t rc = guest_mpeg_import(NID_CSC, YM_DESC, YM_SMALL, YM_RANGE, k_ranges[i].fw, YM_DEST);
+        if (rc != k_ranges[i].rc) {
+            fprintf(stderr, "  CSC range %d,%d %dx%d fw %u: 0x%08x\n", (int)k_ranges[i].x, (int)k_ranges[i].y,
+                    (int)k_ranges[i].w, (int)k_ranges[i].h, (unsigned)k_ranges[i].fw, (unsigned)rc);
+            ranges_ok = 0;
+        }
+    }
+    CHECK(ranges_ok && guest_bytes_are(YM_DEST, dest_bytes, 0x5au),
+          "ycbcr: an odd x or w, a range past the picture, a negative origin and a narrower "
+          "destination get the measured refusals, an empty range succeeds, and none writes");
+
+    MEM_W32(YM_PTR, YM_SMALL);
+    MEM_W32(YM_INIT, 0xdeadbeefu);
+    memset(SR_HOST(YM_AU), 0, 24u);
+    CHECK(guest_mpeg_import(NID_DECODE_YCBCR, YM_DESC, YM_AU, YM_PTR, YM_INIT, 0u) == SCE_MPEG_ERROR_NO_DATA &&
+              MEM_R32(YM_INIT) == 0u,
+          "ycbcr: without a decoder DecodeYCbCr reports no picture and clears init");
+    static uint8_t snapshot[3200u];
+    memcpy(snapshot, SR_HOST(YM_SMALL), sizeof(snapshot));
+    MEM_W32(YM_INIT, 0xdeadbeefu);
+    CHECK(guest_mpeg_import(NID_STOP_YCBCR, YM_DESC, YM_PTR, YM_INIT, 0u, 0u) == 0u && MEM_R32(YM_INIT) == 0u &&
+              memcmp(snapshot, SR_HOST(YM_SMALL), sizeof(snapshot)) == 0,
+          "ycbcr: DecodeStopYCbCr takes the address of the buffer pointer, reports status 0 and writes nothing");
+    CHECK(guest_mpeg_import(NID_STOP_YCBCR, YM_DESC, YM_SMALL, YM_INIT, 0u, 0u) != 0u,
+          "ycbcr: DecodeStopYCbCr given the buffer itself takes word 0 (2) as the buffer and refuses it");
+
+    memset(SR_HOST(YM_COPY), 0xa5, small_size);
+    CHECK(guest_mpeg_import(NID_INIT_YCBCR, YM_DESC, 1u, 64u, 32u, YM_COPY) == 0u &&
+              guest_mpeg_import(NID_COPY_YCBCR, YM_DESC, YM_COPY, YM_SMALL, 0u, 0u) == 0u &&
+              MEM_R32(YM_COPY) == 2u && MEM_R32(YM_COPY + 4u) == 4u,
+          "ycbcr: CopyYCbCr copies a decoded picture and its words 0 and 1");
+    int copied = 1;
+    for (uint32_t y = 0; y < 32u; y++)
+        for (uint32_t x = 0; x < 64u; x++)
+            if (MEM_R8(ref_ycbcr_luma(YM_COPY, x, y)) != MEM_R8(ref_ycbcr_luma(YM_SMALL, x, y))) copied = 0;
+    for (uint32_t cy = 0; cy < 16u; cy++)
+        for (uint32_t cx = 0; cx < 32u; cx++)
+            if (MEM_R16(ref_ycbcr_chroma(YM_COPY, cx, cy)) != MEM_R16(ref_ycbcr_chroma(YM_SMALL, cx, cy)))
+                copied = 0;
+    CHECK(copied, "ycbcr: every sample lands in the copy's own planes");
+    CHECK(guest_mpeg_import(NID_COPY_YCBCR, YM_DESC, YM_COPY, YM_FULL, 0u, 0u) == SCE_MPEG_ERROR_INVALID_VALUE,
+          "ycbcr: CopyYCbCr refuses a source with no decoded picture");
+    mpeg_finish();
+    CHECK(ycbcr_find(YM_DESC, YM_SMALL) == NULL, "ycbcr: teardown frees the host YCbCr slots");
+}
+
+/* sceMpegAvcDecodeYCbCr through the production dispatch writes the decoder's own samples into
+ * the measured strip layout (the textured I_PCM fixture, checked against a second decode of the
+ * same units through the host YUV target), and sceMpegAvcCsc converts them. */
+static void test_mpeg_ycbcr_guest_decode(void) {
+    enum {
+        TD_DESC = 0x08100000u, TD_DATA = 0x08110000u, TD_YCBCR = 0x08130000u, TD_COPY = 0x08134000u,
+        TD_RANGE = 0x08140000u, TD_DEST = 0x08150000u, TD_PTR = 0x08160000u, TD_INIT = 0x08170000u,
+        TD_AU = 0x08180000u, TD_MODE = 0x08190000u, TD_SMALL = 0x081a0000u,
+    };
+    const uint32_t width = 64u, height = 64u, alloc_h = 96u;
+    const uint32_t alloc = width * alloc_h * 3u / 2u + 128u;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
+    static uint8_t es[65536];
+    s_fixture_textured = 1;
+    int built = build_stream(es, sizeof(es), au_off, au_len, &es_len);
+    s_fixture_textured = 0;
+    CHECK(built, "ycbcr-decode: the textured I_PCM stream builds");
+    if (!built) return;
+
+    MEM_W32(TD_DESC, 0u);
+    CHECK(mpeg_create(TD_DESC, TD_DATA, 0x10000u, 0, 64u, 0, 0) == 0, "ycbcr-decode: a context");
+    Mpeg *ctx = mpeg_find(TD_DESC);
     if (!ctx) return;
     ctx->streamWidth = width;
     ctx->streamHeight = height;
@@ -2000,90 +2169,112 @@ static void test_mpeg_ycbcr_guest_contract(void) {
     ctx->h264Init = 1;
     ctx->totalPackets = 1u;
     ctx->fedPackets = 1u;
-    const int decoder_available = ctx->h264 >= 0;
-    if (!decoder_available) {
-        fprintf(stderr, "SKIP: YCbCr guest-picture probe needs a real H.264 backend\n");
-    } else {
-        for (int i = 0; i < FIX_PICTURES; i++)
-            CHECK(sr_h264_submit_au(ctx->h264, es + au_off[i], au_len[i]) == 0,
-                  "synthetic I_PCM access unit reaches the MPEG decoder");
+    int ref = sr_h264_create();
+    if (ctx->h264 < 0 || ref < 0) {
+        fprintf(stderr, "SKIP: the YCbCr decode layout needs a real H.264 backend\n");
+        if (ref >= 0) sr_h264_destroy(ref);
+        mpeg_finish();
+        return;
     }
+    for (int i = 0; i < FIX_PICTURES; i++)
+        CHECK(sr_h264_submit_au(ctx->h264, es + au_off[i], au_len[i]) == 0 &&
+                  sr_h264_submit_au(ref, es + au_off[i], au_len[i]) == 0,
+              "ycbcr-decode: each access unit reaches both decoders");
+    static uint8_t ry[64u * 64u], rcb[32u * 32u], rcr[32u * 32u];
+    SrH264FrameTarget target;
+    SrH264FrameInfo info;
+    memset(&target, 0, sizeof(target));
+    target.kind = SR_H264_TARGET_HOST_YUV;
+    target.host_buffer = ry;
+    target.host_width = 64;
+    target.host_height = 64;
+    target.host_stride = 64;
+    target.host_cb = rcb;
+    target.host_cr = rcr;
+    target.host_c_stride = 32;
+    CHECK(sr_h264_frame_ex(ref, 1, &target, &info) > 0 && info.width == 64 && info.height == 64,
+          "ycbcr-decode: the host YUV target delivers the decoded 64x64 samples");
+    int varied = 0;
+    for (uint32_t i = 1; i < sizeof(ry); i++) if (ry[i] != ry[0]) varied = 1;
+    CHECK(varied, "ycbcr-decode: the textured picture's samples differ with position");
 
-    memset(SR_HOST(TD_MPEG_YCBCR), 0xa5, allocation_size);
-    memset(SR_HOST(TD_MPEG_COPY), 0xa5, allocation_size);
-    memset(SR_HOST(TD_MPEG_DEST), 0x5a, (size_t)width * height * 4u);
-    memset(SR_HOST(TD_MPEG_AU), 0, 24u);
-    CHECK(guest_mpeg_import(0x211a057cu, TD_MPEG_DESC, UINT32_MAX, width, height, TD_MPEG_SIZE) == 0,
-          "guest dispatch queries YCbCr storage size");
-    CHECK(MEM_R32(TD_MPEG_SIZE) == allocation_size,
-          "guest YCbCr query size covers the modeled header and packed 4:2:0 spans");
-    CHECK(guest_mpeg_import(0x67179b1bu, TD_MPEG_DESC, UINT32_MAX, width, height, TD_MPEG_YCBCR) == 0,
-          "guest dispatch initializes the decode allocation");
-    CHECK(guest_mpeg_import(0x67179b1bu, TD_MPEG_DESC, UINT32_MAX, width, height, TD_MPEG_COPY) == 0,
-          "guest dispatch initializes the copy allocation");
-    MEM_W32(TD_MPEG_MODE, 0u);
-    MEM_W32(TD_MPEG_MODE + 4u, 3u);
-    CHECK(guest_mpeg_import(0xa11c7026u, TD_MPEG_DESC, TD_MPEG_MODE, 0u, 0u, 0u) == 0,
-          "guest dispatch selects RGBA output for the CSC pixel contract");
-    CHECK(guest_bytes_are(TD_MPEG_YCBCR, header_bytes, 0u),
-          "Init zeroes the 128-byte guest header");
-    CHECK(guest_bytes_are(TD_MPEG_YCBCR + header_bytes, y_bytes, 0u),
-          "Init zeroes the luma-sized guest plane span");
-    CHECK(guest_bytes_are(TD_MPEG_YCBCR + header_bytes + y_bytes, chroma_bytes, 0u),
-          "Init zeroes the first quarter-size chroma plane span");
-    CHECK(guest_bytes_are(TD_MPEG_YCBCR + header_bytes + y_bytes + chroma_bytes,
-                          chroma_bytes, 0u),
-          "Init zeroes the second quarter-size chroma plane span");
+    memset(SR_HOST(TD_YCBCR), 0xa5, alloc);
+    CHECK(guest_mpeg_import(NID_INIT_YCBCR, TD_DESC, 1u, width, alloc_h, TD_YCBCR) == 0u,
+          "ycbcr-decode: a 64x96 buffer initializes");
+    MEM_W32(TD_MODE, 0u);
+    MEM_W32(TD_MODE + 4u, 3u);
+    CHECK(guest_mpeg_import(NID_DECODE_MODE, TD_DESC, TD_MODE, 0u, 0u, 0u) == 0u,
+          "ycbcr-decode: RGBA8888 output is selected");
+    MEM_W32(TD_PTR, TD_YCBCR);
+    MEM_W32(TD_INIT, 0xdeadbeefu);
+    memset(SR_HOST(TD_AU), 0, 24u);
+    CHECK(guest_mpeg_import(NID_DECODE_YCBCR, TD_DESC, TD_AU, TD_PTR, TD_INIT, 0u) == 0u &&
+              MEM_R32(TD_INIT) == 1u,
+          "ycbcr-decode: DecodeYCbCr decodes a picture and sets init");
+    CHECK(MEM_R32(TD_YCBCR) == 4u && MEM_R32(TD_YCBCR + 4u) == 4u,
+          "ycbcr-decode: words 0 and 1 are the decoded height and width in 16-pixel units");
+    int exact = 1;
+    for (uint32_t y = 0; y < height; y++)
+        for (uint32_t x = 0; x < width; x++)
+            if (MEM_R8(ref_ycbcr_luma(TD_YCBCR, x, y)) != ry[y * 64u + x]) exact = 0;
+    for (uint32_t cy = 0; cy < height / 2u; cy++)
+        for (uint32_t cx = 0; cx < width / 2u; cx++) {
+            uint32_t c = ref_ycbcr_chroma(TD_YCBCR, cx, cy);
+            if (MEM_R8(c) != rcb[cy * 32u + cx] || MEM_R8(c + 1u) != rcr[cy * 32u + cx]) exact = 0;
+        }
+    CHECK(exact, "ycbcr-decode: every decoded sample sits where the measured strip layout puts it");
+    /* 64 wide is two strips per parity: a 64-line picture fills 1024 of a luma plane's 1536 bytes
+     * and 512 of a chroma plane's 768. */
+    CHECK(guest_bytes_are(MEM_R32(TD_YCBCR + 16u) + 1024u, 512u, 0xa5u) &&
+              guest_bytes_are(MEM_R32(TD_YCBCR + 32u) + 512u, 256u, 0xa5u),
+          "ycbcr-decode: a decode writes only the picture's share of each plane");
 
-    MEM_W32(TD_MPEG_PTR, TD_MPEG_YCBCR);
-    MEM_W32(TD_MPEG_RANGE, 0u);
-    MEM_W32(TD_MPEG_RANGE + 4u, 0u);
-    MEM_W32(TD_MPEG_RANGE + 8u, width);
-    MEM_W32(TD_MPEG_RANGE + 12u, height);
-    MEM_W32(TD_MPEG_INIT, 0xdeadbeefu);
-    uint32_t decode_result = guest_mpeg_import(0xf0eb1125u, TD_MPEG_DESC, TD_MPEG_AU,
-                                               TD_MPEG_PTR, TD_MPEG_INIT, 0u);
-    if (decoder_available) {
-        CHECK(decode_result == 0u && MEM_R32(TD_MPEG_INIT) == 1u,
-              "guest Decode succeeds and sets ready when the synthetic picture is decoded");
-        CHECK(ctx->h264Frames > 0, "guest Decode retained a decoded synthetic I_PCM picture");
-        CHECK(guest_bytes_are(TD_MPEG_YCBCR, allocation_size, 0u),
-              "decoded picture leaves the modeled guest YCbCr allocation zero-filled");
-        CHECK(guest_mpeg_import(0x0558b075u, TD_MPEG_DESC, TD_MPEG_COPY, TD_MPEG_YCBCR, 0u, 0u) == 0u,
-              "guest Copy accepts the initialized source and destination");
-        CHECK(guest_bytes_are(TD_MPEG_COPY, allocation_size, 0u),
-              "guest Copy copies the current modeled zero-filled allocation bytes");
-        memset(SR_HOST(TD_MPEG_DEST), 0x5a, (size_t)width * height * 4u);
-        memset(SR_HOST(TD_MPEG_COPY_DEST), 0x5a, (size_t)width * height * 4u);
-        static const uint8_t expected_rgba[4] = { 255u, 203u, 138u, 255u };
-        CHECK(guest_mpeg_import(0x31bd0272u, TD_MPEG_DESC, TD_MPEG_COPY, TD_MPEG_RANGE,
-                                width, TD_MPEG_COPY_DEST) == 0u,
-              "guest CSC accepts the copied decoded picture");
-        CHECK(guest_rgba_matches(TD_MPEG_COPY_DEST, width, height, expected_rgba),
-              "guest Copy retains the decoded picture for later CSC");
-        CHECK(guest_mpeg_import(0x31bd0272u, TD_MPEG_DESC, TD_MPEG_YCBCR, TD_MPEG_RANGE,
-                                width, TD_MPEG_DEST) == 0u,
-              "guest CSC accepts the decoded picture");
-        CHECK(guest_rgba_matches(TD_MPEG_DEST, width, height, expected_rgba),
-              "guest CSC writes decoded I_PCM pixels into the guest destination");
-    } else {
-        fprintf(stderr, "SKIP: guest Decode/Copy/CSC pixel assertions need an H.264 backend\n");
-    }
+    set_range(TD_RANGE, 0, 0, (int32_t)width, (int32_t)height);
+    memset(SR_HOST(TD_DEST), 0x5a, width * height * 4u);
+    CHECK(guest_mpeg_import(NID_CSC, TD_DESC, TD_YCBCR, TD_RANGE, width, TD_DEST) == 0u &&
+              ref_csc_matches(TD_YCBCR, TD_DEST, width, 0u, width, height),
+          "ycbcr-decode: CSC writes the measured conversion of the decoded samples");
+    memset(SR_HOST(TD_COPY), 0xa5, alloc);
+    memset(SR_HOST(TD_DEST), 0x5a, width * height * 4u);
+    CHECK(guest_mpeg_import(NID_INIT_YCBCR, TD_DESC, 1u, width, alloc_h, TD_COPY) == 0u &&
+              guest_mpeg_import(NID_COPY_YCBCR, TD_DESC, TD_COPY, TD_YCBCR, 0u, 0u) == 0u &&
+              guest_mpeg_import(NID_CSC, TD_DESC, TD_COPY, TD_RANGE, width, TD_DEST) == 0u &&
+              ref_csc_matches(TD_YCBCR, TD_DEST, width, 0u, width, height),
+          "ycbcr-decode: a copy converts to the same picture");
 
-    CHECK(mpeg_query_pcm_es_size(TD_MPEG_DESC, TD_MPEG_SIZE + 0x20u, TD_MPEG_SIZE + 0x24u) == 0 &&
-              MEM_R32(TD_MPEG_SIZE + 0x20u) == 320u && MEM_R32(TD_MPEG_SIZE + 0x24u) == 320u,
+    /* A picture larger than the InitYCbCr allocation is refused (not measured) and nothing is
+     * written. */
+    memset(SR_HOST(TD_SMALL), 0xa5, 3200u);
+    CHECK(guest_mpeg_import(NID_INIT_YCBCR, TD_DESC, 1u, width, 32u, TD_SMALL) == 0u,
+          "ycbcr-decode: a 64x32 buffer initializes");
+    static uint8_t small_before[3200u];
+    memcpy(small_before, SR_HOST(TD_SMALL), sizeof(small_before));
+    MEM_W32(TD_PTR, TD_SMALL);
+    MEM_W32(TD_INIT, 0xdeadbeefu);
+    CHECK(guest_mpeg_import(NID_DECODE_YCBCR, TD_DESC, TD_AU, TD_PTR, TD_INIT, 0u) == SCE_MPEG_ERROR_INVALID_VALUE &&
+              MEM_R32(TD_INIT) == 0u && memcmp(small_before, SR_HOST(TD_SMALL), sizeof(small_before)) == 0,
+          "ycbcr-decode: a 64x64 picture is not written into a 64x32 allocation");
+    sr_h264_destroy(ref);
+    mpeg_finish();
+}
+
+/* The PCM access-unit and AU-mode boundaries of sceMpeg. */
+static void test_mpeg_pcm_and_au_mode(void) {
+    enum { PM_DESC = 0x08100000u, PM_DATA = 0x08110000u, PM_SIZE = 0x08120000u };
+    MEM_W32(PM_DESC, 0u);
+    CHECK(mpeg_create(PM_DESC, PM_DATA, 0x10000u, 0, 64u, 0, 0) == 0, "MPEG PCM fixture creates a context");
+    CHECK(mpeg_query_pcm_es_size(PM_DESC, PM_SIZE + 0x20u, PM_SIZE + 0x24u) == 0 &&
+              MEM_R32(PM_SIZE + 0x20u) == 320u && MEM_R32(PM_SIZE + 0x24u) == 320u,
           "MPEG PCM size query returns the documented fixed sizes");
-    uint32_t pcm_sid = mpeg_regist_stream(TD_MPEG_DESC, MPEG_PCM_STREAM, 0u);
+    uint32_t pcm_sid = mpeg_regist_stream(PM_DESC, MPEG_PCM_STREAM, 0u);
     CHECK(pcm_sid != 0u &&
-              mpeg_get_pcm_au(TD_MPEG_DESC, pcm_sid, TD_MPEG_SIZE + 0x28u, TD_MPEG_SIZE + 0x40u) ==
+              mpeg_get_pcm_au(PM_DESC, pcm_sid, PM_SIZE + 0x28u, PM_SIZE + 0x40u) ==
                   SCE_MPEG_ERROR_NO_DATA,
           "MPEG PCM AU remains an explicit no-data refusal");
-    CHECK(mpeg_change_get_au_mode(TD_MPEG_DESC, pcm_sid, MPEG_AU_MODE_SKIP) == 0u &&
-              mpeg_change_get_au_mode(TD_MPEG_DESC, pcm_sid, 2u) != 0u,
+    CHECK(mpeg_change_get_au_mode(PM_DESC, pcm_sid, MPEG_AU_MODE_SKIP) == 0u &&
+              mpeg_change_get_au_mode(PM_DESC, pcm_sid, 2u) != 0u,
           "MPEG AU skip mode is accepted and an unknown mode is refused");
     mpeg_finish();
-    CHECK(ycbcr_find(TD_MPEG_DESC, TD_MPEG_YCBCR) == NULL,
-          "MPEG teardown frees guest YCbCr state");
 }
 
 /* ---- movie frame writers behind the swizzled VRAM mirrors (#1049) ------------------------
@@ -2134,29 +2325,20 @@ static void test_mpeg_csc_swizzled_vram_mirrors(void) {
         MC_RAM_DEST = 0x08350000u,
     };
     static uint8_t image[VRAM_PHYS_BYTES];
+    /* The measured placement: the destination is written from its first pixel, x selects the
+     * source columns and the rows come from the top of the picture. */
     const struct { uint32_t x, y, w, h, frame_width; const char *name; } cases[] = {
         { 0u, 0u, CSC_W, CSC_H, CSC_W, "whole picture" },
-        { 8u, 2u, 40u, 5u, 80u, "partial rectangle in a wider buffer" },
+        { 16u, 16u, 40u, 6u, 80u, "partial range in a wider buffer" },
     };
 
     MEM_W32(MC_DESC, 0u);
     CHECK(mpeg_create(MC_DESC, MC_DATA, 0x10000u, 0, CSC_W, 0, 0) == 0,
           "mirror CSC fixture creates a context");
-    CHECK(mpeg_avc_init_ycbcr(MC_DESC, UINT32_MAX, CSC_W, CSC_H, MC_YCBCR) == 0,
+    CHECK(mpeg_avc_init_ycbcr(MC_DESC, 1u, CSC_W, CSC_H, MC_YCBCR) == 0,
           "mirror CSC fixture initializes a YCbCr allocation");
-    YcbcrBuf *state = ycbcr_find(MC_DESC, MC_YCBCR);
-    CHECK(state != NULL && state->rgba != NULL, "mirror CSC fixture retains a host picture");
-    if (!state || !state->rgba) return;
-    /* Distinct bytes per pixel, so a displaced or repeated piece cannot match. */
-    for (uint32_t yy = 0; yy < CSC_H; yy++)
-        for (uint32_t xx = 0; xx < CSC_W; xx++) {
-            uint8_t *px = state->rgba + ((size_t)yy * CSC_W + xx) * 4u;
-            px[0] = (uint8_t)(xx * 4u + yy);
-            px[1] = (uint8_t)(yy * 8u + xx * 3u + 1u);
-            px[2] = (uint8_t)(xx * yy + 17u * xx);
-            px[3] = (uint8_t)(0x80u + ((xx + yy) & 0x3fu));
-        }
-    state->valid = 1;
+    /* Samples that differ per pixel, so a displaced or repeated piece cannot match. */
+    ref_ycbcr_fill(MC_YCBCR, CSC_W, CSC_H, 0, 0u, 0u, 0u);
 
     for (int mode = 0; mode <= 3; mode++) {
         MEM_W32(MC_MODE, 0u);
@@ -2180,10 +2362,10 @@ static void test_mpeg_csc_swizzled_vram_mirrors(void) {
                 uint32_t result = guest_mpeg_import(0x31bd0272u, MC_DESC, MC_YCBCR, MC_RANGE,
                                                     cases[c].frame_width, dest);
                 int ok = result == 0u;
-                for (uint32_t r = cases[c].y; r < cases[c].y + cases[c].h; r++)
-                    for (uint32_t col = cases[c].x; col < cases[c].x + cases[c].w; col++) {
-                        uint8_t bytes[4];
-                        const uint8_t *px = state->rgba + ((size_t)r * CSC_W + col) * 4u;
+                for (uint32_t r = 0; r < cases[c].h; r++)
+                    for (uint32_t col = 0; col < cases[c].w; col++) {
+                        uint8_t px[4], bytes[4];
+                        ref_ycbcr_rgba(MC_YCBCR, cases[c].x + col, r, px);
                         const uint32_t n = ref_pixel_bytes(mode, px, bytes);
                         const uint32_t addr = dest + (r * cases[c].frame_width + col) * bpp;
                         if (in_ram) {
@@ -2253,64 +2435,6 @@ static void test_mpeg_avc_decode_clear_in_vram_mirrors(void) {
                       "touching only the destination's physical bytes");
         }
     }
-    mpeg_finish();
-}
-
-/* The host picture behind a YCbCr allocation holds exactly the rows sceMpegAvcInitYCbCr
- * asked for. The fixture's 64x64 pictures decoded into a 64x16 allocation deliver 16 rows;
- * the host conversion must not write the other 48 past the end of that buffer (the
- * AddressSanitizer build reports the overflow this guards against). */
-static void test_mpeg_ycbcr_host_rows_bounded(void) {
-    enum {
-        TR_MPEG_DESC = 0x08100000u,
-        TR_MPEG_DATA = 0x08110000u,
-        TR_MPEG_SIZE = 0x08120000u,
-        TR_MPEG_YCBCR = 0x08130000u,
-        TR_MPEG_PTR = 0x08160000u,
-        TR_MPEG_INIT = 0x08170000u,
-        TR_MPEG_AU = 0x08180000u,
-    };
-    const uint32_t width = 64u, height = 16u;
-    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
-    uint8_t es[65536];
-    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
-          "host-row fixture builds the synthetic I_PCM stream");
-    if (!es_len) return;
-
-    MEM_W32(TR_MPEG_DESC, 0u);
-    CHECK(mpeg_create(TR_MPEG_DESC, TR_MPEG_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
-          "host-row fixture creates a context");
-    Mpeg *ctx = mpeg_find(TR_MPEG_DESC);
-    CHECK(ctx != NULL, "host-row fixture finds its context");
-    if (!ctx) return;
-    ctx->streamWidth = width;
-    ctx->streamHeight = height;
-    ctx->h264 = sr_h264_create();
-    ctx->h264Init = 1;
-    ctx->totalPackets = 1u;
-    ctx->fedPackets = 1u;
-    if (ctx->h264 < 0) {
-        fprintf(stderr, "SKIP: YCbCr host-row bound needs a real H.264 backend\n");
-        mpeg_finish();
-        return;
-    }
-    for (int i = 0; i < FIX_PICTURES; i++)
-        CHECK(sr_h264_submit_au(ctx->h264, es + au_off[i], au_len[i]) == 0,
-              "64x64 synthetic access unit reaches the decoder");
-
-    CHECK(guest_mpeg_import(0x211a057cu, TR_MPEG_DESC, UINT32_MAX, width, height, TR_MPEG_SIZE) == 0,
-          "a 64x16 YCbCr allocation size is queried");
-    uint32_t allocation_size = MEM_R32(TR_MPEG_SIZE);
-    memset(SR_HOST(TR_MPEG_YCBCR), 0xa5, allocation_size);
-    memset(SR_HOST(TR_MPEG_AU), 0, 24u);
-    CHECK(guest_mpeg_import(0x67179b1bu, TR_MPEG_DESC, UINT32_MAX, width, height, TR_MPEG_YCBCR) == 0,
-          "a 64x16 YCbCr allocation initializes");
-    MEM_W32(TR_MPEG_PTR, TR_MPEG_YCBCR);
-    MEM_W32(TR_MPEG_INIT, 0xdeadbeefu);
-    uint32_t decode_result = guest_mpeg_import(0xf0eb1125u, TR_MPEG_DESC, TR_MPEG_AU,
-                                               TR_MPEG_PTR, TR_MPEG_INIT, 0u);
-    CHECK(decode_result == 0u && MEM_R32(TR_MPEG_INIT) == 1u,
-          "a picture taller than the YCbCr allocation decodes into the rows it holds");
     mpeg_finish();
 }
 
@@ -2824,7 +2948,7 @@ static void test_psmf_player_display_in_vram_mirrors(void) {
     s_player_image = image;
     s_player_image_size = size;
     lc_prepare_guest();
-    static const uint8_t picture0[4] = { 255u, 203u, 138u, 255u };
+    static const uint8_t picture0[4] = { 255u, 203u, 138u, 0u };   /* alpha 0, as the PSP writes it */
     for (size_t d = 0; d < VRAM_DEST_COUNT; d++) {
         vram_fill_sentinel();
         MEM_W32(AV_VIDEO + 4, k_vram_dests[d].base);
@@ -3715,8 +3839,8 @@ static void test_player_av_composited_presentation(void) {
 #define DD_NID 0x0f6c18d7u
 static void test_mpeg_avc_decode_detail(void) {
     enum {
-        DD_DESC = 0x09350000u, DD_DATA = 0x09360000u, DD_HDR = 0x09380000u, DD_OFF = 0x09381000u,
-        DD_DETAIL = 0x09382000u, DD_UNKNOWN = 0x09390000u,
+        DD_DESC = 0x08650000u, DD_DATA = 0x08660000u, DD_HDR = 0x08670000u, DD_OFF = 0x08671000u,
+        DD_DETAIL = 0x08672000u, DD_UNKNOWN = 0x08674000u,
     };
     uint32_t size = 0;
     uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
@@ -3755,9 +3879,9 @@ static void test_mpeg_avc_decode_detail(void) {
  * the block untouched.  A flush restarts the stream. */
 static void test_mpeg_atrac_au_decode(void) {
     enum {
-        AT_DESC = 0x09300000u, AT_DATA = 0x09310000u, AT_RING = 0x09330000u, AT_HDR = 0x09340000u,
-        AT_AU = 0x09341000u, AT_OUT = 0x09342000u, AT_ATTR = 0x09344000u, AT_OFF = 0x09344010u,
-        AT_RING_DATA = 0x09400000u,
+        AT_DESC = 0x08600000u, AT_DATA = 0x08610000u, AT_RING = 0x08630000u, AT_HDR = 0x08640000u,
+        AT_AU = 0x08641000u, AT_OUT = 0x08642000u, AT_ATTR = 0x08644000u, AT_OFF = 0x08644010u,
+        AT_RING_DATA = 0x08680000u,
     };
     uint32_t size = 0;
     uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
@@ -3778,6 +3902,12 @@ static void test_mpeg_atrac_au_decode(void) {
     const uint32_t ps = size - 2048u;
     const uint32_t pad = packets * MPEG_PACKET_SIZE - ps;
     CHECK(pad == 0u || pad >= 6u, "mpeg-atrac: the tail is long enough for a padding packet");
+    if (AT_RING_DATA + packets * MPEG_PACKET_SIZE > 0x08000000u + ARENA_BYTES) {
+        CHECK(0, "mpeg-atrac: the ring data fits in the fixture arena");
+        atrac3p_bridge_destroy(ref);
+        free(image);
+        return;
+    }
     memcpy(SR_HOST(AT_RING_DATA), image + 2048u, ps);
     if (pad >= 6u) {
         uint8_t *tail = (uint8_t *)SR_HOST(AT_RING_DATA + ps);
@@ -3912,7 +4042,7 @@ static void test_mpeg_csc_presentation_boundary(void) {
     memset(SR_HOST(PC_AU), 0, 24u);
     MEM_W32(PC_AU + 0u, 0u);                  /* pts 90000 ticks = 1 s, stored high word first */
     MEM_W32(PC_AU + 4u, 90000u);
-    CHECK(guest_mpeg_import(0x67179b1bu, PC_DESC, UINT32_MAX, width, height, PC_YCBCR) == 0,
+    CHECK(guest_mpeg_import(0x67179b1bu, PC_DESC, 1u, width, height, PC_YCBCR) == 0,
           "sceMpeg presentation YCbCr storage initializes");
     MEM_W32(PC_MODE, 0u);
     MEM_W32(PC_MODE + 4u, 3u);
@@ -3988,11 +4118,11 @@ int main(int argc, char **argv) {
     test_backend_malformed_input();
     test_video_eos_waits_for_all_access_units();
     test_mpeg_ps_demux_error_fails_closed();
-    test_mpeg_ycbcr_fail_closed_paths();
-    test_mpeg_ycbcr_guest_contract();
+    test_mpeg_ycbcr_measured_contract();
+    test_mpeg_ycbcr_guest_decode();
+    test_mpeg_pcm_and_au_mode();
     test_mpeg_csc_swizzled_vram_mirrors();
     test_mpeg_avc_decode_clear_in_vram_mirrors();
-    test_mpeg_ycbcr_host_rows_bounded();
     test_player_lifecycle_releases_what_it_acquired();
     test_player_get_psmf_info();
     test_player_handle_word();

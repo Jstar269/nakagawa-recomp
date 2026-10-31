@@ -137,54 +137,73 @@ class TestMpegArithmeticFixtures(unittest.TestCase):
 
 
 class TestMpegYcbcrContracts(unittest.TestCase):
-    def test_ycbcr_geometry_is_guest_or_stream_supplied(self) -> None:
-        block = MPEG[MPEG.index("/* ---- YCbCr decode path") : MPEG.index("/* LPCM ES")]
-        self.assertNotIn("#define YCBCR_W", block)
-        self.assertNotIn("#define YCBCR_H\n", block)
+    """The YCbCr buffer is guest data in the layout measured on a PSP (#302, PSP-MPEG-001)."""
+
+    BLOCK = MPEG[MPEG.index("/* ---- YCbCr decode path") : MPEG.index("/* LPCM ES")]
+
+    def test_ycbcr_geometry_is_guest_supplied_or_a_measured_limit(self) -> None:
+        block = self.BLOCK
         self.assertNotIn("frameWidth ? 512", MPEG)
         self.assertNotIn("frameWidth ? (uint32_t)ctx->defaultFrameWidth : 512u", MPEG)
-        self.assertNotIn("272u", MPEG)
-        self.assertIn("streamHeight", MPEG)
-        self.assertIn("b->width", block)
-        self.assertIn("b->height", block)
+        # The only fixed picture sizes are the measured mode-1 limits.
+        self.assertEqual(MPEG.count("272u"), 1)
+        self.assertIn("#define YCBCR_MODE1_MAX_H 272u", block)
+        self.assertIn("#define YCBCR_MODE1_MAX_W 480u", block)
+        # A picture's geometry is read from the guest header's words 0 and 1.
+        header = block[block.index("static int ycbcr_header_read") : block.index("static uint32_t ycbcr_plane_bytes")]
+        self.assertIn("l->height = rows * 16u;", header)
+        self.assertIn("l->width = cols * 16u;", header)
+        self.assertIn("l->plane[i] = MEM_R32(buf + 16u + 4u * i);", header)
 
-    def test_ycbcr_guest_state_is_checked_before_hidden_picture_use(self) -> None:
-        block = MPEG[MPEG.index("/* ---- YCbCr decode path") : MPEG.index("/* LPCM ES")]
-        for contract in (
-            "ycbcr_fingerprint",
-            "guest_tag",
-            "ycbcr_state_usable",
-            "mpeg_contract_error",
-            "sr_guest_span_writable(addr, size)",
-            "if (!from || !to ||",
-            "ycbcr_state_usable(b, 1)",
-        ):
-            self.assertIn(contract, block)
-        guard = block[block.index("static int ycbcr_state_usable") : block.index("static YcbcrBuf *ycbcr_slot_for_init")]
-        self.assertIn("ycbcr_fingerprint(b->buf, b->size) != b->guest_tag", guard)
-        self.assertIn("modified guest YCbCr state", block)
-        self.assertIn("test_mpeg_ycbcr_guest_contract", PSMF_MEDIA)
-        self.assertIn("sr_syscall(&cpu, nid)", PSMF_MEDIA)
-        self.assertIn("guest CSC writes decoded I_PCM pixels into the guest destination", PSMF_MEDIA)
-        self.assertIn("test_mpeg_ycbcr_fail_closed_paths", PSMF_MEDIA)
-        self.assertIn("guest mutation cannot reuse hidden RGBA state", PSMF_MEDIA)
+    def test_ycbcr_has_no_hidden_picture(self) -> None:
+        block = self.BLOCK
+        for hidden in ("rgba", "ycbcr_fingerprint", "guest_tag", "ycbcr_state_usable"):
+            self.assertNotIn(hidden, block)
+        init = block[block.index("uint32_t mpeg_avc_init_ycbcr") : block.index("uint32_t mpeg_avc_decode_mode")]
+        self.assertNotIn("memset(SR_HOST", init)
         decode = block[block.index("uint32_t mpeg_avc_decode_ycbcr") : block.index("uint32_t mpeg_avc_decode_stop_ycbcr")]
-        self.assertIn("b->valid = 1;", decode)
+        self.assertIn("SR_H264_TARGET_HOST_YUV", decode)
+        self.assertIn("ycbcr_store_picture(mpegAddr, buf, &layout, info.width, info.height)", decode)
         self.assertIn("MEM_W32(initAddr, 1u);", decode)
+        store = block[block.index("static uint32_t ycbcr_store_picture") : block.index("uint32_t mpeg_avc_decode_ycbcr")]
+        self.assertIn("MEM_W32(buf, h / 16u);", store)
+        self.assertIn("MEM_W32(buf + 4u, w / 16u);", store)
+        csc = block[block.index("uint32_t mpeg_avc_csc") :]
+        self.assertIn("ycbcr_header_read(buf, &l)", csc)
+        self.assertIn("ycbcr_planes_in(&l, l.width, l.height)", csc)
+        self.assertIn("sr_h264_psp_rgb(", csc)
+        for test in ("test_mpeg_ycbcr_measured_contract", "test_mpeg_ycbcr_guest_decode",
+                     "CSC reads the planes through the header: exchanging P0 and P2 exchanges what it reads",
+                     "every decoded sample sits where the measured strip layout puts it",
+                     "sr_syscall(&cpu, nid)"):
+            self.assertIn(test, PSMF_MEDIA)
 
     def test_ycbcr_operations_preflight_ranges_and_modes(self) -> None:
-        block = MPEG[MPEG.index("/* ---- YCbCr decode path") : MPEG.index("/* LPCM ES")]
+        block = self.BLOCK
         for contract in (
-            "sr_guest_rect_geometry",
+            "sr_guest_rect_geometry(dest, 0u, 0u, frameWidth",
             "sr_guest_span_writable_any_view(span.first, span.total_bytes)",
             "sr_guest_copy_out(rowAddr, out, span.row_bytes)",
             "rangeAddr & 3u",
             "frameWidth == 0",
             "ctx->pixelMode < 0 || ctx->pixelMode > 3",
-            "(uint32_t)w > b->width",
-            "(uint32_t)h > b->height",
+            "if ((x & 1) || (w & 1)) return SCE_MPEG_ERROR_INVALID_VALUE;",
+            "x + w > (int64_t)l.width || y + h > (int64_t)l.height",
+            "if ((uint64_t)w > frameWidth) return MPEG_ERROR_CSC_REFUSED;",
+            "#define MPEG_ERROR_CSC_REFUSED 0x800001FEu",
+            "ycbcr_planes_writable(l, w, h)",
         ):
             self.assertIn(contract, block)
+
+    def test_the_psp_conversion_is_shared_by_both_backends(self) -> None:
+        header = (ROOT / "src" / "rt" / "sr_h264.h").read_text(encoding="utf-8")
+        ffmpeg = (ROOT / "src" / "rt" / "h264_ffmpeg.c").read_text(encoding="utf-8")
+        for constant in ("149 *", "204 * dv", "50 * du", "104 * dv", "258 * du", "+ 64) >> 7"):
+            self.assertIn(constant, header)
+        for backend in (H264, ffmpeg):
+            self.assertIn("sr_h264_psp_rgb(", backend)
+            self.assertNotIn("298 *", backend)
+            self.assertIn("SR_H264_TARGET_HOST_YUV", backend)
 
     def test_mpeg_nid_statuses_are_explicit(self) -> None:
         import hle_registry_meta as meta
@@ -201,9 +220,9 @@ class TestMpegYcbcrContracts(unittest.TestCase):
             "h_MpegChangeGetAuMode": "partial",
         }
         self.assertEqual({k: meta.HANDLER_STATUS.get(k) for k in expected}, expected)
-        self.assertIn("guest plane bytes remain modeled zeroes, not the PSP layout",
+        self.assertIn("MEASURED mode-1 strip layout",
                       meta.HANDLER_METADATA["h_MpegAvcDecodeYCbCr"]["limitation"])
-        self.assertIn("Csc writes the retained decoded picture",
+        self.assertIn("MEASURED PSP matrix",
                       meta.HANDLER_METADATA["h_MpegAvcCsc"]["limitation"])
 
 
