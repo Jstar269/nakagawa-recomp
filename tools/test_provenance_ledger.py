@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any, ClassVar, cast
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,13 +108,18 @@ def tracked_files(prefix: str) -> list[str]:
     return [line for line in out.stdout.splitlines() if line.strip()]
 
 
-def load_ledger() -> dict:
+def load_ledger() -> dict[str, Any]:
     if LEDGER.is_file():
-        return json.loads(LEDGER.read_text(encoding="utf-8"))
-    return json.loads(PUBLIC_LEDGER.read_text(encoding="utf-8"))
+        return cast(dict[str, Any], json.loads(LEDGER.read_text(encoding="utf-8")))
+    return cast(dict[str, Any], json.loads(PUBLIC_LEDGER.read_text(encoding="utf-8")))
 
 
 class ProvenanceLedgerTest(unittest.TestCase):
+    ledger: ClassVar[dict[str, Any]]
+    public_only: ClassVar[bool]
+    records: ClassVar[list[dict[str, Any]]]
+    public_entries: ClassVar[list[dict[str, Any]]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.ledger = load_ledger()
@@ -228,7 +234,7 @@ class ProvenanceLedgerTest(unittest.TestCase):
             # is expected, not stale, so only the tracked-files assertion below
             # still guards against tracked-but-unrecorded files.
             for entry in self.public_entries:
-                path = entry.get("path")
+                path = cast(str, entry.get("path"))
                 if not (ROOT / path).exists():
                     continue
                 self.assertIn(path, tracked, path)
@@ -275,7 +281,7 @@ class ProvenanceLedgerTest(unittest.TestCase):
             head = "\n".join(text.splitlines()[:12])
             if not DERIVED_HEADER.search(head):
                 continue
-            rec = by_path.get(path)
+            rec = cast(dict[str, Any], by_path.get(path))
             self.assertIsNotNone(rec, f"{path}: declares derivation but has no record")
             if rec["classification"] == "project-authored-independent":
                 offenders.append(f"{path} -> {rec['id']}")
@@ -496,10 +502,15 @@ class ProvenanceFailClosedTest(unittest.TestCase):
         detailed.write_text(json.dumps({"records": records}), encoding="utf-8")
         return detailed
 
-    def _run_build_ledger(self, repo: Path, policy: Path, detailed: Path, output: Path) -> dict:
+    def _run_build_ledger(
+        self, repo: Path, policy: Path, detailed: Path, output: Path
+    ) -> dict[str, Any]:
         with mock.patch.object(provenance_ledger, "ROOT", repo), \
              mock.patch.object(provenance_ledger, "POLICY_PATH", policy):
-            return provenance_ledger.build_ledger(output, implementation_ledger=detailed)
+            return cast(
+                dict[str, Any],
+                provenance_ledger.build_ledger(output, implementation_ledger=detailed),
+            )
 
     def test_generation_refuses_unrecorded_implementation_path(self) -> None:
         repo, policy = self._hermetic_repo(
@@ -590,12 +601,14 @@ class ProvenanceFailClosedTest(unittest.TestCase):
 
     def test_claims_ledger_drops_only_the_hashes(self) -> None:
         """The claims-only committed form (#1673) keeps every claim and nothing else changes."""
-        hashed = {"schema_version": 1, "generated_by": "tools/provenance_ledger.py", "entries": [
+        hashed: dict[str, Any] = {
+            "schema_version": 1, "generated_by": "tools/provenance_ledger.py", "entries": [
             {"path": "src/a.c", "classification": "project_authored_attested",
              "evidence": {"record_id": "r"}, "sha256": "a" * 64},
             {"path": "PUBLIC_EXPORT.json", "classification": "reviewed_configuration",
              "evidence": {"source": "x"}},
-        ]}
+            ],
+        }
         claims = provenance_ledger.claims_ledger(hashed)
         self.assertEqual(claims["schema_version"], provenance_ledger.CLAIMS_LEDGER_SCHEMA_VERSION)
         self.assertEqual(claims["generated_by"], hashed["generated_by"])
@@ -759,8 +772,10 @@ class _RefreshFixture:
             path.write_bytes(content)
 
     def _git(self, *argv: str) -> str:
-        return run_git(argv, cwd=self.repo, check=True,
-                       capture_output=True, text=True).stdout.strip()
+        return cast(
+            str,
+            run_git(argv, cwd=self.repo, check=True, capture_output=True, text=True).stdout.strip(),
+        )
 
     #: Phantom include that mirrors the real repository: listed in
     #: ``include_paths`` but never tracked, so removing it is an exact bounded
@@ -2432,8 +2447,8 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
             (fixture.repo / "assets/public_provenance_ledger.json").read_text(encoding="utf-8"))
         return next(entry for entry in document["entries"] if entry["path"] == path)
 
-    def _allow(self, **lists: object) -> dict:
-        allowed = {
+    def _allow(self, **lists: list[Any]) -> dict[str, list[Any]]:
+        allowed: dict[str, list[Any]] = {
             "include_added": [], "include_removed": [],
             "exclude_added": [], "exclude_removed": [], "rule_changes": [],
         }
@@ -2581,13 +2596,21 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
         original_snapshot = provenance_ledger._validate_public_snapshot
         original_export = provenance_ledger._refresh_export_bytes
 
-        def capture_snapshot(document: dict, *, tree, policy, label: str) -> dict:
+        def capture_snapshot(
+            document: dict, *, tree, policy, label: str
+        ) -> dict[str, Any]:
             seen_snapshots.append((label, publication_policy.canonical_digest(policy.document)))
-            return original_snapshot(document, tree=tree, policy=policy, label=label)
+            return cast(
+                dict[str, Any],
+                original_snapshot(document, tree=tree, policy=policy, label=label),
+            )
 
         def capture_export(*, candidate, policy, ledger_bytes: bytes) -> bytes:
             seen_exports.append(publication_policy.canonical_digest(policy.document))
-            return original_export(candidate=candidate, policy=policy, ledger_bytes=ledger_bytes)
+            return cast(
+                bytes,
+                original_export(candidate=candidate, policy=policy, ledger_bytes=ledger_bytes),
+            )
 
         with mock.patch.object(provenance_ledger, "_validate_public_snapshot",
                                side_effect=capture_snapshot), \
@@ -2684,7 +2707,7 @@ class PolicyDeltaRefreshTests(unittest.TestCase):
             ({"policy_delta_authority": authority}, "POLICY_DELTA_ARGUMENT_REQUIRED"),
         ):
             with self.subTest(kwargs=sorted(kwargs)):
-                result = fixture.refresh("docs/guide.md", **kwargs)
+                result = fixture.refresh("docs/guide.md", **cast(Any, kwargs))
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(code, result.stderr)
 
@@ -2975,9 +2998,12 @@ class TransactionalOutputTests(unittest.TestCase):
     """
 
     def _head_bytes(self, fixture: _RefreshFixture, relative: str) -> bytes:
-        return run_git(
-            ["show", f"HEAD:{relative}"], cwd=fixture.repo,
-            check=True, capture_output=True).stdout
+        return cast(
+            bytes,
+            run_git(
+                ["show", f"HEAD:{relative}"], cwd=fixture.repo, check=True, capture_output=True
+            ).stdout,
+        )
 
     def _assert_repo_clean(self, fixture: _RefreshFixture) -> None:
         status = run_git(["status", "--porcelain"], cwd=fixture.repo,
