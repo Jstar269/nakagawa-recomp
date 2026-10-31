@@ -1067,6 +1067,7 @@ PUBLIC_TARGETS := \
 	display-smoke \
 	display-smoke-run \
 	display-smoke-gui \
+	display-smoke-quit \
 	display-smoke-player \
 	display-smoke-clean \
 	title-qualification \
@@ -1209,6 +1210,7 @@ HELP_DESCRIPTION_showcase-linux := build and smoke the showcase demos on this PO
 HELP_DESCRIPTION_display-smoke := build the display smoke fixture
 HELP_DESCRIPTION_display-smoke-run := run display smoke and compare its GE/present flight bundle
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
+HELP_DESCRIPTION_display-smoke-quit := close the display smoke window mid-run and check the orderly quit
 HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
 HELP_DESCRIPTION_display-smoke-clean := remove display smoke artifacts
 HELP_DESCRIPTION_title-qualification := validate public title manifests, input profiles and staging declarations
@@ -1606,6 +1608,13 @@ display-smoke-run: display-smoke
 display-smoke-gui:
 	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
 	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui
+
+# display-smoke-quit closes the window while the long guest still runs: the quit must stop the
+# scheduler and end through the driver's teardown with exit 0 (#1377). It needs a display, so it
+# is not part of any aggregate gate either. SR_VIDEO=gdi runs it on the GDI fallback.
+display-smoke-quit:
+	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) quit --build-dir $(DISPLAY_SMOKE_DIR)
 
 # Drive the actual native-player PLAY NOW path against the launchable fixture.
 # The child opens a real window, so this is a developer/display gate rather than
