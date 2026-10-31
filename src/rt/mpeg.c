@@ -1412,8 +1412,7 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
     ctx->videoPts += videoTimestampStep;
     ctx->ycbcrWant++;
     int got = 0;
-    SrH264FrameInfo info;
-    memset(&info, 0, sizeof(info));
+    SrH264FrameInfo info = {0};
     int eos = ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
 #ifdef SR_SDL3VK
     while (ctx->h264Frames < ctx->ycbcrWant) {
@@ -1485,8 +1484,7 @@ uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t
     if (!ycbcr_header_read(buf, &layout))
         return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "unaligned or unreadable YCbCr header", SCE_MPEG_ERROR_INVALID_VALUE);
     int got = 0;
-    SrH264FrameInfo info;
-    memset(&info, 0, sizeof(info));
+    SrH264FrameInfo info = {0};
 #ifdef SR_SDL3VK
     if (ctx->h264Init && ctx->h264 >= 0) {
         SrH264FrameTarget target;
