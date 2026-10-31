@@ -44,6 +44,7 @@ set(CORE_SOURCES
     src/core/nk_psp_lzrc.c
     src/core/nk_psp_npumdimg.c
     src/core/nk_disc_expand.c
+    src/core/nk_disc_verify.c
     src/core/generated/nk_title_catalog.c
 )
 
@@ -164,6 +165,13 @@ add_executable(test_disc_expand
 )
 target_link_libraries(test_disc_expand PRIVATE nakagawa_core nk_libchdr)
 add_test(NAME disc_expand_test COMMAND test_disc_expand)
+
+add_executable(test_disc_verify
+    tests/native/test_disc_verify.c
+    tests/native/native_test_isolation.c
+)
+target_link_libraries(test_disc_verify PRIVATE nakagawa_core)
+add_test(NAME disc_verify_test COMMAND test_disc_verify)
 
 add_executable(test_xb_parser
     tests/native/test_xb_parser.c

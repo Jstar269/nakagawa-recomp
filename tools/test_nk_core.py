@@ -2116,6 +2116,10 @@ class BoundedLibraryJsonTests(unittest.TestCase):
             "assets_staged": False, "extracted_asset_count": 0,
             "extracted_audio_count": 0, "extracted_visual_count": 0,
             "extracted_layout_count": 0, "last_played": "",
+            # The optional members: a compressed source and the disc check's hashes.
+            "source_image_path": f"{folder}/disc-{i:05d}.cso",
+            "content_sha1": f"{i:040x}", "content_crc32": f"{i:08x}",
+            "disc_verification": "VERIFIED_RETAIL",
         } for i in range(MAX_LIBRARY_GAMES)]
         path = self.temp_dir / "library.json"
         path.write_text(json.dumps({"schema_version": 1, "games": games}, indent=6),

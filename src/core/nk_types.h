@@ -45,7 +45,11 @@ typedef enum {
     NK_ERROR_PATH_TOO_LONG = -13,
     /* A per-user file carries a schema_version newer than this build reads: a
        later player wrote it. It is left exactly as it is (nk_user_data_schema.h). */
-    NK_ERROR_NEWER_SCHEMA = -14
+    NK_ERROR_NEWER_SCHEMA = -14,
+    /* A disc ID alone names more than one library record (a retail disc and a
+       modified copy of it share the ID): the caller names the image's content
+       hash instead (nk_library.h). Nothing was changed. */
+    NK_ERROR_AMBIGUOUS = -15
 } NkResult;
 
 typedef enum {
@@ -68,6 +72,15 @@ typedef struct {
        later step reads; this path is only shown to the user. Empty for a disc
        added as an .iso. */
     char source_image_path[NK_MAX_PATH];
+    /* The whole image's hashes (nk_disc_verify.h; of the expansion for a
+       compressed image), lowercase hex, empty when it was never hashed. With
+       disc_id they key the library: a fan translation and its retail disc
+       share a disc ID and stay two records (nk_library.h). */
+    char content_sha1[41];
+    char content_crc32[9];
+    /* How the image compares with the user's Redump list: an NkDiscTier
+       (nk_disc_verify.h), 0 when it was not checked. */
+    uint32_t disc_verification;
     char prepared_root[NK_MAX_PATH];
     char title_id[64];
     uint64_t iso_size_bytes;
