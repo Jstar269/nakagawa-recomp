@@ -6400,15 +6400,18 @@ class KernelEntryNullcodeProbeTests(unittest.TestCase):
         exception = rows["PSP-EXCEPTION-FETCH-001"]
         self.assertEqual(exception["case_ids"], ["fetch-armed"])
         self.assertEqual(exception["hardware_evidence"], "CAPTURED")
-        self.assertIn("fetch from 0x00000000", exception["evidence_note"])
-        self.assertIn("0x08000000 case was refused", exception["evidence_note"])
+        self.assertIn("Fetch from 0x00000000", exception["evidence_note"])
+        self.assertIn("EPC=0x08000000", exception["evidence_note"])
+        self.assertIn("EPC=0x40000000", exception["evidence_note"])
+        self.assertIn("source commit binding did not match", exception["evidence_note"])
+        self.assertIn("Do not compare the 6.6.0 and 6.6.1 fault outcomes", exception["evidence_note"])
         trace = rows["PSP-TRACE-001"]
         self.assertIn("fpu-state-*", trace["uncited_cases"])
         self.assertIn("vfpu-state-*", trace["uncited_cases"])
         trace_exception = rows["PSP-TRACE-EXCEPTION-001"]
         self.assertEqual(trace_exception["diagnostic_case_ids"], ["insn-trace-exception"])
         self.assertEqual(trace_exception["hardware_evidence"], "NOT_RUN")
-        self.assertIn("pspver 6.6.1", trace_exception["evidence_note"])
+        self.assertIn("NEEDS_PERSON", trace_exception["evidence_note"])
 
 
 class HleIssuesProbeTests(unittest.TestCase):

@@ -3026,17 +3026,39 @@ but `sceKernelCheckCallback` did not return before the case timeout; no frame wa
 available, and `nkctl`'s watchdog recovered the PSP to a qualified boot. This is a
 captured hang, not a measured callback exception.
 
-`PSP-EXCEPTION-FETCH-001`, source commit
-`9e78dd00d628d07d1f7cc28e6d7af5970ab994f9`, ran `jr $t9` with `$t9 = 0` from user
-mode after writing `fetch-armed`. Its retained exprint reply was instruction bus
-error (ExcCode 6), EPC 0, BadVAddr 0, Cause `0x10000018` (BD clear). The full source
-commit matched. The envelope is diagnostic-only because the intentional fault has no
-completion sentinel and the host0 round trip did not complete. A later launch attempt
-for `0x08000000` was blocked before its A3 PRX ran: the recovered PSP reported
-`pspver 6.6.1`, while this session was authorized for `6.6.0`. The `0x40000000`
-fetch and the #312 trace launches were not attempted after that mismatch. The new
-FPU/VFPU and delay-slot exception fixtures therefore have local tests and clean PRX
-builds, but no new PSP measurements.
+`PSP-EXCEPTION-FETCH-001` captures were made on the owner PSP-3000; system software 6.61 and
+ARK-5.1.0 are owner-reported. The runner measured `pspver` per launch. The P1/P2 and fetch-from-zero
+runs reported 6.6.0; the first `0x08000000` launch reported 6.6.1; the later `0x40000000` launch
+reported 6.6.0. These exception results stay separated by firmware; no cross-version comparison of
+fault semantics is claimed.
+
+- Fetch from `0x00000000` at `pspver 6.6.0` retained an instruction bus error frame: EPC `0`,
+  BadVAddr `0`, Cause `0x10000018` (BD clear). The source-bound envelope is diagnostic-only because
+  the faulting case cannot emit its completion marker or complete the host0 round trip.
+- Fetch from `0x08000000` at `pspver 6.6.1` retained an instruction bus error frame: EPC `0x08000000`,
+  BadVAddr `0`, Cause `0x10000018` (BD clear), Status `0x40088613`. This capture is diagnostic-only:
+  the host0 round trip failed, and the PRX source commit `9e78dd00d628d07d1f7cc28e6d7af5970ab994f9`
+  did not match the then-current worktree head. A later exact-head run at `pspver 6.6.0` emitted the
+  `0x08000000` armed marker but `exprint` returned the earlier `0x40000000` frame; that stale frame
+  is not cited.
+- Fetch from `0x40000000` at `pspver 6.6.0` retained an instruction bus error frame: EPC `0x40000000`,
+  BadVAddr `0`, Cause `0x10000018` (BD clear), Status `0x40088613`. This capture is diagnostic-only:
+  the host0 round trip failed and the PRX source commit did not match the then-current worktree head.
+  No exact-head `0x40000000` follow-up was run.
+
+All three fetch cases stop at the intentional user-mode fault, so a completion sentinel or host0
+round trip cannot follow the measured instruction without changing the probe. They remain diagnostic.
+The P1/P2 envelope also remains diagnostic because its deliberate VBLANK and GE non-invocation rows
+are `SKIP`; adding a terminal record would not change those row results.
+
+For #312, exact-head trace PRXs built at `194abdf0ec4f5200f2b766ff4e0a710acd51c9d2` passed the
+PSPSDK build and user-mode import gate. The `insn-trace` launch reported `pspver 6.6.0`, but stopped
+at its `transport-write` preflight because the previous faulting module was not proven unloaded.
+The runner marked `PHYSICAL_INTERVENTION_REQUIRED`; the one bounded `nkctl` recovery returned
+`NEEDS_PERSON` after the PSPLink channel remained unavailable. The trace PRX was not loaded, so no
+FPU/VFPU state records or delay-slot exception frame were captured. `insn-trace-exception` was not
+launched. The lock was released and the WSL USBHostFS server stopped; further PSP work needs owner
+intervention.
 
 ### PSP-GE-SYNC-001 runs 2026-10-31
 
