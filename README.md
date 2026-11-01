@@ -121,6 +121,12 @@ C that Nakagawa generates ([#1495](https://github.com/Jstar269/nakagawa-recomp/p
 the game helps replace Nakagawa's Hot Shots Tennis workarounds with general fixes
 ([#363](https://github.com/Jstar269/nakagawa-recomp/issues/363)).
 
+Work belongs in the recompiler and runtime when its cause is general, such as a system call, an instruction, a
+display-list command or a build step, because the fix then helps every game and can be tested with synthetic
+fixtures. It belongs in a decompilation project only when it rebuilds one function's source so that it compiles back to
+the original bytes, which needs your own copy of the game. If you are unsure, open an issue here and describe what you
+saw.
+
 ## Contributing
 
 Testing is the most useful help right now: try a game you own and report how far it gets. Bugs go in

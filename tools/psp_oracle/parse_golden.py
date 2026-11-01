@@ -2005,20 +2005,27 @@ _register_campaign_probe(
 )
 
 # insn-trace (119, probe_insn_trace.c): the #312 real-PSP instruction trace. Per fixture of
-# fixtures/psp_oracle/insn_trace_fixtures.h, an `<id>-init` record (34 words), one
-# `<id>-sNNNN` record per executed instruction (34 words: pc, op, r1..r25, r29..r31, hi,
-# lo and the store's address and value) and an `<id>-end` record (4 words). The step counts are those of the
+# fixtures/psp_oracle/insn_trace_fixtures.h, an `<id>-init` record (44 words), one
+# `<id>-sNNNN` record per executed instruction (44 words: pc, op, r1..r25, r29..r31, hi,
+# lo, selected f0..f3/fcr31, v0..v3/v32, and the store's address and value) and an `<id>-end`
+# record (4 words). The step counts are those of the
 # fixtures' architectural execution, which Nakagawa's trace of the same words reproduces
 # (tools/test_insn_trace.py checks both against this table).
-INSN_TRACE_STEPS = (("alu-branch-ls", 105), ("delay-slots", 27))
+INSN_TRACE_STEPS = (
+    ("alu-branch-ls", 105), ("delay-slots", 27), ("fpu-state", 4), ("vfpu-state", 5),
+)
 INSN_TRACE_CASES = tuple(
     case for fixture, steps in INSN_TRACE_STEPS
     for case in (f"{fixture}-init", *(f"{fixture}-s{step:04d}" for step in range(steps)),
                  f"{fixture}-end"))
 _register_campaign_probe(
     "insn-trace", "PSP-TRACE-001", INSN_TRACE_CASES,
-    {case: (34 if case.endswith("-init") else 4 if case.endswith("-end") else 34)
+    {case: (44 if case.endswith("-init") else 4 if case.endswith("-end") else 44)
      for case in INSN_TRACE_CASES},
+)
+_register_campaign_probe(
+    "insn-trace-exception", "PSP-TRACE-EXCEPTION-001", (),
+    {"exception-armed": 1}, terminal_case="exception-armed",
 )
 
 # intr-cause (120, probe_hle_issues.c): the #325 COP0 interrupt state. Every row is emitted
@@ -2037,6 +2044,48 @@ _register_campaign_probe(
     "intr-cause", "PSP-INTR-CAUSE-001", INTR_CAUSE_CASES,
     {case: (4 if case.startswith("cause-window-") else 6) for case in INTR_CAUSE_CASES},
 )
+
+# #1375 PSP-NULLCODE-001. One launch first records exact entry snapshots ($ra, $sp,
+# $gp, $a0-$a3, $t0-$t3), then records all four NULL registration results. These are
+# observations, so the parser validates only their shape.
+_register_campaign_probe(
+    "null-code-registration", "PSP-NULLCODE-001",
+    ("thread-entry", "thread-entry-setup", "callback-entry", "callback-entry-setup",
+     "alarm-entry", "alarm-entry-setup", "vtimer-entry", "vtimer-entry-setup",
+     "vblank-subintr-entry", "vblank-subintr-setup", "create-thread-null",
+     "create-callback-null", "register-subintr-null", "register-subintr-null-not-invoked",
+     "ge-drawsync-idle", "ge-set-callback-null", "ge-set-callback-null-not-invoked"),
+    {case: 11 for case in (
+        "thread-entry", "callback-entry", "alarm-entry", "vtimer-entry", "vblank-subintr-entry",
+    )} | {
+        "thread-entry-setup": 6, "callback-entry-setup": 4,
+        "alarm-entry-setup": 2, "vtimer-entry-setup": 5, "vblank-subintr-setup": 6,
+        "create-thread-null": 3, "create-callback-null": 3,
+        "register-subintr-null": 3, "register-subintr-null-not-invoked": 1,
+        "ge-drawsync-idle": 6, "ge-set-callback-null": 2,
+        "ge-set-callback-null-not-invoked": 1,
+    },
+)
+_register_campaign_probe(
+    "null-thread-invocation", "PSP-NULLCODE-001",
+    ("null-thread-armed", "null-thread-started"),
+    {"null-thread-armed": 2, "null-thread-started": 7},
+)
+_register_campaign_probe(
+    "null-callback-invocation", "PSP-NULLCODE-001",
+    ("null-callback-armed", "null-callback-checked"),
+    {"null-callback-armed": 2, "null-callback-checked": 7},
+)
+
+# The fetch itself ends the PRX. The one SKIP record names the target armed for the
+# fault; the runner's retained `exprint` reply is the source of exception fields.
+for _fetch_case in (
+    "exception-a3-fetch-zero", "exception-a3-fetch-08000000", "exception-a3-fetch-40000000",
+):
+    _register_campaign_probe(
+        _fetch_case, "PSP-EXCEPTION-FETCH-001", (), {"fetch-armed": 1},
+        terminal_case="fetch-armed",
+    )
 
 # ge-raster (123, probe_ge_sample.c): the #343 GE raster corpus. The cells are the gr_cells
 # table of the block probe_ge_sample.c shares with tests/native/hle_thread_selftest.c, in order. Per
