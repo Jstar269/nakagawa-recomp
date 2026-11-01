@@ -67,6 +67,9 @@
 static const uint64_t s_frame_work_bound_ns[SR_PERF_FRAME_WORK_BUCKETS - 1u] = {
     16683333u, 22000000u, 33366667u, 50050000u,
 };
+/* How far one frame's thread CPU time may exceed its wall time before the thread clock is
+ * rejected: the two clocks are read a few instructions apart. */
+#define SR_PERF_THREAD_CLOCK_SLACK_NS 1000000u
 static const char *const s_frame_work_names[SR_PERF_FRAME_WORK_BUCKETS] = {
     "le16_7", "le22", "le33_4", "le50_1", "gt50_1",
 };
@@ -208,6 +211,7 @@ typedef struct SrPerfState {
     int late_since_frame;           /* a late VBLANK latch since the previous new frame */
     int frame_cpu_valid;            /* last_frame_cpu_ns holds a reading */
     uint64_t last_frame_cpu_ns;     /* scheduler-thread CPU clock at the previous new frame */
+    uint64_t last_frame_wall_ns;    /* host clock at the previous new frame */
 } SrPerfState;
 
 static SrPerfState s_perf;
@@ -234,13 +238,18 @@ static const char *const s_gpu_replay_names[SR_PERF_GPU_REPLAY_COUNT] = {
 /* SR_PERF prints 1 Hz telemetry; SR_HUD or the F1 overlay only collect counters for
  * the in-game HUD, so the stderr lines are gated separately. SR_PERF_CSV or SR_PERF_JSON alone
  * turns the counters on for their files and writes no telemetry line to stderr at all, the
- * cumulative PERF_ATTRIB lines included, so a measured run carries no stderr writes. */
+ * start-up line and the cumulative PERF_ATTRIB lines included: a measured run's stderr carries
+ * only failures (an output that cannot be opened, a thread clock rejected). */
 static int s_perf_stderr_enabled = 0;
 static int s_perf_files_only = 0;
 #ifdef SR_PROFILER_SELFTEST
 static SrPerfTestClock s_test_wall_clock;
 static SrPerfTestClock s_test_thread_clock;
 #endif
+/* Set when one frame's thread CPU time came out longer than its wall time, which no thread can
+ * run: the clock is not what it claims to be, so host work per frame is off until the counters
+ * next come on. */
+static int s_thread_clock_rejected = 0;
 #ifdef SR_PERF_TSC_THREAD_CLOCK
 static int s_tsc_invariant = -1;      /* -1: not asked yet */
 static uint64_t s_tsc_base;           /* TSC and host clock at the start of the rate measurement */
@@ -289,6 +298,7 @@ static double ms(uint64_t ns) {
  * on. The rate is the TSC's advance over the host clock's since then, so it sharpens as the run
  * goes on and is read only once at least half a second has passed. */
 static void thread_clock_start(void) {
+    s_thread_clock_rejected = 0;
 #ifdef SR_PERF_TSC_THREAD_CLOCK
     if (s_tsc_invariant < 0) {
         unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
@@ -303,6 +313,7 @@ static void thread_clock_start(void) {
  * its rate is not measured yet. Only differences between two readings on the same thread mean
  * anything; time the thread spent waiting or descheduled is not in them. */
 static int thread_cpu_now(uint64_t *out_ns) {
+    if (s_thread_clock_rejected) return 0;
 #ifdef SR_PROFILER_SELFTEST
     if (s_test_thread_clock) {
         *out_ns = s_test_thread_clock();
@@ -326,6 +337,22 @@ static int thread_cpu_now(uint64_t *out_ns) {
     return 1;
 #else
     (void)out_ns;
+    return 0;
+#endif
+}
+
+/* Whether thread_cpu_now converts a count at a measured rate (the Windows TSC clock, and the
+ * selftest's stand-in for it), which can read at the wrong rate. CLOCK_THREAD_CPUTIME_ID is a
+ * thread CPU clock by definition: Linux reads it from per-CPU scheduler clocks the kernel keeps
+ * within a tick or two of the wall clock (kernel/sched/clock.c), so one frame can read a few ms
+ * long without the clock being wrong, and a run's sum is off by one reading at most. */
+static int thread_clock_converted(void) {
+#ifdef SR_PROFILER_SELFTEST
+    if (s_test_thread_clock) return 1;
+#endif
+#ifdef SR_PERF_TSC_THREAD_CLOCK
+    return 1;
+#else
     return 0;
 #endif
 }
@@ -1313,10 +1340,9 @@ void sr_perf_init(void) {
     static int exit_hooked;
     if (!exit_hooked) atexit(perf_exit);
     exit_hooked = 1;
-    fprintf(stderr, "PERF enabled: %s%s%s\n",
-            s_perf_files_only ? "counters for the output files only" : "1 Hz aggregate telemetry",
-            s_perf.csv ? " + CSV" : "",
-            s_perf.json_path[0] ? " + JSON summary" : "");
+    if (!s_perf_files_only)            /* counters for the files only: stderr carries failures only */
+        perf_emit_format("PERF enabled: 1 Hz aggregate telemetry%s%s\n", s_perf.csv ? " + CSV" : "",
+                         s_perf.json_path[0] ? " + JSON summary" : "");
 }
 
 #ifdef SR_PROFILER_SELFTEST
@@ -1619,6 +1645,7 @@ void sr_perf_present_frame(uint32_t buffer, uint32_t vcount) {
     if (s_perf.frame_seen && buffer == s_perf.last_frame_buffer) return;
     uint64_t cpu_ns = 0;
     int cpu_valid = thread_cpu_now(&cpu_ns);
+    const uint64_t wall_ns = raw_now_ns();
     ADD(new_frames, 1);
     if (s_perf.frame_seen) {
         uint32_t vblanks = (uint32_t)(vcount - s_perf.last_new_frame_vcount);
@@ -1631,6 +1658,19 @@ void sr_perf_present_frame(uint32_t buffer, uint32_t vcount) {
         if (vblanks == 1u && s_perf.late_since_frame) ADD(new_frame_iv1_late, 1);
         /* Host work for the frame: everything the scheduler thread ran since the previous new
          * frame (guest code, HLE, GE lists, VBLANK service and the presents), none of its waits. */
+        /* A thread cannot run longer than the wall time between two of its own readings. Windows
+         * does not promise that thread cycles tick at the TSC rate, so a converted clock that reads
+         * more is turned off for the run, not reported. */
+        if (thread_clock_converted() && cpu_valid && s_perf.frame_cpu_valid &&
+            cpu_ns >= s_perf.last_frame_cpu_ns &&
+            cpu_ns - s_perf.last_frame_cpu_ns >
+                wall_ns - s_perf.last_frame_wall_ns + SR_PERF_THREAD_CLOCK_SLACK_NS) {
+            s_thread_clock_rejected = 1;
+            cpu_valid = 0;
+            perf_emit_format("PERF: thread CPU clock read %.3f ms over %.3f ms of wall time; host work "
+                             "per frame is off for the rest of the run\n",
+                             ms(cpu_ns - s_perf.last_frame_cpu_ns), ms(wall_ns - s_perf.last_frame_wall_ns));
+        }
         if (cpu_valid && s_perf.frame_cpu_valid && cpu_ns >= s_perf.last_frame_cpu_ns) {
             uint64_t work = cpu_ns - s_perf.last_frame_cpu_ns;
             unsigned bucket = 0;
@@ -1648,6 +1688,7 @@ void sr_perf_present_frame(uint32_t buffer, uint32_t vcount) {
     s_perf.late_since_frame = 0;
     s_perf.frame_cpu_valid = cpu_valid;
     s_perf.last_frame_cpu_ns = cpu_ns;
+    s_perf.last_frame_wall_ns = wall_ns;
 }
 
 void sr_perf_aot_begin(uint32_t pc) {

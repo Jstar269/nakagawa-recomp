@@ -396,8 +396,9 @@ static uint64_t fake_wall(void) { return s_fake_wall_ns; }
 static uint64_t fake_cpu(void) { return s_fake_cpu_ns; }
 
 static void flip(uint32_t buffer, uint32_t vcount, double cpu_ms) {
-    s_fake_cpu_ns += (uint64_t)(cpu_ms * 1000000.0 + 0.5);
-    s_fake_wall_ns += 1000000u;
+    const uint64_t cpu_ns = (uint64_t)(cpu_ms * 1000000.0 + 0.5);
+    s_fake_cpu_ns += cpu_ns;
+    s_fake_wall_ns += cpu_ns + 1000000u;         /* a thread never runs longer than the wall time */
     sr_perf_present_done(0, 1);
     sr_perf_present_frame(buffer, vcount);
 }
@@ -459,19 +460,65 @@ static void test_frame_intervals_and_work(void) {
     sr_perf_test_reinit();
 }
 
+/* A thread clock that reads more CPU time than the wall time between two new frames is not a
+ * thread CPU clock (Windows does not promise thread cycles at the TSC rate): host work per frame
+ * is turned off for the rest of the run with one line, and on again when the counters restart. */
+static void test_thread_clock_guard(void) {
+    const uint32_t a = 0x04000000u, b = 0x04044000u;
+    s_fake_wall_ns = 20000000000ull;
+    s_fake_cpu_ns = 2000000000ull;
+    sr_perf_test_set_clocks(fake_wall, fake_cpu);
+    sr_perf_test_reinit();
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
+    flip(a, 100u, 0.0);
+    flip(b, 102u, 10.0);                         /* counted */
+    s_fake_cpu_ns += 32000000u;                  /* 32 ms of thread CPU in 30 ms of wall: past the slack */
+    s_fake_wall_ns += 30000000u;
+    sr_perf_present_done(0, 1);
+    sr_perf_present_frame(a, 104u);
+    flip(b, 106u, 5.0);                          /* consistent again, but the clock stays off */
+    flip(a, 108u, 7.0);
+    sr_perf_test_set_report_sink(NULL);
+    sr_perf_test_force_report();
+    CHECK(csv_last("new_frames") == 5.0 && csv_last("frame_work_frames") == 1.0 &&
+              csv_last("frame_work_ms") > 9.9985 && csv_last("frame_work_ms") < 10.0015,
+          "a rejected thread clock: new_frames %.0f, frame_work_frames %.0f, frame_work_ms %.3f "
+          "(expected 5, 1, 10)", csv_last("new_frames"), csv_last("frame_work_frames"),
+          csv_last("frame_work_ms"));
+    CHECK(s_report_count == 1 &&
+              strcmp(s_report_lines[0], "PERF: thread CPU clock read 32.000 ms over 30.000 ms of wall time; "
+                                        "host work per frame is off for the rest of the run\n") == 0,
+          "the rejected thread clock is reported once: %d lines, [%s]", s_report_count,
+          s_report_count ? s_report_lines[0] : "");
+
+    sr_perf_test_reinit();                       /* the counters restart: the clock is on again */
+    flip(a, 110u, 0.0);
+    s_fake_cpu_ns += 30500000u;                  /* 30.5 ms in 30 ms: inside the slack */
+    s_fake_wall_ns += 30000000u;
+    sr_perf_present_done(0, 1);
+    sr_perf_present_frame(b, 112u);
+    sr_perf_test_force_report();
+    CHECK(csv_last("frame_work_frames") == 1.0, "the thread clock is on again after a restart, "
+          "within the slack (frame_work_frames %.0f)", csv_last("frame_work_frames"));
+    sr_perf_test_set_clocks(NULL, NULL);
+    sr_perf_test_reinit();
+}
+
 static uint32_t fake_pc(void) { return 0x08804000u; }
 static uint32_t fake_uid(void) { return 7u; }
 
-/* SR_PERF_CSV alone turns the counters on and writes nothing to stderr, the cumulative
- * PERF_ATTRIB lines included; SR_PERF=0 keeps them off even with an output path (the benchmark's
- * profiler-off leg); with SR_PERF the attribution lines leave as one write each. */
+/* SR_PERF_CSV alone turns the counters on and writes nothing to stderr, the start-up line and the
+ * cumulative PERF_ATTRIB lines included; SR_PERF=0 keeps them off even with an output path (the
+ * benchmark's profiler-off leg); with SR_PERF the start-up line and the attribution lines leave as
+ * one write each. */
 static void test_files_only_counters(void) {
     set_env("SR_PERF", NULL);
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
     sr_perf_test_reinit();
     CHECK(sr_perf_enabled, "SR_PERF_CSV alone turns the counters on");
     int rows = csv_rows();
-    sr_perf_test_set_report_sink(capture_report_line);
-    s_report_count = 0;
     sr_perf_present_done(0, 1);
     sr_perf_test_force_report();
     sr_perf_phase_report(1);
@@ -489,7 +536,13 @@ static void test_files_only_counters(void) {
     /* The attribution lines' text is what tools/vblank_ledger.py parses: a late latch inside a
      * syscall carries its sampled thread, PC and NID, and a collapse drops owed episodes. */
     set_env("SR_PERF", "1");
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
     sr_perf_test_reinit();
+    sr_perf_test_set_report_sink(NULL);
+    CHECK(s_report_count == 1 &&
+              strcmp(s_report_lines[0], "PERF enabled: 1 Hz aggregate telemetry + CSV + JSON summary\n") == 0,
+          "SR_PERF start-up line: %d lines, [%s]", s_report_count, s_report_count ? s_report_lines[0] : "");
     sr_rt_pc_fn = fake_pc;
     sr_rt_uid_fn = fake_uid;
     sr_rt_phase = SR_RT_PHASE_SYSCALL;
@@ -523,7 +576,16 @@ static void test_files_only_counters(void) {
 
 /* The real thread clock: a 30 ms spin on this thread between two new frames is read as at most
  * the wall time it took (a thread cannot run longer than the wall clock), and above zero. A clock
- * read in the wrong unit (TSC cycles as ns) is several times the wall time. */
+ * read in the wrong unit (TSC cycles as ns) is several times the wall time.
+ * Windows counts the thread's own cycles: exact to 1 ms. Linux reads CLOCK_THREAD_CPUTIME_ID from
+ * per-CPU scheduler clocks the kernel keeps within a tick or two of the wall clock
+ * (kernel/sched/clock.c): a hosted runner read this spin as 32.4 ms over 30.0 ms. 20 ms is two
+ * ticks at HZ=100, the coarsest tick. */
+#ifdef _WIN32
+#define THREAD_CLOCK_SLACK_MS 1.0
+#else
+#define THREAD_CLOCK_SLACK_MS 20.0
+#endif
 static void spin_ns(uint64_t ns);
 
 static void test_thread_clock(void) {
@@ -534,8 +596,12 @@ static void test_thread_clock(void) {
     uint64_t t0 = sr_exec_now_ns();
     spin_ns(30000000u);
     sr_perf_present_done(0, 1);
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
     sr_perf_present_frame(0x04044000u, 202u);
+    sr_perf_test_set_report_sink(NULL);
     double wall_ms = (double)(sr_exec_now_ns() - t0) / 1000000.0;
+    CHECK(s_report_count == 0, "the thread clock was turned off: %s", s_report_count ? s_report_lines[0] : "");
     sr_perf_test_force_report();
     double frames = csv_last("frame_work_frames");
     double work = csv_last("frame_work_ms");
@@ -545,9 +611,9 @@ static void test_thread_clock(void) {
     }
     printf("profiler selftest: the thread clock read a 30 ms spin (%.3f ms of wall) as %.3f ms\n", wall_ms,
            work);
-    CHECK(frames == 1.0 && work > 0.0 && work <= wall_ms + 1.0,
-          "a 30 ms spin read as %.3f ms of thread CPU over %.3f ms of wall (frames %.0f)", work,
-          wall_ms, frames);
+    CHECK(frames == 1.0 && work > 0.0 && work <= wall_ms + THREAD_CLOCK_SLACK_MS,
+          "a 30 ms spin read as %.3f ms of thread CPU over %.3f ms of wall (frames %.0f, slack %.0f ms)",
+          work, wall_ms, frames, THREAD_CLOCK_SLACK_MS);
 }
 
 /* Execution share (perf.h): always on, so it is driven here with SR_PERF unset. */
@@ -664,6 +730,7 @@ int main(void) {
     test_guest_symbol_labels();
     test_new_frames_are_distinct_buffers();
     test_frame_intervals_and_work();
+    test_thread_clock_guard();
     test_files_only_counters();
     test_thread_clock();
     sr_perf_shutdown();

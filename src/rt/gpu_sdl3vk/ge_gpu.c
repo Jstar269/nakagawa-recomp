@@ -7956,11 +7956,13 @@ static int coherence_check_device_color(const char *step, const uint32_t *dev, c
 /* Every device pixel of each scale x scale cell holds its guest pixel after a whole-target
  * upload, after a CPU-write patch across a row boundary, and after a depth upload. The
  * replicated rows are written from cached scratch (s_pxwide, s_zwide), never copied from
- * the mapped upload buffer (#1296). At scale 1 the cells are single pixels;
- * gpu-coherence-selftest also runs this case alone at SR_GPU_SCALE=2 and 4. */
+ * the mapped upload buffer (#1296). Every format runs at a full and at a short stride, whose
+ * columns past the stride upload as 0. At scale 1 the cells are single pixels;
+ * gpu-coherence-selftest also runs this case alone at render scales 2 and 4. */
 static int coherence_run_scaled_upload(void) {
     static const struct { uint32_t fmt, stride; } cells[] = {
-        { 3u, 512u }, { 0u, 512u }, { 1u, 512u }, { 2u, 512u }, { 3u, 480u },
+        { 3u, 512u }, { 0u, 512u }, { 1u, 512u }, { 2u, 512u },
+        { 3u, 480u }, { 0u, 480u }, { 1u, 448u }, { 2u, 496u },
     };
     const uint32_t fba = 0x00100000u, base = 0x04000000u | fba;
     uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
@@ -8058,9 +8060,9 @@ static int coherence_run_scaled_upload(void) {
 }
 
 int gegpu_coherence_selftest(void) {
-    /* SR_GPU_COHERENCE_CASE=scaled-upload runs that case alone, as the recipe does at
-     * SR_GPU_SCALE=2 and 4: the other fixtures expect 1x pixels (a filtered sample lands on
-     * other device pixels at a higher scale). Any other value fails. */
+    /* SR_GPU_COHERENCE_CASE=scaled-upload (the harness's --case) runs that case alone, as the
+     * recipe does at render scales 2 and 4: the other fixtures expect 1x pixels (a filtered sample
+     * lands on other device pixels at a higher scale). Any other value fails. */
     const char *only = getenv("SR_GPU_COHERENCE_CASE");
     if (only && *only) {
         if (strcmp(only, "scaled-upload") == 0) return coherence_run_scaled_upload();

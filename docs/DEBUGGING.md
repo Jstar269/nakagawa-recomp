@@ -46,8 +46,9 @@ $env:SR_PERF_CSV = "build/perf/baseline.csv"
 
 `SR_PERF_CSV` derives a sibling `.json` path when `SR_PERF_JSON` is unset. The manager's
 `Benchmark` profile sets both paths and copies both artifacts. With `SR_PERF` unset, either path on
-its own turns the counters on for its file and writes no telemetry line to stderr, the 60-second
-`PERF_ATTRIB` lines included, so a measured run carries no stderr writes. With `SR_PERF=0`, or
+its own turns the counters on for its file and writes nothing to stderr, the start-up line and the
+60-second `PERF_ATTRIB` lines included: a measured run's stderr carries only failures, such as an
+output that cannot be opened or a rejected thread clock. With `SR_PERF=0`, or
 with `SR_PERF` unset and neither path set, clock reads, aggregation, interval output, summary
 writing, and generated AOT per-instruction hooks are disabled. Runtime seams use one predicted
 `sr_perf_enabled` branch; `PERF_AOT_INSTRUCTIONS=0` removes the generated per-instruction hook
@@ -73,7 +74,12 @@ divided by the interval's `wall_ms`, and VBlanks per frame are
   period), `le22` (22 ms, two-thirds of a 30 fps frame), `le33_4` (two periods), `le50_1` (three
   periods) and `gt50_1`. On Windows the clock is the thread's TSC cycles, converted at the TSC rate
   measured over the run, so it needs an invariant TSC and reads nothing in the first half second;
-  `frame_work_frames` stays 0 where no precise thread clock exists. The JSON summary's `frames`
+  `frame_work_frames` stays 0 where no precise thread clock exists. Windows does not promise that
+  thread cycles tick at the TSC rate, so a frame whose thread CPU time is more than 1 ms longer
+  than its wall time turns host work per frame off for the rest of the run, with one `PERF:` line
+  on stderr, instead of reporting it. On Linux the clock is `CLOCK_THREAD_CPUTIME_ID`, read from
+  per-CPU scheduler clocks the kernel keeps within a tick or two of the wall clock: one frame can
+  read a few ms long, and a run's sum is off by one reading at most. The JSON summary's `frames`
   object holds the run totals.
 
 For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
