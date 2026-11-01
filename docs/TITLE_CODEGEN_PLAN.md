@@ -434,7 +434,7 @@ content.
 The generator's invariant is that **a guest address must never change what
 `--profile=none` emits**. Generic implementation may be core; the binding of a
 numeric address to a semantic is title-owned. Every HST-specific translation in
-`tools/codegen.py` — the address-specific custom stubs, `HST_SIMPLE_STUBS`,
+`tools/codegen.py` — the address-specific custom stubs (`tools/codegen_hst_stubs.py`), `HST_SIMPLE_STUBS`,
 `GUEST_PATCHES`, `NULL_BASE_WORD_LOADS`, the MEMSET/ARRSHIFT fastpaths,
 `GUEST_ABORT`, the `HST_MANUAL_CALLABLES`/`HST_RESUME_OWNERS` entry roles, and the `_SV_SPECIAL`
 `--static-verify` exclusion — is therefore reachable only when
