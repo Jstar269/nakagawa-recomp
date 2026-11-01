@@ -47,7 +47,7 @@ CODEGEN_PY = ROOT / "tools" / "codegen.py"
 VFPU_INTERP_C = ROOT / "src" / "rt" / "vfpu_interp.c"
 COMPATIBILITY_MD = ROOT / "docs" / "COMPATIBILITY.md"
 HARDWARE_ORACLE_MD = ROOT / "docs" / "HARDWARE_ORACLE.md"
-VFPU_INTERP_SELFTEST_C = ROOT / "src" / "rt" / "vfpu_interp_selftest.c"
+VFPU_INTERP_SELFTEST_C = ROOT / "tests" / "native" / "vfpu_interp_selftest.c"
 VFPU_PROBE_C = ROOT / "fixtures" / "vfpu_oracle" / "vfpu_probe.c"
 
 #: `|x| = 1.0` in raw bits: the documented end of the arc-sine domain.

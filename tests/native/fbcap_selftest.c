@@ -1,0 +1,764 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 the Nakagawa Recomp authors
+//
+// fbcap_selftest.c - selftest for the presenter-neutral frame capture service (fbcap.c).
+//
+// Drives the public API with synthetic frames and checks exactly what is published:
+//   - a host-served capture (the offscreen and GDI presenters) publishes an exact P6 PPM:
+//     header, size, R,G,B channel order and every pixel byte;
+//   - a read-back capture (the sdl3vk presenter) publishes the same bytes for the same frame,
+//     so a capture means the same thing whichever presenter showed the frame;
+//   - a skipped present (cancel) and a refused re-arm never publish or report stale results;
+//   - a failed publication or present resolves as failed (-1), never as success;
+//   - the publisher creates the parent directory it needs;
+//   - SR_FBSNAP_WINDOWS alone selects the FBSNAP slot with every present captured
+//     (fbcap_policy.c), while an explicit SR_FBSNAP keeps its meaning.
+// No game data, no GPU, no window: exit 0 = every check passed.
+
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <unistd.h>
+#endif
+
+#include "fbcap.h"
+#include "fbcap_policy.h" /* declares sr_fbcap_path with size_t: after <stdio.h> */
+
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
+#define PSP_W 480u
+#define PSP_H 272u
+
+static int s_failures;
+
+#define CHECK(cond, msg)                                         \
+    do {                                                         \
+        if (!(cond)) {                                           \
+            fprintf(stderr, "fbcap_selftest FAIL: %s\n", (msg)); \
+            s_failures++;                                        \
+        }                                                        \
+    } while (0)
+
+static char s_dir[512];
+static uint32_t s_frame[PSP_W * PSP_H];               /* host frame: 0x00RRGGBB words */
+static unsigned char s_frame_rgb[PSP_W * PSP_H * 3];  /* the P6 body it must publish */
+
+/* Path of a named file inside the selftest output directory. */
+static void out_path(char *buf, size_t n, const char *name) {
+    snprintf(buf, n, "%s/%s", s_dir, name);
+}
+
+static int file_exists(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
+static void make_dir(const char *p) {
+#ifdef _WIN32
+    (void)_mkdir(p);
+#else
+    (void)mkdir(p, 0777);
+#endif
+}
+
+static void remove_dir(const char *p) {
+#ifdef _WIN32
+    (void)_rmdir(p);
+#else
+    (void)rmdir(p);
+#endif
+}
+
+/* Fill the synthetic host frame, the layout gui.c's converted s_px uses, and the RGB
+ * stream a correct publisher writes for it. Every channel varies on both axes. */
+static void make_frame(void) {
+    for (uint32_t y = 0; y < PSP_H; y++)
+        for (uint32_t x = 0; x < PSP_W; x++) {
+            uint32_t r = (x * 255u) / PSP_W;
+            uint32_t g = (y * 255u) / PSP_H;
+            uint32_t b = ((x + y) * 255u) / (PSP_W + PSP_H);
+            size_t i = (size_t)y * PSP_W + x;
+            s_frame[i] = (r << 16) | (g << 8) | b;
+            s_frame_rgb[i * 3 + 0] = (unsigned char)r;
+            s_frame_rgb[i * 3 + 1] = (unsigned char)g;
+            s_frame_rgb[i * 3 + 2] = (unsigned char)b;
+        }
+}
+
+/* Read a whole file and compare it with the expected P6 header and RGB body, byte for
+ * byte, including that nothing trails the body. */
+static int ppm_matches(const char *path, uint32_t w, uint32_t h, const unsigned char *rgb) {
+    char header[64];
+    int n = snprintf(header, sizeof header, "P6\n%u %u\n255\n", (unsigned)w, (unsigned)h);
+    size_t body = (size_t)w * h * 3u;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    unsigned char *got = (unsigned char *)malloc((size_t)n + body + 1u);
+    if (!got) { fclose(f); return 0; }
+    size_t len = fread(got, 1, (size_t)n + body + 1u, f);
+    fclose(f);
+    int ok = len == (size_t)n + body && memcmp(got, header, (size_t)n) == 0 &&
+             memcmp(got + n, rgb, body) == 0;
+    free(got);
+    return ok;
+}
+
+/* Both files exist and hold identical bytes. */
+static int files_identical(const char *a, const char *b) {
+    FILE *fa = fopen(a, "rb");
+    FILE *fb = fopen(b, "rb");
+    int ok = fa && fb;
+    while (ok) {
+        int ca = fgetc(fa), cb = fgetc(fb);
+        if (ca != cb) ok = 0;
+        if (ca == EOF || cb == EOF) break;
+    }
+    if (fa) fclose(fa);
+    if (fb) fclose(fb);
+    return ok;
+}
+
+/* Invalid requests are refused and arm nothing. */
+static void test_refused_requests(void) {
+    char long_path[1100];
+    memset(long_path, 'a', sizeof long_path - 1u);
+    long_path[sizeof long_path - 1u] = '\0';
+    CHECK(sr_capture_arm(NULL) == 0, "refuse: NULL path");
+    CHECK(sr_capture_arm("") == 0, "refuse: empty path");
+    CHECK(sr_capture_arm(long_path) == 0, "refuse: path longer than the capture slot");
+    CHECK(!sr_capture_is_armed(), "refuse: nothing armed after refused requests");
+    CHECK(sr_capture_result() == 0, "refuse: refused requests report nothing attempted");
+}
+
+/* A host-served capture (offscreen/GDI) publishes exactly the presented frame. */
+static void test_host_capture(void) {
+    char path[600];
+    out_path(path, sizeof path, "host.ppm");
+    remove(path);
+    /* Pixel (479,0) is r=254 g=0 b=162: pins the R,G,B order of the published body. */
+    CHECK(s_frame_rgb[479 * 3 + 0] == 254 && s_frame_rgb[479 * 3 + 1] == 0 &&
+          s_frame_rgb[479 * 3 + 2] == 162, "fixture: channel-order sentinel");
+    CHECK(sr_capture_arm(path) == 1, "host: arm accepted");
+    CHECK(sr_capture_is_armed(), "host: armed state visible to presenters");
+    CHECK(sr_capture_result() == 0, "host: nothing attempted before service");
+    CHECK(strcmp(sr_capture_source_label(), "") == 0, "host: no source before service");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "host: serve publishes");
+    CHECK(sr_capture_result() == 1, "host: result is published");
+    CHECK(strcmp(sr_capture_source_label(), "cpu-framebuffer") == 0, "host: source label");
+    CHECK(ppm_matches(path, PSP_W, PSP_H, s_frame_rgb), "host: PPM header and pixels exact");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 0,
+          "host: a present with nothing armed publishes nothing");
+}
+
+/* The sdl3vk presenter reads its B8G8R8A8 framebuffer image back instead of serving the
+ * host frame. For the same frame the published file must be byte-identical to the
+ * host-served one, so offscreen and windowed captures can be compared directly. */
+static void test_readback_matches_host_capture(void) {
+    char host[600], readback[600];
+    out_path(host, sizeof host, "same_host.ppm");
+    out_path(readback, sizeof readback, "same_readback.ppm");
+    remove(host);
+    remove(readback);
+    CHECK(sr_capture_arm(host) == 1, "same: host arm");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "same: host publish");
+    CHECK(sr_capture_arm(readback) == 1, "same: readback arm");
+    sr_capture_mark_recorded(SR_CAP_SRC_CPU, PSP_W, PSP_H);
+    CHECK(sr_capture_is_recorded() && !sr_capture_is_armed(), "same: recorded, not armed");
+    CHECK(sr_capture_publish_recorded(s_frame, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "same: readback publish");
+    CHECK(strcmp(sr_capture_source_label(), "cpu-framebuffer") == 0, "same: readback label");
+    CHECK(files_identical(host, readback), "same: host-served and read-back files identical");
+}
+
+/* A GE render target is read back as R8G8B8A8 with a padded row pitch: channels publish
+ * in order and the row padding never reaches the file. */
+static void test_gpu_readback(void) {
+    enum { GW = 8, GH = 4, GROW = GW * 4 + 8 };
+    static unsigned char buf[GROW * GH];
+    static unsigned char expect[GW * GH * 3];
+    char path[600];
+    out_path(path, sizeof path, "gpu.ppm");
+    remove(path);
+    memset(buf, 0xAB, sizeof buf);
+    for (unsigned y = 0; y < GH; y++)
+        for (unsigned x = 0; x < GW; x++) {
+            unsigned char *p = buf + y * GROW + x * 4u;
+            p[0] = (unsigned char)(x * 10u);       /* R */
+            p[1] = (unsigned char)(y * 20u);       /* G */
+            p[2] = (unsigned char)((x + y) * 7u);  /* B */
+            p[3] = 0xEEu;
+            size_t i = ((size_t)y * GW + x) * 3u;
+            expect[i + 0] = p[0];
+            expect[i + 1] = p[1];
+            expect[i + 2] = p[2];
+        }
+    CHECK(sr_capture_arm(path) == 1, "gpu: arm accepted");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, GW, GH);
+    CHECK(sr_capture_arm(path) == 0, "gpu: a re-arm while the readback is pending is refused");
+    sr_capture_cancel();
+    CHECK(sr_capture_is_recorded(), "gpu: cancel never drops a recorded readback");
+    CHECK(sr_capture_serve_host(buf, GW, GH, GROW, SR_CAP_ORDER_RGBX) == 0,
+          "gpu: a host present never services a recorded readback");
+    CHECK(sr_capture_publish_recorded(buf, GROW, SR_CAP_ORDER_RGBX) == 1, "gpu: publish");
+    CHECK(sr_capture_result() == 1, "gpu: result is published");
+    CHECK(strcmp(sr_capture_source_label(), "gpu-render-target") == 0, "gpu: source label");
+    CHECK(!sr_capture_is_recorded(), "gpu: publish resolves the recorded state");
+    CHECK(ppm_matches(path, GW, GH, expect), "gpu: RGB order, pitch and pixels exact");
+}
+
+/* A skipped present cancels the arm: nothing is published for it, a later present cannot
+ * service it, and the next arm publishes only its own frame. */
+static void test_skipped_present_cancels(void) {
+    char skipped[600], next[600];
+    out_path(skipped, sizeof skipped, "skipped.ppm");
+    out_path(next, sizeof next, "after_skip.ppm");
+    remove(skipped);
+    remove(next);
+    CHECK(sr_capture_arm(skipped) == 1, "skip: arm accepted");
+    sr_capture_cancel();
+    CHECK(sr_capture_result() == 0, "skip: cancel resolves as nothing attempted");
+    CHECK(!sr_capture_is_armed(), "skip: cancel clears the armed state");
+    CHECK(strcmp(sr_capture_source_label(), "") == 0, "skip: no source for a cancelled arm");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 0,
+          "skip: a later present must not service the cancelled arm");
+    CHECK(!file_exists(skipped), "skip: no file for the cancelled arm");
+    CHECK(sr_capture_arm(next) == 1, "skip: a fresh arm after cancel");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "skip: fresh arm publishes");
+    CHECK(file_exists(next) && !file_exists(skipped), "skip: only the fresh path is written");
+}
+
+/* A refused re-arm keeps the pending capture and clears only the reportable result. */
+static void test_refused_rearm_keeps_pending(void) {
+    char first[600], second[600];
+    out_path(first, sizeof first, "first.ppm");
+    out_path(second, sizeof second, "second.ppm");
+    remove(first);
+    remove(second);
+    CHECK(sr_capture_arm(first) == 1, "rearm: first arm accepted");
+    CHECK(sr_capture_arm(second) == 0, "rearm: second arm refused while pending");
+    CHECK(sr_capture_result() == 0, "rearm: refused arm exposes no stale result");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "rearm: pending capture still serviced");
+    CHECK(file_exists(first) && !file_exists(second), "rearm: the pending path is written");
+}
+
+/* A failed publication resolves as failed (-1), never as success, and does not wedge the
+ * service: the next arm works. */
+static void test_failed_publication(void) {
+    char blocked[600], next[600];
+    out_path(blocked, sizeof blocked, "blocked.ppm");
+    out_path(next, sizeof next, "next.ppm");
+    make_dir(blocked);                     /* a directory cannot be replaced by the file */
+    remove(next);
+    CHECK(sr_capture_arm(blocked) == 1, "fail: arm accepted");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == -1,
+          "fail: an unwritable destination is attempted-and-failed");
+    CHECK(sr_capture_result() == -1, "fail: result is -1, never a fabricated success");
+    CHECK(sr_capture_arm(next) == 1, "fail: the service is not wedged after a failure");
+    CHECK(sr_capture_result() == 0, "fail: a new arm clears the previous failure");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "fail: the next capture publishes");
+    CHECK(ppm_matches(next, PSP_W, PSP_H, s_frame_rgb), "fail: the next file is exact");
+}
+
+/* Failures before publication (a failed present, an invalid pixel description) resolve
+ * as failed and publish nothing. */
+static void test_explicit_failures(void) {
+    char present_failed[600], bad_pitch[600];
+    out_path(present_failed, sizeof present_failed, "present_failed.ppm");
+    out_path(bad_pitch, sizeof bad_pitch, "bad_pitch.ppm");
+    remove(present_failed);
+    remove(bad_pitch);
+    CHECK(sr_capture_arm(present_failed) == 1, "explicit: arm accepted");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, 8, 4);
+    sr_capture_fail("synthetic present failure");
+    CHECK(sr_capture_result() == -1, "explicit: fail resolves a recorded capture as -1");
+    CHECK(!sr_capture_is_recorded(), "explicit: fail clears the recorded state");
+    CHECK(sr_capture_publish_recorded(s_frame, PSP_W * 4u, SR_CAP_ORDER_RGBX) == 0,
+          "explicit: a failed capture cannot be published later");
+    CHECK(sr_capture_result() == -1 && !file_exists(present_failed),
+          "explicit: the failure stands and no file exists");
+
+    CHECK(sr_capture_arm(bad_pitch) == 1, "explicit: second arm accepted");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u - 1u, SR_CAP_ORDER_BGRX) == -1,
+          "explicit: a row pitch shorter than the pixels is refused");
+    CHECK(sr_capture_result() == -1 && !file_exists(bad_pitch),
+          "explicit: invalid pixels publish nothing");
+}
+
+/* The publisher creates the parent directories it needs (FBSNAP writes under
+ * build/snapshots/, which no build step creates). */
+static void test_parent_directory(void) {
+    char path[600], sub[600], nested[600];
+    out_path(path, sizeof path, "nested/sub/frame_v1.ppm");
+    out_path(sub, sizeof sub, "nested/sub");
+    out_path(nested, sizeof nested, "nested");
+    remove(path);
+    remove_dir(sub);
+    remove_dir(nested);
+    CHECK(!file_exists(path), "parent: no file left from an earlier run");
+    CHECK(sr_capture_arm(path) == 1, "parent: arm accepted");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "parent: publish creates nested/sub");
+    CHECK(ppm_matches(path, PSP_W, PSP_H, s_frame_rgb), "parent: file exact in the new dir");
+}
+
+/* An absolute destination publishes too: on Windows its first prefix is a drive root such as
+ * "C:/", which mkdir reports as an error (EACCES) even though it exists. */
+static void test_absolute_path(void) {
+    char cwd[512] = "", base[1100], path[1200], sub[1200], top[1200];
+    int absolute = s_dir[0] == '/' || s_dir[0] == '\\' || (s_dir[0] && s_dir[1] == ':');
+    if (!absolute) {
+#ifdef _WIN32
+        CHECK(_getcwd(cwd, (int)sizeof cwd) != NULL, "absolute: current directory");
+#else
+        CHECK(getcwd(cwd, sizeof cwd) != NULL, "absolute: current directory");
+#endif
+    }
+    int n = absolute ? snprintf(base, sizeof base, "%s", s_dir)
+                     : snprintf(base, sizeof base, "%s/%s", cwd, s_dir);
+    CHECK(n > 0 && (size_t)n < sizeof base, "absolute: base path fits");
+    n = snprintf(top, sizeof top, "%s/abs", base);
+    CHECK(n > 0 && (size_t)n < sizeof top, "absolute: directory path fits");
+    n = snprintf(sub, sizeof sub, "%s/abs/sub", base);
+    CHECK(n > 0 && (size_t)n < sizeof sub, "absolute: subdirectory path fits");
+    n = snprintf(path, sizeof path, "%s/abs/sub/frame_v2.ppm", base);
+    CHECK(n > 0 && (size_t)n < sizeof path, "absolute: file path fits");
+    remove(path);
+    remove_dir(sub);
+    remove_dir(top);
+    CHECK(sr_capture_arm(path) == 1, "absolute: arm accepted");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "absolute: publish creates the missing directories under an absolute root");
+    CHECK(ppm_matches(path, PSP_W, PSP_H, s_frame_rgb), "absolute: file exact");
+}
+
+/* SR_FBSNAP_WINDOWS is self-sufficient: with SR_FBSNAP unset, configured windows select the
+ * FBSNAP slot and capture every present inside them. An explicit SR_FBSNAP keeps its
+ * meaning, and SR_FBDUMP keeps priority over windows. */
+static void test_windows_imply_every_present(void) {
+    CHECK(sr_fbcap_snap_every(NULL, 0) == 0, "policy: nothing configured is off");
+    CHECK(sr_fbcap_snap_every("", 0) == 0, "policy: an empty switch without windows is off");
+    CHECK(sr_fbcap_snap_every(NULL, 1) == 1, "policy: windows alone capture every present");
+    CHECK(sr_fbcap_snap_every("", 1) == 1, "policy: an empty switch counts as unset");
+    CHECK(sr_fbcap_snap_every("0", 1) == 0, "policy: an explicit SR_FBSNAP=0 stays off");
+    CHECK(sr_fbcap_snap_every("-2", 1) == 0, "policy: a negative cadence is off");
+    CHECK(sr_fbcap_snap_every("every", 1) == 0, "policy: a non-numeric cadence is off");
+    CHECK(sr_fbcap_snap_every("3", 0) == 3, "policy: SR_FBSNAP=3 alone keeps its cadence");
+    CHECK(sr_fbcap_snap_every("3", 1) == 3, "policy: windows keep an explicit cadence");
+    CHECK(sr_fbcap_snap_every("99999999999", 0) == INT_MAX, "policy: a huge cadence saturates");
+    CHECK(sr_fbcap_owner(0, sr_fbcap_snap_every(NULL, 1) > 0) == SR_FBCAP_FBSNAP,
+          "policy: windows without SR_FBSNAP own the FBSNAP slot");
+    CHECK(sr_fbcap_owner(0, sr_fbcap_snap_every("0", 1) > 0) == SR_FBCAP_NONE,
+          "policy: SR_FBSNAP=0 with windows owns nothing");
+    CHECK(sr_fbcap_owner(1, sr_fbcap_snap_every(NULL, 1) > 0) == SR_FBCAP_FBDUMP,
+          "policy: SR_FBDUMP keeps priority over windows");
+}
+
+/* A picture probe is serviced like a capture but publishes no file: it reports the brightest
+ * colour byte, once, through either presenter route, and never blocks a later file capture. */
+static void test_picture_probe(void) {
+    static uint32_t dark[PSP_W * PSP_H];
+    uint32_t b = 99u;
+    char blocked[600], after[600];
+    out_path(blocked, sizeof blocked, "probe_blocked.ppm");
+    out_path(after, sizeof after, "after_probe.ppm");
+    remove(blocked);
+    remove(after);
+    for (uint32_t i = 0; i < PSP_W * PSP_H; i++)
+        dark[i] = (i % 3u == 0u) ? 0x00080000u : (i % 3u == 1u ? 0x00000800u : 0u);
+    dark[17] |= 0xff000000u;                     /* the ignored byte never counts */
+    CHECK(sr_capture_probe_take(&b) == 0, "probe: no result before any probe");
+    CHECK(sr_capture_arm_probe() == 1, "probe: arm accepted");
+    CHECK(sr_capture_arm(blocked) == 0, "probe: a pending probe refuses a file arm");
+    CHECK(sr_capture_serve_host(dark, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "probe: host service resolves the probe");
+    CHECK(!file_exists(blocked), "probe: no file is written");
+    CHECK(sr_capture_probe_take(&b) == 1 && b == 8u, "probe: brightest byte of a dark frame is 8");
+    CHECK(sr_capture_probe_take(&b) == 0, "probe: a result is taken once");
+
+    /* GPU readback route, RGBX order, with one bright pixel in the last row. */
+    static uint32_t gpu[PSP_W * PSP_H];
+    memset(gpu, 0, sizeof gpu);
+    gpu[PSP_W * (PSP_H - 1u) + 5u] = 0x00c80000u;  /* byte 2 (blue in RGBX) = 200 */
+    CHECK(sr_capture_arm_probe() == 1, "probe: gpu arm accepted");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, PSP_W, PSP_H);
+    CHECK(sr_capture_publish_recorded(gpu, PSP_W * 4u, SR_CAP_ORDER_RGBX) == 1, "probe: gpu publish");
+    CHECK(sr_capture_probe_take(&b) == 1 && b == 200u, "probe: gpu brightest byte");
+
+    /* A cancelled probe reports nothing, and a file capture works after a probe. */
+    CHECK(sr_capture_arm_probe() == 1, "probe: arm before a skipped present");
+    sr_capture_cancel();
+    CHECK(sr_capture_probe_take(&b) == 0, "probe: a cancelled probe has no result");
+    CHECK(sr_capture_arm(after) == 1, "probe: file arm after a probe");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "probe: file capture after a probe publishes");
+    CHECK(ppm_matches(after, PSP_W, PSP_H, s_frame_rgb),
+          "probe: file capture after a probe is exact");
+    CHECK(sr_capture_probe_take(&b) == 0, "probe: a file capture leaves no probe result");
+}
+
+/* The dark-picture watch: a stretch opens at the first dark probe, reports once per report
+ * period while probes keep arriving, stays quiet once probes stop, and a visible frame ends
+ * it with RESUMED only when it had been reported. */
+static void test_picture_watch(void) {
+    SrPictureWatch w;
+    uint32_t dark = 0u;
+    memset(&w, 0, sizeof w);
+    CHECK(sr_picture_watch_tick(&w, 5000u, &dark) == SR_PICTURE_WATCH_NONE, "watch: nothing open");
+    CHECK(sr_picture_watch_probe(&w, 1000u, 40u) == SR_PICTURE_WATCH_NONE, "watch: visible frame");
+    CHECK(sr_picture_watch_tick(&w, 1700u, &dark) == SR_PICTURE_WATCH_NONE, "watch: visible stays quiet");
+    CHECK(sr_picture_watch_probe(&w, 1300u, SR_PICTURE_DARK_MAX) == SR_PICTURE_WATCH_NONE,
+          "watch: the threshold value is dark");
+    CHECK(sr_picture_watch_probe(&w, 1600u, 0u) == SR_PICTURE_WATCH_NONE, "watch: still dark");
+    CHECK(sr_picture_watch_tick(&w, 1899u, &dark) == SR_PICTURE_WATCH_NONE, "watch: under one period");
+    CHECK(sr_picture_watch_tick(&w, 1900u, &dark) == SR_PICTURE_WATCH_REPORT && dark == 600u,
+          "watch: first report after one period from the first dark probe");
+    CHECK(sr_picture_watch_tick(&w, 1901u, &dark) == SR_PICTURE_WATCH_NONE, "watch: once per period");
+    CHECK(sr_picture_watch_probe(&w, 1902u, 1u) == SR_PICTURE_WATCH_NONE, "watch: dark probe");
+    /* A VBLANK jump across two periods reports once, with the true elapsed count. */
+    CHECK(sr_picture_watch_tick(&w, 2502u, &dark) == SR_PICTURE_WATCH_REPORT && dark == 1202u,
+          "watch: a jump across a period reports once");
+    /* Probes stop (the game stopped flipping): the no-frame watchdog's case, not this one's. */
+    CHECK(sr_picture_watch_tick(&w, 1902u + 2u * SR_PICTURE_PROBE_EVERY + 1u + 600u, &dark) ==
+          SR_PICTURE_WATCH_NONE, "watch: quiet once probes stop");
+    CHECK(sr_picture_watch_probe(&w, 4000u, SR_PICTURE_DARK_MAX + 1u) == SR_PICTURE_WATCH_RESUMED,
+          "watch: a visible frame ends a reported stretch");
+    CHECK(sr_picture_watch_tick(&w, 9000u, &dark) == SR_PICTURE_WATCH_NONE, "watch: closed");
+    CHECK(sr_picture_watch_probe(&w, 9100u, 0u) == SR_PICTURE_WATCH_NONE, "watch: new stretch");
+    CHECK(sr_picture_watch_probe(&w, 9200u, 90u) == SR_PICTURE_WATCH_NONE,
+          "watch: an unreported stretch ends without RESUMED");
+}
+
+/* The probe's result through the host service (synchronous) and through the deferred GPU
+ * route (recorded, deferred, then published); both must give the same brightest byte. */
+static uint32_t probe_via_host(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
+                               sr_cap_order order) {
+    uint32_t b = 999u;
+    CHECK(sr_capture_arm_probe() == 1, "pinned: host arm");
+    CHECK(sr_capture_serve_host(px, w, h, row_bytes, order) == 1, "pinned: host service");
+    CHECK(sr_capture_probe_take(&b) == 1, "pinned: host result");
+    return b;
+}
+
+static uint32_t probe_via_deferred(const void *px, uint32_t w, uint32_t h, uint32_t row_bytes,
+                                   sr_cap_order order) {
+    uint32_t b = 999u;
+    CHECK(sr_capture_arm_probe() == 1, "pinned: deferred arm");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, w, h);
+    sr_capture_probe_defer();
+    CHECK(sr_capture_probe_in_flight() == 1, "pinned: deferred in flight");
+    CHECK(sr_capture_publish_probe(px, row_bytes, order) == 1, "pinned: deferred publish");
+    CHECK(sr_capture_probe_take(&b) == 1, "pinned: deferred result");
+    return b;
+}
+
+/* The probe's result is pinned on a table of frames: the brightest of the three colour bytes,
+ * never the ignored byte or row padding, in either byte order, at the 4x frame size. */
+static void test_probe_result_pinned(void) {
+    static uint8_t big[2048u * 1088u * 4u];
+    static uint8_t small[16u * 4u * 6u];   /* 6 rows of 16 bytes: 3 pixels + 4 bytes padding */
+    const uint32_t row = 16u;
+    struct { const char *name; uint32_t px, byte; uint8_t value; uint32_t want; } cases[] = {
+        { "all zero", 0u, 0u, 0u, 0u },
+        { "dark maximum in the last pixel", 5u * 3u + 2u, 0u, 8u, 8u },
+        { "byte 1", 7u, 1u, 77u, 77u },
+        { "byte 2", 4u, 2u, 200u, 200u },
+        { "first-row 255", 1u, 2u, 255u, 255u },
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        memset(small, 0, sizeof small);
+        for (uint32_t y = 0; y < 6u; y++) {
+            for (uint32_t x = 0; x < 3u; x++) small[y * row + x * 4u + 3u] = 0xffu;  /* ignored */
+            memset(small + y * row + 12u, 0xff, 4u);                                  /* padding */
+        }
+        uint32_t p = cases[c].px;
+        small[(p / 3u) * row + (p % 3u) * 4u + cases[c].byte] = cases[c].value;
+        for (int o = 0; o < 2; o++) {
+            sr_cap_order order = o ? SR_CAP_ORDER_RGBX : SR_CAP_ORDER_BGRX;
+            uint32_t h = probe_via_host(small, 3u, 6u, row, order);
+            uint32_t d = probe_via_deferred(small, 3u, 6u, row, order);
+            if (h != cases[c].want || d != cases[c].want)
+                fprintf(stderr, "  pinned case '%s': host %u deferred %u, want %u\n",
+                        cases[c].name, h, d, cases[c].want);
+            CHECK(h == cases[c].want && d == cases[c].want, "pinned: brightest byte");
+        }
+    }
+    /* A 4x dark frame whose only non-zero colour byte is the last pixel's: a full scan. */
+    memset(big, 0, sizeof big);
+    for (size_t i = 0; i < 2048u * 1088u; i++) big[i * 4u + 3u] = 0xffu;
+    big[sizeof big - 4u] = 8u;
+    CHECK(probe_via_host(big, 2048u, 1088u, 2048u * 4u, SR_CAP_ORDER_RGBX) == 8u,
+          "pinned: 4x dark frame, host");
+    CHECK(probe_via_deferred(big, 2048u, 1088u, 2048u * 4u, SR_CAP_ORDER_RGBX) == 8u,
+          "pinned: 4x dark frame, deferred");
+}
+
+static int s_resolver_calls, s_resolver_blocking;
+static int s_resolver_finish;  /* what the test resolver does: 1 publish, 0 still running */
+static int test_resolver(int block) {
+    static const uint8_t frame[8] = { 0u, 0u, 9u, 0xffu, 0u, 0u, 0u, 0u };
+    s_resolver_calls++;
+    if (block) s_resolver_blocking++;
+    if (!block && !s_resolver_finish) return 0;
+    (void)sr_capture_publish_probe(frame, 8u, SR_CAP_ORDER_BGRX);
+    return 1;
+}
+
+/* The deferred probe protocol: the capture slot is free while a probe is in flight, a second
+ * probe is refused, the result arrives once, and a dropped or invalid probe has none. */
+static void test_deferred_probe(void) {
+    char path[600];
+    uint32_t b = 0u;
+    out_path(path, sizeof path, "while_probe_in_flight.ppm");
+    remove(path);
+    CHECK(sr_capture_pending_is_probe() == 0, "deferred: nothing pending");
+    CHECK(sr_capture_arm_probe() == 1, "deferred: arm");
+    CHECK(sr_capture_pending_is_probe() == 1, "deferred: the armed request is a probe");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, 2u, 1u);
+    CHECK(sr_capture_is_recorded() && sr_capture_pending_is_probe(), "deferred: recorded probe");
+    sr_capture_probe_defer();
+    CHECK(sr_capture_probe_in_flight() == 1, "deferred: in flight");
+    CHECK(!sr_capture_is_armed() && !sr_capture_is_recorded(), "deferred: the slot is free");
+    CHECK(sr_capture_probe_take(&b) == 0, "deferred: no result while in flight");
+    CHECK(sr_capture_arm_probe() == 0, "deferred: a second probe is refused while one is in flight");
+    CHECK(sr_capture_arm(path) == 1, "deferred: a file capture is accepted while a probe is in flight");
+    CHECK(sr_capture_pending_is_probe() == 0, "deferred: the armed request is a file capture");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1 &&
+          ppm_matches(path, PSP_W, PSP_H, s_frame_rgb),
+          "deferred: the file capture publishes exactly while the probe is in flight");
+    CHECK(sr_capture_probe_take(&b) == 0, "deferred: the file capture gave the probe no result");
+
+    /* Polling: nothing happens without a resolver; with one, a running readback stays in
+     * flight on a non-blocking poll and a blocking poll finishes it. */
+    CHECK(sr_capture_probe_poll(1) == 0 && sr_capture_probe_in_flight(), "deferred: no resolver");
+    sr_capture_set_probe_resolver(test_resolver);
+    s_resolver_finish = 0;
+    CHECK(sr_capture_probe_poll(0) == 0 && sr_capture_probe_in_flight(),
+          "deferred: a running readback stays in flight");
+    CHECK(sr_capture_probe_poll(1) == 1 && !sr_capture_probe_in_flight(),
+          "deferred: a blocking poll finishes it");
+    CHECK(sr_capture_probe_take(&b) == 1 && b == 9u, "deferred: the published result");
+    CHECK(sr_capture_probe_take(&b) == 0, "deferred: taken once");
+    CHECK(sr_capture_probe_poll(1) == 0, "deferred: nothing left to poll");
+    sr_capture_set_probe_resolver(NULL);
+
+    /* A dropped probe has no result; an invalid pixel description fails it without one. */
+    CHECK(sr_capture_arm_probe() == 1, "deferred: arm again");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, 2u, 1u);
+    sr_capture_probe_defer();
+    sr_capture_probe_drop("test drop");
+    CHECK(!sr_capture_probe_in_flight() && sr_capture_probe_take(&b) == 0,
+          "deferred: a dropped probe has no result");
+    CHECK(sr_capture_arm_probe() == 1, "deferred: arm after a drop");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, 2u, 1u);
+    sr_capture_probe_defer();
+    CHECK(sr_capture_publish_probe(s_frame, 4u, SR_CAP_ORDER_BGRX) == -1 &&
+          !sr_capture_probe_in_flight() && sr_capture_probe_take(&b) == 0,
+          "deferred: a short row fails the probe with no result");
+    CHECK(sr_capture_publish_probe(s_frame, 8u, SR_CAP_ORDER_BGRX) == 0,
+          "deferred: publishing with nothing in flight does nothing");
+
+    /* Deferring applies only to a recorded probe: a recorded file capture keeps its state. */
+    CHECK(sr_capture_arm(path) == 1, "deferred: file arm");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, PSP_W, PSP_H);
+    sr_capture_probe_defer();
+    CHECK(sr_capture_is_recorded() && !sr_capture_probe_in_flight(),
+          "deferred: a recorded file capture is not deferred");
+    CHECK(sr_capture_publish_recorded(s_frame, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "deferred: the file capture still publishes");
+    remove(path);
+}
+
+/* ---- deferred watch against the synchronous one -------------------------------------
+ * The reference feeds every probe result at its present, as display_present_active did when
+ * the presenter waited for the readback. The deferred side follows hle.c's present and
+ * VBLANK steps exactly: collect without waiting, collect with waiting only when the next
+ * probe is due or sr_picture_watch_tick_needs_probe() says so, then tick. Readbacks finish
+ * after random delays, mostly a few VBLANKs and sometimes more than a report period. Both
+ * must emit the same probes, RESUMED verdicts and reports, with the same values, in the same
+ * order. */
+typedef struct { char kind; uint32_t key, value; } WatchEvent;
+#define WATCH_EVENTS_MAX 8192
+static WatchEvent s_ref_ev[WATCH_EVENTS_MAX], s_def_ev[WATCH_EVENTS_MAX];
+static int s_ref_n, s_def_n;
+static uint32_t s_sim_now, s_sim_ready, s_sim_brightest;
+static int s_sim_blocking;
+
+static void watch_log(WatchEvent *ev, int *n, char kind, uint32_t key, uint32_t value) {
+    if (*n < WATCH_EVENTS_MAX) {
+        ev[*n].kind = kind;
+        ev[*n].key = key;
+        ev[*n].value = value;
+    }
+    (*n)++;
+}
+
+static uint32_t sim_rand(uint32_t *s) {
+    *s = *s * 1664525u + 1013904223u;
+    return *s >> 8;
+}
+
+static int sim_resolver(int block) {
+    uint8_t frame[8] = { 0u, 0u, 0u, 0xffu, 0u, 0u, 0u, 0xffu };
+    if (block) s_sim_blocking++;
+    if (!block && s_sim_now - s_sim_ready > 0x80000000u) return 0;   /* now < ready */
+    frame[5] = (uint8_t)s_sim_brightest;
+    (void)sr_capture_publish_probe(frame, 8u, SR_CAP_ORDER_BGRX);
+    return 1;
+}
+
+static void sim_collect(SrPictureWatch *w, int block) {
+    uint32_t key = w->pending_vcount, b = 0u;
+    int v = sr_picture_watch_collect(w, block, &b);
+    if (v == SR_PICTURE_WATCH_RESUMED) watch_log(s_def_ev, &s_def_n, 'R', key, b);
+}
+
+static void test_watch_deferred_matches_synchronous(void) {
+    enum { VBLANKS = 24000 };
+    static uint8_t present[VBLANKS], level[VBLANKS];
+    int reports = 0, resumed = 0, mismatched_trials = 0;
+    s_sim_blocking = 0;
+    sr_capture_set_probe_resolver(sim_resolver);
+    for (uint32_t trial = 1u; trial <= 48u; trial++) {
+        uint32_t seed = trial * 2654435761u;
+        /* Every fourth trial starts just below the VCOUNT wrap. */
+        uint32_t base = (trial % 4u == 0u) ? 0xffffffffu - 9000u : 1000u + trial;
+        /* Brightness in runs: dark runs long enough to be reported, bright runs between. */
+        int dark = 0;
+        uint32_t left = 0u;
+        for (uint32_t i = 0; i < VBLANKS; i++) {
+            if (left == 0u) {
+                dark = !dark;
+                left = dark ? 200u + sim_rand(&seed) % 4000u : 50u + sim_rand(&seed) % 1500u;
+            }
+            left--;
+            level[i] = dark ? (uint8_t)(sim_rand(&seed) % (SR_PICTURE_DARK_MAX + 1u))
+                            : (uint8_t)(SR_PICTURE_DARK_MAX + 1u + sim_rand(&seed) % 247u);
+        }
+        /* Presents every one or two VBLANKs, with occasional long gaps. */
+        memset(present, 0, sizeof present);
+        for (uint32_t i = 0; i < VBLANKS;) {
+            present[i] = 1u;
+            i += (sim_rand(&seed) % 100u < 3u) ? 300u + sim_rand(&seed) % 700u
+                                                : 1u + sim_rand(&seed) % 2u;
+        }
+        SrPictureWatch ref, def;
+        memset(&ref, 0, sizeof ref);
+        memset(&def, 0, sizeof def);
+        uint32_t ref_last = 0u, def_last = 0u, dd = 0u;
+        s_ref_n = s_def_n = 0;
+        for (uint32_t i = 0; i < VBLANKS; i++) {
+            uint32_t v = base + i;
+            s_sim_now = v;
+            if (present[i]) {
+                /* Reference: the result is fed inside the present. */
+                if (v - ref_last >= SR_PICTURE_PROBE_EVERY) {
+                    ref_last = v;
+                    watch_log(s_ref_ev, &s_ref_n, 'P', v, 0u);
+                    if (sr_picture_watch_probe(&ref, v, level[i]) == SR_PICTURE_WATCH_RESUMED)
+                        watch_log(s_ref_ev, &s_ref_n, 'R', v, level[i]);
+                }
+                /* Deferred: hle.c's display_present_active. */
+                sim_collect(&def, 0);
+                if (def.pending && v - def_last >= SR_PICTURE_PROBE_EVERY) sim_collect(&def, 1);
+                if (!def.pending && v - def_last >= SR_PICTURE_PROBE_EVERY &&
+                    sr_capture_arm_probe()) {
+                    sr_capture_mark_recorded(SR_CAP_SRC_GPU, 2u, 1u);
+                    sr_capture_probe_defer();
+                    def_last = v;
+                    sr_picture_watch_probe_sent(&def, v);
+                    watch_log(s_def_ev, &s_def_n, 'P', v, 0u);
+                    uint32_t r = sim_rand(&seed) % 100u;
+                    dd = r < 6u ? sim_rand(&seed) % 1300u : sim_rand(&seed) % 4u;
+                    s_sim_ready = v + dd;
+                    s_sim_brightest = level[i];
+                }
+            }
+            /* Reference tick. */
+            uint32_t d = 0u;
+            if (sr_picture_watch_tick(&ref, v, &d) == SR_PICTURE_WATCH_REPORT)
+                watch_log(s_ref_ev, &s_ref_n, 'T', v, d);
+            /* Deferred: hle.c's sr_vblank_tick. */
+            sim_collect(&def, 0);
+            if (sr_picture_watch_tick_needs_probe(&def, v)) sim_collect(&def, 1);
+            d = 0u;
+            if (sr_picture_watch_tick(&def, v, &d) == SR_PICTURE_WATCH_REPORT)
+                watch_log(s_def_ev, &s_def_n, 'T', v, d);
+        }
+        sr_capture_probe_drop("end of trial");
+        int same = s_ref_n == s_def_n && s_ref_n <= WATCH_EVENTS_MAX;
+        for (int k = 0; same && k < s_ref_n; k++)
+            same = s_ref_ev[k].kind == s_def_ev[k].kind && s_ref_ev[k].key == s_def_ev[k].key &&
+                   s_ref_ev[k].value == s_def_ev[k].value;
+        if (!same) {
+            mismatched_trials++;
+            int k = 0;
+            while (k < s_ref_n && k < s_def_n && s_ref_ev[k].kind == s_def_ev[k].kind &&
+                   s_ref_ev[k].key == s_def_ev[k].key && s_ref_ev[k].value == s_def_ev[k].value)
+                k++;
+            fprintf(stderr, "  watch trial %u: first difference at event %d of %d/%d\n",
+                    trial, k, s_ref_n, s_def_n);
+        }
+        for (int k = 0; k < s_ref_n && k < WATCH_EVENTS_MAX; k++) {
+            if (s_ref_ev[k].kind == 'T') reports++;
+            if (s_ref_ev[k].kind == 'R') resumed++;
+        }
+    }
+    sr_capture_set_probe_resolver(NULL);
+    CHECK(mismatched_trials == 0, "watch: deferred results give the synchronous verdicts and reports");
+    /* The trials must reach the cases that matter: reports, resumed stretches, and ticks that
+     * had to wait for a pending result. */
+    CHECK(reports >= 50 && resumed >= 10 && s_sim_blocking >= 10,
+          "watch: the trials reach reports, resumed stretches and blocking collects");
+    if (reports < 50 || resumed < 10 || s_sim_blocking < 10)
+        fprintf(stderr, "  watch coverage: reports %d resumed %d blocking %d\n",
+                reports, resumed, s_sim_blocking);
+}
+
+int main(int argc, char **argv) {
+    snprintf(s_dir, sizeof s_dir, "%s", argc > 1 ? argv[1] : SR_SELFTEST_BUILD_ROOT "/fbcap_selftest");
+    make_dir(s_dir);
+    make_frame();
+    test_refused_requests();
+    test_host_capture();
+    test_readback_matches_host_capture();
+    test_gpu_readback();
+    test_skipped_present_cancels();
+    test_refused_rearm_keeps_pending();
+    test_failed_publication();
+    test_explicit_failures();
+    test_parent_directory();
+    test_absolute_path();
+    test_windows_imply_every_present();
+    test_picture_probe();
+    test_picture_watch();
+    test_probe_result_pinned();
+    test_deferred_probe();
+    test_watch_deferred_matches_synchronous();
+    if (s_failures) {
+        fprintf(stderr, "fbcap_selftest: %d check(s) failed\n", s_failures);
+        return 1;
+    }
+    puts("fbcap selftest: OK");
+    return 0;
+}

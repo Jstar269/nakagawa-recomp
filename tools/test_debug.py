@@ -29,7 +29,7 @@ class TestDebugC(unittest.TestCase):
             # the harness compiles the real implementation.
             [CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
              f"-I{RT}", "-o", os.fspath(cls.exe),
-             os.fspath(RT / "debug_selftest.c"), os.fspath(RT / "debug.c"),
+             os.fspath(ROOT / "tests" / "native" / "debug_selftest.c"), os.fspath(RT / "debug.c"),
              os.fspath(RT / "watchpoints_file.c")],
             capture_output=True, text=True,
         )

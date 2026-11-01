@@ -90,11 +90,11 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 #### Complete Handlers (Evidence-Backed)
 
 - **`h_Strlen`** (`other`): `strlen` (0x52df196c)
-  - Evidence: src/rt/hle_thread_selftest.c:test_sysclib_memory_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_sysclib_memory_imports
   - Evidence: src/rt/hle_kernel_utils.c:h_Strlen
   - Evidence: public C library contract (strlen)
 - **`h_DisplayGetFramePerSec`** (`sceDisplay`): `sceDisplayGetFramePerSec` (0xdba6c4c4)
-  - Evidence: src/rt/hle_thread_selftest.c:test_display_frame_per_sec_float_return
+  - Evidence: tests/native/hle_thread_selftest.c:test_display_frame_per_sec_float_return
   - Evidence: tools/test_hle_manifest.py:FindingRuleTests.test_float_return_metadata_is_live_and_dedicated
   - Evidence: hardware oracle / issue #80 display-clock measurement (59.9400599f in $f0)
 - **`h_GeEdramGetAddr`** (`sceGe`): `sceGeEdramGetAddr` (0xe47e40e4)
@@ -108,46 +108,46 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: src/rt/hle_ge.c:h_GeEdramGetSize
   - Evidence: PSP-HLE-GE-EDRAM-001 cell: edram-size = 0x00200000
 - **`h_IoMkdir`** (`sceIo`): `sceIoMkdir` (0x06a70004)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
+  - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
   - Evidence: src/rt/hle_io.c:h_IoMkdir
 - **`h_IoRemove`** (`sceIo`): `sceIoRemove` (0xf27a9c51)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
+  - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
   - Evidence: src/rt/hle_io.c:h_IoRemove
 - **`h_CpuIsIntrEnable`** (`sceKernel`): `sceKernelIsCpuIntrEnable` (0xb55249d2)
-  - Evidence: src/rt/hle_thread_selftest.c:test_interrupt_nid_semantics
+  - Evidence: tests/native/hle_thread_selftest.c:test_interrupt_nid_semantics
 - **`h_Memset`** (`sceKernel`): `memset` (0x10f3bb61), `sceKernelMemset` (0xa089eca4)
-  - Evidence: src/rt/hle_thread_selftest.c:test_sysclib_memory_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_sysclib_memory_imports
   - Evidence: src/rt/hle_kernel_utils.c:h_Memset
   - Evidence: public C library contract (memset)
 - **`h_SetCompiledSdkVersion`** (`sceKernel`): `sceKernelSetCompiledSdkVersion603_605` (0x1b4217bc), `sceKernelSetCompiledSdkVersion380_390` (0x315ad3a0), `sceKernelSetCompiledSdkVersion370` (0x342061e5), `sceKernelSetCompiledSdkVersion600_602` (0x35669d4c), `sceKernelSetCompiledSdkVersion606` (0x358ca1bb), `sceKernelSetCompiledSdkVersion` (0x7591c7db), `sceKernelSetCompiledSdkVersion500_505` (0x91de343c), `sceKernelSetCompiledSdkVersion395` (0xebd5c3e6), `sceKernelSetCompilerVersion` (0xf77d77cb)
-  - Evidence: src/rt/sdkver_selftest.c
+  - Evidence: tests/native/sdkver_selftest.c
   - Evidence: tools/test_sdkver_c.py
   - Evidence: public ABI (PSPSDK sdkver.h: sceKernelSetCompiledSdkVersion)
 - **`h_RtcGetCurrentClock`** (`sceRtc`): `sceRtcGetCurrentClock` (0x4cfa57b0)
-  - Evidence: src/rt/hle_thread_selftest.c:test_time_domains_are_coherent
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
+  - Evidence: tests/native/hle_thread_selftest.c:test_time_domains_are_coherent
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
   - Evidence: src/rt/hle_rtc.c:h_RtcGetCurrentClock
   - Evidence: public PSPSDK contract (psprtc.h: sceRtcGetCurrentClock, tz is minutes from UTC)
   - Evidence: PSPAutotests tests/rtc/rtc.expected (0/+13/+60/-60/-600000/INT_MAX/-INT_MAX all return 0; -60 is one hour before the UTC baseline)
 - **`h_RtcGetCurrentTick`** (`sceRtc`): `sceRtcGetCurrentTick` (0x3f7ad767)
-  - Evidence: src/rt/hle_thread_selftest.c:test_time_domains_are_coherent
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
+  - Evidence: tests/native/hle_thread_selftest.c:test_time_domains_are_coherent
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
   - Evidence: src/rt/hle_rtc.c:h_RtcGetCurrentTick
   - Evidence: public PSPSDK contract (psprtc.h: sceRtcGetCurrentTick, 0 on success, <0 on error)
   - Evidence: PSPAutotests tests/rtc/rtc.expected (tick advances across a 2 ms delay)
 - **`h_RtcGetTick`** (`sceRtc`): `sceRtcGetTick` (0x6ff40acc)
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
   - Evidence: src/rt/hle_rtc.c:h_RtcGetTick
   - Evidence: public PSPSDK contract (psprtc.h: sceRtcGetTick, pspRtcCheckValidErrors component ranges)
   - Evidence: PSPAutotests tests/rtc/convert.expected (year 0/10000 -> 0x800001fe with output untouched; year 10/9998/9999 exact ticks)
 - **`h_RtcGetTickResolution`** (`sceRtc`): `sceRtcGetTickResolution` (0xc41c2853)
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest
   - Evidence: uOFW src/kd/rtc/rtc.c (MIT): sceRtcGetTickResolution returns 1000000, marked as matching the firmware assembly
   - Evidence: PSPAutotests tests/rtc (2ed7c9c5): every RTC tick conversion uses one-microsecond ticks
 - **`h_RtcSetTick`** (`sceRtc`): `sceRtcSetTick` (0x7ed29e40)
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions
   - Evidence: src/rt/hle_rtc.c:h_RtcSetTick
   - Evidence: public PSPSDK contract (psprtc.h: sceRtcSetTick, 0 on success, <0 on error)
   - Evidence: PSPAutotests tests/rtc/convert.expected (checkSetTick: 835072 -> 0001-01-01, 62135596800000000 -> 1970-01-01)
@@ -203,25 +203,25 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: returns 0x80260008 with nothing reserved and the reserved sample count after a reserve (0x400), both measured (PSP-HLE-AUDIO-SRC-001); the volume bound reuses the Output2 bound and the NULL or unreadable buffer result follows the regular output, both unmeasured; the host mixer runs at 44100 Hz, so a 48000 Hz block passes through a band-limited converter and keeps its source-rate pacing (#339)
 - **`h_CtrlGetSamplingCycle`** (`sceCtrl`): `sceCtrlGetSamplingCycle` (0x02baad91)
   - Limitation: reports the cycle retained by sceCtrlSetSamplingCycle; PSPAutotests leaves the NULL out-pointer call out as crashing a PSP, so the ILLEGAL_ADDR refusal used here instead is the runtime's fail-closed choice, not a measured code
-  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
   - Evidence: PSPAutotests tests/ctrl/sampling (power-on cycle 0, set/get round trip)
 - **`h_CtrlGetSamplingMode`** (`sceCtrl`): `sceCtrlGetSamplingMode` (0xda6b76a1)
   - Limitation: reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured
 - **`h_CtrlPeekLatch`** (`sceCtrl`): `sceCtrlPeekLatch` (0xb1d0e5cd)
   - Limitation: the transition and return words are the sceCtrlReadLatch model, source-tested; the non-clearing peek is the project's model and is not hardware measured, because PSP-HLE-CTRL-LATCH-001 cannot tell clearing from keeping (its release field stays saturated with no input)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-CTRL-LATCH-001 cases latch-peek-initial and latch-peek-after-poll (no input gives make break press 0 and release 0xFFFFFFFF)
 - **`h_CtrlReadLatch`** (`sceCtrl`): `sceCtrlReadLatch` (0x0b588501)
   - Limitation: with no input the measured make, break and press words are 0 and release is 0xFFFFFFFF, which the runtime matches; whether a read clears the latch is not established by the cells (the release word stays saturated), so the clearing contract and the returned cycle count are the project's model, and the null-pointer code is source-selftested only
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-CTRL-LATCH-001: latch-read-initial, latch-read-after-poll, latch-read-clears-peek-keeps)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_read_latch
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_read_latch
 - **`h_CtrlSetSamplingCycle`** (`sceCtrl`): `sceCtrlSetSamplingCycle` (0x6a2774f3)
   - Limitation: validates and stores the cycle, but samples are still latched once per VBLANK whatever the cycle (#1390)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
   - Evidence: PSPAutotests tests/ctrl/sampling2 (0 and 5555..20000 accepted, other cycles refused with 0x800001FE, cycle kept)
 - **`h_CtrlSetSamplingMode`** (`sceCtrl`): `sceCtrlSetSamplingMode` (0x1f4011e6)
   - Limitation: validates and stores the mode, but digital mode does not yet centre the sampled analog axes (#1390); whether firmware truncates the argument to 8 bits before the range check is not measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
   - Evidence: PSPAutotests tests/ctrl/sampling (modes 2 and -1 refused with 0x80000107, mode kept)
 - **`h_DisplaySetFrameBuf`** (`sceDisplay`): `sceDisplaySetFrameBuf` (0x289d82fe)
   - Limitation: display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)
@@ -241,155 +241,155 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_FontGetFontList`** (`sceFont`): `sceFontGetFontList` (0xbc75d85b)
   - Limitation: writes min(num, 18) styles in index order from the served registry values, of which the capture shows only the first; an index whose font is not served, a library that is not live and an unwritable array stop the run by name
-  - Evidence: src/rt/hle_thread_selftest.c:test_font_list_contract
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_list_contract
   - Evidence: PSPAutotests tests/font/fontlist.expected (2ed7c9c5, the console's libfont on a PSP): one 0xA8-byte style per font, num 1 writes exactly one, num -1 and 0 write nothing, 0x80460002 for a NULL library and 0x80460003 for NULL styles
 - **`h_FontGetNumFontList`** (`sceFont`): `sceFontGetNumFontList` (0x27f6e642)
   - Limitation: returns the measured 18 for a live library whether or not every index has a served font; a library handle that is not live and a NULL error pointer are not measured and stop the run by name
-  - Evidence: src/rt/hle_thread_selftest.c:test_font_list_contract
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_list_contract
   - Evidence: PSPAutotests tests/font/fontlist.expected (2ed7c9c5, the console's libfont on a PSP): 18 and error 0 for a live library, 0 and 0x80460002 for a NULL library
   - Evidence: hardware measurement 2026-10-15, PSP-3000 6.6.1: the system font list holds 18 fonts (src/rt/flash0_font.c registry rows)
 - **`h_FontSetAltCharacterCode`** (`sceFont`): `sceFontSetAltCharacterCode` (0xee232411)
   - Limitation: the fallback is kept host-side and used by GetCharInfo and GetCharGlyphImage; the PSP library struct field that holds it is not part of this runtime's library layout, and a library handle that is not live stops the run by name
-  - Evidence: src/rt/hle_thread_selftest.c:test_font_alt_char_contract
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_alt_char_contract
   - Evidence: PSPAutotests tests/font/altcharcode.expected (2ed7c9c5, the console's libfont on a PSP): initial 0x005F, codes stored as 16 bits, 0x80460002 for a NULL library, and the GetCharInfo fallback heights
 - **`h_GeBreak`** (`sceGe`): `sceGeBreak` (0xb448ec0d)
   - Limitation: models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the mode 0 queue id and the paused sync statuses (4, 2) for a list broken mid-draw, the mode 1 result 0 with one list stalled at its start, and the 0x80000100 sync result for a list the reset removed; a list enqueued with no stall address completes inside sceGeListEnQueue, so the runtime cannot reproduce the mid-draw break and returns 0x80000020 with sync peeks of 0 on that sequence; breaking a stalled list, a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_break_continue
 - **`h_GeContinue`** (`sceGe`): `sceGeContinue` (0x4c06e472)
   - Limitation: resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0 result when no list is paused is PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_break_continue
 - **`h_GeDrawSync`** (`sceGe`): `sceGeDrawSync` (0xb287bd61)
   - Limitation: the mode 1 peeks (paused 2, stalled 3, 0 after a reset) and the 0x80000107 for modes 2 and -1 are measured (PSP-GE-CONTROL-001, PSP-GE-SYNC-001); the mode 0 wait frees completed lists' slots, so their peeks read 0x80000100 afterwards (measured); after a reset of a stalled list the PSP's mode 0 returned in some launches and did not return in others, and the runtime returns
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-draw-sync-paused, ge-draw-sync-cancelled, ge-list-dequeue-stalled)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-SYNC-001: ge-sync-invalid-mode, ge-list-sync-after-draw-wait, ge-draw-sync-after-reset-wait)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_sync_ids_match_psp
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_break_continue
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_sync_ids_match_psp
 - **`h_GeEdramSetAddrTranslation`** (`sceGe`): `sceGeEdramSetAddrTranslation` (0xb77905ea)
   - Limitation: replacement-width returns and restoration to boot width 1024 are measured; width 0 as an input, unsupported-width error 0x80000107 (a project choice), and applying the setting to actual GE address translation are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-GE-EDRAM-001: initial width, 512/1024/2048/4096 replacements, restore and final query)
 - **`h_GeListDeQueue`** (`sceGe`): `sceGeListDeQueue` (0x5fb86ab0)
   - Limitation: a stalled list returns BUSY (0x80000021) and stays queued (PSP-GE-CONTROL-001), and so does a completed list until a sceGeDrawSync(0) frees it; an unknown id is 0x80000100 (PSP-GE-SYNC-001, measured); a queued list that has not started is removed and its waiters released, and a freed slot is 0x80000100, following uofw src/kd/ge/ge.c (unmeasured)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_sync_ids_match_psp
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_queued_lists_run_in_order
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_break_continue
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_sync_ids_match_psp
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_queued_lists_run_in_order
 - **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
   - Limitation: display-smoke covers one unstalled synchronous list; a list enqueued behind an active one waits its turn and runs in enqueue order once the head completes, slots come from a FIFO of free slots and ids name slots (uofw src/kd/ge/ge.c; the queued peek 1 and the 64-list 0x80000022 refusal are unmeasured), and argument and priority validation and asynchronous execution timing remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
   - Evidence: fixtures/display_smoke/generate.py:flight_smoke
-  - Evidence: src/rt/hle_thread_selftest.c:test_flight_recorder_ge_present_events
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_queued_lists_run_in_order
+  - Evidence: tests/native/hle_thread_selftest.c:test_flight_recorder_ge_present_events
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_queued_lists_run_in_order
 - **`h_GeListEnQueueHead`** (`sceGe`): `sceGeListEnQueueHead` (0x1c0d95a6)
   - Limitation: idle-list execution follows the shared enqueue path; head ordering is refused while a list is stalled, and asynchronous queue behavior remains unmodeled
 - **`h_GeListSync`** (`sceGe`): `sceGeListSync` (0x03444eb4)
   - Limitation: the syncType 1 peeks (paused 4, stalled 3, 0x80000100 for an unknown id, a reset-removed list or a list after a sceGeDrawSync(0)), the 0x80000107 for other sync types and the syncType 0 results (0 at once for a completed list, no return for a list a reset removed) are measured (PSP-GE-CONTROL-001, PSP-GE-SYNC-001); the queued peek 1 follows uofw unmeasured; a completed list's peek before any sceGeDrawSync(0) read 0 in one PSP launch and often 0x80000100 in others, and the runtime keeps 0 until a sceGeDrawSync(0); command-boundary timing is not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-CONTROL-001: ge-list-sync-paused, ge-list-sync-cancelled, ge-list-dequeue-stalled)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-GE-SYNC-001: ge-list-sync-unknown-poll, ge-sync-invalid-mode, ge-list-sync-cancelled-wait, ge-list-sync-stale-wait, ge-list-sync-after-draw-wait)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
-  - Evidence: src/rt/hle_thread_selftest.c:test_ge_sync_ids_match_psp
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_break_continue
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_sync_ids_match_psp
 - **`h_HprmIsHeadphoneExist`** (`sceHprm`): `sceHprmIsHeadphoneExist` (0x7e69eda4)
   - Limitation: reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the conditions under which firmware reports 1 are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-headphone-first, hprm-headphone-second)
-  - Evidence: src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch
+  - Evidence: tests/native/hle_thread_selftest.c:test_td24b_cheap_hle_batch
 - **`h_HprmIsMicrophoneExist`** (`sceHprm`): `sceHprmIsMicrophoneExist` (0x219c58f1)
   - Limitation: reports the modeled state, 1 by default as measured twice on the PSP-3000 oracle console; other models (without a built-in microphone) are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-microphone-first, hprm-microphone-second)
-  - Evidence: src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch
+  - Evidence: tests/native/hle_thread_selftest.c:test_td24b_cheap_hle_batch
 - **`h_HprmIsRemoteExist`** (`sceHprm`): `sceHprmIsRemoteExist` (0x208db1bd)
   - Limitation: reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the value with a remote attached is not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-remote-first, hprm-remote-second)
-  - Evidence: src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch
+  - Evidence: tests/native/hle_thread_selftest.c:test_td24b_cheap_hle_batch
 - **`h_IoChangeAsyncPriority`** (`sceIo`): `sceIoChangeAsyncPriority` (0xb293727f)
   - Limitation: priority selects queued host requests, but PSP priority ordering and its interaction with callbacks are not hardware-measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoChdir`** (`sceIo`): `sceIoChdir` (0x55f4717d)
   - Limitation: the modeled current directory is per-thread and resolves contained Memory Stick paths; PSP behavior for other devices is not established
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoChstat`** (`sceIo`): `sceIoChstat` (0xb8a740f4)
   - Limitation: only the mode field is supported; attribute, size, and timestamp fields fail closed with IO_CHSTAT_NON_MODE_FIELDS
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoClose`** (`sceIo`): `sceIoClose` (0x810c4bc3)
   - Limitation: the measured cells establish close result 0 for one freshly written host0 file and for the eleven successful fixed UMD/disc/msstor0p1 opens; double close, directory descriptors, standard descriptors and error precedence are not hardware measured, and the refusal while an asynchronous request is pending (ASYNC_BUSY) is covered by the host selftest only (#341)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)
-  - Evidence: src/rt/hle_thread_selftest.c:test_umd_io_console_model
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_umd_io_console_model
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoCloseAsync`** (`sceIo`): `sceIoCloseAsync` (0xff5940b6)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; close callback timing remains unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_fd_namespace
+  - Evidence: tests/native/hle_thread_selftest.c:test_fd_namespace
 - **`h_IoDclose`** (`sceIo`): `sceIoDclose` (0xeb092469)
   - Limitation: the measured cells establish close result 0 for the two successful disc0:/ and disc0:/PSP_GAME directory descriptors only; closing a file, stale or out-of-range descriptor, and listings that were read before the close remain host-selftested only (#341)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0004 and io-dopen-0005 close results)
-  - Evidence: src/rt/hle_thread_selftest.c:test_umd_io_console_model
+  - Evidence: tests/native/hle_thread_selftest.c:test_umd_io_console_model
 - **`h_IoDevctl`** (`sceIo`): `sceIoDevctl` (0x54f5fb11)
   - Limitation: Memory Stick insert/eject callbacks, including the mscmhc0: 0x02015804/0x02015805 forms, are notified once, with argument 1, when registered; no later insert or eject event exists, and the 32-entry bound, duplicate entries and 0x80010016 refusals follow PPSSPP's model, not a hardware measurement (#1378)
 - **`h_IoDopen`** (`sceIo`): `sceIoDopen` (0xb29ddf9c)
   - Limitation: the measured cells establish results and close outcomes for six fixed UMD/disc path calls only; directory contents/order, MS0 paths and general error precedence remain unmeasured (#341)
-  - Evidence: src/rt/hle_thread_selftest.c:test_umd_io_console_model
+  - Evidence: tests/native/hle_thread_selftest.c:test_umd_io_console_model
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)
 - **`h_IoGetAsyncStat`** (`sceIo`): `sceIoGetAsyncStat` (0xcb05f8d6)
   - Limitation: the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoIoctlAsync`** (`sceIo`): `sceIoIoctlAsync` (0xe95a012b)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoLseek`** (`sceIo`): `sceIoLseek` (0x27eb27b8)
   - Limitation: PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; pspautotests revision f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 before zero and permits past-EOF seeks; PSP-KERNEL-SEM-001 measures a Memory Stick position as 32 bits wide (0xFFFFFFFF accepted, beyond it EINVAL with the position unchanged); other devices keep IO_LSEEK_OUT_OF_RANGE there (#1380); invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-seek64, io-seek64-rdwr)
-  - Evidence: src/rt/hle_thread_selftest.c:test_umd_block_device_sectors
+  - Evidence: tests/native/hle_thread_selftest.c:test_umd_block_device_sectors
 - **`h_IoLseek32Async`** (`sceIo`): `sceIoLseek32Async` (0x1b385d8f)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoLseekAsync`** (`sceIo`): `sceIoLseekAsync` (0x71b19e77)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; 64-bit seek timing and callback ordering are not hardware-measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoOpen`** (`sceIo`): `sceIoOpen` (0x109f50bc)
   - Limitation: measured coverage is one host0 file's create/write/read/append/missing-file path, PSP-UMDIO-001's fixed open paths and flags, and PSP-KERNEL-SEM-001's Memory Stick exclusive create; an open without PSP_O_CREAT never creates a file, a create under a missing directory is 0x80010002, and PSP_O_CREAT|PSP_O_EXCL on an existing file is EEXIST with the file unchanged (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-missing-parent, io-excl-new, io-excl-existing)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
+  - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
 - **`h_IoOpenAsync`** (`sceIo`): `sceIoOpenAsync` (0x89aa9906)
   - Limitation: open runs its host lookup at submission to return the PSP-visible fd, then completes as a pending request on the import-boundary service and notifies the fd's async callback; async timing and callback ordering are synthetic, not hardware-measured, and a failed open returns its error directly instead of an fd carrying it
-  - Evidence: src/rt/hle_thread_selftest.c:test_fd_namespace
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_open_async_notifies_later_callback
+  - Evidence: tests/native/hle_thread_selftest.c:test_fd_namespace
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_open_async_notifies_later_callback
 - **`h_IoPollAsync`** (`sceIo`): `sceIoPollAsync` (0x3251ea56)
   - Limitation: the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoRead`** (`sceIo`): `sceIoRead` (0x6a638d83)
   - Limitation: PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); pspautotests revision f573fe8c9122a8ff5db4f030d74557bed644b4e0 records a read past the end of a file returning 0 (#1380); short reads at end of file, zero-length file reads, partial-read position advance, unreadable buffers, write-only descriptors and standard-stream reads remain unmeasured (#341). UMD block-device reads follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (counts and results in 2048-byte sectors, the position advancing by the count, 0x80010016 for a zero count); a read crossing the last sector stays at the raw-device boundary, and the runtime refuses a destination outside guest memory where the console overran the buffer
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
-  - Evidence: src/rt/hle_thread_selftest.c:test_umd_block_device_sectors
+  - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
+  - Evidence: tests/native/hle_thread_selftest.c:test_umd_block_device_sectors
 - **`h_IoReadAsync`** (`sceIo`): `sceIoReadAsync` (0xa0b5a7c2)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoRmdir`** (`sceIo`): `sceIoRmdir` (0x1117c65f)
   - Limitation: empty-directory removal and nonempty refusal are tested with synthetic roots; PSP error precedence beyond those cases remains unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoSetAsyncCallback`** (`sceIo`): `sceIoSetAsyncCallback` (0xa12a0514)
   - Limitation: completion queues the modeled thread callback; PSP callback argument and interleaving behavior remain unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoSync`** (`sceIo`): `sceIoSync` (0xab96437f)
   - Limitation: Memory Stick handles are flushed and synced; other devices and nonzero unknown arguments fail closed with IO_SYNC_DEVICE or IO_SYNC_ARGUMENT
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoWaitAsync`** (`sceIo`): `sceIoWaitAsync` (0xe23eec33)
   - Limitation: the host operation runs when the guest waits; PSP blocking, wake, and callback interleaving remain unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoWaitAsyncCB`** (`sceIo`): `sceIoWaitAsyncCB` (0x35dbd746)
   - Limitation: callback dispatch is modeled at the wait boundary; PSP blocking and callback interleaving remain unmeasured
 - **`h_IoWrite`** (`sceIo`): `sceIoWrite` (0x42ec03ac)
   - Limitation: PSP-IO-001 measures a 64-byte write that returns 64 on a created host0 file and a 32-byte write through an append-mode descriptor that returns 32; read-only descriptors, short writes, zero-length writes, unreadable source buffers, raw devices and standard-stream writes remain unmeasured (#341); a write that would carry the 32-bit position past its range fails closed with IO_WRITE_OUT_OF_RANGE (#1380)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write and io-append)
-  - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
+  - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
 - **`h_IoWriteAsync`** (`sceIo`): `sceIoWriteAsync` (0x0facab19)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
+  - Evidence: tests/native/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_AllocMemoryBlock`** (`sceKernel`): `sceKernelAllocMemoryBlock` (0xfe707fdf)
   - Limitation: types 0 (Low, the partition's bump and free-list path) and 1 (High, from the top of the arena thread stacks share, 0x100 granularity) allocate, and the type, size, option-size and NULL-name codes are pspautotests-recorded; the code for an unmapped name or option pointer is uOFW's 0x800200D3, not measured; memory-block UIDs are separate from partition-block UIDs here, while the PSP shares them (memblock.expected Partition usage)
-  - Evidence: src/rt/hle_thread_selftest.c:test_kernel_import_sweep_memory_blocks_and_sdk_alias
+  - Evidence: tests/native/hle_thread_selftest.c:test_kernel_import_sweep_memory_blocks_and_sdk_alias
   - Evidence: PSPAutotests tests/sysmem/memblock.expected (2ed7c9c5, recorded on a PSP): names, types, sizes, option sizes and type-1 placement deltas
   - Evidence: uOFW src/kd/sysmem/memblock.c (MIT): validation order and the AllocPartitionMemory call
 - **`h_AllocateFpl`** (`sceKernel`): `sceKernelAllocateFpl` (0xd979e9bf)
@@ -401,16 +401,16 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 VPL cells)
 - **`h_CancelAlarm`** (`sceKernel`): `sceKernelCancelAlarm` (0x7e65b999)
   - Limitation: an unknown, cancelled or already-finished alarm UID returns the hardware-measured unknown-alarm code; treating a one-shot that has already fired as unknown (its UID is released when the handler returns 0) is the project's model and is not separately measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_registration_and_error_codes
-  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_cancel_before_firing_prevents_the_handler
-  - Evidence: src/rt/sched_selftest.c:test_alarm_cancel_and_ordering
+  - Evidence: tests/native/hle_thread_selftest.c:test_alarm_registration_and_error_codes
+  - Evidence: tests/native/hle_thread_selftest.c:test_alarm_cancel_before_firing_prevents_the_handler
+  - Evidence: tests/native/sched_selftest.c:test_alarm_cancel_and_ordering
 - **`h_CancelEventFlag`** (`sceKernel`): `sceKernelCancelEventFlag` (0xcd203292)
   - Limitation: the cited cell measures a blocked waiter's WAIT_CANCEL outcome after event cancellation; it does not establish the cancel call's return, pattern assignment, waiter-count output, unknown-ID behavior, pointer errors, or multiple-waiter ordering
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
 - **`h_CancelMsgPipe`** (`sceKernel`): `sceKernelCancelMsgPipe` (0x349b864d)
   - Limitation: releases every active send and receive waiter with WAIT_CANCEL, writes both waiter counts and each timed waiter's remaining timeout and empties the buffer; a waiter paused inside a callback, the unknown-UID code and error precedence are not hardware measured (#1381)
   - Evidence: PSPAutotests tests/threads/msgpipe (cancel case: waiters released with WAIT_CANCEL, counts and remaining timeout written)
-  - Evidence: src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer
+  - Evidence: tests/native/hle_thread_selftest.c:test_msgpipe_cancel_and_refer
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
 - **`h_CancelSema`** (`sceKernel`): `sceKernelCancelSema` (0x8ffdf9a2)
@@ -419,7 +419,7 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
 - **`h_CheckThreadStack`** (`sceKernel`): `sceKernelCheckThreadStack` (0xd13bde95)
   - Limitation: returns the caller's $sp minus its stack's low end, the quantity the recorded cells follow; a $sp outside the calling thread's stack and a call with no current thread are not measured and stop the run by name
-  - Evidence: src/rt/hle_thread_selftest.c:test_check_thread_stack_contract
+  - Evidence: tests/native/hle_thread_selftest.c:test_check_thread_stack_contract
   - Evidence: PSPAutotests tests/threads/threads/stackfree.expected (2ed7c9c5, recorded on a PSP): 0xEB0 and 0xAB0 on 0x1000-byte stacks, 0x10 above GetThreadStackFreeSize, main thread above 0x30000
 - **`h_ClearEventFlag`** (`sceKernel`): `sceKernelClearEventFlag` (0x812346e4)
   - Limitation: the measured mask behavior matches the normal-object path; an unknown UID, or a UID of another kernel-object kind, returns the measured unknown-event-flag code 0x8002019A; error precedence is not covered
@@ -427,7 +427,7 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_CreateEventFlag`** (`sceKernel`): `sceKernelCreateEventFlag` (0x55c20a00)
   - Limitation: the name, attribute and pattern cells match; the shared semaphore/event-flag/LwMutex table holds 128 objects, while the same PSP-recorded output shows 1024 event flags created, and the exhaustion code 0x80020000 is not measured; the option struct is ignored
   - Evidence: PSPAutotests tests/threads/events/create/create.expected at 2ed7c9c5 (NULL name 0x80020001, attr 0x100/0x122/0x300/0x900/0x1200 refused with 0x80020191, long names cut to 31 bytes)
-  - Evidence: src/rt/hle_thread_selftest.c:test_evf_create_and_refer
+  - Evidence: tests/native/hle_thread_selftest.c:test_evf_create_and_refer
 - **`h_CreateFpl`** (`sceKernel`): `sceKernelCreateFpl` (0xc07bb470)
   - Limitation: the cited cells cover valid pool creation and block/status behavior; the handler converts zero block size/count to 16/1, a branch not established by those cited valid-pool cells, and allocation exhaustion plus partition, attribute, and option error precedence need separate evidence
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-create and valid pool status/allocation cells)
@@ -452,20 +452,20 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_DcacheRangeMaintenance`** (`sceKernel`): `sceKernelDcacheWritebackRange` (0x3ee30821), `sceKernelDcacheInvalidateRange` (0xbfa98062)
   - Limitation: guest RAM is one coherent array, so the post-maintenance words the cells check are met, but the pre-maintenance contrast words (an uncached read before writeback, a stale cached read before invalidate) are not reproduced; a title that reads stale data through the cached alias is outside this model
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-CACHE-001: cache-alias-init, cache-writeback-contrast, cache-inval-contrast)
-  - Evidence: src/rt/hle_thread_selftest.c:test_dcache_maintenance_notifies_renderer
+  - Evidence: tests/native/hle_thread_selftest.c:test_dcache_maintenance_notifies_renderer
 - **`h_DelayThread`** (`sceKernel`): `sceKernelDelayThread` (0xceadeb47)
   - Limitation: a zero delay returning 0 without yielding to an equal-priority ready thread or dispatching a pending callback is measured; nonzero delays block for the modeled microsecond duration, whose rounding and wake latency are not measured (#325)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-002: delay-thread-zero)
-  - Evidence: src/rt/hle_thread_selftest.c:test_delay_zero_probe_semantics
+  - Evidence: tests/native/hle_thread_selftest.c:test_delay_zero_probe_semantics
 - **`h_DelayThreadCB`** (`sceKernel`): `sceKernelDelayThreadCB` (0x68da9e36)
   - Limitation: a zero delay returning 0 without yielding and dispatching the pending callback exactly once is measured; nonzero delays and the callback pump while blocked are not measured (#325)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-002: delay-threadcb-zero)
-  - Evidence: src/rt/hle_thread_selftest.c:test_delay_zero_probe_semantics
-  - Evidence: src/rt/hle_thread_selftest.c:test_delay_threadcb_zero_bounds_a_self_renotifying_callback
+  - Evidence: tests/native/hle_thread_selftest.c:test_delay_zero_probe_semantics
+  - Evidence: tests/native/hle_thread_selftest.c:test_delay_threadcb_zero_bounds_a_self_renotifying_callback
 - **`h_DeleteEventFlag`** (`sceKernel`): `sceKernelDeleteEventFlag` (0xef9e4c70)
   - Limitation: unknown-id and waiter-release cells match; the outBits written to a waiter at deletion follow the measured Cancel rule, and a nonzero pattern at deletion is not measured
   - Evidence: PSPAutotests tests/threads/events/delete/delete.expected at 2ed7c9c5 (NULL, invalid and deleted ids 0x8002019A; a blocked waiter leaves with 0x800201B5)
-  - Evidence: src/rt/hle_thread_selftest.c:test_evf_typed_uids_and_delete
+  - Evidence: tests/native/hle_thread_selftest.c:test_evf_typed_uids_and_delete
 - **`h_DeleteFpl`** (`sceKernel`): `sceKernelDeleteFpl` (0xed1410e0)
   - Limitation: valid deletion and the delete-wait outcome are covered; an invalid or already-deleted UID currently returns success in the handler, while the cited delete cells use a valid pool, and multi-waiter teardown ordering is not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid fpl-delete and refer-after-delete cells)
@@ -478,8 +478,8 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_DeleteMsgPipe`** (`sceKernel`): `sceKernelDeleteMsgPipe` (0xf0b7da1c)
   - Limitation: unknown-id and blocked-receiver release cells are selftested; the remaining-timeout word a timed waiter receives at deletion and blocked senders are not asserted, and interrupt-context precedence is not established
   - Evidence: PSPAutotests tests/threads/msgpipe/delete.expected at 2ed7c9c5 (NULL, invalid and deleted ids 0x8002019E; blocked receivers and senders leave with 0x800201B5)
-  - Evidence: src/rt/hle_thread_selftest.c:test_msgpipe_delete_unknown_ids
-  - Evidence: src/rt/hle_thread_selftest.c:test_msgpipe_callback_and_delete
+  - Evidence: tests/native/hle_thread_selftest.c:test_msgpipe_delete_unknown_ids
+  - Evidence: tests/native/hle_thread_selftest.c:test_msgpipe_callback_and_delete
 - **`h_DeleteSema`** (`sceKernel`): `sceKernelDeleteSema` (0x28b6489c)
   - Limitation: a valid delete with one waiter and the unknown-semaphore code are covered; no-waiter behavior, multiple-waiter ordering, and interrupt-context precedence are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: unknown semaphore ID and deleting a waited-on semaphore)
@@ -497,7 +497,7 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_ExitGame`** (`sceKernel`): `sceKernelExitGame` (0x05572a5f)
   - Limitation: the call ends the guest process and ignores the argument registers (the PSPSDK signature takes none); the smoke cell shows only that a module reaching it exits, and exit callbacks and the return to the system menu are not modeled
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-SMOKE-001: module_start, sceKernelExitGame)
-  - Evidence: src/rt/hle_thread_selftest.c:test_exit_game_ignores_argument_registers
+  - Evidence: tests/native/hle_thread_selftest.c:test_exit_game_ignores_argument_registers
 - **`h_ExitThread`** (`sceKernel`): `sceKernelExitThread` (0xaa73c935)
   - Limitation: worker ExitThread status and WaitThreadEnd/ReferThreadStatus outcomes are covered for four values; main/launcher teardown, callbacks during exit, and other thread roles are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-X77, ED-X00, ED-XNEG, and ED-XERR)
@@ -509,16 +509,16 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_FreePartitionMemory`** (`sceKernel`): `sceKernelFreePartitionMemory` (0xb6d61d02)
   - Limitation: a live block is freed once and coalesced, and a freed, zero or unknown UID returns 0x800200CB as recorded; freeing during a reschedule and the kernel's per-block header accounting are not modeled
   - Evidence: PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5 (Free deleted, NULL and invalid all 0x800200CB)
-  - Evidence: src/rt/hle_thread_selftest.c:test_partition_unknown_block_codes
-  - Evidence: src/rt/hle_thread_selftest.c:test_td28_partition_free_reuse
+  - Evidence: tests/native/hle_thread_selftest.c:test_partition_unknown_block_codes
+  - Evidence: tests/native/hle_thread_selftest.c:test_td28_partition_free_reuse
 - **`h_FreeVpl`** (`sceKernel`): `sceKernelFreeVpl` (0xb736e9ff)
   - Limitation: valid frees under the measured pool accounting are covered; invalid IDs/addresses, misalignment, arbitrary fragmentation/coalescing, and zero-size allocation behavior are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: VPL pool accounting, allocation placement, and free sequence)
 - **`h_GetBlockHeadAddr`** (`sceKernel`): `sceKernelGetBlockHeadAddr` (0x9d9a5ba1)
   - Limitation: returns a live block's base and 0 for a freed, zero or unknown UID, as recorded; block placement itself follows the runtime allocator, whose High and aligned types do not yet match partition.expected (sceKernelAllocPartitionMemory stays unreviewed)
   - Evidence: PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5 (Get deleted, NULL and invalid all 00000000)
-  - Evidence: src/rt/hle_thread_selftest.c:test_partition_unknown_block_codes
-  - Evidence: src/rt/hle_thread_selftest.c:test_td28_partition_free_reuse
+  - Evidence: tests/native/hle_thread_selftest.c:test_partition_unknown_block_codes
+  - Evidence: tests/native/hle_thread_selftest.c:test_td28_partition_free_reuse
 - **`h_GetMemoryBlockAddr`** (`sceKernel`): `sceKernelGetMemoryBlockAddr` (0xdb83a952)
   - Limitation: resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured
 - **`h_GetSystemTime`** (`sceKernel`): `sceKernelGetSystemTime` (0xdb738f35)
@@ -534,11 +534,11 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: deleted-UID code 0x800201BE with the output untouched measured (PSP-HLE-VTIMER-003); time = system time - base and the microsecond unit are consistent with PSP-HLE-VTIMER-002 (deltas within about 8%), not a precise rate measurement; NULL out-pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not as a measured VTimer result; no game relies on the output (#325)
 - **`h_GetVTimerTimeWide`** (`sceKernel`): `sceKernelGetVTimerTimeWide` (0xc0b3ffd2)
   - Limitation: returns the elapsed time GetVTimerTime writes, as $v0/$v1, and -1 for uid 0, an invalid and a deleted uid (pspautotests-recorded); the microsecond unit carries GetVTimerTime's limits (PSP-HLE-VTIMER-002, not a precise rate measurement)
-  - Evidence: src/rt/hle_thread_selftest.c:test_vtimer_time_wide_and_setters
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_time_wide_and_setters
   - Evidence: PSPAutotests tests/threads/vtimers/gettime.expected (2ed7c9c5, recorded on a PSP): Objects (wide), Running (wide)
 - **`h_KernelDevkitVersion`** (`sceKernel`): `sceKernelDevkitVersion` (0x3fc9ae6a)
   - Limitation: returns the 6.61 devkit word for every firmware: only the measured firmware is modelled, and other firmware devkit words are not
-  - Evidence: src/rt/hle_thread_selftest.c:test_kernel_devkit_version_measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_kernel_devkit_version_measured
   - Evidence: src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION
   - Evidence: hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)
 - **`h_LockMutex`** (`sceKernel`): `sceKernelLockMutex` (0xb011b11f)
@@ -573,7 +573,7 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: reports name, attr, buffer size, free size and the active send and receive waiter counts for a known pipe, honours a short or zero size word and checks the whole span before writing; the unknown-UID and NULL-pointer codes and error precedence are source-selftested, not hardware measured (#1381)
   - Evidence: public ABI (PSPSDK pspthreadman.h: SceKernelMppInfo, 56 bytes)
   - Evidence: PSPAutotests tests/threads/msgpipe (refer counts beside the cancel and delete cases)
-  - Evidence: src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer
+  - Evidence: tests/native/hle_thread_selftest.c:test_msgpipe_cancel_and_refer
 - **`h_ReferMutexStatus`** (`sceKernel`): `sceKernelReferMutexStatus` (0xa9c2cb9a)
   - Limitation: the cited cell covers an unlocked mutex and its measured status words; size variants, recursive ownership, invalid pointers, and unknown-UID fields are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked status fields)
@@ -590,13 +590,13 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B3-01: ReleaseWaitThread wakes a blocked target with WAIT_RELEASE)
 - **`h_ResumeThread`** (`sceKernel`): `sceKernelResumeThread` (0x75156e8f)
   - Limitation: resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
-  - Evidence: src/rt/sched_selftest.c:test_suspend_resume_error_codes
+  - Evidence: tests/native/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
+  - Evidence: tests/native/sched_selftest.c:test_suspend_resume_error_codes
 - **`h_RotateThreadReadyQueue`** (`sceKernel`): `sceKernelRotateThreadReadyQueue` (0x912354a7)
   - Limitation: rotates the cyclic slot-order ready queue of one priority (0 selects the caller's priority) and yields when the caller leads that queue; no range-error code is returned for an out-of-range priority because none is sourced, and ordering relative to threads that become ready after the rotation is not hardware measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_rotate_ready_queue_selection_order
-  - Evidence: src/rt/hle_thread_selftest.c:test_rotate_equal_priority_yields_to_peers
-  - Evidence: src/rt/sched_selftest.c:test_rotate_ready_queue_moves_head_behind_peers
+  - Evidence: tests/native/hle_thread_selftest.c:test_rotate_ready_queue_selection_order
+  - Evidence: tests/native/hle_thread_selftest.c:test_rotate_equal_priority_yields_to_peers
+  - Evidence: tests/native/sched_selftest.c:test_rotate_ready_queue_moves_head_behind_peers
 - **`h_SendMbx`** (`sceKernel`): `sceKernelSendMbx` (0xe9b3061e)
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
 - **`h_SendMsgPipe`** (`sceKernel`): `sceKernelSendMsgPipe` (0x876dbfad)
@@ -604,25 +604,25 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: no-room, oversize, and blocked-receiver message-pipe cells)
 - **`h_SetAlarm`** (`sceKernel`): `sceKernelSetAlarm` (0x6652b8ca)
   - Limitation: the handler runs in interrupt context at the next interrupt-service point once the guest-time deadline passes (so it can run later than the deadline, and only while CPU interrupts are enabled) and a non-zero return re-arms the alarm that many microseconds after the call's scheduled time, as measured (PSP-HLE-INTR-001), so a late call owes the scheduled points it fell behind; whether a return below 100 us is raised to 100 us, as a VTimer handler return is, is not measured; a NULL handler returns the invalid-address code and a full alarm table the out-of-resources code without a measurement, SetAlarm(0) is accepted without a measurement, the interrupt-context rules for blocking waits made from a handler are the per-API ones (unmeasured for most waits), and the SysClock variants (sceKernelSetSysClockAlarm, sceKernelReferAlarmStatus) are not implemented
-  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_one_shot_fires_once_at_its_time_with_its_argument
-  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_rearm_by_return_value
-  - Evidence: src/rt/sched_selftest.c:test_alarm_rearm_counts_from_the_scheduled_time
-  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_handler_runs_under_interrupt_context_rules
-  - Evidence: src/rt/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline
-  - Evidence: src/rt/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context
-  - Evidence: src/rt/sched_selftest.c:test_alarm_is_a_wake_source_for_the_idle_scheduler
+  - Evidence: tests/native/hle_thread_selftest.c:test_alarm_one_shot_fires_once_at_its_time_with_its_argument
+  - Evidence: tests/native/hle_thread_selftest.c:test_alarm_rearm_by_return_value
+  - Evidence: tests/native/sched_selftest.c:test_alarm_rearm_counts_from_the_scheduled_time
+  - Evidence: tests/native/hle_thread_selftest.c:test_alarm_handler_runs_under_interrupt_context_rules
+  - Evidence: tests/native/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline
+  - Evidence: tests/native/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context
+  - Evidence: tests/native/sched_selftest.c:test_alarm_is_a_wake_source_for_the_idle_scheduler
 - **`h_SetEventFlag`** (`sceKernel`): `sceKernelSetEventFlag` (0x1fb15a32)
   - Limitation: the cited cells cover setting bits that satisfy a waiter and selected wait modes; invalid UIDs, all-bit masks, result precedence, and multiple-waiter ordering are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-signal-before-deadline-late-dispatch)
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics: selected event-flag pattern and wait-mode cells)
 - **`h_SetVTimerTime`** (`sceKernel`): `sceKernelSetVTimerTime` (0x542ad630)
   - Limitation: swaps the time through the SceKernelSysClock pointer and returns 0, 0x800201BE for uid 0, an invalid and a deleted uid with the clock untouched (pspautotests-recorded); a NULL or unwritable pointer (a crash on the PSP per the test's note) stops the run by name; running-timer timing as for SetVTimerTimeWide
-  - Evidence: src/rt/hle_thread_selftest.c:test_vtimer_time_wide_and_setters
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_time_wide_and_setters
   - Evidence: PSPAutotests tests/threads/vtimers/settime.expected (2ed7c9c5, recorded on a PSP): Objects, Values
 - **`h_SetVTimerTimeWide`** (`sceKernel`): `sceKernelSetVTimerTimeWide` (0xfb6425c3)
   - Limitation: makes the value the timer's time and returns the previous time (all 64 bits), -1 for uid 0, an invalid and a deleted uid, and a handler already due runs on the next scheduler pass, not inside the Set (pspautotests-recorded); a running timer counts on from the set value, consistent with the While scheduled cell but its exact microseconds are not measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_vtimer_time_wide_and_setters
-  - Evidence: src/rt/hle_thread_selftest.c:test_vtimer_set_time_while_scheduled
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_time_wide_and_setters
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_set_time_while_scheduled
   - Evidence: PSPAutotests tests/threads/vtimers/settime.expected (2ed7c9c5, recorded on a PSP): Objects (wide), Values (wide), While scheduled
 - **`h_SignalSema`** (`sceKernel`): `sceKernelSignalSema` (0x3f53e640)
   - Limitation: the cited cells cover selected count boundaries and waking a waiter; invalid output pointers, negative-count ranges outside the tested values, and multi-waiter ordering are not established
@@ -637,9 +637,9 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: deleted-UID code 0x800201BE measured (PSP-HLE-VTIMER-003); the microsecond unit of the held time is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)
 - **`h_SuspendThread`** (`sceKernel`): `sceKernelSuspendThread` (0x9944f31f)
   - Limitation: suspend is a scheduler flag (no nesting count); a waiting thread still completes its wait while suspended and runs only after resume; DORMANT and double-suspend codes are hardware measured, while the code for suspending UID 0 or the calling thread reuses the thread-object refusal code without a suspend-specific measurement, and interrupt/dispatch-context precedence is unmeasured
-  - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
-  - Evidence: src/rt/hle_thread_selftest.c:test_suspended_waiter_keeps_wait_semantics
-  - Evidence: src/rt/sched_selftest.c:test_suspended_wait_still_completes
+  - Evidence: tests/native/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
+  - Evidence: tests/native/hle_thread_selftest.c:test_suspended_waiter_keeps_wait_semantics
+  - Evidence: tests/native/sched_selftest.c:test_suspended_wait_still_completes
 - **`h_SysClock2USec`** (`sceKernel`): `sceKernelSysClock2USec` (0xba6b92e2)
   - Limitation: uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured
 - **`h_SysClock2USecWide`** (`sceKernel`): `sceKernelSysClock2USecWide` (0xe1619d7c)
@@ -683,109 +683,109 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_WaitThreadEnd`** (`sceKernel`): `sceKernelWaitThreadEnd` (0x278c0df5)
   - Limitation: the cells join a worker that exits at once (return, ExitThread or ExitDeleteThread with four status values) with a NULL timeout; a join that blocks on a running thread, timeouts, multiple joiners and the remaining-time write are source-selftested only
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-R77, ED-R00, ED-RNEG, ED-RERR, ED-X77, ED-X00, ED-XNEG, ED-XERR, ED-D77, ED-D00, ED-DNEG, ED-DERR)
-  - Evidence: src/rt/hle_thread_selftest.c:test_wait_thread_end_invalid_targets
-  - Evidence: src/rt/hle_thread_selftest.c:test_wait_thread_end_already_ended
-  - Evidence: src/rt/hle_thread_selftest.c:test_wait_thread_end_blocking_and_resume
+  - Evidence: tests/native/hle_thread_selftest.c:test_wait_thread_end_invalid_targets
+  - Evidence: tests/native/hle_thread_selftest.c:test_wait_thread_end_already_ended
+  - Evidence: tests/native/hle_thread_selftest.c:test_wait_thread_end_blocking_and_resume
 - **`h_WakeupThread`** (`sceKernel`): `sceKernelWakeupThread` (0xd59ead2f)
   - Limitation: the cited cells cover wakeup-count accumulation and a sleeping target; specific invalid-target errors, repeated wakeup order, and interactions with termination are not all established
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: wakeups accumulate while the target is not sleeping)
 - **`h_MpegAtracDecode`** (`sceMpeg`): `sceMpegAtracDecode` (0x800c44df)
   - Limitation: decodes the frame the last sceMpegGetAtracAu held with the project's ATRAC3+ bridge into 2048 stereo s16 samples (a mono stream duplicated); refuses with no held frame or an undecodable frame, with unmeasured error values; not measured on this project's PSP
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_atrac_au_decode
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_atrac_au_decode
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
   - Limitation: copies the decoded share of every plane and words 0 and 1 through both headers; not measured on the PSP, and overlapping planes are refused (#302)
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcCsc`** (`sceMpeg`): `sceMpegAvcCsc` (0x31bd0272)
   - Limitation: converts the guest planes, read through the header's pointers, with the MEASURED PSP matrix and gives the MEASURED range refusals; the destination is written from its first pixel with rows from the top of the picture (one measured sub-range), and the 16-bit pixel modes are not measured (#302)
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_csc_swizzled_vram_mirrors
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_csc_swizzled_vram_mirrors
 - **`h_MpegAvcDecodeDetail`** (`sceMpeg`): `sceMpegAvcDecodeDetail` (0x0f6c18d7)
   - Limitation: the 13 words MEASURED on a PSP-3000 (PSP-MPEG-001): word 0 is 0, words 2 and 3 the header's frame width and height, words 4-7 zero, word 8 the last decode's frame status; word 1 is written as the pictures decoded, which the PSP's is not (0 after 240 pictures), and words 9-12 as 0, one of which holds an unidentified pointer on the PSP (#302)
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_avc_decode_detail
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_avc_decode_detail
 - **`h_MpegAvcDecodeStopYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeStopYCbCr` (0xf2930c9c)
   - Limitation: takes the address of the buffer pointer and hands over the picture the decoder still holds with status 1, as MEASURED after the last access unit (PSP-MPEG-001); the PSP decoder runs one access unit behind and this one does not, the decoder is drained only once the whole stream was fed, and a stop in mid-stream is not measured (#302)
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcDecodeYCbCr`** (`sceMpeg`): `sceMpegAvcDecodeYCbCr` (0xf0eb1125)
   - Limitation: writes the decoder's samples into the MEASURED mode-1 strip layout through the header's plane pointers and sets words 0 and 1; a picture larger than its InitYCbCr allocation or than 480x272 is refused as not measured, and the strip length from the decoded height rests on one measured geometry (#302)
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcInitYCbCr`** (`sceMpeg`): `sceMpegAvcInitYCbCr` (0x67179b1b)
   - Limitation: writes the MEASURED mode-1 header (eight plane pointers into the buffer) and leaves the planes; modes 2 and 3 and an odd number of 16-pixel strips are refused as not measured, and the query's mode-1 limits stand in for Init's own (#302)
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegAvcQueryYCbCrSize`** (`sceMpeg`): `sceMpegAvcQueryYCbCrSize` (0x211a057c)
   - Limitation: the sizes and refusals MEASURED for modes 0-4 and -1 (PSP-MPEG-001); a mode-3 size wider than 480, which does not follow 1.5 w h on the PSP, is refused as not modeled (#302)
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_measured_contract
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_ycbcr_guest_decode
 - **`h_MpegChangeGetAuMode`** (`sceMpeg`): `sceMpegChangeGetAuMode` (0x9dcfb7ea)
   - Limitation: decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)
 - **`h_MpegGetAtracAu`** (`sceMpeg`): `sceMpegGetAtracAu` (0xe1ce83a7)
   - Limitation: one ATRAC3+ frame per call from an audio-only demux of the ring bytes the game fed; NO_DATA when none is demultiplexed; the AU clock is the media-engine model (first timestamp + 4180 per decoded block), not the stream's PES time; the ES buffer is a handle, as in PPSSPP, and is not written; not measured on this project's PSP
-  - Evidence: src/rt/psmf_media_selftest.c:test_mpeg_atrac_au_decode
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_atrac_au_decode
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
 - **`h_NetEtherNtostr`** (`sceNet`): `sceNetEtherNtostr` (0x89360950)
   - Limitation: formats a readable six-byte MAC address into the bounded 18-byte lowercase text form without a network stack and returns the text address; the return value (PPSSPP treats the call as void), invalid pointer precedence and the complete text domain are not hardware measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_named_refusals
+  - Evidence: tests/native/hle_thread_selftest.c:test_named_refusals
 - **`h_NpDrmClearLicenseeKey`** (`sceNp`): `sceNpDrmClearLicenseeKey` (0x9b745542)
   - Limitation: forgets the recorded key and returns 0; not hardware measured
 - **`h_NpDrmSetLicenseeKey`** (`sceNp`): `sceNpDrmSetLicenseeKey` (0xa1336091)
   - Limitation: records the 16-byte key and returns 0; the 0x80550902 refusal of a null or unreadable key follows PPSSPP and is not hardware measured; the key is never used because sceNpDrmEdataSetupKey is refused
 - **`h_PowerGetBatteryChargingStatus`** (`scePower`): `scePowerGetBatteryChargingStatus` (0xb4432bc8)
   - Limitation: reports the modeled charging state, measured 0 on AC with a full battery and on battery; the status of a charging battery is not measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_power_battery_20261024
+  - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_power_battery_20261024
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (0 on AC with a full battery and on battery)
 - **`h_PowerGetBatteryLifeTime`** (`scePower`): `scePowerGetBatteryLifeTime` (0x8efb3fa2)
   - Limitation: reports the two measured samples for the modeled power source (external power by default); no discharge model
-  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_power_battery_20261024
+  - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_power_battery_20261024
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (0 on AC; 376 minutes on battery)
 - **`h_PowerGetBusClockFrequencyFloat`** (`scePower`): `scePowerGetBusClockFrequencyFloat` (0x9badb3eb)
   - Limitation: returns the float of the retained bus clock in $f0: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled
-  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_power_identity_getters_measured
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case bus-clock-float (0x42DE0000 = 111.0)
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-002 case bus-clock-float-v0 ($f0 0x42DE0000; $v0 not modelled)
 - **`h_PowerGetBusClockFrequencyInt`** (`scePower`): `scePowerGetBusClockFrequency` (0x478fe6f5), `scePowerGetBusClockFrequencyInt` (0xbd681969)
   - Limitation: the power-on 111 MHz is measured for both registered NIDs; after a Set call the getter reports the retained request verbatim, which is the project's model (the oracle makes no Set call)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-POWER-001: bus-clock-int, bus-clock-alias)
-  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch
+  - Evidence: tests/native/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_td24b_cheap_hle_batch
 - **`h_PowerGetCpuClockFrequencyFloat`** (`scePower`): `scePowerGetCpuClockFrequencyFloat` (0xb1a52c83)
   - Limitation: returns the float of the retained CPU clock in $f0: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled
-  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_power_identity_getters_measured
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case cpu-clock-float (0x435E0000 = 222.0)
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-002 case cpu-clock-float-v0 ($f0 0x435E0000; $v0 not modelled)
 - **`h_PowerGetCpuClockFrequencyInt`** (`scePower`): `scePowerGetCpuClockFrequencyInt` (0xfdb5bfe9), `scePowerGetCpuClockFrequency` (0xfee03a2f)
   - Limitation: the power-on 222 MHz is measured for both registered NIDs; after a Set call the getter reports the retained request verbatim, which is the project's model (the oracle makes no Set call)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-POWER-001: cpu-clock-int, cpu-clock-alias, cpu-clock-int-repeat)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-SYSTEM-001: model-profile)
-  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch
+  - Evidence: tests/native/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_td24b_cheap_hle_batch
 - **`h_PowerGetPllClockFrequencyFloat`** (`scePower`): `scePowerGetPllClockFrequencyFloat` (0xea382a27)
   - Limitation: returns the float of the retained PLL clock in $f0: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled
-  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_power_identity_getters_measured
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case pll-clock-float (0x435E0000 = 222.0)
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-002 case pll-clock-float-v0 ($f0 0x435E0000; $v0 not modelled)
 - **`h_PowerGetPllClockFrequencyInt`** (`scePower`): `scePowerGetPllClockFrequencyInt` (0x34f9c463)
   - Limitation: the power-on 222 MHz is measured; after a Set call the getter reports the retained request verbatim, which is the project's model (the oracle makes no Set call)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-POWER-001: pll-clock-int)
-  - Evidence: src/rt/hle_thread_selftest.c:test_td24b_cheap_hle_batch
+  - Evidence: tests/native/hle_thread_selftest.c:test_td24b_cheap_hle_batch
 - **`h_PowerSetBusClockFrequency`** (`scePower`): `scePowerSetBusClockFrequency` (0xb8d7b3fb)
   - Limitation: validates 1..111 against the measured range at PLL 222 and changes no clock, as measured; at any other retained PLL the range is not measured and the run stops by name
-  - Evidence: src/rt/hle_thread_selftest.c:test_power_set_bus_clock_frequency_autotest
+  - Evidence: tests/native/hle_thread_selftest.c:test_power_set_bus_clock_frequency_autotest
   - Evidence: PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded on a PSP): at PLL 222, 1..111 return 0 and -1, 0, 112 return 0x800001fe, and no request moves any clock
 - **`h_PowerSetCpuClockFrequency`** (`scePower`): `scePowerSetCpuClockFrequency` (0x843fbf43)
   - Limitation: accepts 1..retained PLL and refuses the rest with 0x800001fe, measured only at PLL 222; the clock the getters report after an accepted request is the retained request, not measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_cpu_clock_user_mode_20261024
+  - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_cpu_clock_user_mode_20261024
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 user mode at PLL 222 (1 and 222 accepted; 0, 333, 334 and 223 refused with 0x800001fe)
 - **`h_PsmfGetAudio`** (`scePsmf`): `scePsmfPlayerGetAudioData` (0xb9848a74)
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
 - **`h_PsmfGetPsmfInfo`** (`scePsmf`): `scePsmfPlayerGetPsmfInfo` (0xdf089680)
   - Limitation: host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs are written only when the loaded libpsmfplayer module's exported module_sdk_version is 0x03090510 (a firmware-loaded player records no build); lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)
-  - Evidence: src/rt/psmf_media_selftest.c:test_player_get_psmf_info
-  - Evidence: src/rt/hle_thread_selftest.c:test_runtime_placed_modules
+  - Evidence: tests/native/psmf_media_selftest.c:test_player_get_psmf_info
+  - Evidence: tests/native/hle_thread_selftest.c:test_runtime_placed_modules
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)
   - Limitation: host HLE player; requires host codec backend; no hardware comparison tier measured (#341)
 - **`h_RegCloseCategory`** (`sceReg`): `sceRegCloseCategory` (0x0cae832b)
@@ -820,75 +820,75 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: writes an existing key through a mode-2 category handle (mode 1 is EACCES): INT exactly 4 bytes, a STR takes the size of its new value (string sizes follow their values, measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration), BIN up to its fixed size with the rest zero-filled; persists on a flush; write semantics and the errno-class codes are not hardware measured
 - **`h_RtcConvertLocalToUtc`** (`sceRtc`): `sceRtcConvertLocalTimeToUTC` (0x779242a2)
   - Limitation: applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
 - **`h_RtcConvertUtcToLocal`** (`sceRtc`): `sceRtcConvertUtcToLocalTime` (0x34885e0d)
   - Limitation: applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
 - **`h_RtcGetCurrentClockLocal`** (`sceRtc`): `sceRtcGetCurrentClockLocalTime` (0xe7c27d1b)
   - Limitation: applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; on the first run the setting starts from the host's local time zone (SR_HOST_TIME_ZONE) and is retained, else the seed is the oracle console's measured setting, not a factory default; the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
   - Evidence: src/rt/hle.c:psp_profile_local_offset_minutes
 - **`h_RtcGetTime64_t`** (`sceRtc`): `sceRtcGetTime64_t` (0xe1c93e47)
   - Limitation: out-of-range fields normalise by calendar carry, whose exact seconds are this arithmetic rather than measured; year 0, month 0 and day 0 are refused with 0x800001fe and a refusal leaves the output unwritten, both unmeasured; a NULL or unreadable date and an unwritable non-NULL output take the HLE guest-fault stop
-  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_rtc_time64_20261024
+  - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_rtc_time64_20261024
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (valid dates convert; year 1 and pre-1970 dates return 0x800001fe; month 13, day 32, Feb 30 and hour 24 return 0 and normalise; NULL output returns 0; NULL date faults inside the module)
 - **`h_RtcGetTime_t`** (`sceRtc`): `sceRtcGetTime_t` (0x27c4594c)
   - Limitation: converts in-range dates from 1970 whose seconds fit 32 bits, as one 32-bit word (the measured cell); a field out of range, a date before 1970, a value past 32 bits and a NULL or unmapped pointer are not measured for this function and stop the run by name
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest
   - Evidence: PSPAutotests tests/rtc/convert.expected (2ed7c9c5, recorded on a PSP): checkRtcGetTime_t, 2012-09-20 07:12:15.000500 -> 1348125135
 - **`h_RtcGetWin32FileTime`** (`sceRtc`): `sceRtcGetWin32FileTime` (0xcf561893)
   - Limitation: cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)
 - **`h_RtcTickAddYears`** (`sceRtc`): `sceRtcTickAddYears` (0x42842c77)
   - Limitation: moves the calendar year with the leap day clamped to February 28, and a result outside years 1..9999 returns 0 with dest unwritten (pspautotests-recorded); a source tick past year 9999 and NULL or unmapped pointers are not measured and stop the run by name
-  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest
   - Evidence: PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddYears
 - **`h_UmdActivate`** (`sceUmd`): `sceUmdActivate` (0xc6183d47)
   - Limitation: the callback argument follows PPSSPP (0x22 when no compiled SDK version is set, 0x32 otherwise) and is host-selftested, not hardware measured; the activation result and argument checks are not hardware measured either
-  - Evidence: src/rt/hle_thread_selftest.c:test_umd_unregister_callback
+  - Evidence: tests/native/hle_thread_selftest.c:test_umd_unregister_callback
   - Evidence: PPSSPP sceUmd.cpp callback-status gate with the compiled SDK version
 - **`h_UmdCheckMedium`** (`sceUmd`): `sceUmdCheckMedium` (0x46ebb729)
   - Limitation: always reports a medium present (1), as measured with a disc inserted; the runtime serves one ISO, so the no-disc result and disc removal are not modeled
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: umd-state-before, umd-state-after)
-  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
+  - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
 - **`h_UmdDeactivate`** (`sceUmd`): `sceUmdDeactivate` (0xe83742ba)
   - Limitation: moves the modeled drive to the measured deactivated state 0x12 and notifies the callback with that state, as PPSSPP does; the callback argument, the return value (0) and argument checks are not hardware measured
-  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
+  - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)
 - **`h_UmdDriveStat`** (`sceUmd`): `sceUmdGetDriveStat` (0x6b4a146c)
   - Limitation: reports the modeled drive state: 0x32 with the disc inserted, as measured before and after the PSP-UMDIO-001 opens, and 0x12 after sceUmdDeactivate (a 2026-10-24 measurement recorded in the handler source); no-disc and transitional states are not modeled
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: umd-state-before, umd-state-after)
-  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
+  - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
 - **`h_UmdUnRegisterUMDCallBack`** (`sceUmd`): `sceUmdUnRegisterUMDCallBack` (0xbd2bde07)
   - Limitation: clears the single modeled UMD callback registration; unknown IDs return 0x800201a1 (the kernel callback UNKNOWN_UID code), a project choice because PSPSDK documents only a negative error and the exact code is not hardware measured
 - **`h_GetSystemParamInt`** (`sceUtility`): `sceUtilityGetSystemParamInt` (0xa5da2406)
   - Limitation: ids 2 to 10 return 0 and write a value and ids 0 and 64 return 0x80110103 with the output untouched, as measured; the seeded values are the oracle console's configured settings (WLAN_POWERSAVE is an unmeasured project default), not factory defaults; an invalid output pointer is not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-SYSPARAM-001: int-id-2..int-id-9, int-unknown-0, int-unknown-10, int-unknown-64)
-  - Evidence: src/rt/hle_thread_selftest.c:test_sysreg_virtual_registry
+  - Evidence: tests/native/hle_thread_selftest.c:test_sysreg_virtual_registry
 - **`h_GetSystemParamString`** (`sceUtility`): `sceUtilityGetSystemParamString` (0x34b78343)
   - Limitation: the nickname (id 1) copy with its NUL and the short-buffer 0x80110102 refusal that writes nothing are measured; other string ids, a null buffer and len <= 0 return 0x80110103 without a measurement, and the nickname is the registry value (empty by default), not the console's
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-SYSPARAM-001: string-id-1-len-0x80, string-id-1-len-0x04)
-  - Evidence: src/rt/hle_thread_selftest.c:test_sysparam_nickname_string
+  - Evidence: tests/native/hle_thread_selftest.c:test_sysparam_nickname_string
 - **`h_MsgDialogAbort`** (`sceUtility`): `sceUtilityMsgDialogAbort` (0x4928bd96)
   - Limitation: return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference (derived, not PSP-measured; queued for the next PSP matrix run), and a button answer the model wrote at the first Update stays
-  - Evidence: src/rt/hle_thread_selftest.c:test_msg_dialog_abort_sequence
-  - Evidence: src/rt/hle_thread_selftest.c:test_msg_dialog_abort_without_update
+  - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_sequence
+  - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_without_update
   - Evidence: PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown
 - **`h_UtilityLoadModule`** (`sceUtility`): `sceUtilityLoadModule` (0x2a2b3de0)
   - Limitation: records utility module state only; the user-partition memory a real module occupies is not reserved; IDs and dependencies follow PPSSPP, not measured on this project's PSP
-  - Evidence: src/rt/hle_thread_selftest.c:test_utility_av_module_state
-  - Evidence: src/rt/hle_thread_selftest.c:test_utility_module_table
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_av_module_state
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_module_table
 - **`h_UtilityLoadNetModule`** (`sceUtility`): `sceUtilityLoadNetModule` (0x1579a159)
   - Limitation: maps net-module numbers 1..7 onto utility IDs 0x100..0x106 and their shared state; the status codes for a bad number or a repeated call are the generic module ones, unmeasured on a PSP; makes no connection, and the net libraries stay refused
-  - Evidence: src/rt/hle_thread_selftest.c:test_utility_av_module_state
-  - Evidence: src/rt/hle_thread_selftest.c:test_utility_module_table
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_av_module_state
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_module_table
 - **`h_UtilityUnloadModule`** (`sceUtility`): `sceUtilityUnloadModule` (0xe49bfe92)
   - Limitation: records utility module state only; does not check whether a loaded module still depends on the one unloaded (PPSSPP does not either); not measured on this project's PSP
-  - Evidence: src/rt/hle_thread_selftest.c:test_utility_av_module_state
-  - Evidence: src/rt/hle_thread_selftest.c:test_utility_module_table
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_av_module_state
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_module_table
 - **`h_UtilityUnloadNetModule`** (`sceUtility`): `sceUtilityUnloadNetModule` (0x64d50c56)
   - Limitation: maps net-module numbers 1..7 onto utility IDs 0x100..0x106; the status codes for a bad number or a module that is not loaded are the generic module ones, unmeasured on a PSP
-  - Evidence: src/rt/hle_thread_selftest.c:test_utility_av_module_state
-  - Evidence: src/rt/hle_thread_selftest.c:test_utility_module_table
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_av_module_state
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_module_table
 
 #### Compatibility Handlers (Named Limitations)
 
@@ -999,7 +999,7 @@ corrupt, data-looking, null, or unresolved, the poisoned register state and
 caller PC are preserved and the request is rejected (which the public
 `dispatch()` wrapper turns into process termination) rather than swallowed.
 
-`src/rt/dispatch_isolation_selftest.c` carries the source-owned hostile matrix
+`tests/native/dispatch_isolation_selftest.c` carries the source-owned hostile matrix
 (one target from each former range, every retained magic value, null,
 unresolved PLT, module-table and data-looking shapes, plus legitimate
 configured-alias and terminator controls) and is built for the generic and both

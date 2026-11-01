@@ -917,7 +917,7 @@ class LiveManifestTests(unittest.TestCase):
             0xB29DDF9C: (
                 "h_IoDopen",
                 [
-                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "tests/native/hle_thread_selftest.c:test_umd_io_console_model",
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)",
                 ],
             ),
@@ -926,7 +926,7 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
                     "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-seek64, io-seek64-rdwr)",
-                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
+                    "tests/native/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x109F50BC: (
@@ -935,7 +935,7 @@ class LiveManifestTests(unittest.TestCase):
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)",
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
                     "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-missing-parent, io-excl-new, io-excl-existing)",
-                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
                 ],
             ),
         }
@@ -964,30 +964,30 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write)",
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
-                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
-                    "src/rt/hle_thread_selftest.c:test_io_async_and_path_imports",
+                    "tests/native/hle_thread_selftest.c:test_umd_io_console_model",
+                    "tests/native/hle_thread_selftest.c:test_io_async_and_path_imports",
                 ],
             ),
             0xEB092469: (
                 "h_IoDclose",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0004 and io-dopen-0005 close results)",
-                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "tests/native/hle_thread_selftest.c:test_umd_io_console_model",
                 ],
             ),
             0x6A638D83: (
                 "h_IoRead",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
-                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
-                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
+                    "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "tests/native/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x42EC03AC: (
                 "h_IoWrite",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write and io-append)",
-                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
                 ],
             ),
         }
@@ -1042,7 +1042,7 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["status"], "partial")
                 evidence = meta.HANDLER_EVIDENCE[handler]
                 self.assertTrue(any(e.startswith("docs/HARDWARE_ORACLE.md (PSP-") for e in evidence))
-                self.assertTrue(any(e.startswith("src/rt/hle_thread_selftest.c:test_") for e in evidence))
+                self.assertTrue(any(e.startswith("tests/native/hle_thread_selftest.c:test_") for e in evidence))
                 self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
                 self._assert_cited_cells_are_manifest_cells(evidence)
                 self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
@@ -1056,7 +1056,7 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["status"], "partial")
                 evidence = meta.HANDLER_EVIDENCE[handler]
                 self.assertTrue(any(f"PSPAutotests {expected_file} at 2ed7c9c5" in e for e in evidence))
-                self.assertTrue(any(e.startswith("src/rt/hle_thread_selftest.c:test_") for e in evidence))
+                self.assertTrue(any(e.startswith("tests/native/hle_thread_selftest.c:test_") for e in evidence))
                 self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
                 self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
 

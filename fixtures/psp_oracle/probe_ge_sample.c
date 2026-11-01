@@ -9,13 +9,13 @@
 //   CASE=ge-mip (PSP-GE-MIP-001, #1373): the level of detail and mip level the GE samples, in
 //     constant, automatic and slope TEXLEVEL modes, over a texture whose every level is one
 //     colour. The cell table and list builder are the block shared with
-//     src/rt/hle_thread_selftest.c, as for ge-raster.
+//     tests/native/hle_thread_selftest.c, as for ge-raster.
 //   CASE=ge-raster (PSP-GE-RASTER-001, #343): the raster semantics corpus. Each cell is one
 //     raw display list over a 16x4 window of generated source and destination patterns:
 //     blend factors and equations, alpha, colour, stencil and depth tests, texture
 //     functions, texture formats and CLUT modes, wrap and clamp, triangle coverage, 16-bit
 //     framebuffer formats, dithering, pixel masks, logic operations, clear mode and fog.
-//     The cell table and list builder are the block shared with src/rt/hle_thread_selftest.c,
+//     The cell table and list builder are the block shared with tests/native/hle_thread_selftest.c,
 //     which runs the same cells through the software GE and compares each window's digest.
 //
 // ge-sample: each draw is one raw display list (no libpspgu) into a 64x32 8888 framebuffer
@@ -464,7 +464,7 @@ static int hle_run(void)
 
 /* ==== GE raster cells (PSP-GE-RASTER-001, #343) ====
  * This block is carried byte for byte by fixtures/psp_oracle/probe_ge_sample.c (the PSP
- * side, CASE=ge-raster) and src/rt/hle_thread_selftest.c (the software GE side);
+ * side, CASE=ge-raster) and tests/native/hle_thread_selftest.c (the software GE side);
  * tools/test_psp_oracle.py pins the copy. Each cell is one display list of project-written
  * command words over generated patterns (no game data). It draws into the 16x4 window
  * x 16..31, y 8..11 of a 64x32 colour buffer at VRAM offset GR_FB_OFFSET whose other pixels
@@ -1165,7 +1165,7 @@ static int hle_run(void)
 
 /* ==== GE mip cells (PSP-GE-MIP-001, #1373) ====
  * This block is carried byte for byte by fixtures/psp_oracle/probe_ge_sample.c (the PSP
- * side, CASE=ge-mip) and src/rt/hle_thread_selftest.c (the software GE side);
+ * side, CASE=ge-mip) and tests/native/hle_thread_selftest.c (the software GE side);
  * tools/test_psp_oracle.py pins the copy. Each cell is one display list of project-written
  * command words (no game data). It draws into the 16x4 window x 16..31, y 8..11 of a 64x32
  * 8888 colour buffer at VRAM offset GM_FB_OFFSET whose pixels are 0 before the list runs,

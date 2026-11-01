@@ -4,7 +4,7 @@
 """Source-shape gates for the measured PSP DMAC copy path.
 
 The PSP-visible behavior itself is proven executably by
-``src/rt/hle_thread_selftest.c``, which enters both DMAC NIDs through the real
+``tests/native/hle_thread_selftest.c``, which enters both DMAC NIDs through the real
 ``sr_syscall`` registry and asserts return values and guest memory contents.
 These assertions guard the two properties a behavioral test cannot express:
 
@@ -170,14 +170,14 @@ class TestDmacMeasuredBoundary(unittest.TestCase):
 
 class TestDmacExecutableCoverage(unittest.TestCase):
     def test_regression_covers_both_nids_through_production_dispatch(self) -> None:
-        text = (ROOT / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+        text = (ROOT / "tests" / "native" / "hle_thread_selftest.c").read_text(encoding="utf-8")
         self.assertIn("test_dmac_semantics();", text)
         self.assertIn("test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY", text)
         self.assertIn("test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY", text)
         self.assertIn("test_dmac_active_transfer_across_threads();", text)
 
     def test_regression_asserts_measured_and_policy_cases(self) -> None:
-        text = (ROOT / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+        text = (ROOT / "tests" / "native" / "hle_thread_selftest.c").read_text(encoding="utf-8")
         for needle in (
             "PSP: zero size returns the illegal-size error",
             "PSP: a NULL destination returns the illegal-address error",

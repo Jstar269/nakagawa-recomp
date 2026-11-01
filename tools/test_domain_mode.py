@@ -179,7 +179,7 @@ class MakefileWiringTests(unittest.TestCase):
     def test_domain_mode_selftest_target_exists(self):
         self.assertIn("domain-mode-selftest:", MAKEFILE)
         recipe = MAKEFILE.split("domain-mode-selftest:", 1)[1].split("\n\n", 1)[0]
-        self.assertIn("src/rt/domain_mode_selftest.c", recipe)
+        self.assertIn("tests/native/domain_mode_selftest.c", recipe)
         self.assertIn("src/rt/guest_interp.c", recipe)
         self.assertIn("$(BUILD_DIR)/domain_mode_selftest.exe", recipe)
 

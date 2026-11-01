@@ -29,7 +29,7 @@ vertex words. A result records `framebuffer_sha256` and one `pixel_<x>_<y>` valu
 coordinate, packed according to the case framebuffer format.
 
 The measured raster corpus is the `ge-raster` probe (`PSP-GE-RASTER-001`, in the measured index
-below): 189 cells whose window digests `src/rt/hle_thread_selftest.c` compares with the software GE. The schema corpus below does not cite
+below): 189 cells whose window digests `tests/native/hle_thread_selftest.c` compares with the software GE. The schema corpus below does not cite
 those runs yet.
 
 Run `python tools/psp_oracle/run_psplink.py --ge-corpus-gate` to validate the corpus and report each
@@ -720,12 +720,12 @@ One console is one data point; see §11. Nothing here closes issue #70
 
     The runtime had no SRC handlers before this entry. `h_AudioSRCChReserve`, `h_AudioSRCChRelease` and
     `h_AudioSRCOutputBlocking` in `src/rt/hle.c` now return every word above, on the Output2 slot, and
-    `test_audio_src_matches_the_measured_contract` in `src/rt/hle_thread_selftest.c` pins them. A reserve
+    `test_audio_src_matches_the_measured_contract` in `tests/native/hle_thread_selftest.c` pins them. A reserve
     at 48000 Hz is accepted as measured. The host mixer runs at 44100 Hz, so those blocks pass through
     the band-limited converter in `src/rt/audio_resample.c` and keep their source-rate pacing. The
     values listed as not cited are unmeasured; the handler metadata names the choices made for them.
-  - *Transcendental words (`PSP-VFPU-TRANSCENDENTAL-001`, issue #347).* The eleven scalar operations returned 693 result words over the probe's fixed inputs: 20 special encodings (signed zeros, the smallest signed denormals, plus and minus one, two and one half, the smallest signed normals, plus and minus 2^127, the infinities, and quiet and signalling NaN encodings) and 43 evenly spaced domain constants per operation. The raw words stay private. Compared with the runtime (the generated code and `sr_vfpu_interp`), ten operations matched on all 63 inputs: `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s` and `vnsin.s`. `vrexp2.s` matched on none: the runtime computed the negated `exp2(x)` (`0xBF800000` for an input of zero) where the console returned `exp2(-x)` (`0x3F800000` for zero, `0x40000000` for -1.0 and `0x3EFFFFFC` for +1.0). Both paths now compute `exp2(-x)`, and the 63 measured words are pinned in `src/rt/vfpu_interp_selftest.c`. The same opcode group still decodes five more negated forms (optypes 25, 27, 29, 30 and 31) as the negation of the positive operation; no probe covers them, so they are unmeasured.
-  - *VFPU9 forms and RCX at thread entry (2026-10-24 PSP-3000 PSPLink session, issue #326).* 159 cells over `vsgn.s`, `vbfy1.p`, `vbfy1.q`, `vbfy2.q` and `vt4444.q`, each under no S prefix, negate-all and a `wzyx` swizzle, plus `mfvc` of controls 8-15 on a fresh thread. The runtime rejected all five forms before this entry and zero-filled RCX0-7. The cells fix these rules: an arithmetic NaN result is the canonical `0x7F800001`; a denormal operand counts as a zero of its own sign; `vsgn` takes +1 or -1 from the raw sign bit of any non-zero word, NaN and Inf included, and +0 for either zero; `vbfy1`/`vbfy2` add the user-prefixed S operand, with a forced negate on lanes (0,1,0,1)/(0,0,1,1), to the raw `vs` swizzled (y,x,w,z)/(z,w,x,y), and a user swizzle lane outside the width writes +0; `vt4444.q` packs the high nibble of each byte into a pair. None of them writes VFPU_CC. RCX0-7 read `0x3F800001`, `0x3F800002`, `0x3F800004`, `0x3F800008` and then `0x3F800000` four times. `sr_vfpu_interp` implements the five forms (the generated code routes them there) and `sr_vfpu_thread_ctrl_init` in `src/rt/recomp.h` seeds RCX at every thread entry; `check_psp_measured_vfpu9` in `src/rt/vfpu_interp_selftest.c` pins the cells quoted here. An off-tree replay of the production interpreter against the private log matched all 159 cells and the RCX row. Unmeasured: the T and D prefixes, constant S lanes, other widths (rejected), the sign of a NaN from a negative NaN, denormal results, and the `vrnd*` draws (the `vrndi.s` step came later; see the random-unit step under `PSP-HLE-ISSUES-001` below).
+  - *Transcendental words (`PSP-VFPU-TRANSCENDENTAL-001`, issue #347).* The eleven scalar operations returned 693 result words over the probe's fixed inputs: 20 special encodings (signed zeros, the smallest signed denormals, plus and minus one, two and one half, the smallest signed normals, plus and minus 2^127, the infinities, and quiet and signalling NaN encodings) and 43 evenly spaced domain constants per operation. The raw words stay private. Compared with the runtime (the generated code and `sr_vfpu_interp`), ten operations matched on all 63 inputs: `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s` and `vnsin.s`. `vrexp2.s` matched on none: the runtime computed the negated `exp2(x)` (`0xBF800000` for an input of zero) where the console returned `exp2(-x)` (`0x3F800000` for zero, `0x40000000` for -1.0 and `0x3EFFFFFC` for +1.0). Both paths now compute `exp2(-x)`, and the 63 measured words are pinned in `tests/native/vfpu_interp_selftest.c`. The same opcode group still decodes five more negated forms (optypes 25, 27, 29, 30 and 31) as the negation of the positive operation; no probe covers them, so they are unmeasured.
+  - *VFPU9 forms and RCX at thread entry (2026-10-24 PSP-3000 PSPLink session, issue #326).* 159 cells over `vsgn.s`, `vbfy1.p`, `vbfy1.q`, `vbfy2.q` and `vt4444.q`, each under no S prefix, negate-all and a `wzyx` swizzle, plus `mfvc` of controls 8-15 on a fresh thread. The runtime rejected all five forms before this entry and zero-filled RCX0-7. The cells fix these rules: an arithmetic NaN result is the canonical `0x7F800001`; a denormal operand counts as a zero of its own sign; `vsgn` takes +1 or -1 from the raw sign bit of any non-zero word, NaN and Inf included, and +0 for either zero; `vbfy1`/`vbfy2` add the user-prefixed S operand, with a forced negate on lanes (0,1,0,1)/(0,0,1,1), to the raw `vs` swizzled (y,x,w,z)/(z,w,x,y), and a user swizzle lane outside the width writes +0; `vt4444.q` packs the high nibble of each byte into a pair. None of them writes VFPU_CC. RCX0-7 read `0x3F800001`, `0x3F800002`, `0x3F800004`, `0x3F800008` and then `0x3F800000` four times. `sr_vfpu_interp` implements the five forms (the generated code routes them there) and `sr_vfpu_thread_ctrl_init` in `src/rt/recomp.h` seeds RCX at every thread entry; `check_psp_measured_vfpu9` in `tests/native/vfpu_interp_selftest.c` pins the cells quoted here. An off-tree replay of the production interpreter against the private log matched all 159 cells and the RCX row. Unmeasured: the T and D prefixes, constant S lanes, other widths (rejected), the sign of a NaN from a negative NaN, denormal results, and the `vrnd*` draws (the `vrndi.s` step came later; see the random-unit step under `PSP-HLE-ISSUES-001` below).
 
 - **Observed, not acceptance-eligible: `hle-issues-batch` and `hle-intr-cells` from `da97b2c0` (2026-10-24)**:
   PSP-3000, firmware 6.6.1, PSPLink v3.2.1, operator-declared model PSP-3000, Nakagawa Link resident
@@ -758,7 +758,7 @@ One console is one data point; see §11. Nothing here closes issue #70
     C0' + C1' + C3'. This reproduces all 1792 `rcar` and `rcbig` rows, and both passes are identical.
     The generated code and `sr_vfpu_interp` apply this step to `vrndi.s` under identity S, T and D
     prefixes (`sr_vfpu_rnd_step` in `src/rt/recomp.h`); `check_vrndi_rule_cells` in
-    `src/rt/vfpu_interp_selftest.c` runs both against the rule from the probe's own states. A
+    `tests/native/vfpu_interp_selftest.c` runs both against the rule from the probe's own states. A
     pending prefix, `vrndi.p`/`.t`/`.q`, `vrnds`, `vrndf1` and `vrndf2` have no recorded rule and
     stay fail-closed.
   - *`vscmp` (#326).* Per lane, at every width, the result is -1, 0 or +1 in sign-magnitude
@@ -970,7 +970,7 @@ One console is one data point; see §11. Nothing here closes issue #70
   under identity S, T and D prefixes only (`sr_vfpu_h2f`, `sr_vfpu_uc2i`, `sr_vfpu_socp`, `sr_vfpu_wbn` and
   `sr_vfpu_rndf_step` in `src/rt/recomp.h`), at the measured widths `vh2f.s/.p`, `vuc2i.s`, `vsocp.s/.p`,
   `vwbn.s` and `vrndf1.s/vrndf2.s`. Before this entry both lanes refused every one of them.
-  `check_vfpu_forms_measured` in `src/rt/vfpu_interp_selftest.c` pins every no-prefix word above in both lanes.
+  `check_vfpu_forms_measured` in `tests/native/vfpu_interp_selftest.c` pins every no-prefix word above in both lanes.
   `vwbn.s` applies the rule at every exponent; only the eight listed have cells. Unmeasured, and failing closed in
   both lanes: a pending prefix (the T and D prefixes were never set), the other widths, `vf2h`, `vrnds`, and
   `vc2i`/`vus2i`.
@@ -1074,7 +1074,7 @@ One console is one data point; see §11. Nothing here closes issue #70
   draws into the 16x4 window x 16..31, y 8..11 of a 64x32 colour buffer whose window holds a generated
   destination pattern; the base state turns every per-fragment unit off and draws a 16x4 generated texture 1:1
   with REPLACE/RGBA, so a sprite's source colour is the texel. The table and list builder are one block that
-  `src/rt/hle_thread_selftest.c` carries byte for byte; `test_ge_raster_cells_match_psp` runs every cell through
+  `tests/native/hle_thread_selftest.c` carries byte for byte; `test_ge_raster_cells_match_psp` runs every cell through
   the software GE and compares its window digest with the PSP's. What the cells establish, for these exact
   states only (issue #343):
   - *Blending.* Each colour-times-factor product is floor((2v + 1)(2|f| + 1) / 1024) with the factor's sign
@@ -1118,7 +1118,7 @@ One console is one data point; see §11. Nothing here closes issue #70
   `ge-mip` (#1373): each cell is one display list of project-written command words (no game data) that draws
   into the 16x4 window x 16..31, y 8..11 of a 64x32 8888 buffer, sampling a 64x64 texture of eight levels, each
   one colour (red 32 x level, green 255 on even levels), so a pixel names the level it sampled or the two levels
-  and the weight of a blend. The table and list builder are one block that `src/rt/hle_thread_selftest.c`
+  and the weight of a blend. The table and list builder are one block that `tests/native/hle_thread_selftest.c`
   carries byte for byte; `test_ge_mip_cells_match_psp` runs every cell through the software GE and compares its
   window digest with the PSP's. What the cells establish, for these exact states only:
   - *Level of detail in 1/16 levels.* Constant mode (TEXLEVEL 1) is the signed 4.4 bias (`c-*`); the unused
@@ -1206,14 +1206,14 @@ One console is one data point; see §11. Nothing here closes issue #70
   Runtime comparison. Alarms (`src/rt/sched.c`) rescheduled from the delivery time, so each late call
   pushed the grid back. They now reschedule from the call's scheduled time, and a call that falls behind
   owes the scheduled points it missed (`test_alarm_rearm_counts_from_the_scheduled_time` in
-  `src/rt/sched_selftest.c`). Alarm call times cannot show whether a return below 100 us is raised to
+  `tests/native/sched_selftest.c`). Alarm call times cannot show whether a return below 100 us is raised to
   100 us, because consecutive calls land about 215 us apart, so the runtime uses the return as returned.
   VTimer handlers (`src/rt/hle.c`) already rescheduled from the scheduled time; a return below 100 us now
   reschedules 100 us on (`test_vtimer_handler_return_below_100us_reschedules_100us_on` in
-  `src/rt/hle_thread_selftest.c`). The VBLANK cells match the scheduler's model (one coalesced episode per
+  `tests/native/hle_thread_selftest.c`). The VBLANK cells match the scheduler's model (one coalesced episode per
   masked window, VCOUNT frozen while masked). For the LLE CPU, `SR_INTC_PSP_CPU_IP_BIT` in
   `src/rt/cpu_lle.h` records IP2 as the controller's line, and
-  `test_hw_psp_intr_cause_ip2_while_suspended` in `src/rt/cpu_lle_selftest.c` reproduces the measured
+  `test_hw_psp_intr_cause_ip2_while_suspended` in `tests/native/cpu_lle_selftest.c` reproduces the measured
   Cause words with Status.IE clear. Interrupt delivery at safe points (`sr_cpu_poll`) stays unimplemented.
 
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.

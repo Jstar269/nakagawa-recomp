@@ -665,7 +665,7 @@ class FlightRecorderLinkDependencyTests(unittest.TestCase):
     def test_psmf_media_selftest_links_the_recorder_implementation(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         logical = _with_response_file_inputs(_logical_lines(makefile))
-        selftest = (ROOT / "src" / "rt" / "psmf_media_selftest.c").read_text(encoding="utf-8")
+        selftest = (ROOT / "tests" / "native" / "psmf_media_selftest.c").read_text(encoding="utf-8")
         mpeg = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
         recomp = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
         recorder = (ROOT / "src" / "rt" / "flight_recorder.c").read_text(encoding="utf-8")
@@ -853,7 +853,7 @@ def _nested_frame_callers() -> list[str]:
     call = re.compile(r"\bsr_nested_frame_\w+\s*\(")
     direct = []
     texts = {}
-    for path in sorted(src.rglob("*.c")):
+    for path in sorted([*src.rglob("*.c"), *(ROOT / "tests" / "native").glob("*.c")]):
         rel = path.relative_to(ROOT).as_posix()
         texts[rel] = path.read_text(encoding="utf-8", errors="replace")
         if rel == NESTED_FRAMES_C:
@@ -1018,7 +1018,7 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
                 [
                     "sched-selftest-one:",
                     "\t$(CC) $(CFLAGS) $(LDFLAGS) -o out.exe " + continuation,
-                    "\t\tsrc/rt/sched_selftest.c src/rt/sr_coro.c $(LIBS)",
+                    "\t\ttests/native/sched_selftest.c src/rt/sr_coro.c $(LIBS)",
                 ]
             )
             + "\n"

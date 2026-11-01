@@ -67,7 +67,7 @@
  *
  * Boundary: 14 of 512 wide encodings were observed on silicon. The remainder
  * are covered only by derived cross-implementation tests
- * (src/rt/vfpu_addr_selftest.c driven by tools/test_vfpu_addressing.py), which
+ * (tests/native/vfpu_addr_selftest.c driven by tools/test_vfpu_addressing.py), which
  * assert that this decoder and the Python one agree over the whole finite
  * domain. That is a consistency property, not a hardware measurement.
  *
