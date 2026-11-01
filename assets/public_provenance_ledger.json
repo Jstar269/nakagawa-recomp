@@ -18,24 +18,21 @@
       "path": ".betterleaks.toml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".clang-format",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".clangd",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -75,104 +72,91 @@
       "path": ".editorconfig",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".gitattributes",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/CODEOWNERS",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/ISSUE_TEMPLATE/accessibility.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/ISSUE_TEMPLATE/config.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/ISSUE_TEMPLATE/smoke_test_report.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/codecov.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/copilot-instructions.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/dependabot.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".github/instructions/c-generated.instructions.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -300,16 +284,14 @@
       "path": ".gitignore",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": ".markdownlint-cli2.jsonc",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -327,32 +309,28 @@
       "path": ".recomp.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "ACCESSIBILITY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "AGENTS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "CLAUDE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -370,32 +348,28 @@
       "path": "CODE_OF_CONDUCT.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "CONTRIBUTING.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "CREDITS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "LICENSE",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -414,48 +388,42 @@
       "path": "NOTICE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "PUBLIC_EXPORT.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "REVIEW.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "SECURITY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "SUPPORT.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -474,8 +442,7 @@
       "path": "THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -506,8 +473,7 @@
       "path": "THIRD_PARTY_LICENSES/GPL-2.0.txt",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -800,8 +766,7 @@
       "path": "assets/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -852,8 +817,7 @@
       "path": "assets/failure_codes.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -991,8 +955,7 @@
       "path": "assets/fonts/ui/manifest.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1023,8 +986,7 @@
       "path": "assets/ge_corpus.schema.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1086,16 +1048,14 @@
       "path": "assets/public_provenance_ledger.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "assets/public_source_profile.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1113,8 +1073,7 @@
       "path": "assets/release_manifest.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1143,72 +1102,63 @@
       "path": "assets/title_manifest.schema.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "assets/titles/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "assets/titles/display-smoke.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "title-manifest schema and public PSP metadata review",
-        "statement": "manifest contains user-supplied title metadata, not retail content"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "assets/titles/hst-ucus98701.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "title-manifest schema and public PSP metadata review",
-        "statement": "manifest contains user-supplied title metadata, not retail content"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "assets/titles/pspdev-phase5.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "title-manifest schema and public PSP metadata review",
-        "statement": "manifest contains user-supplied title metadata, not retail content"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "assets/titles/showcase-breakout.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "title-manifest schema and public PSP metadata review",
-        "statement": "manifest contains user-supplied title metadata, not retail content"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "assets/titles/showcase-scene.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "title-manifest schema and public PSP metadata review",
-        "statement": "manifest contains user-supplied title metadata, not retail content"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "assets/titles/synthetic-title2.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "title-manifest schema and public PSP metadata review",
-        "statement": "manifest contains user-supplied title metadata, not retail content"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "assets/titles/synthetic.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "title-manifest schema and public PSP metadata review",
-        "statement": "manifest contains user-supplied title metadata, not retail content"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1251,8 +1201,7 @@
       "path": "assets/vfpu/PROVENANCE.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1424,8 +1373,7 @@
       "path": "docs/AI_USAGE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1443,72 +1391,63 @@
       "path": "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/CI.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/CODE_TOUR.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/COMPATIBILITY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/DCO_POLICY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/DEBUGGING.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1526,32 +1465,28 @@
       "path": "docs/FAILURE_CODES.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/HLE_AND_WORKAROUND_INVENTORY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1569,72 +1504,63 @@
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/LINUX_DEVELOPMENT.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/LLVM_BACKEND.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/ONLINE_FEATURES.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1652,56 +1578,49 @@
       "path": "docs/PLATFORM_PORTABILITY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/PLAYER_UI_DESIGN.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/PORTING.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/PROJECT_MODEL.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1719,32 +1638,28 @@
       "path": "docs/PSP_INTR_WAITS_MATRIX.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/PUBLICATION_READINESS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1762,80 +1677,70 @@
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/RELEASE_SIGNING.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/SETUP.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/SHOWCASE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/SMOKE_TEST.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/STATIC_VERIFY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/STATUS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/TITLE_CODEGEN_PLAN.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -1853,304 +1758,266 @@
       "path": "docs/WORKSPACE_DOCTOR.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/YOUR_OWN_GAMES.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/archive/ISSUE196_DIRECT_XB.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/archive/TITLE_MANAGER_DECOUPLING.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/archive/TOOLCHAIN_BASELINE_2026-08.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/archive/ui-baseline/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/cleanroom/PGF_CONVERTER_SPEC.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/cleanroom/PGF_SPEC.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/decisions/0001-llvm-ir-backend.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/decisions/0002-shared-analysis-ir.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/decisions/0003-lle-first.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/decisions/0004-per-path-provenance.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/decisions/0005-non-retail-discs.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/decisions/0006-register-promotion-opt-in.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/decisions/0007-no-vfpu-simd.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/decisions/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/images/brand/nakagawa-mark-light.svg",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/images/brand/og-card.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/images/showcase-breakout.gif",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/images/showcase-ge-scene.gif",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/index.html",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/media/hst-rally-poster.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/media/hst-rally.mp4",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/media/hst-title-screen-960.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/media/hst-title-screen.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/media/launcher-building.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/media/launcher-library.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/provenance/FONT_ORIGINS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/provenance/GUEST_INTERP_ATTESTATION.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/provenance/HST_PUBLIC_CENSUS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/provenance/INDEPENDENCE_MODEL.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/provenance/MODIFIED_FILE_NOTICES.json",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/provenance/MODIFIED_FILE_NOTICES.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "docs/research/PSP_THREADING_SEMANTICS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2168,8 +2035,7 @@
       "path": "fixtures/cosim/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2242,8 +2108,7 @@
       "path": "fixtures/fonts/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2285,24 +2150,21 @@
       "path": "fixtures/fonts/gudea/Gudea-Regular.ttf",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "fixtures/fonts/gudea/OFL.txt",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "fixtures/fonts/gudea/PIN.json",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2388,40 +2250,35 @@
       "path": "fixtures/nk_ui/core_synthetic.golden",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "fixtures/nk_ui/library.golden",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "fixtures/nk_ui/overlay.golden",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "fixtures/nk_ui/title.golden",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "fixtures/platform_ladder/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2439,8 +2296,7 @@
       "path": "fixtures/production_smoke/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2513,8 +2369,7 @@
       "path": "fixtures/psp_oracle/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2554,8 +2409,7 @@
       "path": "fixtures/psp_oracle/ge_corpus.json",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2672,8 +2526,7 @@
       "path": "fixtures/psp_oracle/mutex_imports.S",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2856,8 +2709,7 @@
       "path": "fixtures/psp_oracle/threadman_user_imports.S",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -2985,8 +2837,7 @@
       "path": "fixtures/psp_phaseb/mutex_imports.S",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -3037,16 +2888,14 @@
       "path": "fixtures/psp_threading_oracle/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
       "path": "fixtures/psp_threading_oracle/matrix.json",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -3064,8 +2913,7 @@
       "path": "fixtures/psp_threading_oracle/thread_shim.S",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -3160,8 +3008,7 @@
       "path": "fixtures/update_check/github_releases_20261028.json",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -3374,8 +3221,7 @@
       "path": "pyproject.toml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "configuration review",
-        "statement": "configuration or dependency metadata reviewed for public release"
+        "source": "trusted detailed implementation ledger"
       }
     },
     {
@@ -6016,6 +5862,18 @@
       }
     },
     {
+      "path": "src/rt/gpu_sdl3vk/ge_gpu_selftest.inc",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend-moved-1531",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
       "classification": "upstream_derived",
       "evidence": {
@@ -6069,6 +5927,18 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "ge-vulkan-backend",
+        "evidence_tier": "R",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
+      "path": "src/rt/gpu_sdl3vk/sdl3vk_selftest.inc",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-vulkan-backend-moved-1531",
         "evidence_tier": "R",
         "upstream": "documented upstream family",
         "license": "GPL-2.0-or-later",
