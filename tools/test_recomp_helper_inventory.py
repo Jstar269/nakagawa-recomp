@@ -437,7 +437,7 @@ class RepositoryInventoryTests(unittest.TestCase):
                 rhi.main(["--check", "--details"])
 
     def test_harness_classification(self) -> None:
-        self.assertTrue(rhi._is_harness("src/rt/hle_thread_selftest.c"))
+        self.assertTrue(rhi._is_harness("tests/native/hle_thread_selftest.c"))
         self.assertFalse(rhi._is_harness(rhi.RECOMP_C))
 
 

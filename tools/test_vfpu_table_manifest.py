@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets" / "vfpu"
 TABLES_C = ROOT / "src" / "rt" / "vfpu_tables.c"
 RECOMP_C = ROOT / "src" / "rt" / "recomp.c"
-SELFTEST_C = ROOT / "src" / "rt" / "vfpu_tables_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "vfpu_tables_selftest.c"
 MAKEFILE = ROOT / "Makefile"
 
 # Genuine sizes, cross-checked against the manifest and PROVENANCE.json.

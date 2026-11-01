@@ -9,7 +9,7 @@
 // The harness #includes recomp.c and cpu_lle.c for direct access to the same
 // helpers the generated code and the interpreter call, and links the real
 // guest_interp.c so the interpreter lane is exercised, not modeled. The stub
-// block below mirrors src/rt/heap_selftest.c: symbols recomp.c references
+// block below mirrors tests/native/heap_selftest.c: symbols recomp.c references
 // that live in scheduler/HLE translation units we deliberately do not link.
 //
 // Failing-before evidence (PR 2, spec section 11): on the base tree there is

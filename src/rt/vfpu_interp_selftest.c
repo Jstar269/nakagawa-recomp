@@ -46,7 +46,7 @@
 /* White-box: include the real runtime + interpreter as translation units so the
  * selftest exercises the production sr_vfpu_interp, sr_vread/sr_vwrite, the
  * transcendental kernels and the guest-memory accessors directly (the same
- * pattern src/rt/heap_selftest.c uses for recomp.c). */
+ * pattern tests/native/heap_selftest.c uses for recomp.c). */
 #include "recomp.c"
 #include "vfpu_tables.c"
 #include "vfpu_interp.c"

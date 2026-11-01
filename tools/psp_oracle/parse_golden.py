@@ -2039,7 +2039,7 @@ _register_campaign_probe(
 )
 
 # ge-raster (123, probe_ge_sample.c): the #343 GE raster corpus. The cells are the gr_cells
-# table of the block probe_ge_sample.c shares with src/rt/hle_thread_selftest.c, in order. Per
+# table of the block probe_ge_sample.c shares with tests/native/hle_thread_selftest.c, in order. Per
 # cell, one `-draw` record (9 words: the GE wait outcome, the list length and the window's
 # FNV-1a 64 digest, low word first) and one record per window row y 0..3 (16 pixels, x 16..31).
 GE_RASTER_CELLS = (
@@ -2080,7 +2080,7 @@ _register_campaign_probe(
 )
 
 # ge-mip (126, probe_ge_sample.c): the #1373 GE level-of-detail cells. The cells are the gm_cells
-# table of the block probe_ge_sample.c shares with src/rt/hle_thread_selftest.c, in order, with
+# table of the block probe_ge_sample.c shares with tests/native/hle_thread_selftest.c, in order, with
 # the ge-raster record shape: one `-draw` record (9 words) and one record per window row.
 GE_MIP_CELLS = (
     "c-b0", "c-b1", "c-b3", "c-b7", "c-b7f", "c-bm1", "c-b0f7", "c-b0f8", "c-b0f9", "c-b1f8",

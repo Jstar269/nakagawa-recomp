@@ -64,7 +64,7 @@
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
-      "reason": "Builds the minimal PSP lifecycle fixture whose directory src/rt/hle_thread_selftest.c names as the source of the payload it exercises. make finds the Makefile by directory convention, and the bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
+      "reason": "Builds the minimal PSP lifecycle fixture whose directory tests/native/hle_thread_selftest.c names as the source of the payload it exercises. make finds the Makefile by directory convention, and the bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/main.c",

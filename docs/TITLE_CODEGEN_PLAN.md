@@ -333,7 +333,7 @@ names one of the retired addresses.
 
 `make dispatch-isolation-selftest` is the matching gate for the typed collections, over
 the same three configurations and the same two fixtures. It drives the **real**
-`dispatch()` entry point — `src/rt/dispatch_isolation_selftest.c` includes `recomp.c` —
+`dispatch()` entry point — `tests/native/dispatch_isolation_selftest.c` includes `recomp.c` —
 and reads its verdict from the resulting `CpuState`, which distinguishes the three
 outcomes cleanly: a termination is `v0 = 1, pc = ra`, the null-call policy hook is
 `v0 = 0, pc = ra`, and an ordinary miss is `v0 = 0, pc = pc + 8`.

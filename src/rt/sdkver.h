@@ -7,7 +7,7 @@
  * retained value that SDK-dependent consumers later read (issue #71). Kept
  * free of any runtime dependency (no CpuState, no memory access) so the
  * retained-state contract can be regression-tested standalone
- * (src/rt/sdkver_selftest.c) without mocking the HLE layer. */
+ * (tests/native/sdkver_selftest.c) without mocking the HLE layer. */
 
 #ifndef SR_SDKVER_H
 #define SR_SDKVER_H

@@ -10,7 +10,7 @@
  * as a plain C call and never enter this table.
  *
  * This header holds the whole data structure and its primitives so the exact production
- * logic can be exercised host-neutrally (src/rt/dispatch_selftest.c). recomp.c owns the one
+ * logic can be exercised host-neutrally (tests/native/dispatch_selftest.c). recomp.c owns the one
  * live instance and wraps these as sr_register()/sr_lookup().
  *
  * ---------------------------------------------------------------------------------------

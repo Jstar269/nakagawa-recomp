@@ -89,7 +89,7 @@
 // production a set stale flag is always followed by an abort at invalidate
 // time; the redirect additionally guards any dispatch that reaches a stale
 // block through a path no firing check precedes. The synthetic
-// self-modifying program in src/rt/dispatch_isolation_selftest.c proves the
+// self-modifying program in tests/native/dispatch_isolation_selftest.c proves the
 // redirect: patch, check, dispatch runs the NEW bytes, restore, dispatch
 // returns to the AOT body.
 

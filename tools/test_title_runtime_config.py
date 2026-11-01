@@ -61,7 +61,7 @@ RETIRED_DISPATCH_ADDRESSES = {
 
 #: Generic runtime sources that must no longer name any of the addresses above.
 #:
-#: src/rt/dispatch_isolation_selftest.c is deliberately NOT here: it is the test that
+#: tests/native/dispatch_isolation_selftest.c is deliberately NOT here: it is the test that
 #: proves those addresses are inert, and it can only state that claim by naming them.
 #: DispatchAddressCensus asserts both halves -- absent from the sources below, and still
 #: present in the selftest that proves inertness.
@@ -820,7 +820,7 @@ class DispatchAddressCensus(unittest.TestCase):
     this check. The executable proof is `make dispatch-isolation-selftest`.
     """
 
-    SELFTEST = "src/rt/dispatch_isolation_selftest.c"
+    SELFTEST = "tests/native/dispatch_isolation_selftest.c"
 
     def test_generic_runtime_sources_name_no_retired_dispatch_address(self) -> None:
         for relative in GENERIC_RUNTIME_SOURCES:
@@ -992,7 +992,7 @@ class DispatchAddressCensus(unittest.TestCase):
         logical = workflow.replace("\\\n", " ")
         pulls_in_recomp = {
             path.relative_to(ROOT).as_posix()
-            for path in (ROOT / "src" / "rt").glob("*.c")
+            for path in [*(ROOT / "src" / "rt").glob("*.c"), *(ROOT / "tests" / "native").glob("*.c")]
             if '#include "recomp.c"' in path.read_text(encoding="utf-8", errors="replace")
         } | {"src/rt/recomp.c"}
         checked = 0
@@ -1000,7 +1000,7 @@ class DispatchAddressCensus(unittest.TestCase):
             stripped = line.strip()
             if not re.match(r"^(gcc|cc|clang|\$\{?CC)\b", stripped):
                 continue
-            operands = set(re.findall(r"src/rt/[\w./-]+\.c", stripped))
+            operands = set(re.findall(r"(?:src/rt|tests/native)/[\w./-]+\.c", stripped))
             if not operands & pulls_in_recomp:
                 continue
             checked += 1
@@ -1049,7 +1049,7 @@ class DispatchAddressCensus(unittest.TestCase):
         logical = workflow.replace("\\\n", " ")
         pulls_in_dispatch = {
             path.relative_to(ROOT).as_posix()
-            for path in (ROOT / "src" / "rt").glob("*.c")
+            for path in [*(ROOT / "src" / "rt").glob("*.c"), *(ROOT / "tests" / "native").glob("*.c")]
             if '#include "recomp.c"' in path.read_text(encoding="utf-8", errors="replace")
         } | {"src/rt/recomp.c"}
 
@@ -1058,7 +1058,7 @@ class DispatchAddressCensus(unittest.TestCase):
             stripped = line.strip()
             if not re.match(r"^(gcc|cc|clang|\$\{?CC)\b", stripped):
                 continue
-            operands = set(re.findall(r"src/rt/[\w./-]+\.c", stripped))
+            operands = set(re.findall(r"(?:src/rt|tests/native)/[\w./-]+\.c", stripped))
             if not operands & pulls_in_dispatch:
                 continue
             checked += 1

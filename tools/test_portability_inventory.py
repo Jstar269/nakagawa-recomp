@@ -44,8 +44,8 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(pi.classify_file("tools/codegen.py")[1], "BUILD_TOOL_ONLY")
 
     def test_selftests_are_test_only(self) -> None:
-        self.assertEqual(pi.classify_file("src/rt/sched_selftest.c")[1], "TEST_ONLY")
-        self.assertEqual(pi.classify_file("src/rt/hle_thread_selftest.c")[1], "TEST_ONLY")
+        self.assertEqual(pi.classify_file("tests/native/sched_selftest.c")[1], "TEST_ONLY")
+        self.assertEqual(pi.classify_file("tests/native/hle_thread_selftest.c")[1], "TEST_ONLY")
 
 
 class ScanTests(unittest.TestCase):

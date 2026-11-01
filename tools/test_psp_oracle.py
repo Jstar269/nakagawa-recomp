@@ -1555,7 +1555,7 @@ class PspOracleRunnerTests(unittest.TestCase):
 
     def test_nakagawa_mode_reuses_production_selftest_and_derives_records(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        source = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+        source = (root / "tests" / "native" / "hle_thread_selftest.c").read_text(encoding="utf-8")
         hle_source = hle_sources.text(root)
         makefile = (root / "Makefile").read_text(encoding="utf-8")
         self.assertIn("sr_syscall", source)
@@ -1603,7 +1603,7 @@ class PspOracleRunnerTests(unittest.TestCase):
         # The smoke define used to add a second sr_profile_block/g_prof_enabled pair
         # on top of the unconditional ones, which broke the smoke compile.
         source = (
-            Path(__file__).resolve().parents[1] / "src" / "rt" / "hle_thread_selftest.c"
+            Path(__file__).resolve().parents[1] / "tests" / "native" / "hle_thread_selftest.c"
         ).read_text(encoding="utf-8")
         self.assertEqual(
             source.count("void sr_profile_block(uint32_t target_pc) { (void)target_pc; }"), 1
@@ -7663,8 +7663,8 @@ class IntrCellsRuntimeContractTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         cls.sched = _c_code((root / "src" / "rt" / "sched.c").read_text(encoding="utf-8"))
         cls.hle = _c_code(hle_sources.text(root))
-        cls.sched_selftest = (root / "src" / "rt" / "sched_selftest.c").read_text(encoding="utf-8")
-        cls.hle_selftest = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+        cls.sched_selftest = (root / "tests" / "native" / "sched_selftest.c").read_text(encoding="utf-8")
+        cls.hle_selftest = (root / "tests" / "native" / "hle_thread_selftest.c").read_text(encoding="utf-8")
 
     @staticmethod
     def _body(code: str, signature: str) -> str:
@@ -8318,7 +8318,7 @@ class DmaTimingProbeTests(unittest.TestCase):
 class GeRasterProbeTests(unittest.TestCase):
     """CASE=ge-raster (123, PSP-GE-RASTER-001) in probe_ge_sample.c: the #343 GE raster
     corpus. The cell table and list builder are one block shared byte for byte with
-    src/rt/hle_thread_selftest.c, which runs every cell through the software GE and compares
+    tests/native/hle_thread_selftest.c, which runs every cell through the software GE and compares
     the window digests the PSP produced; the stream matches the registry."""
 
     makefile: ClassVar[str]
@@ -8335,7 +8335,7 @@ class GeRasterProbeTests(unittest.TestCase):
         fixture = root / "fixtures" / "psp_oracle"
         cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
         cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
-        cls.selftest = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+        cls.selftest = (root / "tests" / "native" / "hle_thread_selftest.c").read_text(encoding="utf-8")
         start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_RASTER\n\n")
         end = cls.probe.index("#endif /* GE_CASE_RASTER */", start)
         cls.section = _c_code(cls.probe[start:end])
@@ -8601,7 +8601,7 @@ class KernelSemanticsProbeTests(unittest.TestCase):
 class GeMipProbeTests(unittest.TestCase):
     """CASE=ge-mip (126, PSP-GE-MIP-001) in probe_ge_sample.c: the #1373 level-of-detail and
     mip cells. The cell table and list builder are one block shared byte for byte with
-    src/rt/hle_thread_selftest.c, which runs the cells through the software GE; the stream
+    tests/native/hle_thread_selftest.c, which runs the cells through the software GE; the stream
     matches the registry."""
 
     START = "/* ==== GE mip cells (PSP-GE-MIP-001, #1373) ===="
@@ -8617,7 +8617,7 @@ class GeMipProbeTests(unittest.TestCase):
         fixture = root / "fixtures" / "psp_oracle"
         cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
         cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
-        cls.selftest = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+        cls.selftest = (root / "tests" / "native" / "hle_thread_selftest.c").read_text(encoding="utf-8")
         start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_MIP\n\n")
         end = cls.probe.index("#endif /* GE_CASE_MIP */", start)
         cls.section = _c_code(cls.probe[start:end])
@@ -10024,7 +10024,7 @@ class IoCasesSourceTests(unittest.TestCase):
             self.assertIn("unexpected 0x12345678", err.getvalue())
 
     def test_runtime_umd_expectations_match_the_measured_parser_table(self) -> None:
-        source = (self.root / "src" / "rt" / "hle_thread_selftest.c").read_text(
+        source = (self.root / "tests" / "native" / "hle_thread_selftest.c").read_text(
             encoding="utf-8")
 
         def c_int(value: str) -> int:
@@ -10861,7 +10861,7 @@ class Record20261015Tests(unittest.TestCase):
             ("VTimer handler cells", "do not match"),
             "the VTimer comparison's current mismatch status",
         )
-        selftest = (self.root / "src" / "rt" / "hle_thread_selftest.c").read_text(
+        selftest = (self.root / "tests" / "native" / "hle_thread_selftest.c").read_text(
             encoding="utf-8")
         for name in ("test_audio_src_matches_the_measured_contract",
                      "test_alarm_delivery_order_matches_the_timer_order_probe"):
@@ -10893,7 +10893,7 @@ class Record20261015Tests(unittest.TestCase):
             ("five more negated forms", "unmeasured"),
             "the unmeasured negated forms",
         )
-        selftest = (self.root / "src" / "rt" / "vfpu_interp_selftest.c").read_text(
+        selftest = (self.root / "tests" / "native" / "vfpu_interp_selftest.c").read_text(
             encoding="utf-8")
         start = selftest.index("static int check_vrexp2_measured_words(void)")
         body = selftest[start:selftest.index("\nint main(void)", start)]

@@ -7,7 +7,7 @@ Three layers, each proving a distinct claim -- none of them executes the
 production HLE dispatch path or a production SDK-dependent consumer (no such
 consumer of g_sdk_version exists in the runtime yet):
 
-1. Helper-level execution: compile and run ``src/rt/sdkver_selftest.c``
+1. Helper-level execution: compile and run ``tests/native/sdkver_selftest.c``
    against the pure helpers in ``src/rt/sdkver.h``. This exercises a
    TEST-LOCAL state word and a TEST-LOCAL consumer model, proving the helper
    contract -- every variant in the selftest's NID table updates the same
@@ -47,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-SELFTEST_C = ROOT / "src" / "rt" / "sdkver_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "sdkver_selftest.c"
 HLE_SOURCE = hle_sources.text()
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
@@ -111,7 +111,7 @@ class TestSdkverSelftestC(unittest.TestCase):
             selftest_nids,
             registered_nids,
             "a SetCompiledSdkVersion variant was added/removed in hle.c "
-            "without updating src/rt/sdkver_selftest.c",
+            "without updating tests/native/sdkver_selftest.c",
         )
 
 
