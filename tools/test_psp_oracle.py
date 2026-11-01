@@ -24,6 +24,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hle_manifest
+import hle_sources
 import scratch_dir
 from import_fixtures import (
     INTERLEAVED_NIDS,
@@ -6370,7 +6371,7 @@ class KernelEntryNullcodeProbeTests(unittest.TestCase):
 
     def test_runtime_registration_paths_preserve_the_measured_null_entries(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        thread = (root / "src" / "rt" / "hle_kernel_thread.c").read_text(encoding="utf-8")
+        thread = hle_sources.text(root)
         start = thread.index("uint32_t sr_callback_table_register(")
         end = thread.index("static int sr_thread_dispatch_callbacks_once", start)
         callback_table = thread[start:end]
