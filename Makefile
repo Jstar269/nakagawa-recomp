@@ -2401,8 +2401,9 @@ cosim-selftest-clean:
 # harness exactly as tools/codegen_gate.py does: the runner's definition ends the run at
 # a raw syscall instead of running it. The reference interpreter carries its own
 # sr_bitrev (src/ref/interp.cpp); it is renamed in that one object so it links beside the
-# runtime's definition and the reference keeps using its own.
-SNAPSHOT_DIR       := $(BUILD_ROOT)/snapshot
+# runtime's definition and the reference keeps using its own. The runner links no SDL, so
+# its copy of recomp.c reads SDL_GetTicksNS under a name the runner defines.
+SNAPSHOT_DIR      := $(BUILD_ROOT)/snapshot
 SNAPSHOT_FIXTURE   := $(SNAPSHOT_DIR)/fixture
 SNAPSHOT_GENERATOR := fixtures/snapshot/generate.py
 SNAPSHOT_DRIVER    := fixtures/snapshot/selftest.py
@@ -2433,7 +2434,8 @@ SNAPSHOT_LINK_OBJS = $(BUILD_DIR)/snapshot_rt_recomp.o $(LIBRARY_OBJS) \
 snapshot-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
 	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/interp.cpp -o $(BUILD_DIR)/snapshot_ref_interp.o
 	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/snapshot_ref.cpp -o $(BUILD_DIR)/snapshot_ref.o
-	$(CC) $(CFLAGS) -DSR_GATE_BUILD -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+	$(CC) $(CFLAGS) -DSR_GATE_BUILD -DSDL_GetTicksNS=snapshot_runner_ticks_ns \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
 		-c src/rt/recomp.c -o $(BUILD_DIR)/snapshot_rt_recomp.o
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
 		-o $(BUILD_DIR)/snapshot_runner.exe $(SNAPSHOT_RUNNER_SRCS) $(CHUNK_OBJS) $(SNAPSHOT_LINK_OBJS)

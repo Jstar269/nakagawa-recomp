@@ -119,7 +119,9 @@ uint32_t sr_get_ge_status(void) { return 0u; }
 uint32_t sr_hle_resolve_late_import(uint32_t nid) { (void)nid; return 0u; }
 void sr_main_module_register(const SrMainModuleRecord *record) { (void)record; }
 void sr_yield(CpuState *s) { (void)s; }
-uint64_t SDL_GetTicksNS(void) { return 0u; }
+/* recomp.c reads the SDL clock for diagnostics only; the Makefile builds the runner's copy
+ * of recomp.c with SDL_GetTicksNS renamed to this, so no SDL symbol is defined here. */
+uint64_t snapshot_runner_ticks_ns(void) { return 0u; }
 /* g_sr_last_writer_enabled stays 0, so the guest accessors never call this. */
 void sr_note_mem_write(uint32_t addr, uint32_t width, uint32_t val, uint32_t pc) {
     (void)addr; (void)width; (void)val; (void)pc;
