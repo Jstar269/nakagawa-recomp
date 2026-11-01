@@ -3075,8 +3075,9 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-# The scaled-upload case runs again alone at render scales 2 and 4 (#1296), selected by
-# arguments: a VAR=value prefix needs a POSIX shell, and cmd.exe does not take one.
+# The scaled-upload case (#1296) and the per-fragment mip level case (#1373) run again alone
+# at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
+# cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
@@ -3089,6 +3090,8 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case scaled-upload
 	$(GPU_COHERENCE_BIN) --scale 4 --case scaled-upload
+	$(GPU_COHERENCE_BIN) --scale 2 --case mip-lod
+	$(GPU_COHERENCE_BIN) --scale 4 --case mip-lod
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies

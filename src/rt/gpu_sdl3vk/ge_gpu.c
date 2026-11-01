@@ -42,9 +42,10 @@
  *    of detail per draw, the level and blend ge_tex_level_pick takes from the bias (minLod =
  *    maxLod); TEXFILTER bit 1 is the mipmap mode. The automatic and slope modes' level of
  *    detail is per fragment in the PSP's own arithmetic (ge.c tex_detail16, measured as
- *    PSP-GE-MIP-001), which the sampler's exact log2 does not reproduce, so they take the
- *    software rasterizer, as does a level list a halving chain cannot hold
- *    (tex_mip_chain_supported). Per-level CLUTs are not modelled.
+ *    PSP-GE-MIP-001), which the sampler's exact log2 does not reproduce, so psp.frag
+ *    computes it (F_LODFRAG) and samples with an explicit level of detail. A level list a
+ *    halving chain cannot hold takes the software rasterizer (tex_mip_chain_supported).
+ *    Per-level CLUTs are not modelled.
  *  - 16-bit precision (5650/5551/4444 framebuffers): the fragment shader snaps its
  *    output to the native lattice (pack-by-truncation + expand-by-bit-replication,
  *    identical to ge.c pack_fb/unpack_color) and applies the GE's 4x4 ordered dither,
@@ -167,7 +168,7 @@ typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize
                  int32_t dith[4]; int32_t bl[4]; float fixa[4]; float fixb[4]; } PushPC;
 enum { F_TEX = 1, F_RGBA = 2, F_DBL = 4, F_FOG = 8, F_PERSP = 16, F_CLEAR = 32,
        F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DITHER = 512, F_SHBLEND = 4096,
-       F_STENCIL = 8192 };
+       F_STENCIL = 8192, F_LODFRAG = 16384 };
 #define F_FMT_SHIFT 10                     /* bits 10-11: framebuffer psm for quantization */
 
 typedef struct {
@@ -191,9 +192,9 @@ typedef struct {
  * zero when mip levels are off, so a level-0-only entry compares equal to any other. */
 typedef struct {
     uint32_t max_level;                    /* TEXMODE highest level; 0 = level 0 only */
-    uint32_t mode;                         /* TEXLEVEL mode: 1 or 3, constant */
+    uint32_t mode;                         /* TEXLEVEL mode: 0 automatic, 2 slope, 1 or 3 constant */
     uint32_t linear;                       /* TEXFILTER bit 1: blend the two nearest levels */
-    float bias;                            /* TEXLEVEL bias */
+    float bias;                            /* TEXLEVEL bias (0 in the per-fragment modes) */
     uint32_t addr[7], bufw[7];             /* levels 1..max_level (index = level - 1) */
     uint8_t wlog2[7], hlog2[7];
 } TexMipKey;
@@ -511,6 +512,13 @@ static int s_cpu_profile_hook_depth;
 
 static uint32_t s_texscratch[512 * 512];
 static uint32_t s_pxscratch[FB_W * FB_H];
+/* One guest row at device width (each pixel repeated s_scale times), in cached memory. The
+ * s_scale device rows of an upload are each copied from here. The upload ring is TRANSFER_SRC
+ * memory without HOST_CACHED (gegpu_pick_host_mem_type), write-combined on common GPUs, where
+ * every CPU read goes to memory: copying each replicated row from the first row of its cell
+ * in the mapped buffer was about half of a 2x frame's CPU time in a measured title (#1296). */
+static uint32_t s_pxwide[FB_W * MAX_SCALE];
+static uint16_t s_zwide[FB_W * MAX_SCALE];
 
 #define VKC(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
     fprintf(stderr, "gegpu: %s failed: %d\n", #expr, (int)vr_); return 0; } } while (0)
@@ -1843,14 +1851,14 @@ static int target_upload(Target *t) {
             for (uint32_t x = 0; x < t->stride; x++) row[x] = fb_unpack(src[x], t->fmt);
         }
         for (uint32_t x = t->stride; x < FB_W; x++) row[x] = 0;
-        uint32_t *dl = dst + (uint32_t)(y * s_scale) * drow;
-        if (s_scale == 1) {
-            memcpy(dl, row, FB_W * 4);
-        } else {
+        const uint32_t *wide = row;
+        if (s_scale > 1) {
             for (uint32_t x = 0; x < FB_W; x++)
-                for (int i = 0; i < s_scale; i++) dl[x * s_scale + i] = row[x];
-            for (int j = 1; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, dl, drow * 4);
+                for (int i = 0; i < s_scale; i++) s_pxwide[x * s_scale + i] = row[x];
+            wide = s_pxwide;
         }
+        uint32_t *dl = dst + (uint32_t)(y * s_scale) * drow;
+        for (int j = 0; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, wide, drow * 4);
     }
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -2009,10 +2017,10 @@ static int target_patch_vram_dirty(Target *t, uint32_t dirty_addr, uint32_t dirt
             }
             uint32_t rgba = fb_unpack(raw, t->fmt);
             uint32_t dx = (x - x0) * (uint32_t)s_scale;
-            for (int sx = 0; sx < s_scale; sx++) dst[dx + (uint32_t)sx] = rgba;
+            for (int sx = 0; sx < s_scale; sx++) s_pxwide[dx + (uint32_t)sx] = rgba;
         }
-        for (int sy = 1; sy < s_scale; sy++)
-            memcpy(dst + (uint32_t)sy * scaled_width, dst,
+        for (int sy = 0; sy < s_scale; sy++)
+            memcpy(dst + (uint32_t)sy * scaled_width, s_pxwide,
                    (size_t)scaled_width * sizeof(uint32_t));
 
         copies[ci].bufferOffset = upload.offset + used;
@@ -2184,20 +2192,18 @@ static int depth_from_cpu(DepthEnt *d) {
     UploadReservation upload;
     if (!upload_reserve(upload_bytes, &upload)) return 0;
     uint32_t source_stride = d->zstride;
-    if (s_scale == 1) {
-        uint16_t *dst = (uint16_t *)upload.map;
-        for (uint32_t y = 0; y < FB_H; y++)
-            memcpy(dst + y * FB_W, s_zbuf + y * source_stride, FB_W * 2u);
-    } else {
-        uint16_t *dst = (uint16_t *)upload.map;
-        uint32_t drow = SCL_W;
-        for (uint32_t y = 0; y < FB_H; y++) {
-            const uint16_t *src = s_zbuf + y * source_stride;
-            uint16_t *dl = dst + (uint32_t)(y * s_scale) * drow;
+    uint16_t *dst = (uint16_t *)upload.map;
+    uint32_t drow = SCL_W;
+    for (uint32_t y = 0; y < FB_H; y++) {
+        const uint16_t *src = s_zbuf + y * source_stride;
+        const uint16_t *wide = src;
+        if (s_scale > 1) {   /* replicate from cached memory, never the mapped upload (s_zwide) */
             for (uint32_t x = 0; x < FB_W; x++)
-                for (int i = 0; i < s_scale; i++) dl[x * s_scale + i] = src[x];
-            for (int j = 1; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, dl, drow * 2);
+                for (int i = 0; i < s_scale; i++) s_zwide[x * s_scale + i] = src[x];
+            wide = s_zwide;
         }
+        uint16_t *dl = dst + (uint32_t)(y * s_scale) * drow;
+        for (int j = 0; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, wide, drow * 2);
     }
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -2675,9 +2681,15 @@ static int tex_decode_upload(VkImage img, int w, int h, uint32_t levels) {
     return 1;
 }
 
-/* Sampler level of detail of one cache entry. With a mip chain (#1373) the state is in
- * constant mode (tex_mip_chain_supported sends the per-fragment modes to the software
- * rasterizer), so the level of detail is fixed: ge_tex_level_pick's level, plus its blend
+/* Whether TEXLEVEL mode `mode` picks the level of detail per fragment (automatic 0, slope 2):
+ * psp.frag computes it (F_LODFRAG), and the sampler spans every level (#1373). */
+static int tex_lod_per_fragment(uint32_t mode) {
+    return mode == 0u || mode == 2u;
+}
+
+/* Sampler level of detail of one cache entry. With a mip chain (#1373) in a per-fragment
+ * mode the shader passes the level of detail (textureLod), so the sampler spans levels 0 to
+ * the highest. In constant mode the level of detail is fixed: ge_tex_level_pick's level, plus its blend
  * weight in 1/16 under TEXFILTER bit 1 (VK_SAMPLER_MIPMAP_MODE_LINEAR; the blend may differ
  * from ge.c's truncated sixteenths by one U8 step). Vulkan filters within a level by
  * minFilter above level of detail 0 and by magFilter otherwise, and ge.c shade() picks the
@@ -2693,6 +2705,11 @@ static void tex_sampler_lod(const TexMipKey *mip, VkSamplerCreateInfo *sci) {
         return;
     }
     if (mip->linear) sci->mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    if (tex_lod_per_fragment(mip->mode)) {
+        sci->minLod = 0.0f;
+        sci->maxLod = (float)mip->max_level;
+        return;
+    }
     int detail16 = (int)(mip->bias * 16.0f);
     uint32_t level = 0u;
     int frac = 0;
@@ -2769,7 +2786,9 @@ static void tex_mip_key(TexMipKey *k) {
     k->max_level = g->tex_max_level;
     k->mode = g->tex_level_mode;
     k->linear = (g->tex_filter >> 1) & 1u;
-    k->bias = g->tex_lod_bias;
+    /* The per-fragment modes take the bias from the push constants: one chain and sampler
+     * serve every bias. */
+    k->bias = tex_lod_per_fragment(k->mode) ? 0.0f : g->tex_lod_bias;
     for (uint32_t i = 0; i < k->max_level; i++) {
         k->addr[i] = g->tex_mip_addr[i];
         k->bufw[i] = g->tex_mip_bufw[i];
@@ -2784,9 +2803,9 @@ static uint32_t log2_pow2(uint32_t v) {
     return l;
 }
 
-/* Whether the current state's mip levels fit one Vulkan mip chain and sampler (#1373). The
- * automatic and slope modes do not: their level of detail is per fragment in the PSP's
- * 1/16-level arithmetic (ge.c tex_detail16), not the sampler's. A chain halves every level
+/* Whether the current state's mip levels fit one Vulkan mip chain and sampler (#1373). In
+ * the automatic and slope modes psp.frag picks the level per fragment in the PSP's 1/16-level
+ * arithmetic (ge.c tex_detail16, F_LODFRAG), so every mode fits. A chain halves every level
  * down to 1x1, while the GE takes each level's size from its own TEXSIZE: a level whose
  * size is not max(1, level-0 size >> level) on both axes, or more levels than a halving
  * chain of level 0 has, cannot be sampled from one image either.
@@ -2795,7 +2814,6 @@ static uint32_t log2_pow2(uint32_t v) {
 static int tex_mip_chain_supported(void) {
     const GeState *g = s_ge;
     if (!g->tex_enable || g->clear || !g->tex_addr || !ge_tex_mip_active(g)) return 1;
-    if (g->tex_level_mode == 0u || g->tex_level_mode == 2u) return 0;
     if (g->tex_w <= 0 || g->tex_h <= 0 || g->tex_w > 512 || g->tex_h > 512) return 1;
     uint32_t wl = log2_pow2((uint32_t)g->tex_w), hl = log2_pow2((uint32_t)g->tex_h);
     if (g->tex_max_level > (wl > hl ? wl : hl)) return 0;
@@ -3149,6 +3167,7 @@ static void build_state(int persp, int sprite, Batch *b) {
     int textured = g->tex_enable && !clear && g->tex_addr;
     unsigned filter_variant = tex_filter_variant(g->tex_filter);
     int flags = premul;
+    uint32_t lodcfg = 0u;                  /* cfg.y bits 24-31 under F_LODFRAG */
     if (clear) flags |= F_CLEAR;
     if (persp && !(clear && sprite)) flags |= F_PERSP;   /* minz/maxz discard */
     if (persp && g->fog_enable && !clear) flags |= F_FOG;
@@ -3160,6 +3179,15 @@ static void build_state(int persp, int sprite, Batch *b) {
         if (filter_variant == 0u) flags |= F_NEAREST;
         b->pc.texsize[0] = (float)g->tex_w;
         b->pc.texsize[1] = (float)g->tex_h;
+        /* Automatic or slope level of detail, per fragment in psp.frag (#1373). Such a state
+         * always samples a cached chain: a render target bound directly has no levels. */
+        if (ge_tex_mip_active(g) && tex_lod_per_fragment(g->tex_level_mode)) {
+            flags |= F_LODFRAG;
+            lodcfg = (g->tex_level_mode == 2u ? 1u : 0u) | (((g->tex_filter >> 1) & 1u) << 1) |
+                     ((g->tex_max_level & 7u) << 2);
+            b->pc.texenv[3] = g->tex_lod_slope;
+            b->pc.fogcol[3] = (float)(int)(g->tex_lod_bias * 16.0f);
+        }
     }
     /* Native 16-bit precision emulation: dither offset + lattice snap in the shader.
      * The dither matrix rides in the push constants (one packed row per int). */
@@ -3180,7 +3208,8 @@ static void build_state(int persp, int sprite, Batch *b) {
         b->pc.bl[3] = (int32_t)((g->stencil_op & 0x070707u) | ((uint32_t)(g->mask_alpha & 0xFF) << 24));
     }
 
-    b->pc.cfg[1] = (!clear && g->atest_enable) ? (int32_t)g->atest : 1 /* func ALWAYS */;
+    b->pc.cfg[1] = (int32_t)(((!clear && g->atest_enable) ? (g->atest & 0xFFFFFFu) : 1u /* ALWAYS */) |
+                             (lodcfg << 24));
     b->pc.cfg[2] = (int32_t)g->minz;
     b->pc.cfg[3] = (int32_t)g->maxz;
     b->pc.texenv[0] = (float)(g->tex_env & 0xFF) / 255.0f;
@@ -3280,7 +3309,7 @@ typedef struct {
     int tex_enable; uint32_t tex_addr, tex_bufw, tex_fmt, tex_wrap, tex_func, tex_env, tex_filter;
     int tex_w, tex_h; int tex_swizzle;
     /* Mip levels (#1373): every field tex_get keys a chain or its sampler by. */
-    uint32_t tex_max_level, tex_level_mode; float tex_lod_bias;
+    uint32_t tex_max_level, tex_level_mode; float tex_lod_bias, tex_lod_slope;
     uint32_t tex_mip_addr[7], tex_mip_bufw[7]; uint8_t tex_mip_wlog2[7], tex_mip_hlog2[7];
     uint32_t clut_fmt, clut_gen;
     int atest_enable; uint32_t atest;
@@ -3311,7 +3340,7 @@ static void snap_fill(StateSnap *o, int persp, int sprite) {
     o->tex_env = g->tex_env; o->tex_filter = g->tex_filter;
     o->tex_w = g->tex_w; o->tex_h = g->tex_h; o->tex_swizzle = g->tex_swizzle;
     o->tex_max_level = g->tex_max_level; o->tex_level_mode = g->tex_level_mode;
-    o->tex_lod_bias = g->tex_lod_bias;
+    o->tex_lod_bias = g->tex_lod_bias; o->tex_lod_slope = g->tex_lod_slope;
     memcpy(o->tex_mip_addr, g->tex_mip_addr, sizeof(o->tex_mip_addr));
     memcpy(o->tex_mip_bufw, g->tex_mip_bufw, sizeof(o->tex_mip_bufw));
     memcpy(o->tex_mip_wlog2, g->tex_mip_wlog2, sizeof(o->tex_mip_wlog2));

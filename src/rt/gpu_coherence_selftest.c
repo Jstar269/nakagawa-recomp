@@ -109,7 +109,7 @@ int main(int argc, char **argv) {
         const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
                          : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE" : NULL;
         if (!name || i + 1 >= argc || !set_env(name, argv[++i])) {
-            fprintf(stderr, "usage: gpu_coherence_selftest [--scale N] [--case scaled-upload]\n");
+            fprintf(stderr, "usage: gpu_coherence_selftest [--scale N] [--case scaled-upload|mip-lod]\n");
             return 2;
         }
     }
