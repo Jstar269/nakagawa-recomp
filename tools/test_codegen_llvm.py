@@ -87,8 +87,7 @@ def program(*words, start=0x1000):
 
 class LoweringTests(unittest.TestCase):
     def setUp(self):
-        saved = {name: getattr(codegen, name) for name in ("LLE_CPU", "SV_ENABLED", "STALE_DETECT")}
-        self.addCleanup(lambda: [setattr(codegen, k, v) for k, v in saved.items()])
+        self.enterContext(codegen.options_scope())
         address_space = codegen.ADDRESS_SPACE
         self.addCleanup(setattr, codegen, "ADDRESS_SPACE", address_space)
 
@@ -203,10 +202,10 @@ class LoweringTests(unittest.TestCase):
     def test_unsupported_forms_fall_back_with_a_reason(self):
         with self.assertRaisesRegex(codegen_llvm.LLVMUnsupported, "FPU at 0x00001000"):
             self.lower(program(mul_s(0, 1, 2), JR_RA, NOP))
-        codegen.LLE_CPU = True
+        codegen.OPTIONS.lle_cpu = True
         with self.assertRaisesRegex(codegen_llvm.LLVMUnsupported, "--lle-cpu"):
             self.lower(program(JR_RA, NOP))
-        codegen.LLE_CPU = False
+        codegen.OPTIONS.lle_cpu = False
         codegen.ADDRESS_SPACE = codegen.AddressSpace("sr_m0_base", "m0")
         with self.assertRaisesRegex(codegen_llvm.LLVMUnsupported, "runtime-placed"):
             self.lower(program(JR_RA, NOP))

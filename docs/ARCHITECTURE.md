@@ -619,7 +619,7 @@ refuses a body whose slot label has no owned successor. `cosim-selftest` covers 
 taken, used to carry the body into the other entry's code and translate a copy of it. In a large
 branch-connected region every entry then holds a copy of the whole region (one title: 6,539
 entries in a region of 1.33 million instructions). A body whose walk exceeds
-`REGION_SPLIT_THRESHOLD` instructions (`tools/codegen.py`, `--region-split-threshold=N|off`)
+`OPTIONS.region_split_threshold` instructions (`tools/codegen.py`, `--region-split-threshold=N|off`)
 instead stops at every other entry. A conditional branch into one records a TAIL transfer to that
 entry's own body after the delay slot (annulled on the not-taken path of a branch-likely), and a
 not-taken successor that is one is a continuation, exactly as straight-line fall-through is. A
