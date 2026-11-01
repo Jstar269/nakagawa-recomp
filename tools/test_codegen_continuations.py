@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import codegen_hst_stubs
 
 
 class FakeElf:
@@ -505,7 +506,7 @@ class ContinuationFlowTests(unittest.TestCase):
 
     def test_profile_wrappers_drain_the_bodies_they_call(self):
         # The two profile wrappers call their real bodies directly (#855 review).
-        source = Path(codegen.__file__).read_text(encoding="utf-8")
+        source = Path(codegen_hst_stubs.__file__).read_text(encoding="utf-8")
         for call in ("f_000468c8_real(s);",):
             with self.subTest(call=call):
                 at = source.index(call)

@@ -2272,5 +2272,39 @@ class DecryptedElfRefusalTests(unittest.TestCase):
         self.assertNotIn("key", message.lower())
 
 
+class AnalyzerSourcesKeyTests(unittest.TestCase):
+    """The analyzer cache key covers every analyzer source file, not only analyze.py (#1531)."""
+
+    def digest_after(self, edit_name: str | None) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = Path(tmp)
+            for name in package_cache.ANALYZER_SOURCES:
+                (tools / name).write_text("# " + name + "\n", encoding="utf-8")
+            if edit_name is not None:
+                with (tools / edit_name).open("a", encoding="utf-8") as handle:
+                    handle.write("# edited\n")
+            return str(package_cache.analyzer_sources_sha256(tools))
+
+    def test_a_change_to_any_analyzer_source_changes_the_key(self) -> None:
+        base = self.digest_after(None)
+        self.assertEqual(base, self.digest_after(None))
+        for name in package_cache.ANALYZER_SOURCES:
+            with self.subTest(name=name):
+                self.assertNotEqual(base, self.digest_after(name))
+
+    def test_the_split_cfg_module_is_covered(self) -> None:
+        self.assertIn("analyze_cfg.py", package_cache.ANALYZER_SOURCES)
+        for name in package_cache.ANALYZER_SOURCES:
+            self.assertTrue((Path(__file__).resolve().parent / name).is_file(), name)
+
+    def test_both_key_builders_use_the_analyzer_sources(self) -> None:
+        for module in (nk_cli, title_codegen_plan):
+            self.assertIsNotNone(module.__file__)
+            source = Path(str(module.__file__)).read_text(encoding="utf-8")
+            with self.subTest(module=module.__name__):
+                self.assertIn("analyzer_sources_sha256(", source)
+                self.assertNotIn('sha256_file(ROOT / "tools" / "analyze.py")', source)
+
+
 if __name__ == "__main__":
     unittest.main()

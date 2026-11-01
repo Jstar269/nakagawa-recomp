@@ -207,8 +207,8 @@ end to end by source-owned tests:
   output a decoder actually produced; a compressed access unit is never presented as a decoded
   frame or PCM block, and a track that runs dry reports `NO_MORE_DATA` rather than silence.
 - Evidence tiers: the access-unit, timestamp and queue contract is covered by
-  `src/rt/psmf_producer_selftest.c` against fixtures built byte-for-byte by that file (tier S), and
-  the decoder seam by `src/rt/psmf_media_selftest.c`, which constructs a baseline-profile H.264
+  `tests/native/psmf_producer_selftest.c` against fixtures built byte-for-byte by that file (tier S), and
+  the decoder seam by `tests/native/psmf_media_selftest.c`, which constructs a baseline-profile H.264
   stream whose every macroblock is `I_PCM` and checks the decoded picture deterministically. The
   host-HLE player itself has no hardware-comparison measurement, so both getters carry the
   `partial` status in `tools/hle_registry_meta.py` rather than `complete`.

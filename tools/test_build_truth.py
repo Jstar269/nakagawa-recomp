@@ -592,7 +592,12 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertIn("src/rt/sr_coro.c", definitions[0])
 
     def test_every_user_of_the_backend_also_supplies_the_capture_policy(self) -> None:
-        backend = (ROOT / "src" / "rt" / "gpu_sdl3vk" / "sdl3vk.c").read_text(encoding="utf-8")
+        backend_dir = ROOT / "src" / "rt" / "gpu_sdl3vk"
+        # sdl3vk.c includes its self-tests, so their calls are part of the backend's link needs.
+        backend = "".join(
+            (backend_dir / name).read_text(encoding="utf-8")
+            for name in ("sdl3vk.c", "sdl3vk_selftest.inc")
+        )
         referenced = sorted(set(re.findall(r"\bsr_fbcap_\w+\s*\(", backend)))
         # Deliberately an assertion, not a skipTest. Skipping here would let the
         # guard retire itself: whoever removed the last sr_fbcap_* call would see
@@ -660,7 +665,7 @@ class FlightRecorderLinkDependencyTests(unittest.TestCase):
     def test_psmf_media_selftest_links_the_recorder_implementation(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         logical = _with_response_file_inputs(_logical_lines(makefile))
-        selftest = (ROOT / "src" / "rt" / "psmf_media_selftest.c").read_text(encoding="utf-8")
+        selftest = (ROOT / "tests" / "native" / "psmf_media_selftest.c").read_text(encoding="utf-8")
         mpeg = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
         recomp = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
         recorder = (ROOT / "src" / "rt" / "flight_recorder.c").read_text(encoding="utf-8")
@@ -848,7 +853,7 @@ def _nested_frame_callers() -> list[str]:
     call = re.compile(r"\bsr_nested_frame_\w+\s*\(")
     direct = []
     texts = {}
-    for path in sorted(src.rglob("*.c")):
+    for path in sorted([*src.rglob("*.c"), *(ROOT / "tests" / "native").glob("*.c")]):
         rel = path.relative_to(ROOT).as_posix()
         texts[rel] = path.read_text(encoding="utf-8", errors="replace")
         if rel == NESTED_FRAMES_C:
@@ -1013,7 +1018,7 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
                 [
                     "sched-selftest-one:",
                     "\t$(CC) $(CFLAGS) $(LDFLAGS) -o out.exe " + continuation,
-                    "\t\tsrc/rt/sched_selftest.c src/rt/sr_coro.c $(LIBS)",
+                    "\t\ttests/native/sched_selftest.c src/rt/sr_coro.c $(LIBS)",
                 ]
             )
             + "\n"
@@ -3534,12 +3539,9 @@ def _makefile_literal_build_paths(text: str, label: str) -> list[str]:
     return findings
 
 
-#: sdl3vk.c holds product code and the GPU capture selftest in one file. Its test-only
-#: section runs from the selftest banner to the first product function after it, so the
-#: scan covers that span and nothing else.
-_SDL3VK_C = "src/rt/gpu_sdl3vk/sdl3vk.c"
-_SDL3VK_SELFTEST_BEGIN = "/* ---- capture selftest (issue #57)"
-_SDL3VK_SELFTEST_END = "void sdl3vk_shutdown(void) {"
+#: sdl3vk.c includes its GPU capture selftest from this file, which holds test code and
+#: nothing else, so the scan covers the whole file.
+_SDL3VK_C = "src/rt/gpu_sdl3vk/sdl3vk_selftest.inc"
 #: One C comment, string literal or character literal. Literals are matched whole, so a
 #: `//` or `/*` inside a string is never taken for a comment.
 _C_LEXEME = re.compile(r"//[^\n]*|/\*.*?\*/|\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'", re.S)
@@ -3576,10 +3578,7 @@ def _test_only_c_sources() -> list[tuple[str, str, int]]:
     for path in (sorted((ROOT / "tests" / "native").glob("*.c"))
                  + sorted((ROOT / "src" / "rt").glob("*selftest*.c"))):
         sources.append((path.relative_to(ROOT).as_posix(), path.read_text(encoding="utf-8"), 1))
-    sdl3vk = (ROOT / _SDL3VK_C).read_text(encoding="utf-8")
-    begin = sdl3vk.index(_SDL3VK_SELFTEST_BEGIN)
-    end = sdl3vk.index(_SDL3VK_SELFTEST_END, begin)
-    sources.append((_SDL3VK_C, sdl3vk[begin:end], sdl3vk.count("\n", 0, begin) + 1))
+    sources.append((_SDL3VK_C, (ROOT / _SDL3VK_C).read_text(encoding="utf-8"), 1))
     return sources
 
 

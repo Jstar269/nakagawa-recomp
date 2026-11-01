@@ -101,7 +101,7 @@ static void hle_step(const char *step)
 static void hle_emit(const char *case_id, const char *status, uint32_t result,
                      const uint32_t *out, uint32_t count)
 {
-    static char line[700];
+    static char line[1536];
     int n = snprintf(line, sizeof(line),
                      "NAKAGAWA_PSP_TEST schema=1 test_id=%s case_id=%s status=%s result=0x%08x",
                      HLE_TEST_ID, case_id, status, (unsigned int)result);

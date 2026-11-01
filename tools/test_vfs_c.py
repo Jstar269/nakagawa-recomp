@@ -4,7 +4,7 @@
 """Host-neutral VFS path joining regression test (issue #19).
 
 Proves that:
-1. Executable selftest (src/rt/vfs_selftest.c) passes cleanly, exercising all path
+1. Executable selftest (tests/native/vfs_selftest.c) passes cleanly, exercising all path
    join edge cases (trailing slashes, device prefix stripping, traversal prevention,
    overflow limits).
 2. Joining root="fs" and guest="ms0:/PSP/SAVEDATA" produces "fs/PSP/SAVEDATA" or
@@ -19,7 +19,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-SELFTEST_C = ROOT / "src" / "rt" / "vfs_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "vfs_selftest.c"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
 

@@ -281,7 +281,6 @@ static uint32_t h_MaxFreeMemSize(CpuState *s) {
 /* PSP-measured 2026-10-15 (PSP-3000, firmware 6.61, probe on e45e667b; docs/HARDWARE_ORACLE.md
  * 2026-10-15 entry, PR #1003): an unknown or deleted FPL id returns SCE_KERNEL_ERROR_UNKNOWN_FPLID,
  * and a refer after delete returns it and writes nothing. */
-#define SCE_KERNEL_ERROR_UNKNOWN_FPLID 0x8002019du
 /* UNMEASURED: create-time block failure and a blocking allocate outside a thread keep the code
  * they returned before the 2026-10-15 measurement; neither path was probed. */
 #define FPL_UNMEASURED_NO_SPACE 0x800200d9u
@@ -608,7 +607,6 @@ static uint32_t h_ReferFplStatus(CpuState *s) {
 #define VPL_ALIGN 16u
 /* PSP-measured (docs/HARDWARE_ORACLE.md kernel-object error table, PSP-B1-01): an unknown VPL id
  * returns SCE_KERNEL_ERROR_UNKNOWN_VPLID. */
-#define SCE_KERNEL_ERROR_UNKNOWN_VPLID 0x8002019cu
 /* UNMEASURED: no VPL exhausted code is recorded; this is the pre-measurement value, not the FPL
  * code. */
 #define VPL_EXHAUSTED 0x800200d9u

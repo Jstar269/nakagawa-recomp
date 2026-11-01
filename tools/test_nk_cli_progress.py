@@ -181,7 +181,7 @@ class NkCliProgressTests(unittest.TestCase):
 
         import nk_cli
 
-        source = inspect.getsource(nk_cli.cmd_bringup)
+        source = inspect.getsource(nk_cli._bringup_launch)
         child_env = inspect.getsource(nk_cli._bringup_child_environment)
         self.assertIn("_bringup_child_environment(user_root)", source)
         self.assertIn('env.pop("SR_DATAROOT", None)', child_env)

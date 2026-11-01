@@ -77,7 +77,7 @@ class PurityGateTests(unittest.TestCase):
         body = "uint32_t a = 0x08A00000u;\n"
         self.write("src/rt/title_config.c", body)
         self.write("src/rt/title_config.h", body)
-        self.write("src/rt/sched_selftest.c", body)
+        self.write("tests/native/sched_selftest.c", body)
         self.assertEqual(purity_gate.scan(self.root, ()), [])
 
     def test_registered_nids_are_not_addresses(self):

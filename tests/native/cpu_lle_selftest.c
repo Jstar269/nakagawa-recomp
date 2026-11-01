@@ -1,0 +1,2787 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 the Nakagawa Recomp authors
+//
+// LLE Phase 1 (PR 2) CPU selftest: COP0 access, mode checks, exception entry,
+// and eret. Standalone host executable, no game inputs required:
+//
+//   mingw32-make CC=gcc cpu-lle-selftest
+//
+// The harness #includes recomp.c and cpu_lle.c for direct access to the same
+// helpers the generated code and the interpreter call, and links the real
+// guest_interp.c so the interpreter lane is exercised, not modeled. The stub
+// block below mirrors src/rt/heap_selftest.c: symbols recomp.c references
+// that live in scheduler/HLE translation units we deliberately do not link.
+//
+// Failing-before evidence (PR 2, spec section 11): on the base tree there is
+// no cpu_lle.h/.c, generated syscalls use sr_raw_syscall, generated breaks
+// use sr_break, and the interpreter answers UNSUPPORTED for syscall/break
+// with no eret path, so every assertion here fails to build or fails closed.
+
+#include "recomp.c"   /* arena, dispatch table, MEM_* backing */
+#include "cpu_lle.c"  /* helpers under test (white-box, same TU) */
+
+/* No GE renderer is linked by this CPU/LLE-only harness. */
+volatile int g_sr_vram_read_pending;
+void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+
+#include <stdlib.h>
+#include <string.h>
+
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+#ifdef _WIN32
+#include <direct.h>
+#include <windows.h>
+#include <wchar.h>
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+/* ---- stubs for runtime symbols recomp.c references -------------------------------- */
+
+uint32_t g_sr_debug = 0;
+SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
+int g_sr_mem_watch_count = 0;
+int g_sr_metadata_watch = 0;
+uint32_t g_sr_mem_watch_context_pc = 0;
+unsigned g_sr_mem_watch_context_limit = 0;
+unsigned g_sr_mem_watch_context_count = 0;
+int g_sr_mem_watch_context_fpr = -1;
+uint32_t g_sr_mem_watch_context_fpr_value = 0;
+uint32_t g_sr_store_context_pc = 0;
+unsigned g_sr_store_context_count = 0;
+unsigned g_sr_store_context_limit = 0;
+int g_sr_store_context_mem_gpr = -1;
+uint32_t g_sr_store_context_mem_offset = 0;
+unsigned g_sr_store_context_mem_words = 0;
+int g_sr_last_writer_enabled = 0;
+void sr_note_mem_write(uint32_t addr, uint32_t width, uint32_t val, uint32_t pc) {
+    (void)addr; (void)width; (void)val; (void)pc;
+}
+CpuState *s_cpu = NULL;
+int sr_sched_on = 0;
+atomic_int_least32_t sr_timeslice;
+
+uint32_t sched_current_uid(void) { return 0u; }
+void sched_exit_current(int32_t status) { (void)status; }
+void sched_exit_current_delete(int32_t status) { (void)status; }
+uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) { (void)uid; (void)arglen; (void)argp; return 0; }
+uint32_t sched_terminate_thread(uint32_t uid) { (void)uid; return 0; }
+uint32_t sched_delete_thread(uint32_t uid) { (void)uid; return 0; }
+uint32_t sched_thread_wakeup(uint32_t uid) { (void)uid; return 0; }
+void sched_set_current_join_target(uint32_t uid) { (void)uid; }
+void sched_clear_current_join_target(void) {}
+int sched_take_current_join_result(uint32_t uid, uint32_t *result_out) { (void)uid; (void)result_out; return 0; }
+uint32_t sr_get_ge_status(void) { return 0u; }
+uint32_t sr_hle_resolve_late_import(uint32_t nid) { (void)nid; return 0u; }
+uint32_t sr_syscall(CpuState *s, uint32_t nid) { (void)s; (void)nid; return 0u; }
+void sr_yield(CpuState *s) { (void)s; }
+int sr_vfpu_interp(CpuState *s, uint32_t op) { (void)s; (void)op; return 0; }
+uint64_t SDL_GetTicksNS(void) { return 0u; }
+
+/* ---- harness ---------------------------------------------------------------------- */
+
+static int g_failed = 0;
+static unsigned g_aot_exception_handler_calls = 0;
+static unsigned g_aot_exception_body_fallthroughs = 0;
+static unsigned g_aot_exception_caller_after_call = 0;
+static unsigned g_aot_exception_eret_handler_fallthroughs = 0;
+static unsigned g_aot_exception_eret_resume_calls = 0;
+static unsigned g_aot_fatal_caller_after_call = 0;
+static unsigned g_aot_fatal_native_caller_after_call = 0;
+static int g_aot_fatal_inner_result = 0;
+
+#define CHECK(cond, ...) do { \
+    if (!(cond)) { fprintf(stderr, "FAIL L%d: ", __LINE__); \
+                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); g_failed = 1; } \
+} while (0)
+
+#define CAUSE_EXCCODE(cause) (((cause) >> 2) & 0x1Fu)
+#define CAUSE_CE(cause) (((cause) >> 28) & 3u)
+
+#define TEST_BASE 0x08810000u
+#define TEST_SPAN_END 0x08811000u
+#define TEST_VECTOR 0x80000180u
+#define TEST_VSPAN_END 0x80001000u
+#define AOT_EXCEPTION_ENTRY (TEST_BASE + 0x100u)
+#define AOT_EXCEPTION_VECTOR (TEST_VECTOR + 0x100u)
+#define AOT_EXCEPTION_RESUME (TEST_BASE + 0x200u)
+#define AOT_EXCEPTION_CALLER (TEST_BASE + 0x300u)
+#define AOT_EXCEPTION_FATAL_ENTRY (TEST_BASE + 0x600u)
+#define AOT_EXCEPTION_FATAL_CALLER (TEST_BASE + 0x640u)
+#define AOT_EXCEPTION_FATAL_NATIVE_CALLER (TEST_BASE + 0x680u)
+#define AOT_EXCEPTION_FATAL_RESUME (TEST_BASE + 0x6C0u)
+#define AOT_EXCEPTION_FATAL_VECTOR 0x09000000u
+#define GENERATED_SYSCALL_ENTRY 0x08810800u
+#define GENERATED_SYSCALL_CALLER 0x08810820u
+#define GENERATED_BREAK_ENTRY 0x08810840u
+#define GENERATED_BREAK_CALLER 0x08810860u
+#define GENERATED_FATAL_RESUME 0x08810828u
+
+/* Functions emitted by tools/test_cpu_lle.py under --lle-cpu semantics and
+ * compiled into this same production-runtime selftest binary. */
+void f_08810800(CpuState *s);
+void f_08810820(CpuState *s);
+void f_08810840(CpuState *s);
+void f_08810860(CpuState *s);
+
+/* Measured pre-exception Status for campaign psp-hw-20260917 (PSP-A1-01,
+ * PSP-A2-01, PSP-A3-01): KSU user, IE 1, IM 0x86, EXL 0 before entry. The
+ * model preserves every pre-exception bit and sets only EXL, so the measured
+ * frame 0x00088613 = 0x00088611 | SR_STATUS_EXL is reproduced exactly. */
+#define TEST_PRE_STATUS 0x00088611u
+
+static void fresh_state(CpuState *s) {
+    memset(s, 0, sizeof *s);
+    sr_cpu_lle_reset_config();
+    sr_cpu_clear_flow(s);
+}
+
+static uint32_t enc_mfc0(unsigned rt, unsigned rd) {
+    return (0x10u << 26) | (rt << 16) | (rd << 11);
+}
+
+static uint32_t enc_mtc0(unsigned rt, unsigned rd) {
+    return (0x10u << 26) | (4u << 21) | (rt << 16) | (rd << 11);
+}
+
+/* I-type memory encodings for the address-error tests below. */
+static uint32_t enc_mem(unsigned primary, unsigned base, unsigned rt, uint16_t offset) {
+    return (primary << 26) | (base << 21) | (rt << 16) | (uint32_t)offset;
+}
+static uint32_t enc_lw(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x23u, base, rt, offset);
+}
+static uint32_t enc_sw(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x2Bu, base, rt, offset);
+}
+static uint32_t enc_vfpu(unsigned primary, unsigned base, unsigned vt, uint16_t offset) {
+    return enc_mem(primary, base, vt, offset);
+}
+
+static void setup_spans(void) {
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(TEST_BASE, TEST_SPAN_END), "test span rejected");
+    CHECK(sr_exec_span_register(TEST_VECTOR, TEST_VSPAN_END), "vector span rejected");
+}
+
+/* Exception entry sets EPC/Cause/EXL and transfers to the vector. */
+static void test_exception_entry_plain(void) {
+    CpuState s;
+    int rc;
+    fresh_state(&s);
+    rc = sr_cpu_raise_exception(&s, SR_EXC_SYS, 0x08810000u, 0x08810000u, 0u, 0u, 0u);
+    CHECK(rc < 0, "raise must report a transfer");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810000u, "EPC=0x%08x, want fault pc", s.cop0[SR_CP0_EPC]);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS, "ExcCode=%u, want SYS",
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]));
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "BD must be clear outside a delay slot");
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) != 0u, "EXL must be set");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION, "flow=%u, want EXCEPTION", s.flow_kind);
+    CHECK(s.flow_target == TEST_VECTOR, "target=0x%08x, want vector", s.flow_target);
+    CHECK(s.pc == TEST_VECTOR, "pc=0x%08x, want vector", s.pc);
+}
+
+/* A delay-slot fault names the branch in EPC and sets Cause.BD. */
+static void test_exception_delay_slot(void) {
+    CpuState s;
+    int rc;
+    fresh_state(&s);
+    rc = sr_cpu_raise_exception(&s, SR_EXC_SYS, 0x08810004u, 0x08810000u, 0u, 1u, 0u);
+    CHECK(rc < 0, "delay raise must report a transfer");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810000u, "EPC=0x%08x, want branch pc", s.cop0[SR_CP0_EPC]);
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u, "BD must be set for a delay-slot fault");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS, "ExcCode lost on delay path");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR, "delay transfer must reach the vector");
+}
+
+/* Coprocessor faults carry CE; address faults carry BadVAddr. */
+static void test_exception_ce_badvaddr(void) {
+    CpuState s;
+    fresh_state(&s);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_CPU, 0x08810000u, 0x08810000u, 0u, 0u, 2u) < 0,
+          "CPU raise must transfer");
+    CHECK(CAUSE_CE(s.cop0[SR_CP0_CAUSE]) == 2u, "CE=%u, want 2", CAUSE_CE(s.cop0[SR_CP0_CAUSE]));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU, "ExcCode=%u, want CPU",
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]));
+
+    fresh_state(&s);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADEL, 0x08810000u, 0x08810000u, 0xDEAD0001u, 0u, 0u) < 0,
+          "ADEL raise must transfer");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0xDEAD0001u, "BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+}
+
+/* Hardware-measured exception-entry cells (campaign psp-hw-20260917,
+ * PSP-3000 / 6.61, user-mode PRX probes via PSPLink; fixtures
+ * fixtures/psp_oracle/probe_exception_a1.c..a3.c, cells in
+ * docs/HARDWARE_ORACLE.md "CPU exception entry"). These checks pin the
+ * measured fields only: EPC, Cause.BD/ExcCode for Bp/AdEL, BadVAddr, and the
+ * preserved general registers. Cause.CE is a single-console observation for
+ * these non-CpU codes (bit 28 read 1 in all three runs), so the CE field is
+ * treated as undefined and asserted neither way. Vector base/EBase, BEV/ERL,
+ * syscall/CpU exceptions, interrupts, and handler entry/return stay
+ * unmeasured and are not pinned here. */
+
+/* PSP-A1-01: a non-delay-slot user-mode `break` reports EPC = the break
+ * address (not +4), Cause 0x10000024 (ExcCode 9, BD 0), the measured
+ * post-entry Status, and preserved a0-a3/t0-t3. */
+static void test_hw_psp_a1_01_break_plain(void) {
+    CpuState s;
+    int rc;
+    static const uint32_t pre[4] = {
+        0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u  /* a0-a3 */
+    };
+    static const uint32_t tmp[4] = {
+        0xAAAAAAAAu, 0xBBBBBBBBu, 0xCCCCCCCCu, 0xDDDDDDDDu  /* t0-t3 */
+    };
+    unsigned i;
+    fresh_state(&s);
+    for (i = 0; i < 4; i++) {
+        s.r[4 + i] = pre[i];
+        s.r[8 + i] = tmp[i];
+    }
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    rc = sr_cpu_raise_exception(&s, SR_EXC_BP, 0x08810000u, 0x08810000u, 0u, 0u, 0u);
+    CHECK(rc < 0, "PSP-A1-01 raise must report a transfer");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810000u, "PSP-A1-01 EPC=0x%08x, want the break pc",
+          s.cop0[SR_CP0_EPC]);
+    /* The measured Cause cells name BD/ExcCode exactly; bit 28 (CE) read 1 in
+     * this single-console campaign but is undefined for non-CpU exceptions, so
+     * only BD and ExcCode are asserted. */
+    CHECK((s.cop0[SR_CP0_CAUSE] & ~(SR_CAUSE_CE_MASK)) == 0x00000024u,
+          "PSP-A1-01 Cause=0x%08x, want BD 0 + ExcCode 9 (CE undefined)",
+          s.cop0[SR_CP0_CAUSE]);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_BP, "PSP-A1-01 ExcCode must be 9");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A1-01 BD must be 0");
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u, "PSP-A1-01 Status=0x%08x, want 0x00088613",
+          s.cop0[SR_CP0_STATUS]);
+    for (i = 0; i < 4; i++) {
+        CHECK(s.r[4 + i] == pre[i], "PSP-A1-01 r[%u] clobbered", 4u + i);
+        CHECK(s.r[8 + i] == tmp[i], "PSP-A1-01 r[%u] clobbered", 8u + i);
+    }
+}
+
+/* PSP-A2-01: the same `break` in the delay slot of an always-taken branch
+ * reports EPC = the branch address, Cause 0x90000024 (BD 1, ExcCode 9);
+ * neither successor executed, which the single-entry raise models by the
+ * transfer itself. */
+static void test_hw_psp_a2_01_break_delay_slot(void) {
+    CpuState s;
+    int rc;
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.in_delay_slot = 1u;
+    s.next_pc = 0x08810004u;  /* PSP-A2-01 branch pc */
+    rc = sr_cpu_raise_exception(&s, SR_EXC_BP, 0x08810008u, 0x08810004u, 0u, 1u, 0u);
+    CHECK(rc < 0, "PSP-A2-01 raise must report a transfer");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810004u, "PSP-A2-01 EPC=0x%08x, want the branch pc",
+          s.cop0[SR_CP0_EPC]);
+    CHECK((s.cop0[SR_CP0_CAUSE] & ~(SR_CAUSE_CE_MASK)) == 0x80000024u,
+          "PSP-A2-01 Cause=0x%08x, want BD 1 + ExcCode 9 (CE undefined)",
+          s.cop0[SR_CP0_CAUSE]);
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u, "PSP-A2-01 Status=0x%08x, want 0x00088613",
+          s.cop0[SR_CP0_STATUS]);
+}
+
+/* PSP-A3-01: a user-mode `lw $t6, 4($t5)` with t5 = 0x88000010 raises AdEL:
+ * EPC = the load address, Cause 0x10000010 (ExcCode 4, BD 0), BadVAddr =
+ * the effective address 0x88000014, the same Status, destination t6
+ * unchanged, and execution did not continue. */
+static void test_hw_psp_a3_01_adel_load(void) {
+    CpuState s;
+    int rc;
+    unsigned i;
+    fresh_state(&s);
+    for (i = 0; i < 4; i++) {
+        s.r[4 + i] = 0x11111111u + i;      /* a0-a3, A3 probe values */
+    }
+    s.r[13] = 0x88000010u;                 /* t5 */
+    s.r[14] = 0x0BADBABEu;                 /* t6: sentinel destination */
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    rc = sr_cpu_raise_exception(&s, SR_EXC_ADEL, 0x08810020u, 0x08810020u,
+                                0x88000014u, 0u, 0u);
+    CHECK(rc < 0, "PSP-A3-01 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-01 ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810020u, "PSP-A3-01 EPC=0x%08x, want the lw address",
+          s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0x88000014u,
+          "PSP-A3-01 BadVAddr=0x%08x, want the effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u, "PSP-A3-01 Status=0x%08x, want 0x00088613",
+          s.cop0[SR_CP0_STATUS]);
+    CHECK(s.r[14] == 0x0BADBABEu, "PSP-A3-01 t6 must be unchanged");
+    CHECK(s.r[13] == 0x88000010u, "PSP-A3-01 t5 must be unchanged");
+    for (i = 0; i < 4; i++) {
+        CHECK(s.r[4 + i] == 0x11111111u + i, "PSP-A3-01 r[%u] clobbered", 4u + i);
+    }
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-01 must transfer to the vector, not continue");
+}
+
+/* PSP-A3-02 / PSP-A3-03: a misaligned user-mode access to a mapped, writable,
+ * 16-byte-aligned buffer. The load case raises AdEL (Cause 0x10000010) and the
+ * store case AdES (Cause 0x10000014) -- distinct codes, not one shared address
+ * error. In both, BadVAddr is the effective address INCLUDING the misaligned low
+ * bits, not the aligned base. That last point is the one a plausible-looking
+ * implementation gets wrong, so it is asserted directly. */
+static void test_hw_psp_a3_02_03_misaligned_codes_and_badvaddr(void) {
+    CpuState s;
+    /* The measured bases and effective addresses, from the probe headers. */
+    const uint32_t load_base = 0x08821C00u, load_ea = 0x08821C02u;
+    const uint32_t store_base = 0x08856400u, store_ea = 0x08856402u;
+
+    /* The decision function must classify each case before anything is raised. */
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, load_ea, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-02 a misaligned load must be classified AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, store_ea, 4u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-03 a misaligned store must be classified AdES");
+    CHECK(sr_cpu_data_access_fault(&s, load_base, 4u, 0) == 0u,
+          "an aligned load at the same base must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, store_base, 4u, 1) == 0u,
+          "an aligned store at the same base must not fault");
+
+    /* PSP-A3-02: lw $t6, 2($t5), t5 = 0x08821C00. */
+    fresh_state(&s);
+    s.r[13] = load_base;
+    s.r[14] = 0x0BADC0DEu;                 /* t6: the probe's sentinel */
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADEL, 0x088043B8u, 0x088043B8u,
+                                 load_ea, 0u, 0u) < 0,
+          "PSP-A3-02 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-02 ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x088043B8u,
+          "PSP-A3-02 EPC=0x%08x, want the lw address", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == load_ea,
+          "PSP-A3-02 BadVAddr=0x%08x, want the misaligned effective address 0x%08x",
+          s.cop0[SR_CP0_BADVADDR], load_ea);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 3u) != 0u,
+          "PSP-A3-02 BadVAddr must keep its low bits, not be aligned down");
+    CHECK(s.r[14] == 0x0BADC0DEu, "PSP-A3-02 t6 must be unchanged by a faulting load");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-02 must transfer to the vector, not continue");
+
+    /* PSP-A3-03: sw $t6, 2($t5), t5 = 0x08856400. */
+    fresh_state(&s);
+    s.r[13] = store_base;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, 0x08838BB8u, 0x08838BB8u,
+                                 store_ea, 0u, 0u) < 0,
+          "PSP-A3-03 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-03 ExcCode must be 5 (AdES), distinct from the load case");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08838BB8u,
+          "PSP-A3-03 EPC=0x%08x, want the sw address", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == store_ea,
+          "PSP-A3-03 BadVAddr=0x%08x, want the misaligned effective address 0x%08x",
+          s.cop0[SR_CP0_BADVADDR], store_ea);
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u,
+          "PSP-A3-03 Status=0x%08x, want 0x00088613", s.cop0[SR_CP0_STATUS]);
+}
+
+/* PSP-A3-04: a misaligned `lw $t6, 2($t5)` in the delay slot of an
+ * always-taken branch raises AdEL with Cause 0x90000010 (ExcCode 4, BD 1):
+ * EPC names the branch (not the load), BadVAddr keeps the misaligned low
+ * bits of the effective address, the destination is unchanged, and neither
+ * successor runs. The guard path (in_delay=1) is what sets BD/EPC here, so
+ * the test goes through sr_cpu_guard_access(), not around it. */
+static void test_hw_psp_a3_04_delay_slot_misaligned(void) {
+    CpuState s;
+    int took;
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, 0x08821C52u, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-04 a delay-slot misaligned load must still classify AdEL");
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = 0x08821C50u;                 /* t5: the probe's base */
+    s.r[14] = 0x0BADC0DEu;                 /* t6: the probe's sentinel */
+    took = sr_cpu_guard_access(&s, 0x08821C52u, 4u, 0,
+                               TEST_BASE + 4u, TEST_BASE, 1u);
+    CHECK(took == 1, "PSP-A3-04 the delay-slot guard must take the fault");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-04 ExcCode must be 4 (AdEL)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u,
+          "PSP-A3-04 Cause BD must be set for a delay-slot data fault");
+    CHECK((s.cop0[SR_CP0_CAUSE] & ~(SR_CAUSE_CE_MASK | SR_CAUSE_BD)) == 0x00000010u,
+          "PSP-A3-04 Cause=0x%08x, want ExcCode 4 with BD (CE undefined)",
+          s.cop0[SR_CP0_CAUSE]);
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE,
+          "PSP-A3-04 EPC=0x%08x, want the branch pc", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0x08821C52u,
+          "PSP-A3-04 BadVAddr=0x%08x, want the misaligned effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 3u) == 2u,
+          "PSP-A3-04 BadVAddr must keep its low bits, not be aligned down");
+    CHECK(s.r[14] == 0x0BADC0DEu, "PSP-A3-04 t6 must be unchanged by a faulting load");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-04 must transfer to the vector, not continue");
+}
+
+/* PSP-A3-05: halfword accesses at an odd address of an owned aligned buffer.
+ * `lh` raises AdEL (Cause 0x10000010), `sh` raises AdES (Cause 0x10000014);
+ * in both EPC is the access itself and BadVAddr is the odd effective address.
+ * The rule is width-relative: base+2 faults for a word but must NOT fault
+ * for a halfword, which is asserted directly. */
+static void test_hw_psp_a3_05_halfword_odd(void) {
+    CpuState s;
+    const uint32_t base = 0x088564F0u;
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 2u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-05 an odd lh must classify AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 2u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-05 an odd sh must classify AdES");
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 2u, 0) == 0u,
+          "base+2 must NOT fault for a halfword: the rule is width-relative");
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 2u, 1) == 0u,
+          "base+2 must NOT fault for a halfword store either");
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "base+2 must still fault for a word load");
+
+    /* Load half: lh $t6, 1($t5). */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[14] = 0x0BADC0DEu;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADEL, TEST_BASE, TEST_BASE,
+                                 base + 1u, 0u, 0u) < 0,
+          "PSP-A3-05 lh raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-05 lh ExcCode must be 4 (AdEL)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A3-05 lh BD must be 0");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "PSP-A3-05 lh EPC must be the access");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 1u,
+          "PSP-A3-05 lh BadVAddr=0x%08x, want the odd effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.r[14] == 0x0BADC0DEu, "PSP-A3-05 lh must leave t6 unchanged");
+
+    /* Store half: sh $t6, 1($t5). */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, TEST_BASE, TEST_BASE,
+                                 base + 1u, 0u, 0u) < 0,
+          "PSP-A3-05 sh raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-05 sh ExcCode must be 5 (AdES), distinct from the load");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A3-05 sh BD must be 0");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 1u,
+          "PSP-A3-05 sh BadVAddr=0x%08x, want the odd effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.cop0[SR_CP0_STATUS] == 0x00088613u,
+          "PSP-A3-05 Status=0x%08x, want 0x00088613", s.cop0[SR_CP0_STATUS]);
+}
+
+/* PSP-A3-06 (negative control): lwl/lwr/swl/swr across alignment boundaries
+ * complete normally. The probe returned and wrote host0:/a3_unaligned_results.txt
+ * with loaded_pair=0x88776655, lwl_only=0x332211ff, lwr_only=0x00004433 for
+ * source bytes 11 22 33 44 55 66 77 88 99 aa bb cc. This pins both halves:
+ * the bypass (width 0, how those primaries are decoded, never faults) and the
+ * merge bytes the hardware produced, which equal the sr_* model bit-for-bit. */
+static void test_hw_psp_a3_06_unaligned_no_fault(void) {
+    CpuState s;
+    static const uint8_t pattern[12] = {
+        0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0x66u,
+        0x77u, 0x88u, 0x99u, 0xaau, 0xbbu, 0xccu,
+    };
+    const uint32_t src = TEST_BASE + 0x200u;
+    const uint32_t dst = TEST_BASE + 0x300u;
+    unsigned i;
+    uint32_t loaded, lwl_only, lwr_only;
+    fresh_state(&s);
+    /* The bypass width: unaligned primaries never reach the guard. */
+    CHECK(sr_cpu_data_access_fault(&s, src + 1u, 0u, 0) == 0u,
+          "PSP-A3-06 an unaligned op at +1 must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, src + 2u, 0u, 0) == 0u,
+          "PSP-A3-06 an unaligned op at +2 must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, dst + 1u, 0u, 1) == 0u,
+          "PSP-A3-06 an unaligned store at +1 must not fault");
+
+    for (i = 0; i < 12u; i++) {
+        MEM_W8_PC(src + i, pattern[i], TEST_BASE);
+        MEM_W8_PC(dst + i, 0u, TEST_BASE);
+    }
+    /* The exact probed load sequence: lwl v0,1(t0) then lwr v0,4(t0). */
+    loaded = sr_lwl(0u, src + 1u);
+    loaded = sr_lwr(loaded, src + 4u);
+    CHECK(loaded == 0x88776655u,
+          "PSP-A3-06 paired load gave 0x%08x, hardware measured 0x88776655", loaded);
+    lwl_only = sr_lwl(0xFFFFFFFFu, src + 2u);
+    CHECK(lwl_only == 0x332211FFu,
+          "PSP-A3-06 lwl-only gave 0x%08x, hardware measured 0x332211ff", lwl_only);
+    lwr_only = sr_lwr(0u, src + 2u);
+    CHECK(lwr_only == 0x00004433u,
+          "PSP-A3-06 lwr-only gave 0x%08x, hardware measured 0x00004433", lwr_only);
+    /* The probed store pair in isolation: dst[0..3] must read 77 88 00 00,
+     * exactly as the hardware's dst_bytes start. */
+    sr_swl(dst + 1u, loaded);
+    sr_swr(dst + 4u, loaded);
+    CHECK(MEM_R32(dst) == 0x00008877u,
+          "PSP-A3-06 stored dst[0..3]=0x%08x, hardware dst_bytes start 77880000",
+          MEM_R32(dst));
+    CHECK(MEM_R32(dst + 4u) == 0x88776655u,
+          "PSP-A3-06 stored dst[4..7]=0x%08x, want the paired word", MEM_R32(dst + 4u));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "PSP-A3-06 helpers must not set flow");
+}
+
+/* PSP-A3-08/09/10/11: VFPU load/store alignment (campaign psp-hw-20260917,
+ * PSP-3000 / 6.61, THREAD_ATTR_USER | THREAD_ATTR_VFPU probes via PSPLink;
+ * fixtures exception-a3-vfpu-lvs/lvq4/lvq8/svq4/vfpu-aligned, cells in
+ * docs/HARDWARE_ORACLE.md "VFPU load/store alignment cells"). lv.s needs
+ * width 4, lv.q/sv.q need width 16, and lvl/lvr/svl/svr bypass with width 0
+ * exactly like lwl/lwr/swl/swr. The probed bases are 16-byte-aligned owned
+ * buffers; the offsets below are the probed effective addresses. */
+static void test_hw_psp_a3_08_11_vfpu_alignment(void) {
+    CpuState s;
+    const uint32_t base = 0x08856580u;  /* the PSP-A3-09 +4 run's base */
+    fresh_state(&s);
+    /* PSP-A3-08: lv.s at base+2 faults AdEL; the aligned single does not. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-08 lv.s at base+2 must classify AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, base, 4u, 0) == 0u,
+          "an aligned single must not fault");
+    /* PSP-A3-09: lv.q at +4 and +8 both fault AdEL; only 16-aligned passes. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 16u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-09 lv.q at base+4 must classify AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, base + 8u, 16u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-09 lv.q at base+8 must classify AdEL");
+    CHECK(sr_cpu_data_access_fault(&s, base, 16u, 0) == 0u,
+          "a 16-byte-aligned quad load must not fault");
+    /* Width-relative: +4/+8 are fine for a word; only width 16 rejects them. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 4u, 0) == 0u,
+          "base+4 must NOT fault for a word: the quad rule is width-relative");
+    CHECK(sr_cpu_data_access_fault(&s, base + 8u, 4u, 0) == 0u,
+          "base+8 must NOT fault for a word either");
+    /* PSP-A3-10: sv.q at +4 faults AdES, distinct from the load code. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 16u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-10 sv.q at base+4 must classify AdES");
+    CHECK(sr_cpu_data_access_fault(&s, base, 16u, 1) == 0u,
+          "a 16-byte-aligned quad store must not fault");
+    /* PSP-A3-11 (negative control): the left/right forms bypass like the
+     * unaligned word forms. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 0u, 0) == 0u,
+          "PSP-A3-11 an lvl/lvr op at +4 must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, base + 4u, 0u, 1) == 0u,
+          "PSP-A3-11 an svl/svr op at +4 must not fault");
+
+    /* Frame half, with the PSP-A3-09 +4 run's exact cells: EPC is the access,
+     * Cause is AdEL with BD clear (and ExcCode 4, not CpU 11), BadVAddr keeps
+     * the low bits instead of being aligned down. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADEL, TEST_BASE, TEST_BASE,
+                                 base + 4u, 0u, 0u) < 0,
+          "PSP-A3-09 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-09 ExcCode must be 4 (AdEL), not CpU (11)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A3-09 BD must be 0");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "PSP-A3-09 EPC must be the access");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "PSP-A3-09 BadVAddr=0x%08x, want the effective address with low bits kept",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 15u) == 4u,
+          "PSP-A3-09 BadVAddr must not be aligned down to 16");
+
+    /* Store half with the PSP-A3-10 run's code. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, TEST_BASE, TEST_BASE,
+                                 base + 4u, 0u, 0u) < 0,
+          "PSP-A3-10 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-10 ExcCode must be 5 (AdES), distinct from the load");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "PSP-A3-10 BadVAddr=0x%08x, want the effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-10 must transfer to the vector, not continue");
+}
+
+/* PSP-A3-08/09/10/11 through the interpreter lane: the VFPU widths above must
+ * fault (or bypass) at the actual lv.s/lv.q/sv.q/lvl.q op, not only in the
+ * decision function. Misaligned forms raise AdEL/AdES with EPC at the access
+ * and BadVAddr holding the effective address; the aligned quad and the
+ * left/right forms at +4 must not raise. The stub sr_vfpu_interp here returns
+ * OTHER without touching state, so a non-faulting VFPU op reports
+ * UNSUPPORTED (not EXCEPTION) with flow NONE -- "ok" means "does not fault". */
+static void test_hw_psp_a3_08_11_vfpu_through_interpreter(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+    const uint32_t base = 0x08856580u;
+
+    /* PSP-A3-08: lv.s S000, 0(t5) at base+2 faults AdEL. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x32u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 2u;
+    s.vi[0] = 0x0BADBABEu;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp lv.s at base+2 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "interp lv.s ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "interp lv.s EPC must be the access");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 2u,
+          "interp lv.s BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.vi[0] == 0x0BADBABEu, "interp lv.s must leave the destination unchanged");
+    CHECK(s.pc == TEST_VECTOR, "interp lv.s must transfer to the vector");
+
+    /* PSP-A3-09: lv.q at +4 and +8 both fault AdEL. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x36u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    s.vi[0] = 0x0BADBABEu;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp lv.q at base+4 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "interp lv.q+4 ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "interp lv.q+4 BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.vi[0] == 0x0BADBABEu, "interp lv.q+4 must leave the destination unchanged");
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x36u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 8u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp lv.q at base+8 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "interp lv.q+8 ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 8u,
+          "interp lv.q+8 BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* PSP-A3-10: sv.q at +4 faults AdES, distinct from the load code. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x3Eu, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp sv.q at base+4 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "interp sv.q ExcCode must be 5 (AdES), distinct from the load");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "interp sv.q EPC must be the store");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "interp sv.q BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* Aligned lv.q is ok: it must not raise. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x36u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "interp aligned lv.q must not raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "interp aligned lv.q must not set flow");
+
+    /* PSP-A3-11: lvl.q/lvr.q at +4 bypass like lwl/lwr and must not raise. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x35u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "interp lvl.q at +4 must not raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "interp lvl.q at +4 must not set flow");
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x35u, 13u, 0u, 2u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "interp lvr.q at +4 must not raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "interp lvr.q at +4 must not set flow");
+}
+
+/* PSP-A3-12/13/14/15: VFPU remaining alignment cells (campaign psp-hw-20260917,
+ * PSP-3000 / 6.61, THREAD_ATTR_USER | THREAD_ATTR_VFPU probes via PSPLink;
+ * fixtures exception-a3-vfpu-svs/svq8/lvq-delay/lvl-odd, cells in
+ * docs/HARDWARE_ORACLE.md "VFPU remaining alignment cells"). sv.s needs width
+ * 4 with the store code, sv.q at +8 needs width 16 with the store code, the
+ * delay-slot BD/EPC rule holds for the VFPU group, and lvl.q at an odd
+ * address bypasses like the unaligned word forms. */
+static void test_hw_psp_a3_12_15_vfpu_remaining(void) {
+    CpuState s;
+    const uint32_t base = 0x08856580u;
+    fresh_state(&s);
+    /* PSP-A3-12: sv.s at base+2 faults AdES; the aligned single store does not. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 4u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-12 sv.s at base+2 must classify AdES");
+    CHECK(sr_cpu_data_access_fault(&s, base, 4u, 1) == 0u,
+          "an aligned single store must not fault");
+    /* A misaligned single is AdES for stores, AdEL for loads: distinct codes. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 2u, 4u, 0) == (unsigned)SR_EXC_ADEL,
+          "base+2 must still classify AdEL for a single load");
+    /* PSP-A3-13: sv.q at +8 faults AdES; only 16-aligned passes. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 8u, 16u, 1) == (unsigned)SR_EXC_ADES,
+          "PSP-A3-13 sv.q at base+8 must classify AdES");
+    CHECK(sr_cpu_data_access_fault(&s, base, 16u, 1) == 0u,
+          "a 16-byte-aligned quad store must not fault");
+    /* Width-relative: +8 is fine for a word/single; only width 16 rejects it. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 8u, 4u, 1) == 0u,
+          "base+8 must NOT fault for a single store: the quad rule is width-relative");
+
+    /* Frame half for PSP-A3-12: EPC is the store, Cause AdES BD clear, BadVAddr
+     * keeps the low bits, Status is the VFPU historical frame. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, TEST_BASE, TEST_BASE,
+                                 base + 2u, 0u, 0u) < 0,
+          "PSP-A3-12 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-12 ExcCode must be 5 (AdES), distinct from the lv.s load");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u, "PSP-A3-12 BD must be 0");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "PSP-A3-12 EPC must be the store");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 2u,
+          "PSP-A3-12 BadVAddr=0x%08x, want the effective address with low bits kept",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 3u) == 2u,
+          "PSP-A3-12 BadVAddr must not be aligned down");
+
+    /* Frame half for PSP-A3-13 with the store code. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_ADES, TEST_BASE, TEST_BASE,
+                                 base + 8u, 0u, 0u) < 0,
+          "PSP-A3-13 raise must report a transfer");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "PSP-A3-13 ExcCode must be 5 (AdES)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 8u,
+          "PSP-A3-13 BadVAddr=0x%08x, want base+8 with low bits kept",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 15u) == 8u,
+          "PSP-A3-13 BadVAddr must not be aligned down to 16");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-13 must transfer to the vector, not continue");
+}
+
+/* PSP-A3-14 through the guard: a misaligned lv.q in a delay slot sets BD and
+ * names the branch, exactly as PSP-A3-04 did for a scalar word. The test goes
+ * through sr_cpu_guard_access() with in_delay=1, which is the path both CPU
+ * tiers use for a VFPU delay-slot fault. */
+static void test_hw_psp_a3_14_vfpu_delay_slot(void) {
+    CpuState s;
+    int took;
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, 0x08981C64u, 16u, 0) == (unsigned)SR_EXC_ADEL,
+          "PSP-A3-14 a delay-slot misaligned quad must still classify AdEL");
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = 0x08981C60u;
+    took = sr_cpu_guard_access(&s, 0x08981C64u, 16u, 0,
+                               TEST_BASE + 4u, TEST_BASE, 1u);
+    CHECK(took == 1, "PSP-A3-14 the delay-slot guard must take the fault");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "PSP-A3-14 ExcCode must be 4 (AdEL), not CpU (11)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u,
+          "PSP-A3-14 Cause BD must be set for a delay-slot VFPU fault");
+    CHECK((s.cop0[SR_CP0_CAUSE] & ~(SR_CAUSE_CE_MASK | SR_CAUSE_BD)) == 0x00000010u,
+          "PSP-A3-14 Cause=0x%08x, want ExcCode 4 with BD (CE undefined)",
+          s.cop0[SR_CP0_CAUSE]);
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE,
+          "PSP-A3-14 EPC=0x%08x, want the branch pc", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0x08981C64u,
+          "PSP-A3-14 BadVAddr=0x%08x, want the misaligned effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK((s.cop0[SR_CP0_BADVADDR] & 15u) == 4u,
+          "PSP-A3-14 BadVAddr must keep its low bits, not be aligned down");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION && s.pc == TEST_VECTOR,
+          "PSP-A3-14 must transfer to the vector, not continue");
+}
+
+/* PSP-A3-15 (negative control): lvl.q at an odd address completes normally.
+ * The probe returned and wrote host0:/a3_vfpu_lvl_odd_results.txt with
+ * dst = aaaaaaaa bbbbbbbb cccccccc 11223344. This pins the bypass (width 0,
+ * never faults) for an odd address, as PSP-A3-11 did at +4. */
+static void test_hw_psp_a3_15_lvl_odd_no_fault(void) {
+    CpuState s;
+    const uint32_t base = 0x08856580u;
+    fresh_state(&s);
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 0u, 0) == 0u,
+          "PSP-A3-15 an lvl op at an odd address must not fault");
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 0u, 1) == 0u,
+          "PSP-A3-15 an svl op at an odd address must not fault");
+    /* Width-relative cross-check: the same odd address faults for a halfword. */
+    CHECK(sr_cpu_data_access_fault(&s, base + 1u, 2u, 0) == (unsigned)SR_EXC_ADEL,
+          "base+1 must still fault for a halfword: the bypass is width-relative");
+}
+
+/* PSP-A3-12/13/14/15 through the interpreter lane: the new widths must fault
+ * (or bypass) at the actual sv.s/sv.q/lv.q/lvl.q op. The stub sr_vfpu_interp
+ * here returns OTHER without touching state, so a non-faulting VFPU op reports
+ * UNSUPPORTED (not EXCEPTION) with flow NONE -- "ok" means "does not fault". */
+static void test_hw_psp_a3_12_15_vfpu_through_interpreter(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+    const uint32_t base = 0x08856580u;
+
+    /* PSP-A3-12: sv.s S000, 0(t5) at base+2 faults AdES. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x3au, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 2u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp sv.s at base+2 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "interp sv.s ExcCode must be 5 (AdES), distinct from the lv.s load");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "interp sv.s EPC must be the store");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 2u,
+          "interp sv.s BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.pc == TEST_VECTOR, "interp sv.s must transfer to the vector");
+
+    /* PSP-A3-13: sv.q at +8 faults AdES. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x3eu, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 8u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp sv.q at base+8 must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "interp sv.q+8 ExcCode must be 5 (AdES)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 8u,
+          "interp sv.q+8 BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* PSP-A3-14: lv.q at +4 in the delay slot of beq $0,$0,+3 faults with
+     * BD set and EPC at the branch. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, 0x10000003u, TEST_BASE);  /* beq $0,$0,+3 */
+    MEM_W32_PC(TEST_BASE + 4u, enc_vfpu(0x36u, 13u, 0u, 0u), TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 4u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "interp delay-slot lv.q must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "interp delay lv.q ExcCode must be 4 (AdEL), not CpU (11)");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u,
+          "interp delay lv.q Cause BD must be set");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE,
+          "interp delay lv.q EPC=0x%08x, want the branch pc", s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == base + 4u,
+          "interp delay lv.q BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* PSP-A3-15: lvl.q at an odd address bypasses and must not raise. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_vfpu(0x35u, 13u, 0u, 0u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = base + 1u;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "interp lvl.q at odd must not raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "interp lvl.q at odd must not set flow");
+}
+
+/* BEV selects the bootstrap vector; an unowned vector fails closed. */
+static void test_vector_selection(void) {
+    CpuState s;
+    uint32_t g, i, b;
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_BEV;
+    CHECK(sr_cpu_in_kernel(&s), "BEV kernel status must read as kernel");
+    /* Point bootstrap at an owned span: selection is what is under test,
+     * while the raw default (outside the flat arena) must fail closed. */
+    sr_cpu_lle_set_vectors(TEST_VECTOR, TEST_VECTOR, TEST_VECTOR);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "BEV raise must transfer");
+    sr_cpu_lle_get_vectors(&g, &i, &b);
+    CHECK(s.pc == b && s.flow_target == b, "BEV must select bootstrap 0x%08x (got 0x%08x)", b, s.pc);
+    (void)g;
+    (void)i;
+
+    /* The untouched bootstrap default is outside the flat arena and must
+     * fail closed rather than dispatch blind. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_BEV;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "default-bootstrap raise must unwind");
+    CHECK(s.flow_kind == SR_FLOW_FATAL, "default bootstrap must be FATAL, got %u", s.flow_kind);
+
+    fresh_state(&s);
+    sr_cpu_lle_set_vectors(0x09000000u, 0x09000000u, 0x09000000u);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "unowned vector must still unwind");
+    CHECK(s.flow_kind == SR_FLOW_FATAL, "unowned vector must be FATAL, got %u", s.flow_kind);
+    CHECK(s.flow_target == 0x09000000u, "fatal target must name the bad vector");
+}
+
+/* eret returns to EPC and clears EXL; user-mode and bad targets fail closed. */
+static void test_eret(void) {
+    CpuState s;
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0, "eret must report a transfer");
+    CHECK(s.flow_kind == SR_FLOW_ERET, "flow=%u, want ERET", s.flow_kind);
+    CHECK(s.pc == TEST_BASE + 0x10u && s.flow_target == TEST_BASE + 0x10u,
+          "eret must target EPC (pc=0x%08x)", s.pc);
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) == 0u, "eret must clear EXL");
+
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0, "user eret must unwind");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION, "user eret must trap, got flow %u", s.flow_kind);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU, "user eret must trap as CPU");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "trap EPC must be the eret pc");
+
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x3u;  /* misaligned */
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0, "misaligned eret target must unwind");
+    CHECK(s.flow_kind == SR_FLOW_FATAL, "misaligned eret target must be FATAL");
+}
+
+/* Kernel/user mode follows KSU unless EXL/ERL pin kernel mode. */
+static void test_mode_checks(void) {
+    CpuState s;
+    fresh_state(&s);
+    CHECK(sr_cpu_in_kernel(&s), "zero status must be kernel");
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    CHECK(!sr_cpu_in_kernel(&s), "KSU=user must read as user");
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER | SR_STATUS_EXL;
+    CHECK(sr_cpu_in_kernel(&s), "EXL must pin kernel mode");
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER | SR_STATUS_ERL;
+    CHECK(sr_cpu_in_kernel(&s), "ERL must pin kernel mode");
+}
+
+/* MFC0/MTC0 round-trip with Status/Cause masking in kernel mode. */
+static void test_cop0_roundtrip(void) {
+    CpuState s;
+    fresh_state(&s);
+    s.r[5] = 0x08810020u;
+    CHECK(sr_cp0_mtc0(&s, 5u, SR_CP0_EPC, 0u, TEST_BASE) == 0, "kernel mtc0 EPC must succeed");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08810020u, "EPC not stored");
+    s.r[6] = 0u;
+    CHECK(sr_cp0_mfc0(&s, 6u, SR_CP0_EPC, 0u, TEST_BASE + 4u) == 0, "kernel mfc0 EPC must succeed");
+    CHECK(s.r[6] == 0x08810020u, "EPC round-trip gave 0x%08x", s.r[6]);
+
+    s.r[7] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 7u, SR_CP0_STATUS, 0u, TEST_BASE + 8u) == 0, "status write must succeed");
+    CHECK(s.cop0[SR_CP0_STATUS] == (SR_STATUS_WRITABLE_MASK & 0xFFFFFFFFu),
+          "status must be masked to writable bits (got 0x%08x)", s.cop0[SR_CP0_STATUS]);
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_ERL) == 0u, "Status.ERL must not be writable");
+
+    s.cop0[SR_CP0_CAUSE] = 0x0000FC00u;  /* hardware-pending bits, INTC-owned */
+    s.r[8] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE + 12u) == 0, "cause write must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == (0x0000FC00u | SR_CAUSE_IP_SW_MASK),
+          "cause must keep HW pending, set SW pair (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    s.r[9] = 0x12340000u;
+    CHECK(sr_cp0_mtc0(&s, 9u, SR_CP0_COUNT, 0u, TEST_BASE + 16u) == 0, "count write must succeed");
+    CHECK(sr_cp0_mfc0(&s, 10u, SR_CP0_COUNT, 0u, TEST_BASE + 20u) == 0, "count read must succeed");
+    CHECK(s.r[10] == 0x12340000u, "count round-trip gave 0x%08x", s.r[10]);
+
+    /* $zero semantics: mfc0 to $zero writes nothing, mtc0 from $zero moves zero. */
+    s.r[11] = 0xAAAAAAAAu;
+    CHECK(sr_cp0_mfc0(&s, 0u, SR_CP0_EPC, 0u, TEST_BASE + 24u) == 0, "mfc0 to $zero must succeed");
+    CHECK(s.r[0] == 0u && s.r[11] == 0xAAAAAAAAu, "$zero move clobbered state");
+    CHECK(sr_cp0_mtc0(&s, 0u, SR_CP0_EPC, 0u, TEST_BASE + 28u) == 0, "mtc0 from $zero must succeed");
+    CHECK(s.cop0[SR_CP0_EPC] == 0u, "mtc0 from $zero must store zero");
+    CHECK(s.flow_kind == SR_FLOW_NONE, "clean COP0 traffic must not set flow");
+}
+
+/* ---- INTC pending/enable state and Cause.IP mirroring (spec 6.1, PR 5) ----------------
+ *
+ * SYNTHETIC. The PSP INTC register map, source numbering, CPU line, polarity, priority
+ * and nesting rules are open hardware-oracle questions (spec 6.3) and interrupt pending
+ * state is NOT_MEASURED in docs/HARDWARE_ORACLE.md. The 8-source controller on Cause.IP2
+ * below is a fixture contract, not a retail claim. What these cases pin is the spec 6.1
+ * model: no configuration means fail closed, a masked source stays pending, the line is
+ * pending & enabled, it is mirrored into exactly one Cause.IP bit a guest mtc0 cannot
+ * forge, and sr_cpu_poll still delivers nothing (delivery is PR 6).
+ *
+ * Failing-before evidence: on the base tree (origin/main 788465b2) none of the sr_intc_*
+ * API exists, so this file fails to build; mfc0 Cause returned the stored word, so a
+ * stale copy of the hardware bits was what the guest read. */
+
+#define INTC_TEST_SOURCES 8u
+#define INTC_TEST_IP 2u
+#define INTC_TEST_IP_BIT (1u << (8u + INTC_TEST_IP))   /* Cause bit 10 */
+
+static void intc_configure_fixture(void) {
+    SrIntcConfig config;
+    config.source_count = INTC_TEST_SOURCES;
+    config.cpu_ip_bit = INTC_TEST_IP;
+    CHECK(sr_intc_init(&config) == 0, "synthetic INTC configuration rejected");
+}
+
+/* What the guest reads from Cause through the production mfc0 helper (kernel mode). */
+static uint32_t intc_guest_cause(CpuState *s) {
+    s->r[6] = 0xDEADBEEFu;
+    CHECK(sr_cp0_mfc0(s, 6u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mfc0 Cause must succeed");
+    return s->r[6];
+}
+
+/* No configuration, no device model: every call fails closed and Cause is not touched. */
+static void test_intc_unconfigured_fails_closed(void) {
+    static const SrIntcConfig bad[] = {
+        { 0u, INTC_TEST_IP },    /* no sources */
+        { 33u, INTC_TEST_IP },   /* wider than the 32-bit state */
+        { 8u, 0u },              /* IP0/IP1 are the guest-writable software pair */
+        { 8u, 1u },
+        { 8u, 8u },              /* Cause.IP has eight bits */
+    };
+    SrIntcConfig config;
+    CpuState s;
+
+    fresh_state(&s);   /* resets the INTC to unconfigured */
+    CHECK(sr_intc_raise(0u) < 0 && sr_intc_clear(0u) < 0,
+          "unconfigured INTC must reject raise and clear");
+    CHECK(sr_intc_set_enable_mask(1u) < 0, "unconfigured INTC must reject an enable mask");
+    CHECK(sr_intc_pending_mask() == 0u && sr_intc_enable_mask() == 0u,
+          "unconfigured INTC must report nothing pending or enabled");
+    s.cop0[SR_CP0_CAUSE] = 0x0000FC00u;
+    CHECK(sr_intc_cpu_pending(&s) < 0, "unconfigured INTC must not report a line");
+    CHECK(s.cop0[SR_CP0_CAUSE] == 0x0000FC00u,
+          "unconfigured INTC must leave Cause untouched (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+    CHECK(intc_guest_cause(&s) == 0x0000FC00u,
+          "unconfigured mfc0 Cause must read the stored word (got 0x%08x)", s.r[6]);
+    CHECK(sr_intc_cpu_pending(NULL) < 0, "a NULL CPU must be rejected");
+
+    CHECK(sr_intc_init(NULL) < 0, "a NULL configuration must be rejected");
+    for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        CHECK(sr_intc_init(&bad[i]) < 0, "configuration %u (sources %u, IP%u) must be rejected",
+              i, bad[i].source_count, bad[i].cpu_ip_bit);
+        CHECK(sr_intc_raise(0u) < 0, "rejected configuration %u must leave the INTC unconfigured", i);
+    }
+
+    /* A rejected re-configuration keeps the previous controller and its state. */
+    config.source_count = 4u;
+    config.cpu_ip_bit = 3u;
+    CHECK(sr_intc_init(&config) == 0, "4-source controller on IP3 must be accepted");
+    CHECK(sr_intc_raise(3u) == 0, "source 3 of 4 must be accepted");
+    CHECK(sr_intc_raise(4u) < 0, "source 4 of 4 must be rejected");
+    CHECK(sr_intc_init(&bad[1]) < 0 && sr_intc_pending_mask() == 0x8u,
+          "a rejected re-configuration must keep the previous state (pending 0x%08x)",
+          sr_intc_pending_mask());
+
+    /* Boundaries: 32 sources and IP7 are valid; init resets pending and enable. */
+    config.source_count = 32u;
+    config.cpu_ip_bit = 7u;
+    CHECK(sr_intc_init(&config) == 0 && sr_intc_pending_mask() == 0u &&
+          sr_intc_enable_mask() == 0u, "init must install an idle 32-source controller");
+    CHECK(sr_intc_raise(31u) == 0 && sr_intc_set_enable_mask(0x80000000u) == 0,
+          "source 31 must be raisable and enableable");
+    s.cop0[SR_CP0_CAUSE] = 0u;
+    CHECK(sr_intc_cpu_pending(&s) == 1 && s.cop0[SR_CP0_CAUSE] == 0x00008000u,
+          "an IP7 line must mirror into Cause bit 15 only (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    sr_cpu_lle_reset_config();
+    CHECK(sr_intc_raise(0u) < 0 && sr_intc_pending_mask() == 0u,
+          "sr_cpu_lle_reset_config must unconfigure the INTC");
+}
+
+/* A masked source stays pending; the line (and Cause.IP) is pending & enabled. */
+static void test_intc_masked_pending_retention(void) {
+    CpuState s;
+
+    fresh_state(&s);   /* Status 0: kernel mode, so mfc0 is legal */
+    intc_configure_fixture();
+    CHECK(sr_intc_pending_mask() == 0u && sr_intc_enable_mask() == 0u,
+          "a fresh INTC has nothing pending or enabled");
+
+    CHECK(sr_intc_raise(3u) == 0, "raise must accept source 3");
+    CHECK(sr_intc_pending_mask() == 0x08u, "raise must latch source 3 (pending 0x%08x)",
+          sr_intc_pending_mask());
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "a masked source must not reach Cause.IP (read 0x%08x)", s.r[6]);
+
+    /* MIPS32: Cause.IP reports pending lines whatever Status.IE/IM say, and the CPU-side
+     * masks never reach the controller. */
+    s.cop0[SR_CP0_STATUS] = 0u;
+    CHECK(sr_intc_set_enable_mask(0x08u) == 0, "enable must accept source 3");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT,
+          "an enabled pending source must read as IP2 with Status IE/IM clear (read 0x%08x)",
+          s.r[6]);
+
+    /* Mask again: the line drops, the source stays pending. */
+    CHECK(sr_intc_set_enable_mask(0u) == 0, "mask must be accepted");
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "masking must drop the line (read 0x%08x)", s.r[6]);
+    CHECK(sr_intc_pending_mask() == 0x08u,
+          "masking must not discard the pending source (pending 0x%08x)", sr_intc_pending_mask());
+
+    /* Re-enable: the retained source reasserts without a new raise. */
+    CHECK(sr_intc_set_enable_mask(0x08u) == 0, "re-enable must be accepted");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT,
+          "re-enabling must reassert the retained source (read 0x%08x)", s.r[6]);
+    CHECK(sr_intc_raise(3u) == 0 && sr_intc_pending_mask() == 0x08u,
+          "a second raise of a pending source must stay one latch");
+
+    /* Acknowledge: pending clears and the line drops although the source is enabled. */
+    CHECK(sr_intc_clear(3u) == 0, "clear must accept source 3");
+    CHECK(sr_intc_pending_mask() == 0u && sr_intc_enable_mask() == 0x08u,
+          "clear must drop pending only (pending 0x%08x enable 0x%08x)",
+          sr_intc_pending_mask(), sr_intc_enable_mask());
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "an acknowledged source must drop the line (read 0x%08x)", s.r[6]);
+
+    /* Two sources: the line follows whichever enabled source is pending. */
+    CHECK(sr_intc_raise(1u) == 0 && sr_intc_raise(5u) == 0, "raise 1 and 5");
+    CHECK(sr_intc_set_enable_mask(0x20u) == 0, "enable source 5 only");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT, "enabled source 5 must assert the line");
+    CHECK(sr_intc_clear(5u) == 0, "clear source 5");
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "masked source 1 alone must not hold the line (read 0x%08x)", s.r[6]);
+    CHECK(sr_intc_pending_mask() == 0x02u, "masked source 1 must stay pending (pending 0x%08x)",
+          sr_intc_pending_mask());
+    CHECK(sr_intc_set_enable_mask(0x22u) == 0, "enable sources 1 and 5");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT, "retained source 1 must assert once enabled");
+
+    /* Out-of-range input is rejected without side effects. */
+    CHECK(sr_intc_raise(INTC_TEST_SOURCES) < 0 && sr_intc_clear(INTC_TEST_SOURCES) < 0,
+          "source %u of %u must be rejected", INTC_TEST_SOURCES, INTC_TEST_SOURCES);
+    CHECK(sr_intc_set_enable_mask(0x100u) < 0, "an enable bit past the last source must be rejected");
+    CHECK(sr_intc_pending_mask() == 0x02u && sr_intc_enable_mask() == 0x22u,
+          "rejected calls must change nothing (pending 0x%08x enable 0x%08x)",
+          sr_intc_pending_mask(), sr_intc_enable_mask());
+    CHECK(s.flow_kind == SR_FLOW_NONE, "INTC traffic must not set flow");
+}
+
+/* Guest mtc0 Cause can neither set nor clear the INTC-owned bit; the write re-derives it. */
+static void test_intc_cause_guest_writes(void) {
+    CpuState s;
+
+    fresh_state(&s);
+    intc_configure_fixture();
+
+    /* Stale stored copy with every hardware bit set while the line is low: the INTC bit
+     * follows the line, IP3..IP7 (unmodeled lines) stay as stored, the SW pair lands. */
+    s.cop0[SR_CP0_CAUSE] = 0x0000FC00u;
+    s.r[8] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == ((0x0000FC00u & ~INTC_TEST_IP_BIT) | SR_CAUSE_IP_SW_MASK),
+          "all-ones write: INTC bit must follow the low line (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    /* A write naming only the INTC bit cannot set it. */
+    s.cop0[SR_CP0_CAUSE] = 0u;
+    s.r[8] = INTC_TEST_IP_BIT;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == 0u, "a guest write must not forge the INTC bit (got 0x%08x)",
+          s.cop0[SR_CP0_CAUSE]);
+
+    /* Line high and the stored copy missing it: writing zero clears the SW pair only. */
+    CHECK(sr_intc_raise(0u) == 0 && sr_intc_set_enable_mask(0x01u) == 0, "assert source 0");
+    s.cop0[SR_CP0_CAUSE] = SR_CAUSE_IP_SW_MASK;
+    CHECK(sr_cp0_mtc0(&s, 0u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == INTC_TEST_IP_BIT,
+          "a guest write must not clear an asserted INTC bit (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    /* BD and ExcCode are not guest-writable, and the resync touches only its own bit. */
+    s.cop0[SR_CP0_CAUSE] = SR_CAUSE_BD | (SR_EXC_SYS << 2);
+    s.r[8] = 0u;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == (SR_CAUSE_BD | (SR_EXC_SYS << 2) | INTC_TEST_IP_BIT),
+          "BD/ExcCode must survive the resync (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+    CHECK(sr_intc_pending_mask() == 0x01u && sr_intc_enable_mask() == 0x01u,
+          "guest Cause writes must not touch controller state");
+
+    /* A user-mode write still traps before reaching Cause or the controller. */
+    fresh_state(&s);
+    intc_configure_fixture();
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.r[8] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) < 0 &&
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU,
+          "user mtc0 Cause must trap as CPU");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_IP_MASK) == 0u,
+          "a trapping write must not set any IP bit (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+}
+
+/* Every MIPS32 condition for taking the interrupt holds, and PR 5 still delivers nothing:
+ * the poll reports none and leaves CpuState and the controller exactly as they were. */
+static void test_intc_poll_reports_none(void) {
+    CpuState s;
+    CpuState before;
+
+    fresh_state(&s);
+    intc_configure_fixture();
+    CHECK(sr_intc_raise(2u) == 0 && sr_intc_set_enable_mask(0x04u) == 0, "assert source 2");
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_IE | SR_STATUS_IM_MASK;   /* kernel, EXL/ERL 0 */
+    s.cop0[SR_CP0_EPC] = 0x12345678u;
+    s.pc = TEST_BASE;
+    memcpy(&before, &s, sizeof s);
+    CHECK(sr_cpu_poll(&s, TEST_BASE) == 0, "poll must report no interrupt");
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "poll must not change CpuState (Cause 0x%08x, EPC 0x%08x, pc 0x%08x, flow %u)",
+          s.cop0[SR_CP0_CAUSE], s.cop0[SR_CP0_EPC], s.pc, s.flow_kind);
+    CHECK(sr_intc_pending_mask() == 0x04u && sr_intc_enable_mask() == 0x04u,
+          "poll must not consume or mask the pending source");
+}
+
+/* PSP-INTR-CAUSE-001 (PSP-3000 6.6.1, 2026-10-29): kernel-mode reads inside a
+ * sceKernelCpuSuspendIntr window. Cause read 0x90000020 (BD, CE=1, ExcCode SYS: the read ran
+ * in the syscall handler of an import stub's delay-slot syscall) and then 0x90000420 while an
+ * interrupt source was pending, with Status 0x00088600 (IE clear); 200 us after the resume
+ * (Status 0x00088601) it read 0x90000020 again. With the measured line, the controller model
+ * gives the guest exactly those words: the pending source shows on IP2 whatever Status.IE
+ * says, and only IP2 changes. Source number and count are fixture configuration. */
+static void test_hw_psp_intr_cause_ip2_while_suspended(void) {
+    CpuState s;
+    SrIntcConfig config;
+    fresh_state(&s);
+    config.source_count = 1u;
+    config.cpu_ip_bit = SR_INTC_PSP_CPU_IP_BIT;
+    CHECK(SR_INTC_PSP_CPU_IP_BIT == 2u, "the measured INTC line is IP2");
+    CHECK(sr_intc_init(&config) == 0, "the measured line must be a valid configuration");
+    CHECK(sr_intc_set_enable_mask(0x1u) == 0, "enable the fixture source");
+    s.cop0[SR_CP0_CAUSE] = 0x90000020u;
+    s.cop0[SR_CP0_STATUS] = 0x00088600u;
+    CHECK(intc_guest_cause(&s) == 0x90000020u,
+          "suspended, nothing pending: Cause reads 0x90000020 (got 0x%08x)", s.r[6]);
+    CHECK(sr_intc_raise(0u) == 0, "a source becomes pending");
+    CHECK(intc_guest_cause(&s) == 0x90000420u,
+          "suspended, source pending: Cause reads 0x90000420 (got 0x%08x)", s.r[6]);
+    CHECK(intc_guest_cause(&s) == 0x90000420u,
+          "the pending line stays visible on a later read (got 0x%08x)", s.r[6]);
+    s.cop0[SR_CP0_STATUS] = 0x00088601u;   /* resumed */
+    CHECK(sr_intc_clear(0u) == 0, "the source is serviced");
+    CHECK(intc_guest_cause(&s) == 0x90000020u,
+          "resumed and serviced: Cause reads 0x90000020 again (got 0x%08x)", s.r[6]);
+    sr_intc_reset();
+}
+
+/* User-mode COP0 access traps; unsupported encodings raise RI. */
+static void test_cop0_traps(void) {
+    CpuState s;
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.r[5] = 1u;
+    CHECK(sr_cp0_mtc0(&s, 5u, SR_CP0_STATUS, 0u, TEST_BASE) < 0, "user mtc0 must unwind");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION, "user mtc0 must trap");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU, "user mtc0 must trap as CPU");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE && (s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u,
+          "user trap needs exact EPC/BD");
+
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    CHECK(sr_cp0_mfc0(&s, 6u, SR_CP0_STATUS, 0u, TEST_BASE) < 0, "user mfc0 must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU, "user mfc0 must trap as CPU");
+
+    /* Unsupported register/select combinations raise RI, never answer zero. */
+    fresh_state(&s);
+    CHECK(sr_cp0_mfc0(&s, 6u, 7u, 0u, TEST_BASE) < 0, "mfc0 rd=7 must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_RI, "bad rd must raise RI");
+    CHECK(s.r[6] == 0u, "failed mfc0 must not write its destination");
+
+    fresh_state(&s);
+    CHECK(sr_cp0_mfc0(&s, 6u, SR_CP0_STATUS, 1u, TEST_BASE) < 0, "mfc0 sel=1 must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_RI, "bad sel must raise RI");
+
+    fresh_state(&s);
+    CHECK(sr_cp0_mtc0(&s, 5u, 20u, 0u, TEST_BASE) < 0, "mtc0 rd=20 must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_RI, "bad mtc0 rd must raise RI");
+
+    fresh_state(&s);
+    s.r[5] = 0x11111111u;
+    CHECK(sr_cp0_mtc0(&s, 5u, SR_CP0_PRID, 0u, TEST_BASE) < 0, "mtc0 PRID must unwind");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_RI, "PRID write must raise RI");
+
+    /* Delay-slot privilege faults name the branch (spec 3.3 BD rule). */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.in_delay_slot = 1u;
+    s.next_pc = TEST_BASE;
+    CHECK(sr_cp0_mtc0(&s, 5u, SR_CP0_STATUS, 0u, TEST_BASE + 4u) < 0, "delay mtc0 must unwind");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "delay trap EPC must be the branch (got 0x%08x)",
+          s.cop0[SR_CP0_EPC]);
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u, "delay trap must set BD");
+}
+
+/* Interpreter lane with the LLE gate on: syscall/break trap, eret returns,
+ * COP0 round-trips; with the gate off the old UNSUPPORTED stands. */
+static void test_interp_lane(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, 0x0000000Cu, TEST_BASE);  /* syscall */
+    MEM_W32_PC(TEST_BASE + 4u, 0x00000000u, TEST_BASE);  /* nop (never reached) */
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "interp syscall must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "interp EPC=0x%08x", s.cop0[SR_CP0_EPC]);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS, "interp ExcCode must be SYS");
+    CHECK(s.pc == TEST_VECTOR && s.flow_target == TEST_VECTOR, "interp must transfer to vector");
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, 0x0000000Du, TEST_BASE);  /* break */
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "interp break must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_BP, "interp ExcCode must be BP");
+
+    /* eret with an owned EPC target. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, SR_OPCODE_ERET, TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    MEM_W32_PC(TEST_BASE + 0x10u, 0x00000000u, TEST_BASE);  /* landing nop */
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_ERET, "interp eret must report ERET (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.pc == TEST_BASE + 0x10u, "interp eret pc=0x%08x", s.pc);
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) == 0u, "interp eret must clear EXL");
+
+    /* COP0 round-trip through the interpreter. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_mtc0(5u, SR_CP0_EPC), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, enc_mfc0(6u, SR_CP0_EPC), TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 8u, 0x03E00008u, TEST_BASE + 8u);  /* jr $ra (returns) */
+    MEM_W32_PC(TEST_BASE + 12u, 0x00000000u, TEST_BASE + 12u);
+    s.pc = TEST_BASE;
+    s.r[5] = 0x08810020u;
+    s.r[31] = TEST_SPAN_END;  /* jr $ra lands outside any span: stops cleanly */
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(s.r[6] == 0x08810020u, "interp COP0 round-trip gave 0x%08x", s.r[6]);
+    CHECK(s.flow_kind == SR_FLOW_NONE, "clean interp COP0 traffic must not set flow");
+    (void)r;
+
+    /* Gate off: the historical fail-closed contract stands. */
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, 0x0000000Cu, TEST_BASE);
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_UNSUPPORTED, "gate-off syscall must stay UNSUPPORTED (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(fault.pc == TEST_BASE, "gate-off fault must name the probe word");
+}
+
+/* Config accessors round-trip and reset restores every default. */
+static void test_config(void) {
+    uint32_t g, i, b;
+    sr_cpu_lle_reset_config();
+    CHECK(!sr_cpu_lle_enabled(), "gate must default off");
+    sr_cpu_lle_set_enabled(1);
+    CHECK(sr_cpu_lle_enabled(), "gate enable must stick");
+    sr_cpu_lle_set_vectors(1u, 2u, 3u);
+    sr_cpu_lle_get_vectors(&g, &i, &b);
+    CHECK(g == 1u && i == 2u && b == 3u, "vector accessors must round-trip");
+    sr_cpu_lle_set_prid(0x12345678u);
+    {
+        CpuState s;
+        fresh_state(&s);
+        /* fresh_state resets config; re-apply after it. */
+        sr_cpu_lle_set_prid(0x12345678u);
+        CHECK(sr_cp0_mfc0(&s, 6u, SR_CP0_PRID, 0u, TEST_BASE) == 0, "PRID read must succeed");
+        CHECK(s.r[6] == 0x12345678u, "PRID must report the configured value");
+    }
+    sr_cpu_lle_reset_config();
+    sr_cpu_lle_get_vectors(&g, &i, &b);
+    CHECK(g == 0x80000180u && !sr_cpu_lle_enabled(), "reset must restore defaults");
+    CHECK(b == 0xBFC00200u, "reset must restore the bootstrap default");
+    {
+        CpuState s;
+        fresh_state(&s);
+        sr_cpu_clear_flow(&s);
+        CHECK(s.flow_kind == SR_FLOW_NONE && s.flow_target == 0u, "clear_flow must zero the channel");
+    }
+}
+
+static void test_nested_exceptions(void) {
+    CpuState s;
+    fresh_state(&s);
+    /* First exception establishes EPC and Cause.BD. */
+    s.cop0[SR_CP0_STATUS] = 0u;
+    s.cop0[SR_CP0_EPC] = 0u;
+    s.cop0[SR_CP0_CAUSE] = 0u;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, 0x08801004u, 0x08801000u, 0u, 1u, 0u) < 0,
+          "first exception must unwind");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08801000u, "first EPC must be branch pc");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u, "first exception must set Cause.BD");
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) != 0u, "first exception must set EXL");
+
+    /* Second exception while Status.EXL is 1: nested exception.
+     * MIPS32 spec Vol. III: EPC and Cause.BD must be preserved; Cause.ExcCode updated. */
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_BP, 0x08802000u, 0x08802000u, 0u, 0u, 0u) < 0,
+          "nested exception must unwind");
+    CHECK(s.cop0[SR_CP0_EPC] == 0x08801000u, "nested exception must preserve EPC (got 0x%08x)", s.cop0[SR_CP0_EPC]);
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) != 0u, "nested exception must preserve Cause.BD");
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_BP, "nested exception must update Cause.ExcCode to BP");
+}
+
+static void test_unbacked_aot_target(void) {
+    CpuState s;
+    fresh_state(&s);
+    /* 0x32200000 is an AOT module address outside guest RAM (not readable). */
+    CHECK(!sr_guest_span_readable(0x32200000u, 4u), "0x32200000 must not be readable in RAM arena");
+    sr_exec_span_register(0x32200000u, 0x32210000u);
+    CHECK(sr_exec_span_owns_fetch(0x32200000u), "registered AOT span must own fetch");
+
+    /* Exception vector pointing to unbacked AOT span must succeed, not SR_FLOW_FATAL. */
+    sr_cpu_lle_set_vectors(0x32200000u, 0x32200000u, 0x32200000u);
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "raise exception to unbacked AOT vector must unwind");
+    CHECK(s.flow_kind == SR_FLOW_EXCEPTION, "unbacked AOT vector must be EXCEPTION, got %u", s.flow_kind);
+    CHECK(s.flow_target == 0x32200000u, "flow_target must be vector");
+
+    /* eret targeting unbacked AOT span must succeed, not SR_FLOW_FATAL. */
+    fresh_state(&s);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = 0x32200000u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0, "eret to unbacked AOT target must unwind");
+    CHECK(s.flow_kind == SR_FLOW_ERET, "unbacked AOT eret must be ERET, got %u", s.flow_kind);
+    CHECK(s.flow_target == 0x32200000u, "flow_target must be EPC");
+}
+
+static void test_dispatch_interpreter_flow(void) {
+    CpuState s;
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+
+    /* TEST_BASE contains a syscall */
+    MEM_W32_PC(TEST_BASE + 0u, 0x0000000Cu, TEST_BASE);  /* syscall */
+    MEM_W32_PC(TEST_BASE + 4u, 0x00000000u, TEST_BASE);  /* nop */
+
+    /* TEST_VECTOR contains handler code: v0 = 42; jr $ra; nop */
+    MEM_W32_PC(TEST_VECTOR + 0u, 0x2402002Au, TEST_VECTOR);      /* addiu $v0, $zero, 42 */
+    MEM_W32_PC(TEST_VECTOR + 4u, 0x03E00008u, TEST_VECTOR + 4u);  /* jr $ra */
+    MEM_W32_PC(TEST_VECTOR + 8u, 0x00000000u, TEST_VECTOR + 8u);  /* nop */
+
+    uint32_t resume_pc = TEST_BASE + 0x20u;
+    MEM_W32_PC(resume_pc, 0x00000000u, resume_pc);
+
+    s.pc = TEST_BASE;
+    s.r[2] = 0u;
+    s.r[31] = resume_pc;
+
+    int r = dispatch_call_try(&s, TEST_BASE, resume_pc);
+    CHECK(r == SR_GUEST_INTERP_CALL_RETURN, "dispatch_call_try must report CALL_RETURN (got %d)", r);
+    CHECK(s.r[2] == 42u, "exception vector must execute and set v0=42 (got %u)", s.r[2]);
+    CHECK(s.flow_kind == SR_FLOW_NONE, "flow metadata must be consumed/cleared (got %u)", s.flow_kind);
+    CHECK(s.flow_target == 0u, "flow_target must be cleared");
+}
+
+/* A registered AOT body must hand an LLE exception to the production dispatcher.
+ * This mirrors the generated --lle-cpu syscall statement: the helper owns the
+ * architectural frame, and the native body must leave immediately when it sets
+ * runtime transfer metadata. */
+static void aot_exception_syscall_body(CpuState *s) {
+    if (sr_cpu_raise_exception(
+            s, SR_EXC_SYS, AOT_EXCEPTION_ENTRY, AOT_EXCEPTION_ENTRY,
+            0u, 0u, 0u) < 0) {
+        return;
+    }
+    /* A helper failure would incorrectly fall through into the interrupted body. */
+    g_aot_exception_body_fallthroughs++;
+}
+
+static void aot_fatal_exception_body(CpuState *s) {
+    if (sr_cpu_raise_exception(
+            s, SR_EXC_SYS, AOT_EXCEPTION_FATAL_ENTRY,
+            AOT_EXCEPTION_FATAL_ENTRY, 0u, 0u, 0u) < 0) {
+        return;
+    }
+    g_aot_exception_body_fallthroughs++;
+}
+
+static void aot_exception_eret_handler_body(CpuState *s) {
+    g_aot_exception_handler_calls++;
+    s->cop0[SR_CP0_EPC] = AOT_EXCEPTION_RESUME;
+    if (sr_cpu_eret(s, AOT_EXCEPTION_VECTOR) < 0) return;
+    g_aot_exception_eret_handler_fallthroughs++;
+}
+
+static void aot_exception_eret_resume_body(CpuState *s) {
+    g_aot_exception_eret_resume_calls++;
+    s->r[2] = 0xE321u;
+    s->pc = AOT_EXCEPTION_RESUME;
+}
+
+static void aot_fatal_try_caller_body(CpuState *s) {
+    g_aot_fatal_inner_result = dispatch_call_try(
+        s, AOT_EXCEPTION_FATAL_ENTRY, AOT_EXCEPTION_FATAL_RESUME);
+    if (g_aot_fatal_inner_result < 0) return;
+    g_aot_fatal_caller_after_call++;
+}
+
+static void aot_fatal_native_caller_body(CpuState *s) {
+    dispatch_call(s, AOT_EXCEPTION_FATAL_ENTRY,
+                  AOT_EXCEPTION_FATAL_RESUME);
+    g_aot_fatal_native_caller_after_call++;
+}
+
+static int run_fatal_dispatch_child(void) {
+    CpuState s;
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    sr_cpu_lle_set_vectors(AOT_EXCEPTION_FATAL_VECTOR,
+                           AOT_EXCEPTION_FATAL_VECTOR,
+                           AOT_EXCEPTION_FATAL_VECTOR);
+    sr_register(AOT_EXCEPTION_FATAL_ENTRY, aot_fatal_exception_body);
+    sr_register(AOT_EXCEPTION_FATAL_NATIVE_CALLER,
+                aot_fatal_native_caller_body);
+    s.pc = AOT_EXCEPTION_FATAL_NATIVE_CALLER;
+    s.r[31] = AOT_EXCEPTION_FATAL_RESUME;
+    dispatch_call(&s, AOT_EXCEPTION_FATAL_NATIVE_CALLER,
+                  AOT_EXCEPTION_FATAL_RESUME);
+    return g_aot_fatal_native_caller_after_call ? 98 : 99;
+}
+
+#ifdef _WIN32
+#define CHILD_SPAWN_CAP 4096
+
+/* Quote one argument into *out* with the CommandLineToArgvW rule: a run of
+ * backslashes is doubled only where it precedes a quote or the closing quote,
+ * and every argument is wrapped. Returns the number of wide characters written,
+ * or 0 when *cap* cannot hold the result. */
+static size_t append_quoted_argument(wchar_t *out, size_t cap, const wchar_t *arg) {
+    size_t n = 0;
+    size_t backslashes = 0;
+    if (cap < 3) return 0;
+    out[n++] = L'"';
+    for (const wchar_t *p = arg; *p; ++p) {
+        if (*p == L'\\') {
+            backslashes++;
+            continue;
+        }
+        if (*p == L'"') {
+            size_t escapes = backslashes * 2 + 1;
+            if (n + escapes + 2 > cap) return 0;
+            while (escapes-- > 0) out[n++] = L'\\';
+            out[n++] = L'"';
+            backslashes = 0;
+            continue;
+        }
+        if (n + backslashes + 2 > cap) return 0;
+        while (backslashes-- > 0) out[n++] = L'\\';
+        backslashes = 0;
+        out[n++] = *p;
+    }
+    if (n + backslashes * 2 + 2 > cap) return 0;
+    while (backslashes-- > 0) {
+        out[n++] = L'\\';
+        out[n++] = L'\\';
+    }
+    out[n++] = L'"';
+    out[n] = L'\0';
+    return n;
+}
+#endif /* _WIN32 */
+
+/* Respawn this binary in one of its child modes and return the child's exit
+ * status, or -1 when the child could not be spawned or waited for.
+ *
+ * Win32 cannot use the CRT's _spawnv() here. _spawnv() joins argv into the
+ * child command line without quoting any of it, so once this executable's own
+ * path contains a space that line is re-parsed as more arguments than we
+ * passed: the mode flag never arrives as argv[1], the child re-runs this whole
+ * suite instead of the mode, and -- because the child's own respawn fails and
+ * that nested process exits 1 -- the `status == 1` assertions below are
+ * satisfied by a process that ran the wrong thing. Measured on a spaced self
+ * path, this file printed nine FAIL lines from those nested runs and still
+ * ended with "cpu-lle selftest: OK" and exit status 0. The command line is
+ * built here instead, with the program path and the mode each quoted, and the
+ * wait and the exit-code read are checked so a failed wait cannot be mistaken
+ * for a child status. */
+static int run_child_process(const char *self_path, const char *mode) {
+#ifdef _WIN32
+    wchar_t wide_path[CHILD_SPAWN_CAP];
+    wchar_t resolved[CHILD_SPAWN_CAP];
+    wchar_t command[CHILD_SPAWN_CAP];
+    wchar_t wide_mode[CHILD_SPAWN_CAP];
+    /* argv[0] arrives from the CRT as the narrow form of this process's
+       command line, so its bytes are the active ANSI code page's, and CP_ACP
+       is its inverse. Converting them as UTF-8 instead replaces every
+       non-ASCII byte with U+FFFD, GetFullPathNameW then resolves a path that
+       names no file, and the child never starts. Measured on this host
+       (code page 1252) from a directory whose name holds U+00E9: CP_UTF8 here
+       produced three "child status=-1" FAIL lines and a FAILED verdict, with
+       CP_ACP none, from the same binary and directory. */
+    if (MultiByteToWideChar(CP_ACP, 0, self_path, -1, wide_path,
+                            CHILD_SPAWN_CAP) <= 0) return -1;
+    if (MultiByteToWideChar(CP_ACP, 0, mode, -1, wide_mode,
+                            CHILD_SPAWN_CAP) <= 0) return -1;
+    /* CreateProcessW is given the program through the command line, and it does
+       not resolve every way argv[0] can be spelled: a relative path written with
+       forward slashes fails with ERROR_FILE_NOT_FOUND, which is how this
+       binary is normally started (the Makefile runs
+       build/mygame/cpu_lle_selftest.exe). Resolve the path to the absolute
+       native form first so neither a relative nor a mixed-separator argv[0]
+       decides whether the child starts. */
+    DWORD resolved_length = GetFullPathNameW(wide_path, CHILD_SPAWN_CAP,
+                                            resolved, NULL);
+    if (resolved_length == 0 || resolved_length >= CHILD_SPAWN_CAP) return -1;
+    size_t written = append_quoted_argument(command, CHILD_SPAWN_CAP, resolved);
+    if (written == 0) return -1;
+    /* The separator belongs between the arguments: without it the two quoted
+       arguments parse as one, the program is not found, and CreateProcessW
+       fails. */
+    if (written + 1 >= CHILD_SPAWN_CAP) return -1;
+    command[written++] = L' ';
+    if (append_quoted_argument(command + written, CHILD_SPAWN_CAP - written,
+                               wide_mode) == 0) return -1;
+
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION child;
+    ZeroMemory(&startup, sizeof(startup));
+    startup.cb = sizeof(startup);
+    if (!CreateProcessW(NULL, command, NULL, NULL, TRUE, 0, NULL, NULL,
+                        &startup, &child)) {
+        return -1;
+    }
+    DWORD status = 0;
+    if (WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0 ||
+        !GetExitCodeProcess(child.hProcess, &status)) {
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        return -1;
+    }
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    return (int)status;
+#else
+    pid_t child = fork();
+    if (child == 0) {
+        execl(self_path, self_path, mode, (char *)NULL);
+        _exit(127);
+    }
+    if (child < 0) return -1;
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) return -1;
+    return WEXITSTATUS(status);
+#endif
+}
+
+static void aot_exception_handler_body(CpuState *s) {
+    g_aot_exception_handler_calls++;
+    s->r[2] = 0xA321u;
+}
+
+/* This is a registered AOT caller-shaped body.  Its nested dispatch_call is a
+ * real production boundary, so the marker after it tells us whether the
+ * dispatcher returns after a vector body returns.  The vector below is a
+ * synthetic handler that does not execute eret; this test therefore states the
+ * host dispatch contract and does not claim guest resume semantics. */
+static void aot_exception_caller_body(CpuState *s) {
+    dispatch_call(s, AOT_EXCEPTION_ENTRY, AOT_EXCEPTION_RESUME);
+    g_aot_exception_caller_after_call++;
+}
+
+static void test_dispatch_aot_exception_flow(void) {
+    CpuState s;
+    int r;
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    sr_cpu_lle_set_vectors(AOT_EXCEPTION_VECTOR, AOT_EXCEPTION_VECTOR,
+                           AOT_EXCEPTION_VECTOR);
+    CHECK(sr_exec_span_owns_fetch(AOT_EXCEPTION_ENTRY),
+          "AOT exception entry must have executable ownership");
+    CHECK(sr_exec_span_owns_fetch(AOT_EXCEPTION_VECTOR),
+          "AOT exception vector must have executable ownership");
+    CHECK(sr_exec_span_owns_fetch(AOT_EXCEPTION_CALLER),
+          "AOT exception caller must have executable ownership");
+
+    g_aot_exception_handler_calls = 0;
+    g_aot_exception_body_fallthroughs = 0;
+    g_aot_exception_caller_after_call = 0;
+    sr_register(AOT_EXCEPTION_ENTRY, aot_exception_syscall_body);
+    sr_register(AOT_EXCEPTION_VECTOR, aot_exception_handler_body);
+    sr_register(AOT_EXCEPTION_CALLER, aot_exception_caller_body);
+
+    s.pc = AOT_EXCEPTION_ENTRY;
+    s.r[2] = 0xDEADBEEFu;
+    s.r[31] = AOT_EXCEPTION_RESUME;
+    r = dispatch_call_try(&s, AOT_EXCEPTION_ENTRY, AOT_EXCEPTION_RESUME);
+
+    CHECK(r == SR_GUEST_INTERP_AOT_HANDOFF,
+          "AOT exception dispatch must report handoff (got %d)", r);
+    CHECK(g_aot_exception_handler_calls == 1,
+          "AOT exception handler must run exactly once (got %u)",
+          g_aot_exception_handler_calls);
+    CHECK(g_aot_exception_body_fallthroughs == 0,
+          "AOT exception body continued after raising (got %u)",
+          g_aot_exception_body_fallthroughs);
+    CHECK(s.r[2] == 0xA321u, "AOT exception handler result was not retained (got 0x%08x)",
+          s.r[2]);
+    CHECK(s.cop0[SR_CP0_EPC] == AOT_EXCEPTION_ENTRY,
+          "AOT exception EPC=0x%08x, want 0x%08x",
+          s.cop0[SR_CP0_EPC], AOT_EXCEPTION_ENTRY);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS,
+          "AOT exception Cause.ExcCode=%u, want SYS",
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]));
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u,
+          "plain AOT syscall must leave Cause.BD clear");
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) != 0u,
+          "AOT exception must set Status.EXL");
+    CHECK(s.flow_kind == SR_FLOW_NONE && s.flow_target == 0u,
+          "AOT dispatcher must consume flow metadata (kind=%u target=0x%08x)",
+          s.flow_kind, s.flow_target);
+
+    /* A nested dispatch_call returns after the synthetic vector body returns;
+     * only the exception body itself is interrupted by the helper transfer. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    sr_cpu_lle_set_vectors(AOT_EXCEPTION_VECTOR, AOT_EXCEPTION_VECTOR,
+                           AOT_EXCEPTION_VECTOR);
+    g_aot_exception_handler_calls = 0;
+    g_aot_exception_body_fallthroughs = 0;
+    g_aot_exception_caller_after_call = 0;
+    s.pc = AOT_EXCEPTION_CALLER;
+    s.r[2] = 0xDEADBEEFu;
+    s.r[31] = AOT_EXCEPTION_RESUME;
+    r = dispatch_call_try(&s, AOT_EXCEPTION_CALLER, AOT_EXCEPTION_RESUME);
+
+    CHECK(r == SR_GUEST_INTERP_AOT_HANDOFF,
+          "nested AOT exception dispatch must report handoff (got %d)", r);
+    CHECK(g_aot_exception_handler_calls == 1,
+          "nested AOT exception handler must run exactly once (got %u)",
+          g_aot_exception_handler_calls);
+    CHECK(g_aot_exception_body_fallthroughs == 0,
+          "nested AOT exception body continued after raising (got %u)",
+          g_aot_exception_body_fallthroughs);
+    CHECK(g_aot_exception_caller_after_call == 1,
+          "nested dispatch_call must return after its vector body (got %u)",
+          g_aot_exception_caller_after_call);
+    CHECK(s.r[2] == 0xA321u,
+          "nested AOT exception handler result was not retained (got 0x%08x)",
+          s.r[2]);
+    CHECK(s.cop0[SR_CP0_EPC] == AOT_EXCEPTION_ENTRY,
+          "nested AOT exception EPC=0x%08x, want 0x%08x",
+          s.cop0[SR_CP0_EPC], AOT_EXCEPTION_ENTRY);
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_SYS,
+          "nested AOT exception Cause.ExcCode=%u, want SYS",
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]));
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_BD) == 0u,
+          "nested plain AOT syscall must leave Cause.BD clear");
+    CHECK((s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) != 0u,
+          "nested AOT exception must set Status.EXL");
+    CHECK(s.flow_kind == SR_FLOW_NONE && s.flow_target == 0u,
+          "nested AOT dispatcher must consume flow metadata (kind=%u target=0x%08x)",
+          s.flow_kind, s.flow_target);
+}
+
+static void test_dispatch_aot_exception_eret_resumes(void) {
+    CpuState s;
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    sr_cpu_lle_set_vectors(AOT_EXCEPTION_VECTOR, AOT_EXCEPTION_VECTOR,
+                           AOT_EXCEPTION_VECTOR);
+    sr_register(AOT_EXCEPTION_ENTRY, aot_exception_syscall_body);
+    sr_register(AOT_EXCEPTION_VECTOR, aot_exception_eret_handler_body);
+    sr_register(AOT_EXCEPTION_RESUME, aot_exception_eret_resume_body);
+
+    g_aot_exception_handler_calls = 0;
+    g_aot_exception_body_fallthroughs = 0;
+    g_aot_exception_eret_handler_fallthroughs = 0;
+    g_aot_exception_eret_resume_calls = 0;
+    s.pc = AOT_EXCEPTION_ENTRY;
+    s.r[31] = AOT_EXCEPTION_RESUME;
+
+    int r = dispatch_call_try(&s, AOT_EXCEPTION_ENTRY,
+                              AOT_EXCEPTION_RESUME);
+    CHECK(r == SR_GUEST_INTERP_AOT_HANDOFF,
+          "AOT exception with handler ERET must complete at the resumed body (got %d)",
+          r);
+    CHECK(g_aot_exception_handler_calls == 1,
+          "AOT ERET handler ran %u times instead of once",
+          g_aot_exception_handler_calls);
+    CHECK(g_aot_exception_eret_handler_fallthroughs == 0,
+          "AOT handler continued after ERET (got %u)",
+          g_aot_exception_eret_handler_fallthroughs);
+    CHECK(g_aot_exception_eret_resume_calls == 1,
+          "AOT dispatcher did not enter the EPC resume body exactly once (got %u)",
+          g_aot_exception_eret_resume_calls);
+    CHECK(g_aot_exception_body_fallthroughs == 0,
+          "AOT syscall body continued after raising (got %u)",
+          g_aot_exception_body_fallthroughs);
+    CHECK(s.r[2] == 0xE321u && s.pc == AOT_EXCEPTION_RESUME,
+          "ERET resume body state is wrong (v0=0x%08x pc=0x%08x)",
+          s.r[2], s.pc);
+    CHECK(s.cop0[SR_CP0_EPC] == AOT_EXCEPTION_RESUME &&
+              (s.cop0[SR_CP0_STATUS] & SR_STATUS_EXL) == 0u,
+          "handler ERET did not preserve EPC/clear EXL (EPC=0x%08x Status=0x%08x)",
+          s.cop0[SR_CP0_EPC], s.cop0[SR_CP0_STATUS]);
+    CHECK(s.flow_kind == SR_FLOW_NONE && s.flow_target == 0u,
+          "handled AOT ERET must consume flow metadata (kind=%u target=0x%08x)",
+          s.flow_kind, s.flow_target);
+}
+
+static void test_dispatch_aot_fatal_flow_propagates(void) {
+    CpuState s;
+    int r;
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    sr_cpu_lle_set_vectors(AOT_EXCEPTION_FATAL_VECTOR,
+                           AOT_EXCEPTION_FATAL_VECTOR,
+                           AOT_EXCEPTION_FATAL_VECTOR);
+    CHECK(!sr_exec_span_owns_fetch(AOT_EXCEPTION_FATAL_VECTOR),
+          "fatal-flow vector fixture must remain unowned");
+    sr_register(AOT_EXCEPTION_FATAL_ENTRY, aot_fatal_exception_body);
+    sr_register(AOT_EXCEPTION_FATAL_CALLER, aot_fatal_try_caller_body);
+
+    g_aot_exception_body_fallthroughs = 0;
+    s.pc = AOT_EXCEPTION_FATAL_ENTRY;
+    s.r[31] = AOT_EXCEPTION_FATAL_RESUME;
+    r = dispatch_call_try(&s, AOT_EXCEPTION_FATAL_ENTRY,
+                          AOT_EXCEPTION_FATAL_RESUME);
+    CHECK(r == SR_GUEST_INTERP_FLOW_FATAL,
+          "AOT fatal exception must reject dispatch instead of handoff (got %d)", r);
+    CHECK(s.flow_kind == SR_FLOW_FATAL &&
+              s.flow_target == AOT_EXCEPTION_FATAL_VECTOR,
+          "AOT fatal exception flow was consumed/changed (kind=%u target=0x%08x)",
+          s.flow_kind, s.flow_target);
+    CHECK(g_aot_exception_body_fallthroughs == 0,
+          "AOT exception body continued after an invalid vector");
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    sr_cpu_lle_set_vectors(AOT_EXCEPTION_FATAL_VECTOR,
+                           AOT_EXCEPTION_FATAL_VECTOR,
+                           AOT_EXCEPTION_FATAL_VECTOR);
+    g_aot_exception_body_fallthroughs = 0;
+    g_aot_fatal_inner_result = 0;
+    g_aot_fatal_caller_after_call = 0;
+    s.pc = AOT_EXCEPTION_FATAL_CALLER;
+    s.r[31] = AOT_EXCEPTION_FATAL_RESUME;
+    r = dispatch_call_try(&s, AOT_EXCEPTION_FATAL_CALLER,
+                          AOT_EXCEPTION_FATAL_RESUME);
+    CHECK(r == SR_GUEST_INTERP_FLOW_FATAL,
+          "nested AOT caller must receive fatal dispatch rejection (got %d)", r);
+    CHECK(g_aot_fatal_inner_result == SR_GUEST_INTERP_FLOW_FATAL,
+          "nested dispatch_call_try swallowed fatal flow (got %d)",
+          g_aot_fatal_inner_result);
+    CHECK(g_aot_fatal_caller_after_call == 0,
+          "native AOT caller continued after fatal dispatch");
+    CHECK(s.flow_kind == SR_FLOW_FATAL &&
+              s.flow_target == AOT_EXCEPTION_FATAL_VECTOR,
+          "nested fatal flow was consumed/changed (kind=%u target=0x%08x)",
+          s.flow_kind, s.flow_target);
+    CHECK(g_aot_exception_body_fallthroughs == 0,
+          "nested AOT exception body continued after an invalid vector");
+}
+
+static int run_generated_fatal_dispatch_child(const char *which) {
+    CpuState s;
+    uint32_t caller_pc;
+    uint32_t body_pc;
+    RecompFn caller;
+    RecompFn body;
+
+    if (strcmp(which, "syscall") == 0) {
+        caller_pc = GENERATED_SYSCALL_CALLER;
+        body_pc = GENERATED_SYSCALL_ENTRY;
+        caller = f_08810820;
+        body = f_08810800;
+    } else if (strcmp(which, "break") == 0) {
+        caller_pc = GENERATED_BREAK_CALLER;
+        body_pc = GENERATED_BREAK_ENTRY;
+        caller = f_08810860;
+        body = f_08810840;
+    } else {
+        return 97;
+    }
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    sr_cpu_lle_set_vectors(AOT_EXCEPTION_FATAL_VECTOR,
+                           AOT_EXCEPTION_FATAL_VECTOR,
+                           AOT_EXCEPTION_FATAL_VECTOR);
+    sr_register(body_pc, body);
+    sr_register(caller_pc, caller);
+    s.pc = caller_pc;
+    s.r[31] = GENERATED_FATAL_RESUME;
+    dispatch_call(&s, caller_pc, GENERATED_FATAL_RESUME);
+
+    /* A returned child distinguishes dispatch continuation from fatal exit. */
+    fprintf(stderr, "generated %s caller returned after fatal flow "
+                    "(sentinel r8=%u)\n",
+            which, s.r[8]);
+    return s.r[8] == 1u ? 98 : 99;
+}
+
+static void test_generated_lle_syscall_break_fatal_flow(const char *self_path) {
+    const char *cases[] = {
+        "--generated-fatal-dispatch-child:syscall",
+        "--generated-fatal-dispatch-child:break",
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        int status = run_child_process(self_path, cases[i]);
+        CHECK(status == 1,
+              "generated --lle-cpu %s caller did not fail closed before its "
+              "post-call sentinel (child status=%d)",
+              i == 0 ? "syscall" : "break", status);
+    }
+}
+
+static int run_selftest_child(const char *mode) {
+    static const char generated_prefix[] =
+        "--generated-fatal-dispatch-child:";
+    if (strncmp(mode, generated_prefix, sizeof generated_prefix - 1u) == 0)
+        return run_generated_fatal_dispatch_child(mode + sizeof generated_prefix - 1u);
+    if (strcmp(mode, "--fatal-aot-dispatch-child") == 0)
+        return run_fatal_dispatch_child();
+    return 96;
+}
+
+static void test_public_dispatch_call_terminates_fatal_flow(const char *self_path) {
+    int status = run_child_process(self_path, "--fatal-aot-dispatch-child");
+    CHECK(status == 1,
+          "dispatch_call returned through an AOT continuation after fatal flow "
+          "instead of terminating (child status=%d)", status);
+}
+
+static void test_interp_flow_trace(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+
+    /* User mode: mtc0 will raise CPU exception */
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    MEM_W32_PC(TEST_BASE + 0u, enc_mtc0(5u, SR_CP0_EPC), TEST_BASE);
+    s.pc = TEST_BASE;
+
+    /* The trace folder beneath the scratch root, created here since nothing else makes it. The
+     * Makefile creates the root itself; an existing folder is fine, and a folder that could
+     * not be made fails sr_trace_open below. */
+#ifdef _WIN32
+    (void)_mkdir(SR_SELFTEST_BUILD_ROOT "/mygame");
+#else
+    (void)mkdir(SR_SELFTEST_BUILD_ROOT "/mygame", 0755);
+#endif
+    const char *trace_path = SR_SELFTEST_BUILD_ROOT "/mygame/test_interp_trace.txt";
+    CHECK(sr_trace_open(trace_path, "test", TEST_BASE) == 0, "sr_trace_open must succeed");
+    SrGuestInterpResult r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    sr_trace_close();
+
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "user mtc0 must raise exception");
+
+    /* Read trace file to verify that sr_end was called for the faulting instruction */
+    FILE *f = fopen(trace_path, "rb");
+    CHECK(f != NULL, "trace file must exist");
+    char buf[1024] = {0};
+    size_t bytes = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    CHECK(bytes > 0, "trace file must not be empty");
+    /* The trace must contain the step record for the mtc0 instruction */
+    CHECK(strstr(buf, "\n0 pc=0x08810000") != NULL, "trace must record the faulting instruction");
+
+    /* Now test that a genuinely rejected opcode does NOT finish a trace record */
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, 0x00000005u, TEST_BASE);  /* unsupported opcode */
+    s.pc = TEST_BASE;
+    CHECK(sr_trace_open(trace_path, "test", TEST_BASE) == 0, "sr_trace_open must succeed");
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    sr_trace_close();
+    CHECK(r == SR_GUEST_INTERP_UNSUPPORTED, "unsupported opcode must return UNSUPPORTED");
+
+    f = fopen(trace_path, "rb");
+    CHECK(f != NULL, "trace file must exist");
+    memset(buf, 0, sizeof(buf));
+    bytes = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    CHECK(strstr(buf, "\n0 pc=0x08810000") == NULL, "rejected opcode must NOT record trace step");
+}
+
+/* PSP-A3-01 end to end: the measured AdEL must come out of an actual `lw`, not
+ * only out of a direct sr_cpu_raise_exception() call. Before the data-access
+ * check existed this load SUCCEEDED, because SR_PHYS() masks 0x88000014 down to
+ * 0x08000014 and the range check accepted the alias. */
+static void test_hw_psp_a3_01_adel_through_load(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 4u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;   /* user mode, EXL clear */
+    s.r[13] = 0x88000010u;
+    s.r[14] = 0x0BADBABEu;                     /* sentinel destination */
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION,
+          "user-mode kernel-segment lw must raise, not read RAM (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "kernel-segment lw ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_EPC] == TEST_BASE, "kernel-segment lw EPC=0x%08x, want the lw address",
+          s.cop0[SR_CP0_EPC]);
+    CHECK(s.cop0[SR_CP0_BADVADDR] == 0x88000014u,
+          "kernel-segment lw BadVAddr=0x%08x, want the effective address",
+          s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.r[14] == 0x0BADBABEu, "AdEL must leave the destination register unchanged");
+    CHECK(s.pc == TEST_VECTOR, "kernel-segment lw must transfer to the vector");
+
+    /* Kernel mode may reach kseg0: it is an unmapped mirror of physical RAM,
+     * which is exactly what the masking accessor implements. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 4u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);  /* jr $ra */
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = 0u;                /* kernel mode */
+    s.r[13] = 0x88000010u;
+    s.r[31] = TEST_SPAN_END;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "kernel-mode kseg0 load must not fault (got %s)", sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "kernel-mode kseg0 load must not set flow");
+}
+
+/* Alignment is SYNTHETIC: the MIPS32 architectural rule, not a PSP measurement.
+ * These pin the behaviour so a later probe has something to confirm or correct. */
+static void test_lle_misaligned_data_access(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 1u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = TEST_BASE;
+    s.r[14] = 0x0BADBABEu;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "misaligned lw must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADEL,
+          "misaligned load ExcCode must be 4 (AdEL)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == TEST_BASE + 1u,
+          "misaligned load BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+    CHECK(s.r[14] == 0x0BADBABEu, "misaligned load must not write the destination");
+
+    /* A misaligned store is AdES (ExcCode 5), not AdEL. */
+    fresh_state(&s);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0u, enc_sw(13u, 14u, 2u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = TEST_BASE;
+    s.r[14] = 0xDEADBEEFu;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_EXCEPTION, "misaligned sw must raise (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_ADES,
+          "misaligned store ExcCode must be 5 (AdES)");
+    CHECK(s.cop0[SR_CP0_BADVADDR] == TEST_BASE + 2u,
+          "misaligned store BadVAddr=0x%08x", s.cop0[SR_CP0_BADVADDR]);
+
+    /* A byte access has no alignment constraint. */
+    CHECK(sr_cpu_data_access_fault(&s, TEST_BASE + 1u, 1u, 0) == 0u,
+          "lb at an odd address must not fault");
+}
+
+/* The gate keeps default builds byte-identical: with LLE off, both cases keep
+ * their historical fail-closed results and neither enters a guest vector. */
+static void test_lle_gate_off_data_access(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 1u), TEST_BASE);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_MISALIGNED_DATA,
+          "gate-off misaligned lw must stay MISALIGNED_DATA (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "gate-off fault must not set flow");
+
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, enc_lw(13u, 14u, 4u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);  /* jr $ra */
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    s.cop0[SR_CP0_STATUS] = TEST_PRE_STATUS;
+    s.r[13] = 0x88000010u;
+    s.r[31] = TEST_SPAN_END;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r != SR_GUEST_INTERP_EXCEPTION,
+          "gate-off kernel-segment lw must keep the historical masked read (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.flow_kind == SR_FLOW_NONE, "gate-off kernel-segment lw must not set flow");
+}
+
+/* The left/right merge helpers access the aligned containing word.  A word
+ * beyond the flat guest arena is dropped by the generated MEM_* accessors;
+ * the interpreter must reject it before calling the helper or continuing. */
+static void test_unaligned_store_guarded_region(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+    const uint32_t address = 0x0C000001u;
+
+    unsigned long reads_before_accessor = g_oor_reads;
+    unsigned long writes_before_accessor = g_oor_writes;
+    sr_swl_pc(address, 0xA1B2C3D4u, TEST_BASE);
+    CHECK(g_oor_reads == reads_before_accessor + 1u &&
+          g_oor_writes == writes_before_accessor + 1u,
+          "generated swl accessors must drop an out-of-range containing word");
+
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, enc_mem(0x2Au, 13u, 14u, 0u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);  /* jr $ra */
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    s.r[13] = address;
+    s.r[14] = 0xA1B2C3D4u;
+    s.r[31] = TEST_SPAN_END;
+    reads_before_accessor = g_oor_reads;
+    writes_before_accessor = g_oor_writes;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_MEMORY_FAULT,
+          "out-of-range swl must fail closed (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(fault.pc == TEST_BASE && fault.opcode_valid &&
+          fault.opcode == enc_mem(0x2Au, 13u, 14u, 0u) &&
+          fault.address == 0x0C000000u,
+          "out-of-range swl fault must name the aligned containing word");
+    CHECK(g_oor_reads == reads_before_accessor &&
+          g_oor_writes == writes_before_accessor,
+          "interpreter must reject before the generated accessors touch memory");
+}
+
+/* ---- ll / sc (opcode 0x30 / 0x38) ---------------------------------------------------
+ *
+ * The same words run in three ways: the generated C emitted by tools/test_cpu_lle.py
+ * (default lane and --lle-cpu lane), and the production interpreter over the same
+ * bytes at the same guest address (the AOT bodies are never registered, so dispatch
+ * cannot hand the interpreter back to them). Each lane is checked against explicit
+ * expected values, not only against the other lane, so an error both lanes shared
+ * would still fail.
+ *
+ * Failing-before evidence: on the base tree CpuState has no llbit, codegen raises
+ * Unsupported for both opcodes (the fixture would not even contain these bodies), and
+ * the interpreter answers SR_GUEST_INTERP_UNSUPPORTED at the first ll/sc word. */
+
+#define LLSC_DEFAULT_ENTRY 0x08810900u
+#define LLSC_LLE_ENTRY 0x08810980u
+#define LLSC_LLE_MISALIGNED_SC_ENTRY 0x08810A00u
+#define LLSC_LLE_MISALIGNED_LL_ENTRY 0x08810A20u
+#define LLSC_DATA 0x08812000u
+#define LLSC_WORDS 7u
+
+void f_08810900(CpuState *s);
+void f_08810980(CpuState *s);
+void f_08810a00(CpuState *s);
+void f_08810a20(CpuState *s);
+
+static uint32_t enc_ll(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x30u, base, rt, offset);
+}
+static uint32_t enc_sc(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x38u, base, rt, offset);
+}
+
+/* Word-for-word the LLSC_SEQUENCE tools/test_cpu_lle.py emits. */
+static const uint32_t LLSC_SEQUENCE[] = {
+    0xE0890000u,   /* 0x00 sc    t1, 0(a0)    link as seeded */
+    0xC08A0004u,   /* 0x04 ll    t2, 4(a0) */
+    0x254A0005u,   /* 0x08 addiu t2, t2, 5 */
+    0xE08A0004u,   /* 0x0c sc    t2, 4(a0)    linked: stores, t2 = 1 */
+    0xE08B0008u,   /* 0x10 sc    t3, 8(a0)    link left set: stores again */
+    0xC080000Cu,   /* 0x14 ll    zero, 12(a0) links, no register write */
+    0xC08C0014u,   /* 0x18 L: ll t4, 20(a0) */
+    0x258C0001u,   /* 0x1c addiu t4, t4, 1 */
+    0xE08C0014u,   /* 0x20 sc    t4, 20(a0) */
+    0x1180FFFCu,   /* 0x24 beq   t4, zero, L */
+    0x00000000u,   /* 0x28 nop */
+    0xE0840018u,   /* 0x2c sc    a0, 24(a0)   rt == base */
+    0x03E00008u,   /* 0x30 jr    ra */
+    0x00000000u,   /* 0x34 nop */
+};
+
+static void llsc_place(uint32_t entry, const uint32_t *words, unsigned count) {
+    for (unsigned i = 0; i < count; i++)
+        MEM_W32_PC(entry + 4u * i, words[i], entry + 4u * i);
+}
+
+static void llsc_seed(CpuState *s, uint32_t llbit) {
+    fresh_state(s);
+    for (unsigned i = 0; i < LLSC_WORDS; i++)
+        MEM_W32_PC(LLSC_DATA + 4u * i, 0x1000u + 0x111u * i, LLSC_DATA);
+    for (unsigned i = 1; i < 32u; i++)
+        s->r[i] = 0xAAAA0000u | i;
+    s->r[4] = LLSC_DATA;
+    s->r[31] = TEST_SPAN_END;   /* the interpreter stops cleanly on the return */
+    s->llbit = llbit;
+}
+
+typedef struct {
+    CpuState state;
+    uint32_t data[LLSC_WORDS];
+} LlscOutcome;
+
+static void llsc_capture(LlscOutcome *out, const CpuState *s) {
+    out->state = *s;
+    for (unsigned i = 0; i < LLSC_WORDS; i++)
+        out->data[i] = MEM_R32(LLSC_DATA + 4u * i);
+}
+
+static void llsc_check_expected(const LlscOutcome *o, uint32_t seed_llbit, const char *lane) {
+    const CpuState *s = &o->state;
+    if (seed_llbit) {
+        CHECK(s->r[9] == 1u && o->data[0] == 0xAAAA0009u,
+              "%s: sc with the link set must store t1 and report 1 (t1=0x%08x m0=0x%08x)",
+              lane, s->r[9], o->data[0]);
+    } else {
+        CHECK(s->r[9] == 0u && o->data[0] == 0x1000u,
+              "%s: sc with the link clear must store nothing and report 0 "
+              "(t1=0x%08x m0=0x%08x)", lane, s->r[9], o->data[0]);
+    }
+    CHECK(s->r[10] == 1u && o->data[1] == 0x1111u + 5u,
+          "%s: ll/addiu/sc must commit the increment (t2=0x%08x m1=0x%08x)",
+          lane, s->r[10], o->data[1]);
+    CHECK(s->r[11] == 1u && o->data[2] == 0xAAAA000Bu,
+          "%s: sc leaves LLbit set, so a second sc also stores (t3=0x%08x m2=0x%08x)",
+          lane, s->r[11], o->data[2]);
+    CHECK(s->r[0] == 0u, "%s: ll zero must not write r0", lane);
+    CHECK(o->data[3] == 0x1333u, "%s: ll must not write memory (m3=0x%08x)", lane, o->data[3]);
+    CHECK(s->r[12] == 1u && o->data[5] == 0x1555u + 1u,
+          "%s: the retry loop must complete in one pass (t4=0x%08x m5=0x%08x)",
+          lane, s->r[12], o->data[5]);
+    CHECK(o->data[6] == LLSC_DATA && s->r[4] == 1u,
+          "%s: sc a0,24(a0) must store the old base and then report 1 "
+          "(m6=0x%08x a0=0x%08x)", lane, o->data[6], s->r[4]);
+    CHECK(o->data[4] == 0x1444u, "%s: untouched word changed (m4=0x%08x)", lane, o->data[4]);
+    CHECK(s->llbit == 1u, "%s: the link must still be set at the end (llbit=%u)",
+          lane, s->llbit);
+    CHECK(s->flow_kind == SR_FLOW_NONE, "%s: clean ll/sc must not set flow", lane);
+}
+
+static void llsc_compare(const LlscOutcome *aot, const LlscOutcome *interp, const char *what) {
+    for (unsigned i = 0; i < 32u; i++)
+        CHECK(aot->state.r[i] == interp->state.r[i], "%s: r%u AOT=0x%08x INTERP=0x%08x",
+              what, i, aot->state.r[i], interp->state.r[i]);
+    CHECK(aot->state.llbit == interp->state.llbit, "%s: llbit AOT=%u INTERP=%u",
+          what, aot->state.llbit, interp->state.llbit);
+    for (unsigned i = 0; i < 32u; i++)
+        CHECK(aot->state.cop0[i] == interp->state.cop0[i],
+              "%s: cop0[%u] AOT=0x%08x INTERP=0x%08x",
+              what, i, aot->state.cop0[i], interp->state.cop0[i]);
+    CHECK(aot->state.flow_kind == interp->state.flow_kind &&
+          aot->state.flow_target == interp->state.flow_target,
+          "%s: flow AOT=%u/0x%08x INTERP=%u/0x%08x", what,
+          aot->state.flow_kind, aot->state.flow_target,
+          interp->state.flow_kind, interp->state.flow_target);
+    for (unsigned i = 0; i < LLSC_WORDS; i++)
+        CHECK(aot->data[i] == interp->data[i], "%s: m%u AOT=0x%08x INTERP=0x%08x",
+              what, i, aot->data[i], interp->data[i]);
+}
+
+/* Run one generated body and the interpreter over the same words. */
+static void llsc_run_both(RecompFn body, uint32_t entry, const uint32_t *words,
+                          unsigned count, uint32_t seed_llbit, int lle,
+                          LlscOutcome *aot, LlscOutcome *interp,
+                          SrGuestInterpResult *interp_result, SrGuestInterpFault *fault) {
+    CpuState s;
+    llsc_seed(&s, seed_llbit);
+    sr_cpu_lle_set_enabled(lle);
+    s.pc = entry;
+    body(&s);
+    llsc_capture(aot, &s);
+
+    llsc_seed(&s, seed_llbit);
+    sr_cpu_lle_set_enabled(lle);
+    llsc_place(entry, words, count);
+    s.pc = entry;
+    memset(fault, 0, sizeof *fault);
+    *interp_result = sr_guest_interp_run(&s, entry, fault);
+    llsc_capture(interp, &s);
+    sr_cpu_lle_set_enabled(0);
+}
+
+static void test_llsc_aot_interp_parity(void) {
+    const unsigned count = sizeof LLSC_SEQUENCE / sizeof LLSC_SEQUENCE[0];
+    static const struct {
+        RecompFn body;
+        uint32_t entry;
+        int lle;
+        const char *lane;
+    } lanes[] = {
+        { f_08810900, LLSC_DEFAULT_ENTRY, 0, "default" },
+        { f_08810980, LLSC_LLE_ENTRY, 1, "lle-cpu" },
+    };
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        for (uint32_t seed = 0; seed <= 1u; seed++) {
+            LlscOutcome aot, interp;
+            SrGuestInterpResult r;
+            SrGuestInterpFault fault;
+            char what[64];
+            snprintf(what, sizeof what, "ll/sc %s lane, seed llbit %u", lanes[l].lane, seed);
+            llsc_run_both(lanes[l].body, lanes[l].entry, LLSC_SEQUENCE, count, seed,
+                          lanes[l].lle, &aot, &interp, &r, &fault);
+            CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == TEST_SPAN_END,
+                  "%s: interpreter must run to the jr $ra and stop there (got %s at 0x%08x)",
+                  what, sr_guest_interp_result_name(r), fault.pc);
+            llsc_check_expected(&aot, seed, what);
+            llsc_check_expected(&interp, seed, what);
+            llsc_compare(&aot, &interp, what);
+        }
+    }
+}
+
+/* Under --lle-cpu a misaligned ll/sc is an address error before the link is consulted:
+ * nothing is loaded or stored, rt and LLbit are untouched (architectural MIPS32 order;
+ * not separately measured on the PSP for ll/sc). Both lanes must agree on EPC/Cause/
+ * BadVAddr as well. */
+static void test_llsc_lle_misaligned(void) {
+    static const struct {
+        RecompFn body;
+        uint32_t entry;
+        uint32_t word;
+        unsigned code;
+        uint32_t ea;
+        const char *what;
+    } cases[] = {
+        { f_08810a00, LLSC_LLE_MISALIGNED_SC_ENTRY, 0xE0890002u, SR_EXC_ADES,
+          LLSC_DATA + 2u, "misaligned sc" },
+        { f_08810a20, LLSC_LLE_MISALIGNED_LL_ENTRY, 0xC0890001u, SR_EXC_ADEL,
+          LLSC_DATA + 1u, "misaligned ll" },
+    };
+    for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        const uint32_t words[3] = { cases[c].word, 0x03E00008u, 0x00000000u };
+        LlscOutcome aot, interp;
+        SrGuestInterpResult r;
+        SrGuestInterpFault fault;
+        CHECK(cases[c].word == (cases[c].code == SR_EXC_ADES ? enc_sc(4u, 9u, 2u)
+                                                              : enc_ll(4u, 9u, 1u)),
+              "%s: fixture word drifted from its encoding", cases[c].what);
+        llsc_run_both(cases[c].body, cases[c].entry, words, 3u, 1u, 1, &aot, &interp,
+                      &r, &fault);
+        CHECK(r == SR_GUEST_INTERP_EXCEPTION, "%s: interpreter must raise (got %s)",
+              cases[c].what, sr_guest_interp_result_name(r));
+        for (int lane = 0; lane < 2; lane++) {
+            const LlscOutcome *o = lane == 0 ? &aot : &interp;
+            const char *name = lane == 0 ? "AOT" : "INTERP";
+            CHECK(CAUSE_EXCCODE(o->state.cop0[SR_CP0_CAUSE]) == cases[c].code,
+                  "%s %s: ExcCode=%u", cases[c].what, name,
+                  CAUSE_EXCCODE(o->state.cop0[SR_CP0_CAUSE]));
+            CHECK(o->state.cop0[SR_CP0_EPC] == cases[c].entry,
+                  "%s %s: EPC=0x%08x", cases[c].what, name, o->state.cop0[SR_CP0_EPC]);
+            CHECK(o->state.cop0[SR_CP0_BADVADDR] == cases[c].ea,
+                  "%s %s: BadVAddr=0x%08x", cases[c].what, name,
+                  o->state.cop0[SR_CP0_BADVADDR]);
+            CHECK(o->state.r[9] == 0xAAAA0009u, "%s %s: rt changed", cases[c].what, name);
+            CHECK(o->state.llbit == 1u, "%s %s: an address error must not touch LLbit",
+                  cases[c].what, name);
+            CHECK(o->data[0] == 0x1000u, "%s %s: memory changed", cases[c].what, name);
+            CHECK(o->state.flow_kind == SR_FLOW_EXCEPTION && o->state.pc == TEST_VECTOR,
+                  "%s %s: must transfer to the vector", cases[c].what, name);
+        }
+        llsc_compare(&aot, &interp, cases[c].what);
+    }
+}
+
+/* PSP-LLSC-001 (PSP-3000 / 6.61, 2026-10-15, probe build e45e667b): the three link
+ * windows fixtures/psp_oracle/probe.c ran on the console, with its values. On the PSP:
+ *   llsc-control        ll A; sc A        -> ll loads A, sc stores and reports 1;
+ *   llsc-second-sc      ll A; sc A; sc A  -> the second sc, with no new ll, also stores
+ *                                            and reports 1 (sc does not clear the link);
+ *   llsc-other-address  ll A; sc B        -> sc stores at B and reports 1, A unchanged
+ *                                            (sc does not compare its address with ll's).
+ * Each row is 16 bytes, word A at +0 and word B at +4, as in the probe. Both generated
+ * lanes and the interpreter must return exactly those words. */
+#define LLSC_MEASURED_DEFAULT_ENTRY 0x08810B00u
+#define LLSC_MEASURED_LLE_ENTRY 0x08810B80u
+#define LLSC_MEASURED_DATA 0x08812100u
+
+void f_08810b00(CpuState *s);
+void f_08810b80(CpuState *s);
+
+/* Word-for-word the LLSC_MEASURED_SEQUENCE tools/test_cpu_lle.py emits. */
+static const uint32_t LLSC_MEASURED_SEQUENCE[] = {
+    0xC0880000u,   /* 0x00 ll t0, 0(a0)    llsc-control */
+    0xE0890000u,   /* 0x04 sc t1, 0(a0) */
+    0xC08A0010u,   /* 0x08 ll t2, 16(a0)   llsc-second-sc */
+    0xE08B0010u,   /* 0x0c sc t3, 16(a0) */
+    0xE08C0010u,   /* 0x10 sc t4, 16(a0)   no new ll */
+    0xC08D0020u,   /* 0x14 ll t5, 32(a0)   llsc-other-address */
+    0xE08E0024u,   /* 0x18 sc t6, 36(a0)   word B of the row */
+    0x03E00008u,   /* 0x1c jr ra */
+    0x00000000u,   /* 0x20 nop */
+};
+
+static void llsc_measured_seed(CpuState *s) {
+    fresh_state(s);
+    for (unsigned row = 0; row < 3u; row++) {
+        MEM_W32_PC(LLSC_MEASURED_DATA + 16u * row, 0x11111111u, LLSC_MEASURED_DATA);
+        MEM_W32_PC(LLSC_MEASURED_DATA + 16u * row + 4u, 0x44444444u, LLSC_MEASURED_DATA);
+    }
+    s->r[4] = LLSC_MEASURED_DATA;
+    s->r[9] = 0x22222222u;    /* llsc-control: the sc value */
+    s->r[11] = 0x22222222u;   /* llsc-second-sc: the first sc value */
+    s->r[12] = 0x33333333u;   /* llsc-second-sc: the second sc value */
+    s->r[14] = 0x55555555u;   /* llsc-other-address: the sc value */
+    s->r[31] = TEST_SPAN_END;
+    s->llbit = 0u;
+}
+
+static void llsc_measured_check(const CpuState *s, const char *lane) {
+    static const struct {
+        const char *cell;
+        unsigned loaded_reg, first_reg, last_reg;
+        uint32_t a, b;   /* words at A and B after the cell, as the PSP left them */
+    } cells[] = {
+        { "llsc-control", 8u, 9u, 9u, 0x22222222u, 0x44444444u },
+        { "llsc-second-sc", 10u, 11u, 12u, 0x33333333u, 0x44444444u },
+        { "llsc-other-address", 13u, 14u, 14u, 0x11111111u, 0x55555555u },
+    };
+    for (unsigned c = 0; c < 3u; c++) {
+        const uint32_t row = LLSC_MEASURED_DATA + 16u * c;
+        CHECK(s->r[cells[c].loaded_reg] == 0x11111111u,
+              "PSP-LLSC-001 %s %s: ll loaded 0x%08x, the PSP loaded 0x11111111",
+              lane, cells[c].cell, s->r[cells[c].loaded_reg]);
+        CHECK(s->r[cells[c].first_reg] == 1u && s->r[cells[c].last_reg] == 1u,
+              "PSP-LLSC-001 %s %s: sc reported %u/%u, the PSP reported 1/1",
+              lane, cells[c].cell, s->r[cells[c].first_reg], s->r[cells[c].last_reg]);
+        CHECK(MEM_R32(row) == cells[c].a && MEM_R32(row + 4u) == cells[c].b,
+              "PSP-LLSC-001 %s %s: A=0x%08x B=0x%08x, the PSP left 0x%08x 0x%08x",
+              lane, cells[c].cell, MEM_R32(row), MEM_R32(row + 4u), cells[c].a, cells[c].b);
+    }
+    CHECK(s->llbit == 1u, "PSP-LLSC-001 %s: no event ended the last window (llbit=%u)",
+          lane, s->llbit);
+}
+
+static void test_llsc_measured_windows(void) {
+    static const struct {
+        RecompFn body;
+        uint32_t entry;
+        int lle;
+        const char *lane;
+    } lanes[] = {
+        { f_08810b00, LLSC_MEASURED_DEFAULT_ENTRY, 0, "default" },
+        { f_08810b80, LLSC_MEASURED_LLE_ENTRY, 1, "lle-cpu" },
+    };
+    const unsigned count = sizeof LLSC_MEASURED_SEQUENCE / sizeof LLSC_MEASURED_SEQUENCE[0];
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        CpuState s;
+        SrGuestInterpFault fault;
+        SrGuestInterpResult r;
+        char what[64];
+
+        llsc_measured_seed(&s);
+        sr_cpu_lle_set_enabled(lanes[l].lle);
+        s.pc = lanes[l].entry;
+        lanes[l].body(&s);
+        snprintf(what, sizeof what, "AOT %s", lanes[l].lane);
+        llsc_measured_check(&s, what);
+
+        llsc_measured_seed(&s);
+        sr_cpu_lle_set_enabled(lanes[l].lle);
+        llsc_place(lanes[l].entry, LLSC_MEASURED_SEQUENCE, count);
+        s.pc = lanes[l].entry;
+        memset(&fault, 0, sizeof fault);
+        r = sr_guest_interp_run(&s, lanes[l].entry, &fault);
+        snprintf(what, sizeof what, "INTERP %s", lanes[l].lane);
+        CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == TEST_SPAN_END,
+              "PSP-LLSC-001 %s: interpreter must run to the jr $ra (got %s at 0x%08x)",
+              what, sr_guest_interp_result_name(r), fault.pc);
+        llsc_measured_check(&s, what);
+        sr_cpu_lle_set_enabled(0);
+    }
+}
+
+/* Interpreter-only field forms and the default lane's fail-closed alignment. */
+static void test_llsc_interpreter(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    /* sc with rt = $zero still stores while linked; only the result is dropped. */
+    llsc_seed(&s, 1u);
+    MEM_W32_PC(TEST_BASE + 0u, enc_sc(4u, 0u, 4u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY, "sc zero: got %s",
+          sr_guest_interp_result_name(r));
+    CHECK(MEM_R32(LLSC_DATA + 4u) == 0u && s.r[0] == 0u,
+          "sc zero must store 0 and leave r0 zero (m1=0x%08x)", MEM_R32(LLSC_DATA + 4u));
+
+    /* Default lane: a misaligned ll/sc keeps the historical fail-closed abort, before
+     * any architectural effect -- the link included. */
+    for (int store = 0; store <= 1; store++) {
+        llsc_seed(&s, store ? 1u : 0u);
+        MEM_W32_PC(TEST_BASE + 0u, store ? enc_sc(4u, 9u, 2u) : enc_ll(4u, 9u, 2u), TEST_BASE);
+        s.pc = TEST_BASE;
+        r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+        CHECK(r == SR_GUEST_INTERP_MISALIGNED_DATA,
+              "gate-off misaligned %s must stay MISALIGNED_DATA (got %s)",
+              store ? "sc" : "ll", sr_guest_interp_result_name(r));
+        CHECK(s.r[9] == 0xAAAA0009u && s.llbit == (store ? 1u : 0u),
+              "gate-off misaligned %s must not touch rt or LLbit", store ? "sc" : "ll");
+        CHECK(MEM_R32(LLSC_DATA) == 0x1000u, "gate-off misaligned sc must not store");
+    }
+
+    /* An ll..sc window with an eret between them: the eret clears the link, so the
+     * sc after it fails (MIPS32 ERET semantics), in the interpreter's eret path. */
+    llsc_seed(&s, 0u);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0x00u, enc_ll(4u, 9u, 0u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 0x04u, SR_OPCODE_ERET, TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 0x10u, enc_sc(4u, 9u, 0u), TEST_BASE + 0x10u);
+    MEM_W32_PC(TEST_BASE + 0x14u, 0x03E00008u, TEST_BASE + 0x14u);
+    MEM_W32_PC(TEST_BASE + 0x18u, 0x00000000u, TEST_BASE + 0x18u);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_ERET, "ll; eret must report ERET (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.llbit == 0u, "eret must clear the link set by ll (llbit=%u)", s.llbit);
+    r = sr_guest_interp_run(&s, s.pc, &fault);
+    CHECK(s.r[9] == 0u && MEM_R32(LLSC_DATA) == 0x1000u,
+          "sc after eret must fail and store nothing (t1=0x%08x m0=0x%08x)",
+          s.r[9], MEM_R32(LLSC_DATA));
+    sr_cpu_lle_set_enabled(0);
+    (void)r;
+}
+
+/* sr_cpu_eret is the one helper both CPU lanes call for an exception return. */
+static void test_eret_clears_link(void) {
+    CpuState s;
+    fresh_state(&s);
+    s.llbit = 1u;
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0 && s.flow_kind == SR_FLOW_ERET,
+          "eret must return");
+    CHECK(s.llbit == 0u, "eret must clear LLbit");
+
+    /* A user-mode eret is a coprocessor-unusable trap, not a return: link kept. */
+    fresh_state(&s);
+    s.llbit = 1u;
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0 && s.flow_kind == SR_FLOW_EXCEPTION,
+          "user eret must trap");
+    CHECK(s.llbit == 1u, "a trapping eret is not a return and must keep LLbit");
+
+    /* Exception entry is not a return either (MIPS32 clears LLbit on ERET only). */
+    fresh_state(&s);
+    s.llbit = 1u;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "raise must transfer");
+    CHECK(s.llbit == 1u, "exception entry must keep LLbit for the handler's eret to clear");
+}
+
+/* INTC Cause.IP mirroring through both CPU tiers (spec 6.1, PR 5; synthetic controller,
+ * see the INTC block above). tools/test_cpu_lle.py emits INTC_CAUSE_SEQUENCE as real
+ * --lle-cpu generated C (f_08810a40) and this test runs the same words through the
+ * production interpreter. Each lane is checked against the expected values and against
+ * the other lane. Status has IE 1, EXL 0 and every IM bit set in kernel mode, so the
+ * interpreter's per-instruction poll sees an eligible asserted line at every safe point
+ * and must still deliver nothing (delivery is PR 6). */
+
+#define INTC_CAUSE_ENTRY 0x08810A40u
+
+void f_08810a40(CpuState *s);
+
+/* Word-for-word the INTC_CAUSE_SEQUENCE tools/test_cpu_lle.py emits. */
+static const uint32_t INTC_CAUSE_SEQUENCE[] = {
+    0x40086800u,   /* 0x00 mfc0 t0, Cause */
+    0x40896800u,   /* 0x04 mtc0 t1, Cause     t1 = all ones */
+    0x400A6800u,   /* 0x08 mfc0 t2, Cause */
+    0x40806800u,   /* 0x0c mtc0 zero, Cause */
+    0x400B6800u,   /* 0x10 mfc0 t3, Cause */
+    0x03E00008u,   /* 0x14 jr   ra */
+    0x00000000u,   /* 0x18 nop */
+};
+
+typedef struct {
+    int asserted;          /* source 4 enabled (line high) or masked (line low) */
+    uint32_t stale_cause;  /* stored Cause before the run: the opposite of the line */
+} IntcCauseLane;
+
+static void intc_cause_seed(CpuState *s, const IntcCauseLane *lane) {
+    fresh_state(s);
+    intc_configure_fixture();
+    CHECK(sr_intc_raise(4u) == 0, "raise source 4");
+    CHECK(sr_intc_set_enable_mask(lane->asserted ? 0x10u : 0u) == 0, "set the lane's mask");
+    sr_cpu_lle_set_enabled(1);
+    s->cop0[SR_CP0_STATUS] = SR_STATUS_IE | SR_STATUS_IM_MASK;
+    s->cop0[SR_CP0_CAUSE] = lane->stale_cause;
+    s->r[9] = 0xFFFFFFFFu;
+    s->r[31] = TEST_SPAN_END;   /* the interpreter stops cleanly on the return */
+    s->pc = INTC_CAUSE_ENTRY;
+}
+
+static void intc_cause_check_expected(const CpuState *s, const IntcCauseLane *lane,
+                                      const char *what) {
+    const uint32_t ip = lane->asserted ? INTC_TEST_IP_BIT : 0u;
+    CHECK(s->r[8] == ip, "%s: first read must see the line, not the stale copy (t0=0x%08x)",
+          what, s->r[8]);
+    CHECK(s->r[10] == (ip | SR_CAUSE_IP_SW_MASK),
+          "%s: an all-ones write must land the SW pair only (t2=0x%08x)", what, s->r[10]);
+    CHECK(s->r[11] == ip, "%s: a zero write must clear the SW pair only (t3=0x%08x)",
+          what, s->r[11]);
+    CHECK(s->cop0[SR_CP0_CAUSE] == ip, "%s: final Cause 0x%08x", what, s->cop0[SR_CP0_CAUSE]);
+    CHECK(s->cop0[SR_CP0_EPC] == 0u && s->flow_kind == SR_FLOW_NONE,
+          "%s: no interrupt may be taken (EPC 0x%08x, flow %u)", what,
+          s->cop0[SR_CP0_EPC], s->flow_kind);
+    CHECK(sr_intc_pending_mask() == 0x10u && sr_intc_enable_mask() == (lane->asserted ? 0x10u : 0u),
+          "%s: the run must not consume the source (pending 0x%08x enable 0x%08x)", what,
+          sr_intc_pending_mask(), sr_intc_enable_mask());
+}
+
+static void test_intc_cause_aot_interp_parity(void) {
+    static const IntcCauseLane lanes[] = {
+        { 1, 0u },                 /* line high, stored copy missing it */
+        { 0, INTC_TEST_IP_BIT },   /* line low (masked), stored copy claiming it */
+    };
+    const unsigned count = sizeof INTC_CAUSE_SEQUENCE / sizeof INTC_CAUSE_SEQUENCE[0];
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        CpuState aot;
+        CpuState interp;
+        SrGuestInterpFault fault;
+        SrGuestInterpResult r;
+        char what[64];
+
+        snprintf(what, sizeof what, "INTC Cause %s lane",
+                 lanes[l].asserted ? "asserted" : "masked");
+        intc_cause_seed(&aot, &lanes[l]);
+        f_08810a40(&aot);
+        intc_cause_check_expected(&aot, &lanes[l], what);
+
+        intc_cause_seed(&interp, &lanes[l]);
+        llsc_place(INTC_CAUSE_ENTRY, INTC_CAUSE_SEQUENCE, count);
+        memset(&fault, 0, sizeof fault);
+        r = sr_guest_interp_run(&interp, INTC_CAUSE_ENTRY, &fault);
+        CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == TEST_SPAN_END,
+              "%s: interpreter must run to the jr $ra and stop there (got %s at 0x%08x)",
+              what, sr_guest_interp_result_name(r), fault.pc);
+        intc_cause_check_expected(&interp, &lanes[l], what);
+        sr_cpu_lle_set_enabled(0);
+
+        for (unsigned i = 0; i < 32u; i++)
+            CHECK(aot.r[i] == interp.r[i], "%s: r%u AOT=0x%08x INTERP=0x%08x",
+                  what, i, aot.r[i], interp.r[i]);
+        for (unsigned i = 0; i < 32u; i++)
+            CHECK(aot.cop0[i] == interp.cop0[i], "%s: cop0[%u] AOT=0x%08x INTERP=0x%08x",
+                  what, i, aot.cop0[i], interp.cop0[i]);
+        CHECK(aot.flow_kind == interp.flow_kind && aot.flow_target == interp.flow_target,
+              "%s: flow AOT=%u/0x%08x INTERP=%u/0x%08x", what, aot.flow_kind,
+              aot.flow_target, interp.flow_kind, interp.flow_target);
+    }
+    sr_intc_reset();
+}
+
+int main(int argc, char **argv) {
+    sr_mem_init();
+    setup_spans();
+    if (argc == 2)
+        return run_selftest_child(argv[1]);
+    test_dispatch_interpreter_flow();
+    test_dispatch_aot_exception_flow();
+    test_dispatch_aot_exception_eret_resumes();
+    test_dispatch_aot_fatal_flow_propagates();
+    test_generated_lle_syscall_break_fatal_flow(argv[0]);
+    test_public_dispatch_call_terminates_fatal_flow(argv[0]);
+    test_interp_flow_trace();
+    test_exception_entry_plain();
+    test_exception_delay_slot();
+    test_exception_ce_badvaddr();
+    test_hw_psp_a1_01_break_plain();
+    test_hw_psp_a2_01_break_delay_slot();
+    test_hw_psp_a3_01_adel_load();
+    test_hw_psp_a3_02_03_misaligned_codes_and_badvaddr();
+    test_hw_psp_a3_04_delay_slot_misaligned();
+    test_hw_psp_a3_05_halfword_odd();
+    test_hw_psp_a3_06_unaligned_no_fault();
+    test_hw_psp_a3_08_11_vfpu_alignment();
+    test_hw_psp_a3_08_11_vfpu_through_interpreter();
+    test_hw_psp_a3_12_15_vfpu_remaining();
+    test_hw_psp_a3_14_vfpu_delay_slot();
+    test_hw_psp_a3_15_lvl_odd_no_fault();
+    test_hw_psp_a3_12_15_vfpu_through_interpreter();
+    test_hw_psp_a3_01_adel_through_load();
+    test_lle_misaligned_data_access();
+    test_lle_gate_off_data_access();
+    test_unaligned_store_guarded_region();
+    test_nested_exceptions();
+    test_vector_selection();
+    test_unbacked_aot_target();
+    test_eret();
+    test_mode_checks();
+    test_cop0_roundtrip();
+    test_cop0_traps();
+    test_interp_lane();
+    test_config();
+    test_eret_clears_link();
+    test_llsc_interpreter();
+    test_llsc_aot_interp_parity();
+    test_llsc_lle_misaligned();
+    test_intc_unconfigured_fails_closed();
+    test_intc_masked_pending_retention();
+    test_intc_cause_guest_writes();
+    test_intc_poll_reports_none();
+    test_hw_psp_intr_cause_ip2_while_suspended();
+    test_intc_cause_aot_interp_parity();
+    test_llsc_measured_windows();
+    sr_cpu_lle_reset_config();
+    if (g_failed) {
+        fprintf(stderr, "cpu-lle selftest: FAILED\n");
+        return 1;
+    }
+    printf("cpu-lle selftest: OK\n");
+    return 0;
+}

@@ -14,6 +14,7 @@ discovered function count and ``--funcs-per-chunk``/``--target-chunk-bytes``; it
 never a fixed per-title constant.
 """
 
+import argparse
 import bisect
 import struct
 import re
@@ -35,6 +36,7 @@ from analyze import (
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
     static_coverage, branch_kind, BRANCH_UNCOND,
 )
+from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
 from host_stubs import HST_SIMPLE_STUBS
 import codegen_llvm
 import compat_overrides
@@ -4315,25 +4317,79 @@ def zero_based_offset0_pointers(data, base, label="<module>"):
     return found
 
 
+_USAGE = (
+    "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
+    "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
+    "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
+    "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm]\n"
+    "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
+)
+
+
+def _command_line_parser():
+    """The ``--option`` half of the command line.
+
+    Positionals (``<elf> <out.c>``) are the arguments that do not start with ``--``; ``main``
+    splits them off and they never reach this parser.  Options are spelled ``--name=value`` or
+    bare ``--name``.  Values stay strings here: ``main`` validates them in one place so each
+    refusal keeps its exact message and exit status.  Abbreviations are off, and an unknown
+    ``--option`` is ignored (``parse_known_args``), as it has always been.  ``--help`` is not an
+    option: ``_USAGE`` is printed when the positionals are missing.
+    """
+    parser = argparse.ArgumentParser(
+        prog="codegen.py", usage=_USAGE[len("usage: "):].rstrip("\n"),
+        add_help=False, allow_abbrev=False,
+    )
+
+    def flag(name, help):
+        parser.add_argument(name, action="store_true", help=help)
+
+    def value(name, help):
+        parser.add_argument(name, default=None, metavar="VALUE", help=help)
+
+    flag("--env-elf", "read the ELF path from the environment; the one positional is <out.c>")
+    flag("--env-extra-elfs", "read the extra module list from the environment")
+    value("--base", "load address of the primary image, in hex")
+    value("--profile", "title profile name (for example hst)")
+    value("--funcs-per-chunk", "functions per generated chunk (default 2000)")
+    value("--target-chunk-bytes", "cut a chunk near this many bytes of C")
+    value("--extra-span", "extra executable span LO,HI of the primary image")
+    parser.add_argument("--extra-elf", action="append", default=[], metavar="ELF@BASE",
+                        help="another module: ELF@BASE, or ELF@runtime for a runtime-placed one")
+    value("--cfg-report", "write the canonical CFG report to this path")
+    flag("--cfg-gate", "fail on any CFG ownership finding")
+    flag("--stack-census", "run the dynamic stack census (implies --cfg-gate)")
+    value("--symbol-map", "guest symbol map naming functions and sites")
+    flag("--name-imports", "name each import stub after the function its NID imports")
+    value("--backend", "c (default) or llvm (#330)")
+    parser.add_argument("--omit-aot", action="append", default=[], metavar="ADDR[,ADDR...]",
+                        help="leave these entries to the dispatcher instead of direct C calls")
+    value("--enhancement-package", "enhancement package to apply")
+    value("--enhancement-data-root", "the title's extracted files, for package data_files")
+    value("--region-split-threshold", "split regions at this many conditional edges, or off")
+    flag("--static-verify", "emit the static-verify prediction table")
+    flag("--lle-cpu", "LLE CPU mode: SYSCALL/BREAK raise guest exceptions")
+    flag("--lle-import-seam", "route import stubs through sr_import_call")
+    flag("--stale-detect", "TD-27 stale-code detection")
+    flag("--promote-registers", "#284 register promotion")
+    flag("--nan-trap", "SR_NAN_TRAP result checks")
+    return parser
+
+
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
-    opts = [a for a in argv[1:] if a.startswith("--")]
+    cli, _unknown = _command_line_parser().parse_known_args(
+        [a for a in argv[1:] if a.startswith("--")])
 
-    use_env_elf = "--env-elf" in opts
-    use_env_extra = "--env-extra-elfs" in opts
+    use_env_elf = cli.env_elf
+    use_env_extra = cli.env_extra_elfs
     # The ELF is a positional only in the legacy form; with --env-elf the first
     # positional is the output .c.  Supplying both is a conflict, not a
     # precedence question: silently treating the ELF as the output path would
     # overwrite the guest image with generated C.
     expected = 1 if use_env_elf else 2
     if len(args) < expected:
-        sys.stderr.write(
-            "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
-            "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
-            "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
-            "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm]\n"
-            "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
-        )
+        sys.stderr.write(_USAGE)
         return 2
     if use_env_elf and len(args) > 1:
         sys.stderr.write(
@@ -4353,138 +4409,109 @@ def main(argv):
         sys.stderr.write(f"codegen: {exc}\n")
         return 2
 
-    base = None
-    profile = None
+    base = int(cli.base, 16) if cli.base is not None else None
+    profile = cli.profile
     funcs_per_chunk = 2000
     chunk_target_bytes = 0
-    extra_span_arg = None
-    cfg_report_path = None
-    cfg_gate = False
-    stack_census = False
+    extra_span_arg = cli.extra_span
+    cfg_gate = cli.cfg_gate
+    stack_census = cli.stack_census
     omit_aot = _OmitAot()
-    enhancement_pkg_path = None
-    enhancement_data_root = None
+    enhancement_pkg_path = cli.enhancement_package
+    enhancement_data_root = cli.enhancement_data_root
     extra_elfs = []  # list of (elf_path, base_addr)
-    cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
-    symbol_map_path = None
-    name_imports = False
+    cli_extra_specs = cli.extra_elf  # raw "ELF@BASE" strings from --extra-elf=
+    cfg_report_path = cli.cfg_report
+    symbol_map_path = cli.symbol_map
+    name_imports = cli.name_imports  # name each import stub after its NID's function
     backend = "c"
-    for o in opts:
-        if o.startswith("--base="):
-            base = int(o.split("=", 1)[1], 16)
-        elif o.startswith("--enhancement-data-root="):
-            enhancement_data_root = o.split("=", 1)[1]
-            if not enhancement_data_root:
-                sys.stderr.write("--enhancement-data-root requires a path\n")
-                return 2
-        elif o.startswith("--enhancement-package="):
-            enhancement_pkg_path = o.split("=", 1)[1]
-            if not enhancement_pkg_path:
-                sys.stderr.write("--enhancement-package requires a path\n")
-                return 2
-        elif o == "--name-imports":
-            # Name each import stub after the function its NID imports (import_stub_names).
-            # Default (absent) leaves every stub f_<address>: the output is unchanged.
-            name_imports = True
-        elif o.startswith("--symbol-map="):
-            symbol_map_path = o.split("=", 1)[1]
-            if not symbol_map_path:
-                sys.stderr.write("--symbol-map requires a path\n")
-                return 2
-        elif o.startswith("--extra-span="):
-            extra_span_arg = o.split("=", 1)[1]
-        elif o.startswith("--cfg-report="):
-            cfg_report_path = o.split("=", 1)[1]
-            if not cfg_report_path:
-                sys.stderr.write("--cfg-report requires a path\n")
-                return 2
-        elif o == "--cfg-gate":
-            cfg_gate = True
-        elif o == "--stack-census":
-            stack_census = True
-        elif o.startswith("--backend="):
-            # #330: --backend=llvm lowers each function the LLVM backend supports to
-            # LLVM IR (<g>_recomp_<n>.ll beside its C chunk) and keeps a C body, with
-            # the recorded reason, for every other one. The default is C, unchanged.
-            backend = o.split("=", 1)[1]
-            if backend not in ("c", "llvm"):
-                sys.stderr.write(f"--backend must be c or llvm, not {backend!r}\n")
-                return 2
-        elif o == "--static-verify":
-            global SV_ENABLED
-            SV_ENABLED = True
-        elif o == "--lle-cpu":
-            # LLE CPU mode (PR 2): SYSCALL/BREAK raise guest exceptions.
-            # Default (absent) preserves the HLE sr_raw_syscall/sr_break path.
-            global LLE_CPU
-            LLE_CPU = True
-        elif o == "--lle-import-seam":
-            # LLE import seam (PR 3): import stubs route through
-            # sr_import_call instead of sr_syscall. Default (absent)
-            # preserves byte-identical HLE stubs.
-            enable_lle_import_seam()
-        elif o.startswith("--region-split-threshold="):
-            value = o.split("=", 1)[1]
+    for option, given in (("--enhancement-data-root", enhancement_data_root),
+                          ("--enhancement-package", enhancement_pkg_path),
+                          ("--symbol-map", symbol_map_path),
+                          ("--cfg-report", cfg_report_path)):
+        if given == "":
+            sys.stderr.write(f"{option} requires a path\n")
+            return 2
+    if cli.backend is not None:
+        # #330: --backend=llvm lowers each function the LLVM backend supports to
+        # LLVM IR (<g>_recomp_<n>.ll beside its C chunk) and keeps a C body, with
+        # the recorded reason, for every other one. The default is C, unchanged.
+        backend = cli.backend
+        if backend not in ("c", "llvm"):
+            sys.stderr.write(f"--backend must be c or llvm, not {backend!r}\n")
+            return 2
+    threshold_arg = cli.region_split_threshold
+    if threshold_arg is not None:
+        try:
+            threshold = None if threshold_arg == "off" else int(threshold_arg, 10)
+        except ValueError:
+            threshold = -1
+        if threshold is not None and threshold < 0:
+            sys.stderr.write(
+                f"invalid --region-split-threshold value: --region-split-threshold={threshold_arg}\n")
+            return 2
+    if cli.funcs_per_chunk is not None:
+        try:
+            funcs_per_chunk = int(cli.funcs_per_chunk, 10)
+        except ValueError:
+            sys.stderr.write(
+                f"invalid --funcs-per-chunk value: --funcs-per-chunk={cli.funcs_per_chunk}\n")
+            return 2
+        if funcs_per_chunk < 1:
+            sys.stderr.write("--funcs-per-chunk must be at least 1\n")
+            return 2
+    if cli.target_chunk_bytes is not None:
+        try:
+            chunk_target_bytes = int(cli.target_chunk_bytes, 10)
+        except ValueError:
+            sys.stderr.write(
+                f"invalid --target-chunk-bytes value: --target-chunk-bytes={cli.target_chunk_bytes}\n")
+            return 2
+        if chunk_target_bytes < 1:
+            sys.stderr.write("--target-chunk-bytes must be at least 1\n")
+            return 2
+    for occurrence in cli.omit_aot:
+        for part in occurrence.split(","):
+            part = part.strip()
+            if not part:
+                continue
             try:
-                threshold = None if value == "off" else int(value, 10)
+                omit_aot.addrs.add(int(part, 16))
             except ValueError:
-                threshold = -1
-            if threshold is not None and threshold < 0:
-                sys.stderr.write(f"invalid --region-split-threshold value: {o}\n")
+                sys.stderr.write(f"invalid --omit-aot address: --omit-aot={occurrence}\n")
                 return 2
-            global REGION_SPLIT_THRESHOLD
-            REGION_SPLIT_THRESHOLD = threshold
-        elif o == "--stale-detect":
-            # TD-27 stale-code detection: emit the compact translation-time
-            # record table and route `cache` through the check hook.
-            # Default (absent) preserves byte-identical output.
-            global STALE_DETECT
-            STALE_DETECT = True
-        elif o == "--promote-registers":
-            # #284: keep guest GPRs in C locals inside runs of simple
-            # instructions, written back at every boundary. Default (absent)
-            # leaves the generated C byte-identical.
-            global PROMOTE_REGISTERS
-            PROMOTE_REGISTERS = True
-        elif o == "--nan-trap":
-            # SR_NAN_TRAP: follow every FPU/VFPU result write with a check that
-            # names the instruction whose result went non-finite from all-finite
-            # operands. Default (absent) emits no check statement at all, so the
-            # generated C is byte-identical to a pre-trap build.
-            global NAN_TRAP
-            NAN_TRAP = True
-        elif o.startswith("--profile="):
-            profile = o.split("=", 1)[1]
-        elif o.startswith("--funcs-per-chunk="):
-            try:
-                funcs_per_chunk = int(o.split("=", 1)[1], 10)
-            except ValueError:
-                sys.stderr.write(f"invalid --funcs-per-chunk value: {o}\n")
-                return 2
-            if funcs_per_chunk < 1:
-                sys.stderr.write("--funcs-per-chunk must be at least 1\n")
-                return 2
-        elif o.startswith("--target-chunk-bytes="):
-            try:
-                chunk_target_bytes = int(o.split("=", 1)[1], 10)
-            except ValueError:
-                sys.stderr.write(f"invalid --target-chunk-bytes value: {o}\n")
-                return 2
-            if chunk_target_bytes < 1:
-                sys.stderr.write("--target-chunk-bytes must be at least 1\n")
-                return 2
-        elif o.startswith("--omit-aot="):
-            for part in o.split("=", 1)[1].split(","):
-                part = part.strip()
-                if not part:
-                    continue
-                try:
-                    omit_aot.addrs.add(int(part, 16))
-                except ValueError:
-                    sys.stderr.write(f"invalid --omit-aot address: {o}\n")
-                    return 2
-        elif o.startswith("--extra-elf="):
-            cli_extra_specs.append(o.split("=", 1)[1])
+
+    # The module-level switches are set only once every option has been accepted.
+    global SV_ENABLED, LLE_CPU, REGION_SPLIT_THRESHOLD, STALE_DETECT, PROMOTE_REGISTERS, NAN_TRAP
+    if cli.static_verify:
+        SV_ENABLED = True
+    if cli.lle_cpu:
+        # LLE CPU mode (PR 2): SYSCALL/BREAK raise guest exceptions.
+        # Default (absent) preserves the HLE sr_raw_syscall/sr_break path.
+        LLE_CPU = True
+    if cli.lle_import_seam:
+        # LLE import seam (PR 3): import stubs route through
+        # sr_import_call instead of sr_syscall. Default (absent)
+        # preserves byte-identical HLE stubs.
+        enable_lle_import_seam()
+    if threshold_arg is not None:
+        REGION_SPLIT_THRESHOLD = threshold
+    if cli.stale_detect:
+        # TD-27 stale-code detection: emit the compact translation-time
+        # record table and route `cache` through the check hook.
+        # Default (absent) preserves byte-identical output.
+        STALE_DETECT = True
+    if cli.promote_registers:
+        # #284: keep guest GPRs in C locals inside runs of simple
+        # instructions, written back at every boundary. Default (absent)
+        # leaves the generated C byte-identical.
+        PROMOTE_REGISTERS = True
+    if cli.nan_trap:
+        # SR_NAN_TRAP: follow every FPU/VFPU result write with a check that
+        # names the instruction whose result went non-finite from all-finite
+        # operands. Default (absent) emits no check statement at all, so the
+        # generated C is byte-identical to a pre-trap build.
+        NAN_TRAP = True
 
     if stack_census:
         # The dynamic run is meaningful only after the static ownership floor
@@ -4784,137 +4811,10 @@ def main(argv):
     SIMPLE_STUBS = HST_SIMPLE_STUBS if hst_profile else {}
 
     for a in sorted(catalog):
-        # --- CUSTOM STUBS START ---
-        if hst_profile and a == 0x000011b0:
-            text = """void f_000011b0(CpuState *s) {  /* custom stub: __register_frame_info bypass */
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x0000260c:
-            text = """void f_0000260c(CpuState *s) {  /* custom stub: exception helper bypass */
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x0000fe3c:
-            text = """void f_0000fe3c(CpuState *s) {  /* custom stub: _getmodreent / FileIO_GetState */
-    if (s->r[31] == 0x000104c4u || s->r[31] == 0x000104f4u) {
-        /* Allocator calls always use the main thread's global impure reent */
-        s->r[2] = 0x002cf338u;
-    } else {
-        extern uint32_t sr_thread_k0(void);
-        uint32_t k0 = s->r[26];
-        if (k0 < 0x08000000u || k0 >= 0x10000000u) k0 = sr_thread_k0();
-        uint32_t ptr = k0 ? MEM_R32(k0 + 4) : 0;
-        if (!ptr) ptr = MEM_R32(0x002cf6b8u);
-        if (!ptr) ptr = 0x002cf338u;
-        s->r[2] = ptr;
-    }
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x00010738:
-            text = """void f_00010738(CpuState *s) {  /* custom stub: _malloc_r(reent, size) -> sr_newlib_malloc bridge
-     * This runtime owns the arena metadata. Retail _memalign_r/_realloc_r edit dlmalloc
-     * headers directly, where bit 0 means PREV_INUSE; the host header uses bit 0 for the
-     * current block's allocation state. Keep the whole metadata-manipulating API on one ABI.
-     * malloc()'s retail wrapper saves its own caller RA at sp+4 before calling _malloc_r.
-     * operator new then adds a 0x20-byte frame and saves its caller at +0xc, which is
-     * sp+0x1c from here. Unwrap only those exact verified return PCs; direct _malloc_r
-     * callers retain their immediate RA, so tracing gains provenance without changing
-     * guest state. */
-    uint32_t owner_ra = s->r[31] == 0x000104d0u
-        ? MEM_R32(s->r[29] + 0x00000004u) : s->r[31];
-    if (owner_ra == 0x00000bf4u || owner_ra == 0x00000c5cu)
-        owner_ra = MEM_R32(s->r[29] + 0x0000001cu);
-    s->r[2] = sr_newlib_malloc(s->r[5], owner_ra);
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x0000f538:
-            text = """void f_0000f538(CpuState *s) {  /* custom stub: _free_r(reent, ptr) -> sr_newlib_free bridge
-     * Reinstated 2026-07-16 alongside f_00010738 -- see that stub's comment. */
-    uint32_t owner_ra = s->r[31] == 0x00010500u
-        ? MEM_R32(s->r[29] + 0x00000004u) : s->r[31];
-    if (owner_ra == 0x00000a14u)
-        owner_ra = MEM_R32(s->r[29] + 0x0000001cu);
-    sr_newlib_free(s->r[5], owner_ra);
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x000101c4:
-            text = """void f_000101c4(CpuState *s) {  /* custom stub: _memalign_r(reent, alignment, size)
-     * The translated retail body carves dlmalloc chunks and writes PREV_INUSE into the
-     * following header. That bit is incompatible with the host arena's current-block flag. */
-    s->r[2] = sr_newlib_memalign(s->r[5], s->r[6], s->r[31]);
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x00013524:
-            text = """void f_00013524(CpuState *s) {  /* custom stub: _realloc_r(reent, ptr, size)
-     * Retail realloc also walks, unlinks, and rewrites dlmalloc headers, so it must use
-     * the same host-owned metadata ABI as malloc/free/memalign. */
-    s->r[2] = sr_newlib_realloc(s->r[5], s->r[6], s->r[31]);
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x00015ea0:
-            text = """void f_00015ea0(CpuState *s) {
-    /* Host-side tokenizer matching FUN_00015ea0 (EBOOT.BIN.dec.c:22965).
-     * str is the CSV buffer pointer; delim is the delimiter string. First
-     * call (str != 0) builds a cached token table by walking the buffer
-     * once. Subsequent calls return one token pointer per yield. */
-    uint32_t str = s->r[4];
-    uint32_t delim = s->r[5];
-    static uint32_t s_tokens[16384];
-    static uint32_t s_ntokens = 0;
-    static uint32_t s_tok_idx = 0;
-    if (str != 0) {
-        s_ntokens = 0;
-        s_tok_idx = 0;
-        uint32_t p = str;
-        uint32_t d = delim;
-        while (MEM_R8(p) != 0 && s_ntokens < 16384) {
-            while (MEM_R8(p) != 0) {
-                int is_delim = 0;
-                for (uint32_t dd = d; MEM_R8(dd) != 0; dd++) {
-                    if (MEM_R8(p) == MEM_R8(dd)) { is_delim = 1; break; }
-                }
-                if (!is_delim) break;
-                p++;
-            }
-            if (MEM_R8(p) == 0) break;
-            s_tokens[s_ntokens++] = p;
-            while (MEM_R8(p) != 0) {
-                int is_delim = 0;
-                for (uint32_t dd = d; MEM_R8(dd) != 0; dd++) {
-                    if (MEM_R8(p) == MEM_R8(dd)) { is_delim = 1; break; }
-                }
-                if (is_delim) { MEM_W8(p, 0); p++; break; }
-                p++;
-            }
-        }
-    }
-    s->r[2] = (s_tok_idx < s_ntokens) ? s_tokens[s_tok_idx++] : 0u;
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x000143b0:
-            text = r'''void f_000143b0(CpuState *s) {  /* custom stub: guest sprintf */
-    sr_guest_sprintf(s);
-}'''
-            func_texts.append(text); emitted.append(a); continue
-
-        # 0x0001034c (heap-statistics walk skip) and 0x001d9eb0 (title backdrop
-        # chooser postcondition) were retired under #363: the walk runs over the
-        # retail allocator's statically linked, untouched bins once the allocator is
-        # host-bridged, and the chooser never yields 0. Both now translate as written.
+        # The hand-written --profile=hst bodies are data: HST_CUSTOM_STUBS maps an address to
+        # its C text (tools/codegen_hst_stubs.py).
+        if hst_profile and a in HST_CUSTOM_STUBS:
+            func_texts.append(HST_CUSTOM_STUBS[a]); emitted.append(a); continue
 
         if a in SIMPLE_STUBS:
             name, ret_val = SIMPLE_STUBS[a]
@@ -4925,66 +4825,14 @@ def main(argv):
 }}"""
             func_texts.append(text); emitted.append(a); continue
 
-        # 0x0001a5f8 and 0x0001c008 had constant-return custom stubs here until
-        # 2026-07-18. A Ghidra-assisted review showed both shadow real,
-        # fully-translatable code: 0x1c008 is `jr ra; sw a1,0x4028(a0)` (the stub
-        # dropped the delay-slot store) and 0x1a5f8 is a computed-goto resume
-        # point reached via .data pointer tables. Both are discovered entries and
-        # translate faithfully; tools/test_codegen_no_shadow_stubs.py keeps them so.
-
-        if hst_profile and a == 0x000468c8:
+        if hst_profile and a == HST_GAME_LOOP_ADDR:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
                 dispatch_boundaries=dispatch_boundaries,
                 stack_census=stack_census)))
             func_texts[-1] = func_texts[-1].replace("void f_000468c8(CpuState *s)", "void f_000468c8_real(CpuState *s)")
-            text = """void f_000468c8(CpuState *s) {  /* custom stub: main_RunGameLoop - infinite frame loop */
-    for (;;) {
-        SR_YIELD(s, 0x000468c8u);
-        f_000468c8_real(s);
-        SR_TAIL_DRAIN(s);
-    }
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a in (0x00011090, 0x000110dc):
-            text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: memcpy native */
-    uint32_t dest = s->r[4];
-    sr_native_memmove(dest, s->r[5], s->r[6], 0x{a:08x}u);
-    s->r[2] = dest;
-    s->pc = s->r[31];
-}}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a in (0x000114c0, 0x000114a8):
-            text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: sceKernelMemset native */
-    uint32_t dest = s->r[4];
-    sr_native_memset(dest, (uint8_t)(s->r[5] & 0xFF), s->r[6], 0x{a:08x}u);
-    s->r[2] = dest;
-    s->pc = s->r[31];
-}}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x000149a8:
-            text = """void f_000149a8(CpuState *s) {  /* custom stub: strcpy native */
-    /* Boot's file-open wrapper copies its source path here before adding the
-     * host0: prefix.  Treating this routine as strcmp left the destination
-     * uninitialized and corrupted every resource path during startup. */
-    uint32_t dst0 = s->r[4], dst = dst0, src = s->r[5];
-    if (dst != 0u && src != 0u) {
-        for (uint32_t n = 0; n < 0x00100000u; n++) {
-            uint8_t ch = MEM_R8(src++);
-            MEM_W8(dst++, ch);
-            if (ch == 0u) break;
-        }
-    }
-    s->r[2] = dst0;
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        # --- CUSTOM STUBS END ---
+            func_texts.append(HST_GAME_LOOP_WRAPPER); emitted.append(a); continue
 
         if is_stub(a):
             lib_nid = impmap.get(a)

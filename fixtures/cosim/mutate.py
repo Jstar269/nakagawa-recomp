@@ -55,7 +55,7 @@ FPU_REFERENCE_HEADER = ROOT / "fixtures" / "cosim" / "fpu_reference.h"
 GENERATOR = ROOT / "tools" / "codegen.py"
 LLVM_BACKEND = ROOT / "tools" / "codegen_llvm.py"
 SCHEDULER = ROOT / "src" / "rt" / "sched.c"
-HLE_THREAD_SELFTEST = ROOT / "src" / "rt" / "hle_thread_selftest.c"
+HLE_THREAD_SELFTEST = ROOT / "tests" / "native" / "hle_thread_selftest.c"
 
 
 class Mutant:

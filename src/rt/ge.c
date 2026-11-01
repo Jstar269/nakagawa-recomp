@@ -78,7 +78,7 @@ static void ge_capture_w32(uint32_t addr, uint32_t value) { ge_capture_note_memo
 #undef MEM_W16
 #undef MEM_W32
 #ifdef SR_GE_VRAM_DECODER_CLI
-static int ge_vram_cli_bad_read;
+int ge_vram_cli_bad_read;   /* set by a read outside the image; ge_vram_cli.c reads it */
 static uint8_t ge_vram_cli_read8(uint32_t addr) {
     uint32_t phys = addr & 0x1FFFFFFFu;
     if (phys < GE_CAPTURE_VRAM_BASE || phys >= GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE) {
@@ -4677,12 +4677,17 @@ static void primitive_profile_note_draw(int type, int count, const VFmt *vf) {
         s_cpu_profile_stats.primitive_profile_eligible[GE_PRIM_PROFILE_CLIPPING_ACCEPTANCE] += triangles;
 }
 
-static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr, uint32_t cmd_addr) {
-    g_frame_prims++;
-    s_primitive_profile_counting = 0;
-    primitive_profile_clear_pending();
-    int type = (op >> 16) & 7;
-    int count = op & 0xFFFF;
+/* What one PRIM command decoded to: the values every stage of draw_prim reads. */
+typedef struct {
+    int type, count, idxfmt;
+    VFmt vf;
+    uint32_t vbase, ibase;
+    unsigned long prim_index;
+    int watch_now;                 /* SR_GEWATCH is on and this frame is past SR_GEWATCH_AFTER */
+} DrawPrimCtx;
+
+/* Profiling counters for one PRIM: vertex uses by primitive type (s_cpu_profile only). */
+static void draw_prim_note_profile(int type, int count) {
     if (s_cpu_profile) {
         uint64_t uses = 0;
         if (type == 0) uses = (uint64_t)count;
@@ -4703,8 +4708,11 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
         s_cpu_profile_stats.vertex_decode_uses += uses;
         s_cpu_profile_stats.primitive_type[type]++;
     }
-    VFmt vf; decode_vtype(ge.vtype, &vf);
-    primitive_profile_note_draw(type, count, &vf);
+}
+
+/* Through/transform command, vertex and sprite counts for the list. */
+static void draw_prim_count_list(int type, int count, const VFmt *vfp) {
+    const VFmt vf = *vfp;
     if (vf.through) {
         g_ge_list_through_cmds++;
         g_ge_list_through_vertices += (unsigned long)count;
@@ -4714,143 +4722,182 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
         g_ge_list_transform_vertices += (unsigned long)count;
         if (type == 6) g_ge_list_transform_sprites += (unsigned long)(count / 2);
     }
-#ifdef SR_GE_FRONTEND_PROFILE
-    uint64_t draw_setup_started = primitive_profile_draw_setup_begin();
-#endif
-    if (s_gelog < 0) s_gelog = getenv("SR_GEDUMP") ? 1 : 0;
-    if (s_gewatch < 0) s_gewatch = getenv("SR_GEWATCH") ? 1 : 0;
-    if (s_gewatch_after < 0) { const char *p=getenv("SR_GEWATCH_AFTER"); s_gewatch_after=p?atoi(p):0; }
-    if (s_gewatch_limit < 0) { const char *p=getenv("SR_GEWATCH_LIMIT"); s_gewatch_limit=p?atoi(p):240; if(s_gewatch_limit<=0)s_gewatch_limit=240; }
-    int watch_now = s_gewatch && s_ge_frame >= (uint32_t)s_gewatch_after;
-    int idxfmt = (ge.vtype >> 11) & 3;
-    if (s_gelog) {
-        static int n=0, nthrough=0, ntransform=0;
-        if (vf.through) nthrough++; else ntransform++;
-        if (n++ < 40 || (!vf.through && ntransform < 20))
-            fprintf(stderr, "GE PRIM type=%d count=%d vtype=0x%06" PRIx32 " through=%d idx=%d tex=%d fmt=%" PRIu32 " fbp=0x%08" PRIx32 " vaddr=0x%08" PRIx32 " iaddr=0x%08" PRIx32 " [thru=%d xform=%d]\n",
-                type, count, ge.vtype, vf.through, idxfmt, ge.tex_enable, ge.tex_fmt, ge.fbp, ge.vaddr, ge.iaddr, nthrough, ntransform);
-    }
-    uint32_t vbase = ge.vaddr, ibase = ge.iaddr;
-    /* Advance vertex/index pointer (PPSSPP GPUCommon::AdvanceVerts). */
-    if (idxfmt) ge.iaddr += (uint32_t)(count << (idxfmt - 1));
-    else        ge.vaddr += (uint32_t)(count * vf.stride);
+}
 
-    /* Narrow transition harness (issue #69): one cached-gate check per draw, before any
-     * vertex work; the helper keeps only weighted draws and emits one JSONL record. */
-    ge_transition_trace_draw(type, count, &vf, prim_index, list_addr, cmd_addr, vbase, ibase);
-
-    /* Observe both the through and transform frontends.  The optional frame gate
-     * preserves the fixed distinct-texture budget for late deterministic scenes. */
-    texdump_maybe();
-
-    /* ---- THROUGH-MODE (2D, screen coords) ---- */
-#ifdef SR_GE_FRONTEND_PROFILE
-    primitive_profile_draw_setup_end(draw_setup_started);
-#endif
-    s_primitive_profile_through = vf.through;
-    s_primitive_profile_counting = s_primitive_profile;
-    if (vf.through) {
-        if (type == 0) {           /* points */
-            for (int i = 0; i < count; i++) {
-                Vtx a; load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i,vf.stride),&vf,&a);
-                draw_point_vtx(&a, 0);
-            }
-        } else if (type == 1 || type == 2) {   /* lines / line strip */
-            for (int i = 1; i < count; i++) {
-                if (type == 1 && (i & 1) == 0) continue;
-                Vtx a, b;
-                load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride),&vf,&a);
-                load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i,  vf.stride),&vf,&b);
-                draw_line_vtx(&a,&b,0);
-            }
-        } else if (type == 3 || type == 4 || type == 5) {
-            int cache_strip = type == 4 && strip_cache_enabled() && count >= 3;
-            Vtx strip_prev[2];
-            if (cache_strip) {
-                load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,0,vf.stride),&vf,&strip_prev[0]);
-                load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,1,vf.stride),&vf,&strip_prev[1]);
-            }
-            for (int i = 2; i < count; i++) {
-                int i0, i1, i2;
-                if      (type == 3) { if (i%3!=2) continue; i0=i-2; i1=i-1; i2=i; }
-                else if (type == 4) { i0=i-2; i1=i-1; i2=i; }
-                else                { i0=0;   i1=i-1; i2=i; }
-                int tri_profile_slot = primitive_profile_claim_triangle();
-                Vtx a, b, c;
-                if (cache_strip) {
-                    a = strip_prev[0]; b = strip_prev[1];
-                    load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i2,vf.stride),&vf,&c);
-                    strip_prev[0] = strip_prev[1]; strip_prev[1] = c;
-                } else {
-                    load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i0,vf.stride),&vf,&a);
-                    load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i1,vf.stride),&vf,&b);
-                    load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i2,vf.stride),&vf,&c);
-                }
-                uint64_t assembly_started = tri_profile_slot == 1 ? SDL_GetTicksNS() : 0;
-                /* Same submission-order culling as transform mode (the GE culls in through
-                 * mode too); strips alternate, provoking vertex stays last. */
-                if (ge.cull_enable && !ge.clear) {
-                    int flip = ((ge.cull & 1) == 0) ^ ((type == 4) ? (i & 1) : 0);
-                    if (flip) { Vtx t = a; a = b; b = t; }
-                }
-#ifdef SR_GE_FRONTEND_PROFILE
-                primitive_profile_note_assembly();
-#endif
-                if (assembly_started)
-                    primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
-                primitive_profile_finish_total();
-                raster_tri(&a,&b,&c,0);
-            }
-        } else if (type == 6) {   /* sprites */
-            for (int i = 1; i < count; i += 2) {
-                Vtx p0, p1;
-                uint32_t va0 = prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride);
-                uint32_t va1 = prim_vtx_addr(vbase,ibase,idxfmt,i,  vf.stride);
-                load_vtx(va0,&vf,&p0);
-                load_vtx(va1,&vf,&p1);
-                if (watch_now) {
-                    int xa=(int)fminf(p0.x,p1.x), xb=(int)fmaxf(p0.x,p1.x);
-                    int ya=(int)fminf(p0.y,p1.y), yb=(int)fmaxf(p0.y,p1.y);
-                    int area=(xb-xa)*(yb-ya);
-                    if (idxfmt||area>=4096) {
-                        static int wn=0;
-                        if (wn++<s_gewatch_limit)
-                            fprintf(stderr,"GEWATCH frame=%" PRIu32 " prim=%lu spr idx=%d va=0x%08" PRIx32 "/0x%08" PRIx32 " area=%d rect=(%d,%d)-(%d,%d) uv=(%.0f,%.0f)-(%.0f,%.0f) color0=%02x%02x%02x%02x color1=%02x%02x%02x%02x tex=%d/0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " func=0x%06" PRIx32 " blend=%d mode=0x%06" PRIx32 " fix=%06" PRIx32 "/%06" PRIx32 " mat=%06" PRIx32 " a=%d clear=0x%03" PRIx32 " fbp=0x%08" PRIx32 " vtype=0x%06" PRIx32 " off=(%.4g,%.4g)\n",
-                                s_ge_frame,prim_index-1,idxfmt,va0,va1,area,xa,ya,xb,yb,p0.u,p0.v,p1.u,p1.v,
-                                p0.a,p0.b,p0.g,p0.r,p1.a,p1.b,p1.g,p1.r,
-                                ge.tex_enable,ge.tex_addr,ge.tex_w,ge.tex_h,ge.tex_fmt,ge.tex_func,
-                                ge.blend_enable,ge.blend_mode,ge.blend_fixa,ge.blend_fixb,
-                                ge.material,ge.material_alpha_set?ge.material_alpha:-1,ge.clear_mode,
-                                ge.fbp,ge.vtype,
-                                (float)(ge.offsetx&0xFFFF)/16.0f,
-                                (float)(ge.offsety&0xFFFF)/16.0f);
-                    }
-                }
-                {
-                    int xa=(int)fminf(p0.x,p1.x), xb=(int)fmaxf(p0.x,p1.x);
-                    int ya=(int)fminf(p0.y,p1.y), yb=(int)fmaxf(p0.y,p1.y);
-                    uint32_t xwidth = vf.pos_fmt == 3 ? 4u :
-                                      (vf.pos_fmt == 2 ? 2u : 1u);
-                    ge_arm_rect_maybe(xa,ya,xb,yb,va0,va1,
-                                      (uint32_t)vf.stride,
-                                      (uint32_t)vf.pos_off, xwidth);
-                }
-                if (s_gelog&&(ge.tex_enable&&!ge.clear)) { static int sn=0; if(sn++<12)
-                    fprintf(stderr,"  texspr (%.0f,%.0f)-(%.0f,%.0f) uv(%.0f,%.0f)-(%.0f,%.0f) tex=0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " bufw=%" PRIu32 "\n",
-                        p0.x,p0.y,p1.x,p1.y,p0.u,p0.v,p1.u,p1.v,ge.tex_addr,ge.tex_w,ge.tex_h,ge.tex_fmt,ge.tex_bufw); }
-                fill_sprite(&p0,&p1,0);
-            }
+/* Through-mode PRIM (2D, screen coordinates): points, lines, triangles and sprites. */
+static void draw_prim_through(const DrawPrimCtx *c) {
+    const int type = c->type;
+    const int count = c->count;
+    const int idxfmt = c->idxfmt;
+    VFmt vf = c->vf;
+    const uint32_t vbase = c->vbase;
+    const uint32_t ibase = c->ibase;
+    const unsigned long prim_index = c->prim_index;
+    const int watch_now = c->watch_now;
+    if (type == 0) {           /* points */
+        for (int i = 0; i < count; i++) {
+            Vtx a; load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i,vf.stride),&vf,&a);
+            draw_point_vtx(&a, 0);
         }
-        s_primitive_profile_counting = 0;
-        primitive_profile_clear_pending();
-        return;
+    } else if (type == 1 || type == 2) {   /* lines / line strip */
+        for (int i = 1; i < count; i++) {
+            if (type == 1 && (i & 1) == 0) continue;
+            Vtx a, b;
+            load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride),&vf,&a);
+            load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i,  vf.stride),&vf,&b);
+            draw_line_vtx(&a,&b,0);
+        }
+    } else if (type == 3 || type == 4 || type == 5) {
+        int cache_strip = type == 4 && strip_cache_enabled() && count >= 3;
+        Vtx strip_prev[2];
+        if (cache_strip) {
+            load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,0,vf.stride),&vf,&strip_prev[0]);
+            load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,1,vf.stride),&vf,&strip_prev[1]);
+        }
+        for (int i = 2; i < count; i++) {
+            int i0, i1, i2;
+            if      (type == 3) { if (i%3!=2) continue; i0=i-2; i1=i-1; i2=i; }
+            else if (type == 4) { i0=i-2; i1=i-1; i2=i; }
+            else                { i0=0;   i1=i-1; i2=i; }
+            int tri_profile_slot = primitive_profile_claim_triangle();
+            Vtx a, b, c;
+            if (cache_strip) {
+                a = strip_prev[0]; b = strip_prev[1];
+                load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i2,vf.stride),&vf,&c);
+                strip_prev[0] = strip_prev[1]; strip_prev[1] = c;
+            } else {
+                load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i0,vf.stride),&vf,&a);
+                load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i1,vf.stride),&vf,&b);
+                load_vtx(prim_vtx_addr(vbase,ibase,idxfmt,i2,vf.stride),&vf,&c);
+            }
+            uint64_t assembly_started = tri_profile_slot == 1 ? SDL_GetTicksNS() : 0;
+            /* Same submission-order culling as transform mode (the GE culls in through
+             * mode too); strips alternate, provoking vertex stays last. */
+            if (ge.cull_enable && !ge.clear) {
+                int flip = ((ge.cull & 1) == 0) ^ ((type == 4) ? (i & 1) : 0);
+                if (flip) { Vtx t = a; a = b; b = t; }
+            }
+#ifdef SR_GE_FRONTEND_PROFILE
+            primitive_profile_note_assembly();
+#endif
+            if (assembly_started)
+                primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
+            primitive_profile_finish_total();
+            raster_tri(&a,&b,&c,0);
+        }
+    } else if (type == 6) {   /* sprites */
+        for (int i = 1; i < count; i += 2) {
+            Vtx p0, p1;
+            uint32_t va0 = prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride);
+            uint32_t va1 = prim_vtx_addr(vbase,ibase,idxfmt,i,  vf.stride);
+            load_vtx(va0,&vf,&p0);
+            load_vtx(va1,&vf,&p1);
+            if (watch_now) {
+                int xa=(int)fminf(p0.x,p1.x), xb=(int)fmaxf(p0.x,p1.x);
+                int ya=(int)fminf(p0.y,p1.y), yb=(int)fmaxf(p0.y,p1.y);
+                int area=(xb-xa)*(yb-ya);
+                if (idxfmt||area>=4096) {
+                    static int wn=0;
+                    if (wn++<s_gewatch_limit)
+                        fprintf(stderr,"GEWATCH frame=%" PRIu32 " prim=%lu spr idx=%d va=0x%08" PRIx32 "/0x%08" PRIx32 " area=%d rect=(%d,%d)-(%d,%d) uv=(%.0f,%.0f)-(%.0f,%.0f) color0=%02x%02x%02x%02x color1=%02x%02x%02x%02x tex=%d/0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " func=0x%06" PRIx32 " blend=%d mode=0x%06" PRIx32 " fix=%06" PRIx32 "/%06" PRIx32 " mat=%06" PRIx32 " a=%d clear=0x%03" PRIx32 " fbp=0x%08" PRIx32 " vtype=0x%06" PRIx32 " off=(%.4g,%.4g)\n",
+                            s_ge_frame,prim_index-1,idxfmt,va0,va1,area,xa,ya,xb,yb,p0.u,p0.v,p1.u,p1.v,
+                            p0.a,p0.b,p0.g,p0.r,p1.a,p1.b,p1.g,p1.r,
+                            ge.tex_enable,ge.tex_addr,ge.tex_w,ge.tex_h,ge.tex_fmt,ge.tex_func,
+                            ge.blend_enable,ge.blend_mode,ge.blend_fixa,ge.blend_fixb,
+                            ge.material,ge.material_alpha_set?ge.material_alpha:-1,ge.clear_mode,
+                            ge.fbp,ge.vtype,
+                            (float)(ge.offsetx&0xFFFF)/16.0f,
+                            (float)(ge.offsety&0xFFFF)/16.0f);
+                }
+            }
+            {
+                int xa=(int)fminf(p0.x,p1.x), xb=(int)fmaxf(p0.x,p1.x);
+                int ya=(int)fminf(p0.y,p1.y), yb=(int)fmaxf(p0.y,p1.y);
+                uint32_t xwidth = vf.pos_fmt == 3 ? 4u :
+                                  (vf.pos_fmt == 2 ? 2u : 1u);
+                ge_arm_rect_maybe(xa,ya,xb,yb,va0,va1,
+                                  (uint32_t)vf.stride,
+                                  (uint32_t)vf.pos_off, xwidth);
+            }
+            if (s_gelog&&(ge.tex_enable&&!ge.clear)) { static int sn=0; if(sn++<12)
+                fprintf(stderr,"  texspr (%.0f,%.0f)-(%.0f,%.0f) uv(%.0f,%.0f)-(%.0f,%.0f) tex=0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " bufw=%" PRIu32 "\n",
+                    p0.x,p0.y,p1.x,p1.y,p0.u,p0.v,p1.u,p1.v,ge.tex_addr,ge.tex_w,ge.tex_h,ge.tex_fmt,ge.tex_bufw); }
+            fill_sprite(&p0,&p1,0);
+        }
     }
-
-    /* ---- TRANSFORM-MODE (3D, full T&L) ---- */
-    /* Diagnostics below may inspect vertices without submitting them; keep
-     * those reads out of the sparse event population. */
     s_primitive_profile_counting = 0;
     primitive_profile_clear_pending();
+}
+
+/* SR_VDUMP: raw vertex bytes and every decoded attribute of the first draws per vtype. */
+static void draw_prim_trace_vdump(const DrawPrimCtx *c) {
+    const int type = c->type;
+    const int count = c->count;
+    const int idxfmt = c->idxfmt;
+    VFmt vf = c->vf;
+    const uint32_t vbase = c->vbase;
+    const uint32_t ibase = c->ibase;
+    /* SR_VDUMP=1: for the first 2 transform-mode draws of each distinct vtype, dump the raw
+     * vertex bytes and every decoded attribute plus the post-T&L color, so shading bugs can be
+     * separated into decode vs. transform vs. lighting without a debugger attached. */
+    {
+        static int vdump = -1;
+        if (vdump < 0) vdump = getenv("SR_VDUMP") ? 1 : 0;
+        if (vdump) {
+            static uint32_t seen_vt[16]; static int seen_n[16]; static int seen_cnt = 0;
+            /* Re-arm once per 60-frame stat window so later scenes (hangar aircraft, mission
+             * terrain) get vertex dumps too, not just the first menu that used the vtype. */
+            static uint32_t vd_win = 0;
+            if (s_ge_frame / 60 != vd_win) {
+                vd_win = s_ge_frame / 60;
+                for (int si = 0; si < seen_cnt; si++) seen_n[si] = 0;
+            }
+            int slot = -1;
+            for (int si = 0; si < seen_cnt; si++) if (seen_vt[si] == ge.vtype) { slot = si; break; }
+            if (slot < 0 && seen_cnt < 16) { slot = seen_cnt++; seen_vt[slot] = ge.vtype; seen_n[slot] = 0; }
+            if (slot >= 0 && seen_n[slot] < 2) {
+                seen_n[slot]++;
+                fprintf(stderr, "VDUMP f=%" PRIu32 " type=%d count=%d vtype=0x%06" PRIx32 " stride=%d offs[w=%d tc=%d col=%d nrm=%d pos=%d] lit=%d gouraud=%d fog=%d tmm=0x%03" PRIx32 "\n",
+                        s_ge_frame, type, count, ge.vtype, vf.stride, vf.w_n ? vf.w_off : -1,
+                        vf.tc_off, vf.col_off, vf.nrm_off, vf.pos_off,
+                        ge.lighting_enable, ge.shade_gouraud, ge.fog_enable, ge.tex_map_mode);
+                if (vf.w_n)
+                    fprintf(stderr, "  bone0=[%.3g %.3g %.3g; %.3g %.3g %.3g; %.3g %.3g %.3g; %.3g %.3g %.3g]\n",
+                            ge.bone[0], ge.bone[1], ge.bone[2], ge.bone[3], ge.bone[4], ge.bone[5],
+                            ge.bone[6], ge.bone[7], ge.bone[8], ge.bone[9], ge.bone[10], ge.bone[11]);
+                int nv = count < 6 ? count : 6;
+                for (int i = 0; i < nv; i++) {
+                    uint32_t a = prim_vtx_addr(vbase, ibase, idxfmt, i, vf.stride);
+                    char hex[3*32 + 1]; int hn = vf.stride < 32 ? vf.stride : 32;
+                    for (int k = 0; k < hn; k++) snprintf(hex + 3*k, 4, "%02x ", MEM_R8(a + (uint32_t)k));
+                    hex[3*hn] = 0;
+                    float px, py, pz, nx = 0, ny = 0, nz = 0, u = 0, tv = 0, w0 = 0;
+                    int r, g, b, al;
+                    read_pos(a, &vf, &px, &py, &pz);
+                    read_color(a, &vf, &r, &g, &b, &al);
+                    if (vf.nrm_off >= 0) read_nrm(a, &vf, &nx, &ny, &nz);
+                    if (vf.tc_off >= 0) read_tc(a, &vf, &u, &tv);
+                    if (vf.w_n) { float ws[8]; read_weights(a, &vf, ws); w0 = ws[0]; }
+                    CVtx cv2; transform_vtx_clip(a, &vf, &cv2);
+                    fprintf(stderr, "  v%d @0x%08" PRIx32 " [%s] pos=(%.4g,%.4g,%.4g) uv=(%.3g,%.3g) col=%02x%02x%02x%02x nrm=(%.3g,%.3g,%.3g) w0=%.3g -> cw=%.4g lit=%02x%02x%02x%02x uvT=(%.3g,%.3g) fog=%.3g\n",
+                            i, a, hex, px, py, pz, u, tv, r, g, b, al, nx, ny, nz, w0,
+                            cv2.cw, cv2.r, cv2.g, cv2.b, cv2.a, cv2.u, cv2.v, cv2.fog);
+                }
+            }
+        }
+    }
+}
+
+/* Transform-mode diagnostics (SR_RTRACE, GE3D, GEWATCH, SR_VDUMP). Returns whether this
+ * draw is being traced triangle by triangle (`rt`). */
+static int draw_prim_trace_transform(const DrawPrimCtx *c) {
+    const int type = c->type;
+    const int count = c->count;
+    const int idxfmt = c->idxfmt;
+    VFmt vf = c->vf;
+    const uint32_t vbase = c->vbase;
+    const uint32_t ibase = c->ibase;
+    const int watch_now = c->watch_now;
     dump_xform_debug(vbase, ibase, idxfmt, &vf, type, count);
     if (s_rtrace < 0) {
         s_rtrace = getenv("SR_RTRACE") ? 1 : 0;
@@ -4904,320 +4951,375 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                 s_ge_frame,type,count,ge.vtype,idxfmt,vbase,ibase);
     }
 
-    /* SR_VDUMP=1: for the first 2 transform-mode draws of each distinct vtype, dump the raw
-     * vertex bytes and every decoded attribute plus the post-T&L color, so shading bugs can be
-     * separated into decode vs. transform vs. lighting without a debugger attached. */
-    {
-        static int vdump = -1;
-        if (vdump < 0) vdump = getenv("SR_VDUMP") ? 1 : 0;
-        if (vdump) {
-            static uint32_t seen_vt[16]; static int seen_n[16]; static int seen_cnt = 0;
-            /* Re-arm once per 60-frame stat window so later scenes (hangar aircraft, mission
-             * terrain) get vertex dumps too, not just the first menu that used the vtype. */
-            static uint32_t vd_win = 0;
-            if (s_ge_frame / 60 != vd_win) {
-                vd_win = s_ge_frame / 60;
-                for (int si = 0; si < seen_cnt; si++) seen_n[si] = 0;
-            }
-            int slot = -1;
-            for (int si = 0; si < seen_cnt; si++) if (seen_vt[si] == ge.vtype) { slot = si; break; }
-            if (slot < 0 && seen_cnt < 16) { slot = seen_cnt++; seen_vt[slot] = ge.vtype; seen_n[slot] = 0; }
-            if (slot >= 0 && seen_n[slot] < 2) {
-                seen_n[slot]++;
-                fprintf(stderr, "VDUMP f=%" PRIu32 " type=%d count=%d vtype=0x%06" PRIx32 " stride=%d offs[w=%d tc=%d col=%d nrm=%d pos=%d] lit=%d gouraud=%d fog=%d tmm=0x%03" PRIx32 "\n",
-                        s_ge_frame, type, count, ge.vtype, vf.stride, vf.w_n ? vf.w_off : -1,
-                        vf.tc_off, vf.col_off, vf.nrm_off, vf.pos_off,
-                        ge.lighting_enable, ge.shade_gouraud, ge.fog_enable, ge.tex_map_mode);
-                if (vf.w_n)
-                    fprintf(stderr, "  bone0=[%.3g %.3g %.3g; %.3g %.3g %.3g; %.3g %.3g %.3g; %.3g %.3g %.3g]\n",
-                            ge.bone[0], ge.bone[1], ge.bone[2], ge.bone[3], ge.bone[4], ge.bone[5],
-                            ge.bone[6], ge.bone[7], ge.bone[8], ge.bone[9], ge.bone[10], ge.bone[11]);
-                int nv = count < 6 ? count : 6;
-                for (int i = 0; i < nv; i++) {
-                    uint32_t a = prim_vtx_addr(vbase, ibase, idxfmt, i, vf.stride);
-                    char hex[3*32 + 1]; int hn = vf.stride < 32 ? vf.stride : 32;
-                    for (int k = 0; k < hn; k++) snprintf(hex + 3*k, 4, "%02x ", MEM_R8(a + (uint32_t)k));
-                    hex[3*hn] = 0;
-                    float px, py, pz, nx = 0, ny = 0, nz = 0, u = 0, tv = 0, w0 = 0;
-                    int r, g, b, al;
-                    read_pos(a, &vf, &px, &py, &pz);
-                    read_color(a, &vf, &r, &g, &b, &al);
-                    if (vf.nrm_off >= 0) read_nrm(a, &vf, &nx, &ny, &nz);
-                    if (vf.tc_off >= 0) read_tc(a, &vf, &u, &tv);
-                    if (vf.w_n) { float ws[8]; read_weights(a, &vf, ws); w0 = ws[0]; }
-                    CVtx cv2; transform_vtx_clip(a, &vf, &cv2);
-                    fprintf(stderr, "  v%d @0x%08" PRIx32 " [%s] pos=(%.4g,%.4g,%.4g) uv=(%.3g,%.3g) col=%02x%02x%02x%02x nrm=(%.3g,%.3g,%.3g) w0=%.3g -> cw=%.4g lit=%02x%02x%02x%02x uvT=(%.3g,%.3g) fog=%.3g\n",
-                            i, a, hex, px, py, pz, u, tv, r, g, b, al, nx, ny, nz, w0,
-                            cv2.cw, cv2.r, cv2.g, cv2.b, cv2.a, cv2.u, cv2.v, cv2.fog);
-                }
-            }
-        }
+    draw_prim_trace_vdump(c);
+    return rt;
+}
+
+/* Transform-mode points. */
+static void draw_prim_xform_points(const DrawPrimCtx *c) {
+    const int count = c->count;
+    const int idxfmt = c->idxfmt;
+    VFmt vf = c->vf;
+    const uint32_t vbase = c->vbase;
+    const uint32_t ibase = c->ibase;
+    for (int i = 0; i < count; i++) {
+        Vtx a;
+        if (!transform_vtx_3d(prim_vtx_addr(vbase,ibase,idxfmt,i,vf.stride),&vf,&a)) continue;
+        draw_point_vtx(&a, 1);
     }
+}
 
-    s_primitive_profile_counting = s_primitive_profile;
-    if (type == 0) {           /* points */
-        for (int i = 0; i < count; i++) {
-            Vtx a;
-            if (!transform_vtx_3d(prim_vtx_addr(vbase,ibase,idxfmt,i,vf.stride),&vf,&a)) continue;
-            draw_point_vtx(&a, 1);
+/* Transform-mode lines and line strips (PPSSPP Clipper::ProcessLine acceptance). */
+static void draw_prim_xform_lines(const DrawPrimCtx *c) {
+    const int type = c->type;
+    const int count = c->count;
+    const int idxfmt = c->idxfmt;
+    VFmt vf = c->vf;
+    const uint32_t vbase = c->vbase;
+    const uint32_t ibase = c->ibase;
+    if (s_stat_on > 0) s_stat.line3d += (unsigned long)(count > 0 ? count - 1 : 0);
+    for (int i = 1; i < count; i++) {
+        if (type == 1 && (i & 1) == 0) continue;
+        CVtx ca, cb;
+        transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride),&vf,&ca);
+        transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i,  vf.stride),&vf,&cb);
+        /* PSP line acceptance (PPSSPP Clipper::ProcessLine): same drop rules as triangles. */
+        if (ca.oor || cb.oor) { s_stat.nearclip++; continue; }
+        if (ca.cw < 0.0f && cb.cw < 0.0f) { s_stat.nearclip++; continue; }
+        if (!ge.depth_clip && (ca.ozp + ca.ozn + cb.ozp + cb.ozn) > 0) { s_stat.nearclip++; continue; }
+        if ((ca.ozp + cb.ozp) >= 2 || (ca.ozn + cb.ozn) >= 2) { s_stat.nearclip++; continue; }
+        float da = clip_d_nearz(&ca), db2 = clip_d_nearz(&cb);
+        if (da < 0.0f && db2 < 0.0f) {
+            s_stat.nearclip++;
+            CVtx both[2]; both[0] = ca; both[1] = cb;
+            s_primitive_profile_counting = 0;
+            uint32_t dump_addr = prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride);
+            s_primitive_profile_counting = s_primitive_profile;
+            near_dump("line", dump_addr, &vf, both, 2);
+            continue;
         }
-    } else if (type == 1 || type == 2) {   /* lines / line strip */
-        if (s_stat_on > 0) s_stat.line3d += (unsigned long)(count > 0 ? count - 1 : 0);
-        for (int i = 1; i < count; i++) {
-            if (type == 1 && (i & 1) == 0) continue;
-            CVtx ca, cb;
-            transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride),&vf,&ca);
-            transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i,  vf.stride),&vf,&cb);
-            /* PSP line acceptance (PPSSPP Clipper::ProcessLine): same drop rules as triangles. */
-            if (ca.oor || cb.oor) { s_stat.nearclip++; continue; }
-            if (ca.cw < 0.0f && cb.cw < 0.0f) { s_stat.nearclip++; continue; }
-            if (!ge.depth_clip && (ca.ozp + ca.ozn + cb.ozp + cb.ozn) > 0) { s_stat.nearclip++; continue; }
-            if ((ca.ozp + cb.ozp) >= 2 || (ca.ozn + cb.ozn) >= 2) { s_stat.nearclip++; continue; }
-            float da = clip_d_nearz(&ca), db2 = clip_d_nearz(&cb);
-            if (da < 0.0f && db2 < 0.0f) {
-                s_stat.nearclip++;
-                CVtx both[2]; both[0] = ca; both[1] = cb;
-                s_primitive_profile_counting = 0;
-                uint32_t dump_addr = prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride);
-                s_primitive_profile_counting = s_primitive_profile;
-                near_dump("line", dump_addr, &vf, both, 2);
-                continue;
-            }
-            if (da < 0.0f)       { CVtx t; clip_lerp_cvtx(&ca,&cb, da/(da-db2), &t); ca=t; }
-            else if (db2 < 0.0f) { CVtx t; clip_lerp_cvtx(&cb,&ca, db2/(db2-da), &t); cb=t; }
-            if (ca.cw <= NEAR_W || cb.cw <= NEAR_W) { s_stat.nearclip++; continue; }
-            if (ca.nf || cb.nf) { s_stat.nonfinite++; continue; }
-            /* PPSSPP ProcessLine: clip-created endpoints outside the screen grid kill the line. */
-            if (clip_vtx_out_of_range(&ca) || clip_vtx_out_of_range(&cb)) { s_stat.nearclip++; continue; }
-            Vtx a, b;
-            project_cvtx(&ca,&a); project_cvtx(&cb,&b);
-            draw_line_vtx(&a,&b,1);
-        }
-    } else if ((type == 3 || type == 4 || type == 5) &&
-               ge_tnl_try_prim(type, count, &vf, vbase, ibase, idxfmt)) {
-        /* Transformed, lit and drawn by the backend's GPU T&L (#318). */
-    } else if (type == 3 || type == 4 || type == 5) {
-        /* SR_RTRACE per-draw bookkeeping: per-reason triangle counters plus a snapshot of the
-         * pixel-level stat counters so the TRIDRW+ line can report this draw's pixel outcome. */
-        enum { D_DRAW, D_OOR, D_WNEG, D_ZOUT, D_ZSAME, D_NEARALL, D_CWLOW, D_CLIP, D_NONFINITE };
-        static const char *dec_name[9] =
-            { "DRAW", "drop-oor", "drop-wneg", "drop-zout", "drop-zsame", "drop-nearall", "drop-cwlow", "CLIP",
-              "drop-nonfinite" };
-        unsigned long dcnt[9] = {0,0,0,0,0,0,0,0,0};
-        struct { unsigned long tri3d, cull, zfail, afail, px3d, zrange, deg3d, blk3d; } st0;
-        st0.tri3d = s_stat.tri3d; st0.cull = s_stat.cull; st0.zfail = s_stat.zfail;
-        st0.afail = s_stat.afail; st0.px3d = s_stat.px3d; st0.zrange = s_stat.zrange;
-        st0.deg3d = s_stat.deg3d; st0.blk3d = s_stat.blk3d;
-        int tlogged = 0;
-        float roffx = (float)(ge.offsetx & 0xFFFF) / 16.0f;
-        float roffy = (float)(ge.offsety & 0xFFFF) / 16.0f;
-        if (rt) {
-            fprintf(stderr, "TRIDRW f=%" PRIu32 " d=%" PRIu32 " fbp=0x%08" PRIx32 "/%" PRIu32 " zbp=0x%08" PRIx32 "/%" PRIu32 " type=%d n=%d vtype=0x%06" PRIx32 " idx=%d va=0x%08" PRIx32 " ia=0x%08" PRIx32 " "
-                    "tex=%d/0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " bufw=%" PRIu32 " sw=%d tfunc=0x%06" PRIx32 " tmm=0x%03" PRIx32 " lit=%d gou=%d "
-                    "zt=%d/%d zw=%d zr=[%" PRIu32 ",%" PRIu32 "] at=%d/0x%06" PRIx32 " bl=%d/%06" PRIx32 "/%06" PRIx32 "/%06" PRIx32 " cull=%d/%" PRIu32 " clr=0x%03" PRIx32 " "
-                    "dclip=%" PRIu32 " fog=%d vp=[%.4g,%.4g,%.4g|%.4g,%.4g,%.4g] off=(%.4g,%.4g) sc=(%d,%d)-(%d,%d) "
-                    "wt=(%.4g,%.4g,%.4g) vt=(%.4g,%.4g,%.4g)\n",
-                    s_ge_frame, s_rt_draw, ge.fbp, ge.fbw, ge.zbp, ge.zbw, type, count, ge.vtype, idxfmt, vbase, ibase,
-                    ge.tex_enable, ge.tex_addr, ge.tex_w, ge.tex_h, ge.tex_fmt, ge.tex_bufw,
-                    ge.tex_swizzle, ge.tex_func, ge.tex_map_mode, ge.lighting_enable, ge.shade_gouraud,
-                    ge.ztest_enable, (int)(ge.ztest & 7), !ge.zwrite_disable, ge.minz, ge.maxz,
-                    ge.atest_enable, ge.atest, ge.blend_enable, ge.blend_mode, ge.blend_fixa, ge.blend_fixb,
-                    ge.cull_enable, ge.cull, ge.clear_mode, ge.depth_clip, ge.fog_enable,
-                    decode_float24(ge.viewport_raw[0]), decode_float24(ge.viewport_raw[1]),
-                    decode_float24(ge.viewport_raw[2]), decode_float24(ge.viewport_raw[3]),
-                    decode_float24(ge.viewport_raw[4]), decode_float24(ge.viewport_raw[5]),
-                    roffx, roffy, ge.scis_x1, ge.scis_y1, ge.scis_x2, ge.scis_y2,
-                    ge.world[9], ge.world[10], ge.world[11], ge.view[9], ge.view[10], ge.view[11]);
-        }
-        int cache_strip = type == 4 && strip_cache_enabled() && count >= 3;
-        CVtx strip_prev[2];
+        if (da < 0.0f)       { CVtx t; clip_lerp_cvtx(&ca,&cb, da/(da-db2), &t); ca=t; }
+        else if (db2 < 0.0f) { CVtx t; clip_lerp_cvtx(&cb,&ca, db2/(db2-da), &t); cb=t; }
+        if (ca.cw <= NEAR_W || cb.cw <= NEAR_W) { s_stat.nearclip++; continue; }
+        if (ca.nf || cb.nf) { s_stat.nonfinite++; continue; }
+        /* PPSSPP ProcessLine: clip-created endpoints outside the screen grid kill the line. */
+        if (clip_vtx_out_of_range(&ca) || clip_vtx_out_of_range(&cb)) { s_stat.nearclip++; continue; }
+        Vtx a, b;
+        project_cvtx(&ca,&a); project_cvtx(&cb,&b);
+        draw_line_vtx(&a,&b,1);
+    }
+}
+
+/* Transform-mode triangles, strips and fans: transform, cull, accept or clip, project and
+ * rasterise (PPSSPP Clipper::ProcessTriangle). `rt` is the SR_RTRACE per-draw flag. */
+static void draw_prim_xform_triangles(const DrawPrimCtx *c, int rt) {
+    const int type = c->type;
+    const int count = c->count;
+    const int idxfmt = c->idxfmt;
+    VFmt vf = c->vf;
+    const uint32_t vbase = c->vbase;
+    const uint32_t ibase = c->ibase;
+    /* SR_RTRACE per-draw bookkeeping: per-reason triangle counters plus a snapshot of the
+     * pixel-level stat counters so the TRIDRW+ line can report this draw's pixel outcome. */
+    enum { D_DRAW, D_OOR, D_WNEG, D_ZOUT, D_ZSAME, D_NEARALL, D_CWLOW, D_CLIP, D_NONFINITE };
+    static const char *dec_name[9] =
+        { "DRAW", "drop-oor", "drop-wneg", "drop-zout", "drop-zsame", "drop-nearall", "drop-cwlow", "CLIP",
+          "drop-nonfinite" };
+    unsigned long dcnt[9] = {0,0,0,0,0,0,0,0,0};
+    struct { unsigned long tri3d, cull, zfail, afail, px3d, zrange, deg3d, blk3d; } st0;
+    st0.tri3d = s_stat.tri3d; st0.cull = s_stat.cull; st0.zfail = s_stat.zfail;
+    st0.afail = s_stat.afail; st0.px3d = s_stat.px3d; st0.zrange = s_stat.zrange;
+    st0.deg3d = s_stat.deg3d; st0.blk3d = s_stat.blk3d;
+    int tlogged = 0;
+    float roffx = (float)(ge.offsetx & 0xFFFF) / 16.0f;
+    float roffy = (float)(ge.offsety & 0xFFFF) / 16.0f;
+    if (rt) {
+        fprintf(stderr, "TRIDRW f=%" PRIu32 " d=%" PRIu32 " fbp=0x%08" PRIx32 "/%" PRIu32 " zbp=0x%08" PRIx32 "/%" PRIu32 " type=%d n=%d vtype=0x%06" PRIx32 " idx=%d va=0x%08" PRIx32 " ia=0x%08" PRIx32 " "
+                "tex=%d/0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " bufw=%" PRIu32 " sw=%d tfunc=0x%06" PRIx32 " tmm=0x%03" PRIx32 " lit=%d gou=%d "
+                "zt=%d/%d zw=%d zr=[%" PRIu32 ",%" PRIu32 "] at=%d/0x%06" PRIx32 " bl=%d/%06" PRIx32 "/%06" PRIx32 "/%06" PRIx32 " cull=%d/%" PRIu32 " clr=0x%03" PRIx32 " "
+                "dclip=%" PRIu32 " fog=%d vp=[%.4g,%.4g,%.4g|%.4g,%.4g,%.4g] off=(%.4g,%.4g) sc=(%d,%d)-(%d,%d) "
+                "wt=(%.4g,%.4g,%.4g) vt=(%.4g,%.4g,%.4g)\n",
+                s_ge_frame, s_rt_draw, ge.fbp, ge.fbw, ge.zbp, ge.zbw, type, count, ge.vtype, idxfmt, vbase, ibase,
+                ge.tex_enable, ge.tex_addr, ge.tex_w, ge.tex_h, ge.tex_fmt, ge.tex_bufw,
+                ge.tex_swizzle, ge.tex_func, ge.tex_map_mode, ge.lighting_enable, ge.shade_gouraud,
+                ge.ztest_enable, (int)(ge.ztest & 7), !ge.zwrite_disable, ge.minz, ge.maxz,
+                ge.atest_enable, ge.atest, ge.blend_enable, ge.blend_mode, ge.blend_fixa, ge.blend_fixb,
+                ge.cull_enable, ge.cull, ge.clear_mode, ge.depth_clip, ge.fog_enable,
+                decode_float24(ge.viewport_raw[0]), decode_float24(ge.viewport_raw[1]),
+                decode_float24(ge.viewport_raw[2]), decode_float24(ge.viewport_raw[3]),
+                decode_float24(ge.viewport_raw[4]), decode_float24(ge.viewport_raw[5]),
+                roffx, roffy, ge.scis_x1, ge.scis_y1, ge.scis_x2, ge.scis_y2,
+                ge.world[9], ge.world[10], ge.world[11], ge.view[9], ge.view[10], ge.view[11]);
+    }
+    int cache_strip = type == 4 && strip_cache_enabled() && count >= 3;
+    CVtx strip_prev[2];
+    if (cache_strip) {
+        transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,0,vf.stride),&vf,&strip_prev[0]);
+        transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,1,vf.stride),&vf,&strip_prev[1]);
+    }
+    for (int i = 2; i < count; i++) {
+        int i0, i1, i2;
+        if      (type == 3) { if (i%3!=2) continue; i0=i-2; i1=i-1; i2=i; }
+        else if (type == 4) { i0=i-2; i1=i-1; i2=i; }
+        else                { i0=0;   i1=i-1; i2=i; }
+        int tri_profile_slot = primitive_profile_claim_triangle();
+        CVtx cv[3], cl[4];
         if (cache_strip) {
-            transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,0,vf.stride),&vf,&strip_prev[0]);
-            transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,1,vf.stride),&vf,&strip_prev[1]);
+            cv[0] = strip_prev[0]; cv[1] = strip_prev[1];
+            transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i2,vf.stride),&vf,&cv[2]);
+            strip_prev[0] = strip_prev[1]; strip_prev[1] = cv[2];
+        } else {
+            transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i0,vf.stride),&vf,&cv[0]);
+            transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i1,vf.stride),&vf,&cv[1]);
+            transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i2,vf.stride),&vf,&cv[2]);
         }
-        for (int i = 2; i < count; i++) {
-            int i0, i1, i2;
-            if      (type == 3) { if (i%3!=2) continue; i0=i-2; i1=i-1; i2=i; }
-            else if (type == 4) { i0=i-2; i1=i-1; i2=i; }
-            else                { i0=0;   i1=i-1; i2=i; }
-            int tri_profile_slot = primitive_profile_claim_triangle();
-            CVtx cv[3], cl[4];
-            if (cache_strip) {
-                cv[0] = strip_prev[0]; cv[1] = strip_prev[1];
-                transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i2,vf.stride),&vf,&cv[2]);
-                strip_prev[0] = strip_prev[1]; strip_prev[1] = cv[2];
+
+        uint64_t acceptance_started = tri_profile_slot == 0 ? SDL_GetTicksNS() : 0;
+
+        /* Culling via submission order (PPSSPP TransformUnit::SendTriangle): the
+         * rasterizer keeps only positive-winding triangles, so cull mode 0 (CW front)
+         * reverses the order, and STRIPS flip it again on every other triangle because
+         * strip triangles alternate winding (cullType ^ wind). Without the parity flip
+         * every second strip triangle is culled wrongly and back faces leak through —
+         * meshes dissolve into scattered triangles. The last vertex (provoking, used
+         * for flat shading) stays in place. */
+        if (ge.cull_enable && !ge.clear) {
+            int flip = ((ge.cull & 1) == 0) ^ ((type == 4) ? (i & 1) : 0);
+            if (flip) { CVtx t = cv[0]; cv[0] = cv[1]; cv[1] = t; }
+        }
+
+        /* PSP triangle acceptance (PPSSPP Clipper::ProcessTriangle). The hardware DROPS
+         * whole triangles rather than clipping when vertices leave the screen grid or the
+         * z range; games rely on it (effect passes, behind-camera geometry). Drawing them
+         * (the old behaviour) scattered runaway triangles across the scene. */
+        int dec = D_DRAW;
+        /* Fail closed on a non-finite clip/screen position FIRST: the out-of-range and
+         * z tests below all compare false against NaN, so a NaN vertex would otherwise be
+         * accepted and rasterized with NaN edge functions (unbounded, garbage coverage).
+         * The PSP's own answer for such a vertex is NOT_MEASURED, so the primitive is
+         * dropped and counted rather than given an invented screen result. */
+        if (cv[0].nf || cv[1].nf || cv[2].nf) dec = D_NONFINITE;
+        else if (cv[0].oor || cv[1].oor || cv[2].oor) dec = D_OOR;
+        else if (cv[0].cw < 0.0f && cv[1].cw < 0.0f && cv[2].cw < 0.0f) dec = D_WNEG;
+        else {
+            int zp = cv[0].ozp + cv[1].ozp + cv[2].ozp;
+            int zn = cv[0].ozn + cv[1].ozn + cv[2].ozn;
+            if (!ge.depth_clip && zp + zn > 0) dec = D_ZOUT;
+            else if (zp >= 3 || zn >= 3) dec = D_ZSAME;
+        }
+        if (dec == D_DRAW) {
+            if (clip_d_nearz(&cv[0]) >= 0.0f && clip_d_nearz(&cv[1]) >= 0.0f && clip_d_nearz(&cv[2]) >= 0.0f) {
+                if (!(cv[0].cw > NEAR_W && cv[1].cw > NEAR_W && cv[2].cw > NEAR_W)) dec = D_CWLOW;
+            } else if (clip_d_nearz(&cv[0]) < 0.0f && clip_d_nearz(&cv[1]) < 0.0f && clip_d_nearz(&cv[2]) < 0.0f) {
+                dec = D_NEARALL;
             } else {
-                transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i0,vf.stride),&vf,&cv[0]);
-                transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i1,vf.stride),&vf,&cv[1]);
-                transform_vtx_clip(prim_vtx_addr(vbase,ibase,idxfmt,i2,vf.stride),&vf,&cv[2]);
+                dec = D_CLIP;   /* crosses the z >= -w plane: clip and fan */
             }
+        }
+        dcnt[dec]++;
+        if (s_primitive_profile_counting) {
+            if (dec == D_DRAW) s_cpu_profile_stats.primitive_profile_transform_triangles_drawn++;
+            else if (dec == D_CLIP) s_cpu_profile_stats.primitive_profile_transform_triangles_clipped++;
+            else s_cpu_profile_stats.primitive_profile_transform_triangles_rejected++;
+        }
+        if (dec != D_DRAW && dec != D_NONFINITE) s_stat.nearclip++;
+        if (dec == D_NONFINITE) s_stat.nonfinite++;
+        int clip_m = -1;
+        if (dec == D_CLIP)
+            clip_m = clip_poly_near(cv, 3, cl);
+        if (acceptance_started)
+            primitive_profile_end(GE_PRIM_PROFILE_CLIPPING_ACCEPTANCE, acceptance_started);
 
-            uint64_t acceptance_started = tri_profile_slot == 0 ? SDL_GetTicksNS() : 0;
-
-            /* Culling via submission order (PPSSPP TransformUnit::SendTriangle): the
-             * rasterizer keeps only positive-winding triangles, so cull mode 0 (CW front)
-             * reverses the order, and STRIPS flip it again on every other triangle because
-             * strip triangles alternate winding (cullType ^ wind). Without the parity flip
-             * every second strip triangle is culled wrongly and back faces leak through —
-             * meshes dissolve into scattered triangles. The last vertex (provoking, used
-             * for flat shading) stays in place. */
-            if (ge.cull_enable && !ge.clear) {
-                int flip = ((ge.cull & 1) == 0) ^ ((type == 4) ? (i & 1) : 0);
-                if (flip) { CVtx t = cv[0]; cv[0] = cv[1]; cv[1] = t; }
-            }
-
-            /* PSP triangle acceptance (PPSSPP Clipper::ProcessTriangle). The hardware DROPS
-             * whole triangles rather than clipping when vertices leave the screen grid or the
-             * z range; games rely on it (effect passes, behind-camera geometry). Drawing them
-             * (the old behaviour) scattered runaway triangles across the scene. */
-            int dec = D_DRAW;
-            /* Fail closed on a non-finite clip/screen position FIRST: the out-of-range and
-             * z tests below all compare false against NaN, so a NaN vertex would otherwise be
-             * accepted and rasterized with NaN edge functions (unbounded, garbage coverage).
-             * The PSP's own answer for such a vertex is NOT_MEASURED, so the primitive is
-             * dropped and counted rather than given an invented screen result. */
-            if (cv[0].nf || cv[1].nf || cv[2].nf) dec = D_NONFINITE;
-            else if (cv[0].oor || cv[1].oor || cv[2].oor) dec = D_OOR;
-            else if (cv[0].cw < 0.0f && cv[1].cw < 0.0f && cv[2].cw < 0.0f) dec = D_WNEG;
-            else {
-                int zp = cv[0].ozp + cv[1].ozp + cv[2].ozp;
-                int zn = cv[0].ozn + cv[1].ozn + cv[2].ozn;
-                if (!ge.depth_clip && zp + zn > 0) dec = D_ZOUT;
-                else if (zp >= 3 || zn >= 3) dec = D_ZSAME;
-            }
-            if (dec == D_DRAW) {
-                if (clip_d_nearz(&cv[0]) >= 0.0f && clip_d_nearz(&cv[1]) >= 0.0f && clip_d_nearz(&cv[2]) >= 0.0f) {
-                    if (!(cv[0].cw > NEAR_W && cv[1].cw > NEAR_W && cv[2].cw > NEAR_W)) dec = D_CWLOW;
-                } else if (clip_d_nearz(&cv[0]) < 0.0f && clip_d_nearz(&cv[1]) < 0.0f && clip_d_nearz(&cv[2]) < 0.0f) {
-                    dec = D_NEARALL;
-                } else {
-                    dec = D_CLIP;   /* crosses the z >= -w plane: clip and fan */
+        /* TRIDEC: per-triangle decision log. First 12 per draw, plus EVERY triangle whose
+         * screen bbox covers the SR_PIXWHO probe pixel (drawn or dropped) — the probe
+         * coverage test treats any cw<=0 vertex as unbounded (could project anywhere). */
+        if (rt) {
+            int probe = 0;
+            if (s_who_x >= 0) {
+                float bx0 = 1e30f, bx1 = -1e30f, by0 = 1e30f, by1 = -1e30f;
+                int unbounded = 0;
+                for (int k = 0; k < 3; k++) {
+                    if (cv[k].cw <= 0.0f) { unbounded = 1; continue; }
+                    float px = cv[k].sx - roffx, py = cv[k].sy - roffy;
+                    if (px < bx0) bx0 = px;
+                    if (px > bx1) bx1 = px;
+                    if (py < by0) by0 = py;
+                    if (py > by1) by1 = py;
                 }
+                if (unbounded) probe = 1;
+                else probe = (bx0 <= (float)s_who_x + 1 && bx1 >= (float)s_who_x - 1 &&
+                              by0 <= (float)s_who_y + 1 && by1 >= (float)s_who_y - 1);
             }
-            dcnt[dec]++;
-            if (s_primitive_profile_counting) {
-                if (dec == D_DRAW) s_cpu_profile_stats.primitive_profile_transform_triangles_drawn++;
-                else if (dec == D_CLIP) s_cpu_profile_stats.primitive_profile_transform_triangles_clipped++;
-                else s_cpu_profile_stats.primitive_profile_transform_triangles_rejected++;
+            if (probe || tlogged < 12) {
+                tlogged++;
+                fprintf(stderr, "TRIDEC f=%" PRIu32 " d=%" PRIu32 " i=%d %s%s"
+                        " v0[c=(%.4g,%.4g,%.4g,%.4g) s=(%.1f,%.1f,%.0f) f=%d%d%d rgba=%d,%d,%d,%d uv=(%.3g,%.3g)]"
+                        " v1[c=(%.4g,%.4g,%.4g,%.4g) s=(%.1f,%.1f,%.0f) f=%d%d%d rgba=%d,%d,%d,%d uv=(%.3g,%.3g)]"
+                        " v2[c=(%.4g,%.4g,%.4g,%.4g) s=(%.1f,%.1f,%.0f) f=%d%d%d rgba=%d,%d,%d,%d uv=(%.3g,%.3g)]\n",
+                        s_ge_frame, s_rt_draw, i, dec_name[dec], probe ? " PROBE" : "",
+                        cv[0].cx, cv[0].cy, cv[0].cz, cv[0].cw, cv[0].sx - roffx, cv[0].sy - roffy, cv[0].sz,
+                        cv[0].oor, cv[0].ozp, cv[0].ozn, cv[0].r, cv[0].g, cv[0].b, cv[0].a, cv[0].u, cv[0].v,
+                        cv[1].cx, cv[1].cy, cv[1].cz, cv[1].cw, cv[1].sx - roffx, cv[1].sy - roffy, cv[1].sz,
+                        cv[1].oor, cv[1].ozp, cv[1].ozn, cv[1].r, cv[1].g, cv[1].b, cv[1].a, cv[1].u, cv[1].v,
+                        cv[2].cx, cv[2].cy, cv[2].cz, cv[2].cw, cv[2].sx - roffx, cv[2].sy - roffy, cv[2].sz,
+                        cv[2].oor, cv[2].ozp, cv[2].ozn, cv[2].r, cv[2].g, cv[2].b, cv[2].a, cv[2].u, cv[2].v);
             }
-            if (dec != D_DRAW && dec != D_NONFINITE) s_stat.nearclip++;
-            if (dec == D_NONFINITE) s_stat.nonfinite++;
-            int clip_m = -1;
-            if (dec == D_CLIP)
-                clip_m = clip_poly_near(cv, 3, cl);
-            if (acceptance_started)
-                primitive_profile_end(GE_PRIM_PROFILE_CLIPPING_ACCEPTANCE, acceptance_started);
+        }
 
-            /* TRIDEC: per-triangle decision log. First 12 per draw, plus EVERY triangle whose
-             * screen bbox covers the SR_PIXWHO probe pixel (drawn or dropped) — the probe
-             * coverage test treats any cw<=0 vertex as unbounded (could project anywhere). */
-            if (rt) {
-                int probe = 0;
-                if (s_who_x >= 0) {
-                    float bx0 = 1e30f, bx1 = -1e30f, by0 = 1e30f, by1 = -1e30f;
-                    int unbounded = 0;
-                    for (int k = 0; k < 3; k++) {
-                        if (cv[k].cw <= 0.0f) { unbounded = 1; continue; }
-                        float px = cv[k].sx - roffx, py = cv[k].sy - roffy;
-                        if (px < bx0) bx0 = px;
-                        if (px > bx1) bx1 = px;
-                        if (py < by0) by0 = py;
-                        if (py > by1) by1 = py;
-                    }
-                    if (unbounded) probe = 1;
-                    else probe = (bx0 <= (float)s_who_x + 1 && bx1 >= (float)s_who_x - 1 &&
-                                  by0 <= (float)s_who_y + 1 && by1 >= (float)s_who_y - 1);
-                }
-                if (probe || tlogged < 12) {
-                    tlogged++;
-                    fprintf(stderr, "TRIDEC f=%" PRIu32 " d=%" PRIu32 " i=%d %s%s"
-                            " v0[c=(%.4g,%.4g,%.4g,%.4g) s=(%.1f,%.1f,%.0f) f=%d%d%d rgba=%d,%d,%d,%d uv=(%.3g,%.3g)]"
-                            " v1[c=(%.4g,%.4g,%.4g,%.4g) s=(%.1f,%.1f,%.0f) f=%d%d%d rgba=%d,%d,%d,%d uv=(%.3g,%.3g)]"
-                            " v2[c=(%.4g,%.4g,%.4g,%.4g) s=(%.1f,%.1f,%.0f) f=%d%d%d rgba=%d,%d,%d,%d uv=(%.3g,%.3g)]\n",
-                            s_ge_frame, s_rt_draw, i, dec_name[dec], probe ? " PROBE" : "",
-                            cv[0].cx, cv[0].cy, cv[0].cz, cv[0].cw, cv[0].sx - roffx, cv[0].sy - roffy, cv[0].sz,
-                            cv[0].oor, cv[0].ozp, cv[0].ozn, cv[0].r, cv[0].g, cv[0].b, cv[0].a, cv[0].u, cv[0].v,
-                            cv[1].cx, cv[1].cy, cv[1].cz, cv[1].cw, cv[1].sx - roffx, cv[1].sy - roffy, cv[1].sz,
-                            cv[1].oor, cv[1].ozp, cv[1].ozn, cv[1].r, cv[1].g, cv[1].b, cv[1].a, cv[1].u, cv[1].v,
-                            cv[2].cx, cv[2].cy, cv[2].cz, cv[2].cw, cv[2].sx - roffx, cv[2].sy - roffy, cv[2].sz,
-                            cv[2].oor, cv[2].ozp, cv[2].ozn, cv[2].r, cv[2].g, cv[2].b, cv[2].a, cv[2].u, cv[2].v);
-                }
-            }
-
-            if (dec == D_DRAW) {
-                Vtx a, b, c;
+        if (dec == D_DRAW) {
+            Vtx a, b, c;
+            uint64_t assembly_started = tri_profile_slot == 1 ? SDL_GetTicksNS() : 0;
+#ifdef SR_GE_FRONTEND_PROFILE
+            primitive_profile_note_assembly();
+#endif
+            project_cvtx(&cv[0],&a); project_cvtx(&cv[1],&b); project_cvtx(&cv[2],&c);
+            if (assembly_started)
+                primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
+            primitive_profile_finish_total();
+            raster_tri(&a,&b,&c,1);
+        } else if (dec == D_CLIP) {
+            int m = clip_m;
+            if (m >= 3) {
+                /* PPSSPP discards each SUB-triangle whose vertices include a clip-created
+                 * vertex that re-projects outside the screen grid (clip_vtx_out_of_range);
+                 * the rest of the fan still draws. */
+                Vtx p[4];
+                int bad[4];
                 uint64_t assembly_started = tri_profile_slot == 1 ? SDL_GetTicksNS() : 0;
 #ifdef SR_GE_FRONTEND_PROFILE
                 primitive_profile_note_assembly();
 #endif
-                project_cvtx(&cv[0],&a); project_cvtx(&cv[1],&b); project_cvtx(&cv[2],&c);
+                for (int k = 0; k < m && k < 4; k++) {
+                    bad[k] = cl[k].nf || (cl[k].cw <= NEAR_W) || clip_vtx_out_of_range(&cl[k]);
+                    if (!bad[k]) project_cvtx(&cl[k], &p[k]);
+                }
                 if (assembly_started)
                     primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
                 primitive_profile_finish_total();
-                raster_tri(&a,&b,&c,1);
-            } else if (dec == D_CLIP) {
-                int m = clip_m;
-                if (m >= 3) {
-                    /* PPSSPP discards each SUB-triangle whose vertices include a clip-created
-                     * vertex that re-projects outside the screen grid (clip_vtx_out_of_range);
-                     * the rest of the fan still draws. */
-                    Vtx p[4];
-                    int bad[4];
-                    uint64_t assembly_started = tri_profile_slot == 1 ? SDL_GetTicksNS() : 0;
-#ifdef SR_GE_FRONTEND_PROFILE
-                    primitive_profile_note_assembly();
-#endif
-                    for (int k = 0; k < m && k < 4; k++) {
-                        bad[k] = cl[k].nf || (cl[k].cw <= NEAR_W) || clip_vtx_out_of_range(&cl[k]);
-                        if (!bad[k]) project_cvtx(&cl[k], &p[k]);
-                    }
-                    if (assembly_started)
-                        primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
-                    primitive_profile_finish_total();
-                    if (rt && tlogged <= 13) {
-                        char buf[640]; size_t bn = 0;
-                        buf[0] = '\0';
-                        for (int k = 0; k < m && k < 4; k++)
-                            bn = sr_buf_append(buf, sizeof(buf), bn,
-                                               " p%d[c=(%.4g,%.4g,%.4g,%.4g)->(%.1f,%.1f,%.0f) bad=%d rgba=%d,%d,%d,%d]",
-                                               k, cl[k].cx, cl[k].cy, cl[k].cz, cl[k].cw,
-                                               bad[k] ? -1.0f : p[k].x, bad[k] ? -1.0f : p[k].y,
-                                               bad[k] ? -1.0f : p[k].z, bad[k],
-                                               cl[k].r, cl[k].g, cl[k].b, cl[k].a);
-                        fprintf(stderr, "TRICLP f=%" PRIu32 " d=%" PRIu32 " i=%d m=%d%s\n",
-                                s_ge_frame, s_rt_draw, i, m, buf);
-                    }
-                    for (int k = 2; k < m && k < 4; k++)
-                        if (!bad[0] && !bad[k-1] && !bad[k])
-                            raster_tri(&p[0], &p[k-1], &p[k], 1);
+                if (rt && tlogged <= 13) {
+                    char buf[640]; size_t bn = 0;
+                    buf[0] = '\0';
+                    for (int k = 0; k < m && k < 4; k++)
+                        bn = sr_buf_append(buf, sizeof(buf), bn,
+                                           " p%d[c=(%.4g,%.4g,%.4g,%.4g)->(%.1f,%.1f,%.0f) bad=%d rgba=%d,%d,%d,%d]",
+                                           k, cl[k].cx, cl[k].cy, cl[k].cz, cl[k].cw,
+                                           bad[k] ? -1.0f : p[k].x, bad[k] ? -1.0f : p[k].y,
+                                           bad[k] ? -1.0f : p[k].z, bad[k],
+                                           cl[k].r, cl[k].g, cl[k].b, cl[k].a);
+                    fprintf(stderr, "TRICLP f=%" PRIu32 " d=%" PRIu32 " i=%d m=%d%s\n",
+                            s_ge_frame, s_rt_draw, i, m, buf);
                 }
-                if (m < 3)
-                    primitive_profile_finish_total();
-            } else {
-                primitive_profile_finish_total();
+                for (int k = 2; k < m && k < 4; k++)
+                    if (!bad[0] && !bad[k-1] && !bad[k])
+                        raster_tri(&p[0], &p[k-1], &p[k], 1);
             }
+            if (m < 3)
+                primitive_profile_finish_total();
+        } else {
+            primitive_profile_finish_total();
         }
-        if (rt) {
-            fprintf(stderr, "TRIDRW+ f=%" PRIu32 " d=%" PRIu32 " tris=%lu draw=%lu clip=%lu drop[oor=%lu wneg=%lu zout=%lu "
-                    "zsame=%lu nearall=%lu cwlow=%lu nonfinite=%lu] rast=%lu cull=%lu deg=%lu px=%lu "
-                    "zfail=%lu afail=%lu zrange=%lu blk=%lu\n",
-                    s_ge_frame, s_rt_draw,
-                    dcnt[0]+dcnt[1]+dcnt[2]+dcnt[3]+dcnt[4]+dcnt[5]+dcnt[6]+dcnt[7]+dcnt[8],
-                    dcnt[D_DRAW], dcnt[D_CLIP], dcnt[D_OOR], dcnt[D_WNEG], dcnt[D_ZOUT],
-                    dcnt[D_ZSAME], dcnt[D_NEARALL], dcnt[D_CWLOW], dcnt[D_NONFINITE],
-                    s_stat.tri3d - st0.tri3d, s_stat.cull - st0.cull, s_stat.deg3d - st0.deg3d,
-                    s_stat.px3d - st0.px3d, s_stat.zfail - st0.zfail, s_stat.afail - st0.afail,
-                    s_stat.zrange - st0.zrange, s_stat.blk3d - st0.blk3d);
-        }
+    }
+    if (rt) {
+        fprintf(stderr, "TRIDRW+ f=%" PRIu32 " d=%" PRIu32 " tris=%lu draw=%lu clip=%lu drop[oor=%lu wneg=%lu zout=%lu "
+                "zsame=%lu nearall=%lu cwlow=%lu nonfinite=%lu] rast=%lu cull=%lu deg=%lu px=%lu "
+                "zfail=%lu afail=%lu zrange=%lu blk=%lu\n",
+                s_ge_frame, s_rt_draw,
+                dcnt[0]+dcnt[1]+dcnt[2]+dcnt[3]+dcnt[4]+dcnt[5]+dcnt[6]+dcnt[7]+dcnt[8],
+                dcnt[D_DRAW], dcnt[D_CLIP], dcnt[D_OOR], dcnt[D_WNEG], dcnt[D_ZOUT],
+                dcnt[D_ZSAME], dcnt[D_NEARALL], dcnt[D_CWLOW], dcnt[D_NONFINITE],
+                s_stat.tri3d - st0.tri3d, s_stat.cull - st0.cull, s_stat.deg3d - st0.deg3d,
+                s_stat.px3d - st0.px3d, s_stat.zfail - st0.zfail, s_stat.afail - st0.afail,
+                s_stat.zrange - st0.zrange, s_stat.blk3d - st0.blk3d);
+    }
+}
+
+/* Transform-mode sprites: two 3D corner vertices define an axis-aligned screen rect. */
+static void draw_prim_xform_sprites(const DrawPrimCtx *c) {
+    const int count = c->count;
+    const int idxfmt = c->idxfmt;
+    VFmt vf = c->vf;
+    const uint32_t vbase = c->vbase;
+    const uint32_t ibase = c->ibase;
+    /* Sprites in transform mode: two 3D corner vertices define an axis-aligned screen rect.
+     * The Z/depth comes from the second vertex. */
+    for (int i = 1; i < count; i += 2) {
+        Vtx p0, p1;
+        if (!transform_vtx_3d(prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride),&vf,&p0)) continue;
+        if (!transform_vtx_3d(prim_vtx_addr(vbase,ibase,idxfmt,i,  vf.stride),&vf,&p1)) continue;
+        fill_sprite(&p0,&p1,1);
+    }
+}
+
+static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr, uint32_t cmd_addr) {
+    g_frame_prims++;
+    s_primitive_profile_counting = 0;
+    primitive_profile_clear_pending();
+    int type = (op >> 16) & 7;
+    int count = op & 0xFFFF;
+    draw_prim_note_profile(type, count);
+    VFmt vf; decode_vtype(ge.vtype, &vf);
+    primitive_profile_note_draw(type, count, &vf);
+    draw_prim_count_list(type, count, &vf);
+#ifdef SR_GE_FRONTEND_PROFILE
+    uint64_t draw_setup_started = primitive_profile_draw_setup_begin();
+#endif
+    if (s_gelog < 0) s_gelog = getenv("SR_GEDUMP") ? 1 : 0;
+    if (s_gewatch < 0) s_gewatch = getenv("SR_GEWATCH") ? 1 : 0;
+    if (s_gewatch_after < 0) { const char *p=getenv("SR_GEWATCH_AFTER"); s_gewatch_after=p?atoi(p):0; }
+    if (s_gewatch_limit < 0) { const char *p=getenv("SR_GEWATCH_LIMIT"); s_gewatch_limit=p?atoi(p):240; if(s_gewatch_limit<=0)s_gewatch_limit=240; }
+    int watch_now = s_gewatch && s_ge_frame >= (uint32_t)s_gewatch_after;
+    int idxfmt = (ge.vtype >> 11) & 3;
+    if (s_gelog) {
+        static int n=0, nthrough=0, ntransform=0;
+        if (vf.through) nthrough++; else ntransform++;
+        if (n++ < 40 || (!vf.through && ntransform < 20))
+            fprintf(stderr, "GE PRIM type=%d count=%d vtype=0x%06" PRIx32 " through=%d idx=%d tex=%d fmt=%" PRIu32 " fbp=0x%08" PRIx32 " vaddr=0x%08" PRIx32 " iaddr=0x%08" PRIx32 " [thru=%d xform=%d]\n",
+                type, count, ge.vtype, vf.through, idxfmt, ge.tex_enable, ge.tex_fmt, ge.fbp, ge.vaddr, ge.iaddr, nthrough, ntransform);
+    }
+    uint32_t vbase = ge.vaddr, ibase = ge.iaddr;
+    /* Advance vertex/index pointer (PPSSPP GPUCommon::AdvanceVerts). */
+    if (idxfmt) ge.iaddr += (uint32_t)(count << (idxfmt - 1));
+    else        ge.vaddr += (uint32_t)(count * vf.stride);
+
+    /* Narrow transition harness (issue #69): one cached-gate check per draw, before any
+     * vertex work; the helper keeps only weighted draws and emits one JSONL record. */
+    ge_transition_trace_draw(type, count, &vf, prim_index, list_addr, cmd_addr, vbase, ibase);
+
+    /* Observe both the through and transform frontends.  The optional frame gate
+     * preserves the fixed distinct-texture budget for late deterministic scenes. */
+    texdump_maybe();
+
+    DrawPrimCtx c = { type, count, idxfmt, vf, vbase, ibase, prim_index, watch_now };
+    /* ---- THROUGH-MODE (2D, screen coords) ---- */
+#ifdef SR_GE_FRONTEND_PROFILE
+    primitive_profile_draw_setup_end(draw_setup_started);
+#endif
+    s_primitive_profile_through = vf.through;
+    s_primitive_profile_counting = s_primitive_profile;
+    if (vf.through) {
+        draw_prim_through(&c);
+        return;
+    }
+
+    /* ---- TRANSFORM-MODE (3D, full T&L) ---- */
+    /* Diagnostics below may inspect vertices without submitting them; keep
+     * those reads out of the sparse event population. */
+    s_primitive_profile_counting = 0;
+    primitive_profile_clear_pending();
+    int rt = draw_prim_trace_transform(&c);
+
+    s_primitive_profile_counting = s_primitive_profile;
+    if (type == 0) {           /* points */
+        draw_prim_xform_points(&c);
+    } else if (type == 1 || type == 2) {   /* lines / line strip */
+        draw_prim_xform_lines(&c);
+    } else if ((type == 3 || type == 4 || type == 5) &&
+               ge_tnl_try_prim(type, count, &vf, vbase, ibase, idxfmt)) {
+        /* Transformed, lit and drawn by the backend's GPU T&L (#318). */
+    } else if (type == 3 || type == 4 || type == 5) {
+        draw_prim_xform_triangles(&c, rt);
     } else if (type == 6) {
-        /* Sprites in transform mode: two 3D corner vertices define an axis-aligned screen rect.
-         * The Z/depth comes from the second vertex. */
-        for (int i = 1; i < count; i += 2) {
-            Vtx p0, p1;
-            if (!transform_vtx_3d(prim_vtx_addr(vbase,ibase,idxfmt,i-1,vf.stride),&vf,&p0)) continue;
-            if (!transform_vtx_3d(prim_vtx_addr(vbase,ibase,idxfmt,i,  vf.stride),&vf,&p1)) continue;
-            fill_sprite(&p0,&p1,1);
-        }
+        draw_prim_xform_sprites(&c);
     }
     s_primitive_profile_counting = 0;
     primitive_profile_clear_pending();
@@ -5622,15 +5724,428 @@ static void ge_block_transfer(uint32_t startdata) {
     }
 }
 
-static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
-    if (!s_ge_inited) ge_state_init();
-    if (!resume) {
-        s_sp = 0;
-        s_bbox_visible = 1;
+/* Register-write commands: framebuffer, depth, fragment-test and blend toggles, dither and patch state. Returns 0 when `cmd` is not one of them. */
+static int ge_cmd_pipeline_state(uint32_t cmd, uint32_t data, uint32_t addr) {
+    switch (cmd) {
+        case GE_VADDR:    ge.vaddr=ge_rel_addr(data); break;
+        case GE_IADDR:    ge.iaddr=ge_rel_addr(data); break;
+        case GE_BASE:     ge.base=data; break;
+        case GE_OFFSETADDR: ge.offset=data<<8; break;
+        case GE_ORIGIN:   ge.offset=addr-4; break;
+        case GE_VERTEXTYPE: ge.vtype=data; break;
+
+        case GE_FRAMEBUFPTR:   ge.fbp=ge_normalize_vram_target((ge.fbp&0xFF000000)|data);
+            if (s_gelog>0) fprintf(stderr,"GE FRAMEBUFPTR data=0x%06" PRIx32 " -> fbp=0x%08" PRIx32 "\n",data,ge.fbp);
+            break;
+        case GE_FRAMEBUFWIDTH: ge.fbw=data&0xFFFF; ge.fbp=ge_normalize_vram_target((ge.fbp&0x00FFFFFF)|((data&0xFF0000)<<8));
+            if (s_gelog>0) fprintf(stderr,"GE FRAMEBUFWIDTH data=0x%06" PRIx32 " -> fbw=%" PRIu32 " fbp=0x%08" PRIx32 "\n",data,ge.fbw,ge.fbp);
+            break;
+        case GE_FRAMEBUFPIXFORMAT: ge.fbfmt=data&3; break;
+
+        case GE_ZBUFPTR:   ge.zbp=ge_normalize_vram_target((ge.zbp&0xFF000000)|data); break;
+        case GE_ZBUFWIDTH: ge.zbw=data&0xFFFF; ge.zbp=ge_normalize_vram_target((ge.zbp&0x00FFFFFF)|((data&0xFF0000)<<8)); break;
+
+        /* Drawing region: the scissor (which the game also sets) bounds all writes. */
+        case GE_REGION1: case GE_REGION2: break;
+
+        case GE_SCISSOR1: ge.scis_x1=data&0x3FF; ge.scis_y1=(data>>10)&0x3FF; break;
+        case GE_SCISSOR2: ge.scis_x2=data&0x3FF; ge.scis_y2=(data>>10)&0x3FF; break;
+
+        /* ---- Depth / cull state ---- */
+        case GE_ZTESTENABLE:   ge.ztest_enable  = data & 1; break;
+        case GE_ZWRITEDISABLE: ge.zwrite_disable= data & 1; break;
+        case GE_ZTEST:         ge.ztest         = data & 7; break;
+        case GE_MINZ:          ge.minz          = data & 0xFFFF; break;
+        case GE_MAXZ:          ge.maxz          = data & 0xFFFF; break;
+        case GE_CULLFACEENABLE:ge.cull_enable   = data & 1; break;
+        case GE_CULL:          ge.cull          = data & 1; break;
+        case GE_CLIPENABLE:    ge.depth_clip = data & 1; break;
+
+        /* ---- Fragment test / blend toggles ---- */
+        case GE_ALPHATESTENABLE: ge.atest_enable = data & 1; break;
+        case GE_ALPHATEST:       ge.atest        = data; break;
+        case GE_ALPHABLENDENABLE: ge.blend_enable=data&1; break;
+        case GE_FOGENABLE:  ge.fog_enable = data & 1; break;
+        case GE_FOG1:       ge.fog_end   = decode_float24(data); break;
+        case GE_FOG2:       ge.fog_slope = decode_float24(data); break;
+        case GE_FOGCOLOR:   ge.fog_color = data; break;
+        case GE_DITHERENABLE: ge.dither_enable = data & 1; break;
+        case GE_DITH0: case GE_DITH1: case GE_DITH2: case GE_DITH3: {
+            /* One row of the 4x4 dither matrix: 4 signed 4-bit values. */
+            int row = (int)(cmd - GE_DITH0);
+            for (int i = 0; i < 4; i++) {
+                int v = (int)((data >> (i*4)) & 0xF);
+                ge.dith[row][i] = (int8_t)(v >= 8 ? v - 16 : v);
+            }
+            break;
+        }
+        case GE_MASKRGB:   ge.mask_rgb   = data; break;
+        case GE_MASKALPHA: ge.mask_alpha = (int)(data & 0xFF); break;
+        case GE_STENCILTESTENABLE: ge.stencil_enable=data&1; break;
+        case GE_STENCILTEST:       ge.stencil_test=data; break;
+        case GE_STENCILOP:         ge.stencil_op=data; break;
+        case GE_COLORTESTENABLE:   ge.color_test_enable=data&1; break;
+        case GE_COLORTEST:         ge.color_test=data&3; break;
+        case GE_COLORREF:          ge.color_ref=data&0x00FFFFFFu; break;
+        case GE_COLORTESTMASK:     ge.color_test_mask=data&0x00FFFFFFu; break;
+        case GE_LOGICOPENABLE:     ge.logic_op_enable=data&1; break;
+        case GE_LOGICOP:           ge.logic_op=data&15; break;
+        case GE_ANTIALIASENABLE: break;
+        case GE_PATCHCULLENABLE: ge.patch_cull_enable=data&1; break;
+        case GE_PATCHDIVISION:   ge.patch_division=data; break;
+        case GE_PATCHPRIMITIVE:  ge.patch_primitive=data&3; break;
+        case GE_PATCHFACING:     ge.patch_facing=data&1; break;
+    default: return 0;
     }
-    static int snap=-1; if(snap<0) snap=(getenv("SR_FBDUMP")||getenv("SR_GEDUMP"))?1:0;
-    uint32_t list_addr=addr;
-    const int flight_ge_enabled = sr_flight_class_enabled(SR_FLIGHT_CLASS_GE);
+    return 1;
+}
+
+/* Register-write commands: matrix uploads, viewport and offset. Returns 0 when `cmd` is not one of them. */
+static int ge_cmd_matrices_viewport(uint32_t cmd, uint32_t data) {
+    switch (cmd) {
+        /* ---- Matrix capture ----
+         * *MATRIXNUMBER sets the write cursor; *MATRIXDATA writes one float24 and advances.
+         * World/View are 4×3 (12 elements), Proj is 4×4 (16 elements). */
+        /* Bone matrices: 8 4x3 matrices in one 96-float array; NUMBER takes data&0x7F
+         * (a raw cursor, can point past the end), DATA writes land only while < 96
+         * (PPSSPP SoftGpu.cpp). The hangar aircraft is drawn part-by-part with one
+         * rigid bone per part and single-weight vertices. */
+        case 0x2A: ge.bone_num = (int)(data & 0x7F); break;    /* BONEMATRIXNUMBER */
+        case 0x2B:                                             /* BONEMATRIXDATA */
+            if (s_stat_on > 0) s_stat.bonew++;
+            if (ge.bone_num < 96) {
+                float bone_f = decode_float24(data);
+                ge.bone[ge.bone_num] = bone_f;
+                if (s_tr_enabled > 0) s_tr_bone_w[ge.bone_num] = bone_f;
+            } else if (s_tr_enabled > 0) {
+                s_tr_bone_drop++;
+            }
+            ge.bone_num++;
+            break;
+        case GE_MORPHWEIGHT0+0: case GE_MORPHWEIGHT0+1:
+        case GE_MORPHWEIGHT0+2: case GE_MORPHWEIGHT0+3:
+        case GE_MORPHWEIGHT0+4: case GE_MORPHWEIGHT0+5:
+        case GE_MORPHWEIGHT0+6: case GE_MORPHWEIGHT0+7:
+            ge.morph_weight[cmd-GE_MORPHWEIGHT0]=decode_float24(data);
+            break;
+        /* Hardware semantics (PPSSPP SoftGpu.cpp): NUMBER takes the low 4 bits; DATA writes
+         * advance the cursor unconditionally but only land while it is in range -- excess
+         * words are DISCARDED, never wrapped. (The old wrap-to-0 let a 13th data word clobber
+         * element 0: the hangar/briefing engine path uploads 13-word matrices and every one
+         * of its world matrices was corrupted, throwing whole meshes behind the camera.) */
+        case GE_WORLDMATRIXNUMBER: ge.world_num = (int)(data & 0xF); break;
+        case GE_WORLDMATRIXDATA:
+            s_stat.mw_world++;
+            if (ge.world_num < 12) {
+                float world_f = decode_float24(data);
+                ge.world[ge.world_num] = world_f;
+                if (s_tr_enabled > 0) s_tr_world_w[ge.world_num] = world_f;
+            } else if (s_tr_enabled > 0) {
+                s_tr_world_drop++;
+            }
+            ge.world_num++;
+            break;
+        case GE_VIEWMATRIXNUMBER: ge.view_num = (int)(data & 0xF); break;
+        case GE_VIEWMATRIXDATA:
+            s_stat.mw_view++;
+            trace_mtx_write("view", ge.view_num, data);
+            if (ge.view_num < 12) {
+                float view_f = decode_float24(data);
+                ge.view[ge.view_num] = view_f;
+                if (s_tr_enabled > 0) s_tr_view_w[ge.view_num] = view_f;
+            } else if (s_tr_enabled > 0) {
+                s_tr_view_drop++;
+            }
+            ge.view_num++;
+            break;
+        case GE_PROJMATRIXNUMBER: ge.proj_num = (int)(data & 0xF); break;
+        case GE_PROJMATRIXDATA:
+            s_stat.mw_proj++;
+            trace_mtx_write("proj", ge.proj_num, data);
+            if (ge.proj_num < 16) {
+                float proj_f = decode_float24(data);
+                ge.proj[ge.proj_num] = proj_f;
+                if (s_tr_enabled > 0) s_tr_proj_w[ge.proj_num] = proj_f;
+            } else if (s_tr_enabled > 0) {
+                s_tr_proj_drop++;
+            }
+            ge.proj_num++;
+            break;
+
+        /* ---- Viewport / offset ---- */
+        case GE_VIEWPORTXSCALE:  ge.viewport_raw[0]=data; break;
+        case GE_VIEWPORTYSCALE:  ge.viewport_raw[1]=data; break;
+        case GE_VIEWPORTZSCALE:  ge.viewport_raw[2]=data; break;
+        case GE_VIEWPORTXCENTER: ge.viewport_raw[3]=data; break;
+        case GE_VIEWPORTYCENTER: ge.viewport_raw[4]=data; break;
+        case GE_VIEWPORTZCENTER: ge.viewport_raw[5]=data; break;
+        case GE_OFFSETX:         ge.offsetx=data; break;
+        case GE_OFFSETY:         ge.offsety=data; break;
+    default: return 0;
+    }
+    return 1;
+}
+
+/* Register-write commands: shading, material and lighting. Returns 0 when `cmd` is not one of them. */
+static int ge_cmd_lighting(uint32_t cmd, uint32_t data) {
+    switch (cmd) {
+        /* ---- Shading / material / lighting ---- */
+        case GE_SHADEMODE:       ge.shade_gouraud = data & 1; break;
+        case GE_REVERSENORMAL:   ge.reverse_normal = data & 1; break;
+        case GE_MATERIALUPDATE:  ge.mat_update = data & 7; break;
+        case GE_MATERIALEMISSIVE:ge.mat_emissive = data; break;
+        case GE_MATERIALAMBIENT: ge.material=data; ge.material_set=1; break;
+        case GE_MATERIALDIFFUSE: ge.mat_diffuse=data;
+            /* Flat-colour fallback for colourless vertices also tracks diffuse. */
+            ge.material=data; ge.material_set=1; break;
+        case GE_MATERIALSPECULAR:ge.mat_specular = data; break;
+        case GE_MATERIALALPHA:   ge.material_alpha=data&0xFF; ge.material_alpha_set=1; break;
+        case GE_MATERIALSPECULARCOEF: ge.spec_coef = decode_float24(data); break;
+        case GE_AMBIENTCOLOR:    ge.amb_color = data; break;
+        case GE_AMBIENTALPHA:    ge.amb_alpha = (int)(data & 0xFF); break;
+        case GE_LIGHTMODE:       ge.light_mode = data & 1; break;
+        case GE_LIGHTINGENABLE:  ge.lighting_enable = data & 1; break;
+        case GE_LIGHTENABLE0+0: case GE_LIGHTENABLE0+1:
+        case GE_LIGHTENABLE0+2: case GE_LIGHTENABLE0+3:
+            ge.light_on[cmd-GE_LIGHTENABLE0] = data & 1; break;
+        case GE_LIGHTTYPE0+0: case GE_LIGHTTYPE0+1:
+        case GE_LIGHTTYPE0+2: case GE_LIGHTTYPE0+3:
+            ge.light_type[cmd-GE_LIGHTTYPE0] = data; break;
+        case GE_LX0+0:  case GE_LX0+1:  case GE_LX0+2:  case GE_LX0+3:
+        case GE_LX0+4:  case GE_LX0+5:  case GE_LX0+6:  case GE_LX0+7:
+        case GE_LX0+8:  case GE_LX0+9:  case GE_LX0+10: case GE_LX0+11: {
+            int k=(int)(cmd-GE_LX0); ge.light_pos[k/3][k%3]=decode_float24(data); break;
+        }
+        case GE_LDX0+0: case GE_LDX0+1: case GE_LDX0+2: case GE_LDX0+3:
+        case GE_LDX0+4: case GE_LDX0+5: case GE_LDX0+6: case GE_LDX0+7:
+        case GE_LDX0+8: case GE_LDX0+9: case GE_LDX0+10:case GE_LDX0+11: {
+            int k=(int)(cmd-GE_LDX0); ge.light_dir[k/3][k%3]=decode_float24(data); break;
+        }
+        case GE_LKA0+0: case GE_LKA0+1: case GE_LKA0+2: case GE_LKA0+3:
+        case GE_LKA0+4: case GE_LKA0+5: case GE_LKA0+6: case GE_LKA0+7:
+        case GE_LKA0+8: case GE_LKA0+9: case GE_LKA0+10:case GE_LKA0+11: {
+            int k=(int)(cmd-GE_LKA0); ge.light_att[k/3][k%3]=decode_float24(data); break;
+        }
+        case GE_LKS0+0: case GE_LKS0+1: case GE_LKS0+2: case GE_LKS0+3:
+            ge.light_spot_exp[cmd-GE_LKS0]=decode_float24(data); break;
+        case GE_LKO0+0: case GE_LKO0+1: case GE_LKO0+2: case GE_LKO0+3:
+            ge.light_spot_cut[cmd-GE_LKO0]=decode_float24(data); break;
+        case GE_LAC0+0: case GE_LAC0+1: case GE_LAC0+2: case GE_LAC0+3:
+        case GE_LAC0+4: case GE_LAC0+5: case GE_LAC0+6: case GE_LAC0+7:
+        case GE_LAC0+8: case GE_LAC0+9: case GE_LAC0+10:case GE_LAC0+11: {
+            int k=(int)(cmd-GE_LAC0), li=k/3;
+            if      (k%3==0) ge.light_acol[li]=data;
+            else if (k%3==1) ge.light_dcol[li]=data;
+            else             ge.light_scol[li]=data;
+            break;
+        }
+    default: return 0;
+    }
+    return 1;
+}
+
+/* Register-write commands: texture, CLUT and texture-coordinate generation. Returns 0 when `cmd` is not one of them. */
+static int ge_cmd_texture(uint32_t cmd, uint32_t data) {
+    switch (cmd) {
+        /* ---- Texturing ---- */
+        case GE_TEXTUREMAPENABLE: ge.tex_enable=data&1; break;
+        case GE_TEXADDR0:     ge.tex_addr=(ge.tex_addr&0xFF000000)|(data&0x00FFFFFF); break;
+        case GE_TEXBUFWIDTH0: ge.tex_bufw=data&0xFFFF; ge.tex_addr=(ge.tex_addr&0x00FFFFFF)|((data&0xFF0000)<<8); break;
+        case GE_TEXSIZE0:  ge.tex_w=1<<(data&0xF); ge.tex_h=1<<((data>>8)&0xF); break;
+        /* Mip levels 1-7, decoded exactly like level 0 (sceGuTexImage(level, ...)). */
+        case GE_TEXADDR0+1: case GE_TEXADDR0+2: case GE_TEXADDR0+3: case GE_TEXADDR0+4:
+        case GE_TEXADDR0+5: case GE_TEXADDR0+6: case GE_TEXADDR0+7: {
+            uint32_t *level_addr = &ge.tex_mip_addr[cmd - GE_TEXADDR0 - 1u];
+            *level_addr = (*level_addr & 0xFF000000u) | (data & 0x00FFFFFFu);
+            break;
+        }
+        case GE_TEXBUFWIDTH0+1: case GE_TEXBUFWIDTH0+2: case GE_TEXBUFWIDTH0+3:
+        case GE_TEXBUFWIDTH0+4: case GE_TEXBUFWIDTH0+5: case GE_TEXBUFWIDTH0+6:
+        case GE_TEXBUFWIDTH0+7: {
+            uint32_t level = cmd - GE_TEXBUFWIDTH0 - 1u;
+            ge.tex_mip_bufw[level] = data & 0xFFFFu;
+            ge.tex_mip_addr[level] = (ge.tex_mip_addr[level] & 0x00FFFFFFu) | ((data & 0xFF0000u) << 8);
+            break;
+        }
+        case GE_TEXSIZE0+1: case GE_TEXSIZE0+2: case GE_TEXSIZE0+3: case GE_TEXSIZE0+4:
+        case GE_TEXSIZE0+5: case GE_TEXSIZE0+6: case GE_TEXSIZE0+7:
+            ge.tex_mip_wlog2[cmd - GE_TEXSIZE0 - 1u] = (uint8_t)(data & 0xFu);
+            ge.tex_mip_hlog2[cmd - GE_TEXSIZE0 - 1u] = (uint8_t)((data >> 8) & 0xFu);
+            break;
+        /* sceGuTexMode: maxmips << 16 | multi-CLUT << 8 | swizzle. The multi-CLUT bit is
+         * not applied: every level samples through the one CLUT (#1373). */
+        case GE_TEXMODE:   ge.tex_swizzle=data&1; ge.tex_max_level=(data>>16)&7u; break;
+        case GE_TEXFORMAT: ge.tex_fmt=data&0xF; break;
+        case GE_TEXFILTER: ge.tex_filter=data; break;
+        case GE_TEXWRAP:   ge.tex_wrap=data; break;
+        case GE_TEXFUNC:   ge.tex_func=data; break;
+        case GE_TEXENVCOLOR: ge.tex_env=data; break;
+        case GE_TEXSCALEU:  ge.tex_scale_u=decode_float24(data); break;
+        case GE_TEXSCALEV:  ge.tex_scale_v=decode_float24(data); break;
+        case GE_TEXOFFSETU: ge.tex_off_u=decode_float24(data); break;
+        case GE_TEXOFFSETV: ge.tex_off_v=decode_float24(data); break;
+        case GE_TEXMAPMODE: ge.tex_map_mode=data; break;
+        case GE_TEXSHADELS: ge.tex_shade_ls=data; break;
+        case GE_TGENMATRIXNUMBER: ge.tgen_num = (int)(data & 0xF); break;
+        case GE_TGENMATRIXDATA:
+            if (ge.tgen_num < 12) ge.tgen[ge.tgen_num] = decode_float24(data);
+            ge.tgen_num++;
+            break;
+        /* sceGuTexLevelMode: mode | trunc(bias * 16) << 16, a signed 4.4 level bias. */
+        case GE_TEXLEVEL:
+            ge.tex_level_mode = data & 3u;
+            ge.tex_lod_bias = (float)(int8_t)(uint8_t)(data >> 16) / 16.0f;
+            break;
+        case GE_TEXLODSLOPE: ge.tex_lod_slope = decode_float24(data); break;
+        case GE_TEXFLUSH: case GE_TEXSYNC: break;         /* no texture cache to flush */
+        case GE_LOADCLUT: {
+            uint64_t profile_started = ge_cpu_profile_begin();
+            /* Copy (data&0x3F) 32-byte blocks from clut_addr into internal CLUT RAM, like
+             * the hardware (PPSSPP TextureCacheCommon::LoadClut). */
+            uint32_t bytes = (data & 0x3F) * 32;
+            if (bytes > sizeof(ge.clutram)) bytes = sizeof(ge.clutram);
+            if (!sr_guest_span_readable(ge.clut_addr, bytes)) {
+                fprintf(stderr, "GE_LOADCLUT: invalid source span addr=0x%08" PRIx32 " bytes=%" PRIu32 "\n",
+                        ge.clut_addr, bytes);
+                ge_cpu_profile_end(GE_CPU_CLUT_LOAD, profile_started);
+                break;
+            }
+            /* CLUT sourced from VRAM may read pixels the GPU backend hasn't written back. */
+            if (s_gpu && s_gpu->flush && (ge.clut_addr & 0x0F000000u) == 0x04000000u)
+                s_gpu->flush("loadclut");
+            for (uint32_t i = 0; i < bytes; i += 4) {
+                uint32_t w = MEM_R32(ge.clut_addr + i);
+                memcpy(&ge.clutram[i], &w, 4);
+            }
+            if (s_ge_timing_model) ge_time_clut_load(bytes);
+            ge.clut_gen++;
+            if (s_cpu_profile) s_cpu_profile_stats.clut_loads++;
+            ge_cpu_profile_end(GE_CPU_CLUT_LOAD, profile_started);
+            break;
+        }
+        case GE_CLUTADDR:      ge.clut_addr=(ge.clut_addr&0xFF000000)|(data&0x00FFFFFF); break;
+        case GE_CLUTADDRUPPER: ge.clut_addr=(ge.clut_addr&0x00FFFFFF)|((data&0xFF0000)<<8); break;
+        case GE_CLUTFORMAT: ge.clut_fmt=data; break;
+    default: return 0;
+    }
+    return 1;
+}
+
+/* Register-write commands: blend modes, clear mode and the block transfer. Returns 0 when `cmd` is not one of them. */
+static int ge_cmd_blend_transfer(uint32_t cmd, uint32_t data) {
+    switch (cmd) {
+        case GE_BLENDMODE:  ge.blend_mode=data; break;
+        case GE_BLENDFIXEDA: ge.blend_fixa=data; break;
+        case GE_BLENDFIXEDB: ge.blend_fixb=data; break;
+        case GE_CLEARMODE:  ge.clear_mode=data; ge.clear=data&1; break;
+
+        /* ---- Block transfer ---- */
+        case GE_TRANSFERSRC:    ge.xf_src  = data; break;
+        case GE_TRANSFERSRCW:   ge.xf_srcw = data; break;
+        case GE_TRANSFERDST:    ge.xf_dst  = data; break;
+        case GE_TRANSFERDSTW:   ge.xf_dstw = data; break;
+        case GE_TRANSFERSRCPOS: ge.xf_spos = data; break;
+        case GE_TRANSFERDSTPOS: ge.xf_dpos = data; break;
+        case GE_TRANSFERSIZE:   ge.xf_size = data; break;
+        case GE_TRANSFERSTART: {
+            uint64_t profile_started = ge_cpu_profile_begin();
+            ge_block_transfer(data);
+            if (s_cpu_profile) s_cpu_profile_stats.block_transfers++;
+            ge_cpu_profile_end(GE_CPU_BLOCK_TRANSFER, profile_started);
+            break;
+        }
+    default: return 0;
+    }
+    return 1;
+}
+
+/* Every register-write command of the list; 0 when `cmd` is none of them. */
+static int ge_exec_state_cmd(uint32_t cmd, uint32_t data, uint32_t addr) {
+    return ge_cmd_pipeline_state(cmd, data, addr) ||
+           ge_cmd_matrices_viewport(cmd, data) ||
+           ge_cmd_lighting(cmd, data) ||
+           ge_cmd_texture(cmd, data) ||
+           ge_cmd_blend_transfer(cmd, data);
+}
+
+/* One PRIM command. `prim_cmd` is the address of its op word; `prim_index` counts the list's
+ * primitives including this one. */
+static void ge_cmd_prim(uint32_t op, uint32_t prim_cmd, uint32_t list_addr, int flight_ge_enabled,
+                        unsigned long prim_index) {
+        uint64_t profile_started = ge_cpu_profile_begin();
+            if (sr_ge_texture_sample_hook && ge.tex_enable && !ge.clear && ge.tex_addr)
+            sr_ge_texture_sample_hook(ge.tex_addr, ge.tex_bufw, (uint32_t)ge.tex_h,
+                                      ge.tex_fmt & 0xFu, ge_fb_addr(),
+                                      ge.fbw ? ge.fbw : 512u, ge.fbfmt & 3u);
+        if (flight_ge_enabled)
+            sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW,
+                             list_addr, prim_cmd, (op >> 16) & 7u, op & 0xffffu);
+        if (s_ge_timing_model) ge_time_prim_begin(op, 0);
+        draw_prim(op, prim_index, list_addr, prim_cmd);
+        s_ge_prim_vtx_share = 0.0;
+        if (s_cpu_profile) {
+            s_cpu_profile_stats.primitive_commands++;
+            s_cpu_profile_stats.primitive_vertices += op & 0xFFFFu;
+        }
+        ge_cpu_profile_end(GE_CPU_PRIMITIVE, profile_started);
+
+}
+
+/* One BEZIER or SPLINE command. */
+static void ge_cmd_patch(uint32_t op, uint32_t cmd) {
+        uint64_t profile_started = ge_cpu_profile_begin();
+        if (s_primitive_profile) {
+            s_cpu_profile_stats.primitive_profile_patch_commands++;
+            s_cpu_profile_stats.primitive_profile_patch_control_vertices +=
+                (uint64_t)(op & 0xFFu) * (uint64_t)((op >> 8) & 0xFFu);
+        }
+        if (s_ge_timing_model) ge_time_prim_begin(op, 1);
+        draw_patch(op, cmd == GE_SPLINE);
+        s_ge_prim_vtx_share = 0.0;
+        if (s_cpu_profile) s_cpu_profile_stats.primitive_commands++;
+        ge_cpu_profile_end(GE_CPU_PRIMITIVE, profile_started);
+
+}
+
+/* SR_GESIGNALLOG: report each SIGNAL behavior a bounded number of times while the
+ * command-flow implementation is being validated against real game lists. */
+static void ge_log_signal_end(uint32_t list_addr, uint32_t addr, uint32_t pending_signal_op,
+                              uint32_t data) {
+    static unsigned char signal_seen[256];
+    unsigned behavior=(pending_signal_op>>16)&0xFFu;
+    static int s_gesiglog = -1;
+    if (s_gesiglog < 0) s_gesiglog = getenv("SR_GESIGNALLOG") ? 1 : 0;
+    if (s_gesiglog && signal_seen[behavior] < 8) {
+        signal_seen[behavior]++;
+        fprintf(stderr,
+                "GE SIGNAL/END: list=0x%08" PRIx32 " pc=0x%08" PRIx32 " behavior=0x%02x token=0x%04" PRIx32 " end=0x%04" PRIx32 "\n",
+                list_addr, addr-8u, behavior, pending_signal_op&0xFFFFu, data&0xFFFFu);
+    }
+}
+
+/* The list's END (no pending SIGNAL): flush the backend, finish the capture and publish the
+ * list's signature and primitive count. */
+static void ge_list_end(uint32_t list_addr, unsigned long sig, unsigned long prims, int snap,
+                        unsigned long start_nz) {
+    extern unsigned long g_tex_nonzero;
+    s_ge_run_tail_words++;
+    if (s_gpu && s_gpu->flush) {
+        uint64_t profile_started = ge_cpu_profile_begin();
+        s_gpu->flush("listend");
+        if (s_cpu_profile) s_cpu_profile_stats.flushes++;
+        ge_cpu_profile_end(GE_CPU_FLUSH, profile_started);
+    }
+    if (ge_capture_active()) s_capture_total_prims += prims;
+    if (snap && g_tex_nonzero>start_nz) ge_snapshot("fb_content.ppm");
+    g_ge_list_sig=sig; g_ge_prim_count=prims;
+    if (s_gewatch > 0 && s_ge_frame >= (uint32_t)s_gewatch_after)
+        fprintf(stderr, "GELIST f=%" PRIu32 " list=0x%08" PRIx32 " fbp=0x%08" PRIx32 " prims=%lu writes=%lu nonblack=%lu clearpx=%lu\n",
+                s_ge_frame, list_addr, ge_fb_addr(), prims,
+                g_list_writes, g_list_nonblack, g_list_clearpx);
+}
+
+/* Start (or extend) the GE capture for the list about to run, and reset the per-list counters. */
+static void ge_list_begin(uint32_t list_addr, int resume) {
     ge_capture_configure();
     if (!s_capture_done && !ge_capture_active() && s_ge_frame >= s_capture_frame &&
         s_ge_frame <= s_capture_frame_end) {
@@ -5652,6 +6167,18 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     g_ge_list_through_vertices=0; g_ge_list_transform_vertices=0;
     g_ge_list_through_sprites=0; g_ge_list_transform_sprites=0;
     g_ge_list_commands=0; s_ge_run_clk=0.0; s_ge_run_tail_words=0; s_ge_prim_vtx_share=0.0;
+}
+
+static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
+    if (!s_ge_inited) ge_state_init();
+    if (!resume) {
+        s_sp = 0;
+        s_bbox_visible = 1;
+    }
+    static int snap=-1; if(snap<0) snap=(getenv("SR_FBDUMP")||getenv("SR_GEDUMP"))?1:0;
+    uint32_t list_addr=addr;
+    const int flight_ge_enabled = sr_flight_class_enabled(SR_FLIGHT_CLASS_GE);
+    ge_list_begin(list_addr, resume);
     extern unsigned long g_tex_nonzero; unsigned long start_nz=g_tex_nonzero;
     unsigned long sig=0; unsigned long prims=0;
     int pending_signal=0;
@@ -5678,306 +6205,6 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         sig=sig*1000003ul+op;
         switch (cmd) {
             case GE_NOP: case 0xFF: break;   /* 0xFF = GE_CMD_NOP_FF (padding, PPSSPP) */
-            case GE_VADDR:    ge.vaddr=ge_rel_addr(data); break;
-            case GE_IADDR:    ge.iaddr=ge_rel_addr(data); break;
-            case GE_BASE:     ge.base=data; break;
-            case GE_OFFSETADDR: ge.offset=data<<8; break;
-            case GE_ORIGIN:   ge.offset=addr-4; break;
-            case GE_VERTEXTYPE: ge.vtype=data; break;
-
-            case GE_FRAMEBUFPTR:   ge.fbp=ge_normalize_vram_target((ge.fbp&0xFF000000)|data);
-                if (s_gelog>0) fprintf(stderr,"GE FRAMEBUFPTR data=0x%06" PRIx32 " -> fbp=0x%08" PRIx32 "\n",data,ge.fbp);
-                break;
-            case GE_FRAMEBUFWIDTH: ge.fbw=data&0xFFFF; ge.fbp=ge_normalize_vram_target((ge.fbp&0x00FFFFFF)|((data&0xFF0000)<<8));
-                if (s_gelog>0) fprintf(stderr,"GE FRAMEBUFWIDTH data=0x%06" PRIx32 " -> fbw=%" PRIu32 " fbp=0x%08" PRIx32 "\n",data,ge.fbw,ge.fbp);
-                break;
-            case GE_FRAMEBUFPIXFORMAT: ge.fbfmt=data&3; break;
-
-            case GE_ZBUFPTR:   ge.zbp=ge_normalize_vram_target((ge.zbp&0xFF000000)|data); break;
-            case GE_ZBUFWIDTH: ge.zbw=data&0xFFFF; ge.zbp=ge_normalize_vram_target((ge.zbp&0x00FFFFFF)|((data&0xFF0000)<<8)); break;
-
-            /* Drawing region: the scissor (which the game also sets) bounds all writes. */
-            case GE_REGION1: case GE_REGION2: break;
-
-            case GE_SCISSOR1: ge.scis_x1=data&0x3FF; ge.scis_y1=(data>>10)&0x3FF; break;
-            case GE_SCISSOR2: ge.scis_x2=data&0x3FF; ge.scis_y2=(data>>10)&0x3FF; break;
-
-            /* ---- Depth / cull state ---- */
-            case GE_ZTESTENABLE:   ge.ztest_enable  = data & 1; break;
-            case GE_ZWRITEDISABLE: ge.zwrite_disable= data & 1; break;
-            case GE_ZTEST:         ge.ztest         = data & 7; break;
-            case GE_MINZ:          ge.minz          = data & 0xFFFF; break;
-            case GE_MAXZ:          ge.maxz          = data & 0xFFFF; break;
-            case GE_CULLFACEENABLE:ge.cull_enable   = data & 1; break;
-            case GE_CULL:          ge.cull          = data & 1; break;
-            case GE_CLIPENABLE:    ge.depth_clip = data & 1; break;
-
-            /* ---- Fragment test / blend toggles ---- */
-            case GE_ALPHATESTENABLE: ge.atest_enable = data & 1; break;
-            case GE_ALPHATEST:       ge.atest        = data; break;
-            case GE_ALPHABLENDENABLE: ge.blend_enable=data&1; break;
-            case GE_FOGENABLE:  ge.fog_enable = data & 1; break;
-            case GE_FOG1:       ge.fog_end   = decode_float24(data); break;
-            case GE_FOG2:       ge.fog_slope = decode_float24(data); break;
-            case GE_FOGCOLOR:   ge.fog_color = data; break;
-            case GE_DITHERENABLE: ge.dither_enable = data & 1; break;
-            case GE_DITH0: case GE_DITH1: case GE_DITH2: case GE_DITH3: {
-                /* One row of the 4x4 dither matrix: 4 signed 4-bit values. */
-                int row = (int)(cmd - GE_DITH0);
-                for (int i = 0; i < 4; i++) {
-                    int v = (int)((data >> (i*4)) & 0xF);
-                    ge.dith[row][i] = (int8_t)(v >= 8 ? v - 16 : v);
-                }
-                break;
-            }
-            case GE_MASKRGB:   ge.mask_rgb   = data; break;
-            case GE_MASKALPHA: ge.mask_alpha = (int)(data & 0xFF); break;
-            case GE_STENCILTESTENABLE: ge.stencil_enable=data&1; break;
-            case GE_STENCILTEST:       ge.stencil_test=data; break;
-            case GE_STENCILOP:         ge.stencil_op=data; break;
-            case GE_COLORTESTENABLE:   ge.color_test_enable=data&1; break;
-            case GE_COLORTEST:         ge.color_test=data&3; break;
-            case GE_COLORREF:          ge.color_ref=data&0x00FFFFFFu; break;
-            case GE_COLORTESTMASK:     ge.color_test_mask=data&0x00FFFFFFu; break;
-            case GE_LOGICOPENABLE:     ge.logic_op_enable=data&1; break;
-            case GE_LOGICOP:           ge.logic_op=data&15; break;
-            case GE_ANTIALIASENABLE: break;
-            case GE_PATCHCULLENABLE: ge.patch_cull_enable=data&1; break;
-            case GE_PATCHDIVISION:   ge.patch_division=data; break;
-            case GE_PATCHPRIMITIVE:  ge.patch_primitive=data&3; break;
-            case GE_PATCHFACING:     ge.patch_facing=data&1; break;
-
-            /* ---- Matrix capture ----
-             * *MATRIXNUMBER sets the write cursor; *MATRIXDATA writes one float24 and advances.
-             * World/View are 4×3 (12 elements), Proj is 4×4 (16 elements). */
-            /* Bone matrices: 8 4x3 matrices in one 96-float array; NUMBER takes data&0x7F
-             * (a raw cursor, can point past the end), DATA writes land only while < 96
-             * (PPSSPP SoftGpu.cpp). The hangar aircraft is drawn part-by-part with one
-             * rigid bone per part and single-weight vertices. */
-            case 0x2A: ge.bone_num = (int)(data & 0x7F); break;    /* BONEMATRIXNUMBER */
-            case 0x2B:                                             /* BONEMATRIXDATA */
-                if (s_stat_on > 0) s_stat.bonew++;
-                if (ge.bone_num < 96) {
-                    float bone_f = decode_float24(data);
-                    ge.bone[ge.bone_num] = bone_f;
-                    if (s_tr_enabled > 0) s_tr_bone_w[ge.bone_num] = bone_f;
-                } else if (s_tr_enabled > 0) {
-                    s_tr_bone_drop++;
-                }
-                ge.bone_num++;
-                break;
-            case GE_MORPHWEIGHT0+0: case GE_MORPHWEIGHT0+1:
-            case GE_MORPHWEIGHT0+2: case GE_MORPHWEIGHT0+3:
-            case GE_MORPHWEIGHT0+4: case GE_MORPHWEIGHT0+5:
-            case GE_MORPHWEIGHT0+6: case GE_MORPHWEIGHT0+7:
-                ge.morph_weight[cmd-GE_MORPHWEIGHT0]=decode_float24(data);
-                break;
-            /* Hardware semantics (PPSSPP SoftGpu.cpp): NUMBER takes the low 4 bits; DATA writes
-             * advance the cursor unconditionally but only land while it is in range -- excess
-             * words are DISCARDED, never wrapped. (The old wrap-to-0 let a 13th data word clobber
-             * element 0: the hangar/briefing engine path uploads 13-word matrices and every one
-             * of its world matrices was corrupted, throwing whole meshes behind the camera.) */
-            case GE_WORLDMATRIXNUMBER: ge.world_num = (int)(data & 0xF); break;
-            case GE_WORLDMATRIXDATA:
-                s_stat.mw_world++;
-                if (ge.world_num < 12) {
-                    float world_f = decode_float24(data);
-                    ge.world[ge.world_num] = world_f;
-                    if (s_tr_enabled > 0) s_tr_world_w[ge.world_num] = world_f;
-                } else if (s_tr_enabled > 0) {
-                    s_tr_world_drop++;
-                }
-                ge.world_num++;
-                break;
-            case GE_VIEWMATRIXNUMBER: ge.view_num = (int)(data & 0xF); break;
-            case GE_VIEWMATRIXDATA:
-                s_stat.mw_view++;
-                trace_mtx_write("view", ge.view_num, data);
-                if (ge.view_num < 12) {
-                    float view_f = decode_float24(data);
-                    ge.view[ge.view_num] = view_f;
-                    if (s_tr_enabled > 0) s_tr_view_w[ge.view_num] = view_f;
-                } else if (s_tr_enabled > 0) {
-                    s_tr_view_drop++;
-                }
-                ge.view_num++;
-                break;
-            case GE_PROJMATRIXNUMBER: ge.proj_num = (int)(data & 0xF); break;
-            case GE_PROJMATRIXDATA:
-                s_stat.mw_proj++;
-                trace_mtx_write("proj", ge.proj_num, data);
-                if (ge.proj_num < 16) {
-                    float proj_f = decode_float24(data);
-                    ge.proj[ge.proj_num] = proj_f;
-                    if (s_tr_enabled > 0) s_tr_proj_w[ge.proj_num] = proj_f;
-                } else if (s_tr_enabled > 0) {
-                    s_tr_proj_drop++;
-                }
-                ge.proj_num++;
-                break;
-
-            /* ---- Viewport / offset ---- */
-            case GE_VIEWPORTXSCALE:  ge.viewport_raw[0]=data; break;
-            case GE_VIEWPORTYSCALE:  ge.viewport_raw[1]=data; break;
-            case GE_VIEWPORTZSCALE:  ge.viewport_raw[2]=data; break;
-            case GE_VIEWPORTXCENTER: ge.viewport_raw[3]=data; break;
-            case GE_VIEWPORTYCENTER: ge.viewport_raw[4]=data; break;
-            case GE_VIEWPORTZCENTER: ge.viewport_raw[5]=data; break;
-            case GE_OFFSETX:         ge.offsetx=data; break;
-            case GE_OFFSETY:         ge.offsety=data; break;
-
-            /* ---- Shading / material / lighting ---- */
-            case GE_SHADEMODE:       ge.shade_gouraud = data & 1; break;
-            case GE_REVERSENORMAL:   ge.reverse_normal = data & 1; break;
-            case GE_MATERIALUPDATE:  ge.mat_update = data & 7; break;
-            case GE_MATERIALEMISSIVE:ge.mat_emissive = data; break;
-            case GE_MATERIALAMBIENT: ge.material=data; ge.material_set=1; break;
-            case GE_MATERIALDIFFUSE: ge.mat_diffuse=data;
-                /* Flat-colour fallback for colourless vertices also tracks diffuse. */
-                ge.material=data; ge.material_set=1; break;
-            case GE_MATERIALSPECULAR:ge.mat_specular = data; break;
-            case GE_MATERIALALPHA:   ge.material_alpha=data&0xFF; ge.material_alpha_set=1; break;
-            case GE_MATERIALSPECULARCOEF: ge.spec_coef = decode_float24(data); break;
-            case GE_AMBIENTCOLOR:    ge.amb_color = data; break;
-            case GE_AMBIENTALPHA:    ge.amb_alpha = (int)(data & 0xFF); break;
-            case GE_LIGHTMODE:       ge.light_mode = data & 1; break;
-            case GE_LIGHTINGENABLE:  ge.lighting_enable = data & 1; break;
-            case GE_LIGHTENABLE0+0: case GE_LIGHTENABLE0+1:
-            case GE_LIGHTENABLE0+2: case GE_LIGHTENABLE0+3:
-                ge.light_on[cmd-GE_LIGHTENABLE0] = data & 1; break;
-            case GE_LIGHTTYPE0+0: case GE_LIGHTTYPE0+1:
-            case GE_LIGHTTYPE0+2: case GE_LIGHTTYPE0+3:
-                ge.light_type[cmd-GE_LIGHTTYPE0] = data; break;
-            case GE_LX0+0:  case GE_LX0+1:  case GE_LX0+2:  case GE_LX0+3:
-            case GE_LX0+4:  case GE_LX0+5:  case GE_LX0+6:  case GE_LX0+7:
-            case GE_LX0+8:  case GE_LX0+9:  case GE_LX0+10: case GE_LX0+11: {
-                int k=(int)(cmd-GE_LX0); ge.light_pos[k/3][k%3]=decode_float24(data); break;
-            }
-            case GE_LDX0+0: case GE_LDX0+1: case GE_LDX0+2: case GE_LDX0+3:
-            case GE_LDX0+4: case GE_LDX0+5: case GE_LDX0+6: case GE_LDX0+7:
-            case GE_LDX0+8: case GE_LDX0+9: case GE_LDX0+10:case GE_LDX0+11: {
-                int k=(int)(cmd-GE_LDX0); ge.light_dir[k/3][k%3]=decode_float24(data); break;
-            }
-            case GE_LKA0+0: case GE_LKA0+1: case GE_LKA0+2: case GE_LKA0+3:
-            case GE_LKA0+4: case GE_LKA0+5: case GE_LKA0+6: case GE_LKA0+7:
-            case GE_LKA0+8: case GE_LKA0+9: case GE_LKA0+10:case GE_LKA0+11: {
-                int k=(int)(cmd-GE_LKA0); ge.light_att[k/3][k%3]=decode_float24(data); break;
-            }
-            case GE_LKS0+0: case GE_LKS0+1: case GE_LKS0+2: case GE_LKS0+3:
-                ge.light_spot_exp[cmd-GE_LKS0]=decode_float24(data); break;
-            case GE_LKO0+0: case GE_LKO0+1: case GE_LKO0+2: case GE_LKO0+3:
-                ge.light_spot_cut[cmd-GE_LKO0]=decode_float24(data); break;
-            case GE_LAC0+0: case GE_LAC0+1: case GE_LAC0+2: case GE_LAC0+3:
-            case GE_LAC0+4: case GE_LAC0+5: case GE_LAC0+6: case GE_LAC0+7:
-            case GE_LAC0+8: case GE_LAC0+9: case GE_LAC0+10:case GE_LAC0+11: {
-                int k=(int)(cmd-GE_LAC0), li=k/3;
-                if      (k%3==0) ge.light_acol[li]=data;
-                else if (k%3==1) ge.light_dcol[li]=data;
-                else             ge.light_scol[li]=data;
-                break;
-            }
-
-            /* ---- Texturing ---- */
-            case GE_TEXTUREMAPENABLE: ge.tex_enable=data&1; break;
-            case GE_TEXADDR0:     ge.tex_addr=(ge.tex_addr&0xFF000000)|(data&0x00FFFFFF); break;
-            case GE_TEXBUFWIDTH0: ge.tex_bufw=data&0xFFFF; ge.tex_addr=(ge.tex_addr&0x00FFFFFF)|((data&0xFF0000)<<8); break;
-            case GE_TEXSIZE0:  ge.tex_w=1<<(data&0xF); ge.tex_h=1<<((data>>8)&0xF); break;
-            /* Mip levels 1-7, decoded exactly like level 0 (sceGuTexImage(level, ...)). */
-            case GE_TEXADDR0+1: case GE_TEXADDR0+2: case GE_TEXADDR0+3: case GE_TEXADDR0+4:
-            case GE_TEXADDR0+5: case GE_TEXADDR0+6: case GE_TEXADDR0+7: {
-                uint32_t *level_addr = &ge.tex_mip_addr[cmd - GE_TEXADDR0 - 1u];
-                *level_addr = (*level_addr & 0xFF000000u) | (data & 0x00FFFFFFu);
-                break;
-            }
-            case GE_TEXBUFWIDTH0+1: case GE_TEXBUFWIDTH0+2: case GE_TEXBUFWIDTH0+3:
-            case GE_TEXBUFWIDTH0+4: case GE_TEXBUFWIDTH0+5: case GE_TEXBUFWIDTH0+6:
-            case GE_TEXBUFWIDTH0+7: {
-                uint32_t level = cmd - GE_TEXBUFWIDTH0 - 1u;
-                ge.tex_mip_bufw[level] = data & 0xFFFFu;
-                ge.tex_mip_addr[level] = (ge.tex_mip_addr[level] & 0x00FFFFFFu) | ((data & 0xFF0000u) << 8);
-                break;
-            }
-            case GE_TEXSIZE0+1: case GE_TEXSIZE0+2: case GE_TEXSIZE0+3: case GE_TEXSIZE0+4:
-            case GE_TEXSIZE0+5: case GE_TEXSIZE0+6: case GE_TEXSIZE0+7:
-                ge.tex_mip_wlog2[cmd - GE_TEXSIZE0 - 1u] = (uint8_t)(data & 0xFu);
-                ge.tex_mip_hlog2[cmd - GE_TEXSIZE0 - 1u] = (uint8_t)((data >> 8) & 0xFu);
-                break;
-            /* sceGuTexMode: maxmips << 16 | multi-CLUT << 8 | swizzle. The multi-CLUT bit is
-             * not applied: every level samples through the one CLUT (#1373). */
-            case GE_TEXMODE:   ge.tex_swizzle=data&1; ge.tex_max_level=(data>>16)&7u; break;
-            case GE_TEXFORMAT: ge.tex_fmt=data&0xF; break;
-            case GE_TEXFILTER: ge.tex_filter=data; break;
-            case GE_TEXWRAP:   ge.tex_wrap=data; break;
-            case GE_TEXFUNC:   ge.tex_func=data; break;
-            case GE_TEXENVCOLOR: ge.tex_env=data; break;
-            case GE_TEXSCALEU:  ge.tex_scale_u=decode_float24(data); break;
-            case GE_TEXSCALEV:  ge.tex_scale_v=decode_float24(data); break;
-            case GE_TEXOFFSETU: ge.tex_off_u=decode_float24(data); break;
-            case GE_TEXOFFSETV: ge.tex_off_v=decode_float24(data); break;
-            case GE_TEXMAPMODE: ge.tex_map_mode=data; break;
-            case GE_TEXSHADELS: ge.tex_shade_ls=data; break;
-            case GE_TGENMATRIXNUMBER: ge.tgen_num = (int)(data & 0xF); break;
-            case GE_TGENMATRIXDATA:
-                if (ge.tgen_num < 12) ge.tgen[ge.tgen_num] = decode_float24(data);
-                ge.tgen_num++;
-                break;
-            /* sceGuTexLevelMode: mode | trunc(bias * 16) << 16, a signed 4.4 level bias. */
-            case GE_TEXLEVEL:
-                ge.tex_level_mode = data & 3u;
-                ge.tex_lod_bias = (float)(int8_t)(uint8_t)(data >> 16) / 16.0f;
-                break;
-            case GE_TEXLODSLOPE: ge.tex_lod_slope = decode_float24(data); break;
-            case GE_TEXFLUSH: case GE_TEXSYNC: break;         /* no texture cache to flush */
-            case GE_LOADCLUT: {
-                uint64_t profile_started = ge_cpu_profile_begin();
-                /* Copy (data&0x3F) 32-byte blocks from clut_addr into internal CLUT RAM, like
-                 * the hardware (PPSSPP TextureCacheCommon::LoadClut). */
-                uint32_t bytes = (data & 0x3F) * 32;
-                if (bytes > sizeof(ge.clutram)) bytes = sizeof(ge.clutram);
-                if (!sr_guest_span_readable(ge.clut_addr, bytes)) {
-                    fprintf(stderr, "GE_LOADCLUT: invalid source span addr=0x%08" PRIx32 " bytes=%" PRIu32 "\n",
-                            ge.clut_addr, bytes);
-                    ge_cpu_profile_end(GE_CPU_CLUT_LOAD, profile_started);
-                    break;
-                }
-                /* CLUT sourced from VRAM may read pixels the GPU backend hasn't written back. */
-                if (s_gpu && s_gpu->flush && (ge.clut_addr & 0x0F000000u) == 0x04000000u)
-                    s_gpu->flush("loadclut");
-                for (uint32_t i = 0; i < bytes; i += 4) {
-                    uint32_t w = MEM_R32(ge.clut_addr + i);
-                    memcpy(&ge.clutram[i], &w, 4);
-                }
-                if (s_ge_timing_model) ge_time_clut_load(bytes);
-                ge.clut_gen++;
-                if (s_cpu_profile) s_cpu_profile_stats.clut_loads++;
-                ge_cpu_profile_end(GE_CPU_CLUT_LOAD, profile_started);
-                break;
-            }
-            case GE_CLUTADDR:      ge.clut_addr=(ge.clut_addr&0xFF000000)|(data&0x00FFFFFF); break;
-            case GE_CLUTADDRUPPER: ge.clut_addr=(ge.clut_addr&0x00FFFFFF)|((data&0xFF0000)<<8); break;
-            case GE_CLUTFORMAT: ge.clut_fmt=data; break;
-
-            case GE_BLENDMODE:  ge.blend_mode=data; break;
-            case GE_BLENDFIXEDA: ge.blend_fixa=data; break;
-            case GE_BLENDFIXEDB: ge.blend_fixb=data; break;
-            case GE_CLEARMODE:  ge.clear_mode=data; ge.clear=data&1; break;
-
-            /* ---- Block transfer ---- */
-            case GE_TRANSFERSRC:    ge.xf_src  = data; break;
-            case GE_TRANSFERSRCW:   ge.xf_srcw = data; break;
-            case GE_TRANSFERDST:    ge.xf_dst  = data; break;
-            case GE_TRANSFERDSTW:   ge.xf_dstw = data; break;
-            case GE_TRANSFERSRCPOS: ge.xf_spos = data; break;
-            case GE_TRANSFERDSTPOS: ge.xf_dpos = data; break;
-            case GE_TRANSFERSIZE:   ge.xf_size = data; break;
-            case GE_TRANSFERSTART: {
-                uint64_t profile_started = ge_cpu_profile_begin();
-                ge_block_transfer(data);
-                if (s_cpu_profile) s_cpu_profile_stats.block_transfers++;
-                ge_cpu_profile_end(GE_CPU_BLOCK_TRANSFER, profile_started);
-                break;
-            }
-
             /* Immediate-mode vertex registers. Only VAP submits; the other nine
              * commands update the registers consumed by the next VAP. */
             case GE_VSCX: case GE_VSCY: case GE_VSCZ:
@@ -5987,40 +6214,14 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                     prims += (unsigned long)ge_imm_vertex(data);
                 break;
 
-            case GE_PRIM: {
-                uint64_t profile_started = ge_cpu_profile_begin();
-                uint32_t prim_cmd = addr - 4;   /* op word address (addr already advanced) */
-                if (sr_ge_texture_sample_hook && ge.tex_enable && !ge.clear && ge.tex_addr)
-                    sr_ge_texture_sample_hook(ge.tex_addr, ge.tex_bufw, (uint32_t)ge.tex_h,
-                                              ge.tex_fmt & 0xFu, ge_fb_addr(),
-                                              ge.fbw ? ge.fbw : 512u, ge.fbfmt & 3u);
-                if (flight_ge_enabled)
-                    sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW,
-                                     list_addr, prim_cmd, (op >> 16) & 7u, op & 0xffffu);
-                if (s_ge_timing_model) ge_time_prim_begin(op, 0);
-                prims++; draw_prim(op, prims, list_addr, prim_cmd);
-                s_ge_prim_vtx_share = 0.0;
-                if (s_cpu_profile) {
-                    s_cpu_profile_stats.primitive_commands++;
-                    s_cpu_profile_stats.primitive_vertices += op & 0xFFFFu;
-                }
-                ge_cpu_profile_end(GE_CPU_PRIMITIVE, profile_started);
+            case GE_PRIM:
+                prims++;
+                ge_cmd_prim(op, addr - 4, list_addr, flight_ge_enabled, prims);   /* op word address (addr already advanced) */
                 break;
-            }
-            case GE_BEZIER: case GE_SPLINE: {
-                uint64_t profile_started = ge_cpu_profile_begin();
-                if (s_primitive_profile) {
-                    s_cpu_profile_stats.primitive_profile_patch_commands++;
-                    s_cpu_profile_stats.primitive_profile_patch_control_vertices +=
-                        (uint64_t)(op & 0xFFu) * (uint64_t)((op >> 8) & 0xFFu);
-                }
-                if (s_ge_timing_model) ge_time_prim_begin(op, 1);
-                prims++; draw_patch(op, cmd == GE_SPLINE);
-                s_ge_prim_vtx_share = 0.0;
-                if (s_cpu_profile) s_cpu_profile_stats.primitive_commands++;
-                ge_cpu_profile_end(GE_CPU_PRIMITIVE, profile_started);
+            case GE_BEZIER: case GE_SPLINE:
+                prims++;
+                ge_cmd_patch(op, cmd);
                 break;
-            }
             case GE_JUMP: addr=ge_rel_addr(data&0x00FFFFFCu); break;
             /* Conditional object rendering (sceGuBeginObject/sceGuEndObject): BJUMP branches,
              * addressed like JUMP, when the last BOUNDINGBOX found its box not visible. */
@@ -6053,35 +6254,13 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 break;  /* END that follows terminates the list */
             case GE_END:
                 if (pending_signal) {
-                    static unsigned char signal_seen[256];
-                    unsigned behavior=(pending_signal_op>>16)&0xFFu;
-                    static int s_gesiglog = -1;
-                    if (s_gesiglog < 0) s_gesiglog = getenv("SR_GESIGNALLOG") ? 1 : 0;
-                    if (s_gesiglog && signal_seen[behavior] < 8) {
-                        signal_seen[behavior]++;
-                        fprintf(stderr,
-                                "GE SIGNAL/END: list=0x%08" PRIx32 " pc=0x%08" PRIx32 " behavior=0x%02x token=0x%04" PRIx32 " end=0x%04" PRIx32 "\n",
-                                list_addr, addr-8u, behavior, pending_signal_op&0xFFFFu, data&0xFFFFu);
-                    }
+                    ge_log_signal_end(list_addr, addr, pending_signal_op, data);
                     pending_signal=0; pending_signal_op=0; break;
                 }
-                s_ge_run_tail_words++;
-                if (s_gpu && s_gpu->flush) {
-                    uint64_t profile_started = ge_cpu_profile_begin();
-                    s_gpu->flush("listend");
-                    if (s_cpu_profile) s_cpu_profile_stats.flushes++;
-                    ge_cpu_profile_end(GE_CPU_FLUSH, profile_started);
-                }
-                if (ge_capture_active()) s_capture_total_prims += prims;
-                if (snap && g_tex_nonzero>start_nz) ge_snapshot("fb_content.ppm");
-                g_ge_list_sig=sig; g_ge_prim_count=prims;
-                if (s_gewatch > 0 && s_ge_frame >= (uint32_t)s_gewatch_after)
-                    fprintf(stderr, "GELIST f=%" PRIu32 " list=0x%08" PRIx32 " fbp=0x%08" PRIx32 " prims=%lu writes=%lu nonblack=%lu clearpx=%lu\n",
-                            s_ge_frame, list_addr, ge_fb_addr(), prims,
-                            g_list_writes, g_list_nonblack, g_list_clearpx);
+                ge_list_end(list_addr, sig, prims, snap, start_nz);
                 return 0;
             default:
-                ge_note_unhandled_cmd(cmd, op);
+                if (!ge_exec_state_cmd(cmd, data, addr)) ge_note_unhandled_cmd(cmd, op);
                 break;
         }
     }
@@ -6322,84 +6501,13 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
 }
 
 #ifdef SR_GE_VRAM_DECODER_CLI
-uint8_t *g_mem;
-int g_ge_capture_active;
-void ge_capture_note_memory(uint32_t addr, uint32_t bytes) { (void)addr; (void)bytes; }
-void sr_oor(uint32_t addr, uint32_t value, int store) {
-    (void)addr; (void)value; (void)store;
-    ge_vram_cli_bad_read = 1;
-}
-uint32_t sr_get_ge_status(void) { return 0; }
-
-static int ge_vram_cli_parse_u32(const char *text, uint32_t *out) {
-    char *end = NULL;
-    unsigned long value;
-    if (!text || !text[0] || !out) return 0;
-    value = strtoul(text, &end, 0);
-    if (end == text || *end != '\0' || value > UINT32_MAX) return 0;
-    *out = (uint32_t)value;
-    return 1;
-}
-
-static int ge_vram_cli_read_file(const char *path, uint8_t *out, size_t size) {
-    FILE *file = fopen(path, "rb");
-    int ok;
-    if (!file) return 0;
-    ok = fread(out, 1, size, file) == size && fgetc(file) == EOF;
-    if (fclose(file) != 0) ok = 0;
-    return ok;
-}
-
-int main(int argc, char **argv) {
-    const size_t arena_size = (size_t)GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE;
-    uint8_t *arena = NULL;
-    uint32_t addr, width, height, stride, format, swizzled, clut_addr, clut_format;
-    uint64_t pixel_count, bytes_per_pixel, byte_extent;
-    uint32_t *pixels = NULL;
-    FILE *output = NULL;
-    int result = 1;
-
-    if (argc != 12 ||
-        !ge_vram_cli_parse_u32(argv[2], &addr) ||
-        !ge_vram_cli_parse_u32(argv[3], &width) ||
-        !ge_vram_cli_parse_u32(argv[4], &height) ||
-        !ge_vram_cli_parse_u32(argv[5], &stride) ||
-        !ge_vram_cli_parse_u32(argv[6], &format) ||
-        !ge_vram_cli_parse_u32(argv[7], &swizzled) ||
-        !ge_vram_cli_parse_u32(argv[8], &clut_addr) ||
-        !ge_vram_cli_parse_u32(argv[9], &clut_format)) {
-        fprintf(stderr, "usage: ge-vram-decoder IMAGE ADDR WIDTH HEIGHT STRIDE FORMAT SWIZZLED CLUT_ADDR CLUT_FORMAT CLUT_FILE RGBA_OUT\n");
-        return 2;
-    }
-    if (!width || !height || width > 4096u || height > 4096u || stride < width ||
-        swizzled > 1u || (format > 10u && format != 11u) ||
-        (format >= 8u && format <= 10u && swizzled) ||
-        (format >= 8u && format <= 10u && (stride & 3u)) ||
-        (uint64_t)width * height > 4194304u ||
-        addr < GE_CAPTURE_VRAM_BASE || addr >= GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE ||
-        (clut_addr && (clut_addr < GE_CAPTURE_VRAM_BASE ||
-                       clut_addr >= GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE)) ||
-        clut_format > 0x00FFFFFFu) {
-        fprintf(stderr, "VRAM decoder rejected out-of-range or unsupported surface metadata\n");
-        return 2;
-    }
-    if (format <= 3u) {
-        bytes_per_pixel = format == 3u ? 4u : 2u;
-        byte_extent = ((uint64_t)height - 1u) * stride * bytes_per_pixel +
-                      (uint64_t)width * bytes_per_pixel;
-        if ((uint64_t)addr + byte_extent >
-            (uint64_t)GE_CAPTURE_VRAM_BASE + GE_CAPTURE_VRAM_SIZE) {
-            fprintf(stderr, "VRAM decoder surface crosses the captured VRAM boundary\n");
-            return 2;
-        }
-    }
-
-    arena = (uint8_t *)calloc(1, arena_size);
-    if (!arena) { fprintf(stderr, "VRAM decoder could not allocate the guest address window\n"); goto done; }
-    g_mem = arena + GE_CAPTURE_VRAM_BASE;
-    if (!ge_vram_cli_read_file(argv[1], arena, GE_CAPTURE_VRAM_SIZE)) {
-        fprintf(stderr, "VRAM decoder input must be exactly 2 MiB\n"); goto done;
-    }
+/* The one entry the standalone decoder (ge_vram_cli.c) calls: ge.* is private to this file.
+ * `clut_ram` is the 2048-byte CLUT file, or NULL to read the CLUT from the VRAM image at
+ * `clut_addr` when that is nonzero. Returns 0 when a read fell outside the captured image. */
+int ge_vram_cli_decode(uint32_t addr, uint32_t width, uint32_t height, uint32_t stride,
+                       uint32_t format, uint32_t swizzled, uint32_t clut_addr,
+                       uint32_t clut_format, const uint8_t *clut_ram, const uint8_t *arena,
+                       uint32_t *pixels) {
     g_ge_capture_active = 0;
     ge.tex_addr = addr;
     ge.tex_w = (int)width;
@@ -6409,19 +6517,13 @@ int main(int argc, char **argv) {
     ge.tex_swizzle = (int)swizzled;
     ge.clut_addr = clut_addr;
     ge.clut_fmt = clut_format;
-    if (strcmp(argv[10], "-") != 0) {
-        if (!ge_vram_cli_read_file(argv[10], ge.clutram, sizeof ge.clutram)) {
-            fprintf(stderr, "VRAM decoder CLUT input must be exactly 2048 bytes\n"); goto done;
-        }
+    if (clut_ram) {
+        memcpy(ge.clutram, clut_ram, sizeof ge.clutram);
     } else if (clut_addr) {
         uint32_t offset = (clut_addr - GE_CAPTURE_VRAM_BASE) & 0x001FFFFFu;
         for (uint32_t i = 0; i < sizeof ge.clutram; i++)
             ge.clutram[i] = arena[(offset + i) & 0x001FFFFFu];
     }
-
-    pixel_count = (uint64_t)width * height;
-    pixels = (uint32_t *)malloc((size_t)pixel_count * sizeof *pixels);
-    if (!pixels) { fprintf(stderr, "VRAM decoder could not allocate the pixel buffer\n"); goto done; }
     if (format == 11u) {
         for (uint32_t y = 0; y < height; y++) {
             for (uint32_t x = 0; x < width; x++) {
@@ -6431,27 +6533,6 @@ int main(int argc, char **argv) {
     } else {
         ge_decode_tex_rgba(pixels);
     }
-    if (ge_vram_cli_bad_read) {
-        fprintf(stderr, "VRAM decoder read outside the captured 2 MiB VRAM image\n"); goto done;
-    }
-    output = fopen(argv[11], "wb");
-    if (!output) { fprintf(stderr, "VRAM decoder could not open its RGBA output\n"); goto done; }
-    for (uint64_t i = 0; i < pixel_count; i++) {
-        uint32_t pixel = pixels[i];
-        uint8_t rgba[4] = {(uint8_t)pixel, (uint8_t)(pixel >> 8),
-                           (uint8_t)(pixel >> 16), (uint8_t)(pixel >> 24)};
-        if (fwrite(rgba, 1, sizeof rgba, output) != sizeof rgba) {
-            fprintf(stderr, "VRAM decoder RGBA output write failed\n"); goto done;
-        }
-    }
-    if (fclose(output) != 0) { output = NULL; fprintf(stderr, "VRAM decoder RGBA output close failed\n"); goto done; }
-    output = NULL;
-    result = 0;
-done:
-    if (output) fclose(output);
-    free(pixels);
-    free(arena);
-    g_mem = NULL;
-    return result;
+    return !ge_vram_cli_bad_read;
 }
 #endif /* SR_GE_VRAM_DECODER_CLI */

@@ -482,8 +482,32 @@
       "invariant": "exception EPC, Cause, BadVAddr and Status are recorded per cell for scalar, halfword, unaligned and VFPU accesses",
       "measurement_note": "Runs PSP-A1-01, PSP-A2-01 and PSP-A3-01 through PSP-A3-15 of campaign psp-hw-20260917 (2026-09-17, PSP-3000 / 6.61 / ARK-5.1.0, user-mode PRX probes loaded through PSPLink) are recorded in the cited section with exact Cause, EPC and BadVAddr values. exception-a2 is measured there as run PSP-A2-01, but the section names its fixture only inside the range `exception-a1`..`exception-a3`, so it is not listed verbatim in evidence_cases. exception-a2.c and the exception-a3-mload..exception-a3-vfpu-lvl-odd cells build from probe_exception_a2.c and probe_exception_a3.c (-DA3_CASE=2..16). Cause bit 28 read as 1 in every faulting run, so the CE field stays undefined here. The campaign predates the run-envelope acceptance machinery and no envelope is committed, so this row records documented prose runs, not envelope-verified captures.",
       "issues": [311],
-      "risk": "low-medium; one case per launch, read the frame with `pspsh -e exprint`, power-cycle between launches",
-      "reset": "raise the exception, then reload PSPLink; power-cycle only by human decision"
+      "risk": "low-medium; one user-mode exception per launch, with the frame captured before bounded recovery",
+      "reset": "capture the frame with exprint before the bounded hardware-runner recovery"
+    },
+    {
+      "id": "PSP-EXCEPTION-FETCH-001",
+      "status": "implemented",
+      "hardware_evidence": "CAPTURED",
+      "evidence_ref": "docs/HARDWARE_ORACLE.md#1375-and-312-captures-2026-11-01",
+      "group": "cpu",
+      "source": "fixtures/psp_oracle/probe_exception_a3.c",
+      "prx": "per-case A3 fetch PRX",
+      "apis": ["user-mode instruction fetch", "ExcCode", "EPC", "BadVAddr", "Cause.BD"],
+      "diagnostic_case_ids": [
+        "exception-a3-fetch-zero",
+        "exception-a3-fetch-08000000",
+        "exception-a3-fetch-40000000"
+      ],
+      "case_ids": [
+        "fetch-armed"
+      ],
+      "invariant": "Each one-launch probe records its armed target before a user-mode instruction fetch; the runner retains the resulting exception frame in teardown",
+      "issues": [1375],
+      "risk": "low-medium; each case issues one user-mode fetch and no persistent write",
+      "reset": "capture exprint before recovery; one case per launch",
+      "evidence_cases": ["fetch-armed"],
+      "evidence_note": "On 2026-11-01, the owner-reported system identity was system software 6.61, ARK-5.1.0; pspver was measured for each launch. Fetch from 0x00000000 at pspver 6.6.0, source commit 9e78dd00d628d07d1f7cc28e6d7af5970ab994f9, reported an instruction bus error with EPC=0, BadVAddr=0 and Cause=0x10000018 (BD clear); it is diagnostic-only because the faulting case has no completion marker or host0 round trip. Fetch from 0x08000000 at pspver 6.6.1, with the same PRX source commit while the worktree HEAD had advanced to 194abdf0, reported an instruction bus error with EPC=0x08000000, BadVAddr=0, Cause=0x10000018 (BD clear) and Status=0x40088613; it is diagnostic-only because the host0 round trip failed and source commit binding did not match the worktree HEAD. An exact-head 194abdf0 rebuild passed the PSPSDK build and import gate, but its 0x08000000 rerun returned the earlier 0x40000000 frame from exprint and is not cited. Fetch from 0x40000000 at pspver 6.6.0, source commit 9e78dd00d628d07d1f7cc28e6d7af5970ab994f9, reported an instruction bus error with EPC=0x40000000, BadVAddr=0, Cause=0x10000018 (BD clear) and Status=0x40088613; it is diagnostic-only because the host0 round trip failed and source commit binding did not match the worktree HEAD. No exact-head 0x40000000 follow-up was run. Do not compare the 6.6.0 and 6.6.1 fault outcomes; they are separate firmware observations."
     },
     {
       "id": "PSP-FPU-001",
@@ -1670,7 +1694,7 @@
           "fog-*",
           "ge-raster-done"
         ],
-        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink, boot 71) of commit 990748ec, case ge-raster after the transport-write preflight: 945 records and the done record (out0 945), all PASS, acceptance-eligible with 0 blockers; every one of the 189 lists reached GE idle. The boot 70 run of 99578ce7 (175 cells, also acceptance-eligible) and the boot 69 run of 8fa4a893 (166 cells; not eligible, uncommitted selftest edit) gave the same window for every cell whose list they share. Cited: each cell's 16x4 window and its FNV-1a 64 digest, which test_ge_raster_cells_match_psp in src/rt/hle_thread_selftest.c compares with the software GE. Not cited: the wait timings. The raw stream stays in the private campaign directory.",
+        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink, boot 71) of commit 990748ec, case ge-raster after the transport-write preflight: 945 records and the done record (out0 945), all PASS, acceptance-eligible with 0 blockers; every one of the 189 lists reached GE idle. The boot 70 run of 99578ce7 (175 cells, also acceptance-eligible) and the boot 69 run of 8fa4a893 (166 cells; not eligible, uncommitted selftest edit) gave the same window for every cell whose list they share. Cited: each cell's 16x4 window and its FNV-1a 64 digest, which test_ge_raster_cells_match_psp in tests/native/hle_thread_selftest.c compares with the software GE. Not cited: the wait timings. The raw stream stays in the private campaign directory.",
         "group": "ge",
         "source": "fixtures/psp_oracle/probe_ge_sample.c",
         "prx": "ge_raster.prx",
@@ -1802,7 +1826,7 @@
           "a-quad-w1to4-*",
           "s-s1-w1to8-*"
         ],
-        "measurement_note": "Measured by the 2026-10-31 PSP-3000 launch (system software 6.61, ARK-5.1.0 (owner); pspver 6.6.0, 0x06060010, declared to the runner; boot 86) of commit 66940d76, case ge-mip after the transport-write preflight: 285 records and the done record (out0 285), all PASS, acceptance-eligible with 0 blockers; every one of the 57 lists reached GE idle. An earlier launch of the same build on the same boot (pspver 6.6.1; not eligible, the runner's checkout was not at the source commit) gave the same window for every cell. Cited: the window and its FNV-1a 64 digest of the 55 cells drawn with one footprint or one w, which test_ge_mip_cells_match_psp in src/rt/hle_thread_selftest.c compares with the software GE. Not cited: a-quad-w1to4 and s-s1-w1to8, whose w varies across the window (the PSP holds one level of detail per 4-pixel span of a row there), filtering within a level (every level is one colour), and the wait timings. The raw stream stays in the private campaign directory.",
+        "measurement_note": "Measured by the 2026-10-31 PSP-3000 launch (system software 6.61, ARK-5.1.0 (owner); pspver 6.6.0, 0x06060010, declared to the runner; boot 86) of commit 66940d76, case ge-mip after the transport-write preflight: 285 records and the done record (out0 285), all PASS, acceptance-eligible with 0 blockers; every one of the 57 lists reached GE idle. An earlier launch of the same build on the same boot (pspver 6.6.1; not eligible, the runner's checkout was not at the source commit) gave the same window for every cell. Cited: the window and its FNV-1a 64 digest of the 55 cells drawn with one footprint or one w, which test_ge_mip_cells_match_psp in tests/native/hle_thread_selftest.c compares with the software GE. Not cited: a-quad-w1to4 and s-s1-w1to8, whose w varies across the window (the PSP holds one level of detail per 4-pixel span of a row there), filtering within a level (every level is one colour), and the wait timings. The raw stream stays in the private campaign directory.",
         "group": "ge",
         "source": "fixtures/psp_oracle/probe_ge_sample.c",
         "prx": "ge_mip.prx",
@@ -1908,9 +1932,11 @@
           "delay-slots-*"
         ],
         "uncited_cases": [
+          "fpu-state-*",
+          "vfpu-state-*",
           "insn-trace-done"
         ],
-        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink 3.2.1, boot 65) of commit 84568280, case insn-trace after the transport-write preflight: 136 records and the done record, all PASS, acceptance-eligible with 0 blockers. Cited: every step record of both fixtures, which tools/psp_oracle/insn_trace.py turns into v2 PSP_HARDWARE traces (105 and 27 records) that agree with Nakagawa's LOCAL_COSIM traces under strict_hardware_diff. An earlier launch of 3edde7f2 is not cited (its step records were cut to 34 of 35 words). The raw log and traces stay in the private campaign directory.",
+        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink 3.2.1, boot 65) of commit 84568280, case insn-trace after the transport-write preflight: 136 records and the done record, all PASS, acceptance-eligible with 0 blockers. Cited: every step record of both fixtures, which tools/psp_oracle/insn_trace.py turns into v2 PSP_HARDWARE traces (105 and 27 records) that agree with Nakagawa LOCAL_COSIM traces under strict_hardware_diff. An earlier launch of 3edde7f2 is not cited (its step records were cut to 34 of 35 words). On 2026-11-01, exact-head 194abdf0 PRXs built and passed the user-mode import gate, but insn-trace stopped at transport-write preflight because unload state from the preceding faulting fetch was unproven. The runner reached PHYSICAL_INTERVENTION_REQUIRED and the one bounded nkctl recovery returned NEEDS_PERSON after PSPLink stayed unresponsive. The trace PRX was not loaded; fpu-state-* and vfpu-state-* remain uncited and unmeasured. PSP-TRACE-EXCEPTION-001 was not launched. The raw logs and traces stay private; do not compare the new, unmeasured fixtures with the older 6.6.1 trace evidence.",
         "evidence_note": "Built from fixtures/psp_oracle/probe_insn_trace.c (with insn_trace_tramp.S and insn_trace_fixtures.h) as insn_trace.prx and run as a single launch, not in the campaign queue; its stream is fixed-shape (CAMPAIGN_PROBE_CASES['insn-trace']). tools/psp_oracle/insn_trace.py turns the host0 log into one v2 PSP_HARDWARE trace per fixture.",
         "group": "cpu",
         "source": "fixtures/psp_oracle/probe_insn_trace.c",
@@ -1932,7 +1958,9 @@
           "sceKernelSleepThread",
           "sceKernelWaitThreadEnd",
           "sceKernelWakeupThread",
-          "Allegrex integer, load/store and branch instructions"
+          "Allegrex integer, load/store and branch instructions",
+          "selected FPU registers and FCR31",
+          "selected VFPU registers"
         ],
         "diagnostic_case_ids": [
           "insn-trace"
@@ -1940,14 +1968,32 @@
         "case_ids": [
           "alu-branch-ls-*",
           "delay-slots-*",
+          "fpu-state-*",
+          "vfpu-state-*",
           "insn-trace-done"
         ],
-        "invariant": "#312: per instruction of each source-owned microprogram in fixtures/psp_oracle/insn_trace_fixtures.h, executed one instruction at a time on the Allegrex (conditional branches decided by the CPU, delay slots as their own steps, an annulled likely delay slot not run), the complete traced register state (r1..r25, r29..r31, hi, lo) and any store's width, address and value, from the header's initial state and a zeroed 4 KiB data block at 0x09f00000.",
+        "invariant": "#312: per instruction of each source-owned microprogram in fixtures/psp_oracle/insn_trace_fixtures.h, executed one instruction at a time on the Allegrex (conditional branches decided by the CPU, delay slots as their own steps, an annulled likely delay slot not run), the complete selected GPR, HI/LO, FPU/FCR31 and VFPU state and any store's width, address and value, from the header's initial state and a zeroed 4 KiB data block at 0x09f00000.",
         "issues": [
           312
         ],
         "risk": "low; user-mode instructions only, on probe-owned registers and the 4 KiB data block allocated at its address; a word outside the supported forms ends the fixture instead of running",
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-TRACE-EXCEPTION-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "Built at exact source commit 194abdf0 and passed the PSPSDK build and user-mode import gate, but not launched on 2026-11-01. The preceding insn-trace transport preflight ended with PHYSICAL_INTERVENTION_REQUIRED; nkctl recovery returned NEEDS_PERSON after PSPLink remained unresponsive. No delay-slot exception frame was captured.",
+        "group": "cpu",
+        "source": "fixtures/psp_oracle/probe_insn_trace.c",
+        "prx": "insn_trace_exception.prx",
+        "apis": ["user-mode break exception in a branch delay slot", "EPC", "Cause", "BadVAddr", "Status"],
+        "diagnostic_case_ids": ["insn-trace-exception"],
+        "case_ids": ["exception-armed"],
+        "invariant": "One source-owned user-mode break in a branch delay slot; the PSPLink runner retains the exception frame in teardown",
+        "issues": [312],
+        "risk": "low; one user-mode break exception and no memory writes",
+        "reset": "one PRX launch; capture exprint before recovery"
       },
       {
         "id": "PSP-MODULE-START-001",
@@ -2133,6 +2179,85 @@
         ],
         "risk": "low; four sub-interrupt handlers (disabled and released), the sampling mode and cycle (restored), the volatile lock (unlocked), 4 KiB blocks (freed), and one 16-byte Memory Stick file in a probe-owned directory the probe creates only when absent and removes; the MAC address and OpenPSID are never read (import gate)",
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-NULLCODE-001",
+        "status": "implemented",
+        "hardware_evidence": "CAPTURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#1375-and-312-captures-2026-11-01",
+        "evidence_note": "Captured on the owner PSP-3000 (system software 6.61, ARK-5.1.0 per owner), pspver 6.6.0. The P1/P2 stream records all five entry contexts and registration results, but its envelope is not acceptance-eligible because the two interrupt/GE non-invocation rows are intentional SKIPs. CreateThread(NULL) and CreateCallback(NULL) each returned a UID and Refer*Status reported code pointer 0. The NULL VBLANK registration returned 0; its Release returned 0x80020068 and it was never enabled. sceGeSetCallback with both code pointers NULL returned id 1 and unset returned 0; no list was queued. The separately guarded NULL thread invocation returned StartThread 0 and exprint captured a user-mode instruction bus error at EPC 0. The NULL callback invocation stopped at sceKernelCheckCallback; no frame was available and nkctl recovered the PSP to a qualified boot. These 6.6.0 records are kept separate from 6.6.1 fault captures; no cross-firmware semantic comparison is claimed.",
+        "group": "kernel",
+        "source": "fixtures/psp_oracle/probe_hle_issues.c",
+        "prx": "null_code_registration.prx",
+        "apis": [
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelCreateThread",
+          "sceKernelStartThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWakeupThread",
+          "sceKernelReferThreadStatus",
+          "sceKernelDeleteThread",
+          "sceKernelCreateCallback",
+          "sceKernelNotifyCallback",
+          "sceKernelCheckCallback",
+          "sceKernelReferCallbackStatus",
+          "sceKernelDeleteCallback",
+          "sceKernelSetAlarm",
+          "sceKernelCancelAlarm",
+          "sceKernelCreateVTimer",
+          "sceKernelStartVTimer",
+          "sceKernelSetVTimerHandler",
+          "sceKernelStopVTimer",
+          "sceKernelDeleteVTimer",
+          "sceKernelRegisterSubIntrHandler",
+          "sceKernelEnableSubIntr",
+          "sceKernelDisableSubIntr",
+          "sceKernelReleaseSubIntrHandler",
+          "sceKernelTerminateDeleteThread",
+          "sceGeDrawSync",
+          "sceGeSetCallback",
+          "sceGeUnsetCallback"
+        ],
+        "diagnostic_case_ids": [
+          "null-code-registration",
+          "null-thread-invocation",
+          "null-callback-invocation"
+        ],
+        "case_ids": [
+          "thread-entry",
+          "thread-entry-setup",
+          "callback-entry",
+          "callback-entry-setup",
+          "alarm-entry",
+          "alarm-entry-setup",
+          "vtimer-entry",
+          "vtimer-entry-setup",
+          "vblank-subintr-entry",
+          "vblank-subintr-setup",
+          "create-thread-null",
+          "create-callback-null",
+          "register-subintr-null",
+          "register-subintr-null-not-invoked",
+          "ge-drawsync-idle",
+          "ge-set-callback-null",
+          "ge-set-callback-null-not-invoked",
+          "null-thread-armed",
+          "null-thread-started",
+          "null-thread-invocation-done",
+          "null-callback-armed",
+          "null-callback-checked",
+          "null-callback-invocation-done",
+          "null-code-registration-done"
+        ],
+        "invariant": "#1375 P1 records $ra, $sp, $gp and $a0-$a3/$t0-$t3 at five kernel-made entries; P2 records NULL registration return codes. NULL sub-interrupt and GE callbacks are not enabled or queued. Thread/callback NULL invokes are separate and only run when P1 shows user-mode context.",
+        "issues": [1375],
+        "risk": "medium; one valid alarm, VTimer and VBLANK sub-interrupt handler are cleaned up; no NULL interrupt/GE handler is invoked; the two guarded invocation follow-ups each use a separate launch",
+        "reset": "one case per launch; host0 output only"
       },
       {
         "id": "PSP-HLE-INTR-001",

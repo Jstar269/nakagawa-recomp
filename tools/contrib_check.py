@@ -118,18 +118,18 @@ class StrictUnit:
 #: header it includes is declared only under that define, so compiling it bare
 #: reports implicit declarations that the real build never sees.
 STRICT_C_UNITS: dict[str, StrictUnit] = {
-    "src/rt/hle_thread_selftest.c": StrictUnit(
+    "tests/native/hle_thread_selftest.c": StrictUnit(
         recipes=("hle-thread-selftest-build", "$(PSP_ORACLE_SMOKE_EXE)"),
         defines=("SR_HLE_THREAD_SELFTEST", "SR_CORO_LIFECYCLE_TEST", "SR_SCHED_LIVENESS_TEST"),
         # The Makefile's audited suppression list for this source: the
         # intr_conformance.h IcProbe rows omit the trailing `skip` field on purpose.
         warnings=("-Wno-missing-field-initializers",),
     ),
-    "src/rt/sched_selftest.c": StrictUnit(
+    "tests/native/sched_selftest.c": StrictUnit(
         recipes=("sched-selftest-one",),
         defines=("SR_SCHED_LIVENESS_TEST",),
     ),
-    "src/rt/gpu_coherence_selftest.c": StrictUnit(
+    "tests/native/gpu_coherence_selftest.c": StrictUnit(
         recipes=("$(GPU_COHERENCE_BIN)",),
         defines=("SR_GPU_COHERENCE_SELFTEST",),
     ),
@@ -139,7 +139,7 @@ STRICT_C_UNITS: dict[str, StrictUnit] = {
         recipes=("$(PLAYER_UI_TEST_EXE)",),
         defines=("NK_PLAYER_UI_REGRESSION_TEST",),
     ),
-    "src/rt/atrac3p_bridge_selftest.c": StrictUnit(
+    "tests/native/atrac3p_bridge_selftest.c": StrictUnit(
         recipes=("atrac3p-bridge-selftest",),
         includes=("tests/native",),
     ),
@@ -154,7 +154,7 @@ STRICT_C_UNITS: dict[str, StrictUnit] = {
             "make {build_dir}/sr_title_config.h",
         ),),
     ),
-    "src/rt/vfpu_interp_selftest.c": StrictUnit(
+    "tests/native/vfpu_interp_selftest.c": StrictUnit(
         recipes=("vfpu-interp-selftest",),
         defines=("SR_FLIGHT_RECORDER_STANDALONE",),
         generated=(GeneratedHeader(

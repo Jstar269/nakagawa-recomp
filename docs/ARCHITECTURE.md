@@ -388,7 +388,7 @@ the reference interpreter in `src/ref/interp.cpp` follows the same rule. A PSP-3
 it (`PSP-LLSC-001`, [hardware oracle index](HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize)):
 a second `sc` after a successful one, with no new `ll`, stores and writes 1, and an `sc` to an
 address other than the one `ll` loaded also stores and writes 1, so `sc` keeps the link and
-compares no address. `src/rt/cpu_lle_selftest.c` and `src/ref/selftest.cpp` run the probe's
+compares no address. `tests/native/cpu_lle_selftest.c` and `src/ref/selftest.cpp` run the probe's
 three windows against those words.
 
 The MIPS32 contract clears LLbit on an exception return (ERET). On the PSP every event that can
