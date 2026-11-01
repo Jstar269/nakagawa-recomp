@@ -552,6 +552,7 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run display presentation smoke": "VULKAN_SDK=/ucrt64 display-smoke-run",
     "Build and run AOT/interpreter cosimulation gate": "VULKAN_SDK=/ucrt64 cosim-selftest",
     "Prove the cosimulation comparator is load-bearing": "VULKAN_SDK=/ucrt64 cosim-mutants",
+    "Build and run snapshot execution selftest": "VULKAN_SDK=/ucrt64 snapshot-selftest",
     "Build and run scheduler selftest": "CC=gcc VULKAN_SDK=/ucrt64 sched-selftest",
     "Build and run dispatch isolation selftest matrix": "CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest",
     "Build and run portable FPU/VFPU conversion selftest": "CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest",
@@ -734,6 +735,7 @@ _NATIVE_SERIAL_GATES = {
     "Run Linux scheduler selftest matrix": "run: make CC=gcc -j4 sched-selftest",
     "Run Linux dispatch isolation selftest matrix": "run: make CC=gcc -j4 dispatch-isolation-selftest",
     "Run Linux AOT/interpreter cosimulation": "run: make CC=gcc -j4 cosim-selftest",
+    "Run Linux snapshot execution selftest": "run: make CC=gcc snapshot-selftest",
     "Run Linux cosimulation mutation corpus":
         "run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4",
     "Run Linux GPU snapshot sync selftest":

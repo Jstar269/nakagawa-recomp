@@ -956,6 +956,13 @@ jobs:
         if: matrix.part == 'translation'
         run: make CC=gcc -j4 cosim-selftest
 
+      # Snapshot execution (#1842): the translated function against the reference
+      # interpreter in src/ref from one captured state, plus a generated-C mutant that
+      # must turn MATCH into the expected MISMATCH.
+      - name: Run Linux snapshot execution selftest
+        if: matrix.part == 'translation'
+        run: make CC=gcc snapshot-selftest
+
       - name: Run Linux cosimulation mutation corpus
         if: matrix.part == 'translation'
         run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4
@@ -1677,6 +1684,16 @@ jobs:
       # defect applied to a COPY of the interpreter under the ignored build tree;
       # the gate must fail for every one, and a mutant that only breaks the build
       # is rejected as INVALID rather than counted as a kill.
+      # Snapshot execution (#1842): one translated function run from a snapshot and
+      # compared with the reference interpreter in src/ref; the selftest also builds and
+      # runs a generated-C mutant that must report the expected MISMATCH.
+      - name: Build and run snapshot execution selftest
+        if: matrix.part == 'selftests'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 snapshot-selftest
+
       - name: Prove the cosimulation comparator is load-bearing
         if: matrix.part == 'selftests'
         shell: msys2 {0}
