@@ -48,6 +48,7 @@ static uint32_t g_module_start_arglen = 0;
 static uint32_t g_module_start_argp = 0;
 static char g_module_start_arg[128];
 static int g_direct_stack_below_args = 0;
+static uint32_t g_host_entry_ra = 0;
 
 uint32_t g_sr_debug = 0;
 int sr_hit_hle = 0;
@@ -101,6 +102,7 @@ RecompFn sr_lookup(uint32_t addr) {{
 /* driver.c's direct boot enters through the host entry (recomp.c, #1375); the harness runs
  * the registered body as that entry's native path does. */
 void dispatch_from_host(CpuState *s, uint32_t entry) {{
+    g_host_entry_ra = s->r[31];
     RecompFn fn = sr_lookup(entry);
     if (fn) sr_call_body(fn, s);
 }}
@@ -413,6 +415,22 @@ int main(int argc, char **argv) {{
         return driver_main(7, argv_fake);
     }}
 
+    if (strcmp(mode, "image_entry_ra") == 0) {{
+        /* #1375: the direct entry's $ra is the host return address unless the reference
+         * trace recorded one. argv: image, reference trace (or none), expected $ra. */
+        if (argc < 5) return 116;
+        char *argv_fake[] = {{ "driver", "--image", argv[2], "0x08000000", "0x08000010", argv[3], "none" }};
+        int result = driver_main(7, argv_fake);
+        if (result != 0) return result;
+        uint32_t expected = 0;
+        if (!parse_hex32(argv[4], &expected)) return 117;
+        if (g_host_entry_ra != expected) {{
+            fprintf(stderr, "entry $ra 0x%08x, expected 0x%08x\\n", g_host_entry_ra, expected);
+            return 118;
+        }}
+        return 0;
+    }}
+
     if (strcmp(mode, "image_boot_args") == 0) {{
         if (argc < 3) return 108;
         char *argv_fake[] = {{
@@ -622,6 +640,21 @@ int main(int argc, char **argv) {{
             # 6. Valid --image load
             valid_img = subprocess.run([str(exe), "image_valid", str(sample_img)], capture_output=True, text=True)
             self.assertEqual(valid_img.returncode, 0, valid_img.stderr + valid_img.stdout)
+
+            # 6b. The direct entry's $ra (#1375): the host return address unless the
+            # reference trace recorded one, as the reference runner starts too.
+            unrecorded_ra = tmpdir / "unrecorded-ra.trace"
+            unrecorded_ra.write_text("# init r29=09f00000\n", encoding="ascii", newline="\n")
+            recorded_ra = tmpdir / "recorded-ra.trace"
+            recorded_ra.write_text("# init r29=09f00000 r31=08812340\n", encoding="ascii", newline="\n")
+            for trace, expected_ra in (("none", "fffffff0"), (str(unrecorded_ra), "fffffff0"),
+                                       (str(recorded_ra), "08812340")):
+                entry_ra = subprocess.run(
+                    [str(exe), "image_entry_ra", str(sample_img), trace, expected_ra],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(entry_ra.returncode, 0,
+                                 f"{trace}: {entry_ra.stderr}{entry_ra.stdout}")
 
             boot_args_env = os.environ.copy()
             boot_args_env["SR_BOOT_PATH"] = "disc0:/PSP_GAME/SYSDIR/SYNTHETIC.BIN"

@@ -28,6 +28,10 @@ using namespace ref;
 
 namespace {
 
+// The runtime's host return address (SR_HOST_RETURN_PC, src/rt/recomp.h); a test keeps the
+// two equal.
+constexpr uint32_t kHostReturnPc = 0xFFFFFFF0u;
+
 std::vector<uint8_t> ReadFile(const char *path) {
 	FILE *f = fopen(path, "rb");
 	if (!f) { fprintf(stderr, "cannot open %s\n", path); exit(2); }
@@ -336,6 +340,11 @@ int main(int argc, char **argv) {
 	uint32_t entry = LoadElf(elf, &mem);
 
 	CpuState s;
+	// The module is entered as a host entry, as src/rt/driver.c's trace harness enters it
+	// (#1375): an entry $ra the init line does not record is the host return address,
+	// SR_HOST_RETURN_PC in src/rt/recomp.h, so both sides of a comparison start alike. A
+	// recorded r31 replaces it.
+	s.r[31] = kHostReturnPc;
 	if (!SeedFromInit(oracle_trace, &s)) {
 		fprintf(stderr, "no '# init' line in %s; rebuild oracle trace with init dump\n", oracle_trace);
 		return kExitUsage;

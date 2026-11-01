@@ -615,6 +615,10 @@ have_image:;
     CpuState s;
     memset(&s, 0, sizeof(s));
     sr_vfpu_thread_ctrl_init(&s);  /* identity S/T, no D prefix, measured RCX0-7 */
+    /* The direct entry is a host entry (#1375): its $ra is the host return address unless the
+     * reference trace recorded one, which then seeds both sides of the comparison (the
+     * reference runner, src/ref/run_elf.cpp, starts the same way). */
+    s.r[31] = SR_HOST_RETURN_PC;
     seed_from_init(ref_trace, &s);
     if (s.r[29] == 0) s.r[29] = 0x09F00000;   /* default stack: top of user RAM (0x08000000..0x0BFFFFFF); was 0x00400000 (kernel driver region — wrong) */
     s.pc = entry;
@@ -755,9 +759,8 @@ have_image:;
             s.r[29] = s.r[5];
         }
         /* The entry is a host entry like every other (#1375): a linked call that returns to
-         * SR_HOST_RETURN_PC, so a TAIL step into interpreted code still returns to the host.
-         * The dispatch owns the AOT tier and its SR_PERF span. */
-        s.r[31] = SR_HOST_RETURN_PC;
+         * SR_HOST_RETURN_PC (its $ra, seeded above), so a TAIL step into interpreted code still
+         * returns to the host. The dispatch owns the AOT tier and its SR_PERF span. */
         if (sr_perf_enabled) sr_perf_guest_begin();
         dispatch_from_host(&s, entry);
         if (sr_perf_enabled) sr_perf_guest_end();
