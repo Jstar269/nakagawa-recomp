@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
+#define _POSIX_C_SOURCE 200809L   /* setenv under -std=c11 */
+
 #include "ace.h"
 #include "gpu_sdl3vk/ge_gpu.h"
 #include "gpu_sdl3vk/sdl3vk.h"
@@ -8,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <vulkan/vulkan.h>
 
 /* Standalone support required by recomp.h and the production GE object. The test owns a
@@ -91,7 +94,25 @@ static int host_mem_type_selection_ok(void) {
     return ok;
 }
 
-int main(void) {
+static int set_env(const char *name, const char *value) {
+#ifdef _WIN32
+    return _putenv_s(name, value) == 0;
+#else
+    return setenv(name, value, 1) == 0;
+#endif
+}
+
+/* `--scale N` and `--case NAME` set SR_GPU_SCALE and SR_GPU_COHERENCE_CASE before the backend
+ * starts. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does not accept. */
+int main(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
+                         : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE" : NULL;
+        if (!name || i + 1 >= argc || !set_env(name, argv[++i])) {
+            fprintf(stderr, "usage: gpu_coherence_selftest [--scale N] [--case scaled-upload]\n");
+            return 2;
+        }
+    }
     if (!host_mem_type_selection_ok()) return 1;
     uint8_t *arena = (uint8_t *)calloc(0x0c000000u, 1);
     if (!arena) return 2;

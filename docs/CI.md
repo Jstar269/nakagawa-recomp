@@ -218,7 +218,8 @@ terminal present-fault cases each get a fresh process, because the renderer must
 device after a terminal failure; an exit 77 skip fails the gate. A separate step runs
 `gpu-coherence-selftest` the same way on lavapipe: the Vulkan backend's render-target coherence,
 texture cache, per-draw state template, filtering and blend cases against the software GE, where
-an exit 77 skip also fails. The job also runs
+an exit 77 skip also fails. Its scaled-upload case then runs alone at render scales 2 and 4, where
+every device pixel of an uploaded target must hold its guest pixel. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by
