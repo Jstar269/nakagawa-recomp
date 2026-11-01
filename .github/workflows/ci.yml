@@ -422,7 +422,11 @@ jobs:
           needs.profile_zero_fixture.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_python == 'true' }}
-    timeout-minutes: 20
+    # A shard is planned at about 7 minutes of hosted-runner time, but on the busy
+    # nk-wsl pool it measured 17-20 minutes (2026-11-01), and shard 0 was cancelled
+    # at the old 20-minute limit on main and on several pull requests. 30 minutes
+    # still stops a hung test well before the default six hours.
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
