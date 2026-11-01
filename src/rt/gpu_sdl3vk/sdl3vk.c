@@ -4233,7 +4233,7 @@ int sdl3vk_capture_selftest(void) {
  * child before its parent), and clears every handle and the renderer state. It is also
  * sdl3vk_init's unwind, so it acts only on what exists; a second call does nothing (#1377). Its
  * SDL_Init is undone with SDL_QuitSubSystem, not SDL_Quit, so the audio backend's subsystem
- * (audio_unavailable.c) stays up until that backend's own cleanup. */
+ * (audio_sdl3.c) stays up until that backend's own cleanup. */
 void sdl3vk_shutdown(void) {
     sdl3vk_overlay_release();
     if (s_dev) {

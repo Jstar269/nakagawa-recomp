@@ -15,7 +15,7 @@ check is an engineering containment result, not legal clearance.
 - The sal063-derived ISO/VFS and SDL audio backends pending their separate
   public review. `iso_public.c` provides a project-authored public ISO VFS backend
   satisfying the `iso.h` seam via `nk_iso`; `iso_unavailable.c` is an explicit fail-closed
-  link boundary. Despite its name, `audio_unavailable.c` is not a stub: it is the working
+  link boundary. `audio_sdl3.c` (named `audio_unavailable.c` until 2026-11-01) is not a stub: it is the working
   public-safe SDL3 audio backend that replaces the excluded one, and it fails closed only when
   no audio device is available.
 
