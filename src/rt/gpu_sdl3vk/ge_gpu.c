@@ -42,9 +42,10 @@
  *    of detail per draw, the level and blend ge_tex_level_pick takes from the bias (minLod =
  *    maxLod); TEXFILTER bit 1 is the mipmap mode. The automatic and slope modes' level of
  *    detail is per fragment in the PSP's own arithmetic (ge.c tex_detail16, measured as
- *    PSP-GE-MIP-001), which the sampler's exact log2 does not reproduce, so they take the
- *    software rasterizer, as does a level list a halving chain cannot hold
- *    (tex_mip_chain_supported). Per-level CLUTs are not modelled.
+ *    PSP-GE-MIP-001), which the sampler's exact log2 does not reproduce, so psp.frag
+ *    computes it (F_LODFRAG) and samples with an explicit level of detail. A level list a
+ *    halving chain cannot hold takes the software rasterizer (tex_mip_chain_supported).
+ *    Per-level CLUTs are not modelled.
  *  - 16-bit precision (5650/5551/4444 framebuffers): the fragment shader snaps its
  *    output to the native lattice (pack-by-truncation + expand-by-bit-replication,
  *    identical to ge.c pack_fb/unpack_color) and applies the GE's 4x4 ordered dither,
@@ -167,7 +168,7 @@ typedef struct { int32_t cfg[4]; float texenv[4]; float fogcol[4]; float texsize
                  int32_t dith[4]; int32_t bl[4]; float fixa[4]; float fixb[4]; } PushPC;
 enum { F_TEX = 1, F_RGBA = 2, F_DBL = 4, F_FOG = 8, F_PERSP = 16, F_CLEAR = 32,
        F_NEAREST = 64, F_SA2X = 128, F_SA2XI = 256, F_DITHER = 512, F_SHBLEND = 4096,
-       F_STENCIL = 8192 };
+       F_STENCIL = 8192, F_LODFRAG = 16384 };
 #define F_FMT_SHIFT 10                     /* bits 10-11: framebuffer psm for quantization */
 
 typedef struct {
@@ -191,9 +192,9 @@ typedef struct {
  * zero when mip levels are off, so a level-0-only entry compares equal to any other. */
 typedef struct {
     uint32_t max_level;                    /* TEXMODE highest level; 0 = level 0 only */
-    uint32_t mode;                         /* TEXLEVEL mode: 1 or 3, constant */
+    uint32_t mode;                         /* TEXLEVEL mode: 0 automatic, 2 slope, 1 or 3 constant */
     uint32_t linear;                       /* TEXFILTER bit 1: blend the two nearest levels */
-    float bias;                            /* TEXLEVEL bias */
+    float bias;                            /* TEXLEVEL bias (0 in the per-fragment modes) */
     uint32_t addr[7], bufw[7];             /* levels 1..max_level (index = level - 1) */
     uint8_t wlog2[7], hlog2[7];
 } TexMipKey;
@@ -511,6 +512,13 @@ static int s_cpu_profile_hook_depth;
 
 static uint32_t s_texscratch[512 * 512];
 static uint32_t s_pxscratch[FB_W * FB_H];
+/* One guest row at device width (each pixel repeated s_scale times), in cached memory. The
+ * s_scale device rows of an upload are each copied from here. The upload ring is TRANSFER_SRC
+ * memory without HOST_CACHED (gegpu_pick_host_mem_type), write-combined on common GPUs, where
+ * every CPU read goes to memory: copying each replicated row from the first row of its cell
+ * in the mapped buffer was about half of a 2x frame's CPU time in a measured title (#1296). */
+static uint32_t s_pxwide[FB_W * MAX_SCALE];
+static uint16_t s_zwide[FB_W * MAX_SCALE];
 
 #define VKC(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
     fprintf(stderr, "gegpu: %s failed: %d\n", #expr, (int)vr_); return 0; } } while (0)
@@ -1843,14 +1851,14 @@ static int target_upload(Target *t) {
             for (uint32_t x = 0; x < t->stride; x++) row[x] = fb_unpack(src[x], t->fmt);
         }
         for (uint32_t x = t->stride; x < FB_W; x++) row[x] = 0;
-        uint32_t *dl = dst + (uint32_t)(y * s_scale) * drow;
-        if (s_scale == 1) {
-            memcpy(dl, row, FB_W * 4);
-        } else {
+        const uint32_t *wide = row;
+        if (s_scale > 1) {
             for (uint32_t x = 0; x < FB_W; x++)
-                for (int i = 0; i < s_scale; i++) dl[x * s_scale + i] = row[x];
-            for (int j = 1; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, dl, drow * 4);
+                for (int i = 0; i < s_scale; i++) s_pxwide[x * s_scale + i] = row[x];
+            wide = s_pxwide;
         }
+        uint32_t *dl = dst + (uint32_t)(y * s_scale) * drow;
+        for (int j = 0; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, wide, drow * 4);
     }
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -2009,10 +2017,10 @@ static int target_patch_vram_dirty(Target *t, uint32_t dirty_addr, uint32_t dirt
             }
             uint32_t rgba = fb_unpack(raw, t->fmt);
             uint32_t dx = (x - x0) * (uint32_t)s_scale;
-            for (int sx = 0; sx < s_scale; sx++) dst[dx + (uint32_t)sx] = rgba;
+            for (int sx = 0; sx < s_scale; sx++) s_pxwide[dx + (uint32_t)sx] = rgba;
         }
-        for (int sy = 1; sy < s_scale; sy++)
-            memcpy(dst + (uint32_t)sy * scaled_width, dst,
+        for (int sy = 0; sy < s_scale; sy++)
+            memcpy(dst + (uint32_t)sy * scaled_width, s_pxwide,
                    (size_t)scaled_width * sizeof(uint32_t));
 
         copies[ci].bufferOffset = upload.offset + used;
@@ -2184,20 +2192,18 @@ static int depth_from_cpu(DepthEnt *d) {
     UploadReservation upload;
     if (!upload_reserve(upload_bytes, &upload)) return 0;
     uint32_t source_stride = d->zstride;
-    if (s_scale == 1) {
-        uint16_t *dst = (uint16_t *)upload.map;
-        for (uint32_t y = 0; y < FB_H; y++)
-            memcpy(dst + y * FB_W, s_zbuf + y * source_stride, FB_W * 2u);
-    } else {
-        uint16_t *dst = (uint16_t *)upload.map;
-        uint32_t drow = SCL_W;
-        for (uint32_t y = 0; y < FB_H; y++) {
-            const uint16_t *src = s_zbuf + y * source_stride;
-            uint16_t *dl = dst + (uint32_t)(y * s_scale) * drow;
+    uint16_t *dst = (uint16_t *)upload.map;
+    uint32_t drow = SCL_W;
+    for (uint32_t y = 0; y < FB_H; y++) {
+        const uint16_t *src = s_zbuf + y * source_stride;
+        const uint16_t *wide = src;
+        if (s_scale > 1) {   /* replicate from cached memory, never the mapped upload (s_zwide) */
             for (uint32_t x = 0; x < FB_W; x++)
-                for (int i = 0; i < s_scale; i++) dl[x * s_scale + i] = src[x];
-            for (int j = 1; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, dl, drow * 2);
+                for (int i = 0; i < s_scale; i++) s_zwide[x * s_scale + i] = src[x];
+            wide = s_zwide;
         }
+        uint16_t *dl = dst + (uint32_t)(y * s_scale) * drow;
+        for (int j = 0; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, wide, drow * 2);
     }
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -2675,9 +2681,15 @@ static int tex_decode_upload(VkImage img, int w, int h, uint32_t levels) {
     return 1;
 }
 
-/* Sampler level of detail of one cache entry. With a mip chain (#1373) the state is in
- * constant mode (tex_mip_chain_supported sends the per-fragment modes to the software
- * rasterizer), so the level of detail is fixed: ge_tex_level_pick's level, plus its blend
+/* Whether TEXLEVEL mode `mode` picks the level of detail per fragment (automatic 0, slope 2):
+ * psp.frag computes it (F_LODFRAG), and the sampler spans every level (#1373). */
+static int tex_lod_per_fragment(uint32_t mode) {
+    return mode == 0u || mode == 2u;
+}
+
+/* Sampler level of detail of one cache entry. With a mip chain (#1373) in a per-fragment
+ * mode the shader passes the level of detail (textureLod), so the sampler spans levels 0 to
+ * the highest. In constant mode the level of detail is fixed: ge_tex_level_pick's level, plus its blend
  * weight in 1/16 under TEXFILTER bit 1 (VK_SAMPLER_MIPMAP_MODE_LINEAR; the blend may differ
  * from ge.c's truncated sixteenths by one U8 step). Vulkan filters within a level by
  * minFilter above level of detail 0 and by magFilter otherwise, and ge.c shade() picks the
@@ -2693,6 +2705,11 @@ static void tex_sampler_lod(const TexMipKey *mip, VkSamplerCreateInfo *sci) {
         return;
     }
     if (mip->linear) sci->mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    if (tex_lod_per_fragment(mip->mode)) {
+        sci->minLod = 0.0f;
+        sci->maxLod = (float)mip->max_level;
+        return;
+    }
     int detail16 = (int)(mip->bias * 16.0f);
     uint32_t level = 0u;
     int frac = 0;
@@ -2769,7 +2786,9 @@ static void tex_mip_key(TexMipKey *k) {
     k->max_level = g->tex_max_level;
     k->mode = g->tex_level_mode;
     k->linear = (g->tex_filter >> 1) & 1u;
-    k->bias = g->tex_lod_bias;
+    /* The per-fragment modes take the bias from the push constants: one chain and sampler
+     * serve every bias. */
+    k->bias = tex_lod_per_fragment(k->mode) ? 0.0f : g->tex_lod_bias;
     for (uint32_t i = 0; i < k->max_level; i++) {
         k->addr[i] = g->tex_mip_addr[i];
         k->bufw[i] = g->tex_mip_bufw[i];
@@ -2784,9 +2803,9 @@ static uint32_t log2_pow2(uint32_t v) {
     return l;
 }
 
-/* Whether the current state's mip levels fit one Vulkan mip chain and sampler (#1373). The
- * automatic and slope modes do not: their level of detail is per fragment in the PSP's
- * 1/16-level arithmetic (ge.c tex_detail16), not the sampler's. A chain halves every level
+/* Whether the current state's mip levels fit one Vulkan mip chain and sampler (#1373). In
+ * the automatic and slope modes psp.frag picks the level per fragment in the PSP's 1/16-level
+ * arithmetic (ge.c tex_detail16, F_LODFRAG), so every mode fits. A chain halves every level
  * down to 1x1, while the GE takes each level's size from its own TEXSIZE: a level whose
  * size is not max(1, level-0 size >> level) on both axes, or more levels than a halving
  * chain of level 0 has, cannot be sampled from one image either.
@@ -2795,7 +2814,6 @@ static uint32_t log2_pow2(uint32_t v) {
 static int tex_mip_chain_supported(void) {
     const GeState *g = s_ge;
     if (!g->tex_enable || g->clear || !g->tex_addr || !ge_tex_mip_active(g)) return 1;
-    if (g->tex_level_mode == 0u || g->tex_level_mode == 2u) return 0;
     if (g->tex_w <= 0 || g->tex_h <= 0 || g->tex_w > 512 || g->tex_h > 512) return 1;
     uint32_t wl = log2_pow2((uint32_t)g->tex_w), hl = log2_pow2((uint32_t)g->tex_h);
     if (g->tex_max_level > (wl > hl ? wl : hl)) return 0;
@@ -3149,6 +3167,7 @@ static void build_state(int persp, int sprite, Batch *b) {
     int textured = g->tex_enable && !clear && g->tex_addr;
     unsigned filter_variant = tex_filter_variant(g->tex_filter);
     int flags = premul;
+    uint32_t lodcfg = 0u;                  /* cfg.y bits 24-31 under F_LODFRAG */
     if (clear) flags |= F_CLEAR;
     if (persp && !(clear && sprite)) flags |= F_PERSP;   /* minz/maxz discard */
     if (persp && g->fog_enable && !clear) flags |= F_FOG;
@@ -3160,6 +3179,15 @@ static void build_state(int persp, int sprite, Batch *b) {
         if (filter_variant == 0u) flags |= F_NEAREST;
         b->pc.texsize[0] = (float)g->tex_w;
         b->pc.texsize[1] = (float)g->tex_h;
+        /* Automatic or slope level of detail, per fragment in psp.frag (#1373). Such a state
+         * always samples a cached chain: a render target bound directly has no levels. */
+        if (ge_tex_mip_active(g) && tex_lod_per_fragment(g->tex_level_mode)) {
+            flags |= F_LODFRAG;
+            lodcfg = (g->tex_level_mode == 2u ? 1u : 0u) | (((g->tex_filter >> 1) & 1u) << 1) |
+                     ((g->tex_max_level & 7u) << 2);
+            b->pc.texenv[3] = g->tex_lod_slope;
+            b->pc.fogcol[3] = (float)(int)(g->tex_lod_bias * 16.0f);
+        }
     }
     /* Native 16-bit precision emulation: dither offset + lattice snap in the shader.
      * The dither matrix rides in the push constants (one packed row per int). */
@@ -3180,7 +3208,8 @@ static void build_state(int persp, int sprite, Batch *b) {
         b->pc.bl[3] = (int32_t)((g->stencil_op & 0x070707u) | ((uint32_t)(g->mask_alpha & 0xFF) << 24));
     }
 
-    b->pc.cfg[1] = (!clear && g->atest_enable) ? (int32_t)g->atest : 1 /* func ALWAYS */;
+    b->pc.cfg[1] = (int32_t)(((!clear && g->atest_enable) ? (g->atest & 0xFFFFFFu) : 1u /* ALWAYS */) |
+                             (lodcfg << 24));
     b->pc.cfg[2] = (int32_t)g->minz;
     b->pc.cfg[3] = (int32_t)g->maxz;
     b->pc.texenv[0] = (float)(g->tex_env & 0xFF) / 255.0f;
@@ -3280,7 +3309,7 @@ typedef struct {
     int tex_enable; uint32_t tex_addr, tex_bufw, tex_fmt, tex_wrap, tex_func, tex_env, tex_filter;
     int tex_w, tex_h; int tex_swizzle;
     /* Mip levels (#1373): every field tex_get keys a chain or its sampler by. */
-    uint32_t tex_max_level, tex_level_mode; float tex_lod_bias;
+    uint32_t tex_max_level, tex_level_mode; float tex_lod_bias, tex_lod_slope;
     uint32_t tex_mip_addr[7], tex_mip_bufw[7]; uint8_t tex_mip_wlog2[7], tex_mip_hlog2[7];
     uint32_t clut_fmt, clut_gen;
     int atest_enable; uint32_t atest;
@@ -3311,7 +3340,7 @@ static void snap_fill(StateSnap *o, int persp, int sprite) {
     o->tex_env = g->tex_env; o->tex_filter = g->tex_filter;
     o->tex_w = g->tex_w; o->tex_h = g->tex_h; o->tex_swizzle = g->tex_swizzle;
     o->tex_max_level = g->tex_max_level; o->tex_level_mode = g->tex_level_mode;
-    o->tex_lod_bias = g->tex_lod_bias;
+    o->tex_lod_bias = g->tex_lod_bias; o->tex_lod_slope = g->tex_lod_slope;
     memcpy(o->tex_mip_addr, g->tex_mip_addr, sizeof(o->tex_mip_addr));
     memcpy(o->tex_mip_bufw, g->tex_mip_bufw, sizeof(o->tex_mip_bufw));
     memcpy(o->tex_mip_wlog2, g->tex_mip_wlog2, sizeof(o->tex_mip_wlog2));
@@ -5400,8 +5429,9 @@ static int coherence_run_tflt_filters(void) {
  * level, and the footprints (1/2, 2 and 4 texels per pixel) give exact levels of detail.
  * Software/Vulkan agreement is not a PSP measurement; the level rules both paths share are
  * PSP-GE-MIP-001's (hle_thread_selftest.c test_ge_mip_cells_match_psp checks ge.c against
- * the PSP). The automatic and slope cases take the software rasterizer, so they check that
- * fallback. */
+ * the PSP). The automatic and slope cases draw on the GPU, which picks their level per
+ * fragment in psp.frag (F_LODFRAG); each case also checks that only a level list a halving
+ * chain cannot hold takes the software rasterizer. */
 #define COH_MIP_TEX   0x04040000u          /* level L at COH_MIP_TEX + L * 0x1000 */
 #define COH_MIP_ALT1  0x04045000u          /* a second level 1 (4x4) for the cache-key case */
 #define COH_MIP_LIST  0x00100800u
@@ -5454,6 +5484,8 @@ typedef struct CohMipCase {
     int level;                  /* level the first pixel samples, or -1 for a blend */
     int alt_level1;             /* level 1 is the second (plain 4x4) level 1 */
     uint32_t level1_log2;       /* level 1 TEXSIZE log2 on both axes; 0 = 2, the halving chain */
+    float slope;                /* TEXLODSLOPE */
+    int falls_back;             /* the draw takes the software rasterizer */
 } CohMipCase;
 
 /* The GE list of one case: framebuffer 0x04160000, levels 0-3, then one sprite when `draw`
@@ -5471,6 +5503,8 @@ static uint32_t coherence_mip_list(const CohMipCase *c, int draw) {
     DL_EMIT(0x10, 0);
     DL_EMIT(0x9C, 0x00160000u);
     DL_EMIT(0x9D, 512u | (0x04000000u >> 8));
+    DL_EMIT(0x9E, 0x00080000u);                         /* depth buffer clear of the levels */
+    DL_EMIT(0x9F, 512u | (0x04000000u >> 8));
     DL_EMIT(0xD2, 3);
     DL_EMIT(0xD3, 0);
     DL_EMIT(0x4C, 0);
@@ -5496,6 +5530,8 @@ static uint32_t coherence_mip_list(const CohMipCase *c, int draw) {
     }
     DL_EMIT(0xC2, c->max_level << 16);                  /* TEXMODE: highest level, unswizzled */
     DL_EMIT(0xC8, c->mode | ((c->bias16 & 0xFFu) << 16));                  /* TEXLEVEL */
+    { uint32_t slope_bits; memcpy(&slope_bits, &c->slope, 4);
+      DL_EMIT(0xD0, slope_bits >> 8); }                                     /* TEXLODSLOPE */
     DL_EMIT(0xC0, 0);
     DL_EMIT(0xC3, 3);
     DL_EMIT(0xC6, c->tflt);
@@ -5689,11 +5725,18 @@ static int coherence_run_mip_case(const CohMipCase *c) {
     memset(fb, 0, bytes);
     sr_gpu_vram_dirty(base, (uint32_t)bytes);
     ge_set_gpu_hooks(&k_hooks);
+    const unsigned long long fallback0 = s_replay_stats.fallback_prims;
     ge_run_list(list, 0);
+    const unsigned long long fallbacks = s_replay_stats.fallback_prims - fallback0;
     GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
                                .width = 480, .height = 272 };
     int ok = gegpu_sync_guest_fb(&desc);
     if (!ok) fprintf(stderr, "gpu coherence selftest [mip-%s]: GPU readback failed\n", c->name);
+    if (ok && (fallbacks != 0u) != (c->falls_back != 0)) {
+        fprintf(stderr, "gpu coherence selftest [mip-%s]: %llu software fallback primitive(s), want %s\n",
+                c->name, fallbacks, c->falls_back ? "the software rasterizer" : "the GPU");
+        ok = 0;
+    }
     if (ok) {
         memcpy(gpu, fb, bytes);
         memset(fb, 0, bytes);
@@ -5740,7 +5783,7 @@ static int coherence_run_mip_case(const CohMipCase *c) {
 static int coherence_run_mip_level_dirty_same_state(void) {
     const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u, rgb = 0x00FFFFFFu;
     const uint32_t level1 = COH_MIP_TEX + 0x1000u;
-    const CohMipCase c = { "level-dirty", 0x004u, 3u, 1u, 16u, 8, 0, 1, 0, 0 };
+    const CohMipCase c = { "level-dirty", 0x004u, 3u, 1u, 16u, 8, 0, 1, 0, 0, 0.0f, 0 };
     uint32_t *fb = (uint32_t *)SR_HOST(base);
     uint32_t *tex = (uint32_t *)SR_HOST(level1);
     coherence_reset_targets();
@@ -5775,46 +5818,181 @@ static int coherence_run_mip_level_dirty_same_state(void) {
     return ok;
 }
 
+/* One GPU draw through the hooks, after the state of `c`: a size x size quad at (COH_MIP_X,
+ * COH_MIP_Y) whose texel coordinates run from 0.25 by `span` texels across it (`vspan` down
+ * it, or `span` when 0), at 1/w = `rw`
+ * everywhere (texel coordinates pre-multiplied by it, as hook_tri receives them), or a
+ * through-mode sprite when `persp` is 0. Returns the level the pixel one in from the corner
+ * sampled (red >> 6 of coherence_mip_texel), or -1. */
+static int coherence_mip_hook_level(const CohMipCase *c, int persp, float rw, int size, float span,
+                                    float vspan) {
+    const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u;
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    coherence_reset_targets();
+    memset(fb, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(coherence_mip_list(c, 0), 0);      /* the state, no draw */
+    s_ge->minz = 0u;
+    s_ge->maxz = 65535u;
+    const float x0 = (float)COH_MIP_X, y0 = (float)COH_MIP_Y, x1 = x0 + (float)size, y1 = y0 + (float)size;
+    const float u0 = 0.25f, u1 = 0.25f + span, v1 = 0.25f + (vspan > 0.0f ? vspan : span);
+    const float q = persp ? rw : 1.0f;
+    GeVtx a = { x0, y0, 1.0f, q, u0 * q, u0 * q, 1.0f, 255, 255, 255, 255 };
+    GeVtx b = { x1, y0, 1.0f, q, u1 * q, u0 * q, 1.0f, 255, 255, 255, 255 };
+    GeVtx d = { x0, y1, 1.0f, q, u0 * q, v1 * q, 1.0f, 255, 255, 255, 255 };
+    GeVtx e = { x1, y1, 1.0f, q, u1 * q, v1 * q, 1.0f, 255, 255, 255, 255 };
+    const unsigned long long fallback0 = s_replay_stats.fallback_prims;
+    int ok = persp ? hook_tri(&a, &b, &e, 1) && hook_tri(&a, &e, &d, 1) : hook_sprite(&a, &e, 0);
+    ok = ok && s_replay_stats.fallback_prims == fallback0 && s_cur && target_readback(s_cur);
+    if (!ok) return -1;
+    const uint32_t px = fb[(COH_MIP_Y + 1) * stride + COH_MIP_X + 1];
+    const uint32_t r = px & 0xFFu, g = (px >> 8) & 0xFFu;
+    return g == 255u - r ? (int)(r >> 6) : -1;
+}
+
+/* Per-fragment levels of detail through the hooks (#1373): psp.frag takes q from the
+ * interpolated 1/w in slope mode, and in automatic mode the footprint from the quotient
+ * rule raster_tri uses, (d(u/w) - u d(1/w)) / (1/w), per PSP pixel. Only the level is
+ * checked, so this also runs alone at SR_GPU_SCALE=2 and 4 (SR_GPU_COHERENCE_CASE=mip-lod),
+ * where a device pixel's footprint is 1/scale of a PSP pixel's. */
+static int coherence_run_mip_lod(void) {
+    static const struct {
+        const char *name;
+        CohMipCase c;
+        int persp; float rw; int size; float span; int level; float vspan;
+    } cells[] = {
+        /* w = 2, slope 1: 16 + log16(1) - log16(1/2) = 32, level 2, whatever the footprint. */
+        { "persp-slope", { "persp-slope", 0x004u, 3u, 2u, 0u, 0, 0, 0, 0, 0, 1.0f, 0 }, 1, 0.5f, 16, 8.0f, 2, 0.0f },
+        /* w = 2, 16 texels over 4 pixels: footprint 4, level 2. Leaving d(u/w) undivided by
+         * 1/w reads footprint 2, level 1. */
+        { "persp-auto", { "persp-auto", 0x004u, 3u, 0u, 0u, 0, 0, 0, 0, 0, 0.0f, 0 }, 1, 0.5f, 4, 16.0f, 2, 0.0f },
+        { "persp-auto-mag", { "persp-auto-mag", 0x004u, 3u, 0u, 0u, 0, 0, 0, 0, 0, 0.0f, 0 }, 1, 0.5f, 16, 8.0f, 0, 0.0f },
+        /* Through mode, 8 texels over 4 pixels: footprint 2, level 1. */
+        { "through-auto", { "through-auto", 0x004u, 3u, 0u, 0u, 0, 0, 0, 0, 0, 0.0f, 0 }, 0, 1.0f, 4, 8.0f, 1, 0.0f },
+        /* The larger axis: 2 texels across and 8 down 4 pixels is footprint 2, level 1. */
+        { "through-auto-v", { "through-auto-v", 0x004u, 3u, 0u, 0u, 0, 0, 0, 0, 0, 0.0f, 0 }, 0, 1.0f, 4, 2.0f, 1,
+          8.0f },
+    };
+    int ok = 1;
+    coherence_mip_fill();
+    for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+        const int level = coherence_mip_hook_level(&cells[i].c, cells[i].persp, cells[i].rw,
+                                                   cells[i].size, cells[i].span, cells[i].vspan);
+        if (level != cells[i].level) {
+            fprintf(stderr, "gpu coherence selftest [mip-lod %s]: level %d at scale %d, want %d\n",
+                    cells[i].name, level, s_scale, cells[i].level);
+            ok = 0;
+        } else {
+            printf("gpu coherence selftest: PASS mip-lod %-18s level=%d scale=%d\n", cells[i].name,
+                   level, s_scale);
+        }
+    }
+    coherence_mip_reset_state();
+    coherence_reset_targets();
+    return ok;
+}
+
+/* A TEXLODSLOPE write between two draws of an otherwise identical state must reach the second
+ * draw: the per-draw state template is keyed by the slope too (StateSnap). Slope 1 is level 1
+ * and slope 2 level 2 in through mode. */
+static int coherence_run_mip_slope_change(void) {
+    const uint32_t base = 0x04000000u | 0x00160000u, stride = 512u, rgb = 0x00FFFFFFu;
+    const CohMipCase c = { "slope-change", 0x004u, 3u, 2u, 0u, 16, 0, 1, 0, 0, 1.0f, 0 };
+    uint32_t *fb = (uint32_t *)SR_HOST(base);
+    coherence_mip_fill();
+    coherence_reset_targets();
+    memset(fb, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(coherence_mip_list(&c, 0), 0);      /* the state, no draw */
+    GeVtx p0 = { (float)COH_MIP_X, (float)COH_MIP_Y, 1.0f, 1.0f, 0.25f, 0.25f, 1.0f,
+                 255, 255, 255, 255 };
+    GeVtx p1 = { (float)(COH_MIP_X + 16), (float)(COH_MIP_Y + 16), 1.0f, 1.0f, 8.25f, 8.25f, 1.0f,
+                 255, 255, 255, 255 };
+    int ok = hook_sprite(&p0, &p1, 0);
+    uint32_t *dl = (uint32_t *)SR_HOST(COH_MIP_RESET);
+    const float two = 2.0f;
+    uint32_t bits;
+    memcpy(&bits, &two, 4);
+    dl[0] = (0xD0u << 24) | (bits >> 8);            /* TEXLODSLOPE 2 */
+    dl[1] = 0x0Fu << 24;
+    dl[2] = 0x0Cu << 24;
+    ge_run_list(COH_MIP_RESET, 0);
+    p0.x += 32.0f; p1.x += 32.0f;
+    ok = ok && hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
+    const uint32_t left = fb[COH_MIP_Y * stride + COH_MIP_X] & rgb;
+    const uint32_t right = fb[COH_MIP_Y * stride + COH_MIP_X + 32] & rgb;
+    const uint32_t want_left = coherence_mip_texel(1u, 0u, 0u) & rgb;
+    const uint32_t want_right = coherence_mip_texel(2u, 0u, 0u) & rgb;
+    if (!ok || left != want_left || right != want_right) {
+        fprintf(stderr,
+                "gpu coherence selftest [mip-slope-change]: draws=%d left=%06x (want %06x) "
+                "right=%06x (want %06x)\n", ok, left, want_left, right, want_right);
+        ok = 0;
+    }
+    coherence_reset_targets();
+    if (ok) printf("gpu coherence selftest: PASS mip %-22s old=%06x new=%06x\n",
+                   "slope-change-same-state", left, right);
+    return ok;
+}
+
 static int coherence_run_mip_levels(void) {
     static const CohMipCase cases[] = {
         /* Constant mode: the bias is the level, clamped to the highest level; one half
          * rounds up to the next level (PSP-GE-MIP-001 c-b0f8). */
-        { "const-level-1",       0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 0 },
-        { "const-level-2",       0x004u, 3u, 1u, 32u, 16, 0, 2, 0, 0 },
-        { "const-clamped",       0x004u, 1u, 1u, 48u, 16, 0, 1, 0, 0 },
-        { "const-half-rounds-up", 0x004u, 3u, 1u, 8u, 16, 0, 1, 0, 0 },
-        { "const-mode-3",        0x004u, 3u, 3u, 32u, 16, 0, 2, 0, 0 },
+        { "const-level-1",       0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 0, 0.0f, 0 },
+        { "const-level-2",       0x004u, 3u, 1u, 32u, 16, 0, 2, 0, 0, 0.0f, 0 },
+        { "const-clamped",       0x004u, 1u, 1u, 48u, 16, 0, 1, 0, 0, 0.0f, 0 },
+        { "const-half-rounds-up", 0x004u, 3u, 1u, 8u, 16, 0, 1, 0, 0, 0.0f, 0 },
+        { "const-mode-3",        0x004u, 3u, 3u, 32u, 16, 0, 2, 0, 0, 0.0f, 0 },
         /* With mip levels on, the level of detail picks the filter within a level: a
          * magnified sprite at constant level 1 filters by the minification field
          * (nearest), and a minified one at constant level 0 by the magnification field. */
-        { "const-mag-linear",    0x104u, 3u, 1u, 16u, 16, 0, 1, 0, 0 },
-        { "const-0-mag-filter",  0x005u, 3u, 1u, 0u,   4, 0, 0, 0, 0 },
+        { "const-mag-linear",    0x104u, 3u, 1u, 16u, 16, 0, 1, 0, 0, 0.0f, 0 },
+        { "const-0-mag-filter",  0x005u, 3u, 1u, 0u,   4, 0, 0, 0, 0, 0.0f, 0 },
         /* GU_NEAREST_MIPMAP_LINEAR at constant level 0.5: half of level 0, half of level 1. */
-        { "const-between",       0x006u, 3u, 1u, 8u,  16, 1, -1, 0, 0 },
-        /* Automatic mode: log2 of the footprint plus the bias, clamped to [0, highest]
-         * (software rasterizer). */
-        { "auto-magnified",      0x004u, 3u, 0u, 0u,  16, 0, 0, 0, 0 },
-        { "auto-level-1",        0x004u, 3u, 0u, 0u,   4, 0, 1, 0, 0 },
-        { "auto-level-2",        0x004u, 3u, 0u, 0u,   2, 0, 2, 0, 0 },
-        { "auto-biased",         0x004u, 3u, 0u, 0xF0u, 2, 0, 1, 0, 0 },
-        { "auto-clamped",        0x004u, 1u, 0u, 0u,   2, 0, 1, 0, 0 },
+        { "const-between",       0x006u, 3u, 1u, 8u,  16, 1, -1, 0, 0, 0.0f, 0 },
+        /* Automatic mode: log2 of the footprint plus the bias, clamped to [0, highest]. */
+        { "auto-magnified",      0x004u, 3u, 0u, 0u,  16, 0, 0, 0, 0, 0.0f, 0 },
+        { "auto-level-1",        0x004u, 3u, 0u, 0u,   4, 0, 1, 0, 0, 0.0f, 0 },
+        { "auto-level-2",        0x004u, 3u, 0u, 0u,   2, 0, 2, 0, 0, 0.0f, 0 },
+        { "auto-biased",         0x004u, 3u, 0u, 0xF0u, 2, 0, 1, 0, 0, 0.0f, 0 },
+        { "auto-clamped",        0x004u, 1u, 0u, 0u,   2, 0, 1, 0, 0, 0.0f, 0 },
         /* Bias -1.5 on a 2x minified sprite: level of detail -0.5, so level 0 through the
          * magnification field (nearest), not the minification field (linear). */
-        { "auto-bias-mag-filter", 0x005u, 3u, 0u, 0xE8u, 4, 0, 0, 0, 0 },
-        /* Slope mode with TEXLODSLOPE 0: its logarithm is -2032, so level 0 (software
-         * rasterizer). */
-        { "slope-zero",          0x004u, 3u, 2u, 16u,  4, 0, 0, 0, 0 },
-        /* Level 1 declared 8x8 cannot sit in a halving chain: the software rasterizer draws. */
-        { "chain-fallback",      0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 3u },
+        { "auto-bias-mag-filter", 0x005u, 3u, 0u, 0xE8u, 4, 0, 0, 0, 0, 0.0f, 0 },
+        /* A footprint of 1.6 texels is level of detail 9/16 (the logarithm takes the top
+         * four mantissa bits): GU_NEAREST_MIPMAP_LINEAR blends 9/16 of level 1 into level 0. */
+        { "auto-between",        0x006u, 3u, 0u, 0u,   5, 1, -1, 0, 0, 0.0f, 0 },
+        /* A footprint of 1.33 texels is level of detail 5/16: level 0, but minified, so the
+         * minification field (nearest), not the magnification field (linear). */
+        { "auto-min-filter",     0x104u, 3u, 0u, 0u,   6, 0, 0, 0, 0, 0.0f, 0 },
+        /* Slope mode with TEXLODSLOPE 0: its logarithm is -2032, so level 0. */
+        { "slope-zero",          0x004u, 3u, 2u, 16u,  4, 0, 0, 0, 0, 0.0f, 0 },
+        /* Slope mode in through mode (q = 1): 16 + log16(slope) + bias, whatever the
+         * footprint; 1.5 is 8/16 above 1, which rounds up to level 2. */
+        { "slope-level-1",       0x004u, 3u, 2u, 0u,  16, 0, 1, 0, 0, 1.0f, 0 },
+        { "slope-level-2",       0x004u, 3u, 2u, 0u,  16, 0, 2, 0, 0, 2.0f, 0 },
+        { "slope-half-rounds-up", 0x004u, 3u, 2u, 0u, 16, 0, 2, 0, 0, 1.5f, 0 },
+        { "slope-biased",        0x004u, 3u, 2u, 0xF0u, 16, 0, 1, 0, 0, 2.0f, 0 },
+        { "slope-clamped",       0x004u, 1u, 2u, 0u,  16, 0, 1, 0, 0, 4.0f, 0 },
+        { "slope-between",       0x006u, 3u, 2u, 0u,  16, 1, -1, 0, 0, 1.5f, 0 },
+        /* Level 1 declared 8x8 cannot sit in a halving chain: the software rasterizer draws,
+         * in constant and per-fragment modes alike. */
+        { "chain-fallback",      0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 3u, 0.0f, 1 },
+        { "chain-fallback-auto", 0x004u, 3u, 0u, 0u,   4, 0, -1, 0, 3u, 0.0f, 1 },
         /* Only level 1's address changes after const-level-1: the cache must not reuse it. */
-        { "level1-moved",        0x004u, 3u, 1u, 16u, 16, 0, 1, 1, 0 },
-        { "level1-back",         0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 0 },
+        { "level1-moved",        0x004u, 3u, 1u, 16u, 16, 0, 1, 1, 0, 0.0f, 0 },
+        { "level1-back",         0x004u, 3u, 1u, 16u, 16, 0, 1, 0, 0, 0.0f, 0 },
     };
     int ok = 1;
     coherence_mip_fill();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         if (!coherence_run_mip_case(&cases[i])) ok = 0;
     if (!coherence_run_mip_level_dirty_same_state()) ok = 0;
+    if (!coherence_run_mip_lod()) ok = 0;
+    if (!coherence_run_mip_slope_change()) ok = 0;
     coherence_mip_reset_state();
     coherence_reset_targets();
     return ok;
@@ -8115,6 +8293,7 @@ int gegpu_coherence_selftest(void) {
     const char *only = getenv("SR_GPU_COHERENCE_CASE");
     if (only && *only) {
         if (strcmp(only, "scaled-upload") == 0) return coherence_run_scaled_upload();
+        if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
