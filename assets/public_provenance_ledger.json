@@ -128,6 +128,14 @@
       }
     },
     {
+      "path": ".github/ISSUE_TEMPLATE/good_first_issue.yml",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      }
+    },
+    {
       "path": ".github/ISSUE_TEMPLATE/smoke_test_report.yml",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -5933,18 +5941,6 @@
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
-      }
-    },
-    {
-      "path": "src/rt/ge_vram_cli.c",
-      "classification": "upstream_derived",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "ge-vram-cli-split-1531",
-        "evidence_tier": "N",
-        "upstream": "documented upstream family",
-        "license": "GPL-2.0-or-later",
-        "modification_status": "modified_or_translated; see trusted record"
       }
     },
     {
