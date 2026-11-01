@@ -740,7 +740,8 @@ class PlayerUiIdSourceTests(unittest.TestCase):
 
     # nk_ui.h's id scheme: the files that allocate element ids, each through its
     # screen's macro.
-    ID_FILES = ("src/player/ui/*.c", "src/rt/overlay/*.c", "src/rt/overlay/*.h")
+    ID_FILES = ("src/player/ui/*.c", "src/player/ui/scr_*.h", "src/rt/overlay/*.c",
+                "src/rt/overlay/*.h")
 
     @staticmethod
     def check_families(owner: str, ids: dict[str, int], spans: dict[str, int]) -> list[str]:

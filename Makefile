@@ -3436,7 +3436,7 @@ nk-ui-player-screens-capture:
 		-Isrc/ui -Isrc/player/ui -Ithird_party/clay $(SDL3_TTF_CFLAGS) \
 		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(NK_UI_CORE_SRCS) src/ui/nk_ui_ttf.c src/ui/backend/nk_ui_sdlr.c \
-		src/player/ui/ui_router.c src/player/ui/scr_library.c src/player/ui/scr_title.c \
+		src/player/ui/ui_router.c src/player/ui/scr_library.c $(NK_UI_PLAYER_TITLE_SRCS) \
 		tests/native/test_player_screens.c $(SDL3_TTF_LIBS) -lm \
 		-o $(BUILD_ROOT)/test_player_screens_capture$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_player_screens_capture$(EXE_EXT) --capture-dir="$(NK_UI_CAPTURE_DIR)"
