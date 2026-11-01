@@ -51,6 +51,8 @@ ROOT = Path(__file__).resolve().parent.parent
 RECOMP_C = "src/rt/recomp.c"
 RECOMP_H = "src/rt/recomp.h"
 EMITTER = "tools/codegen.py"
+#: The data module holding the hand-written C bodies codegen.py appends under --profile=hst.
+EMITTER_DATA = "tools/codegen_hst_stubs.py"
 LEDGER = "assets/public_provenance_ledger.json"
 OUT_MD = ROOT / "docs" / "RECOMP_HELPER_INVENTORY.md"
 REACH_CLASSES = ("emitter-reached", "production-runtime-only", "selftest-only", "address-only", "none")
@@ -316,10 +318,10 @@ def load_inputs(root: Path = ROOT, overrides: dict[str, str] | None = None) -> t
     for rel in overrides:
         if rel.startswith("src/") and rel.endswith((".c", ".h")):
             sources[rel] = overrides[rel]
-    return sources, read(EMITTER), json.loads(read(LEDGER))
+    return sources, (read(EMITTER), read(EMITTER_DATA)), json.loads(read(LEDGER))
 
 
-def build_inventory(sources: dict[str, str], emitter: str, ledger: dict) -> dict:
+def build_inventory(sources: dict[str, str], emitter: str | tuple[str, ...], ledger: dict) -> dict:
     """Pure inventory from in-memory inputs.
 
     Each row carries the committed facts. Line numbers and call counts live under
@@ -367,7 +369,10 @@ def build_inventory(sources: dict[str, str], emitter: str, ledger: dict) -> dict
         if hits and macro not in helpers:
             macro_map[macro] = hits
 
-    emitted = Counter(m.group(1) for m in _CALL_RE.finditer(emitter_text(emitter)))
+    emitters = (emitter,) if isinstance(emitter, str) else emitter
+    emitted = Counter(
+        m.group(1) for source in emitters for m in _CALL_RE.finditer(emitter_text(source))
+    )
 
     runtime: dict[str, Counter] = defaultdict(Counter)
     harness: dict[str, Counter] = defaultdict(Counter)
@@ -430,7 +435,7 @@ def build_inventory(sources: dict[str, str], emitter: str, ledger: dict) -> dict
         )
     return {
         "schema": 2,
-        "sources": [RECOMP_C, RECOMP_H, EMITTER, LEDGER],
+        "sources": [RECOMP_C, RECOMP_H, EMITTER, EMITTER_DATA, LEDGER],
         "summary": _summarize(rows),
         "helpers": rows,
     }
@@ -494,7 +499,7 @@ def render_markdown(inv: dict) -> str:
         "  definition and every prototype in `recomp.h`. A non-static definition in another production",
         "  `src/` file is a defining file. Selftest harness definitions are not.",
         "- **Reach**, first match wins: `emitter-reached` (named in the string literals of",
-        "  `tools/codegen.py`, the C it emits; directly, or through the `recomp.h` macros named in the",
+        "  `tools/codegen.py` and `tools/codegen_hst_stubs.py`, the C they emit; directly, or through the `recomp.h` macros named in the",
         "  row); `production-runtime-only` (called from production `src/` code); `selftest-only` (called",
         "  only from `*selftest*` harness files); `address-only` (never called, but named as a value in",
         "  `src/`); `none`.",
