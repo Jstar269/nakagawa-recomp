@@ -797,7 +797,7 @@ set(NK_RUNTIME_SOURCES
     src/rt/psmf_producer.c
     src/rt/pgf_public.c
     src/rt/gui.c
-    src/rt/audio_unavailable.c
+    src/rt/audio_sdl3.c
     src/rt/h264_mf.c
     src/rt/h264_null.c
     src/rt/h264_ffmpeg.c

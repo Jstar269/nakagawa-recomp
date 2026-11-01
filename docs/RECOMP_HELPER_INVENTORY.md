@@ -235,8 +235,8 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_asin_fixed` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_asin_quantum` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_asin_truncate` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
-| `sr_audio_dump_finish` | `rt/audio_unavailable.c` | yes | production-runtime-only | `rt/audio_unavailable.c`: project_authored_attested |
-| `sr_audio_dump_stats` | `rt/audio_unavailable.c` | yes | production-runtime-only | `rt/audio_unavailable.c`: project_authored_attested |
+| `sr_audio_dump_finish` | `rt/audio_sdl3.c`, `rt/audio_unavailable.c` | yes | production-runtime-only | `rt/audio_sdl3.c`: project_authored_attested; `rt/audio_unavailable.c`: project_authored_attested |
+| `sr_audio_dump_stats` | `rt/audio_sdl3.c`, `rt/audio_unavailable.c` | yes | production-runtime-only | `rt/audio_sdl3.c`: project_authored_attested; `rt/audio_unavailable.c`: project_authored_attested |
 | `sr_audio_vbl` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_begin_impl` | `rt/recomp.c` | yes | emitter-reached (via `sr_begin`) | `rt/recomp.c`: upstream_derived |
 | `sr_bitrev` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |

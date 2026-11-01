@@ -360,7 +360,7 @@ class SoakAuditTests(unittest.TestCase):
         self.assertEqual(soak_audit.lead_series(self._win(327, 100)), [100])
         self.assertEqual(soak_audit.lead_series(self._win(627, 40)), [40])
 
-        per_ch = (ROOT / "src" / "rt" / "audio_unavailable.c").read_text(encoding="utf-8")
+        per_ch = (ROOT / "src" / "rt" / "audio_sdl3.c").read_text(encoding="utf-8")
         host_fmt = self._format_for(per_ch, "AUDIOSTAT_HOST: state=%s driver=%s pushed=%llu")
         self.assertIn("queued=%d", host_fmt)
         self.assertIn("lead_ms=%ld", host_fmt)

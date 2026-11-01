@@ -33,7 +33,7 @@ flowchart LR
         HLE["HLE services<br/>src/rt/hle.c<br/>src/rt/hle_*.c (one per subsystem)"]
         GE["GE rendering<br/>src/rt/ge.c<br/>src/rt/gpu_sdl3vk/ge_gpu.c"]
         VK["Vulkan presenter<br/>src/rt/gpu_sdl3vk/sdl3vk.c"]
-        AUDIO["Audio output<br/>src/rt/hle_audio.c<br/>src/rt/audio_unavailable.c"]
+        AUDIO["Audio output<br/>src/rt/hle_audio.c<br/>src/rt/audio_sdl3.c"]
     end
 
     INTAKE -->|"encrypted input with no decrypted copy"| REFUSE
@@ -291,7 +291,7 @@ The runtime executes generated guest functions and implements the host side of P
 | `hle_host.c` / `hle_data.c` / `hle_route.c` | HLE infrastructure that registers no NIDs: host primitives and checked host paths; the data-root lookup and `/DATA/FONT`; acceptance routes and frame capture |
 | `hle_internal.h` | Private header of the runtime HLE files: shared types, macros and small helpers, and the declarations one file defines and another uses. `tools/hle_sources.py` lists the files |
 | `hle_thread_selftest.c` | Game-input-free Windows and Linux harness that executes selected production HLE handlers through registered NIDs against a synthetic scheduler world |
-| `audio_unavailable.c` | Public-safe SDL3 host audio backend linked under `PUBLIC_SAFE=1`; fails closed with a diagnostic when no device is available. Despite the historical file name it is a working backend, not a refusing stub; the lineage-sensitive `audio.c` backend was retired on 2026-10-25 and no build compiles it |
+| `audio_sdl3.c` | Public-safe SDL3 host audio backend linked under `PUBLIC_SAFE=1`; fails closed with a diagnostic when no device is available. It was named `audio_unavailable.c` until 2026-11-01 but is a working backend, not a refusing stub; the lineage-sensitive `audio.c` backend was retired on 2026-10-25 and no build compiles it |
 | `iso_public.c` / `iso.h` | Public-tree UMD/ISO backend linked under `PUBLIC_SAFE=1` using `nk_iso`; `iso_unavailable.c` is kept as a stub alternative; the private `iso.c` backend was retired on 2026-10-25 |
 | `pgd_unavailable.c` | Public-tree PGD stub linked under `PUBLIC_SAFE=1`; the private installed-data backend `pgd.c` was retired on 2026-10-25 |
 | `mpeg.c` | MPEG/SAS/Atrac-related behavior derived in part from PPSSPP lineage |
@@ -839,7 +839,7 @@ cannot observe it ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/11
 | Diagnostic stream drain (`src/rt/debug.c`, [#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)) | A native thread, Windows only, started when stdout or stderr is redirected | Every 50 ms it writes the C runtime's buffered stdout and stderr text to the log. It reads no guest memory and writes nothing the guest reads, so a paused guest observes nothing. |
 | Android output pump (`src/core/nk_platform_posix.c`, [#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)) | A native thread, Android only, started by `nk_platform_host_startup` | An app process's stdout and stderr go nowhere on Android, so it copies their text, line by line, to the system log and to the run log. It reads no guest memory and writes nothing the guest reads, so a paused guest observes nothing. |
 | Preemption timer (`src/rt/sched.c`, [#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)) | A native thread, paced runs started by the driver | It sleeps until the earliest timed wait of a thread stronger than the running one runs out, then ends the running slice so the next yield point enters the scheduler. It reads no guest memory and writes only the slice counter, which the runtime thread resets at every switch, so a paused guest observes nothing. |
-| SDL audio output (`src/rt/audio_unavailable.c`) | SDL's audio device thread consumes the bound channel streams | The guest reads only the queue depth, on its own calls. A pause stashes each queue and puts back exactly that depth on resume. If the stash fails, the device is paused, so nothing is consumed (`audio-selftest`). |
+| SDL audio output (`src/rt/audio_sdl3.c`) | SDL's audio device thread consumes the bound channel streams | The guest reads only the queue depth, on its own calls. A pause stashes each queue and puts back exactly that depth on resume. If the stash fails, the device is paused, so nothing is consumed (`audio-selftest`). |
 | Audio dump (`SR_AUDIODUMP`, postmix callback) | SDL's audio device thread | It writes the mixed output to a host WAV file and reads no guest memory. |
 | Asynchronous file I/O (`sceIoReadAsync` and related calls) | The runtime thread | A request completes in `io_async_dispatch_tick`, which runs at guest syscall entry and counts syscalls, not host time. A paused guest makes no syscalls. |
 | Media decode (ATRAC3+, H.264, MP3) | The runtime thread, inside the guest's decode call | Nothing runs between calls. |

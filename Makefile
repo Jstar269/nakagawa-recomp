@@ -637,7 +637,7 @@ endif
 PGF_BACKEND_SRC := src/rt/pgf_public.c
 PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
 ISO_BACKEND_SRC := src/rt/iso_public.c
-AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
+AUDIO_BACKEND_SRC := src/rt/audio_sdl3.c
 ASSET_COPY_ARGS := -ExcludeOptionalFonts
 # `override` on purpose: a plain += is discarded when a caller passes CFLAGS on the command
 # line, and once any append to CFLAGS uses override, GNU make ignores later ordinary
@@ -2860,7 +2860,7 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
-		src/rt/audio_unavailable.c src/rt/perf.c -lSDL3 -lm \
+		src/rt/audio_sdl3.c src/rt/perf.c -lSDL3 -lm \
 		-o $(BUILD_DIR)/audio_selftest$(EXE_EXT)
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
 
