@@ -174,6 +174,13 @@ void     sr_perf_init(void);
 typedef void (*SrPerfReportSink)(const char *line, size_t len);
 void     sr_perf_test_set_report_sink(SrPerfReportSink sink);
 void     sr_perf_test_force_report(void);
+/* Fake clocks for the selftest: `wall_ns` replaces the host clock every counter reads and
+ * `thread_cpu_ns` the scheduler thread's CPU clock behind the frame-work counters. NULL restores
+ * the real clock. */
+typedef uint64_t (*SrPerfTestClock)(void);
+void     sr_perf_test_set_clocks(SrPerfTestClock wall_ns, SrPerfTestClock thread_cpu_ns);
+/* Close the CSV and start the counters again from the environment, as a fresh process would. */
+void     sr_perf_test_reinit(void);
 void     sr_perf_shutdown(void);
 uint64_t sr_perf_now_ns_impl(void);
 #define sr_perf_now_ns() (sr_perf_enabled ? sr_perf_now_ns_impl() : 0)
@@ -245,7 +252,9 @@ void     sr_perf_present_wait(uint64_t started_ns);
 void     sr_perf_present_done(uint64_t started_ns, int result);
 void     sr_perf_present_skip(void);
 /* One guest framebuffer the window received, at VBLANK `vcount`. A buffer that differs from the
- * previous present's is a new game frame; the same buffer again is a re-present. */
+ * previous present's is a new game frame; the same buffer again is a re-present. Called on the
+ * scheduler thread, which runs the guest, GE lists and the presenter: the CPU time that thread
+ * used from one new frame to the next is the frame's host work. */
 void     sr_perf_present_frame(uint32_t buffer, uint32_t vcount);
 void     sr_perf_aot_begin(uint32_t pc);
 void     sr_perf_aot_end(void);
