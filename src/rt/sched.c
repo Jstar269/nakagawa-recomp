@@ -24,6 +24,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 #include "recomp.h"
+#include "sce_kernel_errors.h"
 #include "sr_coro.h"     /* portable cooperative-coroutine primitive (replaces Win32 fibers) */
 #include "perf.h"
 #include "title_config.h"   /* optional, validated title bindings (roles + counter words) */
@@ -98,22 +99,6 @@ enum { PSP_THREAD_RUNNING = 1, PSP_THREAD_READY = 2, PSP_THREAD_WAITING = 4,
        PSP_THREAD_SUSPEND = 8, PSP_THREAD_STOPPED = 16 };
 enum { SCHED_WAKE_NONE = 0, SCHED_WAKE_TIMEOUT, SCHED_WAKE_SIGNAL };
 enum { PSP_WAIT_NONE = 0, PSP_WAIT_SLEEP = 1, PSP_WAIT_DELAY = 2, PSP_WAIT_OBJECT = 3 };
-
-#define SCE_KERNEL_ERROR_ILLEGAL_THID      0x80020197u
-#define SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT  0x800200d2u
-#define SCE_KERNEL_ERROR_UNKNOWN_THID      0x80020198u
-#define SCE_KERNEL_ERROR_DORMANT           0x800201a2u
-#define SCE_KERNEL_ERROR_NOT_DORMANT       0x800201a4u
-/* Thread suspend/resume statuses.  Values are the measured "Threads / Status codes"
- * cells in docs/HARDWARE_ORACLE.md (double suspend, resume of a thread that is not
- * suspended); the symbolic names are local labels. */
-#define SCE_KERNEL_ERROR_SUSPEND           0x800201a3u
-#define SCE_KERNEL_ERROR_NOT_SUSPEND       0x800201a5u
-#define SCE_KERNEL_ERROR_THREAD_TERMINATED 0x800201acu
-#define SCE_KERNEL_ERROR_WAIT_DELETE       0x800201b5u
-#define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT   0x80020064u
-#define SCE_KERNEL_ERROR_ILLEGAL_ATTR      0x80020191u
-#define SCE_KERNEL_ERROR_ILLEGAL_PRIORITY  0x80020193u
 
 /* PSP hardware treats a signed-negative status as an error-shaped non-delete
  * exit and latches SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT.  The boundary probe

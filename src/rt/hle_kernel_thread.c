@@ -158,11 +158,6 @@ static uint32_t h_DelayThreadCB(CpuState *s) {
     return h_DelayThreadCBForUsec(A0);
 }
 
-/* PSP's public pspkerror.h names ILLEGAL_ADDR as 0x800200D3 for kernel APIs.
- * Keep it distinct from the subsystem-specific 0x80000103 memory error used by
- * several HLE objects below. */
-#define SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR 0x800200d3u
-
 static uint32_t h_ReadSysClockDelay(uint32_t addr, uint64_t *usec_out) {
     if (!addr || !usec_out || !sr_guest_span_readable(addr, 8u))
         return SCE_KERNEL_ERROR_KERNEL_ILLEGAL_ADDR;
@@ -614,7 +609,6 @@ static uint32_t h_DeleteNotifyCallback(CpuState *s) {
  * result instead of a satisfaction, which is why h_WaitSema / h_WaitEventFlag
  * consult sched_take_wake_result() right after each sched_block_on(). ---- */
 
-#define SCE_KERNEL_ERROR_WAIT_RELEASE  0x800201aau
 
 static uint32_t h_ReleaseWaitThread(CpuState *s) {
     /* a0=thid. PSP-B3-01 (psp-hw-20260917): a waiter is released with
