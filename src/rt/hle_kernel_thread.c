@@ -26,6 +26,7 @@ static uint32_t h_CreateThread(CpuState *s) {
     char name[32] = {0};
     if (A0 && !guest_cstr(A0, name, sizeof(name))) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t uid = sched_create_thread_ex(A1, (int)A2, A3, stack_arg(s, 0), name);
+    if (uid) sched_mark_code_pointer_entry(uid);   /* the entry is a guest code pointer (#1375) */
     return uid ? uid : 0x80020190u;   /* SCE_KERNEL_ERROR_NO_MEMORY */
 }
 static uint32_t h_StartThread(CpuState *s) {

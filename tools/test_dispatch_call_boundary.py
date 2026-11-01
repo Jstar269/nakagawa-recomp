@@ -118,6 +118,7 @@ def _build_and_run_stack_census(
             "int main(void) {\n"
             "    CpuState s = {0};\n"
             "    s.r[29] = 0x2000u;\n"
+            "    s.r[31] = SR_HOST_RETURN_PC;  /* a host entry's return address (#1375) */\n"
             "    s.cop0[SR_CP0_EPC] = 0x00001000u;\n"
             "    sr_register_all();\n"
             "    if (sr_stack_census_status() != SR_STACK_CENSUS_NOT_OBSERVED) return 2;\n"
@@ -582,6 +583,7 @@ static void pair_body(void *arg) {
     RecompFn fn = sr_lookup(0x00001000u);
     memset(&g_probe_state, 0, sizeof g_probe_state);
     g_probe_state.r[29] = PROBE_SP;
+    g_probe_state.r[31] = SR_HOST_RETURN_PC;   /* a host entry's return address (#1375) */
     g_probe_state.r[4] = (uint32_t)g_pair_n[i];
     if (fn) {
 #ifdef SR_TAIL_DRAIN
@@ -610,6 +612,7 @@ int main(int argc, char **argv) {
     sr_register_all();
     memset(&g_probe_state, 0, sizeof g_probe_state);
     g_probe_state.r[29] = PROBE_SP;
+    g_probe_state.r[31] = SR_HOST_RETURN_PC;   /* a host entry's return address (#1375) */
     g_probe_state.r[4] = (uint32_t)n;
     const int neighbour = argc > 2 && strcmp(argv[2], "neighbour") == 0;
     const int pair = argc > 2 && strncmp(argv[2], "pair", 4) == 0;

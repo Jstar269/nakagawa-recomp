@@ -233,7 +233,7 @@ class CallbackDispatchBehaviourTests(unittest.TestCase):
     locals or restructured the helpers could fail it while behaving correctly,
     and a behavioural break could still pass it.  These tests compile
     recomp.h's callback seam and execute it: the dispatcher is injected the
-    same way hle.c injects the real dispatch(), so the production helpers run
+    same way hle.c injects the real dispatch_from_host(), so the production helpers run
     without linking the runtime.
     """
 
@@ -243,6 +243,7 @@ class CallbackDispatchBehaviourTests(unittest.TestCase):
     PROBE_SOURCE = r"""
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "recomp.h"
 
@@ -258,6 +259,12 @@ int sr_aot_return_boundary_scope_end(CpuState *cpu,
     (void)cpu; (void)scope; (void)owner;
     return 0;
 }
+/* recomp.c's stop for a callback function of 0 (#1375); this probe never registers one. */
+void sr_null_code_entry(CpuState *cpu, const char *owner) {
+    (void)cpu;
+    printf("null %s entry\n", owner);
+    exit(1);
+}
 
 static void guest_callback(CpuState *cpu) {
     printf("cb a0=%08x a1=%08x a2=%08x gp=%08x ra=%08x\n",
@@ -266,7 +273,7 @@ static void guest_callback(CpuState *cpu) {
 }
 
 /* Stand-in for recompiled code, injected exactly the way hle.c injects the
- * real dispatch(): it only runs the guest body.  A real `jal` leaves $ra =
+ * real dispatch_from_host(): it only runs the guest body.  A real `jal` leaves $ra =
  * call+8; it never touches $gp. */
 static void stand_in_dispatch(CpuState *cpu, uint32_t entry) {
     (void)entry;
@@ -298,7 +305,8 @@ int main(void) {
      * callback-global $gp or $ra on top of the dispatcher's own. */
     (void)sr_callback_dispatch_one(
         &cpu, 0x08804000u, 7, 0x0000beefu, 0x0000c0deu, stand_in_dispatch);
-    /* 2: dispatcher that does not set $ra: the helper's pin (0) must show. */
+    /* 2: dispatcher that does not set $ra: the helper's pin (the host return
+     * address) must show. */
     uint32_t ret = sr_callback_dispatch_one(
         &cpu, 0x08804000u, 7, 0x0000beefu, 0x0000c0deu, bare_dispatch);
 
@@ -357,7 +365,7 @@ int main(void) {
         """The callback body must see the PSP ABI: $a0=count, $a1=arg, $a2=common,
         the interrupted thread's $gp (never a callback-global GP), and a $ra owned
         by the dispatch path: the jal's value when the dispatcher sets one, the
-        helper's pin (0) when it does not."""
+        helper's pin (SR_HOST_RETURN_PC, #1375) when it does not."""
         out = self._run_probe()
         self.assertIn(
             "cb a0=00000007 a1=0000beef a2=0000c0de gp=12340000 ra=feed0008",
@@ -366,10 +374,11 @@ int main(void) {
             "(jal-like dispatcher case):\n" + out,
         )
         self.assertIn(
-            "cb a0=00000007 a1=0000beef a2=0000c0de gp=12340000 ra=00000000",
+            "cb a0=00000007 a1=0000beef a2=0000c0de gp=12340000 ra=fffffff0",
             out,
-            "the helper must pin $ra=0 before dispatch so a dispatcher that "
-            "never emulates the jal still hands the callback a defined $ra:\n" + out,
+            "the helper must pin $ra to the host return address before dispatch "
+            "so a dispatcher that never emulates the jal still hands the callback "
+            "a defined, nonzero $ra:\n" + out,
         )
 
     def test_interrupted_context_restored_and_return_value_delivered(self):

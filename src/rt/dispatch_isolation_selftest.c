@@ -930,22 +930,16 @@ static CpuState reject_state(void) {
 
 
 /* ---------------------------------------------------------------------------
- * SEPARATE BOUNDARY, MEASURED NOT FIXED: $ra = 0 at the interpreter floor.
+ * $ra = 0 at the interpreter floor is a null code pointer (#1375).
  *
- * The nested host->guest call marshalling in src/rt/hle.c and src/rt/mpeg.c
- * seeds $ra = 0 -- "the callee has no guest return address to jump to" -- and
- * relies on the callee being an AOT body whose C epilogue simply returns.  That
- * works.  What is NOT the same is a nested callee that is NOT translated and so
- * runs on the production interpreter floor: its architectural `jr $ra` sets
- * pc = 0, the interpreter has no CALL boundary to stop at (dispatch() passes
- * none), and pc = 0 owns no executable span.  The floor rejects, and the public
- * dispatch() wrapper turns a rejection into process termination.
- *
- * This is an ABI question, not a frame-ownership one: giving nested calls a
- * synthetic return address or a call boundary would redefine the callback ABI,
- * which the frame-isolation change deliberately does not do.  Recorded here so
- * the behaviour is measured rather than assumed, and so a later fix has a
- * failing-before specimen to point at.
+ * The host used to enter nested guest calls (src/rt/hle.c, src/rt/mpeg.c, the
+ * scheduler) with $ra = 0 and relied on the callee being an AOT body whose C
+ * epilogue simply returns. An interpreted callee's architectural `jr $ra` then
+ * read 0 and stopped as a null code pointer, so the two tiers disagreed. The host
+ * now hands every entry SR_HOST_RETURN_PC as a linked call's resume PC
+ * (dispatch_from_host; test_host_entries_return_through_the_host_return_address),
+ * and a return address of 0 is a null code pointer in both tiers. This record keeps
+ * the interpreter's half of that rule.
  * --------------------------------------------------------------------------- */
 #define NESTED_RA0_EXEC_START 0x00650000u
 #define NESTED_RA0_EXEC_END   (NESTED_RA0_EXEC_START + 0x10u)
@@ -970,8 +964,8 @@ static void test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor(vo
     CHECK(sr_exec_span_register(NESTED_RA0_EXEC_START, NESTED_RA0_EXEC_END),
           "nested-call ra=0 span registration failed");
 
-    /* Exactly the state ge_call_guest_rv()/call_guest3() hand a callee: zeroed,
-     * three arguments, a frame $sp, $ra = 0, pc = the entry. */
+    /* The state the host used to hand a nested callee: zeroed, a frame $sp,
+     * $ra = 0, pc = the entry. */
     memset(&s, 0, sizeof s);
     s.r[29] = 0x09f0fd00u;
     s.r[31] = 0u;
@@ -982,30 +976,29 @@ static void test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor(vo
     CHECK(s.r[2] == 0x00001234u,
           "the interpreted nested callee did not execute its body (v0=0x%08x)", s.r[2]);
     CHECK(result != SR_GUEST_INTERP_AOT_HANDOFF && result != SR_GUEST_INTERP_CALL_RETURN,
-          "MEASURED: an interpreted nested callee with $ra=0 unexpectedly returned "
-          "cleanly (%s) -- if this is now a real contract, this record is stale",
+          "an interpreted callee returned cleanly through $ra=0 (%s)",
           sr_guest_interp_result_name(result));
     CHECK(result == SR_GUEST_INTERP_NULL_CODE_POINTER &&
               fault.pc == NESTED_RA0_EXEC_START + 4u,
-          "MEASURED: the floor did not stop at the jr that reads $ra=0 as a null code "
+          "the floor did not stop at the jr that reads $ra=0 as a null code "
           "pointer (#1375; fault_pc=0x%08x, result=%s)",
           fault.pc, sr_guest_interp_result_name(result));
 
     /* The same shape through the production dispatch core.  dispatch_try() is
      * used rather than dispatch() because the public wrapper terminates the
-     * process on exactly this rejection -- which IS the finding. */
+     * process on this rejection. */
     memset(&s, 0, sizeof s);
     s.r[29] = 0x09f0fd00u;
     s.r[31] = 0u;
     s.pc = NESTED_RA0_EXEC_START;
     dispatch_result = dispatch_try(&s, NESTED_RA0_EXEC_START);
     CHECK(dispatch_result < 0,
-          "MEASURED: the dispatch core accepted a nested $ra=0 interpreted return "
+          "the dispatch core accepted an interpreted return through $ra=0 "
           "(result=%d); the public dispatch() wrapper terminates on a negative result",
           dispatch_result);
 
     /* Control: the identical body with a real return address resumes normally,
-     * so the finding is about $ra = 0 and not about the interpreter floor. */
+     * so the stop is about $ra = 0 and not about the interpreter floor. */
     g_interp_handoff_hits = 0;
     own_synthetic_aot_word(PROBE_RA);
     sr_register(PROBE_RA, interp_handoff_body);
@@ -1653,6 +1646,8 @@ static void test_configured_terminators_match_their_site_only(void) {
     const SrTitleRuntimeConfig *cfg = sr_title_config();
     for (unsigned i = 0; i < cfg->callback_terminator_count; i++) {
         const SrTitleCallbackTerminator *t = &cfg->callback_terminators[i];
+        CHECK(t->sentinel != 0u, "configuration \"%s\" declares a sentinel-0 terminator; a "
+              "target of 0 is a null code pointer (#1375)", cfg->source_id);
         /* An unconstrained field is not compared, so any value stands in for it. */
         uint32_t pc = t->has_pc ? t->pc : PROBE_PC;
         uint32_t ra = t->has_ra ? t->ra : PROBE_RA;
@@ -1682,11 +1677,12 @@ static void test_configured_terminators_match_their_site_only(void) {
 }
 
 /* Both public fixtures deliberately use the SAME sentinel values at DIFFERENT sites, so
- * a build must never terminate at a site only the other fixture declares. */
+ * a build must never terminate at a site only the other fixture declares. The sentinel-0
+ * sites are each fixture's retired null terminator (#1375): no build terminates there. */
 static const struct { uint32_t sentinel, pc, ra; } FOREIGN_TERMINATOR_SITES[] = {
-    { 0u,          PROBE_PC,     0x08805300u },  /* pspdev-phase5 */
+    { 0u,          PROBE_PC,     0x08805300u },  /* pspdev-phase5, retired */
     { UINT32_MAX,  0x08805400u,  0x08805500u },  /* pspdev-phase5 */
-    { 0u,          PROBE_PC,     0x08806300u },  /* synthetic */
+    { 0u,          PROBE_PC,     0x08806300u },  /* synthetic, retired */
     { UINT32_MAX,  0x08806400u,  0x08806500u },  /* synthetic */
 };
 
@@ -2076,6 +2072,210 @@ static void test_null_code_pointer_is_not_the_offset0_function(const char *self_
     sr_exec_span_reset();
 }
 
+/* ---- #1375: the host return address, null entries, and dispatch normalizations ------
+ *
+ * The host enters guest code as a linked call that returns to SR_HOST_RETURN_PC
+ * (dispatch_from_host), never with $ra = 0. A body's `jr $ra` back to the host is that
+ * call's return in both tiers, including after a TAIL step into interpreted code, and a
+ * return address of 0 is the same null code pointer in both. A guest callback of 0 stops
+ * before any guest code runs, and no dispatch normalization turns a nonzero target into
+ * address 0 -- on this zero-based layout each would otherwise run the offset-0 function. */
+#define HOSTRET_AOT_ENTRY    0x00670000u
+#define HOSTRET_STRAY_ENTRY  0x00670010u
+#define HOSTRET_TAIL_ENTRY   0x00670020u
+#define HOSTRET_CALLER_ENTRY 0x00670030u
+#define HOSTRET_EXEC_START   0x00670100u
+#define HOSTRET_INTERP       (HOSTRET_EXEC_START + 0x00u)  /* addiu v0, zero, 0x1234 ; jr ra ; nop */
+#define HOSTRET_INTERP_RET   (HOSTRET_EXEC_START + 0x10u)  /* jr ra ; nop */
+#define HOSTRET_CALL_PC      (HOSTRET_EXEC_START + 0x20u)  /* the caller's jal (its bytes are not run) */
+#define HOSTRET_RESUME       (HOSTRET_CALL_PC + 8u)        /* addiu v1, v1, 1 ; jr t1 ; nop */
+#define HOSTRET_EXEC_END     (HOSTRET_EXEC_START + 0x40u)
+
+static void hostret_aot_body(CpuState *s) {
+    s->r[2] = 0x11u;
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void hostret_stray_body(CpuState *s) {
+    SR_AOT_RETURN_CAPTURE(s, PROBE_RA);
+}
+
+/* A computed TAIL transfer out of a native body (emit_tail_transfer, resume form). */
+static void hostret_tail_body(CpuState *s) {
+    sr_tail_record(s, HOSTRET_INTERP, NULL, 0u, 0u);
+}
+
+static void hostret_callee_body(CpuState *s) {
+    sr_tail_record(s, HOSTRET_INTERP_RET, NULL, 0u, 0u);
+}
+
+/* The generated shape of a direct jal (emit_checked_body_call): the link, the boundary, the
+ * callee and its drain, the end check, then the caller's native continuation, which counts
+ * its runs in v1. */
+static void hostret_caller_body(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    s->r[31] = HOSTRET_RESUME;
+    if (sr_aot_return_boundary_begin(s, HOSTRET_RESUME, HOSTRET_CALL_PC, 1u)) return;
+    hostret_callee_body(s);
+    SR_TAIL_DRAIN(s);
+    if (sr_aot_return_boundary_end(s)) return;
+    s->r[3] += 1u;
+    s->r[31] = caller_ra;
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void hostret_setup(void) {
+    sr_exec_span_reset();
+    own_synthetic_aot_word(HOSTRET_AOT_ENTRY);
+    own_synthetic_aot_word(HOSTRET_STRAY_ENTRY);
+    own_synthetic_aot_word(HOSTRET_TAIL_ENTRY);
+    own_synthetic_aot_word(HOSTRET_CALLER_ENTRY);
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(HOSTRET_AOT_ENTRY, hostret_aot_body);
+    sr_register(HOSTRET_STRAY_ENTRY, hostret_stray_body);
+    sr_register(HOSTRET_TAIL_ENTRY, hostret_tail_body);
+    sr_register(HOSTRET_CALLER_ENTRY, hostret_caller_body);
+    sr_register(PROBE_RA, interp_handoff_body);
+    MEM_W32(HOSTRET_INTERP, 0x24021234u);
+    MEM_W32(HOSTRET_INTERP + 4u, 0x03e00008u);
+    MEM_W32(HOSTRET_INTERP + 8u, 0x00000000u);
+    MEM_W32(HOSTRET_INTERP_RET, 0x03e00008u);
+    MEM_W32(HOSTRET_INTERP_RET + 4u, 0x00000000u);
+    MEM_W32(HOSTRET_RESUME, 0x24630001u);
+    MEM_W32(HOSTRET_RESUME + 4u, 0x01200008u);
+    MEM_W32(HOSTRET_RESUME + 8u, 0x00000000u);
+    CHECK(sr_exec_span_register(HOSTRET_EXEC_START, HOSTRET_EXEC_END),
+          "host-return executable span registration failed");
+}
+
+static CpuState hostret_state(void) {
+    CpuState s = nullptr_state(PROBE_PC);
+    s.r[2] = 0u;
+    s.r[3] = 0u;
+    s.r[9] = PROBE_RA;
+    s.r[31] = SR_HOST_RETURN_PC;
+    return s;
+}
+
+/* Child: a host entry whose native body TAIL-steps into interpreted code that returns. */
+static int run_host_tail_return_child(void) {
+    hostret_setup();
+    CpuState s = hostret_state();
+    dispatch_from_host(&s, HOSTRET_TAIL_ENTRY);
+    return s.r[2] == 0x1234u && s.flow_kind == SR_FLOW_NONE &&
+           sr_aot_return_boundary_top == NULL ? 0 : 98;
+}
+
+static void test_host_entries_return_through_the_host_return_address(const char *self_path) {
+    sr_mem_init();
+    hostret_setup();
+    char event_path[512];
+    snprintf(event_path, sizeof event_path, "%s.hostret-events.txt", self_path);
+
+    /* The host return address names no code, even with address 0 executable. */
+    own_synthetic_aot_word(0u);
+    sr_register(0u, offset0_body);
+    CHECK(sr_lookup(SR_HOST_RETURN_PC) == NULL && !sr_exec_span_owns_fetch(SR_HOST_RETURN_PC) &&
+              !sr_exec_span_owns_fetch(SR_PHYS(SR_HOST_RETURN_PC)),
+          "SR_HOST_RETURN_PC resolves to guest code");
+
+    /* Native body: `jr $ra` to the host is the host entry's return. */
+    CpuState s = hostret_state();
+    int result = dispatch_call_try(&s, HOSTRET_AOT_ENTRY, SR_HOST_RETURN_PC);
+    CHECK(result >= 0 && s.r[2] == 0x11u && s.flow_kind == SR_FLOW_NONE &&
+              sr_aot_return_boundary_top == NULL,
+          "a native host-entered body did not return to the host (result=%d v0=0x%08x flow=%u)",
+          result, s.r[2], s.flow_kind);
+
+    /* A native body that returns anywhere but the host is the named mismatch. */
+    s = hostret_state();
+    result = dispatch_call_try(&s, HOSTRET_STRAY_ENTRY, SR_HOST_RETURN_PC);
+    CHECK(result < 0 && s.flow_kind == SR_FLOW_FATAL && sr_aot_return_boundary_top == NULL,
+          "a host-entered body that returned past the host was accepted (result=%d flow=%u)",
+          result, s.flow_kind);
+    sr_cpu_clear_flow(&s);
+
+    /* Interpreted body (an AOT gap at the entry): the same return, at the call boundary. */
+    s = hostret_state();
+    result = dispatch_call_try(&s, HOSTRET_INTERP, SR_HOST_RETURN_PC);
+    CHECK(result == SR_GUEST_INTERP_CALL_RETURN && s.r[2] == 0x1234u &&
+              s.pc == SR_HOST_RETURN_PC,
+          "an interpreted host-entered body did not return to the host (result=%d v0=0x%08x "
+          "pc=0x%08x)", result, s.r[2], s.pc);
+
+    /* A native body that TAIL-steps into interpreted code, which then returns to the host:
+     * the interpreter must hand back instead of fetching from SR_HOST_RETURN_PC. A failed
+     * TAIL step ends the process, so it runs in a child. */
+    int child_status = run_dispatch_child(self_path, "--host-tail-return-child");
+    CHECK(child_status == 0,
+          "interpreted code entered by a TAIL step did not return to the host (status=%d)",
+          child_status);
+
+    /* The same TAIL-step return one level down: interpreted code returning to a native
+     * linked call's resume PC hands back, so the caller's continuation runs once. Without
+     * that the interpreter runs the continuation (v1 + 1, then on to the handoff) and the
+     * native caller runs it again. */
+    g_interp_handoff_hits = 0;
+    s = hostret_state();
+    result = dispatch_call_try(&s, HOSTRET_CALLER_ENTRY, SR_HOST_RETURN_PC);
+    CHECK(result >= 0 && s.r[3] == 1u && g_interp_handoff_hits == 0 &&
+              s.flow_kind == SR_FLOW_NONE && sr_aot_return_boundary_top == NULL,
+          "a TAIL-stepped return to a native caller ran its continuation %u time(s) "
+          "(result=%d handoffs=%d flow=%u)", s.r[3], result, g_interp_handoff_hits, s.flow_kind);
+
+    /* A return address of 0 is a null code pointer in the native tier too, as it is in the
+     * interpreter (test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor). */
+    remove(event_path);
+    set_boot_event_file(event_path);
+    child_status = run_dispatch_child(self_path, "--null-return-child");
+    set_boot_event_file("");
+    CHECK(child_status == 1,
+          "a generated jr $ra with $ra = 0 did not stop the run with status 1 (status=%d)",
+          child_status);
+    CHECK(boot_event_file_names(event_path, "boundary=null-code-pointer issue=1375"),
+          "the null return address stop did not record its boot event naming #1375");
+
+    /* A callback registered with function 0 stops before guest code runs; on this
+     * zero-based layout it would otherwise run the offset-0 function. */
+    remove(event_path);
+    set_boot_event_file(event_path);
+    child_status = run_dispatch_child(self_path, "--null-callback-child");
+    set_boot_event_file("");
+    CHECK(child_status == 1,
+          "a callback with function 0 did not stop the run with status 1 (status=%d)",
+          child_status);
+    CHECK(boot_event_file_names(event_path, "boundary=null-code-pointer issue=1375"),
+          "the null callback stop did not record its boot event naming #1375");
+    remove(event_path);
+
+    /* No normalization produces address 0: each of these is address 0 with offset or
+     * segment bits set, a null code pointer, and must not reach the offset-0 function. */
+    static const uint32_t normalized_nulls[] = {
+        0x08000000u,                                                  /* RELOC_FIXUP */
+        0x20000000u, 0x60000000u, 0x80000000u, 0xA0000000u, 0xC0000000u, 0xE0000000u, /* KSEG */
+    };
+    for (size_t i = 0; i < sizeof normalized_nulls / sizeof normalized_nulls[0]; i++) {
+        g_offset0_hits = 0;
+        s = nullptr_state(PROBE_PC);
+        result = dispatch_try(&s, normalized_nulls[i]);
+        CHECK(result == SR_GUEST_INTERP_NULL_CODE_POINTER && g_offset0_hits == 0,
+              "dispatch to 0x%08x normalized onto address 0 (result=%d offset-0 runs=%d)",
+              normalized_nulls[i], result, g_offset0_hits);
+    }
+    /* A late import whose export resolves to a kernel-segment alias of address 0. */
+    const uint32_t saved_export = g_late_export_a;
+    g_late_export_a = 0x80000000u;
+    g_offset0_hits = 0;
+    s = nullptr_state(PROBE_PC);
+    result = dispatch_try(&s, LATE_STUB_A);
+    g_late_export_a = saved_export;
+    CHECK(result == SR_GUEST_INTERP_NULL_CODE_POINTER && g_offset0_hits == 0,
+          "a late import resolving to 0x80000000 ran the offset-0 function (result=%d runs=%d)",
+          result, g_offset0_hits);
+
+    sr_exec_span_reset();
+}
+
 int main(int argc, char **argv) {
     sr_mem_init();
     sr_watch_configure();
@@ -2098,6 +2298,21 @@ int main(int argc, char **argv) {
         CpuState s = nullptr_state(NULLPTR_EXEC_START);
         SR_CODE_POINTER(&s, s.r[25], NULLPTR_EXEC_START);
         return 99; /* fail-open: a null code pointer must never fall through */
+    }
+    if (argc == 2 && strcmp(argv[1], "--host-tail-return-child") == 0)
+        return run_host_tail_return_child();
+    if (argc == 2 && strcmp(argv[1], "--null-return-child") == 0) {
+        CpuState s = nullptr_state(PROBE_PC);
+        SR_AOT_RETURN_CAPTURE(&s, 0u);
+        return 99; /* fail-open: generated code returned to address 0 */
+    }
+    if (argc == 2 && strcmp(argv[1], "--null-callback-child") == 0) {
+        sr_exec_span_reset();
+        own_synthetic_aot_word(0u);
+        sr_register(0u, offset0_body);
+        CpuState s = nullptr_state(PROBE_PC);
+        (void)sr_callback_dispatch_one(&s, 0u, 1, 0u, 0u, dispatch_from_host);
+        return 99; /* fail-open: the callback ran (offset-0 runs=g_offset0_hits) */
     }
 
     const SrTitleRuntimeConfig *cfg = sr_title_config();
@@ -2130,6 +2345,7 @@ int main(int argc, char **argv) {
     test_foreign_terminator_sites_are_generic();
     test_stale_hook_redirects_to_interpreter();
     test_null_code_pointer_is_not_the_offset0_function(argv[0]);
+    test_host_entries_return_through_the_host_return_address(argv[0]);
 
     if (g_failures != 0) {
         fprintf(stderr, "dispatch-isolation-selftest: %d FAILURE(S) in configuration \"%s\"\n",

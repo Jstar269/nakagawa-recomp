@@ -193,8 +193,7 @@ int sr_title_config_is_callback_terminator(uint32_t sentinel, uint32_t pc, uint3
         /* A match is the firing: dispatch reports completion on every 1 returned here.
          * The census anchors a terminator on its pc constraint, else its ra. */
         sr_compat_fired("TITLE_CONFIGURED_DISPATCH", t->has_pc ? t->pc : t->ra,
-                        sentinel == 0u ? "callback-list walker null terminator"
-                                       : "callback-list walker terminal miss");
+                        "callback-list walker terminal miss");
         return 1;
     }
     return 0;

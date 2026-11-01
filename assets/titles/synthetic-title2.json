@@ -50,10 +50,6 @@
     ],
     "callback_terminators": [
       {
-        "sentinel": 0,
-        "ra": 151191552
-      },
-      {
         "sentinel": 4294967295,
         "pc": 151195648,
         "ra": 151199744

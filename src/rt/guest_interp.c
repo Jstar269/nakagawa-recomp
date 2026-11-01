@@ -1452,6 +1452,19 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             }
             return SR_GUEST_INTERP_CALL_RETURN;
         }
+        /* Without a boundary of its own (a TAIL step out of a native body), a transfer to the
+         * resume PC of the innermost live native linked call is that call's return, the host
+         * entry's SR_HOST_RETURN_PC included (#1375): the native caller runs the continuation. */
+        if (!boundary && instruction_count != 0u &&
+            sr_aot_return_boundary_capture_resume(s, pc)) {
+            s->pc = pc;
+            if (log_dispatch) {
+                fprintf(stderr,
+                        "GUEST_INTERP_NATIVE_RETURN pc=0x%08" PRIx32 " instructions=%llu\n",
+                        pc, instruction_count);
+            }
+            return SR_GUEST_INTERP_CALL_RETURN;
+        }
 
         if ((pc & 3u) != 0u) {
             set_fault(fault, pc, 0u, pc, 0);

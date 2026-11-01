@@ -75,6 +75,7 @@ ABI_FUNCTIONS = {
     "sr_aot_return_boundary_begin": _FN(L.i32, (L.ptr, L.i32, L.i32, L.i32)),
     "sr_aot_return_boundary_end": _FN(L.i32, (L.ptr,)),
     "dispatch_call": _FN(L.void, (L.ptr, L.i32, L.i32)),
+    "sr_null_code_pointer": _FN(L.void, (L.ptr, L.i32)),
     "sr_lwl": _FN(L.i32, (L.i32, L.i32)),
     "sr_lwr": _FN(L.i32, (L.i32, L.i32)),
     "sr_swl_pc": _FN(L.void, (L.i32, L.i32, L.i32)),
@@ -282,6 +283,14 @@ class FunctionLowering:
         else:
             self.call("sr_llvm_tail_record", self.s, target, fn, self.sp_entry, self.c32(1))
         self.ret()
+
+    def code_pointer_check(self, target, transfer_pc):
+        """codegen.emit_code_pointer_check: a computed target of 0 is a null code pointer
+        (#1375). It stops before the transfer's link write and delay slot."""
+        _, join = self.split(self.builder.icmp("eq", target, self.c32(0)), "null.code.pointer")
+        self.call("sr_null_code_pointer", self.s, self.c32(transfer_pc))
+        self.builder.unreachable()
+        self.builder.position_at_end(join)
 
     def checked_body_call(self, symbol, call_pc):
         """codegen.emit_checked_body_call: a direct CALL with its return boundary."""
@@ -552,6 +561,7 @@ class FunctionLowering:
             then()
         elif t.kind in ("call-computed", "tail-computed"):     # jalr / jr rs
             latched = self.R(t.target_reg)                     # PR #126: latched at the transfer
+            self.code_pointer_check(latched, t.addr)
             self.begin(t.addr, t.word)
             if t.link_reg is not None:
                 self.W(t.link_reg, link_value)

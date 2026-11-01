@@ -1754,7 +1754,7 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     s->r[6] = a2;
     s->r[28] = save.r[28];
     s->r[29] = frame_sp;
-    s->r[31] = 0;
+    s->r[31] = SR_HOST_RETURN_PC;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);

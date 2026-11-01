@@ -1865,6 +1865,21 @@ static void dispatch_report_null_code_pointer(const CpuState *s, uint32_t transf
     dispatch_record_null_code_pointer();
 }
 
+/* A dispatch target that a normalization below would turn into address 0 (#1375): the
+ * kernel-RAM rebase (0x08000000), a segment strip of a kernel-segment alias, or a late
+ * import resolving to such an alias. Each is address 0 with offset or segment bits set,
+ * which the PSP faults on as it does on 0, and on a zero-based image the offset-0 function
+ * would otherwise run in its place. The report names the original target. */
+static int dispatch_report_normalized_null(const CpuState *s, uint32_t target,
+                                           const char *normalization) {
+    fprintf(stderr,
+            "NULL_CODE_POINTER: dispatch to 0x%08" PRIx32 " normalizes (%s) to 0x00000000; "
+            "pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " sp=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
+            target, normalization, s->pc, s->r[31], s->r[29], sched_current_uid());
+    dispatch_record_null_code_pointer();
+    return SR_GUEST_INTERP_NULL_CODE_POINTER;
+}
+
 /* A dispatch to address 0 on an image with no code there (dispatch_try_with_boundary).
  * The dispatch carries no transfer pc; s->pc is only what the caller last wrote. */
 static void dispatch_report_null_dispatch(const CpuState *s) {
@@ -1881,6 +1896,41 @@ void sr_null_code_pointer(CpuState *s, uint32_t transfer_pc) {
     fflush(stderr);
     exit(1);
 }
+
+void sr_null_return_address(CpuState *s) {
+    fprintf(stderr,
+            "NULL_CODE_POINTER: jr $ra returns to 0x00000000 sp=0x%08" PRIx32 " uid=0x%" PRIx32
+            " (generated code; the dispatch trace below names the function)\n",
+            s->r[29], sched_current_uid());
+    dispatch_record_null_code_pointer();
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0u, 0u, 0u);
+    fflush(stderr);
+    exit(1);
+}
+
+/* A guest-held code pointer of 0 that reaches a host entry (#1375): a thread created with
+ * entry 0, or a callback registered with function 0. The kernel accepts both today
+ * (unmeasured on the PSP); the fault comes when the entry is fetched, so the stop sits at
+ * the entry, before guest state changes. A loader-known entry is not a code pointer and
+ * never comes here: a zero-based image's module_start at offset 0 runs like any address. */
+void sr_null_code_entry(CpuState *s, const char *owner) {
+    fprintf(stderr,
+            "NULL_CODE_POINTER: %s entry 0x00000000 ra=0x%08" PRIx32 " sp=0x%08" PRIx32
+            " uid=0x%" PRIx32 "\n",
+            owner && owner[0] ? owner : "guest", s->r[31], s->r[29], sched_current_uid());
+    dispatch_record_null_code_pointer();
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0u, 0u, 0u);
+    fflush(stderr);
+    exit(1);
+}
+
+/* SR_HOST_RETURN_PC must never name code (recomp.h). */
+_Static_assert(SR_HOST_RETURN_PC != 0u && (SR_HOST_RETURN_PC & 3u) == 0u,
+               "SR_HOST_RETURN_PC is a nonzero, word-aligned return address");
+_Static_assert((SR_HOST_RETURN_PC & SR_DISPATCH_VFPU_MASK) != SR_DISPATCH_VFPU_TAG,
+               "SR_HOST_RETURN_PC lies outside the VFPU fallback tag window");
+_Static_assert(SR_PHYS(SR_HOST_RETURN_PC) >= 0x0C000000u,
+               "no dispatch normalization maps SR_HOST_RETURN_PC into the guest arena");
 
 static int dispatch_run_interp(
     CpuState *s,
@@ -2065,6 +2115,24 @@ int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
     return 0;
 }
 
+/* Interpreted code the interpreter entered with no call boundary of its own -- a TAIL step
+ * out of a native body (dispatch_tail_step) -- returns into the native frames below it. A
+ * transfer that lands on the resume PC of the innermost live linked call is that call's
+ * return, exactly as the body's own `jr $ra` would have been: the native caller continues,
+ * so the interpreter must hand back rather than run the continuation itself and then have
+ * the caller run it again. For a host entry the resume PC is SR_HOST_RETURN_PC, which the
+ * interpreter could not even fetch. Returns that land deeper than the innermost live call
+ * stay with sr_aot_return_boundary_end (#1034). */
+int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target) {
+    SrAotReturnBoundary *top = sr_aot_return_boundary_top;
+    if (sr_aot_return_boundary_depth <= sr_aot_return_boundary_floor || top == NULL ||
+        top->state != s || !top->has_resume_pc || top->resume_pc != target) {
+        return 0;
+    }
+    top->observed_target = UINT64_C(0x100000000) | target;
+    return 1;
+}
+
 /* A guest `jr $ra` that returns past its own caller (#1034). Hand-written routines do
  * this: a branch-and-link into a block that restores the enclosing frame's $ra and $sp
  * and returns straight to that frame's caller, so the linked call never resumes. When
@@ -2232,11 +2300,19 @@ int sr_aot_return_boundary_end(CpuState *s) {
         sr_aot_return_boundary_resume_live_frame(s, boundary, actual_target))
         return 1;
 
-    fprintf(stderr,
-            "SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: linked call at 0x%08" PRIx32
-            " resumed at 0x%08" PRIx32 " but its guest jr $ra target was 0x%08" PRIx32
-            "; stopping before the AOT continuation\n",
-            boundary->resume_pc - 8u, boundary->resume_pc, actual_target);
+    if (boundary->resume_pc == SR_HOST_RETURN_PC) {
+        /* A host entry (dispatch_from_host) has no linked call site to name. */
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: a host-entered guest body "
+                "returned to 0x%08" PRIx32 " instead of the host; stopping\n",
+                actual_target);
+    } else {
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: linked call at 0x%08" PRIx32
+                " resumed at 0x%08" PRIx32 " but its guest jr $ra target was 0x%08" PRIx32
+                "; stopping before the AOT continuation\n",
+                boundary->resume_pc - 8u, boundary->resume_pc, actual_target);
+    }
     dispatch_record_semantic_stop_issue("aot-return-target-mismatch", 1034u);
     s->flow_kind = SR_FLOW_FATAL;
     s->flow_target = actual_target;
@@ -2333,7 +2409,7 @@ static int dispatch_try_with_boundary(
     /* Configured callback terminators.
      *
      * A guest that walks a circular callback list reaches its terminal entry with a
-     * sentinel target (0 and -1 are the shapes seen in practice). The permissive miss
+     * sentinel target (-1 is the shape seen in practice). The permissive miss
      * path answers 0, which such a walker reads as "continue", so it loops forever.
      * Where a title's configuration names the exact call site, report COMPLETION to the
      * caller instead: v0 = 1, return to $ra.
@@ -2342,9 +2418,9 @@ static int dispatch_try_with_boundary(
      * and it must be configured -- an unconfigured build matches nothing and the same
      * sentinel at the same site follows ordinary dispatch behavior below. This sits
      * AFTER the VFPU tag check on purpose: the VFPU encoding is core dispatch vocabulary
-     * that a title configuration must never be able to shadow. It sits BEFORE the
-     * null-code-pointer stop below because a configured terminal callback is a normal
-     * completion, even when its sentinel is 0. */
+     * that a title configuration must never be able to shadow. A sentinel of 0 is
+     * refused by the manifest validator (#1375): a target of 0 is a null code pointer,
+     * which stops by name below, never a completed walk. */
     if (sr_title_config_is_callback_terminator(target, s->pc, s->r[31])) {
         s->r[2] = 1u;
         s->pc = s->r[31];
@@ -2430,6 +2506,7 @@ static int dispatch_try_with_boundary(
      * 0x00000000.  When sr_lookup(target) fails for an address in [0x08000000..0x0C000000),
      * try the same address minus the PSP RAM base to find the recompiled function. */
     if (!fn && target >= 0x08000000u && target < 0x0C000000u) {
+        if (target == 0x08000000u) return dispatch_report_normalized_null(s, target, "RELOC_FIXUP");
         fn = sr_lookup(target - 0x08000000u);
         if (fn) {
             static int reloc_fixup_n = 0;
@@ -2451,6 +2528,7 @@ static int dispatch_try_with_boundary(
     if (!fn) {
         uint32_t phys = target & 0x1FFFFFFFu;
         if (phys != target) {
+            if (phys == 0u) return dispatch_report_normalized_null(s, target, "KSEG_FIXUP");
             fn = sr_lookup(phys);
             if (fn) {
                 static int kseg_fixup_n = 0;
@@ -2490,6 +2568,8 @@ static int dispatch_try_with_boundary(
             fn = sr_lookup(resolved);
             if (!fn && (resolved & 0x1FFFFFFFu) != resolved) {
                 resolved &= 0x1FFFFFFFu;
+                if (resolved == 0u)
+                    return dispatch_report_normalized_null(s, target, "late import");
                 fn = sr_lookup(resolved);
             }
             if (fn) {
@@ -2619,6 +2699,14 @@ void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {
         fflush(stderr);
         exit(1);
     }
+}
+
+/* A host entry is a linked call that returns to the host (#1375, recomp.h). The AOT tier
+ * accepts the body's `jr $ra` to SR_HOST_RETURN_PC at its return boundary, and the
+ * interpreter returns at the call boundary instead of fetching from that address. A native
+ * body that returns anywhere else stops as the named #1034 mismatch. */
+void dispatch_from_host(CpuState *s, uint32_t entry) {
+    dispatch_call(s, entry, SR_HOST_RETURN_PC);
 }
 
 jmp_buf g_hle_jmp;

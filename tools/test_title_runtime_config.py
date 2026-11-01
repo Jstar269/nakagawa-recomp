@@ -237,10 +237,11 @@ class RuntimeBindingValidation(unittest.TestCase):
         terminator = defs["callbackTerminator"]
         self.assertFalse(terminator["additionalProperties"])
         self.assertEqual(terminator["required"], ["sentinel"])
-        # A sentinel is a raw target value: 0 and 0xFFFFFFFF are the real ones, so it must
-        # NOT be published as a guestAddress (which forbids zero and demands alignment).
+        # A sentinel is a raw target value (0xFFFFFFFF is the real one), so it must NOT be
+        # published as a guestAddress, which demands alignment. It is never 0: a transfer to
+        # 0 is a null code pointer, which the validator refuses as a sentinel (#1375).
         sentinel_range = terminator["properties"]["sentinel"]["allOf"][0]
-        self.assertEqual(sentinel_range["minimum"], 0)
+        self.assertEqual(sentinel_range["minimum"], 1)
         self.assertEqual(sentinel_range["maximum"], 0xFFFFFFFF)
         self.assertNotIn("$ref", json.dumps(sentinel_range),
                          "a sentinel must not be published as a guestAddress")
@@ -398,33 +399,40 @@ class CallbackTerminatorValidation(unittest.TestCase):
             title_manifest.validate_manifest(manifest)
         self.assertIn(fragment, str(caught.exception))
 
-    def test_the_real_sentinel_values_are_accepted(self) -> None:
-        """0 and 0xFFFFFFFF are the sentinels guests actually use. Neither is a guest
-        address -- zero is forbidden as one, and 0xFFFFFFFF is not 4-byte aligned -- so
-        this asserts the sentinel is validated as a raw target value instead."""
+    def test_the_real_sentinel_value_is_accepted(self) -> None:
+        """0xFFFFFFFF is the sentinel guests actually use. It is not a guest address (it
+        is not 4-byte aligned), so this asserts the sentinel is validated as a raw target
+        value instead."""
         manifest = base_manifest(worker_thread_entry=0x08804200)
         manifest["runtime_bindings"]["callback_terminators"] = [
-            {"sentinel": 0, "ra": 0x08808000},
             {"sentinel": 0xFFFFFFFF, "pc": 0x08808100, "ra": 0x08808200},
         ]
         normalized = title_manifest.validate_manifest(manifest)["runtime_bindings"]
         self.assertEqual(
             normalized["callback_terminators"],
-            [{"sentinel": 0, "ra": 0x08808000},
-             {"sentinel": 0xFFFFFFFF, "pc": 0x08808100, "ra": 0x08808200}],
+            [{"sentinel": 0xFFFFFFFF, "pc": 0x08808100, "ra": 0x08808200}],
         )
+
+    def test_a_null_sentinel_is_rejected(self) -> None:
+        """A transfer to 0 is a null code pointer that stops by name (#1375), so no
+        configuration may report it as a completed callback walk."""
+        for entry in ({"sentinel": 0, "ra": 0x08808000},
+                      {"sentinel": 0, "pc": 0x08808100, "ra": 0x08808200}):
+            with self.subTest(entry=entry):
+                self.assert_rejected([entry], "must not be 0: a transfer to 0 is a null code "
+                                              "pointer")
 
     def test_an_unconstrained_terminator_is_rejected(self) -> None:
         """This is the load-bearing rule: without a pc or an ra, the sentinel would
         terminate at every call site in the program."""
-        self.assert_rejected([{"sentinel": 0}], "must constrain at least one of pc/ra")
+        self.assert_rejected([{"sentinel": 0xFFFFFFFF}], "must constrain at least one of pc/ra")
 
     def test_empty_collection_is_rejected(self) -> None:
         self.assert_rejected([], "must not be empty; omit the field instead")
 
     def test_duplicate_terminator_is_rejected(self) -> None:
         self.assert_rejected(
-            [{"sentinel": 0, "ra": 0x08808000}, {"sentinel": 0, "ra": 0x08808000}],
+            [{"sentinel": 0xFFFFFFFF, "ra": 0x08808000}, {"sentinel": 0xFFFFFFFF, "ra": 0x08808000}],
             "duplicates the terminator already declared",
         )
 
@@ -432,8 +440,8 @@ class CallbackTerminatorValidation(unittest.TestCase):
         """A narrower entry behind a broader one can never decide anything; that is an
         authoring error, not a preference, so it fails rather than being ignored."""
         self.assert_rejected(
-            [{"sentinel": 0, "ra": 0x08808000},
-             {"sentinel": 0, "pc": 0x08808100, "ra": 0x08808000}],
+            [{"sentinel": 0xFFFFFFFF, "ra": 0x08808000},
+             {"sentinel": 0xFFFFFFFF, "pc": 0x08808100, "ra": 0x08808000}],
             "is unreachable behind the broader terminator",
         )
 
@@ -441,8 +449,8 @@ class CallbackTerminatorValidation(unittest.TestCase):
         """The same sentinel at genuinely different sites is normal, not a conflict."""
         manifest = base_manifest(worker_thread_entry=0x08804200)
         manifest["runtime_bindings"]["callback_terminators"] = [
-            {"sentinel": 0, "ra": 0x08808000},
-            {"sentinel": 0, "ra": 0x08808004},
+            {"sentinel": 0xFFFFFFFF, "ra": 0x08808000},
+            {"sentinel": 0xFFFFFFFF, "ra": 0x08808004},
         ]
         normalized = title_manifest.validate_manifest(manifest)["runtime_bindings"]
         self.assertEqual(len(normalized["callback_terminators"]), 2)
@@ -452,10 +460,10 @@ class CallbackTerminatorValidation(unittest.TestCase):
             ({"sentinel": 0x1_0000_0000, "ra": 0x08808000}, "must be in range"),
             ({"sentinel": -1, "ra": 0x08808000}, "must be in range"),
             ({"sentinel": "0", "ra": 0x08808000}, "must be an integer"),
-            ({"sentinel": 0, "ra": 0}, "must not be zero"),
-            ({"sentinel": 0, "pc": 0x08808001}, "must be 4-byte aligned"),
+            ({"sentinel": 0xFFFFFFFF, "ra": 0}, "must not be zero"),
+            ({"sentinel": 0xFFFFFFFF, "pc": 0x08808001}, "must be 4-byte aligned"),
             ({"ra": 0x08808000}, "missing required field(s): sentinel"),
-            ({"sentinel": 0, "ra": 0x08808000, "uid": 1}, "unknown field(s): uid"),
+            ({"sentinel": 0xFFFFFFFF, "ra": 0x08808000, "uid": 1}, "unknown field(s): uid"),
         ):
             with self.subTest(entry=entry):
                 self.assert_rejected([entry], fragment)
@@ -478,17 +486,17 @@ class CallbackTerminatorValidation(unittest.TestCase):
         against a dispatch target, so the reservation must not reach them."""
         manifest = base_manifest(worker_thread_entry=0x08804200)
         manifest["runtime_bindings"]["callback_terminators"] = [
-            {"sentinel": 0, "pc": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000,
+            {"sentinel": 0xFFFFFFFF, "pc": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000,
              "ra": title_manifest.SR_DISPATCH_VFPU_TAG + 0x2000}]
         normalized = title_manifest.validate_manifest(manifest)["runtime_bindings"]
         self.assertEqual(
             normalized["callback_terminators"],
-            [{"sentinel": 0, "pc": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000,
+            [{"sentinel": 0xFFFFFFFF, "pc": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000,
               "ra": title_manifest.SR_DISPATCH_VFPU_TAG + 0x2000}],
         )
 
     def test_the_ceiling_is_enforced(self) -> None:
-        over = [{"sentinel": 0, "ra": 0x08808000 + 4 * i}
+        over = [{"sentinel": 0xFFFFFFFF, "ra": 0x08808000 + 4 * i}
                 for i in range(title_manifest.MAX_CALLBACK_TERMINATORS + 1)]
         self.assert_rejected(over, "maximum is 32")
 
@@ -762,13 +770,14 @@ class GeneratedCollections(unittest.TestCase):
 
     def test_the_two_fixtures_share_their_sentinel_values(self) -> None:
         """Deliberate: a sentinel is generic guest vocabulary, so both fixtures use the
-        SAME values at DIFFERENT sites. That is what makes 'same 0 elsewhere follows
-        generic behavior' an assertion the matrix can actually fail."""
+        SAME values at DIFFERENT sites. That is what makes 'the same sentinel elsewhere
+        follows generic behavior' an assertion the matrix can actually fail. Sentinel 0 is
+        refused (#1375), so -1 is the one they share."""
         def sentinels(path: Path) -> set[int]:
             return {t["sentinel"]
                     for t in self.config(path)["bindings"]["callback_terminators"]}
         self.assertEqual(sentinels(FIXTURE_A), sentinels(FIXTURE_B))
-        self.assertEqual(sentinels(FIXTURE_A), {0, 0xFFFFFFFF})
+        self.assertEqual(sentinels(FIXTURE_A), {0xFFFFFFFF})
 
     def test_a_changed_collection_changes_the_digest(self) -> None:
         """The build binds this digest into RUNTIME_PROFILE_HASH, so a changed binding
