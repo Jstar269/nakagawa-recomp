@@ -422,15 +422,15 @@ CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=16
 else ifeq ($(CASE),exception-a3-fetch-zero)
 TARGET = $(BUILD_DIR)/psp_a3_fetch_zero
 OBJS = $(BUILD_DIR)/probe_exception_a3.o
-CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=17
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT_FULL)\" -DA3_CASE=17
 else ifeq ($(CASE),exception-a3-fetch-08000000)
 TARGET = $(BUILD_DIR)/psp_a3_fetch_08000000
 OBJS = $(BUILD_DIR)/probe_exception_a3.o
-CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=18
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT_FULL)\" -DA3_CASE=18
 else ifeq ($(CASE),exception-a3-fetch-40000000)
 TARGET = $(BUILD_DIR)/psp_a3_fetch_40000000
 OBJS = $(BUILD_DIR)/probe_exception_a3.o
-CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=19
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT_FULL)\" -DA3_CASE=19
 else ifeq ($(CASE),kobj-b1)
 TARGET = $(BUILD_DIR)/psp_b1
 OBJS = $(BUILD_DIR)/psp_b1.o $(BUILD_DIR)/threadman_user_imports.o
