@@ -107,6 +107,12 @@ else ifeq ($(CASE),exception-a3-vfpu-lvq-delay)
 CASE_ID = 42
 else ifeq ($(CASE),exception-a3-vfpu-lvl-odd)
 CASE_ID = 43
+else ifeq ($(CASE),exception-a3-fetch-zero)
+CASE_ID = 132
+else ifeq ($(CASE),exception-a3-fetch-08000000)
+CASE_ID = 133
+else ifeq ($(CASE),exception-a3-fetch-40000000)
+CASE_ID = 134
 else ifeq ($(CASE),kobj-b1)
 CASE_ID = 26
 else ifeq ($(CASE),wait-b2)
@@ -273,6 +279,9 @@ CASE_ID = 118
 # 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
 else ifeq ($(CASE),insn-trace)
 CASE_ID = 119
+# 135: #312's standalone delay-slot exception fixture; the frame is captured from exprint.
+else ifeq ($(CASE),insn-trace-exception)
+CASE_ID = 135
 # 120: the #325 COP0 interrupt state (probe_hle_issues.c): Cause, Status, Count and the
 # interrupt-enable word read in kernel mode across a suspended VBLANK.
 else ifeq ($(CASE),intr-cause)
@@ -286,6 +295,13 @@ CASE_ID = 124
 # WLAN state.
 else ifeq ($(CASE),kernel-semantics)
 CASE_ID = 127
+# 128: #1375 P1 plus non-invoking P2 registrations; 129/130 are separately guarded NULL invokes.
+else ifeq ($(CASE),null-code-registration)
+CASE_ID = 128
+else ifeq ($(CASE),null-thread-invocation)
+CASE_ID = 129
+else ifeq ($(CASE),null-callback-invocation)
+CASE_ID = 130
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -403,6 +419,18 @@ else ifeq ($(CASE),exception-a3-vfpu-lvl-odd)
 TARGET = $(BUILD_DIR)/psp_a3_vfpu_lvl_odd
 OBJS = $(BUILD_DIR)/probe_exception_a3.o
 CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=16
+else ifeq ($(CASE),exception-a3-fetch-zero)
+TARGET = $(BUILD_DIR)/psp_a3_fetch_zero
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=17
+else ifeq ($(CASE),exception-a3-fetch-08000000)
+TARGET = $(BUILD_DIR)/psp_a3_fetch_08000000
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=18
+else ifeq ($(CASE),exception-a3-fetch-40000000)
+TARGET = $(BUILD_DIR)/psp_a3_fetch_40000000
+OBJS = $(BUILD_DIR)/probe_exception_a3.o
+CFLAGS += -DA3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\" -DA3_CASE=19
 else ifeq ($(CASE),kobj-b1)
 TARGET = $(BUILD_DIR)/psp_b1
 OBJS = $(BUILD_DIR)/psp_b1.o $(BUILD_DIR)/threadman_user_imports.o
@@ -496,6 +524,15 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),kernel-semantics)
 TARGET = $(BUILD_DIR)/kernel_semantics
 OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),null-code-registration)
+TARGET = $(BUILD_DIR)/null_code_registration
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),null-thread-invocation)
+TARGET = $(BUILD_DIR)/null_thread_invocation
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),null-callback-invocation)
+TARGET = $(BUILD_DIR)/null_callback_invocation
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 # The DMAC transfer-time cells: their own source with the same writer, ThreadManForUser
 # block and module lifecycle as the HLE issue cells.
 else ifeq ($(CASE),dma-timing)
@@ -515,6 +552,10 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),insn-trace)
 TARGET = $(BUILD_DIR)/insn_trace
 OBJS = $(BUILD_DIR)/probe_insn_trace.o $(BUILD_DIR)/insn_trace_tramp.o $(BUILD_DIR)/threadman_user_imports.o
+# The exception fixture uses the same logger and module lifecycle, without the trampoline.
+else ifeq ($(CASE),insn-trace-exception)
+TARGET = $(BUILD_DIR)/insn_trace_exception
+OBJS = $(BUILD_DIR)/probe_insn_trace.o $(BUILD_DIR)/threadman_user_imports.o
 # The module_start thread cell: no main thread. Its own module_start replaces crt0's: the
 # source gives it the assembler name __wrap_module_start, --wrap=module_start points the export
 # table's reference there, and -e makes it the ELF entry point (the linker script's
@@ -594,6 +635,15 @@ ifeq ($(CASE),hle-intr-cells)
 USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E6961,0xFB8E22EC,0x8A389411
 USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
+ifeq ($(CASE),null-code-registration)
+USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E6961,0xFB8E22EC,0x8A389411
+USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceGe_user=0xB287BD61,0xA4FC06A4,0x05DB22CE
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
+ifneq ($(filter null-thread-invocation null-callback-invocation,$(CASE)),)
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library KUBridge --forbid-library SystemCtrlForUser
 endif
 # kernel-semantics: exactly the four VBLANK sub-interrupt calls, the six sceCtrl sampling calls,
 # the three volatile-lock calls, and from sceWlanDrv only the switch and power state: the gate

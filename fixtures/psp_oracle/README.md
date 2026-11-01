@@ -421,25 +421,27 @@ implementation matches until the comparison protocol runs on the capture.
 
 ## Exception and kernel-object probes (campaign psp-hw-20260917)
 
-These cases are standalone probes, each in its own source file. Unlike
-`probe.c`, they do not print protocol records. Each probe writes its header and
-results to a file on `host0:` (the PSPLink host share) and records the
-`PROBE_BUILD_COMMIT` value (default: the short `HEAD` hash). Build one case per
-launch and power-cycle between launches.
+The original exception and kernel-object cases are standalone probes. The
+`exception-a3-fetch-*` follow-ups share `probe_exception_a3.c` and write a small
+protocol stream before the intentional user-mode fetch fault. Each case is one
+launch; the hardware runner retains PSPLink's `exprint` reply before recovery.
 
 | Case | Source | What it measures | Ends by |
 | --- | --- | --- | --- |
 | `exception-a1` | `probe_exception_a1.c` | A user-mode `break`: EPC, Cause and Status in PSPLink's exception frame. | Raising the exception. |
 | `exception-a2` | `probe_exception_a2.c` | The same `break` in the delay slot of an always-taken branch (the Cause BD bit). | Raising the exception. |
 | `exception-a3` | `probe_exception_a3.c` | A user-mode load from a kernel-segment address (AdEL and BadVAddr). | Raising the exception. |
+| `exception-a3-fetch-zero` | `probe_exception_a3.c` | User-mode instruction fetch from 0. ExcCode, EPC, BadVAddr and Cause.BD are in the runner's teardown `exprint` reply. | Raising the exception. |
+| `exception-a3-fetch-08000000` | `probe_exception_a3.c` | User-mode instruction fetch from 0x08000000. Exception fields are in the runner's teardown `exprint` reply. | Raising the exception. |
+| `exception-a3-fetch-40000000` | `probe_exception_a3.c` | User-mode instruction fetch from 0x40000000. Exception fields are in the runner's teardown `exprint` reply. | Raising the exception. |
 | `kobj-b1` | `psp_b1.c` | Wait-free callback, semaphore, event-flag, FPL, VPL, VTimer and LwMutex return codes and status layouts. | Returning from `main`. |
 | `wait-b2` | `psp_b2.c` | Contended waits with one bounded helper thread: wake, delete, cancel and LwMutex hand-off. | Returning from `main`. |
 | `kernel-b3` | `psp_b3.c` | Message pipes, mailboxes, sleep/wakeup/suspend/terminate, release-wait, alarms and delay timing. | Parking in `sceKernelSleepThread()`. |
 
-After an exception probe, read the frame with `pspsh -e "exprint"`, one
-command at a time. On the measured PSPLink setup, a probe that returned from
-`main` after creating threads (`wait-b2`) left PSPLink and exited to the XMB,
-which is why `kernel-b3` parks instead.
+The hardware runner issues `exprint` after each exception case and keeps its
+reply in the teardown report. On the measured PSPLink setup, a probe that
+returned from `main` after creating threads (`wait-b2`) left PSPLink and exited
+to the XMB, which is why `kernel-b3` parks instead.
 
 The kernel-object probes link `threadman_user_imports.S`, one complete
 ThreadManForUser import block: PSPSDK ships heavyweight-mutex stubs only for
@@ -623,6 +625,23 @@ publishes their words.
 | `vfpu-sort` | `PSP-VFPU-SORT-001` | Built from `probe_hle_issues.c`. #326, two passes, register-only: the raw result words of `vsrt1.q`, `vsrt2.q`, `vsrt3.q` and `vsrt4.q` (C000 into C200, VFPU_CC and a changed-word census of the rest of the register file) over 24 operand sets that put the compared lane pairs in several positions (ordinary orders, equal values and signed zeros, quiet, negative, signalling and payload NaNs against numbers, infinities, denormals, neighbouring floats), each under no S prefix, negate-all and a wzyx swizzle with lanes 0 and 2 negated. One launch, 576 result records, one step per form and pass; MEASURED 2026-10-29 at `9171f055` (acceptance-eligible, both passes identical). |
 | `vfpu-forms2` | `PSP-VFPU-FORMS2-001` | Built from `probe_hle_issues.c`. #326, two passes, register-only: the raw words of `vrnds.s` (24 seeds from two RCX states, with RCX after the write, after the seed and after one `vrndi.s` draw), `vrndi`, `vrndf1` and `vrndf2` at .p, .t and .q from eight RCX states, `vf2h.p`/`.q` over 28 operand quads and `vc2i.s` over ten byte patterns, the conversions under no S prefix, negate-all and wzyx with lanes 0 and 2 negated. MEASURED 2026-10-29 at `97827132` (docs/HARDWARE_ORACLE.md). |
 | `intr-cause` | `PSP-INTR-CAUSE-001` | Built from `probe_hle_issues.c`. #325: COP0 Cause, Status and Count and the Allegrex interrupt-enable word (`mfic $0`), each read in kernel mode by one `kuKernelCall` of a read-only function, with the system time and `sceDisplayGetVcount` after it: four reads with interrupts enabled after a VBLANK start, then per pass (two passes) a read every 1 ms through a 24 ms `sceKernelCpuSuspendIntr` window that starts after a VBLANK start, one read 200 us after the resume and the window summary. Nothing is installed. One launch, 58 result records, `MEASURED` on 2026-10-29 (`2c199df8`). |
+
+### #1375 entry and NULL-code probes
+
+These cases use `probe_hle_issues.c`. `CASE=null-code-registration` records
+`$ra`, `$sp`, `$gp`, `$a0-$a3` and `$t0-$t3` at thread, callback, alarm, VTimer and
+VBLANK sub-interrupt entries, then the NULL registration results for CreateThread,
+CreateCallback, RegisterSubIntrHandler and GeSetCallback. It never enables or queues
+a NULL interrupt/GE handler.
+`null-thread-invocation` and `null-callback-invocation` are separate follow-ups and
+must only run if the entry measurements show user-mode invocation context.
+
+### #312 instruction trace
+
+`CASE=insn-trace` records the selected FPU and VFPU registers in the source-owned
+`fpu-state` and `vfpu-state` fixtures, along with the existing GPR, HI/LO and store
+state. `CASE=insn-trace-exception` raises a `break` in a branch delay slot; the
+runner keeps its EPC, Cause, BadVAddr and Status frame from `exprint` in teardown.
 
 The seven `hle-*` rows are single-launch probes built from `probe_hle_measure.c`, and they are
 not in the campaign queue. Five cases ran on a PSP-3000 on 2026-10-15 (build `b5d6fc5b`):

@@ -2457,7 +2457,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 116)
+        self.assertEqual(len(routes), 123)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2465,6 +2465,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(set(range(1, 79)) | set(range(90, 104)) | {106, 107, 108, 109}
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
+                         | {128, 129, 130, 132, 133, 134, 135}
                          | {150, 151},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
@@ -4020,7 +4021,26 @@ def _gu_teardown_problems(source: str) -> list[str]:
     code = _c_code(source)
     functions = _c_function_list(code)
     problems: list[str] = []
-    if "sceGuInit(" not in code and "sceGeSetCallback(" not in code:
+    if "sceGuInit(" not in code:
+        if "sceGeSetCallback(" not in code:
+            return problems
+        # A probe that sets a callback but never queues a list has no GE/GU teardown
+        # state to drain. It must prove the GE idle first and unset the exact callback ID.
+        if "sceGeListEnQueue(" in code:
+            problems.append("callback-only source queues GE work without GU teardown")
+        registrations = [
+            (name, body, call)
+            for name, body in functions
+            for call in re.finditer(r"\b(\w+) = sceGeSetCallback\(", body)
+        ]
+        if not registrations:
+            problems.append("callback-only source does not keep its GE callback ID")
+        for name, body, call in registrations:
+            cbid = re.escape(call.group(1))
+            if "null_ge_drawsync_bounded(" not in body[:call.start()]:
+                problems.append(f"{name} sets its GE callback before a bounded idle check")
+            if not re.search(r"sceGeUnsetCallback\(\s*%s\s*\)" % cbid, body[call.end():]):
+                problems.append(f"{name} never unsets its GE callback ID")
         return problems
 
     def reaches(name: str, body: str, start: int, pattern: str, what: str) -> int:
@@ -6219,6 +6239,140 @@ def _hle_intr_cleanup_problems(probe: str) -> list[str]:
     return problems
 
 
+class KernelEntryNullcodeProbeTests(unittest.TestCase):
+    """#1375 register/entry probes have fixed, named campaign contracts."""
+
+    EXPECTED = {
+        "null-code-registration": ("PSP-NULLCODE-001", {
+            "thread-entry": 11, "thread-entry-setup": 6,
+            "callback-entry": 11, "callback-entry-setup": 4,
+            "alarm-entry": 11, "alarm-entry-setup": 2,
+            "vtimer-entry": 11, "vtimer-entry-setup": 5,
+            "vblank-subintr-entry": 11, "vblank-subintr-setup": 6,
+            "create-thread-null": 3, "create-callback-null": 3,
+            "register-subintr-null": 3, "register-subintr-null-not-invoked": 1,
+            "ge-drawsync-idle": 6, "ge-set-callback-null": 2,
+            "ge-set-callback-null-not-invoked": 1,
+            "null-code-registration-done": 1,
+        }),
+        "null-thread-invocation": ("PSP-NULLCODE-001", {
+            "null-thread-armed": 2, "null-thread-started": 7,
+            "null-thread-invocation-done": 1,
+        }),
+        "null-callback-invocation": ("PSP-NULLCODE-001", {
+            "null-callback-armed": 2, "null-callback-checked": 7,
+            "null-callback-invocation-done": 1,
+        }),
+        "exception-a3-fetch-zero": ("PSP-EXCEPTION-FETCH-001", {"fetch-armed": 1}),
+        "exception-a3-fetch-08000000": ("PSP-EXCEPTION-FETCH-001", {"fetch-armed": 1}),
+        "exception-a3-fetch-40000000": ("PSP-EXCEPTION-FETCH-001", {"fetch-armed": 1}),
+    }
+
+    def test_each_1375_campaign_has_a_fixed_parser_contract(self) -> None:
+        for campaign, (test_id, expected_counts) in self.EXPECTED.items():
+            with self.subTest(campaign=campaign):
+                spec, counts = CAMPAIGN_PROBE_CASES[campaign]
+                self.assertEqual(spec.test_id, test_id)
+                self.assertEqual(counts, expected_counts)
+                terminal = "fetch-armed" if campaign.startswith("exception-a3-fetch-") \
+                    else f"{campaign}-done"
+                self.assertEqual(spec.terminal_case, terminal)
+
+    def test_registry_parses_the_exact_record_shapes(self) -> None:
+        for campaign, (test_id, _expected_counts) in self.EXPECTED.items():
+            spec, counts = CAMPAIGN_PROBE_CASES[campaign]
+            lines = [
+                "NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown "
+                "binary_sha256=" + "0" * 64 + " source_commit=" + "1" * 40 + " fixture=1375\n"
+            ]
+            for case_id in spec.ordered_cases:
+                values = (
+                    f" out0=0x{len(spec.semantic_cases):08x}"
+                    if case_id == spec.terminal_case
+                    else "".join(f" out{index}=0x00000000"
+                                 for index in range(counts[case_id]))
+                )
+                status = "SKIP" if case_id == "fetch-armed" else "PASS"
+                lines.append(
+                    f"NAKAGAWA_PSP_TEST schema=1 test_id={test_id} case_id={case_id} "
+                    f"status={status} result=0x00000000{values}\n"
+                )
+            parsed = parse_campaign_probe_output("".join(lines), campaign)
+            self.assertEqual(tuple(parsed.results), spec.ordered_cases)
+
+    def test_build_routes_use_the_reserved_case_id_and_existing_probe_source(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        makefile = (root / "fixtures" / "psp_oracle" / "Makefile").read_text(encoding="utf-8")
+        probe = (root / "fixtures" / "psp_oracle" / "probe_hle_issues.c").read_text(
+            encoding="utf-8"
+        )
+        routes = dict(re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            makefile, re.MULTILINE,
+        ))
+        expected_ids = {
+            "null-code-registration": "128", "null-thread-invocation": "129",
+            "null-callback-invocation": "130",
+        }
+        for case, case_id in expected_ids.items():
+            with self.subTest(case=case):
+                self.assertEqual(routes.get(case), case_id)
+                self.assertIn(f"else ifeq ($(CASE),{case})\n", makefile)
+                self.assertIn("probe_hle_issues.o", makefile)
+        for macro in ("HLE_CASE_NULL_CODE_REGISTRATION", "HLE_CASE_NULL_THREAD_INVOCATION",
+                      "HLE_CASE_NULL_CALLBACK_INVOCATION"):
+            self.assertIn(f"#define {macro} ", probe)
+        self.assertIn('"sw $31, 0($12)\\n\\t"', probe)
+        self.assertIn('"sw $29, 4($12)\\n\\t"', probe)
+        self.assertIn('"sw $28, 8($12)\\n\\t"', probe)
+        self.assertIn('"sw $4, 12($12)\\n\\t"', probe)
+        self.assertIn('"sw $11, 40($12)\\n\\t"', probe)
+        exception_probe = (root / "fixtures" / "psp_oracle" / "probe_exception_a3.c").read_text(
+            encoding="utf-8"
+        )
+        for case, case_id, a3_case, target in (
+            ("exception-a3-fetch-zero", "132", 17, "0x00000000u"),
+            ("exception-a3-fetch-08000000", "133", 18, "0x08000000u"),
+            ("exception-a3-fetch-40000000", "134", 19, "0x40000000u"),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(routes.get(case), case_id)
+                self.assertIn(f"-DA3_CASE={a3_case}", makefile)
+                self.assertIn(target, exception_probe)
+        self.assertIn("jr $25", exception_probe)
+        self.assertIn("case_id=fetch-armed status=SKIP", exception_probe)
+        self.assertIn("NAKAGAWA_PSP_STEP schema=1", exception_probe)
+
+    def test_interrupt_and_ge_null_handlers_are_registered_but_never_enabled_or_queued(self) -> None:
+        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+                 / "probe_hle_issues.c").read_text(encoding="utf-8")
+        start = probe.index("static int ke_null_code_registration(void)\n{")
+        end = probe.index("#endif /* HLE_CASE_NULL_CODE_REGISTRATION */", start)
+        registration = probe[start:end]
+        self.assertIn("PSP_VBLANK_INT, candidate, NULL", registration)
+        self.assertIn('"register-subintr-null-not-invoked", "SKIP"', registration)
+        self.assertIn('"ge-set-callback-null-not-invoked", "SKIP"', registration)
+        self.assertNotIn("sceKernelEnableSubIntr", registration)
+        self.assertNotIn("sceGeListEnQueue", registration)
+
+    def test_manifest_rows_name_the_combined_probe_and_separate_faults(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        rows = {row["id"]: row for row in json.loads(
+            (root / "tools" / "psp_oracle" / "manifest.json").read_text(encoding="utf-8")
+        )["tests"]}
+        nullcode = rows["PSP-NULLCODE-001"]
+        registered = set(CAMPAIGN_PROBE_CASES["null-code-registration"][0].ordered_cases)
+        self.assertTrue(registered <= set(nullcode["case_ids"]))
+        self.assertEqual(nullcode["diagnostic_case_ids"], [
+            "null-code-registration", "null-thread-invocation", "null-callback-invocation",
+        ])
+        exception = rows["PSP-EXCEPTION-FETCH-001"]
+        self.assertEqual(exception["case_ids"], ["fetch-armed"])
+        self.assertEqual(exception["hardware_evidence"], "NOT_RUN")
+        trace_exception = rows["PSP-TRACE-EXCEPTION-001"]
+        self.assertEqual(trace_exception["diagnostic_case_ids"], ["insn-trace-exception"])
+
+
 class HleIssuesProbeTests(unittest.TestCase):
     """The HLE issue cells in probe_hle_issues.c: hle-issues-batch (106) and hle-intr-cells (107).
 
@@ -6324,7 +6478,12 @@ class HleIssuesProbeTests(unittest.TestCase):
         text = self.probe
         # Every case section, including the ones with their own test class below.
         macros = [macro for *_head, macro, _test, _log in self.CASES]
-        for macro in ["HLE_CASE_VFPU_FORMS", "HLE_CASE_INTR_CAUSE", *reversed(macros)]:
+        new_macros = [
+            "HLE_CASE_NULL_CODE_REGISTRATION", "HLE_CASE_NULL_THREAD_INVOCATION",
+            "HLE_CASE_NULL_CALLBACK_INVOCATION",
+        ]
+        for macro in ["HLE_CASE_VFPU_FORMS", "HLE_CASE_INTR_CAUSE",
+                      *new_macros, *reversed(macros)]:
             start = text.rindex(f"#if PSP_ORACLE_CASE == {macro}\n")
             end = text.index(f"#endif /* {macro} */", start) + len(f"#endif /* {macro} */")
             text = text[:start] + text[end:]
