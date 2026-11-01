@@ -1630,8 +1630,9 @@ class TestPresenterContract(unittest.TestCase):
         self.assertIn("if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;", present)
         self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return GEGPU_PRESENT_NOT_RESIDENT; }", present)
         # The GE selftest drives the present-failure path through the existing fault seam.
-        self.assertIn("sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);", ge)
-        self.assertIn("failed_present != GEGPU_PRESENT_TARGET_FAILED", ge)
+        selftest = (root / "gpu_sdl3vk" / "ge_gpu_selftest.inc").read_text(encoding="utf-8")
+        self.assertIn("sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);", selftest)
+        self.assertIn("failed_present != GEGPU_PRESENT_TARGET_FAILED", selftest)
 
     def test_display_smoke_offscreen_pins_inherited_sdl_selectors(self):
         inherited = {
