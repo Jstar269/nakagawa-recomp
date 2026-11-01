@@ -237,10 +237,11 @@ class RuntimeBindingValidation(unittest.TestCase):
         terminator = defs["callbackTerminator"]
         self.assertFalse(terminator["additionalProperties"])
         self.assertEqual(terminator["required"], ["sentinel"])
-        # A sentinel is a raw target value: 0 and 0xFFFFFFFF are the real ones, so it must
-        # NOT be published as a guestAddress (which forbids zero and demands alignment).
+        # A sentinel is a raw target value (0xFFFFFFFF is the real one), so it must NOT be
+        # published as a guestAddress, which demands alignment. It is never 0: a transfer to
+        # 0 is a null code pointer, which the validator refuses as a sentinel (#1375).
         sentinel_range = terminator["properties"]["sentinel"]["allOf"][0]
-        self.assertEqual(sentinel_range["minimum"], 0)
+        self.assertEqual(sentinel_range["minimum"], 1)
         self.assertEqual(sentinel_range["maximum"], 0xFFFFFFFF)
         self.assertNotIn("$ref", json.dumps(sentinel_range),
                          "a sentinel must not be published as a guestAddress")

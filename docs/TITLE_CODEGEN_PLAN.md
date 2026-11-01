@@ -345,7 +345,7 @@ migrated bindings do their job. Each build asserts that its own aliases redirect
 own terminators fire; that neither matches one address off in either direction; that the
 other fixture's alias sources and terminator sites behave generically; and that the three
 addresses generic dispatch used to hardcode are ordinary traffic. The two fixtures
-deliberately share the *sentinel values* `0` and `0xFFFFFFFF` while placing them at
+deliberately share the *sentinel value* `0xFFFFFFFF` while placing it at
 disjoint sites, which is what makes "the same sentinel elsewhere follows generic
 behavior" an assertion the matrix can actually fail.
 

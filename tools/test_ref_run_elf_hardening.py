@@ -288,17 +288,18 @@ class TestReferenceRunnerTerminationContract(unittest.TestCase):
         $ra the init line does not record is the runtime's host return address."""
         recomp_h = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
         match = re.search(r"#define SR_HOST_RETURN_PC (0x[0-9A-Fa-f]+)u", recomp_h)
-        self.assertIsNotNone(match)
+        if match is None:
+            self.fail("src/rt/recomp.h no longer defines SR_HOST_RETURN_PC")
         host_return = int(match.group(1), 16)
         elf = self.write_elf("hostret.elf", [self.OPCODE_JR_RA, self.OPCODE_NOP])
-        init = self.root / "hostret-init.trace"
+        init = elf.with_name("hostret-init.trace")
         init.write_text("# psp-recomp trace v1 oracle=interp target=fixture "
                         "start_pc=0x08900000\n# init r1=00000010\n", encoding="ascii", newline="\n")
         proc, meta = self.run_cli(elf, init)
         self.assertEqual(proc.returncode, 4, proc.stderr)
         self.assertEqual(meta.get("stop_reason"), "memory-fault", proc.stderr)
         self.assertEqual(meta.get("pc"), f"0x{host_return:08x}", proc.stderr)
-        out = (self.root / "hostret-out.trace").read_text(encoding="ascii").splitlines()
+        out = elf.with_name(f"{elf.stem}-out.trace").read_text(encoding="ascii").splitlines()
         self.assertIn(f" r31=0x{host_return:08x}", out[1])
 
     def test_break_stop_is_nonzero_and_distinct(self) -> None:
