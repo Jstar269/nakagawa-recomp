@@ -297,7 +297,7 @@ def _reach(direct: int, macros: dict[str, int], prod: Counter, harn: Counter, ad
     return "none"
 
 
-def load_inputs(root: Path = ROOT, overrides: dict[str, str] | None = None) -> tuple[dict[str, str], str, dict]:
+def load_inputs(root: Path = ROOT, overrides: dict[str, str] | None = None) -> tuple[dict[str, str], tuple[str, ...], dict]:
     """Read the C sources under ``src/``, the emitter and the public ledger.
 
     ``overrides`` replaces the text of a repository-relative path (tests mutate an
