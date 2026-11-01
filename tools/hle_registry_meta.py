@@ -689,7 +689,7 @@ HANDLER_METADATA = {
         "status": "complete",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
-            "src/rt/hle.c:h_IoMkdir",
+            "src/rt/hle_io.c:h_IoMkdir",
         ],
     },
     "h_IoOpen": {
@@ -715,7 +715,7 @@ HANDLER_METADATA = {
         "status": "complete",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
-            "src/rt/hle.c:h_IoRemove",
+            "src/rt/hle_io.c:h_IoRemove",
         ],
     },
     "h_IoWrite": {
@@ -820,7 +820,7 @@ HANDLER_METADATA = {
         "status": "complete",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_sysclib_memory_imports",
-            "src/rt/hle.c:h_Memset",
+            "src/rt/hle_kernel_utils.c:h_Memset",
             "public C library contract (memset)",
         ],
         "description": "Fills a fully validated guest span and returns the guest destination.",
@@ -829,7 +829,7 @@ HANDLER_METADATA = {
         "status": "complete",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_sysclib_memory_imports",
-            "src/rt/hle.c:h_Strlen",
+            "src/rt/hle_kernel_utils.c:h_Strlen",
             "public C library contract (strlen)",
         ],
         "description": "Returns the byte length through a guest NUL terminator within readable memory.",
@@ -1042,7 +1042,7 @@ HANDLER_METADATA = {
         "evidence": [
             "tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001",
             "fixtures/psp_oracle/probe_hle_measure.c:hle_run",
-            "src/rt/hle.c:h_GeEdramGetAddr",
+            "src/rt/hle_ge.c:h_GeEdramGetAddr",
             "PSP-HLE-GE-EDRAM-001 cell: edram-addr = 0x04000000",
         ],
     },
@@ -1051,7 +1051,7 @@ HANDLER_METADATA = {
         "evidence": [
             "tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001",
             "fixtures/psp_oracle/probe_hle_measure.c:hle_run",
-            "src/rt/hle.c:h_GeEdramGetSize",
+            "src/rt/hle_ge.c:h_GeEdramGetSize",
             "PSP-HLE-GE-EDRAM-001 cell: edram-size = 0x00200000",
         ],
     },
@@ -1068,7 +1068,7 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_time_domains_are_coherent",
             "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
-            "src/rt/hle.c:h_RtcGetCurrentTick",
+            "src/rt/hle_rtc.c:h_RtcGetCurrentTick",
             "public PSPSDK contract (psprtc.h: sceRtcGetCurrentTick, 0 on success, <0 on error)",
             "PSPAutotests tests/rtc/rtc.expected (tick advances across a 2 ms delay)",
         ],
@@ -1078,7 +1078,7 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_time_domains_are_coherent",
             "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
-            "src/rt/hle.c:h_RtcGetCurrentClock",
+            "src/rt/hle_rtc.c:h_RtcGetCurrentClock",
             "public PSPSDK contract (psprtc.h: sceRtcGetCurrentClock, tz is minutes from UTC)",
             "PSPAutotests tests/rtc/rtc.expected (0/+13/+60/-60/-600000/INT_MAX/-INT_MAX all return 0; -60 is one hour before the UTC baseline)",
         ],
@@ -1110,7 +1110,7 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range",
             "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
-            "src/rt/hle.c:h_RtcGetTick",
+            "src/rt/hle_rtc.c:h_RtcGetTick",
             "public PSPSDK contract (psprtc.h: sceRtcGetTick, pspRtcCheckValidErrors component ranges)",
             "PSPAutotests tests/rtc/convert.expected (year 0/10000 -> 0x800001fe with output untouched; year 10/9998/9999 exact ticks)",
         ],
@@ -1120,7 +1120,7 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_rtc_conversion_errors_and_full_range",
             "src/rt/hle_thread_selftest.c:test_rtc_pointer_validation_and_measured_conversions",
-            "src/rt/hle.c:h_RtcSetTick",
+            "src/rt/hle_rtc.c:h_RtcSetTick",
             "public PSPSDK contract (psprtc.h: sceRtcSetTick, 0 on success, <0 on error)",
             "PSPAutotests tests/rtc/convert.expected (checkSetTick: 835072 -> 0001-01-01, 62135596800000000 -> 1970-01-01)",
         ],

@@ -11,6 +11,11 @@ whole-span preflight from regressing when generated code is regenerated.
 from pathlib import Path
 import re
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,10 +81,12 @@ class TestGuestSpanRouting(unittest.TestCase):
                         copy_in.find("memcpy(out, SR_HOST(src), run)"))
 
     def test_generic_memcpy_memset_preflight_before_sr_host(self) -> None:
-        text = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
-        dmac_start = text.find("static uint32_t h_DmacMemcpy")
-        dmac_end = text.find("static uint32_t h_Memset", dmac_start)
-        dmac = text[dmac_start:dmac_end]
+        text = hle_sources.text()
+        # The handlers through dmac_transfer, inside the one file that defines them (#307).
+        dmac_file = dict(hle_sources.sources())[hle_sources.defining_file("dmac_transfer")]
+        transfer = hle_sources.function_text("uint32_t dmac_transfer(CpuState *s, int try_only) {")
+        dmac_start = dmac_file.index("static uint32_t h_DmacMemcpy")
+        dmac = dmac_file[dmac_start:dmac_file.index(transfer, dmac_start) + len(transfer)]
         self.assertIn("sr_guest_span_prefix(src, n)", dmac)
         self.assertIn("sr_guest_span_prefix(dst, n)", dmac)
         self.assertIn("uint32_t effective = src_prefix < dst_prefix ? src_prefix : dst_prefix;", dmac)
@@ -97,7 +104,10 @@ class TestGuestSpanRouting(unittest.TestCase):
         memset = text[text.find("static uint32_t h_Memset"):text.find("static uint32_t h_Memcpy")]
         self.assertIn("sr_guest_fill(dst, (uint8_t)val, n)", memset)
         self.assertNotIn("SR_HOST", memset)
-        registration = text[text.find("static void hle_register_bulk_memory_handlers") : text.find("void sr_hle_init")]
+        # The shared bulk helper calls the kernel-utility subsystem's registration run (#307).
+        helper = hle_sources.function_text("static void hle_register_bulk_memory_handlers(void) {")
+        self.assertIn("hle_register_bulk_memory_kernel_utils();", helper)
+        registration = hle_sources.function_text("void hle_register_bulk_memory_kernel_utils(void) {")
         self.assertIn("sceKernelMemcpy", registration)
         self.assertIn("sceKernelMemset", registration)
 

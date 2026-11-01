@@ -108,6 +108,7 @@ from psp_oracle.parse_golden import (
     parse_umd_raw_read_output,
     validate_hle_edram_restore,
 )
+import hle_sources  # noqa: E402
 
 
 def _matched(match: re.Match[str] | None) -> re.Match[str]:
@@ -1555,7 +1556,7 @@ class PspOracleRunnerTests(unittest.TestCase):
     def test_nakagawa_mode_reuses_production_selftest_and_derives_records(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
-        hle_source = (root / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle_source = hle_sources.text(root)
         makefile = (root / "Makefile").read_text(encoding="utf-8")
         self.assertIn("sr_syscall", source)
         self.assertIn("oracle_sha256_file", source)
@@ -1568,7 +1569,7 @@ class PspOracleRunnerTests(unittest.TestCase):
         self.assertNotIn("status=PASS result=", source)
         self.assertIn("psp-oracle-nakagawa: hle-thread-selftest-build", makefile)
         self.assertIn("tools/psp_oracle/run_nakagawa.py", makefile)
-        self.assertIn("src/rt/hle.c", makefile)
+        self.assertIn("$(HLE_SRCS)", makefile)
         self.assertIn("sched_delete_thread", hle_source)
         self.assertIn("-Wl,--no-insert-timestamp", makefile)
         self.assertIn("PSP-SMOKE-001", source)
@@ -7661,7 +7662,7 @@ class IntrCellsRuntimeContractTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         root = Path(__file__).resolve().parents[1]
         cls.sched = _c_code((root / "src" / "rt" / "sched.c").read_text(encoding="utf-8"))
-        cls.hle = _c_code((root / "src" / "rt" / "hle.c").read_text(encoding="utf-8"))
+        cls.hle = _c_code(hle_sources.text(root))
         cls.sched_selftest = (root / "src" / "rt" / "sched_selftest.c").read_text(encoding="utf-8")
         cls.hle_selftest = (root / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
 
@@ -10866,7 +10867,7 @@ class Record20261015Tests(unittest.TestCase):
                      "test_alarm_delivery_order_matches_the_timer_order_probe"):
             self.assertEqual(selftest.count(f"static void {name}(void)"), 1)
             self.assertEqual(selftest.count(f"    {name}();"), 1)
-        hle = (self.root / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text(self.root)
         for nid, name in ((0x38553111, "sceAudioSRCChReserve"), (0x5c37c0ae, "sceAudioSRCChRelease"),
                           (0xe0727056, "sceAudioSRCOutputBlocking")):
             self.assertIn(f'sr_hle_register(0x{nid:08x}, "{name}", h_', hle)

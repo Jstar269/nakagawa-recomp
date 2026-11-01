@@ -28,7 +28,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 import title_manifest
 import title_runtime_config
 import compat_overrides
-from test_compat_manifest import extract_hle_guest_addresses, HLE_C
+from test_compat_manifest import extract_hle_guest_addresses
+import hle_sources  # noqa: E402
 
 FIXTURE_A = ROOT / "assets" / "titles" / "pspdev-phase5.json"
 FIXTURE_B = ROOT / "assets" / "titles" / "synthetic.json"
@@ -117,14 +118,14 @@ class GenericIsolationTests(unittest.TestCase):
     """Generic build must not carry HST's compat behavior."""
 
     def test_generic_hle_has_no_migrated_addresses(self):
-        found = set(extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8")))
+        found = set(extract_hle_guest_addresses(hle_sources.text()))
         overlap = found & HST_MIGRATED
         self.assertEqual(overlap, set(),
                          f"generic hle.c still contains HST compat address(es): "
                          f"{sorted(hex(a) for a in overlap)}")
 
     def test_generic_runtime_sources_do_not_consume_retired_bindings(self):
-        for relative in ("src/rt/hle.c", "src/rt/title_config.c", "src/rt/title_config.h"):
+        for relative in (*hle_sources.RUNTIME_HLE_SOURCES, "src/rt/title_config.c", "src/rt/title_config.h"):
             with self.subTest(source=relative):
                 source = (ROOT / relative).read_text(encoding="utf-8")
                 self.assertEqual(retired_tokens_in(source), [],
@@ -244,7 +245,7 @@ class WrongTitleTests(unittest.TestCase):
             with self.subTest(config=label):
                 for address in wrapper_addresses:
                     self.assertNotIn(f"{address:08x}", header.lower())
-        found = set(extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8")))
+        found = set(extract_hle_guest_addresses(hle_sources.text()))
         self.assertEqual(found & wrapper_addresses, set())
 
     def test_wrong_title_does_not_write_hst_latches(self):
@@ -254,7 +255,7 @@ class WrongTitleTests(unittest.TestCase):
                 self.assertNotIn(f"{HST_FRAME_LATCH:08x}", header.lower())
                 self.assertNotIn("FRAME_READY_LATCH_ADDR", header)
                 self.assertNotIn("LIBFONT_READY_FLAG_ADDR", header)
-        found = set(extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8")))
+        found = set(extract_hle_guest_addresses(hle_sources.text()))
         self.assertNotIn(HST_FRAME_LATCH, found)
 
 
@@ -321,7 +322,7 @@ class MutationTests(unittest.TestCase):
 
     def test_new_hardcoded_hst_address_in_hle_fails(self):
         # Simulate a developer re-adding a hardcoded HST address to hle.c
-        mutated = HLE_C.read_text(encoding="utf-8") + "\n    MEM_W32(0x002d132cu, 1u);\n"
+        mutated = hle_sources.text() + "\n    MEM_W32(0x002d132cu, 1u);\n"
         found = extract_hle_guest_addresses(mutated)
         self.assertIn(0x002d132c, found)
         retired = {a for group in compat_overrides.RETIRED_HLE_DIAGNOSTIC_GROUPS
@@ -335,7 +336,7 @@ class MutationTests(unittest.TestCase):
         retired = {a for group in compat_overrides.RETIRED_HLE_DIAGNOSTIC_GROUPS
                    for a in group["addresses"]}
         thinned = retired - {0x0030a000}
-        found = set(extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8")))
+        found = set(extract_hle_guest_addresses(hle_sources.text()))
         self.assertEqual(found & thinned, set())
         self.assertNotIn(0x0030a000, found)
 
@@ -351,7 +352,7 @@ class MutationTests(unittest.TestCase):
         # address survives anywhere in the runtime, title configuration included.
         self.assertEqual(compat_overrides.TITLE_CONFIGURED_SCHEDULER_COMPAT, [])
         addresses = {0x002cf338, 0x0030aa88}
-        for relative in ("src/rt/hle.c", "src/rt/sched.c", "src/rt/recomp.c",
+        for relative in (*hle_sources.RUNTIME_HLE_SOURCES, "src/rt/sched.c", "src/rt/recomp.c",
                          "src/rt/title_config.c", "src/rt/title_config.h"):
             source = (ROOT / relative).read_text(encoding="utf-8").lower()
             for address in addresses:

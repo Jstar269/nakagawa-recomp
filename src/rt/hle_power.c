@@ -7,6 +7,7 @@
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
 // Copyright (c) 2012- PPSSPP Project and contributors
 
+#include "hle_internal.h"
 #include "hle_power.h"
 
 #define A0 (s->r[4])
@@ -283,4 +284,23 @@ void sr_hle_power_loadexec_reset(void) {
         s_power_cb_slots[i] = 0u;
     s_power_lock_count = 0u;
     s_power_tick_count = 0u;
+}
+
+/* PPSSPP 7fab97c05f9568b17ac79c235b945f568eaf6384 models this as a
+ * model capability.  Use its PSP-1000 value until model selection exists. */
+static uint32_t h_PowerCheckWlanCoexistenceClock(CpuState *s) {
+    (void)s;
+    return 0u;
+}
+
+void hle_register_power_coexistence_handlers(void) {
+    sr_hle_register(0xa85880d0u, "scePowerCheckWlanCoexistenceClock", h_PowerCheckWlanCoexistenceClock);
+}
+
+/* Registration runs of the shared helpers in hle.c (#307). Each holds one run of this file's
+ * registrations, in their order, and is called from the helper where the run stood. */
+
+/* From hle_register_unregistered_import_batch(). */
+void hle_register_unregistered_import_power(void) {
+    sr_hle_register_unsupported(0x469989adu, "scePower_469989ad", 0x80020002u);
 }

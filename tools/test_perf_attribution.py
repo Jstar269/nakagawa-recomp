@@ -20,6 +20,10 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
+
 try:
     import perf_attribution
 except ModuleNotFoundError:
@@ -478,7 +482,7 @@ class TestSourcePins(unittest.TestCase):
     """The formats the parser reads are the formats the runtime prints, rendered from its source."""
 
     def test_host_present_line_parses_as_hle_c_prints_it(self) -> None:
-        source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        source = hle_sources.text()
         literal = c_literal_run(source, '"HOST_PRESENT_SUBMITTED f=')
         self.assertEqual(literal, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\\n")
         rendered = render_c_format(literal)

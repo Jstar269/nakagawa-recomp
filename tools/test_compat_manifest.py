@@ -127,6 +127,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 import compat_overrides
+import hle_sources
 from host_stubs import HST_SIMPLE_STUBS
 
 
@@ -172,7 +173,7 @@ def _strip_c_comments_and_literals(source: str) -> str:
 def _runtime_title_diagnostic_inventory() -> dict[str, set[int]]:
     """Address census used to keep title diagnostics out of production source."""
     runtime_paths = {
-        "src/rt/hle.c", "src/rt/sched.c", "src/rt/recomp.c",
+        *hle_sources.RUNTIME_HLE_SOURCES, "src/rt/sched.c", "src/rt/recomp.c",
         "src/rt/debug.c", "src/rt/recomp.h", "src/rt/intr_conformance.h",
     }
     result = {path: set() for path in runtime_paths}
@@ -281,10 +282,7 @@ def extract_dispatch_hook_table(table_name: str) -> list[tuple[int, str]]:
     return [(int(addr, 16), name) for addr, _mask, name in rows]
 
 
-HLE_C = REPO_ROOT / "src" / "rt" / "hle.c"
-
-
-# src/rt/hle.c does not have a single structured table the way codegen.py and
+# The runtime HLE sources (src/rt/hle.c and the files split from it, #307) do not have a single structured table the way codegen.py and
 # recomp.c do, but the ways a guest address is actually USED as an address there
 # are a small, stable set: the MEM_* accessors, sr_r32/sr_w32, dispatch, and the
 # nested-guest-call helpers.  Any absolute guest address reached through one of
@@ -568,13 +566,13 @@ class HleGuestAddressCoverageTests(unittest.TestCase):
         from the scanned scopes must kill this test."""
         synthetic = "static void h_probe(CpuState *s) {\n    MEM_R32(0x00abcdefu);\n}\n"
         self.assertIn(0x00abcdef, extract_hle_guest_addresses(synthetic))
-        found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
+        found = extract_hle_guest_addresses(hle_sources.text())
         self.assertFalse(set(found) & hle_retired_diagnostic_addresses())
 
     def test_every_hle_guest_address_is_inventoried(self):
         """CLEAN POSITIVE / contamination gate: the current hle.c passes, and any
         uninventoried title address added to it fails here."""
-        found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
+        found = extract_hle_guest_addresses(hle_sources.text())
         missing = set(found) & hle_retired_diagnostic_addresses()
         self.assertFalse(
             missing,
@@ -586,7 +584,7 @@ class HleGuestAddressCoverageTests(unittest.TestCase):
         """CLASSIFICATION DRIFT: if an inventoried site disappears or materially
         changes shape (so the extractor no longer sees it), this fails instead of
         silently preserving stale metadata."""
-        found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
+        found = extract_hle_guest_addresses(hle_sources.text())
         stale = hle_retired_diagnostic_addresses() & set(found)
         self.assertEqual(stale, set(),
                          f"retired HST addresses returned to hle.c: {sorted(hex(a) for a in stale)}")
@@ -743,7 +741,7 @@ class HleGuestAddressCoverageTests(unittest.TestCase):
 
     def test_census_counts_are_reconciled_exactly(self):
         """The retired HST groups stay inventoried but are absent from generic HLE."""
-        found = extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8"))
+        found = extract_hle_guest_addresses(hle_sources.text())
         retired = hle_retired_diagnostic_addresses() | hle_title_configured_addresses()
         self.assertEqual(set(found) & retired, set(),
                          "retired or title-configured HST addresses remain in hle.c")
@@ -1386,7 +1384,7 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.source = HLE_C.read_text(encoding="utf-8")
+        self.source = hle_sources.text()
 
     # ---- A: the retired sites must be absent from hle.c -------------------
     def test_the_real_runtime_sync_sites_are_detected(self) -> None:
@@ -1626,7 +1624,7 @@ class GenericRuntimeTitleAddressGuardTests(unittest.TestCase):
         # Mutation proof: a new literal in each production source shape is rejected by
         # the same census, even when its address is only used by diagnostic code.
         for relative_path, address in (
-                ("src/rt/hle.c", 0x0030a000),
+                *((relative, 0x0030a000) for relative in hle_sources.RUNTIME_HLE_SOURCES),
                 ("src/rt/sched.c", 0x00025a50),
                 ("src/rt/recomp.c", 0x00000fdc),
                 ("src/rt/debug.c", 0x0030a000),

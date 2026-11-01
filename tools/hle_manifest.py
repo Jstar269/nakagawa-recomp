@@ -23,7 +23,7 @@ classification so downstream consumers never re-derive policy:
      "classification": "fake_success", "status": "stub"}
 
 `owner_file` is the runtime source file whose registration call registers the
-NID (hle.c or hle_power.c; see runtime_hle_sources). `subsystem` is the
+NID (one of the runtime HLE sources; see runtime_hle_sources). `subsystem` is the
 runtime subsystem that owns the NID for the HLE split (issue #307), from
 tools/hle_registry_meta.py SUBSYSTEM_BY_PREFIX; see subsystem_for.
 
@@ -47,12 +47,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_registry_meta as meta  # noqa: E402
 import psp_import_table  # noqa: E402
 import publication_policy  # noqa: E402
+import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-HLE_C = ROOT / "src" / "rt" / "hle.c"
 DEFAULT_BASELINE = ROOT / "tools" / "import_audit_baseline.json"
 
 MANIFEST_SCHEMA = 1
+# What build_manifest() reads: every runtime HLE source, listed in tools/hle_sources.py.
+MANIFEST_SOURCE = "runtime HLE sources (tools/hle_sources.py)"
 
 _REGISTRATION_CALL_RE = re.compile(r"\bsr_hle_register(?:_unsupported)?\s*\(")
 _LITERAL_RE = re.compile(
@@ -608,10 +610,16 @@ def validate_meta(regs: list[dict]) -> None:
 def _evidence_anchor_present(path: Path, anchor: str) -> bool:
     """Whether ``path`` defines the symbol an evidence entry cites after ``:``.
 
-    A Makefile anchor must be a target rule; any other anchor is a dotted name
-    (``Class.method`` or ``function``) whose every component must appear as a
+    A Makefile anchor must be a target rule. An anchor in a runtime HLE source must
+    be a function or object that file defines: the sources split one subsystem per
+    file (#307), so a name that only appears there (a call, a comment) would let a
+    citation outlive the move of the code it cites. Any other anchor is a dotted
+    name (``Class.method`` or ``function``) whose every component must appear as a
     whole word, so a renamed target, test or function fails the citation.
     """
+    relative = path.resolve().relative_to(ROOT).as_posix() if path.resolve().is_relative_to(ROOT) else ""
+    if relative in hle_sources.RUNTIME_HLE_SOURCES:
+        return relative in hle_sources.definitions().get(anchor, [])
     text = path.read_text(encoding="utf-8", errors="replace")
     if path.name == "Makefile":
         return re.search(rf"^{re.escape(anchor)}\s*:", text, re.MULTILINE) is not None
@@ -718,12 +726,13 @@ def validate_subsystems(regs: list[dict]) -> None:
 def runtime_hle_sources() -> list[tuple[str, str]]:
     """The runtime HLE units the manifest is extracted from, as (path, text) in join order.
 
-    hle.c plus hle_power.c: hle_power.c defines handlers hle.c registers, so the
-    handler-definition cross-check in extract_registrations needs both files.
-    Every registration is attributed to the unit its call sits in (owner_file).
+    Every runtime HLE source (tools/hle_sources.py). A handler may be defined in one
+    unit and registered from another, so the handler-definition cross-check in
+    extract_registrations needs them all. Every registration is attributed to the
+    unit its call sits in (owner_file).
     """
-    paths = (HLE_C, HLE_C.parent / "hle_power.c")
-    return [(p.relative_to(ROOT).as_posix(), p.read_text(encoding="utf-8")) for p in paths]
+    sources: list[tuple[str, str]] = hle_sources.sources()
+    return sources
 
 
 def runtime_hle_source() -> str:
@@ -790,7 +799,7 @@ def build_manifest(source: str | None = None) -> dict:
     findings = compute_findings(regs)
     return {
         "schema": MANIFEST_SCHEMA,
-        "source": "src/rt/hle.c",
+        "source": MANIFEST_SOURCE,
         "registrations": entries,
         "findings": [
             {**f, "nid": f"0x{f['nid']:08x}"} for f in findings
@@ -939,7 +948,10 @@ def registration_scopes(raw_source: str) -> dict[int, dict]:
     A registration inside a helper inherits the scopes of that helper's call
     sites, which is what turns a shared ``hle_register_*_handlers()`` helper into
     evidence that ``sr_hle_init()``'s production branch really reaches it,
-    instead of merely evidence that the text exists in the file.
+    instead of merely evidence that the text exists in the file. Helpers call
+    helpers (a subsystem's registration run called from a shared helper, #307),
+    so a call site counts only as far as its own function is reachable: the
+    scopes are resolved through the whole chain, not one level.
     """
     source = active_source(raw_source)
     # active_source() blanks preprocessor directives, so the conditional scope
@@ -949,14 +961,30 @@ def registration_scopes(raw_source: str) -> dict[int, dict]:
     owners = enclosing_functions(source)
     lines = source.split("\n")
 
-    call_scopes: dict[str, set[str]] = {}
+    call_sites: dict[str | None, list[tuple[str | None, str]]] = {}
     for idx, line in enumerate(lines):
         m = _HELPER_CALL_RE.match(line)
         if m:
-            call_scopes.setdefault(m.group("name"), set()).add(scopes[idx])
+            call_sites.setdefault(m.group("name"), []).append((owners[idx], scopes[idx]))
 
     def expand(scope: str) -> set[str]:
         return {"production", "selftest"} if scope == "both" else {scope}
+
+    reach_of: dict[str | None, set[str]] = {}
+
+    def reach(function: str | None, active: frozenset[str | None] = frozenset()) -> set[str]:
+        """The scopes ``function`` runs in: sr_hle_init and uncalled functions run in both."""
+        if function in reach_of:
+            return reach_of[function]
+        sites = call_sites.get(function, []) if function not in (None, "sr_hle_init") else []
+        live = [(caller, scope) for caller, scope in sites if caller not in active]
+        if not live:
+            found = {"production", "selftest"}
+        else:
+            found = set().union(*(expand(scope) & reach(caller, active | {function}) for caller, scope in live))
+        if not active:
+            reach_of[function] = found
+        return found
 
     out: dict[int, dict] = {}
     registration_matches = [
@@ -967,13 +995,12 @@ def registration_scopes(raw_source: str) -> dict[int, dict]:
         idx = source.count("\n", 0, m.start())
         owner, own_scope = owners[idx], scopes[idx]
         if own_scope != "both" or owner in (None, "sr_hle_init"):
-            reach = expand(own_scope)
+            reachable = expand(own_scope)
         else:
-            sites = call_scopes.get(owner, set())
-            reach = set().union(*(expand(s) for s in sites)) if sites else expand(own_scope)
+            reachable = reach(owner)
         out[int(m.group(1), 16)] = {
             "declared_in": owner,
-            "reachable_from": sorted(reach),
+            "reachable_from": sorted(reachable),
         }
     return out
 
@@ -1598,7 +1625,7 @@ def build_census(manifest: dict | None = None) -> dict:
 
     return {
         "schema": CENSUS_SCHEMA,
-        "source": manifest.get("source", "src/rt/hle.c"),
+        "source": manifest.get("source", MANIFEST_SOURCE),
         "summary": {
             "total_registrations": len(regs),
             "registration_classification": dict(sorted(registration_classification.items())),

@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import frame_capture_check as fcc  # noqa: E402
+import hle_sources  # noqa: E402
 
 
 def write_ppm(path, w, h, fill):
@@ -235,9 +236,7 @@ class EmittedFormatContractTest(unittest.TestCase):
         regression this class exists to prevent. Read the source and rebuild each
         sample from the format string the runtime actually uses.
         """
-        src = (Path(__file__).resolve().parents[1] / "src" / "rt" / "hle.c").read_text(
-            encoding="utf-8", errors="replace"
-        )
+        src = hle_sources.text()
         checks = [
             (
                 "FBSNAP f=%u swapchain capture -> %s (result=%d)",
