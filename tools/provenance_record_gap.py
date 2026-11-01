@@ -371,7 +371,7 @@ _KNOWN_DISPOSITION_GAP_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "src/rt/atrac3p/libavutil/reverse.h",
             "src/rt/atrac3p/libavutil/thread.h",
             "src/rt/atrac3p/libavutil/version.h",
-            "tests/native/atrac3p_selftest.c",
+            "src/rt/atrac3p_selftest.c",
         ),
     ),
     (
