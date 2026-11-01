@@ -5590,6 +5590,17 @@
       }
     },
     {
+      "path": "src/rt/env_registry.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "env-registry-1531",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "src/rt/evf.h",
       "classification": "project_authored_attested",
       "evidence": {
@@ -14725,6 +14736,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "c-gap-codegen-analysis",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_env_registry.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "env-registry-1531",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
