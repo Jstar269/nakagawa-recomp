@@ -82,6 +82,23 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# The analyzer is analyze.py plus the modules split out of it; the cache key covers all of them.
+ANALYZER_SOURCES = ("analyze.py", "analyze_cfg.py")
+
+
+def analyzer_sources_sha256(tools_dir: Path) -> str:
+    """One digest over every analyzer source file, so a change to any of them changes the cache key.
+
+    SHA-256 over each source's name, NUL, the hex SHA-256 of its bytes, NUL, in ANALYZER_SOURCES order.
+    ``package_analyzer_sources_digest`` in ``src/core/nk_title_manifest.c`` computes the same value for
+    the player, which must agree or it calls every package outdated.
+    """
+    digest = hashlib.sha256()
+    for name in ANALYZER_SOURCES:
+        digest.update(name.encode("ascii") + b"\0" + sha256_file(tools_dir / name).encode("ascii") + b"\0")
+    return digest.hexdigest()
+
+
 def _digest(value: Any) -> str:
     return sha256_bytes(canonical_json(value).encode("utf-8"))
 
