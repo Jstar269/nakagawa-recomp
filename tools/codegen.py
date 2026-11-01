@@ -36,6 +36,7 @@ from analyze import (
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
     static_coverage, branch_kind, BRANCH_UNCOND,
 )
+from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
 from host_stubs import HST_SIMPLE_STUBS
 import codegen_llvm
 import compat_overrides
@@ -4810,137 +4811,10 @@ def main(argv):
     SIMPLE_STUBS = HST_SIMPLE_STUBS if hst_profile else {}
 
     for a in sorted(catalog):
-        # --- CUSTOM STUBS START ---
-        if hst_profile and a == 0x000011b0:
-            text = """void f_000011b0(CpuState *s) {  /* custom stub: __register_frame_info bypass */
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x0000260c:
-            text = """void f_0000260c(CpuState *s) {  /* custom stub: exception helper bypass */
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x0000fe3c:
-            text = """void f_0000fe3c(CpuState *s) {  /* custom stub: _getmodreent / FileIO_GetState */
-    if (s->r[31] == 0x000104c4u || s->r[31] == 0x000104f4u) {
-        /* Allocator calls always use the main thread's global impure reent */
-        s->r[2] = 0x002cf338u;
-    } else {
-        extern uint32_t sr_thread_k0(void);
-        uint32_t k0 = s->r[26];
-        if (k0 < 0x08000000u || k0 >= 0x10000000u) k0 = sr_thread_k0();
-        uint32_t ptr = k0 ? MEM_R32(k0 + 4) : 0;
-        if (!ptr) ptr = MEM_R32(0x002cf6b8u);
-        if (!ptr) ptr = 0x002cf338u;
-        s->r[2] = ptr;
-    }
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x00010738:
-            text = """void f_00010738(CpuState *s) {  /* custom stub: _malloc_r(reent, size) -> sr_newlib_malloc bridge
-     * This runtime owns the arena metadata. Retail _memalign_r/_realloc_r edit dlmalloc
-     * headers directly, where bit 0 means PREV_INUSE; the host header uses bit 0 for the
-     * current block's allocation state. Keep the whole metadata-manipulating API on one ABI.
-     * malloc()'s retail wrapper saves its own caller RA at sp+4 before calling _malloc_r.
-     * operator new then adds a 0x20-byte frame and saves its caller at +0xc, which is
-     * sp+0x1c from here. Unwrap only those exact verified return PCs; direct _malloc_r
-     * callers retain their immediate RA, so tracing gains provenance without changing
-     * guest state. */
-    uint32_t owner_ra = s->r[31] == 0x000104d0u
-        ? MEM_R32(s->r[29] + 0x00000004u) : s->r[31];
-    if (owner_ra == 0x00000bf4u || owner_ra == 0x00000c5cu)
-        owner_ra = MEM_R32(s->r[29] + 0x0000001cu);
-    s->r[2] = sr_newlib_malloc(s->r[5], owner_ra);
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x0000f538:
-            text = """void f_0000f538(CpuState *s) {  /* custom stub: _free_r(reent, ptr) -> sr_newlib_free bridge
-     * Reinstated 2026-07-16 alongside f_00010738 -- see that stub's comment. */
-    uint32_t owner_ra = s->r[31] == 0x00010500u
-        ? MEM_R32(s->r[29] + 0x00000004u) : s->r[31];
-    if (owner_ra == 0x00000a14u)
-        owner_ra = MEM_R32(s->r[29] + 0x0000001cu);
-    sr_newlib_free(s->r[5], owner_ra);
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x000101c4:
-            text = """void f_000101c4(CpuState *s) {  /* custom stub: _memalign_r(reent, alignment, size)
-     * The translated retail body carves dlmalloc chunks and writes PREV_INUSE into the
-     * following header. That bit is incompatible with the host arena's current-block flag. */
-    s->r[2] = sr_newlib_memalign(s->r[5], s->r[6], s->r[31]);
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x00013524:
-            text = """void f_00013524(CpuState *s) {  /* custom stub: _realloc_r(reent, ptr, size)
-     * Retail realloc also walks, unlinks, and rewrites dlmalloc headers, so it must use
-     * the same host-owned metadata ABI as malloc/free/memalign. */
-    s->r[2] = sr_newlib_realloc(s->r[5], s->r[6], s->r[31]);
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x00015ea0:
-            text = """void f_00015ea0(CpuState *s) {
-    /* Host-side tokenizer matching FUN_00015ea0 (EBOOT.BIN.dec.c:22965).
-     * str is the CSV buffer pointer; delim is the delimiter string. First
-     * call (str != 0) builds a cached token table by walking the buffer
-     * once. Subsequent calls return one token pointer per yield. */
-    uint32_t str = s->r[4];
-    uint32_t delim = s->r[5];
-    static uint32_t s_tokens[16384];
-    static uint32_t s_ntokens = 0;
-    static uint32_t s_tok_idx = 0;
-    if (str != 0) {
-        s_ntokens = 0;
-        s_tok_idx = 0;
-        uint32_t p = str;
-        uint32_t d = delim;
-        while (MEM_R8(p) != 0 && s_ntokens < 16384) {
-            while (MEM_R8(p) != 0) {
-                int is_delim = 0;
-                for (uint32_t dd = d; MEM_R8(dd) != 0; dd++) {
-                    if (MEM_R8(p) == MEM_R8(dd)) { is_delim = 1; break; }
-                }
-                if (!is_delim) break;
-                p++;
-            }
-            if (MEM_R8(p) == 0) break;
-            s_tokens[s_ntokens++] = p;
-            while (MEM_R8(p) != 0) {
-                int is_delim = 0;
-                for (uint32_t dd = d; MEM_R8(dd) != 0; dd++) {
-                    if (MEM_R8(p) == MEM_R8(dd)) { is_delim = 1; break; }
-                }
-                if (is_delim) { MEM_W8(p, 0); p++; break; }
-                p++;
-            }
-        }
-    }
-    s->r[2] = (s_tok_idx < s_ntokens) ? s_tokens[s_tok_idx++] : 0u;
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x000143b0:
-            text = r'''void f_000143b0(CpuState *s) {  /* custom stub: guest sprintf */
-    sr_guest_sprintf(s);
-}'''
-            func_texts.append(text); emitted.append(a); continue
-
-        # 0x0001034c (heap-statistics walk skip) and 0x001d9eb0 (title backdrop
-        # chooser postcondition) were retired under #363: the walk runs over the
-        # retail allocator's statically linked, untouched bins once the allocator is
-        # host-bridged, and the chooser never yields 0. Both now translate as written.
+        # The hand-written --profile=hst bodies are data: HST_CUSTOM_STUBS maps an address to
+        # its C text (tools/codegen_hst_stubs.py).
+        if hst_profile and a in HST_CUSTOM_STUBS:
+            func_texts.append(HST_CUSTOM_STUBS[a]); emitted.append(a); continue
 
         if a in SIMPLE_STUBS:
             name, ret_val = SIMPLE_STUBS[a]
@@ -4951,66 +4825,14 @@ def main(argv):
 }}"""
             func_texts.append(text); emitted.append(a); continue
 
-        # 0x0001a5f8 and 0x0001c008 had constant-return custom stubs here until
-        # 2026-07-18. A Ghidra-assisted review showed both shadow real,
-        # fully-translatable code: 0x1c008 is `jr ra; sw a1,0x4028(a0)` (the stub
-        # dropped the delay-slot store) and 0x1a5f8 is a computed-goto resume
-        # point reached via .data pointer tables. Both are discovered entries and
-        # translate faithfully; tools/test_codegen_no_shadow_stubs.py keeps them so.
-
-        if hst_profile and a == 0x000468c8:
+        if hst_profile and a == HST_GAME_LOOP_ADDR:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
                 resumable=catalog[a].resumable, profile=profile,
                 dispatch_boundaries=dispatch_boundaries,
                 stack_census=stack_census)))
             func_texts[-1] = func_texts[-1].replace("void f_000468c8(CpuState *s)", "void f_000468c8_real(CpuState *s)")
-            text = """void f_000468c8(CpuState *s) {  /* custom stub: main_RunGameLoop - infinite frame loop */
-    for (;;) {
-        SR_YIELD(s, 0x000468c8u);
-        f_000468c8_real(s);
-        SR_TAIL_DRAIN(s);
-    }
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a in (0x00011090, 0x000110dc):
-            text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: memcpy native */
-    uint32_t dest = s->r[4];
-    sr_native_memmove(dest, s->r[5], s->r[6], 0x{a:08x}u);
-    s->r[2] = dest;
-    s->pc = s->r[31];
-}}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a in (0x000114c0, 0x000114a8):
-            text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: sceKernelMemset native */
-    uint32_t dest = s->r[4];
-    sr_native_memset(dest, (uint8_t)(s->r[5] & 0xFF), s->r[6], 0x{a:08x}u);
-    s->r[2] = dest;
-    s->pc = s->r[31];
-}}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x000149a8:
-            text = """void f_000149a8(CpuState *s) {  /* custom stub: strcpy native */
-    /* Boot's file-open wrapper copies its source path here before adding the
-     * host0: prefix.  Treating this routine as strcmp left the destination
-     * uninitialized and corrupted every resource path during startup. */
-    uint32_t dst0 = s->r[4], dst = dst0, src = s->r[5];
-    if (dst != 0u && src != 0u) {
-        for (uint32_t n = 0; n < 0x00100000u; n++) {
-            uint8_t ch = MEM_R8(src++);
-            MEM_W8(dst++, ch);
-            if (ch == 0u) break;
-        }
-    }
-    s->r[2] = dst0;
-    s->pc = s->r[31];
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        # --- CUSTOM STUBS END ---
+            func_texts.append(HST_GAME_LOOP_WRAPPER); emitted.append(a); continue
 
         if is_stub(a):
             lib_nid = impmap.get(a)

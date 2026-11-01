@@ -573,6 +573,8 @@ ADDRESS_TABLES = {
     "_SV_SPECIAL": "hst_profile",
     "_HST_INLINE_SITES": "hst_profile",
     "SIMPLE_STUBS": "empty-under-none",
+    "HST_CUSTOM_STUBS": "hst_profile",
+    "HST_GAME_LOOP_ADDR": "hst_profile",
     "HST_MANUAL_CALLABLES": "catalog-early-return",
     "HST_RESUME_OWNERS": "catalog-early-return",
 }
