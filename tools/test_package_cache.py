@@ -2299,7 +2299,8 @@ class AnalyzerSourcesKeyTests(unittest.TestCase):
 
     def test_both_key_builders_use_the_analyzer_sources(self) -> None:
         for module in (nk_cli, title_codegen_plan):
-            source = Path(module.__file__).read_text(encoding="utf-8")
+            self.assertIsNotNone(module.__file__)
+            source = Path(str(module.__file__)).read_text(encoding="utf-8")
             with self.subTest(module=module.__name__):
                 self.assertIn("analyzer_sources_sha256(", source)
                 self.assertNotIn('sha256_file(ROOT / "tools" / "analyze.py")', source)
