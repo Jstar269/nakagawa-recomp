@@ -1700,7 +1700,7 @@ def _current_package_cache_key(
         input_hashes=input_hashes,
         title_input_identity=title_input_identity,
         codegen_options=options,
-        analyzer_sha256=package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
+        analyzer_sha256=package_cache.analyzer_sources_sha256(ROOT / "tools"),
         codegen_sha256=package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
         compiler=package_cache.compiler_identity(
             environment.get("CC", "gcc"), repository_root=ROOT, environment=environment

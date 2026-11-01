@@ -82,6 +82,15 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# The analyzer is analyze.py plus the modules split out of it; the cache key covers all of them.
+ANALYZER_SOURCES = ("analyze.py", "analyze_cfg.py")
+
+
+def analyzer_sources_sha256(tools_dir: Path) -> str:
+    """One digest over every analyzer source file, so a change to any of them changes the cache key."""
+    return _digest({name: sha256_file(tools_dir / name) for name in ANALYZER_SOURCES})
+
+
 def _digest(value: Any) -> str:
     return sha256_bytes(canonical_json(value).encode("utf-8"))
 
