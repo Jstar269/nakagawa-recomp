@@ -3050,7 +3050,7 @@ def _package_validate(st):
     st.package_started = package_started
 
 
-def _package_promote(st):
+def _package_promote(st: Any) -> int:
     """Copy the package into place and swap it in."""
     (args, build_dir, cache_dir, cache_key, disc_id, entry_root, native_only, package_started, reporter, stage_observer, target_dir, title_input_identity, user_root) = (
         st.args,
@@ -3154,7 +3154,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         _package_preflight(st)
         _package_extract(st)
         _package_identity(st)
-        rc = _package_cache_check(st)
+        rc: int | None = _package_cache_check(st)
         if rc is not None:
             return rc
         rc = _package_codegen(st)
@@ -5385,7 +5385,7 @@ def _bringup_launch(st):
                       int((time.perf_counter() - started) * 1000))
 
 
-def _bringup_finish(st):
+def _bringup_finish(st: Any) -> int:
     """Write the report and return the exit code."""
     report, report_path = st.report, st.report_path
     report_written = _write_bringup_report(report, report_path)
@@ -5421,7 +5421,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     st.report = report
     st.report_path = report_path
     st.set_stage = set_stage
-    rc = _bringup_open(st)
+    rc: int | None = _bringup_open(st)
     if rc is not None:
         return rc
     rc = _bringup_expand_disc(st)
