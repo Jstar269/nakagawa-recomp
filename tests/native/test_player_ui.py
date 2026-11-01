@@ -393,7 +393,7 @@ def current_build_identity() -> dict[str, str]:
     (NkPackageBuildIdentity in src/core/nk_title_manifest.h)."""
     return {
         "runtime_source_digest": package_cache.source_tree_digest(ROOT),
-        "analyzer_sha256": package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
+        "analyzer_sha256": package_cache.analyzer_sources_sha256(ROOT / "tools"),
         "codegen_sha256": package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
         "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
     }

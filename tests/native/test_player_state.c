@@ -3614,6 +3614,7 @@ static void test_build_identity_matches_the_python_digest(void) {
         {"assets/vfpu/lut.dat", "lut\n"},
         {"assets/vfpu/sub/more.bin", "more\n"},
         {"tools/analyze.py", "analyzer\n"},
+        {"tools/analyze_cfg.py", "analyzer cfg\n"},
         {"tools/codegen.py", "codegen\n"},
         {"tools/title_codegen_plan.py", "planner\n"},
     };
@@ -3625,7 +3626,7 @@ static void test_build_identity_matches_the_python_digest(void) {
     assert(strcmp(identity.runtime_source_digest,
                   "61aa969c1ec9460b856e36b5f4703a2f809bbd6d385d640f1ec930ade70da478") == 0);
     assert(strcmp(identity.analyzer_sha256,
-                  "23e136a01229cfb27a5d25b96ee0a6320b3cfa394e2ffeb369cc4c5c7c444cef") == 0);
+                  "26c67376bb3f60f0df716d10fc029e64949afe8adc5ed750b37267cfa588cb72") == 0);
     assert(strcmp(identity.codegen_sha256,
                   "bd472cf656c14d9ac711ff39655f747c8d25f97d1f735905bd771a40d0054929") == 0);
     assert(strcmp(identity.planner_sha256,
@@ -3679,6 +3680,7 @@ static void test_outdated_packages_rebuild(PlayerApp *app, const char *user_root
     PlayerRebuildCard card;
 
     write_tree_file(install_root, "tools/analyze.py", "analyzer, this version\n");
+    write_tree_file(install_root, "tools/analyze_cfg.py", "analyzer cfg, this version\n");
     write_tree_file(install_root, "tools/codegen.py", "codegen, this version\n");
     write_tree_file(install_root, "tools/title_codegen_plan.py", "planner, this version\n");
     write_tree_file(install_root, "src/rt/runtime.c", "int runtime_this_version;\n");

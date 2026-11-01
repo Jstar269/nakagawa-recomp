@@ -12537,6 +12537,18 @@
       }
     },
     {
+      "path": "tools/analyze_cfg.py",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "analyze-cfg-split-1531",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "tools/audit_public_issue_links.py",
       "classification": "project_authored_attested",
       "evidence": {

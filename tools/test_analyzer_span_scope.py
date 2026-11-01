@@ -976,7 +976,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
 
         mutant_tools = self.root / "fallthrough_mutant_tools"
         mutant_tools.mkdir()
-        analyzer_source = (TOOLS / "analyze.py").read_text(encoding="utf-8")
+        analyzer_source = (TOOLS / "analyze_cfg.py").read_text(encoding="utf-8")
         mutation_anchor = (
             '                if kind_id in {\n'
             '                    _CFG_KIND_IDS["call"], _CFG_KIND_IDS["tail-call"],\n'
@@ -993,7 +993,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
             ),
             1,
         )
-        (mutant_tools / "analyze.py").write_text(
+        (mutant_tools / "analyze_cfg.py").write_text(
             mutant_analyzer,
             encoding="utf-8",
             newline="\n",
@@ -1340,7 +1340,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         # CLI before C emission. The tracked analyzer and controls stay untouched.
         mutant_tools = self.root / "tail_false_positive_mutant_tools"
         mutant_tools.mkdir()
-        analyzer_source = (TOOLS / "analyze.py").read_text(encoding="utf-8")
+        analyzer_source = (TOOLS / "analyze_cfg.py").read_text(encoding="utf-8")
         mutation_anchor = (
             '    for conflict in report.get("ownership_conflicts", ()):\n'
         )
@@ -1355,7 +1355,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
             '    for conflict in report.get("ownership_conflicts", ()):\n',
             1,
         )
-        (mutant_tools / "analyze.py").write_text(
+        (mutant_tools / "analyze_cfg.py").write_text(
             mutant_analyzer,
             encoding="utf-8",
             newline="\n",
