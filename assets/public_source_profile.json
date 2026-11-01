@@ -1243,6 +1243,7 @@
     "tools/admit_paths.py",
     "tools/analysis_ir.py",
     "tools/analyze.py",
+    "tools/analyze_cfg.py",
     "tools/audit_public_issue_links.py",
     "tools/betterleaks_canary.py",
     "tools/boot_gate.py",
