@@ -638,7 +638,7 @@ USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemC
 endif
 ifeq ($(CASE),null-code-registration)
 USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E6961,0xFB8E22EC,0x8A389411
-USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
+USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0xBEA46419,0x15B6446B
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceGe_user=0xB287BD61,0xA4FC06A4,0x05DB22CE
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemCtrlForUser
 endif
