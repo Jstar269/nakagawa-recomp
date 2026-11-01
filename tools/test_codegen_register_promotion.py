@@ -73,7 +73,7 @@ def jal(target):
 class RegisterPromotionTests(unittest.TestCase):
     def setUp(self):
         self._saved = codegen.OPTIONS.promote_registers
-        self.addCleanup(setattr, codegen, "PROMOTE_REGISTERS", self._saved)
+        self.addCleanup(setattr, codegen.OPTIONS, "promote_registers", self._saved)
 
     def _emit(self, words, promote, start=0x1000, end=0x1100, known=None):
         codegen.OPTIONS.promote_registers = promote

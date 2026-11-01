@@ -475,7 +475,7 @@ class LleCodegenTests(unittest.TestCase):
 
     def test_sr_register_all_enables_lle_runtime_when_lle_cpu(self):
         source = (ROOT / "tools" / "codegen.py").read_text(encoding="utf-8")
-        self.assertIn("if LLE_CPU:", source)
+        self.assertIn("if OPTIONS.lle_cpu:", source)
         self.assertIn("sr_cpu_lle_set_enabled(1);", source)
 
     def test_lle_cli_flag_drives_the_module_default(self):
