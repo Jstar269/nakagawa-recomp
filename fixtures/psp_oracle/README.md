@@ -635,6 +635,15 @@ CreateCallback, RegisterSubIntrHandler and GeSetCallback. It never enables or qu
 a NULL interrupt/GE handler.
 `null-thread-invocation` and `null-callback-invocation` are separate follow-ups and
 must only run if the entry measurements show user-mode invocation context.
+The 2026-11-01 PSP captures are summarized in `../../docs/HARDWARE_ORACLE.md`: both NULL
+thread/callback registrations were accepted, and all five entry stubs recorded their
+registers. The P1/P2 envelope is captured but not acceptance-eligible because the
+sub-interrupt and GE non-invocation rows are intentional `SKIP`s. The NULL thread
+follow-up faulted at user EPC 0; the NULL callback follow-up stopped at
+`sceKernelCheckCallback` and the watchdog recovered the PSP without an exception frame.
+The fetch-zero case also captured an exprint frame. The `0x08000000` A3 PRX was refused
+after its transport preflight, and `0x40000000` was not launched, because the recovered
+PSP reported `pspver 6.6.1` instead of the required `6.6.0`.
 
 ### #312 instruction trace
 
@@ -642,6 +651,9 @@ must only run if the entry measurements show user-mode invocation context.
 `fpu-state` and `vfpu-state` fixtures, along with the existing GPR, HI/LO and store
 state. `CASE=insn-trace-exception` raises a `break` in a branch delay slot; the
 runner keeps its EPC, Cause, BadVAddr and Status frame from `exprint` in teardown.
+The original two trace fixtures remain measured. The new FPU/VFPU and delay-slot
+exception fixtures have local tests and clean PRX builds, but their PSP runs were
+blocked by the `pspver` mismatch described above; they are not hardware evidence.
 
 The seven `hle-*` rows are single-launch probes built from `probe_hle_measure.c`, and they are
 not in the campaign queue. Five cases ran on a PSP-3000 on 2026-10-15 (build `b5d6fc5b`):

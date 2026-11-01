@@ -2989,6 +2989,55 @@ not expected PSP values.
 | `ge-sync-ids` | `PSP-GE-SYNC-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue; captured earlier from `96fe29f6` and `f6da6125`) | #1374: `sceGeListSync`, `sceGeDrawSync` and `sceGeListDeQueue` on an unknown queue id, on completed lists before and after later lists, on a list a `sceGeBreak(1)` reset removed, and with sync types other than 0 and 1, each blocking call bounded in a helper thread. See [PSP-GE-SYNC-001 runs 2026-10-31](#psp-ge-sync-001-runs-2026-10-31). |
 | `ge-mip` | `PSP-GE-MIP-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue) | #1373: the raw pixels of a 16x4 window after 57 textured draws over eight one-colour mip levels: constant, automatic, slope and the unused level mode, biases and their rounding, blends, the highest-level clamp, footprints along either axis, and transform-mode quads at fixed and varying w. 285 result records. |
 
+### #1375 and #312 captures 2026-11-01
+
+The captures below came from one case per `nkctl probe` launch with the runner's
+`transport-write` preflight. The first measured launches reported `pspver 6.6.0`.
+On the next launch attempt the PSP came back in boot 96 and reported `pspver 6.6.1`.
+
+`PSP-NULLCODE-001` used source commit `17cc8ee302bb096aa7d88af20eea94127f5c13a6`.
+The entry stub records `$ra`, `$sp`, `$gp`, `$a0-$a3` and `$t0-$t3` before its C
+prologue. The measured `$ra`/stack/global-pointer and argument values were:
+
+| Entry | `$ra` | `$sp` | `$gp` | `$a0-$a3` | Calls observed |
+| --- | --- | --- | --- | --- | ---: |
+| Thread | `0x0b7eecb0` | `0x0b7eecb0` | `0x0a0e01e0` | `0x00000004, 0x0b7eecf0, 0xdeadbeef, 0xdeadbeef` | 1 |
+| Callback | `0x0b7ae9e8` | `0x0b7ae9e8` | `0x0a0e01e0` | `0x00000001, 0x10203040, 0x2468ace0, 0x00000000` | 1 |
+| Alarm | `0x0880cfb0` | `0x0880cfa0` | `0x0a0e01e0` | `0x11223344, 0x00000000, 0x00000000, 0x00000000` | 1 |
+| VTimer | `0x0880cfa0` | `0x0880cf90` | `0x0a0e01e0` | `0x05516c7d, 0x0880cfb0, 0x0880cfb8, 0x55667788` | 1 |
+| VBLANK sub-interrupt | `0x0880cfb0` | `0x0880cfa0` | `0x0a0e01e0` | `0x00000001, 0x89abcdef, 0x00000000, 0x00000000` | 3 |
+
+These raw `$ra` values differ from the design's expectation that the return address
+would be outside user space. `CreateThread(NULL)` returned a UID; `ReferThreadStatus`
+returned 0 and reported entry 0; `DeleteThread` returned 0. `CreateCallback(NULL)`
+also returned a UID; `ReferCallbackStatus` returned 0 and reported callback 0;
+`DeleteCallback` returned 0. A NULL VBLANK registration returned 0 for slot 1;
+its immediate `ReleaseSubIntrHandler` returned `0x80020068`. It was never enabled.
+`sceGeDrawSync(0)` returned 0, `sceGeSetCallback({NULL,NULL})` returned ID 1, and
+`sceGeUnsetCallback` returned 0. No NULL interrupt or GE handler was enabled or
+queued. The P1/P2 envelope remains `CAPTURED`, not acceptance-eligible, because the
+two intentional non-invocation rows are `SKIP` records.
+
+The separately guarded thread invocation returned 0 from `sceKernelStartThread` and
+produced an exprint frame: instruction bus error (ExcCode 6), EPC 0, BadVAddr 0,
+Cause `0x10000018` (BD clear), Status `0x00088613` (user mode). Its envelope was
+acceptance-eligible. The callback invocation's `sceKernelNotifyCallback` returned 0,
+but `sceKernelCheckCallback` did not return before the case timeout; no frame was
+available, and `nkctl`'s watchdog recovered the PSP to a qualified boot. This is a
+captured hang, not a measured callback exception.
+
+`PSP-EXCEPTION-FETCH-001`, source commit
+`9e78dd00d628d07d1f7cc28e6d7af5970ab994f9`, ran `jr $t9` with `$t9 = 0` from user
+mode after writing `fetch-armed`. Its retained exprint reply was instruction bus
+error (ExcCode 6), EPC 0, BadVAddr 0, Cause `0x10000018` (BD clear). The full source
+commit matched. The envelope is diagnostic-only because the intentional fault has no
+completion sentinel and the host0 round trip did not complete. A later launch attempt
+for `0x08000000` was blocked before its A3 PRX ran: the recovered PSP reported
+`pspver 6.6.1`, while this session was authorized for `6.6.0`. The `0x40000000`
+fetch and the #312 trace launches were not attempted after that mismatch. The new
+FPU/VFPU and delay-slot exception fixtures therefore have local tests and clean PRX
+builds, but no new PSP measurements.
+
 ### PSP-GE-SYNC-001 runs 2026-10-31
 
 Four `ge-sync-ids` launches, each preceded by `transport-write`, ran on the project PSP-3000 (system software

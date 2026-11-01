@@ -3166,6 +3166,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-NULL-OUT-001",
                 # 2026-10-17: raw UMD capture stopped before the 32768-byte seek/read result.
                 "PSP-UMDRAW-001",
+                # 2026-11-01: the #1375 P1/P2 stream has explicit non-invocation SKIPs; the
+                # fetch-zero exception has a retained frame but no completion sentinel.
+                "PSP-NULLCODE-001", "PSP-EXCEPTION-FETCH-001",
             },
         )
 
@@ -6365,6 +6368,21 @@ class KernelEntryNullcodeProbeTests(unittest.TestCase):
         self.assertNotIn("sceKernelEnableSubIntr", registration)
         self.assertNotIn("sceGeListEnQueue", registration)
 
+    def test_runtime_registration_paths_preserve_the_measured_null_entries(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        thread = (root / "src" / "rt" / "hle_kernel_thread.c").read_text(encoding="utf-8")
+        start = thread.index("uint32_t sr_callback_table_register(")
+        end = thread.index("static int sr_thread_dispatch_callbacks_once", start)
+        callback_table = thread[start:end]
+        self.assertIn("if (entry && !sr_inrange(entry))", callback_table)
+        self.assertIn("cb->entry = entry;", callback_table)
+        self.assertIn("return cb->uid;", callback_table)
+        self.assertIn("MEM_W32(infop + 40, cb->entry);", thread)
+        self.assertIn(
+            'sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);',
+            thread,
+        )
+
     def test_manifest_rows_name_the_combined_probe_and_separate_faults(self) -> None:
         root = Path(__file__).resolve().parents[1]
         rows = {row["id"]: row for row in json.loads(
@@ -6373,14 +6391,24 @@ class KernelEntryNullcodeProbeTests(unittest.TestCase):
         nullcode = rows["PSP-NULLCODE-001"]
         registered = set(CAMPAIGN_PROBE_CASES["null-code-registration"][0].ordered_cases)
         self.assertTrue(registered <= set(nullcode["case_ids"]))
+        self.assertEqual(nullcode["hardware_evidence"], "CAPTURED")
+        self.assertIn("not acceptance-eligible", nullcode["evidence_note"])
+        self.assertIn("sceKernelCheckCallback", nullcode["evidence_note"])
         self.assertEqual(nullcode["diagnostic_case_ids"], [
             "null-code-registration", "null-thread-invocation", "null-callback-invocation",
         ])
         exception = rows["PSP-EXCEPTION-FETCH-001"]
         self.assertEqual(exception["case_ids"], ["fetch-armed"])
-        self.assertEqual(exception["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(exception["hardware_evidence"], "CAPTURED")
+        self.assertIn("fetch from 0x00000000", exception["evidence_note"])
+        self.assertIn("0x08000000 case was refused", exception["evidence_note"])
+        trace = rows["PSP-TRACE-001"]
+        self.assertIn("fpu-state-*", trace["uncited_cases"])
+        self.assertIn("vfpu-state-*", trace["uncited_cases"])
         trace_exception = rows["PSP-TRACE-EXCEPTION-001"]
         self.assertEqual(trace_exception["diagnostic_case_ids"], ["insn-trace-exception"])
+        self.assertEqual(trace_exception["hardware_evidence"], "NOT_RUN")
+        self.assertIn("pspver 6.6.1", trace_exception["evidence_note"])
 
 
 class HleIssuesProbeTests(unittest.TestCase):
