@@ -501,6 +501,13 @@ static int s_cpu_profile_hook_depth;
 
 static uint32_t s_texscratch[512 * 512];
 static uint32_t s_pxscratch[FB_W * FB_H];
+/* One guest row at device width (each pixel repeated s_scale times), in cached memory. The
+ * s_scale device rows of an upload are each copied from here. The upload ring is TRANSFER_SRC
+ * memory without HOST_CACHED (gegpu_pick_host_mem_type), write-combined on common GPUs, where
+ * every CPU read goes to memory: copying each replicated row from the first row of its cell
+ * in the mapped buffer was about half of a 2x frame's CPU time in a measured title (#1296). */
+static uint32_t s_pxwide[FB_W * MAX_SCALE];
+static uint16_t s_zwide[FB_W * MAX_SCALE];
 
 #define VKC(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
     fprintf(stderr, "gegpu: %s failed: %d\n", #expr, (int)vr_); return 0; } } while (0)
@@ -1833,14 +1840,14 @@ static int target_upload(Target *t) {
             for (uint32_t x = 0; x < t->stride; x++) row[x] = fb_unpack(src[x], t->fmt);
         }
         for (uint32_t x = t->stride; x < FB_W; x++) row[x] = 0;
-        uint32_t *dl = dst + (uint32_t)(y * s_scale) * drow;
-        if (s_scale == 1) {
-            memcpy(dl, row, FB_W * 4);
-        } else {
+        const uint32_t *wide = row;
+        if (s_scale > 1) {
             for (uint32_t x = 0; x < FB_W; x++)
-                for (int i = 0; i < s_scale; i++) dl[x * s_scale + i] = row[x];
-            for (int j = 1; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, dl, drow * 4);
+                for (int i = 0; i < s_scale; i++) s_pxwide[x * s_scale + i] = row[x];
+            wide = s_pxwide;
         }
+        uint32_t *dl = dst + (uint32_t)(y * s_scale) * drow;
+        for (int j = 0; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, wide, drow * 4);
     }
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -1999,10 +2006,10 @@ static int target_patch_vram_dirty(Target *t, uint32_t dirty_addr, uint32_t dirt
             }
             uint32_t rgba = fb_unpack(raw, t->fmt);
             uint32_t dx = (x - x0) * (uint32_t)s_scale;
-            for (int sx = 0; sx < s_scale; sx++) dst[dx + (uint32_t)sx] = rgba;
+            for (int sx = 0; sx < s_scale; sx++) s_pxwide[dx + (uint32_t)sx] = rgba;
         }
-        for (int sy = 1; sy < s_scale; sy++)
-            memcpy(dst + (uint32_t)sy * scaled_width, dst,
+        for (int sy = 0; sy < s_scale; sy++)
+            memcpy(dst + (uint32_t)sy * scaled_width, s_pxwide,
                    (size_t)scaled_width * sizeof(uint32_t));
 
         copies[ci].bufferOffset = upload.offset + used;
@@ -2174,20 +2181,18 @@ static int depth_from_cpu(DepthEnt *d) {
     UploadReservation upload;
     if (!upload_reserve(upload_bytes, &upload)) return 0;
     uint32_t source_stride = d->zstride;
-    if (s_scale == 1) {
-        uint16_t *dst = (uint16_t *)upload.map;
-        for (uint32_t y = 0; y < FB_H; y++)
-            memcpy(dst + y * FB_W, s_zbuf + y * source_stride, FB_W * 2u);
-    } else {
-        uint16_t *dst = (uint16_t *)upload.map;
-        uint32_t drow = SCL_W;
-        for (uint32_t y = 0; y < FB_H; y++) {
-            const uint16_t *src = s_zbuf + y * source_stride;
-            uint16_t *dl = dst + (uint32_t)(y * s_scale) * drow;
+    uint16_t *dst = (uint16_t *)upload.map;
+    uint32_t drow = SCL_W;
+    for (uint32_t y = 0; y < FB_H; y++) {
+        const uint16_t *src = s_zbuf + y * source_stride;
+        const uint16_t *wide = src;
+        if (s_scale > 1) {   /* replicate from cached memory, never the mapped upload (s_zwide) */
             for (uint32_t x = 0; x < FB_W; x++)
-                for (int i = 0; i < s_scale; i++) dl[x * s_scale + i] = src[x];
-            for (int j = 1; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, dl, drow * 2);
+                for (int i = 0; i < s_scale; i++) s_zwide[x * s_scale + i] = src[x];
+            wide = s_zwide;
         }
+        uint16_t *dl = dst + (uint32_t)(y * s_scale) * drow;
+        for (int j = 0; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, wide, drow * 2);
     }
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -7907,7 +7912,161 @@ static int coherence_run_tnl_parity(void) {
     return ok;
 }
 
+/* The whole device-size image, not only the top-left device pixel of each scale x scale cell
+ * that a readback to guest VRAM keeps (write_guest_fb). Colour is left in TRANSFER_SRC, as
+ * target_readback leaves it; `after` is the layout the image returns to. */
+static int coherence_read_device(VkImage img, VkImageAspectFlags aspect, VkImageLayout *layout,
+                                 VkImageLayout after, uint32_t bpp, void *out) {
+    if (s_nbatch && !submit_pending()) return 0;
+    if (!cmd_begin()) return 0;
+    to_layout(s_cmd, img, aspect, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy c = {0};
+    c.imageSubresource.aspectMask = aspect;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(s_cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer, 1, &c);
+    to_layout(s_cmd, img, aspect, layout, after);
+    if (!cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION)) return 0;
+    memcpy(out, s_xfer_map, (size_t)SCL_W * SCL_H * bpp);
+    return 1;
+}
+
+static int coherence_check_device_color(const char *step, const uint32_t *dev, const uint8_t *guest,
+                                        uint32_t stride, uint32_t fmt) {
+    const uint32_t bpp = fmt == 3u ? 4u : 2u;
+    for (uint32_t y = 0; y < SCL_H; y++) {
+        for (uint32_t x = 0; x < SCL_W; x++) {
+            const uint32_t gx = x / (uint32_t)s_scale, gy = y / (uint32_t)s_scale;
+            uint32_t raw = 0, want = 0;
+            if (gx < stride) {                     /* columns past the stride upload as 0 */
+                memcpy(&raw, guest + (gy * stride + gx) * bpp, bpp);
+                want = fb_unpack(raw, fmt);
+            }
+            if (dev[y * SCL_W + x] != want) {
+                fprintf(stderr, "gpu coherence selftest [scaled-upload]: %s fmt=%u stride=%u scale=%d: "
+                        "device pixel (%u,%u) = 0x%08x, want 0x%08x\n", step, fmt, stride, s_scale,
+                        x, y, dev[y * SCL_W + x], want);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* Every device pixel of each scale x scale cell holds its guest pixel after a whole-target
+ * upload, after a CPU-write patch across a row boundary, and after a depth upload. The
+ * replicated rows are written from cached scratch (s_pxwide, s_zwide), never copied from
+ * the mapped upload buffer (#1296). At scale 1 the cells are single pixels;
+ * gpu-coherence-selftest also runs this case alone at SR_GPU_SCALE=2 and 4. */
+static int coherence_run_scaled_upload(void) {
+    static const struct { uint32_t fmt, stride; } cells[] = {
+        { 3u, 512u }, { 0u, 512u }, { 1u, 512u }, { 2u, 512u }, { 3u, 480u },
+    };
+    const uint32_t fba = 0x00100000u, base = 0x04000000u | fba;
+    uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
+    if (!dev) return 0;
+    int ok = 1;
+    for (uint32_t c = 0; ok && c < sizeof(cells) / sizeof(cells[0]); c++) {
+        const uint32_t fmt = cells[c].fmt, stride = cells[c].stride, bpp = fmt == 3u ? 4u : 2u;
+        coherence_reset_targets();
+        uint8_t *guest = (uint8_t *)SR_HOST(base);
+        for (uint32_t i = 0; i < stride * FB_H; i++) {
+            const uint32_t raw = (i + 1u) * 0x9e3779b1u ^ (fmt << 24);
+            memcpy(guest + i * bpp, &raw, bpp);
+        }
+        const char *fail = NULL;           /* "" once the check has printed its own line */
+        Target *t = target_color_acquire(fba, stride, fmt, 1);
+        if (!t || !t->gpu_valid)
+            fail = "the target was not established";
+        else if (!coherence_read_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev))
+            fail = "device read after the upload failed";
+        else if (!coherence_check_device_color("whole-target upload", dev, guest, stride, fmt))
+            fail = "";
+
+        /* A CPU write from mid row 60 into row 61, held and applied as a patch. */
+        if (!fail) {
+            const uint32_t off = (60u * stride + 37u) * bpp, len = (stride + 50u) * bpp;
+            for (uint32_t i = 0; i < len; i++) guest[off + i] = (uint8_t)(0x5au + i * 13u);
+            const unsigned long long syncs0 = s_replay_stats.cpu_write_syncs;
+            const unsigned long uploads0 = s_cnt_upload;
+            sr_gpu_vram_dirty(base + off, len);
+            const int held = t->cpu_n;
+            t = target_color_acquire(fba, stride, fmt, 1);
+            if (!t || !t->gpu_valid)
+                fail = "the target was lost after the CPU write";
+            else if (!held || s_replay_stats.cpu_write_syncs != syncs0 + 1u ||
+                     s_cnt_upload != uploads0 + 1u) {   /* one held span, one patch */
+                fprintf(stderr, "gpu coherence selftest [scaled-upload]: held=%d syncs=%llu uploads=%lu\n",
+                        held, s_replay_stats.cpu_write_syncs - syncs0, s_cnt_upload - uploads0);
+                fail = "the CPU write was not applied as a patch";
+            }
+            else if (!coherence_read_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev))
+                fail = "device read after the patch failed";
+            else if (!coherence_check_device_color("CPU-write patch", dev, guest, stride, fmt))
+                fail = "";
+        }
+        if (fail) {
+            if (*fail)
+                fprintf(stderr, "gpu coherence selftest [scaled-upload]: fmt=%u stride=%u scale=%d: %s\n",
+                        fmt, stride, s_scale, fail);
+            ok = 0;
+        }
+    }
+
+    /* Depth: ge.c's CPU surface, uploaded at device size. */
+    if (ok) {
+        coherence_reset_targets();
+        memset(s_ge, 0, sizeof(*s_ge));
+        s_ge->fbp = base; s_ge->fbw = 512u;
+        s_ge->zbp = 0x04080000u; s_ge->zbw = 512u;
+        DepthEnt *d = NULL;
+        uint16_t *dev16 = (uint16_t *)dev;
+        ok = ge_zbuf_prepare_current() && (s_zbuf = ge_zbuf_ptr()) != NULL;
+        if (ok) {
+            for (uint32_t y = 0; y < FB_H; y++)
+                for (uint32_t x = 0; x < FB_W; x++)
+                    s_zbuf[y * 512u + x] = (uint16_t)(0x1234u + y * 977u + x * 31u);
+            ge_zbuf_note_external_write();
+            d = depth_acquire(0x00080000u, 512u);
+        }
+        if (d) d->cpu_dirty = 1;
+        ok = d && depth_from_cpu(d) &&
+             coherence_read_device(d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
+                                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 2u, dev16);
+        for (uint32_t y = 0; ok && y < SCL_H; y++) {
+            for (uint32_t x = 0; x < SCL_W; x++) {
+                const uint16_t want = s_zbuf[(y / (uint32_t)s_scale) * 512u + x / (uint32_t)s_scale];
+                if (dev16[y * SCL_W + x] != want) {
+                    fprintf(stderr, "gpu coherence selftest [scaled-upload]: depth upload scale=%d: "
+                            "device pixel (%u,%u) = 0x%04x, want 0x%04x\n", s_scale, x, y,
+                            dev16[y * SCL_W + x], want);
+                    ok = 0;
+                    break;
+                }
+            }
+        }
+        if (!ok && !d) fprintf(stderr, "gpu coherence selftest [scaled-upload]: no depth surface\n");
+    }
+    free(dev);
+    coherence_reset_targets();
+    if (ok)
+        printf("gpu coherence selftest: PASS %-22s cells=%u scale=%d\n", "scaled-upload",
+               (unsigned)(sizeof(cells) / sizeof(cells[0])), s_scale);
+    return ok;
+}
+
 int gegpu_coherence_selftest(void) {
+    /* SR_GPU_COHERENCE_CASE=scaled-upload runs that case alone, as the recipe does at
+     * SR_GPU_SCALE=2 and 4: the other fixtures expect 1x pixels (a filtered sample lands on
+     * other device pixels at a higher scale). Any other value fails. */
+    const char *only = getenv("SR_GPU_COHERENCE_CASE");
+    if (only && *only) {
+        if (strcmp(only, "scaled-upload") == 0) return coherence_run_scaled_upload();
+        fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
+        return 0;
+    }
     static const CoherenceCase cases[] = {
         { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
         { "5650-unaligned", 0, 512, (42u * 512u + 61u) * 2u + 1u, 3, 0, 0, 0 },
@@ -7960,6 +8119,8 @@ int gegpu_coherence_selftest(void) {
     /* After the mip fixtures: it rewrites the depth buffer they start from. */
     if (!coherence_run_stencil_parity()) ok = 0;
     if (!coherence_run_tnl_parity()) ok = 0;
+    /* Last: it rewrites ge.c's depth surface. */
+    if (!coherence_run_scaled_upload()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
