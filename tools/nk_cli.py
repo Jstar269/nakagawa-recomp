@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 import contextlib
 import errno
 import hashlib
@@ -25,6 +26,7 @@ import tempfile
 import threading
 import traceback
 import time
+from typing import Any
 import zlib
 
 
@@ -2281,6 +2283,857 @@ def _select_enhancement_package(
     return package_path, user_root / "packages" / f"{disc_id}-enhanced-{package['id']}"
 
 
+@dataclass
+class _PackageBuild:
+    """What the stages of _build_package hand to each other."""
+
+    args: Any
+    stage_observer: Any
+    reporter: Any
+    actual_hash: Any = None
+    aot_stage_dir: Any = None
+    build_dir: Any = None
+    build_environment: Any = None
+    cache_dir: Any = None
+    cache_key: Any = None
+    cached_header: Any = None
+    command: Any = None
+    decision: Any = None
+    decrypted_eboot: Any = None
+    disc_id: Any = None
+    elf_path: Any = None
+    enhancement_package_path: Any = None
+    entry: Any = None
+    entry_package: Any = None
+    entry_root: Any = None
+    expected_hash: Any = None
+    identity_path: Any = None
+    iso_path: Any = None
+    log_command: Any = None
+    manifest: Any = None
+    manifest_cache_path: Any = None
+    manifest_selected: Any = None
+    manifest_source: Any = None
+    metadata: Any = None
+    module_dir: Any = None
+    native_only: Any = None
+    package_started: Any = None
+    preflight: Any = None
+    recorded_identity: Any = None
+    register_local_identity: Any = None
+    requires_local_identity: Any = None
+    reuse_source: Any = None
+    selected: Any = None
+    target_dir: Any = None
+    target_valid: Any = None
+    title_input_identity: Any = None
+    user_root: Any = None
+    uses_decrypted_eboot: Any = None
+
+
+def _package_preflight(st):
+    """Validate the library entry, the selected executable and the manifest."""
+    (args, disc_id, manifest_selected, module_dir, register_local_identity, reporter) = (
+        st.args,
+        st.disc_id,
+        st.manifest_selected,
+        st.module_dir,
+        st.register_local_identity,
+        st.reporter,
+    )
+    reporter.report("preflight", "START", f"Inspecting library entry for {disc_id}...")
+    user_root = _user_data_root(args.user_data_root)
+    entry = _load_library_entry(user_root, disc_id, getattr(args, "iso_path", None))
+    iso_path = Path(entry["iso_path"]).expanduser()
+    if not iso_path.is_file():
+        raise PackageBuildError(f"The library source ISO is unavailable at {iso_path}.")
+    metadata = inspect_iso(iso_path, user_data_root=user_root)
+    if metadata.qualification_error and not register_local_identity:
+        raise PackageBuildError(
+            metadata.qualification_error +
+            " Rebuild with --register-local-compatibility-record only after reviewing this exact local input."
+        )
+    if metadata.disc_id != disc_id:
+        raise PackageBuildError(f"ISO identity {metadata.disc_id} no longer matches library entry {disc_id}.")
+    preflight = inspect_compatibility_preflight(iso_path, metadata=metadata,
+                                                runtime_root=user_root)
+    selected_value = preflight.get("selected_executable")
+    uses_decrypted_eboot = selected_value == "EBOOT.elf"
+    decrypted_eboot = preflight.get("decrypted_executable") if uses_decrypted_eboot else None
+    if preflight.get("modified_dump_cfw_loader") and not uses_decrypted_eboot:
+        raise PackageBuildError(
+            "This disc image was modified by a custom-firmware patch. The game "
+            "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
+            "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use an unmodified "
+            "copy of your disc. The project does not provide decrypted executables. "
+            "This boundary is "
+            "in the works."
+        )
+    if selected_value is None or (uses_decrypted_eboot and not decrypted_eboot):
+        module_dir = decrypted_module_dir(user_root, disc_id)
+        folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
+        raise PackageBuildError(encrypted_executable_message(folder))
+    selected = str(selected_value).upper()
+    selected_from_library = entry.get("selected_executable", "")
+    library_selected = (
+        Path(selected_from_library.replace("\\", "/")).name.upper()
+        if selected_from_library else ""
+    )
+    if uses_decrypted_eboot:
+        if not library_selected:
+            library_selected = "EBOOT.BIN"
+        if library_selected not in {"EBOOT.BIN", "BOOT.BIN"}:
+            raise PackageBuildError(
+                f"Library executable selection {library_selected!r} is invalid for a user-supplied EBOOT.elf."
+            )
+        manifest_selected = library_selected
+    else:
+        manifest_selected = selected
+    if library_selected not in {"EBOOT.BIN", "BOOT.BIN"} or (
+        not uses_decrypted_eboot and library_selected != selected
+    ):
+        raise PackageBuildError(f"Selected executable changed from library entry {library_selected!r} to {selected!r}; re-import the ISO.")
+
+    manifest_source, manifest, expected_hash = _load_entry_manifest(
+        user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
+    )
+    if entry.get("is_experimental") and "codegen_profile" not in manifest:
+        display_name = metadata.title.strip() if metadata.title else ""
+        if not display_name or any(ord(char) < 0x20 for char in display_name):
+            display_name = f"PSP Title ({disc_id})"
+        region = metadata.region if metadata.region in {
+            "JP", "NA", "EU", "KR", "ASIA", "OTHER"
+        } else "OTHER"
+        if not _is_native_legacy_experimental_manifest(
+            manifest, disc_id, entry["title_id"], display_name, region
+        ):
+            raise ExperimentalProfileBuildError(
+                "EXPERIMENTAL_CODEGEN_PROFILE_MISSING",
+                730,
+                "This experimental profile is missing its generic build setting; "
+                "re-import the disc to rebuild the profile, then retry.",
+                "codegen_profile is absent from a non-default experimental profile",
+            )
+        if expected_hash is not None:
+            if uses_decrypted_eboot:
+                current_executable_hash = package_cache.sha256_file(
+                    Path(str(decrypted_eboot))
+                )
+            else:
+                with tempfile.TemporaryDirectory(
+                    prefix=".experimental-profile-check-", dir=user_root
+                ) as temporary:
+                    current_executable_hash = _extract_iso_executable(
+                        iso_path, manifest_selected,
+                        Path(temporary) / "selected.elf",
+                    )
+            if current_executable_hash != expected_hash:
+                raise PackageBuildError(
+                    "Selected executable SHA-256 differs from the experimental "
+                    "profile; re-import the ISO before rebuilding."
+                )
+        try:
+            # The player’s native importer predates the shared Python profile
+            # writer used by bring-up. Rebuild only its untouched zero-layout
+            # default so ELF entry/load metadata and codegen_profile come from
+            # the same reviewed generic logic used by bring-up.
+            write_experimental_profile(iso_path, user_root, metadata=metadata)
+        except (IsoInspectionError, OSError, ValueError) as exc:
+            boundary_code = getattr(exc, "boundary_code", None)
+            if boundary_code in {
+                "EXECUTABLE_LOAD_BINDING_REQUIRED",
+                "FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM",
+            }:
+                raise ExperimentalProfileBuildError(
+                    boundary_code, 308, f"{boundary_code}: {exc}",
+                    f"{boundary_code}: {exc}",
+                ) from exc
+            raise ExperimentalProfileBuildError(
+                "GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE",
+                308,
+                "This executable needs a supported generic MIPS ELF layout; "
+                "provide a decrypted ELF with a documented load binding, then "
+                "retry the build.",
+                f"{boundary_code}: {exc}" if boundary_code else str(exc),
+            ) from exc
+        manifest_source, manifest, expected_hash = _load_entry_manifest(
+            user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
+        )
+    requires_local_identity = bool(
+        manifest.get("disc", {}).get("require_local_compatibility_record", False)
+    )
+    recorded_identity = package_cache.read_local_title_input_identity(user_root, disc_id)
+    if requires_local_identity and recorded_identity is None and not register_local_identity:
+        raise PackageBuildError(
+            f"Unqualified revision (SFO DISC_VERSION {metadata.version}): this manifest requires "
+            "an explicit local compatibility record. Rebuild with "
+            "--register-local-compatibility-record after reviewing the selected local inputs."
+        )
+    if (requires_local_identity and recorded_identity is not None and
+        recorded_identity["disc"]["disc_version"] != metadata.version and
+        not register_local_identity):
+        raise PackageBuildError(
+            f"Unqualified revision (SFO DISC_VERSION {metadata.version}): the local compatibility "
+            "record names a different SFO revision. Review and register this revision explicitly "
+            "with --register-local-compatibility-record."
+        )
+    reporter.report("preflight", "PASS", "Library entry and manifest validated")
+    st.decrypted_eboot = decrypted_eboot
+    st.entry = entry
+    st.expected_hash = expected_hash
+    st.iso_path = iso_path
+    st.manifest = manifest
+    st.manifest_selected = manifest_selected
+    st.manifest_source = manifest_source
+    st.metadata = metadata
+    st.module_dir = module_dir
+    st.preflight = preflight
+    st.recorded_identity = recorded_identity
+    st.requires_local_identity = requires_local_identity
+    st.selected = selected
+    st.user_root = user_root
+    st.uses_decrypted_eboot = uses_decrypted_eboot
+
+
+def _package_extract(st):
+    """Copy the executable, header and modules into the package cache."""
+    (args, decrypted_eboot, disc_id, entry, expected_hash, iso_path, manifest, manifest_selected, manifest_source, preflight, reporter, selected, user_root, uses_decrypted_eboot) = (
+        st.args,
+        st.decrypted_eboot,
+        st.disc_id,
+        st.entry,
+        st.expected_hash,
+        st.iso_path,
+        st.manifest,
+        st.manifest_selected,
+        st.manifest_source,
+        st.preflight,
+        st.reporter,
+        st.selected,
+        st.user_root,
+        st.uses_decrypted_eboot,
+    )
+    reporter.report("extract", "START", "Extracting executable and guest modules...")
+    cache_dir = _require_child(user_root, user_root / "cache" / "packages" / disc_id,
+                               "Package cache")
+    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    marker = cache_dir / PACKAGE_CACHE_MARKER
+    if not marker.exists():
+        # The folder is the player's own (cache/packages/<DISC> under its
+        # data root, checked above): one whose marker was lost, for example
+        # by a removal that stopped part-way, is adopted, never a dead end.
+        marker.write_text("Nakagawa Recomp package cache v1\n", encoding="ascii")
+    else:
+        if marker.read_text(encoding="ascii") != "Nakagawa Recomp package cache v1\n":
+            raise PackageBuildError("Package cache marker is not recognized; refusing to replace it.")
+    elf_path = cache_dir / "selected.elf"
+    actual_hash = (
+        _copy_decrypted_elf(Path(str(decrypted_eboot)), elf_path)
+        if uses_decrypted_eboot
+        else _extract_iso_executable(iso_path, selected, elf_path)
+    )
+    if expected_hash and actual_hash != expected_hash:
+        raise PackageBuildError("Selected executable SHA-256 differs from the experimental profile; re-import the ISO before rebuilding.")
+    if entry.get("is_experimental") and not manifest.get("modules"):
+        # A profile that declares no guest modules gets the disc's own: the
+        # modules the game loads from its disc are translated like the main
+        # executable, so their module_start runs as guest code (#299, #308).
+        manifest = _experimental_build_modules(
+            iso_path, user_root, disc_id, manifest_selected, elf_path,
+            manifest_source, preflight,
+        )
+
+    manifest_cache_path = cache_dir / "manifest.json"
+    if manifest_source == manifest_cache_path:
+        manifest_cache_path = cache_dir / "manifest-source.json"
+    canonical = title_manifest.canonical_json(manifest).encode("utf-8") + b"\n"
+    _write_private_file(manifest_cache_path, canonical)
+
+    psp_header = args.psp_header.expanduser().resolve(strict=True) if args.psp_header else None
+    cached_header = None
+    if psp_header is not None:
+        cached_header = cache_dir / "selected.psp"
+        shutil.copyfile(psp_header, cached_header)
+    else:
+        cached_header = _disc_psp_header(
+            iso_path, manifest, manifest_selected, cache_dir / "selected.psp"
+        )
+    module_dir = _copy_optional_modules(
+        iso_path,
+        manifest,
+        cache_dir,
+        args.module_dir.expanduser().resolve() if args.module_dir else None,
+        decrypted_module_dir(user_root, disc_id),
+    )
+    reporter.report("extract", "PASS", "Executable and modules prepared")
+    st.actual_hash = actual_hash
+    st.cache_dir = cache_dir
+    st.cached_header = cached_header
+    st.elf_path = elf_path
+    st.manifest = manifest
+    st.manifest_cache_path = manifest_cache_path
+    st.module_dir = module_dir
+
+
+def _package_identity(st):
+    """Hash the title's inputs into its identity and check the local record."""
+    (actual_hash, cache_dir, cached_header, iso_path, manifest, manifest_selected, metadata, module_dir, recorded_identity, register_local_identity, requires_local_identity) = (
+        st.actual_hash,
+        st.cache_dir,
+        st.cached_header,
+        st.iso_path,
+        st.manifest,
+        st.manifest_selected,
+        st.metadata,
+        st.module_dir,
+        st.recorded_identity,
+        st.register_local_identity,
+        st.requires_local_identity,
+    )
+    identity_modules = []
+    for module in sorted(
+        (item for item in manifest.get("modules", [])
+         if item.get("role") == "guest-prx" and item.get("required", False)),
+        key=lambda item: item["name"],
+    ):
+        if module_dir is None or not (module_dir / module["name"]).is_file():
+            raise PackageBuildError(
+                f"Required guest PRX {module['name']} is unavailable for title identity."
+            )
+        identity_modules.append({
+            "name": module["name"],
+            "sha256": package_cache.sha256_file(module_dir / module["name"]),
+        })
+    header_magic = None
+    if cached_header is not None:
+        with cached_header.open("rb") as header_file:
+            header_magic = header_file.read(4).decode("ascii", errors="replace")
+    title_input_identity = package_cache.build_title_input_identity(
+        manifest=manifest,
+        executable_name=manifest_selected,
+        executable_sha256=actual_hash,
+        modules=identity_modules,
+        psp_header_sha256=(
+            package_cache.sha256_file(cached_header) if cached_header is not None else None
+        ),
+        psp_header_magic=header_magic,
+        disc_id=metadata.disc_id,
+        region=(metadata.region if metadata.region in {"JP", "NA", "EU", "KR", "ASIA", "OTHER"}
+                else "OTHER"),
+        disc_version=metadata.version,
+        param_sfo=dict(metadata.param_sfo_facts),
+        container=dict(metadata.container_metadata),
+        source_media=_source_media_identity(iso_path, manifest_selected, manifest),
+    )
+    if requires_local_identity and recorded_identity is not None and not register_local_identity:
+        identity_changes = package_cache.title_input_identity_changes(
+            recorded_identity, title_input_identity
+        )
+        if identity_changes:
+            raise PackageBuildError(
+                "Local compatibility record mismatch: " + ", ".join(identity_changes) +
+                ". Review and register the changed inputs with "
+                "--register-local-compatibility-record."
+            )
+    identity_path = cache_dir / "title-input-identity.json"
+    _write_private_file(
+        identity_path,
+        package_cache.canonical_json(title_input_identity).encode("utf-8"),
+    )
+    st.identity_path = identity_path
+    st.title_input_identity = title_input_identity
+
+
+def _package_cache_check(st):
+    """Pick the destination and the cache key; reuse a valid package or cache entry."""
+    (actual_hash, args, cache_dir, cached_header, disc_id, entry, manifest, manifest_cache_path, module_dir, reporter, stage_observer, title_input_identity, user_root) = (
+        st.actual_hash,
+        st.args,
+        st.cache_dir,
+        st.cached_header,
+        st.disc_id,
+        st.entry,
+        st.manifest,
+        st.manifest_cache_path,
+        st.module_dir,
+        st.reporter,
+        st.stage_observer,
+        st.title_input_identity,
+        st.user_root,
+    )
+    enhancement_package_path, target_dir = _select_enhancement_package(
+        user_root,
+        disc_id,
+        title_id=entry["title_id"],
+        executable_sha256=actual_hash,
+        enhancement_package=getattr(args, "enhancement_package", None),
+        experimental_60hz=bool(getattr(args, "experimental_60hz", False)),
+        environment=os.environ,
+    )
+    _require_child(user_root, target_dir, "Package destination")
+    if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
+        raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
+    restored = _restore_interrupted_swap(target_dir, cache_dir)
+    if restored is not None:
+        reporter.log(f"PACKAGE_RESTORED: the package an interrupted build moved aside is back "
+                     f"in place ({restored.name}); the cache check below decides whether it is "
+                     f"reused")
+    cache_key = _current_package_cache_key(
+        manifest,
+        manifest_cache_path,
+        actual_hash,
+        module_dir,
+        cached_header,
+        title_input_identity,
+        instruction_trace=bool(getattr(args, "instruction_trace", False)),
+        enhancement_package_path=enhancement_package_path,
+    )
+    previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
+    decision = package_cache.compare_cache_keys(previous_key, cache_key)
+    target_valid = False
+    target_reason = "package is missing"
+    if target_dir.is_dir() and not target_dir.is_symlink():
+        target_valid, target_reason = package_cache.validate_package_cache(
+            target_dir,
+            expected_key=cache_key,
+        )
+    if target_valid and decision.action == "reuse":
+        _prune_package_cache(cache_dir)
+        if not reporter.is_json_stdout:
+            print(f"PACKAGE_REUSED: {target_dir}")
+            print("CACHE: unchanged key; AOT and native objects reused")
+        reporter.log(f"PACKAGE_REUSED: {target_dir}")
+        reporter.log("CACHE: unchanged key; AOT and native objects reused")
+        reporter.report("compile", "PASS", "Compilation skipped (reusing existing package)")
+        reporter.report("package", "PASS", f"Package reused: {target_dir}")
+        package_cache.write_local_title_input_identity(user_root, title_input_identity)
+        _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
+        _report_reused_package_stages(stage_observer)
+        reporter.close()
+        return 0
+    if previous_key is not None and decision.reasons:
+        if not reporter.is_json_stdout:
+            print("CACHE_CHANGED: " + ", ".join(decision.reasons))
+        reporter.log("CACHE_CHANGED: " + ", ".join(decision.reasons))
+
+    entry_root = package_cache.cache_entry_root(cache_dir, cache_key)
+    entry_package = entry_root / "package"
+    if entry_root.is_symlink():
+        raise PackageBuildError("Package cache entry is a symlink; refusing to reuse it.")
+    if entry_package.is_dir() and not entry_package.is_symlink():
+        entry_valid, entry_reason = package_cache.validate_package_cache(
+            entry_package,
+            expected_key=cache_key,
+        )
+        if entry_valid:
+            _promote_cache_entry(entry_package, target_dir, cache_dir, cache_key, user_root, disc_id)
+            _prune_package_cache(cache_dir, entry_root)
+            if not reporter.is_json_stdout:
+                print(f"PACKAGE: {target_dir}")
+                print("CACHE: content-addressed entry reused")
+            reporter.log(f"PACKAGE: {target_dir}")
+            reporter.log("CACHE: content-addressed entry reused")
+            reporter.report("compile", "PASS", "Compilation skipped (content-addressed entry reused)")
+            reporter.report("package", "PASS", f"Package promoted: {target_dir}")
+            package_cache.write_local_title_input_identity(user_root, title_input_identity)
+            _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
+            _report_reused_package_stages(stage_observer)
+            reporter.close()
+            return 0
+        if entry_package.is_symlink():
+            raise PackageBuildError("Package cache entry is a symlink; refusing to replace it.")
+        shutil.rmtree(entry_package)
+    elif entry_package.exists():
+        raise PackageBuildError("Package cache entry is not a directory; refusing to replace it.")
+    st.cache_key = cache_key
+    st.decision = decision
+    st.enhancement_package_path = enhancement_package_path
+    st.entry_package = entry_package
+    st.entry_root = entry_root
+    st.target_dir = target_dir
+    st.target_valid = target_valid
+
+
+def _package_codegen(st):
+    """Plan the build command and, for a codegen stage, generate the AOT code."""
+    (args, cached_header, decision, elf_path, enhancement_package_path, entry, entry_package, entry_root, identity_path, manifest_cache_path, module_dir, reporter, stage_observer, target_dir, target_valid) = (
+        st.args,
+        st.cached_header,
+        st.decision,
+        st.elf_path,
+        st.enhancement_package_path,
+        st.entry,
+        st.entry_package,
+        st.entry_root,
+        st.identity_path,
+        st.manifest_cache_path,
+        st.module_dir,
+        st.reporter,
+        st.stage_observer,
+        st.target_dir,
+        st.target_valid,
+    )
+    reuse_source = None
+    native_only = False
+    if target_valid and decision.generated_c_reusable:
+        reuse_source = target_dir
+        native_only = decision.action == "native-recompile"
+    entry_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    build_dir = entry_package
+    if build_dir.exists():
+        if build_dir.is_symlink():
+            raise PackageBuildError("Package build staging directory is a symlink; refusing to replace it.")
+        shutil.rmtree(build_dir)
+    def planner_command(output_dir: Path) -> list[str]:
+        planner = [
+            sys.executable,
+            str(ROOT / "tools" / "title_codegen_plan.py"),
+            str(manifest_cache_path),
+            "--package",
+            "--game-elf",
+            str(elf_path),
+            "--output-dir",
+            str(output_dir),
+            "--title-input-identity-file",
+            str(identity_path),
+            "--public-safe",
+        ]
+        if module_dir is not None:
+            planner.extend(("--module-dir", str(module_dir)))
+        if cached_header is not None:
+            planner.extend(("--psp-header", str(cached_header)))
+        if enhancement_package_path is not None:
+            planner.extend(("--enhancement-package", str(enhancement_package_path)))
+            # The title's extracted files, where the package's data_files are read.
+            prepared_root = entry.get("prepared_root") or ""
+            if prepared_root and Path(prepared_root).is_dir():
+                planner.extend(("--enhancement-data-root", prepared_root))
+        return planner
+
+    def log_command(planner: list[str]) -> None:
+        if os.name == "nt":
+            cmd_line = "COMMAND: " + subprocess.list2cmdline(planner)
+        else:
+            import shlex
+            cmd_line = "COMMAND: " + shlex.join(planner)
+        if not reporter.is_json_stdout:
+            print(cmd_line)
+        reporter.log(cmd_line)
+
+    build_environment = _runtime_build_environment(
+        instruction_trace=bool(getattr(args, "instruction_trace", False))
+    )
+    command = planner_command(build_dir)
+    if reuse_source is not None:
+        command.extend(("--reuse-aot-from", str(reuse_source)))
+    if native_only:
+        command.append("--native-only")
+    aot_stage_dir = getattr(args, "aot_stage_dir", None)
+    if aot_stage_dir is not None and reuse_source is not None:
+        # The previous package's validated generated C is compiled; nothing is generated.
+        _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
+        if stage_observer is not None:
+            stage_observer("codegen", "PASS", 0)
+    elif aot_stage_dir is not None:
+        # The codegen stage: the generation phase alone, through the same planner,
+        # inputs and environment as the package build below. The package build then
+        # compiles this output only if it passes the native-only reuse checks.
+        reporter.report("compile", "START", "Generating AOT code...")
+        if stage_observer is not None:
+            stage_observer("codegen", "START", 0)
+        stage_command = planner_command(Path(aot_stage_dir)) + ["--aot-stage"]
+        log_command(stage_command)
+        stage_started = time.perf_counter()
+        staged = subprocess.run(
+            stage_command,
+            cwd=ROOT,
+            env=build_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        stage_ms = int((time.perf_counter() - stage_started) * 1000)
+        if staged.stdout:
+            reporter.log(staged.stdout)
+            if not reporter.is_json_stdout:
+                sys.stdout.write(staged.stdout)
+        if staged.stderr:
+            reporter.log(staged.stderr)
+            if not reporter.is_json_stdout:
+                sys.stderr.write(staged.stderr)
+        if staged.returncode != 0:
+            if stage_observer is not None:
+                stage_observer("codegen", "FAIL", stage_ms)
+            reporter.report(
+                "compile", "FAIL",
+                _package_build_failure_message(
+                    staged.stderr + staged.stdout,
+                    staged.returncode,
+                    reporter.log_file,
+                ),
+            )
+            reporter.close()
+            return staged.returncode
+        if stage_observer is not None:
+            stage_observer("codegen", "PASS", stage_ms)
+        command.extend(("--reuse-aot-stage", str(aot_stage_dir)))
+    st.aot_stage_dir = aot_stage_dir
+    st.build_dir = build_dir
+    st.build_environment = build_environment
+    st.command = command
+    st.log_command = log_command
+    st.native_only = native_only
+    st.reuse_source = reuse_source
+
+
+def _package_compile(st):
+    """Compile the package."""
+    (aot_stage_dir, args, build_environment, command, log_command, reporter, reuse_source, stage_observer, user_root) = (
+        st.aot_stage_dir,
+        st.args,
+        st.build_environment,
+        st.command,
+        st.log_command,
+        st.reporter,
+        st.reuse_source,
+        st.stage_observer,
+        st.user_root,
+    )
+    reporter.report("compile", "START", "Compiling package with AOT codegen...")
+    if stage_observer is not None:
+        stage_observer("compile", "START", 0)
+    log_command(command)
+    compile_started = time.perf_counter()
+    with tempfile.TemporaryDirectory(prefix="nk-compile-progress-") as progress_dir:
+        progress_path = Path(progress_dir) / "compile-progress.jsonl"
+        compile_environment = dict(build_environment)
+        compile_environment[_COMPILE_PROGRESS_FILE_ENV] = str(progress_path)
+        compile_environment.setdefault(
+            _OBJECT_CACHE_DIR_ENV,
+            str(user_root.joinpath(*_OBJECT_CACHE_ROOT_PARTS)),
+        )
+        if compile_environment[_OBJECT_CACHE_DIR_ENV] == "0":
+            del compile_environment[_OBJECT_CACHE_DIR_ENV]
+        if getattr(args, "no_shared_libraries", False):
+            compile_environment.pop(_SHARED_LIBRARY_CACHE_DIR_ENV, None)
+        else:
+            compile_environment.setdefault(
+                _SHARED_LIBRARY_CACHE_DIR_ENV,
+                str(user_root.joinpath(*_SHARED_LIBRARY_CACHE_ROOT_PARTS)),
+            )
+        with _CompileProgressRelay(reporter, progress_path):
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                env=compile_environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+    if completed.stdout:
+        reporter.log(completed.stdout)
+        if not reporter.is_json_stdout:
+            sys.stdout.write(completed.stdout)
+    if aot_stage_dir is not None and reuse_source is None:
+        _record_aot_stage_decision(args, completed.stdout)
+    if completed.returncode != 0:
+        if stage_observer is not None:
+            stage_observer(
+                "compile", "FAIL",
+                int((time.perf_counter() - compile_started) * 1000),
+            )
+        if completed.stderr:
+            reporter.log(completed.stderr)
+            if not reporter.is_json_stdout:
+                sys.stderr.write(completed.stderr)
+        if "PUBLIC_SAFE=0 requires the private PGF and PGD backends" in (
+            completed.stderr + completed.stdout
+        ):
+            boundary_err = (
+                "This checkout lacks the production PGF/PGD runtime backends required "
+                "for a private-backend build."
+            )
+            reporter.report("compile", "FAIL", boundary_err)
+            reporter.close()
+            raise PackageBuildError(boundary_err)
+        if "PACKAGE_UNSUPPORTED_PATH" in completed.stderr or "PACKAGE_UNSUPPORTED_PATH" in completed.stdout:
+            output = completed.stderr + completed.stdout
+            path_err = None
+            for line in output.splitlines():
+                if "PACKAGE_UNSUPPORTED_PATH:" in line:
+                    path_err = line.split("PACKAGE_UNSUPPORTED_PATH:", 1)[1].strip()
+                    break
+            if not path_err:
+                path_err = (
+                    "A build path contains spaces and 8.3 short names are unavailable on this volume; "
+                    "set NK_BUILD_ROOT to a folder without spaces."
+                )
+            reporter.report("compile", "FAIL", path_err)
+            reporter.close()
+            raise PackageBuildError(path_err)
+        reporter.report(
+            "compile", "FAIL",
+            _package_build_failure_message(
+                completed.stderr + completed.stdout,
+                completed.returncode,
+                reporter.log_file,
+            ),
+        )
+        reporter.close()
+        return completed.returncode
+    if stage_observer is not None:
+        stage_observer(
+            "compile", "PASS",
+            int((time.perf_counter() - compile_started) * 1000),
+        )
+
+
+def _package_validate(st):
+    """Stage runtime assets, write the completion manifest and validate the build."""
+    (actual_hash, build_dir, cache_key, entry, module_dir, reporter, stage_observer, title_input_identity) = (
+        st.actual_hash,
+        st.build_dir,
+        st.cache_key,
+        st.entry,
+        st.module_dir,
+        st.reporter,
+        st.stage_observer,
+        st.title_input_identity,
+    )
+    reporter.report("compile", "PASS", "Compilation completed successfully")
+    reporter.report("package", "START", "Staging runtime assets and validating package...")
+    if stage_observer is not None:
+        stage_observer("build_package", "START", 0)
+    package_started = time.perf_counter()
+    _stage_runtime_assets(build_dir)
+    if module_dir is not None:
+        # The runtime loads each guest PRX's data at run time from SR_MODULE_DIR,
+        # by its manifest name. Ship the modules the build compiled against
+        # inside the package so a launch needs nothing outside it.
+        package_modules = build_dir / "modules"
+        if package_modules.is_file():
+            raise PackageBuildError(
+                f"Guest module staging collision: {package_modules} is a file, expecting a directory."
+            )
+        package_modules.mkdir(parents=True, exist_ok=True)
+        for module_file in sorted(module_dir.iterdir()):
+            if module_file.is_file():
+                target_module = package_modules / module_file.name
+                if target_module.is_dir():
+                    raise PackageBuildError(
+                        f"Guest module staging collision: {target_module} is a directory, expecting a file."
+                    )
+                shutil.copyfile(module_file, target_module)
+    backends_mode = "public"
+    backend_limits = [
+        "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+        "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
+    ]
+    package_cache.write_completion_manifest(
+        build_dir,
+        cache_key,
+        title_input_identity=title_input_identity,
+        backends=backends_mode,
+        limits=backend_limits,
+    )
+    valid_package, package_reason = package_cache.validate_package_cache(
+        build_dir,
+        expected_key=cache_key,
+    )
+    if not valid_package:
+        raise PackageBuildError(f"Generated package failed cache verification: {package_reason}")
+
+    package_json = json.loads((build_dir / "package.json").read_text(encoding="utf-8"))
+    if package_json.get("title", {}).get("id") != entry["title_id"] or \
+            package_json.get("inputs", {}).get("executable", {}).get("sha256") != actual_hash:
+        raise PackageBuildError("Generated package identity or input hash differs from the library entry.")
+    st.package_started = package_started
+
+
+def _package_promote(st: Any) -> int:
+    """Copy the package into place and swap it in."""
+    (args, build_dir, cache_dir, cache_key, disc_id, entry_root, native_only, package_started, reporter, stage_observer, target_dir, title_input_identity, user_root) = (
+        st.args,
+        st.build_dir,
+        st.cache_dir,
+        st.cache_key,
+        st.disc_id,
+        st.entry_root,
+        st.native_only,
+        st.package_started,
+        st.reporter,
+        st.stage_observer,
+        st.target_dir,
+        st.title_input_identity,
+        st.user_root,
+    )
+    packages_root = user_root / "packages"
+    if packages_root.is_symlink():
+        raise PackageBuildError("Package destination root is a symlink; refusing to write outside per-user data.")
+    try:
+        packages_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        if _is_disk_full_error(exc):
+            needed_bytes = _package_tree_file_bytes(build_dir)
+            free_bytes = shutil.disk_usage(user_root).free
+            raise PackageBuildError(
+                _package_disk_space_message(needed_bytes, free_bytes)
+            ) from exc
+        raise
+    packages_root = _require_child(user_root, packages_root, "Package destination root")
+    needed_bytes = _require_package_staging_space(build_dir, packages_root)
+    try:
+        staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=packages_root))
+        shutil.rmtree(staging)
+    except OSError as exc:
+        if _is_disk_full_error(exc):
+            free_bytes = shutil.disk_usage(packages_root).free
+            raise PackageBuildError(
+                _package_disk_space_message(needed_bytes, free_bytes)
+            ) from exc
+        raise
+    try:
+        _copy_package_tree_with_space_diagnostics(
+            build_dir, staging, packages_root, needed_bytes
+        )
+        _require_child(user_root, staging, "Package staging directory")
+        valid_staging, staging_reason = package_cache.validate_package_cache(
+            staging,
+            expected_key=cache_key,
+        )
+        if not valid_staging:
+            raise PackageBuildError(f"Package staging verification failed: {staging_reason}")
+        backup = _swap_in_package_folder(staging, target_dir, cache_dir)
+        package_cache.write_local_title_input_identity(user_root, title_input_identity)
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+    _prune_package_cache(cache_dir, entry_root)
+    if not reporter.is_json_stdout:
+        print(f"PACKAGE: {target_dir}")
+        stage_result = getattr(args, "aot_stage_result", None) or {}
+        if native_only:
+            print("CACHE: generated C reused; native objects recompiled")
+        elif stage_result.get("status") == "REUSED":
+            print("CACHE: generated C from the codegen stage compiled")
+        elif stage_result.get("status") == "REGENERATED":
+            print("CACHE: codegen stage refused (" + str(stage_result.get("reason")) +
+                  "); AOT regenerated")
+        else:
+            print("CACHE: AOT regenerated for changed cache key")
+    reporter.log(f"PACKAGE: {target_dir}")
+    reporter.report("package", "PASS", f"Package verified and promoted to {target_dir}")
+    if stage_observer is not None:
+        stage_observer(
+            "build_package", "PASS",
+            int((time.perf_counter() - package_started) * 1000),
+        )
+    reporter.close()
+    return 0
+
+
 def _build_package(args: argparse.Namespace, stage_observer,
                    reporter: _BuildProgressReporter) -> int:
     _record_aot_stage_result(args, "NOT_RUN", "NONE")
@@ -2294,637 +3147,24 @@ def _build_package(args: argparse.Namespace, stage_observer,
         reporter.close()
         sys.stderr.write(msg + "\n")
         return 2
+    st = _PackageBuild(args=args, stage_observer=stage_observer, reporter=reporter)
+    st.disc_id = disc_id
+    st.register_local_identity = register_local_identity
     try:
-        reporter.report("preflight", "START", f"Inspecting library entry for {disc_id}...")
-        user_root = _user_data_root(args.user_data_root)
-        entry = _load_library_entry(user_root, disc_id, getattr(args, "iso_path", None))
-        iso_path = Path(entry["iso_path"]).expanduser()
-        if not iso_path.is_file():
-            raise PackageBuildError(f"The library source ISO is unavailable at {iso_path}.")
-        metadata = inspect_iso(iso_path, user_data_root=user_root)
-        if metadata.qualification_error and not register_local_identity:
-            raise PackageBuildError(
-                metadata.qualification_error +
-                " Rebuild with --register-local-compatibility-record only after reviewing this exact local input."
-            )
-        if metadata.disc_id != disc_id:
-            raise PackageBuildError(f"ISO identity {metadata.disc_id} no longer matches library entry {disc_id}.")
-        preflight = inspect_compatibility_preflight(iso_path, metadata=metadata,
-                                                    runtime_root=user_root)
-        selected_value = preflight.get("selected_executable")
-        uses_decrypted_eboot = selected_value == "EBOOT.elf"
-        decrypted_eboot = preflight.get("decrypted_executable") if uses_decrypted_eboot else None
-        if preflight.get("modified_dump_cfw_loader") and not uses_decrypted_eboot:
-            raise PackageBuildError(
-                "This disc image was modified by a custom-firmware patch. The game "
-                "executable is EBOOT.OLD (encrypted); supply its decrypted form at "
-                "titles/<DISC_ID>/decrypted/EBOOT.elf in user data, or use an unmodified "
-                "copy of your disc. The project does not provide decrypted executables. "
-                "This boundary is "
-                "in the works."
-            )
-        if selected_value is None or (uses_decrypted_eboot and not decrypted_eboot):
-            module_dir = decrypted_module_dir(user_root, disc_id)
-            folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
-            raise PackageBuildError(encrypted_executable_message(folder))
-        selected = str(selected_value).upper()
-        selected_from_library = entry.get("selected_executable", "")
-        library_selected = (
-            Path(selected_from_library.replace("\\", "/")).name.upper()
-            if selected_from_library else ""
-        )
-        if uses_decrypted_eboot:
-            if not library_selected:
-                library_selected = "EBOOT.BIN"
-            if library_selected not in {"EBOOT.BIN", "BOOT.BIN"}:
-                raise PackageBuildError(
-                    f"Library executable selection {library_selected!r} is invalid for a user-supplied EBOOT.elf."
-                )
-            manifest_selected = library_selected
-        else:
-            manifest_selected = selected
-        if library_selected not in {"EBOOT.BIN", "BOOT.BIN"} or (
-            not uses_decrypted_eboot and library_selected != selected
-        ):
-            raise PackageBuildError(f"Selected executable changed from library entry {library_selected!r} to {selected!r}; re-import the ISO.")
-
-        manifest_source, manifest, expected_hash = _load_entry_manifest(
-            user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
-        )
-        if entry.get("is_experimental") and "codegen_profile" not in manifest:
-            display_name = metadata.title.strip() if metadata.title else ""
-            if not display_name or any(ord(char) < 0x20 for char in display_name):
-                display_name = f"PSP Title ({disc_id})"
-            region = metadata.region if metadata.region in {
-                "JP", "NA", "EU", "KR", "ASIA", "OTHER"
-            } else "OTHER"
-            if not _is_native_legacy_experimental_manifest(
-                manifest, disc_id, entry["title_id"], display_name, region
-            ):
-                raise ExperimentalProfileBuildError(
-                    "EXPERIMENTAL_CODEGEN_PROFILE_MISSING",
-                    730,
-                    "This experimental profile is missing its generic build setting; "
-                    "re-import the disc to rebuild the profile, then retry.",
-                    "codegen_profile is absent from a non-default experimental profile",
-                )
-            if expected_hash is not None:
-                if uses_decrypted_eboot:
-                    current_executable_hash = package_cache.sha256_file(
-                        Path(str(decrypted_eboot))
-                    )
-                else:
-                    with tempfile.TemporaryDirectory(
-                        prefix=".experimental-profile-check-", dir=user_root
-                    ) as temporary:
-                        current_executable_hash = _extract_iso_executable(
-                            iso_path, manifest_selected,
-                            Path(temporary) / "selected.elf",
-                        )
-                if current_executable_hash != expected_hash:
-                    raise PackageBuildError(
-                        "Selected executable SHA-256 differs from the experimental "
-                        "profile; re-import the ISO before rebuilding."
-                    )
-            try:
-                # The player’s native importer predates the shared Python profile
-                # writer used by bring-up. Rebuild only its untouched zero-layout
-                # default so ELF entry/load metadata and codegen_profile come from
-                # the same reviewed generic logic used by bring-up.
-                write_experimental_profile(iso_path, user_root, metadata=metadata)
-            except (IsoInspectionError, OSError, ValueError) as exc:
-                boundary_code = getattr(exc, "boundary_code", None)
-                if boundary_code in {
-                    "EXECUTABLE_LOAD_BINDING_REQUIRED",
-                    "FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM",
-                }:
-                    raise ExperimentalProfileBuildError(
-                        boundary_code, 308, f"{boundary_code}: {exc}",
-                        f"{boundary_code}: {exc}",
-                    ) from exc
-                raise ExperimentalProfileBuildError(
-                    "GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE",
-                    308,
-                    "This executable needs a supported generic MIPS ELF layout; "
-                    "provide a decrypted ELF with a documented load binding, then "
-                    "retry the build.",
-                    f"{boundary_code}: {exc}" if boundary_code else str(exc),
-                ) from exc
-            manifest_source, manifest, expected_hash = _load_entry_manifest(
-                user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
-            )
-        requires_local_identity = bool(
-            manifest.get("disc", {}).get("require_local_compatibility_record", False)
-        )
-        recorded_identity = package_cache.read_local_title_input_identity(user_root, disc_id)
-        if requires_local_identity and recorded_identity is None and not register_local_identity:
-            raise PackageBuildError(
-                f"Unqualified revision (SFO DISC_VERSION {metadata.version}): this manifest requires "
-                "an explicit local compatibility record. Rebuild with "
-                "--register-local-compatibility-record after reviewing the selected local inputs."
-            )
-        if (requires_local_identity and recorded_identity is not None and
-            recorded_identity["disc"]["disc_version"] != metadata.version and
-            not register_local_identity):
-            raise PackageBuildError(
-                f"Unqualified revision (SFO DISC_VERSION {metadata.version}): the local compatibility "
-                "record names a different SFO revision. Review and register this revision explicitly "
-                "with --register-local-compatibility-record."
-            )
-        reporter.report("preflight", "PASS", "Library entry and manifest validated")
-        reporter.report("extract", "START", "Extracting executable and guest modules...")
-        cache_dir = _require_child(user_root, user_root / "cache" / "packages" / disc_id,
-                                   "Package cache")
-        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        marker = cache_dir / PACKAGE_CACHE_MARKER
-        if not marker.exists():
-            # The folder is the player's own (cache/packages/<DISC> under its
-            # data root, checked above): one whose marker was lost, for example
-            # by a removal that stopped part-way, is adopted, never a dead end.
-            marker.write_text("Nakagawa Recomp package cache v1\n", encoding="ascii")
-        else:
-            if marker.read_text(encoding="ascii") != "Nakagawa Recomp package cache v1\n":
-                raise PackageBuildError("Package cache marker is not recognized; refusing to replace it.")
-        elf_path = cache_dir / "selected.elf"
-        actual_hash = (
-            _copy_decrypted_elf(Path(str(decrypted_eboot)), elf_path)
-            if uses_decrypted_eboot
-            else _extract_iso_executable(iso_path, selected, elf_path)
-        )
-        if expected_hash and actual_hash != expected_hash:
-            raise PackageBuildError("Selected executable SHA-256 differs from the experimental profile; re-import the ISO before rebuilding.")
-        if entry.get("is_experimental") and not manifest.get("modules"):
-            # A profile that declares no guest modules gets the disc's own: the
-            # modules the game loads from its disc are translated like the main
-            # executable, so their module_start runs as guest code (#299, #308).
-            manifest = _experimental_build_modules(
-                iso_path, user_root, disc_id, manifest_selected, elf_path,
-                manifest_source, preflight,
-            )
-
-        manifest_cache_path = cache_dir / "manifest.json"
-        if manifest_source == manifest_cache_path:
-            manifest_cache_path = cache_dir / "manifest-source.json"
-        canonical = title_manifest.canonical_json(manifest).encode("utf-8") + b"\n"
-        _write_private_file(manifest_cache_path, canonical)
-
-        psp_header = args.psp_header.expanduser().resolve(strict=True) if args.psp_header else None
-        cached_header = None
-        if psp_header is not None:
-            cached_header = cache_dir / "selected.psp"
-            shutil.copyfile(psp_header, cached_header)
-        else:
-            cached_header = _disc_psp_header(
-                iso_path, manifest, manifest_selected, cache_dir / "selected.psp"
-            )
-        module_dir = _copy_optional_modules(
-            iso_path,
-            manifest,
-            cache_dir,
-            args.module_dir.expanduser().resolve() if args.module_dir else None,
-            decrypted_module_dir(user_root, disc_id),
-        )
-        reporter.report("extract", "PASS", "Executable and modules prepared")
-
-        identity_modules = []
-        for module in sorted(
-            (item for item in manifest.get("modules", [])
-             if item.get("role") == "guest-prx" and item.get("required", False)),
-            key=lambda item: item["name"],
-        ):
-            if module_dir is None or not (module_dir / module["name"]).is_file():
-                raise PackageBuildError(
-                    f"Required guest PRX {module['name']} is unavailable for title identity."
-                )
-            identity_modules.append({
-                "name": module["name"],
-                "sha256": package_cache.sha256_file(module_dir / module["name"]),
-            })
-        header_magic = None
-        if cached_header is not None:
-            with cached_header.open("rb") as header_file:
-                header_magic = header_file.read(4).decode("ascii", errors="replace")
-        title_input_identity = package_cache.build_title_input_identity(
-            manifest=manifest,
-            executable_name=manifest_selected,
-            executable_sha256=actual_hash,
-            modules=identity_modules,
-            psp_header_sha256=(
-                package_cache.sha256_file(cached_header) if cached_header is not None else None
-            ),
-            psp_header_magic=header_magic,
-            disc_id=metadata.disc_id,
-            region=(metadata.region if metadata.region in {"JP", "NA", "EU", "KR", "ASIA", "OTHER"}
-                    else "OTHER"),
-            disc_version=metadata.version,
-            param_sfo=dict(metadata.param_sfo_facts),
-            container=dict(metadata.container_metadata),
-            source_media=_source_media_identity(iso_path, manifest_selected, manifest),
-        )
-        if requires_local_identity and recorded_identity is not None and not register_local_identity:
-            identity_changes = package_cache.title_input_identity_changes(
-                recorded_identity, title_input_identity
-            )
-            if identity_changes:
-                raise PackageBuildError(
-                    "Local compatibility record mismatch: " + ", ".join(identity_changes) +
-                    ". Review and register the changed inputs with "
-                    "--register-local-compatibility-record."
-                )
-        identity_path = cache_dir / "title-input-identity.json"
-        _write_private_file(
-            identity_path,
-            package_cache.canonical_json(title_input_identity).encode("utf-8"),
-        )
-
-        enhancement_package_path, target_dir = _select_enhancement_package(
-            user_root,
-            disc_id,
-            title_id=entry["title_id"],
-            executable_sha256=actual_hash,
-            enhancement_package=getattr(args, "enhancement_package", None),
-            experimental_60hz=bool(getattr(args, "experimental_60hz", False)),
-            environment=os.environ,
-        )
-        _require_child(user_root, target_dir, "Package destination")
-        if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
-            raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
-        restored = _restore_interrupted_swap(target_dir, cache_dir)
-        if restored is not None:
-            reporter.log(f"PACKAGE_RESTORED: the package an interrupted build moved aside is back "
-                         f"in place ({restored.name}); the cache check below decides whether it is "
-                         f"reused")
-        cache_key = _current_package_cache_key(
-            manifest,
-            manifest_cache_path,
-            actual_hash,
-            module_dir,
-            cached_header,
-            title_input_identity,
-            instruction_trace=bool(getattr(args, "instruction_trace", False)),
-            enhancement_package_path=enhancement_package_path,
-        )
-        previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
-        decision = package_cache.compare_cache_keys(previous_key, cache_key)
-        target_valid = False
-        target_reason = "package is missing"
-        if target_dir.is_dir() and not target_dir.is_symlink():
-            target_valid, target_reason = package_cache.validate_package_cache(
-                target_dir,
-                expected_key=cache_key,
-            )
-        if target_valid and decision.action == "reuse":
-            _prune_package_cache(cache_dir)
-            if not reporter.is_json_stdout:
-                print(f"PACKAGE_REUSED: {target_dir}")
-                print("CACHE: unchanged key; AOT and native objects reused")
-            reporter.log(f"PACKAGE_REUSED: {target_dir}")
-            reporter.log("CACHE: unchanged key; AOT and native objects reused")
-            reporter.report("compile", "PASS", "Compilation skipped (reusing existing package)")
-            reporter.report("package", "PASS", f"Package reused: {target_dir}")
-            package_cache.write_local_title_input_identity(user_root, title_input_identity)
-            _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
-            _report_reused_package_stages(stage_observer)
-            reporter.close()
-            return 0
-        if previous_key is not None and decision.reasons:
-            if not reporter.is_json_stdout:
-                print("CACHE_CHANGED: " + ", ".join(decision.reasons))
-            reporter.log("CACHE_CHANGED: " + ", ".join(decision.reasons))
-
-        entry_root = package_cache.cache_entry_root(cache_dir, cache_key)
-        entry_package = entry_root / "package"
-        if entry_root.is_symlink():
-            raise PackageBuildError("Package cache entry is a symlink; refusing to reuse it.")
-        if entry_package.is_dir() and not entry_package.is_symlink():
-            entry_valid, entry_reason = package_cache.validate_package_cache(
-                entry_package,
-                expected_key=cache_key,
-            )
-            if entry_valid:
-                _promote_cache_entry(entry_package, target_dir, cache_dir, cache_key, user_root, disc_id)
-                _prune_package_cache(cache_dir, entry_root)
-                if not reporter.is_json_stdout:
-                    print(f"PACKAGE: {target_dir}")
-                    print("CACHE: content-addressed entry reused")
-                reporter.log(f"PACKAGE: {target_dir}")
-                reporter.log("CACHE: content-addressed entry reused")
-                reporter.report("compile", "PASS", "Compilation skipped (content-addressed entry reused)")
-                reporter.report("package", "PASS", f"Package promoted: {target_dir}")
-                package_cache.write_local_title_input_identity(user_root, title_input_identity)
-                _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
-                _report_reused_package_stages(stage_observer)
-                reporter.close()
-                return 0
-            if entry_package.is_symlink():
-                raise PackageBuildError("Package cache entry is a symlink; refusing to replace it.")
-            shutil.rmtree(entry_package)
-        elif entry_package.exists():
-            raise PackageBuildError("Package cache entry is not a directory; refusing to replace it.")
-
-        reuse_source = None
-        native_only = False
-        if target_valid and decision.generated_c_reusable:
-            reuse_source = target_dir
-            native_only = decision.action == "native-recompile"
-        entry_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        build_dir = entry_package
-        if build_dir.exists():
-            if build_dir.is_symlink():
-                raise PackageBuildError("Package build staging directory is a symlink; refusing to replace it.")
-            shutil.rmtree(build_dir)
-        def planner_command(output_dir: Path) -> list[str]:
-            planner = [
-                sys.executable,
-                str(ROOT / "tools" / "title_codegen_plan.py"),
-                str(manifest_cache_path),
-                "--package",
-                "--game-elf",
-                str(elf_path),
-                "--output-dir",
-                str(output_dir),
-                "--title-input-identity-file",
-                str(identity_path),
-                "--public-safe",
-            ]
-            if module_dir is not None:
-                planner.extend(("--module-dir", str(module_dir)))
-            if cached_header is not None:
-                planner.extend(("--psp-header", str(cached_header)))
-            if enhancement_package_path is not None:
-                planner.extend(("--enhancement-package", str(enhancement_package_path)))
-                # The title's extracted files, where the package's data_files are read.
-                prepared_root = entry.get("prepared_root") or ""
-                if prepared_root and Path(prepared_root).is_dir():
-                    planner.extend(("--enhancement-data-root", prepared_root))
-            return planner
-
-        def log_command(planner: list[str]) -> None:
-            if os.name == "nt":
-                cmd_line = "COMMAND: " + subprocess.list2cmdline(planner)
-            else:
-                import shlex
-                cmd_line = "COMMAND: " + shlex.join(planner)
-            if not reporter.is_json_stdout:
-                print(cmd_line)
-            reporter.log(cmd_line)
-
-        build_environment = _runtime_build_environment(
-            instruction_trace=bool(getattr(args, "instruction_trace", False))
-        )
-        command = planner_command(build_dir)
-        if reuse_source is not None:
-            command.extend(("--reuse-aot-from", str(reuse_source)))
-        if native_only:
-            command.append("--native-only")
-        aot_stage_dir = getattr(args, "aot_stage_dir", None)
-        if aot_stage_dir is not None and reuse_source is not None:
-            # The previous package's validated generated C is compiled; nothing is generated.
-            _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
-            if stage_observer is not None:
-                stage_observer("codegen", "PASS", 0)
-        elif aot_stage_dir is not None:
-            # The codegen stage: the generation phase alone, through the same planner,
-            # inputs and environment as the package build below. The package build then
-            # compiles this output only if it passes the native-only reuse checks.
-            reporter.report("compile", "START", "Generating AOT code...")
-            if stage_observer is not None:
-                stage_observer("codegen", "START", 0)
-            stage_command = planner_command(Path(aot_stage_dir)) + ["--aot-stage"]
-            log_command(stage_command)
-            stage_started = time.perf_counter()
-            staged = subprocess.run(
-                stage_command,
-                cwd=ROOT,
-                env=build_environment,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            stage_ms = int((time.perf_counter() - stage_started) * 1000)
-            if staged.stdout:
-                reporter.log(staged.stdout)
-                if not reporter.is_json_stdout:
-                    sys.stdout.write(staged.stdout)
-            if staged.stderr:
-                reporter.log(staged.stderr)
-                if not reporter.is_json_stdout:
-                    sys.stderr.write(staged.stderr)
-            if staged.returncode != 0:
-                if stage_observer is not None:
-                    stage_observer("codegen", "FAIL", stage_ms)
-                reporter.report(
-                    "compile", "FAIL",
-                    _package_build_failure_message(
-                        staged.stderr + staged.stdout,
-                        staged.returncode,
-                        reporter.log_file,
-                    ),
-                )
-                reporter.close()
-                return staged.returncode
-            if stage_observer is not None:
-                stage_observer("codegen", "PASS", stage_ms)
-            command.extend(("--reuse-aot-stage", str(aot_stage_dir)))
-        reporter.report("compile", "START", "Compiling package with AOT codegen...")
-        if stage_observer is not None:
-            stage_observer("compile", "START", 0)
-        log_command(command)
-        compile_started = time.perf_counter()
-        with tempfile.TemporaryDirectory(prefix="nk-compile-progress-") as progress_dir:
-            progress_path = Path(progress_dir) / "compile-progress.jsonl"
-            compile_environment = dict(build_environment)
-            compile_environment[_COMPILE_PROGRESS_FILE_ENV] = str(progress_path)
-            compile_environment.setdefault(
-                _OBJECT_CACHE_DIR_ENV,
-                str(user_root.joinpath(*_OBJECT_CACHE_ROOT_PARTS)),
-            )
-            if compile_environment[_OBJECT_CACHE_DIR_ENV] == "0":
-                del compile_environment[_OBJECT_CACHE_DIR_ENV]
-            if getattr(args, "no_shared_libraries", False):
-                compile_environment.pop(_SHARED_LIBRARY_CACHE_DIR_ENV, None)
-            else:
-                compile_environment.setdefault(
-                    _SHARED_LIBRARY_CACHE_DIR_ENV,
-                    str(user_root.joinpath(*_SHARED_LIBRARY_CACHE_ROOT_PARTS)),
-                )
-            with _CompileProgressRelay(reporter, progress_path):
-                completed = subprocess.run(
-                    command,
-                    cwd=ROOT,
-                    env=compile_environment,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-        if completed.stdout:
-            reporter.log(completed.stdout)
-            if not reporter.is_json_stdout:
-                sys.stdout.write(completed.stdout)
-        if aot_stage_dir is not None and reuse_source is None:
-            _record_aot_stage_decision(args, completed.stdout)
-        if completed.returncode != 0:
-            if stage_observer is not None:
-                stage_observer(
-                    "compile", "FAIL",
-                    int((time.perf_counter() - compile_started) * 1000),
-                )
-            if completed.stderr:
-                reporter.log(completed.stderr)
-                if not reporter.is_json_stdout:
-                    sys.stderr.write(completed.stderr)
-            if "PUBLIC_SAFE=0 requires the private PGF and PGD backends" in (
-                completed.stderr + completed.stdout
-            ):
-                boundary_err = (
-                    "This checkout lacks the production PGF/PGD runtime backends required "
-                    "for a private-backend build."
-                )
-                reporter.report("compile", "FAIL", boundary_err)
-                reporter.close()
-                raise PackageBuildError(boundary_err)
-            if "PACKAGE_UNSUPPORTED_PATH" in completed.stderr or "PACKAGE_UNSUPPORTED_PATH" in completed.stdout:
-                output = completed.stderr + completed.stdout
-                path_err = None
-                for line in output.splitlines():
-                    if "PACKAGE_UNSUPPORTED_PATH:" in line:
-                        path_err = line.split("PACKAGE_UNSUPPORTED_PATH:", 1)[1].strip()
-                        break
-                if not path_err:
-                    path_err = (
-                        "A build path contains spaces and 8.3 short names are unavailable on this volume; "
-                        "set NK_BUILD_ROOT to a folder without spaces."
-                    )
-                reporter.report("compile", "FAIL", path_err)
-                reporter.close()
-                raise PackageBuildError(path_err)
-            reporter.report(
-                "compile", "FAIL",
-                _package_build_failure_message(
-                    completed.stderr + completed.stdout,
-                    completed.returncode,
-                    reporter.log_file,
-                ),
-            )
-            reporter.close()
-            return completed.returncode
-        if stage_observer is not None:
-            stage_observer(
-                "compile", "PASS",
-                int((time.perf_counter() - compile_started) * 1000),
-            )
-        reporter.report("compile", "PASS", "Compilation completed successfully")
-        reporter.report("package", "START", "Staging runtime assets and validating package...")
-        if stage_observer is not None:
-            stage_observer("build_package", "START", 0)
-        package_started = time.perf_counter()
-        _stage_runtime_assets(build_dir)
-        if module_dir is not None:
-            # The runtime loads each guest PRX's data at run time from SR_MODULE_DIR,
-            # by its manifest name. Ship the modules the build compiled against
-            # inside the package so a launch needs nothing outside it.
-            package_modules = build_dir / "modules"
-            if package_modules.is_file():
-                raise PackageBuildError(
-                    f"Guest module staging collision: {package_modules} is a file, expecting a directory."
-                )
-            package_modules.mkdir(parents=True, exist_ok=True)
-            for module_file in sorted(module_dir.iterdir()):
-                if module_file.is_file():
-                    target_module = package_modules / module_file.name
-                    if target_module.is_dir():
-                        raise PackageBuildError(
-                            f"Guest module staging collision: {target_module} is a directory, expecting a file."
-                        )
-                    shutil.copyfile(module_file, target_module)
-        backends_mode = "public"
-        backend_limits = [
-            "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
-            "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
-        ]
-        package_cache.write_completion_manifest(
-            build_dir,
-            cache_key,
-            title_input_identity=title_input_identity,
-            backends=backends_mode,
-            limits=backend_limits,
-        )
-        valid_package, package_reason = package_cache.validate_package_cache(
-            build_dir,
-            expected_key=cache_key,
-        )
-        if not valid_package:
-            raise PackageBuildError(f"Generated package failed cache verification: {package_reason}")
-
-        package_json = json.loads((build_dir / "package.json").read_text(encoding="utf-8"))
-        if package_json.get("title", {}).get("id") != entry["title_id"] or \
-                package_json.get("inputs", {}).get("executable", {}).get("sha256") != actual_hash:
-            raise PackageBuildError("Generated package identity or input hash differs from the library entry.")
-        packages_root = user_root / "packages"
-        if packages_root.is_symlink():
-            raise PackageBuildError("Package destination root is a symlink; refusing to write outside per-user data.")
-        try:
-            packages_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        except OSError as exc:
-            if _is_disk_full_error(exc):
-                needed_bytes = _package_tree_file_bytes(build_dir)
-                free_bytes = shutil.disk_usage(user_root).free
-                raise PackageBuildError(
-                    _package_disk_space_message(needed_bytes, free_bytes)
-                ) from exc
-            raise
-        packages_root = _require_child(user_root, packages_root, "Package destination root")
-        needed_bytes = _require_package_staging_space(build_dir, packages_root)
-        try:
-            staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=packages_root))
-            shutil.rmtree(staging)
-        except OSError as exc:
-            if _is_disk_full_error(exc):
-                free_bytes = shutil.disk_usage(packages_root).free
-                raise PackageBuildError(
-                    _package_disk_space_message(needed_bytes, free_bytes)
-                ) from exc
-            raise
-        try:
-            _copy_package_tree_with_space_diagnostics(
-                build_dir, staging, packages_root, needed_bytes
-            )
-            _require_child(user_root, staging, "Package staging directory")
-            valid_staging, staging_reason = package_cache.validate_package_cache(
-                staging,
-                expected_key=cache_key,
-            )
-            if not valid_staging:
-                raise PackageBuildError(f"Package staging verification failed: {staging_reason}")
-            backup = _swap_in_package_folder(staging, target_dir, cache_dir)
-            package_cache.write_local_title_input_identity(user_root, title_input_identity)
-            if backup is not None:
-                shutil.rmtree(backup, ignore_errors=True)
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
-        _prune_package_cache(cache_dir, entry_root)
-        if not reporter.is_json_stdout:
-            print(f"PACKAGE: {target_dir}")
-            stage_result = getattr(args, "aot_stage_result", None) or {}
-            if native_only:
-                print("CACHE: generated C reused; native objects recompiled")
-            elif stage_result.get("status") == "REUSED":
-                print("CACHE: generated C from the codegen stage compiled")
-            elif stage_result.get("status") == "REGENERATED":
-                print("CACHE: codegen stage refused (" + str(stage_result.get("reason")) +
-                      "); AOT regenerated")
-            else:
-                print("CACHE: AOT regenerated for changed cache key")
-        reporter.log(f"PACKAGE: {target_dir}")
-        reporter.report("package", "PASS", f"Package verified and promoted to {target_dir}")
-        if stage_observer is not None:
-            stage_observer(
-                "build_package", "PASS",
-                int((time.perf_counter() - package_started) * 1000),
-            )
-        reporter.close()
-        return 0
+        _package_preflight(st)
+        _package_extract(st)
+        _package_identity(st)
+        rc: int | None = _package_cache_check(st)
+        if rc is not None:
+            return rc
+        rc = _package_codegen(st)
+        if rc is not None:
+            return rc
+        rc = _package_compile(st)
+        if rc is not None:
+            return rc
+        _package_validate(st)
+        return _package_promote(st)
     except (PackageBuildError, OSError, ValueError, KeyError, TypeError) as exc:
         if isinstance(exc, ExperimentalProfileBuildError):
             reporter.report_failure(exc.user_message, detail=exc.detail)
@@ -4347,27 +4587,47 @@ def _count_unsupported_opcodes(codegen_report: Path, sources: list[dict]) -> dic
     return dict(sorted(counts.items()))
 
 
-def cmd_bringup(args: argparse.Namespace) -> int:
-    """Run the consumer route while writing only schema-checked safe evidence."""
-    report = _new_bringup_report()
-    report_path = Path(args.report).expanduser().resolve(strict=False)
-    private_sweep_import_report: Path | None = None
-    progress: _BringupProgressWriter | None = None
+@dataclass
+class _Bringup:
+    """What the stages of cmd_bringup hand to each other."""
 
-    def fail_stage(report_value, stage, failure_class, issues=(), duration_ms=0):
-        _fail_bringup(
-            report_value, stage, failure_class, issues, duration_ms
-        )
-        if progress is not None:
-            progress_stage = "compile" if stage in {"compile", "build_package"} else stage
-            progress.finish(progress_stage, "FAIL", duration_ms)
+    args: Any
+    boot_path: Any = None
+    checks: Any = None
+    codegen_dir: Any = None
+    fail_stage: Any = None
+    game_name: Any = None
+    iso_path: Any = None
+    manifest: Any = None
+    metadata: Any = None
+    module_dir: Any = None
+    preflight: Any = None
+    private_sweep_import_report: Any = None
+    progress: Any = None
+    report: Any = None
+    report_path: Any = None
+    selected: Any = None
+    selected_elf: Any = None
+    set_stage: Any = None
+    sources: Any = None
+    staged_root: Any = None
+    unsupported_imports: Any = None
+    user_root: Any = None
+    work_dir: Any = None
 
-    def set_stage(report_value, stage, status, duration_ms):
-        _set_bringup_stage(report_value, stage, status, duration_ms)
-        if progress is not None and not (stage == "compile" and status == "PASS"):
-            progress_stage = "compile" if stage in {"compile", "build_package"} else stage
-            progress.finish(progress_stage, status, duration_ms)
 
+def _bringup_open(st):
+    """Resolve the work directory, user data root and disc path."""
+    (args, fail_stage, iso_path, private_sweep_import_report, report, report_path, user_root, work_dir) = (
+        st.args,
+        st.fail_stage,
+        st.iso_path,
+        st.private_sweep_import_report,
+        st.report,
+        st.report_path,
+        st.user_root,
+        st.work_dir,
+    )
     try:
         work_dir = _user_data_root(Path(args.work_dir))
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -4378,8 +4638,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 raise PackageBuildError(
                     "Private sweep progress report must stay under the bring-up work directory."
                 )
-            progress = _BringupProgressWriter(progress_path)
-            progress.start("inspect")
+            st.progress = _BringupProgressWriter(progress_path)
+            st.progress.start("inspect")
         requested_private_report = getattr(args, "private_sweep_import_report", None)
         if requested_private_report is not None:
             private_sweep_import_report = Path(requested_private_report).expanduser().resolve(strict=False)
@@ -4401,7 +4661,21 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
+    st.iso_path = iso_path
+    st.private_sweep_import_report = private_sweep_import_report
+    st.user_root = user_root
+    st.work_dir = work_dir
 
+
+def _bringup_expand_disc(st):
+    """Expand a compressed disc image to a plain ISO."""
+    (fail_stage, iso_path, report, report_path, user_root) = (
+        st.fail_stage,
+        st.iso_path,
+        st.report,
+        st.report_path,
+        st.user_root,
+    )
     # A compressed disc image (.cso, .zso, .chd) is expanded once into this
     # bring-up's user-data root by the player's own C code, and every later
     # stage reads the expanded .iso.
@@ -4423,7 +4697,22 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
+    st.iso_path = iso_path
 
+
+def _bringup_inspect(st):
+    """Inspect the disc and check the executable is one the route supports."""
+    (fail_stage, iso_path, metadata, module_dir, preflight, report, report_path, set_stage, user_root) = (
+        st.fail_stage,
+        st.iso_path,
+        st.metadata,
+        st.module_dir,
+        st.preflight,
+        st.report,
+        st.report_path,
+        st.set_stage,
+        st.user_root,
+    )
     started = time.perf_counter()
     module_dir: Path | None = None
     try:
@@ -4479,9 +4768,35 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         print(_bringup_human_summary(report))
         return 1
     set_stage(report, "inspect", "PASS", int((time.perf_counter() - started) * 1000))
+    st.boot_path = boot_path
+    st.checks = checks
+    st.metadata = metadata
+    st.module_dir = module_dir
+    st.preflight = preflight
+    st.selected = selected
 
-    if progress is not None:
-        progress.start("prepare_import")
+
+def _bringup_prepare_import(st):
+    """Stage the disc's files and write the library entry and profile."""
+    (checks, fail_stage, iso_path, manifest, metadata, module_dir, preflight, report, report_path, selected, selected_elf, set_stage, staged_root, user_root, work_dir) = (
+        st.checks,
+        st.fail_stage,
+        st.iso_path,
+        st.manifest,
+        st.metadata,
+        st.module_dir,
+        st.preflight,
+        st.report,
+        st.report_path,
+        st.selected,
+        st.selected_elf,
+        st.set_stage,
+        st.staged_root,
+        st.user_root,
+        st.work_dir,
+    )
+    if st.progress is not None:
+        st.progress.start("prepare_import")
     started = time.perf_counter()
     # A disc whose data ships in archives gets its files from the player's
     # staging transaction (the one the setup wizard and `prepare` run), into
@@ -4634,9 +4949,29 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     set_stage(report, "prepare_import", "PASS", int((time.perf_counter() - started) * 1000))
     if not metadata.matched_profile:
         _update_issues(report, [308])
+    st.manifest = manifest
+    st.module_dir = module_dir
+    st.selected_elf = selected_elf
+    st.staged_root = staged_root
 
-    if progress is not None:
-        progress.start("analyze")
+
+def _bringup_analyze(st):
+    """Run the analyzer over the executable and modules."""
+    (fail_stage, manifest, module_dir, private_sweep_import_report, report, report_path, selected_elf, set_stage, sources, unsupported_imports, work_dir) = (
+        st.fail_stage,
+        st.manifest,
+        st.module_dir,
+        st.private_sweep_import_report,
+        st.report,
+        st.report_path,
+        st.selected_elf,
+        st.set_stage,
+        st.sources,
+        st.unsupported_imports,
+        st.work_dir,
+    )
+    if st.progress is not None:
+        st.progress.start("analyze")
     started = time.perf_counter()
     try:
         import title_codegen_plan
@@ -4687,13 +5022,26 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         return 1
     set_stage(report, "analyze", "PASS", int((time.perf_counter() - started) * 1000))
     _update_issues(report, [308] if report["unsupported_imports"] else [])
+    st.sources = sources
+    st.unsupported_imports = unsupported_imports
 
+
+def _bringup_codegen(st):
+    """Prepare the empty code-generation stage directory."""
+    (fail_stage, game_name, manifest, report, report_path, work_dir) = (
+        st.fail_stage,
+        st.game_name,
+        st.manifest,
+        st.report,
+        st.report_path,
+        st.work_dir,
+    )
     # Code generation runs once per bring-up, inside the package build: its codegen
     # stage generates the code into codegen-stage/ with the package's own inputs, cache
     # key and Make environment, and the package compiles that output only after the
     # native-only reuse checks accept it (otherwise it regenerates, naming why).
-    if progress is not None:
-        progress.start("codegen")
+    if st.progress is not None:
+        st.progress.start("codegen")
     started = time.perf_counter()
     codegen_dir = work_dir / "codegen-stage"
     try:
@@ -4719,13 +5067,33 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
+    st.codegen_dir = codegen_dir
+    st.game_name = game_name
 
+
+def _bringup_package(st):
+    """Build the package, whose codegen stage generates the code first."""
+    (args, codegen_dir, fail_stage, game_name, iso_path, metadata, module_dir, report, report_path, set_stage, sources, user_root, work_dir) = (
+        st.args,
+        st.codegen_dir,
+        st.fail_stage,
+        st.game_name,
+        st.iso_path,
+        st.metadata,
+        st.module_dir,
+        st.report,
+        st.report_path,
+        st.set_stage,
+        st.sources,
+        st.user_root,
+        st.work_dir,
+    )
     observer_events = {}
     def observe_package_stage(stage, status, duration_ms):
         observer_events[stage] = (status, duration_ms)
         if status == "START":
-            if stage == "compile" and progress is not None:
-                progress.start("compile")
+            if stage == "compile" and st.progress is not None:
+                st.progress.start("compile")
             return
         set_stage(report, stage, status, duration_ms)
 
@@ -4747,10 +5115,10 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     if isinstance(stage_result, dict):
         report["codegen_reuse"] = dict(stage_result)
     codegen_status = observer_events.get("codegen", (None,))[0]
-    if progress is not None and codegen_status is None:
+    if st.progress is not None and codegen_status is None:
         # The package build stopped before its codegen stage, in the package preparation
         # this route always attributed to compile.
-        progress.retarget("codegen", "compile")
+        st.progress.retarget("codegen", "compile")
     if build_status == 0:
         # The report describes what shipped: the stub report packaged with the build.
         try:
@@ -4794,8 +5162,26 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     if report["stages"]["build_package"]["status"] == "NOT_RUN":
         set_stage(report, "build_package", "PASS", 0)
 
-    if progress is not None:
-        progress.start("launch")
+
+def _bringup_launch(st):
+    """Launch the built package and record the result."""
+    (args, boot_path, fail_stage, iso_path, manifest, metadata, report, report_path, set_stage, staged_root, unsupported_imports, user_root, work_dir) = (
+        st.args,
+        st.boot_path,
+        st.fail_stage,
+        st.iso_path,
+        st.manifest,
+        st.metadata,
+        st.report,
+        st.report_path,
+        st.set_stage,
+        st.staged_root,
+        st.unsupported_imports,
+        st.user_root,
+        st.work_dir,
+    )
+    if st.progress is not None:
+        st.progress.start("launch")
     started = time.perf_counter()
     package_dir = user_root / "packages" / metadata.disc_id.upper()
     try:
@@ -4998,11 +5384,68 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         fail_stage(report, "launch", "LAUNCH_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
 
+
+def _bringup_finish(st: Any) -> int:
+    """Write the report and return the exit code."""
+    report, report_path = st.report, st.report_path
     report_written = _write_bringup_report(report, report_path)
     print(_bringup_human_summary(report))
     if not report_written:
         return 1
     return 0 if report["failure_class"] == "NONE" else 1
+
+
+def cmd_bringup(args: argparse.Namespace) -> int:
+    """Run the consumer route while writing only schema-checked safe evidence."""
+    st = _Bringup(args=args)
+    report = _new_bringup_report()
+    report_path = Path(args.report).expanduser().resolve(strict=False)
+    private_sweep_import_report: Path | None = None
+    st.progress = None
+
+    def fail_stage(report_value, stage, failure_class, issues=(), duration_ms=0):
+        _fail_bringup(
+            report_value, stage, failure_class, issues, duration_ms
+        )
+        if st.progress is not None:
+            progress_stage = "compile" if stage in {"compile", "build_package"} else stage
+            st.progress.finish(progress_stage, "FAIL", duration_ms)
+
+    def set_stage(report_value, stage, status, duration_ms):
+        _set_bringup_stage(report_value, stage, status, duration_ms)
+        if st.progress is not None and not (stage == "compile" and status == "PASS"):
+            progress_stage = "compile" if stage in {"compile", "build_package"} else stage
+            st.progress.finish(progress_stage, status, duration_ms)
+    st.fail_stage = fail_stage
+    st.private_sweep_import_report = private_sweep_import_report
+    st.report = report
+    st.report_path = report_path
+    st.set_stage = set_stage
+    rc: int | None = _bringup_open(st)
+    if rc is not None:
+        return rc
+    rc = _bringup_expand_disc(st)
+    if rc is not None:
+        return rc
+    rc = _bringup_inspect(st)
+    if rc is not None:
+        return rc
+    rc = _bringup_prepare_import(st)
+    if rc is not None:
+        return rc
+    rc = _bringup_analyze(st)
+    if rc is not None:
+        return rc
+    rc = _bringup_codegen(st)
+    if rc is not None:
+        return rc
+    rc = _bringup_package(st)
+    if rc is not None:
+        return rc
+    rc = _bringup_launch(st)
+    if rc is not None:
+        return rc
+    return _bringup_finish(st)
 
 
 def _use_utf8_standard_streams() -> None:
