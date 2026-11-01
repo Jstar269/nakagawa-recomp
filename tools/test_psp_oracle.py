@@ -6306,6 +6306,13 @@ class KernelEntryNullcodeProbeTests(unittest.TestCase):
         probe = (root / "fixtures" / "psp_oracle" / "probe_hle_issues.c").read_text(
             encoding="utf-8"
         )
+        threadman = (root / "fixtures" / "psp_oracle" / "threadman_user_imports.S").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'IMPORT_FUNC  "ThreadManForUser", 0x730ED8BC, sceKernelReferCallbackStatus',
+            threadman,
+        )
         routes = dict(re.findall(
             r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
             makefile, re.MULTILINE,
