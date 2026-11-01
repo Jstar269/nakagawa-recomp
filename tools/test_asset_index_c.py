@@ -281,7 +281,7 @@ class TestProjectFontAssetCopy(unittest.TestCase):
 
         Pins, by source shape:
         1. driver.c calls sr_host_data_prepare() after entry validation and
-           BEFORE gui_init / sched_init / any direct fn(&s) invocation;
+           BEFORE gui_init / sched_init / the direct boot entry (dispatch_from_host);
         2. host_data_lookup consumes TERMINAL route states only -- it must not
            begin, resume, or await a census (no lazy construction), so a guest
            HLE lookup can never start the cold walk on the scheduler thread;
@@ -293,12 +293,12 @@ class TestProjectFontAssetCopy(unittest.TestCase):
                             "driver.c must call sr_host_data_prepare()")
         gui_idx = driver.find("gui_init(caption)")
         sched_idx = driver.find("sched_init(&s)")
-        fn_idx = driver.find("sr_call_body(fn, &s);")
+        fn_idx = driver.find("dispatch_from_host(&s, entry);")
         boot_begin = driver.find("BOOT_EVENT phase=index_prepare_begin")
         self.assertLess(boot_begin, prepare_idx,
                         "preparation is announced before it runs")
         for name, idx in (("gui_init", gui_idx), ("sched_init", sched_idx),
-                          ("sr_call_body(fn, &s)", fn_idx)):
+                          ("dispatch_from_host(&s, entry)", fn_idx)):
             self.assertNotEqual(idx, -1, f"driver.c anchor {name} missing")
             self.assertLess(prepare_idx, idx,
                             f"preparation must precede {name} (guest execution seam)")

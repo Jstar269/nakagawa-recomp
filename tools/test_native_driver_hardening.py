@@ -81,7 +81,7 @@ int sr_debug_streams_init(void) {{ return 0; }}
 void sr_profile_init(void) {{}}
 void sr_register_all(void) {{}}
 /* The #855 TAIL protocol lives in guest_interp.c, which this harness does not link.
- * driver.c drains through sr_call_body; the harness bodies record no transfer. */
+ * The harness's host entry drains through sr_call_body; its bodies record no transfer. */
 SrTailTransfer sr_tail_transfer;
 void sr_tail_fatal(const char *what, uint32_t target) {{ (void)what; (void)target; abort(); }}
 void sr_tail_drain(CpuState *s) {{ (void)s; abort(); }}
@@ -97,6 +97,12 @@ static void dummy_recomp_fn(CpuState *s) {{
 RecompFn sr_lookup(uint32_t addr) {{
     if (addr == 0x08000010u || addr == (0x08000010u & 0x01ffffffu)) return dummy_recomp_fn;
     return NULL;
+}}
+/* driver.c's direct boot enters through the host entry (recomp.c, #1375); the harness runs
+ * the registered body as that entry's native path does. */
+void dispatch_from_host(CpuState *s, uint32_t entry) {{
+    RecompFn fn = sr_lookup(entry);
+    if (fn) sr_call_body(fn, s);
 }}
 int sr_trace_open(const char *path, const char *title, uint32_t entry) {{ (void)path; (void)title; (void)entry; return 0; }}
 void sr_trace_close(void) {{}}
