@@ -28,12 +28,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import ClassVar, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 import scratch_dir  # noqa: E402
+import hle_sources  # noqa: E402
 
 #: The host platform backend, chosen the same way the Makefile chooses it.
 _WINDOWS = os.name == "nt"
@@ -71,7 +73,7 @@ CORE_SOURCES = [
 
 
 def _compile_object(
-    owner: type[unittest.TestCase],
+    owner: type[NativeHostBackendTests],
     source: str,
     object_name: str,
     extra_flags: tuple[str, ...] = (),
@@ -91,7 +93,7 @@ def _compile_object(
 
 
 def _build_and_run(
-    test_case: unittest.TestCase,
+    test_case: NativeHostBackendTests,
     test_source: str,
     exe_stem: str,
     extra_sources: tuple[str, ...] = (),
@@ -170,7 +172,7 @@ def _build_and_run(
                     if "nakagawa" in path.name.lower())
     test_case.assertEqual(
         leaked, [], f"{test_source} wrote into the developer's profile before isolating it")
-    return run.stdout
+    return cast(str, run.stdout)
 
 
 def _function_body(source: str, head: str) -> str:
@@ -182,6 +184,9 @@ def _function_body(source: str, head: str) -> str:
 
 
 class NativeHostBackendTests(unittest.TestCase):
+    _object_dir: ClassVar[Path]
+    _objects: ClassVar[dict[str, Path]]
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
@@ -199,7 +204,7 @@ class NativeHostBackendTests(unittest.TestCase):
         (ROOT / "build").mkdir(exist_ok=True)
 
         cls._object_dir = Path(tempfile.mkdtemp(prefix="nk_backend_objects_"))
-        cls._objects: dict[str, Path] = {}
+        cls._objects = {}
         common_sources = [*CORE_SOURCES, PLATFORM_SRC, "src/rt/pgf_public.c", "src/core/nk_pgf_host.c"]
         for source in common_sources:
             cls._objects[source] = _compile_object(
@@ -379,7 +384,7 @@ class NativeHostBackendTests(unittest.TestCase):
         helper after the audio statistics rather than inside them, that the helper sits under the
         public-backend guard, and that the backend defines the function it calls. The statistics
         come from the block route_fail shares (#827), which keeps the SR_AUDIOSTAT gate."""
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         start = hle.index("BOOT_EVENT phase=exit_at_vblank")
         block = hle[start:hle.index("_Exit(0);", start)]
         stats = block.find("hle_exit_audio_stats();")
@@ -387,7 +392,7 @@ class NativeHostBackendTests(unittest.TestCase):
         self.assertNotIn("audio_stat_on()", block, "the SR_AUDIOSTAT gate belongs to the shared block")
         call = block.find("hle_exit_close_audio_dump();")
         self.assertGreater(call, stats, "the dump close must run after the audio statistics")
-        helper_start = hle.index("static void hle_exit_close_audio_dump(void) {")
+        helper_start = hle.index("void hle_exit_close_audio_dump(void) {")
         helper = hle[helper_start:hle.index("\n}\n", helper_start)]
         guard = "#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)\n"
         self.assertIn(guard + "    sr_audio_dump_finish();\n#endif", helper,
@@ -401,7 +406,7 @@ class NativeHostBackendTests(unittest.TestCase):
         sits inside the exit branch and before _Exit. Under SR_ROUTE_NO_EXIT the run carries on,
         so the close must not run there. Like the vblank pin, this reads the source: no native
         target runs a route failure with the public audio backend linked."""
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         start = hle.index("static void route_fail(const char *fmt, ...) {")
         body = hle[start:hle.index("\n}\n", start)]
         call = body.find("hle_exit_close_audio_dump();")
@@ -419,7 +424,7 @@ class NativeHostBackendTests(unittest.TestCase):
         (#827). Both exits call one helper so the two cannot drift, and the helper keeps the
         SR_AUDIOSTAT gate. Like the vblank pin, this reads the source: no native target runs a route
         failure with the public audio backend linked."""
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         start = hle.index("static void route_fail(const char *fmt, ...) {")
         body = hle[start:hle.index("\n}\n", start)]
         stats = body.find("hle_exit_audio_stats();")
@@ -430,9 +435,9 @@ class NativeHostBackendTests(unittest.TestCase):
                            "the audio statistics must print inside the exit branch")
         self.assertLess(stats, body.find("hle_exit_close_audio_dump();"),
                         "the audio statistics must print before the dump is finalised")
-        self.assertEqual(hle.count("static void hle_exit_audio_stats(void) {"), 1,
+        self.assertEqual(hle.count("void hle_exit_audio_stats(void) {"), 1,
                          "the vblank exit and route_fail must share one definition of the stats block")
-        helper_start = hle.index("static void hle_exit_audio_stats(void) {")
+        helper_start = hle.index("void hle_exit_audio_stats(void) {")
         helper = hle[helper_start:hle.index("\n}\n", helper_start)]
         self.assertIn("    if (!audio_stat_on()) return;\n", helper,
                       "the shared stats block must keep the SR_AUDIOSTAT gate")
@@ -448,7 +453,7 @@ class NativeHostBackendTests(unittest.TestCase):
         The call is idempotent and a no-op without SR_PERF. ge.c has no _Exit left: its
         SR_GE_CAPTURE_EXIT run stops at a scheduler boundary, and its fallback with no scheduler
         loop leaves through exit() after the summary (#1377)."""
-        lines = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8").splitlines()
+        lines = hle_sources.text().splitlines()
         found = 0
         for index, line in enumerate(lines):
             code = line.split("//", 1)[0]

@@ -144,7 +144,6 @@ The **Where** column of each table names the places a code can appear:
 | `ANALYZER_INPUT_MISSING` | report | An input the analyzer needs (the executable, a module or the module folder) is missing. |
 | `ANALYZER_INTERNAL_ERROR` | report | The analyzer stopped on an internal error. This is a defect in Nakagawa, not an unsupported game feature; the run's private diagnostic names it. |
 | `ANALYZER_NO_EXECUTABLE_REGIONS` | report | The analyzer found no executable code in the executable or one of its modules. |
-| `ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED` | report, route | The executable imports variables, which are not supported yet. |
 | `PACKAGE_INVALID_ELF` | route | The executable or a module is not a valid ELF image. |
 | `PACKAGE_INVALID_IMPORT_TABLE` | route | The import table could not be read. |
 | `PACKAGE_MODULE_DIR_REQUIRED` | route | A guest module was planned without the folder that holds it. |

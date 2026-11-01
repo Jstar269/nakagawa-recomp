@@ -100,17 +100,16 @@ class CensusOverSyntheticImages(unittest.TestCase):
         self.assertEqual(sorted({m["reason"] for m in rec["missing"]}), [census.REASON_OUTSIDE])
         self.assertEqual(len(rec["missing"]), len(self.stubs))
 
-    def test_a_variable_import_image_names_each_function_stub(self):
+    def test_a_variable_import_image_is_analyzed_and_its_function_stub_counted(self):
         blob = bytearray(import_fixtures.build_interleaved_import_elf(
             [("SynthAlpha", 0, 1), ("SynthVariables", 1, 0)], [0x11000001]))
-        # The variable-only entry's variable-stub pointer must be non-null (as in the
-        # analyzer's own boundary test); the analyzer then refuses the image by name.
+        # The variable-only entry's variable-stub pointer must be non-null. Variable
+        # imports are linked at run time now, so the image analyzes like any other and
+        # its one function stub is counted, not named missing for the variables.
         rec = self._census(_point_variable_table_at_modinfo(bytes(blob)))
-        self.assertEqual(rec["status"], "refused", rec)
-        self.assertEqual(rec["refusal"], census.VARIABLE_IMPORTS_CODE)
-        self.assertEqual(len(rec["missing"]), 1, rec["missing"])
-        self.assertEqual(rec["missing"][0]["reason"], census.REASON_VARIABLE)
-        self.assertEqual(rec["missing"][0]["nid"], 0x11000001)
+        self.assertEqual(rec["status"], "ok", rec)
+        self.assertIsNone(rec["refusal"])
+        self.assertEqual(rec["stubs"], 1, rec)
 
     def test_a_malformed_import_table_is_a_named_refusal_not_a_crash(self):
         # A function window with no NID table is refused by the window walk; the census
@@ -246,9 +245,9 @@ class CensusGateAndReporting(unittest.TestCase):
         self.assertEqual(len(census.check_failures([missing, fault])), 2)
 
     def test_a_named_decision_reason_does_not_fail_the_gate(self):
-        variable = self._record(missing=[census._missing(0x08800000, "L", 1, census.REASON_VARIABLE)])
-        self.assertEqual(census.check_failures([variable], (census.REASON_VARIABLE,)), [])
-        self.assertEqual(len(census.check_failures([variable])), 1)
+        late = self._record(missing=[census._missing(0x08800000, "L", 1, census.REASON_LATE)])
+        self.assertEqual(census.check_failures([late], (census.REASON_LATE,)), [])
+        self.assertEqual(len(census.check_failures([late])), 1)
 
     def test_handled_nids_are_the_sr_hle_registrations(self):
         with tempfile.TemporaryDirectory() as root:

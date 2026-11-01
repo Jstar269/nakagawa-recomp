@@ -52,7 +52,7 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
   `--allow-prefix` explicitly accepts strict-prefix agreement for documented prefix
   analysis and is never the default.
 - **`import_audit_gate.py`** — public import-coverage/fake-success gate:
-  fail-closed HLE manifest from `src/rt/hle.c` (`hle_manifest.py` +
+  fail-closed HLE manifest from the runtime HLE sources (`hle_sources.py`, `hle_manifest.py` +
   `hle_registry_meta.py`), classification baseline drift, and synthetic malformed-ELF
   fixtures (`import_fixtures.py`, `psp_import_table.py`). `import_audit.py` classifies a
   developer-supplied private ELF locally — see [`docs/archive/IMPORT_AUDIT.md`](../docs/archive/IMPORT_AUDIT.md).

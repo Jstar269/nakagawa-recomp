@@ -46,6 +46,7 @@ typedef enum {
     NK_OVERLAY_ACT_QUIT,         /* confirmed: end the run, back to the library */
     NK_OVERLAY_ACT_SET_SCALING,  /* value: the new game scaling (NK_OVERLAY_SCALING_*) */
     NK_OVERLAY_ACT_SET_HUD,      /* value: 1 shows the performance HUD, 0 hides it */
+    NK_OVERLAY_ACT_SET_READOUT,  /* value: 1 shows Ace Mode's speed readout, 0 hides it */
     NK_OVERLAY_ACT_VRAM_VIEW     /* the VRAM viewer's window moved: decode it again */
 } NkOverlayActionKind;
 
@@ -195,6 +196,11 @@ typedef struct {
     bool developer;              /* developer mode: the VRAM and Profile pages are offered */
     const NkOverlayVram *vram;   /* NULL: the VRAM page says there is nothing to show */
     const NkOverlayProfile *profile;
+    /* Ace Mode (src/rt/ace.h): the menu's caption ("Ace Mode on: 16x filtering"), NULL or ""
+       in an authentic run, and the Settings page's Speed readout row: 0 (a zeroed model) has
+       no row (Ace Mode off, or its in-game UI unavailable), 1 shows it off, 2 on. */
+    const char *ace_caption;
+    int ace_readout;
 } NkOverlayModel;
 
 /* Which page is up and where focus returns. Zero-initialised is closed. */
@@ -228,6 +234,7 @@ const char *nk_overlay_scaling_label(int scaling);
 #define NK_OVERLAY_ID_SCALING NK_OVERLAY_ID(0x000201u)      /* + 1 + NK_OVERLAY_SCALING_* per option */
 #define NK_OVERLAY_ID_SCALING_SPAN 0x8u
 #define NK_OVERLAY_ID_HUD NK_OVERLAY_ID(0x000210u)
+#define NK_OVERLAY_ID_READOUT NK_OVERLAY_ID(0x000211u)  /* Ace Mode's speed readout */
 #define NK_OVERLAY_ID_SETTINGS_BACK NK_OVERLAY_ID(0x000220u)
 #define NK_OVERLAY_ID_CONTROLS_BACK NK_OVERLAY_ID(0x000301u)
 #define NK_OVERLAY_ID_QUIT_STAY NK_OVERLAY_ID(0x000401u)

@@ -37,14 +37,18 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import hle_sources  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = 1
 
 # --------------------------------------------------------------------------
 # Scan areas and their default classification.
 # --------------------------------------------------------------------------
+# Every runtime HLE source is semantic core, like the hle.c it was split from (#307).
 CORE_FILES = {
-    "recomp.c", "hle.c", "sched.c", "sr_coro.c", "mpeg.c", "savedata.c",
+    *(Path(path).name for path in hle_sources.RUNTIME_HLE_SOURCES), "recomp.c", "sched.c", "sr_coro.c", "mpeg.c", "savedata.c",
     "debug.c", "watchpoints_file.c", "guest_printf.c", "perf.c", "ge.c",
     "vfpu_tables.c", "vfpu_interp.c", "vfpu_fuzz.c", "vfpu_oracle_host.c",
     "ge_replay.c",

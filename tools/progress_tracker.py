@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import evidence_model
+import hle_sources
 
 # Make Unicode characters render on Windows consoles (cp1252 default).
 try:
@@ -1024,6 +1025,16 @@ def _read_text(p: Path) -> str:
     return p.read_text(encoding="utf-8", errors="ignore")
 
 
+# Stands for every runtime HLE source in _SUBSYSTEM_CHECKS (tools/hle_sources.py lists them).
+HLE_SOURCES = Path("runtime HLE sources")
+
+
+def _hle_text() -> str:
+    """The runtime HLE sources as one text; a missing file reads as empty, like every input here."""
+    root = SRC_RT.parents[1]
+    return "\n".join(_read_text(root / relative) for relative in hle_sources.RUNTIME_HLE_SOURCES)
+
+
 def axis_codegen_coverage() -> dict:
     """A. Analyzable ELF functions vs registered/compiled functions.
 
@@ -1085,7 +1096,6 @@ def axis_nid_coverage() -> dict:
     non-trivial handler (excludes the generic no-op `h_ok` stub).
     """
     imports_path = BUILD / "hst_imports.toml"
-    hle_path = SRC_RT / "hle.c"
     result: dict[str, object] = {"imported_nids": None, "registered_nids": 0,
                                 "registered_nonstub_nids": 0, "note": ""}
     imports_text = _read_text(imports_path)
@@ -1096,7 +1106,7 @@ def axis_nid_coverage() -> dict:
         r'nid\s*=\s*(0x[0-9a-fA-F]+)', imports_text))
     result["imported_nids"] = len(imported)
 
-    hle_text = _read_text(hle_path)
+    hle_text = _hle_text()
     registered: dict[str, str] = {}
     for m in _NID_REGISTER_RE.finditer(hle_text):
         nid, _name, handler = m.group(1).lower(), m.group(2), m.group(3)
@@ -1178,15 +1188,15 @@ def axis_vfpu_opcode_coverage() -> dict:
 # subsystem -> (file, evidence regex, label if matched, label if not)
 _SUBSYSTEM_CHECKS = {
     "audio": (SRC_RT / "audio.c", r"waveOutOpen", "REAL (Win32 waveOut)", "STUB"),
-    "audio_atrac_decode": (SRC_RT / "hle.c", r"h_AtracDecodeData\([\s\S]{0,600}?stereo silence", "PARTIAL (zero-fills, no real decode)", "REAL or pattern stale — re-check hle.c"),
+    "audio_atrac_decode": (HLE_SOURCES, r"h_AtracDecodeData\([\s\S]{0,600}?stereo silence", "PARTIAL (zero-fills, no real decode)", "REAL or pattern stale — re-check the runtime HLE sources"),
     "video": (SRC_RT / "h264_mf.c", r"CMSH264Decoder|IMFTransform", "PARTIAL (Media Foundation, Windows-only)", "STUB"),
     "input": (SRC_RT / "gui.c", r"XInputGetState|DirectInput8Create", "REAL (Win32 XInput/DirectInput; slated for SDL3 Gamepad, Phase 3)", "STUB"),
-    "net": (SRC_RT / "hle.c", r"sceNetAdhoc|sceNetInet|sceNetApctl", None, "STUB (no handlers registered)"),
+    "net": (HLE_SOURCES, r"sceNetAdhoc|sceNetInet|sceNetApctl", None, "STUB (no handlers registered)"),
     # The fiber backend lives in sr_coro.c; sched.c only mentions fibers in comments,
     # so grepping sched.c could label the scheduler REAL from comments alone (#181).
     "sched": (SRC_RT / "sr_coro.c", r"CreateFiberEx|ConvertThreadToFiber", "REAL (cooperative coroutines via sr_coro, Windows fibers)", "STUB"),
     "savedata": (SRC_RT / "savedata.c", r"fopen", "REAL (file-backed virtual memory stick)", "STUB"),
-    "pgf_font": (SRC_RT / "hle.c", r"pgf_open|sceFontGetCharGlyphImage", "REAL (parsed glyph rasterization)", "STUB"),
+    "pgf_font": (HLE_SOURCES, r"pgf_open|sceFontGetCharGlyphImage", "REAL (parsed glyph rasterization)", "STUB"),
     "iso": (SRC_RT / "iso.c", r"iso_read", "REAL (ISO9660 sector reads from host file)", "STUB"),
 }
 
@@ -1197,7 +1207,7 @@ def axis_subsystem_matrix() -> dict:
     survey that grounded these patterns)."""
     out = {}
     for key, (path, pattern, hit_label, miss_label) in _SUBSYSTEM_CHECKS.items():
-        text = _read_text(path)
+        text = _hle_text() if path is HLE_SOURCES else _read_text(path)
         matched = bool(text) and bool(re.search(pattern, text))
         if matched:
             out[key] = hit_label or f"present ({pattern} matched in {path.name})"

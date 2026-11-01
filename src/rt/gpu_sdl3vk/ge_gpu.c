@@ -87,6 +87,7 @@
 #include "../recomp.h"
 #include "../ge_shared.h"
 #include "../perf.h"
+#include "../ace.h"   /* Ace Mode: the 30 Hz detector counts draws per target (Ace on only) */
 
 #include <vulkan/vulkan.h>
 #include <SDL3/SDL_timer.h>
@@ -201,6 +202,10 @@ typedef struct {
     uint64_t key, hash;                    /* state key + content hash; 0,0 = empty */
     VkImage img; VkDeviceMemory mem; VkImageView view; VkSampler smp;
     VkDescriptorSet set;
+    /* Ace Mode's texture filtering (ace.h): the same sampler with anisotropy, and its set,
+     * made the first time a qualifying draw binds this entry. Never made in an authentic run. */
+    VkSampler smp_af;
+    VkDescriptorSet set_af;
     int w, h;
     uint32_t addr, bytes;                  /* guest source range for precise CPU-write invalidation */
     TexMipKey mip;                         /* compared exactly on lookup, with key */
@@ -304,6 +309,11 @@ typedef struct {
 
 /* ---- backend state -------------------------------------------------------------------- */
 static int s_ready = 0;
+/* Ace Mode's anisotropy level (ace.h), read once at init: 0 in an authentic run, and when the
+ * device gives none. Only then is any anisotropic sampler made. */
+static int s_ace_af = 0;
+static uint64_t s_cnt_af_samplers = 0;
+static uint32_t s_tex_pool_sets = 0;
 static GeState  *s_ge;
 static uint16_t *s_zbuf;
 
@@ -2607,6 +2617,8 @@ static void tex_evict_lru(void) {
         tex_shadow_release(e);
         vkFreeDescriptorSets(s_dev, s_dpool_tex, 1, &e->set);
         vkDestroySampler(s_dev, e->smp, NULL);
+        if (e->set_af) vkFreeDescriptorSets(s_dev, s_dpool_tex, 1, &e->set_af);
+        if (e->smp_af) vkDestroySampler(s_dev, e->smp_af, NULL);
         vkDestroyImageView(s_dev, e->view, NULL);
         vkDestroyImage(s_dev, e->img, NULL);
         vkFreeMemory(s_dev, e->mem, NULL);
@@ -2696,6 +2708,19 @@ static void tex_sampler_lod(const TexMipKey *mip, VkSamplerCreateInfo *sci) {
     sci->maxLod = lod;
 }
 
+/* The sampler of a cache entry with these filters, wrap modes and mip state. */
+static void tex_sampler_info(int min_linear, int mag_linear, int clamp_u, int clamp_v,
+                             const TexMipKey *mip, VkSamplerCreateInfo *sci) {
+    memset(sci, 0, sizeof(*sci));
+    sci->sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci->magFilter = mag_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    sci->minFilter = min_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    tex_sampler_lod(mip, sci);
+    sci->addressModeU = clamp_u ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sci->addressModeV = clamp_v ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sci->addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+}
+
 static int tex_make(int w, int h, uint32_t levels, int min_linear, int mag_linear,
                     int clamp_u, int clamp_v, const TexMipKey *mip,
                     VkImage *img, VkDeviceMemory *mem, VkImageView *view, VkSampler *smp) {
@@ -2704,15 +2729,41 @@ static int tex_make(int w, int h, uint32_t levels, int min_linear, int mag_linea
         return 0;
     if (!make_view_levels(*img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, levels, view))
         return 0;
-    VkSamplerCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-    sci.magFilter = mag_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-    sci.minFilter = min_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-    tex_sampler_lod(mip, &sci);
-    sci.addressModeU = clamp_u ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sci.addressModeV = clamp_v ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    VkSamplerCreateInfo sci;
+    tex_sampler_info(min_linear, mag_linear, clamp_u, clamp_v, mip, &sci);
     VKC(vkCreateSampler(s_dev, &sci, NULL, smp));
     return 1;
+}
+
+/* The set a draw binds for cache entry `e`. Ace Mode's texture filtering (ace.h) applies to a
+ * draw that minifies linearly and is transformed: through-mode draws (HUDs, menus, text) and
+ * nearest-filtered textures keep the guest's sampling exactly, and render targets and the
+ * snapshot never come here. The anisotropic pair is made the first time it is needed; if it
+ * cannot be, the draw keeps the plain set. */
+static VkDescriptorSet tex_entry_set(TexEnt *e) {
+    if (!s_ace_af) return e->set;
+    if (!(tex_filter_variant(s_ge->tex_filter) & 2u) || (s_ge->vtype & (1u << 23))) return e->set;
+    if (!e->set_af) {
+        VkSamplerCreateInfo sci;
+        tex_sampler_info(1, (tex_filter_variant(s_ge->tex_filter) & 1u) != 0,
+                         s_ge->tex_wrap & 1, (s_ge->tex_wrap >> 8) & 1, &e->mip, &sci);
+        sci.anisotropyEnable = VK_TRUE;
+        sci.maxAnisotropy = (float)s_ace_af;
+        if (vkCreateSampler(s_dev, &sci, NULL, &e->smp_af) != VK_SUCCESS) {
+            e->smp_af = VK_NULL_HANDLE;
+            ace_note_af_failure();
+            return e->set;
+        }
+        e->set_af = make_descriptor(e->view, e->smp_af, s_dpool_tex);
+        if (!e->set_af) {
+            vkDestroySampler(s_dev, e->smp_af, NULL);
+            e->smp_af = VK_NULL_HANDLE;
+            ace_note_af_failure();
+            return e->set;
+        }
+        s_cnt_af_samplers++;
+    }
+    return e->set_af;
 }
 
 /* The current texture's mip state; all zero unless ge_tex_mip_active(). */
@@ -2817,7 +2868,7 @@ static VkDescriptorSet tex_get(void) {
         if (e->content_valid && e->hash == hash) {
             if (sr_perf_enabled) sr_perf_texture_cache(1);
             e->pending = 1;
-            return e->set;
+            return tex_entry_set(e);
         }
         if (!e->content_valid && e->hash == hash && tex_shadow_matches(e)) {
             e->content_valid = 1;
@@ -2825,7 +2876,7 @@ static VkDescriptorSet tex_get(void) {
             e->pending = 1;
             s_cnt_shadow_avoided++;
             if (sr_perf_enabled) sr_perf_texture_cache(1);
-            return e->set;
+            return tex_entry_set(e);
         }
         /* same texture state, new contents: update in place (cache stays bounded) */
         if (e->pending) submit_pending();
@@ -2837,7 +2888,7 @@ static VkDescriptorSet tex_get(void) {
         tex_shadow_store(e);
         e->pending = 1;
         s_cnt_texup++;
-        return e->set;
+        return tex_entry_set(e);
     }
 
     cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, lookup_started);
@@ -2870,7 +2921,7 @@ static VkDescriptorSet tex_get(void) {
     e->lru = s_texlru++;
     s_cnt_texup++;
     s_tex_n++;
-    return e->set;
+    return tex_entry_set(e);
 }
 
 /* ---- capture --------------------------------------------------------------------------- */
@@ -3353,6 +3404,7 @@ static void append(Batch *b, uint32_t first, uint32_t count) {
     if (s_cpu_profile) s_cpu_profile_stats.append_calls++;
     if (b->sw <= 0 || count == 0) return;
     sr_vram_mark_renderer_pending();
+    if (g_ace_on && s_cur) ace_note_target_draw(s_cur->fba);
     if ((((uint32_t)b->pc.cfg[0] >> 8) & F_SHBLEND) && sr_perf_enabled)
         sr_perf_ge_event(SR_PERF_GE_SHBLEND_DRAW, 1);
     const int self_dep = stencil_reads_own_writes(b);
@@ -3706,6 +3758,7 @@ static int hook_point(const GeVtx *A, int persp) {
 
 static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (!s_ready || !bytes) return;
+    if (g_ace_on && is_vram(addr)) ace_note_vram_write(vram_off(addr), bytes);
     /* CPU HLE calls may use any PSP address alias (KSEG mirrors for RAM or the
      * mirrored 0x04xxxxxx VRAM aperture). Compare cache ranges in the same
      * physical namespace before deciding whether a texture is stale. The
@@ -3890,6 +3943,7 @@ static int hook_xfer(uint32_t startdata) {
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_TRANSFER_BLIT)) return 0;
     dst->render_gen++;                       /* content changed (snapshot/present tracking) */
+    if (g_ace_on) ace_note_target_draw(dst->fba);
     sr_vram_mark_renderer_pending();
     dst->lru = s_lru++;
     s_cnt_xferblit++;
@@ -8131,6 +8185,55 @@ int gegpu_coherence_selftest(void) {
  * ordinary presentation remains asynchronous (the pre-fix lag), then asks the same
  * target through gegpu_sync_guest_fb() and verifies that guest VRAM is current before
  * publication. Descriptor rejection and no-target answers are checked too. */
+/* Ace Mode's texture filtering (ace.h), run with SR_ACE asking for 16x on a device that has it
+ * (gpu-ace-selftest). Through-mode draws keep the guest's sampling exactly: the PSP-measured
+ * sample points still hold and no anisotropic sampler is made for them. A transformed draw that
+ * minifies linearly gets one anisotropic sampler, made once and reused; a nearest-filtered
+ * texture, and the same entry drawn in through mode, keep the plain set. */
+int gegpu_ace_af_selftest(void) {
+    if (!s_ace_af) {
+        fprintf(stderr, "gpu ace selftest: SKIP (this device has no anisotropic filtering)\n");
+        return 77;
+    }
+    if (s_tex_pool_sets != 2u * MAX_TEX) {
+        fprintf(stderr, "gpu ace selftest: FAIL texture pool has %u sets, expected %u\n",
+                s_tex_pool_sets, 2u * MAX_TEX);
+        return 0;
+    }
+    if (!coherence_run_psp_sample_points()) return 0;
+    if (s_cnt_af_samplers != 0u) {
+        fprintf(stderr, "gpu ace selftest: FAIL through-mode draws made %llu anisotropic samplers\n",
+                (unsigned long long)s_cnt_af_samplers);
+        return 0;
+    }
+    /* The list left the 32x32 texture bound. Draw it transformed, then nearest, then through. */
+    GeState *g = s_ge;
+    const uint32_t through = 1u << 23;
+    g->vtype &= ~through;
+    g->tex_filter = 0x101u;                                  /* linear min and mag */
+    VkDescriptorSet aniso = tex_get();
+    VkDescriptorSet again = tex_get();
+    int ok = s_cnt_af_samplers == 1u && aniso == again && aniso != s_white_set;
+    if (!ok) fprintf(stderr, "gpu ace selftest: FAIL transformed linear draw: samplers=%llu same=%d\n",
+                     (unsigned long long)s_cnt_af_samplers, aniso == again);
+    g->tex_filter = 0x100u;                                  /* nearest min, linear mag */
+    VkDescriptorSet nearest = tex_get();
+    if (ok && (s_cnt_af_samplers != 1u || nearest == aniso)) {
+        fprintf(stderr, "gpu ace selftest: FAIL nearest minification got anisotropy\n");
+        ok = 0;
+    }
+    g->tex_filter = 0x101u;
+    g->vtype |= through;
+    VkDescriptorSet plain = tex_get();
+    if (ok && (s_cnt_af_samplers != 1u || plain == aniso)) {
+        fprintf(stderr, "gpu ace selftest: FAIL a through-mode draw bound the anisotropic set\n");
+        ok = 0;
+    }
+    if (ok) printf("gpu ace selftest: PASS af=%d through-mode exact, transformed linear filtered, "
+                   "nearest kept\n", s_ace_af);
+    return ok;
+}
+
 int gegpu_snapshot_sync_selftest(void) {
     const uint32_t fba = 0x00140000u;
     const uint32_t base = 0x04000000u | fba;
@@ -8314,6 +8417,13 @@ int gegpu_snapshot_sync_selftest(void) {
 }
 #endif
 
+void gegpu_ace_stats(GeGpuAceStats *out) {
+    if (!out) return;
+    out->af = s_ace_af;
+    out->af_samplers = (unsigned long long)s_cnt_af_samplers;
+    out->tex_pool_sets = s_tex_pool_sets;
+}
+
 int gegpu_init(void) {
     Sdl3VkInfo vi;
     sr_perf_set_gpu_replay_source(gpu_replay_snapshot);
@@ -8427,9 +8537,15 @@ int gegpu_init(void) {
     dlc.bindingCount = 2; dlc.pBindings = db;
     VKC(vkCreateDescriptorSetLayout(s_dev, &dlc, NULL, &s_dlayout));
 
-    VkDescriptorPoolSize dps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * MAX_TEX };
+    /* Ace Mode's texture filtering (ace.h) can give every entry a second, anisotropic set; the
+     * pool doubles for it then, and only then. */
+    s_ace_af = g_ace_on ? ace_effective()->af : 0;
+    const uint32_t tex_sets = s_ace_af ? 2u * MAX_TEX : MAX_TEX;
+    s_tex_pool_sets = tex_sets;
+    if (s_ace_af) ace_confirm(ACE_FEATURE_AF);   /* the renderer that filters is up */
+    VkDescriptorPoolSize dps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2u * tex_sets };
     VkDescriptorPoolCreateInfo dpc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-    dpc.maxSets = MAX_TEX; dpc.poolSizeCount = 1; dpc.pPoolSizes = &dps;
+    dpc.maxSets = tex_sets; dpc.poolSizeCount = 1; dpc.pPoolSizes = &dps;
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;   /* LRU eviction */
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_tex));
     VkDescriptorPoolSize dpsf = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -8571,6 +8687,8 @@ void gegpu_shutdown(void) {
         tex_shadow_release(e);
         if (e->set) vkFreeDescriptorSets(s_dev, s_dpool_tex, 1, &e->set);
         if (e->smp) vkDestroySampler(s_dev, e->smp, NULL);
+        if (e->set_af) vkFreeDescriptorSets(s_dev, s_dpool_tex, 1, &e->set_af);
+        if (e->smp_af) vkDestroySampler(s_dev, e->smp_af, NULL);
         if (e->view) vkDestroyImageView(s_dev, e->view, NULL);
         if (e->img) vkDestroyImage(s_dev, e->img, NULL);
         if (e->mem) vkFreeMemory(s_dev, e->mem, NULL);

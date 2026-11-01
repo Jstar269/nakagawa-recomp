@@ -105,7 +105,6 @@ CODE_TABLE_INVALID = "ANALYZER_IMPORT_TABLE_INVALID"
 CODE_NID_TABLE_MISSING = "ANALYZER_IMPORT_NID_TABLE_MISSING"
 CODE_LIBRARY_NAME_UNMAPPED = "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED"
 CODE_REGIONS_MISMATCH = "ANALYZER_IMPORT_REGIONS_MISMATCH"
-CODE_VARIABLE_IMPORTS_UNSUPPORTED = "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED"
 
 
 class ImportTableError(Exception):
@@ -459,16 +458,6 @@ def parse_export_table(data: bytes) -> ExportTable | None:
         libraries.append(ExportedLibrary(name, attributes, nids[:num_funcs], nids[num_funcs:]))
         pos = next_pos
     return ExportTable(module_attributes, tuple(libraries))
-
-
-def variable_imports_message(tables: Sequence[tuple[str, int]]) -> str:
-    """The analyzer's named boundary text for a table that declares variables."""
-    total = sum(count for _library, count in tables)
-    summary = ", ".join(f"{library} x{count}" for library, count in tables)
-    return (
-        f"import table declares {total} variable imports ({summary}); "
-        "variable imports are not supported yet"
-    )
 
 
 class ImportWindow(NamedTuple):
@@ -854,7 +843,6 @@ def parse_import_table(data: bytes) -> ImportTable:
     table = ImportTable(module_attributes=struct.unpack_from("<H", mi, 0)[0])
     seen_libs: set[str] = set()
     windows: list[ImportWindow] = []
-    variable_tables: list[tuple[str, int]] = []  # (library, count) per declaring window
     pos = libstub
     entry_index = 0
     while pos < libstubend:
@@ -904,7 +892,6 @@ def parse_import_table(data: bytes) -> ImportTable:
                     f"{what} declares {num_vars} variables but its variable-stub table "
                     f"pointer 0x{vstub_table:08x} is null or misaligned", code=CODE_TABLE_INVALID)
             _read_guest(data, gmap, vstub_table, 4, f"{what} variable-stub table")
-            variable_tables.append((libname, num_vars))
         if num_funcs:
             # Per-window pointer validation. The stub span check (first_sym ..
             # first_sym + num_funcs*8) requires 4-byte alignment, no 32-bit
@@ -921,11 +908,9 @@ def parse_import_table(data: bytes) -> ImportTable:
         pos = next_pos
         entry_index += 1
 
-    # The analyzer refuses a table that declares variables at its named boundary;
-    # the audit refuses it the same way rather than report functions alone.
-    if variable_tables:
-        raise ImportTableError(
-            variable_imports_message(variable_tables), code=CODE_VARIABLE_IMPORTS_UNSUPPORTED)
+    # Variable imports are not function stubs: the analyzer models them
+    # (imports.variable_imports) and the runtime links them, so the audit, like the
+    # analyzer, maps the table's functions alone once their variable-stub pointers check.
 
     def read_nids(address: int, count: int) -> tuple[int, ...]:
         blob = _read_guest(data, gmap, address, count * 4, "global NID region")

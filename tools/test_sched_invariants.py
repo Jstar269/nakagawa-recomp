@@ -40,11 +40,16 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHED = (ROOT / "src" / "rt" / "sched.c").read_text(encoding="utf-8")
 CORO = (ROOT / "src" / "rt" / "sr_coro.c").read_text(encoding="utf-8")
-HLE = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+HLE = hle_sources.text()
 
 
 def strip_comments(source):
@@ -225,7 +230,7 @@ class ThreadLifecycleTests(unittest.TestCase):
         self.assertNotRegex(body, r"0x11[0-9]u?\b")
 
     def test_no_executable_literal_uid_comparisons_remain(self):
-        for name, source in (("sched.c", SCHED), ("hle.c", HLE)):
+        for name, source in (("sched.c", SCHED), ("runtime HLE sources", HLE)):
             stripped = strip_comments(source)
             self.assertNotRegex(
                 stripped,
@@ -261,7 +266,7 @@ class ThreadLifecycleTests(unittest.TestCase):
 
     def test_no_source_compares_a_uid_against_a_role_global(self):
         """Every role question in the runtime goes through a fail-closed predicate."""
-        for name, source in (("sched.c", SCHED), ("hle.c", HLE)):
+        for name, source in (("sched.c", SCHED), ("runtime HLE sources", HLE)):
             stripped = strip_comments(source)
             self.assertNotRegex(
                 stripped,
@@ -378,7 +383,7 @@ class PerCallPathsReadNoEnvironmentTests(unittest.TestCase):
     """
 
     PER_CALL = (
-        ("hle.c", HLE, (
+        ("runtime HLE sources", HLE, (
             "sr_syscall", "h_CpuSuspendIntr", "h_CpuResumeIntr", "sr_alloc_uid",
             "h_SleepThread", "h_SleepThreadCB", "h_WakeupThread", "h_CancelWakeupThread",
             "h_ReferThreadRunStatus", "sr_ctrl_sample", "ctrl_fill_n", "display_present_frame",

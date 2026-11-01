@@ -42,13 +42,14 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 import scratch_dir
+import hle_sources  # noqa: E402
 
 RT = ROOT / "src" / "rt"
 STALE_H = (RT / "stale_code.h").read_text(encoding="utf-8")
 STALE_C = (RT / "stale_code.c").read_text(encoding="utf-8")
 SELFTEST_C = RT / "stale_code_selftest.c"
 SELFTEST_TEXT = SELFTEST_C.read_text(encoding="utf-8")
-HLE_C = (RT / "hle.c").read_text(encoding="utf-8")
+HLE_C = hle_sources.text()
 RECOMP_H = (RT / "recomp.h").read_text(encoding="utf-8")
 MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
@@ -285,7 +286,7 @@ class TestStaleCodeWiring(unittest.TestCase):
         # register unconditionally, once, through a helper that the production registry and
         # the executable harness both call; the stale check inside stays behind its gate.
         low = HLE_C.lower()
-        helper = HLE_C.split("static void hle_register_icache_handlers(void) {", 1)[1]
+        helper = HLE_C.split("void hle_register_icache_handlers(void) {", 1)[1]
         helper = helper.split("\n}\n", 1)[0].lower()
         for nid, name in ((0x920F104A, "sceKernelIcacheInvalidateAll"),
                           (0xD8779AC6, "sceKernelIcacheClearAll"),
@@ -302,7 +303,7 @@ class TestStaleCodeWiring(unittest.TestCase):
         # Data-cache range maintenance is routine around DMA (guest middleware calls it),
         # so it registers unconditionally, once, through the shared helper that both the
         # production registry and the executable harness call.
-        helper = HLE_C.split("static void hle_register_dcache_handlers(void) {", 1)[1]
+        helper = HLE_C.split("void hle_register_dcache_handlers(void) {", 1)[1]
         helper = helper.split("\n}\n", 1)[0].lower()
         for nid, name in ((0xBFA98062, "sceKernelDcacheInvalidateRange"),
                           (0x34B9FA9E, "sceKernelDcacheWritebackInvalidateRange")):

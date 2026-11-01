@@ -104,25 +104,6 @@ class VariableImportTable:
     vstub_table: int
 
 
-class VariableImportsUnsupported(ImportTableError):
-    """A well-formed import table that declares variable imports.
-
-    The analyzer records every declaring library; resolving each variable's
-    references and providing exported-variable storage is not implemented, so
-    the table stops at this named boundary instead of being partly imported.
-    """
-
-    def __init__(self, tables):
-        self.tables = tuple(tables)
-        total = sum(table.count for table in self.tables)
-        summary = ", ".join(f"{table.library} x{table.count}" for table in self.tables)
-        super().__init__(
-            "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED",
-            f"import table declares {total} variable imports ({summary}); "
-            "variable imports are not supported yet",
-        )
-
-
 def _variable_import_table(elf, pos, entry_bytes, size_words, library, count, rebase):
     """Validate and record one entry's variable-import declaration.
 
@@ -176,6 +157,52 @@ class VariableImport:
 
 VARIABLE_REFERENCE_FIELDS = {2: "word32", 5: "hi16", 6: "lo16"}
 MAX_VARIABLE_REFERENCES = 4096
+
+
+@dataclass(frozen=True)
+class VariableExport:
+    """One variable a named library of the image exports, and its address."""
+
+    library: str
+    nid: int
+    address: int
+
+
+def variable_exports(elf):
+    """Every variable a named library of the image exports, in .lib.ent order.
+
+    An export record is a 16-byte head (library name, version, attributes, length in words,
+    variable count, function count, entry table); its entry table holds the function NIDs,
+    the variable NIDs, then their addresses in the same order. The nameless module-lifecycle
+    entry exports no linkable variable. An image with no .lib.ent exports none.
+    """
+    libent = elf.sec(".lib.ent")
+    if not libent or not libent.get("size"):
+        return ()
+    blob = elf.read_at_vaddr(libent["addr"], libent["size"])
+    if blob is None or len(blob) != libent["size"]:
+        raise ImportTableError("ANALYZER_IMPORT_TABLE_INVALID", ".lib.ent leaves mapped input")
+    found = []
+    pos = 0
+    while pos + 16 <= len(blob):
+        name_ptr, _version, _attributes, size, num_vars, num_funcs, table = struct.unpack_from(
+            "<IHHBBHI", blob, pos)
+        if size < 4:
+            break  # a record shorter than its own head ends the table, as the analyzer reads it
+        if num_vars and name_ptr:
+            library = _read_guest_cstr(elf, name_ptr)
+            count = num_funcs + num_vars
+            words = elf.read_at_vaddr(table, 8 * count) if table else None
+            if words is None or len(words) != 8 * count:
+                raise ImportTableError(
+                    "ANALYZER_IMPORT_TABLE_INVALID",
+                    f"{library} export table at 0x{table:08x} leaves mapped input")
+            values = struct.unpack(f"<{2 * count}I", words)
+            for j in range(num_vars):
+                found.append(VariableExport(library, values[num_funcs + j],
+                                            values[count + num_funcs + j]))
+        pos += size * 4
+    return tuple(found)
 
 
 def variable_imports(elf):
@@ -257,6 +284,23 @@ def _encode_import_library_name(raw):
     return "".join(chr(b) if b in allowed else f"%{b:02X}" for b in raw)
 
 
+def decode_import_library_name(text):
+    """The guest bytes of a name _encode_import_library_name encoded (its inverse).
+
+    The runtime compares library names as the loader reads them, raw, so a generated table
+    carries these bytes rather than the encoding."""
+    out = bytearray()
+    i = 0
+    while i < len(text):
+        if text[i] == "%":
+            out.append(int(text[i + 1:i + 3], 16))
+            i += 3
+        else:
+            out.append(ord(text[i]))
+            i += 1
+    return bytes(out)
+
+
 def _read_guest_cstr(elf, addr, *, max_bytes=MAX_IMPORT_LIBRARY_NAME_BYTES):
     """Read one mapped guest C string with deterministic byte/address bounds."""
     if not isinstance(addr, int) or addr < 0 or addr > 0xFFFFFFFF:
@@ -306,22 +350,20 @@ def _import_model_impl(elf):
     (library name, NID); slots no window claims map to the
     UNATTRIBUTED_LIBRARY marker. findings is a list of deterministic
     structural strings (unreferenced section words, detached runs, and
-    unclaimed and multi-claimed positions).
+    unclaimed and multi-claimed positions). A table's variable imports are
+    not function stubs: variable_imports models them, codegen reads their
+    reference sites from memory and the runtime linker patches those sites.
     """
-    stubs, findings, _variable_tables = _function_import_model(elf, allow_variables=False)
+    stubs, findings, _variable_tables = _function_import_model(elf)
     return stubs, findings
 
 
 def function_import_model(
     elf: Elf,
 ) -> "tuple[dict[int, tuple[str, int]], list[str], tuple[VariableImportTable, ...]]":
-    """Return (stubs, findings, variable_tables) without refusing variable imports.
-
-    The same layout as parse_imports. The analyzer refuses an image that declares
-    variable imports; the import-stub census uses this entry point to enumerate the
-    function stubs of such an image and name each one as missing, so none is silent.
-    """
-    return _function_import_model(elf, allow_variables=True)
+    """Return (stubs, findings, variable_tables): parse_imports plus the windows that
+    declare variables (variable_imports models those)."""
+    return _function_import_model(elf)
 
 
 def function_import_windows(
@@ -398,10 +440,8 @@ def _walk_import_windows(elf):
     return windows, variable_tables, base
 
 
-def _function_import_model(elf, *, allow_variables):
+def _function_import_model(elf):
     windows, variable_tables, base = _walk_import_windows(elf)
-    if variable_tables and not allow_variables:
-        raise VariableImportsUnsupported(variable_tables)
 
     # Passes 2-4: the shared layout model (psp_import_table.layout_import_windows)
     # pairs stub slots with NIDs for the audit parser and the analyzer alike.
@@ -419,6 +459,11 @@ def _function_import_model(elf, *, allow_variables):
             raise ValueError(f"truncated import NID region at 0x{address:08x}")
         return struct.unpack(f"<{count}I", blob)
 
+    if variable_tables and not any(window.count for window in windows):
+        # A table that imports only variables has no function stub to pair; a stub or NID
+        # section with content and no function window still fails closed in the layout.
+        if not ((stub_section and stub_section[1]) or (nid_section and nid_section[1])):
+            return {}, [], tuple(variable_tables)
     stubs, findings = layout_import_windows(windows, stub_section, nid_section, read_nids)
     return stubs, findings, tuple(variable_tables)
 

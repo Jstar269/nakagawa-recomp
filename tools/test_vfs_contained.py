@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SELFTEST_C = ROOT / "src" / "rt" / "vfs_contained_selftest.c"
@@ -170,7 +171,7 @@ class TestSeamPortability(unittest.TestCase):
                       "backend selection must be a capability probe, not a platform guess")
 
     def test_linux_guest_file_io_uses_the_containment_seam(self):
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         self.assertIn("ms0_fopen_guest_utf8(path, mode, existence, &open_status)", hle)
         self.assertIn("sr_cd_rename_file(&root, old_rel, new_rel)", hle)
         self.assertIn("sr_cd_mkdir_leaf(&root, rel)", hle)

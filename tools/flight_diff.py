@@ -574,6 +574,12 @@ def _comparability_reasons(baseline: dict[str, Any], candidate: dict[str, Any]) 
             "bundle schema versions differ: "
             f"{baseline['schema_version']} vs {candidate['schema_version']}"
         )
+    for side, bundle in (("baseline", baseline), ("candidate", candidate)):
+        if "enhancements" in bundle["runtime"]:
+            reasons.append(
+                f"the {side} is an Ace Mode run ({bundle['runtime']['enhancements']}); an "
+                "enhanced run is not authentic evidence and is never compared"
+            )
     if baseline["runtime"] != candidate["runtime"]:
         reasons.append(f"runtime blocks differ: {baseline['runtime']} vs {candidate['runtime']}")
     if set(baseline["recorder"]["enabled_classes"]) != set(

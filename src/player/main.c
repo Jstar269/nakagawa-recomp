@@ -699,7 +699,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_UPDATES ||
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
                        app->active_view == VIEW_ONLINE_SETTINGS ||
-                       app->active_view == VIEW_ACCESSIBILITY_SETTINGS) {
+                       app->active_view == VIEW_ACCESSIBILITY_SETTINGS ||
+                       app->active_view == VIEW_ACE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
                 player_app_close_developer_log(app);
@@ -868,7 +869,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_UPDATES ||
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
                        app->active_view == VIEW_ONLINE_SETTINGS ||
-                       app->active_view == VIEW_ACCESSIBILITY_SETTINGS) {
+                       app->active_view == VIEW_ACCESSIBILITY_SETTINGS ||
+                       app->active_view == VIEW_ACE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
                 player_app_close_developer_log(app);
@@ -1552,6 +1554,12 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             break;
         case PLAYER_UI_SETTINGS_CYCLE_INTERFACE_SIZE: player_app_cycle_interface_size(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_TEXT_SIZE: player_app_cycle_text_size(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_ACE: player_app_set_view(app, VIEW_ACE_SETTINGS); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_ACE: player_app_toggle_ace(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_ACE_FILTERING: player_app_cycle_ace_filtering(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT: player_app_toggle_ace_text(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT: player_app_toggle_ace_readout(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE: player_app_toggle_ace_notice(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_HIGH_CONTRAST: player_app_cycle_high_contrast_focus(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION: player_app_cycle_reduce_motion(app); break;
         case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:
@@ -4474,6 +4482,8 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
         } else if (strcmp(test_view, "accessibility-settings") == 0) {
             player_app_set_view(&app, VIEW_ACCESSIBILITY_SETTINGS);
+        } else if (strcmp(test_view, "ace-settings") == 0) {
+            player_app_set_view(&app, VIEW_ACE_SETTINGS);
         } else if (strcmp(test_view, "build-cache") == 0) {
             player_app_set_view(&app, VIEW_BUILD_CACHE);
         } else if (strcmp(test_view, "updates") == 0) {
@@ -4876,8 +4886,8 @@ int main(int argc, char *argv[]) {
         player_ui_nk_test_report_compatibility();
     }
     if (ui_test_mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
-        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_ACCESSIBILITY_SETTINGS. */
-        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_ACCESSIBILITY_SETTINGS; ++view) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_ACE_SETTINGS. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_ACE_SETTINGS; ++view) {
             printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
                    player_ui_test_view_name((PlayerView)view),
                    player_ui_nk_draws_view(view) ? 1 : 0);
@@ -5590,8 +5600,14 @@ int main(int argc, char *argv[]) {
             last_package_cache_generation =
                 app.runtime_package_cache_generation;
         }
+        /* The periodic re-check waits for 2 s with no check running. Counted from
+           the previous rescan instead, a check that took 2 s or more (a large
+           package, a loaded host) found the next one already queued when it ended,
+           so the launcher re-checked back to back and never went idle. */
         uint64_t package_scan_now = SDL_GetTicks();
-        if (package_scan_now - last_package_scan_tick >= 2000) {
+        if (package_status_job) {
+            last_package_scan_tick = package_scan_now;
+        } else if (package_scan_now - last_package_scan_tick >= 2000) {
             player_package_status_queue_all(
                 &app, package_status_requested,
                 package_status_force_requested);

@@ -16,6 +16,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from typing import cast
 from unittest import mock
 import zlib
 
@@ -284,7 +285,9 @@ class BringupLibraryTests(unittest.TestCase):
             digest(path.read_bytes()) if hashed else None)
 
     def games(self) -> list[dict]:
-        return json.loads((self.root / "library.json").read_text(encoding="utf-8"))["games"]
+        return cast(list[dict], json.loads(
+            (self.root / "library.json").read_text(encoding="utf-8")
+        )["games"])
 
     def by_file(self) -> dict[str, dict]:
         return {Path(game["iso_path"]).name: game for game in self.games()}

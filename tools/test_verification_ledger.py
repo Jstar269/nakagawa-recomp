@@ -9,16 +9,23 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from typing import Any, ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_manifest  # noqa: E402
 import verification_ledger as ledger_mod  # noqa: E402
+import hle_sources  # noqa: E402
 
 ROOT = ledger_mod.ROOT
 FIVE = ("hardware-measured", "ppsspp-derived", "game-route", "synthetic", "unverified")
 
 
 class LedgerTests(unittest.TestCase):
+    ledger: ClassVar[dict[str, Any]]
+    manifest: ClassVar[dict[str, Any]]
+    sources: ClassVar[list[tuple[str, str]]]
+    registered: ClassVar[set[str]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.ledger = ledger_mod.build_ledger()
@@ -170,7 +177,7 @@ class RuntimeLogTests(unittest.TestCase):
             ledger_mod.classify_vfpu(census, ("no_such_kernel",))
 
     def test_dispatch_logs_unverified_nids_once_from_the_generated_table(self) -> None:
-        source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        source = hle_sources.text()
         self.assertIn('#include "hle_evidence.h"', source)
         self.assertIn("HLE: unverified: %s (NID 0x%08x) has no recorded evidence (docs/HLE_COVERAGE.md)", source)
         self.assertIn("hle_note_unverified(e);", source)

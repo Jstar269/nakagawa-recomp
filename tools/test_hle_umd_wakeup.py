@@ -3,9 +3,14 @@
 import re
 import unittest
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-HLE_SOURCE = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+HLE_SOURCE = hle_sources.text()
 
 
 def function_body(name):

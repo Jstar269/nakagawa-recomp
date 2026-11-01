@@ -624,6 +624,74 @@ class RelocatedImmediateEmission(unittest.TestCase):
         with self.assertRaisesRegex(codegen.Unsupported, "unrelocated absolute jump"):
             space.check_jump(0x40, 0x0C000010)
 
+    def test_an_unrelocated_jump_decodes_its_target_when_it_runs(self):
+        # A module linked against its executable calls into it by link address, and the loader
+        # leaves that jal as linked: the build cannot know the target, so the transfer decodes
+        # it from the word in guest memory. A relocated jal stays a direct call into the module.
+        self.space({0x08: prx_reloc_model.RelocationSite(0x08, "jump26", 0x20)})
+
+        class WordImage:
+            words = {
+                0x00: 0x0C0000C0, 0x04: 0x24020001,  # jal 0x300 (no relocation); slot
+                0x08: 0x0C000008, 0x0C: 0x00000000,  # jal 0x20 (relocated)
+                0x10: 0x08000100, 0x14: 0x24030002,  # j 0x400 (no relocation); slot
+                0x20: 0x03E00008, 0x24: 0x00000000,  # the module's own leaf
+            }
+
+            def read_at_vaddr(self, address, size):
+                word = self.words.get(address)
+                return None if size != 4 or word is None else struct.pack("<I", word)
+
+        text = "\n".join(codegen.emit_function(WordImage(), 0x00, [(0x00, 0x28)], {0x00, 0x20}))
+        decoded = ("((((sr_m7_base + 0x{0:08x}u) + 4u) & 0xF0000000u) | "
+                   "((MEM_R32((sr_m7_base + 0x{0:08x}u)) & 0x03FFFFFFu) << 2))")
+        self.assertIn(f"uint32_t _t = {decoded.format(0x00)};", text)
+        self.assertIn("dispatch_call(s, _t, (sr_m7_base + 0x00000008u));", text)
+        self.assertIn("m7_00000020(s);", text)
+        self.assertIn(f"uint32_t _t = {decoded.format(0x10)};", text)
+        self.assertIn("sr_tail_record(s, _t, NULL, _sp_entry, 1u); return;", text)
+        self.assertIn("s->r[2] = (0u + 0x00000001u);", text, "the jal's slot runs")
+        self.assertIn("s->r[3] = (0u + 0x00000002u);", text, "the j's slot runs")
+        for link_target in (0x300, 0x400):
+            self.assertNotIn(f"0x{link_target:08x}u", text)
+
+    def test_variable_import_sites_read_their_immediate_from_memory(self):
+        # The runtime linker patches these words when the exporter loads, in any image:
+        # the code reads each HI16/LO16 immediate from memory, never the placeholder.
+        codegen.ADDRESS_SPACE = codegen.AddressSpace(
+            patched={0x08900010: "hi16", 0x08900014: "lo16", 0x08900018: "word32"})
+        space = codegen.ADDRESS_SPACE
+        lui_c, _, _ = codegen.effect(0x08900010, space.instruction_word(0x08900010, 0x3C020000))
+        lw_c, _, _ = codegen.effect(0x08900014, space.instruction_word(0x08900014, 0x8C430000))
+        self.assertEqual(lui_c, "s->r[2] = (((uint32_t)(uint16_t)MEM_R16(0x08900010u)) << 16);")
+        self.assertIn("((uint32_t)(int32_t)(int16_t)(uint16_t)MEM_R16(0x08900014u))", lw_c)
+        self.assertEqual(space.instruction_word(0x0890001C, 0x24020001), 0x24020001)
+        with self.assertRaisesRegex(codegen.Unsupported,
+                                    "variable-import word32 reference on an executed word"):
+            space.instruction_word(0x08900018, 0x24020001)
+
+    def test_variable_import_table_lists_each_reference_in_order(self):
+        from imports import VariableImport
+        lines = codegen.var_import_table_lines("sr_main_var_imports", (
+            VariableImport("SynthLib", 0x12345678, (("hi16", 0x08900010), ("lo16", 0x08900014),
+                                                    ("word32", 0x08A00000))),
+            VariableImport("Empty", 0x1, ()),
+        ))
+        self.assertEqual(lines, [
+            "static const SrVarImportRef sr_main_var_imports_refs_0[] = { {0x08900010u, 5u}, "
+            "{0x08900014u, 6u}, {0x08a00000u, 2u} };",
+            "static const SrVarImport sr_main_var_imports[] = {",
+            '    { "SynthLib", 0x12345678u, sr_main_var_imports_refs_0, 3u },',
+            '    { "Empty", 0x00000001u, NULL, 0u },',
+            "};",
+        ])
+
+    def test_a_table_names_its_library_by_the_guest_bytes(self):
+        # tools/imports.py percent-encodes a name byte outside its safe alphabet; the runtime
+        # compares an importer's name with the raw name the loader reads from its exporter.
+        self.assertEqual(codegen.c_library_name("Lib%2FName%25x"), '"Lib/Name%x"')
+        self.assertEqual(codegen.c_library_name("Lib%22%5C"), '"Lib\\042\\134"')
+
     def test_a_fixed_address_image_keeps_its_absolute_jumps(self):
         space = self.space({}, relocatable=False)
         space.check_jump(0x40, 0x0C000010)                       # no refusal

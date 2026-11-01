@@ -292,6 +292,12 @@ def plan_function(cg, elf, start, ranges, known, *, resume_owners=None, resumabl
         dispatch_boundaries=dispatch_boundaries)
     if not insns:
         raise Unsupported("empty body")
+    if not space.patched.keys().isdisjoint(insns):
+        raise Unsupported("variable-import reference site (its immediate is read from memory)")
+    if not resumable and cg.guest_owns_entry_sp(elf, insns):
+        # Its exits leave $sp to the guest and the stack census leaves it unwrapped
+        # (codegen.GUEST_SP_ENTRIES); the C backend owns that contract.
+        raise Unsupported("loads $sp, so its exits leave $sp to the guest (kept in C)")
     if cg.ENHANCEMENT_SITES and insns & set(cg.ENHANCEMENT_SITES):
         raise Unsupported("enhancement-package rewrite site")
     if profile == "hst":

@@ -21,6 +21,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "../ace.h"   /* Ace Mode: texture filtering asks for samplerAnisotropy */
 #include "sdl3vk.h"
 #include "nk_platform.h"
 #include "../perf.h"
@@ -60,7 +61,7 @@
 typedef struct PresentFrame {
     VkCommandBuffer cmd;
     VkFence fence;
-    VkSemaphore sem_acq, sem_done;
+    VkSemaphore sem_acq;   /* its submit's wait, covered by the fence; the present's is per image */
     VkBuffer staging;
     VkDeviceMemory staging_mem;
     void *staging_map;
@@ -96,6 +97,10 @@ static VkExtent2D     s_swap_ext;
 static uint32_t       s_swap_n;
 static VkImage        s_swap_img[8];
 static VkFence        s_swap_img_fence[8];
+/* The semaphore a present of each image waits on (#1799). No fence covers that wait: it is
+ * known to be over only once the image is acquired again, so the semaphore belongs to the
+ * image, not to the frame slot that drew it, and lives as long as the swapchain does. */
+static VkSemaphore    s_swap_sem_done[8];
 
 static int      s_renderer_terminal = 0;
 static int      s_denorm_preserve_f32 = 0;   /* see sdl3vk_init: VK_KHR_shader_float_controls */
@@ -206,6 +211,12 @@ void sdl3vk_set_logic_slowed_cb(int (*cb)(unsigned *rate)) {
     s_logic_slowed_cb = cb;
 }
 
+static void (*s_ui_pass)(const Sdl3VkUiPass *frame);
+
+void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame)) {
+    s_ui_pass = pass;
+}
+
 static uint32_t s_buttons;
 static uint8_t  s_lx = 128, s_ly = 128;
 static int      s_pad_present;
@@ -276,6 +287,14 @@ static void destroy_swapchain(void) {
     if (s_swap) { vkDestroySwapchainKHR(s_dev, s_swap, NULL); s_swap = VK_NULL_HANDLE; }
 }
 
+/* After the swapchain whose presents waited on them is gone (#1799). */
+static void destroy_present_semaphores(void) {
+    for (size_t i = 0; i < sizeof(s_swap_sem_done) / sizeof(s_swap_sem_done[0]); i++) {
+        if (s_swap_sem_done[i]) vkDestroySemaphore(s_dev, s_swap_sem_done[i], NULL);
+        s_swap_sem_done[i] = VK_NULL_HANDLE;
+    }
+}
+
 /* Queue-idle fault seam for the selftest: a nonzero VkResult stands in for the next wait. */
 static VkResult s_idle_fault_result = VK_SUCCESS;
 
@@ -298,8 +317,13 @@ static int wait_swapchain_unused(void) {
     return 0;
 }
 
+static int init_step_fails(void);
+/* Set while sdl3vk_init creates its swapchain: each present semaphore is then one of its fallible
+ * steps, as it was when the semaphores were per frame, so the init unwind reaches every one. */
+static int s_swapchain_in_init = 0;
+
 /* Creates the swapchain, or replaces the current one: the old swapchain is retired into the new
- * one and destroyed once its images are no longer in use. */
+ * one and destroyed once its images are no longer in use, and its present semaphores with it. */
 static int create_swapchain(void) {
     if (s_swap && !wait_swapchain_unused()) return 0;
     VkSurfaceCapabilitiesKHR caps;
@@ -383,6 +407,7 @@ static int create_swapchain(void) {
         fprintf(stderr, "sdl3vk: vkCreateSwapchainKHR failed: %d; the renderer is terminal\n",
                 (int)cr);
         if (old) vkDestroySwapchainKHR(s_dev, old, NULL);
+        destroy_present_semaphores();
         s_swap = VK_NULL_HANDLE;
         s_swap_n = 0;
         memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
@@ -391,6 +416,9 @@ static int create_swapchain(void) {
     }
     s_swap = made;
     if (old) vkDestroySwapchainKHR(s_dev, old, NULL);
+    /* Every present that waited on these was to the old swapchain, and the queue was idle
+     * before it was replaced (wait_swapchain_unused). */
+    destroy_present_semaphores();
 
     uint32_t n_img = (uint32_t)(sizeof(s_swap_img) / sizeof(s_swap_img[0]));
     VkResult ir = vkGetSwapchainImagesKHR(s_dev, s_swap, &n_img, s_swap_img);
@@ -402,6 +430,23 @@ static int create_swapchain(void) {
         memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
         s_renderer_terminal = 1;
         return 0;
+    }
+    VkSemaphoreCreateInfo semi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    for (uint32_t i = 0; i < n_img; i++) {
+        VkResult sr = s_swapchain_in_init && init_step_fails()
+                    ? VK_ERROR_INITIALIZATION_FAILED
+                    : vkCreateSemaphore(s_dev, &semi, NULL, &s_swap_sem_done[i]);
+        if (sr != VK_SUCCESS) {
+            /* Those already made are destroyed with the swapchain, by the next creation or
+             * by shutdown. */
+            fprintf(stderr, "sdl3vk: vkCreateSemaphore for swapchain image %u failed: %d; "
+                            "the renderer is terminal\n", (unsigned)i, (int)sr);
+            s_swap_sem_done[i] = VK_NULL_HANDLE;
+            s_swap_n = 0;
+            memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
+            s_renderer_terminal = 1;
+            return 0;
+        }
     }
     s_swap_n = n_img;
     memset(s_swap_img_fence,0,sizeof(s_swap_img_fence));
@@ -682,6 +727,27 @@ int sdl3vk_init(const char *title) {
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = s_denorm_preserve_f32 ? 2u : 1u;
     dci.ppEnabledExtensionNames = dev_ext;
+    /* Ace Mode's texture filtering (ace.h) is the only device feature the player ever asks
+     * for, and only in an Ace run that wants it: an authentic run creates the device with no
+     * features, as before. A device without it, or with less than 2x, runs without filtering
+     * and the run says why; a lower maximum clamps the level. */
+    VkPhysicalDeviceFeatures ace_features = {0};
+    if (g_ace_on && ace_effective()->af > 0) {
+        VkPhysicalDeviceFeatures have;
+        VkPhysicalDeviceProperties pp;
+        vkGetPhysicalDeviceFeatures(s_pdev, &have);
+        vkGetPhysicalDeviceProperties(s_pdev, &pp);
+        if (have.samplerAnisotropy && pp.limits.maxSamplerAnisotropy >= 2.0f) {
+            int device_max = pp.limits.maxSamplerAnisotropy >= 16.0f ? 16
+                           : pp.limits.maxSamplerAnisotropy >= 8.0f ? 8
+                           : pp.limits.maxSamplerAnisotropy >= 4.0f ? 4 : 2;
+            ace_features.samplerAnisotropy = VK_TRUE;
+            dci.pEnabledFeatures = &ace_features;
+            ace_set_af_effective(device_max < ace_effective()->af ? device_max : ace_effective()->af, NULL);
+        } else {
+            ace_set_af_effective(0, "this GPU has no anisotropic filtering");
+        }
+    }
     INIT_VK(vkCreateDevice(s_pdev, &dci, NULL, &s_dev));
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
 
@@ -705,7 +771,6 @@ int sdl3vk_init(const char *title) {
         INIT_VK(vkAllocateCommandBuffers(s_dev,&cbi,&f->cmd));
         INIT_VK(vkCreateFence(s_dev,&fci,NULL,&f->fence));
         INIT_VK(vkCreateSemaphore(s_dev,&sci2,NULL,&f->sem_acq));
-        INIT_VK(vkCreateSemaphore(s_dev,&sci2,NULL,&f->sem_done));
 
         VkBufferCreateInfo bci={.sType=VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bci.size=PSP_W*PSP_H*4;bci.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -749,7 +814,9 @@ int sdl3vk_init(const char *title) {
         INIT_VK(vkBindImageMemory(s_dev,f->fbimg,f->fbimg_mem,0));
     }
 
+    s_swapchain_in_init = 1;
     INIT_OK(create_swapchain(), "sdl3vk: no swapchain for the new window\n");
+    s_swapchain_in_init = 0;
 
     /* The launcher always says, so a run it starts is a developer run only when its setting
      * is on; a run started by hand is one when SR_DEVELOPER_MODE is set and not 0. */
@@ -774,6 +841,7 @@ int sdl3vk_init(const char *title) {
 fail:
     /* Release exactly what the steps above created, in reverse order, so a caller that falls
      * back to another presenter (gui_init's GDI window) holds no SDL or Vulkan object. */
+    s_swapchain_in_init = 0;
     sdl3vk_shutdown();
     return 0;
 }
@@ -1151,6 +1219,7 @@ int sdl3vk_get_vk(Sdl3VkInfo *out) {
     out->queue    = (void *)s_queue;
     out->queue_family = s_qfam;
     out->denorm_preserve_f32 = s_denorm_preserve_f32;
+    out->get_instance_proc_addr = (void *)vkGetInstanceProcAddr;
     return 1;
 }
 
@@ -1497,7 +1566,9 @@ static PresentDisposition classify_present(VkResult pr, int *out_presented, cons
     }
 }
 
-static int recover_unenqueued_present(PresentFrame *f) {
+/* A present that was not enqueued left image idx's present semaphore signalled with no wait
+ * pending: once the frame's submit (the signal) is done, the semaphore is replaced. */
+static int recover_unenqueued_present(PresentFrame *f, uint32_t idx) {
     if (!s_dev) return 0;
     if (f->submitted) {
         if (vkWaitForFences(s_dev, 1, &f->fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
@@ -1507,12 +1578,12 @@ static int recover_unenqueued_present(PresentFrame *f) {
         f->submitted = 0;
         f->source = VK_NULL_HANDLE;
     }
-    if (f->sem_done) {
-        vkDestroySemaphore(s_dev, f->sem_done, NULL);
-        f->sem_done = VK_NULL_HANDLE;
+    if (s_swap_sem_done[idx]) {
+        vkDestroySemaphore(s_dev, s_swap_sem_done[idx], NULL);
+        s_swap_sem_done[idx] = VK_NULL_HANDLE;
     }
     VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-    if (vkCreateSemaphore(s_dev, &sci, NULL, &f->sem_done) != VK_SUCCESS) {
+    if (vkCreateSemaphore(s_dev, &sci, NULL, &s_swap_sem_done[idx]) != VK_SUCCESS) {
         s_renderer_terminal = 1;
         return 0;
     }
@@ -1922,6 +1993,20 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         if ((s_hud_enabled || s_logic_slowed_cb) && f->hud_staging_map) {
             draw_hud_overlay(cmd, f, s_swap_img[idx], dw, dh);
         }
+        if (s_ui_pass) {
+            Sdl3VkUiPass ui;
+            ui.cmd = (void *)cmd;
+            ui.frame_slot = (uint32_t)s_frame_cursor;
+            ui.frames_in_flight = PRESENT_FRAMES;
+            ui.format = (int)s_swap_fmt;
+            ui.width = (uint32_t)dw;
+            ui.height = (uint32_t)dh;
+            ui.images = (void *const *)s_swap_img;
+            ui.image_count = s_swap_n;
+            ui.image_index = idx;
+            ui.swapchain_gen = s_swapchain_gen;
+            s_ui_pass(&ui);
+        }
 
         barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0,
@@ -1957,7 +2042,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         si.commandBufferCount = 1;
         si.pCommandBuffers = &cmd;
         si.signalSemaphoreCount = 1;
-        si.pSignalSemaphores = &f->sem_done;
+        si.pSignalSemaphores = &s_swap_sem_done[idx];
         if (PSTEP_VK(PSTEP_RESET_FENCE, vkResetFences(s_dev, 1, &f->fence)) != VK_SUCCESS) {
             why = "vkResetFences failed"; goto fail_acquired;
         }
@@ -1975,7 +2060,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         pi.waitSemaphoreCount = 1;
-        pi.pWaitSemaphores = &f->sem_done;
+        pi.pWaitSemaphores = &s_swap_sem_done[idx];
         pi.swapchainCount = 1;
         pi.pSwapchains = &s_swap;
         pi.pImageIndices = &idx;
@@ -1991,7 +2076,7 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                 VkPipelineStageFlags wstage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
                 VkSubmitInfo esi = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
                 esi.waitSemaphoreCount = 1;
-                esi.pWaitSemaphores = &f->sem_done;
+                esi.pWaitSemaphores = &s_swap_sem_done[idx];
                 esi.pWaitDstStageMask = &wstage;
                 if (vkQueueSubmit(s_queue, 1, &esi, VK_NULL_HANDLE) != VK_SUCCESS) {
                     fprintf(stderr, "sdl3vk: fault harness could not emulate semaphore wait\n");
@@ -2029,7 +2114,8 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             presented = 0;
             s_renderer_terminal = 1;
             /* Surface is lost: present request was enqueued (semaphore waited), but surface is gone.
-             * Do NOT call recover_unenqueued_present because f->sem_done WAS consumed. */
+             * Do NOT call recover_unenqueued_present because the image's present semaphore WAS
+             * consumed. */
             why = disp_why;
             goto fail;
 
@@ -2037,9 +2123,9 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
             presented = 0;
             /* The image is still acquired: only a present or the swapchain's destruction hands
              * it back, and a few such failures in a row would leave no image to acquire (#1377).
-             * The frame is recovered (its fence waited, sem_done replaced) and the swapchain
-             * rebuilt; if either fails, the renderer is terminal. */
-            if (!recover_unenqueued_present(f) || !create_swapchain()) s_renderer_terminal = 1;
+             * The frame is recovered (its fence waited, the image's present semaphore replaced)
+             * and the swapchain rebuilt; if either fails, the renderer is terminal. */
+            if (!recover_unenqueued_present(f, idx) || !create_swapchain()) s_renderer_terminal = 1;
             why = disp_why;
             goto fail;
 
@@ -2391,7 +2477,7 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
     si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores = &f->sem_done;
+    si.pSignalSemaphores = &s_swap_sem_done[idx];
     if (!fail_why && vkResetFences(s_dev, 1, &f->fence) != VK_SUCCESS) fail_why = "vkResetFences failed";
     if (!fail_why && vkQueueSubmit(s_queue, 1, &si, f->fence) != VK_SUCCESS) fail_why = "vkQueueSubmit failed";
     if (fail_why) {
@@ -2404,7 +2490,7 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
 
     VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &f->sem_done;
+    pi.pWaitSemaphores = &s_swap_sem_done[idx];
     pi.swapchainCount = 1;
     pi.pSwapchains = &s_swap;
     pi.pImageIndices = &idx;
@@ -2426,7 +2512,7 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     case PRESENT_NOT_ENQUEUED:
         /* The image is still acquired: recover the frame and rebuild the swapchain to hand it
          * back, as present_common does (#1377). */
-        if (!recover_unenqueued_present(f) || !create_swapchain()) s_renderer_terminal = 1;
+        if (!recover_unenqueued_present(f, idx) || !create_swapchain()) s_renderer_terminal = 1;
         fprintf(stderr, "sdl3vk: pause overlay present failed: %s\n", why ? why : "not enqueued");
         return -1;
     case PRESENT_SURFACE_LOST:
@@ -3206,6 +3292,11 @@ int sdl3vk_pause_input_selftest(void) {
 }
 #undef PAUSE_CHECK
 
+/* Set while the lifecycle selftest holds its own SDL video reference: SDL_WasInit cannot tell
+ * that reference from one sdl3vk leaked, so the per-step count then checks the gamepad
+ * subsystem only, and the selftest checks video once after releasing its reference. */
+static int s_lifecycle_test_holds_video = 0;
+
 /* Objects sdl3vk_init can create, and its SDL subsystems, that are still held. */
 static int lifecycle_live_objects(void) {
     static const PresentFrame empty;
@@ -3215,7 +3306,10 @@ static int lifecycle_live_objects(void) {
             (s_fence != VK_NULL_HANDLE) + (s_swap != VK_NULL_HANDLE) + s_sdl_subsystems;
     for (int i = 0; i < PRESENT_FRAMES; i++)
         n += memcmp(&s_frame[i], &empty, sizeof empty) != 0;
-    return n + (SDL_WasInit(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) != 0);
+    for (size_t i = 0; i < sizeof(s_swap_sem_done) / sizeof(s_swap_sem_done[0]); i++)
+        n += s_swap_sem_done[i] != VK_NULL_HANDLE;
+    return n + (SDL_WasInit(s_lifecycle_test_holds_video ? SDL_INIT_GAMEPAD
+                                                         : SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) != 0);
 }
 
 /* Init unwind, repeated shutdown and re-init (#1377). A failure injected at each fallible step
@@ -3241,6 +3335,14 @@ static int sdl3vk_lifecycle_selftest(void) {
     VkInstanceCreateInfo keep_ci = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     VkInstance keep = VK_NULL_HANDLE;
     (void)vkCreateInstance(&keep_ci, NULL, &keep);
+    /* The test holds its own SDL video reference across the cycles too. sdl3vk_shutdown
+     * releases only its own (SDL_QuitSubSystem), so the video backend's display connection
+     * stays open instead of being reopened some 70 times: under xvfb on a loaded CI runner
+     * one reconnect was seen to fail ("x11 not available"), which the loop then reported as
+     * an unwind at the wrong step. sdl3vk's own objects are still counted below; a video
+     * reference it leaked in any cycle is caught once the test releases its own. */
+    const int keep_video = SDL_InitSubSystem(SDL_INIT_VIDEO) ? 1 : 0;
+    s_lifecycle_test_holds_video = keep_video;
     sdl3vk_shutdown();
     sdl3vk_shutdown();
     if (lifecycle_live_objects() != 0) {
@@ -3321,6 +3423,15 @@ static int sdl3vk_lifecycle_selftest(void) {
         }
     }
     if (keep) vkDestroyInstance(keep, NULL);
+    if (keep_video) {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        s_lifecycle_test_holds_video = 0;
+        if (SDL_WasInit(SDL_INIT_VIDEO) != 0) {
+            fprintf(stderr, "lifecycle: SDL video still initialised after the cycles "
+                            "(a reference sdl3vk_init took was not released)\n");
+            ok = 0;
+        }
+    }
     if (sdl3vk_validation_error_count() != errors) {
         fprintf(stderr, "lifecycle: %d validation error(s) during the unwinds\n",
                 sdl3vk_validation_error_count() - errors);
@@ -3893,6 +4004,40 @@ static int sdl3vk_capture_selftest_body(void) {
         remove(p2);
     }
 
+    /* ---- present semaphores follow the swapchain image (#1799) ----------------------
+     * A present's wait on its semaphore is known to be over only once its image is acquired
+     * again; no fence covers it. Frames drawn from one slot put the frame ring out of step
+     * with the swapchain images, as a driver that hands images out of order does, and none of
+     * them may signal a semaphore that an earlier present of another image may still be
+     * waiting on: the validation layer reports that as an ERROR. */
+    {
+        int errors0 = sdl3vk_validation_error_count();
+        for (int i = 0; i < 8 * PRESENT_FRAMES; i++) {
+            s_frame_cursor = 0;
+            if (sdl3vk_present_rgba(px) != 1) {
+                fprintf(stderr, "present semaphores: present %d from one frame slot failed\n", i);
+                ok = 0;
+            }
+        }
+        if (sdl3vk_validation_error_count() != errors0) {
+            fprintf(stderr, "present semaphores: %d validation error(s) presenting from one frame "
+                            "slot (a semaphore signalled before its image was acquired again)\n",
+                    sdl3vk_validation_error_count() - errors0);
+            ok = 0;
+        }
+        /* Each image has one of its own, made with the swapchain; no slot past its images. */
+        for (size_t i = 0; i < sizeof(s_swap_sem_done) / sizeof(s_swap_sem_done[0]); i++) {
+            int dup = 0;
+            for (size_t k = 0; k < i; k++) dup |= s_swap_sem_done[k] == s_swap_sem_done[i];
+            if ((s_swap_sem_done[i] != VK_NULL_HANDLE) != (i < s_swap_n) ||
+                (s_swap_sem_done[i] != VK_NULL_HANDLE && dup)) {
+                fprintf(stderr, "present semaphores: slot %u of %u swapchain image(s) is wrong\n",
+                        (unsigned)i, (unsigned)s_swap_n);
+                ok = 0;
+            }
+        }
+    }
+
     /* ---- present error recovery and disposition tests ------------------------------- */
     {
         /* Test 1: VK_SUBOPTIMAL_KHR (enqueued rebuild) */
@@ -4102,6 +4247,7 @@ void sdl3vk_shutdown(void) {
             fprintf(stderr, "sdl3vk: shutdown vkQueueWaitIdle failed: %d\n", (int)idle);
     }
     destroy_swapchain();
+    destroy_present_semaphores();
     s_swap_n = 0;
     memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
     if (s_hud_ren)  { SDL_DestroyRenderer(s_hud_ren); s_hud_ren = NULL; }
@@ -4126,7 +4272,6 @@ void sdl3vk_shutdown(void) {
         if (f->staging_map) vkUnmapMemory(s_dev, f->staging_mem);
         if (f->staging)     vkDestroyBuffer(s_dev, f->staging, NULL);
         if (f->staging_mem) vkFreeMemory(s_dev, f->staging_mem, NULL);
-        if (f->sem_done)    vkDestroySemaphore(s_dev, f->sem_done, NULL);
         if (f->sem_acq)     vkDestroySemaphore(s_dev, f->sem_acq, NULL);
         if (f->fence)       vkDestroyFence(s_dev, f->fence, NULL);
         memset(f, 0, sizeof(*f));   /* its command buffer is freed with the pool */

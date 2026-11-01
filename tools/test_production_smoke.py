@@ -1571,8 +1571,12 @@ class TestPresenterContract(unittest.TestCase):
         # One keyboard decision gates both the skipped fast path and the sync that replaces it,
         # so sync_sdl_input() cannot open or close the keyboard between the two.
         self.assertIn("int osk_open = sr_osk_overlay_active();", sdl)
-        self.assertIn("int res = osk_open ? GEGPU_PRESENT_NOT_RESIDENT : gegpu_present(fbaddr, fmt, stride);", sdl)
-        self.assertLess(sdl.index("if (osk_open) {"), sdl.index("gegpu_sync_guest_fb(&d)"))
+        # Ace Mode's crisp keyboard (ace.h) may keep the GPU frame on for an open keyboard; it can
+        # only clear the CPU-path decision, never set it, so an authentic run takes this path.
+        self.assertIn("int osk_cpu = osk_open;", sdl)
+        self.assertIn("if (s_ace_keyboard_now) osk_cpu = 0;", sdl)
+        self.assertIn("int res = osk_cpu ? GEGPU_PRESENT_NOT_RESIDENT : gegpu_present(fbaddr, fmt, stride);", sdl)
+        self.assertLess(sdl.index("if (osk_cpu) {"), sdl.index("gegpu_sync_guest_fb(&d)"))
         self.assertLess(sdl.index("gegpu_sync_guest_fb(&d)"), sdl.index("convert_fb(fbaddr, fmt, stride);"))
         # Only FAILED declines the frame; the failure is reported to the armed capture and the
         # branch jumps to pacing before any conversion or present happens.
