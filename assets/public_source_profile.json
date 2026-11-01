@@ -1020,6 +1020,7 @@
     "src/rt/recomp.c",
     "src/rt/recomp.h",
     "src/rt/savedata.c",
+    "src/rt/sce_kernel_errors.h",
     "src/rt/sched.c",
     "src/rt/sched_selftest.c",
     "src/rt/scripted_input.h",
