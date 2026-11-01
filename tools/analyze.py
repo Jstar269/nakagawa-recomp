@@ -19,6 +19,7 @@
 #
 # Usage: analyze.py <elf> [--toml out.toml] [--quiet]
 
+import argparse
 import bisect
 import hashlib
 import os
@@ -3713,33 +3714,53 @@ def roundtrip_check(model, workdir):
     return ok and preserved and same_count, t1
 
 
+class _OrderedStep(argparse.Action):
+    """Record an output step in command-line order, so --toml and --check run as typed."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        steps = getattr(namespace, "steps", None) or []
+        steps.append((self.dest, values))
+        namespace.steps = steps
+
+
+def _build_arg_parser():
+    parser = argparse.ArgumentParser(
+        prog="analyze.py",
+        allow_abbrev=False,
+        description="Discover function entry points in a PSP ELF and report them.",
+    )
+    parser.add_argument("elf", metavar="ELF", help="the ELF or PRX image to analyze")
+    parser.add_argument("--base", metavar="HEX", type=lambda text: int(text, 16), default=None,
+                        help="load base of a relocatable image, in hex")
+    parser.add_argument("--extra-span", metavar="LO,HI", default=None,
+                        help="an extra executable span of the image")
+    parser.add_argument("--toml", metavar="OUT.TOML", action=_OrderedStep,
+                        help="write the function model as TOML")
+    parser.add_argument("--check", metavar="WORKDIR", action=_OrderedStep,
+                        help="round-trip the TOML model in WORKDIR and report whether it is lossless")
+    parser.add_argument("--cfg-report", metavar="OUT.JSON", default=None,
+                        help="write the canonical CFG report")
+    parser.add_argument("--cfg-gate", action="store_true",
+                        help="fail when the canonical CFG report has findings")
+    parser.add_argument("--quiet", action="store_true", help="skip the ground-truth recall listing")
+    parser.set_defaults(steps=None)
+    return parser
+
+
 def main(argv):
-    args = [a for a in argv[1:] if not a.startswith("--")]
-    opts = [a for a in argv[1:] if a.startswith("--")]
-    if not args:
-        sys.stderr.write(
-            "usage: analyze.py <elf> [--base=HEX] [--extra-span=LO,HI] "
-            "[--toml=out.toml] [--check=workdir] "
-            "[--cfg-report=out.json] [--cfg-gate] [--quiet]\n"
-        )
+    # Unknown options and extra positionals have always been ignored here, so keep ignoring them.
+    try:
+        ns, _ = _build_arg_parser().parse_known_args(argv[1:])
+    except SystemExit as exc:
+        return exc.code
+    base = ns.base
+    extra_span_arg = ns.extra_span
+    cfg_report_path = ns.cfg_report
+    cfg_gate = ns.cfg_gate
+    if cfg_report_path is not None and not cfg_report_path:
+        sys.stderr.write("--cfg-report requires a path\n")
         return 2
-    base = None
-    extra_span_arg = None
-    cfg_report_path = None
-    cfg_gate = False
-    for o in opts:
-        if o.startswith("--base="):
-            base = int(o.split("=", 1)[1], 16)
-        elif o.startswith("--extra-span="):
-            extra_span_arg = o.split("=", 1)[1]
-        elif o.startswith("--cfg-report="):
-            cfg_report_path = o.split("=", 1)[1]
-            if not cfg_report_path:
-                sys.stderr.write("--cfg-report requires a path\n")
-                return 2
-        elif o == "--cfg-gate":
-            cfg_gate = True
-    elf = Elf(args[0], base=base)
+    elf = Elf(ns.elf, base=base)
     extra_spans = resolve_extra_spans(extra_span_arg)
     try:
         starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
@@ -3752,7 +3773,7 @@ def main(argv):
         return 1
     model = build_model(elf, starts)
 
-    quiet = "--quiet" in opts
+    quiet = ns.quiet
     rc = 0
     if cfg_report_path is not None or cfg_gate:
         report_entries, report_ranges = starts, ranges
@@ -3798,12 +3819,12 @@ def main(argv):
         if recall < 0.95:
             rc = 1
 
-    for o in opts:
-        if o.startswith("--toml="):
-            emit_toml(model, o.split("=", 1)[1])
-            print("wrote TOML:", o.split("=", 1)[1])
-        if o.startswith("--check="):
-            ok, t1 = roundtrip_check(model, o.split("=", 1)[1])
+    for step, value in ns.steps or ():
+        if step == "toml":
+            emit_toml(model, value)
+            print("wrote TOML:", value)
+        elif step == "check":
+            ok, t1 = roundtrip_check(model, value)
             print(f"TOML round-trip (hand-corrected, lossless): {'OK' if ok else 'FAIL'}")
             if not ok:
                 rc = 1
