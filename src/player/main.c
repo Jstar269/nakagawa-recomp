@@ -4373,7 +4373,8 @@ static int player_open_window(PlayerRun *run) {
         SDL_Quit();
         return 1;
     }
-    player_host_set_window_icon(run->window);
+    SDL_Window *window = run->window;
+    player_host_set_window_icon(window);
     if (run->interactive_window && run->have_usable_bounds) {
         SDL_Rect usable = run->usable_bounds;
         player_apply_window_geometry(
