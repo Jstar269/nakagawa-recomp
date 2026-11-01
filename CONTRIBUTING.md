@@ -213,7 +213,8 @@ only the modules for the files you changed.
 What does need your own copy of a game: building or running a title (`nk_manager.ps1 -Action BuildFull` with a
 title manifest, the library sweep, `make verify` and the private-title routes) and matching work in a
 decompilation project. What needs a physical PSP is labelled `needs-psp-hardware` and you can skip it. Issues
-labelled [`no-disc-needed`](https://github.com/Jstar269/nakagawa-recomp/labels/no-disc-needed) are written to be done entirely with the commands above.
+labelled [`no-disc-needed`](https://github.com/Jstar269/nakagawa-recomp/labels/no-disc-needed) are written to be done entirely with the commands above; [#1811](https://github.com/Jstar269/nakagawa-recomp/issues/1811)
+to [#1816](https://github.com/Jstar269/nakagawa-recomp/issues/1816) are the first six.
 
 ## Make a focused change
 
