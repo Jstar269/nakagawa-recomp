@@ -127,7 +127,8 @@ def cpu_state(
 
 
 def gpr(cpu: bytes, index: int) -> int:
-    return struct.unpack_from("<I", cpu, OFF_R + 4 * index)[0]
+    value: int = struct.unpack_from("<I", cpu, OFF_R + 4 * index)[0]
+    return value
 
 
 def _region_of(addr: int, size: int) -> str | None:

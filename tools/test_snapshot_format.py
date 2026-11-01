@@ -15,10 +15,7 @@ import struct
 import unittest
 from pathlib import Path
 
-try:
-    import nksnap
-except ModuleNotFoundError:
-    from tools import nksnap
+from tools import nksnap
 
 ROOT = Path(__file__).resolve().parents[1]
 RECOMP_H = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
