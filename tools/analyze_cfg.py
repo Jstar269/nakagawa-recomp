@@ -12,8 +12,8 @@ coverage census. ``analyze.py`` imports every name back, so ``analyze.canonical_
 rest keep working. ``analyze.py`` imports this module at load time; the one thing this module needs back,
 the branch decode (``branch_target``, ``branch_kind``), is imported inside ``canonical_cfg_state``.
 
-The package cache key ``analyzer_sha256`` hashes ``analyze.py`` only, so a change here that alters
-analysis results must also bump ``ANALYZER_CODEGEN_SEMANTICS_EPOCH`` in ``nk_core/package_cache.py``.
+The package cache key ``analyzer_sha256`` hashes this file and ``analyze.py`` together
+(``package_cache.analyzer_sources_sha256``), so a change here invalidates cached packages by itself.
 """
 
 import hashlib
