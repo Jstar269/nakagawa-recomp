@@ -4,9 +4,11 @@
 // Real-PSP instruction trace for the PSP-3000 oracle, one PRX and one launch:
 //   CASE=insn-trace (PSP-TRACE-001, #312): executes each source-owned microprogram of
 //     insn_trace_fixtures.h one instruction at a time on the Allegrex and records the
-//     complete traced register state (r1..r25, r29..r31, hi, lo) and any store after every
-//     instruction, so tools/psp_oracle/insn_trace.py can write a v2 PSP_HARDWARE trace and
-//     compare it with Nakagawa's trace of the same words.
+//     complete traced register state (r1..r25, r29..r31, hi, lo, selected f0..f3/fcr31
+//     and v0..v3/v32) and any store after every instruction, so tools/psp_oracle/insn_trace.py
+//     can write a v2 PSP_HARDWARE trace and compare it with Nakagawa's trace of the same words.
+//   CASE=insn-trace-exception (PSP-TRACE-EXCEPTION-001, #312): a source-owned break in a
+//     branch delay slot; the runner retains EPC/Cause/BadVAddr/Status from exprint.
 //
 // How a step runs. The probe keeps the guest state in memory. An ordinary instruction is
 // copied into the slot of a trampoline (insn_trace_tramp.S) that loads the guest registers,
@@ -42,7 +44,7 @@
 #include <string.h>
 
 PSP_MODULE_INFO("PSP_HLE_MEASURE", 0, 1, 0);
-PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 PSP_HEAP_SIZE_KB(64);
 
 #ifndef PROBE_BUILD_COMMIT
@@ -50,11 +52,16 @@ PSP_HEAP_SIZE_KB(64);
 #endif
 
 #define NT_CASE_TRACE 119
+#define NT_CASE_EXCEPTION 135
 
 #if PSP_ORACLE_CASE == NT_CASE_TRACE
 #define HLE_CAMPAIGN_ID "insn-trace"
 #define HLE_TEST_ID "PSP-TRACE-001"
 #define HLE_LOG "host0:/insn_trace_log.txt"
+#elif PSP_ORACLE_CASE == NT_CASE_EXCEPTION
+#define HLE_CAMPAIGN_ID "insn-trace-exception"
+#define HLE_TEST_ID "PSP-TRACE-EXCEPTION-001"
+#define HLE_LOG "host0:/insn_trace_exception_log.txt"
 #else
 #error probe_insn_trace.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -110,7 +117,7 @@ static void hle_step(const char *step)
 static void hle_emit(const char *case_id, const char *status, uint32_t result,
                      const uint32_t *out, uint32_t count)
 {
-    static char line[700];
+    static char line[1536];
     int n = snprintf(line, sizeof(line),
                      "NAKAGAWA_PSP_TEST schema=1 test_id=%s case_id=%s status=%s result=0x%08x",
                      HLE_TEST_ID, case_id, status, (unsigned int)result);
@@ -227,7 +234,9 @@ int module_stop(SceSize args, void *argp)
 #include "insn_trace_fixtures.h"
 
 #define NT_MAX_STEPS 512u
-#define NT_TRAMP_WORDS 160u
+#define NT_TRAMP_WORDS 192u
+#define NT_RECORD_WORDS 44u
+#define NT_INIT_WORDS 44u
 #define NT_END_REACHED 0u
 #define NT_END_STEP_CAP 1u
 #define NT_END_UNSUPPORTED 2u
@@ -238,7 +247,13 @@ typedef struct NtState {
     uint32_t r[32];
     uint32_t hi, lo;
     uint32_t flag;
+    uint32_t f[4];
+    uint32_t fcr31;
+    uint32_t v[5];
     uint32_t host[12];
+    uint32_t host_f[4];
+    uint32_t host_fcr31;
+    uint32_t host_v[5];
 } NtState;
 
 extern const uint32_t nt_tramp_begin[];
@@ -289,7 +304,7 @@ static uint32_t nt_fnv(const uint32_t *words, uint32_t count)
     return h;
 }
 
-/* The traced registers in record order: r1..r25, r29, r30, r31, hi, lo. */
+/* The traced registers in canonical TRACE_FORMAT.md order. */
 static uint32_t nt_regs(uint32_t *out)
 {
     uint32_t n = 0;
@@ -299,6 +314,9 @@ static uint32_t nt_regs(uint32_t *out)
     out[n++] = s_nt.r[31];
     out[n++] = s_nt.hi;
     out[n++] = s_nt.lo;
+    for (unsigned i = 0; i < 4u; i++) out[n++] = s_nt.f[i];
+    out[n++] = s_nt.fcr31;
+    for (unsigned i = 0; i < 5u; i++) out[n++] = s_nt.v[i];
     return n;
 }
 
@@ -311,6 +329,16 @@ static void nt_init_state(void)
     s_nt.r[26] = s_nt.r[27] = s_nt.r[28] = 0u;
     s_nt.hi = NT_HI_INIT;
     s_nt.lo = NT_LO_INIT;
+    s_nt.f[0] = NT_FPU_F0_INIT;
+    s_nt.f[1] = NT_FPU_F1_INIT;
+    s_nt.f[2] = NT_FPU_F2_INIT;
+    s_nt.f[3] = NT_FPU_F3_INIT;
+    s_nt.fcr31 = NT_FCR_INIT;
+    s_nt.v[0] = NT_VFPU_S000_INIT;
+    s_nt.v[1] = NT_VFPU_S001_INIT;
+    s_nt.v[2] = NT_VFPU_S002_INIT;
+    s_nt.v[3] = NT_VFPU_S003_INIT;
+    s_nt.v[4] = NT_VFPU_S200_INIT;
 }
 
 static int nt_is_cond_branch(uint32_t w)
@@ -340,6 +368,13 @@ static int nt_is_plain(uint32_t w)
 {
     const uint32_t op = w >> 26, fn = w & 63u;
     if (op == 0u) return fn != 8u && fn != 9u && fn != 0x0cu && fn != 0x0du && fn != 0x0fu;
+    if (op == 0x11u) {
+        const uint32_t rs = (w >> 21) & 31u;
+        return rs == 0u || rs == 2u ||
+               (rs == 16u && (fn == 0x00u || fn == 0x32u));
+    }
+    if (w == 0x48ea0000u || w == 0x486b0000u || w == 0x486c0020u ||
+        w == 0x486e0008u) return 1;
     if (op >= 8u && op <= 15u) return 1;
     if (op == 0x20u || op == 0x21u || op == 0x23u || op == 0x24u || op == 0x25u) return 1;
     if (op == 0x28u || op == 0x29u || op == 0x2bu) return 1;
@@ -360,7 +395,7 @@ static void nt_step_plain(const char *id, uint32_t step, uint32_t pc, uint32_t w
     else if (mkind == 16u) mval = *(volatile uint16_t *)(uintptr_t)maddr;
     else if (mkind == 32u) mval = *(volatile uint32_t *)(uintptr_t)maddr;
     static char name[48];
-    uint32_t out[34];
+    uint32_t out[NT_RECORD_WORDS];
     out[0] = pc;
     out[1] = w;
     uint32_t n = 2u + nt_regs(out + 2);
@@ -374,7 +409,7 @@ static void nt_step_plain(const char *id, uint32_t step, uint32_t pc, uint32_t w
 static void nt_record_control(const char *id, uint32_t step, uint32_t pc, uint32_t w)
 {
     static char name[48];
-    uint32_t out[34];
+    uint32_t out[NT_RECORD_WORDS];
     out[0] = pc;
     out[1] = w;
     uint32_t n = 2u + nt_regs(out + 2);
@@ -391,7 +426,7 @@ static void nt_trace(const NtFixture *fx)
     nt_init_state();
     memset((void *)(uintptr_t)NT_DATA_BASE, 0, NT_DATA_BYTES);
     sceKernelDcacheWritebackInvalidateRange((void *)(uintptr_t)NT_DATA_BASE, NT_DATA_BYTES);
-    uint32_t init[34];
+    uint32_t init[NT_INIT_WORDS];
     init[0] = fx->base;
     init[1] = fx->count;
     init[2] = nt_fnv(fx->words, fx->count);
@@ -485,6 +520,35 @@ static int hle_run(void)
 #endif /* NT_CASE_TRACE */
 
 /* ------------------------------------------------------------------------- */
+
+#if PSP_ORACLE_CASE == NT_CASE_EXCEPTION
+
+extern const unsigned char nt_exception_branch[];
+extern const unsigned char nt_exception_break[];
+
+static int hle_run(void)
+{
+    const uint32_t out[1] = {0u};
+    hle_step("exception-break-in-delay-slot");
+    hle_record("exception-armed", "SKIP",
+               (uint32_t)(uintptr_t)nt_exception_branch, out, 1u);
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        ".globl nt_exception_branch\n"
+        "nt_exception_branch:\n\t"
+        "beq $0, $0, 1f\n\t"
+        ".globl nt_exception_break\n"
+        "nt_exception_break:\n\t"
+        "break\n\t"
+        "1:\n\t"
+        "nop\n\t"
+        ".set pop\n\t"
+        : : : "memory");
+    return 1;
+}
+
+#endif /* NT_CASE_EXCEPTION */
 
 int main(int argc, char **argv)
 {
