@@ -99,6 +99,22 @@
       "reason": "Builds the VFPU transcendental probe whose case header fixtures/vfpu_oracle/vfpu_oracle_cases.h the root Makefile compiles into src/rt/vfpu_oracle_host.c. The bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
     },
     {
+      "path": "src/rt/*_selftest.c",
+      "reason": "The originals of the native self-tests that #1531 moved to tests/native/; they stay only until the follow-up pull request removes them (a removed path needs its own policy delta), and every consumer already names the tests/native copy, so the bare names are ambiguous or unreferenced here."
+    },
+    {
+      "path": "tests/native/debug_selftest.c",
+      "reason": "Named in its Python test only as a bare basename or path segments; that basename is also shared with the original src/rt copy that #1531 leaves in place until the follow-up pull request removes it, so the bare name cannot say which file it means until then."
+    },
+    {
+      "path": "tests/native/ge_capture_selftest.c",
+      "reason": "Named in its Python test only as a bare basename or path segments; that basename is also shared with the original src/rt copy that #1531 leaves in place until the follow-up pull request removes it, so the bare name cannot say which file it means until then."
+    },
+    {
+      "path": "tests/native/guest_printf_selftest.c",
+      "reason": "Named in its Python test only as a bare basename or path segments; that basename is also shared with the original src/rt copy that #1531 leaves in place until the follow-up pull request removes it, so the bare name cannot say which file it means until then."
+    },
+    {
       "path": "src/rt/h264_ffmpeg_sub/config.h",
       "reason": "FFmpeg configure stand-in of the H.264 subset, included as \"config.h\" through the Makefile's -I$(H264_SUB_DIR) and listed in src/rt/h264_ffmpeg_sub/PROVENANCE.md; config.h is also a common basename elsewhere in the tree, so the bare name cannot say which one it names."
     },
