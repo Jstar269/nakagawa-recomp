@@ -5477,6 +5477,34 @@ static bool package_runtime_source_digest(const char *source_root, char out_hex[
     return true;
 }
 
+/* analyzer_sha256 covers analyze.py and the module split out of it, the way
+ * package_cache.analyzer_sources_sha256 does: SHA-256 over each source's name, NUL, the
+ * lowercase hex SHA-256 of its bytes, NUL, in the order of package_cache.ANALYZER_SOURCES. */
+static bool package_analyzer_sources_digest(const char *source_root,
+                                            const char analyze_hex[65],
+                                            char out_hex[65]) {
+    char absolute[NK_MAX_PATH * 2];
+    char cfg_hex[65];
+    static const uint8_t nul = 0;
+    if (!package_source_absolute(source_root, "tools/analyze_cfg.py", absolute,
+                                 sizeof(absolute)) ||
+        !nk_platform_file_exists(absolute) || !package_hash_file(absolute, cfg_hex)) {
+        return false;
+    }
+    NkSha256 ctx;
+    nk_sha256_init(&ctx);
+    nk_sha256_update(&ctx, (const uint8_t *)"analyze.py", 10u);
+    nk_sha256_update(&ctx, &nul, 1u);
+    nk_sha256_update(&ctx, (const uint8_t *)analyze_hex, 64u);
+    nk_sha256_update(&ctx, &nul, 1u);
+    nk_sha256_update(&ctx, (const uint8_t *)"analyze_cfg.py", 14u);
+    nk_sha256_update(&ctx, &nul, 1u);
+    nk_sha256_update(&ctx, (const uint8_t *)cfg_hex, 64u);
+    nk_sha256_update(&ctx, &nul, 1u);
+    package_identity_finish(&ctx, out_hex);
+    return true;
+}
+
 bool nk_title_manifest_source_build_identity(const char *source_root,
                                              NkPackageBuildIdentity *out) {
     static const char * const tools[] = {
@@ -5496,7 +5524,10 @@ bool nk_title_manifest_source_build_identity(const char *source_root,
             return false;
         }
     }
-    if (!package_runtime_source_digest(source_root, out->runtime_source_digest)) {
+    char analyze_hex[65];
+    memcpy(analyze_hex, out->analyzer_sha256, sizeof(analyze_hex));
+    if (!package_analyzer_sources_digest(source_root, analyze_hex, out->analyzer_sha256) ||
+        !package_runtime_source_digest(source_root, out->runtime_source_digest)) {
         memset(out, 0, sizeof(*out));
         return false;
     }

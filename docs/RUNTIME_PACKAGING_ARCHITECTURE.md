@@ -392,7 +392,7 @@ package since v0.0.1 records it, and the native validator already requires it:
 | Value | Where the package records it | What it covers |
 | --- | --- | --- |
 | `runtime_source_digest` | `cache.key.native.components` | `src/rt`, `src/core`, `src/ui` and the third-party headers they include (`third_party/clay`, `stb`, `portable-snippets`), the `Makefile` and `mk/*.mk`, `assets/vfpu` (`package_cache.source_tree_digest`) |
-| `analyzer_sha256` | `cache.key.aot.components` | `tools/analyze.py` |
+| `analyzer_sha256` | `cache.key.aot.components` | `tools/analyze.py` and `tools/analyze_cfg.py` (`package_cache.analyzer_sources_sha256`) |
 | `codegen_sha256` | `cache.key.aot.components` | `tools/codegen.py` |
 | `planner_sha256` | `cache.codegen_options` | `tools/title_codegen_plan.py` |
 
