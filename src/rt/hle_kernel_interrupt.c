@@ -102,10 +102,6 @@ static uint32_t h_CpuIsIntrEnable(CpuState *s) {
  * forever. A slot is registered while its handler word is nonzero: the PSP does not count
  * a NULL-handler Register as a registration (see the codes below) (#1287). */
 #define SR_VBLANK_SUBINTR_COUNT 16u
-/* PSPSDK pspkerror.h names for the interrupt manager's refusals. */
-#define SCE_KERNEL_ERROR_ILLEGAL_INTRCODE 0x80020065u
-#define SCE_KERNEL_ERROR_FOUND_HANDLER    0x80020067u
-#define SCE_KERNEL_ERROR_NOTFOUND_HANDLER 0x80020068u
 typedef struct VblankSubIntr {
     uint32_t handler, arg;
     int enabled;

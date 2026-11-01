@@ -1992,9 +1992,6 @@ VplPool *vpl_lookup(uint32_t uid) {
     return i < VPL_MAX && s_vpls[i].used ? &s_vpls[i] : NULL;
 }
 
-/* Thread error codes from sched.c. */
-#define SCE_KERNEL_ERROR_ILLEGAL_THID       0x80020197u
-#define SCE_KERNEL_ERROR_UNKNOWN_THID       0x80020198u
 uint32_t h_WaitThreadEnd_impl(CpuState *s, int is_cb) {
     uint32_t uid = A0, toptr = A1;
     uint32_t self = sched_current_uid();
@@ -2584,7 +2581,6 @@ extern int sr_callback_find_in_table(uint32_t uid);
  * from the record taken when it was placed. Any other loaded module's record holds no segment
  * table, text/data/bss sizes, attribute, version or name, so it is refused by name rather than
  * answered with partial values; so is a main module built without a record. */
-#define SCE_KERNEL_ERROR_CANNOT_GET_MODULE_INFO 0x8002014au
 
 /* True when a live module record other than `mod` still depends on the same PRX image.
  * Two handles can name one base: a second load of an already-resident base reuses that
@@ -3846,11 +3842,6 @@ static void hle_register_cancel_release_handlers(void) {
  * ========================================================================= */
 
 #define PSP_MUTEX_ATTR_FIFO            0x0000u
-/* SCE_KERNEL_ERROR_WAIT_DELETE is defined above with the semaphore oracle values.
- * WAIT_TIMEOUT, CAN_NOT_WAIT and ILLEGAL_COUNT are already defined above, next to
- * the PSPAutotests oracle citations that establish their values. Re-defining them
- * here produced three -Wmacro-redefined warnings on every build of this file. */
-#define SCE_KERNEL_ERROR_ILLEGAL_ATTR               0x80020191u
 
 Mutex **s_mutexes = NULL;
 size_t  s_mutex_len = 0;
