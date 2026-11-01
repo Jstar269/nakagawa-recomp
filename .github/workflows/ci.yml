@@ -1680,10 +1680,6 @@ jobs:
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 cosim-selftest
 
-      # A comparator that cannot fail proves nothing. Each mutant is a semantic
-      # defect applied to a COPY of the interpreter under the ignored build tree;
-      # the gate must fail for every one, and a mutant that only breaks the build
-      # is rejected as INVALID rather than counted as a kill.
       # Snapshot execution (#1842): one translated function run from a snapshot and
       # compared with the reference interpreter in src/ref; the selftest also builds and
       # runs a generated-C mutant that must report the expected MISMATCH.
@@ -1694,6 +1690,10 @@ jobs:
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 snapshot-selftest
 
+      # A comparator that cannot fail proves nothing. Each mutant is a semantic
+      # defect applied to a COPY of the interpreter under the ignored build tree;
+      # the gate must fail for every one, and a mutant that only breaks the build
+      # is rejected as INVALID rather than counted as a kill.
       - name: Prove the cosimulation comparator is load-bearing
         if: matrix.part == 'selftests'
         shell: msys2 {0}
