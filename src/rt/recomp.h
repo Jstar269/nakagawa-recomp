@@ -1417,6 +1417,23 @@ __attribute__((noreturn, cold)) void sr_null_code_pointer(CpuState *s, uint32_t 
 #define SR_CODE_POINTER(s, target, transfer_pc) do { \
     if (__builtin_expect((target) == 0u, 0)) sr_null_code_pointer((s), (transfer_pc)); \
 } while (0)
+/* A generated `jr $ra` whose $ra holds 0 (SR_AOT_RETURN_CAPTURE): the same null code pointer,
+ * reported without the transfer's address, which the capture site does not carry. */
+__attribute__((noreturn, cold)) void sr_null_return_address(CpuState *s);
+/* A thread entry or callback function the guest handed the kernel as 0 (#1375), stopped
+ * before the entry's first instruction. `owner` names the entry kind. */
+__attribute__((noreturn, cold)) void sr_null_code_entry(CpuState *s, const char *owner);
+
+/* The return address the host hands a guest entry (#1375): a thread entry, a callback, an
+ * interrupt or GE handler, the boot entry. It is never 0, which is a null code pointer on
+ * every image (address 0 is a zero-based image's offset-0 function). It is word-aligned and
+ * outside the VFPU fallback tag window, and its SR_PHYS form 0x1FFFFFF0 lies outside the
+ * guest arena, so no dispatch normalization can map it onto code; on the PSP it is a
+ * kernel-segment address that user code cannot fetch. The host enters the guest by
+ * dispatch_from_host, a linked call whose resume PC is this value, so a guest `jr $ra` to it
+ * is that call's return in both tiers. */
+#define SR_HOST_RETURN_PC 0xFFFFFFF0u
+void     dispatch_from_host(CpuState *s, uint32_t entry);
 
 /* AOT `jr $ra` returns are structural host returns, so a linked call needs a
  * small host-side boundary to compare the guest target latched at `jr` with the
@@ -1467,10 +1484,17 @@ int sr_aot_return_boundary_scope_end(CpuState *s,
                                      const SrAotReturnBoundaryScope *scope,
                                      const char *owner);
 
+/* An interpreted transfer to the resume PC of the innermost live linked call of `s` is that
+ * call's return: record it as SR_AOT_RETURN_CAPTURE would and return 1, so the interpreter
+ * hands back to the native caller instead of running its continuation a second time. */
+int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target);
+
 /* Generated `jr $ra` captures before its delay slot. Keep the hot transfer path
  * inline: one target store per return, with the linked-call comparison at the
- * boundary after the native body returns. */
+ * boundary after the native body returns. A return address of 0 is a null code pointer
+ * (#1375): the host never hands one out (SR_HOST_RETURN_PC). */
 #define SR_AOT_RETURN_CAPTURE(s, target) do { \
+    if (__builtin_expect((uint32_t)(target) == 0u, 0)) sr_null_return_address((s)); \
     SrAotReturnBoundary *sr_aot_boundary_ = sr_aot_return_boundary_top; \
     if (sr_aot_boundary_ != NULL && sr_aot_boundary_->state == (s)) \
         sr_aot_boundary_->observed_target = UINT64_C(0x100000000) | (uint32_t)(target); \
@@ -2026,6 +2050,8 @@ void     sched_set_module_start_thread(int priority, uint32_t stack_size, uint32
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
                                 uint32_t attr, const char *name);
+/* The thread's entry is a guest code pointer (sceKernelCreateThread), not loader-known. */
+void     sched_mark_code_pointer_entry(uint32_t uid);
 uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp);
 int      sched_thread_set_gp(uint32_t uid, uint32_t gp);
 int      sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid);
@@ -2304,9 +2330,13 @@ static inline void sr_callback_pack_args(CpuState *cpu, int notify_count,
  * and is the callback's own prologue/epilogue's responsibility to save/restore per the
  * MIPS calling convention, matching real hardware/PPSSPP callback dispatch.
  *
- * dispatch_fn is injected (rather than calling dispatch() directly) so this exact
+ * dispatch_fn is injected (rather than calling dispatch_from_host() directly) so this exact
  * production code path can be unit-tested with a stand-in dispatcher instead of linking
- * the full recompiled runtime; hle.c passes the real dispatch().
+ * the full recompiled runtime; hle.c passes the real dispatch_from_host().
+ *
+ * A callback function of 0 is a null code pointer the guest registered (#1375): the PSP
+ * faults fetching it, so the run stops by name before any register is touched, and a
+ * zero-based image's offset-0 function never runs in its place.
  *
  * Returns the callback's $v0 (observed before the interrupted context is restored), so
  * the caller can implement the PSP kernel's "a callback that returns non-zero is
@@ -2314,6 +2344,7 @@ static inline void sr_callback_pack_args(CpuState *cpu, int notify_count,
 static inline uint32_t sr_callback_dispatch_one(CpuState *cpu, uint32_t entry, int notify_count,
                                                 uint32_t notify_arg, uint32_t common_arg,
                                                 void (*dispatch_fn)(CpuState *, uint32_t)) {
+    if (entry == 0u) sr_null_code_entry(cpu, "callback");
     CpuState save = *cpu;
     SrAotReturnBoundaryScope boundary_scope;
     sr_aot_return_boundary_scope_begin(&boundary_scope);
@@ -2321,7 +2352,7 @@ static inline uint32_t sr_callback_dispatch_one(CpuState *cpu, uint32_t entry, i
     /* PSP callbacks are nested calls on the interrupted thread. In particular, $gp
      * is inherited from that live context; the kernel does not install a
      * callback-global GP. */
-    cpu->r[31] = 0;
+    cpu->r[31] = SR_HOST_RETURN_PC;
     cpu->pc = entry;
     dispatch_fn(cpu, entry);
     uint32_t ret = cpu->r[2];

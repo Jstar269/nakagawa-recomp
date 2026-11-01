@@ -89,7 +89,7 @@ def synthetic_bindings(shift: int = 0) -> dict:
         "launcher_thread_entry": 0x08910020 + shift,
         "dispatch_aliases": [{"from": 0x08911000 + shift, "to": 0x08911010 + shift}],
         "callback_terminators": [
-            {"sentinel": 0, "pc": 0x08912000 + shift, "ra": 0x08912010 + shift},
+            {"sentinel": 0xFFFFFFFF, "pc": 0x08912000 + shift, "ra": 0x08912010 + shift},
         ],
     }
 

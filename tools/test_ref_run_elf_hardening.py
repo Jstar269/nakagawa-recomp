@@ -5,6 +5,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import unittest
@@ -281,6 +282,25 @@ class TestReferenceRunnerTerminationContract(unittest.TestCase):
         self.assertEqual(meta.get("pc"), "0x20000000", proc.stderr)
         # jr ra and its delay slot ran; the faulting fetch did not execute.
         self.assertEqual(meta.get("executed"), "2", proc.stderr)
+
+    def test_unrecorded_return_address_is_the_host_return(self) -> None:
+        """#1375: the module is entered as the driver's trace harness enters it, so an entry
+        $ra the init line does not record is the runtime's host return address."""
+        recomp_h = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        match = re.search(r"#define SR_HOST_RETURN_PC (0x[0-9A-Fa-f]+)u", recomp_h)
+        if match is None:
+            self.fail("src/rt/recomp.h no longer defines SR_HOST_RETURN_PC")
+        host_return = int(match.group(1), 16)
+        elf = self.write_elf("hostret.elf", [self.OPCODE_JR_RA, self.OPCODE_NOP])
+        init = elf.with_name("hostret-init.trace")
+        init.write_text("# psp-recomp trace v1 oracle=interp target=fixture "
+                        "start_pc=0x08900000\n# init r1=00000010\n", encoding="ascii", newline="\n")
+        proc, meta = self.run_cli(elf, init)
+        self.assertEqual(proc.returncode, 4, proc.stderr)
+        self.assertEqual(meta.get("stop_reason"), "memory-fault", proc.stderr)
+        self.assertEqual(meta.get("pc"), f"0x{host_return:08x}", proc.stderr)
+        out = elf.with_name(f"{elf.stem}-out.trace").read_text(encoding="ascii").splitlines()
+        self.assertIn(f" r31=0x{host_return:08x}", out[1])
 
     def test_break_stop_is_nonzero_and_distinct(self) -> None:
         elf = self.write_elf("break.elf", [self.OPCODE_BREAK])

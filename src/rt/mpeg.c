@@ -395,13 +395,13 @@ static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, 
     s->r[6] = a2;
     s->r[28] = save.r[28];
     s->r[29] = frame_sp;
-    s->r[31] = 0;
+    s->r[31] = SR_HOST_RETURN_PC;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;   /* the callback's first pc is its entry */
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
     SrAotReturnBoundaryScope boundary_scope;
     sr_aot_return_boundary_scope_begin(&boundary_scope);
-    dispatch(s, fn);
+    dispatch_from_host(s, fn);
     uint32_t ret = s->r[2];
     int boundary_scope_failed = sr_aot_return_boundary_scope_end(
         s, &boundary_scope, "MPEG guest callback");

@@ -286,6 +286,15 @@ void dispatch(CpuState *s, uint32_t target) {
         g_test_body(s);
     }
 }
+/* The host entry (#1375) runs through the same stand-in. */
+void dispatch_from_host(CpuState *s, uint32_t entry) {
+    dispatch(s, entry);
+}
+/* recomp.c's null-entry stop, which this harness does not link: end the run the same way. */
+void sr_null_code_entry(CpuState *s, const char *owner) {
+    fprintf(stderr, "NULL_CODE_POINTER: %s entry 0x00000000 sp=0x%08x\n", owner, s->r[29]);
+    exit(1);
+}
 
 /* ---- tiny check framework ---------------------------------------------------------- */
 
@@ -2204,7 +2213,7 @@ static void test_callback_dispatch_one_preserves_context(void) {
     expect(seen->r[4] == 7u, "callback saw $a0 = notify_count");
     expect(seen->r[5] == 0xaabbccddu, "callback saw $a1 = notify_arg");
     expect(seen->r[6] == 0x11223344u, "callback saw $a2 = common_arg");
-    expect(seen->r[31] == 0u, "callback saw $ra = 0 (return sentinel)");
+    expect(seen->r[31] == SR_HOST_RETURN_PC, "callback saw the host return address");
     expect(seen->pc == 0x08900000u, "callback saw $pc = entry");
     expect(seen->r[28] == pre.r[28], "callback inherited the interrupted thread's live $gp ($28)");
     expect(seen->r[26] == pre.r[26], "callback saw the interrupted thread's live k0 ($26)");
@@ -2272,7 +2281,7 @@ static void test_callbacks_behavioral(void) {
     expect(s_last_cb_seen.a0 == 1u, "callback saw $a0 = notify_count");
     expect(s_last_cb_seen.a1 == 0xbbbb2222u, "callback saw $a1 = notify_arg");
     expect(s_last_cb_seen.a2 == 0xaaaa1111u, "callback saw $a2 = common_arg");
-    expect(s_last_cb_seen.ra == 0u, "callback saw $ra = 0 (return sentinel)");
+    expect(s_last_cb_seen.ra == SR_HOST_RETURN_PC, "callback saw the host return address");
     expect(s_last_cb_seen.pc == s_test_callbacks[0].entry, "callback saw $pc = entry");
 
     /* Once the callback returns, the interrupted thread's context is restored exactly --
@@ -2598,7 +2607,7 @@ static void test_interrupt_frame_is_restored(void) {
     expect(g_test_handler_seen.pc == g_test_vblank_handler &&
            g_test_handler_seen.r[16] == interrupted.r[16] &&
            g_test_handler_seen.r[29] == SR_VBLANK_STACK_TOP &&
-           g_test_handler_seen.r[31] == 0u,
+           g_test_handler_seen.r[31] == SR_HOST_RETURN_PC,
            "handler sees the preserved interrupted frame plus kernel entry state");
     expect(memcmp(&g_cpu_store, &interrupted, sizeof(interrupted)) == 0,
            "handler register mutations do not leak into the interrupted thread");
@@ -2659,7 +2668,7 @@ static void test_vblank_runs_every_enabled_subintr(void) {
            "each handler receives its own (sub-interrupt number, arg)");
     expect(g_test_handler2_seen.r[16] == interrupted.r[16] &&
                g_test_handler2_seen.r[29] == SR_VBLANK_STACK_TOP &&
-               g_test_handler2_seen.r[31] == 0u && g_test_handler2_seen.pc == 0x00005678u,
+               g_test_handler2_seen.r[31] == SR_HOST_RETURN_PC && g_test_handler2_seen.pc == 0x00005678u,
            "the second handler starts from the interrupted frame, not the first handler's");
     expect(memcmp(&g_cpu_store, &interrupted, sizeof(interrupted)) == 0,
            "the interrupted thread gets its frame back after the last handler");
@@ -4465,7 +4474,7 @@ static void test_alarm_runs_at_its_deadline_in_interrupt_context(void) {
     expect(g_alarm_seen_frame.pc == ALARM_HANDLER &&
            g_alarm_seen_frame.r[29] == SR_VBLANK_STACK_TOP &&
            g_alarm_seen_frame.r[28] == s_gp &&
-           g_alarm_seen_frame.r[31] == 0u &&
+           g_alarm_seen_frame.r[31] == SR_HOST_RETURN_PC &&
            g_alarm_seen_frame.r[16] == interrupted.r[16],
            "the handler gets the interrupt stack, kernel entry state and the live callee-saved file");
     expect(s_cur == running && !sched_is_intr_context(),

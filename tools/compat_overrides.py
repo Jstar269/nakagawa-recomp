@@ -417,31 +417,18 @@ TITLE_CONFIGURED_DISPATCH = [
                 "dispatch miss. Retire by registering the mid-function entry point in "
                 "codegen, which removes the need for any alias.",
          test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)"),
-    dict(address=0x0003e06c, category="temporary_compatibility_patch",
-         name="callback-list walker null terminator",
-         source="src/rt/recomp.c:dispatch (runtime_bindings.callback_terminators)",
-         reason="a circular callback-list walker reaches its terminal entry with target 0; "
-                "reported as COMPLETE at this exact return site instead of as a permissive "
-                "miss, which the walker reads as \"continue\" and loops on forever. Was an "
-                "uninventoried literal in generic dispatch until 2026-08-21. Retire by "
-                "modelling the guest's list terminator faithfully so the walk ends on its "
-                "own. This site constrains ra only, which is the constraint the original "
-                "hardcoded check applied; narrowing it to a pc as well would be a behavior "
-                 "change, not a migration.",
-         test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)",
-         owner_issue="#363",
-         retirement="model the guest's circular callback-list terminator faithfully so the walk "
-                    "ends on its own instead of being reported complete here"),
     dict(address=0x00292fa0, category="temporary_compatibility_patch",
          name="callback-list walker terminal miss",
          source="src/rt/recomp.c:dispatch (runtime_bindings.callback_terminators)",
-         reason="the same walker's -1 terminal target, reported as complete for this exact "
-                 "inner call site (pc plus ra) only. Retire together with the null terminator "
-                 "above: both are surrogates for a faithfully-modelled list end.",
+         reason="a circular callback-list walker's -1 terminal target, reported as complete "
+                 "for this exact inner call site (pc plus ra) only, instead of as a permissive "
+                 "miss the walker would read as \"continue\". Its null-target sibling was "
+                 "retired by #1375: a transfer to 0 is now a null code pointer that stops by "
+                 "name.",
          test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)",
          owner_issue="#363",
-         retirement="retire together with the null terminator above: both are surrogates for a "
-                    "faithfully-modelled list end"),
+         retirement="model the guest's circular callback-list end faithfully so the walk "
+                    "ends on its own instead of being reported complete here"),
 ]
 
 OVERRIDES = (

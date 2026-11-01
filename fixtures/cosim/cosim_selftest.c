@@ -1435,6 +1435,7 @@ static int run_fpu_reference_oracle(void) {
                     const uint32_t fcr31 = mode | (fs ? 0x01000000u : 0u);
                     CpuState state;
                     memset(&state, 0, sizeof state);
+                    state.r[31] = SR_HOST_RETURN_PC;  /* a host entry's return address (#1375) */
                     state.fi[0] = a;
                     state.fi[1] = b;
                     state.r[8] = g_fpu_values[ai].cvt_source;

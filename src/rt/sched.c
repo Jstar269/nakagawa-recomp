@@ -204,6 +204,8 @@ typedef struct {
     int      stack_released;      /* guest stack reservation returned exactly once */
     int      module_start;        /* sched_run's module_start thread: deleted when its entry
                                    * returns (PSP-MODULE-START-001) */
+    int      entry_code_pointer;  /* entry came from the guest (sceKernelCreateThread), not from
+                                   * the loader: an entry of 0 is a null code pointer (#1375) */
     int      join_waiting;        /* current syscall is waiting for join_target */
     int      join_result_valid;  /* target ended while this waiter was blocked */
     uint32_t join_target;
@@ -1789,7 +1791,7 @@ static int sched_dispatch_interrupt_guest(CpuState *cpu, uint32_t entry,
                                           uint32_t *fatal_target) {
     SrAotReturnBoundaryScope scope;
     sr_aot_return_boundary_scope_begin(&scope);
-    dispatch(cpu, entry);
+    dispatch_from_host(cpu, entry);
     const uint32_t flow_kind = cpu->flow_kind;
     const uint32_t flow_target = cpu->flow_target;
     const int scope_failed = sr_aot_return_boundary_scope_end(cpu, &scope, owner);
@@ -1894,7 +1896,7 @@ static void deliver_vblank(void) {
          * vblank (UNKNOWN_EVFID) and its movie threads waited forever. */
         s_cpu->r[4] = no;
         s_cpu->r[5] = arg;
-        s_cpu->r[31] = 0;
+        s_cpu->r[31] = SR_HOST_RETURN_PC;
         s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
         s_cpu->pc = h;
         if (sched_cbsnap_on()) {
@@ -2104,7 +2106,7 @@ static void scheduler_alarm_deliver(int slot) {
     s_cpu->r[29] = SR_VBLANK_STACK_TOP;   /* the dedicated interrupt stack */
     s_cpu->r[28] = s_gp;
     s_cpu->r[4] = common;
-    s_cpu->r[31] = 0;
+    s_cpu->r[31] = SR_HOST_RETURN_PC;
     s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
     s_cpu->pc = handler;
     int save_cur = s_cur; s_cur = -1;     /* interrupt context: SR_YIELD must not switch */
@@ -2353,14 +2355,17 @@ static void sched_turbo_advance_to_vblank(void) {
 static void coro_body(void *param) {
     TCB *t = (TCB *)param;
     for (;;) {
-        /* Entry into the thread body: set up args and the standard return address (0). */
+        /* Entry into the thread body: set up args and the host return address. A guest
+         * thread whose entry is 0 faults on the PSP at its first fetch (#1375); a loader
+         * entry of 0 is a zero-based image's offset-0 function and runs. */
         s_cpu->r[4] = t->arglen;
         s_cpu->r[5] = t->argp;
-        s_cpu->r[31] = 0;
+        s_cpu->r[31] = SR_HOST_RETURN_PC;
+        if (t->entry == 0u && t->entry_code_pointer) sr_null_code_entry(s_cpu, "thread");
         if (sched_uid_is_worker(t->uid)) fprintf(stderr, "DISPATCH uid=0x%x entry=0x%08x\n", t->uid, t->entry);
         t->has_unwind_jmp = 1;
         if (setjmp(t->unwind_jmp) == 0) {
-            dispatch(s_cpu, t->entry);    /* runs until the thread returns or exits */
+            dispatch_from_host(s_cpu, t->entry);  /* runs until the thread returns or exits */
         } else {
             /* longjmp path: sched_unwind_current() was called from recomp.c.
              * The C frames of any in-flight nested host->guest call were
@@ -2571,6 +2576,11 @@ uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_siz
 
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size) {
     return sched_create_thread_ex(entry, priority, stack_size, 0u, NULL);
+}
+
+void sched_mark_code_pointer_entry(uint32_t uid) {
+    TCB *t = tcb_by_uid(uid);
+    if (t) t->entry_code_pointer = 1;
 }
 
 /* Continuation of sched_create_thread: stack/UID seeding + libc/reent registration.
