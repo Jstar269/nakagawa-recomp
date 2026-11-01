@@ -694,7 +694,6 @@
     "src/rt/ge_texture_ref.c",
     "src/rt/ge_texture_ref.h",
     "src/rt/ge_texture_ref_selftest.c",
-    "src/rt/ge_vram_cli.c",
     "src/rt/gpu_capture_selftest.c",
     "src/rt/gpu_coherence_selftest.c",
     "src/rt/gpu_sdl3vk/README.md",
