@@ -575,7 +575,7 @@ def validate_meta(regs: list[dict]) -> None:
                 candidate_path, _, anchor = (part.strip() for part in ev.partition(":"))
                 if not (
                     candidate_path == "Makefile"
-                    or candidate_path.startswith(("src/", "tools/", "fixtures/"))
+                    or candidate_path.startswith(("src/", "tools/", "fixtures/", "tests/"))
                 ):
                     continue
                 has_executable_evidence = True
@@ -592,7 +592,7 @@ def validate_meta(regs: list[dict]) -> None:
             raise ManifestError(
                 f"handler {handler!r} is marked 'complete' but has no named executable evidence; "
                 "a complete handler must cite at least one executable evidence file in the repository "
-                "(under src/, tools/, fixtures/, or Makefile)"
+                "(under src/, tools/, fixtures/, tests/, or Makefile)"
             )
         # Independent of evidence: a partial or compatibility handler must always
         # name its limitation, whether or not it also cites evidence.
@@ -842,7 +842,7 @@ def dump_json(obj: dict, path: Path) -> None:
 #   registered handler + classification           this module's extraction
 #   production dispatch reachability              this module's scope analysis
 #   conformance cell / exercised                  src/rt/intr_conformance.h,
-#                                                 src/rt/hle_thread_selftest.c
+#                                                 tests/native/hle_thread_selftest.c
 #   hardware exercise                             tools/psp_oracle/manifest.json
 #
 # Each consumed fact keeps the tier of the tool that produced it.  The chain
@@ -858,7 +858,7 @@ CHAIN_SCHEMA = 1
 HARDWARE_EVIDENCE_VALUES = frozenset({"NOT_RUN", "CAPTURED", "MEASURED"})
 
 INTR_CONFORMANCE_H = ROOT / "src" / "rt" / "intr_conformance.h"
-SELFTEST_C = ROOT / "src" / "rt" / "hle_thread_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "hle_thread_selftest.c"
 PSP_ORACLE_MANIFEST = ROOT / "tools" / "psp_oracle" / "manifest.json"
 PUBLIC_SOURCE_PROFILE = ROOT / "assets" / "public_source_profile.json"
 

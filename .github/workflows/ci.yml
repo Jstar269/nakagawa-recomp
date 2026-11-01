@@ -919,7 +919,7 @@ jobs:
           mkdir -p "$build_dir"
           make --no-print-directory CC=gcc BUILD_DIR="$build_dir" GE_FRONTEND_PROFILE=1 "$build_dir/ge.o"
 
-      # The executable production-HLE suite (src/rt/hle_thread_selftest.c) links the real
+      # The executable production-HLE suite (tests/native/hle_thread_selftest.c) links the real
       # src/rt/hle.c, so this is hle.c's Linux behavioural gate, not only a compile: the
       # POSIX file, directory and host-data arms run here and the Win32 arms in the
       # windows_runtime selftests part (#306). It links SDL3 (sched.c's host clock).
@@ -1123,7 +1123,7 @@ jobs:
         run: |
           gcc -std=c11 -O1 -Wall -Wextra -Werror -Isrc/rt \
             -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all \
-            -o build/fp_convert_selftest_san src/rt/fp_convert_selftest.c -lm
+            -o build/fp_convert_selftest_san tests/native/fp_convert_selftest.c -lm
           ./build/fp_convert_selftest_san
 
       - name: Run VFPU table loader selftest (source-owned, no game inputs)
@@ -1135,7 +1135,7 @@ jobs:
         run: |
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
             -o build/vfpu_tables_selftest \
-            src/rt/vfpu_tables_selftest.c src/rt/vfpu_tables.c
+            tests/native/vfpu_tables_selftest.c src/rt/vfpu_tables.c
           ./build/vfpu_tables_selftest
 
       - name: Run watchpoints-file parser selftest (source-owned, no game inputs)
@@ -1147,14 +1147,14 @@ jobs:
         run: |
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -D_CRT_SECURE_NO_WARNINGS \
             -o build/watchpoints_file_selftest \
-            src/rt/watchpoints_file_selftest.c src/rt/watchpoints_file.c
+            tests/native/watchpoints_file_selftest.c src/rt/watchpoints_file.c
           ./build/watchpoints_file_selftest
 
       - name: Run strbuf checked-append formatting selftest under UBSan
         if: matrix.part == 'translation'
         run: |
           gcc -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
-            -Isrc/rt -o build/strbuf_selftest_san src/rt/strbuf_selftest.c
+            -Isrc/rt -o build/strbuf_selftest_san tests/native/strbuf_selftest.c
           ./build/strbuf_selftest_san
 
       - name: Run VFPU interpreter selftest (source-owned, no game inputs)
@@ -1183,13 +1183,13 @@ jobs:
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic -Ibuild \
             -D_CRT_SECURE_NO_WARNINGS \
             -o build/vfpu_interp_selftest \
-            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c -lm
+            tests/native/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c -lm
           ./build/vfpu_interp_selftest
           gcc -std=c11 -O1 -Wall -Wextra -Isrc/rt -Ibuild/title-config/generic -Ibuild \
             -D_CRT_SECURE_NO_WARNINGS \
             -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all \
             -o build/vfpu_interp_selftest_san \
-            src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c -lm
+            tests/native/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c -lm
           ./build/vfpu_interp_selftest_san
 
       - name: Run ATRAC3+ decoder and bridge selftests (source-owned, no game inputs)
@@ -1217,18 +1217,18 @@ jobs:
             src/rt/atrac3p/libavutil/mem.c src/rt/atrac3p/libavutil/reverse.c"
           INC="-Isrc/rt -Itests/native -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/libavutil"
           gcc -std=c11 -O1 $INC -o build/atrac3p_selftest \
-            src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+            tests/native/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest
           gcc -std=c11 -O1 $INC -o build/atrac3p_bridge_selftest \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
+            tests/native/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest
           SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
           gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_selftest_san \
-            src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
+            tests/native/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest_san
           gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_bridge_selftest_san \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
+            tests/native/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest_san
 

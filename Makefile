@@ -1968,11 +1968,11 @@ ifeq ($(NK_AOT_PREGENERATED),1)
 $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h:
 	$(if $(wildcard $@),,$(error NK_AOT_PREGENERATED requires $@))
 else
-$(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) $(CODEGEN_TOOL) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP) $(SYMBOL_MAP) $(NAME_IMPORTS_PREREQ)
+$(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) $(CODEGEN_TOOL) tools/codegen.py tools/analyze.py tools/analyze_cfg.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/codegen_hst_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP) $(SYMBOL_MAP) $(NAME_IMPORTS_PREREQ)
 	"$(PYTHON)" $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(SYMBOL_MAP_ARG) $(NAME_IMPORTS_ARG) $(ENHANCEMENT_PACKAGE_ARG) $(CODEGEN_USER_ARGS)
 endif
 
-$(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
+$(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/analyze_cfg.py tools/prxload.py
 	"$(PYTHON)" tools/imports.py --env-elf $(GAME_BASE) --toml=$@
 
 ifndef NK_BUILD_DIR_READY
@@ -2471,7 +2471,7 @@ clean-all: clean clean-fixtures
 clean-preview:
 	"$(PYTHON)" tools/nk_clean.py $(if $(filter 1,$(CONFIRM)),--yes,) $(if $(strip $(OLDER_THAN)),--older-than $(OLDER_THAN),)
 
-# sched-selftest — white-box scheduler/lifecycle unit tests (src/rt/sched_selftest.c).
+# sched-selftest — white-box scheduler/lifecycle unit tests (tests/native/sched_selftest.c).
 # No game inputs needed; #includes sched.c for direct access to pick_next()/TCB state and
 # links the real sr_coro backend. Asserts PSP strict-priority selection, equal-priority
 # rotation, non-runnable exclusion, implicit thread exit on entry return, role-UID
@@ -2502,11 +2502,11 @@ SCHED_SELFTEST_CONFIG_ARG := $(if $(strip $(SCHED_SELFTEST_MANIFEST)),--manifest
 sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_frames.c src/rt/nested_frames.h
 	"$(PYTHON)" $(TITLE_CONFIG_TOOL) $(SCHED_SELFTEST_CONFIG_ARG) --output $(SCHED_SELFTEST_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(SCHED_SELFTEST_DIR) -DSR_SCHED_LIVENESS_TEST $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe \
-		src/rt/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/title_config.c src/rt/ace.c $(LIBS)
+		tests/native/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/title_config.c src/rt/ace.c $(LIBS)
 	$(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe
 
 # heap-selftest — white-box unit tests for the guest heap allocator's boundary-tag
-# coalescing (src/rt/heap_selftest.c). No game inputs needed; #includes recomp.c for
+# coalescing (tests/native/heap_selftest.c). No game inputs needed; #includes recomp.c for
 # direct access to the allocator statics and sr_heap_stats(), and drives the same
 # sr_newlib_malloc/free entry points the generated code calls. Asserts forward and
 # backward merges, the #122 regression (a large allocation must succeed after the
@@ -2518,7 +2518,7 @@ sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_f
 # standalone binary fails to link after the table-loader integration.
 heap-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/heap_selftest.exe \
-		src/rt/heap_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
+		tests/native/heap_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
 native-core-tests: heap-selftest
@@ -2530,7 +2530,7 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables $(LDFLAGS) \
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
-		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
+		tests/native/profiler_selftest.c src/rt/recomp.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/profiler_selftest.exe
 
 # Also covers the SR_PERF line formats, PERF_AUDIO included (#1296).
@@ -2550,7 +2550,7 @@ gui-present-selftest:
 # path validates against the committed assets/vfpu/ tables.
 vfpu-tables-selftest:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_tables_selftest.exe -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		src/rt/vfpu_tables_selftest.c src/rt/vfpu_tables.c $(LIBS)
+		tests/native/vfpu_tables_selftest.c src/rt/vfpu_tables.c $(LIBS)
 	$(BUILD_DIR)/vfpu_tables_selftest.exe
 
 # watchpoints-file-selftest — bounded parser regression for the derived
@@ -2562,12 +2562,12 @@ vfpu-tables-selftest:
 # and golden trace formatting invariants.
 strbuf-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
-		-o $(BUILD_DIR)/strbuf_selftest.exe src/rt/strbuf_selftest.c
+		-o $(BUILD_DIR)/strbuf_selftest.exe tests/native/strbuf_selftest.c
 	$(BUILD_DIR)/strbuf_selftest.exe
 
 watchpoints-file-selftest:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/watchpoints_file_selftest.exe \
-		src/rt/watchpoints_file_selftest.c src/rt/watchpoints_file.c $(LIBS)
+		tests/native/watchpoints_file_selftest.c src/rt/watchpoints_file.c $(LIBS)
 	$(BUILD_DIR)/watchpoints_file_selftest.exe
 
 # ge-texture-ref-selftest — project-authored GE texture sampling reference model
@@ -2576,7 +2576,7 @@ watchpoints-file-selftest:
 # Strict C99; not wired into the renderer.  No game inputs.
 ge-texture-ref-selftest:
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
-		-o $(BUILD_DIR)/ge_texture_ref_selftest.exe src/rt/ge_texture_ref_selftest.c src/rt/ge_texture_ref.c -lm
+		-o $(BUILD_DIR)/ge_texture_ref_selftest.exe tests/native/ge_texture_ref_selftest.c src/rt/ge_texture_ref.c -lm
 	$(BUILD_DIR)/ge_texture_ref_selftest.exe
 
 native-core-tests: ge-texture-ref-selftest fbcap-selftest
@@ -2589,7 +2589,7 @@ native-core-tests: ge-texture-ref-selftest fbcap-selftest
 fbcap-selftest:
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-o $(BUILD_DIR)/fbcap_selftest.exe \
-		src/rt/fbcap_selftest.c src/rt/fbcap.c src/rt/fbcap_policy.c
+		tests/native/fbcap_selftest.c src/rt/fbcap.c src/rt/fbcap_policy.c
 	$(BUILD_DIR)/fbcap_selftest.exe $(BUILD_DIR)/fbcap_selftest
 
 # osk-text-entry-selftest - the on-screen keyboard's text entry (src/rt/osk_text_entry.c)
@@ -2601,7 +2601,7 @@ native-core-tests: osk-text-entry-selftest
 osk-text-entry-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT) \
-		src/rt/osk_text_entry_selftest.c src/rt/osk_text_entry.c src/rt/osk_overlay.c
+		tests/native/osk_text_entry_selftest.c src/rt/osk_text_entry.c src/rt/osk_overlay.c
 	$(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT)
 
 # ace-selftest - Ace Mode's CPU-only cells (src/rt/ace.c): the SR_ACE line fails closed, the
@@ -2611,7 +2611,7 @@ osk-text-entry-selftest:
 native-core-tests: ace-selftest
 ace-selftest:
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
-		-o $(BUILD_DIR)/ace_selftest$(EXE_EXT) src/rt/ace_selftest.c src/rt/ace.c
+		-o $(BUILD_DIR)/ace_selftest$(EXE_EXT) tests/native/ace_selftest.c src/rt/ace.c
 	$(BUILD_DIR)/ace_selftest$(EXE_EXT) $(BUILD_DIR)
 
 # osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
@@ -2622,7 +2622,7 @@ native-core-tests: osk-overlay-selftest
 osk-overlay-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/osk_overlay_selftest$(EXE_EXT) \
-		src/rt/osk_overlay_selftest.c src/rt/osk_overlay.c
+		tests/native/osk_overlay_selftest.c src/rt/osk_overlay.c
 	$(BUILD_DIR)/osk_overlay_selftest$(EXE_EXT)
 
 # atrac3p-selftest — standalone ATRAC3+ decoder regression suite (PR-A,
@@ -2631,7 +2631,7 @@ osk-overlay-selftest:
 # terminator-frame decode through the production entry point, determinism
 # across instances/reset/flush, destroy(NULL)). The optional private fixture
 # hook (ATRAC3P_FIXTURE=<dir> with stream.bin + meta.txt, see
-# src/rt/atrac3p_selftest.c) decodes and SHA-256s the whole stream with the
+# tests/native/atrac3p_selftest.c) decodes and SHA-256s the whole stream with the
 # same hash primitive as the VFPU table loader; it is reported as SKIP when
 # unset and must never be committed. No game inputs required.
 
@@ -2639,7 +2639,7 @@ atrac3p-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
 		-Isrc/rt/atrac3p/libavutil $(LDFLAGS) \
 		-o $(BUILD_DIR)/atrac3p_selftest.exe \
-		src/rt/atrac3p_selftest.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c -lm
+		tests/native/atrac3p_selftest.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/atrac3p_selftest.exe
 
 # atrac3p-bridge-selftest — regression suite for the PSP ATRAC3+ HLE decode
@@ -2653,7 +2653,7 @@ atrac3p-bridge-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
 		-Isrc/rt/atrac3p/libavutil -Itests/native $(LDFLAGS) \
 		-o $(BUILD_DIR)/atrac3p_bridge_selftest.exe \
-		src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
+		tests/native/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
 		$(ATRAC3P_SRCS) src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/atrac3p_bridge_selftest.exe
 
@@ -2682,7 +2682,7 @@ atrac3p-title-accept:
 # scheduler/driver plumbing is stubbed. No game inputs or private data required.
 vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(BUILD_DIR)/vfpu_overlap_diff_cases.h
 	$(CC) $(CFLAGS) -DSR_FLIGHT_RECORDER_STANDALONE -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_interp_selftest.exe \
-		src/rt/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
+		tests/native/vfpu_interp_selftest.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
 
 $(BUILD_DIR)/vfpu_overlap_diff_cases.h: tools/vfpu_overlap_diff_gen.py tools/codegen.py
@@ -2693,7 +2693,7 @@ $(BUILD_DIR)/vfpu_overlap_diff_cases.h: tools/vfpu_overlap_diff_gen.py tools/cod
 # every available host rounding mode. CI adds the UBSan float-cast-overflow gate.
 fp-convert-selftest:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/fp_convert_selftest.exe \
-		src/rt/fp_convert_selftest.c -lm
+		tests/native/fp_convert_selftest.c -lm
 	$(BUILD_DIR)/fp_convert_selftest.exe
 
 # ge-float24-selftest — project-authored GE float24, row-sum transform and
@@ -2702,7 +2702,7 @@ fp-convert-selftest:
 # same rules under every SPEC_AMBIGUITY policy reading.  Strict C99; not wired into the renderer.
 ge-float24-selftest:
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
-		-o $(BUILD_DIR)/ge_float24_selftest.exe src/rt/ge_float24_selftest.c src/rt/ge_float24.c -lm
+		-o $(BUILD_DIR)/ge_float24_selftest.exe tests/native/ge_float24_selftest.c src/rt/ge_float24.c -lm
 	$(BUILD_DIR)/ge_float24_selftest.exe
 
 native-core-tests: ge-float24-selftest
@@ -2718,7 +2718,7 @@ GE_CPU_PROFILE_VALIDATE_SELFTEST := $(BUILD_DIR)/ge_cpu_profile_validate_selftes
 
 ge-cpu-profile-validate-selftest: $(RT_GE_O)
 	$(CC) $(CFLAGS) -Werror $(LDFLAGS) -o $(GE_CPU_PROFILE_VALIDATE_SELFTEST) \
-		src/rt/ge_cpu_profile_validate_selftest.c $(RT_GE_O) src/rt/ge_capture.c \
+		tests/native/ge_cpu_profile_validate_selftest.c $(RT_GE_O) src/rt/ge_capture.c \
 		src/rt/flight_recorder.c src/rt/perf.c -lm
 	$(GE_CPU_PROFILE_VALIDATE_SELFTEST)
 	$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled
@@ -2730,7 +2730,7 @@ native-core-tests: ge-cpu-profile-validate-selftest
 # the ordinary coroutine implementation itself keeps one stable main identity.
 coro-selftest:
 	$(CC) $(CFLAGS) -o $(BUILD_DIR)/coro_selftest.exe \
-		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) \
+		tests/native/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) \
 		$(if $(filter Windows_NT,$(OS)),-lpsapi,-lm)
 	$(BUILD_DIR)/coro_selftest.exe
 
@@ -2742,7 +2742,7 @@ ifeq ($(OS),Windows_NT)
 	$(error coro-selftest-asm needs a POSIX host (Linux or WSL); Windows uses Win32 fibers)
 else
 	$(CC) $(CFLAGS) -DSR_CORO_BACKEND_ASM -o $(BUILD_DIR)/coro_selftest_asm.exe \
-		src/rt/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) -lm
+		tests/native/sr_coro_selftest.c src/rt/sr_coro.c $(LDFLAGS) -lm
 	$(BUILD_DIR)/coro_selftest_asm.exe
 endif
 
@@ -2758,7 +2758,7 @@ endif
 # reading.  Strict C99; not wired into the renderer.  No game inputs.
 ge-raster-ref-selftest:
 	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
-		-o $(BUILD_DIR)/ge_raster_ref_selftest.exe src/rt/ge_raster_ref_selftest.c src/rt/ge_raster_ref.c -lm
+		-o $(BUILD_DIR)/ge_raster_ref_selftest.exe tests/native/ge_raster_ref_selftest.c src/rt/ge_raster_ref.c -lm
 	$(BUILD_DIR)/ge_raster_ref_selftest.exe
 
 native-core-tests: ge-raster-ref-selftest
@@ -2781,12 +2781,12 @@ native-core-tests: ge-raster-ref-selftest
 # issue #88 interrupt-context conformance matrix in src/rt/intr_conformance.h); the --psp-oracle
 # sub-mode below
 # remains available when only one scalar production-HLE stream is needed.
-# The selftest's scratch tree is the caller's BUILD_ROOT (src/rt/hle_thread_selftest.c,
+# The selftest's scratch tree is the caller's BUILD_ROOT (tests/native/hle_thread_selftest.c,
 # SR_SELFTEST_BUILD_ROOT), so a run from a scratch root never writes the checkout's build/.
 HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\"
 HLE_AOT_BOUNDARY_SELFTEST ?= 0
 HLE_AOT_BOUNDARY_DEFINE := $(if $(filter 1,$(HLE_AOT_BOUNDARY_SELFTEST)),-DSR_HLE_AOT_BOUNDARY_TEST,)
-HLE_THREAD_SELFTEST_SOURCE ?= src/rt/hle_thread_selftest.c
+HLE_THREAD_SELFTEST_SOURCE ?= tests/native/hle_thread_selftest.c
 # hle.c includes atrac3p_bridge.h and calls into the PR-B decode bridge, so any
 # target that compiles it needs the same include paths and bridge/decoder
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
@@ -2799,7 +2799,7 @@ MEDIA_FUZZ_ITERS ?= 0
 # $(1) is the optional fuzz iteration count. native-core-tests expands this macro
 # instead of recursing into $(MAKE), which would re-parse this Makefile (#735 item 7).
 define PSMF_PRODUCER_SELFTEST_CMD
-$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_producer_selftest.exe src/rt/psmf_producer.c src/rt/psmf_producer_selftest.c
+$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_producer_selftest.exe src/rt/psmf_producer.c tests/native/psmf_producer_selftest.c
 $(BUILD_DIR)/psmf_producer_selftest.exe $(if $(1),--fuzz-iters $(1),)
 endef
 
@@ -2832,7 +2832,7 @@ PSMF_MEDIA_RUNTIME_OBJS := $(filter-out $(BUILD_DIR)/iso_public.o $(BUILD_DIR)/i
 # -Wno-unused-function: unused static helpers, mostly src/rt/hle.c; 103 warnings without it (#735 item 9).
 psmf-media-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest.o
-	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -c src/rt/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest.o
+	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -c tests/native/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest.o
 	$(file >$(BUILD_DIR)/psmf_media_selftest.rsp,$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
 		-o $(BUILD_DIR)/psmf_media_selftest.exe \
@@ -2845,7 +2845,7 @@ psmf-media-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFI
 # -Wno-unused-function: unused static helpers, mostly src/rt/hle.c; 103 warnings without it (#735 item 9).
 psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest_csc_mutant.o
-	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -DSR_MPEG_CSC_NO_WRITE_MUTANT -c src/rt/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.o
+	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -DSR_MPEG_CSC_NO_WRITE_MUTANT -c tests/native/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.o
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
 		-o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.exe \
 		$(BUILD_DIR)/psmf_producer_media_selftest_csc_mutant.o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.o \
@@ -2912,13 +2912,13 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
 # -Wno-unused-function: unused static helpers, mostly src/rt/hle.c; 225 warnings without it across the three hle-title-selftest configs (#735 item 9).
-hle-title-selftest-one: $(RT_GE_O) $(H264_SUB_OBJS) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c $(HLE_SRCS) $(HLE_HDRS) src/rt/audio_resample.c src/rt/audio_resample.h src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
+hle-title-selftest-one: $(RT_GE_O) $(H264_SUB_OBJS) $(TITLE_CONFIG_TOOL) tools/title_manifest.py tests/native/hle_thread_selftest.c $(HLE_SRCS) $(HLE_HDRS) src/rt/audio_resample.c src/rt/audio_resample.h src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
 	"$(PYTHON)" $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -2938,7 +2938,7 @@ psp-oracle: psp-oracle-nakagawa
 # production-HLE selftest executable.  No host-side sum implementation is used.
 psp-oracle-nakagawa-smoke-generate: $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakagawa_smoke.py tools/codegen.py tools/analyze.py
+$(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakagawa_smoke.py tools/codegen.py tools/analyze.py tools/analyze_cfg.py
 	"$(PYTHON)" tools/psp_oracle/build_nakagawa_smoke.py --elf "$(PSP_ORACLE_SMOKE_ELF)" --out-dir "$(PSP_ORACLE_SMOKE_DIR)"
 	"$(PYTHON)" -c "from pathlib import Path; Path(r'$(PSP_ORACLE_SMOKE_STAMP)').write_text('generated\n', encoding='ascii')"
 
@@ -2951,14 +2951,14 @@ $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER)
 #   -Wno-missing-field-initializers: intr_conformance.h IcProbe rows omit the trailing skip field on purpose.
 #   -Wno-infinite-recursion: a generated guest loop in smoke_recomp_0.c ends in a dead tail call after an unconditional branch.
 #   -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign: FFmpeg n4.4 ATRAC3/ATRAC3+ subset sources in src/rt/atrac3p; import deltas are documented there.
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(H264_SUB_OBJS) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c $(HLE_SRCS) $(HLE_HDRS) src/rt/audio_resample.c src/rt/audio_resample.h src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(H264_SUB_OBJS) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) tests/native/hle_thread_selftest.c $(HLE_SRCS) $(HLE_HDRS) src/rt/audio_resample.c src/rt/audio_resample.h src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -Wno-format-truncation -Wno-missing-field-initializers \
 		-Wno-infinite-recursion -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign \
 		-I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		tests/native/hle_thread_selftest.c $(HLE_SRCS) src/rt/ace.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
@@ -2969,14 +2969,14 @@ psp-oracle-nakagawa-smoke-build: $(PSP_ORACLE_SMOKE_EXE)
 psp-oracle-nakagawa-smoke: psp-oracle-nakagawa-smoke-build
 	"$(PYTHON)" tools/psp_oracle/run_nakagawa.py --executable "$(PSP_ORACLE_SMOKE_EXE)" --output "$(PSP_ORACLE_SMOKE_OUTPUT)" -- --psp-oracle --case sum-1-to-100 --artifact "$(PSP_ORACLE_SMOKE_EXE)" --source-commit "$(PSP_ORACLE_SOURCE_COMMIT)" --model "$(PSP_ORACLE_MODEL)" --firmware "$(PSP_ORACLE_FIRMWARE)"
 
-# dispatch-selftest — host-neutral unit tests for the guest code-address table (issue #45).# No game inputs needed; compiles src/rt/dispatch_selftest.c against the real primitives in
+# dispatch-selftest — host-neutral unit tests for the guest code-address table (issue #45).# No game inputs needed; compiles tests/native/dispatch_selftest.c against the real primitives in
 # dispatch_table.h. Asserts that guest address 0 is a first-class key (register/look up,
 # hash collisions involving 0 in both orders, L1 caching, re-registration), that a real
 # function at address 0 executes while an unregistered lookup does not, and that occupancy
 # is independent of the key. Exit code 0 = all invariants hold.
 dispatch-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
-		-o $(BUILD_DIR)/dispatch_selftest.exe src/rt/dispatch_selftest.c
+		-o $(BUILD_DIR)/dispatch_selftest.exe tests/native/dispatch_selftest.c
 	$(BUILD_DIR)/dispatch_selftest.exe
 
 # stale-code-selftest — host-neutral unit tests for the TD-27 opt-in stale
@@ -2987,7 +2987,7 @@ dispatch-selftest:
 # Exit code 0 = all invariants hold.
 stale-code-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
-		-o $(BUILD_DIR)/stale_code_selftest.exe src/rt/stale_code_selftest.c src/rt/stale_code.c
+		-o $(BUILD_DIR)/stale_code_selftest.exe tests/native/stale_code_selftest.c src/rt/stale_code.c
 	$(BUILD_DIR)/stale_code_selftest.exe
 	"$(PYTHON)" -c "import os,subprocess,sys; e=dict(os.environ); e['SR_STALE_DETECT']='1'; p=os.path.abspath(r'$(BUILD_DIR)/stale_code_selftest.exe'); sys.exit(subprocess.run([p], env=e).returncode)"
 
@@ -3002,12 +3002,12 @@ stale-code-selftest:
 # keeps default-lane syscall/break fail-closed. Exit code 0 = all hold.
 CPU_LLE_AOT_FIXTURE_C := $(BUILD_DIR)/cpu_lle_aot_flow_fixture.c
 
-$(CPU_LLE_AOT_FIXTURE_C): tools/test_cpu_lle.py tools/codegen.py tools/analyze.py
+$(CPU_LLE_AOT_FIXTURE_C): tools/test_cpu_lle.py tools/codegen.py tools/analyze.py tools/analyze_cfg.py
 	"$(PYTHON)" tools/test_cpu_lle.py --generate-lle-aot-flow-fixture $@
 
 cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(CPU_LLE_AOT_FIXTURE_C)
 	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		src/rt/cpu_lle_selftest.c $(CPU_LLE_AOT_FIXTURE_C) src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
+		tests/native/cpu_lle_selftest.c $(CPU_LLE_AOT_FIXTURE_C) src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cpu_lle_selftest.exe
 
 # domain-mode-selftest — host-neutral unit tests for the LLE Phase 1
@@ -3021,12 +3021,12 @@ cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(CPU_LLE_AOT_FIXTURE_C)
 # hit/miss/dispatch-reject, and fallback hit/miss/reject. Exit code 0 = all.
 domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/domain_mode_selftest.exe \
-		src/rt/domain_mode_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
+		tests/native/domain_mode_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/domain_mode_selftest.exe
 
 # dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
 # title configuration owns (dispatch aliases, callback terminators) act only where that
-# configuration names them. No game inputs needed; src/rt/dispatch_isolation_selftest.c
+# configuration names them. No game inputs needed; tests/native/dispatch_isolation_selftest.c
 # #includes recomp.c and drives the real dispatch() entry point, asserting its observable
 # effect on CpuState.
 #
@@ -3054,7 +3054,7 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 	"$(PYTHON)" $(TITLE_CONFIG_TOOL) $(DISPATCH_ISO_CONFIG_ARG) --output $(DISPATCH_ISO_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(DISPATCH_ISO_DIR) $(LDFLAGS) \
 		-o $(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe \
-		src/rt/dispatch_isolation_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c \
+		tests/native/dispatch_isolation_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c \
 		$(LIBS) -lm
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 
@@ -3069,7 +3069,7 @@ memory-watch-selftest: dispatch-isolation-selftest-one
 # shared ownership/growth/sort/lookup core with a synthetic long host path and no game input.
 asset-index-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
-		-o $(BUILD_DIR)/asset_index_selftest.exe src/rt/asset_index_selftest.c
+		-o $(BUILD_DIR)/asset_index_selftest.exe tests/native/asset_index_selftest.c
 	$(BUILD_DIR)/asset_index_selftest.exe
 
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
@@ -3083,7 +3083,7 @@ GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_COHERENCE_BIN) \
-		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 
 gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
@@ -3104,7 +3104,7 @@ gpu-ace-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_ACE_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_ace_selftest.exe \
-		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	@rc=0; $(BUILD_DIR)/gpu_ace_selftest.exe || rc=$$?; \
 	if [ $$rc -eq 77 ]; then echo "SKIP gpu-ace-selftest (exit 77; the reason is printed above)"; \
@@ -3114,7 +3114,7 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
-		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		tests/native/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
 
@@ -3127,7 +3127,7 @@ GPU_CAPTURE_BIN := $(BUILD_DIR)/gpu_capture_selftest.exe
 $(GPU_CAPTURE_BIN): shader-verify
 	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_CAPTURE_BIN) \
-		src/rt/gpu_capture_selftest.c src/rt/perf.c \
+		tests/native/gpu_capture_selftest.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(LIBS)
 
 gpu-capture-selftest: $(GPU_CAPTURE_BIN)
@@ -3203,7 +3203,7 @@ else
 VFPU_FUZZ_TITLE_OBJ := $(BUILD_DIR)/$(GAME_NAME)_recomp.o
 VFPU_FUZZ_CHUNK_OBJS := $(CHUNK_OBJS)
 VFPU_FUZZ_VALIDATE :=
-$(VFPU_FUZZ_H): $(GAME_INPUT_PREREQ) tools/vfpu_fuzz_gen.py tools/analyze.py tools/codegen.py
+$(VFPU_FUZZ_H): $(GAME_INPUT_PREREQ) tools/vfpu_fuzz_gen.py tools/analyze.py tools/analyze_cfg.py tools/codegen.py
 	"$(PYTHON)" tools/vfpu_fuzz_gen.py --env-elf $(VFPU_FUZZ_H) --base=$(GAME_BASE) $(EXTRA_SPAN_ARG)
 endif
 
@@ -3383,7 +3383,7 @@ player-state-test-bin:
 osk-overlay-paint-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Isrc/rt $(SDL3_INC_FLAGS) \
 		-o $(BUILD_DIR)/osk_overlay_paint_selftest$(EXE_EXT) \
-		src/rt/osk_overlay_paint_selftest.c src/rt/osk_overlay.c src/rt/osk_overlay_paint.c $(LDFLAGS) $(LIBS)
+		tests/native/osk_overlay_paint_selftest.c src/rt/osk_overlay.c src/rt/osk_overlay_paint.c $(LDFLAGS) $(LIBS)
 	$(BUILD_DIR)/osk_overlay_paint_selftest$(EXE_EXT) $(BUILD_DIR)/osk_overlay_paint_selftest.bmp
 
 # Resolve the already-supported SDL3_ttf dependency for the font selftest. Linux
@@ -3439,7 +3439,7 @@ nk-ui-player-screens-capture:
 		-Isrc/ui -Isrc/player/ui -Ithird_party/clay $(SDL3_TTF_CFLAGS) \
 		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(NK_UI_CORE_SRCS) src/ui/nk_ui_ttf.c src/ui/backend/nk_ui_sdlr.c \
-		src/player/ui/ui_router.c src/player/ui/scr_library.c src/player/ui/scr_title.c \
+		src/player/ui/ui_router.c src/player/ui/scr_library.c $(NK_UI_PLAYER_TITLE_SRCS) \
 		tests/native/test_player_screens.c $(SDL3_TTF_LIBS) -lm \
 		-o $(BUILD_ROOT)/test_player_screens_capture$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_player_screens_capture$(EXE_EXT) --capture-dir="$(NK_UI_CAPTURE_DIR)"

@@ -24,7 +24,7 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 MAKEFILE = ROOT / "Makefile"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 
-_SRC_TOKEN = re.compile(r"\bsrc/[\w./-]+\.(?:c|cpp)\b")
+_SRC_TOKEN = re.compile(r"\b(?:src|tests/native)/[\w./-]+\.(?:c|cpp)\b")
 
 # Hosted-CI inline builds whose source lists duplicate a canonical Makefile
 # target recipe. PR #118 shipped a runtime dependency (guest_interp.c) that the

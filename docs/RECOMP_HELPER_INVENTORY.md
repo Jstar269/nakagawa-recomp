@@ -22,7 +22,7 @@ does not make this file stale. `--details` prints them to stdout.
   definition and every prototype in `recomp.h`. A non-static definition in another production
   `src/` file is a defining file. Selftest harness definitions are not.
 - **Reach**, first match wins: `emitter-reached` (named in the string literals of
-  `tools/codegen.py`, the C it emits; directly, or through the `recomp.h` macros named in the
+  `tools/codegen.py` and `tools/codegen_hst_stubs.py`, the C they emit; directly, or through the `recomp.h` macros named in the
   row); `production-runtime-only` (called from production `src/` code); `selftest-only` (called
   only from `*selftest*` harness files); `address-only` (never called, but named as a value in
   `src/`); `none`.
@@ -375,7 +375,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_null_code_entry` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_null_code_pointer` | `rt/recomp.c` | yes | emitter-reached (via `SR_CODE_POINTER`) | `rt/recomp.c`: upstream_derived |
 | `sr_null_return_address` | `rt/recomp.c` | yes | emitter-reached (via `SR_AOT_RETURN_CAPTURE`) | `rt/recomp.c`: upstream_derived |
-| `sr_oor` | `rt/ge.c`, `rt/ge_replay.c`, `rt/recomp.c` | yes | emitter-reached (direct) | `rt/ge.c`: upstream_derived; `rt/ge_replay.c`: project_authored_attested; `rt/recomp.c`: upstream_derived |
+| `sr_oor` | `rt/ge_replay.c`, `rt/ge_vram_cli.c`, `rt/recomp.c` | yes | emitter-reached (direct) | `rt/ge_replay.c`: project_authored_attested; `rt/ge_vram_cli.c`: upstream_derived; `rt/recomp.c`: upstream_derived |
 | `sr_parse_display_bounds` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_pick_display` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_profile_block` | `rt/recomp.c` | yes | emitter-reached (via `SR_YIELD`) | `rt/recomp.c`: upstream_derived |

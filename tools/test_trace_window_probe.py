@@ -38,7 +38,7 @@ WINDOW_C = (ROOT / "src/rt/flight_recorder.c").read_text(encoding="utf-8")
 WINDOW_H = (ROOT / "src/rt/flight_recorder.h").read_text(encoding="utf-8")
 INTERP_C = (ROOT / "src/rt/guest_interp.c").read_text(encoding="utf-8")
 CODEGEN_PY = (ROOT / "tools/codegen.py").read_text(encoding="utf-8")
-DISPATCH_SELFTEST = (ROOT / "src/rt/dispatch_isolation_selftest.c").read_text(encoding="utf-8")
+DISPATCH_SELFTEST = (ROOT / "tests/native/dispatch_isolation_selftest.c").read_text(encoding="utf-8")
 MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
 NK_CLI = (ROOT / "tools/nk_cli.py").read_text(encoding="utf-8")
 

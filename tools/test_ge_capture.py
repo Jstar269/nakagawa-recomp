@@ -40,7 +40,7 @@ class TestGeCaptureC(unittest.TestCase):
         result = subprocess.run(
             [CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
              f"-I{RT}", "-o", os.fspath(cls.exe),
-             os.fspath(RT / "ge_capture_selftest.c"),
+             os.fspath(ROOT / "tests" / "native" / "ge_capture_selftest.c"),
              os.fspath(RT / "ge_capture.c")],
             capture_output=True, text=True,
         )

@@ -662,14 +662,14 @@
       },
       "allocation_time": "No stream-wide allocation at open; impossible timestamp normalization bases are refused before allocation.",
       "failure_atomicity": "Invalid headers, extents, stream tables, and presentation bases free the new producer and return NULL.",
-      "harness": "src/rt/psmf_producer_selftest.c:test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_rejects_bad_containers",
+      "harness": "tests/native/psmf_producer_selftest.c:test_seeded_mutation; tests/native/psmf_producer_selftest.c:test_rejects_bad_containers",
       "status": "COVERED",
       "id": "psmf-header-c",
       "source_paths": [
         "src/rt/psmf_producer.c"
       ],
       "test_paths": [
-        "src/rt/psmf_producer_selftest.c"
+        "tests/native/psmf_producer_selftest.c"
       ],
       "malformed_input_coverage": [
         "Bad magic/version, truncated/oversized stream table, invalid extent and impossible presentation base."
@@ -681,14 +681,14 @@
         "deterministic_regression": {
           "status": "IN_CI",
           "tests": [
-            "src/rt/psmf_producer_selftest.c"
+            "tests/native/psmf_producer_selftest.c"
           ],
           "runner": "make CC=gcc native-core-tests"
         },
         "seeded_mutations": {
           "status": "IN_CI",
           "tests": [
-            "src/rt/psmf_producer_selftest.c"
+            "tests/native/psmf_producer_selftest.c"
           ],
           "campaign": "100 seeded iterations via native-core-tests; family limits/clamps apply."
         },
@@ -717,14 +717,14 @@
       },
       "allocation_time": "Stream-mode raw input, per-PES payload, and per-track storage are capped; cumulative duration and packet count are not.",
       "failure_atomicity": "Malformed input is terminal; incomplete syntax waits for more input and is rejected at EOS. Cursor and counters may advance before selected-track allocation failure, but a failed producer never resumes without reset.",
-      "harness": "src/rt/psmf_producer_selftest.c:test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_conformance_corpus; src/rt/psmf_producer_selftest.c:test_streaming_program_demux_matches_file_mode; src/rt/psmf_producer_selftest.c:test_streaming_demux_cursor_progress_without_access_units; src/rt/psmf_producer_selftest.c:test_streaming_demux_rejects_truncated_eos",
+      "harness": "tests/native/psmf_producer_selftest.c:test_seeded_mutation; tests/native/psmf_producer_selftest.c:test_conformance_corpus; tests/native/psmf_producer_selftest.c:test_streaming_program_demux_matches_file_mode; tests/native/psmf_producer_selftest.c:test_streaming_demux_cursor_progress_without_access_units; tests/native/psmf_producer_selftest.c:test_streaming_demux_rejects_truncated_eos",
       "status": "COVERED",
       "id": "mpeg-ps-pes-c",
       "source_paths": [
         "src/rt/psmf_producer.c"
       ],
       "test_paths": [
-        "src/rt/psmf_producer_selftest.c"
+        "tests/native/psmf_producer_selftest.c"
       ],
       "malformed_input_coverage": [
         "Malformed packet prefix/length/options, PTS/DTS flags/markers, pack stuffing/end code and packet-boundary preservation.",
@@ -738,14 +738,14 @@
         "deterministic_regression": {
           "status": "IN_CI",
           "tests": [
-            "src/rt/psmf_producer_selftest.c"
+            "tests/native/psmf_producer_selftest.c"
           ],
           "runner": "make CC=gcc native-core-tests"
         },
         "seeded_mutations": {
           "status": "IN_CI",
           "tests": [
-            "src/rt/psmf_producer_selftest.c"
+            "tests/native/psmf_producer_selftest.c"
           ],
           "campaign": "100 seeded iterations via native-core-tests; family limits/clamps apply."
         },
@@ -773,14 +773,14 @@
       },
       "allocation_time": "Candidate scanning is incremental and linear in appended bytes; the no-AUD and compaction selftests pin the work bound.",
       "failure_atomicity": "Only complete bounded AUs enter the queue; queue backpressure stops parsing without dropping buffered bytes.",
-      "harness": "src/rt/psmf_producer_selftest.c:test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_no_aud_scan_work_bound",
+      "harness": "tests/native/psmf_producer_selftest.c:test_seeded_mutation; tests/native/psmf_producer_selftest.c:test_no_aud_scan_work_bound",
       "status": "COVERED",
       "id": "h264-au-framing-c",
       "source_paths": [
         "src/rt/psmf_producer.c"
       ],
       "test_paths": [
-        "src/rt/psmf_producer_selftest.c"
+        "tests/native/psmf_producer_selftest.c"
       ],
       "malformed_input_coverage": [
         "Split AUDs, no-AUD scan, compaction, queue backpressure and bounded AU publication."
@@ -792,14 +792,14 @@
         "deterministic_regression": {
           "status": "IN_CI",
           "tests": [
-            "src/rt/psmf_producer_selftest.c"
+            "tests/native/psmf_producer_selftest.c"
           ],
           "runner": "make CC=gcc native-core-tests"
         },
         "seeded_mutations": {
           "status": "IN_CI",
           "tests": [
-            "src/rt/psmf_producer_selftest.c"
+            "tests/native/psmf_producer_selftest.c"
           ],
           "campaign": "100 seeded iterations via native-core-tests; family limits/clamps apply."
         },
@@ -828,7 +828,7 @@
       },
       "allocation_time": "Compressed input, output, and chunk storage are capped; decoder execution is delegated to the platform Media Foundation transform.",
       "failure_atomicity": "Invalid AU or queue/decode failure poisons the decoder instance until reset or destruction; queue input is published only after the AU extent and chunk capacity are validated.",
-      "harness": "src/rt/psmf_media_selftest.c:test_legacy_feed_take_path; src/rt/psmf_media_selftest.c:test_real_decode_into_guest_buffer; src/rt/psmf_media_selftest.c:test_legacy_demux_mutations",
+      "harness": "tests/native/psmf_media_selftest.c:test_legacy_feed_take_path; tests/native/psmf_media_selftest.c:test_real_decode_into_guest_buffer; tests/native/psmf_media_selftest.c:test_legacy_demux_mutations",
       "gap": "The real decoder fixture and hostile legacy-feed campaign require Windows Media Foundation; the common PS parser has separate portable producer coverage.",
       "status": "PARTIAL",
       "id": "windows-mf-h264-backend",
@@ -836,7 +836,7 @@
         "src/rt/h264_mf.c"
       ],
       "test_paths": [
-        "src/rt/psmf_media_selftest.c"
+        "tests/native/psmf_media_selftest.c"
       ],
       "malformed_input_coverage": [
         "Invalid/oversized common-demux input, non-Annex-B AU rejection, decoder failure poisoning, and output-extent refusal."
@@ -848,14 +848,14 @@
         "deterministic_regression": {
           "status": "NOT_IN_CI",
           "tests": [
-            "src/rt/psmf_media_selftest.c"
+            "tests/native/psmf_media_selftest.c"
           ],
           "runner": "mingw32-make --no-print-directory psmf-media-selftest"
         },
         "seeded_mutations": {
           "status": "NOT_IN_CI",
           "tests": [
-            "src/rt/psmf_media_selftest.c"
+            "tests/native/psmf_media_selftest.c"
           ],
           "campaign": "The mutation loop enters through the common demux API and requires a Windows Media Foundation decoder; target is not in current CI."
         },
@@ -882,14 +882,14 @@
       },
       "allocation_time": "Frame and track sizes are bounded; resync scans at most the fixed 8192-byte window per extraction attempt.",
       "failure_atomicity": "Invalid frame-size fields fail terminally; complete frames are copied into bounded AU storage before queue publication.",
-      "harness": "src/rt/psmf_producer_selftest.c:test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_access_unit_formation",
+      "harness": "tests/native/psmf_producer_selftest.c:test_seeded_mutation; tests/native/psmf_producer_selftest.c:test_access_unit_formation",
       "status": "COVERED",
       "id": "atrac-frame-framing-c",
       "source_paths": [
         "src/rt/psmf_producer.c"
       ],
       "test_paths": [
-        "src/rt/psmf_producer_selftest.c"
+        "tests/native/psmf_producer_selftest.c"
       ],
       "malformed_input_coverage": [
         "Invalid frame sizes/headers, incomplete cross-PES frames and bounded resynchronization scans."
@@ -901,14 +901,14 @@
         "deterministic_regression": {
           "status": "IN_CI",
           "tests": [
-            "src/rt/psmf_producer_selftest.c"
+            "tests/native/psmf_producer_selftest.c"
           ],
           "runner": "make CC=gcc native-core-tests"
         },
         "seeded_mutations": {
           "status": "IN_CI",
           "tests": [
-            "src/rt/psmf_producer_selftest.c"
+            "tests/native/psmf_producer_selftest.c"
           ],
           "campaign": "100 seeded iterations via native-core-tests; family limits/clamps apply."
         },
@@ -1352,8 +1352,8 @@
         "src/rt/atrac3p/libavcodec/atrac3plusdec.c"
       ],
       "test_paths": [
-        "src/rt/atrac3p_selftest.c",
-        "src/rt/atrac3p_bridge_selftest.c"
+        "tests/native/atrac3p_selftest.c",
+        "tests/native/atrac3p_bridge_selftest.c"
       ],
       "max_input": "Decode accepts at most the handle block_align per call; atrac3p_create has no explicit upper bound on positive block_align.",
       "tables_nesting": "Codec syntax is parsed by the imported decoder; no project recursion ceiling located.",
@@ -1377,8 +1377,8 @@
         "deterministic_regression": {
           "status": "IN_CI",
           "tests": [
-            "src/rt/atrac3p_selftest.c",
-            "src/rt/atrac3p_bridge_selftest.c"
+            "tests/native/atrac3p_selftest.c",
+            "tests/native/atrac3p_bridge_selftest.c"
           ],
           "runner": "build/atrac3p_selftest and build/atrac3p_bridge_selftest steps in .github/workflows/ci.yml"
         },
@@ -1396,7 +1396,7 @@
         "coverage_guided_fuzzer": "NOT_CONFIGURED",
         "overflow_oob_mutation_kill": "NOT_RUN"
       },
-      "harness": "src/rt/atrac3p_selftest.c; src/rt/atrac3p_bridge_selftest.c",
+      "harness": "tests/native/atrac3p_selftest.c; tests/native/atrac3p_bridge_selftest.c",
       "status": "PARTIAL"
     },
     {

@@ -450,6 +450,14 @@ void      ge_decode_tex_level_rgba(uint32_t level, uint32_t *out);
 #define GE_VRAM_VIEW_MAX_HEIGHT 512u
 int       ge_vram_decode_surface(uint32_t addr, uint32_t width, uint32_t height,
                                  uint32_t stride, uint32_t format, uint32_t *out);
+#ifdef SR_GE_VRAM_DECODER_CLI
+/* The standalone decoder's entry into ge.c (built only with -DSR_GE_VRAM_DECODER_CLI):
+ * decodes the surface described by the arguments from the captured VRAM image. */
+int       ge_vram_cli_decode(uint32_t addr, uint32_t width, uint32_t height, uint32_t stride,
+                             uint32_t format, uint32_t swizzled, uint32_t clut_addr,
+                             uint32_t clut_format, const uint8_t *clut_ram,
+                             const uint8_t *arena, uint32_t *pixels);
+#endif
 /* Level 0 of the texture the GE state names now (tex_addr, tex_w x tex_h, any PSM, swizzle and
  * the loaded CLUT), decoded by ge_decode_tex_rgba for the viewer. Refused (0, nothing read)
  * while a GE capture is active, when the texture's bytes are not all readable, when it is
