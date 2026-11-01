@@ -16,7 +16,7 @@
  *
  * Built and run by tools/test_vfpu_addressing.py. No game inputs required:
  *
- *     gcc -std=c11 -Isrc/rt -o vfpu_addr_selftest tests/native/vfpu_addr_selftest.c
+ *     gcc -std=c11 -Isrc/rt -o vfpu_addr_selftest src/rt/vfpu_addr_selftest.c
  */
 
 #include "vfpu_interp.c"
@@ -26,7 +26,7 @@
 /* Standalone support required by recomp.h and the rest of vfpu_interp.c. None
  * of it is reachable from vreg_idx(); it exists only so the translation unit
  * links without dragging in the runtime. Same pattern as
- * tests/native/gpu_coherence_selftest.c. No game inputs or private data required. */
+ * src/rt/gpu_coherence_selftest.c. No game inputs or private data required. */
 uint8_t *g_mem;
 CpuState *s_cpu;
 int g_hle_depth;

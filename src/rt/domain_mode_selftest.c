@@ -10,7 +10,7 @@
 // The harness #includes recomp.c, cpu_lle.c, and domain_mode.c for direct
 // access to the same helpers the generated stubs call, and links the real
 // guest_interp.c so the LLE dispatch lane is exercised, not modeled. The stub
-// block below mirrors tests/native/cpu_lle_selftest.c: symbols recomp.c references
+// block below mirrors src/rt/cpu_lle_selftest.c: symbols recomp.c references
 // that live in scheduler/HLE translation units we deliberately do not link.
 // sr_syscall is a recording test double (not the HLE handler): the HLE-arm
 // proof is that the seam tail-calls sr_syscall with identical (s, nid) and
