@@ -15,6 +15,9 @@
   `name=0x<8 hex>`. Only registers whose value changed in this step are listed. Float and
   VFPU values are the raw 32-bit IEEE-754 bit pattern, not a decimal rendering, so the
   comparison is exact and not subject to printf rounding.
+- An exception fixture may add `epc`, `cause`, `badvaddr`, and `status` tokens after the
+  register tokens. These are raw 32-bit words from the PSP exception frame; normal steps
+  omit them.
 - `<mem-writes>` zero or more memory-write tokens, space-separated, ascending by address:
   `m<size>[<haddr>]=0x<hex>` where `<size>` is 8, 16, or 32, `<haddr>` is `0x` + 8 hex
   digits (guest virtual address), and the value has 2, 4, or 8 hex digits matching the size.

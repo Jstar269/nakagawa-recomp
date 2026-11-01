@@ -320,7 +320,7 @@ class LifecycleInstrumentationIsMandatoryTests(unittest.TestCase):
     """
 
     def test_selftest_refuses_to_build_without_instrumentation(self):
-        selftest = (ROOT / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+        selftest = (ROOT / "tests" / "native" / "hle_thread_selftest.c").read_text(encoding="utf-8")
         self.assertIn("#ifndef SR_CORO_LIFECYCLE_TEST", selftest)
         self.assertIn("#error", selftest)
 

@@ -788,4 +788,975 @@ void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
         consent_items_reported = false;
     }
 }
+
+/* ---- The seam main.c calls (player_ui_test.h). Each moved here from main.c unchanged. ---- */
+
+#include "nk_platform.h"
+#include "nk_title_manifest.h"
+#include "update_check.h"
+
+/* The cache-epoch build regression deliberately defers the automatic rescan
+   for one invalidation so an old post-build latch cannot be completed by a
+   background job before the restarted synthetic build owns the queue. */
+static bool s_ui_test_defer_cache_rescan_once;
+static bool s_ui_test_drop_worker_event;
+static const char *s_ui_test_catalog_reload_path;
+static unsigned s_ui_test_catalog_reload_count;
+static unsigned s_ui_test_catalog_reload_completed;
+static bool s_ui_test_catalog_reload_started;
+static bool s_ui_test_catalog_reload_failed;
+
+void player_ui_test_init(PlayerUiTest *t) {
+    memset(t, 0, sizeof(*t));
+    t->events = "";
+    t->wait_package_status_target = NK_RUNTIME_PACKAGE_UNKNOWN;
+    t->wait_view_mask = UINT32_C(1) << VIEW_LIBRARY;
+}
+
+bool player_ui_test_parse_arg(PlayerUiTest *t, const char *arg) {
+    if (strncmp(arg, "--ui-test-events=", 17) == 0) {
+        t->events = arg + 17;
+        t->mode = true;
+    } else if (strncmp(arg, "--ui-test-screenshot=", 21) == 0) {
+        t->screenshot_path = arg + 21;
+        t->mode = true;
+    } else if (strncmp(arg, "--ui-test-error-code=", 21) == 0) {
+        t->error_code = arg + 21;
+        t->mode = true;
+    } else if (strncmp(arg, "--ui-test-iso-path=", 19) == 0) {
+        t->iso_path = arg + 19;
+        t->mode = true;
+    } else if (strncmp(arg, "--ui-test-art-mount-source=", 27) == 0) {
+        t->art_mount_source = arg + 27;
+        t->mode = true;
+    } else if (strcmp(arg, "--ui-test-wait-background") == 0) {
+        t->wait_background = true;
+        t->mode = true;
+    } else if (strncmp(arg, "--ui-test-catalog-reload-path=", 30) == 0) {
+        s_ui_test_catalog_reload_path = arg + 30;
+        t->mode = true;
+    } else if (strncmp(arg, "--ui-test-catalog-reload-count=", 31) == 0) {
+        uint64_t count = 0;
+        if (!player_ui_test_parse_positive_u64(arg + 31, &count) || count > 1024) {
+            fprintf(stderr, "[PLAYER_UI_TEST] invalid catalog reload count.\n");
+            t->failed = true;
+        } else {
+            s_ui_test_catalog_reload_count = (unsigned)count;
+        }
+        t->mode = true;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+void player_ui_test_check_environment(PlayerUiTest *t) {
+    {
+        const char *fake_running = getenv("NK_UI_TEST_GAME_RUNNING");
+        t->fake_game_running = t->mode && fake_running && fake_running[0];
+    }
+    const char *fail_package_thread_at =
+        getenv("NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT");
+    if (t->mode && fail_package_thread_at) {
+        if (!player_ui_test_parse_fail_attempts(fail_package_thread_at)) {
+            fprintf(stderr,
+                    "[PLAYER_UI_TEST] invalid package status thread fail attempt.\n");
+            t->failed = true;
+        }
+    }
+    const char *fail_package_thread_for =
+        getenv("NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_FOR");
+    if (t->mode && fail_package_thread_for &&
+        !player_ui_test_parse_fail_titles(fail_package_thread_for)) {
+        fprintf(stderr,
+                "[PLAYER_UI_TEST] invalid package status thread fail title.\n");
+        t->failed = true;
+    }
+    if (t->mode && getenv("NK_UI_TEST_DROP_WORKER_EVENT")) {
+        /* Model SDL refusing a worker completion push, so the launcher's
+           reclaim path is exercised by the same harness that drives the real
+           event loop. */
+        s_ui_test_drop_worker_event = true;
+        ui_renderer_test_drop_art_events(true);
+    }
+    if ((s_ui_test_catalog_reload_count > 0) !=
+        (s_ui_test_catalog_reload_path &&
+         s_ui_test_catalog_reload_path[0])) {
+        fprintf(stderr, "[PLAYER_UI_TEST] catalog reload path/count must be paired.\n");
+        t->failed = true;
+    }
+    if (t->mode) setvbuf(stdout, NULL, _IONBF, 0);
+}
+
+/* The UI test points a card at its synthetic image, and the card's own library
+   record with it: the library tells two images of a disc ID apart by their
+   files, so a card and its record must name the same one. */
+static void ui_test_set_card_image(PlayerApp *app, int index, const char *iso_path) {
+    GameRecord *card = &app->games[index];
+    for (int j = 0; j < app->library.count; j++) {
+        NkGameEntry *record = &app->library.entries[j];
+        if (strcmp(record->disc_id, card->disc_id) == 0 &&
+            strcmp(record->iso_path, card->iso_path) == 0) {
+            snprintf(record->iso_path, sizeof(record->iso_path), "%s", iso_path);
+        }
+    }
+    snprintf(card->iso_path, sizeof(card->iso_path), "%s", iso_path);
+}
+
+void player_ui_test_prepare_app(PlayerUiTest *t, PlayerApp *app) {
+    if (t->iso_path && app->selected_game_index >= 0 &&
+        app->selected_game_index < app->game_count) {
+        ui_test_set_card_image(app, app->selected_game_index, t->iso_path);
+    }
+    const char *bind_test_eboot = getenv("NK_UI_TEST_BIND_EBOOT");
+    if (t->mode && t->iso_path && bind_test_eboot &&
+        strcmp(bind_test_eboot, "1") == 0 &&
+        app->selected_game_index >= 0 && app->selected_game_index < app->game_count) {
+        GameRecord *game = &app->games[app->selected_game_index];
+        snprintf(game->selected_executable, sizeof(game->selected_executable),
+                 "EBOOT.BIN");
+        game->executable_eboot_kind = NK_ISO_EXEC_MIPS_ELF32;
+        game->executable_selection = NK_ISO_EXEC_SELECTION_EBOOT;
+    }
+    if (t->iso_path) {
+        for (int i = 0; i < app->game_count; i++) {
+            if (strcmp(app->games[i].disc_id, "TEST00006") == 0) {
+                ui_test_set_card_image(app, i, t->iso_path);
+            }
+        }
+    }
+    if (t->fake_game_running) {
+        /* "1": some game runs. A disc ID names the running game, whose window
+           is up; "starting:<disc ID>" is that game before its window opens. */
+        const char *fake = getenv("NK_UI_TEST_GAME_RUNNING");
+        bool starting = strncmp(fake, "starting:", 9) == 0;
+        const char *disc = starting ? fake + 9 : fake;
+        app->is_game_running = true;
+        if (strcmp(disc, "1") != 0) {
+            snprintf(app->launch_session.disc_id, sizeof(app->launch_session.disc_id),
+                     "%s", disc);
+            /* A launch carries the disc's title, as nk_launch_prepare_session
+               copies it from the library record. */
+            int running_index = player_app_find_game_by_disc_id(app, disc);
+            if (running_index >= 0) {
+                snprintf(app->launch_session.game_title,
+                         sizeof(app->launch_session.game_title), "%s",
+                         app->games[running_index].title_name);
+            }
+            app->child_window_ready = !starting;
+        }
+    }
+    if (t->error_code) {
+        if (strcmp(t->error_code, "CLI_NOT_FOUND") == 0) {
+            player_app_set_cli_not_found_error(app, "Return to Library",
+                                               VIEW_LIBRARY);
+        } else if (strcmp(t->error_code, "UI_TEST_LONG_ERROR") == 0) {
+            static const char long_error_message[] =
+                "Build setup could not continue because a required file was missing. "
+                "Check the message, follow the suggested recovery steps, and try again. "
+                "If the application files are incomplete, reinstall the app and keep "
+                "its folder together. Return to the library after correcting the issue. "
+                "This final sentence confirms the full message remains visible beyond "
+                "the old four-line limit. Keep every recovery step on this card so the "
+                "player can read the complete instruction before leaving this screen.";
+            player_app_set_error(app, t->error_code,
+                                 "Synthetic Long Error", long_error_message,
+                                 "Return to Library", VIEW_LIBRARY);
+        } else if (strcmp(t->error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0 ||
+                   strcmp(t->error_code, "RUNTIME_PREMATURE_EXIT") == 0 ||
+                   strcmp(t->error_code, "RUNTIME_ERROR_EXIT") == 0) {
+            /* The cards a finished game session shows (#1282), from a synthetic
+               stop of the first library game. */
+            const char *disc = app->game_count > 0 ? app->games[0].disc_id : "";
+            static const char stop_event[] =
+                "BOOT_EVENT phase=stop reason=semantic-boundary "
+                "boundary=unsupported-import-scenetadhocinit issue=308";
+            player_dev_log_add(app, "runtime", "%s", stop_event);
+            /* The run's output, kept as logs/game-<disc>-last.txt as a real
+               stop keeps it (#1303); the report reads its boot events there. */
+            char logs_dir[NK_MAX_PATH];
+            char run_log[NK_MAX_PATH + 64] = "";
+            if (disc[0] && nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)) &&
+                snprintf(run_log, sizeof(run_log), "%s%cgame-%s-last.txt", logs_dir,
+                         nk_platform_path_separator(), disc) < (int)sizeof(run_log)) {
+                FILE *log = nk_fopen_utf8(run_log, "wb");
+                if (!log || fprintf(log, "synthetic runtime output\n%s\n", stop_event) < 0) {
+                    run_log[0] = '\0';
+                }
+                if (log && fclose(log) != 0) run_log[0] = '\0';
+            }
+            player_app_set_game_stop_error(app, t->error_code,
+                                           "unsupported-import-scenetadhocinit", 308u,
+                                           strcmp(t->error_code, "RUNTIME_ERROR_EXIT") == 0
+                                               ? 3 : 9,
+                                           strcmp(t->error_code,
+                                                  "RUNTIME_PREMATURE_EXIT") == 0 ? 120u : 9000u,
+                                           disc, run_log[0] ? run_log : NULL);
+        } else if (strcmp(t->error_code, "PACKAGE_BUILD_REFUSED") == 0) {
+            /* A preflight refusal (#1286): the build never started. */
+            const char *disc = app->game_count > 0 ? app->games[0].disc_id : "TEST80001";
+            package_builder_init_session(&app->build_session, disc, "Synthetic Package Fixture");
+            player_app_set_build_error(app, "preflight",
+                                       "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and "
+                                       "built-in decryption stopped: KEY_REQUIRED.",
+                                       NULL);
+        } else {
+            player_app_set_error(app, t->error_code, t->error_code,
+                                 "Synthetic UI regression error state.",
+                                 "Return to Library", VIEW_LIBRARY);
+        }
+    }
+}
+
+void player_ui_test_apply_motion(const PlayerUiTest *t, PlayerApp *app) {
+    /* Scripted runs cut motion so their frames are steady; NK_UI_TEST_MOTION keeps the
+       settings' choice, for the tests of motion itself. */
+    if (t->mode && getenv("NK_UI_TEST_MOTION") == NULL) {
+        app->settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
+    }
+}
+
+void player_ui_test_apply_update_settings(PlayerApp *app) {
+    if (getenv("NK_UI_TEST_CHECK_AT_START") != NULL) app->settings.check_updates_at_start = true;
+}
+
+void player_ui_test_set_next_ui(const PlayerUiNk *next_ui) {
+    g_ui_test_next_ui = next_ui;
+}
+
+void player_ui_test_report_startup(const PlayerUiTest *t, const PlayerUiNk *next_ui) {
+    if (next_ui != NULL && t->mode) {
+        puts("[PLAYER_UI_TEST] UI_NEXT_ACTIVE");
+    }
+    if (t->mode && getenv("NK_UI_TEST_REPORT_COMPATIBILITY") != NULL) {
+        player_ui_nk_test_report_compatibility();
+    }
+    if (t->mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_ACE_SETTINGS. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_ACE_SETTINGS; ++view) {
+            printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
+                   player_ui_test_view_name((PlayerView)view),
+                   player_ui_nk_draws_view(view) ? 1 : 0);
+        }
+    }
+}
+
+bool player_ui_test_create_target(PlayerUiTest *t, SDL_Renderer *renderer, int width,
+                                  int height) {
+    t->render_target = NULL;
+    if (!t->mode) return true;
+    t->render_target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+                                         SDL_TEXTUREACCESS_TARGET, width, height);
+    if (!t->render_target || !SDL_SetRenderTarget(renderer, t->render_target)) {
+        fprintf(stderr, "[PLAYER_UI_TEST] Could not create SDL render target: %s\n",
+                SDL_GetError());
+        if (t->render_target) SDL_DestroyTexture(t->render_target);
+        t->render_target = NULL;
+        return false;
+    }
+    return true;
+}
+
+void player_ui_test_destroy_target(PlayerUiTest *t, SDL_Renderer *renderer) {
+    if (t->render_target) {
+        SDL_SetRenderTarget(renderer, NULL);
+        SDL_DestroyTexture(t->render_target);
+        t->render_target = NULL;
+    }
+}
+
+void player_ui_test_begin_first_frame(PlayerUiTest *t) {
+    t->first_frame_started_ns = t->mode ? SDL_GetTicksNS() : 0;
+    t->first_frame_validation_count = t->mode
+        ? player_app_ui_test_validation_calls() : 0;
+}
+
+void player_ui_test_end_first_frame(PlayerUiTest *t, const PlayerApp *app,
+                                    SDL_Renderer *renderer, const char *invalid_disc_message) {
+    t->drop_data = NULL;
+    if (t->mode) {
+        uint64_t validations = player_app_ui_test_validation_calls();
+        validations = validations >= t->first_frame_validation_count
+            ? validations - t->first_frame_validation_count : validations;
+        player_ui_test_report_frame(
+            0, app, renderer, true,
+            SDL_GetTicksNS() - t->first_frame_started_ns, validations,
+            invalid_disc_message);
+    }
+}
+
+static const char *player_update_phase_name(PlayerUpdatePhase phase) {
+    switch (phase) {
+        case PLAYER_UPDATE_CHECKING: return "checking";
+        case PLAYER_UPDATE_CURRENT: return "current";
+        case PLAYER_UPDATE_AVAILABLE: return "available";
+        case PLAYER_UPDATE_DOWNLOADING: return "downloading";
+        case PLAYER_UPDATE_DOWNLOADED: return "downloaded";
+        case PLAYER_UPDATE_INSTALLING: return "installing";
+        case PLAYER_UPDATE_INSTALLED: return "installed";
+        case PLAYER_UPDATE_FAILED: return "failed";
+        case PLAYER_UPDATE_IDLE:
+        default: return "idle";
+    }
+}
+
+void player_ui_test_report_update_phase(const PlayerUiTest *t, const PlayerApp *app) {
+    static PlayerUpdatePhase reported = PLAYER_UPDATE_IDLE;
+    if (t->mode && app->update.phase != reported) {
+        reported = app->update.phase;
+        printf("[PLAYER_UI_TEST] update=%s error=%s notice=%d newest=%s zip=%s "
+               "install=%s\n",
+               player_update_phase_name(app->update.phase),
+               app->update.error.code[0] ? app->update.error.code : "none",
+               app->update.notice ? 1 : 0,
+               app->update.check.newest.tag[0] ? app->update.check.newest.tag : "none",
+               app->update.zip_path[0] ? app->update.zip_path : "none",
+               app->update.install_dir[0] ? app->update.install_dir : "none");
+        fflush(stdout);
+    }
+}
+
+void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app, SDL_Renderer *renderer,
+                                bool *running, bool background_pending) {
+    if (!t->mode) return;
+    uint64_t ui_test_now = SDL_GetTicks();
+    bool ui_test_block_script = false;
+    if (t->waiting_for_view) {
+        uint32_t current_view_mask = (unsigned)app->active_view < 32
+            ? UINT32_C(1) << (unsigned)app->active_view : 0;
+        if (t->wait_view_mask & current_view_mask) {
+            printf("[PLAYER_UI_TEST] wait_view actual=%s result=PASS\n",
+                   player_ui_test_view_name(app->active_view));
+            t->waiting_for_view = false;
+        } else if (ui_test_now >= t->wait_deadline) {
+            fprintf(stderr, "[PLAYER_UI_TEST] wait_view result=FAIL actual=%s\n",
+                    player_ui_test_view_name(app->active_view));
+            t->failed = true;
+            t->quit_queued = true;
+            *running = false;
+        } else {
+            ui_test_block_script = true;
+        }
+    }
+    if (t->waiting_for_package_status) {
+        const GameRecord *game = app->selected_game_index >= 0 &&
+            app->selected_game_index < app->game_count
+            ? &app->games[app->selected_game_index] : NULL;
+        bool ready = game &&
+            !player_app_runtime_package_check_pending(app, game) &&
+            !player_app_runtime_package_check_failed(app, game) &&
+            player_app_cached_runtime_package_status(app, game) ==
+                t->wait_package_status_target;
+        if (ready) {
+            printf("[PLAYER_UI_TEST] wait_package_status result=PASS\n");
+            t->waiting_for_package_status = false;
+        } else if (ui_test_now >= t->wait_deadline) {
+            fprintf(stderr,
+                    "[PLAYER_UI_TEST] wait_package_status result=FAIL target=%d\n",
+                    (int)t->wait_package_status_target);
+            t->failed = true;
+            t->quit_queued = true;
+            *running = false;
+        } else {
+            ui_test_block_script = true;
+        }
+    }
+    if (t->waiting_for_art_attempt) {
+        unsigned completed = ui_renderer_test_art_attempt_count();
+        if (completed >= t->wait_art_attempt_target) {
+            printf("[PLAYER_UI_TEST] wait_art_attempt target=%u result=PASS\n",
+                   t->wait_art_attempt_target);
+            t->waiting_for_art_attempt = false;
+        } else {
+            ui_test_block_script = true;
+        }
+    }
+    if (t->waiting_for_art_delay) {
+        if (ui_renderer_test_art_delay_active()) {
+            printf("[PLAYER_UI_TEST] wait_art_delay_active result=PASS\n");
+            t->waiting_for_art_delay = false;
+        } else if (ui_test_now >= t->wait_art_delay_deadline) {
+            fprintf(stderr,
+                    "[PLAYER_UI_TEST] wait_art_delay_active result=FAIL\n");
+            t->failed = true;
+            t->quit_queued = true;
+            t->waiting_for_art_delay = false;
+            *running = false;
+        } else {
+            ui_test_block_script = true;
+        }
+    }
+    if (g_ui_test_waiting_for_package_failure) {
+        int failure_index = player_ui_test_fail_title_index(
+            g_ui_test_wait_package_failure_disc);
+        unsigned completed = failure_index >= 0
+            ? g_ui_test_fail_package_status_thread_create_for_counts[
+                failure_index]
+            : 0;
+        if (completed >= g_ui_test_wait_package_failure_target) {
+            printf("[PLAYER_UI_TEST] wait_package_failure disc=%s "
+                   "target=%u result=PASS\n",
+                   g_ui_test_wait_package_failure_disc,
+                   g_ui_test_wait_package_failure_target);
+            g_ui_test_waiting_for_package_failure = false;
+        } else {
+            ui_test_block_script = true;
+        }
+    }
+    if (t->waiting_for_time) {
+        if (ui_test_now >= t->wait_deadline) {
+            printf("[PLAYER_UI_TEST] wait_ms result=PASS\n");
+            t->waiting_for_time = false;
+        } else {
+            ui_test_block_script = true;
+        }
+    }
+    if (!ui_test_block_script && !t->quit_queued && *running) {
+    SDL_Event scripted_event;
+    int next_event = player_ui_test_next_event(
+        t->events, &t->event_cursor, &scripted_event);
+    if (next_event > 0) {
+        if (scripted_event.type == SDL_EVENT_USER &&
+            scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_ART_ATTEMPT) {
+            t->wait_art_attempt_target = scripted_event.user.windowID;
+            t->waiting_for_art_attempt = true;
+            printf("[PLAYER_UI_TEST] wait_art_attempt target=%u started\n",
+                   t->wait_art_attempt_target);
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE) {
+            t->waiting_for_art_delay = true;
+            t->wait_art_delay_deadline = ui_test_now + 10000;
+            printf("[PLAYER_UI_TEST] wait_art_delay_active started\n");
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE) {
+            g_ui_test_waiting_for_package_failure = true;
+            printf("[PLAYER_UI_TEST] wait_package_failure disc=%s "
+                   "target=%u started\n",
+                   g_ui_test_wait_package_failure_disc,
+                   g_ui_test_wait_package_failure_target);
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE) {
+            player_app_runtime_package_cache_invalidate(app);
+            printf("[PLAYER_UI_TEST] invalidate_package_cache generation=%llu\n",
+                   (unsigned long long)app->runtime_package_cache_generation);
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO) {
+            bool mounted = player_ui_test_copy_file(
+                t->art_mount_source, t->iso_path);
+            printf("[PLAYER_UI_TEST] mount_art_iso result=%s\n",
+                   mounted ? "PASS" : "FAIL");
+            if (!mounted) {
+                t->failed = true;
+                t->quit_queued = true;
+                *running = false;
+            }
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_SATURATE_ART_CACHE) {
+            if (!ui_renderer_test_saturate_art_cache(renderer, t->iso_path)) {
+                t->failed = true;
+            }
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_START_SYNTHETIC_BUILD) {
+            bool started = player_ui_test_start_synthetic_build(
+                app, scripted_event.user.windowID);
+            printf("[PLAYER_UI_TEST] synthetic_build result=%s index=%u disc=%s\n",
+                   started ? "PASS" : "FAIL",
+                   scripted_event.user.windowID,
+                   started ? app->games[app->selected_game_index].disc_id : "NONE");
+            if (!started) {
+                t->failed = true;
+                t->quit_queued = true;
+                *running = false;
+            }
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_INVALIDATE_AND_START_SYNTHETIC_BUILD) {
+            player_app_runtime_package_cache_invalidate(app);
+            s_ui_test_defer_cache_rescan_once = true;
+            bool started = player_ui_test_start_synthetic_build(
+                app, scripted_event.user.windowID);
+            printf("[PLAYER_UI_TEST] invalidate_cache_and_synthetic_build result=%s index=%u disc=%s generation=%llu build_session_generation=%llu\n",
+                   started ? "PASS" : "FAIL",
+                   scripted_event.user.windowID,
+                   started ? app->games[app->selected_game_index].disc_id : "NONE",
+                   (unsigned long long)app->runtime_package_cache_generation,
+                   (unsigned long long)app->build_session.session_generation);
+            if (!started) {
+                t->failed = true;
+                t->quit_queued = true;
+                *running = false;
+            }
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+            scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_MS) {
+            t->wait_deadline = ui_test_now + scripted_event.user.windowID;
+            t->waiting_for_time = true;
+            printf("[PLAYER_UI_TEST] wait_ms=%u started\n",
+                   scripted_event.user.windowID);
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_VIEW) {
+            t->wait_view_mask = scripted_event.user.windowID;
+            t->wait_deadline = ui_test_now + scripted_event.user.timestamp;
+            t->waiting_for_view = true;
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS) {
+            t->wait_package_status_target =
+                (NkRuntimePackageStatus)scripted_event.user.windowID;
+            t->wait_deadline = ui_test_now + scripted_event.user.timestamp;
+            t->waiting_for_package_status = true;
+            printf("[PLAYER_UI_TEST] wait_package_status target=%u started\n",
+                   scripted_event.user.windowID);
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_CONSENT) {
+            bool matches = app->active_view == VIEW_PREREQ_CONSENT &&
+                app->prerequisites.items.count == scripted_event.user.windowID &&
+                app->prerequisites.total_bytes == scripted_event.user.timestamp;
+            printf("[PLAYER_UI_TEST] assert_consent result=%s items=%zu expected_items=%u "
+                   "total_bytes=%llu expected_bytes=%llu\n",
+                   matches ? "PASS" : "FAIL",
+                   app->prerequisites.items.count, scripted_event.user.windowID,
+                   (unsigned long long)app->prerequisites.total_bytes,
+                   (unsigned long long)scripted_event.user.timestamp);
+            if (!matches) {
+                t->failed = true;
+                t->quit_queued = true;
+                *running = false;
+            }
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_VIEW) {
+            uint32_t current_view_mask = (unsigned)app->active_view < 32
+                ? UINT32_C(1) << (unsigned)app->active_view : 0;
+            bool matches = (scripted_event.user.windowID & current_view_mask) != 0;
+            printf("[PLAYER_UI_TEST] assert_view result=%s actual=%s\n",
+                   matches ? "PASS" : "FAIL",
+                   player_ui_test_view_name(app->active_view));
+            if (!matches) {
+                t->failed = true;
+                t->quit_queued = true;
+                *running = false;
+            }
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING) {
+            printf("[PLAYER_UI_TEST] assert_game_running result=%s\n",
+                   app->is_game_running ? "PASS" : "FAIL");
+            if (!app->is_game_running) {
+                t->failed = true;
+                t->quit_queued = true;
+                *running = false;
+            }
+        } else {
+            if (scripted_event.type == SDL_EVENT_DROP_FILE) {
+                t->drop_data = (char *)scripted_event.drop.data;
+            }
+            if (!SDL_PushEvent(&scripted_event)) {
+                if (t->drop_data) {
+                    SDL_free(t->drop_data);
+                    t->drop_data = NULL;
+                }
+                t->failed = true;
+                *running = false;
+                fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
+            } else if (scripted_event.type == SDL_EVENT_QUIT) {
+                t->quit_queued = true;
+            } else if (scripted_event.type == SDL_EVENT_KEY_DOWN ||
+                       scripted_event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                /* A scripted press is a whole tap: the release follows in
+                   the same frame, as a person's key or button does. The
+                   next UI's input model ignores a second press of a key it
+                   still holds. */
+                SDL_Event release = scripted_event;
+                if (release.type == SDL_EVENT_KEY_DOWN) {
+                    release.type = SDL_EVENT_KEY_UP;
+                    release.key.down = false;
+                } else {
+                    release.type = SDL_EVENT_GAMEPAD_BUTTON_UP;
+                    release.gbutton.down = false;
+                }
+                if (!SDL_PushEvent(&release)) {
+                    t->failed = true;
+                    *running = false;
+                    fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL "
+                                    "release event.\n");
+                }
+            }
+        }
+    } else if (next_event == 0) {
+        if (!(t->wait_background &&
+              (background_pending))) {
+            memset(&scripted_event, 0, sizeof(scripted_event));
+            scripted_event.type = SDL_EVENT_QUIT;
+            if (!SDL_PushEvent(&scripted_event)) {
+                t->failed = true;
+                *running = false;
+                fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic quit.\n");
+            } else {
+                t->quit_queued = true;
+            }
+        }
+    } else {
+        t->failed = true;
+        *running = false;
+        fprintf(stderr, "[PLAYER_UI_TEST] Invalid synthetic event script near byte %llu.\n",
+                (unsigned long long)t->event_cursor);
+    }
+    }
+}
+
+void player_ui_test_event_handled(PlayerUiTest *t, const SDL_Event *event) {
+    if (t->drop_data && event->type == SDL_EVENT_DROP_FILE &&
+        event->drop.data == t->drop_data) {
+        SDL_free(t->drop_data);
+        t->drop_data = NULL;
+    }
+}
+
+void player_ui_test_begin_frame(PlayerUiTest *t) {
+    t->frame_started_ns = t->mode ? SDL_GetTicksNS() : 0;
+    t->frame_validation_count = t->mode
+        ? player_app_ui_test_validation_calls() : 0;
+}
+
+void player_ui_test_end_frame(PlayerUiTest *t, const PlayerApp *app, SDL_Renderer *renderer,
+                              bool running, const char *invalid_disc_message) {
+    if (t->mode) {
+        t->frame++;
+        uint64_t validations = player_app_ui_test_validation_calls();
+        validations = validations >= t->frame_validation_count
+            ? validations - t->frame_validation_count : validations;
+        player_ui_test_report_frame(t->frame, app, renderer,
+                                   running && !app->should_quit,
+                                   SDL_GetTicksNS() - t->frame_started_ns,
+                                   validations, invalid_disc_message);
+        if (!running || app->should_quit) {
+            bool captured = t->screenshot_path &&
+                ui_capture_screenshot(renderer, t->screenshot_path);
+            printf("[PLAYER_UI_TEST] screenshot=%s width=%d height=%d\n",
+                   captured ? "PASS" : "FAIL", app->window_width, app->window_height);
+            if (!captured) t->failed = true;
+        }
+    }
+}
+
+bool player_ui_test_skip_factory_restart(const PlayerUiTest *t) {
+    if (t->mode) {
+        puts("[PLAYER_UI_TEST] factory_reset restart=skipped");
+        return true;
+    }
+    return false;
+}
+
+bool player_ui_test_take_cache_rescan_deferral(void) {
+    if (s_ui_test_defer_cache_rescan_once) {
+        s_ui_test_defer_cache_rescan_once = false;
+        return true;
+    }
+    return false;
+}
+
+/* Models SDL refusing the push so the harness can prove the reclaim path.
+   The event must not be queued at all: a queued event the reclaim then
+   races would free a job the queue still owns. */
+bool player_ui_test_drop_worker_event(void) {
+    return s_ui_test_drop_worker_event;
+}
+
+void player_ui_test_delay_package_status_worker(bool (*closing)(void *user)) {
+    const char *delay_text = getenv("NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS");
+    if (delay_text && delay_text[0]) {
+        char *end = NULL;
+        unsigned long delay = strtoul(delay_text, &end, 10);
+        /* A slow check, standing in for hashing a large package: it stops
+           when the launcher closes, as the hashing does. */
+        if (end && *end == '\0' && delay <= 5000) {
+            for (unsigned long waited = 0; waited < delay && !closing(NULL);
+                 waited += 10u) {
+                SDL_Delay(10);
+            }
+        }
+    }
+}
+
+void player_ui_test_catalog_begin(PlayerUiTestCatalog *c) {
+    if (s_ui_test_catalog_reload_count > 0 &&
+        s_ui_test_catalog_reload_path &&
+        s_ui_test_catalog_reload_path[0] &&
+        !s_ui_test_catalog_reload_started) {
+        c->start = SDL_CreateSemaphore(0);
+        c->done = SDL_CreateSemaphore(0);
+        c->repetitions = s_ui_test_catalog_reload_count;
+        if (!c->start || !c->done) {
+            if (c->start) {
+                SDL_DestroySemaphore(c->start);
+                c->start = NULL;
+            }
+            if (c->done) {
+                SDL_DestroySemaphore(c->done);
+                c->done = NULL;
+            }
+        }
+    }
+}
+
+/* Every exit of the worker reaches this loop, including the warm-cache shortcut,
+   so the UI thread's reload hand-off can never wait for a repetition this worker
+   would skip. */
+void player_ui_test_catalog_run_worker(PlayerUiTestCatalog *c, const GameRecord *game,
+                                       NkRuntimePackageStatus status, const char *root) {
+    if (c->start && c->done) {
+        for (unsigned i = 0; i < c->repetitions; i++) {
+            (void)SDL_WaitSemaphore(c->start);
+            NkRuntimePackageStatus repeated_status = status;
+            if (root) {
+                repeated_status = nk_launch_validate_runtime_package(
+                    root, game, NULL, NULL, 0);
+            }
+            if (repeated_status != status) {
+                c->status_mismatch = true;
+            }
+            c->status_checks++;
+            (void)SDL_SignalSemaphore(c->done);
+        }
+    }
+}
+
+/* The worker thread could not start: its semaphores are not used. */
+void player_ui_test_catalog_release(PlayerUiTestCatalog *c) {
+    if (c->start) {
+        SDL_DestroySemaphore(c->start);
+        c->start = NULL;
+    }
+    if (c->done) {
+        SDL_DestroySemaphore(c->done);
+        c->done = NULL;
+    }
+}
+
+void player_ui_test_catalog_report(PlayerUiTestCatalog *c, NkRuntimePackageStatus status) {
+    if (c->repetitions > 0) {
+        bool stress_passed = !s_ui_test_catalog_reload_failed &&
+            s_ui_test_catalog_reload_completed == c->repetitions &&
+            c->status_checks == c->repetitions &&
+            !c->status_mismatch;
+        printf("[PLAYER_UI_TEST] catalog_reload result=%s reloads=%u "
+               "status_checks=%u status=%d\n",
+               stress_passed ? "PASS" : "FAIL",
+               s_ui_test_catalog_reload_completed,
+               c->status_checks, (int)status);
+        if (c->start) {
+            SDL_DestroySemaphore(c->start);
+            c->start = NULL;
+        }
+        if (c->done) {
+            SDL_DestroySemaphore(c->done);
+            c->done = NULL;
+        }
+    }
+}
+
+/* The UI thread's half of the stress: each reload of the title catalog pairs with one
+   of the worker's validations. */
+void player_ui_test_catalog_drive(PlayerUiTestCatalog *c) {
+    if (c->start && c->done && !s_ui_test_catalog_reload_started) {
+        s_ui_test_catalog_reload_started = true;
+        for (unsigned i = 0; i < s_ui_test_catalog_reload_count; i++) {
+            (void)SDL_SignalSemaphore(c->start);
+            char reload_error[256] = "";
+            if (!nk_title_manifest_load_overlay_ext(
+                    s_ui_test_catalog_reload_path, true, reload_error,
+                    sizeof(reload_error))) {
+                s_ui_test_catalog_reload_failed = true;
+            } else {
+                s_ui_test_catalog_reload_completed++;
+            }
+            (void)SDL_WaitSemaphore(c->done);
+        }
+    }
+}
+
+bool player_ui_test_fail_package_check_thread(int index, const GameRecord *game) {
+    printf("[PLAYER_UI_TEST] package_check index=%d disc=%s\n", index, game->disc_id);
+    g_ui_test_package_status_thread_create_attempts++;
+    bool fail_thread_create =
+        player_ui_test_fail_thread_create_for_game(game);
+    for (unsigned failure = 0;
+         failure < g_ui_test_fail_package_status_thread_create_count;
+         failure++) {
+        if (g_ui_test_package_status_thread_create_attempts ==
+            g_ui_test_fail_package_status_thread_create_on_attempts[failure]) {
+            fail_thread_create = true;
+            break;
+        }
+    }
+    if (fail_thread_create) {
+        int fail_title_index = player_ui_test_fail_title_index(game->disc_id);
+        if (fail_title_index >= 0) {
+            g_ui_test_fail_package_status_thread_create_for_counts[
+                fail_title_index]++;
+        }
+    }
+    return fail_thread_create;
+}
+
+void player_ui_test_report_post_build_validation(int status, const char *reason,
+                                                 uint64_t job_session_generation,
+                                                 uint64_t current_session_generation) {
+    printf("[PLAYER_UI_TEST] post_build_validation status=%d reason=%s "
+           "build_session_generation=%llu current_build_session_generation=%llu\n",
+           status, reason[0] ? reason : "none",
+           (unsigned long long)job_session_generation,
+           (unsigned long long)current_session_generation);
+}
+
+void player_ui_test_report_post_build_transition(PlayerApp *app, const char *disc_id,
+                                                 int current_index) {
+    /* runtime= is what makes the title's card offer PLAY. */
+    printf("[PLAYER_UI_TEST] post_build_transition view=ready_library "
+           "disc=%s found=%d prepared=%d status=%d runtime=%d\n",
+           disc_id, current_index >= 0,
+           current_index >= 0
+               ? app->games[current_index].is_prepared : 0,
+           current_index >= 0
+               ? (int)app->games[current_index].status : -1,
+           current_index >= 0
+               ? (int)player_app_cached_game_has_runtime(
+                     app, &app->games[current_index]) : 0);
+}
+
+/* The UI test holds the worker, to see the library draw frames while a check runs. */
+void player_ui_test_hold_disc_check(void) {
+    const char *hold = getenv("NK_UI_TEST_DISC_CHECK_HOLD_MS");
+    if (hold && hold[0]) SDL_Delay((Uint32)strtoul(hold, NULL, 10));
+}
+
+/* The launch worker's synthetic slow start: the launch takes this long before its checks. */
+const char *player_ui_test_slow_start_text(void) {
+    return getenv("NK_UI_TEST_SLOW_START_MS");
+}
+
+void player_ui_test_slow_start(const PlayerUiTestLaunch *launch) {
+    if (launch->slow_start_ms > 0u) SDL_Delay(launch->slow_start_ms);
+}
+
+/* The headless regression cannot open a modal box, so it reads the dialog
+   the host would show from these lines; the message's line break is
+   written as \n to keep it on one. */
+void player_ui_test_report_quit_dialog(const SDL_MessageBoxData *dialog) {
+    printf("[PLAYER_UI_TEST] QUIT_DIALOG title=%s\n", dialog->title);
+    printf("[PLAYER_UI_TEST] QUIT_DIALOG message=");
+    for (const char *ch = dialog->message; *ch; ++ch) {
+        if (*ch == '\n') fputs("\\n", stdout);
+        else putchar(*ch);
+    }
+    putchar('\n');
+    for (int i = 0; i < dialog->numbuttons; ++i) {
+        const SDL_MessageBoxButtonData *button = &dialog->buttons[i];
+        printf("[PLAYER_UI_TEST] QUIT_DIALOG button id=%d return_default=%d "
+               "escape_default=%d label=%s\n",
+               button->buttonID,
+               (button->flags & SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT) != 0,
+               (button->flags & SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT) != 0,
+               button->text);
+    }
+    fflush(stdout);
+}
+
+bool player_ui_test_messagebox_fails(void) {
+    return getenv("NK_UI_TEST_MESSAGEBOX_FAIL") != NULL;
+}
+
+void player_ui_test_report_open_url(const char *url) {
+    printf("[PLAYER_UI_TEST] open_url=%s\n", url);
+    fflush(stdout);
+}
+
+/* The test reads the report from stdout, one line: newlines become " | ". */
+void player_ui_test_report_copied_details(bool copied, const char *report) {
+    printf("[PLAYER_UI_TEST] copied_details clipboard=%d report=", copied ? 1 : 0);
+    for (const char *c = report; *c; c++) {
+        if (*c == '\n') fputs(c[1] ? " | " : "", stdout);
+        else putchar(*c);
+    }
+    putchar('\n');
+}
+
+/* The regression build never reaches the network: its transport answers from
+   files in NK_UI_TEST_UPDATE_DIR (releases.json for the API, otherwise the
+   URL's last part), and a missing file is "offline". */
+typedef struct {
+    FILE *file;
+    char final_url[512];
+} PlayerUpdateTestResponse;
+
+static bool player_update_test_read(void *context, unsigned char *buffer, size_t capacity,
+                                    size_t *bytes_read) {
+    PlayerUpdateTestResponse *response = (PlayerUpdateTestResponse *)context;
+    *bytes_read = fread(buffer, 1, capacity, response->file);
+    /* A slow link, so the progress and Cancel can be seen. */
+    if (getenv("NK_UI_TEST_UPDATE_SLOW") != NULL) SDL_Delay(40);
+    return !ferror(response->file);
+}
+
+static void player_update_test_close(void *context) {
+    PlayerUpdateTestResponse *response = (PlayerUpdateTestResponse *)context;
+    fclose(response->file);
+    free(response);
+}
+
+static bool player_update_test_open(void *context, const char *url, const char *allowed_hosts,
+                                    PackageHttpResponse *out) {
+    const char *dir = getenv("NK_UI_TEST_UPDATE_DIR");
+    const char *name = strrchr(url, '/');
+    char path[NK_MAX_PATH];
+    PlayerUpdateTestResponse *response;
+    int64_t size;
+    (void)context;
+    (void)allowed_hosts;
+    if (!dir || !name) return false;
+    name = strcmp(url, NK_UPDATE_RELEASES_URL) == 0 ? "releases.json" : name + 1;
+    if (snprintf(path, sizeof(path), "%s%c%s", dir, nk_platform_path_separator(), name) >=
+        (int)sizeof(path)) {
+        return false;
+    }
+    printf("[PLAYER_UI_TEST] update_request=%s\n", url);
+    fflush(stdout);
+    size = nk_platform_get_file_size(path);
+    response = (PlayerUpdateTestResponse *)calloc(1, sizeof(*response));
+    if (!response || size < 0 || !(response->file = nk_fopen_utf8(path, "rb"))) {
+        free(response);
+        return false;
+    }
+    snprintf(response->final_url, sizeof(response->final_url), "%s", url);
+    memset(out, 0, sizeof(*out));
+    out->final_url = response->final_url;
+    out->has_content_length = true;
+    out->content_length = (uint64_t)size;
+    out->context = response;
+    out->read = player_update_test_read;
+    out->close = player_update_test_close;
+    return true;
+}
+
+PackageHttpOpen player_ui_test_update_transport(void) {
+    return player_update_test_open;
+}
+
+/* The key update signatures are checked with: a TEST-ONLY key from
+   NK_UI_TEST_UPDATE_DIR's update_signing_key.pub when the test wrote one, so its
+   synthetic releases can be signed. Without that file *handled stays false and the
+   caller uses the built-in key. */
+bool player_ui_test_update_signing_key(NkMinisignKey *out, bool *handled) {
+    const char *dir = getenv("NK_UI_TEST_UPDATE_DIR");
+    char path[NK_MAX_PATH];
+    char text[512];
+    FILE *file;
+    *handled = false;
+    if (dir && snprintf(path, sizeof(path), "%s%cupdate_signing_key.pub", dir,
+                        nk_platform_path_separator()) < (int)sizeof(path) &&
+        (file = nk_fopen_utf8(path, "rb")) != NULL) {
+        size_t length = fread(text, 1, sizeof(text), file);
+        fclose(file);
+        *handled = true;
+        return length < sizeof(text) && nk_minisign_parse_key(text, length, out);
+    }
+    return false;
+}
+
 #endif /* NK_PLAYER_UI_REGRESSION_TEST */

@@ -911,8 +911,8 @@ Two limits are stated rather than implied, because that check does not reach the
 - **Non-ASCII characters in the checkout path are unverified.** No hosted gate runs from such a path.
   The places measured are the selftest respawn sites named here, and they were measured locally, not
   by a hosted gate.
-- **The selftest respawn sites quote their command line only recently.** `src/rt/hle_thread_selftest.c`,
-  `src/rt/cpu_lle_selftest.c` and `src/rt/dispatch_isolation_selftest.c` start a second copy of their
+- **The selftest respawn sites quote their command line only recently.** `tests/native/hle_thread_selftest.c`,
+  `tests/native/cpu_lle_selftest.c` and `tests/native/dispatch_isolation_selftest.c` start a second copy of their
   own binary, and they used the CRT's `_spawnl`/`_spawnv`, which joins its arguments without quoting:
   a spaced self path was re-parsed as extra arguments, the mode flag never arrived, and the child ran
   the whole suite instead of the requested mode. The HLE exit-game site was corrected in PR #680 and

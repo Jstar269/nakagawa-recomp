@@ -393,7 +393,7 @@ class TestReleaseDocumentation(unittest.TestCase):
         )
         # The player decrypts the user's disc itself (#295), so the setup wizard asks for
         # a disc image, not a decrypted one.
-        wizard = (ROOT / "src" / "player" / "ui" / "scr_title.c").read_text(encoding="utf-8")
+        wizard = (ROOT / "src" / "player" / "ui" / "scr_wizard.c").read_text(encoding="utf-8")
         self.assertIn('"A disc image (.iso) of a PSP game you own"', wizard)
         self.assertNotIn("A decrypted .iso", wizard)
         self.assertNotIn("click **Add Game**", readme)

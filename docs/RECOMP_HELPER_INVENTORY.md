@@ -375,7 +375,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_null_code_entry` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_null_code_pointer` | `rt/recomp.c` | yes | emitter-reached (via `SR_CODE_POINTER`) | `rt/recomp.c`: upstream_derived |
 | `sr_null_return_address` | `rt/recomp.c` | yes | emitter-reached (via `SR_AOT_RETURN_CAPTURE`) | `rt/recomp.c`: upstream_derived |
-| `sr_oor` | `rt/ge.c`, `rt/ge_replay.c`, `rt/recomp.c` | yes | emitter-reached (direct) | `rt/ge.c`: upstream_derived; `rt/ge_replay.c`: project_authored_attested; `rt/recomp.c`: upstream_derived |
+| `sr_oor` | `rt/ge_replay.c`, `rt/ge_vram_cli.c`, `rt/recomp.c` | yes | emitter-reached (direct) | `rt/ge_replay.c`: project_authored_attested; `rt/ge_vram_cli.c`: upstream_derived; `rt/recomp.c`: upstream_derived |
 | `sr_parse_display_bounds` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_pick_display` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_profile_block` | `rt/recomp.c` | yes | emitter-reached (via `SR_YIELD`) | `rt/recomp.c`: upstream_derived |

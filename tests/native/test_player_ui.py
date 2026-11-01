@@ -393,7 +393,7 @@ def current_build_identity() -> dict[str, str]:
     (NkPackageBuildIdentity in src/core/nk_title_manifest.h)."""
     return {
         "runtime_source_digest": package_cache.source_tree_digest(ROOT),
-        "analyzer_sha256": package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
+        "analyzer_sha256": package_cache.analyzer_sources_sha256(ROOT / "tools"),
         "codegen_sha256": package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
         "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
     }
@@ -740,7 +740,8 @@ class PlayerUiIdSourceTests(unittest.TestCase):
 
     # nk_ui.h's id scheme: the files that allocate element ids, each through its
     # screen's macro.
-    ID_FILES = ("src/player/ui/*.c", "src/rt/overlay/*.c", "src/rt/overlay/*.h")
+    ID_FILES = ("src/player/ui/*.c", "src/player/ui/scr_*.h", "src/rt/overlay/*.c",
+                "src/rt/overlay/*.h")
 
     @staticmethod
     def check_families(owner: str, ids: dict[str, int], spans: dict[str, int]) -> list[str]:

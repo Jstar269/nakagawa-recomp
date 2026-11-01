@@ -7,7 +7,7 @@
 /* Pure PSP sceKernelEventFlag pattern/mode helpers.
  *
  * Kept free of any runtime dependency (no CpuState, no memory access) so the
- * exact PSP semantics can be regression-tested standalone (src/rt/evf_selftest.c)
+ * exact PSP semantics can be regression-tested standalone (tests/native/evf_selftest.c)
  * without mocking the HLE layer. Behavior cross-checked against PPSSPP's
  * Core/HLE/sceKernelEventFlag.cpp. */
 

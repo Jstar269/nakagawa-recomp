@@ -241,6 +241,26 @@ set(NK_UI_BACKEND_SOURCES
     src/ui/backend/nk_ui_vk.c
 )
 set(NK_UI_RESERVED_STUB_SOURCES ${NK_UI_EDGE_SOURCES} ${NK_UI_BACKEND_SOURCES})
+# The screens that came out of the old scr_title.c: the title page, the one-card flow pages,
+# About, the setup wizard, the game-found card, Settings, Controls and the developer log, with
+# the frame and form code they share (scr_flow.c, scr_form.c).
+set(NK_UI_PLAYER_TITLE_SOURCES
+    src/player/ui/scr_title.c
+    src/player/ui/scr_flow.c
+    src/player/ui/scr_form.c
+    src/player/ui/scr_build.c
+    src/player/ui/scr_remove.c
+    src/player/ui/scr_stop.c
+    src/player/ui/scr_rebuild.c
+    src/player/ui/scr_prereq.c
+    src/player/ui/scr_error.c
+    src/player/ui/scr_about.c
+    src/player/ui/scr_wizard.c
+    src/player/ui/scr_disc.c
+    src/player/ui/scr_settings.c
+    src/player/ui/scr_controller.c
+    src/player/ui/scr_devlog.c
+)
 set(NK_UI_PLAYER_SCREEN_SOURCES
     src/player/ui/player_ui_nk.c
     src/player/ui/ui_router.c
@@ -254,7 +274,7 @@ set(NK_UI_PLAYER_C5_SOURCES
     src/player/ui/player_ui_nk.c
     src/player/ui/ui_router.c
     src/player/ui/scr_library.c
-    src/player/ui/scr_title.c
+    ${NK_UI_PLAYER_TITLE_SOURCES}
 )
 # The next UI's SDL host pieces: disc art on a worker thread, launcher sounds.
 set(NK_UI_PLAYER_HOST_SOURCES
@@ -311,7 +331,7 @@ add_executable(test_player_screens
     ${NK_UI_CORE_SOURCES}
     src/player/ui/ui_router.c
     src/player/ui/scr_library.c
-    src/player/ui/scr_title.c
+    ${NK_UI_PLAYER_TITLE_SOURCES}
 )
 target_include_directories(test_player_screens PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ui

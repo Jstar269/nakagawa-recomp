@@ -44,7 +44,7 @@ entry below is a *control*. `tests/threads/semaphores/wait.expected` (31 lines,
 same upstream, same Git-ignored status) is a normal-context hardware capture of
 `sceKernelWaitSema` specifically, and issue #43 used it to implement the
 ordinary count contract. It is cited by line number in `src/rt/hle.c` and in
-`test_wait_sema_count_validation()` in `src/rt/hle_thread_selftest.c`; it does
+`test_wait_sema_count_validation()` in `tests/native/hle_thread_selftest.c`; it does
 not feed `hw[]` here, because these tables are `waits.expected` transcriptions
 and mixing two sources into one column would make the gate unverifiable.
 
@@ -174,7 +174,7 @@ deliberately left out of the executable matrix, with their reasons:
 
 ## The harness
 
-`src/rt/intr_conformance.h`, included once by `src/rt/hle_thread_selftest.c`, which already
+`src/rt/intr_conformance.h`, included once by `tests/native/hle_thread_selftest.c`, which already
 links production `hle.c`, includes production `sched.c`, and enters every handler through
 `sr_syscall`'s registered-NID lookup. Reusing that target avoids a second Make recipe with
 a hand-copied flag list.
