@@ -312,8 +312,12 @@ class TestDmacGpuAliasBoundary(unittest.TestCase):
         self.assertIn("tex_canonical(e->mip.addr[l])", ranges)
         self.assertIn("tex_ent_overlaps(e, dirty0, dirty1)", region)
         self.assertIn("vram_off(canonical_addr)", region)
-        self.assertIn('"alias-vram"', text)
-        self.assertIn("if (tc->dirty_alias)", text)
+        # The alias cases live in the GE self-tests, which ge_gpu.c includes from their own file.
+        selftest = (ROOT / "src" / "rt" / "gpu_sdl3vk" / "ge_gpu_selftest.inc").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"alias-vram"', selftest)
+        self.assertIn("if (tc->dirty_alias)", selftest)
 
 
 if __name__ == "__main__":
