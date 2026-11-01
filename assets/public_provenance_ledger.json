@@ -9780,6 +9780,18 @@
       }
     },
     {
+      "path": "src/rt/sce_kernel_errors.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "sce-kernel-errors-1531",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "GPL-2.0-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      }
+    },
+    {
       "path": "src/rt/sched.c",
       "classification": "upstream_derived",
       "evidence": {
