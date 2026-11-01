@@ -30,6 +30,7 @@
 #endif
 #include "vfs_contained.h"
 #include "recomp.h"
+#include "sce_kernel_errors.h"
 #include "iso.h"
 #include "pgf_api.h"
 #include "pgd_api.h"
@@ -117,18 +118,6 @@ typedef struct { uint32_t nid, target; } LateImportEntry;
 #define A2 (s->r[6])
 #define A3 (s->r[7])
 
-/* A blocking call made with CPU interrupts disabled or thread dispatch disabled
- * returns this, per PSPAutotests tests/intr/waits.expected. The handlers below
- * check sched_wait_permitted() individually, each at the point its own oracle
- * cells put it -- never as a shared pre-handler gate, because the same oracle
- * shows the precedence is per-API: ILLEGAL_MODE (L72) and ILLEGAL_THID (L204)
- * both beat it, while sceKernelWaitSema's bad-object error (L54/L55) does not.
- * See docs/PSP_INTR_WAITS_MATRIX.md. */
-#define SCE_KERNEL_ERROR_CAN_NOT_WAIT 0x800201a7u
-#define SCE_KERNEL_ERROR_WAIT_TIMEOUT  0x800201a8u
-#ifndef SCE_KERNEL_ERROR_WAIT_DELETE
-#define SCE_KERNEL_ERROR_WAIT_DELETE   0x800201b5u
-#endif
 
 /* Partition metadata is kernel-owned. sceKernelGetBlockHeadAddr returns the first
  * caller-usable byte, so keep bookkeeping host-side: retail newlib immediately
@@ -217,9 +206,6 @@ typedef struct {
     uint32_t wlan_switch;
 } PspConsoleProfile;
 
-#ifndef SCE_KERNEL_ERROR_ILLEGAL_ADDR
-#define SCE_KERNEL_ERROR_ILLEGAL_ADDR 0x80000103u
-#endif
 #define HLE_KERNEL_ERROR_NOT_IMPLEMENTED 0x80020002u /* SCE_KERNEL_ERROR_NOTIMP */
 #define HLE_KERNEL_ERROR_ILLEGAL_ADDR 0x800200d3u     /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
@@ -297,7 +283,6 @@ typedef struct {
     uint32_t free_blocks;
     uint32_t *thread_uids;
 } TlsplPool;
-#define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT    0x80020064u
 
 typedef enum {
     MODULE_STATE_UNUSED = 0,
@@ -1009,9 +994,6 @@ typedef struct {
  * a small kernel partition, while keeping the 32-slot worst case at 32 MiB of
  * host memory.  Rejected creates return SCE_KERNEL_ERROR_ILLEGAL_SIZE. */
 #define MSG_PIPE_MAX_CAPACITY 0x100000u
-#ifndef SCE_KERNEL_ERROR_ILLEGAL_ADDR
-#define SCE_KERNEL_ERROR_ILLEGAL_ADDR  0x80000103u
-#endif
 typedef struct {
     SrWaitHandle invocation;
     int is_send;
@@ -1065,9 +1047,6 @@ typedef struct {
     int kind;                      /* SYNC_KIND_*: the object class sharing this table */
 } Sync;
 enum { SYNC_KIND_SEMA = 1, SYNC_KIND_EVENT_FLAG, SYNC_KIND_LWMUTEX };
-#ifndef SCE_KERNEL_ERROR_ILLEGAL_ADDR
-#define SCE_KERNEL_ERROR_ILLEGAL_ADDR               0x80000103u
-#endif
 
 typedef struct {
     uint32_t thread_uid;

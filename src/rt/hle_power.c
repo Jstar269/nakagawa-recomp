@@ -192,7 +192,6 @@ uint32_t h_PowerUnregisterCallback(CpuState *s) {
  * Core/HLE/scePower.cpp. sceKernelPowerLock and sceKernelPowerUnlock validate
  * lockType (must be 0, else INVALID_MODE 0x80000107) and maintain a nested
  * lock count. sceKernelPowerTick records ticks without blocking. */
-#define SCE_KERNEL_ERROR_INVALID_MODE 0x80000107u
 static uint32_t s_power_lock_count = 0u;
 static uint32_t s_power_tick_count = 0u;
 

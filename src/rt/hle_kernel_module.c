@@ -1315,14 +1315,6 @@ uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
     }
     return uid;
 }
-/* Module-state errors are defined in the public PSPSDK pspkerror.h header. The
- * lifecycle mapping below is source-backed and remains unmeasured on hardware. */
-#define SCE_KERNEL_ERROR_ALREADY_STARTED    0x80020133u
-#define SCE_KERNEL_ERROR_NOT_STARTED        0x80020134u
-#define SCE_KERNEL_ERROR_ALREADY_STOPPED    0x80020135u
-#define SCE_KERNEL_ERROR_CAN_NOT_STOP       0x80020136u
-#define SCE_KERNEL_ERROR_ALREADY_STOPPING   0x8002013fu
-#define SCE_KERNEL_ERROR_MODULE_MGR_BUSY    0x80020143u
 
 static const char *module_state_name(LoadedModuleState state) {
     switch (state) {
@@ -1430,7 +1422,6 @@ static uint32_t h_ExitGame(CpuState *s) {
  * record. The main module's UID comes from the shared pool the first time a guest asks
  * for it, so it never aliases another kernel object (it used to be the constant 0x112,
  * the third UID the pool hands out, which a thread or semaphore also receives). */
-#define SCE_KERNEL_ERROR_UNKNOWN_MODULE 0x8002012eu
 uint32_t s_main_module_uid;
 
 static uint32_t module_uid_at(uint32_t addr) {
