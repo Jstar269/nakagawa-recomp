@@ -3101,28 +3101,46 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
-            entry_hints=None):
-    # trace_memo=False runs the uncached per-start walks; the output is the same either way
-    # (tests pin the two against each other).
-    # `entry_hints` are code pointers another image holds into this one (data_section_words).
-    # `report`, when a dict, receives the discovery state the import-stub census reads:
-    # covered (every traced instruction address), calls (every direct-call target seen),
-    # and hc (the high-confidence seeds). The return value is unchanged.
-    ranges = exec_ranges(elf, extra_spans=extra_spans)
-    file_exec_ranges = _file_backed_exec_ranges(elf)
-    relocated = _relocated_words(elf)
-    jumps = _relocated_jumps(elf)
-    # Executable segment bytes that a called pointer array proves hold code although the
-    # section table names them data (see called_pointer_array_entries). Filled after the
-    # first discovery round; only control flow from those entries reaches into them.
-    proven_spans = []
+class _Discovery:
+    """The state analyze() builds up: the executable ranges, the seeds and the traced functions.
 
-    def trace_ranges_for_entry(entry):
+    The passes below share it by reference and mutate its sets in place, in the order analyze()
+    runs them. Each pass keeps the body it had inside analyze(); it only opens by naming the state
+    it uses.
+    """
+
+    def __init__(self, elf, extra_spans, cfg_gate, trace_memo):
+        self.elf = elf
+        self.cfg_gate = cfg_gate
+        self.ranges = exec_ranges(elf, extra_spans=extra_spans)
+        self.file_exec_ranges = _file_backed_exec_ranges(elf)
+        self.relocated = _relocated_words(elf)
+        self.jumps = _relocated_jumps(elf)
+        # Executable segment bytes that a called pointer array proves hold code although the
+        # section table names them data (see called_pointer_array_entries). Filled after the
+        # first discovery round; only control flow from those entries reaches into them.
+        self.proven_spans = []
+        # High-confidence function starts: addresses that are genuinely entered as a function,
+        # not internal blocks. These seed the extent tracing below.
+        self.hc = set()
+        self.noisy = set()
+        self.jtails = set()  # every in-range `j` target; candidates for tail-call promotion below
+        # `covered` ends up holding every instruction that belongs to some known function, so the
+        # weak signals that land inside a function body (internal blocks) can be discarded.
+        self.covered = set()
+        self.calls = set()
+        self.functions = set()
+        # Words expanded by earlier traces, one set per range list (see trace_function's
+        # `walked`). Traces share a set only when their ranges are equal, so a word expanded
+        # under one range list is never skipped under another.
+        self.walked_by_ranges = {} if trace_memo else None
+
+    def trace_ranges_for_entry(self, entry):
+        ranges = self.ranges
         if in_ranges(entry, ranges):
             return ranges
         containing = next(
-            (span for span in (*file_exec_ranges, *proven_spans) if span[0] <= entry < span[1]),
+            (span for span in (*self.file_exec_ranges, *self.proven_spans) if span[0] <= entry < span[1]),
             None,
         )
         if containing is None:
@@ -3136,14 +3154,73 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
                 merged.append((lo, hi))
         return merged
 
-    def in_text(a):
-        return in_ranges(a, ranges) and (a & 3) == 0
+    def in_text(self, a):
+        return in_ranges(a, self.ranges) and (a & 3) == 0
 
-    # High-confidence function starts: addresses that are genuinely entered as a function,
-    # not internal blocks. These seed the extent tracing below.
-    hc = set()
-    noisy = set()
-    jtails = set()  # every in-range `j` target; candidates for tail-call promotion below
+    def trace(self, entry, entry_ranges):
+        walked = None
+        if self.walked_by_ranges is not None:
+            walked = self.walked_by_ranges.setdefault(tuple(entry_ranges), set())
+        return trace_function(
+            self.elf, entry, entry_ranges, self.covered, self.calls, self.hc, walked=walked,
+        )
+
+    def callable_target(self, addr):
+        # The worklist's rule for a direct-call or jump target, shared by the late passes:
+        # named code, or file-backed executable bytes outside the named sections. The late
+        # passes tested the named ranges alone, so a callee in those bytes that only a late
+        # pass reached was dropped and got no body (the follow-up to the import-stub seed).
+        # The two tests are deliberately asymmetric. `ranges` already carries the title's
+        # extra executable spans (exec_ranges), which need not be file-backed, while
+        # `file_exec_ranges` is only the file-backed PT_LOAD executable set. So a target in
+        # an extra span that is not file-backed is accepted through `ranges` alone. A
+        # proven span (a called pointer array's targets) is callable the same way; only a
+        # trace that starts inside it can name a target there.
+        return (in_ranges(addr, self.ranges) or in_ranges(addr, self.file_exec_ranges)
+                or in_ranges(addr, self.proven_spans))
+
+    def discover(self, work):
+        # Trace from `work`, following discovered calls, then seed the pointer arrays the
+        # traced code calls through, until neither finds anything new.
+        elf, covered, relocated = self.elf, self.covered, self.relocated
+        functions, hc, proven_spans = self.functions, self.hc, self.proven_spans
+        callable_target, trace = self.callable_target, self.trace
+        trace_ranges_for_entry = self.trace_ranges_for_entry
+        while True:
+            while work:
+                s = work.pop()
+                new_calls = []
+                if callable_target(s):
+                    new_calls = trace(s, trace_ranges_for_entry(s))
+                for t in new_calls:
+                    if t not in functions and callable_target(t):
+                        functions.add(t)
+                        work.append(t)
+            # Start-up code calls every word of a function-pointer array (C++ static
+            # constructors). Each word is a function entry even where the section table
+            # names the bytes data: some retail section tables label everything after the
+            # import tables `.data`, constructors included. The traced call sites are the
+            # evidence, so this runs once the traced code is known.
+            seeds = set()
+            for entry in called_pointer_array_entries(elf, covered, relocated):
+                if entry in functions:
+                    continue
+                if not callable_target(entry):
+                    span = _containing_span(entry, _executable_segment_spans(elf))
+                    if span is None:
+                        continue
+                    if span not in proven_spans:
+                        proven_spans.append(span)
+                seeds.add(entry)
+            if not seeds:
+                return
+            hc.update(seeds)
+            functions.update(seeds)
+            work.extend(sorted(seeds))
+
+
+def _seed_entry_point(d):
+    elf, ranges, file_exec_ranges, hc = d.elf, d.ranges, d.file_exec_ranges, d.hc
     if (elf.entry & 3) == 0 and (
         in_ranges(elf.entry, ranges) or in_ranges(elf.entry, file_exec_ranges)
     ):
@@ -3163,6 +3240,9 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
         if (word >> 16) == 0x27BD and (word & 0x8000):
             hc.add(start)
 
+
+def _seed_prologues_and_terminators(d):
+    elf, ranges, noisy = d.elf, d.ranges, d.noisy
     # Build a file-offset -> vaddr lookup from PT_LOAD segments (needed because
     # the raw file's byte offset differs from the guest virtual address for PRX/rebased ELFs).
     # If no PT_LOAD segment covers a given file offset, the address is skipped.
@@ -3192,6 +3272,9 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
         if is_uncond and in_ranges(va + 8, ranges) and ((va + 8) & 3) == 0:
             noisy.add(va + 8)
 
+
+def _seed_module_exports(d):
+    elf, ranges, relocated, hc = d.elf, d.ranges, d.relocated, d.hc
     # Module export pointers and constructor/destructor arrays point at real functions.
     # NOTE: .lib.ent is parsed separately below (structures with func_table), don't scan raw.
     for nm in (".rodata.sceModuleInfo", ".rodata.sceResident",
@@ -3233,6 +3316,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
             idx += size * 4
 
 
+def _seed_import_stubs(d):
+    elf, ranges, file_exec_ranges, hc = d.elf, d.ranges, d.file_exec_ranges, d.hc
     # Reconstruct stubs from .sceStub.text or imports
     stubs_sec = elf.sec(".sceStub.text")
     if has_import_table(elf):
@@ -3268,6 +3353,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
                 hc.add(a)
 
 
+def _seed_function_pointer_tables(d, entry_hints):
+    elf, ranges, relocated, hc, in_text = d.elf, d.ranges, d.relocated, d.hc, d.in_text
     # Function-pointer tables in read-only/data sections (callbacks reached via jalr).
     for nm in (".rodata", ".data", ".sdata", ".rodata.sceResident"):
         s = elf.sec(nm)
@@ -3296,6 +3383,11 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     # materialized base) lands only on those pads; each one needs a dispatch entry.
     hc.update(bounded_computed_goto_targets(elf, ranges))
 
+
+def _seed_address_materializations(d):
+    elf, ranges, file_exec_ranges = d.elf, d.ranges, d.file_exec_ranges
+    relocated, jumps, hc, noisy, jtails = d.relocated, d.jumps, d.hc, d.noisy, d.jtails
+    cfg_gate, in_text = d.cfg_gate, d.in_text
     # Sweep executable sections for weaker "block boundary" signals and possible indirect
     # targets. Direct JAL targets are collected by trace_function only after their source
     # instruction is reached; a linear sweep can mistake data inside .text for a call.
@@ -3428,76 +3520,11 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
                             hc.add(val)
                         else: break
 
-    # Trace each function's extent from the high-confidence seeds, following discovered calls.
-    # `covered` ends up holding every instruction that belongs to some known function, so the
-    # weak signals that land inside a function body (internal blocks) can be discarded.
-    covered = set()
-    calls = set()
-    # Words expanded by earlier traces, one set per range list (see trace_function's
-    # `walked`). Traces share a set only when their ranges are equal, so a word expanded
-    # under one range list is never skipped under another.
-    walked_by_ranges = {} if trace_memo else None
 
-    def trace(entry, entry_ranges):
-        walked = None
-        if walked_by_ranges is not None:
-            walked = walked_by_ranges.setdefault(tuple(entry_ranges), set())
-        return trace_function(
-            elf, entry, entry_ranges, covered, calls, hc, walked=walked,
-        )
-
-    def callable_target(addr):
-        # The worklist's rule for a direct-call or jump target, shared by the late passes:
-        # named code, or file-backed executable bytes outside the named sections. The late
-        # passes tested the named ranges alone, so a callee in those bytes that only a late
-        # pass reached was dropped and got no body (the follow-up to the import-stub seed).
-        # The two tests are deliberately asymmetric. `ranges` already carries the title's
-        # extra executable spans (exec_ranges), which need not be file-backed, while
-        # `file_exec_ranges` is only the file-backed PT_LOAD executable set. So a target in
-        # an extra span that is not file-backed is accepted through `ranges` alone. A
-        # proven span (a called pointer array's targets) is callable the same way; only a
-        # trace that starts inside it can name a target there.
-        return (in_ranges(addr, ranges) or in_ranges(addr, file_exec_ranges)
-                or in_ranges(addr, proven_spans))
-
-    def discover(work):
-        # Trace from `work`, following discovered calls, then seed the pointer arrays the
-        # traced code calls through, until neither finds anything new.
-        while True:
-            while work:
-                s = work.pop()
-                new_calls = []
-                if callable_target(s):
-                    new_calls = trace(s, trace_ranges_for_entry(s))
-                for t in new_calls:
-                    if t not in functions and callable_target(t):
-                        functions.add(t)
-                        work.append(t)
-            # Start-up code calls every word of a function-pointer array (C++ static
-            # constructors). Each word is a function entry even where the section table
-            # names the bytes data: some retail section tables label everything after the
-            # import tables `.data`, constructors included. The traced call sites are the
-            # evidence, so this runs once the traced code is known.
-            seeds = set()
-            for entry in called_pointer_array_entries(elf, covered, relocated):
-                if entry in functions:
-                    continue
-                if not callable_target(entry):
-                    span = _containing_span(entry, _executable_segment_spans(elf))
-                    if span is None:
-                        continue
-                    if span not in proven_spans:
-                        proven_spans.append(span)
-                seeds.add(entry)
-            if not seeds:
-                return
-            hc.update(seeds)
-            functions.update(seeds)
-            work.extend(sorted(seeds))
-
-    functions = set(hc)
-    discover(list(hc))
-
+def _promote_tail_calls(d):
+    """Return the calls of the last promoted tail-call body, for the gap fill to resolve."""
+    elf, jtails, functions = d.elf, d.jtails, d.functions
+    callable_target, trace, trace_ranges_for_entry = d.callable_target, d.trace, d.trace_ranges_for_entry
     # Tail-call promotion: a `j` target that no fallthrough can reach (the word 8
     # bytes before it -- the previous slot's terminator position -- is `jr`, `j`,
     # or an unconditional `b`) is a function entered only by jumps: the shared-
@@ -3525,7 +3552,12 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
             if c not in functions and callable_target(c):
                 functions.add(c)
                 pending_tail_calls.extend(trace(c, trace_ranges_for_entry(c)))
+    return pending_tail_calls
 
+
+def _fill_gaps(d, pending_tail_calls):
+    elf, ranges, noisy, covered, functions = d.elf, d.ranges, d.noisy, d.covered, d.functions
+    callable_target, trace, trace_ranges_for_entry = d.callable_target, d.trace, d.trace_ranges_for_entry
     # Gap fill: a weak-signal address that no known function covers is an indirect-only
     # function (reached through a register the call graph could not resolve). Add it and trace
     # it, which may reveal further calls. Iterate until stable.
@@ -3566,10 +3598,11 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
                         pending_gap_calls.extend(trace(t, trace_ranges_for_entry(t)))
                 changed = True
 
-    # The late passes can reach start-up code that calls a pointer array (a function
-    # entered only through a pointer or the gap fill); seed those arrays too.
-    discover([])
 
+def _owned_spans(d):
+    """The executable ranges plus the instructions the traces reached outside them, merged."""
+    elf, ranges, file_exec_ranges = d.elf, d.ranges, d.file_exec_ranges
+    covered, proven_spans = d.covered, d.proven_spans
     # A direct call, or a called pointer array, can prove that code exists outside named
     # .text sections. Grant the interpreter floor only the instructions reached from those
     # roots, never the surrounding executable PT_LOAD's unowned gaps.
@@ -3597,9 +3630,39 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
             merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], hi))
         else:
             merged_ranges.append((lo, hi))
+    return merged_ranges
+
+
+def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
+            entry_hints=None):
+    # trace_memo=False runs the uncached per-start walks; the output is the same either way
+    # (tests pin the two against each other).
+    # `entry_hints` are code pointers another image holds into this one (data_section_words).
+    # `report`, when a dict, receives the discovery state the import-stub census reads:
+    # covered (every traced instruction address), calls (every direct-call target seen),
+    # and hc (the high-confidence seeds). The return value is unchanged.
+    d = _Discovery(elf, extra_spans, cfg_gate, trace_memo)
+    _seed_entry_point(d)
+    _seed_prologues_and_terminators(d)
+    _seed_module_exports(d)
+    _seed_import_stubs(d)
+    _seed_function_pointer_tables(d, entry_hints)
+    _seed_address_materializations(d)
+
+    # Trace each function's extent from the high-confidence seeds, following discovered calls.
+    d.functions = set(d.hc)
+    d.discover(list(d.hc))
+    pending_tail_calls = _promote_tail_calls(d)
+    _fill_gaps(d, pending_tail_calls)
+
+    # The late passes can reach start-up code that calls a pointer array (a function
+    # entered only through a pointer or the gap fill); seed those arrays too.
+    d.discover([])
+
+    merged_ranges = _owned_spans(d)
     if report is not None:
-        report.update(covered=covered, calls=calls, hc=hc)
-    return functions, merged_ranges
+        report.update(covered=d.covered, calls=d.calls, hc=d.hc)
+    return d.functions, merged_ranges
 
 
 # ---- TOML model: a function inventory the codegen reads and a human can correct ----------
