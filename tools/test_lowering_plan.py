@@ -146,12 +146,12 @@ class DriftGuardTests(unittest.TestCase):
     def test_plans_match_emit_function_with_every_body_split(self):
         # #1691: a split body's conditional edge into another entry is a TAIL transfer
         # to that entry's symbol, and a not-taken branch continues into the next entry.
-        saved = codegen.REGION_SPLIT_THRESHOLD
+        saved = codegen.OPTIONS.region_split_threshold
         try:
             captured = self._run("--funcs-per-chunk=1", "--stack-census",
                                  "--region-split-threshold=0")
         finally:
-            codegen.REGION_SPLIT_THRESHOLD = saved
+            codegen.OPTIONS.region_split_threshold = saved
         self._check(captured)
         transfers = [step for _, _, plan in captured for step in plan.steps
                      if isinstance(step, P.Transfer)]

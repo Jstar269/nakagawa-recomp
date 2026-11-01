@@ -72,11 +72,11 @@ def jal(target):
 
 class RegisterPromotionTests(unittest.TestCase):
     def setUp(self):
-        self._saved = codegen.PROMOTE_REGISTERS
+        self._saved = codegen.OPTIONS.promote_registers
         self.addCleanup(setattr, codegen, "PROMOTE_REGISTERS", self._saved)
 
     def _emit(self, words, promote, start=0x1000, end=0x1100, known=None):
-        codegen.PROMOTE_REGISTERS = promote
+        codegen.OPTIONS.promote_registers = promote
         elf = FakeElf(words)
         known = known if known is not None else {start}
         return codegen.emit_function(elf, start, [(start, end)], known)
@@ -197,12 +197,12 @@ class RegisterPromotionTests(unittest.TestCase):
 
     def test_lle_guarded_accesses_are_not_promoted(self):
         words = {0x1000: lw(8, 4, 0), 0x1004: JR_RA, 0x1008: NOP}
-        codegen.PROMOTE_REGISTERS = True
+        codegen.OPTIONS.promote_registers = True
         try:
             text = "\n".join(codegen.emit_function(FakeElf(words), 0x1000, [(0x1000, 0x1100)],
                                                    {0x1000}, lle_cpu=True))
         finally:
-            codegen.PROMOTE_REGISTERS = self._saved
+            codegen.OPTIONS.promote_registers = self._saved
         self.assertIn("sr_cpu_guard_access", text)
         self.assertNotIn("_gpr8", text)
 

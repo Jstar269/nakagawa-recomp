@@ -283,9 +283,9 @@ def plan_function(cg, elf, start, ranges, known, *, resume_owners=None, resumabl
     space = cg.ADDRESS_SPACE
     if space.runtime_module:
         raise Unsupported("runtime-placed module (relocatable addresses)")
-    if cg.LLE_CPU:
+    if cg.OPTIONS.lle_cpu:
         raise Unsupported("--lle-cpu exception lowering is not in the prototype scope")
-    if cg.SV_ENABLED:
+    if cg.OPTIONS.static_verify:
         raise Unsupported("--static-verify assertions are emitted by the C backend only")
     insns, labels, continuations = cg.function_flow(
         elf, start, ranges, known, resume_owners=resume_owners,
@@ -322,7 +322,7 @@ def plan_function(cg, elf, start, ranges, known, *, resume_owners=None, resumabl
             if (w >> 26) in (0x11, 0x12):
                 raise Unsupported(f"coprocessor branch at 0x{addr:08x}")
         else:
-            decode_op(addr, w, stale_detect=cg.STALE_DETECT)
+            decode_op(addr, w, stale_detect=cg.OPTIONS.stale_detect)
 
     # A delay slot that is itself a branch target runs inline at its transfer and again
     # under its own label; fall-through past the transfer skips the labelled copy.
@@ -353,7 +353,7 @@ def plan_function(cg, elf, start, ranges, known, *, resume_owners=None, resumabl
         if w is None:
             continue
         if not cg.is_control(w):
-            plan.steps.append(decode_op(addr, w, stale_detect=cg.STALE_DETECT))
+            plan.steps.append(decode_op(addr, w, stale_detect=cg.OPTIONS.stale_detect))
             if addr in continuations:
                 plan.steps.append(FallInto(continuations[addr]))
             continue
@@ -374,7 +374,7 @@ def _slot(cg, ds, dsw):
         raise Unsupported(f"unreadable delay slot at 0x{ds:08x}")
     if cg.is_control(dsw):
         raise Unsupported(f"control in delay slot at 0x{ds:08x}")
-    return decode_op(ds, dsw, stale_detect=cg.STALE_DETECT)
+    return decode_op(ds, dsw, stale_detect=cg.OPTIONS.stale_detect)
 
 
 def _transfer(cg, elf, ranges, addr, w, ds, dsw, known, resume_owners, labels, continuations,

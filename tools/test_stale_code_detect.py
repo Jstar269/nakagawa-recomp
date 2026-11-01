@@ -347,19 +347,19 @@ class FakeElf:
 
 class TestStaleCodegenGate(unittest.TestCase):
     def test_flag_defaults_off(self):
-        self.assertFalse(codegen.STALE_DETECT)
+        self.assertFalse(codegen.OPTIONS.stale_detect)
 
     def test_cache_op_is_noop_by_default_and_hook_when_enabled(self):
         cache_word = (0x2F << 26) | (4 << 21) | (2 << 16) | 0x10
         stmt, _, _ = codegen.effect(0x1000, cache_word)
         self.assertEqual(stmt, "(void)0;")
-        old = codegen.STALE_DETECT
-        codegen.STALE_DETECT = True
+        old = codegen.OPTIONS.stale_detect
+        codegen.OPTIONS.stale_detect = True
         try:
             stmt, _, _ = codegen.effect(0x1000, cache_word)
             self.assertIn("sr_stale_note_cache_op", stmt)
         finally:
-            codegen.STALE_DETECT = old
+            codegen.OPTIONS.stale_detect = old
 
     def test_fnv_vectors_match_runtime(self):
         self.assertEqual(codegen.stale_fnv1a([]), 0x811C9DC5)
@@ -397,8 +397,8 @@ class TestStaleCodegenEmission(unittest.TestCase):
         Path(path).write_bytes(eh + ph + code)
 
     def _run_codegen(self, tmp_dir, stale):
-        old = codegen.STALE_DETECT
-        codegen.STALE_DETECT = False
+        old = codegen.OPTIONS.stale_detect
+        codegen.OPTIONS.stale_detect = False
         try:
             elf = str(Path(tmp_dir) / "min.elf")
             out = str(Path(tmp_dir) / "min_recomp.c")
@@ -409,7 +409,7 @@ class TestStaleCodegenEmission(unittest.TestCase):
             self.assertEqual(codegen.main(args), 0)
             return Path(out).read_text(encoding="ascii")
         finally:
-            codegen.STALE_DETECT = old
+            codegen.OPTIONS.stale_detect = old
 
     def test_default_output_has_no_stale_records(self):
         with tempfile.TemporaryDirectory(prefix="staleemit_") as tmp_dir:
