@@ -119,7 +119,8 @@ class GenericTitleProofFixtures(unittest.TestCase):
         self.assertFalse(any("\\" in p or ":" in p for p in [normalized["filesystem"]["data_root"]]))
         # Runtime bindings are disjoint from the other two synthetics.
         self.assertEqual(len(normalized["runtime_bindings"]["dispatch_aliases"]), 2)
-        self.assertEqual(len(normalized["runtime_bindings"]["callback_terminators"]), 2)
+        # One terminator: the sentinel-0 entry was retired (#1375).
+        self.assertEqual(len(normalized["runtime_bindings"]["callback_terminators"]), 1)
 
     def test_three_fixtures_are_pairwise_disjoint(self) -> None:
         """The three public synthetics use disjoint address families; matrix can distinguish."""

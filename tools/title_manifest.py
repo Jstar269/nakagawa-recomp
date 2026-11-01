@@ -751,8 +751,8 @@ def validate_callback_terminators(value: Any, path: str) -> list[dict[str, int]]
         if entry["sentinel"] == 0:
             fail(
                 f"{item_path}.sentinel",
-                "must not be 0: a transfer to 0 is a null code pointer, which stops by "
-                "name (#1375), never a callback-list terminator",
+                "must not be 0: a transfer to 0 is a null code pointer, which stops the "
+                "run, never a callback-list terminator",
             )
         # The sentinel is compared against a dispatch TARGET. `pc`/`ra` are compared
         # against CpuState fields at the call site, never against a target, so the core

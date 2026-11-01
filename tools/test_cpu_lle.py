@@ -733,7 +733,8 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
         main = ("int main(void) {\n    CpuState s;\n    memset(&s, 0, sizeof(s));\n"
                 "    sr_exec_span_reset();\n" + spans + "".join(regs) + "    sr_mem_init();\n"
                 + image + "    s.r[29] = 0x09000000u;\n    s.pc = 0x00001000u;\n"
-                "    dispatch(&s, 0x00001000u);\n"
+                "    s.r[31] = SR_HOST_RETURN_PC;\n"
+                "    dispatch_from_host(&s, 0x00001000u);\n"
                 '    printf("PASSUP v0=0x%08x sp=0x%08x\\n", s.r[2], s.r[29]);\n'
                 "    return 0;\n}\n")
         source = "\n\n".join((_INTEGRATION_STUBS, "".join(decls), *texts, main))
@@ -850,14 +851,16 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
             ))
 
         outer = emit(0x1000, {
-            0x1000: _jal(0x2000), 0x1004: NOP,
-            0x1008: 0x3C080885,  # lui t0, 0x0885
-            0x100C: 0x3508F000,  # ori t0, t0, 0xf000 (linked continuation count)
-            0x1010: lw(9, 8),
-            0x1014: addiu(9, 9, 1),
-            0x1018: sw(9, 8),
-            0x101C: JR_RA, 0x1020: NOP,
-        }, 0x1024, known=(0x2000,) if mixed_chain else ())
+            0x1000: 0x03E08021,  # addu s0, ra, zero (keep the thread's return address)
+            0x1004: _jal(0x2000), 0x1008: NOP,
+            0x100C: 0x3C080885,  # lui t0, 0x0885
+            0x1010: 0x3508F000,  # ori t0, t0, 0xf000 (linked continuation count)
+            0x1014: lw(9, 8),
+            0x1018: addiu(9, 9, 1),
+            0x101C: sw(9, 8),
+            0x1020: 0x0200F821,  # addu ra, s0, zero
+            0x1024: JR_RA, 0x1028: NOP,
+        }, 0x102C, known=(0x2000,) if mixed_chain else ())
         if mixed_chain:
             # OUTER reaches MIDDLE by a direct generated CALL that drains at the call site.
             self.assertIn("f_00002000(s); SR_TAIL_DRAIN(s);", outer)
@@ -959,7 +962,7 @@ int main(void) {
     sr_cpu_lle_set_enabled(1);
     sr_cpu_lle_set_vectors(VECTOR, VECTOR, VECTOR);
     sr_exec_span_reset();
-    if (!sr_exec_span_register(0x1000u, 0x1024u) ||
+    if (!sr_exec_span_register(0x1000u, 0x102cu) ||
         !sr_exec_span_register(0x2000u, 0x2028u) ||
         !sr_exec_span_register(0x3000u, 0x3004u) ||
         !sr_exec_span_register(0x4000u, 0x4018u) ||
