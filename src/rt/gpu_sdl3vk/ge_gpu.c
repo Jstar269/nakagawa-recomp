@@ -511,13 +511,6 @@ static int s_cpu_profile_hook_depth;
 
 static uint32_t s_texscratch[512 * 512];
 static uint32_t s_pxscratch[FB_W * FB_H];
-/* One guest row at device width (each pixel repeated s_scale times), in cached memory. The
- * s_scale device rows of an upload are each copied from here. The upload ring is TRANSFER_SRC
- * memory without HOST_CACHED (gegpu_pick_host_mem_type), write-combined on common GPUs, where
- * every CPU read goes to memory: copying each replicated row from the first row of its cell
- * in the mapped buffer was about half of a 2x frame's CPU time in a measured title (#1296). */
-static uint32_t s_pxwide[FB_W * MAX_SCALE];
-static uint16_t s_zwide[FB_W * MAX_SCALE];
 
 #define VKC(expr) do { VkResult vr_ = (expr); if (vr_ != VK_SUCCESS) { \
     fprintf(stderr, "gegpu: %s failed: %d\n", #expr, (int)vr_); return 0; } } while (0)
@@ -1850,14 +1843,14 @@ static int target_upload(Target *t) {
             for (uint32_t x = 0; x < t->stride; x++) row[x] = fb_unpack(src[x], t->fmt);
         }
         for (uint32_t x = t->stride; x < FB_W; x++) row[x] = 0;
-        const uint32_t *wide = row;
-        if (s_scale > 1) {
-            for (uint32_t x = 0; x < FB_W; x++)
-                for (int i = 0; i < s_scale; i++) s_pxwide[x * s_scale + i] = row[x];
-            wide = s_pxwide;
-        }
         uint32_t *dl = dst + (uint32_t)(y * s_scale) * drow;
-        for (int j = 0; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, wide, drow * 4);
+        if (s_scale == 1) {
+            memcpy(dl, row, FB_W * 4);
+        } else {
+            for (uint32_t x = 0; x < FB_W; x++)
+                for (int i = 0; i < s_scale; i++) dl[x * s_scale + i] = row[x];
+            for (int j = 1; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, dl, drow * 4);
+        }
     }
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -2016,10 +2009,10 @@ static int target_patch_vram_dirty(Target *t, uint32_t dirty_addr, uint32_t dirt
             }
             uint32_t rgba = fb_unpack(raw, t->fmt);
             uint32_t dx = (x - x0) * (uint32_t)s_scale;
-            for (int sx = 0; sx < s_scale; sx++) s_pxwide[dx + (uint32_t)sx] = rgba;
+            for (int sx = 0; sx < s_scale; sx++) dst[dx + (uint32_t)sx] = rgba;
         }
-        for (int sy = 0; sy < s_scale; sy++)
-            memcpy(dst + (uint32_t)sy * scaled_width, s_pxwide,
+        for (int sy = 1; sy < s_scale; sy++)
+            memcpy(dst + (uint32_t)sy * scaled_width, dst,
                    (size_t)scaled_width * sizeof(uint32_t));
 
         copies[ci].bufferOffset = upload.offset + used;
@@ -2191,18 +2184,20 @@ static int depth_from_cpu(DepthEnt *d) {
     UploadReservation upload;
     if (!upload_reserve(upload_bytes, &upload)) return 0;
     uint32_t source_stride = d->zstride;
-    uint16_t *dst = (uint16_t *)upload.map;
-    uint32_t drow = SCL_W;
-    for (uint32_t y = 0; y < FB_H; y++) {
-        const uint16_t *src = s_zbuf + y * source_stride;
-        const uint16_t *wide = src;
-        if (s_scale > 1) {   /* replicate from cached memory, never the mapped upload (s_zwide) */
+    if (s_scale == 1) {
+        uint16_t *dst = (uint16_t *)upload.map;
+        for (uint32_t y = 0; y < FB_H; y++)
+            memcpy(dst + y * FB_W, s_zbuf + y * source_stride, FB_W * 2u);
+    } else {
+        uint16_t *dst = (uint16_t *)upload.map;
+        uint32_t drow = SCL_W;
+        for (uint32_t y = 0; y < FB_H; y++) {
+            const uint16_t *src = s_zbuf + y * source_stride;
+            uint16_t *dl = dst + (uint32_t)(y * s_scale) * drow;
             for (uint32_t x = 0; x < FB_W; x++)
-                for (int i = 0; i < s_scale; i++) s_zwide[x * s_scale + i] = src[x];
-            wide = s_zwide;
+                for (int i = 0; i < s_scale; i++) dl[x * s_scale + i] = src[x];
+            for (int j = 1; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, dl, drow * 2);
         }
-        uint16_t *dl = dst + (uint32_t)(y * s_scale) * drow;
-        for (int j = 0; j < s_scale; j++) memcpy(dl + (uint32_t)j * drow, wide, drow * 2);
     }
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -8008,10 +8003,10 @@ static int coherence_check_device_color(const char *step, const uint32_t *dev, c
 }
 
 /* Every device pixel of each scale x scale cell holds its guest pixel after a whole-target
- * upload, after a CPU-write patch across a row boundary, and after a depth upload. The
- * replicated rows are written from cached scratch (s_pxwide, s_zwide), never copied from
- * the mapped upload buffer (#1296). Every format runs at a full and at a short stride, whose
- * columns past the stride upload as 0. At scale 1 the cells are single pixels;
+ * upload, after a CPU-write patch across a row boundary, and after a depth upload (#1296):
+ * a readback to guest VRAM keeps only one device pixel per cell, so a row or column of a
+ * cell left unwritten would not show there. Every format runs at a full and at a short
+ * stride, whose columns past the stride upload as 0. At scale 1 the cells are single pixels;
  * gpu-coherence-selftest also runs this case alone at render scales 2 and 4. */
 static int coherence_run_scaled_upload(void) {
     static const struct { uint32_t fmt, stride; } cells[] = {
