@@ -1,0 +1,78 @@
+name: Starter issue (maintainers)
+description: A small, self-contained task for a first-time contributor
+title: "[Starter]: "
+labels:
+  - good first issue
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For maintainers and for contributors who have agreed a task with a maintainer. A starter issue
+        names one change, the files to start in and the exact command that proves it. Do not include game
+        names, disc IDs, game files, decrypted modules, extracted assets, full traces or private paths.
+        Setup: [CONTRIBUTING.md](https://github.com/Jstar269/nakagawa-recomp/blob/main/CONTRIBUTING.md#contributing-without-a-game-disc).
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is wrong or missing, in two or three sentences, and what the result should be.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: disc
+    attributes:
+      label: Is a game disc needed?
+      description: "No" means the task builds and tests with the repository's synthetic fixtures alone. Label the issue `no-disc-needed` when it does.
+      options:
+        - "No: synthetic fixtures only"
+        - "Yes: your own copy of a game"
+        - "Yes: a physical PSP"
+    validations:
+      required: true
+
+  - type: textarea
+    id: where
+    attributes:
+      label: Where to look
+      description: File paths (and function or test names) to start in. Add the nearest existing test that shows the pattern.
+      placeholder: |
+        - src/rt/hle_power.c: h_PowerIsBatteryExist
+        - src/rt/hle_thread_selftest.c: the nearest existing check
+    validations:
+      required: true
+
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace or log excerpt
+      description: |
+        A few lines that show the problem, with private paths removed. For runtime work, say which
+        `SR_*` switch produced them; docs/DEBUGGING.md lists the switches and the quick recipes.
+        Write "none" for a tooling task.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true when the task is done, and the exact command that shows it, with the output to expect.
+      placeholder: |
+        - A new check fails before the change and passes after it.
+        - `python -m unittest tools.test_<module>` reports OK.
+        - `mingw32-make contrib-check` (Windows) or `make contrib-check` (Linux) reports no FAIL.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Before submitting
+      options:
+        - label: The text names no game, disc ID or private path, and attaches no game-derived data.
+          required: true
+        - label: The issue has a milestone and the labels `good first issue` and, where it applies, `no-disc-needed`.
+          required: true

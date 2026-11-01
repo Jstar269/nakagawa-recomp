@@ -180,6 +180,41 @@ Follow the [authoritative development baseline in docs/SETUP.md](docs/SETUP.md).
 is Windows 11 x64, PowerShell 7.4+ (`pwsh`), CPython 3.15.x, current MSYS2 UCRT64, and a current
 auto-detected Vulkan SDK/loader. The native player is the repository's only user interface.
 
+## Contributing without a game disc
+
+Most work needs no game, no disc and no PSP. The repository builds and tests with synthetic fixtures that it
+generates itself, so you can set up, change code and prove the change without anyone's retail data. The
+make targets below are the real ones; run them from the repository root with MSYS2 UCRT64's `bin` folder on
+`PATH` (Windows) or with `make CC=gcc` (Linux). Times are wall-clock on the maintainer's Windows 11 machine
+(24 threads) on the first, cold build of a fresh worktree; later runs reuse built objects and are faster.
+
+| Command | What it proves | Time |
+| --- | --- | --- |
+| `python tools/nk_doctor.py --scope build` | Your toolchain is complete. | about 2 seconds |
+| `mingw32-make --no-print-directory display-smoke` | Builds the whole pipeline (generator, compiler, runtime) on a synthetic fixture and checks the presented frame. | about 3.5 minutes |
+| `mingw32-make --no-print-directory native-core-tests` | The native runtime self-tests (scheduler, memory, GE, UI core). | about 6 minutes |
+| `python -m unittest tools.test_<name>` | One Python tooling module. Pick the module that matches the file you changed. | seconds to a minute |
+| `python -m unittest tools.test_lint_docs tools.test_dco_policy` | The documentation and DCO policy gates, for a docs change. | about 15 seconds |
+| `mingw32-make contrib-check` | The gates that apply to the files you changed (see below). | about 1 minute for a docs change |
+
+Two more routes also need no game:
+
+- `mingw32-make production-smoke`, `platform-ladder` and `cosim-selftest` exercise the two-phase pipeline,
+  relocations, the scheduler and AOT-versus-interpreter parity on synthetic inputs
+  ([docs/SETUP.md](docs/SETUP.md#public-synthetic-verification-routes)).
+- The source-owned PSP demos and the oracle fixtures under `fixtures/` build with PSPDEV, the PSP toolchain,
+  which on Windows runs inside WSL 2 (`mingw32-make showcase showcase-smoke`; setup in
+  [docs/SETUP.md](docs/SETUP.md#showcase-demos-on-windows-wsl-2-and-pspdev)). They need no disc either.
+
+The full Python suite (`python -m unittest discover -s tools -p "test_*.py"`) takes about 77 minutes on this
+machine because it also runs heavy native fixtures. Hosted CI runs it in shards on every pull request, so run
+only the modules for the files you changed.
+
+What does need your own copy of a game: building or running a title (`nk_manager.ps1 -Action BuildFull` with a
+title manifest, the library sweep, `make verify` and the private-title routes) and matching work in a
+decompilation project. What needs a physical PSP is labelled `needs-psp-hardware` and you can skip it. Issues
+labelled [`no-disc-needed`](https://github.com/Jstar269/nakagawa-recomp/labels/no-disc-needed) are written to be done entirely with the commands above.
+
 ## Make a focused change
 
 - Runtime C: follow `.clang-format`, use `sr_` for public symbols and `s_` for file-static state, and preserve the `CpuState` ABI.
@@ -276,6 +311,14 @@ python -m pre_commit install
 python -m pre_commit run --all-files
 ```
 
+What the hooks check. Both stages run `ruff-check`, the generic hygiene hooks (trailing whitespace,
+end of file, YAML, JSON and TOML syntax, merge-conflict markers, private-key detection, files over 25 MB),
+`documentation-freshness` (`tools/lint_docs.py`), `publication-policy-sync` (`tools/policy_sync.py`),
+the publication audit (`tools/publish_audit.py`), the modified-file notice audit and the provenance-record gap
+check. The commit stage adds a secret scan (`betterleaks`) and a staged-whitespace check. The hooks never need
+a game, but they do read the whole tree, so a new file that carries a game name, disc ID, key or private path is
+rejected before it leaves your machine. Never bypass them with `--no-verify`; fix what they report.
+
 `install` sets up both the commit and the push hook (`default_install_hook_types` in
 `.pre-commit-config.yaml`). The publication audit runs at both stages on purpose: the push stage
 audits the index, not each pushed commit, and a pushed branch is public, so only the commit stage
@@ -284,6 +327,17 @@ checks every commit before it can leave the machine.
 The external-oracle `make verify` path requires inputs that are intentionally not in the repository.
 When those inputs are unavailable, report the gate as blocked/unavailable rather than treating it as
 a pass.
+
+### What admission means for your pull request
+
+A new file is a new public path, and only the maintainer can admit one: the provenance record that covers it is
+private. In your pull request, say who wrote each new file (and with which AI tool, if any) or, for code from
+another project, the project, exact revision and licence. Open the pull request as a draft anyway and list the new
+files there; do not edit `PUBLIC_EXPORT.json` or the ledger to make the check pass. The maintainer admits the exact
+bytes of each new file (so change a new file after admission only by asking), then runs or asks you to run
+`make contrib-refresh` and commit what it stages. The **Trusted provenance attestation** check stays red until the
+admission, which is expected: a pull request that is otherwise green with only this check red is ready for review.
+Edits to existing files need no admission.
 
 ## Developer Certificate of Origin (DCO 1.1)
 
