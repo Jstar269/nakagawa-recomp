@@ -24,7 +24,6 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hle_manifest
-import hle_sources
 import scratch_dir
 from import_fixtures import (
     INTERLEAVED_NIDS,
