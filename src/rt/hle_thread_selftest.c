@@ -42141,14 +42141,16 @@ static int aot_spawn_self(const char *self, const char *mode) {
 }
 
 static void test_aot_null_thread_entry(const char *self) {
-    /* Absolute: the child enters its own scratch directory before the stop is written. */
-    char events_path[MAX_PATH];
+    /* Absolute: the child enters its own scratch directory before the stop is written. The
+     * directory is resolved, not the file: POSIX realpath() needs the path to exist. */
+    char build_root[MAX_PATH];
+    char events_path[MAX_PATH + 32];
     nk_platform_mkdir_p(HLE_BUILD_ROOT);
-    if (!nk_platform_absolute_path(HLE_BUILD_ROOT "/null_thread_entry_events.txt",
-                                   events_path, sizeof events_path)) {
-        expect(0, "null thread entry: the event file path resolves");
+    if (!nk_platform_absolute_path(HLE_BUILD_ROOT, build_root, sizeof build_root)) {
+        expect(0, "null thread entry: the build root resolves");
         return;
     }
+    snprintf(events_path, sizeof events_path, "%s/null_thread_entry_events.txt", build_root);
     remove(events_path);
     hle_test_setenv("SR_BOOT_EVENT_FILE", events_path);
     int status = aot_spawn_self(self, "--null-thread-entry-child");

@@ -350,10 +350,10 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
             ("sched.c", "coro_body"),                        # thread entries
             ("hle.c", "hle_dispatch_guest_scoped"),          # VTimer and GE callbacks
             ("mpeg.c", "call_guest3"),                       # the ringbuffer callback
+            ("driver.c", "main"),                            # the scheduler-less boot entry
         },
-        # The boot entry (seeded), a linked export (the importer's $ra) and a trace replay.
+        # A linked export (the importer's $ra) and a trace replay (the traced $ra).
         "sr_call_body": {
-            ("driver.c", "main"),
             ("hle.c", "link_started_export"),
             ("funcdiff.c", "main"),
         },

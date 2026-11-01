@@ -754,14 +754,12 @@ have_image:;
                stack prologue cannot overwrite the guest-visible argument. */
             s.r[29] = s.r[5];
         }
-        /* The entry returns to the host like every other host entry (#1375). */
+        /* The entry is a host entry like every other (#1375): a linked call that returns to
+         * SR_HOST_RETURN_PC, so a TAIL step into interpreted code still returns to the host.
+         * The dispatch owns the AOT tier and its SR_PERF span. */
         s.r[31] = SR_HOST_RETURN_PC;
         if (sr_perf_enabled) sr_perf_guest_begin();
-        if (sr_perf_enabled) sr_perf_aot_begin(entry);
-        int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
-        sr_call_body(fn, &s);
-        sr_exec_leave(exec_previous);
-        if (sr_perf_enabled) sr_perf_aot_end();
+        dispatch_from_host(&s, entry);
         if (sr_perf_enabled) sr_perf_guest_end();
     }
     /* The SR_PERF summary first, while the GPU GE it samples still exists; then the presenter,
