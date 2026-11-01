@@ -96,7 +96,7 @@ parentheses):
   prefix/transcendental helpers).
 - `src/rt/hle.c` (PPSSPP lineage; record `hle-core`, tier N; names
   `sceKernelThread`, `sceCtrl`, `sceFont`, and related PPSSPP sources).
-- `src/rt/ge.c`, `src/rt/ge_shared.h` (PPSSPP lineage; record
+- `src/rt/ge.c`, `src/rt/ge_shared.h`, `src/rt/ge_vram_cli.c` (PPSSPP lineage; record
   `ge-software-rasterizer`, tier N; names `GPU/Software/*`,
   `GPU/Common/VertexDecoder*`, GE command headers).
 - `src/rt/vfpu_interp.c` (PPSSPP lineage; record `vfpu-interpreter`,

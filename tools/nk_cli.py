@@ -158,12 +158,12 @@ def _build_vram_decoder(temp_dir: Path) -> Path:
     compiler = shutil.which("gcc")
     if compiler is None:
         raise ValueError("vram decoder requires GCC on PATH (UCRT64 GCC on Windows)")
-    source = ROOT / "src" / "rt" / "ge.c"
+    sources = [ROOT / "src" / "rt" / "ge.c", ROOT / "src" / "rt" / "ge_vram_cli.c"]
     executable = temp_dir / ("ge-vram-decoder.exe" if os.name == "nt" else "ge-vram-decoder")
     command = [
         compiler, "-std=c99", "-O2", "-flto", "-ffunction-sections", "-fdata-sections",
         "-DSR_GE_VRAM_DECODER_CLI", "-Isrc/rt", "-Isrc/core", "-Isrc/core/generated",
-        "-Isrc/player", str(source), "-Wl,--gc-sections", "-lm", "-o", str(executable),
+        "-Isrc/player", *map(str, sources), "-Wl,--gc-sections", "-lm", "-o", str(executable),
     ]
     built = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
     if built.returncode:
