@@ -1858,7 +1858,7 @@ def _cache_key_for_build(
         input_hashes=input_hashes,
         title_input_identity=title_input_identity,
         codegen_options=options,
-        analyzer_sha256=package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
+        analyzer_sha256=package_cache.analyzer_sources_sha256(ROOT / "tools"),
         codegen_sha256=package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
         compiler=package_cache.compiler_identity(compiler_name, repository_root=ROOT),
         target=package_cache.compiler_target(repository_root=ROOT),
@@ -2376,7 +2376,7 @@ def build_package(
         tools = {
             "python": platform.python_version(),
             "planner": {"sha256": _sha256_file(Path(__file__).resolve())},
-            "analyzer": {"sha256": _sha256_file(ROOT / "tools" / "analyze.py")},
+            "analyzer": {"sha256": package_cache.analyzer_sources_sha256(ROOT / "tools")},
             "codegen": {"sha256": _sha256_file(ROOT / "tools" / "codegen.py")},
             "make": {"command": make_display_name, "identity": make_identity},
             "compiler": {"command": cc_display_name, "identity": cc_identity},
