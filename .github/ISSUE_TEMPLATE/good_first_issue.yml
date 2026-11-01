@@ -24,7 +24,7 @@ body:
     id: disc
     attributes:
       label: Is a game disc needed?
-      description: "No" means the task builds and tests with the repository's synthetic fixtures alone. Label the issue `no-disc-needed` when it does.
+      description: 'Choose the first option when the task builds and tests with the repository''s synthetic fixtures alone, and label the issue `no-disc-needed`.'
       options:
         - "No: synthetic fixtures only"
         - "Yes: your own copy of a game"
