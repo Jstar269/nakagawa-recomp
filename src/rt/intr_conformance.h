@@ -206,8 +206,8 @@ enum {
 #define NID_IC_CREATE_LWMUTEX     0x19cff145u
 #define NID_IC_VOLATILE_MEM_LOCK  0x3e0271d3u
 
-#define SCE_KERNEL_ERROR_CAN_NOT_WAIT_HW     0x800201a7u
-#define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT_HW  0x80020064u
+#define SCE_KERNEL_ERROR_CAN_NOT_WAIT_HW     SCE_KERNEL_ERROR_CAN_NOT_WAIT
+#define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT_HW  SCE_KERNEL_ERROR_ILLEGAL_CONTEXT
 
 /* ---- a single matrix cell ------------------------------------------------ */
 typedef struct {
