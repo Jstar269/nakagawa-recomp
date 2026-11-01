@@ -2283,7 +2283,7 @@ class AnalyzerSourcesKeyTests(unittest.TestCase):
             if edit_name is not None:
                 with (tools / edit_name).open("a", encoding="utf-8") as handle:
                     handle.write("# edited\n")
-            return package_cache.analyzer_sources_sha256(tools)
+            return str(package_cache.analyzer_sources_sha256(tools))
 
     def test_a_change_to_any_analyzer_source_changes_the_key(self) -> None:
         base = self.digest_after(None)
