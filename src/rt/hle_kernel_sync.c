@@ -12,28 +12,6 @@
 
 #include "hle_internal.h"
 
-/* Semaphore error codes measured by PSPAutotests
- * tests/threads/semaphores/wait.expected, which is a NORMAL-context oracle and
- * therefore covers exactly the column tests/intr/waits.expected does not:
- *
- *   UNKNOWN_SEMID  sceKernelWaitSema(0, 1, NULL)          -> 80020199   (L21)
- *                  sceKernelWaitSema(0xDEADBEEF, 1, NULL) -> 80020199   (L23)
- *                  a deleted semaphore id                 -> 80020199   (L25)
- *   ILLEGAL_COUNT  need 100 against maxCount 1            -> 800201BD   (L3, L11)
- *                  need 0                                 -> 800201BD   (L13)
- *                  need -1                                -> 800201BD   (L5, L15)
- *
- * WAIT_TIMEOUT is the same file's L9/L17 result for a wait that was legal,
- * entered, and expired. */
-#define SCE_KERNEL_ERROR_UNKNOWN_SEMID 0x80020199u
-#define SCE_KERNEL_ERROR_ILLEGAL_COUNT 0x800201bdu
-#ifndef SCE_KERNEL_ERROR_WAIT_CANCEL
-#define SCE_KERNEL_ERROR_WAIT_CANCEL   0x800201a9u
-#endif
-#define SCE_KERNEL_ERROR_UNKNOWN_MPPID 0x8002019eu
-#define SCE_KERNEL_ERROR_MPP_FULL      0x800201b3u
-#define SCE_KERNEL_ERROR_MPP_EMPTY     0x800201b4u
-#define SCE_KERNEL_ERROR_ILLEGAL_SIZE  0x800201bcu
 /* Message-pipe waiter attributes are independent for send and receive waits. */
 #define PSP_MPP_ATTR_SEND_PRIORITY     0x0100u
 #define PSP_MPP_ATTR_RECEIVE_PRIORITY  0x1000u
@@ -820,8 +798,6 @@ void hle_register_msgpipe_handlers(void) {
     sr_hle_register(0x349b864d, "sceKernelCancelMsgPipe", h_CancelMsgPipe);
     sr_hle_register(0x33be4024, "sceKernelReferMsgPipeStatus", h_ReferMsgPipeStatus);
 }
-#define SCE_KERNEL_ERROR_UNKNOWN_MBXID 0x8002019bu
-#define SCE_KERNEL_ERROR_MBX_EMPTY     0x800201b2u
 #define PSP_MBX_ATTR_PRIORITY          0x400u
 
 /* Rewrite guest-visible circular next links so first->...->last->first matches
@@ -1476,11 +1452,6 @@ int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out) {
 #define LWMUTEX_UID           0x10u
 #define LWMUTEX_ATTR_RECURSIVE 0x0200u
 #define LWMUTEX_DELETED_WORD   0xffffffffu
-#define SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND           0x800201cau
-#define SCE_KERNEL_ERROR_LWMUTEX_FAILED_TO_OWN       0x800201c4u
-#define SCE_KERNEL_ERROR_LWMUTEX_LOCKED              0x800201cbu
-#define SCE_KERNEL_ERROR_LWMUTEX_UNLOCK_UNDERFLOW    0x800201ccu
-#define SCE_KERNEL_ERROR_LWMUTEX_RECURSIVE_NOT_ALLOWED 0x800201cfu
 
 /* PSP-B2-01 (psp-hw-20260917): an unlock to level 0 with a waiter hands
  * ownership directly to the waiter (lockThread = waiter, level = the waiter's
@@ -1814,9 +1785,6 @@ static uint32_t h_UnlockLwMutex(CpuState *s) {
     }
     return 0;
 }
-#ifndef SCE_KERNEL_ERROR_WAIT_CANCEL
-#define SCE_KERNEL_ERROR_WAIT_CANCEL   0x800201a9u
-#endif
 
 static uint32_t h_CancelSema(CpuState *s) {
     /* a0=semaid, a1=newCount, a2=numWaitThreads out (stack_arg 0).
@@ -1865,16 +1833,6 @@ static uint32_t h_CancelEventFlag(CpuState *s) {
 #define PSP_MUTEX_ATTR_ALLOW_RECURSIVE 0x0200u
 #define PSP_MUTEX_LEGAL_ATTR_MASK      0x0BFFu
 
-#ifndef SCE_KERNEL_ERROR_WAIT_CANCEL
-#define SCE_KERNEL_ERROR_WAIT_CANCEL                0x800201A9u
-#endif
-#define SCE_KERNEL_ERROR_NO_MEMORY                  0x80020190u
-#define SCE_KERNEL_ERROR_UNKNOWN_MUTEXID            0x800201C3u
-#define SCE_KERNEL_ERROR_MUTEX_FAILED_TO_OWN        0x800201C4u
-#define SCE_KERNEL_ERROR_MUTEX_NOT_OWNED            0x800201C5u
-#define SCE_KERNEL_ERROR_MUTEX_LOCK_OVERFLOW        0x800201C6u
-#define SCE_KERNEL_ERROR_MUTEX_UNLOCK_UNDERFLOW      0x800201C7u
-#define SCE_KERNEL_ERROR_MUTEX_RECURSIVE_NOT_ALLOWED 0x800201C8u
 
 typedef struct {
     uint32_t size;
@@ -2334,7 +2292,6 @@ static uint32_t h_CreateEventFlag(CpuState *s) {
  * tests/threads/events gives Clear (clear.expected L15-L19), Wait
  * (wait.expected L35) and Refer (refer.expected L23-L25) the same code, and a
  * UID of another kind in the shared table answers it too (see sync_find). */
-#define SCE_KERNEL_ERROR_UNKNOWN_EVFID 0x8002019au
 static Sync *evf_find(uint32_t uid) { return sync_find(uid, SYNC_KIND_EVENT_FLAG); }
 static uint64_t s_evf_wait_order;
 
