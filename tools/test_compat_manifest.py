@@ -9,8 +9,7 @@ This test extracts the authoritative, structured sources of such overrides
 --
 
   1. tools/codegen.py: GUEST_PATCHES, host_stubs.HST_SIMPLE_STUBS, and the
-     per-address custom stubs between the "--- CUSTOM STUBS START/END ---"
-     markers.
+     per-address custom stubs in tools/codegen_hst_stubs.py (HST_CUSTOM_STUBS).
   2. src/rt/recomp.c: the g_exact_hooks[]/g_range_hooks[] DispatchHook tables.
   3. src/rt/hle.c: guest addresses used as addresses through the MEM_*
      accessors, sr_r32/sr_w32, dispatch, or the ge_call_guest* nested-guest
@@ -114,7 +113,6 @@ natural next step -- do not read their absence here as "safe to ignore."
 
 import ast
 import contextlib
-import inspect
 import io
 from pathlib import Path
 import re
@@ -259,18 +257,9 @@ RECOMP_C = REPO_ROOT / "src" / "rt" / "recomp.c"
 
 
 def extract_codegen_custom_stub_addresses() -> set[int]:
-    src = inspect.getsource(codegen)
-    m = re.search(r"# --- CUSTOM STUBS START ---(.*?)# --- CUSTOM STUBS END ---", src, re.S)
-    assert m, "codegen.py: CUSTOM STUBS START/END markers not found (did the driver loop move?)"
-    block = m.group(1)
-    addrs: set[int] = set()
-    for stmt in re.finditer(r"if (?:hst_profile and )?a (?:==|in) \(?(0x[0-9a-fA-F]+(?:\s*,\s*0x[0-9a-fA-F]+)*)\)?:", block):
-        group1 = stmt.group(1)
-        if not group1:
-            continue
-        for h in re.findall(r"0x[0-9a-fA-F]+", group1):
-            addrs.add(int(h, 16))
-    return addrs
+    """The addresses codegen.py replaces with a hand-written body: the keys of
+    codegen_hst_stubs.HST_CUSTOM_STUBS plus the game-loop wrapper's address."""
+    return set(codegen.HST_CUSTOM_STUBS) | {codegen.HST_GAME_LOOP_ADDR}
 
 
 def extract_dispatch_hook_table(table_name: str) -> list[tuple[int, str]]:

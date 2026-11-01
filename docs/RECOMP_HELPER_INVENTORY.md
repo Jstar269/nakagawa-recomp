@@ -22,7 +22,7 @@ does not make this file stale. `--details` prints them to stdout.
   definition and every prototype in `recomp.h`. A non-static definition in another production
   `src/` file is a defining file. Selftest harness definitions are not.
 - **Reach**, first match wins: `emitter-reached` (named in the string literals of
-  `tools/codegen.py`, the C it emits; directly, or through the `recomp.h` macros named in the
+  `tools/codegen.py` and `tools/codegen_hst_stubs.py`, the C they emit; directly, or through the `recomp.h` macros named in the
   row); `production-runtime-only` (called from production `src/` code); `selftest-only` (called
   only from `*selftest*` harness files); `address-only` (never called, but named as a value in
   `src/`); `none`.

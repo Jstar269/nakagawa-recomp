@@ -149,6 +149,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `lowering_plan.py` | Backend-neutral lowering plan of one function: decoded operations and resolved transfers (#330). |
 | `prx_reloc_model.py` | Model every PSP module relocation as a function of the load base, for position-independent module translation. |
 | `host_stubs.py` | Semantic name overrides for known guest functions, imported by the generator. |
+| `codegen_hst_stubs.py` | The hand-written C bodies the generator emits for specific HST guest addresses (`--profile=hst`), as data keyed by address. |
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
 | `entry_frame_balance.py` | Stack-symbolic entry classification: callable boundary versus resume PC. |
 | `elf_bounds.py` | Shared, fail-closed ELF32 envelope checks for the offline PSP tools. |
