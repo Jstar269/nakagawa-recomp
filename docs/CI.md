@@ -190,9 +190,10 @@ counted as a kill. Both are source-owned and need no game input. See
 limits of the evidence.
 
 Both hosts run `hle-thread-selftest`, the executable production-HLE suite that links
-`src/rt/hle.c` (#306): the Windows job in its `selftests` part, and the Linux `native_tools` job
-after the pinned SDL3 install, because the suite links SDL3 for the scheduler's host clock. Each
-host runs its own arms of `hle.c`'s file, directory and host-data seams. A few checks exist on
+the runtime HLE sources (`src/rt/hle.c` and its subsystem files, #306, #307): the Windows job in its
+`selftests` part, and the Linux `native_tools` job after the pinned SDL3 install, because the suite
+links SDL3 for the scheduler's host clock. Each host runs its own arms of the file, directory and
+host-data seams (`hle_host.c`, `hle_io.c`, `hle_data.c`). A few checks exist on
 Windows only, because what they check is Win32: the `FindFirstFileW` error classifier, the
 `CreateProcessW` command-line quoting of the exit-game respawn, and the `mklink` junction (Linux
 plants a symbolic link in its place).
@@ -946,18 +947,21 @@ already the maintainer's:
 
 - a push to `main` of this repository;
 - a merge-queue group (`merge_group`) of `main`;
-- a pull request whose head branch is in this repository (not a fork), starts with
-  `batch/` (the integration desk's batches of already-reviewed pull requests), and was
-  opened by the repository owner.
+- a pull request whose head branch is in this repository (not a fork), which the
+  repository owner opened and whose event the owner sent. Branches that may carry an
+  outside contributor's commits are excluded: the desk's `carry/pr-<N>` branches for locked
+  fork pull requests and its `desk/` working branches. The owner is the only collaborator
+  with push access. Apps the owner installed, such as a coding agent, can also push branches,
+  but a pull request they open or a push they make isn't the owner's event, so its runs stay on
+  hosted runners. The code on the owner's own branches already runs on the owner's PC.
 
 Trusted CodeQL (`.github/workflows/codeql.yml`) sends its three analyses there for the
 same targets: its `prepare` job, which stays hosted, runs the default branch's
 classifier (`python tools/ci_paths.py --codeql-runner`) and the `analyze` jobs run on
 the runner it names. That workflow always runs the default branch's definition and
 reads the candidate tree as data (`build-mode: none`), and it takes the pool only when
-it was woken by a desk batch or a merge group, or for a push to `main`. Every other
-pull request's analysis stays on `ubuntu-26.04`, so ordinary traffic cannot fill the
-pool ahead of a landing.
+it was woken by one of the owner's own pull requests above or a merge group, or for a
+push to `main`. Every other pull request's analysis stays on `ubuntu-26.04`.
 
 Every other run, a fork's pull request above all, gets the job's hosted image (`ubuntu-24.04`
 or `ubuntu-26.04`, whichever that job names when it is not on the pool). Two repository
@@ -979,8 +983,9 @@ keeps this repository's own runs where they belong. What stops a fork is:
   values the runner provides: `GITHUB_REPOSITORY`, `GITHUB_EVENT_NAME`, `GITHUB_REF`,
   `GITHUB_WORKFLOW_REF` and the event payload at `GITHUB_EVENT_PATH`, never from a file
   in the repository. It refuses every job that is not one of the trusted runs above (for
-  `workflow_run`, only the default branch's `codeql.yml` woken by a desk batch or a merge
-  group), so a fork's job that asks for the pool fails before it runs anything.
+  `workflow_run`, only the default branch's `codeql.yml` woken by one of the owner's own
+  pull requests or a merge group), so a fork's job that asks for the pool fails before it
+  runs anything.
 - **The fork approval policy.** The repository requires approval before any workflow runs
   for an outside contributor's pull request (`all_external_contributors`).
 - **Isolation.** Each runner is an ephemeral container that takes one job and is

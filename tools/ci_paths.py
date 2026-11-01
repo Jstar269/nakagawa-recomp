@@ -625,8 +625,10 @@ HOSTED_LINUX_RUNNER = "ubuntu-24.04"
 HOSTED_LINUX_RUNNER_2604 = "ubuntu-26.04"
 SELF_HOSTED_LINUX_RUNNER = ("self-hosted", "linux", "x64", "nk-wsl")
 SELF_HOSTED_REPOSITORY = "Jstar269/nakagawa-recomp"
-#: The desk's batch branches (one commit per folded pull request, built from main).
-SELF_HOSTED_BATCH_PREFIX = "batch/"
+#: Head branches of this repository that may carry an outside contributor's commits: the
+#: desk's ``carry/pr-<N>`` branches for locked fork pull requests, and ``desk/`` working
+#: branches. Their runs stay on hosted runners even though they live in this repository.
+SELF_HOSTED_UNTRUSTED_PREFIXES = ("carry/", "desk/")
 #: The pool's supervisor refreshes NK_SELF_HOSTED_HEARTBEAT every two minutes while the
 #: pool is healthy. An older heartbeat means the supervisor, the PC or the pool is gone,
 #: and trusted runs go back to hosted runners instead of waiting for a runner that will
@@ -645,9 +647,12 @@ def trusted_for_self_hosted(
     """Whether this run may use the self-hosted pool: its code is already the maintainer's.
 
     True only for this repository's push to ``main``, its merge groups (built from
-    pull requests a maintainer enqueued), and a pull request from a ``batch/`` branch of
-    this repository itself, opened by the repository owner. A fork's pull request is
-    never trusted, whatever its branch is called; nor is any other event.
+    pull requests a maintainer enqueued), and a pull request from a branch of this
+    repository itself that the repository owner opened and whose event the owner sent,
+    unless the branch is one that may carry an outside contributor's commits
+    (``SELF_HOSTED_UNTRUSTED_PREFIXES``). Those branches are pushed only with the
+    owner's credentials, and their code already runs on the owner's PC. A fork's pull
+    request is never trusted, whatever its branch is called; nor is any other event.
     """
 
     if repository != SELF_HOSTED_REPOSITORY:
@@ -671,14 +676,18 @@ def trusted_for_self_hosted(
     if not isinstance(head_repo, dict) or not isinstance(base_repo, dict):
         return False
     head_ref = head.get("ref")
+    sender = event.get("sender")
     owner = repository.split("/", 1)[0]
     return (
         head_repo.get("full_name") == repository
         and base_repo.get("full_name") == repository
         and head_repo.get("fork") is False
         and isinstance(head_ref, str)
-        and head_ref.startswith(SELF_HOSTED_BATCH_PREFIX)
+        and bool(head_ref)
+        and not head_ref.startswith(SELF_HOSTED_UNTRUSTED_PREFIXES)
         and user.get("login") == owner
+        and isinstance(sender, dict)
+        and sender.get("login") == owner
     )
 
 
@@ -711,9 +720,9 @@ def codeql_trusted_target(
     Trusted CodeQL always runs the default branch's definition and reads the candidate tree
     as data (``build-mode: none``), so no pull request's code or workflow runs in it. It
     still takes the pool only for the targets CI would send there: a push to ``main``, and
-    a "CodeQL wake" run (``workflow_run``) of a merge group of ``main`` or of a desk batch
-    pull request (this repository's ``batch/`` branch, pushed by the owner). Every other
-    pull request's analysis stays hosted, so ordinary traffic cannot fill the pool.
+    a "CodeQL wake" run (``workflow_run``) of a merge group of ``main`` or of a pull request
+    from one of this repository's own branches pushed by the owner (not a branch in
+    ``SELF_HOSTED_UNTRUSTED_PREFIXES``). Every other pull request's analysis stays hosted.
     """
 
     if repository != SELF_HOSTED_REPOSITORY:
@@ -736,7 +745,8 @@ def codeql_trusted_target(
     if kind == "pull_request":
         owner = repository.split("/", 1)[0]
         return (
-            head_branch.startswith(SELF_HOSTED_BATCH_PREFIX)
+            bool(head_branch)
+            and not head_branch.startswith(SELF_HOSTED_UNTRUSTED_PREFIXES)
             and isinstance(actor, dict)
             and actor.get("login") == owner
         )

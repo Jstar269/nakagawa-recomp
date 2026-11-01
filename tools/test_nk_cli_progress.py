@@ -17,6 +17,8 @@ import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import hle_sources  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 CLI_PATH = ROOT / "tools" / "nk_cli.py"
 
@@ -585,7 +587,7 @@ class NkCliVramTests(unittest.TestCase):
         self.assertIn("ge.zbp, 480u, 272u,", source[call:call + 120])
 
     def test_vram_capture_is_gated_on_a_presentable_frame(self) -> None:
-        source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        source = hle_sources.text()
         start = source.index("static void vramdump_try_present(")
         body = source[start:source.index("\n}\n", start)]
         self.assertIn("!gui_on() || !fb->addr || !display_host_span_valid(fb)", body)

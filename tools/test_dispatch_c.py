@@ -19,8 +19,13 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 RT = ROOT / "src" / "rt"
@@ -343,18 +348,22 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
     linked call only where the guest itself supplies the return address.
     """
 
+    # The runtime HLE files, read through tools/hle_sources.py, form one unit here: an HLE
+    # entry site is named by its function, whichever subsystem file holds it.
+    HLE = "runtime HLE"
+
     # Entry calls the runtime may make outside recomp.c and guest_interp.c, by function.
     ALLOWED_ENTRY_SITES = {
         "dispatch_from_host": {
             ("sched.c", "sched_dispatch_interrupt_guest"),  # VBLANK sub-interrupts, alarms
             ("sched.c", "coro_body"),                        # thread entries
-            ("hle.c", "hle_dispatch_guest_scoped"),          # VTimer and GE callbacks
+            (HLE, "hle_dispatch_guest_scoped"),              # VTimer and GE callbacks
             ("mpeg.c", "call_guest3"),                       # the ringbuffer callback
             ("driver.c", "main"),                            # the scheduler-less boot entry
         },
         # A linked export (the importer's $ra) and a trace replay (the traced $ra).
         "sr_call_body": {
-            ("hle.c", "link_started_export"),
+            (HLE, "link_started_export"),
             ("funcdiff.c", "main"),
         },
         "dispatch_call_try": {("domain_mode.c", "sr_import_call_guest")},  # the stub's resume
@@ -362,20 +371,25 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
         "dispatch": {("vfpu_fuzz.c", "check_unaligned_dispatch")},  # the VFPU fallback tag
     }
 
-    @staticmethod
-    def _runtime_sources():
+    @classmethod
+    def _runtime_sources(cls):
+        """``(label, path, text)`` for each runtime source; the HLE files share one label."""
+        hle = set(hle_sources.RUNTIME_HLE_SOURCES) | set(hle_sources.HLE_PRIVATE_HEADERS)
         for path in sorted(RT.rglob("*.[ch]")):
-            if "selftest" in path.name or path.name in {"recomp.c", "guest_interp.c"}:
+            relative = path.relative_to(ROOT).as_posix()
+            if "selftest" in path.name or path.name in {"recomp.c", "guest_interp.c"} or relative in hle:
                 continue
-            yield path
+            yield path.name, relative, path.read_text(encoding="utf-8", errors="replace")
+        for relative, text in hle_sources.sources(headers=True):
+            yield cls.HLE, relative, text
 
     def test_no_runtime_source_seeds_a_zero_return_address(self):
         offenders = []
-        for path in self._runtime_sources():
-            code = _strip_comments_keep_lines(path.read_text(encoding="utf-8", errors="replace"))
+        for _, relative, text in self._runtime_sources():
+            code = _strip_comments_keep_lines(text)
             for match in re.finditer(r"r\[31\]\s*=\s*0u?\s*;", code):
                 line = code.count("\n", 0, match.start()) + 1
-                offenders.append(f"{path.relative_to(ROOT).as_posix()}:{line}")
+                offenders.append(f"{relative}:{line}")
         self.assertEqual(offenders, [], "a host entry seeds $ra = 0; seed SR_HOST_RETURN_PC")
 
     def test_every_host_to_guest_entry_is_an_allowed_helper(self):
@@ -383,20 +397,20 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
                           r"dispatch_call|dispatch)\s*\(")
         found = set()
         stray = []
-        for path in self._runtime_sources():
-            if path.name == "recomp.h":
+        for label, relative, text in self._runtime_sources():
+            if label == "recomp.h":
                 continue  # declarations and the core's own inline helpers
-            code = _strip_comments_keep_lines(path.read_text(encoding="utf-8", errors="replace"))
+            code = _strip_comments_keep_lines(text)
             lines = code.split("\n")
             for match in call.finditer(code):
                 index = code.count("\n", 0, match.start())
                 if _DEFINITION_LINE.match(lines[index]):
                     continue  # a definition or prototype, not a call
-                site = (path.name, _enclosing_function(lines, index))
+                site = (label, _enclosing_function(lines, index))
                 if site in self.ALLOWED_ENTRY_SITES[match.group(1)]:
                     found.add((match.group(1), site))
                 else:
-                    stray.append(f"{match.group(1)} in {site[0]}:{site[1]} (line {index + 1})")
+                    stray.append(f"{match.group(1)} in {relative}:{site[1]} (line {index + 1})")
         self.assertEqual(stray, [], "a host-to-guest entry outside the reviewed helpers")
         expected = {(name, site) for name, sites in self.ALLOWED_ENTRY_SITES.items()
                     for site in sites}
@@ -408,8 +422,8 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
         helper = helper[: helper.index("\n}\n")]
         self.assertIn('if (entry == 0u) sr_null_code_entry(cpu, "callback");', helper)
         self.assertIn("cpu->r[31] = SR_HOST_RETURN_PC;", helper)
-        hle_c = _strip_comments((RT / "hle.c").read_text(encoding="utf-8"))
-        self.assertRegex(hle_c, r"sr_callback_dispatch_one\(\s*cpu,[^;]*dispatch_from_host\);")
+        hle_code = _strip_comments(hle_sources.text())
+        self.assertRegex(hle_code, r"sr_callback_dispatch_one\(\s*cpu,[^;]*dispatch_from_host\);")
         self.assertIn("#define SR_HOST_RETURN_PC 0xFFFFFFF0u", recomp_h)
 
 

@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import build_profile
 import codegen
+import hle_sources
 import title_codegen_plan
 
 
@@ -517,6 +518,32 @@ def _with_response_file_inputs(logical: list[tuple[int, str]]) -> list[tuple[int
     return result
 
 
+def _make_variables(makefile: str) -> dict[str, list[str]]:
+    """Every ``NAME :=|?=|= value`` in ``makefile``, continuation lines joined, in order."""
+    out: dict[str, list[str]] = {}
+    for line in makefile.replace("\\\n", " ").splitlines():
+        match = re.match(r"^([A-Za-z0-9_]+)\s*(?::=|\?=|=)\s*(.*)$", line)
+        if match:
+            out.setdefault(match.group(1), []).append(match.group(2))
+    return out
+
+
+def _expanded(text: str, variables: dict[str, list[str]], seen: frozenset[str] = frozenset()) -> str:
+    """``text`` with the words of every plain ``$(NAME)`` in it appended, recursively.
+
+    A recipe names the HLE sources through ``$(HLE_SRCS)`` (#307), so a check that looks for a
+    source file by name in a link line has to see through the variable: matched against the raw
+    text, it would skip every HLE link and pass on nothing. The first assignment of a name is
+    used, as tools/test_android_build.py does.
+    """
+    words: list[str] = []
+    for name in re.findall(r"\$\(([A-Za-z0-9_]+)\)", text):
+        if name in seen or not variables.get(name):
+            continue
+        words.append(_expanded(variables[name][0], variables, seen | {name}))
+    return " ".join([text, *words]) if words else text
+
+
 class Sdl3vkLinkDependencyTests(unittest.TestCase):
     """sdl3vk.c calls into fbcap_policy.c and the presenter-neutral capture
     service fbcap.c, so every recipe that compiles the backend must also supply
@@ -695,7 +722,6 @@ def _psmf_media_filtered_out(makefile: str) -> str:
     return match.group(1)
 
 
-HLE_C = "src/rt/hle.c"
 H264_BACKENDS = ("src/rt/h264_mf.c", "src/rt/h264_null.c")
 H264_BACKEND_OBJECTS = ("h264_mf.o", "h264_null.o")
 HLE_RUNTIME_BUNDLES = ("$(RT_SRCS)", "$(RT_OBJS)", "$(PSMF_MEDIA_RUNTIME_OBJS)")
@@ -732,13 +758,15 @@ def _hle_link_supplies_h264_backends(link: str, makefile: str) -> bool:
 def _hle_link_h264_offenders(makefile: str) -> list[str]:
     """Find Makefile link commands that compile HLE without its PSMF backends."""
     logical = _with_response_file_inputs(_logical_lines(makefile))
+    variables = _make_variables(makefile)
     hle_links = [
         (number, text)
         for number, text in logical
-        if _is_link_statement(text) and HLE_C in text
+        if _is_link_statement(text)
+        and any(source in _expanded(text, variables) for source in hle_sources.RUNTIME_HLE_SOURCES)
     ]
     if not hle_links:
-        return [f"Makefile has no link command containing {HLE_C}"]
+        return ["Makefile has no link command containing a runtime HLE source"]
     return [
         f"Makefile:{number}: {text.strip()}"
         for number, text in hle_links
@@ -754,12 +782,14 @@ class HlePsmfPlayerBackendLinkDependencyTests(unittest.TestCase):
 
     def test_runtime_sources_keep_both_h264_backends(self) -> None:
         sources = _rt_runtime_sources(self.makefile)
-        self.assertIn(HLE_C, sources)
+        expanded = _expanded(" ".join(sorted(sources)), _make_variables(self.makefile)).split()
+        for source in hle_sources.RUNTIME_HLE_SOURCES:
+            self.assertIn(source, expanded)
         for backend in H264_BACKENDS:
             self.assertIn(backend, sources)
 
     def test_every_hle_link_supplies_both_h264_backends(self) -> None:
-        hle = (ROOT / HLE_C).read_text(encoding="utf-8")
+        hle = hle_sources.text()
         self.assertIn("hle_register_psmf_player_handlers", hle)
         self.assertRegex(hle, r"\bsr_h264_create\s*\(")
 
@@ -934,8 +964,9 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
 
     def test_the_caller_set_is_discovered_not_assumed(self) -> None:
         callers = _nested_frame_callers()
-        for expected in ("src/rt/hle.c", "src/rt/mpeg.c", "src/rt/sched.c"):
+        for expected in ("src/rt/mpeg.c", "src/rt/sched.c"):
             self.assertIn(expected, callers)
+        self.assertTrue(set(callers) & set(hle_sources.RUNTIME_HLE_SOURCES), "no runtime HLE source is a caller")
 
     def test_psmf_runtime_objs_keep_nested_frames(self) -> None:
         removed = _psmf_media_filtered_out(self.makefile)
@@ -944,12 +975,16 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
 
     def test_every_link_of_a_caller_also_supplies_the_module(self) -> None:
         callers = _nested_frame_callers()
+        variables = _make_variables(self.makefile)
         offenders = []
-        for number, text in self.lines:
-            if not _is_link_statement(text):
+        checked = []
+        for number, raw in self.lines:
+            if not _is_link_statement(raw):
                 continue
+            text = _expanded(raw, variables)
             if not any(caller in text for caller in callers):
                 continue
+            checked.append(number)
             if any(bundle in text for bundle in NESTED_FRAMES_BUNDLES):
                 continue
             if _link_defines_nested_frame_stubs(text):
@@ -962,6 +997,13 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
             f"{NESTED_FRAMES_C}; the link will fail with undefined references to "
             "sr_nested_frame_*:\n" + "\n".join(offenders),
         )
+        # The HLE sources reach the link lines through $(HLE_SRCS) (#307); a scan that cannot
+        # see through it would skip every HLE selftest link and still pass.
+        hle_links = [number for number, raw in self.lines
+                     if _is_link_statement(raw) and "$(HLE_SRCS)" in raw]
+        self.assertGreaterEqual(len(hle_links), 5, "the HLE selftest links name $(HLE_SRCS)")
+        self.assertEqual(sorted(set(hle_links) - set(checked)), [],
+                         "HLE links the nested-frame scan did not check")
 
     def test_the_guard_rejects_a_recipe_that_drops_the_module(self) -> None:
         """Failing-before proof: the check must catch the sched-selftest shape."""

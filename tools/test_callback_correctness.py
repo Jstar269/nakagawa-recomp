@@ -8,8 +8,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hle_sources  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
-HLE_SOURCE = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+HLE_SOURCE = hle_sources.text()
 SCHED_SOURCE = (ROOT / "src" / "rt" / "sched.c").read_text(encoding="utf-8")
 RECOMP_H_SOURCE = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
 
@@ -174,7 +178,7 @@ class CallbackCorrectnessTests(unittest.TestCase):
         self.assertIn("0x800200D2u", reg)
 
     def test_power_callback_is_real_slot_registration(self):
-        power_source = (ROOT / "src" / "rt" / "hle_power.c").read_text(encoding="utf-8")
+        power_source = HLE_SOURCE
         body = strip_comments(function_body(power_source, "h_PowerRegisterCallback"))
         self.assertIn("s_power_cb_slots[16]", power_source)
         for code in ("0x80000020u", "0x80000022u", "0x80000100u", "0x80000102u"):

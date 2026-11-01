@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PERF_HEADER = "vblank_total,wall_ms,fps,frame_ms,vblank_hz\n"
@@ -374,7 +375,7 @@ class SoakAuditTests(unittest.TestCase):
         sys.path.insert(0, str(ROOT / "tools"))
         import soak_audit
 
-        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        hle = hle_sources.text()
         fmt = self._format_for(hle, "AUDIOSTAT_LEAD: vbl=%u ch=%u outputs=%lu")
         self.assertIn("queued=%d", fmt)
         self.assertIn("lead_ms=%ld", fmt)

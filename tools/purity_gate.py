@@ -73,7 +73,7 @@ ALLOWLIST: tuple[Allowed, ...] = (
     Allowed("src/rt/sched.c", 0x08800000, 1,
             "SR_STACK_ARENA_FLOOR: start of the PSP user partition, the generic floor of the "
             "thread-stack arena"),
-    Allowed("src/rt/hle.c", 0x08800000, 1,
+    Allowed("src/rt/hle_kernel_memory.c", 0x08800000, 1,
             "VOLATILE_PART_END: the end of partition 5, the 4 MiB volatile region below the "
             "user partition (pspautotests tests/sysmem/volatile.expected, #1383)"),
     Allowed("src/rt/hle.c", 0x08FFDF00, 1,
