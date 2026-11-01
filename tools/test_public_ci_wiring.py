@@ -370,7 +370,7 @@ class PublicCiWiringTests(unittest.TestCase):
         public_backends = set(re.findall(r"(?m)^\w+_BACKEND_SRC := (\S+)$", block))
         self.assertEqual(public_backends, {
             "src/rt/pgf_public.c", "src/rt/pgd_unavailable.c",
-            "src/rt/iso_public.c", "src/rt/audio_unavailable.c",
+            "src/rt/iso_public.c", "src/rt/audio_sdl3.c",
         })
         private_backends = set(RETIRED_PRIVATE_BACKENDS)
         for path in sorted(private_backends):

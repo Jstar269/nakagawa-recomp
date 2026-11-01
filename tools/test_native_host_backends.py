@@ -359,7 +359,7 @@ class NativeHostBackendTests(unittest.TestCase):
         cmd = [
             "gcc", "-std=c99", "-Wall", "-Wextra",
             "-Isrc/rt", "-DSR_AUDIO_SELFTEST",
-            "src/rt/audio_unavailable.c", "src/rt/perf.c",
+            "src/rt/audio_sdl3.c", "src/rt/perf.c",
             "-lSDL3", "-lm",
             "-o", str(out),
         ]
@@ -397,7 +397,7 @@ class NativeHostBackendTests(unittest.TestCase):
         guard = "#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)\n"
         self.assertIn(guard + "    sr_audio_dump_finish();\n#endif", helper,
                       "the helper must call the dump close directly under the public-backend guard")
-        backend = (ROOT / "src" / "rt" / "audio_unavailable.c").read_text(encoding="utf-8")
+        backend = (ROOT / "src" / "rt" / "audio_sdl3.c").read_text(encoding="utf-8")
         self.assertIn("\nvoid sr_audio_dump_finish(void) {\n", backend)
 
     def test_route_fail_closes_the_audio_dump_before_exit(self) -> None:

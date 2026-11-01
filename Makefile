@@ -637,7 +637,7 @@ endif
 PGF_BACKEND_SRC := src/rt/pgf_public.c
 PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
 ISO_BACKEND_SRC := src/rt/iso_public.c
-AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
+AUDIO_BACKEND_SRC := src/rt/audio_sdl3.c
 ASSET_COPY_ARGS := -ExcludeOptionalFonts
 # `override` on purpose: a plain += is discarded when a caller passes CFLAGS on the command
 # line, and once any append to CFLAGS uses override, GNU make ignores later ordinary
@@ -2931,7 +2931,7 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
-		src/rt/audio_unavailable.c src/rt/perf.c -lSDL3 -lm \
+		src/rt/audio_sdl3.c src/rt/perf.c -lSDL3 -lm \
 		-o $(BUILD_DIR)/audio_selftest$(EXE_EXT)
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
 
@@ -3146,8 +3146,9 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-# The scaled-upload case runs again alone at render scales 2 and 4 (#1296), selected by
-# arguments: a VAR=value prefix needs a POSIX shell, and cmd.exe does not take one.
+# The scaled-upload case (#1296) and the per-fragment mip level case (#1373) run again alone
+# at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
+# cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
@@ -3160,6 +3161,8 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case scaled-upload
 	$(GPU_COHERENCE_BIN) --scale 4 --case scaled-upload
+	$(GPU_COHERENCE_BIN) --scale 2 --case mip-lod
+	$(GPU_COHERENCE_BIN) --scale 4 --case mip-lod
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies

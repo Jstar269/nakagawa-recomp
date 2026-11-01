@@ -39,7 +39,11 @@ layout(set = 0, binding = 1) uniform sampler2D u_dst;   /* destination snapshot 
  * 8192 stencil: the stencil test and ops of ge.c put_px_rgba_tested() against the
  * destination alpha in u_dst (bl.z = GE_STENCILTEST, bl.w = GE_STENCILOP | PMSKA<<24).
  * ge_gpu.c routes here only states whose depth-fail and depth-tested stencil-fail ops
- * are KEEP, so a discard is exact wherever the depth test runs in the pipeline. */
+ * are KEEP, so a discard is exact wherever the depth test runs in the pipeline.
+ * 16384 per-fragment level of detail (#1373): TEXLEVEL automatic or slope mode, chosen
+ * per fragment as ge.c tex_detail16 and ge_tex_level_pick choose it; cfg.y bits 24-31 =
+ * slope mode | mipmap-linear << 1 | highest level << 2, texenv.a = TEXLODSLOPE,
+ * fogcol.a = the TEXLEVEL bias in 1/16 (the sampler spans every level). */
 layout(push_constant) uniform PC {
     ivec4 cfg;      /* x = texfunc | flags<<8, y = alpha test (func|ref<<8|mask<<16),
                        z = minz, w = maxz */
@@ -105,6 +109,12 @@ int stencil_op(int op, int old, int ref, int fbfmt) {
     }
 }
 
+/* ge_shared.h ge_lod_log16: log2 in 1/16 levels from the float's exponent and top four
+ * mantissa bits (PSP-GE-MIP-001). */
+int lod_log16(float f) {
+    return int((floatBitsToUint(f) >> 19) & 0xFFFu) - 127 * 16;
+}
+
 /* An 8-bit alpha on the native lattice of framebuffer format `fbfmt`. */
 int quant_alpha(int a, int fbfmt) {
     if (fbfmt == 1) return a >= 128 ? 255 : 0;
@@ -116,6 +126,12 @@ int quant_alpha(int a, int fbfmt) {
 void main() {
     int flags = pc.cfg.x >> 8;
     int fbfmt = (flags >> 10) & 3;
+
+    /* Screen derivatives of the affine varyings, taken here in uniform control flow (before
+     * any discard). Per device pixel; times the render scale they are per PSP pixel. */
+    float lod_scale = float(max(pc.bl.y, 1));
+    vec2 duv_dx = dFdxFine(v_uv) * lod_scale, duv_dy = dFdyFine(v_uv) * lod_scale;
+    float drw_dx = dFdxFine(v_rw) * lod_scale, drw_dy = dFdyFine(v_rw) * lod_scale;
 
     /* PSP depth-range test: discard transform-mode pixels outside [minz,maxz]. */
     if ((flags & 16) != 0) {
@@ -150,7 +166,38 @@ void main() {
             if ((flags & 64) != 0) uv = floor(uv) + vec2(0.5);
             else uv = floor((uv - vec2(0.5)) * 16.0) / 16.0 + vec2(0.5);
             uv += pc.texsize.zw;
-            vec4 t = texture(u_tex, uv / pc.texsize.xy) * 255.0;
+            vec4 t;
+            if ((flags & 16384) != 0) {
+                /* ge.c tex_detail16: automatic mode is log16 of the footprint (the larger
+                 * squared length of the level-0 texel coordinate's screen derivatives, each
+                 * the quotient rule's (d(u rw) - u d(rw)) / rw, as raster_tri takes them);
+                 * slope mode is 16 + log16(TEXLODSLOPE) - log16(q), q = 1/w. Then
+                 * ge_tex_level_pick: nearest level (one half up) or level + blend in 1/16,
+                 * clamped to the highest level. A level of detail above 0 filters by the
+                 * minification field (ge.c shade), and an explicit LOD of 0.25 keeps the
+                 * sampler on it while nearest mipmap mode stays on level 0. */
+                int lcfg = (pc.cfg.y >> 24) & 0xFF, lmax = (lcfg >> 2) & 7;
+                int detail16 = int(pc.fogcol.a);
+                if ((lcfg & 1) != 0) {
+                    detail16 += 16 + lod_log16(pc.texenv.a) - lod_log16(v_rw);
+                } else {
+                    vec2 u0 = v_uv / rw;
+                    vec2 dx = (duv_dx - u0 * drw_dx) / rw, dy = (duv_dy - u0 * drw_dy) / rw;
+                    detail16 += lod_log16(sqrt(max(dot(dx, dx), dot(dy, dy))));
+                }
+                float lod = 0.0;
+                if (detail16 > 0) {
+                    int level, frac = 0;
+                    if ((lcfg & 2) != 0) { level = detail16 >> 4; frac = detail16 & 15; }
+                    else                 level = (detail16 + 8) >> 4;
+                    if (level >= lmax) { level = lmax; frac = 0; }
+                    lod = float(level) + float(frac) / 16.0;
+                    if (lod == 0.0) lod = 0.25;
+                }
+                t = textureLod(u_tex, uv / pc.texsize.xy, lod) * 255.0;
+            } else {
+                t = texture(u_tex, uv / pc.texsize.xy) * 255.0;
+            }
             int  tf    = pc.cfg.x & 7;
             bool rgba  = (flags & 2) != 0;
             float dscl = ((flags & 4) != 0) ? 2.0 : 1.0;

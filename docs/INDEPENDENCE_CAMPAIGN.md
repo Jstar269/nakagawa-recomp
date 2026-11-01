@@ -116,7 +116,7 @@ Corrections to the mission list:
    **absent from the public tree**. The public-source profile
    (`assets/public_source_profile.json`, `exclude_paths`) excludes them;
    the public build links project-authored seams instead
-   (`iso_unavailable.c`, `audio_unavailable.c` and `pgd_unavailable.c`, all
+   (`iso_unavailable.c`, `audio_sdl3.c` (formerly `audio_unavailable.c`) and `pgd_unavailable.c`, all
    `project_authored_attested`, and the project-authored PGF reader `pgf_public.c`,
    #349). They remain
    campaign items — a platform without ISO/VFS, audio, fonts, and
