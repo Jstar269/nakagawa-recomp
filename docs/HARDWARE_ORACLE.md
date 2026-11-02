@@ -683,7 +683,7 @@ One console is one data point; see §11. Nothing here closes issue #70
 
   | Evidence id | Cells cited | Not cited | Outcome (2026-11-02) |
   | --- | --- | --- | --- |
-  | `PSP-HLE-SAVEDATA-GETSIZE-001` | `save-absent-before`, `volatile-lock-before`, `getsize-missing-secure`, `save-absent-after-secure`, `getsize-missing-empty`, `save-absent-after-empty`, `getsize-missing-shortfall`, `save-absent-after-shortfall`, `getsize-missing-null`, `save-absent-after-null` | A save that exists; the Memory Stick's own free figures | MEASURED: 10 records, PASS |
+  | `PSP-HLE-SAVEDATA-GETSIZE-001` | `save-absent-before`, `volatile-lock-before`, `getsize-missing-secure`, `save-absent-after-secure`, `getsize-missing-empty`, `save-absent-after-empty`, `getsize-missing-shortfall`, `save-absent-after-shortfall`, `getsize-missing-null`, `save-absent-after-null`, `hle-savedata-getsize-done` | A save that exists; the Memory Stick's own free figures | MEASURED: 10 records, PASS |
 
   What the cells establish, for these exact words only:
   - *GETSIZE for a save that does not exist (`PSP-HLE-SAVEDATA-GETSIZE-001`).* Every `sceIoGetstat` of the save directory returned 0x80010002, so no dialog created it, and the volatile-memory TryLock returned 0 with a size word of 0x400000. Each dialog went through status 1, 2, 3, 0. InitStart returned 0 and ShutdownStart returned 0 in every cell, and the bind word stayed at its preset.

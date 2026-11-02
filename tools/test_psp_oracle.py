@@ -3124,6 +3124,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-AUDIO-SRC-001",
                 # The 2026-10-16 acceptance-eligible PSP-3000 VMIR3 run.
                 "PSP-VRAM-MIRROR-001",
+                # The 2026-11-02 game-context run of eded11ac.
+                "PSP-HLE-SAVEDATA-GETSIZE-001",
                 # The 2026-10-27 acceptance-eligible ge-timing runs of 8f707fc0 (#1296).
                 "PSP-GE-TIMING-001",
                 # The 2026-10-27 acceptance-eligible cpu-timing run of 3a14a88e (#1296).
