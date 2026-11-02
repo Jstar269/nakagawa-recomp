@@ -31,8 +31,7 @@ Before you change anything:
    one label and a milestone ([which milestone](CONTRIBUTING.md#start-here)).
 3. Run `git fetch origin` and start a branch from current `origin/main`. Check that the problem is
    not already fixed there and that no open pull request already covers it.
-4. Make the change, with a test that fails before it and passes after it. Related fixes in the same
-   area, or a feature with its tests and docs, can share one pull request; unrelated changes cannot.
+4. Make the change, with a test that fails before it and passes after it.
 5. Run the checks for the files you changed (below, and Section 9).
 6. Open a **Draft** pull request and fill in the template.
 
@@ -68,11 +67,9 @@ On either platform, run one Python test module with `python -m unittest tools.te
 Python suite (`python -m unittest discover -s tools -p "test_*.py"`) is long; hosted CI runs it in
 shards whenever a change routes Python, so run it locally only when hosted CI cannot.
 
-`contrib-check` compares your branch with `origin/main` and runs only the gates that apply: Ruff, the
-matching Python tests, a strict C compile of changed C, markdownlint and the documentation lint for
-changed Markdown, and the publication audit. It is a quick local check, not a substitute for hosted
-CI. Each gate reports `PASS`, `FAIL`, `SKIP` (tool not installed: not a pass), `NOT_RUN` or
-`MAINTAINER-SIDE` ([what each means](CONTRIBUTING.md#the-fast-path-one-command)).
+`contrib-check` compares your branch with `origin/main` and runs only the gates that apply. It is a
+quick local check, not a substitute for hosted CI, and `SKIP` (tool not installed) is not a pass
+([the gates and what each result means](CONTRIBUTING.md#the-fast-path-one-command)).
 
 ### Hard limits
 
@@ -203,9 +200,8 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 
 ## 4. Provenance and publication
 
-- Every public path has a provenance record. A new path is admitted by the maintainer; a pull
-  request that adds one says where each new file came from (see
-  [New files](#new-files-what-to-put-in-the-pull-request)). The maintainer's own steps are under
+- Every public path has a provenance record. For a new path, see
+  [New files](#new-files-what-to-put-in-the-pull-request); the maintainer's own steps are under
   [Maintainer process](#maintainer-process).
 - Deterministic documentation/configuration paths and explicitly synthetic tests may use
   their narrow classes. Never label project implementation as a synthetic fixture.
@@ -314,9 +310,8 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 - Validate complete guest spans and checked size arithmetic before forming bulk host
   pointers.
 - `src/rt/recomp.h` is a load-bearing ABI: MIPS `$ra` is `r[31]`, with no separate `lr`.
-- Never hand-edit generated `build/<game>/<game>_recomp_*.c`. Change the generator,
-  analysis, or runtime and regenerate. Chunk count is dynamic; `FUNCS_PER_CHUNK` is not
-  a fixed ABI.
+- Generated code is never hand-edited (Hard limits). Chunk count is dynamic; `FUNCS_PER_CHUNK`
+  is not a fixed ABI.
 - A private title run proves only its qualified route. A white-box fixture is not a
   production syscall proof; software/Vulkan agreement is not a PSP hardware oracle.
 - A mutation is behavioral evidence only when it generates, compiles, executes, and fails
