@@ -8093,6 +8093,76 @@ static void test_msg_dialog_abort_without_update(void) {
     sr_hle_test_osk_slot_reset();
 }
 
+/* #1386 cancel cleanup: a game that gives up on a dialog calls ShutdownStart while it is still
+ * RUNNING. Savedata, netconf, gamedata and game sharing take that (the message dialog refuses it,
+ * tests/utility/dialog/status.expected). The shutdown must leave nothing behind: the dialog winds
+ * down to NONE, writes no result into the abandoned block, and the next InitStart, of the same
+ * type or another, starts fresh from INIT with a cleared result word. Which status a non-message
+ * dialog reports after a RUNNING shutdown is not measured; only that the slot comes back is
+ * asserted. Gamedata and sharing are cancelled before their first Update, which would create
+ * memory-stick directories. */
+static void test_utility_dialog_cancel_cleanup(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+    };
+    char what[256];
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    for (size_t i = 0; i < sizeof(dialogs) / sizeof(dialogs[0]); i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const int works = savedata || dialogs[i].init == NID_NETCONF_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
+        snprintf(what, sizeof(what), "%s reaches RUNNING before it is cancelled", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 2u,
+               what);
+        if (works) (void)utility_call(&cpu, dialogs[i].update, 0u); /* its work has started */
+        snprintf(what, sizeof(what), "%s accepts ShutdownStart while RUNNING", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u, what);
+        int none = 0;
+        for (int frame = 0; frame < 4 && !none; frame++)
+            none = utility_call(&cpu, dialogs[i].status, 0u) == 0u;
+        snprintf(what, sizeof(what), "%s winds down to NONE after a cancel", dialogs[i].name);
+        expect(none, what);
+        /* Nothing may write into the abandoned block from here on. */
+        MEM_W32(block + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+        for (int k = 0; k < 4; k++) {
+            (void)utility_call(&cpu, dialogs[i].update, 0u);
+            (void)utility_call(&cpu, dialogs[i].status, 0u);
+        }
+        snprintf(what, sizeof(what), "%s writes no result into its cancelled block", dialogs[i].name);
+        expect(MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED, what);
+
+        /* A message dialog takes the freed slot and finishes into its own block only. */
+        utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+        snprintf(what, sizeof(what), "a message dialog starts after %s is cancelled", dialogs[i].name);
+        expect(msg_dialog_run_to_finished(&cpu, UTILITY_MSG_PARAM_ADDR), what);
+        snprintf(what, sizeof(what), "the message dialog leaves the cancelled %s block alone",
+                 dialogs[i].name);
+        expect(MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED, what);
+
+        /* The same type starts again from INIT with its result word cleared. */
+        snprintf(what, sizeof(what), "%s starts again from INIT after a cancel", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
+                   MEM_R32(block + 0x1cu) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u,
+               what);
+        sr_hle_test_osk_slot_reset();
+    }
+}
+
 static void test_msg_dialog_answer_field(void) {
     enum { OPTIONS = 0x23cu, BUTTON_PRESSED = 0x240u, OPT_YESNO = 0x10u };
     CpuState cpu;
@@ -43065,6 +43135,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_storage_dialog_parameter_sizes();
     test_netconf_parameter_sizes();
     test_utility_dialog_single_slot();
+    test_utility_dialog_cancel_cleanup();
     test_utility_dialog_status_sequence();
     test_savedata_older_parameter_versions();
     test_msg_dialog_answer_field();
