@@ -137,7 +137,7 @@ summary distinguishes the two so a new file never reads as a mistake you made.
 | Classify change | Which areas your change touches, so only relevant jobs run | Rarely fails; ask a maintainer |
 | Hygiene and security | pre-commit hooks: Ruff, whitespace and encoding, publication safety, secret scanning | Run `python -m pre_commit run --files <your files>` locally |
 | Markdown validation | markdownlint on changed Markdown | Run `npx --yes markdownlint-cli2@0.24.0 <file>` |
-| Python tooling gates (0–3) | The `tools/` unit tests, split into four shards | Run the failing test module with `python -m unittest tools.<module>` |
+| Python tooling gates (0–5) | The `tools/` unit tests, split into six shards | Run the failing test module with `python -m unittest tools.<module>` |
 | Native and translation gates | Strict C builds (`-std=c99`/`c11 -Werror`) and runtime selftests on Linux | Compile the changed C file with the flags shown in the log |
 | Windows runtime compile gate | The runtime builds with MSYS2 UCRT64 on Windows | Check Windows-only APIs and headers |
 | Trusted provenance attestation | Your change against the private trusted ledger | Provenance mismatches are handled by a maintainer |
