@@ -1269,6 +1269,9 @@ class ApprovalDigestTests(unittest.TestCase):
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
         }
         self.git("init", "-q", "-b", "main")
+        # Without this, ``git add -A`` in push() re-reads the working tree on Linux and resets an index-only
+        # mode change (update-index --chmod) back to 0644 before it is committed.
+        self.git("config", "core.fileMode", "false")
         self.write(".github/workflows/ci.yml", self.WORKFLOW)
         self.write("tools/gate.py", "print('gate')\n")
         self.write("tools/other.py", "print('not a CI tool')\n")
