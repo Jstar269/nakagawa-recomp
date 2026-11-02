@@ -3745,18 +3745,7 @@ void sr_hle_init(void) {
     sched_set_thread_exit_hook(hle_module_thread_exit);
     sched_set_watchdog_describers(hle_describe_wait_object, hle_watchdog_nid_name);
 #ifdef SR_MPEG_MEDIA_SELFTEST
-    hle_register_mpeg_ycbcr_handlers();
-    hle_register_mpeg_avc_decode_handler();
-    /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
-     * so the guest getter and the A/V presentation boundaries are reachable from a
-     * production-path test (issue #279). */
-    hle_register_psmf_player_handlers();
-    /* ... and the host presentation boundaries those pictures and blocks reach: the display
-     * flip and the audio output calls, so the presentation-offset measurement is exercised
-     * through the production handlers rather than a white-box call. */
-    hle_register_display_setframebuf_handler();
-    hle_register_regular_audio_handlers();
-    hle_register_output2_audio_handlers();
+    hle_register_media_selftest_handlers();
 #else
     hle_fd_init();
     g_callcount = getenv("SR_CALLCOUNT") ? 1 : 0;

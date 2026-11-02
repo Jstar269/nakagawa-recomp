@@ -1661,4 +1661,21 @@ static inline uint32_t hle_io_raw_umd_seek(Fd *f, int64_t offset, uint32_t whenc
     return 0u;
 }
 
+/* The registrations sr_hle_init() makes in the focused media build (SR_MPEG_MEDIA_SELFTEST, #307).
+ * tests/native/hle_focus_media_stubs.c calls this same function, so the two cannot drift. */
+static inline void hle_register_media_selftest_handlers(void) {
+    hle_register_mpeg_ycbcr_handlers();
+    hle_register_mpeg_avc_decode_handler();
+    /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
+     * so the guest getter and the A/V presentation boundaries are reachable from a
+     * production-path test (issue #279). */
+    hle_register_psmf_player_handlers();
+    /* ... and the host presentation boundaries those pictures and blocks reach: the display
+     * flip and the audio output calls, so the presentation-offset measurement is exercised
+     * through the production handlers rather than a white-box call. */
+    hle_register_display_setframebuf_handler();
+    hle_register_regular_audio_handlers();
+    hle_register_output2_audio_handlers();
+}
+
 #endif

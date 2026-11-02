@@ -71,16 +71,12 @@ void sr_hle_register_unsupported(uint32_t nid, const char *name, uint32_t error)
     focus_register(nid, name, NULL, error);
 }
 
-/* The registrations hle.c's sr_hle_init() makes under SR_MPEG_MEDIA_SELFTEST, in that order. */
+/* The registrations hle.c's sr_hle_init() makes under SR_MPEG_MEDIA_SELFTEST: the same shared
+ * function, so this list cannot drift from it. */
 static void focus_init(void) {
     if (s_focus_ready) return;
     s_focus_ready = 1;
-    hle_register_mpeg_ycbcr_handlers();
-    hle_register_mpeg_avc_decode_handler();
-    hle_register_psmf_player_handlers();
-    hle_register_display_setframebuf_handler();
-    hle_register_regular_audio_handlers();
-    hle_register_output2_audio_handlers();
+    hle_register_media_selftest_handlers();
 }
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {

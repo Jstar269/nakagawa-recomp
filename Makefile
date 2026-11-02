@@ -2980,6 +2980,9 @@ psmf-media-focused-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(HLE_OBJS) $(RT_GE_O) $
 		--include $(HLE_MEDIA_FOCUS_SRCS) --stub $(BUILD_DIR)/hle_focus_media_stubs.o --require hle_register_psmf_player_handlers sr_hle_test_psmf_av_reset
 	$(BUILD_DIR)/psmf_media_focused_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 
+# The hosted gate for the focused link (#307): native-core-tests runs on every pull request.
+native-core-tests: psmf-media-focused-selftest
+
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
 		src/rt/audio_sdl3.c src/rt/perf.c -lSDL3 -lm \

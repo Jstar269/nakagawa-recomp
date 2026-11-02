@@ -19,7 +19,7 @@ import hle_focus_check  # noqa: E402
 
 CC = shutil.which("gcc") or shutil.which("cc")
 NM = shutil.which("nm")
-SOURCES = ["fake/hle_a.c", "fake/hle_b.c", "fake/hle_c.c"]
+SOURCES = ["fake/focus_a.c", "fake/focus_b.c", "fake/focus_c.c"]
 
 
 @unittest.skipUnless(CC and NM, "needs a C compiler and nm")
@@ -42,9 +42,9 @@ class FocusCheckTests(unittest.TestCase):
         return exe
 
     def build(self) -> tuple[Path, Path, Path, Path]:
-        a = self.compile("hle_a", "int a_only(void) { return 1; }\nint shared(void) { return 2; }\n")
-        b = self.compile("hle_b", "int b_only(void) { return 3; }\n")
-        c = self.compile("hle_c", "int c_only(void) { return 4; }\n")
+        a = self.compile("focus_a", "int a_only(void) { return 1; }\nint shared(void) { return 2; }\n")
+        b = self.compile("focus_b", "int b_only(void) { return 3; }\n")
+        c = self.compile("focus_c", "int c_only(void) { return 4; }\n")
         main = self.compile("main", "extern int a_only(void);\nint main(void) { return a_only() - 1; }\n")
         return a, b, c, main
 
@@ -54,18 +54,26 @@ class FocusCheckTests(unittest.TestCase):
 
     def test_focused_executable_passes(self) -> None:
         a, _, _, main = self.build()
-        self.assertEqual(self.run_check(self.link(main, a), ["fake/hle_a.c"], ["a_only"]), [])
+        self.assertEqual(self.run_check(self.link(main, a), ["fake/focus_a.c"], ["a_only"]), [])
 
     def test_linked_excluded_file_is_reported(self) -> None:
         a, b, _, main = self.build()
-        problems = self.run_check(self.link(main, a, b), ["fake/hle_a.c"])
+        problems = self.run_check(self.link(main, a, b), ["fake/focus_a.c"])
         self.assertEqual(len(problems), 1)
-        self.assertIn("hle_b.c is linked", problems[0])
+        self.assertIn("focus_b.c is linked", problems[0])
         self.assertIn("b_only", problems[0])
+
+    def test_stub_redefining_included_symbol_is_reported(self) -> None:
+        a, _, _, main = self.build()
+        stub = self.compile("stub", "int shared(void) { return 9; }\n")
+        problems = hle_focus_check.check(self.link(main, a), self.dir, ["fake/focus_a.c"], [stub], [], NM, SOURCES)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("stub stub.o redefines", problems[0])
+        self.assertIn("shared", problems[0])
 
     def test_missing_required_symbol_is_reported(self) -> None:
         a, _, _, main = self.build()
-        problems = self.run_check(self.link(main, a), ["fake/hle_a.c"], ["not_there"])
+        problems = self.run_check(self.link(main, a), ["fake/focus_a.c"], ["not_there"])
         self.assertEqual(problems, ["required symbol not_there is not defined in t.exe"])
 
     def test_missing_excluded_object_fails_closed(self) -> None:
@@ -73,12 +81,12 @@ class FocusCheckTests(unittest.TestCase):
         exe = self.link(main, a)
         b.unlink()
         with self.assertRaises(hle_focus_check.FocusError):
-            self.run_check(exe, ["fake/hle_a.c"])
+            self.run_check(exe, ["fake/focus_a.c"])
 
     def test_unknown_included_file_fails_closed(self) -> None:
         a, _, _, main = self.build()
         with self.assertRaises(hle_focus_check.FocusError):
-            self.run_check(self.link(main, a), ["fake/hle_zzz.c"])
+            self.run_check(self.link(main, a), ["fake/focus_zzz.c"])
 
 
 if __name__ == "__main__":

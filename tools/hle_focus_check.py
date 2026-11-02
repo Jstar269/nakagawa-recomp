@@ -12,6 +12,7 @@ the excluded HLE files. It fails when
 * an excluded HLE file is missing its object (nothing to compare against: fail closed),
 * the executable defines a symbol that an excluded HLE file defines and no included file or
   stub defines, which means the excluded file, or a copy of its code, was linked, or
+* a stub object defines a global that an included HLE file also defines, or
 * a ``--require`` symbol is absent from the executable, which would make the first test
   pass on an executable that does not hold the subsystem at all.
 
@@ -87,6 +88,14 @@ def check(exe: Path, objdir: Path, included: list[str], stubs: list[Path], requi
         allowed |= defined_symbols(stub, nm, local_too=True)
     linked = defined_symbols(exe, nm, local_too=True, text_only=True)
     problems: list[str] = []
+    # A stub that redefines a linked file's global is a second definition of that behaviour.
+    included_globals: set[str] = set()
+    for source in included:
+        included_globals |= defined_symbols(objdir / f"{stem(source)}.o", nm)
+    for stub in stubs:
+        shadowed = sorted(defined_symbols(stub, nm) & included_globals)
+        if shadowed:
+            problems.append(f"stub {stub.name} redefines symbols of a linked HLE file: {', '.join(shadowed[:6])}")
     for name in excluded:
         obj = objdir / f"{name}.o"
         if not obj.is_file():
