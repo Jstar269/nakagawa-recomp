@@ -51,7 +51,7 @@ pull request.
 ### Build and test
 
 **Windows 11** is the supported desktop platform. You need PowerShell 7.4 or later, MSYS2 UCRT64
-(GCC, GNU Make, SDL3, SDL3_ttf, the Vulkan headers and loader), CPython 3.15 and the Vulkan SDK.
+(GCC, GNU Make, SDL3, SDL3_ttf, the Vulkan headers and loader), CPython 3.15 (3.14 is also accepted) and the Vulkan SDK.
 [`docs/SETUP.md`](docs/SETUP.md) has the full steps, including the
 [`PATH` order](docs/SETUP.md#path-order) that matters on Windows. From the repository root, with
 MSYS2 UCRT64's `bin` folder on `PATH`:
@@ -91,14 +91,18 @@ the full rules.
 - **No game data.** No ISOs, executables, decrypted modules, extracted assets (icons, textures, audio,
   fonts), saves, game-byte Ghidra databases, or C generated from a retail game (everything under
   `build/`). The only game images allowed are the curated presentation media Section 5 describes,
-  and the maintainer chooses those.
+  and the maintainer chooses those. Game titles and retail disc IDs are not game data: they may
+  appear in documentation, comments, tests, tools and the compatibility table.
 - **No keys or credentials.** No console-bound values (fuse ID, secure-install ID, licence files),
   user keys, tokens or passwords. The public key tables for built-in game decryption live only in
   `src/core/nk_psp_builtin_keys.c`.
 - **No private captures.** No traces, frame or memory dumps, private logs, or anything showing a
   user name or local path.
-- **No firmware.** No firmware files, no firmware decryption, and no key that only firmware uses.
-  Decrypting the user's own game disc on their machine is allowed (Section 5).
+- **No firmware.** The operating system is HLE and the project carries none of the console's. No
+  firmware files, no firmware decryption, and no key that only firmware uses. A user may supply plain
+  files from their own console's `flash0`, such as its fonts, in a local folder the runtime reads;
+  those are never committed, packaged, shipped or uploaded. Decrypting the user's own game disc on
+  their machine is allowed (Section 5).
 - **No hidden failures.** No loop caps, sleeps, forced returns or fake success that hide missing
   behaviour. Unknown functions and dispatch misses stay visible (Section 6).
 - **No hand edits to generated code.** Never edit `build/<game>/<game>_recomp_*.c`; change the
@@ -128,9 +132,9 @@ the full rules.
 
 ### New files: what to put in the pull request
 
-Every public file has a provenance entry: where it came from and the evidence for that. Its bytes are
-bound by the trusted attestation, which regenerates each file's hash from the record behind those
-entries. That record is kept privately by the maintainer, so you cannot add an entry, and you do not
+Every public file has a provenance entry: where it came from and the evidence for that. The trusted
+attestation checks each file against the origin claim recorded behind those entries (and the exact
+bytes of a file imported byte-identical). That record is kept privately by the maintainer, so you cannot add an entry, and you do not
 need to. **The maintainer admits new paths.** For each file you add, say in the pull
 request:
 
@@ -232,10 +236,11 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   adapted when it works better or lands faster than a rewrite: for example FFmpeg codec subsets
   (the `src/rt/atrac3p/` pattern), uofw (github.com/uofw/uofw, MIT), GPL-compatible emulator
   source (PPSSPP, GPL-2.0-or-later; JPCSP, GPL-3.0), MIT, BSD, Apache-2.0 or zlib code, and CC0 or
-  public-domain dedications such as NVIDIA's MIT-licensed dxvk-remix API (maintainer decisions of
-  2026-10-20, 2026-10-22 and 2026-10-25; no further decision is needed per import). Each file must
+  public-domain dedications such as NVIDIA's MIT-licensed dxvk-remix API. No further decision is
+  needed per import. Each file must
   be pinned to an exact upstream revision, listed in a `PROVENANCE.md` manifest as byte-identical or
-  LOCAL DELTA, keep its licence and copyright notices, be credited in `CREDITS.md`, and get a trusted
+  LOCAL DELTA (the trusted attestation checks every byte-identical row's blob ID or SHA-256 against
+  the file, and against the base's row, on every pull request), keep its licence and copyright notices, be credited in `CREDITS.md`, and get a trusted
   record and admission like any new path. An adapted file keeps the upstream copyright header and
   adds a one-line note that it was modified, as the GPL requires; no special path or naming is
   needed beyond that. Emulator-derived units are labelled `derived-translated`
@@ -247,7 +252,12 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 - Do not call code "clean-room" or "independent" unless its trusted record supports that
   label (see `docs/provenance/INDEPENDENCE_MODEL.md`); prefer "project-authored".
 - Adding or removing a public path changes `assets/public_source_profile.json`, which only the
-  maintainer's admission can authorize. `provenance-refresh` and `tools/contrib_refresh.py` refuse
+  maintainer's admission can authorize. An admission binds each new path to its origin claim (its
+  class and, from its trusted record, the record, upstream, revision and licence), so later edits
+  flow through the normal refresh while that claim holds. A file imported byte-identical stays bound
+  to its exact bytes; changing it, or recording it as a LOCAL DELTA in its `PROVENANCE.md`, needs
+  the maintainer's approval of the new bytes: a new admission before it lands, a trusted exact-blob
+  approval after. `provenance-refresh` and `tools/contrib_refresh.py` refuse
   added or removed paths and only refresh admitted ones. A commit carries the regenerated controls
   for the paths it changes and nothing more; a refresh after merging `main` is a commit of its own.
   Never hand-edit them.
@@ -257,18 +267,23 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 - Never commit or publish retail executables/ISOs/assets, decrypted modules, generated
   retail C, saves, console-unique or user-specific keys, game-byte Ghidra databases, private
   traces/captures, or private paths, except as the presentation-media bullet below allows.
-- Built-in game decryption (maintainer decision, 2026-10-27, the way PPSSPP does it): the player
+- Built-in game decryption, the way PPSSPP does it: the player
   and tools decrypt the encrypted executable and modules of a game the user owns, locally, from
   the user's own disc image, into the private per-title folder. The public key tables PPSSPP
   ships may be carried, in the reviewed table `src/core/nk_psp_builtin_keys.c` only (the one path
   the publication audit lets hold key literals). Console-bound values (fuse ID, secure-install
   ID, licence files) come only from the user, locally, and are never committed. Decrypted output
-  stays on the user's machine under the rules below. Firmware is never decrypted, even privately:
-  updater PSAR archives, the IPL, the Media Engine image and system-menu files are refused by
-  name before any decryption step runs, and no key only firmware uses is carried.
-- Presentation screenshots and short clips are the exception (maintainer policy deltas of 2026-10-21 for screenshots
-  and 2026-10-27 for clips, following established recomp practice in Zelda64Recomp, Unleashed Recompiled and Ship of
-  Harkinian): curated PNGs, and H.264 MP4 clips of about 60 seconds at most with the game's own sound, of a title
+  stays on the user's machine under the rules below.
+- Firmware follows PPSSPP's model: the operating system is HLE, the modules a game ships on its
+  disc may run as LLE, and the project ships no firmware and carries no key that only firmware
+  uses. It ships open replacement fonts (`font/`, `docs/provenance/FONT_ORIGINS.md`). A user may
+  supply plain, unencrypted files from their own console's `flash0`, such as the real fonts, in a
+  local folder under their user data that the runtime reads. Those files stay on the user's machine:
+  they are never committed, packaged, shipped or uploaded. Nakagawa never decrypts firmware, even
+  privately: updater PSAR archives, the IPL, the Media Engine image, system-menu files and
+  encrypted `flash0` modules are refused by name before any decryption step runs.
+- Presentation screenshots and short clips are the exception (established recomp practice in Zelda64Recomp,
+  Unleashed Recompiled and Ship of Harkinian): curated PNGs, and H.264 MP4 clips of about 60 seconds at most with the game's own sound, of a title
   running in Nakagawa, including the launcher or library with it loaded, may be published when each is checked for
   personal data (no profile names, user paths or private menus) and carries a notice that the game belongs to its
   publisher, that no game data is in the repository, and that users need their own copy. Raw evidence captures,
@@ -280,17 +295,17 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   or external-oracle inputs are `NOT_RUN`, `BLOCKED`, or `SKIP`, never silent passes.
 - Do not run title or physical-hardware routes for a source/configuration mission unless
   explicitly required. Remote host work stays reversible and non-overlapping.
-- Product network rule: offline by default (maintainer decision, 2026-10-22). The player and runtime make no network
+- Product network rule: offline by default. The player and runtime make no network
   connection unless the user enables a documented, opt-in feature; today there are two: the
-  consented prerequisite download, and Check for updates (maintainer decision, 2026-10-28):
+  consented prerequisite download, and Check for updates:
   GitHub's Releases API for this repository when the user asks, or once at start if they turned
   that on (off by default), then that release's Windows ZIP on a separate click, kept only if it
   matches the release's published SHA-256. A new egress needs a maintainer decision, a "Network use"
   entry in `docs/SETUP.md`, and an update to the egress allowlist test in
   `tools/test_prereq_fetcher.py`. The reserved `network_mode` setting accepts only `"offline"`,
   and a value a build does not know reads back as offline, never as something more permissive.
-- A user may move their own packages and saves to their own devices, for example an Android phone
-  (maintainer decision, 2026-10-23); such a transfer is started by the user and goes directly to
+- A user may move their own packages and saves to their own devices, for example an Android phone;
+  such a transfer is started by the user and goes directly to
   their device, never through a server. No feature uploads game code, game data, decrypted
   modules, packages, saves or guest memory to any server or third party, and nothing built from a
   user's game is ever published or shared. No telemetry. Tests never touch the internet. Network
@@ -303,8 +318,11 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   arbitrary state writes, invented assets, or VFS aliases that hide missing behavior.
 - **LLE first.** When the guest code for a function exists, for example a module the game ships
   on its disc, and running it needs no firmware, run that code (LLE) instead of writing a new HLE
-  handler for it, as #1645 did for the game's own libfont. HLE stays for the kernel and hardware
-  boundary: firmware modules the project does not carry, syscalls, and device access.
+  handler for it, as #1645 did for the game's own libfont. HLE stays for the operating system:
+  the kernel and hardware boundary, firmware modules the project does not carry, syscalls, and
+  device access. Where a game asks for a system file that only a console's `flash0` holds, such
+  as a font, the runtime reads the user's own copy if they supplied one, and otherwise serves the
+  project's open replacement and says so.
 - Unknown NIDs and dispatch misses remain visible. No switch makes a miss permissive: the interpreter
   runs only inside analyzer-owned spans (the PR #118 floor), and every rejection terminates the run.
   Correctness evidence asserts PSP-visible results, state, and wakes.
@@ -500,9 +518,10 @@ covers the maintainer's workspace, how new paths are admitted, and how pull requ
   worktree. Do not edit, stage, commit, merge or push there.
 - The integrator lands from one landing run, one PR at a time. When the queue is long, the desk lands
   pull requests in batches instead: a linear batch branch with one commit per folded PR, one CI and
-  CodeQL run for the batch, then a rebase-merge. A path-adding PR admitted with a V3 policy
-  delta needs no re-key when another path-adding PR lands first; one admitted before V3
-  deltas existed needs one `--rekey`, and a batch carries at most one profile-changing PR
+  CodeQL run for the batch, then a rebase-merge. A path-adding PR admitted with a V4 policy
+  delta needs no re-key when another path-adding PR lands first or when its claim-bound files are
+  edited; one admitted with a V3 delta needs one `--rekey` once its files change, and one admitted
+  before V3 deltas existed needs one `--rekey`, and a batch carries at most one profile-changing PR
   ([landing order](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
   Never hold a ready pull request for an unrelated one.
 - At the end of a mission, also state whether canonical main was fast-forwarded or left

@@ -89,9 +89,9 @@ The native player uses the existing SDL3 and Vulkan runtime to render its in-win
 2. **Future Outside/Inside Presence**: A shared UI system is intended to drive the launcher outside the game and an in-game pause overlay (`Esc`, `F1` or the gamepad's `Guide`). The pause is implemented (a scheduler stall with the overlay holding all input, [Clocks](ARCHITECTURE.md#clocks)), and so are its screens, drawn with nk_ui by the runtime ([In-game overlay](PLAYER_UI_DESIGN.md#in-game-overlay-c9c-built)).
 3. **No Web / Server Overhead**: Eliminates Node.js, localhost HTTP listeners, port collisions, browser sandbox restrictions, and security boundary headaches.
 
-### Layout library and language decision (2026-10-21)
+### Layout library and language
 
-The owner decided on 2026-10-21 that the native player's UI is written in C on SDL3 and Vulkan, and that its layout uses **Clay**, a single-header C layout library ([github.com/nicbarker/clay](https://github.com/nicbarker/clay)). Upstream's `LICENSE.md` identifies the license as zlib/libpng (`Zlib`); the pinned header, license, and provenance are recorded under `third_party/clay/`. The decision has three parts:
+The native player's UI is written in C on SDL3 and Vulkan, and its layout uses **Clay**, a single-header C layout library ([github.com/nicbarker/clay](https://github.com/nicbarker/clay)). Upstream's `LICENSE.md` identifies the license as zlib/libpng (`Zlib`); the pinned header, license, and provenance are recorded under `third_party/clay/`. This has three parts:
 
 1. **One UI system (target)**: the launcher, the in-game overlay and the settings screens are planned to share one UI system. It is drawn at the window's real pixel size (the UI half of [#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129)) and is controller-first.
 2. **Rust is not adopted for the UI**: Rust may be used later, behind a C ABI, only for isolated parsers of untrusted input (ISO, SFO, PGF), and only if fuzzing justifies it.
@@ -312,7 +312,7 @@ Settings, first run, error dialogs and the in-game overlay, is [`PLAYER_UI_DESIG
 
 ## 9. System check (planned)
 
-Maintainer decision of 2026-10-23: a **System check** page verifies that this PC can run every part of Nakagawa. It
+A **System check** page verifies that this PC can run every part of Nakagawa. It
 is a button in Settings, and the setup wizard's last step offers it ("Check this PC, about 2 minutes", skippable). Each
 row shows a pass or a named failure with the fix, in plain words:
 
