@@ -326,7 +326,7 @@ static uint32_t h_RtcTickAddYears(CpuState *s) {
     return rtc_write_u64(A0, rtc_datetime_to_tick(&value)) ? 0u : RTC_ILLEGAL_ADDR;
 }
 /* sceRtcTickAddMicroseconds / Seconds / Days: the source tick plus a whole number of units,
- * written to dest. PSPAutotests tests/rtc/arithmetic.expected (rev 2ed7c9c5, recorded on a PSP,
+ * written to dest. PSPAutotests tests/rtc/arithmetic.expected (rev f573fe8c, recorded on a PSP,
  * checkRtcTickAddMicroseconds, -Seconds and -Days) shows plain modulo-2^64 arithmetic with a result
  * of 0 on every row: 0001-01-01 00:00:10 - 11 seconds wraps to year 60267, 9999-12-31 23:59:50
  * + 10 seconds reaches year 10000 and the huge counts wrap (e.g. + 62135596800000445 seconds
@@ -355,7 +355,7 @@ static uint32_t h_RtcTickAddDays(CpuState *s) {
 }
 
 /* sceRtcCheckValid(const pspTime *): 0 for a valid date, else the first failing field as a negative
- * code. PSPAutotests tests/rtc/lookup.expected (2ed7c9c5, recorded on a PSP): 2012-09-20 07:00:00 is
+ * code. PSPAutotests tests/rtc/lookup.expected (f573fe8c, recorded on a PSP): 2012-09-20 07:00:00 is
  * 0; a year 10000 or a field read as a huge unsigned value (the test stores -98 and the like in the
  * 16-bit fields) fails with year -1, month -2, day -3, hour -4, minute -5, second -6 and
  * microsecond -7, in that order, the first failing field deciding ("Very invalid Date" is -1).
@@ -379,7 +379,7 @@ static uint32_t h_RtcCheckValid(CpuState *s) {
 }
 
 /* sceRtcGetDayOfWeek(year, month, day): 0 is Sunday. Measured on a PSP by PSPAutotests
- * tests/rtc/lookup.expected (2ed7c9c5, checkDayOfWeek): 2010-04-27 is 2, and a day outside the
+ * tests/rtc/lookup.expected (f573fe8c, checkDayOfWeek): 2010-04-27 is 2, and a day outside the
  * month carries linearly (2000-01-00 is 5, 2000-01-2458 is 6, 2001-01-00 is 0, 2001-01-2458 is 1).
  * A month of 0 or above 12 is measured only at seven exact triples, answered from that table; any
  * other such month, and a year outside 1..9999, is not measured and stops the run by name. */

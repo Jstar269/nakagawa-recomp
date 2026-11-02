@@ -790,6 +790,7 @@ static uint32_t psmf_set_psmf(CpuState *s) {
     p->fileSize = sz;
     p->readOffset = p->streamOffset;
     p->status = PSMF_STATUS_STANDBY;
+    p->stoppedAfterStart = 0;
     psmf_flush(p);
     psmf_media_reset(p);
     sched_delay_current(PSMF_SET_PSMF_DELAY_US);
@@ -872,6 +873,7 @@ static uint32_t h_PsmfStop(CpuState *s) {
     SrPsmfPlayer *p = psmf_find(A0, 0);
     if (!p || p->status < PSMF_STATUS_PLAYING) return PSMF_ERR_STATUS;
     p->status = PSMF_STATUS_STANDBY;
+    p->stoppedAfterStart = 1;   /* psmf_media_reset below clears displayPtsValid; GetCurrentPts still knows */
     p->breakRequested = 0;
     psmf_flush(p);
     if (p->producer) sr_psmf_producer_reset(p->producer);
@@ -890,6 +892,7 @@ static uint32_t h_PsmfRelease(CpuState *s) {
     SrPsmfPlayer *p = psmf_find(A0, 0);
     if (!p || p->status < PSMF_STATUS_STANDBY) return PSMF_ERR_STATUS;
     p->status = PSMF_STATUS_INIT;
+    p->stoppedAfterStart = 0;
     p->fileLba = p->fileSize = p->streamOffset = p->streamSize = 0;
     psmf_flush(p);
     if (p->producer) {
@@ -905,19 +908,21 @@ static uint32_t h_PsmfStatus(CpuState *s) {
 }
 /* scePsmfPlayerGetCurrentPts(player, u32 *pts): the displaypts of the last picture the video getter
  * delivered.  pspautotests video/psmfplayer/getcurrentpts.expected (recorded on a PSP, rev
- * 2ed7c9c5): a player still INIT or deleted is 0x80616001; a player in STANDBY, or playing before
+ * f573fe8c): a player still INIT or deleted is 0x80616001; a player in STANDBY, or playing before
  * its first picture, is 0x8061600c with the output untouched; once a picture was delivered it is 0
  * and writes ONE 32-bit word, the low half of the 64-bit sentinel the test passed in (a first
  * picture at 0 leaves "1337133700000000"), and a finished player reports its last picture (low
  * word 0x8a90f = 567567 there).  The status check comes before the pointer check.  A NULL or
  * unwritable pointer once a picture exists (the hardware run crashes there), and a player that
- * returned to STANDBY after playing (Stop), are not measured and stop the run by name. */
+ * scePsmfPlayerStop returned to STANDBY after playing, are not measured and stop the run by name. */
 static uint32_t h_PsmfGetCurrentPts(CpuState *s) {
     SrPsmfPlayer *p = psmf_find(A0, 0);
     if (!p || p->status < PSMF_STATUS_STANDBY) return PSMF_ERR_STATUS;
+    /* scePsmfPlayerStop returns a played player to STANDBY and resets the media state, so the
+     * stop is keyed on that Stop, not on displayPtsValid, which the reset clears. */
+    if (p->status == PSMF_STATUS_STANDBY && p->stoppedAfterStart)
+        return hle_unmodelled_stop("scePsmfPlayerGetCurrentPts", "on a player stopped after playing is not measured");
     if (!p->displayPtsValid) return PSMF_ERR_NO_DATA;
-    if (p->status == PSMF_STATUS_STANDBY)
-        return hle_unmodelled_stop("scePsmfPlayerGetCurrentPts", "on a player that returned to standby after a picture is not measured");
     if (!A1 || !sr_guest_span_writable(A1, 4u))
         return hle_unmodelled_stop("scePsmfPlayerGetCurrentPts", "with an unwritable output 0x%08x is not measured", A1);
     MEM_W32(A1, (uint32_t)p->displayPts);

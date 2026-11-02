@@ -10574,6 +10574,106 @@ static void test_psp_measured_power_battery_20261024(void) {
     sr_hle_test_power_set_external(1);
 }
 
+/* #1814, #1815, #1816: synthetic checks that pin what the production handlers do today for
+ * NIDs the verification ledger had no recorded evidence for. They are NOT PSP measurements:
+ * a value here records this runtime's current behaviour, nothing more. (The measured power
+ * values live in test_psp_measured_power_battery_20261024; this test enters each NID by its
+ * literal number and also pins that the handlers read no argument register.) Every leg goes
+ * through sr_syscall, the production dispatch of the production registration. */
+static void test_pinned_handlers_1814_1815_1816(void) {
+    enum { CLOCK = 0x00270080u, GARBAGE = 0xa57c3de1u };
+    CpuState cpu;
+    uint32_t i;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    sr_hle_test_umd_reset();
+
+    /* #1814: scePowerIsBatteryExist(void), scePowerIsBatteryCharging(void) and
+     * scePowerGetBatteryLifePercent(void). Registers a0-a3 hold garbage: a handler that
+     * read an argument would change its answer. */
+    expect(sr_hle_test_is_registered(0x0afd0d8bu) && sr_hle_test_is_registered(0x1e490401u) &&
+               sr_hle_test_is_registered(0x2085d15du),
+           "the three power-status NIDs have a production registration");
+    for (i = 0u; i < 2u; i++) {
+        uint32_t percent = i == 0u ? 96u : 93u; /* external power online, then on battery */
+        sr_hle_test_power_set_external((int)(i == 0u));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x0afd0d8bu) == 1u,
+               "scePowerIsBatteryExist reports a battery present in both power states (pins current behaviour)");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x1e490401u) == 0u,
+               "scePowerIsBatteryCharging reports not charging in both power states (pins current behaviour)");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x2085d15du) == percent,
+               "scePowerGetBatteryLifePercent follows the external-power state (pins current behaviour)");
+    }
+    sr_hle_test_power_set_external(1);
+
+    /* #1815: sceKernelUSec2SysClock(unsigned int usec, SceKernelSysClock *clock). usec is a
+     * 32-bit register, so 0xffffffff is the largest input: a value above 2^32 cannot reach
+     * the handler. The 64-bit clock is {low = usec, high = 0}. */
+    static const uint32_t usec_cases[] = {0u, 1u, 0x7fffffffu, 0x80000000u, 0xffffffffu};
+    for (i = 0u; i < sizeof(usec_cases) / sizeof(usec_cases[0]); i++) {
+        MEM_W32(CLOCK, GARBAGE);
+        MEM_W32(CLOCK + 4u, GARBAGE);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = usec_cases[i];
+        cpu.r[5] = CLOCK;
+        cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x110dec9au) == 0u && MEM_R32(CLOCK) == usec_cases[i] &&
+                   MEM_R32(CLOCK + 4u) == 0u,
+               "sceKernelUSec2SysClock stores {usec, 0} and overwrites a stale high word (pins current behaviour)");
+    }
+    /* A null output pointer is refused with SCE_KERNEL_ERROR_ILLEGAL_ADDR (0x800200d3)
+     * and nothing in the neighbouring words changes. */
+    MEM_W32(CLOCK, GARBAGE);
+    MEM_W32(CLOCK + 4u, GARBAGE);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0xffffffffu;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, 0x110dec9au) == 0x800200d3u && MEM_R32(CLOCK) == GARBAGE &&
+               MEM_R32(CLOCK + 4u) == GARBAGE,
+           "sceKernelUSec2SysClock refuses a null output pointer and writes nothing (pins current behaviour)");
+
+    /* #1816: argument reads checked against the public signatures. sceUmdGetErrorStat(void)
+     * reads no argument; sceDisplaySetMode(int mode, int width, int height) reads a0-a2 and
+     * ignores a3. Neither handler reads a register beyond its signature, so no fix is needed
+     * and these checks pin current behaviour. */
+    expect(sr_hle_test_is_registered(0x20628e6fu) && sr_hle_test_is_registered(0x0e20f177u),
+           "sceUmdGetErrorStat and sceDisplaySetMode have a production registration");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x20628e6fu) == 0u,
+           "sceUmdGetErrorStat reports no drive error while the disc is present and active (pins current behaviour)");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, 0xe83742bau) == 0u, "sceUmdDeactivate returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x20628e6fu) == 0u,
+           "sceUmdGetErrorStat still reports no drive error with the disc present but deactivated (pins current behaviour)");
+    sr_hle_test_umd_reset();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 480u;
+    cpu.r[6] = 272u;
+    cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x0e20f177u) == 0u,
+           "sceDisplaySetMode (mode 0, 480x272) returns SCE_DISPLAY_SET_MODE_SUCCESS (pins current behaviour)");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GARBAGE;
+    cpu.r[5] = GARBAGE;
+    cpu.r[6] = GARBAGE;
+    cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x0e20f177u) == 0u,
+           "sceDisplaySetMode accepts any mode and size and still returns 0 (pins current behaviour)");
+}
+
 static void test_psp_measured_cpu_clock_user_mode_20261024(void) {
     enum { NID_POWER_SET_CPU_CLOCK = 0x843fbf43u, NID_POWER_GET_CPU_INT = 0xfdb5bfe9u };
     static const uint32_t refused[] = { 0u, 333u, 334u, 223u /* PLL + 1 */, 0xffffffffu };
@@ -10741,7 +10841,7 @@ static void test_rtc_time_t_add_years_resolution_autotest(void) {
 }
 
 /* sceRtcTickAddMicroseconds, sceRtcTickAddSeconds, sceRtcTickAddDays, sceRtcGetDayOfWeek and
- * sceRtcCheckValid against PSPAutotests tests/rtc/{arithmetic,lookup}.expected (2ed7c9c5, recorded
+ * sceRtcCheckValid against PSPAutotests tests/rtc/{arithmetic,lookup}.expected (f573fe8c, recorded
  * on a PSP). Each row is the autotest's own: the date goes to a tick through sceRtcGetTick, the
  * count is added, and the result goes back through sceRtcSetTick. Before these handlers the five
  * NIDs were unregistered imports that stopped 11 titles at launch. */
@@ -38678,6 +38778,56 @@ static uint32_t psmf_start_call(CpuState *cpu, uint32_t init_pts, uint32_t t0_le
     return sr_syscall(cpu, NID_SCE_PSMF_PLAYER_START);
 }
 
+/* scePsmfPlayerGetCurrentPts after scePsmfPlayerStop: getcurrentpts.expected (pspautotests
+ * f573fe8c, recorded on a PSP) measures a never-played STANDBY player (0x8061600c), not one
+ * that played and was stopped.  Stop resets the media state, so the player has to remember the
+ * Stop itself; the call then stops the run by name until SetPsmf or Release gives it a new
+ * stream.  psmf_media_selftest cannot count stops (its build has no stop counter), so this
+ * lives here, on the same synthetic stream. */
+static void test_psmf_get_current_pts_after_stop_stops_by_name(void) {
+    enum { NID_GET_CURRENT_PTS = 0x3ed62233u, NID_RELEASE_PSMF = 0xe792cd94u };
+    CpuState cpu;
+    sr_hle_init();
+    psmf_synthetic_build();
+    s_psmf_synthetic_enabled = 1;
+    MEM_W32(PSMF_SELFTEST_CREATE + 0, PSMF_SELFTEST_BUFFER);
+    MEM_W32(PSMF_SELFTEST_CREATE + 4, 0x00285800u);
+    MEM_W32(PSMF_SELFTEST_CREATE + 8, 0x30u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 0, 0x0eu);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 4, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 8, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 20, 0u);
+    title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_CREATE, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_CREATE) == 0u,
+           "psmf pts: the player is created");
+    expect(psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO) == 0x80616001u,
+           "psmf pts: an initial player is the status error");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF_CB, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_PATH) == 0u,
+           "psmf pts: the stream is opened");
+    expect(psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO) == PSMF_ERR_NO_DATA,
+           "psmf pts: a standby player that never played is NO_DATA (measured)");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_START, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_CONFIG) == 0u,
+           "psmf pts: playback starts");
+    expect(psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO) == PSMF_ERR_NO_DATA,
+           "psmf pts: a playing player before its first picture is NO_DATA (measured)");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_STOP, PSMF_SELFTEST_PLAYER, 0u) == 0u, "psmf pts: playback stops");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    uint32_t r = psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u && r != PSMF_ERR_NO_DATA,
+           "psmf pts: a played-then-stopped player stops the run by name, not NO_DATA");
+    expect(psmf_call(&cpu, NID_RELEASE_PSMF, PSMF_SELFTEST_PLAYER, 0u) == 0u, "psmf pts: the stream is released");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF_CB, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_PATH) == 0u,
+           "psmf pts: a new stream is opened");
+    expect(psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO) == PSMF_ERR_NO_DATA &&
+               sr_hle_test_unmodelled_stops() == stops + 1u,
+           "psmf pts: a new stream clears the stopped state");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_DELETE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf pts: the player is deleted");
+    s_psmf_synthetic_enabled = 0;
+}
+
 /* A version-1 stream (a zero bound in its video stream entry) accepts only initPts 0. The
  * handler used to read initPts from t0, so a title calling Start(player, data, 0) with a
  * nonzero value left in t0 got a parameter error and its movie never started, while a
@@ -43516,6 +43666,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_umd_unregister_callback();
     test_umd_replace_permission_and_disc_info();
     test_psp_measured_power_battery_20261024();
+    test_pinned_handlers_1814_1815_1816();
     test_psp_measured_cpu_clock_user_mode_20261024();
     test_psp_measured_rtc_time64_20261024();
     test_power_set_bus_clock_frequency_autotest();
@@ -43671,6 +43822,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_late_prx_unload_keeps_module_owned_objects();
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();
+    test_psmf_get_current_pts_after_stop_stops_by_name();
     test_psmf_start_reads_init_pts_from_the_third_argument();
     test_psmf_set_psmf_and_change_play_mode();
     test_flight_recorder_trace();

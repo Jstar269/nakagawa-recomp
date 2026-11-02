@@ -31,8 +31,8 @@ Install with `sudo apt update && sudo apt install`:
 - `build-essential`, `pkg-config`, `cmake`, `ninja-build`, `git`, `curl`
 - `gcc-mipsel-linux-gnu` (AOT test targets that emit MIPS objects)
 - `python3.15`, `python3.15-venv`, `python3.15-dev`. CPython 3.15.x is
-  required, and Ubuntu 24.04's own archive does not carry it: enable the
-  deadsnakes PPA first (`sudo add-apt-repository ppa:deadsnakes/ppa`). Create a
+  the supported version (3.14.x is also accepted, `>=3.14,<3.16`), and Ubuntu 24.04's own
+  archive does not carry 3.15: enable the deadsnakes PPA first (`sudo add-apt-repository ppa:deadsnakes/ppa`). Create a
   project environment (for example `~/.venvs/nakagawa`), and keep `ruff`,
   `pre-commit` and the hash-locked tools in it.
 - `libvulkan-dev`, `vulkan-tools`, `glslc`, `spirv-tools` (Vulkan headers and shader tools)
@@ -127,7 +127,7 @@ The player builds with the CMake route above or `make CC=gcc player`. Its launch
 (`sdl3-ttf` through `pkg-config`); a player built without it says so when it starts and asks for a
 rebuild with SDL3_ttf installed.
 
-- **BUILD PACKAGE** runs the system's own `python` (CPython 3.15 or 3.14), `gcc` and `make` from
+- **BUILD PACKAGE** runs the system's own `python` (CPython 3.15 first, 3.14 when no 3.15 is runnable), `gcc` and `make` from
   `PATH`. Nothing is downloaded on Linux: the pinned prerequisite download is Windows-only. When a
   tool is missing, the card names it and the Ubuntu package that provides it
   (`BUILD_TOOLCHAIN_MISSING`). The player's checks are tested on Linux; a whole game package

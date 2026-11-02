@@ -880,9 +880,9 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 - **`h_PsmfGetAudio`** (`scePsmf`): `scePsmfPlayerGetAudioData` (0xb9848a74)
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
 - **`h_PsmfGetCurrentPts`** (`scePsmf`): `scePsmfPlayerGetCurrentPts` (0x3ed62233)
-  - Limitation: host HLE player; the pts is the displaypts of the last picture the video getter delivered, written as one 32-bit word; a NULL or unwritable output once a picture exists (the hardware run crashes) and a player back in standby after playing are not measured and stop the run by name
+  - Limitation: host HLE player; the pts is the displaypts of the last picture the video getter delivered, written as one 32-bit word; a NULL or unwritable output once a picture exists (the hardware run crashes) and a player that scePsmfPlayerStop returned to standby after playing are not measured and stop the run by name
   - Evidence: tests/native/psmf_media_selftest.c:test_player_av_presentation_timing
-  - Evidence: PSPAutotests tests/video/psmfplayer/getcurrentpts.expected (2ed7c9c5, recorded on a PSP): Initial 0x80616001, Standby and Playing-before-a-picture 0x8061600c, then one 32-bit write of the last picture's pts
+  - Evidence: PSPAutotests tests/video/psmfplayer/getcurrentpts.expected (f573fe8c, recorded on a PSP): Initial 0x80616001, Standby and Playing-before-a-picture 0x8061600c, then one 32-bit write of the last picture's pts
 - **`h_PsmfGetPsmfInfo`** (`scePsmf`): `scePsmfPlayerGetPsmfInfo` (0xdf089680)
   - Limitation: host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs are written only when the loaded libpsmfplayer module's exported module_sdk_version is 0x03090510 (a firmware-loaded player records no build); lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)
   - Evidence: tests/native/psmf_media_selftest.c:test_player_get_psmf_info
@@ -922,7 +922,7 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 - **`h_RtcCheckValid`** (`sceRtc`): `sceRtcCheckValid` (0x4b1b5e82)
   - Limitation: returns 0 or the first failing field as -1 year, -2 month, -3 day, -4 hour, -5 minute, -6 second, -7 microsecond (measured); a day of 0 or one from the month length to 31, and a NULL or unmapped pointer, are not measured and stop the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
-  - Evidence: PSPAutotests tests/rtc/lookup.expected (2ed7c9c5, recorded on a PSP): checkRtcCheckValid and checkMaxYear
+  - Evidence: PSPAutotests tests/rtc/lookup.expected (f573fe8c, recorded on a PSP): checkRtcCheckValid and checkMaxYear
 - **`h_RtcConvertLocalToUtc`** (`sceRtc`): `sceRtcConvertLocalTimeToUTC` (0x779242a2)
   - Limitation: applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
@@ -936,7 +936,7 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 - **`h_RtcGetDayOfWeek`** (`sceRtc`): `sceRtcGetDayOfWeek` (0x57726bc1)
   - Limitation: Sunday is 0; months 1..12 of years 1..9999 with the day carried linearly (the measured cells); a month of 0 or above 12 answers only the seven measured triples, and any other month, year or day outside those stops the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
-  - Evidence: PSPAutotests tests/rtc/lookup.expected (2ed7c9c5, recorded on a PSP): checkDayOfWeek
+  - Evidence: PSPAutotests tests/rtc/lookup.expected (f573fe8c, recorded on a PSP): checkDayOfWeek
 - **`h_RtcGetTime64_t`** (`sceRtc`): `sceRtcGetTime64_t` (0xe1c93e47)
   - Limitation: out-of-range fields normalise by calendar carry, whose exact seconds are this arithmetic rather than measured; year 0, month 0 and day 0 are refused with 0x800001fe and a refusal leaves the output unwritten, both unmeasured; a NULL or unreadable date and an unwritable non-NULL output take the HLE guest-fault stop
   - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_rtc_time64_20261024
@@ -950,15 +950,15 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 - **`h_RtcTickAddDays`** (`sceRtc`): `sceRtcTickAddDays` (0xe51b4b7a)
   - Limitation: adds the sign-extended 32-bit day count times 86400000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
-  - Evidence: PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddDays
+  - Evidence: PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddDays
 - **`h_RtcTickAddMicroseconds`** (`sceRtc`): `sceRtcTickAddMicroseconds` (0x26d25a5d)
   - Limitation: adds the 64-bit count modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
-  - Evidence: PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddMicroseconds
+  - Evidence: PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddMicroseconds
 - **`h_RtcTickAddSeconds`** (`sceRtc`): `sceRtcTickAddSeconds` (0xf2a4afe5)
   - Limitation: adds the 64-bit count times 1000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
-  - Evidence: PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddSeconds
+  - Evidence: PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddSeconds
 - **`h_RtcTickAddYears`** (`sceRtc`): `sceRtcTickAddYears` (0x42842c77)
   - Limitation: moves the calendar year with the leap day clamped to February 28, and a result outside years 1..9999 returns 0 with dest unwritten (pspautotests-recorded); a source tick past year 9999 and NULL or unmapped pointers are not measured and stop the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest

@@ -492,9 +492,9 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "tests/native/psmf_media_selftest.c:test_player_av_presentation_timing",
-            "PSPAutotests tests/video/psmfplayer/getcurrentpts.expected (2ed7c9c5, recorded on a PSP): Initial 0x80616001, Standby and Playing-before-a-picture 0x8061600c, then one 32-bit write of the last picture's pts",
+            "PSPAutotests tests/video/psmfplayer/getcurrentpts.expected (f573fe8c, recorded on a PSP): Initial 0x80616001, Standby and Playing-before-a-picture 0x8061600c, then one 32-bit write of the last picture's pts",
         ],
-        "limitation": "host HLE player; the pts is the displaypts of the last picture the video getter delivered, written as one 32-bit word; a NULL or unwritable output once a picture exists (the hardware run crashes) and a player back in standby after playing are not measured and stop the run by name",
+        "limitation": "host HLE player; the pts is the displaypts of the last picture the video getter delivered, written as one 32-bit word; a NULL or unwritable output once a picture exists (the hardware run crashes) and a player that scePsmfPlayerStop returned to standby after playing are not measured and stop the run by name",
     },
     # The licensee key is recorded for sceNpDrmEdataSetupKey, which stays refused: no key
     # material ships with the project and nothing decrypts.
@@ -1161,7 +1161,7 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
-            "PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddMicroseconds",
+            "PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddMicroseconds",
         ],
         "limitation": "adds the 64-bit count modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name",
     },
@@ -1169,7 +1169,7 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
-            "PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddSeconds",
+            "PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddSeconds",
         ],
         "limitation": "adds the 64-bit count times 1000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name",
     },
@@ -1177,7 +1177,7 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
-            "PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddDays",
+            "PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddDays",
         ],
         "limitation": "adds the sign-extended 32-bit day count times 86400000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name",
     },
@@ -1185,7 +1185,7 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
-            "PSPAutotests tests/rtc/lookup.expected (2ed7c9c5, recorded on a PSP): checkDayOfWeek",
+            "PSPAutotests tests/rtc/lookup.expected (f573fe8c, recorded on a PSP): checkDayOfWeek",
         ],
         "limitation": "Sunday is 0; months 1..12 of years 1..9999 with the day carried linearly (the measured cells); a month of 0 or above 12 answers only the seven measured triples, and any other month, year or day outside those stops the run by name",
     },
@@ -1193,7 +1193,7 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
-            "PSPAutotests tests/rtc/lookup.expected (2ed7c9c5, recorded on a PSP): checkRtcCheckValid and checkMaxYear",
+            "PSPAutotests tests/rtc/lookup.expected (f573fe8c, recorded on a PSP): checkRtcCheckValid and checkMaxYear",
         ],
         "limitation": "returns 0 or the first failing field as -1 year, -2 month, -3 day, -4 hour, -5 minute, -6 second, -7 microsecond (measured); a day of 0 or one from the month length to 31, and a NULL or unmapped pointer, are not measured and stop the run by name",
     },
