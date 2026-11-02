@@ -1879,6 +1879,40 @@ _register_campaign_probe(
     "kernel-semantics", "PSP-KERNEL-SEM-001", tuple(KERNEL_SEM_ROWS), dict(KERNEL_SEM_ROWS),
 )
 
+# memory-edge (138, probe_memory_edge.c, fixture mem_edge.h): the #303 invalid-tail and
+# boundary cells and #1380's sceIoRead into a boundary buffer. Three measurement rows, then for
+# each of three placements (the last bytes of user RAM, the first bytes of user RAM, the last
+# bytes of VRAM) a placement row and 21 call cells (three APIs by four deltas on the reading
+# side, three APIs by three deltas on the writing side), then three always-SKIP rows. Every row
+# is emitted on every run with a fixed word count: a cell that is not run is a SKIP record.
+MEMORY_EDGE_PLACES = ("ramtail", "ramhead", "vramtail")
+MEMORY_EDGE_APIS = ("io", "memcpy", "try")
+MEMORY_EDGE_SRC_DELTAS = (0, 1, 4, 0x1000)
+MEMORY_EDGE_DST_DELTAS = (0, 1, 4)
+MEMORY_EDGE_CELL_WORDS = 12
+
+
+def _memory_edge_rows() -> tuple[tuple[str, int], ...]:
+    rows: list[tuple[str, int]] = [("edge-ram-hi", 8), ("edge-ram-lo", 8), ("edge-data", 3)]
+    for place in MEMORY_EDGE_PLACES:
+        if place == "vramtail":
+            rows.append(("edge-vram", 4))
+        rows.append((f"edge-place-{place}", 8))
+        for side, deltas in (("src", MEMORY_EDGE_SRC_DELTAS), ("dst", MEMORY_EDGE_DST_DELTAS)):
+            for api in MEMORY_EDGE_APIS:
+                for delta in deltas:
+                    rows.append((f"me-{place}-{api}-{side}-{delta:04x}", MEMORY_EDGE_CELL_WORDS))
+    for name in ("me-cpu-store-edge", "me-cpu-load-edge", "me-scratch-io", "me-scratch-cross"):
+        rows.append((name, MEMORY_EDGE_CELL_WORDS))
+    return tuple(rows)
+
+
+MEMORY_EDGE_ROWS = _memory_edge_rows()
+_register_campaign_probe(
+    "memory-edge", "PSP-MEMEDGE-001", tuple(row for row, _ in MEMORY_EDGE_ROWS),
+    dict(MEMORY_EDGE_ROWS),
+)
+
 # vfpu-forms2 (121, probe_hle_issues.c): the second #326 batch of VFPU forms, two passes. Every
 # row is emitted on every run, so the stream is fixed-shape. Per pass: vrnds.s over 24 seed
 # words from two RCX states (rnds-p<pass>-<i>-<a|b>, 25 words), vrndi, vrndf1 and vrndf2 at
