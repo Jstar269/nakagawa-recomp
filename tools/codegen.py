@@ -177,6 +177,18 @@ def _enhancement_rewrite(addr: int) -> dict | None:
     return site["rewrite"]
 
 
+def _refuse_argument_site_on_a_loop(entry: int) -> None:
+    """An argument_x2 site doubles once per call: a branch back to its entry would double again."""
+    if not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
+        return
+    site = ENHANCEMENT_SITES.get(entry)
+    if site is not None and site["rewrite"]["kind"] == "scale_int_args":
+        raise enhancement_package.EnhancementPackageError(
+            f"site {site['id']}: argument_x2 doubles once per call, and this function "
+            "branches back to its entry (fail-closed refusal)"
+        )
+
+
 def _enhancement_boundary(addr: int) -> bool:
     """Whether ``addr`` is the package's update boundary; the caller emits its count."""
     if ENHANCEMENT_UPDATE_BOUNDARY is None or ADDRESS_SPACE.runtime_module:
@@ -3138,12 +3150,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     if not resumable and guest_owns_entry_sp(elf, insns):
         resumable = True
         GUEST_SP_ENTRIES.add(start)
-    if start in labels and start in ENHANCEMENT_SITES \
-            and ENHANCEMENT_SITES[start]["rewrite"]["kind"] == "scale_int_args":
-        raise enhancement_package.EnhancementPackageError(
-            f"site {ENHANCEMENT_SITES[start]['id']}: argument_x2 doubles once per call, and this "
-            "function branches back to its entry (fail-closed refusal)"
-        )
+    if start in labels:
+        _refuse_argument_site_on_a_loop(start)
     for label in labels:
         # A label on the delay slot of a transfer that never falls through runs the slot
         # as an ordinary word; when that word goes on to the next one, the walk owns that
