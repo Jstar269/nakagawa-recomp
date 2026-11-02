@@ -9,7 +9,7 @@ body:
       value: |
         For maintainers and for contributors who have agreed a task with a maintainer. A starter issue
         names one change, the files to start in and the exact command that proves it. Do not include game
-        names, disc IDs, game files, decrypted modules, extracted assets, full traces or private paths.
+        files, decrypted modules, extracted assets, full traces or private paths.
         Setup: [CONTRIBUTING.md](https://github.com/Jstar269/nakagawa-recomp/blob/main/CONTRIBUTING.md#contributing-without-a-game-disc).
 
   - type: textarea
@@ -72,7 +72,7 @@ body:
     attributes:
       label: Before submitting
       options:
-        - label: The text names no game, disc ID or private path, and attaches no game-derived data.
+        - label: The text names no private path and attaches no game-derived data.
           required: true
         - label: The issue has a milestone and the labels `good first issue` and, where it applies, `no-disc-needed`.
           required: true
