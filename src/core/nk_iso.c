@@ -246,6 +246,12 @@ static size_t nk_iso_name_without_version(const char *name, size_t length) {
     return length;
 }
 
+/* ECMA-119 9.1: a record is 33 fixed bytes and an identifier of at least one byte, all inside
+ * rec_len. A record's fields are read only after this holds. */
+static bool nk_iso_dir_record_fits(const uint8_t *record, uint8_t rec_len) {
+    return rec_len >= 34u && record[32] != 0 && 33u + record[32] <= rec_len;
+}
+
 static bool nk_iso_name_matches(const char *token, const uint8_t *name_bytes, uint8_t name_len) {
     if (!token || !name_bytes || name_len == 0) return false;
 
@@ -1277,6 +1283,13 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
                 fclose(f);
                 return NK_ERROR_INVALID_ISO;
             }
+            if (!nk_iso_dir_record_fits(&dir_buf[off], rec_len)) {
+                snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+                    "Malformed ISO: directory record at offset %zu is too short for its identifier", off);
+                free(dir_buf);
+                fclose(f);
+                return NK_ERROR_INVALID_ISO;
+            }
 
             uint32_t extent_lba_le = read_le32(&dir_buf[off + 2]);
             uint32_t extent_lba_be = read_be32(&dir_buf[off + 6]);
@@ -1348,6 +1361,13 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
                     if (off + rec_len > read_bytes) {
                         snprintf(out_meta->error_message, sizeof(out_meta->error_message),
                             "Malformed ISO: PSP_GAME directory record truncated before sector end");
+                        free(dir_buf);
+                        fclose(f);
+                        return NK_ERROR_INVALID_ISO;
+                    }
+                    if (!nk_iso_dir_record_fits(&dir_buf[off], rec_len)) {
+                        snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+                            "Malformed ISO: PSP_GAME directory record at offset %zu is too short for its identifier", off);
                         free(dir_buf);
                         fclose(f);
                         return NK_ERROR_INVALID_ISO;
@@ -1928,6 +1948,11 @@ NkResult nk_iso_extract_file(const char *iso_path, const char *disc_rel_path, co
             if ((off % SECTOR_SIZE) + rec_len > SECTOR_SIZE) {
                 off = ((off / SECTOR_SIZE) + 1) * SECTOR_SIZE;
                 continue;
+            }
+            if (!nk_iso_dir_record_fits(&dir_buf[off], rec_len)) {
+                free(dir_buf);
+                fclose(f_iso);
+                return NK_ERROR_INVALID_ISO;
             }
 
             uint32_t ext_lba_le = read_le32(&dir_buf[off + 2]);
