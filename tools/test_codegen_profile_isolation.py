@@ -78,7 +78,7 @@ ENTRY = 0x00400000
 
 NOP = 0x00000000
 JR_RA = 0x03E00008
-LW_T0_A0 = 0x8C880000  # lw $t0, 0($a0) -- the NULL_BASE_WORD_LOADS shape
+LW_T0_A0 = 0x8C880000  # lw $t0, 0($a0)
 LUI_T0 = (0x0F << 26) | (8 << 16) | 0x1234  # lui $t0, 0x1234
 ORI_T0 = (0x0D << 26) | (8 << 21) | (8 << 16) | 0x5678  # ori $t0, $t0, 0x5678
 
@@ -109,7 +109,6 @@ HST_CUSTOM_STUBS = (
     0x00013524, 0x00015EA0, 0x000143B0, 0x000468C8,
     0x00011090, 0x000110DC, 0x000114A8, 0x000114C0, 0x000149A8,
 )
-HST_NULL_BASE = tuple(sorted(codegen.NULL_BASE_WORD_LOADS))
 HST_GUEST_PATCHES = tuple(sorted(codegen.GUEST_PATCHES))
 HST_SIMPLE_STUB_ADDRS = tuple(sorted(HST_SIMPLE_STUBS))
 
@@ -120,7 +119,6 @@ BODY_COUPLED = (
     + HST_FASTPATHS
     + HST_ABORT
     + HST_CUSTOM_STUBS
-    + HST_NULL_BASE
     + HST_GUEST_PATCHES
     + HST_SIMPLE_STUB_ADDRS
 )
@@ -152,11 +150,6 @@ def _body_sv_leaf() -> list[int]:
     return [LUI_T0, ORI_T0, JR_RA, NOP]
 
 
-def _body_null_base() -> list[int]:
-    """`lw` at the function's first instruction: the NULL_BASE_WORD_LOADS site."""
-    return [LW_T0_A0, JR_RA, NOP]
-
-
 def _body_guest_patch() -> list[int]:
     """Branch at the first instruction, then a predictable run for sv_plan."""
     return [_beq_fwd(8), NOP, LUI_T0, ORI_T0, JR_RA, NOP]
@@ -168,8 +161,6 @@ def _body_fastpath(consumed_words: int) -> list[int]:
 
 
 def _shape_for(addr: int) -> list[int]:
-    if addr in HST_NULL_BASE:
-        return _body_null_base()
     if addr in HST_GUEST_PATCHES:
         return _body_guest_patch()
     if addr == 0x0006EA1C:
@@ -451,7 +442,6 @@ class ProfileHstLegacyTests(unittest.TestCase):
             "ARRSHIFT_FASTPATH",
             "GUEST_ABORT",
             "_Exit(9)",
-            "== 0u ? 0u : MEM_R32",
             "custom stub: __register_frame_info bypass",
         )
         missing = [s for s in expected if s not in self.combined]
@@ -568,7 +558,6 @@ EMITTERS = frozenset({"effect", "normal_line", "emit_function", "main", "sv_plan
 #: A membership test against one of these binds guest addresses to HST
 #: semantics, so it must be reachable only under the hst profile.
 ADDRESS_TABLES = {
-    "NULL_BASE_WORD_LOADS": "hst_profile",
     "GUEST_PATCHES": "hst_profile",
     "_SV_SPECIAL": "hst_profile",
     "_HST_INLINE_SITES": "hst_profile",
@@ -829,8 +818,7 @@ class GateInventoryTests(unittest.TestCase):
 
     def test_address_tables_have_not_grown_silently(self):
         """Every table entry is inside the specimen's covered set."""
-        for name in ("NULL_BASE_WORD_LOADS", "GUEST_PATCHES",
-                     "HST_MANUAL_CALLABLES"):
+        for name in ("GUEST_PATCHES", "HST_MANUAL_CALLABLES"):
             for addr in getattr(codegen, name):
                 self.assertIn(addr, COVERED, f"{name} 0x{addr:08x} uncovered")
         for addr in codegen._SV_SPECIAL:
@@ -952,7 +940,6 @@ class RetiredAddressGuardTests(unittest.TestCase):
             self.assertNotIn(addr, HST_SIMPLE_STUBS, f"{hex_addr} reintroduced into HST_SIMPLE_STUBS")
             self.assertNotIn(addr, BODY_COUPLED, f"{hex_addr} reintroduced into BODY_COUPLED")
             self.assertNotIn(addr, COVERED, f"{hex_addr} reintroduced into COVERED")
-            self.assertNotIn(addr, codegen.NULL_BASE_WORD_LOADS, f"{hex_addr} in NULL_BASE_WORD_LOADS")
             self.assertNotIn(addr, codegen.GUEST_PATCHES, f"{hex_addr} in GUEST_PATCHES")
             self.assertNotIn(addr, codegen._SV_SPECIAL, f"{hex_addr} in _SV_SPECIAL")
             self.assertNotIn(addr, codegen.HST_MANUAL_CALLABLES, f"{hex_addr} in HST_MANUAL_CALLABLES")
@@ -1149,6 +1136,24 @@ RETIRED_363_STUB_ADDRESSES: tuple[int, ...] = (
     0x00015F98, 0x0001034C, 0x0001C010, 0x0001C0FC, 0x0001C104, 0x0001C560,
     0x0001C604, 0x0001C810, 0x0001C818, 0x001D9EB0,
 )
+
+
+#: The four word loads that read 0 from a null base under the HST profile (#363). None
+#: took its null path on the gate route, so the title no longer has per-address load
+#: semantics.
+RETIRED_NULL_BASE_LOADS: tuple[int, ...] = (0x0003E014, 0x0003E04C, 0x0003E060, 0x000705D4)
+
+
+class RetiredNullBaseLoadTests(unittest.TestCase):
+    def test_a_retired_load_translates_like_any_other_load(self):
+        words = _build_specimen_words({a: [LW_T0_A0, JR_RA, NOP] for a in RETIRED_NULL_BASE_LOADS})
+        for profile in ("hst", "none"):
+            funcs = _codegen_functions(words, profile, False)
+            for addr in RETIRED_NULL_BASE_LOADS:
+                with self.subTest(profile=profile, addr=f"0x{addr:08x}"):
+                    _, body = _find(funcs, addr)
+                    self.assertIn("MEM_R32(s->r[4] + 0x00000000u)", body)
+                    self.assertNotIn("== 0u ?", body, "a load at this address reads 0 from null")
 
 
 class RetiredStubBodyTests(unittest.TestCase):

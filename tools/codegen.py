@@ -1280,18 +1280,6 @@ def mreg_index(reg, side, j, i):
 class Unsupported(Exception):
     pass
 
-# The HST PRX is linked/recompiled at guest address zero, while the original PSP
-# process maps it above the unmapped null page. A few guest data-structure walkers
-# intentionally read fields from their null terminator. Keep those reviewed data
-# loads zero-valued without changing instruction dispatch or legitimate low .text
-# addresses. This is relocation compatibility, not a loop cap.
-NULL_BASE_WORD_LOADS = {
-    0x0003E014: "command-list initial sentinel read",
-    0x0003E04C: "command-list next sentinel read",
-    0x0003E060: "command-list null completion callback",
-    0x000705D4: "uninitialized job-queue count read",
-}
-
 # Effect of a non-control instruction -> (c_statement, store_addr_expr_or_None, store_size).
 # Loads and stores whose effective address must satisfy the hardware's data
 # access rules under --lle-cpu, as {opcode: (width, is_store)}.
@@ -1388,7 +1376,7 @@ def _ll_sc_stmt(addr, w, op, lle_cpu, delay_branch_pc):
             f"sr_end(s, _ea, _sc ? 4 : 0); }}"), SELF_TRACED, 0
 
 
-def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+def effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     op = w >> 26
     if op == 0x10:  # COP0 (spec 3.4)
         cop_rs = (w >> 21) & 0x1F
@@ -1510,17 +1498,12 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
             if sub == 0x14: return wr(rd(w), f"sr_bitrev({R(rt(w))})"), None, 0                      # bitrev
         raise Unsupported(f"SPECIAL3 funct 0x{fn:02x} at 0x{addr:08x}")
     # Under the LLE gate every aligned load and store is address-checked first.
-    # The hst_profile null-base word-load workaround keeps its own emission:
-    # it is a title-specific hack, and production fixtures never opt into LLE.
-    if lle_cpu and op in LLE_ACCESS and not (hst_profile and op == 0x23 and addr in NULL_BASE_WORD_LOADS):
+    if lle_cpu and op in LLE_ACCESS:
         return _lle_access_stmt(addr, w, op, delay_branch_pc)
     # loads
     if op == 0x20: return wr(rt(w), f"((uint32_t)(int32_t)(int8_t)MEM_R8({R(rs(w))} + {simm(w)}))"), None, 0   # lb
     if op == 0x21: return wr(rt(w), f"((uint32_t)(int32_t)(int16_t)MEM_R16({R(rs(w))} + {simm(w)}))"), None, 0  # lh
-    if op == 0x23:
-        if hst_profile and addr in NULL_BASE_WORD_LOADS:
-            return wr(rt(w), f"({R(rs(w))} == 0u ? 0u : MEM_R32({R(rs(w))} + {simm(w)}))"), None, 0
-        return wr(rt(w), f"MEM_R32({R(rs(w))} + {simm(w)})"), None, 0   # lw
+    if op == 0x23: return wr(rt(w), f"MEM_R32({R(rs(w))} + {simm(w)})"), None, 0   # lw
     if op == 0x24: return wr(rt(w), f"MEM_R8({R(rs(w))} + {simm(w)})"), None, 0    # lbu
     if op == 0x25: return wr(rt(w), f"MEM_R16({R(rs(w))} + {simm(w)})"), None, 0   # lhu
     # stores
@@ -2682,9 +2665,9 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
             pc = next_pc
     return insns, labels, continuations
 
-def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+def _plain_line(addr, w, trace_w, lle_cpu=False, delay_branch_pc=None):
     try:
-        eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+        eff, saddr, ssize = effect(addr, w, lle_cpu=lle_cpu,
                                    delay_branch_pc=delay_branch_pc)
     except Unsupported:
         # Keep the owning function translatable when the static emitter does not know a
@@ -2698,8 +2681,8 @@ def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch
         return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff}"
     return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
 
-def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
-    line = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+def normal_line(addr, w, lle_cpu=False, delay_branch_pc=None):
+    line = _plain_line(addr, w, w, lle_cpu=lle_cpu,
                        delay_branch_pc=delay_branch_pc)
     if w is not None and _enhancement_boundary(addr):
         # One logic update begins here: count it before the stock statement runs.
@@ -2710,7 +2693,7 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
     word_line = None
     if rw["kind"] == "word":
         # The trace hook keeps the stock word: guest memory still holds it.
-        word_line = _plain_line(addr, rw["word"], w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+        word_line = _plain_line(addr, rw["word"], w, lle_cpu=lle_cpu,
                                 delay_branch_pc=delay_branch_pc)
     return _enhanced_line(rw, line, word_line)
 
@@ -2771,13 +2754,13 @@ class RegisterPromotion:
         self.in_span = False
         return lines
 
-    def try_line(self, addr, w, hst_profile=False, lle_cpu=False):
+    def try_line(self, addr, w, lle_cpu=False):
         """The promoted lines for one instruction, or None to emit it the legacy way."""
         global _PROMO_LINE
         collector = _PromotedLine()
         _PROMO_LINE = collector
         try:
-            text = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu)
+            text = _plain_line(addr, w, w, lle_cpu=lle_cpu)
         except Unsupported:
             text = None
         finally:
@@ -2829,7 +2812,7 @@ def _flow_return(resumable=False):
     """Leave the native body when a helper set flow metadata (spec 3.4)."""
     return "if (s->flow_kind != 0u) { return; }"
 
-def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
+def delay_slot_lines(ds, dsw, branch_pc, lle_cpu=False,
                      resumable=False, indent="    "):
     """Emission for one branch delay slot (spec 3.4).
 
@@ -2846,7 +2829,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
     dop, dfn = dsw >> 26, dsw & 0x3F
     if dop == 0 and dfn == 0x0C:  # syscall in delay slot
         if not lle_cpu:
-            return [normal_line(ds, dsw, hst_profile=hst_profile)]
+            return [normal_line(ds, dsw)]
         code = (dsw >> 6) & 0xFFFFF
         _ = code
         return [
@@ -2858,7 +2841,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
         ]
     if dop == 0 and dfn == 0x0D:  # break in delay slot
         if not lle_cpu:
-            return [normal_line(ds, dsw, hst_profile=hst_profile)]
+            return [normal_line(ds, dsw)]
         code = (dsw >> 6) & 0xFFFFF
         _ = code
         return [
@@ -2881,7 +2864,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
             f"{indent}sr_end(s, 0u, 0);",
             f"{indent}{_flow_return(resumable)}",
         ]
-    return [normal_line(ds, dsw, hst_profile=hst_profile, lle_cpu=lle_cpu,
+    return [normal_line(ds, dsw, lle_cpu=lle_cpu,
                         delay_branch_pc=branch_pc if lle_cpu else None)]
 
 # ---------------------------------------------------------------------------
@@ -3207,7 +3190,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             if (not is_control(w) and not _is_cop0_move(w) and addr not in sv_points
                     and addr not in continuations and _enhancement_rewrite(addr) is None
                     and not (hst_profile and addr in _HST_INLINE_SITES)):
-                promoted = promo.try_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu)
+                promoted = promo.try_line(addr, w, lle_cpu=lle_cpu)
             if promoted is not None:
                 out.extend(promoted)
                 continue
@@ -3413,7 +3396,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             )
 
         if not is_control(w):
-            out.append(normal_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu))
+            out.append(normal_line(addr, w, lle_cpu=lle_cpu))
             if _is_cop0_move(w):
                 # MFC0/MTC0 can raise (privilege/reserved encoding): propagate
                 # the resulting flow before any native continuation (spec 3.4).
@@ -3442,7 +3425,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             resume = G((addr + 8) & 0xFFFFFFFF)
             out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
             out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); s->r[31] = {resume}; sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu,
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                         resumable=resumable, indent="      "))
             out.append(f"      dispatch_call(s, _t, {resume}); }}")
             if addr in continuations:
@@ -3454,7 +3437,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             _jal_rw = _enhancement_rewrite(addr)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
             if target in known or target in resume_owners:
                 _call_stmt = f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
                 if lle_cpu:
@@ -3489,7 +3472,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.append(f"    {{ uint32_t _t = {R(a)};")
             out.append(f"      {emit_code_pointer_check('_t', addr)}")
             out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
                                         indent="      "))
             if d != 0:
                 out.append(
@@ -3519,12 +3502,12 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 elif ds_is_syscall and dsw is not None:
                     # LLE: the delay-slot syscall raises with BD set (spec 3.4).
                     out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                    out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
+                    out.extend(delay_slot_lines(ds, dsw, addr,
                                                 lle_cpu=lle_cpu, resumable=resumable,
                                                 indent="      "))
                 else:
                     out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                    out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
+                    out.extend(delay_slot_lines(ds, dsw, addr,
                                                 lle_cpu=lle_cpu, resumable=resumable,
                                                 indent="      "))
                 out.append(f"      {emit_host_return(resumable, stack_census=stack_census)} }}")
@@ -3536,28 +3519,28 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elif ds_is_syscall and dsw is not None:
                 # LLE: the delay-slot syscall raises with BD set (spec 3.4).
                 out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+                out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
             else:
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
                 out.append(f"    {{ uint32_t _t = {R(a)};")
                 out.append(f"      {emit_code_pointer_check('_t', addr)}")
                 out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
+                out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
                                             indent="      "))
                 out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         if op == 2 and ADDRESS_SPACE.unrelocated_jump(addr):  # j the loader leaves as linked
             out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
             out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu,
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                         resumable=resumable, indent="      "))
             out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         if op == 2:  # j
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
             if target == addr:
                 # Self-loop (a spin wait): the native call below would recurse on the host
                 # stack once per iteration. Keep it a backward goto with the preemption point.
@@ -3590,7 +3573,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
 
         out.append(f"    {{ uint32_t _c = {cond};{inject_stmt}")
         out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-        _delay = delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable)
+        _delay = delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable)
         _delay_inline = " ".join(line.strip() for line in _delay)
         if is_linked_call(elf, addr, w, ranges):
             # bltzal/bgezal (bal = bgezal $zero) to a callable is a CALL (#968), inside
