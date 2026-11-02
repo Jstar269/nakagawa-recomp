@@ -1580,8 +1580,15 @@ static void player_report_start(PlayerApp *app, bool create) {
         free(job);
         return;
     }
-    job->thread = SDL_CreateThread(player_report_thread_main, "nakagawa-report", job);
+    job->thread = player_ui_test_fail_report_thread_create()
+        ? NULL : SDL_CreateThread(player_report_thread_main, "nakagawa-report", job);
     if (!job->thread) {
+        memset(&app->report, 0, sizeof(app->report));
+        player_report_command(job->title_id, app->report.command, sizeof(app->report.command));
+        app->report.phase = PLAYER_REPORT_FAILED;
+        snprintf(app->report.message, sizeof(app->report.message),
+                 "The report could not be started. Run this in a terminal: %s",
+                 app->report.command);
         free(job);
         return;
     }

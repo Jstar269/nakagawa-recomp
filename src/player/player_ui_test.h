@@ -58,7 +58,8 @@ enum {
     PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE = -20261006,
     PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE = -20261007,
     PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE = -20261008,
-    PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS = -20261009
+    PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS = -20261009,
+    PLAYER_UI_TEST_ACTION_WAIT_REPORT = -20261010
 };
 
 #define UI_TEST_MAX_PACKAGE_STATUS_THREAD_CREATE_FAILURES 8
@@ -112,6 +113,8 @@ typedef struct PlayerUiTest {
     bool waiting_for_view;
     bool waiting_for_package_status;
     NkRuntimePackageStatus wait_package_status_target;
+    bool waiting_for_report;
+    uint32_t wait_report_mask;   /* bit n set: PlayerReportPhase n ends the wait */
     bool waiting_for_art_attempt;
     bool waiting_for_art_delay;
     uint64_t wait_art_delay_deadline;
@@ -164,6 +167,8 @@ void player_ui_test_report_update_phase(const PlayerUiTest *t, const PlayerApp *
 /* The regression build writes its problem report under this folder (the sandbox lies inside the
    repository, which the report tool refuses) and leaves the toolchain check (up to 90 s) out; NULL elsewhere. */
 const char *player_ui_test_report_data_root(void);
+/* True when the script asked the Problem report worker thread to fail to start. */
+bool player_ui_test_fail_report_thread_create(void);
 /* One frame's scripted step: the waits, the assertions and the next event. */
 void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app, SDL_Renderer *renderer,
                                 bool *running, bool background_pending);
@@ -250,6 +255,7 @@ static inline void player_ui_test_report_update_phase(const PlayerUiTest *t,
     (void)t; (void)app;
 }
 static inline const char *player_ui_test_report_data_root(void) { return NULL; }
+static inline bool player_ui_test_fail_report_thread_create(void) { return false; }
 static inline void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app,
                                               SDL_Renderer *renderer, bool *running,
                                               bool background_pending) {
