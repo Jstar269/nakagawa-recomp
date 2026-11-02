@@ -3003,6 +3003,50 @@ not expected PSP values.
 | `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
 | `ge-sync-ids` | `PSP-GE-SYNC-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue; captured earlier from `96fe29f6` and `f6da6125`) | #1374: `sceGeListSync`, `sceGeDrawSync` and `sceGeListDeQueue` on an unknown queue id, on completed lists before and after later lists, on a list a `sceGeBreak(1)` reset removed, and with sync types other than 0 and 1, each blocking call bounded in a helper thread. See [PSP-GE-SYNC-001 runs 2026-10-31](#psp-ge-sync-001-runs-2026-10-31). |
 | `ge-mip` | `PSP-GE-MIP-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue) | #1373: the raw pixels of a 16x4 window after 57 textured draws over eight one-colour mip levels: constant, automatic, slope and the unused level mode, biases and their rounding, blends, the highest-level clamp, footprints along either axis, and transform-mode quads at fixed and varying w. 285 result records. |
+| `memory-edge` | `PSP-MEMEDGE-001` | `CAPTURED` (2026-11-02, `bb3f36e4`, boot 104, game context, firmware 6.6.1; single launch, not in the campaign queue; 33 PASS and 42 intentional SKIP, so not acceptance-eligible) | #303, #1380: the top of user RAM from the partition allocator and the end of VRAM from the DMA engine; `sceIoWrite`, `sceIoRead`, `sceDmacMemcpy` and `sceDmacTryMemcpy` with a buffer whose last 0x100 bytes sit at the edge and lengths 0x100 plus 0, 1, 4 and 0x1000. See [PSP-MEMEDGE-001 capture 2026-11-02](#psp-memedge-001-capture-2026-11-02). |
+
+### PSP-MEMEDGE-001 capture 2026-11-02
+
+`memory-edge` (CASE 138, `fixtures/psp_oracle/probe_memory_edge.c`) uses the placement helper
+`fixtures/psp_oracle/mem_edge.h`, which any probe source can include. It measures where
+user-visible memory ends, puts a probe-owned buffer so that its last (or first) 0x100 bytes sit at
+a measured edge, and records every call's outcome as data. A record exists only if the call
+returned. Word layout of a call cell: return code, whether it returned, N, length, buffer bytes
+changed, sink bytes or position, first changed offset, outside-edge changed bytes, guard bytes
+changed, setup mask, skip reason, call pointer. A call that faults or hangs leaves the
+`NAKAGAWA_PSP_STEP` before it as the last line.
+
+The capture is `CAPTURED`: 75 records (74 cells and the done record), 33 `PASS` and 42 `SKIP`.
+The runner counts a `SKIP` as a record that did not pass, so the envelope is not
+acceptance-eligible. The raw stream, host0 log and runner envelope stay in the private campaign
+directory.
+
+| Measurement | Result |
+| --- | --- |
+| Top of user RAM (game context) | `0x0a000000`: the last high-address allocator page ends there and the pages above answer `0x800200d9`. In the VSH context the top is not page-aligned and not usable as an edge. |
+| Bottom of user RAM | Not measurable from user mode: every non-allocatable page answers `0x800200d9`, so in-use and outside memory look alike. The `ramhead` placement and its 21 call cells are `SKIP` (reason 1). |
+| Scratchpad | Not a placement. A whole-scratchpad `sceIoWrite` from `0x00010000` wrote its step and never returned (first launch); the watchdog recovered the PSP. |
+| End of VRAM | `0x04200000` by the DMA engine: `sceDmacMemcpy` of the last VRAM page and of its last 64 bytes returned 0 and the page copied. A one-page `sceIoWrite` from the last VRAM page never returned (third launch), so no file call is handed a VRAM pointer; the 7 VRAM file cells are `SKIP` (reason 5). |
+| Reading past the top of user RAM | `sceIoWrite`, `sceDmacMemcpy` and `sceDmacTryMemcpy` from a buffer whose last 0x100 bytes end at `0x0a000000` with length 0x100 + 0, 1, 4 and 0x1000 all returned success and copied every requested byte (`sceIoWrite` returned the whole length). No call checked the source range against the top of the user partition. |
+| Reading past the end of VRAM | `sceDmacMemcpy` and `sceDmacTryMemcpy` from a buffer ending at the VRAM end with the same lengths all returned 0 and copied every requested byte, with all 0x1100 sink bytes changed for the longest. |
+| Writing at the edge | Delta 0 (the buffer exactly at the edge) ran for `sceIoRead` and both DMA calls and returned success with 0x100 bytes changed. Deltas 1 and 4 stayed `SKIP` (reason 3): the safety gate sends a write past an edge only after the same API refused the same overrun on the reading side, and none did. |
+| CPU load and store past an edge | `SKIP` (reason 5): a fault in user mode cannot be recorded by the mechanisms the probes use. |
+
+Provenance of the run: probe commits `2ecb1893` (VRAM end by DMA oracle) and `bb3f36e4` (a file
+read's buffer is written back before it is checked, because the first control recorded only 0x40
+changed bytes from a stale line). Two earlier launches hung on a file call and were kept as
+findings, not repeated.
+
+Comparison with Nakagawa's guest-range validation (AGENTS.md section 6): the runtime accepts a DMA
+or file source that runs past the top of user RAM as long as it stays inside the guest arena
+(`[0, 0x0c000000)`), which agrees with the reading cells. One disagreement was found and fixed: a
+`sceDmacMemcpy` source that starts in VRAM and runs past its end into the swizzled mirror returned
+an error in the runtime while the PSP copies it. `dmac_transfer` in `src/rt/hle_cache_dma.c` now
+copies such a source through a bounce buffer; the regression is in `hle-thread-selftest`
+(`test_dmac_hardware_semantics`, "a VRAM source running past the end of VRAM").
+
+Not measured, so not claimed: the bottom of user RAM, the scratchpad bounds, any write past an
+edge, `sceIoRead` into a boundary buffer beyond delta 0 (#1380), and a CPU fault at an edge.
 
 ### #1375 and #312 captures 2026-11-01
 

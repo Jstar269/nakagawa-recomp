@@ -278,6 +278,9 @@ CASE_ID = 117
 # 118: the #303 DMAC transfer-time and busy-channel cells (probe_dmac_timing.c).
 else ifeq ($(CASE),dma-timing)
 CASE_ID = 118
+# 138: the #303/#1380 memory-edge cells and the placement fixture mem_edge.h (probe_memory_edge.c).
+else ifeq ($(CASE),memory-edge)
+CASE_ID = 138
 # 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
 else ifeq ($(CASE),insn-trace)
 CASE_ID = 119
@@ -543,6 +546,11 @@ OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),dma-timing)
 TARGET = $(BUILD_DIR)/dma_timing
 OBJS = $(BUILD_DIR)/probe_dmac_timing.o $(BUILD_DIR)/threadman_user_imports.o
+# The memory-edge cells: their own source with the same writer, ThreadManForUser block and
+# module lifecycle as the HLE issue cells, plus the placement header mem_edge.h.
+else ifeq ($(CASE),memory-edge)
+TARGET = $(BUILD_DIR)/memory_edge
+OBJS = $(BUILD_DIR)/probe_memory_edge.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE raster corpus: the same source as the sample-point cells, case 123.
 else ifeq ($(CASE),ge-raster)
 TARGET = $(BUILD_DIR)/ge_raster
@@ -662,6 +670,13 @@ USER_MODE_IMPORT_GATE_ARGS += --exact-library sceSuspendForUser=0x3E0271D3,0xA14
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceWlanDrv=0xD7763699,0x93440B11
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
 endif
+# memory-edge: partition-memory, file and DMAC calls only; none of the interrupt, controller,
+# suspend or WLAN imports, nothing from the kernel bridge, and no OpenPSID.
+ifeq ($(CASE),memory-edge)
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library sceCtrl
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceSuspendForUser --forbid-library sceWlanDrv
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
 # intr-cause: exactly kuKernelCall from the kernel bridge, the two sceDisplay reads, and from
 # Kernel_Library the suspend/resume pair plus the two LwMutex calls the PSPSDK libc glue
 # imports; nothing from the interrupt manager or SystemCtrlForUser.
@@ -757,6 +772,10 @@ endif
 ifneq ($(filter $(BUILD_DIR)/probe_kernel_semantics.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
+# And the memory-edge cells (probe_memory_edge.c).
+ifneq ($(filter $(BUILD_DIR)/probe_memory_edge.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
 # And the DMAC transfer-time cells (probe_dmac_timing.c).
 ifneq ($(filter $(BUILD_DIR)/probe_dmac_timing.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
@@ -848,6 +867,9 @@ $(BUILD_DIR)/probe_insn_trace.o: probe_insn_trace.c insn_trace_fixtures.h
 $(BUILD_DIR)/probe_module_start.o: probe_module_start.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/probe_kernel_semantics.o: probe_kernel_semantics.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_memory_edge.o: probe_memory_edge.c mem_edge.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/insn_trace_tramp.o: insn_trace_tramp.S

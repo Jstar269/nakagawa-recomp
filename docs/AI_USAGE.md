@@ -84,6 +84,14 @@ Assisted-by: Codex (GPT-6 Luna)
   adds their own `Signed-off-by:` after reviewing the final diff, and no tool adds it for them.
 - A commit written entirely by a person carries no `Assisted-by:` line.
 
+## How each tool reads these rules
+
+[`AGENTS.md`](../AGENTS.md) holds the rules. Codex, Cursor, Jules and most other agents read it on
+their own. Claude Code reaches it through `CLAUDE.md`, and Copilot through
+`.github/copilot-instructions.md`. Gemini CLI reads only `GEMINI.md` unless told otherwise: set
+`"context": {"fileName": ["AGENTS.md"]}` in your own `.gemini/settings.json`. With Aider, pass
+`--read AGENTS.md`.
+
 Repository-specific contribution and disclosure rules remain authoritative:
 [AGENTS.md](../AGENTS.md), [CONTRIBUTING.md](../CONTRIBUTING.md), [NOTICE.md](../NOTICE.md), and
 [SECURITY.md](../SECURITY.md).
