@@ -154,6 +154,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import posixpath
 import re
 import subprocess
 import sys
@@ -168,9 +169,9 @@ try:
     from .provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        claims_ledger, claims_ledger_bytes, derive_policy_delta_v3, is_claims_ledger,
-        is_policy_delta_v3, policy_delta_v3_bytes, policy_delta_v3_name, validate_ledger,
-        verify_policy_delta_v3,
+        admission_claim, claims_ledger, claims_ledger_bytes, derive_policy_delta_v3, is_claims_ledger,
+        is_derived_policy_delta, policy_delta_v3_bytes, policy_delta_v3_name, policy_delta_v4_key,
+        validate_ledger, verify_derived_policy_delta,
     )
     from .public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
     from .public_export import build_control_document as _build_control_document
@@ -181,9 +182,9 @@ except ImportError:
     from provenance_ledger import (
         ALLOWED_CLASSES as ALLOWED_CLASSES, RefreshError, _admission_requires_implementation,
         _canonical_json_bytes, _class_for, _classify_policy_delta, _read_policy_delta_authority,
-        claims_ledger, claims_ledger_bytes, derive_policy_delta_v3, is_claims_ledger,
-        is_policy_delta_v3, policy_delta_v3_bytes, policy_delta_v3_name, validate_ledger,
-        verify_policy_delta_v3,
+        admission_claim, claims_ledger, claims_ledger_bytes, derive_policy_delta_v3, is_claims_ledger,
+        is_derived_policy_delta, policy_delta_v3_bytes, policy_delta_v3_name, policy_delta_v4_key,
+        validate_ledger, verify_derived_policy_delta,
     )
     from public_export import EXPORT_TREE_DERIVED_FIELDS as _EXPORT_TREE_DERIVED_FIELDS
     from public_export import build_control_document as _build_control_document
@@ -539,6 +540,7 @@ def read_tree(repo: Path, tree_sha: str) -> dict[str, bytes]:
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert proc.stdin and proc.stdout
+    stdin = proc.stdin
     blobs: dict[str, bytes] = {}
     total = 0
 
@@ -547,8 +549,8 @@ def read_tree(repo: Path, tree_sha: str) -> dict[str, bytes]:
         # stdout pipe fills, and then stops draining stdin, so writing the
         # whole request list before reading anything deadlocks both ends.
         try:
-            proc.stdin.write("".join(f"{oid}\n" for _, oid in requests).encode("ascii"))
-            proc.stdin.close()
+            stdin.write("".join(f"{oid}\n" for _, oid in requests).encode("ascii"))
+            stdin.close()
         except OSError:
             pass  # the reader hit a ceiling and killed the process
 
@@ -1245,6 +1247,145 @@ def _case_collision_findings(candidate_blobs: dict[str, bytes], base_blobs: dict
     return findings
 
 
+#: The import manifest every vendored directory carries (AGENTS.md Section 4): a table whose
+#: rows name each file, its kind ("imported byte-identical", "imported + LOCAL DELTA", ...) and
+#: the upstream Git blob id and/or SHA-256 of the imported bytes.
+VENDOR_MANIFEST_NAME = "PROVENANCE.md"
+_MANIFEST_FILE_CELL = re.compile(r"`([^`]+)`")
+_GIT_BLOB_ID = re.compile(r"[0-9a-f]{40}")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _manifest_rows(raw: bytes) -> list[dict[str, str]] | None:
+    """The rows of every ``| File | ... | Kind | ...`` table in a manifest, keyed by lower-case header.
+
+    ``None`` when the manifest is not UTF-8 text. Tables without a Kind column (for example an
+    asset list or a table of local changes) declare no import kind and are skipped.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    rows: list[dict[str, str]] = []
+    header: list[str] | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            header = None
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if cells and cells[0] == "File":
+            lowered = [cell.lower() for cell in cells]
+            header = lowered if "kind" in lowered else None
+            continue
+        if header is None or all(set(cell) <= set("-: ") for cell in cells):
+            continue
+        rows.append(dict(zip(header, cells, strict=False)))
+    return rows
+
+
+def _manifest_row_path(manifest: str, cell: str) -> str | None:
+    """The repository path a row's File cell names, relative to its manifest, or ``None``."""
+    match = _MANIFEST_FILE_CELL.fullmatch(cell.strip())
+    if match is None or match.group(1).startswith("/"):
+        return None
+    directory = manifest.rsplit("/", 1)[0] if "/" in manifest else ""
+    resolved = posixpath.normpath(posixpath.join(directory, match.group(1)))
+    return None if resolved == ".." or resolved.startswith("../") else resolved
+
+
+def _is_byte_identical_kind(kind: str) -> bool:
+    return kind.strip().lower().startswith("imported byte-identical")
+
+
+def _vendored_manifest_findings(candidate_blobs: dict[str, bytes], base_blobs: dict[str, bytes]) -> list[Finding]:
+    """A file a manifest declares imported byte-identical must still carry the recorded upstream bytes.
+
+    Where the hash is the claim, it stays bound for as long as the manifest says so, before and
+    after the file lands: every "imported byte-identical" row must name a file whose Git blob id
+    and/or SHA-256 equals the recorded value, and must carry at least one of them. A row the base
+    declares byte-identical may stop being so only explicitly: its file leaves the tree, or the
+    candidate's manifest re-labels the row as a LOCAL DELTA. Dropping or re-wording the row is a
+    finding, so a formatter, hook or hand edit cannot drift an import silently.
+    """
+    findings: list[Finding] = []
+    candidate_rows: dict[str, list[dict[str, str]]] = {}
+    for manifest in sorted(candidate_blobs):
+        if posixpath.basename(manifest) != VENDOR_MANIFEST_NAME:
+            continue
+        rows = _manifest_rows(candidate_blobs[manifest])
+        if rows is None:
+            findings.append(Finding(
+                "VENDORED_MANIFEST_UNREADABLE", manifest,
+                "the import manifest is not UTF-8 text, so its byte-identical declarations cannot be checked",
+            ))
+            continue
+        candidate_rows[manifest] = rows
+        for row in rows:
+            if not _is_byte_identical_kind(row.get("kind", "")):
+                continue
+            path = _manifest_row_path(manifest, row.get("file", ""))
+            if path is None or path not in candidate_blobs:
+                findings.append(Finding(
+                    "VENDORED_FILE_MISSING", manifest,
+                    f"declares {row.get('file', '')!r} imported byte-identical, but the candidate tree "
+                    "carries no such file",
+                ))
+                continue
+            data = candidate_blobs[path]
+            actual = {
+                "blob": hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest(),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            checked = 0
+            for column, value in row.items():
+                value = value.strip().strip("`")
+                if "blob" in column and _GIT_BLOB_ID.fullmatch(value):
+                    kind = "blob"
+                elif "sha" in column and "256" in column and _SHA256_HEX.fullmatch(value):
+                    kind = "sha256"
+                else:
+                    continue
+                checked += 1
+                if actual[kind] != value:
+                    findings.append(Finding(
+                        "VENDORED_BYTES_DRIFT", path,
+                        f"{manifest} declares this file imported byte-identical with {column} {value}, but "
+                        f"its bytes give {actual[kind]}; restore the upstream bytes, or record the change "
+                        "as a LOCAL DELTA in the manifest",
+                    ))
+            if not checked:
+                findings.append(Finding(
+                    "VENDORED_ROW_UNVERIFIABLE", path,
+                    f"{manifest} declares this file imported byte-identical without an upstream Git blob id "
+                    "or SHA-256 to check it against",
+                ))
+    for manifest in sorted(base_blobs):
+        if posixpath.basename(manifest) != VENDOR_MANIFEST_NAME:
+            continue
+        for row in _manifest_rows(base_blobs[manifest]) or []:
+            path = _manifest_row_path(manifest, row.get("file", ""))
+            if not _is_byte_identical_kind(row.get("kind", "")) or path is None or path not in candidate_blobs:
+                continue
+            kinds = [
+                candidate.get("kind", "") for candidate in candidate_rows.get(manifest, [])
+                if _manifest_row_path(manifest, candidate.get("file", "")) == path
+            ]
+            if not kinds:
+                findings.append(Finding(
+                    "VENDORED_ROW_REMOVED", path,
+                    f"the base {manifest} declares this file imported byte-identical; the candidate keeps the "
+                    "file but no longer lists it, so a change to it would go unrecorded",
+                ))
+            elif not any(_is_byte_identical_kind(kind) or "local delta" in kind.lower() for kind in kinds):
+                findings.append(Finding(
+                    "VENDORED_ROW_RECLASSIFIED", path,
+                    f"the base {manifest} declares this file imported byte-identical; it may stop being so "
+                    f"only as a LOCAL DELTA, but the candidate labels it {kinds[0]!r}",
+                ))
+    return findings
+
+
 def _ephemeral_verdict_findings(
     *,
     candidate_commit: str,
@@ -1319,6 +1460,7 @@ def _ephemeral_verdict_findings(
             maintainer_action=True,
         ))
     findings.extend(_case_collision_findings(candidate_blobs, base_blobs))
+    findings.extend(_vendored_manifest_findings(candidate_blobs, base_blobs))
 
     legacy_entries: dict[str, dict] | None = None
     legacy_raw = candidate_blobs.get(LEDGER_PATH)
@@ -1549,9 +1691,9 @@ def generate_ephemeral_controls(
         blessed_policy_file = _external_input(
             trusted_candidate_policy, repo=repo, label="trusted candidate policy",
         )
-    # A V3 authority (#1673) derives the candidate profile from the base and the approved
-    # change; V1 and V2 bind a separately blessed copy of it.
-    v3_authority = policy_delta_raw is not None and is_policy_delta_v3(policy_delta_raw)
+    # A V3 authority (#1673) or a V4 authority (claims-bound) derives the candidate profile from
+    # the base and the approved change; V1 and V2 bind a separately blessed copy of it.
+    v3_authority = policy_delta_raw is not None and is_derived_policy_delta(policy_delta_raw)
     if policy_delta_raw is None and blessed_policy_file is not None:
         raise VerifyError(
             "POLICY_DELTA_ARGUMENT_REQUIRED",
@@ -1560,7 +1702,7 @@ def generate_ephemeral_controls(
     if v3_authority and blessed_policy_file is not None:
         raise VerifyError(
             "POLICY_DELTA_ARGUMENT_REQUIRED",
-            "a V3 policy delta authority derives the candidate profile; pass no --trusted-candidate-policy",
+            "a V3 or V4 policy delta authority derives the candidate profile; pass no --trusted-candidate-policy",
         )
     if policy_delta_raw is not None and not v3_authority and blessed_policy_file is None:
         raise VerifyError(
@@ -1655,16 +1797,16 @@ def generate_ephemeral_controls(
             )
         except RefreshError as error:
             raise VerifyError(error.code, str(error)) from error
-        # A V1/V2 record binds the two profile digests and no file bytes. Since V3 (#1673)
-        # every path admission binds its bytes, so a legacy record may still approve a
-        # profile change that adds no path, but never a new path: an edited new file would
-        # miss its V3 delta and pass on the old record. One `admit_paths.py --rekey` writes
-        # the V3 delta from the recorded admission.
+        # A V1/V2 record binds the two profile digests and neither file bytes nor origin
+        # claims. Since V3 (#1673) every path admission binds its bytes, and since V4 its
+        # origin claim, so a legacy record may still approve a profile change that adds no
+        # path, but never a new path. One `admit_paths.py --rekey` writes the V4 delta from
+        # the recorded admission.
         if allowed_delta["include_added"]:
             raise VerifyError(
                 "POLICY_DELTA_LEGACY_ADDS_PATHS",
-                "a V1/V2 policy delta binds no bytes, so it cannot admit new paths "
-                f"({', '.join(allowed_delta['include_added'])}); re-key the admission to a V3 delta "
+                "a V1/V2 policy delta binds no claim, so it cannot admit new paths "
+                f"({', '.join(allowed_delta['include_added'])}); re-key the admission to a V4 delta "
                 "with admit_paths.py --rekey",
             )
         policy_delta = _classify_policy_delta(baseline_document, candidate_document)
@@ -1683,13 +1825,16 @@ def generate_ephemeral_controls(
                 "candidate publication policy equals the trusted base policy; omit policy-delta inputs when unchanged",
             )
         try:
-            policy_delta = verify_policy_delta_v3(
+            policy_delta = verify_derived_policy_delta(
                 policy_delta_raw,
                 baseline_policy_bytes=base_policy_bytes,
                 candidate_policy_bytes=candidate_policy_raw,
                 base_blobs=base_blobs,
                 candidate_blobs=candidate_blobs,
                 candidate_policy=candidate_policy,
+                # A V4 authority binds each added path to the origin claim the trusted ledger
+                # derives for it: the same exact records the generated ledger is built from.
+                claim_of=lambda path: admission_claim(path, exact_records.get(path)),
             )
         except RefreshError as error:
             raise VerifyError(error.code, str(error)) from error
@@ -1776,6 +1921,27 @@ def _declares_hashed_ledger(raw: bytes | None) -> bool:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return False
     return isinstance(document, dict) and document.get("schema_version") == 1
+
+
+def policy_delta_key_v4(*, repo: Path, base_rev: str, candidate_rev: str) -> str:
+    """The file name of the V4 authority that would approve this candidate's profile change.
+
+    The attestation workflows look up ``docs/provenance/policy-deltas-v4/<key>.json`` first. The
+    key depends on the two profiles alone -- never on file bytes or the trusted ledger -- so an
+    edit to an admitted file selects the same decision. It only selects: verification derives the
+    whole document, claims and byte bindings included, and requires the fetched bytes to equal it.
+    """
+    repo = repo.resolve()
+    baseline_raw = read_tree(repo, _rev_tree(repo, _rev_commit(repo, base_rev))).get(POLICY_PATH)
+    candidate_raw = read_tree(repo, _rev_tree(repo, _rev_commit(repo, candidate_rev))).get(POLICY_PATH)
+    if baseline_raw is None or candidate_raw is None:
+        raise VerifyError("POLICY_MISSING", f"the base or the candidate has no {POLICY_PATH}")
+    baseline = strict_json(baseline_raw, code="TRUSTED_POLICY_INVALID", label="trusted policy")
+    candidate = strict_json(candidate_raw, code="CANDIDATE_POLICY_INVALID", label="candidate policy")
+    try:
+        return str(policy_delta_v4_key(baseline, candidate))
+    except RefreshError as error:
+        raise VerifyError(error.code, str(error)) from error
 
 
 def policy_delta_key(*, repo: Path, base_rev: str, candidate_rev: str) -> str:
@@ -2262,6 +2428,7 @@ def verify(
             "excluded by both the trusted and the candidate policy, so it would enter the tree unverified",
         ))
     findings.extend(_case_collision_findings(candidate_blobs, base_blobs))
+    findings.extend(_vendored_manifest_findings(candidate_blobs, base_blobs))
 
     # Everything the gate must reason about: never narrower than the trusted
     # universe, widened by whatever the candidate additionally publishes.
@@ -2715,6 +2882,13 @@ def main(argv: list[str] | None = None) -> int:
             "profile change from --base to --candidate, and exit; needs no trusted input"
         ),
     )
+    parser.add_argument(
+        "--policy-delta-key-v4", action="store_true",
+        help=(
+            "print the file name (sha256 of the selector) of the V4 policy-delta authority that would "
+            "approve the profile change from --base to --candidate, and exit; reads the two profiles only"
+        ),
+    )
     parser.add_argument("--workdir", type=Path, default=None,
                         help="scratch directory for trusted inputs; must be outside --repo")
     parser.add_argument(
@@ -2756,12 +2930,16 @@ def main(argv: list[str] | None = None) -> int:
     # for --explain-verdict, which reads an existing verdict rather than
     # producing one. Enforced here so the explanation mode stays a single
     # command with no inputs a contributor does not have.
-    if args.policy_delta_key:
-        # Selection only: reads the two profiles and the candidate's blobs from Git objects.
+    if args.policy_delta_key or args.policy_delta_key_v4:
+        # Selection only: reads the two profiles (and, for V3, the candidate's blobs) from Git objects.
+        flag = "--policy-delta-key-v4" if args.policy_delta_key_v4 else "--policy-delta-key"
+        if args.policy_delta_key and args.policy_delta_key_v4:
+            parser.error("pass one of --policy-delta-key and --policy-delta-key-v4")
         if args.base is None or args.candidate is None:
-            parser.error("--policy-delta-key needs --base and --candidate")
+            parser.error(f"{flag} needs --base and --candidate")
+        key_of = policy_delta_key_v4 if args.policy_delta_key_v4 else policy_delta_key
         try:
-            print(policy_delta_key(repo=args.repo, base_rev=args.base, candidate_rev=args.candidate))
+            print(key_of(repo=args.repo, base_rev=args.base, candidate_rev=args.candidate))
         except VerifyError as error:
             print(f"trusted provenance attestation: {error.code}: {error}", file=sys.stderr)
             return 2

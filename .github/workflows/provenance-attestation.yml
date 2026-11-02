@@ -189,67 +189,99 @@ jobs:
           echo "base policy sha256 ${base_policy_sha}"
           echo "candidate policy sha256 ${candidate_policy_sha}"
           if [ "${base_policy_sha}" != "${candidate_policy_sha}" ]; then
-            # v3-policy-delta-lookup:begin (the same block in both attestation workflows)
-            # A V3 authority (#1673) records only this change: the added paths with their admitted
-            # SHA-256, the removed paths, the exclude-list and rule changes. It stays valid when
-            # unrelated paths land. The trusted checkout's verifier derives it from the base and
-            # candidate profiles and the candidate's blobs; its SHA-256 is the stored file's name.
-            # The name only selects: the verifier derives the document again and requires the
-            # fetched bytes to equal it exactly. A failed derivation fails this step.
-            v3_name="$(python tools/provenance_attest_verify.py --repo "${GITHUB_WORKSPACE}" \
-              --base "${BASE_SHA}" --candidate "${HEAD_SHA}" --policy-delta-key)"
-            case "${v3_name}" in
-              [0-9a-f]*) [ "${#v3_name}" -eq 64 ] || { echo "V3 policy delta name malformed" >&2; exit 1; } ;;
-              *) echo "V3 policy delta name malformed" >&2; exit 1 ;;
+            # v4-policy-delta-lookup:begin (the same block in both attestation workflows)
+            # A V4 authority binds each added path to its origin claim (the trusted record's class,
+            # upstream, revision and licence), and to its SHA-256 only where the admission declared a
+            # byte-identical import. It is stored under the SHA-256 of its selector, which the
+            # trusted checkout's verifier derives from the base and candidate profiles alone, so an
+            # edit to an admitted file selects the same decision. The name only selects: the
+            # verifier derives the whole document again, claims and byte bindings included, and
+            # requires the fetched bytes to equal it exactly. A failed derivation fails this step.
+            v4_name="$(python tools/provenance_attest_verify.py --repo "${GITHUB_WORKSPACE}" \
+              --base "${BASE_SHA}" --candidate "${HEAD_SHA}" --policy-delta-key-v4)"
+            case "${v4_name}" in
+              [0-9a-f]*) [ "${#v4_name}" -eq 64 ] || { echo "V4 policy delta name malformed" >&2; exit 1; } ;;
+              *) echo "V4 policy delta name malformed" >&2; exit 1 ;;
             esac
             if gh api \
               -H "Accept: application/vnd.github.raw" \
-              "repos/${TRUSTED_REPO}/contents/docs/provenance/policy-deltas-v3/${v3_name}.json?ref=${authority_sha}" \
-              > "${RUNNER_TEMP}/trusted/policy-delta-authority.json" 2> "${RUNNER_TEMP}/trusted/v3-lookup.err"; then
-              echo "V3 policy delta authority ${v3_name} materialized"
+              "repos/${TRUSTED_REPO}/contents/docs/provenance/policy-deltas-v4/${v4_name}.json?ref=${authority_sha}" \
+              > "${RUNNER_TEMP}/trusted/policy-delta-authority.json" 2> "${RUNNER_TEMP}/trusted/v4-lookup.err"; then
+              echo "V4 policy delta authority ${v4_name} materialized"
               echo "policy_delta_authority=${RUNNER_TEMP}/trusted/policy-delta-authority.json" >> "${GITHUB_OUTPUT}"
             else
-              # Only a confirmed absence falls back; any other lookup error fails this step.
-              if ! grep -q "HTTP 404" "${RUNNER_TEMP}/trusted/v3-lookup.err"; then
-                cat "${RUNNER_TEMP}/trusted/v3-lookup.err" >&2
-                echo "the V3 policy delta lookup failed for a reason other than its absence" >&2
+              # Only a confirmed absence falls back to an admission from before V4; any other
+              # lookup error fails this step.
+              if ! grep -q "HTTP 404" "${RUNNER_TEMP}/trusted/v4-lookup.err"; then
+                cat "${RUNNER_TEMP}/trusted/v4-lookup.err" >&2
+                echo "the V4 policy delta lookup failed for a reason other than its absence" >&2
                 exit 1
               fi
-              # No V3 authority: an admission from before V3 deltas left a V1/V2 record keyed by
-              # both profile digests (nested), or by the candidate digest alone (flat). The
-              # verifier accepts such a record only for a change that adds no path.
               rm -f "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
-              nested_policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}/${base_policy_sha}"
-              flat_policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}"
+              # v3-policy-delta-lookup:begin (the same block in both attestation workflows)
+              # No V4 authority: an admission from before V4 left a V3 authority (#1673). It records
+              # only this change: the added paths with their admitted SHA-256, the removed paths,
+              # the exclude-list and rule changes. It stays valid when unrelated paths land. The
+              # trusted checkout's verifier derives it from the base and candidate profiles and the
+              # candidate's blobs; its SHA-256 is the stored file's name. The name only selects: the
+              # verifier derives the document again and requires the fetched bytes to equal it
+              # exactly. A failed derivation fails this step.
+              v3_name="$(python tools/provenance_attest_verify.py --repo "${GITHUB_WORKSPACE}" \
+                --base "${BASE_SHA}" --candidate "${HEAD_SHA}" --policy-delta-key)"
+              case "${v3_name}" in
+                [0-9a-f]*) [ "${#v3_name}" -eq 64 ] || { echo "V3 policy delta name malformed" >&2; exit 1; } ;;
+                *) echo "V3 policy delta name malformed" >&2; exit 1 ;;
+              esac
               if gh api \
                 -H "Accept: application/vnd.github.raw" \
-                "repos/${TRUSTED_REPO}/contents/${nested_policy_dir}/candidate-policy.json?ref=${authority_sha}" \
-                > "${RUNNER_TEMP}/trusted/candidate-policy.json" && \
-                gh api \
-                  -H "Accept: application/vnd.github.raw" \
-                  "repos/${TRUSTED_REPO}/contents/${nested_policy_dir}/policy-delta-authority.json?ref=${authority_sha}" \
-                  > "${RUNNER_TEMP}/trusted/policy-delta-authority.json" && \
-                test -s "${RUNNER_TEMP}/trusted/candidate-policy.json" && \
-                test -s "${RUNNER_TEMP}/trusted/policy-delta-authority.json"; then
-                policy_dir="${nested_policy_dir}"
+                "repos/${TRUSTED_REPO}/contents/docs/provenance/policy-deltas-v3/${v3_name}.json?ref=${authority_sha}" \
+                > "${RUNNER_TEMP}/trusted/policy-delta-authority.json" 2> "${RUNNER_TEMP}/trusted/v3-lookup.err"; then
+                echo "V3 policy delta authority ${v3_name} materialized"
+                echo "policy_delta_authority=${RUNNER_TEMP}/trusted/policy-delta-authority.json" >> "${GITHUB_OUTPUT}"
               else
-                policy_dir="${flat_policy_dir}"
-                gh api \
+                # Only a confirmed absence falls back; any other lookup error fails this step.
+                if ! grep -q "HTTP 404" "${RUNNER_TEMP}/trusted/v3-lookup.err"; then
+                  cat "${RUNNER_TEMP}/trusted/v3-lookup.err" >&2
+                  echo "the V3 policy delta lookup failed for a reason other than its absence" >&2
+                  exit 1
+                fi
+                # No V3 authority: an admission from before V3 deltas left a V1/V2 record keyed by
+                # both profile digests (nested), or by the candidate digest alone (flat). The
+                # verifier accepts such a record only for a change that adds no path.
+                rm -f "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
+                nested_policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}/${base_policy_sha}"
+                flat_policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}"
+                if gh api \
                   -H "Accept: application/vnd.github.raw" \
-                  "repos/${TRUSTED_REPO}/contents/${policy_dir}/candidate-policy.json?ref=${authority_sha}" \
-                  > "${RUNNER_TEMP}/trusted/candidate-policy.json"
-                gh api \
-                  -H "Accept: application/vnd.github.raw" \
-                  "repos/${TRUSTED_REPO}/contents/${policy_dir}/policy-delta-authority.json?ref=${authority_sha}" \
-                  > "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
+                  "repos/${TRUSTED_REPO}/contents/${nested_policy_dir}/candidate-policy.json?ref=${authority_sha}" \
+                  > "${RUNNER_TEMP}/trusted/candidate-policy.json" && \
+                  gh api \
+                    -H "Accept: application/vnd.github.raw" \
+                    "repos/${TRUSTED_REPO}/contents/${nested_policy_dir}/policy-delta-authority.json?ref=${authority_sha}" \
+                    > "${RUNNER_TEMP}/trusted/policy-delta-authority.json" && \
+                  test -s "${RUNNER_TEMP}/trusted/candidate-policy.json" && \
+                  test -s "${RUNNER_TEMP}/trusted/policy-delta-authority.json"; then
+                  policy_dir="${nested_policy_dir}"
+                else
+                  policy_dir="${flat_policy_dir}"
+                  gh api \
+                    -H "Accept: application/vnd.github.raw" \
+                    "repos/${TRUSTED_REPO}/contents/${policy_dir}/candidate-policy.json?ref=${authority_sha}" \
+                    > "${RUNNER_TEMP}/trusted/candidate-policy.json"
+                  gh api \
+                    -H "Accept: application/vnd.github.raw" \
+                    "repos/${TRUSTED_REPO}/contents/${policy_dir}/policy-delta-authority.json?ref=${authority_sha}" \
+                    > "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
+                fi
+                test -s "${RUNNER_TEMP}/trusted/candidate-policy.json"
+                test -s "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
+                echo "policy delta authority materialized from ${policy_dir}"
+                echo "trusted_candidate_policy=${RUNNER_TEMP}/trusted/candidate-policy.json" >> "${GITHUB_OUTPUT}"
+                echo "policy_delta_authority=${RUNNER_TEMP}/trusted/policy-delta-authority.json" >> "${GITHUB_OUTPUT}"
               fi
-              test -s "${RUNNER_TEMP}/trusted/candidate-policy.json"
-              test -s "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
-              echo "policy delta authority materialized from ${policy_dir}"
-              echo "trusted_candidate_policy=${RUNNER_TEMP}/trusted/candidate-policy.json" >> "${GITHUB_OUTPUT}"
-              echo "policy_delta_authority=${RUNNER_TEMP}/trusted/policy-delta-authority.json" >> "${GITHUB_OUTPUT}"
+              # v3-policy-delta-lookup:end
             fi
-            # v3-policy-delta-lookup:end
+            # v4-policy-delta-lookup:end
           else
             echo "candidate policy equals trusted base policy; no policy delta authority required"
           fi
