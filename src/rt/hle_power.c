@@ -53,9 +53,10 @@ void sr_hle_test_power_set_external(int external) { s_power_external = external 
  * src/power/psppower.h (scePowerSetClockFrequency) and PPSSPP
  * Core/HLE/scePower.cpp, where the Set calls update the frequencies the Get
  * calls report. The getters below previously returned fixed 333/166; they now
- * reflect the last accepted Set request. Frequency validation and any 350 MHz
- * ceiling difference between the two Set variants are UNMEASURED here: every
- * request is retained verbatim and reported back.
+ * reflect the last accepted Set request, retained verbatim. PSPAutotests
+ * tests/power/freq.expected (2ed7c9c5, recorded on a PSP) shows the PSP stepping
+ * an accepted request (19 reads back as PLL 190, CPU 18, bus 95), which is not
+ * modelled here.
  *
  * PLL: the PSPSDK header documents pllfreq as valid from 19 to 333 MHz, with
  * cpufreq <= pllfreq and busfreq * 2 <= pllfreq. It documents no power-on value.
@@ -83,11 +84,16 @@ uint32_t h_PowerGetPllClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_pll_
 uint32_t h_PowerGetCpuClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_cpu_freq; return 0; }
 uint32_t h_PowerGetBusClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_bus_freq; return 0; }
 
-/* scePowerSetClockFrequency(pllfreq, cpufreq, busfreq): retain the requested
- * PLL, CPU and bus clocks. Same public references as the retained state above.
- * scePowerSetClockFrequency630 (0x469989ad) shares this handler: PPSSPP
- * Core/HLE/scePower.cpp (c9e2afb6) routes it to the same function. */
+/* scePowerSetClockFrequency(pllfreq, cpufreq, busfreq): check the request, then retain the PLL,
+ * CPU and bus clocks. PPSSPP Core/HLE/scePower.cpp (c9e2afb6) routes scePowerSetClockFrequency350
+ * (0xebd177d6) and scePowerSetClockFrequency630 (0x469989ad) to the same function, so all three
+ * share this handler, and its ranges are PPSSPP's. PSPAutotests tests/power/freq.expected
+ * (2ed7c9c5, recorded on a PSP) calls it with (n, n, n / 2): -1..18 and 334 return 0x800001FE and
+ * 19..333 return 0. The independent CPU and bus limits are UNMEASURED. */
 uint32_t h_PowerSetClockFrequency(CpuState *s) {
+    if (A0 < 19u || A0 < A1 || A0 > 333u) return SCE_ERROR_INVALID_VALUE;
+    if (A1 == 0u || A1 > 333u) return SCE_ERROR_INVALID_VALUE;
+    if (A2 == 0u || A2 > 166u) return SCE_ERROR_INVALID_VALUE;
     s_pll_freq = A0;
     s_cpu_freq = A1;
     s_bus_freq = A2;
@@ -120,16 +126,6 @@ uint32_t h_PowerSetBusClockFrequency(CpuState *s) {
                                       "at a PLL other than the measured 222 MHz is not measured");
     int32_t bus = (int32_t)A0;
     if (bus < 1 || bus > (int32_t)SR_POWER_BOOT_BUS_MHZ) return SCE_ERROR_INVALID_VALUE;
-    return 0;
-}
-
-/* scePowerSetClockFrequency350(pllfreq, cpufreq, busfreq): same shape, same
- * retained state. Whether firmware 350 permits a distinct PLL ceiling is
- * UNMEASURED here. */
-uint32_t h_PowerSetClockFrequency350(CpuState *s) {
-    s_pll_freq = A0;
-    s_cpu_freq = A1;
-    s_bus_freq = A2;
     return 0;
 }
 
@@ -246,7 +242,7 @@ void sr_hle_power_register_clock(void) {
     sr_hle_register(0xb1a52c83, "scePowerGetCpuClockFrequencyFloat", h_PowerGetCpuClockFrequencyFloat);
     sr_hle_register(0x9badb3eb, "scePowerGetBusClockFrequencyFloat", h_PowerGetBusClockFrequencyFloat);
     sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
-    sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
+    sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency);
     sr_hle_register(0x469989ad, "scePowerSetClockFrequency630", h_PowerSetClockFrequency);
     sr_hle_register(0x843fbf43, "scePowerSetCpuClockFrequency", h_PowerSetCpuClockFrequency);
     sr_hle_register(0xb8d7b3fb, "scePowerSetBusClockFrequency", h_PowerSetBusClockFrequency);

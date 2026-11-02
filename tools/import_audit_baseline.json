@@ -1222,7 +1222,7 @@
     "classification": "dedicated",
     "handler": "h_PowerSetClockFrequency",
     "name": "scePowerSetClockFrequency630",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x46ebb729": {
     "classification": "dedicated",
@@ -1863,7 +1863,7 @@
     "classification": "dedicated",
     "handler": "h_PowerSetClockFrequency",
     "name": "scePowerSetClockFrequency",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x740fccd1": {
     "classification": "dedicated",
@@ -3728,9 +3728,9 @@
   },
   "0xebd177d6": {
     "classification": "dedicated",
-    "handler": "h_PowerSetClockFrequency350",
+    "handler": "h_PowerSetClockFrequency",
     "name": "scePowerSetClockFrequency350",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xebd5c3e6": {
     "classification": "dedicated",

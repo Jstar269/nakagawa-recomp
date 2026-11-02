@@ -10731,6 +10731,66 @@ static void test_power_set_bus_clock_frequency_autotest(void) {
     sr_hle_test_power_reset();
 }
 
+/* scePowerSetClockFrequency and its 350 and 630 variants, which PPSSPP Core/HLE/scePower.cpp
+ * (c9e2afb6) routes to one function. PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded
+ * on a PSP) calls it with (n, n, n / 2): -1..18 and 334 return 0x800001FE, 19..333 return 0. The
+ * independent CPU and bus limits are PPSSPP's, not measured. A refused request moves no clock. */
+static int power_clocks_are(uint32_t pll, uint32_t cpu, uint32_t bus) {
+    return td24b_dispatch4(0x34f9c463u, 0u, 0u, 0u, 0u) == pll &&
+           td24b_dispatch4(0xfdb5bfe9u, 0u, 0u, 0u, 0u) == cpu &&
+           td24b_dispatch4(0xbd681969u, 0u, 0u, 0u, 0u) == bus;
+}
+
+static void test_power_set_clock_frequency_range_checks(void) {
+    static const struct { uint32_t nid; const char *name; } setters[] = {
+        {0x737486f2u, "scePowerSetClockFrequency"},
+        {0xebd177d6u, "scePowerSetClockFrequency350"},
+        {0x469989adu, "scePowerSetClockFrequency630"},
+    };
+    static const struct { uint32_t pll, cpu, bus; const char *why; } refused[] = {
+        {18u, 18u, 9u, "PLL below 19 (recorded)"},
+        {334u, 334u, 167u, "PLL above 333 (recorded)"},
+        {222u, 223u, 111u, "PLL below the CPU clock"},
+        {222u, 0u, 111u, "CPU clock 0"},
+        {333u, 334u, 166u, "CPU clock above 333, which also puts it above the PLL"},
+        {222u, 222u, 0u, "bus clock 0"},
+        {333u, 333u, 167u, "bus clock above 166"},
+    };
+    static const struct { uint32_t pll, cpu, bus; } accepted[] = {
+        {19u, 19u, 9u}, {333u, 333u, 166u}, {333u, 1u, 1u}, {222u, 222u, 111u},
+    };
+    char msg[192];
+    reset_fixture();
+    sr_hle_init();
+    for (size_t n = 0; n < sizeof(setters) / sizeof(setters[0]); n++) {
+        uint32_t nid = setters[n].nid;
+        for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+            sr_hle_test_power_reset();
+            snprintf(msg, sizeof msg, "%s refuses %s with 0x800001FE and moves no clock",
+                     setters[n].name, refused[i].why);
+            expect(td24b_dispatch4(nid, refused[i].pll, refused[i].cpu, refused[i].bus, 0u) == 0x800001feu &&
+                       power_clocks_are(222u, 222u, 111u), msg);
+        }
+        int sweep_ok = 1;
+        for (int32_t freq = -1; freq <= 334; freq++) {
+            uint32_t want = (freq >= 19 && freq <= 333) ? 0u : 0x800001feu;
+            if (td24b_dispatch4(nid, (uint32_t)freq, (uint32_t)freq, (uint32_t)(freq / 2), 0u) != want)
+                sweep_ok = 0;
+        }
+        snprintf(msg, sizeof msg, "%s answers the recorded (n, n, n / 2) sweep from -1 to 334",
+                 setters[n].name);
+        expect(sweep_ok, msg);
+        for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+            sr_hle_test_power_reset();
+            snprintf(msg, sizeof msg, "%s accepts %u/%u/%u and retains it", setters[n].name,
+                     accepted[i].pll, accepted[i].cpu, accepted[i].bus);
+            expect(td24b_dispatch4(nid, accepted[i].pll, accepted[i].cpu, accepted[i].bus, 0u) == 0u &&
+                       power_clocks_are(accepted[i].pll, accepted[i].cpu, accepted[i].bus), msg);
+        }
+    }
+    sr_hle_test_power_reset();
+}
+
 /* sceRtcGetTime_t, sceRtcTickAddYears and sceRtcGetTickResolution against PSPAutotests
  * tests/rtc/{convert,arithmetic}.expected (2ed7c9c5, recorded on a PSP). Dates go to ticks and
  * back through sceRtcGetTick / sceRtcSetTick, as the autotests do. Before these handlers the
@@ -43418,6 +43478,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_psp_measured_cpu_clock_user_mode_20261024();
     test_psp_measured_rtc_time64_20261024();
     test_power_set_bus_clock_frequency_autotest();
+    test_power_set_clock_frequency_range_checks();
     test_rtc_time_t_add_years_resolution_autotest();
     test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();

@@ -47,15 +47,15 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 ### HLE Semantic Status Census
 
 Registered NIDs: **661** (dedicated **557**, fake_success **5**, controlled_unsupported **99**).
-Semantic handler census: **535** handlers across **26** API families, covering **563** handler-associated NID registrations.
+Semantic handler census: **534** handlers across **26** API families, covering **563** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 230 | 235 |
+| `partial` | 231 | 238 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 288 | 298 |
+| `unreviewed` | 286 | 295 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -77,7 +77,7 @@ Semantic handler census: **535** handlers across **26** API families, covering *
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `scePower` | 0 | 10 | 0 | 0 | 9 | 19 | 22 |
+| `scePower` | 0 | 11 | 0 | 0 | 7 | 18 | 22 |
 | `scePsmf` | 0 | 3 | 0 | 0 | 14 | 17 | 17 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 5 | 7 | 0 | 0 | 1 | 13 | 13 |
@@ -85,7 +85,7 @@ Semantic handler census: **535** handlers across **26** API families, covering *
 | `sceUmd` | 0 | 6 | 1 | 0 | 7 | 14 | 14 |
 | `sceUtility` | 0 | 7 | 0 | 0 | 27 | 34 | 34 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **230** | **1** | **2** | **288** | **535** | **563** |
+| **Total** | **14** | **231** | **1** | **2** | **286** | **534** | **563** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -845,6 +845,11 @@ Semantic handler census: **535** handlers across **26** API families, covering *
   - Limitation: validates 1..111 against the measured range at PLL 222 and changes no clock, as measured; at any other retained PLL the range is not measured and the run stops by name
   - Evidence: tests/native/hle_thread_selftest.c:test_power_set_bus_clock_frequency_autotest
   - Evidence: PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded on a PSP): at PLL 222, 1..111 return 0 and -1, 0, 112 return 0x800001fe, and no request moves any clock
+- **`h_PowerSetClockFrequency`** (`scePower`): `scePowerSetClockFrequency630` (0x469989ad), `scePowerSetClockFrequency` (0x737486f2), `scePowerSetClockFrequency350` (0xebd177d6)
+  - Limitation: the PLL range is recorded for (n, n, n / 2) only; the independent CPU and bus limits are PPSSPP's and not measured; an accepted request is retained verbatim, while the recording shows the PSP stepping it (19 reads back as PLL 190, CPU 18, bus 95), and PPSSPP's delay on a PLL change is not modelled (#341)
+  - Evidence: tests/native/hle_thread_selftest.c:test_power_set_clock_frequency_range_checks
+  - Evidence: PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded on a PSP): (n, n, n / 2) returns 0 for 19..333 and 0x800001fe for -1..18 and 334
+  - Evidence: PPSSPP scePower.cpp (c9e2afb6): the ranges, and one function behind 0x737486f2, 0xebd177d6 and 0x469989ad
 - **`h_PowerSetCpuClockFrequency`** (`scePower`): `scePowerSetCpuClockFrequency` (0x843fbf43)
   - Limitation: accepts 1..retained PLL and refuses the rest with 0x800001fe, measured only at PLL 222; the clock the getters report after an accepted request is the retained request, not measured
   - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_cpu_clock_user_mode_20261024
