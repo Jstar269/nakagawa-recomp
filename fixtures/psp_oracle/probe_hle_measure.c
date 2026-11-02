@@ -17,7 +17,7 @@
 // (PSP-HLE-SAVEDATA-GETSIZE-001). Cases 97-101 have recorded PSP-3000 runs from
 // 2026-10-15: the VTimer and power cases were measured; pool-bounds was captured
 // only in its earlier revision, and the revised form has not run; null-out was
-// captured incomplete. Cases 102-103 have not run on hardware.
+// captured incomplete. Case 104 was measured on 2026-11-02 (docs/HARDWARE_ORACLE.md).
 // Their pass rule is machinery only: a record is PASS when its calls completed and were
 // recorded in order, and SKIP only when the object a cell needs (a timer, pool or
 // block UID) was not obtained. A fixed-pool delete after a refused create is PASS
@@ -1905,19 +1905,18 @@ static int hle_run(void)
 #endif /* HLE_CASE_TIMER_ORDER */
 
 /* ------------------------------------------------------------------------- */
-
 #if PSP_ORACLE_CASE == HLE_CASE_SAVEDATA_GETSIZE
 
 /* #308, PR #1898: what savedata mode 22 (GETSIZE) answers when the named save does not exist,
-   and whether it still fills in the free and shortfall fields. src/rt/savedata.c follows
-   PPSSPP here; the one recorded PSP case has the save in place. GETSIZE changes nothing on
+   and whether it still fills in the free and shortfall fields. GETSIZE changes nothing on
    the Memory Stick: the save name is one no game owns, the probe checks that its directory is
    absent before and after each dialog, and it makes and deletes no save. No dialog shows and
    no button is pressed.
 
-   The dialog must run in game context. Under the XMB, InitStart returned 0 and the status
-   stayed at INIT (two launches, 2026-10-31, pspver 6.6.0), so volatile-lock-before records
-   whether the memory the utility needs is free when the first dialog starts.
+   The dialog must run in game context (standalone PSPLink after a soft reset). Launched under
+   the XMB, InitStart returned 0 and the status stayed at INIT with an SceUtilityInit thread
+   left behind (two launches, 2026-10-31), so volatile-lock-before records whether the memory
+   the utility needs is free when the first dialog starts.
 
    Each dialog runs as in a game's frame loop, at most HLE_SD_POLL_VBLANKS polls one vblank
    apart: GetStatus; Update(1) when RUNNING; ShutdownStart once FINISHED; done when NONE

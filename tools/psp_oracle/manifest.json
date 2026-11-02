@@ -1306,8 +1306,10 @@
       {
         "id": "PSP-HLE-SAVEDATA-GETSIZE-001",
         "status": "implemented",
-        "hardware_evidence": "NOT_RUN",
-        "evidence_note": "No hardware capture exists. It is built from fixtures/psp_oracle/probe_hle_measure.c as hle_savedata_getsize.prx and its stream is strictly parsed (10 records and the done record).",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": ["save-absent-before", "volatile-lock-before", "getsize-missing-secure", "save-absent-after-secure", "getsize-missing-empty", "save-absent-after-empty", "getsize-missing-shortfall", "save-absent-after-shortfall", "getsize-missing-null", "save-absent-after-null", "hle-savedata-getsize-done"],
+        "measurement_note": "Measured by the 2026-11-02 PSP-3000 single-case run (firmware 6.6.1, game context, boot 107) of public commit eded11ac, case hle-savedata-getsize: 10 records and the done record, all PASS, acceptance-eligible with 0 blockers. Cited: for a save that does not exist, a non-NULL sizeInfo gives common result 0x80110327 with the free fields and neededKB written and overwriteKB and overwriteString left alone; a NULL sizeInfo gives common result 0; and the save directory stays absent. Commit 1a3d3d22 (boot 106) agreed on the cells it shares.",
         "group": "system",
         "source": "fixtures/psp_oracle/probe_hle_measure.c",
         "prx": "hle_savedata_getsize.prx",
