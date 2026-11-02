@@ -1055,6 +1055,31 @@ outside the published repository.
   waits for a profile/save or cannot open a title-specific cache, inspect the
   local diagnostic log. Do not copy that input or its path into Git.
 
+### Local problem report (`nk_cli.py report`)
+
+`python tools/nk_cli.py report --title <DISC_ID>` writes one ZIP you can attach to an issue yourself. It
+is made on your PC and **nothing is uploaded**: the code uses no network library, and a test fails if it
+opens a connection. The ZIP goes to `<user data>\reports\<UTC time>-<title>.zip`; `--preview` lists the
+files without writing it, `--json` prints the list for a tool, and `--no-doctor` leaves out the toolchain
+check (the one slow step).
+
+| File in the ZIP | What it is |
+| --- | --- |
+| `about.txt` | Nakagawa version and source commit, tools version, OS, CPU, GPU and driver, RAM, title id and region, package state, and every file here with its size |
+| `logs/game-<DISC_ID>-last.txt` and `-prev.txt` | The title's last two runtime logs (without `--title`, the two newest of any title) |
+| `logs/developer-log.txt`, `logs/player-output.txt` | The launcher's logs |
+| `settings/*.json` | The `.json` files directly in the player's settings folder; a value under a key named like a token, secret or password is replaced |
+| `flight-recorder-summary.json` | The newest `flight-recorder*.json`'s scalar fields and the size of each list; never its events or memory |
+| `nk_doctor.txt` | `tools/nk_doctor.py --json` |
+
+Only those files are ever opened, so nothing is "everything except a few exclusions". Each is also
+refused by rule when it is a game file or disc image, a decrypted module, a save, a frame or memory dump,
+a trace, a key or a console-bound value, or when it is not plain text, and long logs keep their last 2 MiB
+from a whole line. Every line is redacted: your home folder (any spelling: `C:\Users\you`, `C:/Users/you`,
+`\\?\C:\...`, `file:///C:/...`, `/mnt/c/Users/you`, `/home/you`, `/Users/you`, JSON-escaped slashes)
+becomes `~`, your account name becomes `<user>` and this PC's name `<host>`. Read the ZIP before you
+attach it. The launcher button for this is not built yet (#1849).
+
 ### Windows host pitfalls
 
 | Symptom | Cause | Fix |
