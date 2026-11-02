@@ -2457,7 +2457,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 123)
+        self.assertEqual(len(routes), 124)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2465,7 +2465,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(set(range(1, 79)) | set(range(90, 104)) | {106, 107, 108, 109}
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
-                         | {128, 129, 130, 132, 133, 134, 135}
+                         | {128, 129, 130, 132, 133, 134, 135, 138}
                          | {150, 151},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
@@ -3169,6 +3169,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 # 2026-11-01: the #1375 P1/P2 stream has explicit non-invocation SKIPs; the
                 # fetch-zero exception has a retained frame but no completion sentinel.
                 "PSP-NULLCODE-001", "PSP-EXCEPTION-FETCH-001",
+                # 2026-11-02: memory-edge (bb3f36e4): 33 PASS and 42 intentional SKIP records
+                # (no bottom-of-RAM edge, no scratchpad or VRAM file call, no unproven overrun).
+                "PSP-MEMEDGE-001",
             },
         )
 
