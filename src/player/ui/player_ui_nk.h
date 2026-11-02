@@ -812,6 +812,7 @@ typedef struct {
 typedef struct {
     const char *version_line;   /* "v0.0.1 (10-23-2026)" (player_ui_version_line) */
     const char *build_commit;   /* short source commit, or NULL / "" */
+    const char *data_root_line; /* which data folder is in use (#1850), or NULL / "" */
     float logical_width;
     float logical_height;
 } PlayerUiAboutModel;

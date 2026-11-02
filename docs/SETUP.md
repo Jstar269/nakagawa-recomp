@@ -421,6 +421,29 @@ On start-up, `nakagawa_player.exe` automatically scans `<user data>/manifests` a
 
 Similarly, `python tools/nk_cli.py build-package` searches `assets/titles` first and then `<user data>/manifests`, resolving title manifests identically to the native player so user-configured titles build without command-line overlay arguments.
 
+### Portable mode (`portable.txt`)
+
+By default every per-user folder lives under the per-user data root (on Windows,
+`%LOCALAPPDATA%\Nakagawa\data`). To keep the library, saves, settings, logs, cache and downloads
+beside the program instead, for a USB stick, a handheld PC or two versions that must not share
+settings, create an empty file named `portable.txt` in the same folder as `nakagawa_player.exe`.
+
+- The data root is then `data` in that folder (`<program folder>\data`, made on first start); the
+  config, cache, logs and saves folders sit inside it, exactly as with
+  `--user-data-root=<folder>`.
+- The decision is made once, in `src/core/nk_portable.h`, and handed to the platform's one
+  override (`nk_platform_set_app_data_dir_override`), so the library, packages, fonts, settings,
+  saves, logs and the folders the player hands to the build tools and the game all follow it.
+- An explicit `--user-data-root=<folder>` wins over the marker.
+- If the folder cannot be written (a read-only install, a full or write-protected drive) the player
+  refuses to start with `PORTABLE_NOT_WRITABLE` (a dialog on Windows, stderr elsewhere). It never
+  falls back to the per-user root, so nothing is saved somewhere you did not choose. Delete
+  `portable.txt` to go back to the per-user root; the two data folders are separate and neither is
+  moved or deleted.
+- **About** shows the data folder in use and says when it is the portable one.
+- Updating: unpack the new version, then copy `portable.txt` and the `data` folder beside the new
+  program. Nakagawa does not move or delete the old folder.
+
 ### System fonts
 
 Authentic in-game typography requires PSP system fonts in Sony's PlayStation Glyph Format (`.pgf`), dumped from the user's own physical PSP console firmware (`flash0:/font/`). The project does not bundle or distribute proprietary firmware fonts.
