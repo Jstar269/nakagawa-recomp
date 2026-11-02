@@ -152,6 +152,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `codegen_hst_stubs.py` | The hand-written C bodies the generator emits for specific HST guest addresses (`--profile=hst`), as data keyed by address. |
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
 | `entry_frame_balance.py` | Stack-symbolic entry classification: callable boundary versus resume PC. |
+| `miss_seeds.py` | Merge the dispatch-miss files a run writes (`SR_MISS_SEEDS`) into a per-title seed list that `analyze.py` and `codegen.py` take as `--miss-seeds` (#1848). |
 | `elf_bounds.py` | Shared, fail-closed ELF32 envelope checks for the offline PSP tools. |
 | `hle_manifest.py` | Generate the authoritative HLE registration manifest from the runtime HLE table, plus the semantic-status census artifact (`--census-json` / `--census-markdown`). |
 | `hle_registry_meta.py` | Curated classification metadata for the HLE registration manifest. |
@@ -371,6 +372,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_dispatch_fatal_policy.py` | Tests for fail-closed dispatch and unknown NID handling. |
 | `test_direct_j_omission_mutation.py` | Compiled mutation proof for omitted direct-j execution boundaries. |
 | `test_entry_frame_balance.py` | Structural entry-role classification regressions. |
+| `test_miss_seeds.py` | Dispatch-miss seeds: the seed file, the analysis entries, and the run-to-rebuild loop on a synthetic module. |
 | `test_fp_scalar_mutations.py` | Committed mutation regressions for the scalar FPU control-register slice. |
 | `test_guest_span_routing.py` | Source-shape gates for the native bulk and parser slice. |
 | `test_guest_printf.py` | Behavioral regression checks for the guest formatted-output bridge. |

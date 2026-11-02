@@ -337,6 +337,34 @@ function: the dispatcher reaches them only as a miss, which stops the run.
 - interpreter instructions, distinct interpreter entry points, distinct miss targets, and entries
   whose PC did not fit the 2048-entry set (`entry_points_overflow`).
 
+**Feeding misses back into analysis (#1848).** `miss_targets` counts guest addresses the dispatcher
+reached with no registered body. Setting `SR_MISS_SEEDS=<file>` makes the runtime also write those
+distinct targets at exit, one `0x%08x` per line in ascending order, under a `# nakagawa-miss-seeds-v1`
+header. A run that exceeded the entry-point set says so in the file (`entry_points_overflow=N`) and on
+stderr, and the merge tool calls the list incomplete. The loop is then:
+
+```powershell
+python tools/miss_seeds.py merge --out <title seed list> --run <label> --elf <the image the run executed> <miss file>...
+# rebuild with the list as extra function entries:
+#   codegen.py ... --miss-seeds=<title seed list>      (Makefile: CODEGEN_USER_ARGS=--miss-seeds=<list>)
+#   analyze.py <elf> --miss-seeds=<title seed list>
+```
+
+`merge` keeps the run that first found each seed (`run=<label>`) and drops targets that are already
+function entries. A target inside a function's body stays: a run entered the body mid-way, and the seed
+gives that address its own body, as tail-call promotion does. Analysis checks each seed. One that is
+unaligned, outside the executable ranges or on an all-zero or all-ones word is reported
+(`CODEGEN_MISS_SEEDS: ignored 0x...: <reason>`) and left out, never forced. `CODEGEN_MISS_SEEDS` prints the
+applied, already-known and ignored counts, and the coverage JSON gains a `miss_seeds` map of address to
+status, only for a build given `--miss-seeds`. Without the option the output is unchanged.
+
+Seeding adds input for the next build only. A miss at run time keeps its behaviour: it still prints
+`DISPATCH_MISS_NEW`, still enters the interpreter floor inside an owned span, and still stops the run
+outside one. Seeds apply to the primary image's guest addresses; a runtime-placed module's targets are
+not matched yet. The list is derived from a title's code, so keep it with the title's other private
+build inputs and out of the repository. A changed list is not a Makefile prerequisite, so
+rebuild the title's `_recomp.c` after merging.
+
 The share is a time share. It overstates the interpreter's share of instructions, because the
 interpreter is slower per instruction. The exact instruction share still needs a
 `PERF_AOT_INSTRUCTIONS=1` build with `SR_PERF=1`. Time is charged to the tier that is running. A

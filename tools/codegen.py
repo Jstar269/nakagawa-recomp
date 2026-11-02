@@ -44,6 +44,7 @@ import codegen_llvm
 import compat_overrides
 import enhancement_package
 import entry_frame_balance
+import miss_seeds
 from imports import ImportTableError, format_boundary
 
 
@@ -4086,7 +4087,7 @@ COVERAGE_TOTAL_FIELDS = (
 )
 
 
-def write_coverage_report(path, images, module_translations):
+def write_coverage_report(path, images, module_translations, miss_seed_outcome=None):
     """Write what this run translated, per image and in total (``<game>_recomp_coverage.json``).
 
     The numbers come from analyze.static_coverage over the same entries and executable
@@ -4105,6 +4106,10 @@ def write_coverage_report(path, images, module_translations):
     owned = total["owned_words"]
     total["translated_share"] = round(total["translated_words"] / owned, 6) if owned else None
     report = {"schema_version": 1, "total": total, "images": rows}
+    if miss_seed_outcome is not None:
+        # Present only for a build given --miss-seeds, so a default report is unchanged.
+        report["miss_seeds"] = {f"0x{address:08x}": status
+                                for address, status in sorted(miss_seed_outcome.items())}
     with open(path, "w", encoding="ascii", newline="\n") as output:
         output.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print("CODEGEN_COVERAGE " + " ".join(
@@ -4354,7 +4359,8 @@ _USAGE = (
     "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
     "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
     "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
-    "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm]\n"
+    "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm] "
+    "[--miss-seeds=FILE]\n"
     "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
 )
 
@@ -4395,6 +4401,7 @@ def _command_line_parser():
     value("--symbol-map", "guest symbol map naming functions and sites")
     flag("--name-imports", "name each import stub after the function its NID imports")
     value("--backend", "c (default) or llvm (#330)")
+    value("--miss-seeds", "a dispatch-miss seed list (tools/miss_seeds.py): extra function entries")
     parser.add_argument("--omit-aot", action="append", default=[], metavar="ADDR[,ADDR...]",
                         help="leave these entries to the dispatcher instead of direct C calls")
     value("--enhancement-package", "enhancement package to apply")
@@ -4461,6 +4468,7 @@ def main(argv):
     for option, given in (("--enhancement-data-root", enhancement_data_root),
                           ("--enhancement-package", enhancement_pkg_path),
                           ("--symbol-map", symbol_map_path),
+                          ("--miss-seeds", cli.miss_seeds),
                           ("--cfg-report", cfg_report_path)):
         if given == "":
             sys.stderr.write(f"{option} requires a path\n")
@@ -4619,11 +4627,24 @@ def main(argv):
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
     extra_spans = resolve_extra_spans(extra_span_arg)
+    # Seeds from a run's dispatch misses (tools/miss_seeds.py, #1848) are extra entries for the
+    # primary image only. Without --miss-seeds the analysis call is exactly the one it always was.
+    seed_args = {}
+    if cli.miss_seeds is not None:
+        try:
+            seed_args = {"seeds": set(miss_seeds.read_seed_file(cli.miss_seeds).seeds),
+                         "report": {}}
+        except miss_seeds.SeedFileError as exc:
+            sys.stderr.write(f"codegen: {exc}\n")
+            return 2
     try:
-        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate, **seed_args)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
         return 1
+    miss_seed_outcome = seed_args["report"]["miss_seeds"] if seed_args else None
+    if miss_seed_outcome is not None:
+        miss_seeds.report_outcome(miss_seed_outcome, prefix="CODEGEN_MISS_SEEDS")
     if cfg_report_path is not None or cfg_gate:
         # This opt-in gate audits the primary image. Extra modules have their own
         # analyzer invocation below and remain a separate bring-up surface until
@@ -4633,7 +4654,9 @@ def main(argv):
             # A report-only run describes gate-mode analysis but must not change
             # the entry set that feeds code emission.
             try:
-                report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+                report_entries, report_ranges = analyze(
+                    elf, extra_spans=extra_spans, cfg_gate=True,
+                    **({"seeds": seed_args["seeds"]} if seed_args else {}))
             except ImportTableError as exc:
                 sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
                 return 1
@@ -5140,7 +5163,8 @@ def main(argv):
             for a, r in sorted(module.stubbed):
                 f.write(f"{module.name}@0x{a:08x} {r}\n")
 
-    write_coverage_report(f"{base_name}_coverage.json", coverage_images, module_translations)
+    write_coverage_report(f"{base_name}_coverage.json", coverage_images, module_translations,
+                          miss_seed_outcome=miss_seed_outcome)
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"

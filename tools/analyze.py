@@ -2177,6 +2177,40 @@ def _seed_address_materializations(d):
                         else: break
 
 
+#: What became of a miss seed (`analyze`'s `report["miss_seeds"]`): `applied` is a new function
+#: entry; `known` was already a high-confidence entry. Anything else names why it was ignored.
+SEED_APPLIED = "applied"
+SEED_KNOWN = "known"
+SEED_UNALIGNED = "unaligned"
+SEED_OUTSIDE_CODE = "outside-executable-ranges"
+SEED_NOT_CODE = "not-a-function-start"
+
+
+def _seed_miss_targets(d, seeds):
+    """Add each dispatch-miss target that can start a function to the entries, and return the
+    status of every seed. A seed that does not look like a function start is reported and left
+    out: seeding adds analysis input, it never forces a body (AGENTS.md Section 6)."""
+    outcome = {}
+    for address in sorted(set(seeds)):
+        if address & 3:
+            outcome[address] = SEED_UNALIGNED
+        elif not d.callable_target(address):
+            outcome[address] = SEED_OUTSIDE_CODE
+        else:
+            raw = d.elf.read_at_vaddr(address, 4)
+            word = int.from_bytes(raw, "little") if raw is not None and len(raw) == 4 else None
+            # An all-zero or all-ones word is padding or erased data, not the first instruction
+            # of a function a run entered on purpose.
+            if word is None or word in (0x00000000, 0xFFFFFFFF):
+                outcome[address] = SEED_NOT_CODE
+            elif address in d.hc:
+                outcome[address] = SEED_KNOWN
+            else:
+                d.hc.add(address)
+                outcome[address] = SEED_APPLIED
+    return outcome
+
+
 def _promote_tail_calls(d):
     """Return the calls of the last promoted tail-call body, for the gap fill to resolve."""
     elf, jtails, functions = d.elf, d.jtails, d.functions
@@ -2290,13 +2324,16 @@ def _owned_spans(d):
 
 
 def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
-            entry_hints=None):
+            entry_hints=None, seeds=None):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
     # `entry_hints` are code pointers another image holds into this one (data_section_words).
     # `report`, when a dict, receives the discovery state the import-stub census reads:
     # covered (every traced instruction address), calls (every direct-call target seen),
     # and hc (the high-confidence seeds). The return value is unchanged.
+    # `seeds` are guest addresses a run reached as dispatch misses (tools/miss_seeds.py, #1848):
+    # extra function entries for this build. Each is checked and either applied or ignored with
+    # a reason, which `report["miss_seeds"]` maps address -> status. None changes nothing.
     d = _Discovery(elf, extra_spans, cfg_gate, trace_memo)
     _seed_entry_point(d)
     _seed_prologues_and_terminators(d)
@@ -2304,6 +2341,10 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     _seed_import_stubs(d)
     _seed_function_pointer_tables(d, entry_hints)
     _seed_address_materializations(d)
+    if seeds is not None:
+        outcome = _seed_miss_targets(d, seeds)
+        if report is not None:
+            report["miss_seeds"] = outcome
 
     # Trace each function's extent from the high-confidence seeds, following discovered calls.
     d.functions = set(d.hc)
@@ -2460,6 +2501,8 @@ def _build_arg_parser():
                         help="write the canonical CFG report")
     parser.add_argument("--cfg-gate", action="store_true",
                         help="fail when the canonical CFG report has findings")
+    parser.add_argument("--miss-seeds", metavar="SEEDS", default=None,
+                        help="a seed list from tools/miss_seeds.py: extra function entries")
     parser.add_argument("--quiet", action="store_true", help="skip the ground-truth recall listing")
     parser.set_defaults(steps=None)
     return parser
@@ -2480,8 +2523,18 @@ def main(argv):
         return 2
     elf = Elf(ns.elf, base=base)
     extra_spans = resolve_extra_spans(extra_span_arg)
+    seeds = None
+    if ns.miss_seeds is not None:
+        import miss_seeds
+        try:
+            seeds = set(miss_seeds.read_seed_file(ns.miss_seeds).seeds)
+        except miss_seeds.SeedFileError as exc:
+            sys.stderr.write(f"analyze: {exc}\n")
+            return 2
+    seed_report = {}
     try:
-        starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+        starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate,
+                                 seeds=seeds, report=seed_report)
     except Exception as exc:
         boundary_code = getattr(exc, "code", None)
         if not isinstance(boundary_code, str) or not boundary_code.startswith("ANALYZER_"):
@@ -2489,6 +2542,9 @@ def main(argv):
         message = "This PSP import-table layout is not supported yet."
         sys.stderr.write(f"{boundary_code}: {exc}. {message}\n")
         return 1
+    if seeds is not None:
+        import miss_seeds
+        miss_seeds.report_outcome(seed_report["miss_seeds"])
     model = build_model(elf, starts)
 
     quiet = ns.quiet
@@ -2498,7 +2554,8 @@ def main(argv):
         if not cfg_gate:
             # A report-only run describes gate-mode analysis but must not change
             # the entry set used for the model and recall output below.
-            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True,
+                                                    seeds=seeds)
         cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
         if cfg_report_path is not None:
             parent = os.path.dirname(cfg_report_path)
