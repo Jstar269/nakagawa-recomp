@@ -221,7 +221,7 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-CTRL-LATCH-001 cases latch-peek-initial and latch-peek-after-poll (no input gives make break press 0 and release 0xFFFFFFFF)
 - **`h_CtrlReadBuffer`** (`sceCtrl`): `sceCtrlReadBufferPositive` (0x1f803938)
-  - Limitation: consumption of every unread sample, the newest-sample window and the one-sample wait match the recorded cells; samples are latched once per VBLANK whatever the sampling cycle, and digital mode does not centre the stick in the delivered data (#1390)
+  - Limitation: consumption of every unread sample, the newest-sample window and the one-sample wait match the recorded cells; samples are latched once per VBLANK whatever the sampling cycle, and digital mode does not centre the stick in the delivered data (#1390, #341)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: ctrl-empty-read, ctrl-short-read, ctrl-short-read-next consumption; a read right after a read waits for the next sample)
   - Evidence: PSPAutotests tests/ctrl/sampling and tests/ctrl/vblank at f573fe8c (a read right after a read answers 1)
   - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract

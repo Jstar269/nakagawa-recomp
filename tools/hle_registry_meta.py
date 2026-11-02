@@ -1898,7 +1898,7 @@ HANDLER_METADATA = {
             "tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract",
             "tests/native/hle_thread_selftest.c:test_ctrl_sampling_contract",
         ],
-        "limitation": "consumption of every unread sample, the newest-sample window and the one-sample wait match the recorded cells; samples are latched once per VBLANK whatever the sampling cycle, and digital mode does not centre the stick in the delivered data (#1390)",
+        "limitation": "consumption of every unread sample, the newest-sample window and the one-sample wait match the recorded cells; samples are latched once per VBLANK whatever the sampling cycle, and digital mode does not centre the stick in the delivered data (#1390, #341)",
     },
     "h_CtrlPeekBufferPositive": {
         "status": "partial",
