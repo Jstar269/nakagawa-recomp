@@ -675,7 +675,7 @@ removes a public file, with the failure each skipped step produces.
 | `REFRESH_NEW_PATH_REQUIRES_ADMISSION` | The refresh saw an added or removed path | Run step 4 first |
 | `POLICY_DELTA_AUTHORITY_REQUIRED` | The profile changed without its delta authority | Pass the step 2 file |
 | Hosted check: HTTP 404 fetching the policy delta | The private records are not on the private `main` | Step 3 |
-| `ADMIT_HOOKS_WOULD_REWRITE` | A pre-commit hook would change a byte of a path being admitted | Commit the hook output, then admit |
+| `ADMIT_HOOKS_WOULD_REWRITE` | A pre-commit hook would change a byte of a path being admitted | Fix it on the pull request branch, then admit |
 | `POLICY_DELTA_CLAIM_MISMATCH` | A new path's class, record, upstream, revision or licence differs from its admission | Restore the claim, or admit the new claim (a new decision) |
 | `POLICY_DELTA_ADDED_BYTES_MISMATCH` | A byte-bound import changed after its admission | Restore the upstream bytes, or admit it again as a LOCAL DELTA with `--binding claim` |
 | `VENDORED_BYTES_DRIFT` | A `PROVENANCE.md` row says byte-identical but the file differs | Restore the upstream bytes, or move the row to LOCAL DELTA |
@@ -689,12 +689,15 @@ python tools/admit_paths.py <pr-worktree> <path> [<path> ...] --approval-basis "
   --private-repo <authority checkout on main>
 ```
 
-It first runs the byte-rewriting pre-commit hooks that `.pre-commit-config.yaml` configures (trailing whitespace,
-end of file, line endings, byte-order mark) on the paths, in a scratch clone of `HEAD`. If a hook would change a
-byte, it refuses with `ADMIT_HOOKS_WOULD_REWRITE` and names the paths: commit the hook output first, so the next
-commit cannot reshape what was just admitted. A path that does not match its checked-out form under
-`.gitattributes` is refused as `ADMIT_PATH_NOT_NORMALIZED`. Without a configuration that declares these hooks, or
-without `pre-commit` installed, it refuses rather than skipping the check. Then it reads each path's committed bytes
+It first checks each path's blob at `HEAD` against the rules of the byte-rewriting pre-commit hooks:
+trailing whitespace, exactly one final line ending, LF line endings, and no UTF-8 byte-order mark. The check is
+pure Python and runs nothing from the pull request. It never runs `pre-commit`, a hook the pull request defines,
+or a module it ships. The exclusions come from the trusted base's `.pre-commit-config.yaml` (top-level and per
+hook); none apply when the base has none. The line-ending rule also skips a file that the base's
+`.gitattributes` marks `-text`. If a hook would change a byte, it refuses with `ADMIT_HOOKS_WOULD_REWRITE` and
+names each path and rule. Fix them on the pull request branch first, so the next commit cannot reshape what was
+just admitted. A base configuration this reader cannot parse is refused (`ADMIT_HOOKS_CONFIG_INVALID`). Then it
+reads each path's committed bytes
 and derives its class with the gate's classifier. An implementation path needs an exact record already in
 `IMPLEMENTATION_PROVENANCE.json`; the command never writes one. It writes and locally
 commits the admission and V4 policy-delta records under `docs/provenance/`, builds the clean candidate, runs
@@ -837,10 +840,18 @@ whether or not the profile changed:
 | `VENDORED_ROW_UNVERIFIABLE` | the row has no blob ID or SHA-256 to check against |
 | `VENDORED_ROW_REMOVED` | the base listed the file byte-identical, the candidate keeps the file but drops the row |
 | `VENDORED_ROW_RECLASSIFIED` | the base row became a kind other than LOCAL DELTA |
+| `VENDORED_ROW_REPINNED` | a row byte-identical in both base and candidate changed a cell or header: its blob ID, its SHA-256, or the upstream revision its header names |
+| `VENDORED_ROW_LOCAL_DELTA` | a base byte-identical row became a LOCAL DELTA row |
 | `VENDORED_MANIFEST_UNREADABLE` | the manifest is not UTF-8 |
 
-A base byte-identical row may become a LOCAL DELTA row, and that changes the file's claim. A byte-identical file
-outside any manifest (for example a font) has no row to check, so after it lands it is held only by review.
+The candidate's manifest cannot vouch for itself over a landed import. Otherwise, rewriting a file and its pinned
+hash together would pass. A new pin (an upstream update) and a move to LOCAL DELTA (which changes the file's
+claim) are therefore both `maintainer_action` findings. They stay fatal until the maintainer approves the
+candidate's exact bytes in the trusted ledger. The approval is a `reviewed_blobs` entry for the path, at the
+SHA-256 of the new bytes, citing the path's own exact record. The verifier reads those entries only when such a
+change needs one. The trusted record's `upstream_revision` should be updated in the same private commit. A
+byte-identical file outside any manifest (for example a font) has no row to check, so after it lands it is held
+only by review.
 
 ### V3 policy deltas
 

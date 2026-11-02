@@ -86,13 +86,11 @@ def write(root: Path, relative: str, content: str) -> None:
 
 
 _REAL_HOOK_CHECK = admit_paths.check_rewriting_hooks
-_REAL_PRE_COMMIT_COMMAND = admit_paths._pre_commit_command
-_REAL_PRE_COMMIT_AVAILABLE = admit_paths._pre_commit_available
 
 
 def setUpModule() -> None:
-    # Every admission first runs the repository's byte-rewriting pre-commit hooks; HookCheckTest
-    # covers that step. The synthetic repositories here carry no hook configuration.
+    # Every admission first applies the byte-rewriting hooks' rules; HookCheckTest covers that
+    # step, so the synthetic content elsewhere need not be shaped for it.
     patcher = mock.patch.object(admit_paths, "check_rewriting_hooks", return_value=[])
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
@@ -1256,100 +1254,153 @@ class ClaimBindingAdmissionTest(unittest.TestCase):
 
 
 class HookCheckTest(unittest.TestCase):
-    """Before reading or pinning a byte, admit_paths runs the repository's byte-rewriting hooks."""
+    """Before reading or pinning a byte, admit_paths applies the byte-rewriting hooks' rules.
 
-    CONFIG = (
-        "repos:\n  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: v6.0.0\n    hooks:\n"
-        "      - id: trailing-whitespace\n      - id: end-of-file-fixer\n      - id: check-json\n"
-    )
-    #: end-of-file-fixer's rule, standing in for ``python -m pre_commit run <hook> --files ...``.
-    FIXER = (
-        "import sys\n"
-        "hook, changed = sys.argv[1], False\n"
-        "for name in sys.argv[2:]:\n"
-        "    raw = open(name, 'rb').read()\n"
-        "    fixed = raw.rstrip(b'\\n') + b'\\n' if hook == 'end-of-file-fixer' else raw\n"
-        "    if fixed != raw:\n"
-        "        open(name, 'wb').write(fixed)\n"
-        "        changed = True\n"
-        "sys.exit(1 if changed or hook == 'fail' else 0)\n"
-    )
+    The rules run in pure Python on the blobs at the pull request head, with the trusted base's
+    exclusions. Nothing from the pull request is executed (#1889 security review).
+    """
 
     def setUp(self) -> None:
-        self.fixture = _Fixture(self)
-        self.fixer = self.fixture.tmp / "fixer.py"
-        self.fixer.write_text(self.FIXER, encoding="utf-8", newline="\n")
-        self.calls: list[tuple[str, list[str]]] = []
-
-        def command(hook: str, paths: list[str]) -> list[str]:
-            self.calls.append((hook, list(paths)))
-            return [sys.executable, str(self.fixer), hook, *paths]
-
         self.enterContext(mock.patch.object(admit_paths, "check_rewriting_hooks", _REAL_HOOK_CHECK))
-        self.enterContext(mock.patch.object(admit_paths, "_pre_commit_command", command))
-        self.enterContext(mock.patch.object(admit_paths, "_pre_commit_available", return_value=True))
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="nakagawa-admit-hooks-test-")))
 
-    def _refused(self, code: str, *paths: str) -> None:
-        private_before = git(self.fixture.authority, "rev-parse", "HEAD")
-        with self.assertRaises(AdmitError) as caught:
-            self.fixture.admit(*paths)
-        self.assertEqual(caught.exception.code, code, str(caught.exception))
-        self.assertEqual(git(self.fixture.authority, "rev-parse", "HEAD"), private_before, "nothing recorded")
-        self.assertEqual(git(self.fixture.pr, "branch", "--list", "admit/*"), "", "no admission branch")
-        self.assertEqual(git(self.fixture.pr, "status", "--porcelain"), "", "the pull request worktree is untouched")
+    def _repo(self, base_files: dict[str, bytes], head_files: dict[str, bytes]) -> tuple[Path, str, str]:
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q")
+        git(repo, "config", "core.autocrlf", "false")
+        for files in (base_files, head_files):
+            for relative, data in files.items():
+                path = repo / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            (repo / "anchor").write_bytes(str(len(files)).encode() + b"\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-qm", "commit")
+            if files is base_files:
+                base = git(repo, "rev-parse", "HEAD")
+        return repo, base, git(repo, "rev-parse", "HEAD")
 
     def test_refuses_when_the_hooks_would_rewrite_and_admits_after_the_fix_is_committed(self) -> None:
-        self.fixture.add(admit_paths.PRE_COMMIT_CONFIG, self.CONFIG)
-        self.fixture.add("docs/new-page.md", "# New page\n\n\n")
-        self._refused("ADMIT_HOOKS_WOULD_REWRITE", "docs/new-page.md")
-        self.assertEqual((self.fixture.pr / "docs/new-page.md").read_bytes(), b"# New page\n\n\n")
-        self.assertEqual([hook for hook, _ in self.calls], ["trailing-whitespace", "end-of-file-fixer"])
+        fixture = _Fixture(self)
+        fixture.add("docs/new-page.md", "# New page  \n\n\n")
+        private_before = git(fixture.authority, "rev-parse", "HEAD")
+        with self.assertRaises(AdmitError) as caught:
+            fixture.admit("docs/new-page.md")
+        self.assertEqual(caught.exception.code, "ADMIT_HOOKS_WOULD_REWRITE")
+        self.assertIn("docs/new-page.md: trailing whitespace on line 1 (trailing-whitespace)", str(caught.exception))
+        self.assertIn("more than one line ending", str(caught.exception))
+        self.assertEqual(git(fixture.authority, "rev-parse", "HEAD"), private_before, "nothing recorded")
+        self.assertEqual(git(fixture.pr, "branch", "--list", "admit/*"), "", "no admission branch")
+        self.assertEqual(git(fixture.pr, "status", "--porcelain"), "", "the pull request worktree is untouched")
 
-        digest = self.fixture.add("docs/new-page.md", "# New page\n")
-        result = self.fixture.admit("docs/new-page.md")
-        (statement,) = self.fixture.record(result["records"][0])["reviewed_new_paths"]
+        digest = fixture.add("docs/new-page.md", "# New page\n")
+        result = fixture.admit("docs/new-page.md")
+        (statement,) = fixture.record(result["records"][0])["reviewed_new_paths"]
         self.assertEqual(statement["sha256"], digest)
 
-    def test_refuses_without_a_hook_configuration_or_pre_commit(self) -> None:
-        self.fixture.add("docs/new-page.md", "# New page\n")
-        self._refused("ADMIT_HOOKS_CONFIG_MISSING", "docs/new-page.md")
-        self.fixture.add(admit_paths.PRE_COMMIT_CONFIG, "repos: []\n")
-        self._refused("ADMIT_HOOKS_CONFIG_MISSING", "docs/new-page.md")
-        self.fixture.add(admit_paths.PRE_COMMIT_CONFIG, self.CONFIG)
-        with mock.patch.object(admit_paths, "_pre_commit_available", return_value=False):
-            self._refused("ADMIT_HOOKS_UNAVAILABLE", "docs/new-page.md")
-        self.assertEqual(self.calls, [])
+    def test_each_rule_matches_the_hook_it_stands_for(self) -> None:
+        findings = admit_paths.rewriting_hook_findings
+        self.assertEqual(findings(b""), {})
+        self.assertEqual(findings(b"clean\ntext\n"), {})
+        self.assertEqual(set(findings(b"a \nb\n")), {"trailing-whitespace"})
+        self.assertEqual(set(findings(b"a\nb\t")), {"trailing-whitespace", "end-of-file-fixer"})
+        self.assertEqual(set(findings(b"a\nb")), {"end-of-file-fixer"})
+        self.assertEqual(set(findings(b"a\n\n")), {"end-of-file-fixer"})
+        self.assertEqual(set(findings(b"\n")), {"end-of-file-fixer"})
+        self.assertEqual(set(findings(b"a\r\nb\r\n")), {"mixed-line-ending"})
+        self.assertEqual(set(findings(b"a\rb\n")), {"mixed-line-ending"})
+        self.assertEqual(set(findings(b"\xef\xbb\xbfa\n")), {"fix-byte-order-marker"})
+        self.assertEqual(findings(b"\x00\x01binary \r\n\n\n"), {}, "binary files are left alone, as identify types them")
 
-    def test_a_failing_hook_is_refused(self) -> None:
-        self.fixture.add(admit_paths.PRE_COMMIT_CONFIG, self.CONFIG)
-        self.fixture.add("docs/new-page.md", "# New page\n")
-        with mock.patch.object(admit_paths, "REWRITING_HOOKS", ("fail",)):
-            self.fixture.add(admit_paths.PRE_COMMIT_CONFIG, self.CONFIG + "      - id: fail\n")
-            self._refused("ADMIT_HOOKS_FAILED", "docs/new-page.md")
-
-    def test_the_repository_configures_the_rewriting_hooks(self) -> None:
-        config = (ROOT / admit_paths.PRE_COMMIT_CONFIG).read_text(encoding="utf-8")
-        hooks = admit_paths.configured_rewriting_hooks(config)
-        self.assertIn("end-of-file-fixer", hooks)
-        self.assertIn("trailing-whitespace", hooks)
-
-    @unittest.skipUnless(admit_paths.importlib.util.find_spec("pre_commit"), "NOT_RUN: pre-commit is not installed")
-    def test_real_pre_commit_runs_the_configured_hook(self) -> None:
-        """``python -m pre_commit run <hook> --files`` in the scratch clone, with a local system hook."""
-        config = (
-            "repos:\n  - repo: local\n    hooks:\n      - id: end-of-file-fixer\n"
-            "        name: end-of-file-fixer (fixture)\n"
-            # pre-commit splits the entry with shlex; the interpreter's path may hold a space.
-            f'        entry: "{shlex.join([Path(sys.executable).as_posix(), self.fixer.as_posix(), "end-of-file-fixer"])}"\n'
-            "        language: system\n        types: [text]\n"
+    def test_exclusions_come_from_the_trusted_base_not_the_pull_request(self) -> None:
+        base_config = (
+            b"exclude: |\n  (?x)^(\n      third_party/|\n      build/\n  )\n"
+            b"repos:\n  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: v6.0.0\n    hooks:\n"
+            b"      - id: trailing-whitespace\n        # a comment\n        exclude: ^docs/legacy\\.md$\n"
+            b"      - id: end-of-file-fixer\n        exclude: >-\n          ^docs/table\\.dat$\n"
+            b"      - id: check-json\n        exclude: ^docs/legacy2\\.md$\n"
         )
-        with mock.patch.object(admit_paths, "_pre_commit_command", _REAL_PRE_COMMIT_COMMAND), \
-                mock.patch.object(admit_paths, "_pre_commit_available", _REAL_PRE_COMMIT_AVAILABLE):
-            self.fixture.add(admit_paths.PRE_COMMIT_CONFIG, config)
-            self.fixture.add("docs/new-page.md", "# New page\n\n\n")
-            self._refused("ADMIT_HOOKS_WOULD_REWRITE", "docs/new-page.md")
-            self.fixture.add("docs/new-page.md", "# New page\n")
-            self.assertEqual(self.fixture.admit("docs/new-page.md")["paths"], ["docs/new-page.md"])
+        repo, base, head = self._repo(
+            {admit_paths.PRE_COMMIT_CONFIG: base_config},
+            {
+                # The candidate widens every exclusion; it must have no effect.
+                admit_paths.PRE_COMMIT_CONFIG: b"exclude: .*\n",
+                "docs/legacy.md": b"kept as recorded \n",
+                "docs/legacy2.md": b"not excluded for this hook \n",
+                "docs/table.dat": b"no final newline",
+                "third_party/lib/x.c": b"int x; \r\n\r\n",
+                "docs/clean.md": b"# Clean\n",
+            },
+        )
+        check = admit_paths.check_rewriting_hooks
+        self.assertEqual(
+            check(repo, base, head, ["docs/legacy.md", "docs/table.dat", "third_party/lib/x.c", "docs/clean.md"]),
+            list(admit_paths.REWRITING_HOOKS),
+        )
+        with self.assertRaises(AdmitError) as caught:
+            check(repo, base, head, ["docs/legacy2.md", "docs/clean.md"])
+        self.assertEqual(caught.exception.code, "ADMIT_HOOKS_WOULD_REWRITE")
+        self.assertIn("docs/legacy2.md", str(caught.exception))
+        self.assertNotIn("docs/clean.md:", str(caught.exception))
+
+    def test_line_endings_follow_the_base_gitattributes(self) -> None:
+        repo, base, head = self._repo(
+            {".gitattributes": b"* text=auto eol=lf\n*.dat -text\n"},
+            {".gitattributes": b"* -text\n", "assets/table.dat": b"a\r\nb\r\n", "docs/page.md": b"a\r\nb\r\n"},
+        )
+        admit_paths.check_rewriting_hooks(repo, base, head, ["assets/table.dat"])
+        with self.assertRaises(AdmitError) as caught:
+            admit_paths.check_rewriting_hooks(repo, base, head, ["docs/page.md"])
+        self.assertIn("docs/page.md: CRLF", str(caught.exception), "the candidate's -text is ignored")
+
+    def test_nothing_from_the_pull_request_is_executed(self) -> None:
+        marker = (self.tmp / "executed").as_posix()
+        payload = f"open({marker!r}, 'w').write('ran')\n".encode()
+        candidate_config = (
+            "repos:\n  - repo: local\n    hooks:\n      - id: trailing-whitespace\n"
+            "        name: trailing-whitespace\n"
+            f'        entry: "{shlex.join([Path(sys.executable).as_posix(), "-c", payload.decode()])}"\n'
+            "        language: system\n"
+        ).encode()
+        repo, base, head = self._repo(
+            {"README": b"base\n"},
+            {
+                admit_paths.PRE_COMMIT_CONFIG: candidate_config,
+                "pre_commit.py": payload,
+                "pre_commit/__init__.py": payload,
+                "pre_commit/__main__.py": payload,
+                "docs/new.md": b"# New \n",
+                "docs/clean.md": b"# Clean\n",
+            },
+        )
+        with self.assertRaises(AdmitError) as caught:
+            admit_paths.check_rewriting_hooks(repo, base, head, ["docs/new.md"])
+        self.assertEqual(caught.exception.code, "ADMIT_HOOKS_WOULD_REWRITE")
+        admit_paths.check_rewriting_hooks(repo, base, head, ["docs/clean.md", "pre_commit/__main__.py"])
+        self.assertFalse(Path(marker).exists(), "a pull request's hook or pre_commit module ran")
+        self.assertEqual(git(repo, "status", "--porcelain"), "", "nothing was checked out or rewritten")
+
+    def test_an_unreadable_base_configuration_is_refused(self) -> None:
+        for config in (
+            "repos:\n  - repo: x\n    hooks:\n      - id: trailing-whitespace\n        exclude: \"a\\.md\"\n",
+            "repos:\n  - repo: x\n    hooks:\n      - id: trailing-whitespace\n      - id: trailing-whitespace\n",
+            "exclude: ^(unclosed\n",
+            "exclude: [a, b]\n",
+        ):
+            with self.subTest(config=config), self.assertRaises(AdmitError) as caught:
+                admit_paths.rewriting_hook_exclusions(config)
+            self.assertEqual(caught.exception.code, "ADMIT_HOOKS_CONFIG_INVALID")
+
+    def test_the_repository_configuration_is_read(self) -> None:
+        config = (ROOT / admit_paths.PRE_COMMIT_CONFIG).read_text(encoding="utf-8")
+        top, hooks = admit_paths.rewriting_hook_exclusions(config)
+        assert top is not None
+        self.assertTrue(top.search("third_party/lib/x.c"))
+        self.assertFalse(top.search("tools/admit_paths.py"))
+        self.assertTrue(hooks["trailing-whitespace"].search("src/core/nk_psp_aes.c"))
+        self.assertTrue(hooks["end-of-file-fixer"].search("src/rt/minimp3/LICENSE"))
+        self.assertFalse(hooks["end-of-file-fixer"].search("tools/admit_paths.py"))
 
 
 class RecompJsonRegressionTest(unittest.TestCase):

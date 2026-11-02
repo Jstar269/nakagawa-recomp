@@ -133,9 +133,11 @@ summary distinguishes the two so a new file never reads as a mistake you made.
 A `VENDORED_*` finding means a file that a `PROVENANCE.md` manifest lists as imported byte-identical no longer
 matches the blob ID or SHA-256 in its row. It can also mean such a row was removed or reclassified. The check
 compares every pull request's tree with those rows. If you meant to change the file, mark the row
-`imported + LOCAL DELTA`, keep the upstream notices, and add a one-line modification note to the file. A maintainer then
-re-admits the file if it has not landed yet, or updates its trusted record if it has. Otherwise restore the
-upstream bytes.
+`imported + LOCAL DELTA`, keep the upstream notices, and add a one-line modification note to the file. Otherwise,
+restore the upstream bytes. To update an import to a new upstream revision, change the file and its row together.
+Changing the row of a landed byte-identical import, or moving it to LOCAL DELTA, reports `VENDORED_ROW_REPINNED` or
+`VENDORED_ROW_LOCAL_DELTA`. That is a maintainer's step, not a mistake: the check stays red until a maintainer
+approves the new bytes, or re-admits a file that has not landed yet.
 
 ### What the pull-request checks mean
 
@@ -346,8 +348,9 @@ file's origin: its class and, for imported code, the upstream project, revision 
 a file you wrote need no new admission, as long as that claim still holds. The exception is a file imported
 byte-identical from another project: the admission binds its exact bytes. To change one, ask first. Its row in that
 directory's `PROVENANCE.md` must move to LOCAL DELTA, which needs a new admission. Before admitting, the maintainer's
-tool runs the whitespace and end-of-file pre-commit hooks on the new files and refuses if they would change a
-byte. Commit the hook output (`python -m pre_commit run --files <new files>`) before asking for admission. The
+tool checks the new files against the whitespace, end-of-file, line-ending and byte-order-mark hook rules. It
+refuses if a hook would change a byte. Run `python -m pre_commit run --files <new files>` and commit what it
+changes before asking for admission. The
 maintainer then runs or asks you to run `make contrib-refresh` and commit what it stages. The **Trusted provenance
 attestation** check stays red until the admission, which is expected: a pull request that is otherwise green with
 only this check red is ready for review. Edits to existing files need no admission.

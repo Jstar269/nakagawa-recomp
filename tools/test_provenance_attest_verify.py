@@ -3901,11 +3901,34 @@ class PolicyDeltaV4Tests(_PolicyDeltaFixture):
                 hidden = self._edit({self.MANIFEST: manifest}, "hide the change")
                 self.assertIn(code, {f["code"] for f in self._attest(hidden, landed, None)["findings"]})
 
-        # Recording it as a LOCAL DELTA is the explicit way to change an import.
+        # Re-pinning the row to the new bytes cannot approve itself (#1889 review).
+        self.repo.branch("repin", drifted)
+        repinned = self._edit({self.MANIFEST: self._manifest("imported byte-identical", drifted_bytes)},
+                              "pin the manifest row to the edited bytes")
+        verdict = self._attest(repinned, landed, None)
+        self.assertEqual(verdict["verdict"], "fail")
+        self.assertEqual([(f["code"], f["maintainer_action"]) for f in verdict["findings"]],
+                         [("VENDORED_ROW_REPINNED", True)])
+
+        # Recording it as a LOCAL DELTA is the explicit way to change an import, and it changes
+        # the import's claim, so it waits for the maintainer.
         self.repo.branch("local-delta", drifted)
         recorded = self._edit({self.MANIFEST: self._manifest("imported + LOCAL DELTA", drifted_bytes)},
                               "record the change as a LOCAL DELTA")
         verdict = self._attest(recorded, landed, None)
+        self.assertEqual([(f["code"], f["maintainer_action"]) for f in verdict["findings"]],
+                         [("VENDORED_ROW_LOCAL_DELTA", True)])
+
+        # The maintainer approves the exact new bytes in the trusted ledger, citing the path's record.
+        authority = json.loads(self.trusted_ledger.read_text(encoding="utf-8"))
+        authority["reviewed_blobs"] = [{
+            "path": self.LIB, "sha256": _sha(drifted_bytes), "classification": "upstream-third-party",
+            "record_id": self.LIB_RECORD["id"],
+        }]
+        self.write_trusted(authority)
+        verdict = self._attest(recorded, landed, None)
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        verdict = self._attest(repinned, landed, None)
         self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
 
 
@@ -3925,8 +3948,11 @@ class VendoredManifestTests(unittest.TestCase):
         return ("| File | Kind | Upstream blob SHA | SHA-256 |\n| --- | --- | --- | --- |\n"
                 + "".join(rows)).encode("utf-8")
 
-    def codes(self, candidate: dict[str, bytes], base: dict[str, bytes] | None = None) -> list[str]:
-        return [finding.code for finding in verifier._vendored_manifest_findings(candidate, base or {})]
+    def codes(self, candidate: dict[str, bytes], base: dict[str, bytes] | None = None, approved=None) -> list[str]:
+        return [
+            finding.code
+            for finding in verifier._vendored_manifest_findings(candidate, base or {}, change_approved=approved)
+        ]
 
     def test_matching_rows_pass_and_drift_fails(self) -> None:
         good = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical")), "lib/up.h": self.DATA}
@@ -3954,7 +3980,9 @@ class VendoredManifestTests(unittest.TestCase):
         edited = self.DATA + b"/* local fix */\n"
         local_delta = {"lib/PROVENANCE.md": self.manifest(self.row("imported + LOCAL DELTA", edited)),
                        "lib/up.h": edited}
-        self.assertEqual(self.codes(local_delta, base), [])
+        # The relabel changes the import's claim, so it needs the maintainer's approval of the bytes.
+        self.assertEqual(self.codes(local_delta, base), ["VENDORED_ROW_LOCAL_DELTA"])
+        self.assertEqual(self.codes(local_delta, base, approved=lambda path, data: data == edited), [])
         removed_row = {"lib/PROVENANCE.md": self.manifest(), "lib/up.h": edited}
         self.assertEqual(self.codes(removed_row, base), ["VENDORED_ROW_REMOVED"])
         relabelled = {"lib/PROVENANCE.md": self.manifest(self.row("project-authored", edited)), "lib/up.h": edited}
@@ -3962,6 +3990,44 @@ class VendoredManifestTests(unittest.TestCase):
         self.assertEqual(self.codes({"lib/up.h": edited}, base), ["VENDORED_ROW_REMOVED"])
         # Removing the import itself needs no manifest row.
         self.assertEqual(self.codes({"lib/PROVENANCE.md": self.manifest()}, base), [])
+
+    def test_a_landed_import_cannot_approve_its_own_new_hash(self) -> None:
+        """Rewrite a landed byte-identical import and its pinned hashes together (#1889 review)."""
+        base = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical")), "lib/up.h": self.DATA}
+        edited = self.DATA + b"int injected(void);\n"
+        rehashed = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical", edited)), "lib/up.h": edited}
+        self.assertEqual(self.codes(rehashed), [], "the candidate manifest alone is self-consistent")
+        (finding,) = verifier._vendored_manifest_findings(rehashed, base)
+        self.assertEqual(finding.code, "VENDORED_ROW_REPINNED")
+        self.assertTrue(finding.maintainer_action)
+        self.assertTrue(finding.fatal)
+        # A new upstream revision in the header, even with the same bytes, is a new pin too.
+        relabelled_header = {
+            **base, "lib/PROVENANCE.md": base["lib/PROVENANCE.md"].replace(b"Upstream blob SHA", b"Upstream v9 blob SHA"),
+        }
+        self.assertEqual(self.codes(relabelled_header, base), ["VENDORED_ROW_REPINNED"])
+        self.assertEqual(self.codes(base, base), [])
+        # Only an approval of the candidate's exact bytes clears it.
+        self.assertEqual(self.codes(rehashed, base, approved=lambda path, data: data == edited), [])
+        self.assertEqual(self.codes(rehashed, base, approved=lambda path, data: data == self.DATA),
+                         ["VENDORED_ROW_REPINNED"])
+
+    def test_the_approval_is_a_trusted_exact_blob_entry_citing_the_path_record(self) -> None:
+        edited = self.DATA + b"/* new upstream */\n"
+        trusted = json.dumps({"records": [], "reviewed_blobs": [{
+            "path": "lib/up.h", "sha256": _sha(edited), "classification": "upstream-third-party",
+            "record_id": "lib-import",
+        }]}).encode("utf-8")
+        approved = verifier._vendored_change_approver(trusted, {"lib/up.h": {"id": "lib-import"}})
+        self.assertTrue(approved("lib/up.h", edited))
+        self.assertFalse(approved("lib/up.h", self.DATA), "another digest")
+        self.assertFalse(approved("lib/other.h", edited), "another path")
+        cites_another = verifier._vendored_change_approver(trusted, {"lib/up.h": {"id": "other-record"}})
+        self.assertFalse(cites_another("lib/up.h", edited), "an approval citing a record that does not cover the path")
+        self.assertFalse(verifier._vendored_change_approver(trusted, {})("lib/up.h", edited), "no exact record")
+        untouched = verifier._vendored_change_approver(b"not json", {})
+        self.assertEqual(self.codes({"lib/up.h": self.DATA}, {}, approved=untouched), [],
+                         "the approvals are read only when a change needs one")
 
     def test_tables_without_a_kind_column_declare_nothing(self) -> None:
         assets = b"| File | Archive path | SHA-256 |\n| --- | --- | --- |\n| `up.h` | x | `" + b"0" * 64 + b"` |\n"

@@ -1298,7 +1298,32 @@ def _is_byte_identical_kind(kind: str) -> bool:
     return kind.strip().lower().startswith("imported byte-identical")
 
 
-def _vendored_manifest_findings(candidate_blobs: dict[str, bytes], base_blobs: dict[str, bytes]) -> list[Finding]:
+def _vendored_change_approver(trusted_raw: bytes, exact_records: dict[str, dict]):
+    """``approved(path, data)``: whether the trusted ledger approves these exact bytes of ``path``.
+
+    The approval is a ``reviewed_blobs`` entry (see :func:`load_trusted_approvals`) for the
+    path at the SHA-256 of ``data`` that cites the path's own exact record. The approvals are
+    read only when a manifest change needs one, so a run that changes no landed import never
+    depends on them.
+    """
+    loaded: list[dict[tuple[str, str], dict]] = []
+
+    def approved(path: str, data: bytes) -> bool:
+        if not loaded:
+            loaded.append(load_trusted_approvals(trusted_raw))
+        approval = loaded[0].get((path, hashlib.sha256(data).hexdigest()))
+        record = exact_records.get(path)
+        return approval is not None and record is not None and approval["record_id"] == record.get("id")
+
+    return approved
+
+
+def _vendored_manifest_findings(
+    candidate_blobs: dict[str, bytes],
+    base_blobs: dict[str, bytes],
+    *,
+    change_approved=None,
+) -> list[Finding]:
     """A file a manifest declares imported byte-identical must still carry the recorded upstream bytes.
 
     Where the hash is the claim, it stays bound for as long as the manifest says so, before and
@@ -1307,6 +1332,14 @@ def _vendored_manifest_findings(candidate_blobs: dict[str, bytes], base_blobs: d
     declares byte-identical may stop being so only explicitly: its file leaves the tree, or the
     candidate's manifest re-labels the row as a LOCAL DELTA. Dropping or re-wording the row is a
     finding, so a formatter, hook or hand edit cannot drift an import silently.
+
+    The candidate's manifest is not authority over a landed import. A row byte-identical in
+    both the base and the candidate must keep the base row's cells and headers (its blob ID,
+    SHA-256 and the upstream revision its header names), or rewriting the file and its hash
+    together would pass. A row that moves from byte-identical to LOCAL DELTA changes the
+    import's claim. Both need a maintainer: ``change_approved(path, data)`` (from
+    :func:`_vendored_change_approver`) must approve the candidate's exact bytes, else the
+    finding stays fatal with ``maintainer_action``.
     """
     findings: list[Finding] = []
     candidate_rows: dict[str, list[dict[str, str]]] = {}
@@ -1367,10 +1400,33 @@ def _vendored_manifest_findings(candidate_blobs: dict[str, bytes], base_blobs: d
             path = _manifest_row_path(manifest, row.get("file", ""))
             if not _is_byte_identical_kind(row.get("kind", "")) or path is None or path not in candidate_blobs:
                 continue
-            kinds = [
-                candidate.get("kind", "") for candidate in candidate_rows.get(manifest, [])
+            matches = [
+                candidate for candidate in candidate_rows.get(manifest, [])
                 if _manifest_row_path(manifest, candidate.get("file", "")) == path
             ]
+            kinds = [candidate.get("kind", "") for candidate in matches]
+            identical = [candidate for candidate in matches if _is_byte_identical_kind(candidate.get("kind", ""))]
+            relabelled = not identical and any("local delta" in kind.lower() for kind in kinds)
+            repinned = bool(identical) and all(candidate != row for candidate in identical)
+            if (repinned or relabelled) and not (
+                change_approved is not None and change_approved(path, candidate_blobs[path])
+            ):
+                if repinned:
+                    findings.append(Finding(
+                        "VENDORED_ROW_REPINNED", path,
+                        f"the base {manifest} pins this byte-identical import; the candidate changes its row "
+                        "(blob ID, SHA-256 or the upstream revision in its header), and the manifest cannot "
+                        "approve its own new pin: a maintainer approves the new bytes in the trusted ledger",
+                        maintainer_action=True,
+                    ))
+                else:
+                    findings.append(Finding(
+                        "VENDORED_ROW_LOCAL_DELTA", path,
+                        f"the base {manifest} declares this file imported byte-identical; the candidate records "
+                        "it as a LOCAL DELTA, which changes its origin claim: a maintainer approves the new "
+                        "bytes in the trusted ledger",
+                        maintainer_action=True,
+                    ))
             if not kinds:
                 findings.append(Finding(
                     "VENDORED_ROW_REMOVED", path,
@@ -1405,6 +1461,7 @@ def _ephemeral_verdict_findings(
     require_exact_blob_approvals: bool,
     generated_ledger_bytes: bytes,
     generated_export: dict,
+    vendored_change_approved=None,
 ) -> tuple[list[Finding], list[dict], list[dict], list[dict]]:
     """Apply the finding vocabulary to the trusted generated state.
 
@@ -1460,7 +1517,9 @@ def _ephemeral_verdict_findings(
             maintainer_action=True,
         ))
     findings.extend(_case_collision_findings(candidate_blobs, base_blobs))
-    findings.extend(_vendored_manifest_findings(candidate_blobs, base_blobs))
+    findings.extend(_vendored_manifest_findings(
+        candidate_blobs, base_blobs, change_approved=vendored_change_approved,
+    ))
 
     legacy_entries: dict[str, dict] | None = None
     legacy_raw = candidate_blobs.get(LEDGER_PATH)
@@ -2057,6 +2116,7 @@ def verify_ephemeral(
         generated_ledger_bytes=generated_ledger_bytes,
         generated_export=generated_export,
         authorized_policy_delta=policy_delta,
+        vendored_change_approved=_vendored_change_approver(controls.trusted_raw, exact_records),
     )
     if not _is_ancestor(repo, base_commit, candidate_commit):
         findings.insert(0, Finding(
@@ -2428,7 +2488,10 @@ def verify(
             "excluded by both the trusted and the candidate policy, so it would enter the tree unverified",
         ))
     findings.extend(_case_collision_findings(candidate_blobs, base_blobs))
-    findings.extend(_vendored_manifest_findings(candidate_blobs, base_blobs))
+    findings.extend(_vendored_manifest_findings(
+        candidate_blobs, base_blobs,
+        change_approved=_vendored_change_approver(trusted_raw, exact_records),
+    ))
 
     # Everything the gate must reason about: never narrower than the trusted
     # universe, widened by whatever the candidate additionally publishes.

@@ -43,10 +43,12 @@ records it as a LOCAL DELTA (``--binding claim``).
 
 The command does the mechanical parts and nothing else:
 
-1. runs the repository's byte-rewriting pre-commit hooks (``REWRITING_HOOKS``,
-   those ``.pre-commit-config.yaml`` configures) on the committed paths in a
-   scratch clone, and refuses if they would change a byte, so the next commit
-   cannot quietly edit what was just admitted;
+1. checks the committed paths against the byte-rewriting pre-commit hooks'
+   rules (``REWRITING_HOOKS``: trailing whitespace, final newline, line
+   endings, byte-order mark) in pure Python, with the exclusions of the trusted
+   base's ``.pre-commit-config.yaml``, and refuses if a hook would change a
+   byte, so the next commit cannot quietly edit what was just admitted. Nothing
+   from the pull request is executed;
 2. reads each path's exact committed bytes from the pull request's ``HEAD``;
 3. derives each path's classification with the gate's own classifier
    (``provenance_ledger``); an implementation path needs an exact record that
@@ -82,7 +84,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -111,9 +112,15 @@ POLICY_DELTAS = "docs/provenance/policy-deltas"
 POLICY_DELTAS_V3 = provenance_ledger.POLICY_DELTA_V3_DIR
 POLICY_DELTAS_V4 = provenance_ledger.POLICY_DELTA_V4_DIR
 PRE_COMMIT_CONFIG = ".pre-commit-config.yaml"
-#: The pre-commit hooks that rewrite file bytes. Each one the repository configures runs on the
-#: committed paths before anything is read or pinned (``check_rewriting_hooks``).
+#: The pre-commit hooks that rewrite file bytes, each checked in pure Python on the committed
+#: paths before anything is read or pinned (``check_rewriting_hooks``). Nothing from the pull
+#: request runs: its hook definitions and any module it ships are never executed.
 REWRITING_HOOKS = ("trailing-whitespace", "end-of-file-fixer", "mixed-line-ending", "fix-byte-order-marker")
+#: The bytes ``identify`` (pre-commit's file typing) accepts as text; a file whose first 1024
+#: bytes hold any other byte is binary, and the text hooks leave it alone.
+_TEXT_BYTES = bytes(sorted({7, 8, 9, 10, 11, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7F}))
+#: The exclusion of a hook that is declared without one.
+_NO_EXCLUSION = re.compile(r"(?!)")
 
 #: Variables that would point a Git command at a different repository or index.
 #: Identity and configuration are kept: commits are the operator's own.
@@ -230,85 +237,161 @@ def _blob(repo: Path, rev: str, path: str) -> tuple[str, str]:
     return mode, sha
 
 
-def configured_rewriting_hooks(config: str) -> list[str]:
-    """The ``REWRITING_HOOKS`` a ``.pre-commit-config.yaml`` declares, in ``REWRITING_HOOKS`` order."""
-    declared = set(re.findall(r"^\s*-\s*id:\s*['\"]?([A-Za-z0-9_.-]+)", config, flags=re.MULTILINE))
-    return [hook for hook in REWRITING_HOOKS if hook in declared]
+def _yaml_scalar(lines: list[str], index: int, indent: int, rest: str) -> tuple[str, int]:
+    """The scalar value starting at ``rest`` on line ``index`` and the next line to read.
+
+    Reads only the forms a hook ``exclude`` takes in practice: a plain, single-quoted or
+    escape-free double-quoted one-line scalar, or a ``|``/``>`` block (with ``-`` chomping).
+    Anything else is refused, so an unexpected form cannot silently widen an exclusion.
+    """
+    rest = rest.strip()
+    if rest in ("|", "|-", ">", ">-"):
+        block = []
+        index += 1
+        while index < len(lines) and (not lines[index].strip() or len(lines[index]) - len(lines[index].lstrip()) > indent):
+            block.append(lines[index].strip())
+            index += 1
+        while block and not block[-1]:
+            block.pop()
+        return ("\n" if rest.startswith("|") else " ").join(block), index
+    if rest.startswith("'"):
+        if len(rest) < 2 or not rest.endswith("'"):
+            raise ValueError("unterminated single-quoted scalar")
+        return rest[1:-1].replace("''", "'"), index + 1
+    if rest.startswith('"'):
+        if len(rest) < 2 or not rest.endswith('"') or "\\" in rest:
+            raise ValueError("double-quoted scalars with escapes are not read")
+        return rest[1:-1], index + 1
+    if not rest or rest[0] in "[{&*!%@`":
+        raise ValueError(f"unsupported scalar {rest!r}")
+    return rest.split(" #", 1)[0].strip(), index + 1
 
 
-def _pre_commit_available() -> bool:
-    return importlib.util.find_spec("pre_commit") is not None
+def rewriting_hook_exclusions(config: str) -> tuple[re.Pattern[str] | None, dict[str, re.Pattern[str]]]:
+    """The top-level ``exclude`` and, for each ``REWRITING_HOOKS`` hook ``config`` declares, its own ``exclude``.
+
+    A declared hook without an ``exclude`` maps to a pattern that matches nothing. ``config`` is the trusted base's ``.pre-commit-config.yaml``, never the pull request's.
+    Raises ``AdmitError("ADMIT_HOOKS_CONFIG_INVALID")`` for a form this reader does not
+    understand, an invalid pattern, or a rewriting hook declared twice.
+    """
+    lines = config.splitlines()
+    top: re.Pattern[str] | None = None
+    hooks: dict[str, re.Pattern[str]] = {}
+    seen: set[str] = set()
+    hook: str | None = None
+    hook_indent = -1
+    index = 0
+    try:
+        while index < len(lines):
+            line = lines[index]
+            indent = len(line) - len(line.lstrip())
+            item = re.match(r"\s*-\s+id:\s*(.*)$", line)
+            if item:
+                hook_id, _ = _yaml_scalar(lines, index, indent, item.group(1))
+                hook, hook_indent = hook_id, indent
+                if hook in REWRITING_HOOKS:
+                    if hook in seen:
+                        raise ValueError(f"{hook} is declared twice")
+                    seen.add(hook)
+                    hooks[hook] = _NO_EXCLUSION
+                index += 1
+                continue
+            if hook is not None and line.strip() and not line.lstrip().startswith("#") and indent <= hook_indent:
+                hook = None
+            key = re.match(r"\s*exclude:\s*(.*)$", line)
+            if key:
+                value, index = _yaml_scalar(lines, index, indent, key.group(1))
+                if indent == 0:
+                    top = re.compile(value)
+                elif hook in REWRITING_HOOKS and indent == hook_indent + 2:
+                    hooks[hook] = re.compile(value)
+                continue
+            index += 1
+    except (ValueError, re.error) as error:
+        raise AdmitError(
+            "ADMIT_HOOKS_CONFIG_INVALID", f"cannot read the trusted base's {PRE_COMMIT_CONFIG}: {error}",
+        ) from None
+    return top, hooks
 
 
-def _pre_commit_command(hook: str, paths: list[str]) -> list[str]:
-    return [sys.executable, "-m", "pre_commit", "run", hook, "--files", *paths]
+def rewriting_hook_findings(data: bytes) -> dict[str, str]:
+    """What each ``REWRITING_HOOKS`` hook would change in ``data``, by hook (empty: nothing).
+
+    The same rules as the pinned pre-commit-hooks: trailing whitespace (``bytes.rstrip()``
+    before each line ending), exactly one line ending at the end of a non-empty file, LF
+    line endings only (``.gitattributes`` stores text as LF), and no UTF-8 byte-order mark.
+    A binary file, as ``identify`` would type it, is left alone.
+    """
+    if data[:1024].translate(None, _TEXT_BYTES):
+        return {}
+    found: dict[str, str] = {}
+    for number, line in enumerate(data.split(b"\n"), 1):
+        body = line[:-1] if line.endswith(b"\r") else line
+        if body != body.rstrip():
+            found["trailing-whitespace"] = f"trailing whitespace on line {number}"
+            break
+    if data:
+        body = data.rstrip(b"\r\n")
+        tail = data[len(body):]
+        if not body:
+            found["end-of-file-fixer"] = "only line endings (the hook empties the file)"
+        elif tail not in (b"\n", b"\r\n"):
+            found["end-of-file-fixer"] = (
+                "no line ending at the end of the file" if not tail else "more than one line ending at the end of the file"
+            )
+    if b"\r" in data:
+        found["mixed-line-ending"] = "CRLF or CR line endings (the repository stores text with LF)"
+    if data.startswith(b"\xef\xbb\xbf"):
+        found["fix-byte-order-marker"] = "a UTF-8 byte-order mark"
+    return found
 
 
-def check_rewriting_hooks(pr: Path, head: str, paths: list[str], *, scratch_root: Path | None = None) -> list[str]:
-    """Refuse unless the repository's byte-rewriting hooks leave every committed path unchanged.
+def check_rewriting_hooks(pr: Path, base: str, head: str, paths: list[str]) -> list[str]:
+    """Refuse unless the byte-rewriting hooks would leave every committed path unchanged.
 
-    The hooks (end-of-file-fixer, trailing-whitespace and the line-ending fixers that
-    ``.pre-commit-config.yaml`` configures) run with the repository's own configuration, so
-    their exclusions apply, in a scratch clone of the pull request at ``head``: the pull
-    request worktree is never touched. A path Git itself would renormalize, a path a hook
-    rewrites, a hook that fails, and a repository with no such hook configured are each
-    refused. Returns the hooks that ran.
+    The four ``REWRITING_HOOKS`` rules run in pure Python on each path's blob at ``head``,
+    honouring the exclusions in the trusted ``base``'s ``.pre-commit-config.yaml`` (top-level
+    and per hook; none when the base has no configuration). Nothing is checked out and nothing
+    from the pull request is executed: a candidate ``.pre-commit-config.yaml``, a planted
+    ``pre_commit`` module or a redefined local hook has no effect. Returns the hooks checked.
     """
     try:
-        config = _git(pr, "cat-file", "blob", f"{head}:{PRE_COMMIT_CONFIG}").decode("utf-8")
-    except (AdmitError, UnicodeDecodeError):
+        config = _git(pr, "cat-file", "blob", f"{base}:{PRE_COMMIT_CONFIG}").decode("utf-8")
+    except AdmitError:
+        config = ""
+    except UnicodeDecodeError:
         raise AdmitError(
-            "ADMIT_HOOKS_CONFIG_MISSING", f"the pull request HEAD has no readable {PRE_COMMIT_CONFIG}",
+            "ADMIT_HOOKS_CONFIG_INVALID", f"the trusted base's {PRE_COMMIT_CONFIG} is not UTF-8",
         ) from None
-    hooks = configured_rewriting_hooks(config)
-    if not hooks:
+    top, excluded = rewriting_hook_exclusions(config)
+    # Git stores a file the base's .gitattributes marks -text (or binary) as it is, so its line
+    # endings are only rewritten when the base configures mixed-line-ending itself.
+    attributes = _git(pr, "check-attr", "-z", f"--source={base}", "text", "--", *paths).split(b"\0")
+    verbatim = {
+        attributes[index].decode("utf-8")
+        for index in range(0, len(attributes) - 2, 3)
+        if attributes[index + 2] == b"unset"
+    }
+    problems = []
+    for path in paths:
+        if top is not None and top.search(path):
+            continue
+        findings = rewriting_hook_findings(_git(pr, "cat-file", "blob", f"{head}:{path}"))
+        for hook, problem in findings.items():
+            if hook in excluded and excluded[hook].search(path):
+                continue
+            if hook == "mixed-line-ending" and hook not in excluded and path in verbatim:
+                continue
+            problems.append(f"{path}: {problem} ({hook})")
+    if problems:
         raise AdmitError(
-            "ADMIT_HOOKS_CONFIG_MISSING",
-            f"{PRE_COMMIT_CONFIG} configures none of {', '.join(REWRITING_HOOKS)}",
+            "ADMIT_HOOKS_WOULD_REWRITE",
+            "the next commit's pre-commit hooks would rewrite these committed files, so an admission "
+            "now would not survive it:\n  " + "\n  ".join(problems) + "\nFix them on the pull request "
+            f"branch (its author can run `python -m pre_commit run --files {' '.join(paths)}`), "
+            "commit, then admit",
         )
-    if not _pre_commit_available():
-        raise AdmitError(
-            "ADMIT_HOOKS_UNAVAILABLE",
-            "pre-commit is not installed for this Python (python -m pip install pre-commit); the "
-            "repository's hooks must run on the files before they are admitted",
-        )
-    env = {key: value for key, value in os.environ.items() if key not in _REPOSITORY_VARIABLES}
-    scratch = Path(tempfile.mkdtemp(prefix="nakagawa-admit-hooks-", dir=scratch_root))
-    try:
-        clone = scratch / "hooks"
-        _git(scratch, "clone", "-q", "--shared", "--no-checkout", "-c", "core.autocrlf=false", str(pr), str(clone))
-        _git(clone, "checkout", "-q", "--detach", head)
-        renormalized = _text(clone, "diff", "--name-only", "--", *paths)
-        if renormalized:
-            raise AdmitError(
-                "ADMIT_PATH_NOT_NORMALIZED",
-                "Git would rewrite these committed files' line endings on their next commit; run "
-                f"`git add --renormalize` on them and commit first: {', '.join(renormalized.splitlines())}",
-            )
-        failures = []
-        for hook in hooks:
-            result = subprocess.run(
-                _pre_commit_command(hook, paths), cwd=clone, env=env, capture_output=True, check=False,
-            )
-            if result.returncode:
-                output = (result.stdout + result.stderr).decode("utf-8", errors="replace").strip()
-                failures.append(f"{hook}: {output[-600:]}")
-        rewritten = _text(clone, "diff", "--name-only", "--", *paths)
-        if rewritten:
-            raise AdmitError(
-                "ADMIT_HOOKS_WOULD_REWRITE",
-                f"the repository's pre-commit hooks ({', '.join(hooks)}) would rewrite "
-                f"{', '.join(rewritten.splitlines())}; run `python -m pre_commit run --files "
-                f"{' '.join(paths)}` in the pull request worktree, commit what it changes, then admit",
-            )
-        if failures:
-            raise AdmitError(
-                "ADMIT_HOOKS_FAILED",
-                "the repository's pre-commit hooks did not run cleanly on the paths:\n" + "\n".join(failures),
-            )
-    finally:
-        _remove_scratch(scratch)
-    return hooks
+    return list(REWRITING_HOOKS)
 
 
 def default_slug(branch: str, paths: list[str]) -> str:
@@ -618,7 +701,7 @@ def _prepare_admission(
         raise AdmitError("ADMIT_PATH_UNCOMMITTED", f"commit the new paths before admitting them:\n{dirty}")
     # Before any byte is read or pinned: the hooks every later commit runs must have nothing
     # left to change, or the first commit after the admission would edit an admitted file.
-    check_rewriting_hooks(pr, head, paths, scratch_root=scratch_root)
+    check_rewriting_hooks(pr, base, head, paths)
     base_policy = _git(pr, "cat-file", "blob", f"{base}:{POLICY}")
     with tempfile.TemporaryDirectory(prefix="nakagawa-admit-base-") as policy_scratch:
         policy_path = Path(policy_scratch) / "policy.json"
