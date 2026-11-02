@@ -931,6 +931,10 @@ uses for `CI_CHANGE_UNAPPROVED`: the protected paths above, listed by `protected
   record, or a record whose digest the head no longer has, fails with `CI_CHANGE_UNAPPROVED`
   whether or not the workflow removed the label.
 
+The digest covers the same boundary `protected_paths` draws and nothing wider: it does not hash a helper
+module that a gate tool imports, or a script outside `tools/` that a workflow runs, so review those
+in the head that introduces them.
+
 A force-push of an unrelated history is judged by content alone: the previous head is the
 push's `before`, whatever its ancestry, and an identical digest is identical bytes. Two pushes
 in quick succession can find no record yet at the first one's head and withdraw the label;
