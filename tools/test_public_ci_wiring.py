@@ -1943,7 +1943,7 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
                 ):
                     self.assertEqual(result[key], "true", key)
                 self.assertEqual(result["python_scope"], "all")
-                self.assertEqual(result["python_num_shards"], "4")
+                self.assertEqual(result["python_num_shards"], str(ci_paths.PYTHON_SHARDS_FULL))
 
     def test_python_tools_skip_summary_counts_only_known_prefixes(self) -> None:
         output = "\n".join(

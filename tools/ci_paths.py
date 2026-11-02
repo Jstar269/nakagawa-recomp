@@ -871,10 +871,10 @@ def _changed_files_from_git(event_name: str, event: Mapping[str, object]) -> lis
 #: Python shards for a change whose only build-system edit is a recipe-only Makefile
 #: edit. The Makefile-coupled subset (tools/ci_test_shards.py --select makefile) is
 #: about nine tenths of the suite by measured weight, because most heavy modules run
-#: make, so it keeps two runners rather than one; at that width the Python job is
-#: about as long as the native and Windows gates the same change still requires.
-PYTHON_SHARDS_FULL = 4
-PYTHON_SHARDS_MAKEFILE = 2
+#: make, so it keeps four runners, two fewer than the full suite's six. Six full shards keep a
+#: shard well inside the 30-minute job limit on the busy self-hosted pool (2026-11-02).
+PYTHON_SHARDS_FULL = 6
+PYTHON_SHARDS_MAKEFILE = 4
 
 
 def _makefile_revisions(left: str, right: str) -> tuple[str, str] | None:
