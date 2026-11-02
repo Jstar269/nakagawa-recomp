@@ -165,7 +165,7 @@ In early Nakagawa development, executing `module_start` for `libfont.prx` and `p
 
 - **ISO vs. Firmware Reality:** The PGF font files (`jpn0.pgf`, `ltn0.pgf`, etc.) are located in the PSP's internal `flash0:/font/` filesystem partition, **not** on the game UMD disc.
 - **Honest Prerequisite Discipline:** We do not sacrifice fidelity merely to claim "Program + ISO". If authentic rendering requires the genuine Sony PGF font, we state clearly:
-  $$\text{Nakagawa} + \text{Game ISO} + \text{User-Supplied Firmware Font (flash0)}$$
+  $$\text{Nakagawa} + \text{Game ISO} + \text{User-Supplied Console Font (flash0)}$$
 - A non-authentic TTF replacement mode may exist solely as an optional, clearly labeled developer fallback, but it is **not** the architectural baseline.
 
 ---

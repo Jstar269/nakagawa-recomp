@@ -137,7 +137,7 @@ summary distinguishes the two so a new file never reads as a mistake you made.
 | Classify change | Which areas your change touches, so only relevant jobs run | Rarely fails; ask a maintainer |
 | Hygiene and security | pre-commit hooks: Ruff, whitespace and encoding, publication safety, secret scanning | Run `python -m pre_commit run --files <your files>` locally |
 | Markdown validation | markdownlint on changed Markdown | Run `npx --yes markdownlint-cli2@0.24.0 <file>` |
-| Python tooling gates (0–3) | The `tools/` unit tests, split into four shards | Run the failing test module with `python -m unittest tools.<module>` |
+| Python tooling gates (0–5) | The `tools/` unit tests, split into six shards | Run the failing test module with `python -m unittest tools.<module>` |
 | Native and translation gates | Strict C builds (`-std=c99`/`c11 -Werror`) and runtime selftests on Linux | Compile the changed C file with the flags shown in the log |
 | Windows runtime compile gate | The runtime builds with MSYS2 UCRT64 on Windows | Check Windows-only APIs and headers |
 | Trusted provenance attestation | Your change against the private trusted ledger | Provenance mismatches are handled by a maintainer |
@@ -169,7 +169,7 @@ Signed-off-by: Real Name <email@example.com>
 ```
 
 - Use `git commit -s` to automatically append this line. Only the person who wrote a commit may sign it off, and no tool or agent adds one for anyone.
-- A pull request without sign-offs is not blocked for that reason; the maintainer may merge it (maintainer decision, 2026-10-30). The same goes for a box you forgot to tick or a disclosure you left out: the maintainer asks in review instead of closing the pull request. Only code from another project has a firm rule, because the license requires it: name where it came from, and it must be under a GPL-compatible license.
+- A pull request without sign-offs is not blocked for that reason; the maintainer may merge it. The same goes for a box you forgot to tick or a disclosure you left out: the maintainer asks in review instead of closing the pull request. Only code from another project has a firm rule, because the license requires it: name where it came from, and it must be under a GPL-compatible license.
 - Neither the confirmation nor a sign-off is a copyright assignment—you retain ownership of your original contributions.
 - Disclose third-party source origins and AI-assisted generation separately in pull request descriptions. Commits that an AI tool helped produce end with one `Assisted-by: <tool> (<model>)` line per tool; see [docs/AI_USAGE.md](docs/AI_USAGE.md#disclosing-ai-help-in-commits).
 - For complete policy details, bot exceptions, and how to add sign-offs to your own open pull request, see [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
@@ -291,8 +291,9 @@ python tools/publish_audit.py --tracked-only --worktree
 
 To rebuild a game you own, pass its local title manifest:
 `.\nk_manager.ps1 -Action BuildFast -TitleManifest <your manifest> -GameName <name>` for a runtime-only change, or
-`-Action BuildFull` after a codegen or pipeline change ([docs/SETUP.md](docs/SETUP.md#3-build)). Title manifests
-that name a retail game, such as the maintainer's Hot Shots Tennis one, stay local and are not in the repository.
+`-Action BuildFull` after a codegen or pipeline change ([docs/SETUP.md](docs/SETUP.md#3-build)). The repository
+carries one retail manifest, Hot Shots Tennis (`assets/titles/hst-ucus98701.json`); a manifest for any other
+retail game stays local unless a maintainer admits it as a public path.
 
 Pass `--worktree` when auditing by hand: it reads the bytes on disk. The bare `--tracked-only`
 form reads staged Git blobs, which is correct for the pre-commit hook (it stashes unstaged
@@ -317,7 +318,7 @@ end of file, YAML, JSON and TOML syntax, merge-conflict markers, private-key det
 `documentation-freshness` (`tools/lint_docs.py`), `publication-policy-sync` (`tools/policy_sync.py`),
 the publication audit (`tools/publish_audit.py`), the modified-file notice audit and the provenance-record gap
 check. The commit stage adds a secret scan (`betterleaks`) and a staged-whitespace check. The hooks never need
-a game, but they do read the whole tree, so a new file that carries a game name, disc ID, key or private path is
+a game, but they do read the whole tree, so a new file that carries game data, a key or a private path is
 rejected before it leaves your machine. Never bypass them with `--no-verify`; fix what they report.
 
 `install` sets up both the commit and the push hook (`default_install_hook_types` in

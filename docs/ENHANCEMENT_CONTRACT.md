@@ -102,7 +102,7 @@ Enhancements are governed by the following cache rules:
 
 ## 5. Symbolic Capabilities vs. Raw Addresses
 
-A critical design requirement of Nakagawa Recomp is the complete absence of title-specific guest addresses or proprietary game names from generic code (`TITLE_PROFILE_ARCHITECTURE.md`).
+A critical design requirement of Nakagawa Recomp is the complete absence of title-specific guest addresses and title-keyed behaviour from generic code (`TITLE_PROFILE_ARCHITECTURE.md`).
 
 Enhancements must follow the same strict rule:
 

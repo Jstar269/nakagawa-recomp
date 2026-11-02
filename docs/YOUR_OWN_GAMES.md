@@ -31,8 +31,9 @@ Importing a disc doesn't change its status. The **EXPERIMENTAL** badge on the ga
   checks the disc (see [Encrypted games](#supplying-unencrypted-files)).
 - **PSP system fonts (optional, recommended for in-game text).** To see a
   game's text in the PSP's own lettering, copy the Sony font files (`.pgf`)
-  from your own PSP's `flash0:/font/`. The project doesn't include or share
-  them. Connect your PSP by USB as [Copying the fonts from your PSP](SETUP.md#copying-the-fonts-from-your-psp)
+  from your own PSP's `flash0:/font/`. They are plain files; Nakagawa reads them
+  from a local folder and never decrypts anything from `flash0`. The project
+  doesn't include, share or upload them. Connect your PSP by USB as [Copying the fonts from your PSP](SETUP.md#copying-the-fonts-from-your-psp)
   describes and choose **GET FONTS FROM MY PSP** in **Settings > PSP FONTS**, or
   copy them to a folder and run `python tools/nk_cli.py fonts import <folder>`.
   If two files cover the same slot, pick one with `--choose <slot>=<file>`
