@@ -36,11 +36,17 @@ class FocusError(Exception):
     """The check could not be made, which is a failure, not a pass."""
 
 
-def defined_symbols(path: Path, nm: str) -> set[str]:
-    """External symbols defined by an object or executable, from ``nm -g --defined-only``."""
+def defined_symbols(path: Path, nm: str, local_too: bool = False, text_only: bool = False) -> set[str]:
+    """Symbols an object or executable defines, from ``nm --defined-only``.
+
+    External ones only, unless ``local_too``: a linked ELF executable turns the hidden
+    symbols the HLE objects export into local ones, so its table is read in full. With
+    ``text_only`` only code symbols count (a function is the unit a linked file brings in;
+    data names collide with unrelated statics of the runtime objects).
+    """
     try:
-        result = subprocess.run([nm, "-g", "--defined-only", str(path)], capture_output=True,
-                                text=True, check=False)
+        command = [nm, *([] if local_too else ["-g"]), "--defined-only", str(path)]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
     except OSError as error:
         raise FocusError(f"cannot run {nm}: {error}") from error
     if result.returncode != 0:
@@ -48,8 +54,11 @@ def defined_symbols(path: Path, nm: str) -> set[str]:
     names: set[str] = set()
     for line in result.stdout.splitlines():
         fields = line.split()
-        if len(fields) == 3 and not fields[2].startswith(".refptr."):   # MinGW import pseudo-symbols
-            names.add(fields[2])
+        if len(fields) != 3 or fields[2].startswith(".refptr."):   # MinGW import pseudo-symbols
+            continue
+        if text_only and fields[1] not in ("T", "t"):
+            continue
+        names.add(fields[2])
     return names
 
 
@@ -69,18 +78,20 @@ def check(exe: Path, objdir: Path, included: list[str], stubs: list[Path], requi
     if not included:
         raise FocusError("no included HLE file named")
     excluded = sorted(set(names) - {stem(source) for source in included})
+    # An included file's static of the same name as an excluded file's global is not a leak, so
+    # the allowed set carries the included objects' local symbols too.
     allowed: set[str] = set()
     for source in included:
-        allowed |= defined_symbols(objdir / f"{stem(source)}.o", nm)
+        allowed |= defined_symbols(objdir / f"{stem(source)}.o", nm, local_too=True)
     for stub in stubs:
-        allowed |= defined_symbols(stub, nm)
-    linked = defined_symbols(exe, nm)
+        allowed |= defined_symbols(stub, nm, local_too=True)
+    linked = defined_symbols(exe, nm, local_too=True, text_only=True)
     problems: list[str] = []
     for name in excluded:
         obj = objdir / f"{name}.o"
         if not obj.is_file():
             raise FocusError(f"no object for the excluded file {names[name]} at {obj}")
-        leaked = sorted((defined_symbols(obj, nm) - allowed) & linked)
+        leaked = sorted((defined_symbols(obj, nm, text_only=True) - allowed) & linked)
         if leaked:
             problems.append(f"{names[name]} is linked: {', '.join(leaked[:6])}"
                             + (f" and {len(leaked) - 6} more" if len(leaked) > 6 else ""))
