@@ -2677,6 +2677,17 @@
       }
     },
     {
+      "path": "fixtures/psp_oracle/mem_edge.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "memory-edge-303",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "fixtures/psp_oracle/mutex_imports.S",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -2789,6 +2800,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "kernel-semantics-probe-20261031",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "fixtures/psp_oracle/probe_memory_edge.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "memory-edge-303",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
