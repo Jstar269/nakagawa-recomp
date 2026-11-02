@@ -406,6 +406,76 @@ class PortableZipTests(unittest.TestCase):
             stage_install.main(["--portable-zip", str(out)])
 
 
+_V = "0.0.2"
+_PLAYER = f"nakagawa-recomp-{_V}-windows-x64.zip"
+_SOURCES = f"nakagawa-recomp-{_V}-prerequisite-sources.zip"
+_GOOD_ASSETS = [_PLAYER, f"{_PLAYER}.sha256", f"{_PLAYER}.sha256.minisig", _SOURCES, f"{_SOURCES}.sha256"]
+
+
+class ReleaseAssetContractTests(unittest.TestCase):
+    """One player ZIP per platform, with every other file droppable by name (#1876)."""
+
+    def _codes(self, names):
+        return sorted(problem.split(":", 1)[0] for problem in stage_install.check_release_assets(names))
+
+    def test_the_documented_release_passes(self):
+        self.assertEqual(stage_install.check_release_assets(_GOOD_ASSETS), [])
+        # The signature is optional: a release without it falls back to its page in the player.
+        self.assertEqual(stage_install.check_release_assets([n for n in _GOOD_ASSETS if "minisig" not in n]), [])
+
+    def test_the_recipe_names_what_the_contract_accepts(self):
+        recipe = (TOOLS.parent / "docs" / "PREVIEW_RELEASE.md").read_text(encoding="utf-8")
+        for template in ("nakagawa-recomp-$Version-windows-x64.zip", "nakagawa-recomp-$Version-prerequisite-sources.zip"):
+            self.assertIn(template, recipe)
+        self.assertIn("--check-assets", recipe)
+
+    def test_two_archives_for_one_platform_fail(self):
+        self.assertEqual(self._codes(_GOOD_ASSETS + ["nakagawa-recomp-0.0.2-windows-x64.zip.bak"]),
+                         ["ASSET_NAME_UNKNOWN"])
+        self.assertEqual(self._codes(_GOOD_ASSETS + ["nakagawa-recomp-0.0.2-portable.zip"]),
+                         ["ASSET_FILTER_MISMATCH", "ASSET_SECOND_ARCHIVE"])
+        self.assertEqual(self._codes(_GOOD_ASSETS + ["nakagawa-recomp-0.0.2-windows-x64-installer.exe"]),
+                         ["ASSET_FILTER_MISMATCH", "ASSET_SECOND_ARCHIVE"])
+
+    def test_a_missing_platform_token_fails(self):
+        names = ["nakagawa-recomp-0.0.2.zip", "nakagawa-recomp-0.0.2.zip.sha256"]
+        self.assertIn("ASSET_PLAYER_MISSING", self._codes(names))
+        self.assertIn("ASSET_SECOND_ARCHIVE", self._codes(names))
+
+    def test_a_checksum_a_name_filter_would_keep_fails(self):
+        # "checksums.txt" is listed nowhere in the contract, and a name without a checksum word is no checksum file.
+        self.assertEqual(self._codes(_GOOD_ASSETS + ["hashes.txt"]), ["ASSET_NAME_UNKNOWN"])
+        self.assertEqual(self._codes([_PLAYER, "nakagawa-recomp-0.0.2-windows-x64.zip.hash"]),
+                         ["ASSET_CHECKSUM_MISSING", "ASSET_NAME_UNKNOWN"])
+
+    def test_a_player_name_a_filter_would_drop_fails(self):
+        names = ["nakagawa-recomp-0.0.2-windows-x64-debug.zip"]
+        self.assertTrue(stage_install.is_auxiliary_asset(names[0]))
+        self.assertIn("ASSET_PLAYER_MISSING", self._codes(names))
+
+    def test_missing_checksum_orphans_and_mixed_versions_fail(self):
+        self.assertEqual(self._codes([_PLAYER]), ["ASSET_CHECKSUM_MISSING"])
+        self.assertEqual(self._codes([n for n in _GOOD_ASSETS if n != _PLAYER]),
+                         ["ASSET_ORPHAN", "ASSET_ORPHAN", "ASSET_PLAYER_MISSING"])
+        self.assertEqual(self._codes(_GOOD_ASSETS[:3] + ["nakagawa-recomp-0.0.1-prerequisite-sources.zip"]),
+                         ["ASSET_VERSION_MIXED"])
+
+    def test_a_second_platform_is_two_archives_only_when_the_contract_lists_it(self):
+        self.assertEqual(self._codes(_GOOD_ASSETS + ["nakagawa-recomp-0.0.2-linux-x64.zip"]),
+                         ["ASSET_FILTER_MISMATCH", "ASSET_SECOND_ARCHIVE"])
+
+    def test_the_command_line_reads_a_release_folder(self):
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            for name in _GOOD_ASSETS:
+                (folder / name).write_bytes(b"")
+            self.assertEqual(stage_install.main(["--check-assets", str(folder)]), 0)
+            (folder / "nakagawa-recomp-0.0.2-windows-arm64.zip").write_bytes(b"")
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(stage_install.main(["--check-assets", str(folder)]), 1)
+            self.assertIn("ASSET_SECOND_ARCHIVE", stderr.getvalue())
+
+
 class ReproducibleBuildTests(unittest.TestCase):
     def test_player_links_carry_the_reproducible_link_flag(self):
         """Without it the PE header holds the link time and two builds of one commit differ (#324)."""

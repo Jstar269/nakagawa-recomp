@@ -44,6 +44,10 @@ Usage::
 
     python tools/stage_install.py --dest "<install folder>" --desktop-shortcut
     python tools/stage_install.py --portable-zip <out.zip> --zip-stage <staged folder>
+    python tools/stage_install.py --check-assets <release folder, or file names>
+
+``--check-assets`` checks the names of a release's files against the one-archive-
+per-platform contract in ``docs/PREVIEW_RELEASE.md`` (#1876).
 """
 
 from __future__ import annotations
@@ -56,6 +60,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import re
 import subprocess
 import sys
 import tarfile
@@ -473,6 +478,70 @@ def write_portable_zip(stage: Path, zip_path: Path, *, source_date_epoch: int,
     }
 
 
+_VERSION = r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?"
+_PLAYER_ZIP = re.compile(rf"nakagawa-recomp-({_VERSION})-(windows-x64)\.zip")
+_SOURCE_ZIP = re.compile(rf"nakagawa-recomp-({_VERSION})-prerequisite-sources\.zip")
+# What a catalogue launcher drops before it ranks archives: checksum, signature, source and
+# debug files. Every released file that is not the player archive carries one of these words.
+_AUXILIARY_TOKENS = ("sha256", "checksum", ".minisig", ".sig", ".asc", "source", "src", "debug", "symbols",
+                     ".pdb", "sbom")
+_ARCHIVE_SUFFIXES = (".zip", ".7z", ".tar", ".tar.gz", ".tgz", ".tar.xz", ".tar.zst", ".exe", ".msi", ".dmg",
+                     ".appimage", ".deb", ".rpm")
+
+
+def is_auxiliary_asset(name: str) -> bool:
+    """True when a name filter that skips checksum, signature, source and debug files drops ``name``."""
+    lowered = name.lower()
+    return any(token in lowered for token in _AUXILIARY_TOKENS)
+
+
+def check_release_assets(names) -> list[str]:
+    """Return the problems with a release's file names; empty when the contract holds (#1876).
+
+    Exactly one player archive per platform, ``nakagawa-recomp-<version>-<os>-<arch>.zip``, with its
+    ``.sha256`` (and optionally that file's ``.minisig``); the prerequisite source archive with its
+    ``.sha256``; one version throughout; and nothing else a launcher's name filter would keep as a
+    second candidate.
+    """
+    names = sorted(set(names))
+    problems: list[str] = []
+    players: dict[str, list[str]] = {}
+    versions: set[str] = set()
+    for name in names:
+        player = _PLAYER_ZIP.fullmatch(name)
+        source = _SOURCE_ZIP.fullmatch(name)
+        if player:
+            players.setdefault(player[2], []).append(name)
+        if player or source:
+            versions.add((player or source)[1])
+            continue
+        checked = re.fullmatch(r"(nakagawa-recomp-.+\.zip)\.sha256(\.minisig)?", name)
+        if checked and (_PLAYER_ZIP.fullmatch(checked[1]) or _SOURCE_ZIP.fullmatch(checked[1])):
+            # A signature signs the checksum file, so it needs the checksum and the archive both.
+            needed = [checked[1]] + ([f"{checked[1]}.sha256"] if checked[2] else [])
+            problems += [f"ASSET_ORPHAN: {name} has no {other}" for other in needed if other not in names]
+        elif name.lower().endswith(_ARCHIVE_SUFFIXES) and not is_auxiliary_asset(name):
+            problems.append(f"ASSET_SECOND_ARCHIVE: {name} would compete with the player archive; name it "
+                            "nakagawa-recomp-<version>-<os>-<arch>.zip, or as a source, checksum or debug file")
+        else:
+            problems.append(f"ASSET_NAME_UNKNOWN: {name} is not a name the release contract lists")
+    if not players:
+        problems.append("ASSET_PLAYER_MISSING: no nakagawa-recomp-<version>-windows-x64.zip")
+    for platform, found in players.items():
+        if len(found) > 1:
+            problems.append(f"ASSET_PLATFORM_DUPLICATE: {platform} has {len(found)} archives: {', '.join(found)}")
+        for archive in found:
+            if f"{archive}.sha256" not in names:
+                problems.append(f"ASSET_CHECKSUM_MISSING: {archive}.sha256")
+    if len(versions) > 1:
+        problems.append(f"ASSET_VERSION_MIXED: {', '.join(sorted(versions))}")
+    kept = [name for name in names if not is_auxiliary_asset(name) and name.lower().endswith(_ARCHIVE_SUFFIXES)]
+    if sorted(kept) != sorted(n for found in players.values() for n in found):
+        problems.append("ASSET_FILTER_MISMATCH: a name filter that drops checksum, signature, source and debug "
+                        f"files would leave {kept}, not the player archives")
+    return problems
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--dest", type=Path,
@@ -480,6 +549,9 @@ def main(argv=None) -> int:
     parser.add_argument("--portable-zip", type=Path,
                         help="instead of installing, write this reproducible portable ZIP from "
                              "--zip-stage")
+    parser.add_argument("--check-assets", nargs="+", metavar="PATH",
+                        help="check a release folder's file names (or the file names given) against the "
+                             "one-archive-per-platform contract")
     parser.add_argument("--zip-stage", type=Path,
                         help="the staged release folder --portable-zip archives")
     parser.add_argument("--source-date-epoch",
@@ -498,6 +570,16 @@ def main(argv=None) -> int:
     parser.add_argument("--arguments", default=DEFAULT_ARGUMENTS,
                         help=f"player arguments in the shortcut (default: {DEFAULT_ARGUMENTS})")
     args = parser.parse_args(argv)
+    if args.check_assets is not None:
+        paths = [Path(item) for item in args.check_assets]
+        if len(paths) == 1 and paths[0].is_dir():
+            names = [child.name for child in paths[0].iterdir()]
+        else:
+            names = [item.name for item in paths]
+        problems = check_release_assets(names)
+        for problem in problems:
+            print(f"stage_install: FAIL: {problem}", file=sys.stderr)
+        return 1 if problems else 0
     if args.portable_zip is not None or args.zip_stage is not None:
         if args.portable_zip is None or args.zip_stage is None or args.dest is not None:
             parser.error("--portable-zip and --zip-stage go together, without --dest")
