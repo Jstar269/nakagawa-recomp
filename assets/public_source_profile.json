@@ -1592,11 +1592,8 @@
     "tools/test_matrix_disposition.py",
     "tools/test_matrix_report.py",
     "tools/test_mem_debug.py",
-<<<<<<< HEAD
-    "tools/test_miss_seeds.py",
-=======
     "tools/test_microtest_gate.py",
->>>>>>> origin/main
+    "tools/test_miss_seeds.py",
     "tools/test_modified_file_notice_audit.py",
     "tools/test_mp3_tone_fixture.py",
     "tools/test_mpeg_h264_bounds.py",
