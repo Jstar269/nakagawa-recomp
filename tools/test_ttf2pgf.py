@@ -1371,7 +1371,7 @@ class ProjectLatinStrikeTests(unittest.TestCase):
     @staticmethod
     def _stem(glyph: Glyph) -> float:
         row = glyph.height // 2
-        return sum(glyph.samples[row * glyph.width:(row + 1) * glyph.width]) / 15
+        return float(sum(glyph.samples[row * glyph.width:(row + 1) * glyph.width])) / 15
 
     def test_each_strike_meets_the_console_font_of_its_size(self) -> None:
         for variable, nominal, ascender, descender, x_height, cap, drop, stem, advance in self.STRIKES:

@@ -1478,7 +1478,7 @@ class _Planner:
         stop_low = min((y for contour in self.font.outline(stop) for _x, y, _on in contour), default=None)
         if ellipsis_low is None or stop_low is None:
             raise _refuse("baseline-ellipsis-unavailable", "U+2026 or U+002E has no outline")
-        return stop_low - ellipsis_low
+        return int(stop_low) - int(ellipsis_low)
 
     def outline(self, code: int) -> list[list[tuple]]:
         """The code's contours in font units, after any shift this conversion asked for."""
