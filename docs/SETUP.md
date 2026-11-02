@@ -1075,9 +1075,9 @@ check (the one slow step).
 Only those files are ever opened, so nothing is "everything except a few exclusions". Each is also
 refused by rule when it is a game file or disc image, a decrypted module, a save, a frame or memory dump,
 a trace, a key or a console-bound value, or when it is not plain text, and long logs keep their last 2 MiB
-from a whole line. Every line is redacted: your home folder (any spelling: `C:\Users\you`, `C:/Users/you`,
-`\\?\C:\...`, `file:///C:/...`, `/mnt/c/Users/you`, `/home/you`, `/Users/you`, JSON-escaped slashes)
-becomes `~`, your account name becomes `<user>` and this PC's name `<host>`. Read the ZIP before you
+from a whole line. Every line is redacted: your home folder (backslash or slash, the doubled slashes of
+JSON, the `\\?\` and `file:///` prefixes, the `/mnt/c` mount, and the Windows, Linux and macOS profile
+folders, found both by the account this PC names and by their shape) becomes `~`, your account name becomes `<user>` and this PC's name `<host>`. Read the ZIP before you
 attach it. The launcher button for this is not built yet (#1849).
 
 ### Windows host pitfalls

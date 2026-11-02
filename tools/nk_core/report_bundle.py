@@ -155,8 +155,9 @@ def _name_regex(name: str) -> re.Pattern[str] | None:
 def redact_text(text: str, identity: Identity) -> str:
     """The text with the home folder as ``~``, the account name as ``<user>`` and the machine
     name as ``<host>``. The home folder is found both as the known value and by shape
-    (``X:\\Users\\<name>``, ``/mnt/c/Users/<name>``, ``/home/<name>``, ``/Users/<name>``), so a
-    report from another account on the same machine is covered too."""
+    (a Windows profile folder with or without a drive or ``/mnt/c`` mount, a Linux ``home`` or
+    macOS ``Users`` folder), so a report from another account on the same machine is covered
+    too."""
     for home in sorted(identity.home_dirs, key=len, reverse=True):
         pattern = _path_regex(home)
         if pattern is not None:
