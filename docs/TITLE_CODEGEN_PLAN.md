@@ -182,14 +182,16 @@ runtime, and a binding only decides whether — and where — that meaning appli
 
 ### Typed collections
 
-Two later bindings name a *set* of semantic sites rather than one address, so they are
-arrays rather than scalars. Both are individually optional and both are empty in a
-generic build.
+A later binding names a *set* of semantic sites rather than one address, so it is an
+array rather than a scalar. It is optional and empty in a generic build.
 
 | Collection | Entry | Consumed by |
 | --- | --- | --- |
 | `dispatch_aliases` | `{from, to}` | `recomp.c` `dispatch()` before the table lookup |
-| `callback_terminators` | `{sentinel, pc?, ra?}` | `recomp.c` `dispatch()` after the VFPU tag check |
+
+There is no second collection: the runtime never reports a dispatch target as a
+completed walk, and a manifest naming a retired runtime-binding field fails with that
+field's named migration error in both validators.
 
 A **dispatch alias** says a computed call to `from` must enter the body registered at
 `to`. It covers a *registration* gap — a tail call landing past a callee's prologue at
@@ -199,26 +201,10 @@ to the normal miss path. Validation rejects a self-alias, a duplicate source, an
 alias whose target is itself an alias source, because the runtime resolves exactly one
 step and a chain would silently stop short.
 
-A **callback terminator** says that at one exact call site, `sentinel` as a dispatch
-target means the guest's callback walk is COMPLETE — report `v0 = 1`, return to `$ra` —
-instead of taking the permissive miss path, which answers 0 and which a circular walker
-reads as "continue" and loops on forever. `sentinel` is a raw target value, not an
-address: the real one is `0xFFFFFFFF`, so the alignment rule for a guest address does not
-apply to it. A sentinel of `0` is refused (#1375): a transfer to 0 is a null code pointer,
-which stops the run by name in every tier and backend, never a completed walk. `pc` and
-`ra` are guest addresses and
-**at least one is required** — an entry constraining neither would make the sentinel
-terminate at every call site in the program, which is precisely the address-global
-behavior this collection exists to prevent. Validation also rejects a duplicate entry
-and an entry that is unreachable behind a broader one for the same sentinel.
-
-Both collections are normalized to a canonical order, so two manifests that mean the
+The collection is normalized to a canonical order, so two manifests that mean the
 same thing produce the same digest and are not two different builds.
 
-Ordering inside `dispatch()` is deliberate. The terminator check sits **after** the VFPU
-tag check, because the VFPU dispatch encoding is core vocabulary a title configuration
-must never be able to shadow. No terminator can match a target of 0, which reaches the
-null-code-pointer stop (#1375). The alias check
+Ordering inside `dispatch()` is deliberate. The alias check
 sits **after** the exact-hook table, so runtime policy hooks keep precedence over a title
 redirect, and before the lookup fixups, so an aliased target reaches the same code a
 direct target would.
@@ -231,11 +217,9 @@ target matching `SR_DISPATCH_VFPU_TAG` under `SR_DISPATCH_VFPU_MASK`
 consulted, a binding whose own match value falls in that window could never fire. A
 manifest naming one is rejected, with the exact window in the message:
 
-- `dispatch_aliases[].from` and `callback_terminators[].sentinel` are compared against a
-  dispatch target, so both are subject to the reservation;
-- `dispatch_aliases[].to` is only ever handed to `sr_lookup()`, and
-  `callback_terminators[].pc` / `.ra` are compared against `CpuState` fields at the call
-  site, so none of those three is.
+- `dispatch_aliases[].from` is compared against a dispatch target, so it is subject to
+  the reservation;
+- `dispatch_aliases[].to` is only ever handed to `sr_lookup()`, so it is not.
 
 Without the rule such a manifest validates, generates, compiles, and then takes the
 configured target into the VFPU interpreter — a private title manifest is never part of
@@ -244,12 +228,11 @@ error. The JSON schema publishes the same window as `$defs/coreReservedDispatchT
 and a test reads both macros back out of `src/rt/recomp.h` so the Python mirror cannot
 drift from the runtime it describes.
 
-`src/rt/title_config.c` sizes both generated arrays from the list rather than from the
-declared count, and `_Static_assert`s the two against each other. A count larger than its
-list would otherwise zero-pad the array, and a zero-filled terminator entry reads as
-`{sentinel 0, no pc constraint, no ra constraint}` — exactly the program-wide match the
-validator refuses to accept. Deriving the size from the initializer makes that
-disagreement a compile error instead.
+`src/rt/title_config.c` sizes the generated alias array from the list rather than from
+the declared count, and `_Static_assert`s the two against each other. A count larger than
+its list would otherwise zero-pad the array, and a zero-filled alias entry is a live
+entry the lookup would compare against. Deriving the size from the initializer makes
+that disagreement a compile error instead.
 
 ### The generic runtime interface
 
@@ -331,23 +314,20 @@ itself needs generated code and is not asserted here.
 generator's determinism, and a source-shape check that no generic runtime source still
 names one of the retired addresses.
 
-`make dispatch-isolation-selftest` is the matching gate for the typed collections, over
+`make dispatch-isolation-selftest` is the matching gate for the typed collection, over
 the same three configurations and the same two fixtures. It drives the **real**
 `dispatch()` entry point — `tests/native/dispatch_isolation_selftest.c` includes `recomp.c` —
-and reads its verdict from the resulting `CpuState`, which distinguishes the three
-outcomes cleanly: a termination is `v0 = 1, pc = ra`, the null-call policy hook is
-`v0 = 0, pc = ra`, and an ordinary miss is `v0 = 0, pc = pc + 8`.
+and reads its verdict from the resulting `CpuState`, which distinguishes the outcomes
+cleanly: the null-call policy hook is `v0 = 0, pc = ra`, and an ordinary miss is
+`v0 = 0, pc = pc + 8`.
 
 Almost every assertion is derived from `sr_title_config()` at run time rather than
 hardcoded, so one source proves "only what THIS build configures acts" for every
 configuration — including the private HST one, where the same binary instead proves the
-migrated bindings do their job. Each build asserts that its own aliases redirect and its
-own terminators fire; that neither matches one address off in either direction; that the
-other fixture's alias sources and terminator sites behave generically; and that the three
-addresses generic dispatch used to hardcode are ordinary traffic. The two fixtures
-deliberately share the *sentinel value* `0xFFFFFFFF` while placing it at
-disjoint sites, which is what makes "the same sentinel elsewhere follows generic
-behavior" an assertion the matrix can actually fail.
+migrated bindings do their job. Each build asserts that its own aliases redirect; that
+no alias matches one address off in either direction; that the other fixture's alias
+sources behave generically; and that the addresses generic dispatch used to hardcode,
+the retired forced-completion site included, are ordinary traffic.
 
 This is production-helper (tier-2) evidence: `dispatch()` is the real function, but the
 `CpuState` and the registered bodies are a test fixture rather than a title route.

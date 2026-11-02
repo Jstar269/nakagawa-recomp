@@ -2,8 +2,9 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
 /*
- * Executable isolation tests for the two typed dispatch bindings that title
- * configuration owns: DISPATCH ALIASES and CALLBACK TERMINATORS.
+ * Executable isolation tests for the typed dispatch binding that title
+ * configuration owns: DISPATCH ALIASES. The retired forced-completion site is checked
+ * as ordinary dispatch-miss traffic in every build.
  *
  * Standalone host executable, no game inputs required. The harness #includes recomp.c
  * and drives the real production dispatch core. The executable-span case enters the
@@ -14,7 +15,7 @@
  *
  * The same source is built once per title configuration by the Makefile matrix:
  *
- *   generic    -- no title configuration; both collections empty
+ *   generic    -- no title configuration; the collection is empty
  *   fixture-a  -- assets/titles/pspdev-phase5.json
  *   fixture-b  -- assets/titles/synthetic.json  (a DISJOINT synthetic address family)
  *
@@ -257,8 +258,9 @@ static Probe probe(uint32_t target, uint32_t pc, uint32_t ra) {
     return out;
 }
 
-/* dispatch() reports a completed callback walk as v0 = 1, pc = ra. Nothing else does. */
-static int terminated(Probe p) { return p.v0 == 1u && p.pc == p.ra; }
+/* The runtime no longer reports a dispatch target as a completed callback walk
+ * (v0 = 1, pc = ra); the retired-site checks assert that no probe looks like one. */
+static int completed_walk(Probe p) { return p.v0 == 1u && p.pc == p.ra; }
 
 /* The generic outcome for a target no binding claims: reject it without fabricated
  * register/PC progress. This includes null, data-looking, historical resource-handle,
@@ -1449,7 +1451,7 @@ static void test_host_stack_exhaustion_is_a_named_boundary(const char *self_path
  * Each probe is skipped when the configuration under test genuinely DECLARES that
  * binding, so this source stays correct for a configuration that legitimately owns these
  * addresses -- the title they came from. Under that configuration the binding is instead
- * asserted by test_configured_aliases_redirect / the terminator test, which is the right
+ * asserted by test_configured_aliases_redirect, which is the right
  * claim to make there. What must never happen is a build that applies one of them
  * WITHOUT declaring it, and that is what the checks below rule out. */
 static void test_retired_bindings_are_inert(void) {
@@ -1471,18 +1473,20 @@ static void test_retired_bindings_are_inert(void) {
     }
 
     /* Null is a data pointer, never a generic success return. */
-    if (!sr_title_config_is_callback_terminator(0u, PROBE_PC, 0x0003e06cu)) {
+    {
         Probe p = probe(0u, PROBE_PC, 0x0003e06cu);
-        CHECK(!terminated(p), "unconfigured null target (ra=0x0003e06c) reports completion "
+        CHECK(!completed_walk(p), "null target (ra=0x0003e06c) reports completion "
               "in configuration \"%s\"", sr_title_config()->source_id);
         CHECK(generic_outcome(p, 0u), "target 0 at the retired site is not ordinary "
               "null-call policy (v0=0x%08x pc=0x%08x)", p.v0, p.pc);
     }
 
-    /* The retired -1 terminator: target UINT32_MAX at pc = 0x00292fa0, ra = 0x00047a0c. */
-    if (!sr_title_config_is_callback_terminator(UINT32_MAX, 0x00292fa0u, 0x00047a0cu)) {
+    /* The retired -1 forced completion: target UINT32_MAX at pc = 0x00292fa0,
+     * ra = 0x00047a0c. The runtime no longer reports a dispatch target as a completed
+     * walk, so this is an ordinary dispatch miss in every configuration. */
+    {
         Probe p = probe(UINT32_MAX, 0x00292fa0u, 0x00047a0cu);
-        CHECK(!terminated(p), "retired -1 terminator (pc=0x00292fa0 ra=0x00047a0c) still "
+        CHECK(!completed_walk(p), "retired -1 terminator (pc=0x00292fa0 ra=0x00047a0c) still "
               "reports completion in configuration \"%s\"", sr_title_config()->source_id);
         CHECK(generic_outcome(p, UINT32_MAX), "target -1 at the retired site is not an "
               "ordinary dispatch miss (v0=0x%08x pc=0x%08x)", p.v0, p.pc);
@@ -1640,68 +1644,6 @@ static void test_foreign_aliases_do_not_redirect(void) {
     }
 }
 
-/* ---- terminators: the sentinel is generic, the call site is not -------------------- */
-
-static void test_configured_terminators_match_their_site_only(void) {
-    const SrTitleRuntimeConfig *cfg = sr_title_config();
-    for (unsigned i = 0; i < cfg->callback_terminator_count; i++) {
-        const SrTitleCallbackTerminator *t = &cfg->callback_terminators[i];
-        CHECK(t->sentinel != 0u, "configuration \"%s\" declares a sentinel-0 terminator; a "
-              "target of 0 is a null code pointer (#1375)", cfg->source_id);
-        /* An unconstrained field is not compared, so any value stands in for it. */
-        uint32_t pc = t->has_pc ? t->pc : PROBE_PC;
-        uint32_t ra = t->has_ra ? t->ra : PROBE_RA;
-
-        Probe p = probe(t->sentinel, pc, ra);
-        CHECK(terminated(p), "configured terminator (sentinel=0x%08x pc=0x%08x ra=0x%08x) "
-              "did not report completion (v0=0x%08x pc=0x%08x)",
-              t->sentinel, pc, ra, p.v0, p.pc);
-
-        /* The SAME sentinel one step away from the configured site must follow generic
-         * behavior. This is the property that keeps a sentinel from becoming global. */
-        if (t->has_pc) {
-            Probe q = probe(t->sentinel, pc + 4u, ra);
-            CHECK(!terminated(q), "sentinel 0x%08x terminated at pc=0x%08x, which is not "
-                  "the configured site", t->sentinel, pc + 4u);
-            CHECK(generic_outcome(q, t->sentinel), "sentinel 0x%08x off-site is not generic "
-                  "(v0=0x%08x pc=0x%08x)", t->sentinel, q.v0, q.pc);
-        }
-        if (t->has_ra) {
-            Probe q = probe(t->sentinel, pc, ra + 4u);
-            CHECK(!terminated(q), "sentinel 0x%08x terminated at ra=0x%08x, which is not "
-                  "the configured site", t->sentinel, ra + 4u);
-            CHECK(generic_outcome(q, t->sentinel), "sentinel 0x%08x off-site is not generic "
-                  "(v0=0x%08x pc=0x%08x)", t->sentinel, q.v0, q.pc);
-        }
-    }
-}
-
-/* Both public fixtures deliberately use the SAME sentinel values at DIFFERENT sites, so
- * a build must never terminate at a site only the other fixture declares. The sentinel-0
- * sites are each fixture's retired null terminator (#1375): no build terminates there. */
-static const struct { uint32_t sentinel, pc, ra; } FOREIGN_TERMINATOR_SITES[] = {
-    { 0u,          PROBE_PC,     0x08805300u },  /* pspdev-phase5, retired */
-    { UINT32_MAX,  0x08805400u,  0x08805500u },  /* pspdev-phase5 */
-    { 0u,          PROBE_PC,     0x08806300u },  /* synthetic, retired */
-    { UINT32_MAX,  0x08806400u,  0x08806500u },  /* synthetic */
-};
-
-static void test_foreign_terminator_sites_are_generic(void) {
-    for (size_t i = 0; i < sizeof FOREIGN_TERMINATOR_SITES / sizeof FOREIGN_TERMINATOR_SITES[0]; i++) {
-        uint32_t sentinel = FOREIGN_TERMINATOR_SITES[i].sentinel;
-        uint32_t pc = FOREIGN_TERMINATOR_SITES[i].pc;
-        uint32_t ra = FOREIGN_TERMINATOR_SITES[i].ra;
-        /* Skip a site this build genuinely declares; it is asserted above. */
-        if (sr_title_config_is_callback_terminator(sentinel, pc, ra)) continue;
-        Probe p = probe(sentinel, pc, ra);
-        CHECK(!terminated(p), "another title's terminator site (sentinel=0x%08x pc=0x%08x "
-              "ra=0x%08x) reported completion in configuration \"%s\"",
-              sentinel, pc, ra, sr_title_config()->source_id);
-        CHECK(generic_outcome(p, sentinel), "another title's terminator site is not generic "
-              "(sentinel=0x%08x v0=0x%08x pc=0x%08x)", sentinel, p.v0, p.pc);
-    }
-}
-
 /* ---- the generic build inherits nothing -------------------------------------------- */
 
 static void test_generic_build_configures_no_collection(void) {
@@ -1709,31 +1651,21 @@ static void test_generic_build_configures_no_collection(void) {
     if (strcmp(cfg->source_id, "none") != 0) return;   /* not the generic build */
     CHECK(cfg->dispatch_alias_count == 0u,
           "the generic configuration declares %u dispatch alias(es)", cfg->dispatch_alias_count);
-    CHECK(cfg->callback_terminator_count == 0u,
-          "the generic configuration declares %u callback terminator(s)",
-          cfg->callback_terminator_count);
-    CHECK((cfg->valid & (SR_TITLE_CFG_DISPATCH_ALIASES | SR_TITLE_CFG_CALLBACK_TERMINATORS)) == 0u,
+    CHECK((cfg->valid & SR_TITLE_CFG_DISPATCH_ALIASES) == 0u,
           "the generic configuration set a collection validity bit (valid=0x%x)", cfg->valid);
-    /* Every foreign site is exercised by the tests above; the claim here is the stronger
-     * one that no input at all can produce a match. */
-    CHECK(!sr_title_config_is_callback_terminator(0u, PROBE_PC, PROBE_RA) &&
-          !sr_title_config_is_callback_terminator(UINT32_MAX, PROBE_PC, PROBE_RA),
-          "an unconfigured build matched a callback terminator");
     CHECK(!sr_title_config_dispatch_alias(0u, NULL) &&
           !sr_title_config_dispatch_alias(UINT32_MAX, NULL),
           "an unconfigured build resolved a dispatch alias");
 }
 
-/* A configured build must declare at least one of each, or the matrix would be asserting
+/* A configured build must declare at least one alias, or the matrix would be asserting
  * emptiness three times over and prove nothing about the configured path. */
-static void test_configured_build_declares_both_collections(void) {
+static void test_configured_build_declares_aliases(void) {
     const SrTitleRuntimeConfig *cfg = sr_title_config();
     if (strcmp(cfg->source_id, "none") == 0) return;
     CHECK(cfg->dispatch_alias_count > 0u,
           "configuration \"%s\" declares no dispatch alias; the fixture is not exercising "
           "the configured path", cfg->source_id);
-    CHECK(cfg->callback_terminator_count > 0u,
-          "configuration \"%s\" declares no callback terminator", cfg->source_id);
 }
 
 /* ---- TD-27 stale dispatch redirect ------------------------------------------------
@@ -2317,11 +2249,11 @@ int main(int argc, char **argv) {
 
     const SrTitleRuntimeConfig *cfg = sr_title_config();
     fprintf(stderr, "dispatch-isolation-selftest: configuration \"%s\" "
-            "(%u alias(es), %u terminator(s))\n",
-            cfg->source_id, cfg->dispatch_alias_count, cfg->callback_terminator_count);
+            "(%u alias(es))\n",
+            cfg->source_id, cfg->dispatch_alias_count);
 
     test_generic_build_configures_no_collection();
-    test_configured_build_declares_both_collections();
+    test_configured_build_declares_aliases();
     test_valid_aot_miss_executes_guest_bytes();
     test_aot_store_watch_synthetic_guest();
     test_aot_call_returns_before_native_continuation();
@@ -2341,8 +2273,6 @@ int main(int argc, char **argv) {
     test_diagnostic_exact_hooks_never_consume();
     test_configured_aliases_redirect();
     test_foreign_aliases_do_not_redirect();
-    test_configured_terminators_match_their_site_only();
-    test_foreign_terminator_sites_are_generic();
     test_stale_hook_redirects_to_interpreter();
     test_null_code_pointer_is_not_the_offset0_function(argv[0]);
     test_host_entries_return_through_the_host_return_address(argv[0]);

@@ -3124,9 +3124,9 @@ domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		tests/native/domain_mode_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/domain_mode_selftest.exe
 
-# dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
-# title configuration owns (dispatch aliases, callback terminators) act only where that
-# configuration names them. No game inputs needed; tests/native/dispatch_isolation_selftest.c
+# dispatch-isolation-selftest — executable proof that the TYPED dispatch binding a
+# title configuration owns (dispatch aliases) acts only where that configuration names
+# it. No game inputs needed; tests/native/dispatch_isolation_selftest.c
 # #includes recomp.c and drives the real dispatch() entry point, asserting its observable
 # effect on CpuState.
 #

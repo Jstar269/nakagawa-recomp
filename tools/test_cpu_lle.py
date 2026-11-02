@@ -652,10 +652,6 @@ int sr_title_config_vblank_counters(uint32_t *frame_addr, uint32_t *vsync_addr) 
 }
 int sr_title_config_is_worker_entry(uint32_t entry) { (void)entry; return 0; }
 int sr_title_config_is_launcher_entry(uint32_t entry) { (void)entry; return 0; }
-int sr_title_config_is_callback_terminator(uint32_t sentinel,
-                                           uint32_t pc, uint32_t ra) {
-    (void)sentinel; (void)pc; (void)ra; return 0;
-}
 int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
     (void)from; (void)to_addr; return 0;
 }

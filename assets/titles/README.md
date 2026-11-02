@@ -98,7 +98,7 @@ Titles that omit the key are unaffected.
 - `synthetic-title2.json` is a third source-owned fixture added for the
   generic-title planning proof: it uses a distinct supported synthetic address
   family (`0x090xxxxx`), a distinct module name (`synthetic2.prx` at
-  `0x09400000`), and disjoint `dispatch_aliases`/`callback_terminators`. It
+  `0x09400000`), and disjoint `dispatch_aliases`. It
   builds the shared profile-zero source at this manifest's own address family.
   `profile-zero-e2e` asserts the same seven-case route without generic-core
   title branches.

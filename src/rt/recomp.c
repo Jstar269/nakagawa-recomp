@@ -2406,26 +2406,6 @@ static int dispatch_try_with_boundary(
         s->pc=pc+4;
         return SR_GUEST_INTERP_AOT_HANDOFF;
     }
-    /* Configured callback terminators.
-     *
-     * A guest that walks a circular callback list reaches its terminal entry with a
-     * sentinel target (-1 is the shape seen in practice). The permissive miss
-     * path answers 0, which such a walker reads as "continue", so it loops forever.
-     * Where a title's configuration names the exact call site, report COMPLETION to the
-     * caller instead: v0 = 1, return to $ra.
-     *
-     * The semantic is generic and lives here; only the call-site identity is configured,
-     * and it must be configured -- an unconfigured build matches nothing and the same
-     * sentinel at the same site follows ordinary dispatch behavior below. This sits
-     * AFTER the VFPU tag check on purpose: the VFPU encoding is core dispatch vocabulary
-     * that a title configuration must never be able to shadow. A sentinel of 0 is
-     * refused by the manifest validator (#1375): a target of 0 is a null code pointer,
-     * which stops by name below, never a completed walk. */
-    if (sr_title_config_is_callback_terminator(target, s->pc, s->r[31])) {
-        s->r[2] = 1u;
-        s->pc = s->r[31];
-        return SR_GUEST_INTERP_AOT_HANDOFF;
-    }
     /* Guest address 0 (#1375). Dispatch is keyed on `target` alone. s->pc is not lost-state
      * evidence: generated code writes it only at returns and recorded tail transfers, and
      * every host entry and interpreted transfer seeds it with the target it dispatches, so a
