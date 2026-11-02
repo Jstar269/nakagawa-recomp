@@ -6,7 +6,7 @@ implementation (`src/rt/sched.c`, sal063 lineage, ledger record `scheduler`)
 was readable while writing, and nothing from it is reproduced here beyond the
 interface spellings §2 fixes as `SEAM:` identifiers.
 
-**Re-scope (maintainer decision, 2026-10-20).** The clean-room scheduler rewrite this spec was written for
+**Re-scope.** The clean-room scheduler rewrite this spec was written for
 is no longer planned: [#340](https://github.com/Jstar269/nakagawa-recomp/issues/340) was closed as not planned, and working inherited code is no longer
 rewritten only to make it original (`../INDEPENDENCE_CAMPAIGN.md`). The spec stays as a behaviour
 reference; the derived `src/rt/sched.c` is the shipped scheduler. The rank below is the campaign's

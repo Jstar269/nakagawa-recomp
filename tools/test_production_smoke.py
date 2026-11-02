@@ -455,7 +455,7 @@ class TestProductionSmoke(unittest.TestCase):
             "watchpoints_file.o", "guest_printf.o", "perf.o", "fbcap_policy.o", "fbcap.o",
             "ge_capture.o", "vfpu_interp.o", "hle.o", "sched.o", "sr_coro.o",
             "iso_public.o", "pgd_unavailable.o", "mpeg.o", "pgf_public.o",
-            "gui.o", "audio_unavailable.o", "h264_mf.o", "h264_null.o", "savedata.o",
+            "gui.o", "audio_sdl3.o", "h264_mf.o", "h264_null.o", "savedata.o",
             "osk_win.o", "driver.o", "sdl3vk.o", "ge_gpu.o",
             "atrac3p_atrac3p_api.o",
             "atrac3p_libavcodec/atrac.o", "atrac3p_libavcodec/atrac3plus.o",

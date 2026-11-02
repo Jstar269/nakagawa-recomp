@@ -17,8 +17,9 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
   keep unsupported behavior fail-closed.
 - **Visible failure:** invalid guest pointers, unknown opcodes, unowned targets, missing
   inputs, and unavailable backends must be reported, not guessed or synthesized.
-- **Generic implementation:** no game names or private guest addresses in `src/rt/` or
-  generic `tools/` code. Evidence-backed title behavior belongs in a manifest/config with
+- **Generic implementation:** no title-specific branches, title-keyed overrides or private guest
+  addresses in `src/rt/` or generic `tools/` code; a game's name or disc ID in a comment, test or
+  document is fine. Evidence-backed title behavior belongs in a manifest/config with
   a retirement criterion.
 - **Evidence honesty:** preserve existing derived-code records and reject copied or
   translated emulator code. PSP values need a measured cell, public specification, or an
@@ -60,7 +61,7 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
 - Missing `Signed-off-by:` on any commit. A DCO sign-off is optional for every contributor
   (`docs/DCO_POLICY.md` section 4); an unticked template box is a question for the author, not a finding.
 - Merge commits from `main` into a PR branch; shared branches are not rebased or force-pushed.
-- Fail-closed public stubs such as `iso_unavailable.c` and `pgd_unavailable.c`. Do not infer behavior from a filename: `audio_unavailable.c` is
+- Fail-closed public stubs such as `iso_unavailable.c` and `pgd_unavailable.c`. Do not infer behavior from a filename: `audio_sdl3.c` (formerly `audio_unavailable.c`) is
   the active public-safe SDL3 host-audio backend.
 - Formatting-only differences already enforced by `.clang-format`, Ruff, or markdownlint.
 - Edits to generated `build/<game>/*_recomp_*.c`; those files are never committed. Flag

@@ -366,7 +366,10 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
             (HLE, "link_started_export"),
             ("funcdiff.c", "main"),
         },
-        "dispatch_call_try": {("domain_mode.c", "sr_import_call_guest")},  # the stub's resume
+        "dispatch_call_try": {
+            ("domain_mode.c", "sr_import_call_guest"),  # the stub's resume
+            ("snapshot_runner.c", "main"),              # one snapshot call, $ra = host return (#1842)
+        },
         "dispatch_call": set(),
         "dispatch": {("vfpu_fuzz.c", "check_unaligned_dispatch")},  # the VFPU fallback tag
     }

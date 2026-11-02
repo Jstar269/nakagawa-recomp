@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import json
 import os
@@ -370,7 +371,7 @@ class PublicCiWiringTests(unittest.TestCase):
         public_backends = set(re.findall(r"(?m)^\w+_BACKEND_SRC := (\S+)$", block))
         self.assertEqual(public_backends, {
             "src/rt/pgf_public.c", "src/rt/pgd_unavailable.c",
-            "src/rt/iso_public.c", "src/rt/audio_unavailable.c",
+            "src/rt/iso_public.c", "src/rt/audio_sdl3.c",
         })
         private_backends = set(RETIRED_PRIVATE_BACKENDS)
         for path in sorted(private_backends):
@@ -552,6 +553,7 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run display presentation smoke": "VULKAN_SDK=/ucrt64 display-smoke-run",
     "Build and run AOT/interpreter cosimulation gate": "VULKAN_SDK=/ucrt64 cosim-selftest",
     "Prove the cosimulation comparator is load-bearing": "VULKAN_SDK=/ucrt64 cosim-mutants",
+    "Build and run snapshot execution selftest": "VULKAN_SDK=/ucrt64 snapshot-selftest",
     "Build and run scheduler selftest": "CC=gcc VULKAN_SDK=/ucrt64 sched-selftest",
     "Build and run dispatch isolation selftest matrix": "CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest",
     "Build and run portable FPU/VFPU conversion selftest": "CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest",
@@ -734,6 +736,7 @@ _NATIVE_SERIAL_GATES = {
     "Run Linux scheduler selftest matrix": "run: make CC=gcc -j4 sched-selftest",
     "Run Linux dispatch isolation selftest matrix": "run: make CC=gcc -j4 dispatch-isolation-selftest",
     "Run Linux AOT/interpreter cosimulation": "run: make CC=gcc -j4 cosim-selftest",
+    "Run Linux snapshot execution selftest": "run: make CC=gcc snapshot-selftest",
     "Run Linux cosimulation mutation corpus":
         "run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4",
     "Run Linux GPU snapshot sync selftest":
@@ -1941,7 +1944,7 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
                 ):
                     self.assertEqual(result[key], "true", key)
                 self.assertEqual(result["python_scope"], "all")
-                self.assertEqual(result["python_num_shards"], "4")
+                self.assertEqual(result["python_num_shards"], str(ci_paths.PYTHON_SHARDS_FULL))
 
     def test_python_tools_skip_summary_counts_only_known_prefixes(self) -> None:
         output = "\n".join(
@@ -2024,12 +2027,61 @@ class MergeQueueCodeqlWiringTests(unittest.TestCase):
                 "        description: Open pull request number to scan from the trusted default branch",
                 "        required: true",
                 "        type: number",
+                "      force_scan:",
+                "        description: Analyse the pull request even when no C/C++, Python or workflow file changed",
+                "        required: false",
+                "        default: false",
+                "        type: boolean",
                 "  push:",
                 "    branches: [main]",
                 "  schedule:",
                 '    - cron: "37 3 * * 1"',
             ],
         )
+
+    def test_only_a_pull_request_that_changes_no_analysed_file_skips_the_analyses(self) -> None:
+        blocks = _workflow_job_blocks("codeql.yml")
+        prepare = blocks["prepare"]
+        scope = _ci_step(prepare, "Decide whether the change can affect the analysis")
+        self.assertIsNotNone(scope)
+        assert scope is not None
+        scope_text = "\n".join(scope)
+        # Only a pull request target, and never a forced dispatch, may skip.
+        self.assertIn('if [ "${TARGET_KIND}" != "pull-request" ] || [ "${FORCE_SCAN}" = "true" ]; then', scope_text)
+        self.assertIn(
+            'python tools/ci_paths.py --codeql-scope "${BASE_SHA}" "${TARGET_SHA}" --github-output "${GITHUB_OUTPUT}"',
+            scope_text,
+        )
+        # The classifier is the default branch's copy: the only checkout is that branch, and
+        # the diff is of fetched git objects, never a checkout of the candidate.
+        prepare_text = "\n".join(prepare)
+        self.assertEqual(prepare_text.count("uses: actions/checkout@"), 1)
+        self.assertIn("      scan: ${{ steps.scope.outputs.scan }}", prepare_text)
+        # The artifact the analyses download exists exactly when they run.
+        retain = _ci_step(prepare, "Retain source data for isolated CodeQL jobs")
+        assert retain is not None
+        self.assertIn("if: ${{ steps.scope.outputs.scan == 'true' }}", "\n".join(retain))
+        self.assertIn("needs.prepare.outputs.scan == 'true'", "\n".join(blocks["analyze"]))
+
+    def test_skipped_analysis_still_uploads_one_result_per_category_for_the_exact_head(self) -> None:
+        upload_block = _workflow_job_blocks("codeql.yml")["upload"]
+        upload = "\n".join(upload_block)
+        self.assertIn(
+            "(needs.analyze.result == 'skipped' && needs.prepare.outputs.scan == 'false')",
+            upload,
+        )
+        self.assertIn("needs.analyze.result == 'success' ||", upload)
+        step = _ci_step(upload_block, "Write empty results for a change that cannot affect the analysis")
+        self.assertIsNotNone(step)
+        assert step is not None
+        step_text = "\n".join(step)
+        self.assertIn("if: ${{ needs.prepare.outputs.scan == 'false' }}", step_text)
+        self.assertIn('for language in ("actions", "c-cpp", "python"):', step_text)
+        self.assertIn('"results": []', step_text)
+        self.assertIn('"id": f"/language:{language}/"', step_text)
+        # Both routes end in the one validating, stale-checking upload.
+        self.assertEqual(self.text.count("codeScanning.uploadSarif("), 1)
+        self.assertEqual(self.text.count('const expected = ["actions", "c-cpp", "python"];'), 1)
 
     def test_pull_request_route_text_is_unchanged(self) -> None:
         for fragment in (
@@ -2086,6 +2138,61 @@ class MergeQueueCodeqlWiringTests(unittest.TestCase):
 
     def test_reserved_provenance_context_is_not_named_here(self) -> None:
         self.assertNotIn("Trusted provenance attestation", self.text)
+
+
+class ClusterFuzzLiteWiringTests(unittest.TestCase):
+    """The one fuzz target runs on a pull request only when its inputs change, and nightly."""
+
+    def setUp(self) -> None:
+        self.text = _workflow_text("clusterfuzzlite.yml")
+        self.on_block = _on_block(self.text)
+
+    def _paths(self) -> list[str]:
+        start = self.on_block.index("    paths:")
+        paths = []
+        for line in self.on_block[start + 1:]:
+            if not line.startswith("      - "):
+                break
+            paths.append(line.strip()[2:].strip('"'))
+        return paths
+
+    def test_pull_request_runs_only_for_the_fuzzed_inputs(self) -> None:
+        self.assertEqual(
+            self._paths(),
+            [
+                "src/core/nk_json.c",
+                "src/core/nk_json.h",
+                "tests/fuzzers/**",
+                ".clusterfuzzlite/**",
+                ".github/workflows/clusterfuzzlite.yml",
+            ],
+        )
+
+    def test_every_file_the_fuzz_build_compiles_is_a_trigger(self) -> None:
+        build = (ROOT / ".clusterfuzzlite" / "build.sh").read_text(encoding="utf-8")
+        compiled = re.findall(r"-c (\S+\.c) ", build)
+        self.assertIn("src/core/nk_json.c", compiled)
+        for source in compiled:
+            with self.subTest(source=source):
+                self.assertTrue(
+                    any(fnmatch.fnmatchcase(source, pattern.replace("**", "*")) for pattern in self._paths()),
+                    source,
+                )
+        parser = (ROOT / "src" / "core" / "nk_json.c").read_text(encoding="utf-8")
+        for header in re.findall(r'#include "([^"]+)"', parser):
+            with self.subTest(header=header):
+                self.assertIn(f"src/core/{header}", self._paths())
+
+    def test_nightly_and_manual_runs_fuzz_without_a_diff(self) -> None:
+        on_text = "\n".join(self.on_block)
+        self.assertIn("  schedule:", on_text)
+        self.assertIn("  workflow_dispatch:", on_text)
+        self.assertIn("mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }}", self.text)
+
+    def test_the_check_is_not_a_trust_verdict_producer(self) -> None:
+        # A pull request that does not start it must not be left waiting on it.
+        verdict = (ROOT / "tools" / "ci_trust_verdict.py").read_text(encoding="utf-8")
+        self.assertNotIn("clusterfuzzlite", verdict.lower())
 
 
 class MergeQueueWakeWiringTests(unittest.TestCase):

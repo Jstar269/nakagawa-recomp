@@ -55,7 +55,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_DIR = ROOT / "tools"
 DEFAULT_WEIGHTS = TOOLS_DIR / "ci_test_weights.json"
-DEFAULT_NUM_SHARDS = 4
+DEFAULT_NUM_SHARDS = 6
 TEST_GLOB = "test_*.py"
 SELECTIONS = ("all", "makefile")
 SKIP_REASON_PREFIXES = ("NIGHTLY_TIER:", "WINDOWS_ONLY:", "PRIVATE_INPUT:")

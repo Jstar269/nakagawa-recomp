@@ -637,7 +637,7 @@ endif
 PGF_BACKEND_SRC := src/rt/pgf_public.c
 PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
 ISO_BACKEND_SRC := src/rt/iso_public.c
-AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
+AUDIO_BACKEND_SRC := src/rt/audio_sdl3.c
 ASSET_COPY_ARGS := -ExcludeOptionalFonts
 # `override` on purpose: a plain += is discarded when a caller passes CFLAGS on the command
 # line, and once any append to CFLAGS uses override, GNU make ignores later ordinary
@@ -1113,6 +1113,8 @@ PUBLIC_TARGETS := \
 	cosim-mutants \
 	cosim-selftest-llvm \
 	cosim-mutants-llvm \
+	snapshot-selftest \
+	snapshot-selftest-run \
 	clean \
 	clean-fixtures \
 	tidy \
@@ -1261,6 +1263,8 @@ HELP_DESCRIPTION_cosim-selftest-clean := remove cosimulation artifacts
 HELP_DESCRIPTION_cosim-mutants := run the cosimulation negative corpus
 HELP_DESCRIPTION_cosim-selftest-llvm := run the cosimulation with the opt-in LLVM IR backend (#330)
 HELP_DESCRIPTION_cosim-mutants-llvm := run the LLVM IR backend's cosimulation mutation campaign (#330)
+HELP_DESCRIPTION_snapshot-selftest := run snapshot execution against the reference interpreter (#1842)
+HELP_DESCRIPTION_snapshot-selftest-run := build and run the snapshot runner and its generated-C mutant
 HELP_DESCRIPTION_clean := remove current-title build outputs
 HELP_DESCRIPTION_clean-fixtures := remove smoke, cosimulation, and oracle artifacts
 HELP_DESCRIPTION_tidy := remove intermediates while preserving linked binaries
@@ -2384,6 +2388,73 @@ cosim-mutants:
 cosim-selftest-clean:
 	$(MAKE) BUILD_DIR=$(COSIM_DIR) clean
 
+# ---- Snapshot execution (#1842) -------------------------------------------------------
+#
+# src/rt/snapshot_runner.c runs one translated function from a snapshot (tools/nksnap.py,
+# src/rt/nksnap.c) and the reference interpreter in src/ref from the same state, and
+# prints MATCH, MISMATCH or NOT_CHECKED. This gate builds it against a source-owned
+# synthetic module (fixtures/snapshot/generate.py), checks every case's verdict and the
+# loader's refusals (fixtures/snapshot/selftest.py), then builds a second runner whose
+# generated C has one changed immediate and requires the MISMATCH that change causes.
+#
+# The runner links recomp.c with SR_GATE_BUILD, which leaves sr_raw_syscall to the
+# harness exactly as tools/codegen_gate.py does: the runner's definition ends the run at
+# a raw syscall instead of running it. The reference interpreter carries its own
+# sr_bitrev (src/ref/interp.cpp); it is renamed in that one object so it links beside the
+# runtime's definition and the reference keeps using its own. The runner links no SDL, so
+# its copy of recomp.c reads SDL_GetTicksNS under a name the runner defines.
+SNAPSHOT_DIR      := $(BUILD_ROOT)/snapshot
+SNAPSHOT_FIXTURE   := $(SNAPSHOT_DIR)/fixture
+SNAPSHOT_GENERATOR := fixtures/snapshot/generate.py
+SNAPSHOT_DRIVER    := fixtures/snapshot/selftest.py
+SNAPSHOT_BASE_ADDR := 0x08A00000
+SNAPSHOT_REF_FLAGS := -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev
+SNAPSHOT_RUNNER_SRCS := src/rt/snapshot_runner.c src/rt/nksnap.c src/rt/guest_interp.c \
+	src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c \
+	src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/vfpu_interp.c \
+	src/rt/perf.c src/rt/nested_frames.c
+SNAPSHOT_GAME_VARS = GAME_NAME=snapshot GAME_ELF=$(SNAPSHOT_FIXTURE)/guest.prx \
+	GAME_BASE=$(SNAPSHOT_BASE_ADDR) GAME_ENTRY=$(SNAPSHOT_BASE_ADDR) \
+	GAME_PSP_HEADER=$(SNAPSHOT_FIXTURE)/guest.psp GAME_EXTRA_ELFS= TITLE_MANIFEST= \
+	BUILD_DIR=$(SNAPSHOT_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
+
+snapshot-selftest:
+	"$(PYTHON)" $(SNAPSHOT_GENERATOR) generate --out-dir $(SNAPSHOT_FIXTURE)
+	$(MAKE) $(SNAPSHOT_DIR)/snapshot_image.bin $(SNAPSHOT_DIR)/snapshot_recomp.c \
+		$(SNAPSHOT_GAME_VARS) CODEGEN_TOOL=$(CODEGEN_TOOL)
+	$(MAKE) snapshot-selftest-run $(SNAPSHOT_GAME_VARS)
+
+# Second phase: CHUNK_OBJS and the mutant's chunk exist only after codegen ran.
+SNAPSHOT_MUTANT_CHUNK = $(shell "$(PYTHON)" $(SNAPSHOT_DRIVER) find-chunk --build-dir $(BUILD_DIR) --game $(GAME_NAME) --cases $(SNAPSHOT_FIXTURE)/cases.json)
+SNAPSHOT_MUTANT_DIR = $(BUILD_DIR)/mutant
+SNAPSHOT_LINK_OBJS = $(BUILD_DIR)/snapshot_rt_recomp.o $(LIBRARY_OBJS) \
+	$(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/snapshot_ref_interp.o \
+	$(BUILD_DIR)/snapshot_ref.o -lstdc++ -lm
+
+snapshot-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/interp.cpp -o $(BUILD_DIR)/snapshot_ref_interp.o
+	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/snapshot_ref.cpp -o $(BUILD_DIR)/snapshot_ref.o
+	$(CC) $(CFLAGS) -DSR_GATE_BUILD -DSDL_GetTicksNS=snapshot_runner_ticks_ns \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-c src/rt/recomp.c -o $(BUILD_DIR)/snapshot_rt_recomp.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/snapshot_runner.exe $(SNAPSHOT_RUNNER_SRCS) $(CHUNK_OBJS) $(SNAPSHOT_LINK_OBJS)
+	"$(PYTHON)" $(SNAPSHOT_DRIVER) run --runner $(BUILD_DIR)/snapshot_runner.exe \
+		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(SNAPSHOT_FIXTURE)/cases.json \
+		--work $(BUILD_DIR)/cases
+	"$(PYTHON)" $(SNAPSHOT_DRIVER) mutate --chunk $(SNAPSHOT_MUTANT_CHUNK) \
+		--cases $(SNAPSHOT_FIXTURE)/cases.json --out $(SNAPSHOT_MUTANT_DIR)/$(notdir $(SNAPSHOT_MUTANT_CHUNK))
+	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK \
+		-c $(SNAPSHOT_MUTANT_DIR)/$(notdir $(SNAPSHOT_MUTANT_CHUNK)) -o $(SNAPSHOT_MUTANT_DIR)/mutant_chunk.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/snapshot_runner_mutant.exe $(SNAPSHOT_RUNNER_SRCS) \
+		$(filter-out $(SNAPSHOT_MUTANT_CHUNK:.c=.o),$(CHUNK_OBJS)) $(SNAPSHOT_MUTANT_DIR)/mutant_chunk.o \
+		$(SNAPSHOT_LINK_OBJS)
+	"$(PYTHON)" $(SNAPSHOT_DRIVER) mutant --runner $(BUILD_DIR)/snapshot_runner_mutant.exe \
+		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(SNAPSHOT_FIXTURE)/cases.json \
+		--work $(SNAPSHOT_MUTANT_DIR)
+	@echo "snapshot-selftest: PASS"
+
 
 # Treat profile stamps as generated included makefiles. GNU Make restarts after
 # creating a missing flavour, so objects invalidated by that recipe are absent
@@ -2860,7 +2931,7 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
-		src/rt/audio_unavailable.c src/rt/perf.c -lSDL3 -lm \
+		src/rt/audio_sdl3.c src/rt/perf.c -lSDL3 -lm \
 		-o $(BUILD_DIR)/audio_selftest$(EXE_EXT)
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
 
@@ -3075,8 +3146,9 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-# The scaled-upload case runs again alone at render scales 2 and 4 (#1296), selected by
-# arguments: a VAR=value prefix needs a POSIX shell, and cmd.exe does not take one.
+# The scaled-upload case (#1296) and the per-fragment mip level case (#1373) run again alone
+# at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
+# cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
@@ -3089,6 +3161,8 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case scaled-upload
 	$(GPU_COHERENCE_BIN) --scale 4 --case scaled-upload
+	$(GPU_COHERENCE_BIN) --scale 2 --case mip-lod
+	$(GPU_COHERENCE_BIN) --scale 4 --case mip-lod
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
@@ -3436,7 +3510,7 @@ nk-ui-player-screens-capture:
 		-Isrc/ui -Isrc/player/ui -Ithird_party/clay $(SDL3_TTF_CFLAGS) \
 		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(NK_UI_CORE_SRCS) src/ui/nk_ui_ttf.c src/ui/backend/nk_ui_sdlr.c \
-		src/player/ui/ui_router.c src/player/ui/scr_library.c src/player/ui/scr_title.c \
+		src/player/ui/ui_router.c src/player/ui/scr_library.c $(NK_UI_PLAYER_TITLE_SRCS) \
 		tests/native/test_player_screens.c $(SDL3_TTF_LIBS) -lm \
 		-o $(BUILD_ROOT)/test_player_screens_capture$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_player_screens_capture$(EXE_EXT) --capture-dir="$(NK_UI_CAPTURE_DIR)"

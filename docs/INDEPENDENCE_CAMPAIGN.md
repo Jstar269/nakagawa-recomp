@@ -2,14 +2,13 @@
 
 Status: plan — nothing below is implemented unless marked.
 
-**Re-scope (maintainer decision, 2026-10-20).** Inherited code that is already GPL-3.0-compatible
+**Re-scope.** Inherited code that is already GPL-3.0-compatible
 (sal063 under GPLv3 with credits, PPSSPP lineage under GPL-2.0-or-later) is no longer rewritten
 only to make it original. A G-item is replaced only when (1) hardware or test evidence shows it
 is wrong, or (2) an LLE path makes it unnecessary (as planned for G9 and G12). Where a replacement
 is needed, vendoring or adapting FFmpeg codec subsets, uofw (MIT), GPL-compatible emulator
 source (PPSSPP, JPCSP), or any other source under a GPL-3.0-or-later-compatible licence is
-preferred over a fresh rewrite, under the `AGENTS.md` section 4 import rules (2026-10-22 and
-2026-10-25 extensions). Emulator-derived units stay labelled `derived-translated`, so this
+preferred over a fresh rewrite, under the `AGENTS.md` section 4 import rules. Emulator-derived units stay labelled `derived-translated`, so this
 campaign's independence claims never cover them, and G14 (PGD/amctrl) stays excluded. The group analysis below is
 kept as the inventory and evidence plan; read its "(a) clean-room rewrite" verdicts as
 "replace only under (1) or (2)".
@@ -116,7 +115,7 @@ Corrections to the mission list:
    **absent from the public tree**. The public-source profile
    (`assets/public_source_profile.json`, `exclude_paths`) excludes them;
    the public build links project-authored seams instead
-   (`iso_unavailable.c`, `audio_unavailable.c` and `pgd_unavailable.c`, all
+   (`iso_unavailable.c`, `audio_sdl3.c` (formerly `audio_unavailable.c`) and `pgd_unavailable.c`, all
    `project_authored_attested`, and the project-authored PGF reader `pgf_public.c`,
    #349). They remain
    campaign items — a platform without ISO/VFS, audio, fonts, and
