@@ -685,8 +685,7 @@ shader/code output are not cached across jobs or runs, so the repository's
 content-addressed invalidation and freshness checks remain the source of truth.
 No volatile dollar figure is part of the repository contract.
 
-Every `windows_runtime` compile goes through `ccache` (#735 item 2; owner decisions
-of 2026-10-27 and 2026-10-30). Inside one part it serves repeated compiles of the
+Every `windows_runtime` compile goes through `ccache` (#735 item 2). Inside one part it serves repeated compiles of the
 same sources (the platform ladder builds the runtime once per rung, the smoke part
 once per smoke). Between runs it is persisted with the Actions cache:
 
