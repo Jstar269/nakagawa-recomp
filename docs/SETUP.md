@@ -102,7 +102,7 @@ Known unknowns, each to be recorded by the first run rather than assumed:
 Result of the first run (2026-11-02, [#1876](https://github.com/Jstar269/nakagawa-recomp/issues/1876)),
 on the ZIP layout from `tools/stage_install.py --dest` and `--portable-zip` built from the pull request's
 head (the player, its runtime DLLs and `source/`; not the attested release ZIP, so no `prereqs/`, no demos):
-Wine 9.0 (Ubuntu 24.04 `wine64`, 64-bit prefix only) under WSL 2, Xvfb as the display, Mesa llvmpipe, no
+Wine 9.0 (Ubuntu 24.04 `wine64`, 64-bit prefix only) under WSL 2, Xvfb as the display, Mesa software Vulkan drivers installed, no
 GPU, no audio device, no game disc.
 
 | Step | Result |
@@ -118,7 +118,7 @@ GPU, no audio device, no game disc.
 | Proton | `NOT_RUN` (not installed) |
 
 Wine printed `failed to open C:\windows\syswow64undll32.exe` once while creating the prefix, which is
-the missing 32-bit Wine and does not affect a 64-bit program.
+and every 64-bit program above ran regardless.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
