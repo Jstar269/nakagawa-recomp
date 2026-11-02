@@ -565,6 +565,105 @@ def _is_python_tool(path: str) -> bool:
     )
 
 
+#: Files whose text decides which Python test modules the native and Windows gates run.
+#: Those gates run make targets and fixed ``unittest`` module names, never a discovery
+#: sweep (that is the Python shards' job), so a test module none of these files names is
+#: executed by the Python shards alone.
+_NATIVE_GATE_SOURCE_GLOBS = ("Makefile", "GNUmakefile", "mk/*.mk", "CMakeLists.txt", ".github/workflows/*.yml")
+_NATIVE_GATE_SCRIPT_GLOB = "tools/*.py"
+
+
+@lru_cache(maxsize=1)
+def _native_gate_sources() -> str | None:
+    """Text of the build and CI descriptors and tool scripts, or None when unreadable.
+
+    Test modules and this classifier are left out: a test that merely names another test
+    is not a gate that runs it. None makes ``_is_unexecuted_test`` answer False, so an
+    unreadable tree keeps every native route.
+    """
+
+    chunks: list[str] = []
+    try:
+        for pattern in _NATIVE_GATE_SOURCE_GLOBS:
+            for path in sorted(ROOT.glob(pattern)):
+                chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+        for path in sorted(ROOT.glob(_NATIVE_GATE_SCRIPT_GLOB)):
+            if path.name.startswith("test_") or path.name in {"ci_paths.py", "mypy_baseline.py"}:
+                continue
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return "\n".join(chunks)
+
+
+def _is_unexecuted_test(path: str) -> bool:
+    """True for a ``tools/test_*.py`` module that no native or Windows gate runs.
+
+    Such a change is exercised by the Python shards only, so it needs neither the native
+    nor the Windows job even when the module's subject (``codegen``, ``hst_*``) is a
+    native one. A module any build or CI descriptor or tool script names stays routed, and
+    so does a CI classifier test (``_is_workflow_ci``), whose edit changes what CI runs.
+    """
+
+    normalised = _normalise(path)
+    pure = PurePosixPath(normalised)
+    if pure.parent != PurePosixPath("tools") or not pure.name.startswith("test_") or pure.suffix != ".py":
+        return False
+    if _is_workflow_ci(normalised):
+        return False
+    sources = _native_gate_sources()
+    return sources is not None and pure.stem not in sources
+
+
+#: Languages Trusted CodeQL analyses (.github/workflows/codeql.yml). ``c-cpp`` and
+#: ``python`` build nothing (``build-mode: none``), so only their own source files and the
+#: workflow definitions the ``actions`` language reads can change a result.
+_CODEQL_SOURCE_SUFFIXES = frozenset(
+    {".c", ".cc", ".cpp", ".cxx", ".c++", ".h", ".hh", ".hpp", ".hxx", ".h++", ".inc", ".inl", ".tcc",
+     ".py", ".pyi", ".pyw"}
+)
+
+
+def _is_codeql_relevant(path: str) -> bool:
+    normalised = _normalise(path)
+    name = PurePosixPath(normalised).name
+    return (
+        PurePosixPath(normalised).suffix.lower() in _CODEQL_SOURCE_SUFFIXES
+        or normalised.startswith((".github/workflows/", ".github/actions/", ".github/codeql/"))
+        or name in {"action.yml", "action.yaml"}
+    )
+
+
+def codeql_scan_needed(paths: Iterable[str]) -> bool:
+    """Whether a pull request's changed paths can change a Trusted CodeQL result.
+
+    Fails closed: no paths, an unreadable history, or any C/C++, Python or workflow path
+    (a deleted or renamed one included) means a full analysis. Only a change made wholly
+    of other files, for example documentation, assets or Makefiles, skips it.
+    """
+
+    files = [_normalise(path) for path in paths if path.strip()]
+    if not files or "<history-unavailable>" in files:
+        return True
+    return any(_is_codeql_relevant(path) for path in files)
+
+
+def codeql_scope_from_git(base: str, head: str) -> list[str]:
+    """The paths that differ between a pull request's base and its merge commit."""
+
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-status", "--find-renames", base, head],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return ["<history-unavailable>"]
+    return _parse_changed_paths(result.stdout)
+
+
 def _is_recognised(path: str) -> bool:
     return any(
         predicate(path)
@@ -942,11 +1041,20 @@ def classify(
     )
     native_runtime = force_full or any(_is_native_runtime(path) for path in files)
     python_tools = force_full or any(_is_python_tool(path) for path in files)
-    native_tool = force_full or any(_is_native_tool(path) for path in files)
     markdown = force_full or any(_is_markdown(path) for path in files)
 
-    native_without_recipe = (
-        native_runtime or build_system or manager_powershell or title_manifest or native_tool or workflow_ci
+    # A tools/test_*.py module no native or Windows gate runs is checked by the Python
+    # shards alone, so it does not route the native and Windows jobs even when its subject
+    # is a native tool. The exported flags above keep describing the path's subject.
+    gated = [path for path in files if not _is_unexecuted_test(path)]
+    native_without_recipe = force_full or any(
+        _is_native_runtime(path)
+        or (_is_build_system(path) and not (makefile_recipe_only and path == "Makefile"))
+        or _is_manager(path)
+        or _is_title_manifest(path)
+        or _is_native_tool(path)
+        or _is_workflow_ci(path)
+        for path in gated
     )
     # A recipe-only Makefile edit still runs every native and Windows gate: those are
     # the jobs that execute recipes, and the edited target may be one of them.
@@ -1048,7 +1156,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="write only Trusted CodeQL's analysis runner (runner=...) and classify nothing",
     )
+    parser.add_argument(
+        "--codeql-scope",
+        nargs=2,
+        metavar=("BASE", "HEAD"),
+        help="write only whether Trusted CodeQL must analyse a pull request (scan=...) and classify nothing",
+    )
     args = parser.parse_args(argv)
+
+    if args.codeql_scope:
+        changed = codeql_scope_from_git(*args.codeql_scope)
+        scan = codeql_scan_needed(changed)
+        _write_outputs({"scan": str(scan).lower()}, args.github_output)
+        print(f"changed_files={len(changed)}")
+        print("changed_paths=" + ",".join(sorted(changed)))
+        print(f"scan={str(scan).lower()}")
+        return 0
 
     event = _read_event(args.event_path)
     pool = {
