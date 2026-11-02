@@ -14,6 +14,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hle_sources  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -171,7 +172,7 @@ class TestAssetIndexSelftestC(unittest.TestCase):
 
 class TestProjectFontBuildWiring(unittest.TestCase):
     def test_makefile_uses_one_rule_family_for_all_project_slots(self):
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("define PROJECT_FONT_RULE", makefile)
         for target in ("japanese", "latin", "korean"):
             self.assertIn(f"PROJECT_FONT_RULE,{target},", makefile)

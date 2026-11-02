@@ -52,6 +52,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import pgf_writer  # noqa: E402
 import scratch_dir  # noqa: E402
 import hle_sources  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 from nk_core import fonts  # noqa: E402
 
 SLOT_HEADER = ROOT / "src" / "core" / "nk_font_slots.h"
@@ -431,7 +432,7 @@ class Flash0FontFixtureContractTests(unittest.TestCase):
                 self.assertEqual(status, CACHE_STATUS[case])
 
     def test_every_link_of_the_device_supplies_nk_font(self) -> None:
-        makefile = MAKEFILE.read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         logical = makefile.replace("\\\n", " ")
         recipes = [line for line in logical.splitlines()
                    if line.startswith("\t") and "src/rt/flash0_font.c" in line]

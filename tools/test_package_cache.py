@@ -25,6 +25,7 @@ import title_codegen_plan
 from nk_core import package_cache
 from nk_doctor_checks import check_runtime_package_cache
 from nk_doctor_core import Report
+from makefile_text import read_makefile  # noqa: E402
 
 
 def _aot_gap_report(cache: dict, region_count: int) -> str:
@@ -1085,7 +1086,7 @@ class PackageCacheTests(unittest.TestCase):
                 if path.suffix in {".c", ".h"} and path.is_file():
                     used.update(include.findall(path.read_text(encoding="utf-8",
                                                                errors="replace")))
-        lines = (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        lines = read_makefile(ROOT).splitlines()
         start = next(i for i, line in enumerate(lines) if line.startswith("RT_NK_UI_FLAGS"))
         flags = [lines[start]]
         while flags[-1].endswith("\\"):
@@ -2158,7 +2159,7 @@ class PackageOptimizationTests(unittest.TestCase):
         self.assertEqual(unset, explicit_o1)
 
     def test_default_recomp_flags_are_the_makefile_s(self):
-        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(Path(__file__).resolve().parents[1])
         line = re.search(r"^RECOMP_FLAGS \?= (.+)$", makefile, re.MULTILINE)
         self.assertIsNotNone(line)
         expanded = (line.group(1).replace("$(RECOMP_OPT)", "-O1")
@@ -2180,7 +2181,7 @@ class PackageOptimizationTests(unittest.TestCase):
 
     def test_the_optimized_cosimulation_lane_runs_the_package_level(self):
         # cosim-selftest-opt proves AOT/interpreter parity for code built the way packages are.
-        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(Path(__file__).resolve().parents[1])
         lane = re.search(r"^COSIM_OPT_LEVEL \?= (\S+)$", makefile, re.MULTILINE)
         self.assertIsNotNone(lane)
         self.assertEqual(lane.group(1), package_cache.PACKAGE_RECOMP_OPT)

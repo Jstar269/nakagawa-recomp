@@ -17,13 +17,17 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 class BuildSystemParityTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.makefile_text = read_makefile(ROOT)
         self.cmake_text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
 
     def test_core_sources_parity(self) -> None:

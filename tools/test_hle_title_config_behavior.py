@@ -28,6 +28,7 @@ import scratch_dir
 import title_runtime_config
 import title_manifest
 import hle_sources  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 FIXTURE = ROOT / "assets" / "titles" / "synthetic.json"
 
@@ -93,13 +94,12 @@ def run_libfont_selftest(make: str, tmp_path: Path, manifest_path: Path,
     tag = "mutant" if hle_source is not None else "libfont"
     out_dir = tmp_path / tag
     out_dir.mkdir(exist_ok=True)
-    makefile = ROOT / "Makefile"
     if hle_source is None:
         command_makefile = None
         makefile_arg = []
     else:
         command_makefile = tmp_path / f"Makefile.{tag}"
-        makefile_text = makefile.read_text(encoding="utf-8")
+        makefile_text = read_makefile(ROOT)
         relative, text = hle_source
         assert relative in hle_sources.makefile_hle_srcs(makefile_text), relative
         # The whole assignment, continuation lines included: the mutant replaces one entry in it.

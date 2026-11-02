@@ -14,10 +14,14 @@ evidence. The portable-core compile gate enforces this class of bug with
 import re
 from pathlib import Path
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 RECOMP_C = (ROOT / "src" / "rt" / "recomp.c").read_text(encoding="utf-8")
-MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
+MAKEFILE = read_makefile(ROOT)
 
 
 def sr_end_impl_body():

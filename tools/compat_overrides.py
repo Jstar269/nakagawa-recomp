@@ -70,6 +70,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from makefile_text import read_makefile  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 
 CATEGORIES = {
@@ -737,7 +740,7 @@ WAIVABLE_TEST_DEFECTS = frozenset({NO_TEST_DEFECT, NO_REFERENCE_DEFECT})
 
 def makefile_targets(makefile: "Path | None" = None) -> "frozenset[str]":
     """The literal rule targets the Makefile declares (not variables, not recipe text)."""
-    text = (makefile or ROOT / "Makefile").read_text(encoding="utf-8")
+    text = makefile.read_text(encoding="utf-8") if makefile else read_makefile(ROOT)
     targets: "set[str]" = set()
     for line in text.splitlines():
         match = _MAKE_RULE_RE.match(line)

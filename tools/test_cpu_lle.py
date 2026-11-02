@@ -32,12 +32,13 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 import scratch_dir
+from makefile_text import read_makefile  # noqa: E402
 
 
 CPU_LLE_H = ROOT / "src" / "rt" / "cpu_lle.h"
 CPU_LLE_C = ROOT / "src" / "rt" / "cpu_lle.c"
 GUEST_INTERP_H = ROOT / "src" / "rt" / "guest_interp.h"
-MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
+MAKEFILE = read_makefile(ROOT)
 
 
 class FakeElf:

@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import package_notices
 from title_codegen_plan import PackageRouteError
+from makefile_text import read_makefile  # noqa: E402
 
 
 class TestPackageNotices(unittest.TestCase):
@@ -311,7 +312,7 @@ class TestPackageNotices(unittest.TestCase):
     def test_relink_objects_follow_makefile_sources(self) -> None:
         """RELINK.md lists exactly the ATRAC3+ objects the Makefile builds, plus the bridge."""
         objects = package_notices.atrac3p_object_names(ROOT)
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertGreater(len(objects), 1)
         for obj in objects[:-1]:
             source = "src/rt/atrac3p/" + obj[len("$(BUILD_DIR)/atrac3p_"):-2] + ".c"

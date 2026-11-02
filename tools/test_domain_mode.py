@@ -19,11 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+from makefile_text import read_makefile  # noqa: E402
 
 
 DOMAIN_H = ROOT / "src" / "rt" / "domain_mode.h"
 DOMAIN_C = ROOT / "src" / "rt" / "domain_mode.c"
-MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
+MAKEFILE = read_makefile(ROOT)
 
 
 class DefaultStubsUnchangedTests(unittest.TestCase):

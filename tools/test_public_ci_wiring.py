@@ -26,6 +26,7 @@ import ci_required  # noqa: E402
 import ci_paths  # noqa: E402
 import ci_test_shards  # noqa: E402
 import showcase as showcase_cli  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 
 def _ci_job_blocks() -> dict[str, list[str]]:
@@ -165,7 +166,7 @@ class PublicCiWiringTests(unittest.TestCase):
             _ci_step_index(native_tools, step_name),
         )
 
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("GE_FRONTEND_PROFILE ?= 0", makefile)
         self.assertIn("$(RT_GE_O): src/rt/ge.c", makefile)
         self.assertIn("$(CC) $(GE_CFLAGS)", makefile)
@@ -195,7 +196,7 @@ class PublicCiWiringTests(unittest.TestCase):
             _ci_step_index(native_tools, "Verify lavapipe and run GPU capture selftest"),
             _ci_step_index(native_tools, step_name),
         )
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("gpu-coherence-selftest: $(GPU_COHERENCE_BIN)\n\t$(GPU_COHERENCE_BIN)\n", makefile)
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("`gpu-coherence-selftest`", docs)
@@ -252,7 +253,7 @@ class PublicCiWiringTests(unittest.TestCase):
         assert windows is not None
         self.assertIn("hle-thread-selftest", "\n".join(windows))
         # GNU ld has no --no-insert-timestamp: the link names the per-host reproducible flag.
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         start = makefile.index("\nhle-thread-selftest-build:")
         recipe = makefile[start:makefile.index("\nhle-thread-selftest:", start)]
         self.assertIn("$(REPRODUCIBLE_LINK_FLAG)", recipe)
@@ -364,7 +365,7 @@ class PublicCiWiringTests(unittest.TestCase):
         CMake target may compile a private backend. This test does not cover the guarded code
         itself: src/rt/driver.c and src/rt/gui.c are in no CMake target.
         """
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         block = _makefile_backend_block(makefile)
         self.assertIn("ifneq ($(PUBLIC_SAFE),1)\n$(error PUBLIC_SAFE=0 was retired", block)
         public_backends = set(re.findall(r"(?m)^\w+_BACKEND_SRC := (\S+)$", block))
@@ -440,7 +441,7 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertNotIn("GAME_ELF=tools/vfpu_words.txt", ci)
 
     def test_makefile_pregenerated_mode_does_not_require_game_elf(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("VFPU_FUZZ_PREGENERATED ?= 0", makefile)
         self.assertIn("ifeq ($(VFPU_FUZZ_PREGENERATED),1)", makefile)
         self.assertIn("VFPU_FUZZ_TITLE_OBJ :=", makefile)
@@ -486,7 +487,7 @@ class PublicCiWiringTests(unittest.TestCase):
 
     def test_provenance_record_gap_check_is_wired_in_ci_and_make(self) -> None:
         ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         precommit = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
 
         self.assertIn("python tools/provenance_record_gap.py --check", ci)
@@ -529,7 +530,7 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn('"SDL_VIDEODRIVER": "dummy"', harness)
         self.assertIn('"SDL_RENDER_DRIVER": "software"', harness)
 
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("player-ui-regressions: $(PLAYER_UI_TEST_EXE)", makefile)
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("player-ui-regressions", docs)
@@ -666,7 +667,7 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         self.assertIn("CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest-csc-mutant", step)
         # The Windows build keeps Media Foundation as its decoder: the FFmpeg subset is off
         # there by default and the media selftest links the Media Foundation libraries.
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("ifeq ($(OS),Windows_NT)\nH264_FFMPEG ?= 0\nelse\nH264_FFMPEG ?= 1\nendif", makefile)
         self.assertIn("ifeq ($(OS),Windows_NT)\nPSMF_MEDIA_LIBS := -lmfplat -lole32", makefile)
 
@@ -1178,7 +1179,7 @@ class PlayerUiShardTests(unittest.TestCase):
         self.assertEqual([test.id() for test in self.module._flatten(loaded)], self.shard_ids("1/4"))
 
     def test_the_makefile_runs_every_shard_of_one_count_side_by_side(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         listed = re.search(r"(?m)^PLAYER_UI_SHARDS := (.+)$", makefile)
         self.assertIsNotNone(listed)
         assert listed is not None

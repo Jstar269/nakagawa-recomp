@@ -29,6 +29,7 @@ import scratch_dir  # noqa: E402
 import vulkan_sdk  # noqa: E402
 from test_build_truth import _scratch_build_root  # noqa: E402
 from ci_test_shards import nightly_tier  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 
 MANIFEST_PATHS = (
@@ -694,7 +695,7 @@ class ProfileZeroManifestTests(unittest.TestCase):
                 self.assertFalse(manifest["profile_zero"]["acceptance"]["private_inputs_allowed"])
 
     def test_make_and_hosted_platform_ladder_name_the_gate(self) -> None:
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("profile-zero-e2e:", makefile)
         self.assertIn("profile-zero-e2e", workflow)

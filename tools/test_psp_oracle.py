@@ -109,6 +109,7 @@ from psp_oracle.parse_golden import (
     validate_hle_edram_restore,
 )
 import hle_sources  # noqa: E402
+from makefile_text import read_makefile  # noqa: E402
 
 
 def _matched(match: re.Match[str] | None) -> re.Match[str]:
@@ -1557,7 +1558,7 @@ class PspOracleRunnerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         source = (root / "tests" / "native" / "hle_thread_selftest.c").read_text(encoding="utf-8")
         hle_source = hle_sources.text(root)
-        makefile = (root / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(root)
         self.assertIn("sr_syscall", source)
         self.assertIn("oracle_sha256_file", source)
         self.assertIn("GetModuleFileNameA", source)
@@ -1582,9 +1583,7 @@ class PspOracleRunnerTests(unittest.TestCase):
         # A bare -w hides every warning from the smoke compile, including the
         # ATRAC3P sources it builds in-line. Narrow -Wno-<warning> flags stay
         # allowed because each one names the single warning it hides.
-        lines = (Path(__file__).resolve().parents[1] / "Makefile").read_text(
-            encoding="utf-8"
-        ).splitlines()
+        lines = read_makefile(Path(__file__).resolve().parents[1]).splitlines()
         rules = [
             index for index, line in enumerate(lines)
             if line.startswith("$(PSP_ORACLE_SMOKE_EXE):")
