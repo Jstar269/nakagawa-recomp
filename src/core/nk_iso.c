@@ -246,12 +246,6 @@ static size_t nk_iso_name_without_version(const char *name, size_t length) {
     return length;
 }
 
-/* ECMA-119 9.1: a record is 33 fixed bytes and an identifier of at least one byte, all inside
- * rec_len. A record's fields are read only after this holds. */
-static bool nk_iso_dir_record_fits(const uint8_t *record, uint8_t rec_len) {
-    return rec_len >= 34u && record[32] != 0 && 33u + record[32] <= rec_len;
-}
-
 static bool nk_iso_name_matches(const char *token, const uint8_t *name_bytes, uint8_t name_len) {
     if (!token || !name_bytes || name_len == 0) return false;
 
@@ -1145,6 +1139,12 @@ static NkResult nk_iso_inspect_pbp(FILE *f, uint64_t file_size,
 
 static bool nk_iso_non_retail_identity(const char *iso_path, const uint8_t *sfo,
                                        uint32_t sfo_size, NkIsoMetadata *meta);
+
+/* ECMA-119 9.1: a record is 33 fixed bytes and an identifier of at least one byte, all inside
+ * rec_len. A record's fields are read only after this holds. */
+static bool nk_iso_dir_record_fits(const uint8_t *record, uint8_t rec_len) {
+    return rec_len >= 34u && record[32] != 0 && 33u + record[32] <= rec_len;
+}
 
 NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     if (!iso_path || !out_meta) return NK_ERROR_GENERIC;
