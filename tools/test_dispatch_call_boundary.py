@@ -186,7 +186,7 @@ def _addu(rd: int, rs: int, rt: int) -> int: return (rs << 21) | (rt << 16) | (r
 
 
 _NOP = 0
-_V0, _V1, _A0, _T9, _SP, _RA = 2, 3, 4, 25, 29, 31
+_V0, _V1, _A0, _T8, _T9, _SP, _FP, _RA = 2, 3, 4, 24, 25, 29, 30, 31
 _PROBE_BASE = 0x1000
 _PROBE_SP = 0x09F00000
 
@@ -503,6 +503,37 @@ def _longjmp_into_live_frame() -> tuple[int, ...]:
         _jr(_RA), _addu(_V0, _A1, 0),
     ])
     assert len(words) == (0x1080 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+def _alloca_switch_chain(*, falls_through: bool) -> tuple[int, ...]:
+    """A function that frees an alloca from memory, entered through a switch case.
+
+    F saves $sp in its frame, lowers $sp and computes a jump to CASE, the way a switch over
+    a jump table reaches its cases. CASE is an entry of its own, entered at the lowered $sp,
+    and it does not load $sp: it hands its chain to EXIT, which does, and which returns to
+    F's caller with the frame released. F branches to EXIT too, so F owns its $sp and
+    records no restore of its own. CASE reaches EXIT by `j`, or by falling through, where
+    its own walk takes EXIT in and the body loads $sp itself (the control).
+    """
+    case = 0x1048
+    exit_body = 0x104C if falls_through else 0x1054
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
+        _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),             # 0x1018
+        _sw(_SP, 0x10, _FP),                                 # 0x1020 save $sp
+        _i(0x05, _A0, 0, (exit_body - 0x1028) >> 2), _NOP,   # 0x1024 bne a0, zero, EXIT
+        _addiu(_SP, _SP, -0x30),                             # 0x102C alloca
+        _lui(_T8, 0), _ori(_T8, _T8, exit_body),             # 0x1030 EXIT is address-taken
+        _lui(_T9, 0), _ori(_T9, _T9, case),                  # 0x1038
+        _jr(_T9), _NOP,                                      # 0x1040 the switch
+        _addiu(_V0, 0, 0x56),                                # 0x1048 CASE
+        *([] if falls_through else [_j(exit_body), _NOP]),
+        _lw(_SP, 0x10, _FP), _addu(_SP, _FP, 0),             # EXIT: reload the saved $sp
+        _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
+        _jr(_RA), _addiu(_SP, _SP, 0x20),
+    ])
+    assert len(words) == (exit_body + 0x18 - _PROBE_BASE) // 4, "the fixture's labels moved"
     return words
 
 
@@ -1225,6 +1256,25 @@ class GeneratedCallDepthTests(unittest.TestCase):
         body = body[:body.index("\n}")]
         self.assertNotIn("_sp_entry", body, "longjmp's exits restore its entry $sp")
 
+    def test_switch_case_chaining_to_a_loaded_sp_leaves_the_callers_sp(self):
+        # Each case is an entry entered at the alloca-lowered $sp. Before: CASE owed that
+        # $sp as its entry SP, the chain drain applied it after EXIT had returned, and F's
+        # caller came back with its $sp too low and read its saved $ra from the wrong slot.
+        for falls_through in (False, True):
+            with self.subTest(falls_through=falls_through):
+                generated, results = self._probe(
+                    _alloca_switch_chain(falls_through=falls_through), (0, 1))
+                rc, output, fields = results[0]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x56, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+                rc, output, fields = results[1]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+                body = generated[generated.index("void f_00001048(CpuState *s) {"):]
+                body = body[:body.index("\n}")]
+                self.assertNotIn("_sp_entry", body, "a chain to a loaded $sp restores none")
+
     def test_longjmp_mutants_fail_for_their_semantic(self):
         # J1: codegen restores longjmp's entry $sp again: the return no longer reaches F's
         # frame, so the run stops or F's code runs on G's frame.
@@ -1240,6 +1290,15 @@ class GeneratedCallDepthTests(unittest.TestCase):
             "J2-no-live-frame-continuation", _longjmp_into_live_frame(), (0,),
             {"recomp.c": ("    if (returned->call_sp > sp) return 0;", "    return 0;")},
             lambda r: "AOT_RETURN_TARGET_MISMATCH" in r[0][1] and r[0][2].get("v0") != 0x107,
+        )
+
+    def test_guest_sp_chain_mutant_fails_for_its_semantic(self):
+        # S1: the walk records no tail edges: CASE owes its entry SP again.
+        self._assert_mutant_fails(
+            "S1-chain-not-followed", _alloca_switch_chain(falls_through=False), (0,),
+            {"codegen.py": ("            tail_sources.setdefault(target, []).append(start)",
+                            "            tail_sources.setdefault(target, [])")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
         )
 
     def test_tail_protocol_mutants_fail_for_their_semantic(self):

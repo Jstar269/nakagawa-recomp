@@ -867,6 +867,19 @@ class StraightLineEndTests(unittest.TestCase):
         text = self.emit(words, known={0x1000, 0x1010})
         self.assertIn("goto _sr_cont_00001010;", text)
 
+    def test_a_continuation_into_a_body_that_loads_sp_owes_no_entry_sp(self):
+        # guest_sp_chains follows the edge emission turns into a goto, not just a `j`.
+        words = {0x1000: bne(4, 0, 0x1000, 0x100C), 0x1004: NOP,
+                 0x1008: b(0x1008, 0x1018), 0x100C: addiu(2, 2, 1),
+                 0x1010: 0x8FBD0010, 0x1014: JR_RA,                 # 0x1010: lw sp, 16(sp)
+                 0x1018: JR_RA, 0x101C: NOP}
+        known = {0x1000, 0x1010}
+        with region_split_threshold(None):
+            flows, chains = codegen.guest_sp_chains(FakeElf(words), sorted(known),
+                                                    [(0x1000, 0x1020)], known)
+        self.assertEqual(flows[0x1000][2], {0x100C: 0x1010})
+        self.assertEqual(chains, known)
+
     def test_patched_b_keeps_its_not_taken_path(self):
         words = {0x1000: b(0x1000, 0x1010), 0x1004: NOP, 0x1008: JR_RA, 0x100C: NOP,
                  0x1010: JR_RA, 0x1014: NOP}
