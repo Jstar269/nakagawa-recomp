@@ -5840,6 +5840,41 @@ static void profile_read(uint8_t mac[6], uint8_t psid[16]) {
     for (uint32_t i = 0; i < 16u; i++) psid[i] = MEM_R8(PROFILE_OUT + 16u + i);
 }
 
+/* Portable mode (#1850): the game process's registry overlay follows SR_USER_DATA_ROOT, the root the
+ * launcher resolved, not the platform default; SR_SYSTEM_REGISTRY still wins, and a relative root
+ * is refused rather than answered with the default. */
+char *sreg_overlay_path(void);
+static void test_sysreg_overlay_follows_user_data_root(void) {
+    char cwd[1024], root[2048];
+    char *path;
+    size_t len;
+    const char suffix[] = "registry";
+    if (!getcwd(cwd, sizeof(cwd))) {
+        expect(0, "getcwd for the user-data-root test");
+        return;
+    }
+    snprintf(root, sizeof(root), "%s/%s/udr", cwd, SYSREG_SCRATCH_DIR);
+    sysreg_env(NULL);
+    hle_test_setenv("SR_USER_DATA_ROOT", root);
+    path = sreg_overlay_path();
+    len = path ? strlen(path) : 0u;
+    expect(path && strstr(path, "udr") && strstr(path, suffix) && len > 11u &&
+               strcmp(path + len - 11u, "system.json") == 0,
+           "SR_USER_DATA_ROOT sets the registry overlay's folder");
+    free(path);
+    sysreg_env(SYSREG_SCRATCH_FILE);
+    path = sreg_overlay_path();
+    expect(path && strcmp(path, SYSREG_SCRATCH_FILE) == 0, "SR_SYSTEM_REGISTRY wins over SR_USER_DATA_ROOT");
+    free(path);
+    sysreg_env(NULL);
+    hle_test_setenv("SR_USER_DATA_ROOT", "relative-root");
+    path = sreg_overlay_path();
+    expect(path == NULL, "a relative SR_USER_DATA_ROOT is refused, not answered with the default folder");
+    free(path);
+    hle_test_setenv("SR_USER_DATA_ROOT", NULL);
+    sysreg_env(SYSREG_SCRATCH_FILE);
+}
+
 static void test_console_profile_identity(void) {
     static const char configured[] =
         "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
@@ -43033,6 +43068,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();
     test_sysreg_virtual_registry();
+    test_sysreg_overlay_follows_user_data_root();
     test_console_profile_identity();
     test_sysreg_write_model();
     test_sysparam_nickname_string();
