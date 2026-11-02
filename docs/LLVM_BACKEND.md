@@ -44,7 +44,7 @@ decodes no MIPS and makes no transfer decision.
 
 ### One representation for both backends
 
-The design rule (maintainer, 2026-10-29) is that every backend lowers from the same analysis
+The design rule is that every backend lowers from the same analysis
 representation, so a semantic fix lands once and the backends cannot drift. Where that
 stands in this stage:
 

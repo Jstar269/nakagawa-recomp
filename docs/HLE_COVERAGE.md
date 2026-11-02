@@ -135,7 +135,7 @@ belongs to without the census's own grouping.
 | `0x1f0fc3e3` | `sceHttpSetRecvTimeOut` | network | `unverified` | no recorded evidence |
 | `0x1f4011e6` | `sceCtrlSetSamplingMode` | input | `synthetic` | HLE selftest dispatch |
 | `0x1f6752ad` | `sceGeEdramGetSize` | ge | `hardware-measured` | PSP oracle PSP-HLE-GE-EDRAM-001 |
-| `0x1f803938` | `sceCtrlReadBufferPositive` | input | `synthetic` | conformance cells and HLE selftest dispatch |
+| `0x1f803938` | `sceCtrlReadBufferPositive` | input | `synthetic` | conformance cells and HLE selftest dispatch; note |
 | `0x1fb15a32` | `sceKernelSetEventFlag` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x1fc64e09` | `sceKernelLockLwMutexCB` | kernel_sync | `synthetic` | conformance cells |
 | `0x1ff89745` | `sceNetAdhocctlJoinEnterGameMode` | network | `unverified` | no recorded evidence |
@@ -151,7 +151,7 @@ belongs to without the census's own grouping.
 | `0x2255551e` | `sceHttpGetNetworkPspError` | network | `unverified` | no recorded evidence |
 | `0x231fc6b7` | `_sceAtracGetContextAddress` | audio_codec | `unverified` | no recorded evidence |
 | `0x235d8787` | `scePsmfPlayerCreate` | mpeg | `synthetic` | HLE selftest dispatch |
-| `0x237dbd4f` | `sceKernelAllocPartitionMemory` | kernel_memory | `synthetic` | HLE selftest dispatch |
+| `0x237dbd4f` | `sceKernelAllocPartitionMemory` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0x24ac31eb` | `sceUtilityGamedataInstallInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x24fd7bcf` | `sceImposeGetLanguageMode` | utility | `synthetic` | HLE selftest dispatch |
 | `0x267a6dd2` | `__sceSasRevParam` | audio | `unverified` | no recorded evidence |
@@ -225,7 +225,7 @@ belongs to without the census's own grouping.
 | `0x39810265` | `sceKernelReferVplStatus` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0x39af39a6` | `sceNetInit` | network | `synthetic` | HLE selftest dispatch |
 | `0x3a20a200` | `sceAudiocodecGetEDRAM` | audio_codec | `unverified` | no recorded evidence |
-| `0x3a622550` | `sceCtrlPeekBufferPositive` | input | `synthetic` | HLE selftest dispatch |
+| `0x3a622550` | `sceCtrlPeekBufferPositive` | input | `synthetic` | HLE selftest dispatch; note |
 | `0x3ad58b8c` | `sceKernelSuspendDispatchThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x3aea8cb6` | `sceFontClose` | font | `unverified` | no recorded evidence |
 | `0x3aee7261` | `sceKernelPowerUnlock` | power | `synthetic` | HLE selftest dispatch |

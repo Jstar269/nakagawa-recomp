@@ -16,6 +16,8 @@ never a fixed per-title constant.
 
 import argparse
 import bisect
+import contextlib
+import dataclasses
 import struct
 import re
 import os
@@ -48,61 +50,94 @@ from imports import ImportTableError, format_boundary
 CPU_STATE_ABI_VERSION = 3
 EMITTED_OWNERSHIP_SCHEMA_VERSION = 1
 
-# LLE CPU mode (PR 2): when True, generated SYSCALL/BREAK raise guest
-# exceptions via sr_cpu_raise_exception instead of the default HLE path
-# (sr_raw_syscall/sr_break). Set by --lle-cpu; default False preserves
-# byte-for-byte HLE behavior. MFC0/MTC0/ERET have no prior HLE behavior
-# (they were untranslatable) and emit helper calls in both modes.
-LLE_CPU = False
 
-# LLE import seam (PR 3): when True, generated import stubs route through
-# sr_import_call(s, nid, stub_pc) instead of calling sr_syscall(s, nid)
-# directly, so the stub honors the per-domain HLE/LLE selection in
-# src/rt/domain_mode.h. Set by --lle-import-seam; default False preserves
-# byte-for-byte HLE stubs. In HLE mode the seam tail-calls sr_syscall with
-# identical effects; the stub keys off s->flow_kind (the PR 2 pattern),
-# never off the seam return, because legitimate HLE errors are nonzero.
-LLE_IMPORT_SEAM = False
+@dataclass
+class CodegenOptions:
+    """The command-line switches that change the C a run emits.
 
-# Entry splitting (owner decision, 2026-10-29). A body normally owns every
-# instruction it reaches by a conditional branch, including another entry's code, so
-# each entry of a large branch-connected region translates its own copy of the region
-# (one title: 6,539 entries in a 1.33M-instruction region). A body whose walk would
-# exceed this many instructions instead stops at every other entry: a conditional
-# branch into one, taken or not taken, becomes a TAIL transfer to that entry's own
-# body (#855), as `j` and straight-line fall-through already are. Bodies within the
-# budget are byte-identical to the unsplit output. 0 splits every body; None never
-# splits. Set by --region-split-threshold=N|off.
-REGION_SPLIT_THRESHOLD = 32768
+    ``main`` turns them on from the command line; the defaults reproduce the historical output
+    byte for byte.  The module holds one instance, ``OPTIONS``; emitters read it and tests set it
+    through ``options_scope``.  Each field comment is the contract of its switch.
+    """
 
-# TD-27 stale-code detection (tools/codegen.py side of the SR_STALE_DETECT
-# gate). When True, codegen emits one compact (address, entry word, word
-# count, FNV-1a) record per translated primary-image function into
-# sr_register_all(), and routes the `cache` op through
-# sr_stale_note_cache_op() instead of the default no-op. Set by
-# --stale-detect; default False preserves byte-for-byte output. Only the
-# primary image is recorded: extra modules are translated at build time but
-# never copied into guest RAM, so their arena bytes cannot be compared
-# without false-firing on the first check.
-STALE_DETECT = False
+    # LLE CPU mode (PR 2): when True, generated SYSCALL/BREAK raise guest
+    # exceptions via sr_cpu_raise_exception instead of the default HLE path
+    # (sr_raw_syscall/sr_break). Set by --lle-cpu; default False preserves
+    # byte-for-byte HLE behavior. MFC0/MTC0/ERET have no prior HLE behavior
+    # (they were untranslatable) and emit helper calls in both modes.
+    lle_cpu: bool = False
 
-# SR_NAN_TRAP NaN/Inf origin diagnostic (issue #69). When True, every FPU and
-# VFPU result write in the generated C is followed by an SR_NAN_TRAP_* check
-# that names the first instructions whose result went non-finite from all-finite
-# operands (see the SR_NAN_TRAP block in src/rt/recomp.h). Set by --nan-trap;
-# default False emits no check statement at all, so the generated C -- and
-# therefore the object built from it -- is byte-identical to a pre-trap build.
-# The C half of the option (-DSR_NAN_TRAP) makes those checks live; without it
-# they expand to ((void)0) and neither half changes behaviour on its own.
-NAN_TRAP = False
+    # LLE import seam (PR 3): when True, generated import stubs route through
+    # sr_import_call(s, nid, stub_pc) instead of calling sr_syscall(s, nid)
+    # directly, so the stub honors the per-domain HLE/LLE selection in
+    # src/rt/domain_mode.h. Set by --lle-import-seam; default False preserves
+    # byte-for-byte HLE stubs. In HLE mode the seam tail-calls sr_syscall with
+    # identical effects; the stub keys off s->flow_kind (the PR 2 pattern),
+    # never off the seam return, because legitimate HLE errors are nonzero.
+    lle_import_seam: bool = False
 
-# Local guest-register promotion (#284). When True, runs of simple instructions
-# keep the guest GPRs they touch in C locals (`_gpr<n>`) and write them back to
-# s->r[] before every label, control transfer, non-promoted instruction and the
-# end of the body, so no runtime helper, dispatcher or other body ever sees a
-# stale register file. Set by --promote-registers; default False leaves the
-# generated C byte-identical. RegisterPromotion below owns the rules.
-PROMOTE_REGISTERS = False
+    # Entry splitting (owner decision, 2026-10-29). A body normally owns every
+    # instruction it reaches by a conditional branch, including another entry's code, so
+    # each entry of a large branch-connected region translates its own copy of the region
+    # (one title: 6,539 entries in a 1.33M-instruction region). A body whose walk would
+    # exceed this many instructions instead stops at every other entry: a conditional
+    # branch into one, taken or not taken, becomes a TAIL transfer to that entry's own
+    # body (#855), as `j` and straight-line fall-through already are. Bodies within the
+    # budget are byte-identical to the unsplit output. 0 splits every body; None never
+    # splits. Set by --region-split-threshold=N|off.
+    region_split_threshold: int | None = 32768
+
+    # TD-27 stale-code detection (tools/codegen.py side of the SR_STALE_DETECT
+    # gate). When True, codegen emits one compact (address, entry word, word
+    # count, FNV-1a) record per translated primary-image function into
+    # sr_register_all(), and routes the `cache` op through
+    # sr_stale_note_cache_op() instead of the default no-op. Set by
+    # --stale-detect; default False preserves byte-for-byte output. Only the
+    # primary image is recorded: extra modules are translated at build time but
+    # never copied into guest RAM, so their arena bytes cannot be compared
+    # without false-firing on the first check.
+    stale_detect: bool = False
+
+    # SR_NAN_TRAP NaN/Inf origin diagnostic (issue #69). When True, every FPU and
+    # VFPU result write in the generated C is followed by an SR_NAN_TRAP_* check
+    # that names the first instructions whose result went non-finite from all-finite
+    # operands (see the SR_NAN_TRAP block in src/rt/recomp.h). Set by --nan-trap;
+    # default False emits no check statement at all, so the generated C -- and
+    # therefore the object built from it -- is byte-identical to a pre-trap build.
+    # The C half of the option (-DSR_NAN_TRAP) makes those checks live; without it
+    # they expand to ((void)0) and neither half changes behaviour on its own.
+    nan_trap: bool = False
+
+    # Local guest-register promotion (#284). When True, runs of simple instructions
+    # keep the guest GPRs they touch in C locals (`_gpr<n>`) and write them back to
+    # s->r[] before every label, control transfer, non-promoted instruction and the
+    # end of the body, so no runtime helper, dispatcher or other body ever sees a
+    # stale register file. Set by --promote-registers; default False leaves the
+    # generated C byte-identical. RegisterPromotion below owns the rules.
+    promote_registers: bool = False
+
+    # --static-verify: compile-time-predicted register assertions (see the SR_SV_CHECK block).
+    static_verify: bool = False
+
+
+OPTIONS = CodegenOptions()
+
+
+@contextlib.contextmanager
+def options_scope(**changes):
+    """Run with the named options changed, restoring every option on exit."""
+    saved = dataclasses.replace(OPTIONS)
+    for field, value in changes.items():
+        if not hasattr(OPTIONS, field):
+            raise AttributeError(f"unknown codegen option {field!r}")
+        setattr(OPTIONS, field, value)
+    try:
+        yield OPTIONS
+    finally:
+        for field in dataclasses.fields(saved):
+            setattr(OPTIONS, field.name, getattr(saved, field.name))
+
+
 # The collector of one promoted line while it is translated (R and wr read it).
 _PROMO_LINE = None
 # Totals over one codegen run, printed as CODEGEN_PROMOTION when promotion is on.
@@ -338,9 +373,8 @@ def enable_lle_import_seam():
     call and enables the runtime LLE lane. Without it an LLE miss would be
     ignored by the caller, so the seam implies --lle-cpu.
     """
-    global LLE_IMPORT_SEAM, LLE_CPU
-    LLE_IMPORT_SEAM = True
-    LLE_CPU = True
+    OPTIONS.lle_import_seam = True
+    OPTIONS.lle_cpu = True
 
 
 def is_eret(w):
@@ -358,7 +392,7 @@ def import_stub_text(addr, lib, nid, lle_import_seam=False):
     never falls through as if the import had succeeded.
     """
     if lle_import_seam is False:
-        lle_import_seam = LLE_IMPORT_SEAM
+        lle_import_seam = OPTIONS.lle_import_seam
     symbol = ADDRESS_SPACE.symbol(addr)
     if lle_import_seam:
         return (f"void {symbol}(CpuState *s) {{  /* import: {lib} nid 0x{nid:08x} */\n"
@@ -1095,7 +1129,7 @@ def _nanf(pc, op, fd, out, ins):
     the codegen samples them into locals before the store, so a destination that
     aliases a source still reports what was actually read.
     """
-    if not NAN_TRAP:
+    if not OPTIONS.nan_trap:
         return ""
     return (f' SR_NAN_TRAP_F({G(pc)},"{op}",{fd}u,{out},'
             f'{",".join(ins)});')
@@ -1107,7 +1141,7 @@ def _nanv(pc, op, vd, out, nout, a, na, b=None, nb=0):
     `a`/`na` and `b`/`nb` are the source lane arrays; omitting `b` reports a
     one-source-vector form.
     """
-    if not NAN_TRAP:
+    if not OPTIONS.nan_trap:
         return ""
     if b is None:
         # One source vector: the 7-argument form. SR_NAN_TRAP_V2 takes 9, and
@@ -1129,7 +1163,7 @@ def _nan_matrix(pc, op, vd, out_exprs, in_exprs, in_exprs2=()):
     every consumed lane instead of the matrix alone. Only emitted under
     --nan-trap.
     """
-    if not NAN_TRAP:
+    if not OPTIONS.nan_trap:
         return ""
     outs = " ".join(f"_ntout[{i}]={expr};" for i, expr in enumerate(out_exprs))
     ins = " ".join(f"_ntin[{i}]={expr};" for i, expr in enumerate(in_exprs))
@@ -1163,7 +1197,7 @@ def _nanm(pc, op, vd, outs, ins, nout, nin, ins2=None, nin2=0):
     operand group (vtfm's vector) is passed as its own pair. Only emitted under
     --nan-trap.
     """
-    if not NAN_TRAP:
+    if not OPTIONS.nan_trap:
         return ""
     if ins2 is None:
         return f' SR_NAN_TRAP_V({G(pc)},"{op}",{vd}u,{outs},{nout},{ins},{nin});'
@@ -1506,7 +1540,7 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
         # cache (TD-27): a no-op in default static recompilation. Behind
         # --stale-detect the invalidate becomes a stale-code check hook; the
         # SR_STALE_DETECT runtime gate keeps it off the hot path when unset.
-        if STALE_DETECT:
+        if OPTIONS.stale_detect:
             return f"sr_stale_note_cache_op((uint32_t)({R(rs(w))} + {simm(w)}));", None, 0
         return "(void)0;", None, 0  # cache (no-op in user space static recompilation)
     if op == 0x3f: return f"if ((0x{w:08x}u & 0xFFFF0000u) != 0xFFFF0000u) {{ s->vfpuCtrl[0]=0xe4u; s->vfpuCtrl[1]=0xe4u; s->vfpuCtrl[2]=0u; }}", None, 0  # vflush
@@ -2243,7 +2277,7 @@ def _fpu_unary(addr, op, fdv, expr, src):
     produced. With it the operand is sampled into a local first, so the report
     names what the instruction read even when fd == fs.
     """
-    if not NAN_TRAP:
+    if not OPTIONS.nan_trap:
         return f"{F(fdv)} = {expr};"
     return (f"{{ float _a = {src}; {F(fdv)} = {expr};"
             + _nanf(addr, op, fdv, F(fdv), ["_a"]) + " }")
@@ -2462,7 +2496,7 @@ def continues_to_next_word(w):
 
 
 class _WalkBudgetExceeded(Exception):
-    """The unsplit walk of one entry passed REGION_SPLIT_THRESHOLD instructions."""
+    """The unsplit walk of one entry passed OPTIONS.region_split_threshold instructions."""
 
 
 def function_flow(elf, start, ranges, known, resume_owners=None,
@@ -2470,12 +2504,12 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
     """Ownership of the body for the entry ``start``: (insns, labels, continuations).
 
     Every caller gets the same answer for the same entry. The body is split at other
-    entries when REGION_SPLIT_THRESHOLD says so (see its comment).
+    entries when OPTIONS.region_split_threshold says so (see its comment).
     """
     # One membership test per walked instruction: index the spans once (same answers as
     # in_ranges over the list), as analyze.trace_function does; both walks below share it.
     ranges = span_index(ranges)
-    threshold = REGION_SPLIT_THRESHOLD
+    threshold = OPTIONS.region_split_threshold
     if threshold is not None and threshold > 0:
         try:
             return _walk_body(elf, start, ranges, known, resume_owners,
@@ -2869,7 +2903,6 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
 # Default builds are unchanged: nothing is emitted unless codegen runs with
 # --static-verify (keeps the -O0 -w chunk-size budget intact).
 
-SV_ENABLED = False
 SV_MAX_PER_FLUSH = 3     # checks attached to one flush point
 SV_MAX_PER_FUNC = 16     # checks per function (bounds chunk growth)
 SV_STATS = {"funcs": 0, "checks": 0}
@@ -3012,7 +3045,7 @@ def _sv_step(w, regs, written):
 
 def sv_plan(elf, insns, labels, hst_profile=False):
     """Pre-compute {flush_addr: [(reg, expected_value), ...]} for one function."""
-    if not (insns and SV_ENABLED):
+    if not (insns and OPTIONS.static_verify):
         return {}
     if hst_profile and (insns & _SV_SPECIAL):
         return {}
@@ -3091,7 +3124,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     """
     hst_profile = profile == "hst"
     if lle_cpu is False:
-        lle_cpu = LLE_CPU
+        lle_cpu = OPTIONS.lle_cpu
     resume_owners = resume_owners or {}
     ranges = span_index(ranges)
     if flow is None:
@@ -3157,7 +3190,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         labels.add(start)
         out.append(f"    goto L_{start:08x};")
     consumed = set()
-    promo = RegisterPromotion() if PROMOTE_REGISTERS else None
+    promo = RegisterPromotion() if OPTIONS.promote_registers else None
     for addr in sorted(insns):
         if addr in consumed:
             continue
@@ -4208,7 +4241,7 @@ def shared_library_source_text(module, texts):
     ]
     lines.extend(f"void {module.prefix}_{a:08x}(CpuState *s);" for a, _nwords in module.functions)
     lines.append("")
-    if SV_ENABLED:
+    if OPTIONS.static_verify:
         lines += [SR_SV_CHECK, ""]
     return "\n".join(lines) + "\n" + "\n\n".join(texts) + "\n"
 
@@ -4481,37 +4514,36 @@ def main(argv):
                 sys.stderr.write(f"invalid --omit-aot address: --omit-aot={occurrence}\n")
                 return 2
 
-    # The module-level switches are set only once every option has been accepted.
-    global SV_ENABLED, LLE_CPU, REGION_SPLIT_THRESHOLD, STALE_DETECT, PROMOTE_REGISTERS, NAN_TRAP
+    # The options are set only once every option has been accepted.
     if cli.static_verify:
-        SV_ENABLED = True
+        OPTIONS.static_verify = True
     if cli.lle_cpu:
         # LLE CPU mode (PR 2): SYSCALL/BREAK raise guest exceptions.
         # Default (absent) preserves the HLE sr_raw_syscall/sr_break path.
-        LLE_CPU = True
+        OPTIONS.lle_cpu = True
     if cli.lle_import_seam:
         # LLE import seam (PR 3): import stubs route through
         # sr_import_call instead of sr_syscall. Default (absent)
         # preserves byte-identical HLE stubs.
         enable_lle_import_seam()
     if threshold_arg is not None:
-        REGION_SPLIT_THRESHOLD = threshold
+        OPTIONS.region_split_threshold = threshold
     if cli.stale_detect:
         # TD-27 stale-code detection: emit the compact translation-time
         # record table and route `cache` through the check hook.
         # Default (absent) preserves byte-identical output.
-        STALE_DETECT = True
+        OPTIONS.stale_detect = True
     if cli.promote_registers:
         # #284: keep guest GPRs in C locals inside runs of simple
         # instructions, written back at every boundary. Default (absent)
         # leaves the generated C byte-identical.
-        PROMOTE_REGISTERS = True
+        OPTIONS.promote_registers = True
     if cli.nan_trap:
         # SR_NAN_TRAP: follow every FPU/VFPU result write with a check that
         # names the instruction whose result went non-finite from all-finite
         # operands. Default (absent) emits no check statement at all, so the
         # generated C is byte-identical to a pre-trap build.
-        NAN_TRAP = True
+        OPTIONS.nan_trap = True
 
     if stack_census:
         # The dynamic run is meaningful only after the static ownership floor
@@ -4856,7 +4888,7 @@ def main(argv):
                 resume_owners=resume_owners, resumable=catalog[a].resumable,
                 dispatch_boundaries=dispatch_boundaries))
             emitted.append(a)
-            if STALE_DETECT:
+            if OPTIONS.stale_detect:
                 stale_funcs.append(a)
         except Unsupported as e:
             if applied_before is not None:
@@ -5209,7 +5241,7 @@ def main(argv):
     if symbol_table:
         main_out.append(
             f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")
-    if LLE_CPU:
+    if OPTIONS.lle_cpu:
         main_out.append("    sr_cpu_lle_set_enabled(1);")
     main_out.append("    sr_exec_span_reset();")
     for module in module_translations:
@@ -5229,7 +5261,7 @@ def main(argv):
             "    sr_stack_census_begin(sr_stack_census_expected_entries, "
             f"{len(census_entries)}u);"
         )
-    if STALE_DETECT:
+    if OPTIONS.stale_detect:
         # TD-27 compact translation-time records (address + entry word +
         # word count + FNV-1a per translated primary-image function). No raw
         # code bodies are embedded; the runtime compares these against live
@@ -5272,7 +5304,7 @@ def main(argv):
     for i, chunk in enumerate(boundaries):
         parts = ["/* Generated by tools/codegen.py. Do not edit by hand. */\n",
                  f'#include "{os.path.basename(base_name)}_funcs.h"\n#include <math.h>\n#include <string.h>\n#include <stdio.h>\n\n']
-        if SV_ENABLED:
+        if OPTIONS.static_verify:
             parts.append(SR_SV_CHECK + "\n\n")
         parts.append("\n\n".join(chunk) + "\n\n")
         parts.append(f"void sr_register_chunk_{i}(void) {{\n")
@@ -5349,10 +5381,10 @@ def main(argv):
     if backend == "llvm":
         print(f"llvm backend: {len(llvm_lowered)} functions lowered to LLVM IR, "
               f"{len(llvm_fallbacks)} kept in C (reasons: {llvm_manifest_path})")
-    if SV_ENABLED:
+    if OPTIONS.static_verify:
         print(f"static-verify: {SV_STATS['checks']} register assertions "
               f"across {SV_STATS['funcs']} functions")
-    if PROMOTE_REGISTERS:
+    if OPTIONS.promote_registers:
         print(promotion_summary())
     return 0
 
