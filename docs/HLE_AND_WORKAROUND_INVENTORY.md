@@ -46,13 +46,13 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **667** (dedicated **561**, fake_success **5**, controlled_unsupported **101**).
-Semantic handler census: **540** handlers across **26** API families, covering **567** handler-associated NID registrations.
+Registered NIDs: **679** (dedicated **570**, fake_success **5**, controlled_unsupported **104**).
+Semantic handler census: **549** handlers across **26** API families, covering **576** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 235 | 240 |
+| `partial` | 244 | 249 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 288 | 297 |
@@ -60,18 +60,18 @@ Semantic handler census: **540** handlers across **26** API families, covering *
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | `newlib` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
+| `other` | 1 | 1 | 0 | 0 | 0 | 2 | 2 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 10 | 0 | 0 | 2 | 12 | 12 |
-| `sceDisplay` | 1 | 5 | 0 | 0 | 8 | 14 | 14 |
+| `sceDisplay` | 1 | 6 | 0 | 0 | 8 | 15 | 15 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
-| `sceFont` | 0 | 3 | 0 | 0 | 11 | 14 | 14 |
+| `sceFont` | 0 | 7 | 0 | 0 | 11 | 18 | 18 |
 | `sceGe` | 2 | 8 | 0 | 0 | 4 | 14 | 14 |
 | `sceHprm` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 101 | 0 | 0 | 85 | 189 | 207 |
+| `sceKernel` | 3 | 102 | 0 | 0 | 85 | 190 | 208 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 11 | 0 | 1 | 25 | 37 | 37 |
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
@@ -83,9 +83,9 @@ Semantic handler census: **540** handlers across **26** API families, covering *
 | `sceRtc` | 5 | 12 | 0 | 0 | 1 | 18 | 18 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
-| `sceUtility` | 0 | 7 | 0 | 0 | 27 | 34 | 34 |
+| `sceUtility` | 0 | 9 | 0 | 0 | 27 | 36 | 36 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **235** | **1** | **2** | **288** | **540** | **567** |
+| **Total** | **14** | **244** | **1** | **2** | **288** | **549** | **576** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -154,6 +154,10 @@ Semantic handler census: **540** handlers across **26** API families, covering *
 
 #### Partial Handlers (Named Limitations)
 
+- **`h_LoadExecForUser_362A956B`** (`other`): `LoadExecForUser_362A956B` (0x362a956b)
+  - Limitation: reads the registered exit callback's argument block as {mode, params, common}: no live callback 0x800201a1, NULL argument 0x800200d3, mode 4 or above 0x800200d2, params size below 12 0x800201bc, else clears params->unk1 and sets params->unk2 to -1; an unusable params pointer stops the run by name; the check order when mode and size both fail, and other compiled SDK versions, are not measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/threads/callbacks/exit.expected (1a9e6c31, recorded on a PSP, compiled SDK 3.95): checkpoints under LoadExecForUser_362A956B
 - **`h_AudioChRelease`** (`sceAudio`): `sceAudioChRelease` (0x6fc46853)
   - Limitation: the cells release channel 0 after the two valid blocking-output calls and query it after release; unreserved, out-of-range, and other channel-state release results are unmeasured (#341)
   - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
@@ -251,6 +255,10 @@ Semantic handler census: **540** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_vcount_freezes_while_cpu_interrupts_are_masked
   - Evidence: tests/native/hle_thread_selftest.c:test_vcount_credits_one_deferred_period_on_resume
   - Evidence: tests/native/hle_thread_selftest.c:test_vcount_tracks_elapsed_source_periods
+- **`h_DisplayIsForeground`** (`sceDisplay`): `sceDisplayIsForeground` (0xb4f378fa)
+  - Limitation: reports whether the active scanout address is non-zero; the result before sceDisplaySetMode or any framebuffer is not measured and follows from the zero address
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/display/isstate.expected (1a9e6c31, recorded on a PSP): 0 with no framebuffer, 1 with one set, 1 after a latched request for address 0
 - **`h_DisplaySetFrameBuf`** (`sceDisplay`): `sceDisplaySetFrameBuf` (0x289d82fe)
   - Limitation: display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -276,6 +284,22 @@ Semantic handler census: **540** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_font_list_contract
   - Evidence: PSPAutotests tests/font/fontlist.expected (2ed7c9c5, the console's libfont on a PSP): 18 and error 0 for a live library, 0 and 0x80460002 for a NULL library
   - Evidence: hardware measurement 2026-10-15, PSP-3000 6.6.1: the system font list holds 18 fonts (src/rt/flash0_font.c registry rows)
+- **`h_FontPixelToPointH`** (`sceFont`): `sceFontPixelToPointH` (0x74b21701)
+  - Limitation: pixels * 72 / hRes in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_measured_contract
+  - Evidence: PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPixelToPointH conversions
+- **`h_FontPixelToPointV`** (`sceFont`): `sceFontPixelToPointV` (0xf8f0752e)
+  - Limitation: pixels * 72 / vRes in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_measured_contract
+  - Evidence: PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPixelToPointV conversions
+- **`h_FontPointToPixelH`** (`sceFont`): `sceFontPointToPixelH` (0x472694cd)
+  - Limitation: points * hRes / 72 in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_measured_contract
+  - Evidence: PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPointToPixelH conversions
+- **`h_FontPointToPixelV`** (`sceFont`): `sceFontPointToPixelV` (0x3c4b7e82)
+  - Limitation: points * vRes / 72 in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_measured_contract
+  - Evidence: PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPointToPixelV conversions
 - **`h_FontSetAltCharacterCode`** (`sceFont`): `sceFontSetAltCharacterCode` (0xee232411)
   - Limitation: the fallback is kept host-side and used by GetCharInfo and GetCharGlyphImage; the PSP library struct field that holds it is not part of this runtime's library layout, and a library handle that is not live stops the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_font_alt_char_contract
@@ -579,6 +603,10 @@ Semantic handler census: **540** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_td28_partition_free_reuse
 - **`h_GetMemoryBlockAddr`** (`sceKernel`): `sceKernelGetMemoryBlockAddr` (0xdb83a952)
   - Limitation: resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured
+- **`h_GetModuleIdList`** (`sceKernel`): `sceKernelGetModuleIdList` (0x644395e2)
+  - Limitation: lists only the main module and the modules the runtime loaded (a PSP also lists firmware modules), main first and then in load order, an order that is not measured; an unwritable count or buffer is not measured and stops the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/modules/idlist/idlist.expected (1a9e6c31, recorded on a PSP): byte size, whole entries, count is the total, the caller's module is listed
 - **`h_GetSystemTime`** (`sceKernel`): `sceKernelGetSystemTime` (0xdb738f35)
   - Limitation: writes the 64-bit modeled microsecond clock and returns 0; the illegal-address result is the runtime's own code (RTC_ILLEGAL_ADDR), not a PSP measurement, and the clock origin is not compared with hardware
 - **`h_GetSystemTimeLow`** (`sceKernel`): `sceKernelGetSystemTimeLow` (0x369ed59d)
@@ -961,11 +989,19 @@ Semantic handler census: **540** handlers across **26** API families, covering *
   - Limitation: the nickname (id 1) copy with its NUL and the short-buffer 0x80110102 refusal that writes nothing are measured; other string ids, a null buffer and len <= 0 return 0x80110103 without a measurement, and the nickname is the registry value (empty by default), not the console's
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-SYSPARAM-001: string-id-1-len-0x80, string-id-1-len-0x04)
   - Evidence: tests/native/hle_thread_selftest.c:test_sysparam_nickname_string
+- **`h_HtmlViewerStatus`** (`sceUtility`): `sceUtilityHtmlViewerGetStatus` (0xbda7d894)
+  - Limitation: always WRONG_TYPE: the runtime has no HTML viewer dialog, and its InitStart import is not registered
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/utility/dialog/status.expected and htmlviewer.expected (1a9e6c31, recorded on a PSP): html=WRONG_TYPE when no HTML viewer was started
 - **`h_MsgDialogAbort`** (`sceUtility`): `sceUtilityMsgDialogAbort` (0x4928bd96)
   - Limitation: return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference (derived, not PSP-measured; queued for the next PSP matrix run), and a button answer the model wrote at the first Update stays
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_sequence
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_without_update
   - Evidence: PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown
+- **`h_ScreenshotStatus`** (`sceUtility`): `sceUtilityScreenshotGetStatus` (0xd81957b7)
+  - Limitation: always WRONG_TYPE: the runtime has no screenshot dialog, and its InitStart import is not registered
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/utility/dialog/status.expected (1a9e6c31, recorded on a PSP): shot=WRONG_TYPE when no screenshot dialog was started
 - **`h_UtilityLoadModule`** (`sceUtility`): `sceUtilityLoadModule` (0x2a2b3de0)
   - Limitation: records utility module state only; the user-partition memory a real module occupies is not reserved; IDs and dependencies follow PPSSPP, not measured on this project's PSP
   - Evidence: tests/native/hle_thread_selftest.c:test_utility_av_module_state

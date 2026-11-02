@@ -948,6 +948,12 @@
     "name": "sceIoWaitAsyncCB",
     "status": "partial"
   },
+  "0x362a956b": {
+    "classification": "dedicated",
+    "handler": "h_LoadExecForUser_362A956B",
+    "name": "LoadExecForUser_362A956B",
+    "status": "partial"
+  },
   "0x362cbe8f": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -1076,6 +1082,12 @@
     "handler": "h_Mp3TermResource",
     "name": "sceMp3TermResource",
     "status": "unreviewed"
+  },
+  "0x3c4b7e82": {
+    "classification": "dedicated",
+    "handler": "h_FontPointToPixelV",
+    "name": "sceFontPointToPixelV",
+    "status": "partial"
   },
   "0x3cef484f": {
     "classification": "dedicated",
@@ -1255,6 +1267,12 @@
     "name": "scePsmfPlayerGetVideoData",
     "status": "partial"
   },
+  "0x472694cd": {
+    "classification": "dedicated",
+    "handler": "h_FontPointToPixelH",
+    "name": "sceFontPointToPixelH",
+    "status": "partial"
+  },
   "0x472e3825": {
     "classification": "dedicated",
     "handler": "h_AtracSetMOutDataAndGetID",
@@ -1375,6 +1393,13 @@
     "handler": "h_WaitSema",
     "name": "sceKernelWaitSema",
     "status": "partial"
+  },
+  "0x50647530": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceNetFreeThreadinfo",
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0x50a14dfc": {
     "classification": "dedicated",
@@ -1676,6 +1701,12 @@
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
   },
+  "0x644395e2": {
+    "classification": "dedicated",
+    "handler": "h_GetModuleIdList",
+    "name": "sceKernelGetModuleIdList",
+    "status": "partial"
+  },
   "0x644e5607": {
     "classification": "dedicated",
     "handler": "h_AtracResetPlayPosition",
@@ -1920,6 +1951,12 @@
     "handler": "h_SasGetEnvelopeHeight",
     "name": "__sceSasGetEnvelopeHeight",
     "status": "unreviewed"
+  },
+  "0x74b21701": {
+    "classification": "dedicated",
+    "handler": "h_FontPixelToPointH",
+    "name": "sceFontPixelToPointH",
+    "status": "partial"
   },
   "0x75156e8f": {
     "classification": "dedicated",
@@ -2919,6 +2956,12 @@
     "name": "sceGeBreak",
     "status": "partial"
   },
+  "0xb4f378fa": {
+    "classification": "dedicated",
+    "handler": "h_DisplayIsForeground",
+    "name": "sceDisplayIsForeground",
+    "status": "partial"
+  },
   "0xb55249d2": {
     "classification": "dedicated",
     "handler": "h_CpuIsIntrEnable",
@@ -3076,6 +3119,12 @@
     "classification": "dedicated",
     "handler": "h_PowerGetBusClockFrequencyInt",
     "name": "scePowerGetBusClockFrequencyInt",
+    "status": "partial"
+  },
+  "0xbda7d894": {
+    "classification": "dedicated",
+    "handler": "h_HtmlViewerStatus",
+    "name": "sceUtilityHtmlViewerGetStatus",
     "status": "partial"
   },
   "0xbea46419": {
@@ -3261,6 +3310,13 @@
     "name": "sceUmdReplacePermit",
     "status": "unreviewed"
   },
+  "0xcc393e48": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceNetGetMallocStat",
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
+  },
   "0xcd203292": {
     "classification": "dedicated",
     "handler": "h_CancelEventFlag",
@@ -3425,6 +3481,12 @@
     "handler": "h_MpegRingbufferQueryMemSize",
     "name": "sceMpegRingbufferQueryMemSize",
     "status": "unreviewed"
+  },
+  "0xd81957b7": {
+    "classification": "dedicated",
+    "handler": "h_ScreenshotStatus",
+    "name": "sceUtilityScreenshotGetStatus",
+    "status": "partial"
   },
   "0xd8199e4c": {
     "classification": "dedicated",
@@ -3948,6 +4010,13 @@
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
   },
+  "0xf7d13214": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceNetAdhocDiscoverStop",
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
+  },
   "0xf7d8d092": {
     "classification": "dedicated",
     "handler": "h_UtilityUnloadAvModule",
@@ -3977,6 +4046,12 @@
     "handler": "h_PsmfStatus",
     "name": "scePsmfPlayerGetCurrentStatus",
     "status": "unreviewed"
+  },
+  "0xf8f0752e": {
+    "classification": "dedicated",
+    "handler": "h_FontPixelToPointV",
+    "name": "sceFontPixelToPointV",
+    "status": "partial"
   },
   "0xf919f628": {
     "classification": "dedicated",

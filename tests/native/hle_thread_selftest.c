@@ -31577,6 +31577,154 @@ static void test_module_id_queries_resolve_owning_module(void) {
     s_fixture_loaded_end = 0x00400000u;
 }
 
+/* sceDisplayIsForeground, sceKernelGetModuleIdList, LoadExecForUser_362A956B and the utility
+ * dialog GetStatus calls without a dialog, against PSPAutotests (rev 1a9e6c31, recorded on a
+ * PSP): display/isstate.expected, modules/idlist/idlist.expected, threads/callbacks/exit.expected
+ * and utility/dialog/{status,htmlviewer}.expected. Before these handlers the NIDs were unregistered
+ * imports. */
+static void test_imports_20261102_measured_contracts(void) {
+    CpuState cpu;
+    uint32_t stops;
+    reset_fixture();
+    sr_hle_init();
+
+    /* isstate.expected: 0 while the scanout address is 0, 1 once a framebuffer is set, and still 1
+     * after a latched request for address 0, which only takes effect at the next vblank. */
+    const uint32_t NID_IS_FOREGROUND = 0xb4f378fau, NID_SET_FRAMEBUF = 0x289d82feu;
+    expect(sr_hle_test_is_registered(NID_IS_FOREGROUND), "sceDisplayIsForeground is registered");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[7] = 1u;
+    expect(sr_syscall(&cpu, NID_SET_FRAMEBUF) == 0u, "a latched request for framebuffer 0 is accepted");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SET_FRAMEBUF) == 0u, "an immediate request for framebuffer 0 is accepted");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_IS_FOREGROUND) == 0u, "no framebuffer: not foreground");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x04000000u; cpu.r[5] = 512u; cpu.r[6] = 3u; cpu.r[7] = 1u;
+    expect(sr_syscall(&cpu, NID_SET_FRAMEBUF) == 0u, "a latched request for the framebuffer at 0x04000000 is accepted");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x04000000u; cpu.r[5] = 512u; cpu.r[6] = 3u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, NID_SET_FRAMEBUF) == 0u, "the framebuffer at 0x04000000 is set");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_IS_FOREGROUND) == 1u, "a framebuffer is set: foreground");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[7] = 1u;
+    (void)sr_syscall(&cpu, NID_SET_FRAMEBUF);
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_IS_FOREGROUND) == 1u,
+           "a latched request for framebuffer 0 leaves it foreground until the vblank");
+
+    /* idlist.expected: byte size, whole entries, count is the module total, the caller's module is in it. */
+    const uint32_t NID_ID_LIST = 0x644395e2u, NID_GET_ID_BY_ADDR = 0xd8b73127u;
+    const uint32_t BUF = 0x00200600u, CNT = 0x00200680u;
+    const uint32_t A_BASE = 0x08a10000u, B_BASE = 0x08a20000u, SPAN = 0x10000u;
+    s_fixture_loaded_base = 0x08804000u;
+    s_fixture_loaded_end = 0x08a00000u;
+    sr_hle_test_module_reset();
+    uint32_t uid_a = sr_hle_test_register_module("late_a.prx", A_BASE + 0x70u, 0u);
+    uint32_t uid_b = sr_hle_test_register_module("late_b.prx", B_BASE + 0x70u, 0u);
+    expect(uid_a && uid_b && sr_hle_test_set_module_image(uid_a, A_BASE, A_BASE + SPAN, 0u) &&
+               sr_hle_test_set_module_image(uid_b, B_BASE, B_BASE + SPAN, 0u),
+           "two late modules are loaded");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08804100u;
+    uint32_t main_id = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    expect(sr_hle_test_is_registered(NID_ID_LIST), "sceKernelGetModuleIdList is registered");
+    static const struct { int32_t size; uint32_t written; } sizes[] = {
+        { 0, 0 }, { 1, 1 }, { 3, 1 }, { 4, 1 }, { 5, 2 }, { 8, 2 }, { 9, 3 }, { 12, 3 }, { 64, 3 },
+    };
+    int sizes_ok = 1;
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        for (uint32_t w = 0; w < 8u; w++) MEM_W32(BUF + 4u * w, 0xdeadbeefu);
+        MEM_W32(CNT, 0xffffffffu);
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = (uint32_t)sizes[i].size; cpu.r[6] = CNT;
+        uint32_t r = sr_syscall(&cpu, NID_ID_LIST);
+        uint32_t written = 0;
+        for (uint32_t w = 0; w < 8u; w++) if (MEM_R32(BUF + 4u * w) != 0xdeadbeefu) written = w + 1u;
+        if (r != 0u || MEM_R32(CNT) != 3u || written != sizes[i].written) sizes_ok = 0;
+    }
+    expect(sizes_ok, "sizes 0..64 write ceil(size / 4) entries, at most the 3 modules, and count is the total");
+    for (uint32_t w = 0; w < 8u; w++) MEM_W32(BUF + 4u * w, 0xdeadbeefu);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = 32u; cpu.r[6] = CNT;
+    (void)sr_syscall(&cpu, NID_ID_LIST);
+    expect(MEM_R32(BUF) == main_id && MEM_R32(BUF + 4u) == uid_a && MEM_R32(BUF + 8u) == uid_b &&
+               MEM_R32(BUF + 12u) == 0xdeadbeefu,
+           "the list holds the caller's own module and the two late modules");
+    MEM_W32(CNT, 0xffffffffu);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = 0xfffffffcu; cpu.r[6] = CNT;
+    expect(sr_syscall(&cpu, NID_ID_LIST) == 0x800200d3u && MEM_R32(CNT) == 0xffffffffu,
+           "a negative size is 0x800200d3 and leaves count untouched");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[5] = 0u; cpu.r[6] = CNT;
+    expect(sr_syscall(&cpu, NID_ID_LIST) == 0x800200d3u && MEM_R32(CNT) == 0xffffffffu,
+           "a NULL buffer with size 0 is 0x800200d3 and leaves count untouched");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_b;
+    expect(sr_hle_test_unload_module(&cpu) == 0u, "the second late module is unloaded");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = 32u; cpu.r[6] = CNT;
+    (void)sr_syscall(&cpu, NID_ID_LIST);
+    expect(MEM_R32(CNT) == 2u, "an unloaded module leaves the list");
+    stops = sr_hle_test_unmodelled_stops();
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = 8u;
+    (void)sr_syscall(&cpu, NID_ID_LIST);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u, "a NULL count pointer stops by name");
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = UINT32_MAX;
+    s_fixture_loaded_end = 0x00400000u;
+
+    /* exit.expected: LoadExecForUser_362A956B reads the registered exit callback's argument block. */
+    const uint32_t NID_LOADEXEC_362 = 0x362a956bu, NID_CREATE_CB = 0xe81caf8fu, NID_REG_EXIT = 0x4ac57943u;
+    const uint32_t NAME = 0x00200700u, BLOCK = 0x00200720u, PARAMS = 0x00200740u;
+    expect(sr_hle_test_is_registered(NID_LOADEXEC_362), "LoadExecForUser_362A956B is registered");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_LOADEXEC_362) == 0x800201a1u, "without an exit callback: UNKNOWN_CBID");
+    MEM_W32(NAME, 0x31626300u);   /* "cb1" */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = NAME; cpu.r[5] = 0x08804000u; cpu.r[6] = 0u;
+    uint32_t cb1 = sr_syscall(&cpu, NID_CREATE_CB);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb1;
+    expect(cb1 != 0u && sr_syscall(&cpu, NID_REG_EXIT) == 0u, "an exit callback with a NULL argument is registered");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_LOADEXEC_362) == 0x800200d3u, "a NULL callback argument: ILLEGAL_ADDR");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = NAME; cpu.r[5] = 0x08804000u; cpu.r[6] = BLOCK + 8u;
+    uint32_t cb2 = sr_syscall(&cpu, NID_CREATE_CB);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb2;
+    expect(cb2 != 0u && sr_syscall(&cpu, NID_REG_EXIT) == 0u, "an exit callback with an argument block is registered");
+    MEM_W32(BLOCK + 4u, PARAMS);
+    static const struct { int32_t mode; uint32_t result; int cleared; } modes[] = {
+        { -1, 0x800200d2u, 0 }, { 0, 0u, 1 }, { 1, 0u, 1 }, { 2, 0u, 1 }, { 3, 0u, 1 }, { 4, 0x800200d2u, 0 },
+    };
+    int modes_ok = 1;
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        MEM_W32(BLOCK, (uint32_t)modes[i].mode);
+        MEM_W32(PARAMS, 12u); MEM_W32(PARAMS + 4u, 0x1337u); MEM_W32(PARAMS + 8u, 0x1337u);
+        memset(&cpu, 0, sizeof(cpu));
+        uint32_t r = sr_syscall(&cpu, NID_LOADEXEC_362);
+        int cleared = MEM_R32(PARAMS + 4u) == 0u && MEM_R32(PARAMS + 8u) == 0xffffffffu;
+        if (r != modes[i].result || cleared != modes[i].cleared || MEM_R32(PARAMS) != 12u) modes_ok = 0;
+    }
+    expect(modes_ok, "mode 0..3 clears the parameter block and succeeds; mode -1 and 4 are ILLEGAL_ARGUMENT");
+    static const struct { uint32_t size; uint32_t result; } psizes[] = {
+        { 0xffffffffu, 0u }, { 0u, 0x800201bcu }, { 1u, 0x800201bcu }, { 4u, 0x800201bcu }, { 11u, 0x800201bcu },
+        { 12u, 0u }, { 13u, 0u }, { 16u, 0u },
+    };
+    int psizes_ok = 1;
+    MEM_W32(BLOCK, 0u);
+    for (size_t i = 0; i < sizeof(psizes) / sizeof(psizes[0]); i++) {
+        MEM_W32(PARAMS, psizes[i].size); MEM_W32(PARAMS + 4u, 0x1337u); MEM_W32(PARAMS + 8u, 0x1337u);
+        memset(&cpu, 0, sizeof(cpu));
+        uint32_t r = sr_syscall(&cpu, NID_LOADEXEC_362);
+        int cleared = MEM_R32(PARAMS + 4u) == 0u && MEM_R32(PARAMS + 8u) == 0xffffffffu;
+        if (r != psizes[i].result || cleared != (psizes[i].result == 0u)) psizes_ok = 0;
+    }
+    expect(psizes_ok, "a parameter size of 12 or more (or -1) succeeds; below 12 is ILLEGAL_SIZE, untouched");
+
+    /* status.expected, htmlviewer.expected: no HTML viewer or screenshot dialog was started. */
+    const uint32_t NID_HTML_STATUS = 0xbda7d894u, NID_SHOT_STATUS = 0xd81957b7u;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_HTML_STATUS) == 0x80110005u && sr_syscall(&cpu, NID_SHOT_STATUS) == 0x80110005u,
+           "sceUtilityHtmlViewerGetStatus and sceUtilityScreenshotGetStatus are WRONG_TYPE");
+
+    /* The exit callback slot is global: delete both so later tests see none registered. */
+    const uint32_t NID_DELETE_CB = 0xedba5844u;
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb1;
+    (void)sr_syscall(&cpu, NID_DELETE_CB);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb2;
+    (void)sr_syscall(&cpu, NID_DELETE_CB);
+}
+
 /* The runtime keeps none of the PSP user partition for itself. Its VBLANK interrupt stack and
  * nested host->guest frames used to occupy [0x09ef0000, 0x0a000000), the partition's top
  * 1.06 MiB, so with a main image ending at 0x08a00000 and a module_start and a main thread
@@ -40688,6 +40836,53 @@ static void test_font_measured_contract(uint32_t served_index) {
                "sceFontSetResolution accepts 1, infinity and 128");
     }
 
+    /* resolution.expected: PixelToPoint/PointToPixel H and V at 128 x 128 and 64 x 64, 0 in errorCode. */
+    {
+        static const struct { uint32_t nid; const char *name; int to_points; } conv[] = {
+            { 0x74b21701u, "sceFontPixelToPointH", 1 }, { 0xf8f0752eu, "sceFontPixelToPointV", 1 },
+            { 0x472694cdu, "sceFontPointToPixelH", 0 }, { 0x3c4b7e82u, "sceFontPointToPixelV", 0 },
+        };
+        for (size_t i = 0; i < sizeof(conv) / sizeof(conv[0]); i++) {
+            expect(sr_hle_test_is_registered(conv[i].nid), "the font unit conversion is registered");
+            if (!sr_hle_test_is_registered(conv[i].nid)) continue;
+            static const float res[] = { 128.0f, 64.0f };
+            static const float in[] = { 5.0f, -5.0f, 0.0f };
+            /* [resolution][input]: points are 5*72/res, pixels are 5*res/72 */
+            static const float to_points[2][3] = { { 2.8125f, -2.8125f, 0.0f }, { 5.625f, -5.625f, 0.0f } };
+            static const float to_pixels[2][3] = { { 8.888889f, -8.888889f, 0.0f }, { 4.444445f, -4.444445f, 0.0f } };
+            int ok = 1;
+            for (int r = 0; r < 2; r++) {
+                (void)flt_call_f(FLT_NID_SET_RESOLUTION, lib, res[r], res[r]);
+                for (int v = 0; v < 3; v++) {
+                    CpuState cpu;
+                    memset(&cpu, 0, sizeof(cpu));
+                    cpu.r[4] = lib; cpu.r[5] = FLT_ERR; cpu.f[12] = in[v]; cpu.f[0] = -777.0f;
+                    MEM_W32(FLT_ERR, 0xdeadbeefu);
+                    const float want = conv[i].to_points ? to_points[r][v] : to_pixels[r][v];
+                    if (sr_syscall(&cpu, conv[i].nid) != 0u || MEM_R32(FLT_ERR) != 0u ||
+                        fabsf(cpu.f[0] - want) > 1e-5f * (fabsf(want) + 1.0f)) ok = 0;
+                }
+            }
+            char msg2[120];
+            snprintf(msg2, sizeof(msg2), "%s matches resolution.expected at 128 and 64", conv[i].name);
+            expect(ok, msg2);
+            CpuState cpu;
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[5] = FLT_ERR; cpu.f[12] = 5.0f; cpu.f[0] = -777.0f;
+            MEM_W32(FLT_ERR, 0u);
+            expect(sr_syscall(&cpu, conv[i].nid) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB &&
+                       cpu.f[0] == 0.0f,
+                   "a unit conversion on a NULL library writes INVALID_LIB and returns 0.0");
+            uint32_t stops_c = sr_hle_test_unmodelled_stops();
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = lib; cpu.r[5] = 0u; cpu.f[12] = 5.0f;
+            (void)sr_syscall(&cpu, conv[i].nid);
+            expect(sr_hle_test_unmodelled_stops() == stops_c + 1u,
+                   "a unit conversion with a NULL errorCode stops by name");
+        }
+        (void)flt_call_f(FLT_NID_SET_RESOLUTION, lib, 128.0f, 128.0f);
+    }
+
     for (uint32_t i = 0; i < 0xa8u; i += 4u) MEM_W32(FLT_STYLE_REQ + i, 0u);   /* one SceFontStyle */
     MEM_W32(FLT_ERR, 0xdeadbeefu);
     expect(flt_call(FLT_NID_FIND_OPTIMUM, 0u, FLT_STYLE_REQ, FLT_ERR, 0u) == 0u &&
@@ -43326,6 +43521,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_power_set_bus_clock_frequency_autotest();
     test_rtc_time_t_add_years_resolution_autotest();
     test_rtc_tick_add_day_of_week_check_valid_autotest();
+    test_imports_20261102_measured_contracts();
     test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();
     test_ctrl_sampling_mode_cycle_matrix();
