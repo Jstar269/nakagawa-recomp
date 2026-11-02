@@ -80,8 +80,7 @@ no network.
 1. Unpack `nakagawa-recomp-<version>-windows-x64.zip` into an empty folder and check the unpacked files
    against `SHA256SUMS.txt`.
 2. Start `bin\nakagawa_player.exe` (`wine bin/nakagawa_player.exe`, or add it to Steam as a non-Steam game
-   and pick a Proton version). The window needs Vulkan: Wine 9 or later with DXVK or its own Vulkan loader,
-   or Proton 9 or later.
+   and pick a Proton version). The first run used Wine 9.0 only; no minimum version is claimed.
 3. Pick a folder of your own discs in the library and confirm the scan lists them.
 4. Run a showcase demo from **Test this PC** (they ship in `bin\demos\` and need no disc) and confirm it
    draws and runs. The repository's `display-smoke` target needs the MSYS2 toolchain from a source checkout
@@ -100,8 +99,26 @@ Known unknowns, each to be recorded by the first run rather than assumed:
 - **Check for updates** does the same network request as on Windows, so it works only if the prefix has
   network access.
 
-Result so far: `NOT_RUN`. No Wine or Proton install was available when this guide was written
-([#1876](https://github.com/Jstar269/nakagawa-recomp/issues/1876) stays open for the first recorded run).
+Result of the first run (2026-11-02, [#1876](https://github.com/Jstar269/nakagawa-recomp/issues/1876)),
+on the ZIP layout from `tools/stage_install.py --dest` and `--portable-zip` built from the pull request's
+head (the player, its runtime DLLs and `source/`; not the attested release ZIP, so no `prereqs/`, no demos):
+Wine 9.0 (Ubuntu 24.04 `wine64`, 64-bit prefix only) under WSL 2, Xvfb as the display, Mesa llvmpipe, no
+GPU, no audio device, no game disc.
+
+| Step | Result |
+| --- | --- |
+| Unpack the ZIP, check `SHA256SUMS.txt` | `PASS` |
+| `nakagawa_player.exe --help` | `PASS` |
+| Player renders the library, About and Settings views to 1280x720 screenshots | `PASS` (non-blank) |
+| The synthetic display-smoke fixture, built natively, run under Wine with `--sched` | `PASS` (`DRIVER_EXPECT_U32 ... status=PASS`) |
+| The same fixture with `--gui` in a window, and with `--sched --gui` offscreen | `PASS` |
+| Scan a folder of real discs | `NOT_RUN` (no disc; the scan is not exercised by the synthetic route) |
+| BUILD PACKAGE with the bundled `prereqs/` toolchain | `NOT_RUN` (the local ZIP has no `prereqs/`) |
+| Audio, gamepad, Check for updates | `NOT_RUN` |
+| Proton | `NOT_RUN` (not installed) |
+
+Wine printed `failed to open C:\windows\syswow64undll32.exe` once while creating the prefix, which is
+the missing 32-bit Wine and does not affect a 64-bit program.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
