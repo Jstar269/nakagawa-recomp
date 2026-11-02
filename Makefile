@@ -2929,6 +2929,26 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 		   ! grep -Fq "FAIL: ycbcr-decode: CSC writes the measured conversion of the decoded samples" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the guest pixel assertion" >&2; exit 1; fi; \
 		echo "psmf-media-selftest-csc-mutant: killed by the CSC write assertions"
 
+# psmf-media-focused-selftest -- the same media selftest (#307), linked against six HLE files, not
+# all twenty-seven: hle_mpeg.c and the presentation boundary its A/V measurement drives
+# (display, audio, audio_codec, route, input), plus tests/native/hle_focus_media_stubs.c for the
+# calls into the rest of HLE. tools/hle_focus_check.py then reads the executable's symbol table
+# and fails if any excluded HLE file was linked. $(HLE_OBJS) are only the symbol reference.
+HLE_MEDIA_FOCUS_SRCS := src/rt/hle_mpeg.c src/rt/hle_display.c src/rt/hle_audio.c \
+                        src/rt/hle_audio_codec.c src/rt/hle_route.c src/rt/hle_input.c
+psmf-media-focused-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(HLE_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o tests/native/hle_focus_media_stubs.c tools/hle_focus_check.py
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest.o
+	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -c tests/native/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Werror -c tests/native/hle_focus_media_stubs.c -o $(BUILD_DIR)/hle_focus_media_stubs.o
+	$(file >$(BUILD_DIR)/psmf_media_focused_selftest.rsp,$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
+		-o $(BUILD_DIR)/psmf_media_focused_selftest.exe \
+		$(HLE_MEDIA_FOCUS_SRCS) $(BUILD_DIR)/hle_focus_media_stubs.o @$(BUILD_DIR)/psmf_media_focused_selftest.rsp \
+		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
+	$(PYTHON) tools/hle_focus_check.py --exe $(BUILD_DIR)/psmf_media_focused_selftest.exe --objdir $(BUILD_DIR) \
+		--include $(HLE_MEDIA_FOCUS_SRCS) --stub $(BUILD_DIR)/hle_focus_media_stubs.o --require hle_register_psmf_player_handlers sr_hle_test_psmf_av_reset
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
+
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
 		src/rt/audio_sdl3.c src/rt/perf.c -lSDL3 -lm \
