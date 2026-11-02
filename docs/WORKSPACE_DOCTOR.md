@@ -289,7 +289,10 @@ The governance work intentionally leaves these as separate, evidence-backed foll
    outright; `clean-preview` still reports only the roots listed above, and linked-worktree build
    output is now surfaced by `WORKTREES_BUILD_SIZE`, but a non-build route that writes outside the
    listed roots is not yet surfaced by a single inventory;
-7. eliminate absolute paths from generated `compile_commands.json` where tooling permits;
+7. [DONE - #368] eliminate absolute paths from generated `compile_commands.json`:
+   `python tools/compdb_relocate.py compile_commands.json` rewrites every path under the checkout
+   to a root-relative form and keeps only `directory` absolute, so a moved or cloned workspace
+   repoints with `--root`;
 8. [DONE - #368] audit and bound agent database/worktree accumulation:
    `check_worktree_accumulation` in `tools/nk_doctor_checks.py` inventories every registered
    worktree (count, nesting inside a checkout, unregistered directories in the sibling
