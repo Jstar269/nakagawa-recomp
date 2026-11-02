@@ -1198,7 +1198,6 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | ---------- | ------------- |
 | `SR_IOLOG=1` | Log file open/read/write operations |
 | `SR_STATLOG=1` | Log stat operations |
-| `SR_PATHHEX=1` | Log path hex values |
 | `SR_UMDDUMP=1` | Dump UMD data |
 
 ### Display & Video (→ SR_DBG_VIDEO)
@@ -1255,7 +1254,7 @@ committed.
 | `SR_VBLANK_Q_US=N` | Host-clock vblank quantum in microseconds. In the default paced profile it does **not** produce vblanks -- the scheduler's rational 60000/1001 source is the only producer -- and only sets the threshold at which a yield is counted as late vblank *service* (reported as `vbl_late_service_yields` by the spin watchdog). It is an out-of-band vblank source only under `SR_NOVBPACE=1` |
 | `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no new frame; a firing is a NO-NEW-FLIP observation, not a hang verdict -- classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints |
 | `SR_GE_TIMING=1` | Opt-in GE completion timing (issue #1296), off by default. A display list that reached its END completes -- finish callback, `sceGeDrawSync`, `sceGeListSync` -- only once guest time passes its cost on one serial GE timeline; the callback is delivered as an interrupt, and the peeks read 2 until it is handled. The cost model in `src/rt/ge.c` is in GE clocks (the bus clock, converted at the emulated bus clock) and every coefficient was measured on a PSP-3000 with `CASE=ge-timing` (PR #1321): per list, command word and PRIM, per vertex by format, per span by width and fill state, texel fetch, CLUT loads and block transfers. Classes the measurement did not cover are charged as the nearest measured class and tagged `UNMEASURED_NEAREST` in the source. Startup prints `GE_TIMING: on, GE time model measured on PSP-3000 ...` |
-| `SR_NOAUDIO=1` | Disable audio output |
+| `SR_AUDIO_DISABLED=1` | Disable audio output (null backend). `SR_AUDIO_BACKEND=null` (or `none`, `0`, `off`) does the same; `SR_AUDIO_BACKEND=dummy` keeps the device open on SDL's dummy driver. `SR_HEADLESS=1` also selects the null backend unless `SR_AUDIO_BACKEND` is set |
 | `SR_AUDIODUMP=PATH` | Debug only, off by default. Write the device mix (every channel's stream after the master gain, as SDL is about to submit it) to a 16-bit PCM WAV at the device's own rate and channel count. The header is patched once per second of audio data and at close, and a stats line (`AUDIODUMP: ... frames= silent_frames= clipped_samples= peak= dropped_frames=`) is printed there. `dropped_frames` counts the frames the dump was offered but did not write, whether past its size limit, after a changed device format, or after a failed write; the first refusal prints one line. The file is closed at a normal exit and at `SR_EXIT_AT_VBLANK`, with or without `SR_AUDIOSTAT`; a runtime that is killed, crashes, or ends on another path that skips `atexit` (`sceKernelExitGame`, the watchdog, a route failure) keeps the last once-a-second patch, so up to a second at the end lies past the header's length. It runs on SDL's audio thread and does file I/O there, so it changes host pacing; never compare timing with it on. Audit the file for silence, clipping, gaps and sample rate |
 | `SR_POSTUMD=1` | Post-UMD processing |
 | `SR_HEAP_BASE=HEX` | Override heap base address |
@@ -1291,10 +1290,11 @@ guest PCs before inferring a missing branch.
 Two sampling traps produced a false "voice audio is silent" diagnosis for a short title/logo
 voice sting. Both are methodology lessons, not game-specific behavior:
 
-- **Power-of-two-only push sampling can miss short audio windows entirely.** The `AUDIO_PUSH`
-  logger under `SR_AUDIOLOG=1` samples the first 16 calls and then only power-of-two call counts.
-  A short voice/SE window (tens of vblanks) can fall entirely between sampled calls, so "every
-  sampled push was peak 0" does not prove silence. When testing a short audio event, log by
+- **Sparse sampling of audio pushes can miss short audio windows entirely.** A log that samples
+  only some push calls (the first few, then power-of-two call counts) can let a short voice/SE
+  window (tens of vblanks) fall entirely between sampled calls, so "every sampled push was
+  peak 0" does not prove silence. The runtime has no such push logger now; the
+  `SR_AUDIOLOG` and `AUDIO_PUSH` lines that described one never matched the source. When testing a short audio event, log by
   semantic trigger (keyon) or over a bounded vblank window around the event instead.
 - **A VAG voice slot can legitimately begin with a zero block before real ADPCM data.** Dumping
   only the first 16 bytes at keyon (or decoding only the first 28-sample block) can classify a
