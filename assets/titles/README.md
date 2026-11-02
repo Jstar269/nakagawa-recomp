@@ -16,7 +16,7 @@ declared input locations for the manager (see below) — and are never written
 back into a checked-in manifest file. The
 checked-in synthetic manifests prove the schema and validator without claiming
 that the current runtime is general-purpose. The HST title configuration is the
-one retail manifest here, published by owner decision (2026-10-27); see below.
+one retail manifest here; see below.
 
 The JSON Schema is a portable editor/review contract. `tools/title_manifest.py` is the normative validator and additionally enforces semantic invariants such as portable Windows names, non-overlapping executable spans, and case-insensitive uniqueness.
 
@@ -126,8 +126,7 @@ span is manifest data, and it reaches `analyze`/`codegen` only through an explic
 `--extra-span` argument or the `TITLE_EXTRA_SPANS` seam that the manager fills from
 the validated plan (the host-portable generic contract). See [`docs/TITLE_CODEGEN_PLAN.md`](../../docs/TITLE_CODEGEN_PLAN.md).
 
-`hst-ucus98701.json` is the Hot Shots Tennis manifest, public since 2026-10-27
-(owner decision). It holds the disc identity, the module names and load
+`hst-ucus98701.json` is the Hot Shots Tennis manifest, and it is public. It holds the disc identity, the module names and load
 addresses, the profiles and the runtime bindings, all as addresses: no game
 bytes, no disc image name and no host path. The player uses it to recognize
 UCUS98701 as the built-in `hst` title. Its `executable`, `module_dir` and
