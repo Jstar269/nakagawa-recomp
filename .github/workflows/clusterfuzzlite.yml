@@ -2,9 +2,23 @@
 # Copyright (C) 2026 the Nakagawa Recomp authors
 name: ClusterFuzzLite
 
+# Code-change fuzzing needs a diff in the fuzzed code, so a pull request starts it only when
+# it touches what the one target builds: the parser, its header, the harness, the
+# ClusterFuzzLite build, or this file. The nightly batch run covers the rest. The check is not
+# a required status, so a pull request that skips it is not left waiting (docs/CI.md,
+# "ClusterFuzzLite C fuzzing").
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    paths:
+      - "src/core/nk_json.c"
+      - "src/core/nk_json.h"
+      - "tests/fuzzers/**"
+      - ".clusterfuzzlite/**"
+      - ".github/workflows/clusterfuzzlite.yml"
+  schedule:
+    - cron: "47 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,7 +45,9 @@ jobs:
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: c
-          mode: code-change
+          # A pull request fuzzes the changed code for a minute; the nightly and manual runs
+          # have no diff, so they fuzz the whole target for five.
+          mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }}
           sanitizer: address
-          fuzz-seconds: 60
+          fuzz-seconds: ${{ github.event_name == 'pull_request' && 60 || 300 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
