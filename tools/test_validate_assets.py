@@ -188,7 +188,8 @@ def _run_validator(tree: Path, ref: Path, *extra: str) -> subprocess.CompletedPr
 
 
 def _combined(process: subprocess.CompletedProcess) -> str:
-    return process.stdout + process.stderr
+    returned: str = process.stdout + process.stderr
+    return returned
 
 
 def _count(output: str, label: str) -> int:

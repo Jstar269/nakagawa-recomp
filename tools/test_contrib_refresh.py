@@ -131,7 +131,8 @@ class TrustedLedgerRepository:
     def _commit(self, message: str) -> str:
         _git(self.root, "add", "-A")
         _git(self.root, "commit", "-qm", message)
-        return _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        returned: str = _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        return returned
 
     def controls(self) -> tuple[bytes, bytes]:
         return (self.root / LEDGER).read_bytes(), (self.root / EXPORT).read_bytes()

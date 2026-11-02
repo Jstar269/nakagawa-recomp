@@ -112,15 +112,18 @@ class _Refused(Exception):
 
 
 def _u16(data: bytes, offset: int) -> int:
-    return struct.unpack_from("<H", data, offset)[0]
+    returned: int = struct.unpack_from("<H", data, offset)[0]
+    return returned
 
 
 def _u32(data: bytes, offset: int) -> int:
-    return struct.unpack_from("<I", data, offset)[0]
+    returned: int = struct.unpack_from("<I", data, offset)[0]
+    return returned
 
 
 def _i32(data: bytes, offset: int) -> int:
-    return struct.unpack_from("<i", data, offset)[0]
+    returned: int = struct.unpack_from("<i", data, offset)[0]
+    return returned
 
 
 def _sign7(value: int) -> int:
@@ -459,7 +462,8 @@ class _Image:
         glyph = self.checked_glyph(glyph_id, True)
         if glyph is None:
             return False
-        return glyph["width"] != 0 and glyph["height"] != 0
+        returned: bool = glyph["width"] != 0 and glyph["height"] != 0
+        return returned
 
 
 def pgf_verdict(data: bytes) -> Dict[str, Any]:

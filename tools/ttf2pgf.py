@@ -275,25 +275,29 @@ def validate_output_name(name: str, pin: SourcePin | None) -> None:
 def _u16(data: bytes, offset: int, section: str) -> int:
     if offset < 0 or offset + 2 > len(data):
         raise _refuse("malformed-font", f"{section}: read of 2 bytes at {offset} is out of bounds")
-    return struct.unpack_from(">H", data, offset)[0]
+    returned: int = struct.unpack_from(">H", data, offset)[0]
+    return returned
 
 
 def _s16(data: bytes, offset: int, section: str) -> int:
     if offset < 0 or offset + 2 > len(data):
         raise _refuse("malformed-font", f"{section}: read of 2 bytes at {offset} is out of bounds")
-    return struct.unpack_from(">h", data, offset)[0]
+    returned: int = struct.unpack_from(">h", data, offset)[0]
+    return returned
 
 
 def _u32(data: bytes, offset: int, section: str) -> int:
     if offset < 0 or offset + 4 > len(data):
         raise _refuse("malformed-font", f"{section}: read of 4 bytes at {offset} is out of bounds")
-    return struct.unpack_from(">I", data, offset)[0]
+    returned: int = struct.unpack_from(">I", data, offset)[0]
+    return returned
 
 
 def _s8(data: bytes, offset: int, section: str) -> int:
     if offset < 0 or offset + 1 > len(data):
         raise _refuse("malformed-font", f"{section}: read of 1 byte at {offset} is out of bounds")
-    return struct.unpack_from(">b", data, offset)[0]
+    returned: int = struct.unpack_from(">b", data, offset)[0]
+    return returned
 
 
 @dataclass(frozen=True)

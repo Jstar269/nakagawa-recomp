@@ -56,7 +56,8 @@ def _entry_offset(blob: bytes, index: int) -> int:
     elf = Elf(blob, base=0)
     header = elf.read_at_vaddr(elf.sec(".rodata.sceModuleInfo")["addr"], 52)
     libstub = struct.unpack_from("<I", header, 44)[0]
-    return DATA_FILE_OFF + (libstub - BASE_VADDR) + 20 * index
+    returned: int = DATA_FILE_OFF + (libstub - BASE_VADDR) + 20 * index
+    return returned
 
 
 def _own_stub_run_layout(primary, moved: int):
@@ -378,7 +379,8 @@ def _section_header_offset(blob: bytes, name: bytes) -> int:
         start = struct.unpack_from("<I", blob, header)[0]
         end = names.find(b"\0", start)
         if names[start:end] == name:
-            return header
+            returned: int = header
+            return returned
     raise KeyError(name)
 
 

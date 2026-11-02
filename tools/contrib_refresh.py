@@ -128,7 +128,8 @@ def _git(repo: Path, *args: str, check: bool = False) -> subprocess.CompletedPro
 def _resolve_base(repo: Path, requested: str | None) -> str:
     if requested is not None:
         try:
-            return verifier._rev_commit(repo, requested)
+            returned: str = verifier._rev_commit(repo, requested)
+            return returned
         except verifier.VerifyError as error:
             raise RefreshRefused("TRUSTED_BASE_REQUIRED", "", str(error)) from error
     result = _git(repo, "merge-base", "HEAD", "origin/main")
@@ -139,7 +140,8 @@ def _resolve_base(repo: Path, requested: str | None) -> str:
             "",
             "cannot resolve a base from merge-base(HEAD, origin/main); pass --base <commit>",
         )
-    return value
+    returned: str = value
+    return returned
 
 
 def _changed_paths(base_blobs: dict[str, bytes], candidate_blobs: dict[str, bytes]) -> list[str]:

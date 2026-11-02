@@ -591,7 +591,8 @@ class PrivateEbootSuiteOptInTests(unittest.TestCase):
         original_is_file = Path.is_file
 
         def is_eboot(candidate) -> bool:
-            return os.path.normcase(os.path.abspath(os.fspath(candidate))) == eboot_key
+            returned: bool = os.path.normcase(os.path.abspath(os.fspath(candidate))) == eboot_key
+            return returned
 
         def fake_isfile(candidate) -> bool:
             return input_present if is_eboot(candidate) else original_isfile(candidate)

@@ -89,6 +89,7 @@ import sys
 import tempfile
 import unicodedata
 from dataclasses import dataclass
+from typing import Any
 
 try:
     from .nk_core.git_isolation import isolated_git_env
@@ -1130,7 +1131,8 @@ def claims_ledger(document: dict) -> dict:
     for entry in claims.get("entries", []):
         if isinstance(entry, dict):
             entry.pop("sha256", None)
-    return claims
+    returned: dict[str, Any] = claims
+    return returned
 
 
 def claims_ledger_bytes(document: dict) -> bytes:
@@ -1769,7 +1771,8 @@ def _refresh_document(
         expected = hashlib.sha256(candidate.blobs[path]).hexdigest()
         if entry.get("sha256") != expected:
             raise RefreshError("REFRESH_OUTPUT_INVALID", f"output hash does not match candidate bytes for {path}")
-    return output
+    returned: dict[str, Any] = output
+    return returned
 
 
 def _refresh_export_bytes(

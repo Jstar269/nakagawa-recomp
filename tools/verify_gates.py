@@ -44,7 +44,8 @@ def trace_source_tier(path: str) -> str:
     """Read the evidence tier from the trace header (cheap, header-only)."""
 
     try:
-        return tracediff.read_source_tier(path)
+        returned: str = tracediff.read_source_tier(path)
+        return returned
     except tracediff.HardwareTraceError:
         if _declares_v2_header(path):
             raise

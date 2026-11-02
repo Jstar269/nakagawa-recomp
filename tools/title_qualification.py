@@ -38,7 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import NoReturn
+from typing import Any, NoReturn
 
 TOOLS = Path(__file__).resolve().parent
 ROOT = TOOLS.parent
@@ -159,7 +159,8 @@ def load_public_manifest(path: Path) -> dict:
         raise QualificationError(
             f"{path}: kind {manifest['kind']!r} is local-only; the public route "
             "qualifies synthetic or homebrew titles")
-    return manifest
+    returned: dict[str, Any] = manifest
+    return returned
 
 
 def declared_path_problems(manifest: dict) -> list[str]:
@@ -398,7 +399,8 @@ def staging_failure_report(*, inspect_duration_ms: int = 0) -> dict:
     report["issue_numbers"] = list(LAUNCH_FAILURE_ISSUES)
     report["runtime_output_kind"] = "ENTRY_NOT_COMPILED"
     report["exit_classification"] = "NOT_RUN"
-    return report
+    returned: dict[str, Any] = report
+    return returned
 
 
 def launch_report(
@@ -432,7 +434,8 @@ def launch_report(
         report["stages"]["launch"] = {"status": "TIMED_OUT", "duration_ms": duration_ms}
         report["failure_class"] = "LAUNCH_TIMEOUT"
         report["issue_numbers"] = list(LAUNCH_FAILURE_ISSUES)
-        return report
+        returned: dict[str, Any] = report
+        return returned
     report["process_exit_code"] = returncode
     report["exit_classification"] = "EXITED_ZERO" if returncode == 0 else "EXITED_NONZERO"
     if returncode != 0:
@@ -443,20 +446,25 @@ def launch_report(
             "VIDEO_UNAVAILABLE": "HEADLESS_UNAVAILABLE",
         }.get(kind, "LAUNCH_FAILED")
         _stage_fail(report, "launch", failure, duration_ms)
-        return report
+        returned: dict[str, Any] = report
+        return returned
     spawned = _spawned_runtime_title(output)
     play_now = _PLAY_NOW.search(output)
     if spawned != title["id"] or not play_now or play_now.group(1) != title["display_name"]:
         _stage_fail(report, "launch", "LAUNCH_FAILED", duration_ms)
-        return report
+        returned: dict[str, Any] = report
+        return returned
     if "BOOT_EVENT phase=window_ready backend=offscreen" not in output or _first_checkpoint(output) is None:
         _stage_fail(report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", duration_ms)
-        return report
+        returned: dict[str, Any] = report
+        return returned
     if not presentation_ok:
         _stage_fail(report, "launch", "NO_FRAME_SUBMISSIONS", duration_ms)
-        return report
+        returned: dict[str, Any] = report
+        return returned
     report["stages"]["launch"] = {"status": "PASS", "duration_ms": duration_ms}
-    return report
+    returned: dict[str, Any] = report
+    return returned
 
 
 def write_report(report: dict, path: Path) -> None:
@@ -824,7 +832,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     args.build_root = args.build_root.resolve()
-    return args.func(args)
+    returned: int = args.func(args)
+    return returned
 
 
 if __name__ == "__main__":

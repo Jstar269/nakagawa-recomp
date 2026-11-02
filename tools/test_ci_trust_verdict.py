@@ -21,6 +21,7 @@ import tempfile
 import unittest
 from unittest import mock
 import urllib.error
+from typing import Any
 
 try:
     import ci_trust_verdict as ctv
@@ -583,17 +584,23 @@ class FakeGitHub(ctv.GitHub):
     def paginate(self, path: str, key: str | None = None) -> list:
         self.reads.append(path)
         if path == "pulls?state=open":
-            return self.raw["open_pull_requests"]
+            returned: list[Any] = self.raw["open_pull_requests"]
+            return returned
         if path == f"issues/{PR}/events":
-            return self.raw["label_events"]
+            returned: list[Any] = self.raw["label_events"]
+            return returned
         if path.startswith("actions/runs?head_sha="):
-            return self.raw["workflow_runs"]
+            returned: list[Any] = self.raw["workflow_runs"]
+            return returned
         if path.startswith("actions/runs/"):
-            return self.raw["jobs"][path.split("/")[2]]
+            returned: list[Any] = self.raw["jobs"][path.split("/")[2]]
+            return returned
         if path.startswith(f"commits/{HEAD}/check-runs"):
-            return self.raw["check_runs"]
+            returned: list[Any] = self.raw["check_runs"]
+            return returned
         if path == f"commits/{HEAD}/statuses":
-            return self.raw["statuses"]
+            returned: list[Any] = self.raw["statuses"]
+            return returned
         raise AssertionError(path)
 
     def post(self, path: str, body: dict) -> object:
@@ -744,7 +751,8 @@ class CollectorTests(unittest.TestCase):
         with mock.patch.object(ctv, "GitHub", return_value=gh), \
                 mock.patch.dict(os.environ, {"GITHUB_TOKEN": "token"}), \
                 mock.patch("sys.stdout"):
-            return ctv.main(["--repository", gh.repository, "--post", "--target-url", "https://run", *args])
+            returned: int = ctv.main(["--repository", gh.repository, "--post", "--target-url", "https://run", *args])
+            return returned
 
     def test_main_posts_one_status_bound_to_the_head(self) -> None:
         gh = FakeGitHub(Scenario())
@@ -900,7 +908,8 @@ class CommandLineTests(unittest.TestCase):
             path = Path(tmp) / "snapshot.json"
             path.write_text(json.dumps(raw), encoding="utf-8")
             with mock.patch("sys.stdout"):
-                return ctv.main(["--snapshot", str(path), *extra])
+                returned: int = ctv.main(["--snapshot", str(path), *extra])
+                return returned
 
     def test_offline_snapshot_exit_codes(self) -> None:
         self.assertEqual(self._main(Scenario().raw), 0)
