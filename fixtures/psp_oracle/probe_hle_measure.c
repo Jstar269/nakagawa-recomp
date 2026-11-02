@@ -44,11 +44,10 @@
 #include <psppower.h>
 #include <psphprm.h>
 #include <pspctrl.h>
-#include <psputility_sysparam.h>
+#include <psputility.h>
 #include <pspge.h>
 #include <pspdisplay.h>
 #include <pspsuspend.h>
-#include <psputility_savedata.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
