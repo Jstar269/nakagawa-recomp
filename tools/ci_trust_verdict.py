@@ -59,7 +59,7 @@ recorded as a SHA-256 digest of every protected path's mode and bytes in the
 candidate tree (``approval_digest``: paths from ``protected_paths``, so added,
 removed and renamed paths and the classification code itself change it). The
 record is the *name of a job* in a ``pull_request_target`` run of the verdict
-workflow at the approved head, ``CI approval record v1 <digest>``: only the
+workflow at the approved head, ``CI approval record v1 pr<N> <digest>``: only the
 default branch's workflow definition can produce such a run, so a pull request
 cannot forge one. ``--approval record`` runs on the label event and writes the
 digest when the label's last event is ``labeled`` by a user with write access
@@ -136,8 +136,8 @@ API_ROOT = "https://api.github.com"
 _SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST_VERSION = "nk-ci-approval-digest-v1"
 # The approval record: the name of a successful job in a pull_request_target run of the verdict workflow.
-APPROVAL_RECORD_PREFIX = "CI approval record v1 "
-_APPROVAL_RECORD = re.compile(re.escape(APPROVAL_RECORD_PREFIX) + r"([0-9a-f]{64})")
+APPROVAL_RECORD_PREFIX = "CI approval record v1 pr"
+_APPROVAL_RECORD = re.compile(re.escape(APPROVAL_RECORD_PREFIX) + r"([1-9][0-9]*) ([0-9a-f]{64})")
 
 
 @dataclass(frozen=True)
@@ -273,6 +273,7 @@ def normalise(raw: dict) -> dict:
         "approval": approval,
         "head_digest": raw.get("head_digest"),
         "approval_records": sorted(set(raw.get("approval_records") or [])),
+        "retargeted": any(event.get("event") == "base_ref_changed" for event in raw.get("label_events") or []),
         "workflow_runs": [
             {
                 "id": int(run["id"]),
@@ -358,7 +359,7 @@ def _approval(snapshot: dict) -> tuple[bool, str]:
     # An older label survives a push only when the workflow carried it: this head's protected content, hashed
     # here by trusted code, must equal a digest the trusted workflow recorded at this very head.
     digest = snapshot["head_digest"]
-    if digest and digest in snapshot["approval_records"]:
+    if digest and digest in snapshot["approval_records"] and not snapshot["retargeted"]:
         return True, (f"{APPROVAL_LABEL!r} applied by {event['actor']!r} carried to this head: its protected "
                       f"content is byte-identical to the approved head's (digest {digest[:12]})")
     return False, (f"{APPROVAL_LABEL!r} predates this head and its protected content differs from the approved "
@@ -645,8 +646,8 @@ def git_facts(repo: Path, repository: str, number: int, head_sha: str, remote: s
 def approval_digest(repo: Path, head_sha: str) -> str:
     """SHA-256 over the mode and bytes of every protected path in ``head_sha``'s tree.
 
-    The path set comes from ``protected_paths`` with the trusted checkout's workflows, exactly as the verdict's
-    own classification does. A protected path absent from the candidate contributes nothing, so a path added to
+    The path set is ``protected_paths`` with the trusted checkout's workflows, exactly as the verdict's own
+    classification, plus every ``tools/`` path that a workflow or action of ``head_sha`` itself names. A protected path absent from the candidate contributes nothing, so a path added to
     or removed from the candidate changes the digest, and a rename is a removal plus an addition. The candidate's
     copy of this tool is itself a protected path. The path is NUL-terminated and the rest of a record has a fixed
     shape, so no two different trees give the same preimage.
@@ -654,6 +655,14 @@ def approval_digest(repo: Path, head_sha: str) -> str:
     trusted = tree_entries(repo, "HEAD")
     candidate = tree_entries(repo, head_sha)
     paths = protected_paths(trusted, candidate, trusted_workflow_texts(repo, trusted))
+    # The verdict's own classification names a tool only when a default-branch workflow does. A tool the
+    # candidate's workflows or actions newly run (or newly stop running) is exactly what a reviewed head can
+    # change later without touching a workflow, so it is hashed too, and a reference that only the candidate
+    # makes cannot be missed. Absent paths contribute nothing, as above.
+    for named, blob in candidate.items():
+        if named.startswith(PROTECTED_PREFIXES) and named.endswith((".yml", ".yaml")):
+            text = _git(repo, "cat-file", "blob", blob.split(":", 1)[1]).decode("utf-8", "replace")
+            paths |= {tool for tool in referenced_tools(text) if tool in candidate}
     digest = hashlib.sha256(DIGEST_VERSION.encode("ascii") + b"\n")
     for path in sorted(paths):
         entry = candidate.get(path)
@@ -782,32 +791,44 @@ class GitHub:
         return note
 
 
-def record_digests(runs: list[dict], jobs_of, head_sha: str) -> set[str]:
-    """Digests recorded at ``head_sha``: successful ``CI approval record v1 <digest>`` jobs of this workflow.
+def record_digests(runs: list[dict], jobs_of, head_sha: str, number: int, default_branch: str) -> set[str]:
+    """Digests recorded at ``head_sha`` for pull request ``number``: successful ``CI approval record v1 pr<N>
+    <digest>`` jobs of this workflow.
 
-    Only a ``pull_request_target`` run of the verdict workflow at exactly this head counts. GitHub always takes
-    that workflow's definition from the default branch, so a pull request cannot produce one with a name of its
-    choosing; a job in a ``pull_request`` run, another workflow, another head or a failed job is ignored.
-    ``jobs_of(run_id)`` returns that run's jobs.
+    Only a ``pull_request_target`` run of the verdict workflow at exactly this head counts. A pull request cannot
+    choose a job name in such a run: GitHub takes its workflow definition from the pull request's base branch,
+    not from the pull request. That is the default branch only when the pull request targets it, so a run that
+    GitHub reports as belonging to a pull request on another base, or to another pull request, is ignored, and
+    so is a job whose name carries another pull request's number (the same SHA can head two pull requests). A job
+    in a ``pull_request`` run, another workflow, another head or a failed job is ignored. GitHub leaves a fork
+    pull request's run without its pull requests; ``label_approver`` and ``_approval`` close that case by refusing
+    a pull request that was ever retargeted. ``jobs_of(run_id)`` returns that run's jobs.
     """
     found: set[str] = set()
     for run in runs:
         if (run.get("path") != VERDICT_WORKFLOW or run.get("event") != "pull_request_target"
                 or run.get("head_sha") != head_sha):
             continue
+        reported = run.get("pull_requests") or []
+        if any((item.get("base") or {}).get("ref") != default_branch for item in reported):
+            continue
+        if reported and number not in {item.get("number") for item in reported}:
+            continue
         for job in jobs_of(int(run["id"])):
             match = _APPROVAL_RECORD.fullmatch(job.get("name") or "")
-            if (match and job.get("head_sha") == head_sha and job.get("status") == "completed"
-                    and job.get("conclusion") == "success"):
-                found.add(match.group(1))
+            if (match and int(match.group(1)) == number and job.get("head_sha") == head_sha
+                    and job.get("status") == "completed" and job.get("conclusion") == "success"):
+                found.add(match.group(2))
     return found
 
 
-def recorded_digests(gh: "GitHub", head_sha: str, runs: list[dict] | None = None) -> set[str]:
+def recorded_digests(gh: "GitHub", head_sha: str, number: int, default_branch: str,
+                     runs: list[dict] | None = None) -> set[str]:
     if runs is None:
         runs = gh.paginate(f"actions/runs?head_sha={head_sha}", "workflow_runs")
     return record_digests(
         runs, lambda run_id: gh.paginate(f"actions/runs/{run_id}/jobs?filter=latest", "jobs"), head_sha,
+        number, default_branch,
     )
 
 
@@ -890,7 +911,7 @@ def collect(gh: GitHub, repo: Path, default_branch: str, head_sha: str, number: 
     if labelled and any(change["kind"] != "behind" for change in facts["protected_changes"]):
         try:
             raw["head_digest"] = approval_digest(repo, head_sha)
-            raw["approval_records"] = sorted(recorded_digests(gh, head_sha, workflow_runs))
+            raw["approval_records"] = sorted(recorded_digests(gh, head_sha, number, default_branch, workflow_runs))
         except (subprocess.CalledProcessError, urllib.error.URLError, KeyError, ValueError) as error:
             print(f"carried approval unavailable ({type(error).__name__}); only a fresh label can approve",
                   file=sys.stderr)
@@ -949,7 +970,10 @@ def label_approver(gh: GitHub, number: int, pr: dict) -> str:
     """The write-access user whose ``labeled`` event is the label's latest; refuse otherwise."""
     if APPROVAL_LABEL not in {label.get("name") for label in pr.get("labels") or []}:
         raise ApprovalRefused(f"{APPROVAL_LABEL!r} is not on #{number}")
-    events = [event for event in gh.paginate(f"issues/{number}/events")
+    all_events = gh.paginate(f"issues/{number}/events")
+    if any(event.get("event") == "base_ref_changed" for event in all_events):
+        raise ApprovalRefused(f"#{number} was retargeted; its earlier runs may have used another base's workflow")
+    events = [event for event in all_events
               if event.get("event") in ("labeled", "unlabeled")
               and (event.get("label") or {}).get("name") == APPROVAL_LABEL]
     if not events:
@@ -990,7 +1014,7 @@ def carry_approval(gh: GitHub, repo: Path, number: int, before_sha: str, head_sh
     if before_sha == head_sha:
         raise ApprovalRefused("the push did not move the head")
     label_approver(gh, number, _open_pull_request(gh, number, head_sha, default_branch))
-    recorded = recorded_digests(gh, before_sha)
+    recorded = recorded_digests(gh, before_sha, number, default_branch)
     if not recorded:
         raise ApprovalRefused(f"no approval record at the previous head {before_sha}")
     digest = candidate_digest(gh, repo, number, head_sha, remote)

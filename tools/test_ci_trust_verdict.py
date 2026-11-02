@@ -903,10 +903,13 @@ VERDICT_RUN_PATH = ctv.VERDICT_WORKFLOW
 
 def _record(run_id: int, digest: str, *, sha: str = HEAD, path: str = VERDICT_RUN_PATH,
             event: str = "pull_request_target", conclusion: str | None = "success",
-            status: str = "completed", name: str | None = None, job_sha: str | None = None) -> tuple[dict, dict]:
+            status: str = "completed", name: str | None = None, job_sha: str | None = None,
+            number: int = PR, run_prs: tuple[int, ...] = (PR,), base: str = "main") -> tuple[dict, dict]:
     """A run and its one job, shaped like the approval record the label workflow leaves."""
-    run = _run(run_id, path, event, sha=sha)
-    job = _job(run_id * 100, name or ctv.APPROVAL_RECORD_PREFIX + digest, sha=job_sha or sha,
+    run = _run(run_id, path, event, sha=sha, prs=run_prs)
+    for item in run["pull_requests"]:
+        item["base"]["ref"] = base
+    job = _job(run_id * 100, name or f"{ctv.APPROVAL_RECORD_PREFIX}{number} {digest}", sha=job_sha or sha,
                status=status, conclusion=conclusion)
     return run, job
 
@@ -941,6 +944,11 @@ class CarriedApprovalTests(VerdictAssertions):
     def test_a_digest_that_could_not_be_computed_drops_the_approval(self) -> None:
         self.assertVerdict(_carried(digest=None), "failure", "CI_CHANGE_UNAPPROVED")
 
+    def test_a_retargeted_pull_request_does_not_carry_an_approval(self) -> None:
+        scenario = _carried()
+        scenario.raw["label_events"].append({"id": 9, "event": "base_ref_changed", "created_at": "2026-10-28T10:20:00Z"})
+        self.assertVerdict(scenario, "failure", "CI_CHANGE_UNAPPROVED")
+
     def test_a_matching_record_does_not_replace_the_label(self) -> None:
         scenario = _carried()
         scenario.raw["pull_request"]["labels"] = []
@@ -966,7 +974,7 @@ class ApprovalRecordForgeryTests(unittest.TestCase):
     def digests(self, *pairs: tuple[dict, dict], head: str = HEAD) -> set[str]:
         runs = [run for run, _ in pairs]
         jobs = {run["id"]: [job] for run, job in pairs}
-        found: set[str] = ctv.record_digests(runs, lambda run_id: jobs[run_id], head)
+        found: set[str] = ctv.record_digests(runs, lambda run_id: jobs[run_id], head, PR, "main")
         return found
 
     def test_the_genuine_record_is_read(self) -> None:
@@ -992,11 +1000,29 @@ class ApprovalRecordForgeryTests(unittest.TestCase):
                                       _record(3, D1, conclusion=None, status="in_progress")), set())
 
     def test_malformed_names_are_ignored(self) -> None:
-        for name in (f"CI approval record v1 {D1[:-1]}", f"CI approval record v1 {D1}0", f"CI approval record v1 {(chr(97) * 64).upper()}",
-                     f"CI approval record v2 {D1}", f"x CI approval record v1 {D1}", f"CI approval record v1 {D1} ",
-                     "CI approval record v1 ", "Compute trusted CI verdict"):
+        prefix = "CI approval record v1 "
+        for name in (f"{prefix}pr{PR} {D1[:-1]}", f"{prefix}pr{PR} {D1}0", f"{prefix}pr{PR} {(chr(97) * 64).upper()}",
+                     f"{prefix}pr{PR}{D1}", f"{prefix}{D1}", f"{prefix}pr0{PR} {D1}", f"{prefix}pr-{PR} {D1}",
+                     f"CI approval record v2 pr{PR} {D1}", f"x {prefix}pr{PR} {D1}", f"{prefix}pr{PR} {D1} ",
+                     prefix, "Compute trusted CI verdict"):
             with self.subTest(name=name):
                 self.assertEqual(self.digests(_record(1, D1, name=name)), set())
+
+    def test_a_record_for_another_pull_request_at_the_same_sha_is_ignored(self) -> None:
+        """Two pull requests can share a head SHA; a record names the pull request it was written for."""
+        self.assertEqual(self.digests(_record(1, D1, number=PR + 1)), set())
+        self.assertEqual(self.digests(_record(2, D1, number=PR)), {D1})
+
+    def test_a_run_reported_for_another_pull_request_or_base_is_ignored(self) -> None:
+        self.assertEqual(self.digests(_record(1, D1, run_prs=(PR + 1,))), set())
+        self.assertEqual(self.digests(_record(2, D1, base="release")), set())
+        self.assertEqual(self.digests(_record(3, D1, run_prs=())), {D1})   # a fork's run reports no pull requests
+
+    def test_a_retargeted_pull_request_is_never_carried(self) -> None:
+        gh = ApprovalGitHub(records=(_record(6, D1, sha=BEFORE),))
+        gh.events.append({"id": 9, "event": "base_ref_changed", "created_at": "2026-10-28T10:20:00Z"})
+        with mock.patch.object(ctv, "candidate_digest", return_value=D1), self.assertRaises(ctv.ApprovalRefused):
+            ctv.carry_approval(gh, Path("."), PR, BEFORE, HEAD, "main")
 
     def test_a_forged_record_does_not_approve_in_the_collector(self) -> None:
         """Failing-before: there was no record to forge, and a stale label was always withdrawn by the workflow."""
@@ -1319,6 +1345,27 @@ class ApprovalDigestTests(unittest.TestCase):
         self.git("mv", ".github/workflows/ci.yml", ".github/workflows/ci2.yml")
         self.assertNotIn(self.push(), (first, renamed))
 
+    def test_a_tool_that_only_the_candidates_workflow_names_is_hashed(self) -> None:
+        """Failing-before: a head adds a gate tool through its own workflow edit and the label is applied; a later
+        push turns the tool into ``exit 0`` without touching a workflow, and the digest did not change."""
+        self.write(".github/workflows/ci.yml", self.WORKFLOW + "      - run: python tools/new_gate.py\n")
+        self.write("tools/new_gate.py", "print('real gate')\n")
+        approved = self.push()
+        self.write("tools/new_gate.py", "raise SystemExit(0)\n")
+        self.assertNotEqual(self.push(), approved)
+        # The same holds for an existing tool that only the candidate's workflow newly runs.
+        self.write(".github/workflows/ci.yml", self.WORKFLOW + "      - run: python tools/other.py\n")
+        self.write("tools/other.py", "print('now a gate')\n")
+        newly_run = self.push()
+        self.write("tools/other.py", "raise SystemExit(0)\n")
+        self.assertNotEqual(self.push(), newly_run)
+        # ... and for an action's own workflow-style file.
+        self.write(".github/actions/x/action.yml", "runs:\n  steps:\n    - run: python tools/third.py\n")
+        self.write("tools/third.py", "print(1)\n")
+        third = self.push()
+        self.write("tools/third.py", "print(2)\n")
+        self.assertNotEqual(self.push(), third)
+
     def test_a_file_mode_change_changes_the_digest(self) -> None:
         first = self.push()
         self.git("update-index", "--chmod=+x", "tools/gate.py")
@@ -1358,9 +1405,11 @@ class ApprovalWorkflowWiringTests(unittest.TestCase):
         self.text = (ROOT / ctv.VERDICT_WORKFLOW).read_text(encoding="utf-8")
 
     def test_the_record_job_name_is_what_the_verifier_reads(self) -> None:
-        match = re.search(r"(?m)^    name: (CI approval record v1 \$\{\{ needs\.approval\.outputs\.digest \}\})$", self.text)
+        match = re.search(r"(?m)^    name: (CI approval record v1 pr\$\{\{ github\.event\.pull_request\.number \}\} "
+                          r"\$\{\{ needs\.approval\.outputs\.digest \}\})$", self.text)
         assert match is not None
         name = match.group(1).replace("${{ needs.approval.outputs.digest }}", D1)
+        name = name.replace("${{ github.event.pull_request.number }}", str(PR))
         self.assertRegex(name, ctv._APPROVAL_RECORD)
         self.assertTrue(name.startswith(ctv.APPROVAL_RECORD_PREFIX))
 

@@ -163,13 +163,16 @@ jobs:
           echo "ci-change-approved removed from #${PR_NUMBER}: a maintainer re-applies it after reviewing the new head"
 
   approval_record:
-    # The record itself. The digest is in this job's NAME, and the verifier
-    # (tools/ci_trust_verdict.py, record_digests) reads it back only from a
-    # successful job of a pull_request_target run of this workflow at the exact
-    # head. GitHub takes that workflow's definition from the default branch, so
-    # a pull request cannot produce such a job with a name of its choosing. The
-    # digest is validated as 64 hex digits before it leaves the previous job.
-    name: CI approval record v1 ${{ needs.approval.outputs.digest }}
+    # The record itself. The pull request number and the digest are in this
+    # job's NAME, and the verifier (tools/ci_trust_verdict.py, record_digests)
+    # reads them back only from a successful job of a pull_request_target run
+    # of this workflow at the exact head, for that pull request. GitHub takes
+    # a pull_request_target run's workflow from the pull request's BASE branch,
+    # which is the default branch only for a pull request that targets it; the
+    # verifier ignores runs reported for another base and never carries for a
+    # pull request that was retargeted. A pull request cannot name such a job.
+    # The digest is a SHA-256 hex string the previous job's tool printed.
+    name: CI approval record v1 pr${{ github.event.pull_request.number }} ${{ needs.approval.outputs.digest }}
     needs: [approval]
     if: ${{ needs.approval.outputs.digest != '' }}
     runs-on: ubuntu-26.04

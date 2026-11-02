@@ -892,8 +892,11 @@ uses for `CI_CHANGE_UNAPPROVED`: the protected paths above, listed by `protected
 `tools/ci_trust_verdict.py` from the default branch's workflows. There is no second list.
 
 - *The digest.* `approval_digest` is a SHA-256 over the mode and SHA-256 of the bytes of every
-  protected path present in the head's tree, in path order, under a version tag. A protected
-  path added to or removed from the head changes it, so an added workflow or action file, a
+  protected path present in the head's tree, in path order, under a version tag. The path set is
+  the verdict's own, plus every `tools/` file that a workflow or action of the head itself names
+  outside a comment, so a gate tool that only the candidate's workflow runs (a new tool, or an
+  existing one newly run) is hashed, and a later push that turns it into `exit 0` withdraws the
+  label. A protected path added to or removed from the head changes it, so an added workflow or action file, a
   deleted gate tool and a rename (a removal plus an addition) all change it. A mode change
   changes it. The candidate's copy of `tools/ci_trust_verdict.py`, `tools/ci_paths.py`, the
   verdict workflow and the other gate files are protected paths, so changing the
@@ -905,12 +908,17 @@ uses for `CI_CHANGE_UNAPPROVED`: the protected paths above, listed by `protected
   head, provided the label's latest event is `labeled` by a user with write access, the pull
   request is open against the default branch, and `refs/pull/<n>/head` still is the head the
   event named, before and after hashing. The next job, `approval_record`, is named `CI approval
-  record v1 <digest>`; the digest is the job's name. The record is read back only from a
-  successful job of that name, in a `pull_request_target` run of
-  `.github/workflows/ci-trust-verdict.yml`, at exactly the head being judged. GitHub takes a
-  `pull_request_target` run's workflow definition from the default branch, so a pull request
-  cannot produce such a job. A job in a `pull_request` run, another workflow, another head
-  or a failed job is ignored.
+  record v1 pr<number> <digest>`; the pull request number and the digest are the job's name.
+  The record is read back only from a successful job of that name, in a `pull_request_target`
+  run of `.github/workflows/ci-trust-verdict.yml`, at exactly the head being judged and for
+  that pull request's number (one SHA can head two pull requests). GitHub takes a
+  `pull_request_target` run's workflow definition from the pull request's base branch, not from
+  the pull request, so a pull request cannot produce such a job. That base is the default
+  branch only for a pull request that targets it: a run GitHub reports for another base or
+  another pull request is ignored, and a pull request that was ever retargeted (a
+  `base_ref_changed` event) never carries an approval, because GitHub does not report a fork
+  pull request's runs against it. A job in a `pull_request` run, another workflow, another
+  head or a failed job is ignored.
 - *The carry.* On a `synchronize` event the `approval` job reads the digest recorded at the
   push's previous head (`github.event.before`), recomputes it for the new head with trusted
   code, and succeeds only on an exact match, with the label still on the pull request from a
