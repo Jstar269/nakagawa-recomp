@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 16 |
 | `ppsspp-derived` | 111 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 262 | 200 |
-| `unverified` | 224 | 57 |
+| `synthetic` | 268 | 200 |
+| `unverified` | 218 | 57 |
 | total | 661 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -81,7 +81,7 @@ belongs to without the census's own grouping.
 | `0x092968f4` | `sceKernelCpuSuspendIntr` | kernel_interrupt | `hardware-measured` | PSP oracle PSP-DISPLAY-001 |
 | `0x099ef33c` | `sceFontFindOptimumFont` | font | `unverified` | no recorded evidence |
 | `0x0ad043ed` | `sceNetAdhocctlConnect` | network | `unverified` | no recorded evidence |
-| `0x0afd0d8b` | `scePowerIsBatteryExist` | power | `unverified` | no recorded evidence |
+| `0x0afd0d8b` | `scePowerIsBatteryExist` | power | `synthetic` | HLE selftest dispatch |
 | `0x0b2228e9` | `sceNetAdhocGameModeDeleteReplica` | network | `unverified` | no recorded evidence |
 | `0x0b588501` | `sceCtrlReadLatch` | input | `hardware-measured` | PSP oracle PSP-HLE-CTRL-LATCH-001 |
 | `0x0bf0a3ae` | `sceNetGetLocalEtherAddr` | network | `unverified` | no recorded evidence |
@@ -95,7 +95,7 @@ belongs to without the census's own grouping.
 | `0x0da7535e` | `sceFontGetFontInfo` | font | `unverified` | no recorded evidence |
 | `0x0db149f4` | `sceMp3NotifyAddStreamData` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x0ddcd2c9` | `sceKernelTryLockMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
-| `0x0e20f177` | `sceDisplaySetMode` | display | `unverified` | no recorded evidence |
+| `0x0e20f177` | `sceDisplaySetMode` | display | `synthetic` | HLE selftest dispatch |
 | `0x0e2a73ab` | `sceAtracSetData` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x0e3c2e9d` | `sceMpegAvcDecode` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x0ed48fe2` | `sceKernelDeleteNotifyCallback` | kernel_thread | `unverified` | no recorded evidence |
@@ -105,7 +105,7 @@ belongs to without the census's own grouping.
 | `0x1078c008` | `scePsmfPlayerStop` | mpeg | `synthetic` | HLE selftest dispatch |
 | `0x109f50bc` | `sceIoOpen` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0x10f3bb61` | `memset` | kernel_utils | `synthetic` | HLE selftest dispatch |
-| `0x110dec9a` | `sceKernelUSec2SysClock` | kernel_time | `unverified` | no recorded evidence |
+| `0x110dec9a` | `sceKernelUSec2SysClock` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0x1117c65f` | `sceIoRmdir` | io | `unverified` | no recorded evidence |
 | `0x1181e963` | `sceKernelDelaySysClockThreadCB` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x132f1eca` | `sceAtracReinit` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
@@ -130,7 +130,7 @@ belongs to without the census's own grouping.
 | `0x1b839b83` | `sceMp3LowLevelInit` | audio_codec | `synthetic` | HLE selftest dispatch |
 | `0x1c0d95a6` | `sceGeListEnQueueHead` | ge | `synthetic` | HLE selftest dispatch |
 | `0x1d8a762e` | `sceRegOpenCategory` | system | `synthetic` | HLE selftest dispatch |
-| `0x1e490401` | `scePowerIsBatteryCharging` | power | `unverified` | no recorded evidence |
+| `0x1e490401` | `scePowerIsBatteryCharging` | power | `synthetic` | HLE selftest dispatch |
 | `0x1e57a8e7` | `scePsmfPlayerConfigPlayer` | mpeg | `unverified` | no recorded evidence |
 | `0x1f0fc3e3` | `sceHttpSetRecvTimeOut` | network | `unverified` | no recorded evidence |
 | `0x1f4011e6` | `sceCtrlSetSamplingMode` | input | `synthetic` | HLE selftest dispatch |
@@ -139,8 +139,8 @@ belongs to without the census's own grouping.
 | `0x1fb15a32` | `sceKernelSetEventFlag` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x1fc64e09` | `sceKernelLockLwMutexCB` | kernel_sync | `synthetic` | conformance cells |
 | `0x1ff89745` | `sceNetAdhocctlJoinEnterGameMode` | network | `unverified` | no recorded evidence |
-| `0x20628e6f` | `sceUmdGetErrorStat` | umd | `unverified` | no recorded evidence |
-| `0x2085d15d` | `scePowerGetBatteryLifePercent` | power | `unverified` | no recorded evidence |
+| `0x20628e6f` | `sceUmdGetErrorStat` | umd | `synthetic` | HLE selftest dispatch |
+| `0x2085d15d` | `scePowerGetBatteryLifePercent` | power | `synthetic` | HLE selftest dispatch |
 | `0x208db1bd` | `sceHprmIsRemoteExist` | input | `hardware-measured` | PSP oracle PSP-HLE-HPRM-001 |
 | `0x20b317a0` | `sceNetAdhocctlAddHandler` | network | `unverified` | no recorded evidence |
 | `0x20fff560` | `sceKernelCreateVTimer` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002, PSP-HLE-VTIMER-003, PSP-HLE-TIMER-ORDER-001 |
