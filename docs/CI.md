@@ -23,8 +23,9 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Draft pull request | the same path-applicable jobs as a ready pull request, plus classification, hygiene/security, and CI required | only jobs irrelevant to the changed paths |
 | Ready pull request, docs-only | classification, hygiene/security, Markdown, CI required | Python/native, Windows |
 | Ready pull request, native C/build files | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
-| Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over two shards, native/translation, Windows, CI required | the Python modules that cannot observe a Makefile recipe |
+| Ready pull request, recipe-only edit of phony targets in `Makefile` | classification, hygiene/security, Python tooling on the Makefile-coupled modules over four shards, native/translation, Windows, CI required | the Python modules that cannot observe a Makefile recipe |
 | Ready pull request, ordinary tools Python file | classification, hygiene/security, Python tooling, CI required | native/translation, Windows |
+| Ready pull request, only `tools/test_*.py` modules that no native or Windows gate runs | classification, hygiene/security, Python tooling, CI required | native/translation, Windows (see [Tests-only changes](#tests-only-changes)) |
 | Status-only transition (draft <-> ready) | no run: `.github/workflows/ci.yml` does not list `ready_for_review` or `converted_to_draft` | every gate, because the head did not change |
 | Workflow/CI configuration | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the substantive public gates |
 | Dependency-only metadata (`.github/dependabot.yml`) | classification, hygiene/security, CI required | Python/native, Windows |
@@ -34,6 +35,85 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Manual `workflow_dispatch` | the full matrix and full Python tier, regardless of paths | none |
 | Nightly schedule (`17 3 * * *` UTC) | the full matrix and full Python tier | none |
 | Merge-queue group (`merge_group`, `checks_requested`) | the full matrix, as for a manual dispatch, regardless of paths; every required check reports on the group commit | none |
+
+### What else starts on a pull request push
+
+The table above is the `CI` workflow. Four other workflows start on the same push, and
+two of them are now path-gated too (measured on the repository's Actions usage export
+of 2026-11-02, whole history, hosted runners):
+
+| Workflow | Per push before | Now | Measured cost |
+| --- | --- | --- | --- |
+| `CodeQL wake` then `Trusted CodeQL` | 1 wake + prepare + 3 analyses + upload (6 jobs) | 6 jobs when the diff touches C/C++, Python or workflow files; otherwise 3 (wake, prepare, upload) | `codeql.yml` is 38.5k hosted minutes over 2,732 runs, about 14 minutes a run |
+| `ClusterFuzzLite` | 1 job, every pull request | 1 job only when the fuzz target's inputs change; none otherwise | 6.8k minutes over 1,767 runs, about 3.8 minutes a run |
+| `OSV-Scanner`, `Dependency Review`, `Provenance attestation` | 1 job each | unchanged | cheap per run (4.5-5.6k runs) but supply-chain controls |
+| `Trusted CI verdict` | about 4 runs, 1 job each | unchanged | 16 s average run |
+
+#### Tests-only changes
+
+A `tools/test_<subject>.py` file used to route by its subject: `test_codegen_x.py` counted
+as a `codegen` change and started the native and Windows jobs, about nine runner legs. Those
+jobs never run a test module unless a build or CI descriptor names it (the Makefile, `mk/`,
+`CMakeLists.txt`, the workflows) or a tool, driver or fixture script does: they run make
+targets and a few fixed `unittest` module names, not a discovery sweep. `tools/ci_paths.py`
+therefore reads those files (`_native_gate_sources`) and treats a test module as checked by
+the Python shards alone unless one of them names it as a whole identifier, or a module that
+is run imports it or names it as a string, transitively (`_gate_executed_tests`;
+`tests/native/test_player_ui.py` imports `tools/test_player_package_route`, which therefore
+stays routed). Anything else keeps its route: a module a descriptor names (for example
+`test_flash0_font` and `test_public_ci_wiring`, which `ci.yml` runs on Windows), a deleted
+module a descriptor still names, a classifier test (`test_ci_paths`, `test_ci_required`,
+`test_ci_test_shards`), any non-test file beside it, an unparsable gate module (every test
+then counts as run), and every unreadable-descriptor case. A gate that loads a test module
+by a computed name would escape this and must name the module literally. The exported subject
+flags (`build_system`, `python_tools`, ...) are unchanged; only `run_native` and
+`run_windows` skip.
+
+#### Trusted CodeQL on pull requests
+
+`Trusted CodeQL` is the producer of the required `CodeQL` status: GitHub's code scanning
+creates that check only when a SARIF upload for the pull request's merge commit is
+processed, and no job of ours can post it. A pull request that is never analysed would
+therefore wait for it forever. The workflow keeps its `prepare` and `upload` jobs on every
+pull request and decides in `prepare`, from the default branch's `tools/ci_paths.py
+--codeql-scope BASE MERGE`, whether the diff can change a result:
+
+- **Analysed in full:** any added, changed, deleted or renamed C/C++ source or header, Python
+  file, workflow, action or `.github/codeql/` file; an unreadable diff or any name that cannot
+  be classified with confidence (the diff is read with `git diff -z`, so names are verbatim;
+  a quote, backslash, control character or edge whitespace still forces a scan); a
+  merge-queue group; a push to `main`; the weekly schedule; and a manual dispatch with `force_scan`.
+- **Skipped:** a diff made only of other files (documentation, assets, `Makefile` and `mk/`,
+  JSON, PowerShell). `build-mode: none` means the C analysis reads source files and never
+  builds, so a build file cannot change it. The `upload` job then writes one empty SARIF
+  result for each of the three categories, each carrying a note that the analysis was
+  skipped and why, and sends it through the same stale-head checks and the same upload as a
+  real result. The required `CodeQL` check reports on the exact merge commit as before.
+
+The decision is made by the default branch's copy of the workflow and classifier, from git
+objects, so a pull request cannot widen or narrow its own scan. `codeql-wake.yml` is
+unchanged: it is a signal with no path filter, because a candidate-controlled `paths` list
+could drop a pull request's wake and leave its required check missing.
+
+If an empty upload is ever refused, `gh workflow run codeql.yml -f pull_request_number=N
+-f force_scan=true` analyses that pull request in full.
+
+#### Why the verdict waited about nine minutes
+
+`Compute trusted CI verdict` averages 16 s of run time but 531 s of queue time in the usage
+export. Nothing in `ci-trust-verdict.yml` explains that. Its concurrency group is per head
+SHA with `cancel-in-progress: false`, so runs for one head queue behind each other, but a
+run waiting on its group has no job yet, so that wait is not part of the job's queue time.
+It runs on `ubuntu-26.04` with no `needs` on any other workflow (`workflow_run` starts it
+after each producer finishes; it does not wait for them). Sampling the 87 verdict jobs of
+2026-11-01 to 2026-11-02 through the API gave a mean queue of 18 s, a median of 2 s, a
+90th percentile of 62 s and a maximum of 267 s; the four longest waits (169 to 267 s) all
+fell within seven minutes of 2026-11-02, when many other jobs were also waiting. The
+historical 531 s average is therefore the runner limit (about 20 concurrent jobs) and not
+a property of the workflow: the verdict job is created when a producer finishes, which is
+when the repository's own matrix has most jobs queued, and it waits in the same queue as
+the Windows and Python legs. The way to shorten it is to start fewer jobs per push, which
+is what the path gates above do. No change to `ci-trust-verdict.yml` is made or needed.
 
 ### Draft pull requests
 
@@ -64,8 +144,12 @@ hidden by the aggregate.
 
 ### ClusterFuzzLite C fuzzing
 
-Pull requests run the pinned ClusterFuzzLite workflow in
-`.github/workflows/clusterfuzzlite.yml`. Its C target
+Pull requests that change the fuzzed code run the pinned ClusterFuzzLite workflow in
+`.github/workflows/clusterfuzzlite.yml`: `src/core/nk_json.c`, `src/core/nk_json.h`,
+`tests/fuzzers/`, `.clusterfuzzlite/` and the workflow file itself (a path filter; the
+check is not a required status, so a pull request that skips it waits on nothing). A nightly
+and a manual run fuzz the whole target for five minutes in `batch` mode, since there is no
+diff for `code-change` mode to follow. Its C target
 `tests/fuzzers/test_nk_json_fuzzer.c` calls the public `nk_json_parse` API
 with bounded synthetic bytes and exercises nesting at the `NK_JSON_MAX_DEPTH`
 boundary. The project configuration is `.clusterfuzzlite/project.yaml`; the
@@ -514,7 +598,10 @@ apart. The shard step runs `unittest -v`, and every hosted log line carries a
 timestamp, so each module's time on the hosted runner, under coverage, is the time
 from its first test line to the next module's first test line. The current weights
 come from run 41105240488: its four shards took 456, 554, 315 and 303 seconds, and
-the same modules plan to about 407 seconds each with the refreshed weights.
+the same modules plan to about 407 seconds each with the refreshed weights. The suite
+now runs on six shards (about 272 seconds each by those weights), and the
+Makefile-coupled subset on four: on the busy self-hosted pool a four-shard step took
+17-30 minutes on 2026-11-01 and 2026-11-02 and reached the 30-minute job limit.
 `python tools/ci_test_shards.py --check` rejects weights for modules that no longer
 exist, and `--plan` prints the resulting partition with per-shard estimates.
 
@@ -665,8 +752,8 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   revision cannot provide. A recipe-only edit still runs the native and Windows
   gates, which execute recipes. Python runs only the modules whose transitive tool
   closure reads the `Makefile` or runs `make` (`ci_test_shards.py --select
-  makefile`), on two shards; any other Python-routing change in the same diff
-  restores the full four-shard suite. That closure covers most of the suite's
+  makefile`), on four shards; any other Python-routing change in the same diff
+  restores the full six-shard suite. That closure covers most of the suite's
   weight, because most heavy modules build through `make`, so the saving is the
   unrelated modules and two runners rather than the Python job as a whole.
 - **The published surface is derived, not listed.** `_is_public_surface` asks the

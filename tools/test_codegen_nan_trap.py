@@ -79,12 +79,12 @@ class nan_trap_codegen_state:
     """Turn --nan-trap on for the duration of a block and restore it after."""
 
     def __enter__(self):
-        self._previous = codegen.NAN_TRAP
-        codegen.NAN_TRAP = True
+        self._previous = codegen.OPTIONS.nan_trap
+        codegen.OPTIONS.nan_trap = True
         return self
 
     def __exit__(self, *exc):
-        codegen.NAN_TRAP = self._previous
+        codegen.OPTIONS.nan_trap = self._previous
         return False
 
 
@@ -309,9 +309,9 @@ class TestEmissionShape(unittest.TestCase):
             text = codegen.vfpu_effect(0x00001111, word)[0]
         self.assertIn('SR_NAN_TRAP_V(0x00001111u,"vmmul",4u,_ntout,16,_ntin,32)', text)
         self.assertIn("float _ntin[32], _ntout[16];", text)
-        codegen.NAN_TRAP = False
+        codegen.OPTIONS.nan_trap = False
         self.assertNotIn("SR_NAN_TRAP", codegen.vfpu_effect(0x00001111, word)[0])
-        codegen.NAN_TRAP = False
+        codegen.OPTIONS.nan_trap = False
 
     def _matrix_word(self, sub, vt, vs, vd, size):
         size_bits = {1: 0, 2: 1 << 7, 3: 1 << 15, 4: (1 << 7) | (1 << 15)}[size]
@@ -469,12 +469,12 @@ class TestMatrixFormsCostNothingWhenOff(unittest.TestCase):
              ("vtfm4", matrix_word(3, 4, 0, 8, 4))]
 
     def statements(self, trapped: bool):
-        previous = codegen.NAN_TRAP
-        codegen.NAN_TRAP = trapped
+        previous = codegen.OPTIONS.nan_trap
+        codegen.OPTIONS.nan_trap = trapped
         try:
             return [codegen.effect(0x00001111, word)[0] for _name, word in self.FORMS]
         finally:
-            codegen.NAN_TRAP = previous
+            codegen.OPTIONS.nan_trap = previous
 
     def test_every_matrix_form_gathers_operands_when_the_option_is_on(self):
         for (name, _word), text in zip(self.FORMS, self.statements(True), strict=True):
