@@ -23,7 +23,8 @@
 // block UID) was not obtained. A fixed-pool delete after a refused create is PASS
 // with out0 0 and issues no delete, because the refusal is what that create measures.
 // No returned value is compared with an expected PSP value, here, in the host checker
-// or in the parser. hle-null-out-pointers passes NULL as a mandatory out pointer,
+// or in the parser; hle-savedata-getsize's check that its save is absent is a precondition
+// of its measurement, not a PSP semantic. hle-null-out-pointers passes NULL as a mandatory out pointer,
 // which may fault in kernel mode, so it is scheduled last in a session.
 //
 // Record stream (tools/psp_oracle/protocol.py): NAKAGAWA_PSP_META, then one
@@ -1909,9 +1910,11 @@ static int hle_run(void)
 
 /* #308, PR #1898: what savedata mode 22 (GETSIZE) answers when the named save does not exist,
    and whether it still fills in the free and shortfall fields. GETSIZE changes nothing on
-   the Memory Stick: the save name is one no game owns, the probe checks that its directory is
-   absent before and after each dialog, and it makes and deletes no save. No dialog shows and
-   no button is pressed.
+   the Memory Stick: the save name is one no game owns, and the probe makes and deletes no
+   save. No dialog shows and no button is pressed. Every cell here measures a save that does
+   not exist, so the save directory must be absent before and after each dialog: a stat that
+   does not return HLE_SD_SAVE_ABSENT makes COMPLETE report FAIL, and the host contract
+   (validate_hle_savedata_getsize_absent) refuses the stream.
 
    The dialog must run in game context (standalone PSPLink after a soft reset). Launched under
    the XMB, InitStart returned 0 and the status stayed at INIT with an SceUtilityInit thread
@@ -1954,6 +1957,7 @@ static int hle_run(void)
 #define HLE_SD_OUTCOME_COMPLETE 0u
 #define HLE_SD_OUTCOME_TIMEOUT 1u
 #define HLE_SD_OUTCOME_INIT_REFUSED 2u
+#define HLE_SD_SAVE_ABSENT 0x80010002u /* sceIoGetstat: no such file or directory */
 #define HLE_SD_GAME_NAME "NKPROBE01"
 #define HLE_SD_SAVE_NAME "GETSIZE"
 #define HLE_SD_SAVE_DIR "ms0:/PSP/SAVEDATA/" HLE_SD_GAME_NAME HLE_SD_SAVE_NAME
@@ -1965,6 +1969,7 @@ static uint8_t s_hle_sd_param[HLE_SD_PARAM_BYTES] __attribute__((aligned(64)));
 static uint32_t s_hle_sd_size_info[HLE_SD_SIZE_INFO_WORDS] __attribute__((aligned(64)));
 static uint8_t s_hle_sd_entry[HLE_SD_SIZE_ENTRY_BYTES] __attribute__((aligned(64)));
 static uint32_t s_hle_sd_timeouts;
+static uint32_t s_hle_sd_not_absent;
 
 static void hle_sd_put32(uint32_t offset, uint32_t value)
 {
@@ -2088,13 +2093,17 @@ static void hle_sd_dialog(const char *case_id, int with_size_info, uint64_t secu
     hle_record(case_id, "PASS", (uint32_t)init, out, HLE_SD_DIALOG_WORDS);
 }
 
-/* The save's directory: the result is sceIoGetstat's return, 0x80010002 while it is absent. */
+/* The save's directory: the result is sceIoGetstat's return. Any other than
+   HLE_SD_SAVE_ABSENT voids the run, whichever cell saw it. */
 static void hle_sd_absent(const char *case_id)
 {
     SceIoStat st;
     memset(&st, 0, sizeof(st));
     hle_step(case_id);
     const int rc = sceIoGetstat(HLE_SD_SAVE_DIR, &st);
+    if ((uint32_t)rc != HLE_SD_SAVE_ABSENT) {
+        s_hle_sd_not_absent++;
+    }
     const uint32_t out[1] = {(uint32_t)st.st_mode};
     hle_record(case_id, "PASS", (uint32_t)rc, out, 1);
 }
@@ -2127,7 +2136,7 @@ static int hle_run(void)
     /* Last: a NULL out pointer can fault in kernel mode, and the cells above are on host0. */
     hle_sd_dialog("getsize-missing-null", 0, 0u);
     hle_sd_absent("save-absent-after-null");
-    return s_hle_sd_timeouts == 0u;
+    return s_hle_sd_timeouts == 0u && s_hle_sd_not_absent == 0u;
 }
 
 #endif /* HLE_CASE_SAVEDATA_GETSIZE */

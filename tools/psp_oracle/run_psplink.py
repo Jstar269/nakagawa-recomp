@@ -70,6 +70,7 @@ if TYPE_CHECKING:
         parse_umd_raw_read_output,
         parse_vram_mirror_output,
         validate_hle_edram_restore,
+        validate_hle_savedata_getsize_absent,
     )
 else:
     try:
@@ -125,6 +126,7 @@ else:
             parse_umd_raw_read_output,
             parse_vram_mirror_output,
             validate_hle_edram_restore,
+            validate_hle_savedata_getsize_absent,
         )
     except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
         from psp_oracle.parse_golden import (
@@ -148,6 +150,7 @@ else:
             parse_umd_raw_read_output,
             parse_vram_mirror_output,
             validate_hle_edram_restore,
+            validate_hle_savedata_getsize_absent,
         )
 
 
@@ -991,6 +994,11 @@ def _validate_campaign_contract(text: str, case_id: str) -> None:
         # failure, not a measurement.
         parse_campaign_probe_output(text, case_id, require_complete=True)
         validate_hle_edram_restore(text)
+    elif case_id == "hle-savedata-getsize":
+        # A fixed-shape stream, plus its precondition: a stream whose save directory was
+        # not absent measured nothing, so it is a protocol failure.
+        parse_campaign_probe_output(text, case_id, require_complete=True)
+        validate_hle_savedata_getsize_absent(text)
     elif case_id in CAMPAIGN_PROBE_CASES:
         parse_campaign_probe_output(text, case_id, require_complete=True)
     elif case_id == "registry-readonly":

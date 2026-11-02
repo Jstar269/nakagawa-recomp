@@ -107,6 +107,7 @@ from psp_oracle.parse_golden import (
     UMDRAW_READ_SIZES,
     parse_umd_raw_read_output,
     validate_hle_edram_restore,
+    validate_hle_savedata_getsize_absent,
 )
 import hle_sources  # noqa: E402
 
@@ -5645,11 +5646,18 @@ class HleMeasureProbeTests(unittest.TestCase):
                                 self._imports(self._block_text(block, case_id))}
                     self.assertEqual(sorted(declared - called), [])
 
+    GETSIZE_ABSENT_OVERRIDES = {
+        cell: ("PASS", 0x80010002, [0])
+        for cell in CAMPAIGN_PROBE_CASES["hle-savedata-getsize"][0].semantic_cases
+        if cell.startswith("save-absent-")
+    }
+
     def _stream(self, case: str, overrides: dict | None = None) -> str:
         """A complete synthetic stream: every cell PASS with zero fields unless overridden."""
         spec, counts = CAMPAIGN_PROBE_CASES[case]
         if overrides is None:
-            overrides = self.GE_UNSET_OVERRIDES if case == "hle-ge-edram" else {}
+            overrides = {"hle-ge-edram": self.GE_UNSET_OVERRIDES,
+                         "hle-savedata-getsize": self.GETSIZE_ABSENT_OVERRIDES}.get(case, {})
         lines = [
             "NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown "
             "binary_sha256=" + "0" * 64 + " source_commit=" + "b" * 40 + " fixture=hle-measure",
@@ -5690,6 +5698,23 @@ class HleMeasureProbeTests(unittest.TestCase):
                 foreign = text.replace(f"test_id={spec.test_id}", "test_id=PSP-OTHER-001", 1)
                 with self.assertRaises(ProtocolError):
                     parse_campaign_probe_output(self._body(foreign), case)
+
+    def test_savedata_getsize_contract_refuses_a_save_that_was_not_absent(self) -> None:
+        """Each hle-savedata-getsize save-absent cell must return 0x80010002: a stream that
+        shows the save directory fails the contract even with a COMPLETE PASS line."""
+        case = "hle-savedata-getsize"
+        absent = self.GETSIZE_ABSENT_OVERRIDES
+        self.assertEqual(len(absent), 5)
+        stream = self._body(self._stream(case))
+        validate_hle_savedata_getsize_absent(stream)
+        self.assertIsNone(_validate_campaign_contract(stream, case))
+        for cell in absent:
+            for rc in (0, 0x80010013):
+                with self.subTest(cell=cell, rc=rc):
+                    present = self._body(self._stream(case, {**absent,
+                                                             cell: ("PASS", rc, [0o10777])}))
+                    with self.assertRaises(ProtocolError):
+                        _validate_campaign_contract(present, case)
 
     def test_ge_restore_invariant_accepts_a_restored_width_and_rejects_a_changed_one(self) -> None:
         case = "hle-ge-edram"
@@ -5948,7 +5973,11 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
         self.assertIn("const uint32_t bound = init >= 0 ? HLE_SD_POLL_VBLANKS : 1u;", section)
         self.assertIn("for (uint32_t i = 0; i < bound; i++) {", section)
         self.assertIn("(void)sceDisplayWaitVblankStart();", section)
-        self.assertIn("return s_hle_sd_timeouts == 0u;", run)
+        self.assertIn("return s_hle_sd_timeouts == 0u && s_hle_sd_not_absent == 0u;", run)
+        absent = HleMeasureProbeTests._function_body(section, "static void hle_sd_absent(")
+        self.assertIn("if ((uint32_t)rc != HLE_SD_SAVE_ABSENT) {", absent)
+        self.assertIn("s_hle_sd_not_absent++;", absent)
+        self.assertIn("#define HLE_SD_SAVE_ABSENT 0x80010002u", section)
 
     def test_vtimer_errors_deletes_the_stale_timer_before_the_live_cells(self) -> None:
         section = _c_code(self.h._section("HLE_CASE_VTIMER_ERRORS"))
