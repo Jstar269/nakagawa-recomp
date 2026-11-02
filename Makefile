@@ -2504,6 +2504,8 @@ VERIFY_FIXTURE   := $(VERIFY_DIR)/fixture
 VERIFY_GENERATOR := fixtures/verify/generate.py
 VERIFY_DRIVER    := fixtures/verify/selftest.py
 VERIFY_CORE_SRCS := $(filter-out src/rt/snapshot_runner.c,$(SNAPSHOT_RUNNER_SRCS)) src/rt/verify.c
+# Preprocess one hooked runtime unit as the default build compiles it: no -DSR_VERIFY.
+VERIFY_PREPROCESS = $(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(HLE_INCLUDES) -E -P src/rt/$(1).c -o $(BUILD_DIR)/default_$(1).i
 VERIFY_GAME_VARS = GAME_NAME=verify GAME_ELF=$(VERIFY_FIXTURE)/guest.prx \
 	GAME_BASE=$(SNAPSHOT_BASE_ADDR) GAME_ENTRY=$(SNAPSHOT_BASE_ADDR) \
 	GAME_PSP_HEADER=$(VERIFY_FIXTURE)/guest.psp GAME_EXTRA_ELFS= TITLE_MANIFEST= \
@@ -2550,9 +2552,8 @@ verify-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS
 		--replay $(BUILD_DIR)/verify_replay_mutant.exe \
 		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(VERIFY_FIXTURE)/cases.json \
 		--work $(VERIFY_MUTANT_DIR)
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -E -P \
-		src/rt/recomp.c -o $(BUILD_DIR)/default_recomp.i
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(HLE_INCLUDES) -E -P src/rt/hle.c -o $(BUILD_DIR)/default_hle.i
+	$(call VERIFY_PREPROCESS,recomp)
+	$(call VERIFY_PREPROCESS,hle)
 	"$(PYTHON)" $(VERIFY_DRIVER) default-unchanged $(BUILD_DIR)/default_recomp.i $(BUILD_DIR)/default_hle.i
 	"$(PYTHON)" $(VERIFY_DRIVER) exit-paths
 	@echo "verify-selftest: PASS"
