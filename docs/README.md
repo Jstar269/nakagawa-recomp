@@ -86,7 +86,8 @@ Each row is something you are about to do. Find yours and read what it points to
   corrected 28/5 hardware-oracle design, and local Nakagawa/general Wiki draft
   text; the CT/ST oracle campaign is completed (`HARDWARE_MEASURED`) while
   reused lifecycle/callback/ABI facts are separately measured.
-- [`AI_USAGE.md`](AI_USAGE.md) — factual AI-assistance and review boundaries.
+- [`AI_USAGE.md`](AI_USAGE.md) — factual AI-assistance and review boundaries, and how each
+  tool reaches `AGENTS.md`.
 
 ## Doctrine, player, and productization
 

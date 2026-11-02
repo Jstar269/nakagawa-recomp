@@ -276,7 +276,7 @@ still carries a block is accepted only when the block exactly describes this
 candidate against this base; any other block is refused. If `PROVENANCE_BASE_SHA` is
 omitted, the command uses `merge-base(HEAD, origin/main)`.
 When the candidate publication profile changed, also supply the external
-`PROVENANCE_POLICY_DELTA_AUTHORITY` input: a V3 authority alone, or a V1/V2
+`PROVENANCE_POLICY_DELTA_AUTHORITY` input: a V4 or V3 authority alone, or a V1/V2
 record together with `PROVENANCE_TRUSTED_CANDIDATE_POLICY`; the command stops
 when the shape is wrong or the authority is missing.
 
@@ -417,9 +417,9 @@ the exact semantic difference. Issue #156 is the first real case (removing the
 phantom `TODO.md` include entry -- the file was never tracked).
 
 To cross such a delta the executor supplies the external
-`--policy-delta-authority`. A V3 authority comes alone: it records the change
-itself, and the candidate's own profile is checked against it (see "V3 policy
-deltas" below). A V1/V2 record from an earlier admission also needs
+`--policy-delta-authority`. A V4 (or earlier V3) authority comes alone: it
+records the change itself, and the candidate's own profile is checked against it
+(see "V4 policy deltas" below). A V1/V2 record from an earlier admission also needs
 `--trusted-candidate-policy` (the blessed candidate policy bytes, never read
 from the candidate tree), because it binds the baseline digest, the blessed
 candidate digest, and the exact allowed semantic delta:
@@ -647,23 +647,26 @@ removes a public file, with the failure each skipped step produces.
    paths to `assets/public_source_profile.json` and regenerates `PUBLIC_EXPORT.json`; commit both with the files. The
    candidate policy hash is the SHA-256 of that committed profile.
 2. **Record the authority in the private authority checkout on `main`:**
-   * an admission authority document under `docs/provenance/admissions/` binding each new path to the SHA-256 of its
-     exact bytes and its classification;
+   * an admission authority document under `docs/provenance/admissions/` recording each new path, its
+     classification, the SHA-256 of the bytes that were reviewed, and its binding when that is not the default;
    * for an implementation path, its exact record in `docs/provenance/IMPLEMENTATION_PROVENANCE.json`;
-   * a V3 policy delta, `docs/provenance/policy-deltas-v3/<sha256 of its bytes>.json`: the profile change alone,
-     with each added path bound to the SHA-256 of its admitted bytes (see "V3 policy deltas" below). Nested
-     `policy-deltas/<candidate sha256>/<baseline sha256>/` and flat `policy-deltas/<candidate sha256>/` V1/V2
-     records from earlier admissions remain readable for a profile change that adds no path; nothing writes them
-     now. A V1/V2 record binds no file bytes, so one that adds a path is refused
-     (`POLICY_DELTA_LEGACY_ADDS_PATHS`) and its admission needs one `--rekey`.
+   * a V4 policy delta, `docs/provenance/policy-deltas-v4/<selector sha256>.json`: the profile change alone, with
+     each added path bound to its origin claim. Only a byte-identical import is also bound to the SHA-256 of
+     its bytes (see "V4 policy deltas" below). V3 deltas
+     (`policy-deltas-v3/`, every added path bound to its bytes) from admissions made before V4 stay readable.
+     So do nested `policy-deltas/<candidate sha256>/<baseline sha256>/` and flat
+     `policy-deltas/<candidate sha256>/` V1/V2 records, for a profile change that adds no path. Nothing writes
+     either one now. A V1/V2 record binds no claim and no bytes, so one that adds a path is refused
+     (`POLICY_DELTA_LEGACY_ADDS_PATHS`), and its admission needs one `--rekey`.
 3. **Push the private `main` commit.** The hosted "Trusted provenance attestation" check reads the authority from
    `main`; local-only records fail with HTTP 404.
 4. **Admit the new paths** with `provenance_ledger.py admit-new-reviewed`, from a clean candidate commit whose only
    change from the base is the new paths and their profile entries. Commit the generated controls and merge that
    commit into the task branch.
 5. **Refresh the controls** with `python tools/provenance_refresh.py --trusted-ledger <private
-   IMPLEMENTATION_PROVENANCE.json>`; when the profile changed, add `--policy-delta-authority` with the V3 file from
-   step 2 (a V1/V2 record also needs `--trusted-candidate-policy`). Always pass the trusted ledger.
+   IMPLEMENTATION_PROVENANCE.json>`; when the profile changed, add `--policy-delta-authority` with the V4 file from
+   step 2 (a V1/V2 record also needs `--trusted-candidate-policy`). Always pass the trusted ledger: a V4 delta
+   is checked against the origin claims it derives from it.
 6. **Stage the generated controls with the change.** The pre-commit publication audit reads the index, so an unstaged
    ledger or profile reports the old state.
 
@@ -672,7 +675,10 @@ removes a public file, with the failure each skipped step produces.
 | `REFRESH_NEW_PATH_REQUIRES_ADMISSION` | The refresh saw an added or removed path | Run step 4 first |
 | `POLICY_DELTA_AUTHORITY_REQUIRED` | The profile changed without its delta authority | Pass the step 2 file |
 | Hosted check: HTTP 404 fetching the policy delta | The private records are not on the private `main` | Step 3 |
-| `POLICY_DELTA_ADDED_BYTES_MISMATCH` | A new file changed after its admission | Admit the final bytes again (a new decision) |
+| `ADMIT_HOOKS_WOULD_REWRITE` | A pre-commit hook would change a byte of a path being admitted | Fix it on the pull request branch, then admit |
+| `POLICY_DELTA_CLAIM_MISMATCH` | A new path's class, record, upstream, revision or licence differs from its admission | Restore the claim, or admit the new claim (a new decision) |
+| `POLICY_DELTA_ADDED_BYTES_MISMATCH` | A byte-bound import changed after its admission | Restore the upstream bytes, or admit it again as a LOCAL DELTA with `--binding claim` |
+| `VENDORED_BYTES_DRIFT` | A `PROVENANCE.md` row says byte-identical but the file differs | Restore the upstream bytes, or move the row to LOCAL DELTA |
 | `POLICY_DELTA_UNAUTHORIZED` | The profile changes something the admission did not approve | Remove the extra change, or admit it |
 | `TRUSTED_BASELINE_INVALID` | The local private authority checkout is behind its `main` | Fast-forward it and rerun |
 
@@ -683,14 +689,27 @@ python tools/admit_paths.py <pr-worktree> <path> [<path> ...] --approval-basis "
   --private-repo <authority checkout on main>
 ```
 
-It reads each path's committed bytes, derives its class with the gate's classifier (an implementation path needs
-an exact record already in `IMPLEMENTATION_PROVENANCE.json`; the command never writes one), writes and locally
-commits the admission and V3 policy-delta records under `docs/provenance/`, builds the clean candidate, runs
+It first checks each path's blob at `HEAD` against the rules of the byte-rewriting pre-commit hooks:
+trailing whitespace, exactly one final line ending, LF line endings, and no UTF-8 byte-order mark. The check is
+pure Python and runs nothing from the pull request. It never runs `pre-commit`, a hook the pull request defines,
+or a module it ships. The exclusions come from the trusted base's `.pre-commit-config.yaml` (top-level and per
+hook); none apply when the base has none. The line-ending rule also skips a file that the base's
+`.gitattributes` marks `-text`. If a hook would change a byte, it refuses with `ADMIT_HOOKS_WOULD_REWRITE` and
+names each path and rule. Fix them on the pull request branch first, so the next commit cannot reshape what was
+just admitted. A base configuration this reader cannot parse is refused (`ADMIT_HOOKS_CONFIG_INVALID`). Then it
+reads each path's committed bytes
+and derives its class with the gate's classifier. An implementation path needs an exact record already in
+`IMPLEMENTATION_PROVENANCE.json`; the command never writes one. It writes and locally
+commits the admission and V4 policy-delta records under `docs/provenance/`, builds the clean candidate, runs
 `admit-new-reviewed`, and leaves the result on a local `admit/<slug>-<date>` branch, whose ledger is in the committed
 claims form. It then prints the commands still to run: the private push (step 3, skipped with `--push`), the merge of
 that branch, and the step 5 refresh. `tools/test_admit_paths.py` replays the 2026-10-22 `.recomp.json` admission
 against the private authority and requires the same admission record and the same tree, apart from the canonical
 profile order and the claims-form ledger.
+
+Each path is bound to its claim unless its origin is `third_party`, which is bound to its bytes. Override that per
+path with `"binding"` in `--origin-json`, or for every path with `--binding claim|bytes`. Bind an authored or
+adapted file to its claim. Bind a file imported unchanged to its bytes, because there the bytes are the claim.
 
 For path-adding pull requests approved together, use `--batch <file.json>` with entries shaped like:
 
@@ -711,11 +730,11 @@ For path-adding pull requests approved together, use `--batch <file.json>` with 
 ]
 ```
 
-Each entry has its own admission, its own V3 delta and its own `admit/<slug>-<date>` controls branch. All use one
+Each entry has its own admission, its own V4 delta and its own `admit/<slug>-<date>` controls branch. All use one
 shared `--base`; the tool commits their records in one local private commit and refuses overlapping paths. There is
 no batch-size cap. `--push`, when used, pushes only private `main`.
 
-**Landing order.** Any order. A V3 delta records only its own pull request's change, so it stays valid when another
+**Landing order.** Any order. A V4 delta records only its own pull request's change, so it stays valid when another
 path-adding pull request lands first: the verifier checks it against whatever base the pull request lands on. If Git
 conflicts on, or reorders, `assets/public_source_profile.json` during a merge, run
 `python tools/admit_paths.py --merge-profile <worktree>` and then `git add assets/public_source_profile.json`; the
@@ -723,10 +742,12 @@ command merges `include_paths` and `exclude_paths` three ways against the merge 
 stays and a path either side removed or moved stays out, and it refuses if another profile field differs or a path
 would end up both included and excluded. Keep unrelated ready PRs moving.
 
-`--rekey` (one pull request) and `--batch-resume` (a JSON list of entries) are for pull requests admitted before V3
-deltas existed: their V1/V2 delta binds no bytes and is refused for a path addition. They reuse the recorded
-admission (the same paths and bytes), record no new decision, and write the V3 delta, so the pull request needs no
-further re-key:
+`--rekey` (one pull request) and `--batch-resume` (a JSON list of entries) are for pull requests admitted before V4
+deltas existed. A V1/V2 delta binds nothing and is refused for a path addition. A V3 delta still works while every
+added path keeps its admitted bytes, but any edit breaks it. They reuse the admission recorded for exactly these
+paths and record no new decision. A claim-bound path may have changed since; a byte-bound path must still have its
+recorded bytes. They take each claim from the current trusted record and write the V4 delta, so later edits and
+landings need no further re-key:
 
 ```text
 python tools/admit_paths.py --batch-resume <file.json> --base <new-base> --private-repo <authority checkout>
@@ -735,9 +756,107 @@ python tools/admit_paths.py --batch-resume <file.json> --base <new-base> --priva
 The landing desk lands at most one profile-changing pull request per batch: a batch that folds two of them changes
 the profile by the union of both, and no single delta records that union.
 
+### V4 policy deltas
+
+A V4 policy-delta authority records only what a pull request changes in the profile. It binds each added path to
+its origin claim, not to its bytes:
+
+```json
+{
+  "exclude_added": [],
+  "exclude_removed": [],
+  "include_added": [
+    {
+      "binding": "claim",
+      "claim": {"classification": "project_authored_attested", "record_classification": "project_authored_attested",
+                "record_id": "<record id>", "upstream": null, "upstream_license": null, "upstream_revision": null},
+      "path": "tools/new_tool.py"
+    },
+    {
+      "binding": "bytes",
+      "claim": {"classification": "upstream_derived", "record_classification": "upstream_derived",
+                "record_id": "<record id>", "upstream": "<project>", "upstream_license": "MIT",
+                "upstream_revision": "<exact revision>"},
+      "path": "third_party/lib/lib.h",
+      "sha256": "<SHA-256 of the admitted bytes>"
+    }
+  ],
+  "include_removed": [],
+  "kind": "policy-delta-authority",
+  "rule_changes": [{"key": "<field>", "baseline_sha256": "<digest or null>", "candidate_sha256": "<digest or null>"}],
+  "schema_version": 4
+}
+```
+
+The claim is what the gate itself derives for the path: the class `_class_for` gives it. When that class comes from
+the path's exact record in the trusted `IMPLEMENTATION_PROVENANCE.json`, the claim also holds the record's id,
+classification, upstream, upstream revision and upstream licence. A deterministic class such as
+`reviewed_documentation` carries nulls there. The admission and the verifier both compute it from the same trusted
+record with `provenance_ledger.admission_claim`.
+
+Its name depends on the two profiles alone. It is the SHA-256 of the canonical selector: the same document with
+`include_added` reduced to the bare paths. It is stored as `docs/provenance/policy-deltas-v4/<that digest>.json`
+(sorted keys, two-space JSON, one final LF). The name therefore does not move when a claim-bound file is edited.
+Both attestation workflows derive it from the trusted checkout with
+`python tools/provenance_attest_verify.py --policy-delta-key-v4 --base <base> --candidate <head>` and fetch it at
+the pinned authority revision. Only an HTTP 404 falls back to the V3 name and then to the V1/V2 layouts; any other fetch error fails the job.
+
+The name only selects. The verifier derives the document again from the base profile, the candidate profile, the
+candidate's blobs and the trusted records, with each path's binding taken from the fetched document. It requires
+the fetched bytes to equal the derived document exactly. Beyond the V3 refusals below, that gives two codes:
+
+| Refusal | What happened |
+| --- | --- |
+| `POLICY_DELTA_CLAIM_MISMATCH` | an added path's class, record id, record class, upstream, revision or licence differs from the claim its admission approved |
+| `POLICY_DELTA_CLAIM_UNRESOLVED` | an added path no longer resolves to any class (for example, its record no longer covers it) |
+| `POLICY_DELTA_ADDED_BYTES_MISMATCH` | a byte-bound path's bytes differ from the digest its admission approved |
+
+What it still protects:
+
+* An added or removed path still needs a delta on the private `main`. The candidate cannot supply it, and the
+  verifier refuses any profile change the delta does not record.
+* A claim cannot change silently. Editing the trusted record, or moving a path to a class the gate derives
+  differently, breaks the exact comparison. Because the record decides the claim, a contributor cannot edit their
+  way into another one.
+* A byte-identical import cannot drift. Its delta binds its bytes. After it lands, the `PROVENANCE.md` manifest
+  check holds it (see below).
+
+Limit: a claim-bound delta accepts any content for its paths, as long as the claim holds. It does so in every pull
+request whose profile change is exactly the one it records, and the verdict is for the exact head it ran on. That
+is the authority a landed path already has. Hosted CI, review and the publication audit still check the content.
+To withdraw an approval before the pull request lands, delete the V4 file from the private `main`.
+
+### Byte-identical manifest rows
+
+Every `PROVENANCE.md` in the candidate tree is read as a manifest. A table row whose kind says the file was imported
+byte-identical is checked against the candidate: its blob-ID column against the file's Git blob ID, and its
+SHA-256 column against the file's SHA-256. The check runs in both attestation paths, on every pull request,
+whether or not the profile changed:
+
+| Finding | What happened |
+| --- | --- |
+| `VENDORED_BYTES_DRIFT` | the file no longer matches its row |
+| `VENDORED_FILE_MISSING` | the row names a file the candidate does not carry |
+| `VENDORED_ROW_UNVERIFIABLE` | the row has no blob ID or SHA-256 to check against |
+| `VENDORED_ROW_REMOVED` | the base listed the file byte-identical, the candidate keeps the file but drops the row |
+| `VENDORED_ROW_RECLASSIFIED` | the base row became a kind other than LOCAL DELTA |
+| `VENDORED_ROW_REPINNED` | a row byte-identical in both base and candidate changed a cell or header: its blob ID, its SHA-256, or the upstream revision its header names |
+| `VENDORED_ROW_LOCAL_DELTA` | a base byte-identical row became a LOCAL DELTA row |
+| `VENDORED_MANIFEST_UNREADABLE` | the manifest is not UTF-8 |
+
+The candidate's manifest cannot vouch for itself over a landed import. Otherwise, rewriting a file and its pinned
+hash together would pass. A new pin (an upstream update) and a move to LOCAL DELTA (which changes the file's
+claim) are therefore both `maintainer_action` findings. They stay fatal until the maintainer approves the
+candidate's exact bytes in the trusted ledger. The approval is a `reviewed_blobs` entry for the path, at the
+SHA-256 of the new bytes, citing the path's own exact record. The verifier reads those entries only when such a
+change needs one. The trusted record's `upstream_revision` should be updated in the same private commit. A
+byte-identical file outside any manifest (for example a font) has no row to check, so after it lands it is held
+only by review.
+
 ### V3 policy deltas
 
-A V3 policy-delta authority records only what a pull request changes in the profile:
+V3 is the earlier byte-bound form. Admissions made before V4 left these, and the verifier still reads them; nothing
+writes one now. A V3 policy-delta authority records only what a pull request changes in the profile:
 
 ```json
 {
@@ -768,12 +887,12 @@ equal it exactly, and refuses, each with its own code:
 | `POLICY_DELTA_UNCLASSIFIED_PATH` | a removed exclusion leaves a file in the tree unclassified |
 | `POLICY_DELTA_UNAUTHORIZED` | the profile changes anything the delta does not record |
 | `CANDIDATE_POLICY_NOT_CANONICAL` | the candidate profile is not in canonical form |
-| `POLICY_DELTA_ARGUMENT_REQUIRED` | a V3 authority came with a blessed candidate policy, or a V1/V2 one without |
-| `POLICY_DELTA_LEGACY_ADDS_PATHS` | a V1/V2 record, which binds no bytes, tried to admit a path; re-key it to V3 |
+| `POLICY_DELTA_ARGUMENT_REQUIRED` | a V3 or V4 authority came with a blessed candidate policy, or a V1/V2 one without |
+| `POLICY_DELTA_LEGACY_ADDS_PATHS` | a V1/V2 record, which binds no claim or bytes, tried to admit a path; re-key it to V4 |
 
 Limits: `exclude_rationale` is one rule field, so two pull requests that each add an exclusion still conflict and
 the second needs a new delta; a removed `exclude_globs` or `exclude_prefixes` entry is refused whatever the delta
-says. To withdraw an approval before its pull request lands, delete the V3 file from the private `main` (a legacy
+says. To withdraw an approval before its pull request lands, delete its V4 or V3 file from the private `main` (a legacy
 V1/V2 record left beside it cannot admit the path either); reproducing an approved change needs the exact approved
 bytes.
 
@@ -786,7 +905,7 @@ python tools/admit_paths.py --policy-delta <pr-worktree> --approval-basis "<the 
 ```
 
 It reads the change from the profile at the merge-base with `origin/main` (or `--base`) to the profile at `HEAD`,
-writes a V3 authority, and records the approval basis in the private commit. It refuses a delta that adds a path
+writes a V4 authority, and records the approval basis in the private commit. It refuses a delta that adds a path
 (`POLICY_DELTA_ADDS_PATHS`: admit those instead), an empty delta, and a non-canonical profile. The delta stays valid
 when unrelated profile changes land; issue it again only if `main` changed one of its removed or excluded paths, or
 one of its changed rule fields, too.
