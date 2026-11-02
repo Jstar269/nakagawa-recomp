@@ -1665,6 +1665,22 @@ int main(int argc, char **argv) {
     assert(strcmp(session.memstick_root, "saves") != 0);
     assert(nk_platform_dir_exists(session.memstick_root));
 
+    /* 2b. An inherited SR_MEMSTICK is honoured, so a wrapper can redirect a launched title. */
+    {
+        const char *prev = getenv("SR_MEMSTICK");
+        char prev_copy[1024] = "";
+        char forced[900];
+        static NkLaunchSession forced_session;
+        bool had = prev != NULL;
+        if (had) snprintf(prev_copy, sizeof(prev_copy), "%s", prev);
+        snprintf(forced, sizeof(forced), "%s%cforced-ms", root1, sep);
+        set_environment_value("SR_MEMSTICK", forced);
+        assert(nk_launch_prepare_session(&forced_session, &game, root1) == NK_OK);
+        assert(strstr(forced_session.memstick_root, "forced-ms") != NULL);
+        assert(nk_platform_dir_exists(forced_session.memstick_root));
+        restore_environment_value("SR_MEMSTICK", prev_copy, had);
+    }
+
     /* 3. A .exe name still has its extension replaced, not appended to. */
     printf("[LAUNCH_TEST] Subtest 3: .exe extension is replaced\n");
     fflush(stdout);
