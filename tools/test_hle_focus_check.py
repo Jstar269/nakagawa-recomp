@@ -33,12 +33,12 @@ class FocusCheckTests(unittest.TestCase):
         source = self.dir / f"{name}.c"
         source.write_text(body, encoding="utf-8")
         obj = self.dir / f"{name}.o"
-        subprocess.run([CC, "-c", str(source), "-o", str(obj)], check=True)
+        subprocess.run([str(CC), "-c", str(source), "-o", str(obj)], check=True)
         return obj
 
     def link(self, *objects: Path) -> Path:
         exe = self.dir / "t.exe"
-        subprocess.run([CC, "-o", str(exe), *map(str, objects)], check=True)
+        subprocess.run([str(CC), "-o", str(exe), *map(str, objects)], check=True)
         return exe
 
     def build(self) -> tuple[Path, Path, Path, Path]:
@@ -49,7 +49,8 @@ class FocusCheckTests(unittest.TestCase):
         return a, b, c, main
 
     def run_check(self, exe: Path, include: list[str], required: list[str] | None = None) -> list[str]:
-        return hle_focus_check.check(exe, self.dir, include, [], required or [], NM, SOURCES)
+        problems: list[str] = hle_focus_check.check(exe, self.dir, include, [], required or [], NM, SOURCES)
+        return problems
 
     def test_focused_executable_passes(self) -> None:
         a, _, _, main = self.build()
