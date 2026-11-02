@@ -19,6 +19,7 @@ import time
 import unittest
 from typing import Sequence
 from urllib.parse import parse_qs, quote, urlsplit
+import zipfile
 import zlib
 
 
@@ -2762,6 +2763,47 @@ class NativePlayerUiTests(unittest.TestCase):
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "updates")
+
+    @staticmethod
+    def problem_report_steps(stdout: str) -> tuple[list[dict[str, str]], list[str]]:
+        """The Problem report phases the player settled on, and the file names it listed."""
+        steps = []
+        names = []
+        for line in stdout.splitlines():
+            if line.startswith("[PLAYER_UI_TEST] problem_report="):
+                steps.append(dict(re.findall(r"([a-z_]+)=(\S+)", line)))
+            elif line.startswith("[PLAYER_UI_TEST] problem_report_file="):
+                names.append(line.split("=", 1)[1])
+        return steps, names
+
+    def test_problem_report_page_previews_then_writes_one_local_bundle(self) -> None:
+        """#1849: the Problem report page lists every file with a size, Create writes the
+        ZIP on this PC, and the page then shows where it went."""
+        # The report tool refuses a data folder inside the repository, where the
+        # sandbox lies, so the regression build writes under a folder outside it.
+        with tempfile.TemporaryDirectory(prefix="nk-report-test-") as tmp:
+            env = {"NK_UI_TEST_REPORT_DATA_ROOT": tmp}
+            run = self.next_ui_run(
+                "problem-report", ("WAIT_MS=8000", "KEY_RETURN", "WAIT_MS=12000"), env_extra=env)
+            stdout = run["stdout"]
+            assert isinstance(stdout, str)
+            steps, names = self.problem_report_steps(stdout)
+            phases = [int(step["problem_report"]) for step in steps]
+            if 6 in phases:
+                self.skipTest("no Python interpreter on this host, so the page shows the command")
+            # 1 is listing, 2 previewed, 4 done (PlayerReportPhase).
+            self.assertEqual(phases[:1], [1], stdout)
+            self.assertIn(2, phases, stdout)
+            self.assertEqual(phases[-1], 4, stdout)
+            self.assertIn("about.txt", names)
+            written = Path(steps[-1]["path"])
+            self.assertEqual(written.parent, Path(tmp) / "reports", "nothing leaves this PC")
+            with zipfile.ZipFile(written) as bundle:
+                self.assertIn("about.txt", bundle.namelist())
+                self.assertEqual(sorted(bundle.namelist()), sorted(names[-len(bundle.namelist()):]))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "problem_report")
 
     def test_update_check_offline_shows_one_plain_card_and_no_retries(self) -> None:
         run, steps, requests = self.update_run(

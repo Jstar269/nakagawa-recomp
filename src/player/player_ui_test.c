@@ -45,7 +45,7 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "psp_fonts", VIEW_PSP_FONTS }, { "updates", VIEW_UPDATES },
         { "confirm_factory_reset", VIEW_CONFIRM_FACTORY_RESET },
         { "accessibility_settings", VIEW_ACCESSIBILITY_SETTINGS },
-        { "ace_settings", VIEW_ACE_SETTINGS }
+        { "ace_settings", VIEW_ACE_SETTINGS }, { "problem_report", VIEW_PROBLEM_REPORT }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -482,6 +482,7 @@ const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_CONFIRM_FACTORY_RESET: return "confirm_factory_reset";
     case VIEW_ACCESSIBILITY_SETTINGS: return "accessibility_settings";
     case VIEW_ACE_SETTINGS: return "ace_settings";
+    case VIEW_PROBLEM_REPORT: return "problem_report";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
     }
@@ -1032,8 +1033,8 @@ void player_ui_test_report_startup(const PlayerUiTest *t, const PlayerUiNk *next
         player_ui_nk_test_report_compatibility();
     }
     if (t->mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
-        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_ACE_SETTINGS. */
-        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_ACE_SETTINGS; ++view) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_PROBLEM_REPORT. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_PROBLEM_REPORT; ++view) {
             printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
                    player_ui_test_view_name((PlayerView)view),
                    player_ui_nk_draws_view(view) ? 1 : 0);
@@ -1100,8 +1101,26 @@ static const char *player_update_phase_name(PlayerUpdatePhase phase) {
     }
 }
 
+const char *player_ui_test_report_data_root(void) {
+    const char *root = getenv("NK_UI_TEST_REPORT_DATA_ROOT");
+    return root != NULL && root[0] != '\0' ? root : NULL;
+}
+
 void player_ui_test_report_update_phase(const PlayerUiTest *t, const PlayerApp *app) {
     static PlayerUpdatePhase reported = PLAYER_UPDATE_IDLE;
+    static PlayerReportPhase reported_report = PLAYER_REPORT_IDLE;
+    if (t->mode && app->report.phase != reported_report) {
+        reported_report = app->report.phase;
+        printf("[PLAYER_UI_TEST] problem_report=%d files=%d path=%s\n", (int)app->report.phase,
+               app->report.file_count, app->report.path[0] ? app->report.path : "none");
+        if (app->report.message[0]) {
+            printf("[PLAYER_UI_TEST] problem_report_message=%s\n", app->report.message);
+        }
+        for (int i = 0; i < app->report.file_count; ++i) {
+            printf("[PLAYER_UI_TEST] problem_report_file=%s\n", app->report.file_names[i]);
+        }
+        fflush(stdout);
+    }
     if (t->mode && app->update.phase != reported) {
         reported = app->update.phase;
         printf("[PLAYER_UI_TEST] update=%s error=%s notice=%d newest=%s zip=%s "

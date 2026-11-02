@@ -161,6 +161,9 @@ void player_ui_test_begin_first_frame(PlayerUiTest *t);
 void player_ui_test_end_first_frame(PlayerUiTest *t, const PlayerApp *app,
                                     SDL_Renderer *renderer, const char *invalid_disc_message);
 void player_ui_test_report_update_phase(const PlayerUiTest *t, const PlayerApp *app);
+/* The regression build writes its problem report under this folder (the sandbox lies inside the
+   repository, which the report tool refuses) and leaves the toolchain check (up to 90 s) out; NULL elsewhere. */
+const char *player_ui_test_report_data_root(void);
 /* One frame's scripted step: the waits, the assertions and the next event. */
 void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app, SDL_Renderer *renderer,
                                 bool *running, bool background_pending);
@@ -246,6 +249,7 @@ static inline void player_ui_test_report_update_phase(const PlayerUiTest *t,
                                                       const PlayerApp *app) {
     (void)t; (void)app;
 }
+static inline const char *player_ui_test_report_data_root(void) { return NULL; }
 static inline void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app,
                                               SDL_Renderer *renderer, bool *running,
                                               bool background_pending) {
