@@ -17,7 +17,7 @@ import hle_sources  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SELFTEST_C = ROOT / "src" / "rt" / "asset_index_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "asset_index_selftest.c"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
 

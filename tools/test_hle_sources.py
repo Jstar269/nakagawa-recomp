@@ -230,7 +230,7 @@ class FailClosedTests(unittest.TestCase):
     def test_unlisted_hle_file_is_reported(self) -> None:
         files = self._complete()
         files["src/rt/hle_extra.c"] = "int z;\n"
-        files["src/rt/hle_thread_selftest.c"] = "int t;\n"
+        files["tests/native/hle_thread_selftest.c"] = "int t;\n"
         self.assertEqual(hle_sources.unlisted_hle_files(self._tree(files)), ["src/rt/hle_extra.c"])
 
 
@@ -272,7 +272,7 @@ class PathConstantGuardTests(unittest.TestCase):
         source = (
             '"""Reads src/rt/hle.c."""\n'
             'def f():\n    """hle.c"""\n    return "h_X not found in src/rt/hle.c"\n'
-            'SELFTEST = "src/rt/hle_thread_selftest.c"\n'
+            'SELFTEST = "tests/native/hle_thread_selftest.c"\n'
         )
         self.assertEqual(hle_sources.hle_source_path_constants(source), [])
 

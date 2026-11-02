@@ -4,7 +4,7 @@
 
 """Behavioral + wiring coverage for the guest code-address dispatch table (issue #45).
 
-Layer 1 (behavioral): compile and run ``src/rt/dispatch_selftest.c`` against the real
+Layer 1 (behavioral): compile and run ``tests/native/dispatch_selftest.c`` against the real
 primitives in ``src/rt/dispatch_table.h`` -- register/look up address 0 as a first-class
 key, hash collisions involving 0 (both orders), L1 caching, re-registration, and the
 proof that a real function at address 0 executes while an unregistered lookup does not.
@@ -29,7 +29,7 @@ import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 RT = ROOT / "src" / "rt"
-SELFTEST_C = RT / "dispatch_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "dispatch_selftest.c"
 DISPATCH_H = (RT / "dispatch_table.h").read_text(encoding="utf-8")
 RECOMP_C = (RT / "recomp.c").read_text(encoding="utf-8")
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
@@ -186,7 +186,7 @@ class TestDispatchWiring(unittest.TestCase):
                         "hook-table regression guard did not detect its mutation")
 
     def test_hostile_target_matrix_is_source_owned(self):
-        isolation = (ROOT / "src" / "rt" / "dispatch_isolation_selftest.c").read_text(encoding="utf-8")
+        isolation = (ROOT / "tests" / "native" / "dispatch_isolation_selftest.c").read_text(encoding="utf-8")
         self.assertIn("0x33000010u", isolation)
         self.assertIn("test_historical_target_shapes_fail_closed", isolation)
 
@@ -366,7 +366,10 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
             (HLE, "link_started_export"),
             ("funcdiff.c", "main"),
         },
-        "dispatch_call_try": {("domain_mode.c", "sr_import_call_guest")},  # the stub's resume
+        "dispatch_call_try": {
+            ("domain_mode.c", "sr_import_call_guest"),  # the stub's resume
+            ("snapshot_runner.c", "main"),              # one snapshot call, $ra = host return (#1842)
+        },
         "dispatch_call": set(),
         "dispatch": {("vfpu_fuzz.c", "check_unaligned_dispatch")},  # the VFPU fallback tag
     }

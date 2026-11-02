@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import codegen
 import scratch_dir
 FIXTURE = ROOT / "fixtures" / "vfpu_addressing" / "hardware_vfpu_addr_001.json"
-SELFTEST = ROOT / "src" / "rt" / "vfpu_addr_selftest.c"
+SELFTEST = ROOT / "tests" / "native" / "vfpu_addr_selftest.c"
 
 WIDTHS = (1, 2, 3, 4)
 ENCODINGS = range(128)

@@ -917,7 +917,7 @@ class LiveManifestTests(unittest.TestCase):
             0xB29DDF9C: (
                 "h_IoDopen",
                 [
-                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "tests/native/hle_thread_selftest.c:test_umd_io_console_model",
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)",
                 ],
             ),
@@ -926,7 +926,7 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
                     "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-seek64, io-seek64-rdwr)",
-                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
+                    "tests/native/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x109F50BC: (
@@ -935,7 +935,7 @@ class LiveManifestTests(unittest.TestCase):
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)",
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
                     "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-missing-parent, io-excl-new, io-excl-existing)",
-                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
                 ],
             ),
         }
@@ -964,30 +964,30 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write)",
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
-                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
-                    "src/rt/hle_thread_selftest.c:test_io_async_and_path_imports",
+                    "tests/native/hle_thread_selftest.c:test_umd_io_console_model",
+                    "tests/native/hle_thread_selftest.c:test_io_async_and_path_imports",
                 ],
             ),
             0xEB092469: (
                 "h_IoDclose",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0004 and io-dopen-0005 close results)",
-                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "tests/native/hle_thread_selftest.c:test_umd_io_console_model",
                 ],
             ),
             0x6A638D83: (
                 "h_IoRead",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
-                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
-                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
+                    "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "tests/native/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x42EC03AC: (
                 "h_IoWrite",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write and io-append)",
-                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
                 ],
             ),
         }
@@ -1042,7 +1042,7 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["status"], "partial")
                 evidence = meta.HANDLER_EVIDENCE[handler]
                 self.assertTrue(any(e.startswith("docs/HARDWARE_ORACLE.md (PSP-") for e in evidence))
-                self.assertTrue(any(e.startswith("src/rt/hle_thread_selftest.c:test_") for e in evidence))
+                self.assertTrue(any(e.startswith("tests/native/hle_thread_selftest.c:test_") for e in evidence))
                 self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
                 self._assert_cited_cells_are_manifest_cells(evidence)
                 self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
@@ -1056,18 +1056,18 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["status"], "partial")
                 evidence = meta.HANDLER_EVIDENCE[handler]
                 self.assertTrue(any(f"PSPAutotests {expected_file} at 2ed7c9c5" in e for e in evidence))
-                self.assertTrue(any(e.startswith("src/rt/hle_thread_selftest.c:test_") for e in evidence))
+                self.assertTrue(any(e.startswith("tests/native/hle_thread_selftest.c:test_") for e in evidence))
                 self.assertTrue(meta.HANDLER_LIMITATIONS[handler].strip())
                 self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
 
     def test_route_a_batches_eleven_and_twelve_leave_uncovered_contracts_unreviewed(self) -> None:
         # The oracle cells use CreateThread/StartThread only as setup, the WritebackInvalidate
-        # range variant is not measured, and AllocPartitionMemory diverges from
-        # sysmem/partition.expected (NULL name, partition, type and size validation, High
-        # placement). None of them may ride along with the batches above.
+        # range variant is not measured. None of them may ride along with the batches above.
+        # AllocPartitionMemory left this list in the later #341 batch: its partition and type
+        # refusals now follow partition.expected, and the NULL-name and placement divergences
+        # are named in its partial limitation instead of keeping it unreviewed.
         for nid, handler in ((0x446D8DE6, "h_CreateThread"), (0xF475845D, "h_StartThread"),
-                             (0x34B9FA9E, "h_DcacheWritebackInvalidateRange"),
-                             (0x237DBD4F, "h_AllocPartitionMemory")):
+                             (0x34B9FA9E, "h_DcacheWritebackInvalidateRange")):
             with self.subTest(handler=handler):
                 self.assertEqual(self.regs[nid]["handler"], handler)
                 self.assertEqual(self.regs[nid]["status"], "unreviewed")
@@ -2415,6 +2415,55 @@ class CensusTests(unittest.TestCase):
             with self.assertRaises(ManifestError) as ctx:
                 hle_manifest.validate_meta(self.raw_regs)
             self.assertIn("has no named limitation", str(ctx.exception))
+
+    def test_new_partial_without_evidence_is_rejected(self) -> None:
+        self.assertNotIn("h_DisplayGetFrameBuf", meta.HANDLER_EVIDENCE)
+        with mock.patch.dict(meta.HANDLER_STATUS, {"h_DisplayGetFrameBuf": "partial"}), \
+                mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_DisplayGetFrameBuf": "a limit (#341)"}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("cites no evidence", str(ctx.exception))
+
+    def test_ratchet_entry_that_gained_evidence_is_rejected(self) -> None:
+        self.assertIn("h_DmacMemcpy", meta.PARTIAL_WITHOUT_EVIDENCE)
+        with mock.patch.dict(meta.HANDLER_EVIDENCE, {"h_DmacMemcpy": ["tools/hle_manifest.py"]}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("now cites evidence", str(ctx.exception))
+
+    def test_ratchet_entry_that_left_partial_is_rejected(self) -> None:
+        with mock.patch.dict(meta.HANDLER_STATUS, {"h_DmacMemcpy": "unreviewed"}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("no longer a partial or compatibility handler", str(ctx.exception))
+
+    def test_cited_oracle_id_must_exist(self) -> None:
+        with mock.patch.dict(
+            meta.HANDLER_EVIDENCE,
+            {"h_DisplaySetFrameBuf": ["docs/HARDWARE_ORACLE.md (PSP-NOSUCH-ROW-999)"]},
+        ):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("PSP-NOSUCH-ROW-999", str(ctx.exception))
+
+    def test_interrupt_display_timer_ctrl_batch_has_evidence_and_named_limits(self) -> None:
+        """The #341 graduation batch: each handler cites evidence and names what is unmeasured."""
+        batch = (
+            "h_CpuSuspendIntr", "h_CpuResumeIntr", "h_CpuResumeIntrWithSync",
+            "h_CpuIsIntrSuspended", "h_DisplayGetAccumulatedHcount", "h_DisplayGetVcount",
+            "h_SetVTimerHandler", "h_SetVTimerHandlerWide", "h_CancelVTimerHandler",
+            "h_AllocPartitionMemory", "h_CtrlReadBuffer", "h_CtrlPeekBufferPositive",
+            "h_CtrlReadBufferNegative", "h_CtrlPeekBufferNegative",
+        )
+        for handler in batch:
+            with self.subTest(handler=handler):
+                self.assertEqual(meta.HANDLER_STATUS.get(handler), "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE.get(handler))
+                self.assertIn("#341", meta.HANDLER_LIMITATIONS.get(handler, ""))
+                self.assertNotIn(handler, meta.PARTIAL_WITHOUT_EVIDENCE)
+        # The profile-zero imports that moved off `unreviewed` leave the allowlist.
+        for nid in (0x092968F4, 0x5F10D406, 0x237DBD4F, 0x1F803938):
+            self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
 
     def test_census_is_deterministic(self) -> None:
         c1 = hle_manifest.build_census(self.manifest)

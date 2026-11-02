@@ -314,7 +314,8 @@ static int parse_indexed_register(const char *name, char prefix, uint32_t *index
     char *end = NULL;
     errno = 0;
     unsigned long long val = strtoull(name + 1, &end, 10);
-    if (errno != 0 || !end || end == name + 1 || *end != '\0' || val > 31ULL) return 0;
+    const unsigned long long maximum = prefix == 'v' ? 127ULL : 31ULL;
+    if (errno != 0 || !end || end == name + 1 || *end != '\0' || val > maximum) return 0;
     *index = (uint32_t)val;
     return 1;
 }
@@ -415,6 +416,7 @@ static void seed_from_init(const char *trace_path, CpuState *s) {
                 if (parse_hex32(val_str, &val)) {
                     if (parse_indexed_register(name, 'r', &idx)) s->r[idx] = val;
                     else if (parse_indexed_register(name, 'f', &idx)) s->fi[idx] = val;
+                    else if (parse_indexed_register(name, 'v', &idx)) s->vi[idx] = val;
                     else if (strcmp(name, "hi") == 0) s->hi = val;
                     else if (strcmp(name, "lo") == 0) s->lo = val;
                     else if (strcmp(name, "fcr31") == 0) s->fcr31 = val;

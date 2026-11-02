@@ -519,6 +519,7 @@ def evaluate_teardown_snapshots(
     host0_capture_complete: bool = True,
     module_threads_available: bool = True,
     exprint_command_status: str = "NOT_RUN",
+    exprint_reply: str = "",
 ) -> dict[str, object]:
     """Compare owned teardown state and retain allocator deltas as diagnostics.
 
@@ -669,6 +670,7 @@ def evaluate_teardown_snapshots(
         "memory_free_deltas_diagnostic_only": True,
         "exprint_status": "NOT_RUN",
         "exprint_command_status": exprint_command_status,
+        "exprint_reply": exprint_reply,
     }
 
 
@@ -2782,6 +2784,7 @@ class PsplinkCampaignRunner:
                 ),
                 module_threads_available=module_thread_problem is None,
                 exprint_command_status=exprint[3],
+                exprint_reply=exprint[1],
             ),
         )
         teardown_report["modstun_reply"] = self.last_modstun_reply

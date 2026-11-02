@@ -237,7 +237,7 @@ bool nk_title_manifest_aot_package_cache_identity(
  *   runtime_source_digest  cache.key.native.components: the runtime, core and
  *                          player C sources, the Makefile and assets/vfpu
  *                          (tools/nk_core/package_cache.py source_tree_digest)
- *   analyzer_sha256        cache.key.aot.components: tools/analyze.py
+ *   analyzer_sha256        cache.key.aot.components: tools/analyze.py and tools/analyze_cfg.py
  *   codegen_sha256         cache.key.aot.components: tools/codegen.py
  *   planner_sha256         cache.codegen_options: tools/title_codegen_plan.py
  *

@@ -19,8 +19,9 @@
    - the NT_DATA_BYTES bytes at NT_DATA_BASE start zero and are the only memory a
      fixture reads or writes;
    - no word names r26, r27 or r28 (the probe's trampoline holds its state pointer in
-     r28), no word is a coprocessor, trap, syscall or likely-in-delay-slot form, and no
-     delay slot holds a control transfer. */
+     r28); the FPU and VFPU fixtures use only their selected state registers; unlisted
+     coprocessor, trap and syscall forms are unsupported; no word is a likely-in-delay-slot
+     form, and no delay slot holds a control transfer. */
 
 #ifndef NT_INSN_TRACE_FIXTURES_H
 #define NT_INSN_TRACE_FIXTURES_H
@@ -31,6 +32,16 @@
 #define NT_DATA_BYTES 0x1000u
 #define NT_HI_INIT 0x0badf00du
 #define NT_LO_INIT 0x13579bdfu
+#define NT_FPU_F0_INIT 0x3fc00000u
+#define NT_FPU_F1_INIT 0x40100000u
+#define NT_FPU_F2_INIT 0x00000000u
+#define NT_FPU_F3_INIT 0x00000000u
+#define NT_FCR_INIT 0x00000000u
+#define NT_VFPU_S000_INIT 0x3f000000u
+#define NT_VFPU_S001_INIT 0x40000000u
+#define NT_VFPU_S002_INIT 0x00000000u
+#define NT_VFPU_S003_INIT 0x00000000u
+#define NT_VFPU_S200_INIT 0x40400000u
 
 /* alu-branch-ls: a five-pass loop of ALU, shift, compare, multiply and every load/store
    width, closed by bne with a delay slot, then a signed load, a variable shift, nor and
@@ -109,6 +120,25 @@ static const uint32_t nt_delay_slots_words[] = {
     0x24150015u, /* addiu $21, $0, 21 */
 };
 
+/* fpu-state: add.s updates f2 from the seeded f0/f1 words, mfc1 transfers the
+   raw result to r8, c.eq.s updates FCC0, and cfc1 exposes FCR31 in r9. */
+static const uint32_t nt_fpu_state_words[] = {
+    0x46010080u, /* add.s $f2, $f0, $f1 */
+    0x44081000u, /* mfc1 $8, $f2 */
+    0x46021032u, /* c.eq.s $f2, $f2 */
+    0x4449f800u, /* cfc1 $9, $31 */
+};
+
+/* vfpu-state: mfv reads seeded S000, S001 and S200 raw words to r11/r12/r14,
+   mtv writes S000 from r10, then mfv reads the new word back. No prefixes are used. */
+static const uint32_t nt_vfpu_state_words[] = {
+    0x486b0000u, /* mfv $11, S000 */
+    0x486c0020u, /* mfv $12, S001 */
+    0x486e0008u, /* mfv $14, S200 */
+    0x48ea0000u, /* mtv $10, S000 */
+    0x486b0000u, /* mfv $11, S000 */
+};
+
 typedef struct NtFixture {
     const char *id;
     uint32_t base;
@@ -116,11 +146,13 @@ typedef struct NtFixture {
     const uint32_t *words;
 } NtFixture;
 
-#define NT_FIXTURE_COUNT 2u
+#define NT_FIXTURE_COUNT 4u
 
 static const NtFixture nt_fixtures[NT_FIXTURE_COUNT] = {
     {"alu-branch-ls", 0x08900000u, 29u, nt_alu_branch_ls_words},
     {"delay-slots", 0x08910000u, 35u, nt_delay_slots_words},
+    {"fpu-state", 0x08920000u, 4u, nt_fpu_state_words},
+    {"vfpu-state", 0x08930000u, 5u, nt_vfpu_state_words},
 };
 
 #endif

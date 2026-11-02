@@ -10,7 +10,7 @@ Nakagawa Recomp is an independent project. It is not affiliated with or endorsed
 Sony Interactive Entertainment, Clap Hanz, or any game publisher. PlayStation and
 PSP are trademarks of Sony Interactive Entertainment Inc., and game titles are
 trademarks of their owners; they are named only to say what the project works
-with. The repository contains no game files, firmware or system fonts. Users
+with. The repository contains no game files, firmware or Sony system fonts. Users
 supply their own game; Nakagawa decrypts it locally with the public game key
 tables PPSSPP ships, never downloads games, and never decrypts firmware.
 
@@ -106,7 +106,7 @@ We aim to respond promptly and will remove material where appropriate.
   system component, and links none of it. Build notes are in `docs/PLATFORM_PORTABILITY.md`.
 - **SDL3** — zlib; used by the optional host renderer/audio integration. The
   first public profile excludes the sal063-derived `src/rt/audio.c` backend and
-  links `src/rt/audio_unavailable.c` instead.
+  links `src/rt/audio_sdl3.c` instead.
 - **Vulkan** — Apache-2.0 loader/header ecosystem; this repository does not
   redistribute a Vulkan SDK or loader binary.
 - **VFPU tables** — PPSSPP-origin lookup data with the exact source and checksums

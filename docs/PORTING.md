@@ -288,7 +288,7 @@ runtime and dispatch source.
 The inventory is *not* an executable proof of unsupported-interpreter fail-closed; that
 property is proven by the production interpreter floor (`src/rt/guest_interp.c`) through
 `fixtures/cosim/cosim_selftest.c` (fail-closed negative corpus, control sweep, jalr link
-shape, form census) and `src/rt/dispatch_isolation_selftest.c`. Retirement work was
+shape, form census) and `tests/native/dispatch_isolation_selftest.c`. Retirement work was
 tracked by [issue #98](https://github.com/Jstar269/nakagawa-recomp/issues/98), now closed. (This
 previously cited #20, which is a merged pull request about `sceSasCore` routing and has
 no relation to this surface — so the surface had no tracker at all.)
@@ -315,7 +315,7 @@ is bound to a local or assigned into a `CpuState` register first, so the extract
 direct-literal regex matched none of them. The gate now also recognizes those indirect
 shapes (`bound_local`, `cpu_state_register`); its grammar and its explicit limits are
 documented in `tools/test_compat_manifest.py` (static inventory — see executable
-fail-closed coverage in `fixtures/cosim/` and `src/rt/dispatch_isolation_selftest.c`).
+fail-closed coverage in `fixtures/cosim/` and `tests/native/dispatch_isolation_selftest.c`).
 Historical diagnostic census (now retired):
 
 | Group | Bucket | Addresses | Sites |
@@ -424,7 +424,7 @@ format validation without title-specific disc ID confirmation.
 `SR_CALL_GUEST_STACK` (`src/rt/hle.c`) and the equivalent literal in `src/rt/mpeg.c`
 gave every nested guest call the same fixed guest stack address, `0x09df8000`. Three
 consequences were measured executably before the fix
-(`src/rt/hle_thread_selftest.c`): an inner call destroyed the outer body's guest
+(`tests/native/hle_thread_selftest.c`): an inner call destroyed the outer body's guest
 locals; two *different* threads each only one level deep collided, because the
 marshalling is scheduler-preemptible at any `SR_YIELD`; and `0x09df8000` was inside
 the descending arena `sceKernelCreateThread` carves guest thread stacks from — the

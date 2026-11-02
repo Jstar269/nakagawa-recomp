@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-import inspect
 from pathlib import Path
 import re
 import sys
@@ -10,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import codegen_hst_stubs
 
 
 def require_match(pattern: str, text: str, flags: int = 0) -> "re.Match[str]":
@@ -33,28 +33,28 @@ class RetailAllocatorTranslationTests(unittest.TestCase):
         Translating either body therefore corrupts the host free list even though the
         malloc/free entry points themselves are bridged.
         """
-        source = inspect.getsource(codegen)
-        malloc_stub = require_match(r"if hst_profile and a == 0x00010738:.*?continue", source, re.S)
-        self.assertIn("s->r[31] == 0x000104d0u", malloc_stub.group(0))
-        self.assertIn("MEM_R32(s->r[29] + 0x00000004u)", malloc_stub.group(0))
-        self.assertIn("owner_ra == 0x00000bf4u", malloc_stub.group(0))
-        self.assertIn("owner_ra == 0x00000c5cu", malloc_stub.group(0))
-        self.assertIn("MEM_R32(s->r[29] + 0x0000001cu)", malloc_stub.group(0))
-        self.assertIn("sr_newlib_malloc(s->r[5], owner_ra)", malloc_stub.group(0))
-        free_stub = require_match(r"if hst_profile and a == 0x0000f538:.*?continue", source, re.S)
-        self.assertIn("s->r[31] == 0x00010500u", free_stub.group(0))
-        self.assertIn("MEM_R32(s->r[29] + 0x00000004u)", free_stub.group(0))
-        self.assertIn("owner_ra == 0x00000a14u", free_stub.group(0))
-        self.assertIn("MEM_R32(s->r[29] + 0x0000001cu)", free_stub.group(0))
-        self.assertIn("sr_newlib_free(s->r[5], owner_ra)", free_stub.group(0))
-        memalign_stub = require_match(r"if hst_profile and a == 0x000101c4:.*?continue", source, re.S)
+        stubs = codegen_hst_stubs.HST_CUSTOM_STUBS
+        malloc_stub = stubs[0x10738]
+        self.assertIn("s->r[31] == 0x000104d0u", malloc_stub)
+        self.assertIn("MEM_R32(s->r[29] + 0x00000004u)", malloc_stub)
+        self.assertIn("owner_ra == 0x00000bf4u", malloc_stub)
+        self.assertIn("owner_ra == 0x00000c5cu", malloc_stub)
+        self.assertIn("MEM_R32(s->r[29] + 0x0000001cu)", malloc_stub)
+        self.assertIn("sr_newlib_malloc(s->r[5], owner_ra)", malloc_stub)
+        free_stub = stubs[0xF538]
+        self.assertIn("s->r[31] == 0x00010500u", free_stub)
+        self.assertIn("MEM_R32(s->r[29] + 0x00000004u)", free_stub)
+        self.assertIn("owner_ra == 0x00000a14u", free_stub)
+        self.assertIn("MEM_R32(s->r[29] + 0x0000001cu)", free_stub)
+        self.assertIn("sr_newlib_free(s->r[5], owner_ra)", free_stub)
+        memalign_stub = stubs[0x101C4]
         self.assertIn(
-            "sr_newlib_memalign(s->r[5], s->r[6], s->r[31])", memalign_stub.group(0)
+            "sr_newlib_memalign(s->r[5], s->r[6], s->r[31])", memalign_stub
         )
-        realloc_stub = require_match(r"if hst_profile and a == 0x00013524:.*?continue", source, re.S)
+        realloc_stub = stubs[0x13524]
         self.assertIn(
             "sr_newlib_realloc(s->r[5], s->r[6], s->r[31])",
-            realloc_stub.group(0),
+            realloc_stub,
         )
 
     def test_public_wrappers_translate_retail_callees(self):

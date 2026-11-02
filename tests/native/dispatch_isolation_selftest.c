@@ -1,0 +1,2357 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 the Nakagawa Recomp authors
+
+/*
+ * Executable isolation tests for the two typed dispatch bindings that title
+ * configuration owns: DISPATCH ALIASES and CALLBACK TERMINATORS.
+ *
+ * Standalone host executable, no game inputs required. The harness #includes recomp.c
+ * and drives the real production dispatch core. The executable-span case enters the
+ * public dispatch() wrapper itself; expected rejection cases use dispatch_try() so the
+ * harness can assert the state that the wrapper would otherwise terminate on. Setup and
+ * entry are test-specific (a synthetic CpuState, synthetic registered bodies), so this
+ * is production-helper/white-box evidence, tier 2.
+ *
+ * The same source is built once per title configuration by the Makefile matrix:
+ *
+ *   generic    -- no title configuration; both collections empty
+ *   fixture-a  -- assets/titles/pspdev-phase5.json
+ *   fixture-b  -- assets/titles/synthetic.json  (a DISJOINT synthetic address family)
+ *
+ * Almost every assertion is derived from sr_title_config() at run time rather than
+ * hardcoded, so one source proves "only what THIS build configures acts, and nothing
+ * else does" for all three builds. The one deliberate exception is the retired-binding
+ * test: the guest addresses generic dispatch hardcoded before this configuration path
+ * existed. No configuration here declares them, so every build must treat them as
+ * ordinary traffic -- that is the zero-collision claim, and it can only be stated by
+ * naming the numbers. They appear HERE, in a test that proves they are inert, and
+ * nowhere in generic runtime code; tools/test_title_runtime_config.py enforces both
+ * halves of that sentence.
+ *
+ * dispatch() writes diagnostics to stderr on the miss and null-call paths. That output
+ * is expected; the exit code is the result.
+ */
+
+#include "sr_coro.h"
+#include "recomp.c"   /* white-box: the real dispatch() and its hook tables */
+
+/* No GE renderer is linked by this dispatch-only harness. */
+volatile int g_sr_vram_read_pending;
+void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+
+#include <stdlib.h>
+#include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <wchar.h>
+#else
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+/* ---- stubs for runtime symbols recomp.c references -------------------------------- */
+
+uint32_t g_sr_debug = 0;
+SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
+int g_sr_mem_watch_count = 0;
+int g_sr_metadata_watch = 0;
+uint32_t g_sr_mem_watch_context_pc = 0;
+unsigned g_sr_mem_watch_context_limit = 0;
+unsigned g_sr_mem_watch_context_count = 0;
+int g_sr_mem_watch_context_fpr = -1;
+uint32_t g_sr_mem_watch_context_fpr_value = 0;
+uint32_t g_sr_store_context_pc = 0;
+unsigned g_sr_store_context_count = 0;
+unsigned g_sr_store_context_limit = 0;
+int g_sr_store_context_mem_gpr = -1;
+uint32_t g_sr_store_context_mem_offset = 0;
+unsigned g_sr_store_context_mem_words = 0;
+int g_sr_last_writer_enabled = 0;
+void sr_note_mem_write(uint32_t addr, uint32_t width, uint32_t val, uint32_t pc) {
+    (void)addr; (void)width; (void)val; (void)pc;
+}
+CpuState *s_cpu = NULL;
+int sr_sched_on = 0;
+atomic_int_least32_t sr_timeslice;
+
+/* A test may name a current guest thread; the dispatch core must never stop it on its own. */
+static uint32_t g_current_uid = 0u;
+static int g_thread_stops = 0;
+uint32_t sched_current_uid(void) { return g_current_uid; }
+void sched_exit_current(int32_t status) { (void)status; g_thread_stops++; }
+void sched_exit_current_delete(int32_t status) { (void)status; g_thread_stops++; }
+uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) { (void)uid; (void)arglen; (void)argp; return 0; }
+uint32_t sched_terminate_thread(uint32_t uid) { (void)uid; g_thread_stops++; return 0; }
+uint32_t sched_delete_thread(uint32_t uid) { (void)uid; return 0; }
+uint32_t sched_thread_wakeup(uint32_t uid) { (void)uid; return 0; }
+void sched_set_current_join_target(uint32_t uid) { (void)uid; }
+void sched_clear_current_join_target(void) {}
+int sched_take_current_join_result(uint32_t uid, uint32_t *result_out) { (void)uid; (void)result_out; return 0; }
+uint32_t sr_get_ge_status(void) { return 0u; }
+/* Synthetic registry inputs for the real dispatch bridge (#593). Retirement
+ * changes the resolver answer, as the HLE lifecycle does; this harness does
+ * not claim to exercise the module-unload syscall itself. */
+#define LATE_STUB_A 0x007b0000u
+#define LATE_STUB_B 0x007b0010u
+#define LATE_EXPORT_A 0x006b0000u
+#define LATE_EXPORT_B 0x006b0010u
+static uint32_t g_late_export_a;
+static uint32_t g_late_export_b;
+static unsigned g_late_resolutions;
+uint32_t sr_hle_resolve_late_import(uint32_t target) {
+    if (target == LATE_STUB_A || target == LATE_STUB_B) {
+        g_late_resolutions++;
+        return target == LATE_STUB_A ? g_late_export_a : g_late_export_b;
+    }
+    return 0u;
+}
+uint32_t sr_syscall(CpuState *s, uint32_t nid) { (void)s; (void)nid; return 0u; }
+void sr_yield(CpuState *s) { (void)s; }
+int sr_vfpu_interp(CpuState *s, uint32_t op) { (void)s; (void)op; return 0; }
+uint64_t SDL_GetTicksNS(void) { return 0u; }
+
+/* ---- harness ---------------------------------------------------------------------- */
+
+static int g_failures = 0;
+
+#define CHECK(cond, ...) do {                                            \
+    if (!(cond)) {                                                       \
+        g_failures++;                                                    \
+        fprintf(stderr, "FAIL %s:%d: ", __func__, __LINE__);             \
+        fprintf(stderr, __VA_ARGS__);                                    \
+        fprintf(stderr, "\n");                                           \
+    }                                                                    \
+} while (0)
+
+/* A synthetic call site far from every hook key, PLT window and diagnostic PC in
+ * dispatch(), so a probe measures the binding under test and nothing else. */
+#define PROBE_PC 0x00500000u
+#define PROBE_RA 0x00500040u
+
+/* Source-owned executable bytes for the production interpreter-floor regression.
+ * This range is disjoint from every public title fixture and from PROBE_PC/PROBE_RA.
+ * The program writes a value through guest memory, reads it back, returns through
+ * `jr $ra`, and increments v0 in the return delay slot:
+ *
+ *   addiu t0, zero, 0x1234
+ *   sw    t0, 0(a0)
+ *   lw    v0, 0(a0)
+ *   jr    ra
+ *   addiu v0, v0, 1
+ *
+ * Before the interpreter floor exists, dispatch() fabricates v0=0 and advances the
+ * caller PC by eight, so this test is an executable FAILING_BEFORE. The future span
+ * registry defines SR_HAS_EXEC_SPAN_REGISTRY and must require this explicit range;
+ * interpreting arbitrary arena bytes is not an acceptable way to make the test pass. */
+#define INTERP_EXEC_START 0x00600000u
+#define INTERP_EXEC_END   (INTERP_EXEC_START + 20u)
+#define INTERP_DATA_ADDR  0x00601000u
+#define WATCH_AOT_PC      0x00608004u
+#define INTERP_REJECT_ADDR 0x00602000u
+#define INTERP_UNOWNED_AOT_ADDR 0x00603000u
+#define INTERP_PARTIAL_AOT_ADDR 0x00604000u
+
+/* A production CALL regression: the native caller owns a live frame while the
+ * interpreted callee returns to an interior continuation. The callee also owns a
+ * small frame and changes $ra in its return delay slot, so matching the live $ra
+ * after the delay slot is intentionally not sufficient. */
+#define INTERP_CALL_EXEC_START 0x00610000u
+#define INTERP_CALL_RESUME     (INTERP_CALL_EXEC_START + 0x24u)
+#define INTERP_CALL_EXEC_END   (INTERP_CALL_EXEC_START + 0x3cu)
+#define INTERP_CALL_DATA_ADDR  0x00611000u
+#define INTERP_CALL_STACK      0x00410000u
+#define INTERP_CALLER_AOT_ADDR 0x00620000u
+
+/* Disjoint interpreter-owned tail-transfer cells. */
+#define INTERP_TAIL_EXEC_START 0x00640000u
+#define INTERP_TAIL_EXEC_END   (INTERP_TAIL_EXEC_START + 0x3cu)
+#define INTERP_TAIL_J_TARGET   (INTERP_TAIL_EXEC_START + 0x10u)
+#define INTERP_TAIL_JR_ENTRY   (INTERP_TAIL_EXEC_START + 0x20u)
+#define INTERP_TAIL_JR_TARGET  (INTERP_TAIL_EXEC_START + 0x30u)
+
+/* Source-owned high virtual executable module: the architectural class of a
+ * build-time-translated extra PSP module (analyzer-owned load slots such as
+ * 0x32200000) whose bytes exist only inside its own file, never in the flat
+ * guest arena. Ownership of this range is lawful; interpreter fetch backing is
+ * not present and must never be fabricated. Disjoint from every other fixture
+ * range, probe address, and public title fixture family in this file. */
+#define INTERP_HIGH_EXEC_START  0x32200000u
+#define INTERP_HIGH_EXEC_END    (INTERP_HIGH_EXEC_START + 0x20u)
+#define INTERP_HIGH_AOT_ADDR    (INTERP_HIGH_EXEC_START + 0x08u)
+#define INTERP_HIGH_MISS_ADDR   (INTERP_HIGH_EXEC_START + 0x10u)
+/* A low mapped-RAM neighbour used to prove that registering an out-of-arena
+ * module span leaves ordinary low execution tiers fully working. */
+#define INTERP_LOW_NEIGHBOR     0x00605000u
+
+/* How many times a registered synthetic body was entered. */
+static int g_body_hits = 0;
+static void synthetic_body(CpuState *s) { (void)s; g_body_hits++; }
+
+#define ABI_CALL_TARGET 0x00670000u
+#define ABI_CALL_SITE   0x00670004u
+#define ABI_CALL_RESUME 0x00670008u
+
+static void synthetic_callee_clobbers_saved_gprs(CpuState *s) {
+    for (unsigned reg = 16u; reg <= 23u; reg++)
+        s->r[reg] = 0xcccc0000u + reg;
+    s->r[30] = 0xcccc0030u;
+}
+
+static unsigned g_alias_fatal_body_calls;
+static unsigned g_alias_fatal_body_fallthroughs;
+
+static void synthetic_alias_fatal_body(CpuState *s) {
+    g_alias_fatal_body_calls++;
+    if (sr_cpu_raise_exception(s, SR_EXC_SYS, s->pc, s->pc,
+                               0u, 0u, 0u) < 0)
+        return;
+    g_alias_fatal_body_fallthroughs++;
+}
+
+static void own_synthetic_aot_word(uint32_t address) {
+    MEM_W32(address, 0u);
+    CHECK(sr_exec_span_register(address, address + 4u),
+          "synthetic AOT executable ownership failed at 0x%08x", address);
+}
+
+static int g_interp_handoff_hits = 0;
+static uint32_t g_interp_handoff_v0 = 0;
+static uint32_t g_interp_handoff_pc = 0;
+static uint32_t g_interp_handoff_mem = 0;
+static void interp_handoff_body(CpuState *s) {
+    g_interp_handoff_hits++;
+    g_interp_handoff_v0 = s->r[2];
+    g_interp_handoff_pc = s->pc;
+    g_interp_handoff_mem = MEM_R32(INTERP_DATA_ADDR);
+}
+
+typedef struct {
+    int      body_ran;    /* a registered body was entered through dispatch */
+    uint32_t v0;          /* s->r[2] afterwards */
+    uint32_t pc;          /* s->pc afterwards */
+    uint32_t pc_before;
+    uint32_t ra;
+    int      dispatch_result;
+} Probe;
+
+/* Run one dispatch through a freshly initialized CpuState. */
+static Probe probe(uint32_t target, uint32_t pc, uint32_t ra) {
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = pc;
+    s.r[29] = 0x00400000u;   /* a plausible stack pointer; nothing reads through it here */
+    s.r[31] = ra;
+    s.r[2] = 0xdeadbeefu;    /* poison: every path under test must overwrite v0 */
+    int before = g_body_hits;
+    int dispatch_result = dispatch_try(&s, target);
+    Probe out;
+    out.body_ran = (g_body_hits != before);
+    out.v0 = s.r[2];
+    out.pc = s.pc;
+    out.pc_before = pc;
+    out.ra = ra;
+    out.dispatch_result = dispatch_result;
+    return out;
+}
+
+/* dispatch() reports a completed callback walk as v0 = 1, pc = ra. Nothing else does. */
+static int terminated(Probe p) { return p.v0 == 1u && p.pc == p.ra; }
+
+/* The generic outcome for a target no binding claims: reject it without fabricated
+ * register/PC progress. This includes null, data-looking, historical resource-handle,
+ * unresolved-PLT and module-table values. dispatch() turns that negative result into
+ * process termination. */
+static int generic_outcome(Probe p, uint32_t target) {
+    (void)target;
+    if (p.body_ran) return 0;
+    return p.dispatch_result < 0 && p.v0 == 0xdeadbeefu && p.pc == p.pc_before;
+}
+
+static void late_body_a(CpuState *s) {
+    g_body_hits++;
+    s->r[2] = 0xa1u;
+    s->pc = s->r[31];
+}
+
+static void late_body_reloaded(CpuState *s) {
+    g_body_hits++;
+    s->r[2] = 0xa2u;
+    s->pc = s->r[31];
+}
+
+static void late_body_b(CpuState *s) {
+    g_body_hits++;
+    s->r[2] = 0xb1u;
+    s->pc = s->r[31];
+}
+
+/* ---- runtime-placed module bindings (issue #704) ---------------------------------
+ * Two synthetic module translations share link addresses, as every relocatable PSP
+ * module does. Each is bound only while "loaded", at whatever base the test chooses,
+ * with its relocated words laid out exactly as the runtime loader would write them.
+ * The proof: a bound image is the only dispatch and fetch authority for its range
+ * (a static registration at the same address does not run there), unbinding hands the
+ * range back, a different module bound at the same addresses runs its own bodies, the
+ * same translation runs at a base with nonzero low bits, and a fixed-address
+ * translation binds only at its link addresses. */
+#define MODULE_BASE_LOW   0x08A00000u
+#define MODULE_BASE_ODD   0x08A08100u   /* low 16 bits nonzero: exercises the HI16 carry */
+#define MODULE_STATIC_OFF 0x40u
+#define MODULE_GAP_OFF    0x80u          /* inside the image, outside every span */
+#define MODULE_FIXED_LINK 0x08B00000u
+
+static uint32_t g_module_a_base, g_module_b_base, g_module_fixed_base;
+static int g_module_a_entry_hits, g_module_a_second_hits, g_module_b_hits;
+static int g_module_static_hits;
+
+static void module_a_entry(CpuState *s) { g_body_hits++; g_module_a_entry_hits++; s->r[2] = 0xa0u; s->pc = s->r[31]; }
+static void module_a_second(CpuState *s) { g_body_hits++; g_module_a_second_hits++; s->r[2] = 0xa1u; s->pc = s->r[31]; }
+static void module_b_entry(CpuState *s) { g_body_hits++; g_module_b_hits++; s->r[2] = 0xb0u; s->pc = s->r[31]; }
+static void module_static_body(CpuState *s) { g_body_hits++; g_module_static_hits++; s->r[2] = 0x5au; s->pc = s->r[31]; }
+
+static const SrModuleFunc k_module_a_funcs[] = {
+    { 0x00u, 4u, module_a_entry }, { MODULE_STATIC_OFF, 2u, module_a_second },
+};
+static const SrModuleFunc k_module_b_funcs[] = {
+    { 0x00u, 4u, module_b_entry }, { MODULE_STATIC_OFF, 2u, module_b_entry },
+};
+static const SrModuleSpan k_module_spans[] = { { 0x00u, 0x60u } };
+static const SrModuleCode k_module_a = {
+    "overlay_a.prx", 0x200u, 0x1111u, 0x00u, 0x100u, 0x10u, 1u, NULL, &g_module_a_base,
+    k_module_a_funcs, 2u, k_module_spans, 1u, 0u, 0u,
+};
+static const SrModuleCode k_module_b = {
+    "overlay_b.prx", 0x300u, 0x2222u, 0x00u, 0x200u, 0x10u, 1u, NULL, &g_module_b_base,
+    k_module_b_funcs, 2u, k_module_spans, 1u, 0u, 0u,
+};
+static const SrModuleFunc k_module_fixed_funcs[] = { { MODULE_FIXED_LINK, 2u, module_a_entry } };
+static const SrModuleSpan k_module_fixed_spans[] = { { MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x20u } };
+static const SrModuleCode k_module_fixed = {
+    "fixed.prx", 0x80u, 0x3333u, MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x40u, 0x4u, 0u, NULL,
+    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u,
+};
+static const SrModuleCode k_module_unsupported = {
+    "untranslatable.prx", 0x80u, 0x4444u, 0x00u, 0x40u, 0x4u, 1u,
+    "relocations cannot be translated: synthetic", &g_module_fixed_base,
+    NULL, 0u, NULL, 0u, 0u, 0u,
+};
+
+/* Two code overlays translated for the same link range. Each is bound only while guest
+ * memory holds its identifying bytes (header and text, the first OVERLAY_CHECK_BYTES),
+ * which the synthetic images below fill with a per-overlay tag. */
+#define OVERLAY_LINK        0x08B10000u
+#define OVERLAY_CHECK_BYTES 0x50u
+#define OVERLAY_ENTRY       (OVERLAY_LINK + 0x40u)
+#define OVERLAY_TAG_A       0xa5a50000u
+#define OVERLAY_TAG_B       0x5b5b0000u
+
+static uint32_t g_overlay_a_base, g_overlay_b_base;
+static void overlay_a_body(CpuState *s) { g_body_hits++; s->r[2] = 0x0au; s->pc = s->r[31]; }
+static void overlay_b_body(CpuState *s) { g_body_hits++; s->r[2] = 0x0bu; s->pc = s->r[31]; }
+static const SrModuleFunc k_overlay_a_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_a_body } };
+static const SrModuleFunc k_overlay_b_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_b_body } };
+/* The span runs past the identifying bytes, so it also covers OVERLAY_UNTRANSLATED: code
+ * the analysis did not find, which the interpreter runs inside the bound overlay. */
+#define OVERLAY_UNTRANSLATED (OVERLAY_LINK + 0x60u)
+static const SrModuleSpan k_overlay_spans[] = { { OVERLAY_ENTRY, OVERLAY_LINK + 0x70u } };
+static SrModuleCode k_overlay_a = {
+    "A.ovl", OVERLAY_CHECK_BYTES, 0x5555u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
+    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
+};
+static SrModuleCode k_overlay_b = {
+    "B.ovl", OVERLAY_CHECK_BYTES, 0x6666u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
+    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
+};
+
+static uint32_t overlay_word(uint32_t tag, uint32_t off) { return tag | off; }
+
+static void write_overlay_image(uint32_t tag) {
+    for (uint32_t off = 0; off < OVERLAY_CHECK_BYTES; off += 4u)
+        MEM_W32(OVERLAY_LINK + off, overlay_word(tag, off));
+}
+
+static uint64_t overlay_image_digest(uint32_t tag) {
+    unsigned char bytes[OVERLAY_CHECK_BYTES];
+    for (uint32_t off = 0; off < OVERLAY_CHECK_BYTES; off += 4u) {
+        uint32_t word = overlay_word(tag, off);
+        for (unsigned b = 0; b < 4u; b++) bytes[off + b] = (unsigned char)(word >> (8u * b));
+    }
+    return sr_module_code_fnv1a64(bytes, sizeof bytes);
+}
+
+static void test_code_overlays_follow_guest_memory(void) {
+    sr_module_code_reset();
+    sr_exec_span_reset();
+    k_overlay_a.overlay_check_fnv1a64 = overlay_image_digest(OVERLAY_TAG_A);
+    k_overlay_b.overlay_check_fnv1a64 = overlay_image_digest(OVERLAY_TAG_B);
+    sr_module_code_register(&k_overlay_a);
+    sr_module_code_register(&k_overlay_b);
+
+    write_overlay_image(0x12340000u);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
+              !sr_module_code_is_bound(&k_overlay_a, NULL) &&
+              !sr_module_code_is_bound(&k_overlay_b, NULL),
+          "memory that holds neither overlay binds neither");
+    Probe none = probe(OVERLAY_ENTRY, PROBE_PC, PROBE_RA);
+    CHECK(!none.body_ran && none.dispatch_result < 0,
+          "a call into an unbound overlay range misses instead of running a translation");
+
+    write_overlay_image(OVERLAY_TAG_A);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 1u &&
+              sr_module_code_is_bound(&k_overlay_a, NULL) &&
+              !sr_module_code_is_bound(&k_overlay_b, NULL),
+          "the overlay whose header and text are in memory is bound");
+    Probe a = probe(OVERLAY_ENTRY, PROBE_PC, PROBE_RA);
+    CHECK(a.body_ran && a.v0 == 0x0au, "the bound overlay's translation runs");
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u,
+          "a second invalidate with the same code changes nothing");
+    MEM_W32(OVERLAY_UNTRANSLATED, 0x24020077u);       /* addiu v0, zero, 0x77 */
+    MEM_W32(OVERLAY_UNTRANSLATED + 4u, 0x03e00008u);  /* jr ra */
+    MEM_W32(OVERLAY_UNTRANSLATED + 8u, 0x00000000u);  /* nop */
+    /* The interpreted code returns to a translated body, as test_valid_aot_miss does. */
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+    g_interp_handoff_hits = 0;
+    g_interp_handoff_v0 = 0u;
+    Probe interp = probe(OVERLAY_UNTRANSLATED, PROBE_PC, PROBE_RA);
+    CHECK(interp.dispatch_result >= 0 && g_interp_handoff_hits == 1 &&
+              g_interp_handoff_v0 == 0x77u,
+          "code the analysis missed inside a bound overlay's span is interpreted");
+    MEM_W32(OVERLAY_LINK + 0x74u, 0xdeadbeefu);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
+              sr_module_code_is_bound(&k_overlay_a, NULL),
+          "a write past the identifying bytes (the overlay's data) keeps it bound");
+
+    write_overlay_image(OVERLAY_TAG_B);
+    CHECK(sr_module_code_sync_overlays(0x08000000u, 0x08001000u) == 0u &&
+              sr_module_code_is_bound(&k_overlay_a, NULL),
+          "an invalidate that does not cover the overlay leaves its binding alone");
+    CHECK(sr_module_code_sync_overlays(OVERLAY_ENTRY, OVERLAY_ENTRY + 4u) == 2u &&
+              !sr_module_code_is_bound(&k_overlay_a, NULL) &&
+              sr_module_code_is_bound(&k_overlay_b, NULL),
+          "loading another overlay over the range swaps the binding");
+    Probe b = probe(OVERLAY_ENTRY, PROBE_PC, PROBE_RA);
+    CHECK(b.body_ran && b.v0 == 0x0bu, "the newly bound overlay's translation runs");
+
+    sr_module_code_reset();
+}
+
+static void test_runtime_module_binding_is_the_authority_for_its_range(void) {
+    SrModuleBindDetail detail;
+    sr_module_code_reset();
+    sr_exec_span_reset();
+    sr_module_code_register(&k_module_a);
+    sr_module_code_register(&k_module_b);
+    sr_module_code_register(&k_module_fixed);
+    sr_module_code_register(&k_module_unsupported);
+    sr_module_code_register(&k_module_a);   /* the same descriptor registers once */
+    CHECK(sr_module_code_count() == 4u, "four module descriptors are registered");
+    CHECK(sr_module_code_find("OVERLAY_A.PRX") == &k_module_a,
+          "module descriptors are found by case-insensitive file name");
+    CHECK(sr_module_code_find("overlay_c.prx") == NULL, "an absent module is not found");
+
+    /* A stale fixed-address registration over the same addresses: before any module is
+     * bound it is the ordinary owner of its word. */
+    own_synthetic_aot_word(MODULE_BASE_LOW + MODULE_STATIC_OFF);
+    sr_register(MODULE_BASE_LOW + MODULE_STATIC_OFF, module_static_body);
+    /* ...and one where the module's span has bytes but no translated entry. */
+    own_synthetic_aot_word(MODULE_BASE_LOW + 0x20u);
+    sr_register(MODULE_BASE_LOW + 0x20u, module_static_body);
+    CHECK(sr_lookup(MODULE_BASE_LOW + 0x20u) == module_static_body,
+          "the static registration is reachable while no module is bound");
+    g_module_static_hits = 0;
+    Probe before = probe(MODULE_BASE_LOW + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(before.body_ran && g_module_static_hits == 1, "an unbound range keeps its static owner");
+    CHECK(sr_module_code_fetch_authority(MODULE_BASE_LOW) == -1,
+          "no module owns a range before it is bound");
+
+    CHECK(sr_module_code_bind(&k_module_a, MODULE_BASE_LOW, &detail) == SR_MODULE_BIND_OK,
+          "module A binds at its loaded base (address 0x%08x)", detail.address);
+    CHECK(g_module_a_base == MODULE_BASE_LOW, "binding publishes the base to the generated code");
+    g_module_a_entry_hits = g_module_a_second_hits = g_module_static_hits = 0;
+    Probe entry = probe(MODULE_BASE_LOW, PROBE_PC, PROBE_RA);
+    Probe second = probe(MODULE_BASE_LOW + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(entry.body_ran && entry.v0 == 0xa0u && g_module_a_entry_hits == 1,
+          "dispatch at base + link address runs the module's translation");
+    CHECK(second.body_ran && second.v0 == 0xa1u && g_module_a_second_hits == 1 &&
+          g_module_static_hits == 0,
+          "the bound module, not the static registration, owns its range");
+    CHECK(sr_module_code_fetch_authority(MODULE_BASE_LOW + 0x10u) == 1 &&
+          sr_module_code_fetch_authority(MODULE_BASE_LOW + MODULE_GAP_OFF) == 0 &&
+          sr_module_code_fetch_authority(MODULE_BASE_LOW + 0x12u) == 0,
+          "fetch authority covers exactly the module's aligned span words");
+    CHECK(sr_lookup(MODULE_BASE_LOW + MODULE_GAP_OFF) == NULL &&
+          !sr_exec_span_owns_fetch(MODULE_BASE_LOW + MODULE_GAP_OFF),
+          "an image word outside every span is not executable");
+    CHECK(sr_lookup(MODULE_BASE_LOW + 0x20u) == NULL &&
+          sr_exec_span_owns_fetch(MODULE_BASE_LOW + 0x20u),
+          "a span word with no translated entry is interpreter-owned, never the static body");
+    /* A static registration over the image's gap word (+0x80, outside the bound module's
+     * span) is no authority there: the bound module decides, and it says no. */
+    own_synthetic_aot_word(MODULE_BASE_LOW + MODULE_GAP_OFF);
+    CHECK(sr_lookup(MODULE_BASE_LOW + MODULE_GAP_OFF) == NULL &&
+          !sr_exec_span_owns_fetch(MODULE_BASE_LOW + MODULE_GAP_OFF),
+          "a static span over a bound module's gap word must not own that fetch");
+    CHECK(sr_module_code_bind(&k_module_a, MODULE_BASE_ODD, &detail) ==
+              SR_MODULE_BIND_ALREADY_BOUND,
+          "one translation has at most one live binding");
+    CHECK(sr_module_code_bind(&k_module_b, MODULE_BASE_LOW + 0x80u, &detail) ==
+              SR_MODULE_BIND_OVERLAP && detail.address == MODULE_BASE_LOW,
+          "a second image may not overlap a bound one");
+
+    uint32_t stale_before = sr_stale_entry_count();
+    sr_stale_register_block(MODULE_BASE_LOW, 4u, 0x12345678u);
+    sr_module_code_unbind(&k_module_a);
+    CHECK(sr_stale_entry_count() == stale_before,
+          "unbinding forgets the stale-code expectations of the module's range");
+    CHECK(!sr_module_code_is_bound(&k_module_a, NULL), "module A is unbound");
+    g_module_static_hits = 0;
+    Probe after = probe(MODULE_BASE_LOW + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(after.body_ran && g_module_static_hits == 1 && g_module_a_second_hits == 1,
+          "unbinding hands the range back; the unloaded module's bodies are unreachable");
+
+    /* A different module at the same addresses runs its own translation. */
+    CHECK(sr_module_code_bind(&k_module_b, MODULE_BASE_LOW, &detail) == SR_MODULE_BIND_OK,
+          "module B binds where module A was");
+    g_module_b_hits = 0;
+    Probe reused = probe(MODULE_BASE_LOW + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(reused.body_ran && reused.v0 == 0xb0u && g_module_b_hits == 1 &&
+          g_module_a_second_hits == 1 && g_module_static_hits == 1,
+          "address reuse by another module dispatches to that module only");
+    sr_module_code_unbind(&k_module_b);
+
+    /* The same translation at a base whose low half is nonzero. */
+    CHECK(sr_module_code_bind(&k_module_a, MODULE_BASE_ODD, &detail) == SR_MODULE_BIND_OK &&
+          g_module_a_base == MODULE_BASE_ODD,
+          "the same translation binds at a base with nonzero low bits");
+    Probe moved = probe(MODULE_BASE_ODD + MODULE_STATIC_OFF, PROBE_PC, PROBE_RA);
+    CHECK(moved.body_ran && moved.v0 == 0xa1u, "the module runs at its new base");
+    sr_module_code_unbind(&k_module_a);
+
+    CHECK(sr_module_code_bind(&k_module_fixed, 0x100u, &detail) == SR_MODULE_BIND_BAD_BASE,
+          "a fixed-address translation binds only at its link addresses");
+    CHECK(sr_module_code_bind(&k_module_fixed, 0u, &detail) == SR_MODULE_BIND_OK,
+          "a fixed-address translation binds at base 0");
+    Probe fixed = probe(MODULE_FIXED_LINK, PROBE_PC, PROBE_RA);
+    CHECK(fixed.body_ran && fixed.v0 == 0xa0u, "a fixed-address module dispatches at its link address");
+    sr_module_code_unbind(&k_module_fixed);
+    CHECK(sr_module_code_bind(&k_module_unsupported, MODULE_BASE_LOW, &detail) ==
+              SR_MODULE_BIND_UNSUPPORTED,
+          "a module the build could not translate is refused at bind");
+    CHECK(sr_module_code_bind(&k_module_a, 0x0BFFFF80u, &detail) ==
+              SR_MODULE_BIND_IMAGE_UNREADABLE && detail.address == 0x0BFFFF80u &&
+          sr_module_code_fetch_authority(0x0BFFFF80u) == -1,
+          "an image range beyond guest memory is refused and owns nothing");
+    CHECK(strcmp(sr_module_bind_result_name(SR_MODULE_BIND_ALREADY_BOUND),
+                 "second-instance") == 0,
+          "bind results have stable semantic-boundary names");
+    CHECK(sr_module_code_fnv1a64("", 0u) == 0xcbf29ce484222325ull &&
+          sr_module_code_fnv1a64("a", 1u) == 0xaf63dc4c8601ec8cull,
+          "the module identity digest matches the shared FNV-1a/64 vectors");
+    sr_module_code_reset();
+}
+
+static void test_late_import_retirement_is_visible_after_warm_dispatch(void) {
+    sr_exec_span_reset();
+    own_synthetic_aot_word(LATE_EXPORT_A);
+    own_synthetic_aot_word(LATE_EXPORT_B);
+    /* The caller's import stub remains executable when the exporting module
+     * retires. Without stub ownership, sr_lookup's fetch guard masks the alias
+     * defect. Unsupported source-owned stub bytes make fallback fail closed. */
+    own_synthetic_aot_word(LATE_STUB_A);
+    own_synthetic_aot_word(LATE_STUB_B);
+    MEM_W32(LATE_STUB_A, 0xffffffffu);
+    MEM_W32(LATE_STUB_B, 0xffffffffu);
+    sr_register(LATE_EXPORT_A, late_body_a);
+    sr_register(LATE_EXPORT_B, late_body_b);
+    g_late_export_a = LATE_EXPORT_A;
+    g_late_export_b = LATE_EXPORT_B;
+    g_late_resolutions = 0u;
+
+    for (unsigned call = 0; call < 2u; call++) {
+        Probe p = probe(LATE_STUB_A, PROBE_PC, PROBE_RA);
+        CHECK(p.body_ran && p.v0 == 0xa1u && p.pc == PROBE_RA,
+              "live late import did not execute its current export");
+    }
+    Probe neighbor = probe(LATE_STUB_B, PROBE_PC, PROBE_RA);
+    CHECK(neighbor.body_ran && neighbor.v0 == 0xb1u,
+          "unrelated late-import module failed to warm");
+    CHECK(g_late_resolutions == 3u,
+          "warm late import bypassed the live registry");
+    CHECK(sr_lookup(LATE_STUB_A) == NULL && sr_lookup(LATE_STUB_B) == NULL,
+          "late import installed a persistent dispatch alias");
+
+    /* Retired bindings resolve to zero. Repeated attempts must reject without
+     * touching guest state, even while the old body is registered. */
+    g_late_export_a = 0u;
+    for (unsigned retired = 0; retired < 2u; retired++) {
+        Probe p = probe(LATE_STUB_A, PROBE_PC, PROBE_RA);
+        CHECK(generic_outcome(p, LATE_STUB_A),
+              "retired late import executed a stale body or changed guest state");
+    }
+    neighbor = probe(LATE_STUB_B, PROBE_PC, PROBE_RA);
+    CHECK(neighbor.body_ran && neighbor.v0 == 0xb1u,
+          "retiring one late import invalidated an unrelated module");
+
+    /* Same-address reload replaces the export's body. KSEG normalization must
+     * still select it, and a later remap must follow the new registry answer. */
+    sr_register(LATE_EXPORT_A, late_body_reloaded);
+    g_late_export_a = LATE_EXPORT_A | 0x80000000u;
+    Probe reloaded = probe(LATE_STUB_A, PROBE_PC, PROBE_RA);
+    CHECK(reloaded.body_ran && reloaded.v0 == 0xa2u && reloaded.pc == PROBE_RA,
+          "same-address late-import reload called the retired body");
+    g_late_export_a = LATE_EXPORT_B;
+    Probe remapped = probe(LATE_STUB_A, PROBE_PC, PROBE_RA);
+    CHECK(remapped.body_ran && remapped.v0 == 0xb1u,
+          "late-import remap ignored the current registry answer");
+
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[31] = PROBE_RA;
+    g_late_export_a = LATE_EXPORT_A;
+    CHECK(dispatch_call_try(&s, LATE_STUB_A, PROBE_RA) == SR_GUEST_INTERP_AOT_HANDOFF
+          && s.r[2] == 0xa2u && s.pc == PROBE_RA,
+          "typed CALL did not resolve the current late export");
+    g_late_export_a = 0u;
+    s.pc = PROBE_PC;
+    CpuState before = s;
+    CHECK(dispatch_call_try(&s, LATE_STUB_A, PROBE_RA) < 0
+          && memcmp(&s, &before, sizeof s) == 0,
+          "typed CALL to a retired late import did not fail closed");
+    g_late_export_b = 0u;
+    sr_exec_span_reset();
+}
+
+static void test_historical_call_target_fails_at_named_boundary(void) {
+    CpuState s;
+    CpuState before;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[29] = 0x00400000u;
+    s.r[31] = PROBE_RA;
+    s.r[2] = 0xdeadbeefu;
+    before = s;
+
+    int result = dispatch_call_try(&s, 0x33000010u, PROBE_RA);
+    CHECK(result == SR_GUEST_INTERP_NOT_EXECUTABLE,
+          "historical resource-shaped CALL target must fail at the named "
+          "not-executable boundary (got %s)",
+          sr_guest_interp_result_name((SrGuestInterpResult)result));
+    CHECK(strcmp(dispatch_semantic_boundary_name((SrGuestInterpResult)result),
+                 "target-not-executable") == 0,
+          "rejected CALL target did not map to the product boundary name");
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "rejected historical CALL target changed guest state");
+}
+
+/* Real hardware does not restore $s0-$s7/$fp for a callee: honoring the ABI is the
+ * callee's own job, so every title sees every register write its callee makes. The
+ * title-configured restore that one profile used to arm is retired (#363). */
+static void test_call_boundary_keeps_callee_register_writes(void) {
+    sr_mem_init();
+    sr_exec_span_reset();
+    own_synthetic_aot_word(ABI_CALL_TARGET);
+    sr_register(ABI_CALL_TARGET, synthetic_callee_clobbers_saved_gprs);
+
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = ABI_CALL_SITE;
+    for (unsigned reg = 16u; reg <= 23u; reg++)
+        s.r[reg] = 0x11110000u + reg;
+    s.r[30] = 0x11110030u;
+
+    int result = dispatch_call_try(&s, ABI_CALL_TARGET, ABI_CALL_RESUME);
+    CHECK(result == SR_GUEST_INTERP_AOT_HANDOFF,
+          "registered synthetic CALL did not complete through AOT (result=%d)", result);
+    for (unsigned reg = 16u; reg <= 23u; reg++)
+        CHECK(s.r[reg] == 0xcccc0000u + reg,
+              "CALL boundary hid the callee's write to r[%u] (got 0x%08x)",
+              reg, s.r[reg]);
+    CHECK(s.r[30] == 0xcccc0030u,
+          "CALL boundary hid the callee's write to fp/s8 (got 0x%08x)", s.r[30]);
+    sr_exec_span_reset();
+}
+
+/* ---- valid executable AOT miss: production interpreter floor ---------------------- */
+
+static void test_valid_aot_miss_executes_guest_bytes(void) {
+    static const uint32_t program[] = {
+        0x24081234u, /* addiu t0, zero, 0x1234 */
+        0xac880000u, /* sw    t0, 0(a0) */
+        0x8c820000u, /* lw    v0, 0(a0) */
+        0x03e00008u, /* jr    ra */
+        0x24420001u, /* addiu v0, v0, 1 -- return delay slot */
+    };
+    for (size_t i = 0; i < sizeof program / sizeof program[0]; i++)
+        MEM_W32(INTERP_EXEC_START + (uint32_t)(i * 4u), program[i]);
+    MEM_W32(INTERP_DATA_ADDR, 0xfeedfaceu);
+    const uint64_t watch_before = sr_watch_match_count();
+
+#ifdef SR_HAS_EXEC_SPAN_REGISTRY
+    /* The implementation slice must add this explicit contract. Keeping the call
+     * conditional lets the exact same source compile and fail on the pre-change tree. */
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(INTERP_EXEC_START, INTERP_EXEC_END),
+          "source-owned executable span registration failed");
+    own_synthetic_aot_word(PROBE_RA);
+#endif
+
+    g_interp_handoff_hits = 0;
+    g_interp_handoff_v0 = 0u;
+    g_interp_handoff_pc = 0u;
+    g_interp_handoff_mem = 0u;
+    sr_register(PROBE_RA, interp_handoff_body);
+
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[4] = INTERP_DATA_ADDR;
+    s.r[29] = 0x00400000u;
+    s.r[31] = PROBE_RA;
+    s.r[2] = 0xdeadbeefu;
+
+    dispatch(&s, INTERP_EXEC_START);
+
+    CHECK(MEM_R32(INTERP_DATA_ADDR) == 0x00001234u,
+          "valid executable miss did not perform the guest store (mem=0x%08x)",
+          MEM_R32(INTERP_DATA_ADDR));
+    CHECK(!SR_WATCH_ACTIVE() || sr_watch_match_count() == watch_before + 1u,
+          "interpreter store did not trigger exactly one SR_WATCH hit");
+    CHECK(s.r[2] == 0x00001235u,
+          "valid executable miss did not execute load + return delay slot (v0=0x%08x)",
+          s.r[2]);
+    CHECK(s.pc == PROBE_RA,
+          "interpreted jr-ra did not leave the architectural resume PC at ra "
+          "(pc=0x%08x ra=0x%08x)", s.pc, PROBE_RA);
+    CHECK(g_interp_handoff_hits == 1,
+          "interpreter did not hand control to the registered AOT destination "
+          "(hits=%d)", g_interp_handoff_hits);
+    CHECK(g_interp_handoff_v0 == 0x00001235u &&
+          g_interp_handoff_pc == PROBE_RA &&
+          g_interp_handoff_mem == 0x00001234u,
+          "AOT handoff observed wrong state (v0=0x%08x pc=0x%08x mem=0x%08x)",
+          g_interp_handoff_v0, g_interp_handoff_pc, g_interp_handoff_mem);
+    sr_exec_span_reset();
+}
+
+/* This native body is the source-owned AOT side of the watchpoint regression:
+ * codegen emits this same MEM_W32_PC helper for a translated `sw`. */
+static void synthetic_aot_watch_body(CpuState *s) {
+    (void)s;
+    MEM_W32_PC(INTERP_DATA_ADDR, 0x89abcdefu, WATCH_AOT_PC);
+}
+
+static void test_aot_store_watch_synthetic_guest(void) {
+    if (!SR_WATCH_ACTIVE()) return;
+    const uint64_t watch_before = sr_watch_match_count();
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    synthetic_aot_watch_body(&s);
+    CHECK(MEM_R32(INTERP_DATA_ADDR) == 0x89abcdefu,
+          "synthetic AOT body did not perform its guest store");
+    CHECK(sr_watch_match_count() == watch_before + 1u,
+          "AOT store did not trigger exactly one SR_WATCH hit");
+}
+
+static int g_call_continuation_hits = 0;
+static int g_call_outer_handoff_hits = 0;
+static uint32_t g_call_ra_after_callee = 0u;
+
+static void call_outer_return_body(CpuState *s) {
+    (void)s;
+    g_call_outer_handoff_hits++;
+}
+
+/* This is an AOT caller-shaped production body. Its continuation is deliberately
+ * native C, while the callee is fetched and executed by the production interpreter. */
+static void synthetic_aot_call_body(CpuState *s) {
+    const uint32_t entry_sp = s->r[29];
+
+    s->r[29] = entry_sp - 16u;
+    MEM_W32(s->r[29] + 12u, s->r[31]);
+    s->r[2] = 2u;
+    s->r[31] = INTERP_CALL_RESUME;
+#ifdef SR_HAS_GUEST_CALL_BOUNDARY
+    dispatch_call(s, INTERP_CALL_EXEC_START, INTERP_CALL_RESUME);
+#else
+    /* Failing-before path: the old untyped dispatch lets the interpreter run the
+     * native caller continuation from the guest image before returning here. */
+    dispatch(s, INTERP_CALL_EXEC_START);
+#endif
+    g_call_ra_after_callee = s->r[31];
+
+    /* Interior AOT continuation: read the callee's store and perform the caller's
+     * one-time tail. The same operations are present in the guest bytes at RESUME
+     * so an unbounded interpreter is observably wrong, not merely differently traced. */
+    s->r[3] += 0x10u;
+    s->r[5] = MEM_R32(s->r[4]);
+    s->r[2] += 0x100u;
+    s->r[31] = MEM_R32(s->r[29] + 12u);
+    s->r[29] += 16u;
+    g_call_continuation_hits++;
+}
+
+static void test_aot_call_returns_before_native_continuation(void) {
+    static const uint32_t program[] = {
+        0x27bdfff8u, /* addiu sp, sp, -8       -- callee frame */
+        0xafbf0004u, /* sw    ra, 4(sp)        -- preserve call link */
+        0x240905a5u, /* addiu t1, zero, 0x5a5  -- caller-saved register */
+        0xac890000u, /* sw    t1, 0(a0)        -- cross-tier store */
+        0x24420007u, /* addiu v0, v0, 7        -- accumulator */
+        0x8fbf0004u, /* lw    ra, 4(sp)        -- restore call link */
+        0x27bd0008u, /* addiu sp, sp, 8        -- restore callee frame */
+        0x03e00008u, /* jr    ra               -- return */
+        0x27ff0004u, /* addiu ra, ra, 4        -- return delay mutates $ra */
+        0x24630010u, /* addiu v1, v1, 0x10     -- AOT continuation */
+        0x8c850000u, /* lw    a1, 0(a0)        -- AOT reads callee store */
+        0x24420100u, /* addiu v0, v0, 0x100    -- AOT continuation */
+        0x8fbf000cu, /* lw    ra, 12(sp)       -- restore caller link */
+        0x03e00008u, /* jr    ra               -- caller return */
+        0x27bd0010u, /* addiu sp, sp, 16       -- caller return delay */
+    };
+    const uint32_t initial_sp = INTERP_CALL_STACK;
+
+    for (size_t i = 0; i < sizeof program / sizeof program[0]; i++)
+        MEM_W32(INTERP_CALL_EXEC_START + (uint32_t)(i * 4u), program[i]);
+    MEM_W32(INTERP_CALL_DATA_ADDR, 0u);
+
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(INTERP_CALL_EXEC_START, INTERP_CALL_EXEC_END),
+          "CALL regression executable span registration failed");
+    own_synthetic_aot_word(PROBE_RA);
+    own_synthetic_aot_word(INTERP_CALLER_AOT_ADDR);
+    sr_register(PROBE_RA, call_outer_return_body);
+    sr_register(INTERP_CALLER_AOT_ADDR, synthetic_aot_call_body);
+
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[4] = INTERP_CALL_DATA_ADDR;
+    s.r[29] = initial_sp;
+    s.r[31] = PROBE_RA;
+    s.r[2] = 0xdeadbeefu;
+    s.r[3] = 0u;
+    s.r[5] = 0xfeedfaceu;
+
+    g_call_continuation_hits = 0;
+    g_call_outer_handoff_hits = 0;
+    g_call_ra_after_callee = 0u;
+    dispatch(&s, INTERP_CALLER_AOT_ADDR);
+
+    CHECK(g_call_continuation_hits == 1,
+          "AOT continuation ran %d times instead of exactly once",
+          g_call_continuation_hits);
+    CHECK(g_call_outer_handoff_hits == 0,
+          "CALL boundary handed the interpreted callee through the native outer return "
+          "(%d handoff(s))", g_call_outer_handoff_hits);
+    CHECK(MEM_R32(INTERP_CALL_DATA_ADDR) == 0x000005a5u,
+          "interpreted CALL callee did not commit its store (mem=0x%08x)",
+          MEM_R32(INTERP_CALL_DATA_ADDR));
+    CHECK(s.r[5] == 0x000005a5u && s.r[3] == 0x00000010u,
+          "AOT continuation observed wrong caller-saved/store state "
+          "(a1=0x%08x v1=0x%08x)", s.r[5], s.r[3]);
+    CHECK(s.r[2] == 0x00000109u,
+          "CALL accumulator ran the wrong number of times (v0=0x%08x)", s.r[2]);
+    CHECK(g_call_ra_after_callee == INTERP_CALL_RESUME + 4u,
+          "return delay slot did not execute exactly once before boundary handoff "
+          "(ra=0x%08x expected=0x%08x)",
+          g_call_ra_after_callee, INTERP_CALL_RESUME + 4u);
+    CHECK(s.r[29] == initial_sp && s.r[31] == PROBE_RA,
+          "CALL frame/outer return state was not restored exactly "
+          "(sp=0x%08x ra=0x%08x)", s.r[29], s.r[31]);
+    sr_exec_span_reset();
+}
+
+static void test_interpreter_tail_transfers_remain_untyped(void) {
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(INTERP_TAIL_EXEC_START, INTERP_TAIL_EXEC_END),
+          "tail-transfer executable span registration failed");
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, call_outer_return_body);
+
+    /* j target; delay slot; target body returns through the seeded outer $ra. */
+    MEM_W32(INTERP_TAIL_EXEC_START, 0x08190004u);
+    MEM_W32(INTERP_TAIL_EXEC_START + 4u, 0x24030011u);
+    MEM_W32(INTERP_TAIL_J_TARGET, 0x24020022u);
+    MEM_W32(INTERP_TAIL_J_TARGET + 4u, 0x03e00008u);
+    MEM_W32(INTERP_TAIL_J_TARGET + 8u, 0x24000000u); /* addiu zero, zero, 0 */
+
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[29] = INTERP_CALL_STACK;
+    s.r[31] = PROBE_RA;
+    s.r[2] = 0xdeadbeefu;
+    g_call_outer_handoff_hits = 0;
+    dispatch(&s, INTERP_TAIL_EXEC_START);
+    CHECK(s.r[2] == 0x22u && s.r[3] == 0x11u &&
+              g_call_outer_handoff_hits == 1,
+          "tail j did not execute its delay/target/outer return exactly once "
+          "(v0=0x%08x v1=0x%08x handoffs=%d)",
+          s.r[2], s.r[3], g_call_outer_handoff_hits);
+
+    /* jr t0 is the computed tail counterpart; it must not inherit CALL semantics. */
+    MEM_W32(INTERP_TAIL_JR_ENTRY, 0x01000008u);
+    MEM_W32(INTERP_TAIL_JR_ENTRY + 4u, 0x24030033u);
+    MEM_W32(INTERP_TAIL_JR_TARGET, 0x24020044u);
+    MEM_W32(INTERP_TAIL_JR_TARGET + 4u, 0x03e00008u);
+    MEM_W32(INTERP_TAIL_JR_TARGET + 8u, 0x24000000u); /* addiu zero, zero, 0 */
+
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[8] = INTERP_TAIL_JR_TARGET;
+    s.r[29] = INTERP_CALL_STACK;
+    s.r[31] = PROBE_RA;
+    s.r[2] = 0xdeadbeefu;
+    g_call_outer_handoff_hits = 0;
+    dispatch(&s, INTERP_TAIL_JR_ENTRY);
+    CHECK(s.r[2] == 0x44u && s.r[3] == 0x33u &&
+              g_call_outer_handoff_hits == 1,
+          "tail jr did not execute its delay/target/outer return exactly once "
+          "(v0=0x%08x v1=0x%08x handoffs=%d)",
+          s.r[2], s.r[3], g_call_outer_handoff_hits);
+    sr_exec_span_reset();
+}
+
+static CpuState reject_state(void) {
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = PROBE_PC;
+    s.r[2] = 0xdeadbeefu;
+    s.r[4] = INTERP_DATA_ADDR;
+    s.r[29] = 0x00400000u;
+    s.r[31] = PROBE_RA;
+    return s;
+}
+
+
+/* ---------------------------------------------------------------------------
+ * $ra = 0 at the interpreter floor is a null code pointer (#1375).
+ *
+ * The host used to enter nested guest calls (src/rt/hle.c, src/rt/mpeg.c, the
+ * scheduler) with $ra = 0 and relied on the callee being an AOT body whose C
+ * epilogue simply returns. An interpreted callee's architectural `jr $ra` then
+ * read 0 and stopped as a null code pointer, so the two tiers disagreed. The host
+ * now hands every entry SR_HOST_RETURN_PC as a linked call's resume PC
+ * (dispatch_from_host; test_host_entries_return_through_the_host_return_address),
+ * and a return address of 0 is a null code pointer in both tiers. This record keeps
+ * the interpreter's half of that rule.
+ * --------------------------------------------------------------------------- */
+#define NESTED_RA0_EXEC_START 0x00650000u
+#define NESTED_RA0_EXEC_END   (NESTED_RA0_EXEC_START + 0x10u)
+
+static void test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor(void) {
+    /* addiu v0, zero, 0x1234 ; jr ra ; nop -- the smallest translated-body shape. */
+    static const uint32_t program[] = {
+        0x24021234u, /* addiu v0, zero, 0x1234 */
+        0x03e00008u, /* jr    ra */
+        0x00000000u, /* nop (delay slot) */
+        0x00000000u,
+    };
+    SrGuestInterpFault fault;
+    CpuState s;
+    SrGuestInterpResult result;
+    int dispatch_result;
+
+    for (size_t i = 0; i < sizeof program / sizeof program[0]; i++)
+        MEM_W32(NESTED_RA0_EXEC_START + (uint32_t)(i * 4u), program[i]);
+
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(NESTED_RA0_EXEC_START, NESTED_RA0_EXEC_END),
+          "nested-call ra=0 span registration failed");
+
+    /* The state the host used to hand a nested callee: zeroed, a frame $sp,
+     * $ra = 0, pc = the entry. */
+    memset(&s, 0, sizeof s);
+    s.r[29] = 0x09f0fd00u;
+    s.r[31] = 0u;
+    s.pc = NESTED_RA0_EXEC_START;
+    s.vfpuCtrl[0] = 0xe4u; s.vfpuCtrl[1] = 0xe4u;
+
+    result = sr_guest_interp_run(&s, NESTED_RA0_EXEC_START, &fault);
+    CHECK(s.r[2] == 0x00001234u,
+          "the interpreted nested callee did not execute its body (v0=0x%08x)", s.r[2]);
+    CHECK(result != SR_GUEST_INTERP_AOT_HANDOFF && result != SR_GUEST_INTERP_CALL_RETURN,
+          "an interpreted callee returned cleanly through $ra=0 (%s)",
+          sr_guest_interp_result_name(result));
+    CHECK(result == SR_GUEST_INTERP_NULL_CODE_POINTER &&
+              fault.pc == NESTED_RA0_EXEC_START + 4u,
+          "the floor did not stop at the jr that reads $ra=0 as a null code "
+          "pointer (#1375; fault_pc=0x%08x, result=%s)",
+          fault.pc, sr_guest_interp_result_name(result));
+
+    /* The same shape through the production dispatch core.  dispatch_try() is
+     * used rather than dispatch() because the public wrapper terminates the
+     * process on this rejection. */
+    memset(&s, 0, sizeof s);
+    s.r[29] = 0x09f0fd00u;
+    s.r[31] = 0u;
+    s.pc = NESTED_RA0_EXEC_START;
+    dispatch_result = dispatch_try(&s, NESTED_RA0_EXEC_START);
+    CHECK(dispatch_result < 0,
+          "the dispatch core accepted an interpreted return through $ra=0 "
+          "(result=%d); the public dispatch() wrapper terminates on a negative result",
+          dispatch_result);
+
+    /* Control: the identical body with a real return address resumes normally,
+     * so the stop is about $ra = 0 and not about the interpreter floor. */
+    g_interp_handoff_hits = 0;
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+    memset(&s, 0, sizeof s);
+    s.r[29] = 0x09f0fd00u;
+    s.r[31] = PROBE_RA;
+    s.pc = NESTED_RA0_EXEC_START;
+    result = sr_guest_interp_run(&s, NESTED_RA0_EXEC_START, &fault);
+    CHECK(result == SR_GUEST_INTERP_AOT_HANDOFF && s.pc == PROBE_RA &&
+              g_interp_handoff_hits == 1,
+          "CONTROL: the same body with a non-zero $ra did not resume at it "
+          "(%s, pc=0x%08x, hits=%d)",
+          sr_guest_interp_result_name(result), s.pc, g_interp_handoff_hits);
+
+    sr_exec_span_reset();
+}
+
+static void test_interpreter_rejects_unowned_and_invalid_fetches(void) {
+    SrGuestInterpFault fault;
+    CpuState s;
+    CpuState before;
+    SrGuestInterpResult result;
+
+    /* Valid bytes in mapped RAM are data until an explicit executable span owns them. */
+    sr_exec_span_reset();
+    MEM_W32(INTERP_REJECT_ADDR, 0x24021234u); /* addiu v0, zero, 0x1234 */
+    s = reject_state();
+    before = s;
+    result = sr_guest_interp_run(&s, INTERP_REJECT_ADDR, &fault);
+    CHECK(result == SR_GUEST_INTERP_NOT_EXECUTABLE,
+          "mapped unregistered RAM returned %s",
+          sr_guest_interp_result_name(result));
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "mapped unregistered RAM changed CpuState");
+
+    s = reject_state();
+    before = s;
+    int dispatch_result = dispatch_try(&s, INTERP_REJECT_ADDR);
+    CHECK(dispatch_result == SR_GUEST_INTERP_NOT_EXECUTABLE,
+          "production dispatch core did not reject mapped unregistered RAM (result=%d)",
+          dispatch_result);
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "production dispatch rejection changed CpuState");
+
+    CHECK(sr_exec_span_register(INTERP_REJECT_ADDR, INTERP_REJECT_ADDR + 8u),
+          "misalignment test span registration failed");
+    s = reject_state();
+    before = s;
+    result = sr_guest_interp_run(&s, INTERP_REJECT_ADDR + 2u, &fault);
+    CHECK(result == SR_GUEST_INTERP_MISALIGNED_PC,
+          "misaligned PC returned %s", sr_guest_interp_result_name(result));
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "misaligned PC changed CpuState");
+
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(INTERP_REJECT_ADDR, INTERP_REJECT_ADDR + 2u),
+          "incomplete-fetch test span registration failed");
+    s = reject_state();
+    before = s;
+    result = sr_guest_interp_run(&s, INTERP_REJECT_ADDR, &fault);
+    CHECK(result == SR_GUEST_INTERP_FETCH_BOUNDARY,
+          "incomplete instruction fetch returned %s",
+          sr_guest_interp_result_name(result));
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "incomplete instruction fetch changed CpuState");
+
+    sr_exec_span_reset();
+    MEM_W32(INTERP_PARTIAL_AOT_ADDR, 0u);
+    CHECK(sr_exec_span_register(
+              INTERP_PARTIAL_AOT_ADDR, INTERP_PARTIAL_AOT_ADDR + 2u),
+          "partial AOT-fetch test span registration failed");
+    sr_register(INTERP_PARTIAL_AOT_ADDR, interp_handoff_body);
+    CHECK(sr_lookup(INTERP_PARTIAL_AOT_ADDR) == NULL,
+          "AOT lookup accepted a span without one complete instruction");
+    g_interp_handoff_hits = 0;
+    s = reject_state();
+    before = s;
+    result = sr_guest_interp_run(&s, INTERP_PARTIAL_AOT_ADDR, &fault);
+    CHECK(result == SR_GUEST_INTERP_FETCH_BOUNDARY,
+          "registered partial-fetch AOT address returned %s",
+          sr_guest_interp_result_name(result));
+    CHECK(g_interp_handoff_hits == 0 && memcmp(&s, &before, sizeof s) == 0,
+          "partial-fetch AOT rejection ran a body or changed CpuState");
+
+    sr_exec_span_reset();
+    CHECK(sr_exec_span_register(INTERP_REJECT_ADDR, INTERP_REJECT_ADDR + 4u),
+          "end-boundary test span registration failed");
+    s = reject_state();
+    before = s;
+    result = sr_guest_interp_run(&s, INTERP_REJECT_ADDR + 4u, &fault);
+    CHECK(result == SR_GUEST_INTERP_FETCH_BOUNDARY,
+          "end-of-span instruction fetch returned %s",
+          sr_guest_interp_result_name(result));
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "end-of-span instruction fetch changed CpuState");
+
+    MEM_W32(INTERP_REJECT_ADDR, 0xfc000000u); /* reserved primary opcode */
+    s = reject_state();
+    before = s;
+    uint32_t data_before = MEM_R32(INTERP_DATA_ADDR);
+    result = sr_guest_interp_run(&s, INTERP_REJECT_ADDR, &fault);
+    CHECK(result == SR_GUEST_INTERP_UNSUPPORTED,
+          "unsupported opcode returned %s", sr_guest_interp_result_name(result));
+    CHECK(fault.opcode_valid && fault.pc == INTERP_REJECT_ADDR &&
+          fault.opcode == 0xfc000000u,
+          "unsupported opcode fault metadata is imprecise "
+          "(valid=%d pc=0x%08x op=0x%08x)",
+          fault.opcode_valid, fault.pc, fault.opcode);
+    CHECK(memcmp(&s, &before, sizeof s) == 0 &&
+          MEM_R32(INTERP_DATA_ADDR) == data_before,
+          "unsupported opcode applied partial architectural side effects");
+
+    /* AOT address registration selects a tier only after explicit executable
+     * ownership. Reach a mapped, registered-but-unowned target after a normal
+     * instruction and a delay slot: neither address equality nor mapped RAM may
+     * let the native body run. The delay slot remains interpreter-owned. */
+    sr_exec_span_reset();
+    MEM_W32(INTERP_REJECT_ADDR, 0x24000001u); /* addiu zero, zero, 1 */
+    MEM_W32(INTERP_REJECT_ADDR + 4u,
+            0x08000000u | ((INTERP_UNOWNED_AOT_ADDR >> 2) & 0x03ffffffu));
+    MEM_W32(INTERP_REJECT_ADDR + 8u, 0x24080055u); /* addiu t0, zero, 0x55 (delay) */
+    CHECK(sr_exec_span_register(INTERP_REJECT_ADDR, INTERP_REJECT_ADDR + 12u),
+          "registered-but-unowned AOT test span registration failed");
+    sr_register(INTERP_UNOWNED_AOT_ADDR, interp_handoff_body);
+    g_interp_handoff_hits = 0;
+    s = reject_state();
+    result = sr_guest_interp_run(&s, INTERP_REJECT_ADDR, &fault);
+    CHECK(result == SR_GUEST_INTERP_NOT_EXECUTABLE,
+          "registered AOT address outside executable ownership returned %s",
+          sr_guest_interp_result_name(result));
+    CHECK(g_interp_handoff_hits == 0,
+          "AOT registration alone authorized execution (hits=%d)",
+          g_interp_handoff_hits);
+    CHECK(s.r[0] == 0u && s.r[8] == 0x55u && s.pc == INTERP_UNOWNED_AOT_ADDR,
+          "interpreter delay/r0/target state is wrong before unowned handoff rejection "
+          "(r0=0x%08x t0=0x%08x pc=0x%08x)",
+          s.r[0], s.r[8], s.pc);
+
+    s = reject_state();
+    before = s;
+    result = (SrGuestInterpResult)dispatch_try(&s, INTERP_UNOWNED_AOT_ADDR);
+    CHECK(result == SR_GUEST_INTERP_NOT_EXECUTABLE,
+          "direct dispatch treated unowned AOT registration as executable (result=%s)",
+          sr_guest_interp_result_name(result));
+    CHECK(g_interp_handoff_hits == 0 && memcmp(&s, &before, sizeof s) == 0,
+          "direct unowned AOT rejection ran a body or changed CpuState");
+    sr_exec_span_reset();
+}
+
+/* ---- high virtual module: authority without interpreter backing --------------------- */
+
+static void test_high_virtual_module_authority_is_fail_closed(void) {
+    SrGuestInterpFault fault;
+    CpuState s;
+    CpuState before;
+
+    sr_exec_span_reset();
+
+    /* Precondition: this architectural class of span lies outside the flat
+     * interpreter arena. A mutant that aliases high addresses onto SR_PHYS
+     * arena offsets, or enlarges the arena bound to cover them, fails here. */
+    CHECK(!sr_guest_span_readable(INTERP_HIGH_EXEC_START, 4u),
+          "precondition broken: 0x%08x is interpreter-readable in this build",
+          INTERP_HIGH_EXEC_START);
+
+    /* Structural ownership only: an analyzer-owned span whose bytes are never
+     * copied into guest RAM must register, or every build carrying such a
+     * module dies in sr_register_all() before guest dispatch. */
+    CHECK(sr_exec_span_register(INTERP_HIGH_EXEC_START, INTERP_HIGH_EXEC_END),
+          "analyzer-owned out-of-arena executable span was rejected");
+    CHECK(sr_exec_span_register(INTERP_HIGH_EXEC_START, INTERP_HIGH_EXEC_END),
+          "exact duplicate executable-span registration must stay idempotent");
+    CHECK(!sr_exec_span_register(INTERP_HIGH_EXEC_START + 2u, INTERP_HIGH_EXEC_END),
+          "misaligned out-of-arena span registration was accepted");
+
+    /* Authority tier: a registered native body inside the owned high span is a
+     * lawful dispatch destination. The build-time translation embodies those
+     * instructions, so entering it requires ownership, not arena backing. */
+    sr_register(INTERP_HIGH_AOT_ADDR, synthetic_body);
+    CHECK(sr_lookup(INTERP_HIGH_AOT_ADDR) != NULL,
+          "AOT lookup rejected a fully owned registered high-module entry");
+    int high_hits_before = g_body_hits;
+    Probe p = probe(INTERP_HIGH_AOT_ADDR, PROBE_PC, PROBE_RA);
+    CHECK(p.body_ran && p.dispatch_result == SR_GUEST_INTERP_AOT_HANDOFF,
+          "owned high-module AOT dispatch did not run its native body "
+          "(ran=%d result=%d)", p.body_ran, p.dispatch_result);
+    CHECK(g_body_hits == high_hits_before + 1,
+          "owned high-module AOT body ran %d times instead of exactly once",
+          g_body_hits - high_hits_before);
+    CHECK(p.v0 == 0xdeadbeefu && p.pc == PROBE_PC,
+          "high-module AOT body disturbed caller state (v0=0x%08x pc=0x%08x)",
+          p.v0, p.pc);
+
+    /* Registering an out-of-arena module span must not poison ordinary tiers:
+     * startup-equivalent registration survives and low execution keeps working. */
+    own_synthetic_aot_word(INTERP_LOW_NEIGHBOR);
+    sr_register(INTERP_LOW_NEIGHBOR, synthetic_body);
+    Probe low = probe(INTERP_LOW_NEIGHBOR, PROBE_PC, PROBE_RA);
+    CHECK(low.body_ran && low.dispatch_result == SR_GUEST_INTERP_AOT_HANDOFF,
+          "low execution broke while a high module span was registered "
+          "(ran=%d result=%d)", low.body_ran, low.dispatch_result);
+
+    /* Fetch tier: an owned high address with NO registered body and no readable
+     * bytes fails closed precisely instead of reading fabricated bytes. */
+    s = reject_state();
+    before = s;
+    int miss_result = dispatch_try(&s, INTERP_HIGH_MISS_ADDR);
+    CHECK(miss_result == SR_GUEST_INTERP_MEMORY_FAULT,
+          "owned unbacked unregistered fetch returned %s (result=%d)",
+          sr_guest_interp_result_name((SrGuestInterpResult)miss_result),
+          miss_result);
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "unbacked fetch rejection changed CpuState");
+
+    s = reject_state();
+    SrGuestInterpResult interp_result =
+        sr_guest_interp_run(&s, INTERP_HIGH_MISS_ADDR, &fault);
+    CHECK(interp_result == SR_GUEST_INTERP_MEMORY_FAULT,
+          "interpreter returned %s for an owned unbacked fetch",
+          sr_guest_interp_result_name(interp_result));
+    CHECK(!fault.opcode_valid && fault.pc == INTERP_HIGH_MISS_ADDR &&
+              fault.address == INTERP_HIGH_MISS_ADDR,
+          "unbacked-fetch fault metadata is imprecise (valid=%d pc=0x%08x addr=0x%08x)",
+          fault.opcode_valid, fault.pc, fault.address);
+
+    /* Current static first-slice union behavior only: exact duplicates are
+     * idempotent (asserted above), while a distinct overlapping analyzer span is
+     * recorded alongside the first and neither range loses authority. This is
+     * not a future module/segment/instance overlap contract. */
+    CHECK(sr_exec_span_register(INTERP_HIGH_MISS_ADDR, INTERP_HIGH_EXEC_END),
+          "distinct overlapping executable-span registration was rejected");
+    CHECK(sr_exec_span_owns_fetch(INTERP_HIGH_MISS_ADDR),
+          "complete fetch inside overlapping spans lost ownership");
+    CHECK(sr_lookup(INTERP_HIGH_AOT_ADDR) != NULL,
+          "overlapping registration invalidated the first span's owner");
+
+    sr_exec_span_reset();
+}
+
+/* Drive production dispatch recursion on the same reserved host stack as a guest
+ * thread. The preflight must stop new AOT entries with the diagnostic reserve left. */
+#define STACK_GUARD_TARGET 0x007c0000u
+#define STACK_GUARD_RESUME 0x007c0100u
+#define STACK_GUARD_EXPECTED_MARGIN ((size_t)64u << 10)
+static SrCoro *g_stack_guard_main;
+static int g_stack_guard_result;
+static size_t g_stack_guard_remaining;
+static unsigned g_stack_guard_calls;
+
+static void stack_guard_recursive_body(CpuState *s) {
+    g_stack_guard_calls++;
+    int result = dispatch_call_try(s, STACK_GUARD_TARGET, STACK_GUARD_RESUME);
+    if (result == SR_GUEST_INTERP_HOST_STACK_EXHAUSTED ||
+        result == SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE) {
+        g_stack_guard_result = result;
+        if (!sr_coro_stack_remaining(&g_stack_guard_remaining))
+            g_stack_guard_remaining = 0;
+    }
+}
+
+static void stack_guard_coro_body(void *arg) {
+    CpuState *s = (CpuState *)arg;
+    size_t initial_remaining = 0;
+    if (sr_coro_stack_remaining(&initial_remaining))
+        g_stack_guard_remaining = initial_remaining;
+    (void)dispatch_call_try(s, STACK_GUARD_TARGET, STACK_GUARD_RESUME);
+    sr_coro_switch(g_stack_guard_main);
+    for (;;) sr_coro_switch(g_stack_guard_main);
+}
+
+static int run_host_stack_guard_child(void) {
+    g_stack_guard_main = sr_coro_main();
+    if (!g_stack_guard_main) return 10;
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = 0x00500000u;
+    s.r[31] = 0x00500008u;
+    g_stack_guard_result = 0;
+    g_stack_guard_remaining = 0;
+    g_stack_guard_calls = 0;
+    own_synthetic_aot_word(STACK_GUARD_TARGET);
+    sr_register(STACK_GUARD_TARGET, stack_guard_recursive_body);
+    sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
+    sr_sched_on = 1;
+    SrCoro *fiber = sr_coro_create(stack_guard_coro_body, &s,
+                                   SR_GUEST_CORO_STACK_SIZE);
+    if (!fiber) return 11;
+    sr_coro_switch(fiber);
+    sr_sched_on = 0;
+    sr_dispatch_host_stack_remaining = NULL;
+    sr_coro_destroy(fiber);
+    if (g_stack_guard_result != SR_GUEST_INTERP_HOST_STACK_EXHAUSTED ||
+        g_stack_guard_calls == 0 ||
+        g_stack_guard_remaining < STACK_GUARD_EXPECTED_MARGIN ||
+        g_stack_guard_remaining > SR_GUEST_CORO_STACK_SIZE) {
+        fprintf(stderr,
+                "stack guard child: result=%d calls=%u remaining=%zu margin=%zu\n",
+                g_stack_guard_result, g_stack_guard_calls, g_stack_guard_remaining,
+                (size_t)STACK_GUARD_EXPECTED_MARGIN);
+        return 12;
+    }
+    fprintf(stderr,
+            "stack guard child: calls=%u remaining=%zu margin=%zu\n",
+            g_stack_guard_calls, g_stack_guard_remaining,
+            (size_t)STACK_GUARD_EXPECTED_MARGIN);
+    return 0;
+}
+
+#ifdef _WIN32
+#define CHILD_SPAWN_CAP 4096
+
+/* Quote one argument into *out* with the CommandLineToArgvW rule: a run of
+ * backslashes is doubled only where it precedes a quote or the closing quote,
+ * and every argument is wrapped. Returns the number of wide characters written,
+ * or 0 when *cap* cannot hold the result. */
+static size_t append_quoted_argument(wchar_t *out, size_t cap, const wchar_t *arg) {
+    size_t n = 0;
+    size_t backslashes = 0;
+    if (cap < 3) return 0;
+    out[n++] = L'"';
+    for (const wchar_t *p = arg; *p; ++p) {
+        if (*p == L'\\') {
+            backslashes++;
+            continue;
+        }
+        if (*p == L'"') {
+            size_t escapes = backslashes * 2 + 1;
+            if (n + escapes + 2 > cap) return 0;
+            while (escapes-- > 0) out[n++] = L'\\';
+            out[n++] = L'"';
+            backslashes = 0;
+            continue;
+        }
+        if (n + backslashes + 2 > cap) return 0;
+        while (backslashes-- > 0) out[n++] = L'\\';
+        backslashes = 0;
+        out[n++] = *p;
+    }
+    if (n + backslashes * 2 + 2 > cap) return 0;
+    while (backslashes-- > 0) {
+        out[n++] = L'\\';
+        out[n++] = L'\\';
+    }
+    out[n++] = L'"';
+    out[n] = L'\0';
+    return n;
+}
+#endif /* _WIN32 */
+
+/* Respawn this binary as the unregistered-dispatch child and return its exit
+ * status, or -1 when it could not be spawned or waited for.
+ *
+ * Win32 cannot use the CRT's _spawnv() here: it joins argv into the child
+ * command line without quoting, so a self path containing a space is re-parsed
+ * as two arguments, the flag is lost and the child re-runs this whole matrix
+ * sweep instead of the one case the check is about -- while the top level still
+ * reports "OK (configuration ...)" and exits 0. The command line is built here
+ * with both arguments quoted, and the wait and the exit-code read are checked
+ * so a failed wait cannot read as a child status. */
+static int run_dispatch_child(const char *self_path, const char *mode) {
+#ifdef _WIN32
+    wchar_t wide_path[CHILD_SPAWN_CAP];
+    wchar_t resolved[CHILD_SPAWN_CAP];
+    wchar_t wide_mode[CHILD_SPAWN_CAP];
+    wchar_t command[CHILD_SPAWN_CAP];
+    /* argv[0] arrives from the CRT as the narrow form of this process's
+       command line, so its bytes are the active ANSI code page's, and CP_ACP
+       is its inverse. Converting them as UTF-8 instead replaces every
+       non-ASCII byte with U+FFFD, GetFullPathNameW then resolves a path that
+       names no file, and the child never starts. Measured on this host
+       (code page 1252) from a directory whose name holds U+00E9: CP_UTF8 here
+       produced "status=-1" and a 1 FAILURE(S) verdict, with CP_ACP none, from
+       the same binary and directory. */
+    if (MultiByteToWideChar(CP_ACP, 0, self_path, -1, wide_path,
+                            CHILD_SPAWN_CAP) <= 0) return -1;
+    if (MultiByteToWideChar(CP_ACP, 0, mode, -1, wide_mode,
+                            CHILD_SPAWN_CAP) <= 0) return -1;
+    /* CreateProcessW is given the program through the command line, and it does
+       not resolve every way argv[0] can be spelled: a relative path written with
+       forward slashes fails with ERROR_FILE_NOT_FOUND, which is how this binary
+       is normally started (the Makefile runs
+       build/mygame/dispatch_isolation_selftest_generic.exe). Resolve to the
+       absolute native form first. */
+    DWORD resolved_length = GetFullPathNameW(wide_path, CHILD_SPAWN_CAP,
+                                            resolved, NULL);
+    if (resolved_length == 0 || resolved_length >= CHILD_SPAWN_CAP) return -1;
+    size_t written = append_quoted_argument(command, CHILD_SPAWN_CAP, resolved);
+    if (written == 0) return -1;
+    /* The separator belongs between the arguments: without it the two quoted
+       arguments parse as one, the program is not found, and CreateProcessW
+       fails. */
+    if (written + 1 >= CHILD_SPAWN_CAP) return -1;
+    command[written++] = L' ';
+    if (append_quoted_argument(command + written, CHILD_SPAWN_CAP - written,
+                               wide_mode) == 0) return -1;
+
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION child;
+    ZeroMemory(&startup, sizeof(startup));
+    startup.cb = sizeof(startup);
+    if (!CreateProcessW(NULL, command, NULL, NULL, TRUE, 0, NULL, NULL,
+                        &startup, &child)) {
+        return -1;
+    }
+    DWORD status = 0;
+    if (WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0 ||
+        !GetExitCodeProcess(child.hProcess, &status)) {
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+        return -1;
+    }
+    CloseHandle(child.hThread);
+    CloseHandle(child.hProcess);
+    return (int)status;
+#else
+    pid_t child = fork();
+    if (child == 0) {
+        execl(self_path, self_path, mode, (char *)NULL);
+        _exit(127);
+    }
+    if (child < 0) return -1;
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) return -1;
+    return WEXITSTATUS(status);
+#endif
+}
+
+static void test_public_dispatch_wrapper_terminates_rejection(const char *self_path) {
+    int child_status = run_dispatch_child(self_path, "--unregistered-dispatch-child");
+    CHECK(child_status == 1,
+          "public dispatch wrapper did not terminate an unregistered executable attempt "
+          "with status 1 (status=%d)", child_status);
+}
+
+static void test_host_stack_exhaustion_is_a_named_boundary(const char *self_path) {
+    int child_status = run_dispatch_child(self_path, "--host-stack-boundary-child");
+    CHECK(child_status == 0,
+          "recursive dispatch did not stop at the host-stack boundary with the "
+          "production fiber reserve (status=%d)", child_status);
+}
+
+/* ---- the retired numbers: inert in every configuration ----------------------------- */
+
+/* Guest addresses that generic dispatch hardcoded before this path existed. None of the
+ * three matrix configurations declares any of them, so every matrix build must treat
+ * them as ordinary traffic.
+ *
+ * Each probe is skipped when the configuration under test genuinely DECLARES that
+ * binding, so this source stays correct for a configuration that legitimately owns these
+ * addresses -- the title they came from. Under that configuration the binding is instead
+ * asserted by test_configured_aliases_redirect / the terminator test, which is the right
+ * claim to make there. What must never happen is a build that applies one of them
+ * WITHOUT declaring it, and that is what the checks below rule out. */
+static void test_retired_bindings_are_inert(void) {
+    const uint32_t retired_alias_from = 0x00030950u;
+    const uint32_t retired_alias_to   = 0x00030948u;
+
+    if (!sr_title_config_dispatch_alias(retired_alias_from, NULL)) {
+        /* Register the body the retired alias used to redirect INTO. If this build still
+         * carried that redirect, this body would run. */
+        own_synthetic_aot_word(retired_alias_to);
+        sr_register(retired_alias_to, synthetic_body);
+        Probe p = probe(retired_alias_from, PROBE_PC, PROBE_RA);
+        CHECK(!p.body_ran, "retired tail-call alias 0x%08x still redirects into 0x%08x "
+              "in configuration \"%s\", which does not declare it",
+              retired_alias_from, retired_alias_to, sr_title_config()->source_id);
+        CHECK(generic_outcome(p, retired_alias_from),
+              "retired alias source 0x%08x is not an ordinary dispatch miss "
+              "(v0=0x%08x pc=0x%08x)", retired_alias_from, p.v0, p.pc);
+    }
+
+    /* Null is a data pointer, never a generic success return. */
+    if (!sr_title_config_is_callback_terminator(0u, PROBE_PC, 0x0003e06cu)) {
+        Probe p = probe(0u, PROBE_PC, 0x0003e06cu);
+        CHECK(!terminated(p), "unconfigured null target (ra=0x0003e06c) reports completion "
+              "in configuration \"%s\"", sr_title_config()->source_id);
+        CHECK(generic_outcome(p, 0u), "target 0 at the retired site is not ordinary "
+              "null-call policy (v0=0x%08x pc=0x%08x)", p.v0, p.pc);
+    }
+
+    /* The retired -1 terminator: target UINT32_MAX at pc = 0x00292fa0, ra = 0x00047a0c. */
+    if (!sr_title_config_is_callback_terminator(UINT32_MAX, 0x00292fa0u, 0x00047a0cu)) {
+        Probe p = probe(UINT32_MAX, 0x00292fa0u, 0x00047a0cu);
+        CHECK(!terminated(p), "retired -1 terminator (pc=0x00292fa0 ra=0x00047a0c) still "
+              "reports completion in configuration \"%s\"", sr_title_config()->source_id);
+        CHECK(generic_outcome(p, UINT32_MAX), "target -1 at the retired site is not an "
+              "ordinary dispatch miss (v0=0x%08x pc=0x%08x)", p.v0, p.pc);
+    }
+}
+
+/* Historical HST-era target shapes are hostile inputs, not dispatch contracts.  This
+ * source-owned matrix is deliberately kept outside the title configuration so a broad
+ * pattern reintroduced into recomp.c fails immediately. */
+static void test_historical_target_shapes_fail_closed(void) {
+    static const uint32_t targets[] = {
+        0x33000010u, 0x44000010u, 0x55000010u, 0x88000010u,
+        0x5b0ca3f8u, 0x27dfcb14u, 0x656a6f72u, 0x32305f34u,
+        0x002cf338u, 0x0b000100u, 0x0000100cu, 0xdeadbeefu,
+        0u,
+    };
+    for (size_t i = 0; i < sizeof targets / sizeof targets[0]; ++i) {
+        Probe p = probe(targets[i], PROBE_PC, PROBE_RA);
+        CHECK(generic_outcome(p, targets[i]),
+              "historical/data-looking target 0x%08x was swallowed or advanced "
+              "instead of failing closed (result=%d v0=0x%08x pc=0x%08x)",
+              targets[i], p.dispatch_result, p.v0, p.pc);
+    }
+}
+
+/* ---- diagnostic exact hooks are fall-through, never a consume path (#362) ---------- */
+
+/* HFILL (0x0001b584) and FMT_TRACE (0x00018130) are diagnostic entries in
+ * g_exact_hooks[]. The pre-revision helpers looked each target up themselves
+ * and returned 0 (CONSUMED), so an UNREGISTERED exact key became apparent
+ * success while the poisoned v0/pc were left in place. Both directions of the
+ * corrected contract are pinned here, in every configuration:
+ *   - unregistered key: the diagnostic hook must not bless the dispatch; the
+ *     ordinary miss floor rejects it with poisoned state preserved;
+ *   - registered key: normal dispatch performs the single authoritative
+ *     lookup and executes the body exactly once (a helper that both
+ *     self-delegated AND fell through would double-execute here). */
+static void test_diagnostic_exact_hooks_never_consume(void) {
+    static const uint32_t keys[] = { 0x0001b584u, 0x00018130u };
+    sr_mem_init();
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; ++i) {
+        uint32_t key = keys[i];
+
+        Probe p = probe(key, PROBE_PC, PROBE_RA);
+        CHECK(generic_outcome(p, key),
+              "unregistered diagnostic key 0x%08x was consumed as apparent success "
+              "by its hook instead of failing closed (result=%d v0=0x%08x pc=0x%08x)",
+              key, p.dispatch_result, p.v0, p.pc);
+
+        int before = g_body_hits;
+        own_synthetic_aot_word(key);
+        sr_register(key, synthetic_body);
+        Probe q = probe(key, PROBE_PC, PROBE_RA);
+        CHECK(g_body_hits == before + 1,
+              "registered diagnostic key 0x%08x must execute its body exactly once "
+              "(hits %d -> %d, result=%d)",
+              key, before, g_body_hits, q.dispatch_result);
+        CHECK(q.body_ran && q.dispatch_result == SR_GUEST_INTERP_AOT_HANDOFF,
+              "registered diagnostic key 0x%08x did not complete through normal "
+              "dispatch (result=%d ran=%d)",
+              key, q.dispatch_result, q.body_ran);
+    }
+}
+
+/* ---- aliases: exactly what this build configures, and nothing else ------------------ */
+
+static void test_configured_aliases_redirect(void) {
+    const SrTitleRuntimeConfig *cfg = sr_title_config();
+    for (unsigned i = 0; i < cfg->dispatch_alias_count; i++) {
+        uint32_t from = cfg->dispatch_aliases[i].from;
+        uint32_t to = cfg->dispatch_aliases[i].to;
+
+        /* Unregistered destination: an alias must not fabricate a call. */
+        Probe p = probe(from, PROBE_PC, PROBE_RA);
+        CHECK(!p.body_ran, "alias 0x%08x invented a call with no body at 0x%08x", from, to);
+        CHECK(generic_outcome(p, from), "alias 0x%08x with an unregistered destination is "
+              "not an ordinary miss (v0=0x%08x pc=0x%08x)", from, p.v0, p.pc);
+
+        /* Registered destination: the alias source must enter that body. */
+        own_synthetic_aot_word(to);
+        sr_register(to, synthetic_body);
+        p = probe(from, PROBE_PC, PROBE_RA);
+        CHECK(p.body_ran, "alias 0x%08x did not enter the body registered at 0x%08x", from, to);
+
+        /* A fatal LLE transfer raised by the aliased AOT body must not be
+         * converted to a successful handoff by the alias fast path. */
+        sr_cpu_lle_set_vectors(0x09000000u, 0x09000000u, 0x09000000u);
+        sr_register(to, synthetic_alias_fatal_body);
+        CpuState fatal_state;
+        memset(&fatal_state, 0, sizeof fatal_state);
+        fatal_state.pc = PROBE_PC;
+        fatal_state.r[31] = PROBE_RA;
+        g_alias_fatal_body_calls = 0u;
+        g_alias_fatal_body_fallthroughs = 0u;
+        int fatal_result = dispatch_call_try(&fatal_state, from, PROBE_RA);
+        CHECK(fatal_result == SR_GUEST_INTERP_FLOW_FATAL,
+              "alias 0x%08x swallowed fatal AOT flow (result=%d)",
+              from, fatal_result);
+        CHECK(g_alias_fatal_body_calls == 1u &&
+                  g_alias_fatal_body_fallthroughs == 0u,
+              "fatal aliased body did not transfer exactly once "
+              "(calls=%u fallthroughs=%u)",
+              g_alias_fatal_body_calls, g_alias_fatal_body_fallthroughs);
+        CHECK(fatal_state.flow_kind == SR_FLOW_FATAL &&
+                  fatal_state.flow_target == 0x09000000u,
+              "alias dispatch changed fatal flow (kind=%u target=0x%08x)",
+              fatal_state.flow_kind, fatal_state.flow_target);
+        sr_cpu_lle_reset_config();
+
+        /* The accessor agrees with what dispatch did. */
+        uint32_t resolved = 0u;
+        CHECK(sr_title_config_dispatch_alias(from, &resolved) && resolved == to,
+              "accessor disagrees with dispatch for alias 0x%08x", from);
+
+        /* Off-by-one in either direction is a different address, not this alias. A
+         * configured source is always 4-byte aligned, so neither neighbour can be one. */
+        for (int delta = -1; delta <= 1; delta += 2) {
+            uint32_t near_addr = (uint32_t)((int64_t)from + delta);
+            CHECK(!sr_title_config_dispatch_alias(near_addr, NULL),
+                  "alias matching is not exact: 0x%08x resolved as a neighbour of 0x%08x",
+                  near_addr, from);
+            Probe q = probe(near_addr, PROBE_PC, PROBE_RA);
+            CHECK(!q.body_ran, "0x%08x redirected as if it were the alias source 0x%08x",
+                  near_addr, from);
+        }
+    }
+}
+
+/* Alias sources declared by the public fixtures. A build must redirect only the sources
+ * ITS OWN configuration declares; the rest are another title's business. */
+static const uint32_t FOREIGN_ALIAS_SOURCES[] = {
+    0x08805100u,              /* assets/titles/pspdev-phase5.json */
+    0x08806100u, 0x08806104u, /* assets/titles/synthetic.json */
+};
+
+static int declared_alias_source(uint32_t addr) {
+    const SrTitleRuntimeConfig *cfg = sr_title_config();
+    for (unsigned i = 0; i < cfg->dispatch_alias_count; i++)
+        if (cfg->dispatch_aliases[i].from == addr) return 1;
+    return 0;
+}
+
+static void test_foreign_aliases_do_not_redirect(void) {
+    for (size_t i = 0; i < sizeof FOREIGN_ALIAS_SOURCES / sizeof FOREIGN_ALIAS_SOURCES[0]; i++) {
+        uint32_t from = FOREIGN_ALIAS_SOURCES[i];
+        if (declared_alias_source(from)) continue;   /* this build's own; covered above */
+        CHECK(!sr_title_config_dispatch_alias(from, NULL),
+              "another title's alias source 0x%08x resolved in configuration \"%s\"",
+              from, sr_title_config()->source_id);
+        Probe p = probe(from, PROBE_PC, PROBE_RA);
+        CHECK(!p.body_ran, "another title's alias source 0x%08x redirected in "
+              "configuration \"%s\"", from, sr_title_config()->source_id);
+        CHECK(generic_outcome(p, from), "another title's alias source 0x%08x is not an "
+              "ordinary miss (v0=0x%08x pc=0x%08x)", from, p.v0, p.pc);
+    }
+}
+
+/* ---- terminators: the sentinel is generic, the call site is not -------------------- */
+
+static void test_configured_terminators_match_their_site_only(void) {
+    const SrTitleRuntimeConfig *cfg = sr_title_config();
+    for (unsigned i = 0; i < cfg->callback_terminator_count; i++) {
+        const SrTitleCallbackTerminator *t = &cfg->callback_terminators[i];
+        CHECK(t->sentinel != 0u, "configuration \"%s\" declares a sentinel-0 terminator; a "
+              "target of 0 is a null code pointer (#1375)", cfg->source_id);
+        /* An unconstrained field is not compared, so any value stands in for it. */
+        uint32_t pc = t->has_pc ? t->pc : PROBE_PC;
+        uint32_t ra = t->has_ra ? t->ra : PROBE_RA;
+
+        Probe p = probe(t->sentinel, pc, ra);
+        CHECK(terminated(p), "configured terminator (sentinel=0x%08x pc=0x%08x ra=0x%08x) "
+              "did not report completion (v0=0x%08x pc=0x%08x)",
+              t->sentinel, pc, ra, p.v0, p.pc);
+
+        /* The SAME sentinel one step away from the configured site must follow generic
+         * behavior. This is the property that keeps a sentinel from becoming global. */
+        if (t->has_pc) {
+            Probe q = probe(t->sentinel, pc + 4u, ra);
+            CHECK(!terminated(q), "sentinel 0x%08x terminated at pc=0x%08x, which is not "
+                  "the configured site", t->sentinel, pc + 4u);
+            CHECK(generic_outcome(q, t->sentinel), "sentinel 0x%08x off-site is not generic "
+                  "(v0=0x%08x pc=0x%08x)", t->sentinel, q.v0, q.pc);
+        }
+        if (t->has_ra) {
+            Probe q = probe(t->sentinel, pc, ra + 4u);
+            CHECK(!terminated(q), "sentinel 0x%08x terminated at ra=0x%08x, which is not "
+                  "the configured site", t->sentinel, ra + 4u);
+            CHECK(generic_outcome(q, t->sentinel), "sentinel 0x%08x off-site is not generic "
+                  "(v0=0x%08x pc=0x%08x)", t->sentinel, q.v0, q.pc);
+        }
+    }
+}
+
+/* Both public fixtures deliberately use the SAME sentinel values at DIFFERENT sites, so
+ * a build must never terminate at a site only the other fixture declares. The sentinel-0
+ * sites are each fixture's retired null terminator (#1375): no build terminates there. */
+static const struct { uint32_t sentinel, pc, ra; } FOREIGN_TERMINATOR_SITES[] = {
+    { 0u,          PROBE_PC,     0x08805300u },  /* pspdev-phase5, retired */
+    { UINT32_MAX,  0x08805400u,  0x08805500u },  /* pspdev-phase5 */
+    { 0u,          PROBE_PC,     0x08806300u },  /* synthetic, retired */
+    { UINT32_MAX,  0x08806400u,  0x08806500u },  /* synthetic */
+};
+
+static void test_foreign_terminator_sites_are_generic(void) {
+    for (size_t i = 0; i < sizeof FOREIGN_TERMINATOR_SITES / sizeof FOREIGN_TERMINATOR_SITES[0]; i++) {
+        uint32_t sentinel = FOREIGN_TERMINATOR_SITES[i].sentinel;
+        uint32_t pc = FOREIGN_TERMINATOR_SITES[i].pc;
+        uint32_t ra = FOREIGN_TERMINATOR_SITES[i].ra;
+        /* Skip a site this build genuinely declares; it is asserted above. */
+        if (sr_title_config_is_callback_terminator(sentinel, pc, ra)) continue;
+        Probe p = probe(sentinel, pc, ra);
+        CHECK(!terminated(p), "another title's terminator site (sentinel=0x%08x pc=0x%08x "
+              "ra=0x%08x) reported completion in configuration \"%s\"",
+              sentinel, pc, ra, sr_title_config()->source_id);
+        CHECK(generic_outcome(p, sentinel), "another title's terminator site is not generic "
+              "(sentinel=0x%08x v0=0x%08x pc=0x%08x)", sentinel, p.v0, p.pc);
+    }
+}
+
+/* ---- the generic build inherits nothing -------------------------------------------- */
+
+static void test_generic_build_configures_no_collection(void) {
+    const SrTitleRuntimeConfig *cfg = sr_title_config();
+    if (strcmp(cfg->source_id, "none") != 0) return;   /* not the generic build */
+    CHECK(cfg->dispatch_alias_count == 0u,
+          "the generic configuration declares %u dispatch alias(es)", cfg->dispatch_alias_count);
+    CHECK(cfg->callback_terminator_count == 0u,
+          "the generic configuration declares %u callback terminator(s)",
+          cfg->callback_terminator_count);
+    CHECK((cfg->valid & (SR_TITLE_CFG_DISPATCH_ALIASES | SR_TITLE_CFG_CALLBACK_TERMINATORS)) == 0u,
+          "the generic configuration set a collection validity bit (valid=0x%x)", cfg->valid);
+    /* Every foreign site is exercised by the tests above; the claim here is the stronger
+     * one that no input at all can produce a match. */
+    CHECK(!sr_title_config_is_callback_terminator(0u, PROBE_PC, PROBE_RA) &&
+          !sr_title_config_is_callback_terminator(UINT32_MAX, PROBE_PC, PROBE_RA),
+          "an unconfigured build matched a callback terminator");
+    CHECK(!sr_title_config_dispatch_alias(0u, NULL) &&
+          !sr_title_config_dispatch_alias(UINT32_MAX, NULL),
+          "an unconfigured build resolved a dispatch alias");
+}
+
+/* A configured build must declare at least one of each, or the matrix would be asserting
+ * emptiness three times over and prove nothing about the configured path. */
+static void test_configured_build_declares_both_collections(void) {
+    const SrTitleRuntimeConfig *cfg = sr_title_config();
+    if (strcmp(cfg->source_id, "none") == 0) return;
+    CHECK(cfg->dispatch_alias_count > 0u,
+          "configuration \"%s\" declares no dispatch alias; the fixture is not exercising "
+          "the configured path", cfg->source_id);
+    CHECK(cfg->callback_terminator_count > 0u,
+          "configuration \"%s\" declares no callback terminator", cfg->source_id);
+}
+
+/* ---- TD-27 stale dispatch redirect ------------------------------------------------
+ *
+ * Synthetic self-modifying program. STALE_EXEC owns a registered AOT body and
+ * codegen-shaped translation-time stale records naming the ORIGINAL guest
+ * words. After the guest overwrites a word and the invalidate-time check
+ * fires, production dispatch must run the NEW bytes through the interpreter;
+ * after the bytes are restored and the check runs silent again, dispatch
+ * returns to the AOT body. Gate off, every dispatch takes the AOT path
+ * (zero behaviour change); that direction is asserted here too. Disjoint
+ * from every other fixture range, probe address, and public title fixture
+ * family in this file. */
+#define STALE_EXEC       0x00650000u
+#define STALE_EXEC_END   (STALE_EXEC + 0x0cu)
+#define STALE_RESUME     (STALE_EXEC + 0x0cu)
+#define STALE_ORIG_IMM   0x1111u
+#define STALE_NEW_IMM    0x2222u
+#define STALE_AOT_VALUE  0x51a1e000u
+#define STALE_ADDIU_V0(imm) (0x24020000u | ((uint32_t)(imm) & 0xffffu))
+
+static int g_stale_aot_hits = 0;
+
+static void stale_aot_body(CpuState *s) {
+    g_stale_aot_hits++;
+    s->r[2] = STALE_AOT_VALUE;
+    s->pc = s->r[31];
+}
+
+/* Production-shaped reader: the HLE invalidate handlers read guest memory
+ * exactly this way (see h_CacheInvalidateAll in hle.c). */
+static int stale_test_mem_read(uint32_t addr, uint32_t *word_out, void *ctx) {
+    (void)ctx;
+    if (!sr_guest_span_readable(addr, 4u)) {
+        return 0;
+    }
+    *word_out = MEM_R32(addr);
+    return 1;
+}
+
+static int run_stale_call(CpuState *s) {
+    memset(s, 0, sizeof *s);
+    s->pc = PROBE_PC;
+    s->r[29] = 0x00400000u;
+    s->r[31] = STALE_RESUME;
+    s->r[2] = 0xdeadbeefu;
+    return dispatch_call_try(s, STALE_EXEC, STALE_RESUME);
+}
+
+static void test_stale_hook_redirects_to_interpreter(void) {
+    const int gate = sr_stale_enabled();
+    const uint32_t orig_words[3] = {
+        STALE_ADDIU_V0(STALE_ORIG_IMM), 0x03e00008u, 0x00000000u,
+    };
+    uint32_t bad = 0u, exp = 0u, act = 0u;
+    CpuState s;
+    int rc;
+
+    sr_stale_reset();
+    sr_exec_span_reset();
+    MEM_W32(STALE_EXEC, orig_words[0]);
+    MEM_W32(STALE_EXEC + 4u, orig_words[1]);
+    MEM_W32(STALE_EXEC + 8u, orig_words[2]);
+    /* Codegen-shaped registration: entry word plus head-run block. */
+    sr_stale_register_word(STALE_EXEC, orig_words[0]);
+    sr_stale_register_block(STALE_EXEC, 3u, sr_stale_fnv1a(orig_words, 3u));
+    CHECK(sr_exec_span_register(STALE_EXEC, STALE_EXEC_END),
+          "stale executable span registration failed");
+    sr_register(STALE_EXEC, stale_aot_body);
+
+    /* Pristine: the check is silent, the query is clean, dispatch takes AOT. */
+    CHECK(sr_stale_check_range(STALE_EXEC, 12u, stale_test_mem_read, NULL,
+                               &bad, &exp, &act) == 0,
+          "pristine stale invalidate must be silent");
+    CHECK(sr_stale_block_is_stale(STALE_EXEC) == 0,
+          "pristine stale block must not be stale");
+    g_stale_aot_hits = 0;
+    rc = run_stale_call(&s);
+    CHECK(rc == SR_GUEST_INTERP_AOT_HANDOFF && g_stale_aot_hits == 1 &&
+          s.r[2] == STALE_AOT_VALUE && s.pc == STALE_RESUME,
+          "pristine stale dispatch must take the AOT body "
+          "(rc=%d hits=%d v0=0x%08x pc=0x%08x)",
+          rc, g_stale_aot_hits, s.r[2], s.pc);
+
+    /* Overwrite one guest word, then run the cache op: gate on, the check
+     * fires and the interpreted result follows the new bytes while the
+     * stale AOT value still names the old ones. Gate off, the check stays
+     * silent and dispatch stays on the AOT path. */
+    MEM_W32(STALE_EXEC, STALE_ADDIU_V0(STALE_NEW_IMM));
+    CHECK(sr_stale_check_range(STALE_EXEC, 12u, stale_test_mem_read, NULL,
+                               &bad, &exp, &act) == (gate ? 1 : 0),
+          "patched stale invalidate must %s",
+          gate ? "fire" : "stay silent");
+    CHECK(sr_stale_block_is_stale(STALE_EXEC) == (gate ? 1 : 0),
+          "patched stale query must read %s", gate ? "stale" : "clean");
+    g_stale_aot_hits = 0;
+    rc = run_stale_call(&s);
+    if (gate) {
+        CHECK(rc == SR_GUEST_INTERP_CALL_RETURN,
+              "stale dispatch must return through the interpreter boundary "
+              "(rc=%d)", rc);
+        CHECK(g_stale_aot_hits == 0,
+              "stale dispatch must not enter the AOT body");
+        CHECK(s.r[2] == STALE_NEW_IMM && s.pc == STALE_RESUME,
+              "stale dispatch must follow the NEW bytes "
+              "(v0=0x%08x pc=0x%08x)", s.r[2], s.pc);
+        CHECK(s.r[2] != STALE_AOT_VALUE,
+              "interpreted result must differ from stale AOT");
+    } else {
+        CHECK(rc == SR_GUEST_INTERP_AOT_HANDOFF && g_stale_aot_hits == 1 &&
+              s.r[2] == STALE_AOT_VALUE,
+              "gate off: patched stale dispatch must stay on the AOT path "
+              "(rc=%d hits=%d v0=0x%08x)", rc, g_stale_aot_hits, s.r[2]);
+    }
+
+    /* Restore the bytes, then run the cache op again: silent, flag cleared,
+     * dispatch returns to the AOT path. */
+    MEM_W32(STALE_EXEC, orig_words[0]);
+    CHECK(sr_stale_check_range(STALE_EXEC, 12u, stale_test_mem_read, NULL,
+                               &bad, &exp, &act) == 0,
+          "restored stale invalidate must be silent");
+    CHECK(sr_stale_block_is_stale(STALE_EXEC) == 0,
+          "restored bytes must clear the flag");
+    g_stale_aot_hits = 0;
+    rc = run_stale_call(&s);
+    CHECK(rc == SR_GUEST_INTERP_AOT_HANDOFF && g_stale_aot_hits == 1 &&
+          s.r[2] == STALE_AOT_VALUE && s.pc == STALE_RESUME,
+          "restored stale dispatch must return to the AOT value "
+          "(rc=%d hits=%d v0=0x%08x pc=0x%08x)",
+          rc, g_stale_aot_hits, s.r[2], s.pc);
+
+    sr_stale_reset();
+    sr_exec_span_reset();
+}
+
+/* ---- #1375: a null code pointer vs. the offset-0 function of a zero-based image ----
+ *
+ * The synthetic image is based at 0: its offset-0 function is registered at guest
+ * address 0 and owns that word, as a zero-based PRX's first function does. A computed
+ * transfer (jalr/jr) whose register holds 0 is a null code pointer and must stop at the
+ * transfer, before its link write and delay slot, without entering that function. A
+ * static `jal 0` reaches the same function as an ordinary CALL, and the dispatch core
+ * still resolves address 0 for static targets. */
+#define NULLPTR_EXEC_START 0x00660000u
+#define NULLPTR_EXEC_END   (NULLPTR_EXEC_START + 0x40u)
+#define NULLPTR_JR_ENTRY   (NULLPTR_EXEC_START + 0x10u)
+#define NULLPTR_JAL_ENTRY  (NULLPTR_EXEC_START + 0x20u)
+
+static int g_offset0_hits = 0;
+static void offset0_body(CpuState *s) { g_offset0_hits++; s->r[2] = 0x70u; }
+
+static CpuState nullptr_state(uint32_t pc) {
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = pc;
+    s.r[2] = 0xdeadbeefu;
+    s.r[3] = 0xdeadbeefu;
+    s.r[29] = INTERP_CALL_STACK;
+    s.r[31] = PROBE_RA;
+    return s;
+}
+
+static int boot_event_file_names(const char *path, const char *needle) {
+    char text[4096];
+    FILE *events = fopen(path, "rb");
+    if (!events) return 0;
+    size_t n = fread(text, 1, sizeof text - 1u, events);
+    fclose(events);
+    text[n] = '\0';
+    return strstr(text, needle) != NULL;
+}
+
+static void set_boot_event_file(const char *path) {
+#ifdef _WIN32
+    _putenv_s("SR_BOOT_EVENT_FILE", path);
+#else
+    if (path[0]) setenv("SR_BOOT_EVENT_FILE", path, 1);
+    else unsetenv("SR_BOOT_EVENT_FILE");
+#endif
+}
+
+static void test_null_code_pointer_is_not_the_offset0_function(const char *self_path) {
+    sr_mem_init();
+    sr_exec_span_reset();
+    char event_path[512];
+    snprintf(event_path, sizeof event_path, "%s.nullptr-events.txt", self_path);
+
+    /* No code at address 0 yet: a dispatch there is a null code pointer, whatever s->pc
+     * holds. A host entry handed a null guest handler seeds s->pc with that 0, which the
+     * old "collapsed thread" guard read as lost state: it zeroed Status, terminated the
+     * current thread and reported success. It must stop the run by name instead, with
+     * the thread and its registers untouched. */
+    g_offset0_hits = 0;
+    g_thread_stops = 0;
+    g_current_uid = 0x0414u;
+    CpuState s = nullptr_state(0u);
+    s.cop0[SR_CP0_STATUS] = 0x00000001u;
+    CpuState before = s;
+    remove(event_path);
+    set_boot_event_file(event_path);
+    int dispatch_result = dispatch_try(&s, 0u);
+    set_boot_event_file("");
+    g_current_uid = 0u;
+    CHECK(dispatch_result == SR_GUEST_INTERP_NULL_CODE_POINTER,
+          "a dispatch to address 0 with no code there was not refused as a null code pointer "
+          "(result=%d)", dispatch_result);
+    CHECK(g_thread_stops == 0 && s.cop0[SR_CP0_STATUS] == before.cop0[SR_CP0_STATUS] &&
+              s.r[2] == before.r[2] && s.r[31] == before.r[31],
+          "a dispatch to address 0 stopped the current thread or changed its state "
+          "(stops=%d status=0x%08x v0=0x%08x)",
+          g_thread_stops, s.cop0[SR_CP0_STATUS], s.r[2]);
+    CHECK(boot_event_file_names(event_path, "boundary=null-code-pointer issue=1375"),
+          "a dispatch to address 0 did not record its boot event naming #1375");
+    remove(event_path);
+
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+
+    /* Address 0 owned by an analyzer span with no native body (an AOT gap on a zero-based
+     * image): a dispatch there is no null code pointer. The interpreter floor runs the
+     * words at 0 (jr ra ; addiu v0, zero, 0x5a) and hands back to the native resume. */
+    CHECK(sr_exec_span_register(0u, 8u), "address-0 executable span registration failed");
+    MEM_W32(0u, 0x03e00008u);
+    MEM_W32(4u, 0x2402005au);
+    g_interp_handoff_hits = 0;
+    g_interp_handoff_v0 = 0u;
+    s = nullptr_state(PROBE_PC);
+    s.r[31] = PROBE_RA;
+    dispatch_result = dispatch_try(&s, 0u);
+    CHECK(dispatch_result != SR_GUEST_INTERP_NULL_CODE_POINTER,
+          "a dispatch to span-owned address 0 with no native body was refused as a null "
+          "code pointer");
+    CHECK(g_interp_handoff_hits == 1 && g_interp_handoff_v0 == 0x5au,
+          "the interpreter did not run span-owned address 0 and resume at its return "
+          "(result=%d handoffs=%d v0=0x%08x)",
+          dispatch_result, g_interp_handoff_hits, g_interp_handoff_v0);
+
+    own_synthetic_aot_word(0u);
+    sr_register(0u, offset0_body);
+    CHECK(sr_exec_span_register(NULLPTR_EXEC_START, NULLPTR_EXEC_END),
+          "null-code-pointer executable span registration failed");
+
+    /* jalr t9 ; addiu v1, zero, 0x55 */
+    MEM_W32(NULLPTR_EXEC_START, 0x0320f809u);
+    MEM_W32(NULLPTR_EXEC_START + 4u, 0x24030055u);
+    /* jr t0 ; addiu v1, zero, 0x66 */
+    MEM_W32(NULLPTR_JR_ENTRY, 0x01000008u);
+    MEM_W32(NULLPTR_JR_ENTRY + 4u, 0x24030066u);
+    /* jal 0 ; nop ; addiu v0, v0, 1 ; jr t1 ; nop */
+    MEM_W32(NULLPTR_JAL_ENTRY, 0x0c000000u);
+    MEM_W32(NULLPTR_JAL_ENTRY + 4u, 0x00000000u);
+    MEM_W32(NULLPTR_JAL_ENTRY + 8u, 0x24420001u);
+    MEM_W32(NULLPTR_JAL_ENTRY + 12u, 0x01200008u);
+    MEM_W32(NULLPTR_JAL_ENTRY + 16u, 0x00000000u);
+
+    /* The static path the null rule must leave alone: address 0 resolves to the
+     * offset-0 function, and a static CALL of it runs that function. */
+    CHECK(sr_lookup(0u) == offset0_body, "address 0 does not resolve to the offset-0 function");
+    g_offset0_hits = 0;
+    s = nullptr_state(PROBE_PC);
+    CHECK(dispatch_call_try(&s, 0u, PROBE_RA) == SR_GUEST_INTERP_AOT_HANDOFF &&
+              g_offset0_hits == 1 && s.r[2] == 0x70u,
+          "a static CALL to address 0 did not run the offset-0 function (hits=%d v0=0x%08x)",
+          g_offset0_hits, s.r[2]);
+
+    /* Interpreted jalr through a null register: stops before its link and slot. */
+    SrGuestInterpFault fault;
+    g_offset0_hits = 0;
+    s = nullptr_state(NULLPTR_EXEC_START);
+    s.r[25] = 0u;
+    SrGuestInterpResult result = sr_guest_interp_run(&s, NULLPTR_EXEC_START, &fault);
+    CHECK(result == SR_GUEST_INTERP_NULL_CODE_POINTER && fault.pc == NULLPTR_EXEC_START,
+          "null jalr was not refused as a null code pointer at the jalr "
+          "(result=%s fault_pc=0x%08x)", sr_guest_interp_result_name(result), fault.pc);
+    CHECK(g_offset0_hits == 0, "null jalr entered the offset-0 function");
+    CHECK(s.r[31] == PROBE_RA && s.r[3] == 0xdeadbeefu,
+          "null jalr applied its link write or delay slot (ra=0x%08x v1=0x%08x)",
+          s.r[31], s.r[3]);
+
+    /* A static jal 0 from interpreted code is not a code pointer, so the null rule
+     * must not claim it. The interpreter seeds s->pc with the CALL's target, 0, and the
+     * dispatch core must not read that as a collapsed thread either: the offset-0
+     * function runs, the interpreted caller resumes after the call (v0 + 1) and leaves
+     * through `jr t1`, and the current thread and its Status are untouched. */
+    g_offset0_hits = 0;
+    g_interp_handoff_hits = 0;
+    g_interp_handoff_v0 = 0u;
+    g_thread_stops = 0;
+    g_current_uid = 0x0414u;
+    s = nullptr_state(NULLPTR_JAL_ENTRY);
+    s.r[9] = PROBE_RA;
+    s.cop0[SR_CP0_STATUS] = 0x00000001u;
+    result = sr_guest_interp_run(&s, NULLPTR_JAL_ENTRY, &fault);
+    g_current_uid = 0u;
+    CHECK(result != SR_GUEST_INTERP_NULL_CODE_POINTER,
+          "static jal 0 from interpreted code was refused as a null code pointer");
+    CHECK(result == SR_GUEST_INTERP_AOT_HANDOFF && g_offset0_hits == 1 &&
+              g_interp_handoff_hits == 1 && g_interp_handoff_v0 == 0x71u,
+          "static jal 0 from interpreted code did not run the offset-0 function and resume "
+          "its caller (result=%s hits=%d handoffs=%d v0=0x%08x)",
+          sr_guest_interp_result_name(result), g_offset0_hits, g_interp_handoff_hits,
+          g_interp_handoff_v0);
+    CHECK(g_thread_stops == 0 && s.cop0[SR_CP0_STATUS] == 0x00000001u,
+          "static jal 0 from interpreted code was treated as a collapsed thread "
+          "(stops=%d status=0x%08x)", g_thread_stops, s.cop0[SR_CP0_STATUS]);
+
+    /* Interpreted jr through a null register, through the production dispatch core:
+     * the named boundary and its event line. */
+    remove(event_path);
+    set_boot_event_file(event_path);
+    g_offset0_hits = 0;
+    s = nullptr_state(PROBE_PC);
+    s.r[8] = 0u;
+    before = s;
+    dispatch_result = dispatch_try(&s, NULLPTR_JR_ENTRY);
+    set_boot_event_file("");
+    CHECK(dispatch_result == SR_GUEST_INTERP_NULL_CODE_POINTER && g_offset0_hits == 0,
+          "null jr did not stop the dispatch core as a null code pointer "
+          "(result=%d hits=%d)", dispatch_result, g_offset0_hits);
+    CHECK(s.r[3] == before.r[3] && s.r[2] == before.r[2],
+          "null jr ran its delay slot or fabricated a result");
+    CHECK(strcmp(dispatch_semantic_boundary_name((SrGuestInterpResult)dispatch_result),
+                 "null-code-pointer") == 0,
+          "null code pointer did not map to its product boundary name");
+    CHECK(boot_event_file_names(event_path, "boundary=null-code-pointer issue=1375"),
+          "null code pointer stop did not record its boot event naming #1375");
+    remove(event_path);
+
+    /* Generated code's check: a nonzero pointer passes, and 0 ends the process. */
+    SR_CODE_POINTER(&s, PROBE_RA, NULLPTR_EXEC_START);
+    int child_status = run_dispatch_child(self_path, "--null-code-pointer-child");
+    CHECK(child_status == 1,
+          "generated-code null code pointer check did not stop the run with status 1 "
+          "(status=%d)", child_status);
+
+    sr_exec_span_reset();
+}
+
+/* ---- #1375: the host return address, null entries, and dispatch normalizations ------
+ *
+ * The host enters guest code as a linked call that returns to SR_HOST_RETURN_PC
+ * (dispatch_from_host), never with $ra = 0. A body's `jr $ra` back to the host is that
+ * call's return in both tiers, including after a TAIL step into interpreted code, and a
+ * return address of 0 is the same null code pointer in both. A guest callback of 0 stops
+ * before any guest code runs, and no dispatch normalization turns a nonzero target into
+ * address 0 -- on this zero-based layout each would otherwise run the offset-0 function. */
+#define HOSTRET_AOT_ENTRY    0x00670000u
+#define HOSTRET_STRAY_ENTRY  0x00670010u
+#define HOSTRET_TAIL_ENTRY   0x00670020u
+#define HOSTRET_CALLER_ENTRY 0x00670030u
+#define HOSTRET_EXEC_START   0x00670100u
+#define HOSTRET_INTERP       (HOSTRET_EXEC_START + 0x00u)  /* addiu v0, zero, 0x1234 ; jr ra ; nop */
+#define HOSTRET_INTERP_RET   (HOSTRET_EXEC_START + 0x10u)  /* jr ra ; nop */
+#define HOSTRET_CALL_PC      (HOSTRET_EXEC_START + 0x20u)  /* the caller's jal (its bytes are not run) */
+#define HOSTRET_RESUME       (HOSTRET_CALL_PC + 8u)        /* addiu v1, v1, 1 ; jr t1 ; nop */
+#define HOSTRET_EXEC_END     (HOSTRET_EXEC_START + 0x40u)
+
+static void hostret_aot_body(CpuState *s) {
+    s->r[2] = 0x11u;
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void hostret_stray_body(CpuState *s) {
+    SR_AOT_RETURN_CAPTURE(s, PROBE_RA);
+}
+
+/* A computed TAIL transfer out of a native body (emit_tail_transfer, resume form). */
+static void hostret_tail_body(CpuState *s) {
+    sr_tail_record(s, HOSTRET_INTERP, NULL, 0u, 0u);
+}
+
+static void hostret_callee_body(CpuState *s) {
+    sr_tail_record(s, HOSTRET_INTERP_RET, NULL, 0u, 0u);
+}
+
+/* The generated shape of a direct jal (emit_checked_body_call): the link, the boundary, the
+ * callee and its drain, the end check, then the caller's native continuation, which counts
+ * its runs in v1. */
+static void hostret_caller_body(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    s->r[31] = HOSTRET_RESUME;
+    if (sr_aot_return_boundary_begin(s, HOSTRET_RESUME, HOSTRET_CALL_PC, 1u)) return;
+    hostret_callee_body(s);
+    SR_TAIL_DRAIN(s);
+    if (sr_aot_return_boundary_end(s)) return;
+    s->r[3] += 1u;
+    s->r[31] = caller_ra;
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void hostret_setup(void) {
+    sr_exec_span_reset();
+    own_synthetic_aot_word(HOSTRET_AOT_ENTRY);
+    own_synthetic_aot_word(HOSTRET_STRAY_ENTRY);
+    own_synthetic_aot_word(HOSTRET_TAIL_ENTRY);
+    own_synthetic_aot_word(HOSTRET_CALLER_ENTRY);
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(HOSTRET_AOT_ENTRY, hostret_aot_body);
+    sr_register(HOSTRET_STRAY_ENTRY, hostret_stray_body);
+    sr_register(HOSTRET_TAIL_ENTRY, hostret_tail_body);
+    sr_register(HOSTRET_CALLER_ENTRY, hostret_caller_body);
+    sr_register(PROBE_RA, interp_handoff_body);
+    MEM_W32(HOSTRET_INTERP, 0x24021234u);
+    MEM_W32(HOSTRET_INTERP + 4u, 0x03e00008u);
+    MEM_W32(HOSTRET_INTERP + 8u, 0x00000000u);
+    MEM_W32(HOSTRET_INTERP_RET, 0x03e00008u);
+    MEM_W32(HOSTRET_INTERP_RET + 4u, 0x00000000u);
+    MEM_W32(HOSTRET_RESUME, 0x24630001u);
+    MEM_W32(HOSTRET_RESUME + 4u, 0x01200008u);
+    MEM_W32(HOSTRET_RESUME + 8u, 0x00000000u);
+    CHECK(sr_exec_span_register(HOSTRET_EXEC_START, HOSTRET_EXEC_END),
+          "host-return executable span registration failed");
+}
+
+static CpuState hostret_state(void) {
+    CpuState s = nullptr_state(PROBE_PC);
+    s.r[2] = 0u;
+    s.r[3] = 0u;
+    s.r[9] = PROBE_RA;
+    s.r[31] = SR_HOST_RETURN_PC;
+    return s;
+}
+
+/* Child: a host entry whose native body TAIL-steps into interpreted code that returns. */
+static int run_host_tail_return_child(void) {
+    hostret_setup();
+    CpuState s = hostret_state();
+    dispatch_from_host(&s, HOSTRET_TAIL_ENTRY);
+    return s.r[2] == 0x1234u && s.flow_kind == SR_FLOW_NONE &&
+           sr_aot_return_boundary_top == NULL ? 0 : 98;
+}
+
+static void test_host_entries_return_through_the_host_return_address(const char *self_path) {
+    sr_mem_init();
+    hostret_setup();
+    char event_path[512];
+    snprintf(event_path, sizeof event_path, "%s.hostret-events.txt", self_path);
+
+    /* The host return address names no code, even with address 0 executable. */
+    own_synthetic_aot_word(0u);
+    sr_register(0u, offset0_body);
+    CHECK(sr_lookup(SR_HOST_RETURN_PC) == NULL && !sr_exec_span_owns_fetch(SR_HOST_RETURN_PC) &&
+              !sr_exec_span_owns_fetch(SR_PHYS(SR_HOST_RETURN_PC)),
+          "SR_HOST_RETURN_PC resolves to guest code");
+
+    /* Native body: `jr $ra` to the host is the host entry's return. */
+    CpuState s = hostret_state();
+    int result = dispatch_call_try(&s, HOSTRET_AOT_ENTRY, SR_HOST_RETURN_PC);
+    CHECK(result >= 0 && s.r[2] == 0x11u && s.flow_kind == SR_FLOW_NONE &&
+              sr_aot_return_boundary_top == NULL,
+          "a native host-entered body did not return to the host (result=%d v0=0x%08x flow=%u)",
+          result, s.r[2], s.flow_kind);
+
+    /* A native body that returns anywhere but the host is the named mismatch. */
+    s = hostret_state();
+    result = dispatch_call_try(&s, HOSTRET_STRAY_ENTRY, SR_HOST_RETURN_PC);
+    CHECK(result < 0 && s.flow_kind == SR_FLOW_FATAL && sr_aot_return_boundary_top == NULL,
+          "a host-entered body that returned past the host was accepted (result=%d flow=%u)",
+          result, s.flow_kind);
+    sr_cpu_clear_flow(&s);
+
+    /* Interpreted body (an AOT gap at the entry): the same return, at the call boundary. */
+    s = hostret_state();
+    result = dispatch_call_try(&s, HOSTRET_INTERP, SR_HOST_RETURN_PC);
+    CHECK(result == SR_GUEST_INTERP_CALL_RETURN && s.r[2] == 0x1234u &&
+              s.pc == SR_HOST_RETURN_PC,
+          "an interpreted host-entered body did not return to the host (result=%d v0=0x%08x "
+          "pc=0x%08x)", result, s.r[2], s.pc);
+
+    /* A native body that TAIL-steps into interpreted code, which then returns to the host:
+     * the interpreter must hand back instead of fetching from SR_HOST_RETURN_PC. A failed
+     * TAIL step ends the process, so it runs in a child. */
+    int child_status = run_dispatch_child(self_path, "--host-tail-return-child");
+    CHECK(child_status == 0,
+          "interpreted code entered by a TAIL step did not return to the host (status=%d)",
+          child_status);
+
+    /* The same TAIL-step return one level down: interpreted code returning to a native
+     * linked call's resume PC hands back, so the caller's continuation runs once. Without
+     * that the interpreter runs the continuation (v1 + 1, then on to the handoff) and the
+     * native caller runs it again. */
+    g_interp_handoff_hits = 0;
+    s = hostret_state();
+    result = dispatch_call_try(&s, HOSTRET_CALLER_ENTRY, SR_HOST_RETURN_PC);
+    CHECK(result >= 0 && s.r[3] == 1u && g_interp_handoff_hits == 0 &&
+              s.flow_kind == SR_FLOW_NONE && sr_aot_return_boundary_top == NULL,
+          "a TAIL-stepped return to a native caller ran its continuation %u time(s) "
+          "(result=%d handoffs=%d flow=%u)", s.r[3], result, g_interp_handoff_hits, s.flow_kind);
+
+    /* A return address of 0 is a null code pointer in the native tier too, as it is in the
+     * interpreter (test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor). */
+    remove(event_path);
+    set_boot_event_file(event_path);
+    child_status = run_dispatch_child(self_path, "--null-return-child");
+    set_boot_event_file("");
+    CHECK(child_status == 1,
+          "a generated jr $ra with $ra = 0 did not stop the run with status 1 (status=%d)",
+          child_status);
+    CHECK(boot_event_file_names(event_path, "boundary=null-code-pointer issue=1375"),
+          "the null return address stop did not record its boot event naming #1375");
+
+    /* A callback registered with function 0 stops before guest code runs; on this
+     * zero-based layout it would otherwise run the offset-0 function. */
+    remove(event_path);
+    set_boot_event_file(event_path);
+    child_status = run_dispatch_child(self_path, "--null-callback-child");
+    set_boot_event_file("");
+    CHECK(child_status == 1,
+          "a callback with function 0 did not stop the run with status 1 (status=%d)",
+          child_status);
+    CHECK(boot_event_file_names(event_path, "boundary=null-code-pointer issue=1375"),
+          "the null callback stop did not record its boot event naming #1375");
+    remove(event_path);
+
+    /* No normalization produces address 0: each of these is address 0 with offset or
+     * segment bits set, a null code pointer, and must not reach the offset-0 function. */
+    static const uint32_t normalized_nulls[] = {
+        0x08000000u,                                                  /* RELOC_FIXUP */
+        0x20000000u, 0x60000000u, 0x80000000u, 0xA0000000u, 0xC0000000u, 0xE0000000u, /* KSEG */
+    };
+    for (size_t i = 0; i < sizeof normalized_nulls / sizeof normalized_nulls[0]; i++) {
+        g_offset0_hits = 0;
+        s = nullptr_state(PROBE_PC);
+        result = dispatch_try(&s, normalized_nulls[i]);
+        CHECK(result == SR_GUEST_INTERP_NULL_CODE_POINTER && g_offset0_hits == 0,
+              "dispatch to 0x%08x normalized onto address 0 (result=%d offset-0 runs=%d)",
+              normalized_nulls[i], result, g_offset0_hits);
+    }
+    /* A late import whose export resolves to a kernel-segment alias of address 0. */
+    const uint32_t saved_export = g_late_export_a;
+    g_late_export_a = 0x80000000u;
+    g_offset0_hits = 0;
+    s = nullptr_state(PROBE_PC);
+    result = dispatch_try(&s, LATE_STUB_A);
+    g_late_export_a = saved_export;
+    CHECK(result == SR_GUEST_INTERP_NULL_CODE_POINTER && g_offset0_hits == 0,
+          "a late import resolving to 0x80000000 ran the offset-0 function (result=%d runs=%d)",
+          result, g_offset0_hits);
+
+    sr_exec_span_reset();
+}
+
+int main(int argc, char **argv) {
+    sr_mem_init();
+    sr_watch_configure();
+    sr_watch_note_vblank(7u);
+    atomic_store(&sr_timeslice, 0);
+
+    if (argc == 2 && strcmp(argv[1], "--unregistered-dispatch-child") == 0) {
+        CpuState s = reject_state();
+        sr_exec_span_reset();
+        MEM_W32(INTERP_REJECT_ADDR, 0x24021234u);
+        dispatch(&s, INTERP_REJECT_ADDR);
+        return 99; /* fail-open: dispatch() must never return from this rejection */
+    }
+    if (argc == 2 && strcmp(argv[1], "--host-stack-boundary-child") == 0)
+        return run_host_stack_guard_child();
+    if (argc == 2 && strcmp(argv[1], "--null-code-pointer-child") == 0) {
+        sr_exec_span_reset();
+        own_synthetic_aot_word(0u);
+        sr_register(0u, offset0_body);
+        CpuState s = nullptr_state(NULLPTR_EXEC_START);
+        SR_CODE_POINTER(&s, s.r[25], NULLPTR_EXEC_START);
+        return 99; /* fail-open: a null code pointer must never fall through */
+    }
+    if (argc == 2 && strcmp(argv[1], "--host-tail-return-child") == 0)
+        return run_host_tail_return_child();
+    if (argc == 2 && strcmp(argv[1], "--null-return-child") == 0) {
+        CpuState s = nullptr_state(PROBE_PC);
+        SR_AOT_RETURN_CAPTURE(&s, 0u);
+        return 99; /* fail-open: generated code returned to address 0 */
+    }
+    if (argc == 2 && strcmp(argv[1], "--null-callback-child") == 0) {
+        sr_exec_span_reset();
+        own_synthetic_aot_word(0u);
+        sr_register(0u, offset0_body);
+        CpuState s = nullptr_state(PROBE_PC);
+        (void)sr_callback_dispatch_one(&s, 0u, 1, 0u, 0u, dispatch_from_host);
+        return 99; /* fail-open: the callback ran (offset-0 runs=g_offset0_hits) */
+    }
+
+    const SrTitleRuntimeConfig *cfg = sr_title_config();
+    fprintf(stderr, "dispatch-isolation-selftest: configuration \"%s\" "
+            "(%u alias(es), %u terminator(s))\n",
+            cfg->source_id, cfg->dispatch_alias_count, cfg->callback_terminator_count);
+
+    test_generic_build_configures_no_collection();
+    test_configured_build_declares_both_collections();
+    test_valid_aot_miss_executes_guest_bytes();
+    test_aot_store_watch_synthetic_guest();
+    test_aot_call_returns_before_native_continuation();
+    test_interpreter_tail_transfers_remain_untyped();
+    test_interpreter_rejects_unowned_and_invalid_fetches();
+    test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor();
+    test_high_virtual_module_authority_is_fail_closed();
+    test_public_dispatch_wrapper_terminates_rejection(argv[0]);
+    test_host_stack_exhaustion_is_a_named_boundary(argv[0]);
+    test_retired_bindings_are_inert();
+    test_call_boundary_keeps_callee_register_writes();
+    test_historical_call_target_fails_at_named_boundary();
+    test_runtime_module_binding_is_the_authority_for_its_range();
+    test_code_overlays_follow_guest_memory();
+    test_late_import_retirement_is_visible_after_warm_dispatch();
+    test_historical_target_shapes_fail_closed();
+    test_diagnostic_exact_hooks_never_consume();
+    test_configured_aliases_redirect();
+    test_foreign_aliases_do_not_redirect();
+    test_configured_terminators_match_their_site_only();
+    test_foreign_terminator_sites_are_generic();
+    test_stale_hook_redirects_to_interpreter();
+    test_null_code_pointer_is_not_the_offset0_function(argv[0]);
+    test_host_entries_return_through_the_host_return_address(argv[0]);
+
+    if (g_failures != 0) {
+        fprintf(stderr, "dispatch-isolation-selftest: %d FAILURE(S) in configuration \"%s\"\n",
+                g_failures, cfg->source_id);
+        return 1;
+    }
+    fprintf(stderr, "dispatch-isolation-selftest: OK (configuration \"%s\")\n", cfg->source_id);
+    return 0;
+}

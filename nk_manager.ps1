@@ -723,47 +723,47 @@ try {
         & python -m unittest discover -s tools -p "test_*.py" | Out-Host
         if ($LASTEXITCODE -ne 0) { $failed += "python-unittest"; $gateStatus["python-unittest"] = "FAIL" } else { $gateStatus["python-unittest"] = "PASS" }
 
-        Write-Host "`n[2/15] Scheduler/callback selftest (src/rt/sched_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[2/15] Scheduler/callback selftest (tests/native/sched_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("sched-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -PassThru -NoNewWindow -Wait
         if ($p.ExitCode -ne 0) { $failed += "sched-selftest"; $gateStatus["sched-selftest"] = "FAIL" } else { $gateStatus["sched-selftest"] = "PASS" }
 
-        Write-Host "`n[3/15] Profiler hash-table selftest (src/rt/profiler_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[3/15] Profiler hash-table selftest (tests/native/profiler_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("profiler-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $MakeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "profiler-selftest"; $gateStatus["profiler-selftest"] = "FAIL" } else { $gateStatus["profiler-selftest"] = "PASS" }
 
-        Write-Host "`n[4/15] Guest-heap allocator selftest (src/rt/heap_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[4/15] Guest-heap allocator selftest (tests/native/heap_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("heap-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "heap-selftest"; $gateStatus["heap-selftest"] = "FAIL" } else { $gateStatus["heap-selftest"] = "PASS" }
 
-        Write-Host "`n[5/15] Asset index selftest (src/rt/asset_index_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[5/15] Asset index selftest (tests/native/asset_index_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("asset-index-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "asset-index-selftest"; $gateStatus["asset-index-selftest"] = "FAIL" } else { $gateStatus["asset-index-selftest"] = "PASS" }
 
-        Write-Host "`n[6/15] HLE thread/wait selftest (src/rt/hle_thread_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[6/15] HLE thread/wait selftest (tests/native/hle_thread_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("hle-thread-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "hle-thread-selftest"; $gateStatus["hle-thread-selftest"] = "FAIL" } else { $gateStatus["hle-thread-selftest"] = "PASS" }
 
-        Write-Host "`n[7/15] FPU conversion round-trip selftest (src/rt/fp_convert_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[7/15] FPU conversion round-trip selftest (tests/native/fp_convert_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("fp-convert-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "fp-convert-selftest"; $gateStatus["fp-convert-selftest"] = "FAIL" } else { $gateStatus["fp-convert-selftest"] = "PASS" }
 
-        Write-Host "`n[8/15] VFPU sin/cos lookup table selftest (src/rt/vfpu_tables_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[8/15] VFPU sin/cos lookup table selftest (tests/native/vfpu_tables_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("vfpu-tables-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "vfpu-tables-selftest"; $gateStatus["vfpu-tables-selftest"] = "FAIL" } else { $gateStatus["vfpu-tables-selftest"] = "PASS" }
 
-        Write-Host "`n[9/15] Watchpoints and file I/O selftest (src/rt/watchpoints_file_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[9/15] Watchpoints and file I/O selftest (tests/native/watchpoints_file_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("watchpoints-file-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "watchpoints-file-selftest"; $gateStatus["watchpoints-file-selftest"] = "FAIL" } else { $gateStatus["watchpoints-file-selftest"] = "PASS" }
 
-        Write-Host "`n[10/15] VFPU interpreter selftest (src/rt/vfpu_interp_selftest.c)..." -ForegroundColor Cyan
+        Write-Host "`n[10/15] VFPU interpreter selftest (tests/native/vfpu_interp_selftest.c)..." -ForegroundColor Cyan
         $a = $makeBaseArgs + @("vfpu-interp-selftest", "--no-print-directory")
         $p = Start-Process -FilePath $makeExe -ArgumentList $a -NoNewWindow -Wait -PassThru
         if ($p.ExitCode -ne 0) { $failed += "vfpu-interp-selftest"; $gateStatus["vfpu-interp-selftest"] = "FAIL" } else { $gateStatus["vfpu-interp-selftest"] = "PASS" }

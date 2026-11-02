@@ -1,10 +1,9 @@
 # Online mode and developer mode (design)
 
 Status: step 1 of the implementation order is built (the switches, the wizard step and the developer log panel).
-The update check is built too, as its own opt-in feature outside online mode (owner decision, 2026-10-28; see
+The update check is built too, as its own opt-in feature outside online mode (see
 [Update check](#update-check)); news and reports are not. The player is offline unless the user asks
-([`SETUP.md`](SETUP.md#network-use)). This page is the contract the implementation follows. Maintainer
-decisions of 2026-10-23: the launcher gets an update check, a reporting system and a news feed, all behind an
+([`SETUP.md`](SETUP.md#network-use)). This page is the contract the implementation follows. The launcher gets an update check, a reporting system and a news feed, all behind an
 **online mode** that the setup wizard asks about, and a **developer mode** that shows a developer log for
 diagnosing new issues.
 
@@ -40,8 +39,8 @@ switchable alone. The step is skippable; skipping keeps both off.
 
 ## Update check
 
-Built for v0.0.2 (owner decision, 2026-10-28: "a way for users to Check for Updates and have the newer version
-automatically downloaded optionally"). It replaces the signed `updates.json` design this section held before:
+Built for v0.0.2: a way for users to Check for Updates and have the newer version
+automatically downloaded optionally. It replaces the signed `updates.json` design this section held before:
 the update check is its own opt-in feature, not a part of online mode, and it uses GitHub, where the releases
 already are.
 
@@ -147,8 +146,7 @@ its own explicit choice with its own sentence in Settings.
 ## Policy and code changes this needs
 
 1. `AGENTS.md`, section 5: offline by default becomes "offline until the user turns on online mode; then only
-   news and user-sent reports, only to `nakagawa.jaycast.net`". The update check already has its own entry there
-   (2026-10-28).
+   news and user-sent reports, only to `nakagawa.jaycast.net`". The update check already has its own entry there.
 2. Until the first network feature ships, `network_mode` in `settings.json` stays `"offline"` (the only value
    `AGENTS.md` section 5 accepts) and the user's choice lives in a separate `online_mode` key, with the per-feature
    switches (`online_news`, `online_reports`) and `developer_mode` beside it. The update check has its own key,

@@ -423,7 +423,7 @@ Similarly, `python tools/nk_cli.py build-package` searches `assets/titles` first
 
 ### System fonts
 
-Authentic in-game typography requires PSP system fonts in Sony's PlayStation Glyph Format (`.pgf`), dumped from the user's own physical PSP console firmware (`flash0:/font/`). The project does not bundle or distribute proprietary firmware fonts.
+Firmware follows PPSSPP's model. The operating system is HLE, the modules a game ships on its disc may run as LLE, and Nakagawa ships no firmware and decrypts none. It ships open replacement fonts. Authentic in-game typography needs the PSP's own system fonts in Sony's PlayStation Glyph Format (`.pgf`): you may copy those plain files from your own console's `flash0:/font/` into a local folder that Nakagawa reads. They stay on your PC. The project never bundles, commits, packages or uploads them, and it does not decrypt anything from `flash0`.
 
 > [!NOTE]
 > Do not confuse system fonts with `libfont.prx`. `libfont.prx` (located under `place_game_here/EXTRACTED/decrypted/libfont.prx` or `<user data>/titles/<DISC_ID>/decrypted/libfont.prx`) is a game-supplied guest middleware PRX executable module implementing the `sceFont` API; it does not contain the actual font glyph outlines. Typography requires the separate `.pgf` font files.
@@ -829,7 +829,7 @@ following any link does, and nothing opens on its own. A report link holds only 
 version, the Nakagawa version, the system and the stop reason, never a path, user name, log or
 setting ([`ONLINE_FEATURES.md`](ONLINE_FEATURES.md#reports)).
 
-The update check (maintainer decision, 2026-10-28) asks GitHub's public Releases API which versions of
+The update check asks GitHub's public Releases API which versions of
 `Jstar269/nakagawa-recomp` exist, and nothing else. The request is anonymous: it names itself
 `NakagawaRecomp/UpdateCheck` and carries no ID and no information about your PC or your games. The
 Updates page then shows this version, the newest one (pre-releases count), the release page link and the
@@ -911,8 +911,8 @@ Two limits are stated rather than implied, because that check does not reach the
 - **Non-ASCII characters in the checkout path are unverified.** No hosted gate runs from such a path.
   The places measured are the selftest respawn sites named here, and they were measured locally, not
   by a hosted gate.
-- **The selftest respawn sites quote their command line only recently.** `src/rt/hle_thread_selftest.c`,
-  `src/rt/cpu_lle_selftest.c` and `src/rt/dispatch_isolation_selftest.c` start a second copy of their
+- **The selftest respawn sites quote their command line only recently.** `tests/native/hle_thread_selftest.c`,
+  `tests/native/cpu_lle_selftest.c` and `tests/native/dispatch_isolation_selftest.c` start a second copy of their
   own binary, and they used the CRT's `_spawnl`/`_spawnv`, which joins its arguments without quoting:
   a spaced self path was re-parsed as extra arguments, the mode flag never arrived, and the child ran
   the whole suite instead of the requested mode. The HLE exit-game site was corrected in PR #680 and
@@ -1054,6 +1054,31 @@ outside the published repository.
   `WATCHDOG_PSMF` activity -- rather than from the threshold alone. If a title
   waits for a profile/save or cannot open a title-specific cache, inspect the
   local diagnostic log. Do not copy that input or its path into Git.
+
+### Local problem report (`nk_cli.py report`)
+
+`python tools/nk_cli.py report --title <DISC_ID>` writes one ZIP you can attach to an issue yourself. It
+is made on your PC and **nothing is uploaded**: the code uses no network library, and a test fails if it
+opens a connection. The ZIP goes to `<user data>\reports\<UTC time>-<title>.zip`; `--preview` lists the
+files without writing it, `--json` prints the list for a tool, and `--no-doctor` leaves out the toolchain
+check (the one slow step).
+
+| File in the ZIP | What it is |
+| --- | --- |
+| `about.txt` | Nakagawa version and source commit, tools version, OS, CPU, GPU and driver, RAM, title id and region, package state, and every file here with its size |
+| `logs/game-<DISC_ID>-last.txt` and `-prev.txt` | The title's last two runtime logs (without `--title`, the two newest of any title) |
+| `logs/developer-log.txt`, `logs/player-output.txt` | The launcher's logs |
+| `settings/*.json` | The `.json` files directly in the player's settings folder; a value under a key named like a token, secret or password is replaced |
+| `flight-recorder-summary.json` | The newest `flight-recorder*.json`'s scalar fields and the size of each list; never its events or memory |
+| `nk_doctor.txt` | `tools/nk_doctor.py --json` |
+
+Only those files are ever opened, so nothing is "everything except a few exclusions". Each is also
+refused by rule when it is a game file or disc image, a decrypted module, a save, a frame or memory dump,
+a trace, a key or a console-bound value, or when it is not plain text, and long logs keep their last 2 MiB
+from a whole line. Every line is redacted: your home folder (backslash or slash, the doubled slashes of
+JSON, the `\\?\` and `file:///` prefixes, the `/mnt/c` mount, and the Windows, Linux and macOS profile
+folders, found both by the account this PC names and by their shape) becomes `~`, your account name becomes `<user>` and this PC's name `<host>`. Read the ZIP before you
+attach it. The launcher button for this is not built yet (#1849).
 
 ### Windows host pitfalls
 

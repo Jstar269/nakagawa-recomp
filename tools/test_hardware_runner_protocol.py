@@ -2421,6 +2421,9 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         self.assertEqual(teardown["status"], "PASS")
         self.assertEqual(teardown["exprint_status"], "NOT_RUN")
         self.assertEqual(teardown["exprint_command_status"], "PROCESS_EXITED")
+        self.assertEqual(
+            teardown["exprint_reply"], "Synthetic exception query is unqualified\n"
+        )
 
     def test_l1_requalification_failure_proceeds_to_bounded_l2(self):
         class FailPspverOnceAfterRestartTransport(SimulatedPsplinkTransport):

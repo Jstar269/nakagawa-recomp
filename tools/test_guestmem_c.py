@@ -4,7 +4,7 @@
 
 """Behavioral + wiring coverage for the guest-memory bounds contract (issue #15).
 
-Layer 1 (behavioral): compile and run ``src/rt/guestmem_selftest.c`` — real
+Layer 1 (behavioral): compile and run ``tests/native/guestmem_selftest.c`` — real
 assertions, including an overflow differential fuzz over the full 32-bit range —
 against the helpers in ``src/rt/recomp.h``.
 
@@ -24,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RT = ROOT / "src" / "rt"
-SELFTEST_C = RT / "guestmem_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "guestmem_selftest.c"
 RECOMP_H = (RT / "recomp.h").read_text(encoding="utf-8")
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 

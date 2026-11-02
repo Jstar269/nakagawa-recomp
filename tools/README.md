@@ -140,6 +140,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | --- | --- |
 | `prxload.py` | Rebase a PRX/ELF at a base address and write a flat image. |
 | `analyze.py` | Discover function boundaries, executable spans and tail calls in a guest ELF. |
+| `analyze_cfg.py` | The canonical CFG report, its gate and the static coverage census, with the branch decode they use. `analyze.py` imports every name back. |
 | `analysis_ir.py` | Advisory analysis IR from a `codegen.py --cfg-report` file: blocks, functions, call graph, xrefs, register use; parity check, annotation comparison and `explain`. |
 | `imports.py` | Walk guest import tables and resolve MIPS NIDs to HLE handler names. |
 | `codegen.py` | Translate guest MIPS to C and split the output into `<g>_recomp_<n>.c` chunks. |
@@ -148,6 +149,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `lowering_plan.py` | Backend-neutral lowering plan of one function: decoded operations and resolved transfers (#330). |
 | `prx_reloc_model.py` | Model every PSP module relocation as a function of the load base, for position-independent module translation. |
 | `host_stubs.py` | Semantic name overrides for known guest functions, imported by the generator. |
+| `codegen_hst_stubs.py` | The hand-written C bodies the generator emits for specific HST guest addresses (`--profile=hst`), as data keyed by address. |
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
 | `entry_frame_balance.py` | Stack-symbolic entry classification: callable boundary versus resume PC. |
 | `elf_bounds.py` | Shared, fail-closed ELF32 envelope checks for the offline PSP tools. |
@@ -173,6 +175,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `funcdiff_cmp.py` | Fail-closed per-function trace comparison against a developer-supplied oracle trace. |
 | `verify_gates.py` | Run the optional differential verification gates without shell-specific syntax. |
 | `tracediff.py` | Diff two runtime traces in the format documented in `TRACE_FORMAT.md`. |
+| `nksnap.py` | Read and write `nksnap` v1 snapshots and parse the snapshot runner's verdict lines (#1842). |
 | `import_audit.py` | Classify a PSP ELF's imports against the HLE registration manifest. |
 | `import_audit_gate.py` | Public CI gate for import coverage and fake-success regressions. |
 | `import_fixtures.py` | Synthetic PSP ELF fixtures for the import-coverage audit gate. |
@@ -225,6 +228,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `nk_doctor_core.py` | Shared data structures and bounded file-format validators for the doctor. |
 | `hst_test_fixtures.py` | Small source-owned ELF, PSP-header and ISO envelope fixtures for the doctor tests. |
 | `nk_clean.py` | Preview-first workspace cleaner for allowlisted output roots. |
+| `compdb_relocate.py` | Rewrite a `compile_commands.json` so paths under the checkout are root-relative and only `directory` stays absolute. |
 | `title_manifest.py` | Validate and deterministically normalize public title manifests. |
 | `title_qualification.py` | Qualify public titles: validate manifests, input profiles and bring-up reports, and smoke-launch a public title through the native player in a sandbox. |
 | `title_codegen_plan.py` | Build a deterministic code-generation plan or AOT package from a title manifest. |
@@ -359,6 +363,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_codegen_transfer_target_timing.py` | A computed transfer must read its target register at the transfer. |
 | `test_codegen_vfpu_fallback.py` | VFPU fallback emission, including unsupported forms failing closed. |
 | `test_cosim_fixture.py` | Structural gates for the AOT/interpreter cosimulation fixture. |
+| `test_snapshot_format.py` | Pins the `nksnap` v1 format, every loader refusal and the snapshot runner's verdict grammar. |
 | `test_compat_manifest.py` | Every custom codegen stub and dispatch hook must be in the manifest. |
 | `test_cosim_mutation_gate_outcome.py` | Cosim mutation driver verdicts bound to process status, the timeout verdict and child-tree reaping. |
 | `test_cpu_lle.py` | Low-level emulation CPU gates: COP0, exceptions, eret, interpreter support. |
@@ -444,6 +449,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_iso_parity.py` | Differential parity between the native disc, library and launch code and Python. |
 | `test_manager_safety.py` | Manager filesystem, process and build safety guarantees. |
 | `test_nk_clean.py` | Preview and allowlist safety contracts for the workspace cleaner. |
+| `test_compdb_relocate.py` | Path relativising, backslash roots, sibling-prefix safety and in-place rewrite for the compilation-database relocator. |
 | `test_nk_cli_progress.py` | CLI progress reporting and log-file options. |
 | `test_nk_core.py` | Unit tests for the portable preparation and runtime library. |
 | `test_package_cache.py` | Cache tiering, cache-key separation, in-checkout write refusal, bounded external JSON. |

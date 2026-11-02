@@ -68,7 +68,7 @@ CLASS_SOURCES = {
     "game-route": "No public, title-free record of the NIDs or forms a qualified title route exercised exists yet.",
     "synthetic": (
         "HLE: an executable host test enters the NID (`src/rt/intr_conformance.h` cells or "
-        "`src/rt/hle_thread_selftest.c` dispatch), or the handler's notes cite a selftest, a "
+        "`tests/native/hle_thread_selftest.c` dispatch), or the handler's notes cite a selftest, a "
         "`tools/test_*.py` module, a Makefile target or a synthetic fixture. VFPU: the census "
         "lists a differential test (synthetic corpus, fuzz or interpreter selftest)."
     ),

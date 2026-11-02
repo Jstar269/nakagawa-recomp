@@ -509,6 +509,53 @@ def extract_registrations(raw_source: str, sources: list[tuple[str, str]] | None
     return sorted(regs, key=lambda r: r["nid"])
 
 
+_PSP_EVIDENCE_ID = re.compile(r"PSP-[A-Z0-9]+(?:-[A-Z0-9]+)*-\d{3}")
+
+
+def validate_status_evidence_ratchet() -> None:
+    """A partial or compatibility status must cite evidence, and cited PSP ids must exist (#341).
+
+    Statuses that predate the rule sit on the shrink-only
+    `PARTIAL_WITHOUT_EVIDENCE` list; everything else must carry at least one entry in
+    `HANDLER_EVIDENCE`. A cited `PSP-...-NNN` oracle id has to appear in the hardware
+    oracle documentation or manifest, so a typo cannot pass as a measurement.
+    """
+    exempt = meta.PARTIAL_WITHOUT_EVIDENCE
+    for handler, status in meta.HANDLER_STATUS.items():
+        if status not in ("partial", "compatibility"):
+            continue
+        has_evidence = bool(meta.HANDLER_EVIDENCE.get(handler))
+        if not has_evidence and handler not in exempt:
+            raise ManifestError(
+                f"handler {handler!r} is marked {status!r} but cites no evidence; a status "
+                "claim must name a PSP oracle cell, a dispatch-entering self-test or a public "
+                "signature it was read against (#341)"
+            )
+        if has_evidence and handler in exempt:
+            raise ManifestError(
+                f"PARTIAL_WITHOUT_EVIDENCE lists {handler!r}, which now cites evidence; "
+                "remove it from the list (#341)"
+            )
+    for handler in sorted(exempt):
+        if meta.HANDLER_STATUS.get(handler) not in ("partial", "compatibility"):
+            raise ManifestError(
+                f"PARTIAL_WITHOUT_EVIDENCE lists {handler!r}, which is no longer a partial or "
+                "compatibility handler (stale); remove it (#341)"
+            )
+    known = _read_optional(ROOT / "docs" / "HARDWARE_ORACLE.md") + _read_optional(
+        ROOT / "tools" / "psp_oracle" / "manifest.json"
+    )
+    for handler, evidence in meta.HANDLER_EVIDENCE.items():
+        for entry in evidence:
+            for oracle_id in _PSP_EVIDENCE_ID.findall(entry):
+                if oracle_id not in known:
+                    raise ManifestError(
+                        f"handler {handler!r} cites oracle id {oracle_id!r}, which neither "
+                        "docs/HARDWARE_ORACLE.md nor tools/psp_oracle/manifest.json records"
+                    )
+
+
+
 def validate_meta(regs: list[dict]) -> None:
     """Both-direction cross-check between curated metadata and the extraction."""
     handlers = {r["handler"] for r in regs}
@@ -575,7 +622,7 @@ def validate_meta(regs: list[dict]) -> None:
                 candidate_path, _, anchor = (part.strip() for part in ev.partition(":"))
                 if not (
                     candidate_path == "Makefile"
-                    or candidate_path.startswith(("src/", "tools/", "fixtures/"))
+                    or candidate_path.startswith(("src/", "tools/", "fixtures/", "tests/"))
                 ):
                     continue
                 has_executable_evidence = True
@@ -592,7 +639,7 @@ def validate_meta(regs: list[dict]) -> None:
             raise ManifestError(
                 f"handler {handler!r} is marked 'complete' but has no named executable evidence; "
                 "a complete handler must cite at least one executable evidence file in the repository "
-                "(under src/, tools/, fixtures/, or Makefile)"
+                "(under src/, tools/, fixtures/, tests/, or Makefile)"
             )
         # Independent of evidence: a partial or compatibility handler must always
         # name its limitation, whether or not it also cites evidence.
@@ -604,6 +651,7 @@ def validate_meta(regs: list[dict]) -> None:
                     "every partial and compatibility entry must carry a non-empty limitation "
                     "(state a factual limitation from code or 'limitation not yet reviewed (#341)')"
                 )
+    validate_status_evidence_ratchet()
     validate_subsystems(regs)
 
 
@@ -842,7 +890,7 @@ def dump_json(obj: dict, path: Path) -> None:
 #   registered handler + classification           this module's extraction
 #   production dispatch reachability              this module's scope analysis
 #   conformance cell / exercised                  src/rt/intr_conformance.h,
-#                                                 src/rt/hle_thread_selftest.c
+#                                                 tests/native/hle_thread_selftest.c
 #   hardware exercise                             tools/psp_oracle/manifest.json
 #
 # Each consumed fact keeps the tier of the tool that produced it.  The chain
@@ -858,7 +906,7 @@ CHAIN_SCHEMA = 1
 HARDWARE_EVIDENCE_VALUES = frozenset({"NOT_RUN", "CAPTURED", "MEASURED"})
 
 INTR_CONFORMANCE_H = ROOT / "src" / "rt" / "intr_conformance.h"
-SELFTEST_C = ROOT / "src" / "rt" / "hle_thread_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "hle_thread_selftest.c"
 PSP_ORACLE_MANIFEST = ROOT / "tools" / "psp_oracle" / "manifest.json"
 PUBLIC_SOURCE_PROFILE = ROOT / "assets" / "public_source_profile.json"
 

@@ -360,7 +360,7 @@ hole:
   load-bearing layer only once a primary opcode is implemented that a control encoding
   shares.
 * `sr_exec_span_owns_fetch()` is the *dispatch* authority predicate, not the
-  interpreter's fetch path — `src/rt/dispatch_isolation_selftest.c` owns it, and it does
+  interpreter's fetch path — `tests/native/dispatch_isolation_selftest.c` owns it, and it does
   fail when that predicate is weakened (measured).
 
 The campaign has already earned its keep: the `allow-r0-write` mutant **survived**

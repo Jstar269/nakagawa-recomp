@@ -33,11 +33,31 @@ NK_UI_PLAYER_SCREEN_SRCS := \
 	src/player/ui/scr_first_run.c \
 	src/player/ui/scr_dialogs.c
 
+# The screens that came out of the old scr_title.c: the title page, the one-card flow pages,
+# About, the setup wizard, the game-found card, Settings, Controls and the developer log, with
+# the frame and form code they share (scr_flow.c, scr_form.c).
+NK_UI_PLAYER_TITLE_SRCS := \
+	src/player/ui/scr_title.c \
+	src/player/ui/scr_flow.c \
+	src/player/ui/scr_form.c \
+	src/player/ui/scr_build.c \
+	src/player/ui/scr_remove.c \
+	src/player/ui/scr_stop.c \
+	src/player/ui/scr_rebuild.c \
+	src/player/ui/scr_prereq.c \
+	src/player/ui/scr_error.c \
+	src/player/ui/scr_about.c \
+	src/player/ui/scr_wizard.c \
+	src/player/ui/scr_disc.c \
+	src/player/ui/scr_settings.c \
+	src/player/ui/scr_controller.c \
+	src/player/ui/scr_devlog.c
+
 NK_UI_PLAYER_C5_SRCS := \
 	src/player/ui/player_ui_nk.c \
 	src/player/ui/ui_router.c \
 	src/player/ui/scr_library.c \
-	src/player/ui/scr_title.c
+	$(NK_UI_PLAYER_TITLE_SRCS)
 
 # The next UI's SDL host pieces: disc art on a worker thread, launcher sounds.
 NK_UI_PLAYER_HOST_SRCS := \

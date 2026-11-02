@@ -5,7 +5,7 @@
 
 Two layers:
 
-1. Compile and run ``src/rt/evf_selftest.c`` against the pure helpers in
+1. Compile and run ``tests/native/evf_selftest.c`` against the pure helpers in
    ``src/rt/evf.h`` — keep-mask clear, AND/OR matching, WAITCLEAR/WAITCLEARALL
    consumption, and PSP-style wait/poll argument validation errors.
 2. Source-level wiring checks that ``src/rt/hle.c`` (Windows-only TU, not
@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-SELFTEST_C = ROOT / "src" / "rt" / "evf_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "evf_selftest.c"
 HLE_SOURCE = hle_sources.text()
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 

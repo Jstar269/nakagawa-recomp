@@ -296,11 +296,11 @@ class TestStrictCompileFlagsMirrorTheMakefile(unittest.TestCase):
         self.assertFalse(_has_flag(recipe, "-DSR_HLE_THREAD_SELFTEST"))
 
     def test_a_selftest_is_compiled_with_its_own_defines(self) -> None:
-        command, reason = contrib_check.strict_compile_command("cc", "src/rt/hle_thread_selftest.c", [])
+        command, reason = contrib_check.strict_compile_command("cc", "tests/native/hle_thread_selftest.c", [])
         self.assertEqual(reason, "")
         for define in ("SR_HLE_THREAD_SELFTEST", "SR_CORO_LIFECYCLE_TEST", "SR_SCHED_LIVENESS_TEST"):
             self.assertIn(f"-D{define}", command)
-        self.assertEqual(command[-1], "src/rt/hle_thread_selftest.c")
+        self.assertEqual(command[-1], "tests/native/hle_thread_selftest.c")
         plain, _ = contrib_check.strict_compile_command("cc", "src/rt/hle.c", [])
         self.assertFalse([flag for flag in plain if flag.startswith("-D")])
 
@@ -389,8 +389,8 @@ class TestStrictCompileOnUnchangedMain(unittest.TestCase):
     """
 
     SOURCES = (
-        "src/rt/hle_thread_selftest.c",
-        "src/rt/sched_selftest.c",
+        "tests/native/hle_thread_selftest.c",
+        "tests/native/sched_selftest.c",
         "src/player/ui/player_ui_nk.c",
         "src/player/ui/scr_title.c",
         "tests/native/test_player_screens.c",

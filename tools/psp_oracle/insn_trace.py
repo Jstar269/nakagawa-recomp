@@ -17,9 +17,11 @@ differs.
         exit 0 on STRICT_V2_AGREEMENT, 1 on the first divergence, 2 on a rejected input
 
 Both sides record, per executed instruction (delay slots included, an annulled likely
-delay slot not), the traced registers that changed (r1..r25, r29..r31, hi, lo) and the
-store the instruction made. r26..r28 are never traced: the probe's trampoline owns them
-and no fixture names them.
+delay slot not), the traced registers that changed (r1..r25, r29..r31, hi, lo, selected
+f0..f3/fcr31 and v0..v3/v32) and the store the instruction made. r26..r28 are never
+traced: the probe's trampoline owns them and no fixture names them. The separate
+``CASE=insn-trace-exception`` fixture faults in a branch delay slot; the PSPLink runner
+retains its EPC/Cause/BadVAddr/Status frame in the case teardown report.
 """
 
 from __future__ import annotations
@@ -46,7 +48,14 @@ FIXTURE_ID = "insn-trace"
 TEST_ID = "PSP-TRACE-001"
 EXIT_SYSCALL_WORD = 0x0008430C  # syscall 0x210c: the gate build's stop (tools/gate_stub.c)
 TRACED_GPRS = tuple(range(1, 26)) + (29, 30, 31)
-RECORD_WORDS = 2 + len(TRACED_GPRS) + 2 + 2   # pc, op, registers, hi, lo, store address/value
+TRACED_FPRS = tuple(range(4))
+TRACED_VFPU = (0, 1, 2, 3, 32)
+TRACE_STATE_NAMES = tuple(
+    [f"r{i}" for i in TRACED_GPRS] + ["hi", "lo"]
+    + [f"f{i}" for i in TRACED_FPRS] + ["fcr31"]
+    + [f"v{i}" for i in TRACED_VFPU]
+)
+RECORD_WORDS = 2 + len(TRACE_STATE_NAMES) + 2   # pc, op, selected state, store address/value
 STORE_BITS = {0x28: 8, 0x29: 16, 0x2B: 32}     # sb, sh, sw: the store width follows from the op
 END_REACHED = 0
 
@@ -59,7 +68,7 @@ def parse_fixtures(path: Path = FIXTURES_H) -> dict:
     """Read the fixtures header: constants, word arrays and the fixture table."""
     text = path.read_text(encoding="utf-8")
     consts = {name: int(value, 16) for name, value in
-              re.findall(r"#define (NT_[A-Z_]+) (0x[0-9a-fA-F]+)u", text)}
+              re.findall(r"#define (NT_[A-Z0-9_]+) (0x[0-9a-fA-F]+)u", text)}
     arrays = {}
     for name, body in re.findall(r"static const uint32_t (nt_\w+)_words\[\] = \{(.*?)\};", text, re.S):
         arrays[name] = [(int(word, 16), asm.strip()) for word, asm in
@@ -88,6 +97,19 @@ def initial_state(consts: dict) -> dict:
         regs[f"r{i}"] = 0
     regs["hi"] = consts["NT_HI_INIT"]
     regs["lo"] = consts["NT_LO_INIT"]
+    regs.update({f"f{i}": 0 for i in range(32)})
+    regs["f0"] = consts["NT_FPU_F0_INIT"]
+    regs["f1"] = consts["NT_FPU_F1_INIT"]
+    regs["f2"] = consts["NT_FPU_F2_INIT"]
+    regs["f3"] = consts["NT_FPU_F3_INIT"]
+    regs["fcr31"] = consts["NT_FCR_INIT"]
+    regs.update({f"v{i}": 0 for i in range(128)})
+    vfpu_init_names = (
+        "NT_VFPU_S000_INIT", "NT_VFPU_S001_INIT", "NT_VFPU_S002_INIT",
+        "NT_VFPU_S003_INIT", "NT_VFPU_S200_INIT",
+    )
+    for index, const_name in zip(TRACED_VFPU, vfpu_init_names, strict=True):
+        regs[f"v{index}"] = consts[const_name]
     return regs
 
 
@@ -137,8 +159,8 @@ def v2_header(source_tier: str, fixture: dict, steps: int, *, source_commit: str
 
 
 def _state_tokens(before: dict, after: dict) -> list[str]:
-    names = [f"r{i}" for i in TRACED_GPRS] + ["hi", "lo"]
-    return [f"{name}=0x{after[name]:08x}" for name in names if after[name] != before[name]]
+    return [f"{name}=0x{after[name]:08x}" for name in TRACE_STATE_NAMES
+            if after[name] != before[name]]
 
 
 def psp_records(log_text: str, fixture: dict, consts: dict) -> tuple[list[str], str]:
@@ -157,7 +179,7 @@ def psp_records(log_text: str, fixture: dict, consts: dict) -> tuple[list[str], 
     if "init" not in records or "end" not in records:
         raise InsnTraceError(f"{fid}: the log has no init or end record")
     init = records["init"][2]
-    if len(init) != 4 + len(TRACED_GPRS) + 2:
+    if len(init) != 4 + len(TRACE_STATE_NAMES):
         raise InsnTraceError(f"{fid}: the init record is malformed")
     if init[0] != fixture["base"] or init[1] != len(fixture["words"]):
         raise InsnTraceError(f"{fid}: the probe ran a different fixture (base/count)")
@@ -167,7 +189,7 @@ def psp_records(log_text: str, fixture: dict, consts: dict) -> tuple[list[str], 
     if status != "PASS" or result != END_REACHED:
         raise InsnTraceError(f"{fid}: the probe did not reach the end address (status {result})")
     steps = end[0]
-    names = [f"r{i}" for i in TRACED_GPRS] + ["hi", "lo"]
+    names = TRACE_STATE_NAMES
     state = dict(zip(names, init[4:], strict=True))
     expected = initial_state(consts)
     if any(state[n] != expected[n] for n in names) or init[3] != consts["NT_DATA_BASE"]:

@@ -15,6 +15,11 @@
 //     .p, .t and .q, register-only;
 //   CASE=vfpu-sort (PSP-VFPU-SORT-001): #326 raw result words of vsrt1.q to vsrt4.q,
 //     register-only.
+//   CASE=null-code-registration (PSP-NULLCODE-001): #1375 entry $ra/$sp/$gp and ABI
+//     argument registers for thread, callback, alarm, VTimer and VBLANK sub-interrupt
+//     entries, followed by NULL registration results; interrupt/GE handlers are not invoked;
+//   CASE=null-thread-invocation / null-callback-invocation: #1375 follow-ups only when the
+//     measured entry context is user mode; each is isolated in its own launch.
 // These cases live apart from probe_hle_measure.c because they do what that file's
 // families never may: hle-intr-cells registers a VBLANK sub-interrupt handler, sets
 // VTimer and alarm handlers and suspends interrupts, and hle-issues-batch calls a kernel
@@ -59,6 +64,9 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_VFPU_SORT 125
 #define HLE_CASE_VFPU_FORMS2 121
 #define HLE_CASE_INTR_CAUSE 120
+#define HLE_CASE_NULL_CODE_REGISTRATION 128
+#define HLE_CASE_NULL_THREAD_INVOCATION 129
+#define HLE_CASE_NULL_CALLBACK_INVOCATION 130
 
 #if PSP_ORACLE_CASE == HLE_CASE_ISSUES_BATCH
 #define HLE_CAMPAIGN_ID "hle-issues-batch"
@@ -88,6 +96,18 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "intr-cause"
 #define HLE_TEST_ID "PSP-INTR-CAUSE-001"
 #define HLE_LOG "host0:/intr_cause_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_NULL_CODE_REGISTRATION
+#define HLE_CAMPAIGN_ID "null-code-registration"
+#define HLE_TEST_ID "PSP-NULLCODE-001"
+#define HLE_LOG "host0:/null_code_registration_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_NULL_THREAD_INVOCATION
+#define HLE_CAMPAIGN_ID "null-thread-invocation"
+#define HLE_TEST_ID "PSP-NULLCODE-001"
+#define HLE_LOG "host0:/null_thread_invocation_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_NULL_CALLBACK_INVOCATION
+#define HLE_CAMPAIGN_ID "null-callback-invocation"
+#define HLE_TEST_ID "PSP-NULLCODE-001"
+#define HLE_LOG "host0:/null_callback_invocation_log.txt"
 #else
 #error probe_hle_issues.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -147,7 +167,7 @@ static void hle_step(const char *step)
 static void hle_emit(const char *case_id, const char *status, uint32_t result,
                      const uint32_t *out, uint32_t count)
 {
-    static char line[700];
+    static char line[1536];
     int n = snprintf(line, sizeof(line),
                      "NAKAGAWA_PSP_TEST schema=1 test_id=%s case_id=%s status=%s result=0x%08x",
                      HLE_TEST_ID, case_id, status, (unsigned int)result);
@@ -1990,6 +2010,503 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_INTR_CAUSE */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_NULL_CODE_REGISTRATION
+
+#include <pspdisplay.h>
+#include <pspge.h>
+#include <pspintrman.h>
+
+/* Capture before a C prologue can change sp or gp. Each row is ra, sp, gp,
+   a0-a3 and t0-t3, the eight integer argument registers in the PSP ABI. */
+enum { KE_THREAD, KE_CALLBACK, KE_ALARM, KE_VTIMER, KE_VBLANK, KE_ENTRY_COUNT };
+static int ke_null_code_registration(void);
+static volatile uint32_t s_ke_regs[KE_ENTRY_COUNT][11];
+static volatile uint32_t s_ke_seen[KE_ENTRY_COUNT];
+
+#define KE_ENTRY_STUB(name, body, offset) \
+    __asm__(".set push\n\t" \
+            ".set noreorder\n\t" \
+            ".text\n\t" \
+            ".align 2\n\t" \
+            ".globl " #name "\n\t" \
+            #name ":\n\t" \
+            "la $12, s_ke_regs\n\t" \
+            "addiu $12, $12, " #offset "\n\t" \
+            "sw $31, 0($12)\n\t" \
+            "sw $29, 4($12)\n\t" \
+            "sw $28, 8($12)\n\t" \
+            "sw $4, 12($12)\n\t" \
+            "sw $5, 16($12)\n\t" \
+            "sw $6, 20($12)\n\t" \
+            "sw $7, 24($12)\n\t" \
+            "sw $8, 28($12)\n\t" \
+            "sw $9, 32($12)\n\t" \
+            "sw $10, 36($12)\n\t" \
+            "sw $11, 40($12)\n\t" \
+            "j " #body "\n\t" \
+            "nop\n\t" \
+            ".set pop\n\t");
+
+extern int ke_thread_entry(SceSize args, void *argp);
+extern int ke_callback_entry(int notify_count, int notify_arg, void *common);
+extern SceUInt ke_alarm_entry(void *common);
+extern SceUInt ke_vtimer_entry(SceUID uid, SceKernelSysClock *scheduled,
+                               SceKernelSysClock *actual, void *common);
+extern int ke_vblank_entry(int sub, void *arg);
+
+KE_ENTRY_STUB(ke_thread_entry, ke_thread_entry_body, 0)
+KE_ENTRY_STUB(ke_callback_entry, ke_callback_entry_body, 44)
+KE_ENTRY_STUB(ke_alarm_entry, ke_alarm_entry_body, 88)
+KE_ENTRY_STUB(ke_vtimer_entry, ke_vtimer_entry_body, 132)
+KE_ENTRY_STUB(ke_vblank_entry, ke_vblank_entry_body, 176)
+
+__attribute__((used, noinline)) static int ke_thread_entry_body(SceSize args, void *argp)
+{
+    (void)args;
+    (void)argp;
+    s_ke_seen[KE_THREAD]++;
+    return 0x13579bdf;
+}
+
+__attribute__((used, noinline)) static int ke_callback_entry_body(
+    int notify_count, int notify_arg, void *common)
+{
+    (void)notify_count;
+    (void)notify_arg;
+    (void)common;
+    s_ke_seen[KE_CALLBACK]++;
+    return 0;
+}
+
+__attribute__((used, noinline)) static SceUInt ke_alarm_entry_body(void *common)
+{
+    (void)common;
+    s_ke_seen[KE_ALARM]++;
+    return 0u;
+}
+
+__attribute__((used, noinline)) static SceUInt ke_vtimer_entry_body(
+    SceUID uid, SceKernelSysClock *scheduled, SceKernelSysClock *actual, void *common)
+{
+    (void)uid;
+    (void)scheduled;
+    (void)actual;
+    (void)common;
+    s_ke_seen[KE_VTIMER]++;
+    return 0u;
+}
+
+__attribute__((used, noinline)) static int ke_vblank_entry_body(int sub, void *arg)
+{
+    (void)sub;
+    (void)arg;
+    s_ke_seen[KE_VBLANK]++;
+    return -1;
+}
+
+static void ke_record_entry(const char *case_id, unsigned row)
+{
+    uint32_t words[11];
+    for (unsigned i = 0; i < 11u; i++) {
+        words[i] = s_ke_regs[row][i];
+    }
+    hle_record(case_id, "PASS", s_ke_seen[row], words, 11u);
+}
+
+static int hle_run(void)
+{
+    const uint32_t thread_arg = 0x13579bdfu;
+    SceKernelThreadInfo thread_info;
+    memset(&thread_info, 0, sizeof(thread_info));
+    thread_info.size = sizeof(thread_info);
+
+    hle_step("thread-entry-create");
+    const SceUID thread = sceKernelCreateThread(
+        "ke_entry", ke_thread_entry, 0x20, 0x1000, THREAD_ATTR_USER, NULL);
+    int thread_start = -1, thread_wait = -1, thread_refer = -1, thread_delete = -1;
+    uint32_t thread_exit = 0xffffffffu;
+    if (thread >= 0) {
+        hle_step("thread-entry-start");
+        thread_start = sceKernelStartThread((SceUID)thread, sizeof(thread_arg),
+                                            (void *)&thread_arg);
+        if (thread_start >= 0) {
+            SceUInt timeout = 300000u;
+            hle_step("thread-entry-wait");
+            thread_wait = sceKernelWaitThreadEnd((SceUID)thread, &timeout);
+        }
+        thread_refer = sceKernelReferThreadStatus((SceUID)thread, &thread_info);
+        if (thread_refer >= 0) {
+            thread_exit = (uint32_t)thread_info.exitStatus;
+        }
+        hle_step("thread-entry-delete");
+        thread_delete = sceKernelDeleteThread((SceUID)thread);
+    }
+    ke_record_entry("thread-entry", KE_THREAD);
+    const uint32_t thread_setup[6] = {
+        (uint32_t)thread, (uint32_t)thread_start, (uint32_t)thread_wait,
+        (uint32_t)thread_refer, thread_exit, (uint32_t)thread_delete,
+    };
+    hle_record("thread-entry-setup", "PASS", s_ke_seen[KE_THREAD], thread_setup, 6u);
+
+    hle_step("callback-entry-create");
+    const SceUID callback = sceKernelCreateCallback(
+        "ke_entry", ke_callback_entry, (void *)(uintptr_t)0x2468ace0u);
+    int callback_notify = -1, callback_check = -1, callback_delete = -1;
+    if (callback >= 0) {
+        hle_step("callback-entry-notify");
+        callback_notify = sceKernelNotifyCallback((SceUID)callback, 0x10203040);
+        hle_step("callback-entry-check");
+        callback_check = sceKernelCheckCallback();
+        hle_step("callback-entry-delete");
+        callback_delete = sceKernelDeleteCallback((SceUID)callback);
+    }
+    ke_record_entry("callback-entry", KE_CALLBACK);
+    const uint32_t callback_setup[4] = {
+        (uint32_t)callback, (uint32_t)callback_notify,
+        (uint32_t)callback_check, (uint32_t)callback_delete,
+    };
+    hle_record("callback-entry-setup", "PASS", s_ke_seen[KE_CALLBACK], callback_setup, 4u);
+
+    hle_step("alarm-entry-set");
+    const SceUID alarm = sceKernelSetAlarm(
+        10000u, ke_alarm_entry, (void *)(uintptr_t)0x11223344u);
+    if (alarm >= 0) {
+        hle_step("alarm-entry-wait");
+        sceKernelDelayThread(100000u);
+    }
+    int alarm_cancel = alarm >= 0 ? sceKernelCancelAlarm((SceUID)alarm) : -1;
+    ke_record_entry("alarm-entry", KE_ALARM);
+    const uint32_t alarm_setup[2] = {(uint32_t)alarm, (uint32_t)alarm_cancel};
+    hle_record("alarm-entry-setup", "PASS", s_ke_seen[KE_ALARM], alarm_setup, 2u);
+
+    hle_step("vtimer-entry-create");
+    const SceUID vtimer = sceKernelCreateVTimer("ke_entry", NULL);
+    int vtimer_start = -1, vtimer_set = -1, vtimer_stop = -1, vtimer_delete = -1;
+    if (vtimer >= 0) {
+        SceKernelSysClock due;
+        due.low = 10000u;
+        due.hi = 0u;
+        hle_step("vtimer-entry-start");
+        vtimer_start = sceKernelStartVTimer((SceUID)vtimer);
+        if (vtimer_start >= 0) {
+            hle_step("vtimer-entry-set");
+            vtimer_set = sceKernelSetVTimerHandler(
+                (SceUID)vtimer, &due, ke_vtimer_entry, (void *)(uintptr_t)0x55667788u);
+            hle_step("vtimer-entry-wait");
+            sceKernelDelayThread(100000u);
+        }
+        hle_step("vtimer-entry-stop");
+        vtimer_stop = sceKernelStopVTimer((SceUID)vtimer);
+        vtimer_delete = sceKernelDeleteVTimer((SceUID)vtimer);
+    }
+    ke_record_entry("vtimer-entry", KE_VTIMER);
+    const uint32_t vtimer_setup[5] = {
+        (uint32_t)vtimer, (uint32_t)vtimer_start, (uint32_t)vtimer_set,
+        (uint32_t)vtimer_stop, (uint32_t)vtimer_delete,
+    };
+    hle_record("vtimer-entry-setup", "PASS", s_ke_seen[KE_VTIMER], vtimer_setup, 5u);
+
+    hle_step("vblank-entry-register");
+    int slot = -1, vblank_register = -1;
+    uint32_t attempts = 0u;
+    for (int candidate = 0; candidate < 16; candidate++) {
+        attempts++;
+        vblank_register = sceKernelRegisterSubIntrHandler(
+            PSP_VBLANK_INT, candidate, (void *)ke_vblank_entry,
+            (void *)(uintptr_t)0x89abcdefu);
+        if (vblank_register >= 0) {
+            slot = candidate;
+            break;
+        }
+    }
+    int vblank_enable = -1, vblank_disable = -1, vblank_release = -1;
+    if (slot >= 0) {
+        hle_step("vblank-entry-enable");
+        vblank_enable = sceKernelEnableSubIntr(PSP_VBLANK_INT, slot);
+        if (vblank_enable >= 0) {
+            sceKernelDelayThread(50000u);
+        }
+        hle_step("vblank-entry-disable");
+        vblank_disable = sceKernelDisableSubIntr(PSP_VBLANK_INT, slot);
+        vblank_release = sceKernelReleaseSubIntrHandler(PSP_VBLANK_INT, slot);
+    }
+    ke_record_entry("vblank-subintr-entry", KE_VBLANK);
+    const uint32_t vblank_setup[6] = {
+        (uint32_t)vblank_register, (uint32_t)slot, attempts,
+        (uint32_t)vblank_enable, (uint32_t)vblank_disable, (uint32_t)vblank_release,
+    };
+    hle_record("vblank-subintr-setup", "PASS", s_ke_seen[KE_VBLANK], vblank_setup, 6u);
+    return ke_null_code_registration();
+}
+
+static volatile int s_null_ge_drawsync_rc = -1;
+static volatile int s_null_ge_drawsync_returned;
+
+static int null_ge_drawsync_thread(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    s_null_ge_drawsync_rc = sceGeDrawSync(0);
+    s_null_ge_drawsync_returned = 1;
+    return 0;
+}
+
+static int null_ge_drawsync_bounded(uint32_t out[6])
+{
+    hle_step("ge-drawsync-thread-create");
+    const SceUID thread = sceKernelCreateThread(
+        "null_ge_sync", null_ge_drawsync_thread, 0x20, 0x1000, THREAD_ATTR_USER, NULL);
+    int start_rc = -1, wait_rc = -1, terminate_delete_rc = -1, delete_rc = -1;
+    if (thread >= 0) {
+        hle_step("ge-drawsync-thread-start");
+        start_rc = sceKernelStartThread((SceUID)thread, 0u, NULL);
+        if (start_rc >= 0) {
+            SceUInt timeout = 200000u;
+            hle_step("ge-drawsync-wait-bounded");
+            wait_rc = sceKernelWaitThreadEnd(thread, &timeout);
+        } else {
+            wait_rc = start_rc;
+        }
+        if (wait_rc < 0) {
+            hle_step("ge-drawsync-terminate-timeout");
+            terminate_delete_rc = sceKernelTerminateDeleteThread(thread);
+        } else {
+            delete_rc = sceKernelDeleteThread(thread);
+        }
+    }
+    out[0] = (uint32_t)thread;
+    out[1] = (uint32_t)start_rc;
+    out[2] = (uint32_t)wait_rc;
+    out[3] = (uint32_t)terminate_delete_rc;
+    out[4] = (uint32_t)delete_rc;
+    out[5] = s_null_ge_drawsync_returned
+                 ? (uint32_t)s_null_ge_drawsync_rc : 0xffffffffu;
+    return s_null_ge_drawsync_returned && wait_rc >= 0;
+}
+
+static int ke_null_code_registration(void)
+{
+    SceKernelThreadInfo thread_info;
+    memset(&thread_info, 0, sizeof(thread_info));
+    thread_info.size = sizeof(thread_info);
+    hle_step("create-thread-null");
+    const SceUID thread = sceKernelCreateThread(
+        "null_entry", NULL, 0x20, 0x1000, THREAD_ATTR_USER, NULL);
+    int thread_refer = -1, thread_delete = -1;
+    uint32_t thread_entry = 0xffffffffu;
+    if (thread >= 0) {
+        thread_refer = sceKernelReferThreadStatus((SceUID)thread, &thread_info);
+        if (thread_refer >= 0) {
+            thread_entry = (uint32_t)(uintptr_t)thread_info.entry;
+        }
+        thread_delete = sceKernelDeleteThread((SceUID)thread);
+    }
+    const uint32_t thread_out[3] = {
+        (uint32_t)thread_refer, thread_entry, (uint32_t)thread_delete,
+    };
+    hle_record("create-thread-null", "PASS", (uint32_t)thread, thread_out, 3u);
+
+    SceKernelCallbackInfo callback_info;
+    memset(&callback_info, 0, sizeof(callback_info));
+    callback_info.size = sizeof(callback_info);
+    hle_step("create-callback-null");
+    const SceUID callback = sceKernelCreateCallback("null_entry", NULL, NULL);
+    int callback_refer = -1, callback_delete = -1;
+    uint32_t callback_entry = 0xffffffffu;
+    if (callback >= 0) {
+        callback_refer = sceKernelReferCallbackStatus((SceUID)callback, &callback_info);
+        if (callback_refer >= 0) {
+            callback_entry = (uint32_t)(uintptr_t)callback_info.callback;
+        }
+        callback_delete = sceKernelDeleteCallback((SceUID)callback);
+    }
+    const uint32_t callback_out[3] = {
+        (uint32_t)callback_refer, callback_entry, (uint32_t)callback_delete,
+    };
+    hle_record("create-callback-null", "PASS", (uint32_t)callback, callback_out, 3u);
+
+    hle_step("register-subintr-null");
+    int slot = -1, register_rc = -1, release_rc = -1;
+    uint32_t attempts = 0u;
+    for (int candidate = 0; candidate < 16; candidate++) {
+        attempts++;
+        register_rc = sceKernelRegisterSubIntrHandler(
+            PSP_VBLANK_INT, candidate, NULL, (void *)(uintptr_t)0x89abcdefu);
+        if (register_rc >= 0) {
+            slot = candidate;
+            release_rc = sceKernelReleaseSubIntrHandler(PSP_VBLANK_INT, candidate);
+            break;
+        }
+    }
+    const uint32_t subintr_out[3] = {(uint32_t)slot, (uint32_t)release_rc, attempts};
+    hle_record("register-subintr-null", "PASS", (uint32_t)register_rc, subintr_out, 3u);
+    /* Never enable a NULL sub-interrupt handler: delivery runs in kernel interrupt context. */
+    const uint32_t subintr_not_invoked[1] = {1u};
+    hle_record("register-subintr-null-not-invoked", "SKIP", 0u, subintr_not_invoked, 1u);
+
+    uint32_t draw_sync_out[6];
+    const int draw_sync_complete = null_ge_drawsync_bounded(draw_sync_out);
+    const int draw_sync = (int)s_null_ge_drawsync_rc;
+    hle_record("ge-drawsync-idle", draw_sync_complete ? "PASS" : "SKIP",
+               (uint32_t)draw_sync, draw_sync_out, 6u);
+    PspGeCallbackData ge_callback;
+    memset(&ge_callback, 0, sizeof(ge_callback));
+    int ge_callback_id = -1;
+    if (draw_sync_complete && draw_sync == 0) {
+        hle_step("ge-set-callback-null");
+        ge_callback_id = sceGeSetCallback(&ge_callback);
+    }
+    const int ge_unset = ge_callback_id >= 0 ? sceGeUnsetCallback(ge_callback_id) : -1;
+    const uint32_t ge_out[2] = {(uint32_t)draw_sync, (uint32_t)ge_unset};
+    hle_record("ge-set-callback-null", ge_callback_id >= 0 ? "PASS" : "SKIP",
+               (uint32_t)(draw_sync_complete && draw_sync == 0
+                              ? ge_callback_id : draw_sync), ge_out, 2u);
+    /* No display list is queued: a GE finish callback would run in interrupt context. */
+    const uint32_t ge_not_invoked[1] = {1u};
+    hle_record("ge-set-callback-null-not-invoked", "SKIP", 0u, ge_not_invoked, 1u);
+    return 1;
+}
+
+#endif /* HLE_CASE_NULL_CODE_REGISTRATION */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_NULL_THREAD_INVOCATION
+
+static int hle_run(void)
+{
+    hle_step("null-thread-create-for-invocation");
+    const SceUID thread = sceKernelCreateThread(
+        "null_entry_run", NULL, 0x20, 0x1000, THREAD_ATTR_USER, NULL);
+    if (thread < 0) {
+        const uint32_t armed[2] = {(uint32_t)thread, 0xffffffffu};
+        const uint32_t started[6] = {0xffffffffu, 0xffffffffu, 0xffffffffu,
+                                     0xffffffffu, 0xffffffffu, 0xffffffffu};
+        hle_record("null-thread-armed", "SKIP", (uint32_t)thread, armed, 2u);
+        hle_record("null-thread-started", "SKIP", (uint32_t)thread, started, 6u);
+        return 1;
+    }
+
+    const uint32_t armed[2] = {(uint32_t)thread, 0u};
+    hle_record("null-thread-armed", "PASS", (uint32_t)thread, armed, 2u);
+    hle_step("null-thread-start");
+    const int start_rc = sceKernelStartThread((SceUID)thread, 0u, NULL);
+    SceUInt timeout = 300000u;
+    int wait_rc = start_rc < 0 ? start_rc : -1;
+    if (start_rc >= 0) {
+        hle_step("null-thread-wait");
+        wait_rc = sceKernelWaitThreadEnd((SceUID)thread, &timeout);
+    }
+    SceKernelThreadInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = sizeof(info);
+    const int refer_rc = sceKernelReferThreadStatus((SceUID)thread, &info);
+    int terminate_rc = -1;
+    if (start_rc >= 0 && wait_rc < 0 && refer_rc >= 0 &&
+        info.status != PSP_THREAD_STOPPED && info.status != PSP_THREAD_KILLED) {
+        hle_step("null-thread-terminate-timeout");
+        terminate_rc = sceKernelTerminateThread((SceUID)thread);
+        SceUInt cleanup_timeout = 100000u;
+        (void)sceKernelWaitThreadEnd((SceUID)thread, &cleanup_timeout);
+    }
+    hle_step("null-thread-delete");
+    const int delete_rc = sceKernelDeleteThread((SceUID)thread);
+    const uint32_t started[7] = {
+        (uint32_t)start_rc, (uint32_t)wait_rc, (uint32_t)refer_rc,
+        (uint32_t)info.status, (uint32_t)info.exitStatus,
+        (uint32_t)terminate_rc, (uint32_t)delete_rc,
+    };
+    hle_record("null-thread-started", start_rc >= 0 ? "PASS" : "SKIP",
+               (uint32_t)start_rc, started, 7u);
+    return 1;
+}
+
+#endif /* HLE_CASE_NULL_THREAD_INVOCATION */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_NULL_CALLBACK_INVOCATION
+
+static volatile SceUID s_null_callback_uid = -1;
+static volatile int s_null_callback_check_rc = -1;
+static volatile int s_null_callback_check_returned;
+static volatile int s_null_callback_worker_entered;
+
+static int null_callback_worker(SceSize args, void *argp)
+{
+    (void)args;
+    (void)argp;
+    s_null_callback_worker_entered = 1;
+    const SceUID callback = sceKernelCreateCallback("null_cb_run", NULL, NULL);
+    s_null_callback_uid = callback;
+    if (callback < 0) {
+        const uint32_t armed[2] = {(uint32_t)callback, 0xffffffffu};
+        hle_record("null-callback-armed", "SKIP", (uint32_t)callback, armed, 2u);
+        return (int)callback;
+    }
+    hle_step("null-callback-notify");
+    const int notify = sceKernelNotifyCallback((SceUID)callback, 0x10203040);
+    const uint32_t armed[2] = {(uint32_t)callback, (uint32_t)notify};
+    hle_record("null-callback-armed", notify >= 0 ? "PASS" : "SKIP",
+               (uint32_t)callback, armed, 2u);
+    if (notify < 0) {
+        return notify;
+    }
+    hle_step("null-callback-check");
+    const int check = sceKernelCheckCallback();
+    s_null_callback_check_rc = check;
+    s_null_callback_check_returned = 1;
+    return check;
+}
+
+static int hle_run(void)
+{
+    hle_step("null-callback-worker-create");
+    const SceUID thread = sceKernelCreateThread(
+        "null_cb_worker", null_callback_worker, 0x20, 0x1000, THREAD_ATTR_USER, NULL);
+    int start_rc = -1, wait_rc = -1, refer_rc = -1, delete_thread_rc = -1;
+    SceKernelThreadInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = sizeof(info);
+    if (thread >= 0) {
+        hle_step("null-callback-worker-start");
+        start_rc = sceKernelStartThread((SceUID)thread, 0u, NULL);
+        if (start_rc >= 0) {
+            SceUInt timeout = 300000u;
+            hle_step("null-callback-worker-wait");
+            wait_rc = sceKernelWaitThreadEnd((SceUID)thread, &timeout);
+        }
+        refer_rc = sceKernelReferThreadStatus((SceUID)thread, &info);
+        delete_thread_rc = sceKernelDeleteThread((SceUID)thread);
+    }
+    if (thread < 0 || !s_null_callback_worker_entered) {
+        const uint32_t armed[2] = {0xffffffffu, 0xffffffffu};
+        hle_record("null-callback-armed", "SKIP", (uint32_t)thread, armed, 2u);
+    }
+    int terminate_thread_rc = -1;
+    if (thread >= 0 && start_rc >= 0 && wait_rc < 0 && refer_rc >= 0 &&
+        info.status != PSP_THREAD_STOPPED && info.status != PSP_THREAD_KILLED) {
+        hle_step("null-callback-worker-terminate-timeout");
+        terminate_thread_rc = sceKernelTerminateThread((SceUID)thread);
+        SceUInt cleanup_timeout = 100000u;
+        (void)sceKernelWaitThreadEnd((SceUID)thread, &cleanup_timeout);
+    }
+    int delete_callback_rc = -1;
+    if (s_null_callback_uid >= 0) {
+        delete_callback_rc = sceKernelDeleteCallback((SceUID)s_null_callback_uid);
+    }
+    const uint32_t checked[7] = {
+        s_null_callback_check_returned ? (uint32_t)s_null_callback_check_rc : 0xffffffffu,
+        (uint32_t)wait_rc, (uint32_t)refer_rc, (uint32_t)info.exitStatus,
+        (uint32_t)terminate_thread_rc, (uint32_t)delete_thread_rc,
+        (uint32_t)delete_callback_rc,
+    };
+    hle_record("null-callback-checked",
+               s_null_callback_check_returned ? "PASS" : "SKIP",
+               (uint32_t)start_rc, checked, 7u);
+    return 1;
+}
+
+#endif /* HLE_CASE_NULL_CALLBACK_INVOCATION */
 
 /* ------------------------------------------------------------------------- */
 

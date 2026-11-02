@@ -40,6 +40,9 @@
 //   16          - VFPU left merge at an odd address (lvl.q at base+1, PSP-A3-15).
 //                 Returns and writes a results file if it completes; an
 //                 exception frame is itself the fault observation.
+//   17..19      - user-mode instruction fetch from 0, 0x08000000 and 0x40000000
+//                 (#1375 P3). The host0 stream records the armed target; the
+//                 runner retains the post-mortem exception frame in teardown.
 //
 // Cases 8-12 need the VFPU unit, so their builds set the main thread attribute
 // to THREAD_ATTR_USER | THREAD_ATTR_VFPU. Without it the access would trap
@@ -75,6 +78,20 @@ PSP_HEAP_SIZE_KB(64);
 
 #ifndef A3_CASE
 #define A3_CASE 1
+#endif
+
+#if A3_CASE == 17
+#define A3_FETCH_CASE_ID "exception-a3-fetch-zero"
+#define A3_FETCH_LOG "host0:/exception_a3_fetch_zero_log.txt"
+#define A3_FETCH_TARGET 0x00000000u
+#elif A3_CASE == 18
+#define A3_FETCH_CASE_ID "exception-a3-fetch-08000000"
+#define A3_FETCH_LOG "host0:/exception_a3_fetch_08000000_log.txt"
+#define A3_FETCH_TARGET 0x08000000u
+#elif A3_CASE == 19
+#define A3_FETCH_CASE_ID "exception-a3-fetch-40000000"
+#define A3_FETCH_LOG "host0:/exception_a3_fetch_40000000_log.txt"
+#define A3_FETCH_TARGET 0x40000000u
 #endif
 
 extern const unsigned char a3_load_instruction[];
@@ -644,14 +661,63 @@ __attribute__((noinline)) static int a3_write_vfpu_odd_results(char *out, size_t
         a3_v_dstOdd[0], a3_v_dstOdd[1], a3_v_dstOdd[2], a3_v_dstOdd[3]);
 }
 
+#elif A3_CASE == 17 || A3_CASE == 18 || A3_CASE == 19
+
+/* The branch and its nop delay slot are user-mode code. The failing fetch is
+   the target instruction; no memory, firmware, or console state is changed. */
+__attribute__((noinline)) static void a3_raise_instruction_fetch(void) {
+    const uint32_t target = A3_FETCH_TARGET;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "move $25, %0\n\t"
+        ".globl a3_fetch_instruction\n"
+        "a3_fetch_instruction:\n\t"
+        "jr $25\n\t"
+        "nop\n\t"
+        ".set pop\n\t"
+        : : "r"(target) : "$25", "memory");
+}
+
 #else
 #error unsupported A3_CASE
+#endif
+
+#if A3_CASE == 17 || A3_CASE == 18 || A3_CASE == 19
+static int a3_write_fetch_armed(void) {
+    char text[640];
+    int length = snprintf(
+        text, sizeof(text),
+        "NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown "
+        "binary_sha256=0000000000000000000000000000000000000000000000000000000000000000 "
+        "source_commit=%s fixture=exception-a3-fetch\n"
+        "NAKAGAWA_PSP_STEP schema=1 case_id=%s step=fetch-0x%08x\n"
+        "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-EXCEPTION-FETCH-001 "
+        "case_id=fetch-armed status=SKIP result=0x%08x out0=0x00000000\n",
+        A3_BUILD_COMMIT, A3_FETCH_CASE_ID, (unsigned int)A3_FETCH_TARGET,
+        (unsigned int)A3_FETCH_TARGET);
+    if (length < 0 || (size_t)length >= sizeof(text)) {
+        return -1;
+    }
+    const SceUID fd = sceIoOpen(
+        A3_FETCH_LOG, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (fd < 0) {
+        return -1;
+    }
+    const int wrote = sceIoWrite(fd, text, (SceSize)length);
+    const int closed = sceIoClose(fd);
+    return wrote == length && closed >= 0 ? 0 : -1;
+}
 #endif
 
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
-#if A3_CASE == 7 || A3_CASE == 12 || A3_CASE == 16
+#if A3_CASE == 17 || A3_CASE == 18 || A3_CASE == 19
+    if (a3_write_fetch_armed() < 0) return 1;
+    a3_raise_instruction_fetch();
+    return 4;
+#elif A3_CASE == 7 || A3_CASE == 12 || A3_CASE == 16
     {
         char results[1536];
 #if A3_CASE == 7

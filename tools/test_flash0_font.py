@@ -89,7 +89,7 @@ JAPANESE_PROJECT_CODES = (0x3042, 0x3044, 0x3046, 0x3048, 0x304A)
 KOREAN_PROJECT_CODES = (0x41, 0xAC00, 0xD55C)
 FLASH0_HEADER = ROOT / "src" / "rt" / "flash0_font.h"
 VFS_HEADER = ROOT / "src" / "rt" / "vfs_contained.h"
-SELFTEST_SOURCE = ROOT / "src" / "rt" / "hle_thread_selftest.c"
+SELFTEST_SOURCE = ROOT / "tests" / "native" / "hle_thread_selftest.c"
 
 
 def header_string(name: str) -> str:

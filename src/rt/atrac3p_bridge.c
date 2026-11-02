@@ -4,7 +4,7 @@
 /*
  * atrac3p_bridge.c — thin Nakagawa-authored decode bridges over the PR-A
  * ATRAC3+ and FFmpeg n4.4 plain-AT3 decoders. No PPSSPP code. All checks are source-owned and
- * regression-tested in src/rt/atrac3p_bridge_selftest.c.
+ * regression-tested in tests/native/atrac3p_bridge_selftest.c.
  *
  * The bridge owns the decoder instance lifetime and the exact frame contract
  * the HLE needs: blockAlign bytes in, channels*2048 interleaved s16 out, or

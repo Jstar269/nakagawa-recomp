@@ -28,7 +28,7 @@ except ModuleNotFoundError:
 
 ROOT = Path(__file__).resolve().parent.parent
 CC = shutil.which("gcc")
-SELFTEST = ROOT / "src" / "rt" / "dispatch_isolation_selftest.c"
+SELFTEST = ROOT / "tests" / "native" / "dispatch_isolation_selftest.c"
 RECOMP = ROOT / "src" / "rt" / "recomp.c"
 RECOMP_H = ROOT / "src" / "rt" / "recomp.h"
 GUEST_INTERP = ROOT / "src" / "rt" / "guest_interp.c"

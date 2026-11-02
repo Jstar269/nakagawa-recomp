@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import codegen_hst_stubs
 
 
 class FakeElf:
@@ -80,13 +81,13 @@ def beql(rs, rt, pc, target):
 
 @contextmanager
 def region_split_threshold(value):
-    """Run with codegen.REGION_SPLIT_THRESHOLD set, restoring it afterwards."""
-    saved = codegen.REGION_SPLIT_THRESHOLD
-    codegen.REGION_SPLIT_THRESHOLD = value
+    """Run with codegen.OPTIONS.region_split_threshold set, restoring it afterwards."""
+    saved = codegen.OPTIONS.region_split_threshold
+    codegen.OPTIONS.region_split_threshold = value
     try:
         yield
     finally:
-        codegen.REGION_SPLIT_THRESHOLD = saved
+        codegen.OPTIONS.region_split_threshold = saved
 
 
 def regimm(selector, rs, pc, target):
@@ -505,7 +506,7 @@ class ContinuationFlowTests(unittest.TestCase):
 
     def test_profile_wrappers_drain_the_bodies_they_call(self):
         # The two profile wrappers call their real bodies directly (#855 review).
-        source = Path(codegen.__file__).read_text(encoding="utf-8")
+        source = Path(codegen_hst_stubs.__file__).read_text(encoding="utf-8")
         for call in ("f_000468c8_real(s);",):
             with self.subTest(call=call):
                 at = source.index(call)
@@ -530,7 +531,7 @@ class ContinuationFlowTests(unittest.TestCase):
             }
         )
         known = {0x1000, 0x1008, 0x1020}
-        for threshold in (None, codegen.REGION_SPLIT_THRESHOLD):
+        for threshold in (None, codegen.OPTIONS.region_split_threshold):
             with self.subTest(threshold=threshold), region_split_threshold(threshold):
                 insns, labels, continuations = codegen.function_flow(
                     elf, 0x1000, [(0x1000, 0x102C)], known)
@@ -683,14 +684,14 @@ class EntrySplitTests(unittest.TestCase):
         self.assertEqual(record[1], len(insns))
 
     def test_threshold_option_is_parsed_and_checked(self):
-        saved = codegen.REGION_SPLIT_THRESHOLD
+        saved = codegen.OPTIONS.region_split_threshold
         try:
             self.assertEqual(codegen.main(["codegen.py", "missing.elf", "out.c",
                                            "--region-split-threshold=-1"]), 2)
             self.assertEqual(codegen.main(["codegen.py", "missing.elf", "out.c",
                                            "--region-split-threshold=many"]), 2)
         finally:
-            codegen.REGION_SPLIT_THRESHOLD = saved
+            codegen.OPTIONS.region_split_threshold = saved
 
 
 def addiu(rt, rs, imm):

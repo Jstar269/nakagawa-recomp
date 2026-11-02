@@ -59,6 +59,24 @@ def _decode(word: int) -> str:
     if op == 1:
         name = {0x01: "bgez", 0x02: "bltzl", 0x10: "bltzal", 0x11: "bgezal"}[rt]
         return f"{name} ${rs}, {simm}"
+    if op == 0x11:
+        ft, fs, fd, funct = rt, (word >> 11) & 31, (word >> 6) & 31, word & 63
+        if rs == 0:
+            return "mfc1 $" + str(rt) + ", $f" + str(fs)
+        if rs == 2:
+            return "cfc1 $" + str(rt) + ", $" + str(fs)
+        if rs == 16 and funct == 0:
+            return f"add.s $f{fd}, $f{fs}, $f{ft}"
+        if rs == 16 and funct == 0x32:
+            return f"c.eq.s $f{fs}, $f{ft}"
+    if word == 0x48EA0000:
+        return "mtv $10, S000"
+    if word == 0x486B0000:
+        return "mfv $11, S000"
+    if word == 0x486E0008:
+        return "mfv $14, S200"
+    if word == 0x486C0020:
+        return "mfv $12, S001"
     if op in (4, 5, 20, 21):
         name = {4: "beq", 5: "bne", 20: "beql", 21: "bnel"}[op]
         return f"{name} ${rs}, ${rt}, {simm}"
@@ -87,11 +105,19 @@ class FixtureHeaderTests(unittest.TestCase):
 
     def test_table_and_constants(self) -> None:
         ids = [f["id"] for f in self.data["fixtures"]]
-        self.assertEqual(ids, ["alu-branch-ls", "delay-slots"])
+        self.assertEqual(ids, ["alu-branch-ls", "delay-slots", "fpu-state", "vfpu-state"])
         self.assertEqual(self.data["consts"]["NT_DATA_BASE"], 0x09F00000)
         self.assertEqual(self.data["consts"]["NT_DATA_BYTES"], 0x1000)
-        self.assertEqual([f["base"] for f in self.data["fixtures"]], [0x08900000, 0x08910000])
-        self.assertEqual([len(f["words"]) for f in self.data["fixtures"]], [29, 35])
+        self.assertEqual([f["base"] for f in self.data["fixtures"]],
+                         [0x08900000, 0x08910000, 0x08920000, 0x08930000])
+        self.assertEqual([len(f["words"]) for f in self.data["fixtures"]], [29, 35, 4, 5])
+
+    def test_selected_fpu_vfpu_initial_state_is_source_owned(self) -> None:
+        state = insn_trace.initial_state(self.data["consts"])
+        self.assertEqual((state["f0"], state["f1"], state["f2"], state["fcr31"]),
+                         (0x3FC00000, 0x40100000, 0, 0))
+        self.assertEqual((state["v0"], state["v1"], state["v2"], state["v3"], state["v32"]),
+                         (0x3F000000, 0x40000000, 0, 0, 0x40400000))
 
     def test_every_word_matches_its_assembly_comment(self) -> None:
         for fixture in self.data["fixtures"]:
@@ -126,9 +152,16 @@ class FixtureHeaderTests(unittest.TestCase):
         self.assertEqual((state["r26"], state["r27"], state["r28"]), (0, 0, 0))
         self.assertEqual(state["r9"], 0x09090909)
         self.assertEqual((state["hi"], state["lo"]), (0x0BADF00D, 0x13579BDF))
+        self.assertEqual((state["f0"], state["f1"], state["f2"], state["fcr31"]),
+                         (0x3FC00000, 0x40100000, 0, 0))
+        self.assertEqual((state["v0"], state["v1"], state["v2"], state["v3"], state["v32"]),
+                         (0x3F000000, 0x40000000, 0, 0, 0x40400000))
         probe = (FIXTURE_DIR / "probe_insn_trace.c").read_text(encoding="utf-8")
         self.assertIn("for (unsigned i = 1; i < 32u; i++) s_nt.r[i] = 0x01010101u * i;", probe)
         self.assertIn("s_nt.r[29] = NT_DATA_BASE + 0x800u;", probe)
+        self.assertIn("s_nt.f[0] = NT_FPU_F0_INIT;", probe)
+        self.assertIn("s_nt.fcr31 = NT_FCR_INIT;", probe)
+        self.assertIn("s_nt.v[0] = NT_VFPU_S000_INIT;", probe)
 
 
 class ProbeSourceTests(unittest.TestCase):
@@ -158,28 +191,49 @@ class ProbeSourceTests(unittest.TestCase):
         self.assertEqual(_campaign_completeness_contract("insn-trace"), "strict-golden-sequence")
         self.assertNotIn("insn-trace", CAMPAIGN_QUEUE_CASES)
 
+    def test_exception_fixture_is_a_registered_one_launch_probe(self) -> None:
+        route = "else ifeq ($(CASE),insn-trace-exception)\nCASE_ID = 135\n"
+        self.assertIn(route, self.makefile)
+        spec, counts = parse_golden.CAMPAIGN_PROBE_CASES["insn-trace-exception"]
+        self.assertEqual(spec.test_id, "PSP-TRACE-EXCEPTION-001")
+        self.assertEqual(spec.ordered_cases, ("exception-armed",))
+        self.assertEqual(counts["exception-armed"], 1)
+        self.assertIn("NT_CASE_EXCEPTION 135", self.probe)
+        self.assertIn("beq $0, $0, 1f", self.probe)
+        self.assertIn('"nt_exception_break:\\n\\t"', self.probe)
+        self.assertIn('"break\\n\\t"', self.probe)
+
     def test_writer_round_trip_and_lifecycle_are_the_hle_issues_copies(self) -> None:
         shared = self.issues[self.issues.index("static int s_log_failed;\n"):
                              self.issues.index("/* ---", self.issues.index("int module_stop("))]
         self.assertIn(shared, self.probe)
 
     def test_trampoline_layout_matches_the_probe_state(self) -> None:
-        self.assertIn("uint32_t r[32];\n    uint32_t hi, lo;\n    uint32_t flag;\n    uint32_t host[12];",
-                      self.probe)
+        self.assertIn("uint32_t r[32];\n    uint32_t hi, lo;\n    uint32_t flag;\n"
+                      "    uint32_t f[4];\n    uint32_t fcr31;\n    uint32_t v[5];\n"
+                      "    uint32_t host[12];\n    uint32_t host_f[4];\n"
+                      "    uint32_t host_fcr31;\n    uint32_t host_v[5];", self.probe)
         loads = re.findall(r"lw\s+\$(\d+), (\d+)\(\$28\)", self.tramp)
         stores = re.findall(r"sw\s+\$(\d+), (\d+)\(\$28\)", self.tramp)
         traced = [str(r) for r in insn_trace.TRACED_GPRS]
         self.assertEqual([r for r, _ in loads if r != "1"][:len(traced) - 1], traced[1:])
         for reg, off in loads + stores:
-            if off not in ("128", "132", "136"):
+            if off not in ("128", "132", "136", "140", "144", "148", "152", "156"):
                 self.assertEqual(int(off), 4 * int(reg))
         self.assertNotIn("$26", self.tramp)
         self.assertNotIn("$27", self.tramp)
         self.assertEqual(self.tramp.count("nt_tramp_slot:\n    nop\n    nop\n"), 1)
         self.assertIn("nt_tramp_taken:\n    sw    $28, 136($28)", self.tramp)
+        self.assertIn("lw    $1, 140($28)\n    mtc1  $1, $f0", self.tramp)
+        self.assertIn("swc1  $f0, 140($28)", self.tramp)
+        self.assertIn("lv.s  S000, 160($28)", self.tramp)
+        self.assertIn("sv.s  S000, 160($28)", self.tramp)
+        self.assertIn("lv.s  S200, 176($28)", self.tramp)
+        self.assertIn("sv.s  S200, 176($28)", self.tramp)
 
     def test_steps_are_bounded_and_unsupported_words_stop(self) -> None:
         self.assertIn("#define NT_MAX_STEPS 512u", self.probe)
+        self.assertIn("#define NT_TRAMP_WORDS 192u", self.probe)
         self.assertIn("while (step < NT_MAX_STEPS) {", self.probe)
         self.assertIn("status = NT_END_UNSUPPORTED;", self.probe)
         self.assertIn("sceKernelIcacheInvalidateRange(s_nt_tramp, s_nt_tramp_words * 4u);", self.probe)
@@ -188,9 +242,12 @@ class ProbeSourceTests(unittest.TestCase):
         spec, counts = parse_golden.CAMPAIGN_PROBE_CASES["insn-trace"]
         self.assertEqual(spec.test_id, "PSP-TRACE-001")
         self.assertEqual(spec.terminal_case, "insn-trace-done")
-        self.assertEqual(len(parse_golden.INSN_TRACE_CASES), (105 + 2) + (27 + 2))
-        self.assertEqual(counts["alu-branch-ls-init"], 34)
+        self.assertEqual(len(parse_golden.INSN_TRACE_CASES),
+                         (105 + 2) + (27 + 2) + (4 + 2) + (5 + 2))
+        self.assertEqual(counts["alu-branch-ls-init"], 44)
         self.assertEqual(counts["delay-slots-s0026"], insn_trace.RECORD_WORDS)
+        self.assertEqual(counts["fpu-state-s0000"], insn_trace.RECORD_WORDS)
+        self.assertEqual(counts["vfpu-state-s0004"], insn_trace.RECORD_WORDS)
         self.assertEqual(counts["delay-slots-end"], 4)
 
 
@@ -200,7 +257,7 @@ class ConversionTests(unittest.TestCase):
     def _log(self, fixture, steps, tamper=None):
         data = insn_trace.parse_fixtures()
         state = insn_trace.initial_state(data["consts"])
-        names = [f"r{i}" for i in insn_trace.TRACED_GPRS] + ["hi", "lo"]
+        names = list(insn_trace.TRACE_STATE_NAMES)
         commit = "1" * 40
         lines = [f"NAKAGAWA_PSP_META schema=1 source=psp source_commit={commit} fixture=hle-measure"]
 
@@ -222,14 +279,20 @@ class ConversionTests(unittest.TestCase):
         fixture = insn_trace.parse_fixtures()["fixtures"][0]
         steps = [(0x08900000, 0x24080005, {"r8": 5}, (0, 0, 0)),
                  (0x08900004, 0xAC8A0000, {}, (32, 0x09F00000, 0x12345678)),
-                 (0x08900008, 0xA08B0004, {"hi": 1, "lo": 2}, (8, 0x09F00004, 0x78))]
+                 (0x08900008, 0xA08B0004, {"hi": 1, "lo": 2}, (8, 0x09F00004, 0x78)),
+                 (0x0890000C, 0x46010080, {"f2": 0x40700000}, (0, 0, 0)),
+                 (0x08900010, 0x46021032, {"fcr31": 0x00800000}, (0, 0, 0)),
+                 (0x08900014, 0x48EA0000, {"v0": 0x0A0A0A0A}, (0, 0, 0))]
         text, data = self._log(fixture, steps)
         lines, commit = insn_trace.psp_records(text, fixture, data["consts"])
         self.assertEqual(commit, "1" * 40)
         self.assertEqual(lines, ["0 pc=0x08900000 op=0x24080005 r8=0x00000005",
                                  "1 pc=0x08900004 op=0xac8a0000 m32[0x09f00000]=0x12345678",
                                  "2 pc=0x08900008 op=0xa08b0004 hi=0x00000001 lo=0x00000002 "
-                                 "m8[0x09f00004]=0x78"])
+                                 "m8[0x09f00004]=0x78",
+                                 "3 pc=0x0890000c op=0x46010080 f2=0x40700000",
+                                 "4 pc=0x08900010 op=0x46021032 fcr31=0x00800000",
+                                 "5 pc=0x08900014 op=0x48ea0000 v0=0x0a0a0a0a"])
 
     def test_stale_or_foreign_runs_are_refused(self) -> None:
         fixture = insn_trace.parse_fixtures()["fixtures"][0]
@@ -252,6 +315,22 @@ class ConversionTests(unittest.TestCase):
         self.assertIn(f"binary_sha256={insn_trace.image_sha256(fixture)}", header)
         self.assertIn("fixture_id=insn-trace cell_id=delay-slots", header)
         self.assertIn("start_pc=0x08910000 steps=27 complete=1", header)
+
+    def test_exception_frame_tokens_are_valid_strict_trace_fields(self) -> None:
+        fixture = insn_trace.parse_fixtures()["fixtures"][0]
+        header_psp = insn_trace.v2_header(
+            "PSP_HARDWARE", fixture, 1, source_commit="a" * 40,
+            model="PSP-3000", firmware="6.6.0",
+        )
+        header_local = header_psp.replace("source_tier=PSP_HARDWARE", "source_tier=LOCAL_COSIM")
+        frame = ("0 pc=0x08900000 op=0x0000000d epc=0x08900000 cause=0x80000024 "
+                 "badvaddr=0x00000000 status=0x00000010")
+        with tempfile.TemporaryDirectory(prefix="insn-trace-exception-") as tmp_name:
+            psp = Path(tmp_name) / "exception.psp.trace"
+            local = Path(tmp_name) / "exception.local.trace"
+            insn_trace.write_trace(psp, header_psp, [frame])
+            insn_trace.write_trace(local, header_local, [frame])
+            self.assertIsNone(tracediff.strict_hardware_diff(psp, local))
 
 
 @unittest.skipUnless(_gcc(), "needs a host C compiler for the generated code")
@@ -286,8 +365,63 @@ class LocalTraceTests(unittest.TestCase):
         self.assertEqual(ds[6], "6 pc=0x08910020 op=0x04110014 r31=0x08910028")
         self.assertEqual(ds[16], "16 pc=0x08910044 op=0xac880000 m32[0x09f00000]=0xfffffffb")
 
+    def test_fpu_vfpu_register_state_is_seeded_and_traced(self) -> None:
+        fpu = self.lines["fpu-state"]
+        vfpu = self.lines["vfpu-state"]
+        self.assertIn("f2=0x40700000", fpu[0])
+        self.assertIn("r8=0x40700000", fpu[1])
+        self.assertIn("fcr31=0x00800000", fpu[2])
+        self.assertIn("r9=0x00800000", fpu[3])
+        self.assertIn("r11=0x3f000000", vfpu[0])
+        self.assertIn("r12=0x40000000", vfpu[1])
+        self.assertIn("r14=0x40400000", vfpu[2])
+        self.assertIn("v0=0x0a0a0a0a", vfpu[3])
+        self.assertIn("r11=0x0a0a0a0a", vfpu[4])
+
+    def test_fpu_vfpu_mutations_diverge_at_the_first_changed_state(self) -> None:
+        def compare_mutant(fixture_id: str, mutate, expected_step: int, token: str) -> None:
+            fixture = next(item for item in self.data["fixtures"] if item["id"] == fixture_id)
+            mutant = insn_trace.local_records(
+                fixture, self.data["consts"], Path(self.tmp.name) / f"{fixture_id}-mutant", mutate
+            )
+            good_path = Path(self.tmp.name) / f"{fixture_id}-good.trace"
+            bad_path = Path(self.tmp.name) / f"{fixture_id}-mutant.trace"
+            header = f"# psp-recomp trace v1 oracle=recomp start_pc=0x{fixture['base']:08x}"
+            insn_trace.write_trace(good_path, header, self.lines[fixture_id])
+            insn_trace.write_trace(bad_path, header, mutant)
+            divergence = tracediff.strict_local_diff(str(good_path), str(bad_path))
+            self.assertIsNotNone(divergence)
+            step, _pc, detail = divergence
+            self.assertEqual(step, expected_step)
+            self.assertIn(token, detail)
+
+        def mutate_fpu(gen_c: str) -> None:
+            changed = 0
+            for path in Path(gen_c).parent.glob("gen*.c"):
+                text = path.read_text(encoding="utf-8")
+                if "sr_fpu_add_s" in text:
+                    path.write_text(text.replace("sr_fpu_add_s", "sr_fpu_sub_s"),
+                                    encoding="utf-8", newline="\n")
+                    changed += 1
+            self.assertGreater(changed, 0)
+
+        def mutate_vfpu(gen_c: str) -> None:
+            changed = 0
+            for path in Path(gen_c).parent.glob("gen*.c"):
+                text = path.read_text(encoding="utf-8")
+                if "s->vi[0] = s->r[10];" in text:
+                    path.write_text(text.replace("s->vi[0] = s->r[10];", "s->vi[0] = 0;"),
+                                    encoding="utf-8", newline="\n")
+                    changed += 1
+            self.assertGreater(changed, 0)
+
+        compare_mutant("fpu-state", mutate_fpu, 0, "f2")
+        compare_mutant("vfpu-state", mutate_vfpu, 3, "v0")
+
     def test_streams_reproduce_the_psp_measurement(self) -> None:
-        for fid, lines in self.lines.items():
+        # New source-owned fixtures stay unmeasured until a matching PSP capture is cited.
+        for fid in PSP_MEASURED_STREAM_SHA256:
+            lines = self.lines[fid]
             digest = hashlib.sha256("".join(line + "\n" for line in lines).encode()).hexdigest()
             self.assertEqual(digest, PSP_MEASURED_STREAM_SHA256[fid], fid)
 

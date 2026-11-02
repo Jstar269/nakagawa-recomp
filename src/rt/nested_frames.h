@@ -12,7 +12,7 @@
  *
  * Before this module all of them used one fixed guest address, 0x09df8000.
  * Three properties of that arrangement were measured executably in
- * src/rt/hle_thread_selftest.c and are the reason this module exists:
+ * tests/native/hle_thread_selftest.c and are the reason this module exists:
  *
  *   1. Same thread, nested: an inner call overwrote the outer body's guest
  *      locals (test_nested_guest_call_abi).

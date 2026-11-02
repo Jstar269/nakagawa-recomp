@@ -75,7 +75,8 @@ is behind [Zelda 64: Recompiled](https://github.com/Zelda64Recomp/Zelda64Recomp)
 (built with [XenonRecomp](https://github.com/hedge-dev/XenonRecomp)).
 
 - When a game needs something that isn't supported yet, the player stops and names the missing piece.
-- No games, firmware or system fonts ship here, and no game data is ever downloaded.
+- No games, firmware or Sony system fonts ship here, and no game data is ever downloaded. Open replacement fonts
+  ship instead; the PSP's own fonts are used only if you copy them from your own console.
 - The player works offline. It connects to the internet only when you agree: to fetch build tools when they
   aren't already present, and to check for updates when you ask ([network use](docs/SETUP.md#network-use)).
 
@@ -121,6 +122,12 @@ C that Nakagawa generates ([#1495](https://github.com/Jstar269/nakagawa-recomp/p
 the game helps replace Nakagawa's Hot Shots Tennis workarounds with general fixes
 ([#363](https://github.com/Jstar269/nakagawa-recomp/issues/363)).
 
+Work belongs in the recompiler and runtime when its cause is general, such as a system call, an instruction, a
+display-list command or a build step, because the fix then helps every game and can be tested with synthetic
+fixtures. It belongs in a decompilation project only when it rebuilds one function's source so that it compiles back to
+the original bytes, which needs your own copy of the game. If you are unsure, open an issue here and describe what you
+saw.
+
 ## Contributing
 
 Testing is the most useful help right now: try a game you own and report how far it gets. Bugs go in
@@ -153,7 +160,7 @@ decoders come from FFmpeg. It is not endorsed by those upstream authors. Details
 Nakagawa Recomp is an independent fan project. It is not affiliated with or endorsed by Sony Interactive
 Entertainment, Clap Hanz, or any game publisher. PlayStation and PSP are trademarks of Sony Interactive
 Entertainment Inc., and game titles are trademarks of their owners; they are named here only to say what the project
-works with. This repository contains no game files, firmware or system fonts. Nakagawa decrypts your own disc
+works with. This repository contains no game files, firmware or Sony system fonts. Nakagawa decrypts your own disc
 locally with the public game key tables PPSSPP ships; it never downloads games and never decrypts firmware.
 
 Rights holders with a concern about anything here can contact the maintainer privately through

@@ -165,7 +165,7 @@ In early Nakagawa development, executing `module_start` for `libfont.prx` and `p
 
 - **ISO vs. Firmware Reality:** The PGF font files (`jpn0.pgf`, `ltn0.pgf`, etc.) are located in the PSP's internal `flash0:/font/` filesystem partition, **not** on the game UMD disc.
 - **Honest Prerequisite Discipline:** We do not sacrifice fidelity merely to claim "Program + ISO". If authentic rendering requires the genuine Sony PGF font, we state clearly:
-  $$\text{Nakagawa} + \text{Game ISO} + \text{User-Supplied Firmware Font (flash0)}$$
+  $$\text{Nakagawa} + \text{Game ISO} + \text{User-Supplied Console Font (flash0)}$$
 - A non-authentic TTF replacement mode may exist solely as an optional, clearly labeled developer fallback, but it is **not** the architectural baseline.
 
 ---
@@ -207,8 +207,8 @@ end to end by source-owned tests:
   output a decoder actually produced; a compressed access unit is never presented as a decoded
   frame or PCM block, and a track that runs dry reports `NO_MORE_DATA` rather than silence.
 - Evidence tiers: the access-unit, timestamp and queue contract is covered by
-  `src/rt/psmf_producer_selftest.c` against fixtures built byte-for-byte by that file (tier S), and
-  the decoder seam by `src/rt/psmf_media_selftest.c`, which constructs a baseline-profile H.264
+  `tests/native/psmf_producer_selftest.c` against fixtures built byte-for-byte by that file (tier S), and
+  the decoder seam by `tests/native/psmf_media_selftest.c`, which constructs a baseline-profile H.264
   stream whose every macroblock is `I_PCM` and checks the decoded picture deterministically. The
   host-HLE player itself has no hardware-comparison measurement, so both getters carry the
   `partial` status in `tools/hle_registry_meta.py` rather than `complete`.

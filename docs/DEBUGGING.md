@@ -1590,6 +1590,57 @@ r4=0x0830b000  r5=0x00000100  r6=0x00000004  r7=0x00000000
 === END CRASH REPORT ===
 ```
 
+## Snapshot execution
+
+`src/rt/snapshot_runner.c` runs one translated guest function from a known state and checks
+it against the reference interpreter in `src/ref` (#1842). A snapshot (`nksnap` v1, read and
+written by `tools/nksnap.py` and `src/rt/nksnap.c`) holds the full `CpuState`, the entry PC
+and the guest memory blocks the call can touch. The runner links against one module's
+generated code, loads the module image, overlays the blocks, sets `$ra` to the host-return
+sentinel on both sides and runs:
+
+- the translated entry, through production dispatch, until it returns, reaches its first
+  import stub or reaches its first raw `syscall` (the import handler and the syscall do not
+  run);
+- the reference interpreter, from the same registers and a copy of the same RAM, until its
+  next instruction is the return sentinel or an import stub named with `--import`, or it
+  stops by itself.
+
+```text
+snapshot_runner [--import ADDR:NID]... [--max-steps N] [--rewrite OUT] <image.bin> <base-hex> <snapshot.nksnap>
+```
+
+It prints one line on stdout:
+
+| Verdict | Meaning | Exit |
+| --- | --- | --- |
+| `MATCH` | Same stop, same registers, same memory. | 0 |
+| `MISMATCH <field> aot=<value> ref=<value>` | The first difference, in this order: `stop` (`return`, `syscall`, `import`), `syscall_pc`, `syscall_code` or `import_nid`, `r1`..`r31`, `hi`, `lo`, `f0`..`f31` (raw bits), `fcr31`, the out-of-range access counts `oor_loads`/`oor_stores`, then `mem[0x<addr>]` from the lowest address up. | 1 |
+| `NOT_CHECKED <reason> [key=value...]` | The comparison was not made. This is never a pass. | 3 |
+| `REFUSED <reason>` | The snapshot file was refused: `bad-magic`, `abi-version`, `cpustate-size`, `truncated`, `block-size`, `block-overlap`, `block-outside-guest` or `trailing-bytes`. | 2 |
+
+The `NOT_CHECKED` reasons are `ref-no-vfpu` (the reference has no VFPU; `pc=` and `op=` name the
+instruction), `ref-unimplemented`, `ref-memory-fault`, `ref-break`, `ref-step-limit` (the
+`--max-steps` budget, one million by default), `block-outside-ref-ram` (a block in scratchpad or
+VRAM, which the reference does not model), `write-outside-snapshot` (a byte changed outside the
+image and the blocks, so the call used memory the snapshot did not capture), `aot-no-body` and
+`aot-dispatch-error`. Memory is compared by content after both runs: every byte either side
+changed is checked, and a store that rewrites the value already there changes nothing either
+side can observe.
+
+The reference does not know where a module's import stubs are; pass each one the call can reach
+as `--import <stub-address>:<nid>` (hex), from the module's import table (`tools/imports.py`).
+Without it the reference runs the stub's own bytes and the verdict is a `stop` mismatch, never a
+silent match. A callee without a translated body runs on the interpreter floor through
+production dispatch, as it does in a title build.
+
+`mingw32-make --no-print-directory snapshot-selftest` (`make CC=gcc snapshot-selftest` on
+Linux) builds the runner against a synthetic module (`fixtures/snapshot/`), checks every case
+and every refusal, and builds a second runner with one immediate changed in the generated C,
+which must report `MISMATCH r11`. On a title, build the runner the same way against that
+title's generated code. Snapshots contain guest memory: they stay private like traces and
+captures, and none is ever committed.
+
 ## Naming generated functions from a symbol map
 
 By default every generated function is named after its guest address: `f_00222a00` for a callable

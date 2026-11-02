@@ -78,6 +78,7 @@ HLE_PRIVATE_HEADERS: tuple[str, ...] = (
 #: ``src/rt/hle*.c`` files that are not part of the runtime HLE.
 NOT_RUNTIME: tuple[str, ...] = (
     "src/rt/hle_thread_selftest.c",
+    "tests/native/hle_thread_selftest.c",
 )
 
 #: The function every complete runtime HLE source set defines exactly once.

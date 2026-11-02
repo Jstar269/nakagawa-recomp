@@ -4,7 +4,7 @@
 
 """TD-27: opt-in stale translated-code tracking (detection + invalidation half).
 
-Layer 1 (behavioral): compile and run ``src/rt/stale_code_selftest.c``
+Layer 1 (behavioral): compile and run ``tests/native/stale_code_selftest.c``
 against the real ``src/rt/stale_code.c`` twice -- gate off (an overwritten
 invalidate must stay silent and the dispatch-side query must stay clean) and
 SR_STALE_DETECT=1 (an overwritten translated block must fire loudly, set the
@@ -47,7 +47,7 @@ import hle_sources  # noqa: E402
 RT = ROOT / "src" / "rt"
 STALE_H = (RT / "stale_code.h").read_text(encoding="utf-8")
 STALE_C = (RT / "stale_code.c").read_text(encoding="utf-8")
-SELFTEST_C = RT / "stale_code_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "stale_code_selftest.c"
 SELFTEST_TEXT = SELFTEST_C.read_text(encoding="utf-8")
 HLE_C = hle_sources.text()
 RECOMP_H = (RT / "recomp.h").read_text(encoding="utf-8")
@@ -328,7 +328,7 @@ class TestStaleCodeWiring(unittest.TestCase):
             body = MAKEFILE.split(recipe, 1)[1].split("\n\n", 1)[0]
             self.assertIn("src/rt/stale_code.c", body)
         self.assertIn("stale-code-selftest:", MAKEFILE)
-        self.assertIn("src/rt/stale_code_selftest.c", MAKEFILE)
+        self.assertIn("tests/native/stale_code_selftest.c", MAKEFILE)
         self.assertIn("SR_STALE_DETECT", MAKEFILE)
         block = re.search(r"(?ms)^PUBLIC_TARGETS := \\\n(.*?)(?=^INTERNAL_TARGETS :=)", MAKEFILE)
         self.assertIsNotNone(block)
@@ -347,19 +347,19 @@ class FakeElf:
 
 class TestStaleCodegenGate(unittest.TestCase):
     def test_flag_defaults_off(self):
-        self.assertFalse(codegen.STALE_DETECT)
+        self.assertFalse(codegen.OPTIONS.stale_detect)
 
     def test_cache_op_is_noop_by_default_and_hook_when_enabled(self):
         cache_word = (0x2F << 26) | (4 << 21) | (2 << 16) | 0x10
         stmt, _, _ = codegen.effect(0x1000, cache_word)
         self.assertEqual(stmt, "(void)0;")
-        old = codegen.STALE_DETECT
-        codegen.STALE_DETECT = True
+        old = codegen.OPTIONS.stale_detect
+        codegen.OPTIONS.stale_detect = True
         try:
             stmt, _, _ = codegen.effect(0x1000, cache_word)
             self.assertIn("sr_stale_note_cache_op", stmt)
         finally:
-            codegen.STALE_DETECT = old
+            codegen.OPTIONS.stale_detect = old
 
     def test_fnv_vectors_match_runtime(self):
         self.assertEqual(codegen.stale_fnv1a([]), 0x811C9DC5)
@@ -397,8 +397,8 @@ class TestStaleCodegenEmission(unittest.TestCase):
         Path(path).write_bytes(eh + ph + code)
 
     def _run_codegen(self, tmp_dir, stale):
-        old = codegen.STALE_DETECT
-        codegen.STALE_DETECT = False
+        old = codegen.OPTIONS.stale_detect
+        codegen.OPTIONS.stale_detect = False
         try:
             elf = str(Path(tmp_dir) / "min.elf")
             out = str(Path(tmp_dir) / "min_recomp.c")
@@ -409,7 +409,7 @@ class TestStaleCodegenEmission(unittest.TestCase):
             self.assertEqual(codegen.main(args), 0)
             return Path(out).read_text(encoding="ascii")
         finally:
-            codegen.STALE_DETECT = old
+            codegen.OPTIONS.stale_detect = old
 
     def test_default_output_has_no_stale_records(self):
         with tempfile.TemporaryDirectory(prefix="staleemit_") as tmp_dir:

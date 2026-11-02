@@ -40,7 +40,7 @@ class TestGuestPrintf(unittest.TestCase):
                     f"-I{RT}",
                     "-o",
                     os.fspath(exe),
-                    os.fspath(RT / "guest_printf_selftest.c"),
+                    os.fspath(ROOT / "tests" / "native" / "guest_printf_selftest.c"),
                     os.fspath(RT / "guest_printf.c"),
                     os.fspath(RT / "debug.c"),
                     # debug.c depends on the derived watchpoints.json parser;

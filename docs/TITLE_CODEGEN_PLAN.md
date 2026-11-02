@@ -333,7 +333,7 @@ names one of the retired addresses.
 
 `make dispatch-isolation-selftest` is the matching gate for the typed collections, over
 the same three configurations and the same two fixtures. It drives the **real**
-`dispatch()` entry point — `src/rt/dispatch_isolation_selftest.c` includes `recomp.c` —
+`dispatch()` entry point — `tests/native/dispatch_isolation_selftest.c` includes `recomp.c` —
 and reads its verdict from the resulting `CpuState`, which distinguishes the three
 outcomes cleanly: a termination is `v0 = 1, pc = ra`, the null-call policy hook is
 `v0 = 0, pc = ra`, and an ordinary miss is `v0 = 0, pc = pc + 8`.
@@ -434,7 +434,7 @@ content.
 The generator's invariant is that **a guest address must never change what
 `--profile=none` emits**. Generic implementation may be core; the binding of a
 numeric address to a semantic is title-owned. Every HST-specific translation in
-`tools/codegen.py` — the address-specific custom stubs, `HST_SIMPLE_STUBS`,
+`tools/codegen.py` — the address-specific custom stubs (`tools/codegen_hst_stubs.py`), `HST_SIMPLE_STUBS`,
 `GUEST_PATCHES`, `NULL_BASE_WORD_LOADS`, the MEMSET/ARRSHIFT fastpaths,
 `GUEST_ABORT`, the `HST_MANUAL_CALLABLES`/`HST_RESUME_OWNERS` entry roles, and the `_SV_SPECIAL`
 `--static-verify` exclusion — is therefore reachable only when

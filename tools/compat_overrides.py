@@ -15,8 +15,7 @@ OVERRIDES against the authoritative, mechanically-extractable sources of hooks
 in the tree:
   - tools/codegen.py: GUEST_PATCHES, HST entry-role metadata,
     host_stubs.HST_SIMPLE_STUBS, and the
-    per-address custom stubs between the "--- CUSTOM STUBS START/END ---"
-    markers in emit_function's driver loop.
+    per-address custom stubs in tools/codegen_hst_stubs.py (HST_CUSTOM_STUBS).
   - src/rt/recomp.c: any live dispatch hook table (currently none; #363 retired
     both exact trace entries and all broad target predicates).
   - src/rt/hle.c: guest addresses used as addresses (MEM_R*/MEM_W*/dispatch/

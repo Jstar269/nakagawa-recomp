@@ -2,7 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 /* Complete ThreadManForUser import block for the PSP-B1/B2/B3 kernel-object
-   probes and the wait-outcomes and kernel-misc oracle cases.
+   probes, wait-outcomes, kernel-misc, and #1375 null-code oracle cases.
 
    This file holds ThreadManForUser only. Every PRX that links it gets every
    stub below, so a library that only one case needs (kernel-misc's sceDisplay
@@ -51,6 +51,7 @@
     IMPORT_FUNC  "ThreadManForUser", 0x74829B76, sceKernelReceiveMsgPipe
     IMPORT_FUNC  "ThreadManForUser", 0x33BE4024, sceKernelReferMsgPipeStatus
     IMPORT_FUNC  "ThreadManForUser", 0x17C1684E, sceKernelReferThreadStatus
+    IMPORT_FUNC  "ThreadManForUser", 0x730ED8BC, sceKernelReferCallbackStatus
     IMPORT_FUNC  "ThreadManForUser", 0x876DBFAD, sceKernelSendMsgPipe
     IMPORT_FUNC  "ThreadManForUser", 0x3F53E640, sceKernelSignalSema
     IMPORT_FUNC  "ThreadManForUser", 0xF475845D, sceKernelStartThread

@@ -45,9 +45,12 @@ def _range(text: str, name: str) -> tuple[int, int]:
 
 class TestGuestSpanRouting(unittest.TestCase):
     def test_generated_bulk_stubs_use_complete_span_helpers(self) -> None:
+        # The native memcpy/memset stub bodies are data in codegen_hst_stubs.py ("@ADDR@" is the
+        # stub's own address); the span helpers in codegen.py's own emitters stay in its source.
+        stubs = (ROOT / "tools" / "codegen_hst_stubs.py").read_text(encoding="utf-8")
+        self.assertIn("sr_native_memmove(dest, s->r[5], s->r[6], 0x@ADDR@u);", stubs)
+        self.assertIn("sr_native_memset(dest, (uint8_t)(s->r[5] & 0xFF), s->r[6], 0x@ADDR@u);", stubs)
         text = (ROOT / "tools" / "codegen.py").read_text(encoding="utf-8")
-        self.assertIn("sr_native_memmove(dest, s->r[5], s->r[6], 0x{a:08x}u);", text)
-        self.assertIn("sr_native_memset(dest, (uint8_t)(s->r[5] & 0xFF), s->r[6], 0x{a:08x}u);", text)
         self.assertIn("sr_guest_span_writable(_mf_base, _mf_cnt)", text)
         self.assertNotIn("memmove(SR_HOST(dest), SR_HOST(src), size)", text)
         self.assertNotIn("memset(SR_HOST(dest), val, size)", text)

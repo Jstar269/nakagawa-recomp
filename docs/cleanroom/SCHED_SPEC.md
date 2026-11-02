@@ -6,7 +6,7 @@ implementation (`src/rt/sched.c`, sal063 lineage, ledger record `scheduler`)
 was readable while writing, and nothing from it is reproduced here beyond the
 interface spellings §2 fixes as `SEAM:` identifiers.
 
-**Re-scope (maintainer decision, 2026-10-20).** The clean-room scheduler rewrite this spec was written for
+**Re-scope.** The clean-room scheduler rewrite this spec was written for
 is no longer planned: [#340](https://github.com/Jstar269/nakagawa-recomp/issues/340) was closed as not planned, and working inherited code is no longer
 rewritten only to make it original (`../INDEPENDENCE_CAMPAIGN.md`). The spec stays as a behaviour
 reference; the derived `src/rt/sched.c` is the shipped scheduler. The rank below is the campaign's
@@ -45,7 +45,7 @@ record the inventory with SHA-256):
 
 - this spec;
 - ABI headers the implementation must satisfy: `src/rt/recomp.h`,
-  `src/rt/sr_coro.h`, `src/rt/sr_coro_selftest.c` (usage example only),
+  `src/rt/sr_coro.h`, `tests/native/sr_coro_selftest.c` (usage example only),
   `src/rt/intr_conformance.h` (conformance contract, read-only);
 - landing LLE headers for seam positions only (read-only, may move before
   admission — re-check at build time): `src/rt/cpu_lle.h`,
@@ -374,7 +374,7 @@ old code: (fill). Maintainer attestation: (maintainer signs; agents do not).
 
 Existing (all source-owned, game-input-free; all must pass unmodified):
 
-1. `sched-selftest` build target running `src/rt/sched_selftest.c`
+1. `sched-selftest` build target running `tests/native/sched_selftest.c`
    (~50 cases: selection fairness, lifecycle, timeouts, exit-status
    normalisation, callbacks, clocks, vblank edges, interrupt frames).
 2. `python tools/test_sched_invariants.py` (scheduled-behaviour invariants).
@@ -414,7 +414,7 @@ blocking test; a test that needs a wall-clock wait uses the turbo
   hidden gaps, no latch hacks).
 - [C4] `docs/ARCHITECTURE.md` HLE-boundary section — unknown operations
   stay visible; missing behaviour fails rather than fabricating.
-- [C5] `src/rt/sched_selftest.c` + `tools/test_sched_invariants.py` —
+- [C5] `tests/native/sched_selftest.c` + `tools/test_sched_invariants.py` —
   source-owned behavioural expectations (selection, lifecycle, banking,
   join, callbacks, clocks, vblank edges, interrupt frames, exit-status
   normalisation, role inertness). Tests are behaviour definitions here,

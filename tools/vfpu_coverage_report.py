@@ -792,7 +792,7 @@ def build_census() -> dict[str, object]:
     source_paths = (
         "tools/codegen.py",
         "src/rt/vfpu_interp.c",
-        "src/rt/vfpu_interp_selftest.c",
+        "tests/native/vfpu_interp_selftest.c",
         "src/rt/vfpu_fuzz.c",
         "tools/test_vfpu_synth_corpus.py",
         "tools/vfpu_fuzz_gen.py",
