@@ -37,10 +37,10 @@
     X("SR_ALLOC_TRACE", "flag-presence", "off", "hle.c,recomp.c", "When set, prints a trace line for guest memory allocations and partition frees to stderr.") \
     X("SR_ARGLOG", "flag-presence", "off", "sched.c", "Logs a THREAD_ARG_COPY line to stderr when a started thread's argument block is copied.") \
     X("SR_ATRACLOG", "flag-presence", "off", "hle_audio_codec.c", "Enables ATRAC audio codec diagnostic logging.") \
-    X("SR_AUDIODUMP", "path", "unset or empty: no dump written", "audio_unavailable.c", "Writes the mixed audio sent to the host device as a 16-bit PCM WAV file at this path.") \
-    X("SR_AUDIOSTAT", "flag-presence", "off", "audio_unavailable.c,hle.c", "When set, enables audio statistics reporting.") \
-    X("SR_AUDIO_BACKEND", "string", "unset (normal audio backend)", "audio_unavailable.c,psmf_media_selftest.c", "Audio backend choice; null, none, 0 or off select the silent null backend.") \
-    X("SR_AUDIO_DISABLED", "string", "unset (audio enabled)", "audio_unavailable.c", "When set to exactly 1, host audio output is disabled and the null audio backend is used.") \
+    X("SR_AUDIODUMP", "path", "unset or empty: no dump written", "audio_sdl3.c", "Writes the mixed audio sent to the host device as a 16-bit PCM WAV file at this path.") \
+    X("SR_AUDIOSTAT", "flag-presence", "off", "audio_sdl3.c,hle.c", "When set, enables audio statistics reporting.") \
+    X("SR_AUDIO_BACKEND", "string", "unset (normal audio backend)", "audio_sdl3.c,psmf_media_selftest.c", "Audio backend choice; null, none, 0 or off select the silent null backend.") \
+    X("SR_AUDIO_DISABLED", "string", "unset (audio enabled)", "audio_sdl3.c", "When set to exactly 1, host audio output is disabled and the null audio backend is used.") \
     X("SR_BLOCKLOG", "flag-presence", "off", "debug.h,sched.c", "Logs each time the scheduler parks a thread in a delay or object wait; read once per process.") \
     X("SR_BOOT_EVENT_FILE", "path", "unset (no event file)", "driver.c,gui.c,hle.c,hle_kernel_module.c,recomp.c", "File to which boot progress events are appended in addition to stderr.") \
     X("SR_BOOT_PATH", "path", "unset (no boot argument seeded)", "driver.c", "Guest boot path (under 4096 bytes) placed in the entry's argument block.") \
@@ -119,7 +119,7 @@
     X("SR_GPU_TEX_SHADOW_DISABLE", "flag-nonzero", "off (texture shadow enabled)", "gpu_sdl3vk/ge_gpu.c", "Disables the GPU texture shadow when set to a non-empty value other than 0.") \
     X("SR_GPU_TNL", "string", "off", "ge.c", "Set to exactly 1 to hand eligible transform-mode triangles to the GPU backend for vertex transform.") \
     X("SR_GPU_XFER_RING_KB", "number", "built-in default ring size", "gpu_sdl3vk/ge_gpu.c", "Transfer ring size in KiB (0 disables, above 65536 ignored).") \
-    X("SR_HEADLESS", "flag-nonzero", "off", "audio_unavailable.c,gui.c,sched.c", "Marks the run headless: silent audio, headless presenter and no pause UI (audio check wants exactly 1).") \
+    X("SR_HEADLESS", "flag-nonzero", "off", "audio_sdl3.c,gui.c,sched.c", "Marks the run headless: silent audio, headless presenter and no pause UI (audio check wants exactly 1).") \
     X("SR_HEADLESS_ACCEPT_PRESENTED_FRAMES", "string", "unset (off)", "gui.c,sched.c", "Requests the headless presented-frames acceptance checkpoint; any non-empty value enables it.") \
     X("SR_HEAP_BASE", "number", "first page-aligned address after the loaded image", "hle.c", "Hexadecimal base address for the user heap partition.") \
     X("SR_HEAP_DIAG", "flag-presence", "off", "recomp.c", "When set, prints live heap blocks and rejected foreign frees to stderr.") \
@@ -133,7 +133,7 @@
     X("SR_IOLOG", "flag-presence", "off", "debug.h,hle_data.c,hle_io.c", "When set, logs file I/O operations to stderr and enables the file-system debug category.") \
     X("SR_LAUNCHER_DISPLAY_BOUNDS", "list", "unset (primary display)", "gpu_sdl3vk/sdl3vk.c,gui.c", "Display bounds as x,y,w,h used to open the launcher window on a chosen display.") \
     X("SR_LOOSE_CONTENT_ROOTS", "list", "unset (no loose content roots)", "hle_thread_selftest.c", "Serialized list of extra loose-content root directories bound alongside the primary root.") \
-    X("SR_MASTER_VOLUME", "number", "100", "audio_unavailable.c", "Master audio volume as a percentage, converted to a gain by the audio backend.") \
+    X("SR_MASTER_VOLUME", "number", "100", "audio_sdl3.c", "Master audio volume as a percentage, converted to a gain by the audio backend.") \
     X("SR_MEMSTICK", "path", "memstick", "hle_thread_selftest.c,vfs_path.h", "Host directory that serves as the guest ms0: memory stick root.") \
     X("SR_MODULE_DIR", "path", "place_game_here/EXTRACTED/decrypted", "hle_kernel_module.c,hle_thread_selftest.c", "Directory holding the decrypted guest modules the runtime loads.") \
     X("SR_MPEGAV", "flag-presence", "off", "hle.c", "Enables MPEG/PSMF audio-video sync logging (also enabled by SR_MPEGLOG).") \
@@ -228,7 +228,7 @@
     X("SR_WATCH_N", "string", "unset", "debug.c", "Memory watch slot N (0..15), formatted 0xSTART,0xEND,label.") \
     X("SR_WINDOW_HIDDEN", "flag-nonzero", "off", "gpu_sdl3vk/sdl3vk.c", "When nonzero, the presenter creates a hidden window for headless routes.") \
     X("SR_YIELDLOG", "flag-presence", "off", "sched.c", "Logs the first 200 worker-thread yields to stderr.") \
-    X("TEMP", "system", "falls back to TMPDIR, then current dir or /tmp", "audio_unavailable.c,profiler_selftest.c", "Host temporary directory used for scratch files by the audio and profiler code.") \
-    X("TMPDIR", "system", "unset: falls back to the current directory", "audio_unavailable.c,profiler_selftest.c,vfs_contained_selftest.c", "Host temp directory (after TEMP) where self-tests place their scratch files.")
+    X("TEMP", "system", "falls back to TMPDIR, then current dir or /tmp", "audio_sdl3.c,profiler_selftest.c", "Host temporary directory used for scratch files by the audio and profiler code.") \
+    X("TMPDIR", "system", "unset: falls back to the current directory", "audio_sdl3.c,profiler_selftest.c,vfs_contained_selftest.c", "Host temp directory (after TEMP) where self-tests place their scratch files.")
 
 #endif /* NK_ENV_REGISTRY_H */

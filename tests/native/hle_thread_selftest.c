@@ -53,6 +53,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 
 #include "ge_shared.h"
 #include "gpu_sdl3vk/ge_gpu.h"   /* GeGpuFbDescriptor: header-only, no Vulkan */
+#include "sce_kernel_errors.h"
 #include "sched.c" /* white-box fixture setup and observable TCB state */
 #include "flight_recorder.h"
 #include "fbcap.h"            /* capture API this harness stubs (stub presenter) */
@@ -306,7 +307,6 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_KERNEL_SEND_MSG_PIPE_CB 0x7c41f2c2u
 #define NID_SCE_KERNEL_RECEIVE_MSG_PIPE 0x74829b76u
 #define NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB 0xfbfa697du
-#define SCE_KERNEL_ERROR_ILLEGAL_ADDR 0x80000103u
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW 0x369ed59du
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_WIDE 0x82bc5777u
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME 0xdb738f35u
@@ -408,10 +408,6 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_POWER_GET_BUS_INT 0x478fe6f5u
 #define NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD 0x3ad58b8cu
 #define NID_SCE_KERNEL_RESUME_DISPATCH_THREAD  0x27e22ec2u
-#define SCE_KERNEL_ERROR_MPP_FULL     0x800201b3u
-#define SCE_KERNEL_ERROR_MPP_EMPTY    0x800201b4u
-#define SCE_KERNEL_ERROR_ILLEGAL_SIZE 0x800201bcu
-#define SCE_KERNEL_ERROR_UNKNOWN_MPPID 0x8002019eu
 #define NID_SCE_ATRAC_RELEASE_ID 0x61eb33f5u
 #define NID_SCE_ATRAC_SET_DATA 0x0e2a73abu
 #define NID_SCE_ATRAC_SET_DATA_AND_GET_ID 0x7a20e7afu
@@ -446,10 +442,6 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define SCE_ERROR_MODULE_ALREADY_LOADED 0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED 0x80111103u
 #define SCE_KERNEL_ERROR_NOT_IMPLEMENTED 0x80020002u
-#define SCE_KERNEL_ERROR_ALREADY_STARTED 0x80020133u
-#define SCE_KERNEL_ERROR_NOT_STARTED 0x80020134u
-#define SCE_KERNEL_ERROR_ALREADY_STOPPED 0x80020135u
-#define SCE_KERNEL_ERROR_CAN_NOT_STOP 0x80020136u
 #define SCE_ERROR_AV_MODULE_BAD_ID 0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED 0x80110f03u
