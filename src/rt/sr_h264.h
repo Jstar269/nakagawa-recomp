@@ -111,9 +111,6 @@ int sr_h264_drain(int id, const SrH264FrameTarget *target,
                   SrH264FrameInfo *info);
 int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode);
 int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int maxH, int strideBytes);
-/* No packet follows what was fed: closes the access unit still open in the demux. 0, or -1 when
- * the stream cannot end there. Feeding after it is refused. */
-int sr_h264_end_stream(int id);
 int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts);
 /* The presentation time of the access unit sr_h264_au_take would hand out next: 1 with *pts
  * (-1 when the unit carries none), 0 when no complete unit is queued. */

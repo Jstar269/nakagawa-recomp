@@ -152,9 +152,11 @@ typedef struct {
     uint32_t totalPackets;       /* streamSize/packetSize: whole-movie packet count */
     uint32_t fedPackets;         /* cumulative packets the game has put into the ring */
     int streamEnded;             /* the fed stream ran out with the whole movie in: nothing follows */
+    uint32_t videoDryAt, audioDryAt; /* fedPackets when a getter last found nothing to hand out */
     uint32_t headerAddr;         /* guest address of the PSMF header passed to QueryStreamOffset */
     int h264;                    /* host H.264 backend id (-1 = none) */
     int h264Init, h264Frames;
+    int h264Units;               /* access units handed out for decoding */
     int avcFrameStatus;         /* 1 when the last AVC decode call produced a picture */
     int defaultFrameWidth, pixelMode;
     uint32_t streamWidth, streamHeight;
@@ -318,12 +320,25 @@ static void mpeg_audio_feed(Mpeg *ctx, const uint8_t *bytes, uint32_t len) {
     mpeg_audio_pump(ctx);
 }
 
-/* Every complete frame is out and the whole movie has been fed since the demux (re)started, with
- * no packet after it: the demux may close its last frame. A title that loops a movie keeps putting
- * packets past the header's count, so the count alone ends nothing. */
+/* The last unit of a stream stays open in the demux, since only the next one would end it. Every
+ * packet the header counts being in says nothing yet: a title that loops a movie keeps putting
+ * packets past that count, from the start of the file, as slowly as it likes. The stream has ended
+ * once a title that was told there is no data comes back without having put anything. */
+static int mpeg_feed_stopped(const Mpeg *ctx, uint32_t *dryAt) {
+    if (!ctx->totalPackets || ctx->fedPackets < ctx->totalPackets) return 0;
+    if (*dryAt == ctx->fedPackets) return 1;
+    *dryAt = ctx->fedPackets;
+    return 0;
+}
+
+/* Every complete frame is out and the feed has stopped with the whole movie put since the demux
+ * (re)started: the demux may close its last frame. Audio runs out long before the video does, with
+ * the ring full and no room to put, so a movie's video says when it has ended. */
 static void mpeg_audio_close_stream(Mpeg *ctx) {
     if (!ctx->audioDemux || ctx->audioDemuxFailed || ctx->audioDemuxEos || ctx->audioFifoCount ||
         !ctx->totalPackets || ctx->audioFedPackets < ctx->totalPackets) return;
+    if (ctx->h264Init && ctx->h264 >= 0 ? !ctx->streamEnded : !mpeg_feed_stopped(ctx, &ctx->audioDryAt))
+        return;
     ctx->audioDemuxEos = 1;
     if (sr_psmf_producer_feed_stream(ctx->audioDemux, NULL, 0, 1) < 0) {
         ctx->audioDemuxFailed = 1;
@@ -482,12 +497,7 @@ static void analyze(uint32_t buffer, Mpeg *ctx) {
      * timestamp which only covers the first segment). */
     ctx->totalPackets = ctx->streamSize / 2048u;
     ctx->streamEnded = 0;
-}
-
-/* Every packet the header counts has been put. That alone is no end of stream: a title that loops
- * a movie keeps putting packets past the header's count, from the start of the file. */
-static int mpeg_whole_stream_fed(const Mpeg *ctx) {
-    return ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets;
+    ctx->videoDryAt = ctx->audioDryAt = 0;
 }
 
 /* ---- SceMpegAu (auAddr): pts/dts stored as 32-bit-word-swapped s64 ---- */
@@ -840,12 +850,12 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     /* Real end-of-stream: the game has fed the whole movie (fedPackets >= totalPackets) and the
      * ring has drained. This mirrors PPSSPP's mediaengine->IsVideoEnd() without ffmpeg -- the movie
      * runs for the full file then ends, instead of stopping at the (segment-only) header timestamp. */
-    int dry = rb_get(ring, RB_packetsAvail) == 0;
-    /* The ring is released byte for byte as access units leave, so it runs dry with the access unit
-     * closed at the end of the stream still to hand out. */
-    int lastUnitWaits = dry && ctx->h264Init && ctx->h264 >= 0 && sr_h264_au_peek_pts(ctx->h264, NULL);
-    if (dry && mpeg_whole_stream_fed(ctx) && !lastUnitWaits) ctx->videoEnd = 1;
-    if (!lastUnitWaits && (rb_get(ring, RB_packetsRead) == 0 || dry)) {
+    /* A decoder gives a picture up one access unit late, so the stream's end finds it holding some.
+     * Their access units have left the ring: each is handed out again to be decoded out. */
+    int held = ctx->streamEnded && ctx->h264Frames < ctx->h264Units;
+    if (!held && ctx->totalPackets && ctx->fedPackets >= ctx->totalPackets &&
+        rb_get(ring, RB_packetsAvail) == 0) ctx->videoEnd = 1;
+    if (!held && (rb_get(ring, RB_packetsRead) == 0 || rb_get(ring, RB_packetsAvail) == 0)) {
         g_mpeg_nodata++;
         au_write_pts(auAddr, 0, -1); au_write_pts(auAddr, 8, -1);
         return SCE_MPEG_ERROR_NO_DATA;
@@ -868,12 +878,12 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
         uint64_t psConsumed = 0;
         int64_t auPts = -1;
         int r = sr_h264_au_take(ctx->h264, 0, &psConsumed, &auPts);
-        if (r == 0 && mpeg_whole_stream_fed(ctx)) {
-            /* Every complete access unit is out and no packet followed the last one: the demux
-             * may close the final access unit, which no later start code will end. */
+        if (r == 0 && !ctx->streamEnded && mpeg_feed_stopped(ctx, &ctx->videoDryAt)) {
             ctx->streamEnded = 1;
             r = sr_h264_au_take(ctx->h264, 1, &psConsumed, &auPts);
         }
+        if (r > 0) ctx->h264Units++;
+        else if (r == 0 && held) r = 1;
         if (r == 0) {
             if (ctx->streamEnded) ctx->videoEnd = 1;
             g_mpeg_nodata++;
@@ -904,12 +914,6 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
             rb_set(ring, RB_packetsAvail, av > release ? av - release : 0u);
             if (attrAddr) MEM_W32(attrAddr, 1);
             if (ctx->videoEnd) return SCE_MPEG_ERROR_NO_DATA;
-            /* The last packet is out and none follows: no later start code will end the access
-             * unit still open in the demux, and the decoder may give up what it holds. */
-            if (!ctx->streamEnded && mpeg_whole_stream_fed(ctx) && rb_get(ring, RB_packetsAvail) == 0) {
-                ctx->streamEnded = 1;
-                if (sr_h264_end_stream(ctx->h264) < 0) ctx->h264DemuxFailed = 1;
-            }
             return 0;
         }
     }
@@ -1066,6 +1070,7 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
         target.pixel_mode = ctx->pixelMode;
         gotFrame = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
         if (gotFrame > 0) ctx->h264Frames++;
+        else if (eos) ctx->h264Units = ctx->h264Frames;
     }
 #endif
     if (gotFrame <= 0 && !ctx->h264Frames) {
@@ -1463,6 +1468,7 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
             MEM_W32(initAddr, 0u);
             return mpeg_contract_error("sceMpegAvcDecodeYCbCr", "H.264 backend rejected the access unit", SCE_MPEG_ERROR_NO_DATA);
         } else {
+            if (eos) ctx->h264Units = ctx->h264Frames;
             break;
         }
     }
@@ -1526,8 +1532,7 @@ uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t bufPtr, uint32_t
         target.host_cb = s_ycbcr_cb;
         target.host_cr = s_ycbcr_cr;
         target.host_c_stride = (int)(YCBCR_SCRATCH_W / 2u);
-        int eos = mpeg_whole_stream_fed(ctx);
-        if (sr_h264_frame_ex(ctx->h264, eos, &target, &info) > 0) {
+        if (sr_h264_frame_ex(ctx->h264, ctx->streamEnded, &target, &info) > 0) {
             got = 1;
             ctx->h264Frames++;
             ctx->ycbcrWant = ctx->h264Frames;

@@ -3912,12 +3912,64 @@ static void test_mpeg_avc_decode_detail(void) {
  * of the file. The whole header's worth having been put ends nothing: pictures and audio frames
  * keep coming from the next pass, and only a ring that runs dry with nothing following ends the
  * stream. */
-static void test_mpeg_looped_stream_feeds_past_header_size(void) {
+/* One access unit and one audio frame a pass until the stream ends. `lead` 0 puts the second pass
+ * at once; otherwise the title puts it `lead` packets at a time, and only when the ring is short of
+ * that many or it was told there is no data. Either way, once the file is out it stops putting.
+ * With `stop_ptr`, each access unit is followed by sceMpegAvcDecodeStopYCbCr, which stands for the
+ * stream's end no more than the decode does. */
+static int looped_stream_run(uint32_t desc, uint32_t ring, uint32_t avc, uint32_t atrac, uint32_t au,
+                             uint32_t attr, uint32_t aau, uint32_t ptr, uint32_t init, uint32_t out,
+                             uint32_t packets, uint32_t lead, uint32_t stop_ptr) {
+    Mpeg *ctx = mpeg_find(desc);
+    int pictures = 0, blocks = 0;
+    for (int step = 0; step < 16 * (AV_PICTURES + AV_AUDIO_BLOCKS); step++) {
+        uint32_t left = 2u * packets - ctx->fedPackets;
+        uint32_t n = lead < left ? lead : left;
+        uint32_t r = mpeg_get_avc_au(desc, avc, au, attr);
+        if (r == 0u) {
+            MEM_W32(init, 0u);
+            uint32_t d = mpeg_avc_decode(desc, au, 512u, ptr, init);
+            CHECK(d == 0u || d == SCE_MPEG_ERROR_NO_DATA, "mpeg-loop: an access unit decodes, or the picture comes later");
+            pictures += MEM_R32(init) == 1u;
+            if (stop_ptr) {
+                CHECK(mpeg_avc_decode_stop_ycbcr(desc, stop_ptr, init) == 0u, "mpeg-loop: the stop call succeeds");
+                pictures += MEM_R32(init) == 1u;
+            }
+        } else {
+            CHECK(r == SCE_MPEG_ERROR_NO_DATA, "mpeg-loop: GetAvcAu only ever says there is no data");
+            if (ctx->videoEnd) break;
+        }
+        if (mpeg_get_atrac_au(desc, atrac, aau, attr) == 0u) {
+            CHECK(mpeg_atrac_decode(desc, aau, out, blocks == 0 ? 1u : 0u) == 0u,
+                  "mpeg-loop: every audio frame decodes");
+            blocks++;
+        }
+        if (n && (r != 0u || rb_get(ring, RB_packetsAvail) < lead))
+            CHECK(mpeg_ringbuffer_put(NULL, ring, n, n) == n, "mpeg-loop: the second pass goes in");
+        CHECK(!ctx->h264DemuxFailed, "mpeg-loop: packets past the header's size are not a demux failure");
+        if (ctx->h264DemuxFailed) break;
+    }
+    /* What the demux still held when the video ended. */
+    for (int guard = 0; guard < 4 * AV_AUDIO_BLOCKS; guard++) {
+        if (mpeg_get_atrac_au(desc, atrac, aau, attr) == 0u) {
+            if (mpeg_atrac_decode(desc, aau, out, blocks == 0 ? 1u : 0u)) break;
+            blocks++;
+        } else if (ctx->audioDemuxEos && !ctx->audioFifoCount) {
+            break;
+        }
+    }
+    CHECK(pictures == 2 * AV_PICTURES, "mpeg-loop: every picture of both passes comes out");
+    CHECK(blocks == 2 * AV_AUDIO_BLOCKS, "mpeg-loop: every audio frame of both passes comes out");
+    CHECK(ctx->videoEnd, "mpeg-loop: a feed that stopped ends the video");
+    return pictures;
+}
+
+static void test_mpeg_looped_stream_feeds_past_header_size(uint32_t lead, int stop) {
     enum {
         LP_DESC = 0x08600000u, LP_DATA = 0x08610000u, LP_RING = 0x08630000u, LP_HDR = 0x08640000u,
         LP_AU = 0x08641000u, LP_ATTR = 0x08641100u, LP_OFF = 0x08641110u, LP_INIT = 0x08641120u,
         LP_AAU = 0x08641200u, LP_PTR = 0x08641300u, LP_OUT = 0x08642000u,
-        LP_FRAME = 0x08680000u, LP_RING_DATA = 0x086c0000u,
+        LP_FRAME = 0x08680000u, LP_YCPTR = 0x08641310u, LP_YCBCR = 0x08400000u, LP_RING_DATA = 0x086c0000u,
     };
     uint32_t size = 0;
     uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
@@ -3962,41 +4014,75 @@ static void test_mpeg_looped_stream_feeds_past_header_size(void) {
         free(image);
         return;
     }
-    /* The game is decoding when the file's last packet goes in, then wraps to its start. */
-    int pictures = 0, blocks = 0;
     MEM_W32(LP_PTR, LP_FRAME);
-    CHECK(mpeg_get_avc_au(LP_DESC, avc, LP_AU, LP_ATTR) == 0u,
-          "mpeg-loop: the first access unit comes out with the whole pass in the ring");
-    MEM_W32(LP_INIT, 0u);
-    CHECK(mpeg_avc_decode(LP_DESC, LP_AU, 512u, LP_PTR, LP_INIT) == 0u,
-          "mpeg-loop: the first access unit decodes");
-    pictures += MEM_R32(LP_INIT) == 1u;
-    CHECK(mpeg_get_atrac_au(LP_DESC, atrac, LP_AAU, LP_ATTR) == 0u &&
-              mpeg_atrac_decode(LP_DESC, LP_AAU, LP_OUT, 1u) == 0u,
-          "mpeg-loop: the first audio frame comes out with the whole pass in the ring");
-    blocks++;
-    CHECK(mpeg_ringbuffer_put(NULL, LP_RING, packets, packets) == packets,
-          "mpeg-loop: the second pass is put past the header's stream size");
-    CHECK(!ctx->h264DemuxFailed, "mpeg-loop: packets past the header's size are not a demux failure");
-    for (int guard = 0; guard < 4 * AV_PICTURES; guard++) {
-        uint32_t r = mpeg_get_avc_au(LP_DESC, avc, LP_AU, LP_ATTR);
-        if (r) {
-            CHECK(r == SCE_MPEG_ERROR_NO_DATA, "mpeg-loop: GetAvcAu ends with no data");
-            break;
-        }
-        MEM_W32(LP_INIT, 0u);
-        CHECK(mpeg_avc_decode(LP_DESC, LP_AU, 512u, LP_PTR, LP_INIT) == 0u,
-              "mpeg-loop: every access unit decodes");
-        pictures += MEM_R32(LP_INIT) == 1u;
+    if (stop) {
+        CHECK(mpeg_avc_init_ycbcr(LP_DESC, 1u, 480u, 272u, LP_YCBCR) == 0u, "mpeg-loop: the YCbCr buffer is set up");
+        MEM_W32(LP_YCPTR, LP_YCBCR);
     }
-    CHECK(pictures == 2 * AV_PICTURES, "mpeg-loop: every picture of both passes comes out");
-    for (int guard = 0; guard < 4 * AV_AUDIO_BLOCKS; guard++) {
-        if (mpeg_get_atrac_au(LP_DESC, atrac, LP_AAU, LP_ATTR)) break;
-        if (mpeg_atrac_decode(LP_DESC, LP_AAU, LP_OUT, 0u)) break;
-        blocks++;
+    /* The game is decoding when the file's last packet goes in, then wraps to its start. */
+    if (!lead)
+        CHECK(mpeg_ringbuffer_put(NULL, LP_RING, packets, packets) == packets,
+              "mpeg-loop: the second pass is put past the header's stream size");
+    looped_stream_run(LP_DESC, LP_RING, avc, atrac, LP_AU, LP_ATTR, LP_AAU, LP_PTR, LP_INIT, LP_OUT,
+                      packets, lead, stop ? LP_YCPTR : 0u);
+    mpeg_finish();
+    free(image);
+}
+
+/* A movie put whole and only once: the last access unit stays open in the demux, and its packets
+ * stay in the ring until it leaves. A title that takes an empty ring for the end of the movie never
+ * asks for it otherwise, as WipEout Pure's short menu movies do not. */
+static void test_mpeg_last_unit_keeps_its_ring_packets(void) {
+    enum {
+        LU_DESC = 0x08600000u, LU_DATA = 0x08610000u, LU_RING = 0x08630000u, LU_HDR = 0x08640000u,
+        LU_AU = 0x08641000u, LU_ATTR = 0x08641100u, LU_OFF = 0x08641110u, LU_INIT = 0x08641120u,
+        LU_PTR = 0x08641300u, LU_FRAME = 0x08680000u, LU_RING_DATA = 0x086c0000u,
+    };
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "mpeg-last: the A/V container builds"); return; }
+    const uint32_t ps = size - 2048u;
+    const uint32_t packets = (ps + MPEG_PACKET_SIZE - 1u) / MPEG_PACKET_SIZE;
+    const uint32_t pad = packets * MPEG_PACKET_SIZE - ps;
+    CHECK(pad == 0u || pad >= 6u, "mpeg-last: the tail is long enough for a padding packet");
+    memcpy(SR_HOST(LU_RING_DATA), image + 2048u, ps);
+    if (pad >= 6u) {
+        uint8_t *tail = (uint8_t *)SR_HOST(LU_RING_DATA + ps);
+        tail[0] = 0x00; tail[1] = 0x00; tail[2] = 0x01; tail[3] = 0xbe;
+        tail[4] = (uint8_t)((pad - 6u) >> 8); tail[5] = (uint8_t)(pad - 6u);
+        memset(tail + 6, 0xff, pad - 6u);
     }
-    CHECK(blocks == 2 * AV_AUDIO_BLOCKS, "mpeg-loop: every audio frame of both passes comes out");
-    CHECK(ctx->videoEnd, "mpeg-loop: the ring running dry with nothing following ends the video");
+    memcpy(SR_HOST(LU_HDR), image, 2048u);
+    memcpy(SR_HOST(LU_HDR + 4u), "0015", 4u);
+    be32_at((uint8_t *)SR_HOST(LU_HDR + 12u), packets * MPEG_PACKET_SIZE);
+    MEM_W32(LU_DESC, 0u);
+    CHECK(mpeg_ringbuffer_construct(LU_RING, packets, LU_RING_DATA,
+                                    packets * MPEG_RING_BYTES_PER_PKT, 0u, 0u) == 0u &&
+              mpeg_create(LU_DESC, LU_DATA, 0x10000u, LU_RING, 512u, 0u, 0u) == 0u &&
+              mpeg_query_stream_offset(LU_DESC, LU_HDR, LU_OFF) == 0u,
+          "mpeg-last: the ring, the context and the header are set up");
+    uint32_t avc = mpeg_regist_stream(LU_DESC, MPEG_AVC_STREAM, 0u);
+    Mpeg *ctx = mpeg_find(LU_DESC);
+    CHECK(mpeg_ringbuffer_put(NULL, LU_RING, packets, packets) == packets, "mpeg-last: the whole movie goes in");
+    if (!ctx || ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: the last access unit needs a real H.264 backend\n");
+        mpeg_finish();
+        free(image);
+        return;
+    }
+    MEM_W32(LU_PTR, LU_FRAME);
+    int pictures = 0, dryEarly = 0;
+    for (int guard = 0; guard < 8 * AV_PICTURES && !ctx->videoEnd; guard++) {
+        uint32_t r = mpeg_get_avc_au(LU_DESC, avc, LU_AU, LU_ATTR);
+        if (r) continue;
+        dryEarly += pictures + 2 < AV_PICTURES && rb_get(LU_RING, RB_packetsAvail) == 0u;
+        MEM_W32(LU_INIT, 0u);
+        mpeg_avc_decode(LU_DESC, LU_AU, 512u, LU_PTR, LU_INIT);
+        pictures += MEM_R32(LU_INIT) == 1u;
+    }
+    CHECK(pictures == AV_PICTURES, "mpeg-last: every picture comes out");
+    CHECK(!dryEarly, "mpeg-last: the ring is not empty while an access unit is still to come");
+    CHECK(ctx->videoEnd && rb_get(LU_RING, RB_packetsAvail) == 0u, "mpeg-last: the last one empties the ring");
     mpeg_finish();
     free(image);
 }
@@ -4324,7 +4410,10 @@ int main(int argc, char **argv) {
     test_mpeg_csc_presentation_boundary(1);
     test_mpeg_av_audio_followed_by_content();
     test_mpeg_atrac_au_decode();
-    test_mpeg_looped_stream_feeds_past_header_size();
+    test_mpeg_looped_stream_feeds_past_header_size(0u, 0);
+    test_mpeg_looped_stream_feeds_past_header_size(4u, 0);
+    test_mpeg_looped_stream_feeds_past_header_size(0u, 1);
+    test_mpeg_last_unit_keeps_its_ring_packets();
     test_mpeg_avc_decode_detail();
     test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
