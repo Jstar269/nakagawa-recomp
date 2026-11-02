@@ -255,10 +255,20 @@ class FontProvisioningTests(unittest.TestCase):
                          {"source": "user", "served_index": 0})
         # Index 9 belongs to the second eight-entry group and cannot borrow ltn0.
         self.assertEqual(resolve_latin_index(user_data, project / "font", 8),
-                         {"source": "project", "served_index": -1})
+                         {"source": "project", "served_index": -1, "project_file": "nkltn.pgf"})
         states = latin_index_states(user_data, project_root=project)
         self.assertIn("missing; fallback ltn0.pgf", states[1]["detail"])
         self.assertIn("missing; project nkltn.pgf", states[8]["detail"])
+
+        # #1300: the second size group has its own project strike.
+        (project / "font" / "nkltns.pgf").write_bytes(
+            latin_strike_pgf("Nakagawa Project Latin Second", 7 * 64)
+        )
+        self.assertEqual(resolve_latin_index(user_data, project / "font", 8),
+                         {"source": "project", "served_index": -1, "project_file": "nkltns.pgf"})
+        states = latin_index_states(user_data, project_root=project)
+        self.assertIn("missing; project nkltns.pgf", states[8]["detail"])
+        (project / "font" / "nkltns.pgf").unlink()
 
         # The legacy one-file import is used only after the project font is unavailable.
         (project / "font" / "nkltn.pgf").unlink()

@@ -1290,6 +1290,111 @@ class EmboldenTests(CliRefusalMixin):
         self.assertIsNotNone(validate_pgf_data(api.image, "embolden.pgf"))
 
 
+class HeaderAndEllipsisOptionTests(CliRefusalMixin):
+    """The header sizes and extents a font declares, and a baseline ellipsis, are explicit options."""
+
+    def setUp(self) -> None:
+        self.data = FONT.read_bytes()
+        self.tmp = Path(tempfile.mkdtemp(prefix="ttf2pgf-header-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _convert(self, **overrides: object):
+        arguments: dict = {"input_path": str(FONT), "output_path": "out.pgf", "codes": (0x48, 0x48), "ppem": 13}
+        arguments.update(overrides)
+        return convert(self.data, **arguments)
+
+    def test_defaults_keep_the_derived_header(self) -> None:
+        conversion = self._convert()
+        self.assertEqual(struct.unpack_from("<iiii", conversion.image, 0x24), (13 * 64, 13 * 64, 1920, 1920))
+        self.assertIsNone(conversion.manifest["parameters"]["header_ascender_26_6"])
+
+    def test_options_reach_the_header_and_the_manifest(self) -> None:
+        conversion = self._convert(nominal_size_26_6=448, resolution_26_6=8192, header_ascender_26_6=576,
+                                   header_descender_26_6=-131)
+        self.assertEqual(struct.unpack_from("<iiii", conversion.image, 0x24), (448, 448, 8192, 8192))
+        self.assertEqual(struct.unpack_from("<ii", conversion.image, 0xD4), (576, -131))
+        parameters = conversion.manifest["parameters"]
+        self.assertEqual((parameters["nominal_em_26_6"], parameters["resolution_26_6"]), (448, 8192))
+        self.assertEqual(parameters["header_descender_26_6"], -131)
+
+    def test_baseline_ellipsis_needs_the_ellipsis_in_the_code_set(self) -> None:
+        with self.assertRaises(TtfConvertError) as caught:
+            self._convert(baseline_ellipsis=True)
+        self.assertEqual(caught.exception.reason, "baseline-ellipsis-unavailable")
+        self.assert_cli_refused("baseline-ellipsis-unavailable", self.tmp / "out.pgf", FONT, "--codes", "0x48-0x48",
+                                "--baseline-ellipsis")
+
+
+class ProjectLatinStrikeTests(unittest.TestCase):
+    """#1300: the build's Latin strikes meet the console fonts of their size in the numbers that make
+    text look different: where the ink sits, how thick the strokes are, and how far each letter moves.
+
+    The targets are aggregates measured on console Latin fonts of each size; no glyph shape is taken
+    from them. Hot Shots Tennis opens the second size's regular face (ltn8.pgf). The bounds are one pixel
+    for an edge, because the source font's proportions are not the console's, and a fifth of a pixel for
+    a stem.
+    """
+
+    MPLUS = ROOT / "fixtures" / "fonts" / "mplus1p"
+    STRIKES = (
+        ("PROJECT_LATIN_FONT_ARGS", 648, 863, -196, 11, 14, -3, 2.13, 11.43),
+        ("PROJECT_LATIN_SMALL_FONT_ARGS", 448, 576, -131, 7, 9, -2, 1.40, 7.62),
+    )
+
+    @classmethod
+    def _convert(cls, variable: str):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        match = re.search(rf"^{variable} := (.+)$", makefile, re.MULTILINE)
+        assert match is not None, f"the Makefile does not define {variable}"
+        tokens = match.group(1).split()
+        tokens.remove("--baseline-ellipsis")
+        flags = dict(zip(tokens[0::2], tokens[1::2], strict=True))
+        names = {
+            "--ppem": "ppem", "--embolden-x": "embolden_x", "--embolden-y": "embolden_y",
+            "--embolden-advance": "embolden_advance", "--nominal-size": "nominal_size_26_6",
+            "--resolution": "resolution_26_6", "--header-ascender": "header_ascender_26_6",
+            "--header-descender": "header_descender_26_6",
+        }
+        data = (cls.MPLUS / "MPLUS1p-Regular.ttf").read_bytes()
+        return convert(data, input_path="MPLUS1p-Regular.ttf", output_path="nkltn.pgf",
+                       code_points=ttf2pgf.latin_1_text_code_points(), baseline_ellipsis=True,
+                       font_name="Nakagawa Open Latin", font_type="Regular",
+                       **{names[flag]: int(value) for flag, value in flags.items()})
+
+    @staticmethod
+    def _ink_rows(glyph: Glyph) -> tuple[int, int]:
+        """Top and bottom edges of the rows that reach half coverage, above the baseline."""
+        rows = [max(glyph.samples[row * glyph.width:(row + 1) * glyph.width]) for row in range(glyph.height)]
+        inked = [row for row, peak in enumerate(rows) if peak >= 8]
+        return glyph.adjust_y - inked[0], glyph.adjust_y - inked[-1] - 1
+
+    @staticmethod
+    def _stem(glyph: Glyph) -> float:
+        row = glyph.height // 2
+        return sum(glyph.samples[row * glyph.width:(row + 1) * glyph.width]) / 15
+
+    def test_each_strike_meets_the_console_font_of_its_size(self) -> None:
+        for variable, nominal, ascender, descender, x_height, cap, drop, stem, advance in self.STRIKES:
+            with self.subTest(strike=variable):
+                conversion = self._convert(variable)
+                glyphs = _glyph_map(conversion.glyphs)
+                self.assertEqual(struct.unpack_from("<iiii", conversion.image, 0x24),
+                                 (nominal, nominal, 8192, 8192))
+                self.assertEqual(struct.unpack_from("<ii", conversion.image, 0xD4), (ascender, descender))
+                self.assertLessEqual(abs(self._ink_rows(glyphs[ord("x")])[0] - x_height), 1)
+                self.assertLessEqual(abs(self._ink_rows(glyphs[ord("H")])[0] - cap), 1)
+                self.assertLessEqual(abs(self._ink_rows(glyphs[ord("p")])[1] - drop), 1)
+                self.assertLessEqual(abs(self._stem(glyphs[ord("l")]) - stem), 0.2)
+                lower = [cast(int, glyphs[code].advance_x) / 64 for code in range(ord("a"), ord("z") + 1)]
+                self.assertLessEqual(abs(sum(lower) / len(lower) - advance), 0.2)
+
+    def test_the_ellipsis_sits_on_the_line_of_the_full_stop(self) -> None:
+        for variable, *_ in self.STRIKES:
+            with self.subTest(strike=variable):
+                glyphs = _glyph_map(self._convert(variable).glyphs)
+                self.assertEqual(glyphs[0x2026].adjust_y, glyphs[ord(".")].adjust_y)
+
+
 class NameDenylistTests(unittest.TestCase):
     """Output names: vendor camouflage and reserved or trademark names are refused by name."""
 

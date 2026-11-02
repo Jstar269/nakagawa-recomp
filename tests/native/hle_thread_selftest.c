@@ -40096,6 +40096,31 @@ static void test_flash0_latin_index_resolution(void) {
                    SR_FONT_REGISTRY_PRESENT &&
                project_info.source && strcmp(project_info.source, "project") == 0,
            "with no import, Latin index 16 is served by the project font");
+
+    /* #1300: the project's Latin font has the console's two sizes, one for each size group. */
+    SrFontRegistryInfo project_large, project_small;
+    expect(sr_flash0_font_registry_info(&project_sources, 2u, &project_large) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               sr_flash0_font_registry_info(&project_sources, 10u, &project_small) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_large.font_name, "Nakagawa Project Latin") == 0 &&
+               strcmp(project_small.font_name, "Nakagawa Project Latin Second") == 0 &&
+               project_large.h_size != project_small.h_size,
+           "the project's Latin font serves each size group its own strike");
+
+    /* #1300: resolving a font for the font list says nothing of what the game draws with; only
+     * an open does, and the open is what the log has to name. */
+    const uint32_t opened_bit = 1u << 14;
+    expect((sr_flash0_font_test_opens_logged() & opened_bit) == 0u,
+           "resolving a Latin index for the font list is not reported as a game's open");
+    FILE *opened = NULL;
+    uint32_t opened_size = 0;
+    expect(sr_flash0_font_open("flash0:/font/ltn14.pgf", 1u, &project_sources, &opened,
+                               &opened_size) == 0u && opened != NULL,
+           "the device opens a Latin index the project font serves");
+    if (opened) fclose(opened);
+    expect((sr_flash0_font_test_opens_logged() & opened_bit) != 0u,
+           "a game's open of a Latin index is named in the log");
 }
 
 /* The guest-visible /DATA/FONT subtree over the synthetic roots the device test set up. Latin and

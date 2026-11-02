@@ -44,6 +44,8 @@ SLOT_FILES: Dict[str, str] = {
 }
 LATIN_INDEX_FILES: Tuple[str, ...] = tuple(f"ltn{index}.pgf" for index in range(16))
 LATIN_SIZE_GROUP_COUNT = 8
+#: The project's Latin font for the second size group; a project folder without it serves the first.
+PROJECT_LATIN_SMALL_FILE = "nkltns.pgf"
 
 
 def latin_index_from_filename(name: str) -> Optional[int]:
@@ -787,6 +789,7 @@ def resolve_latin_index(
     ``served_index`` is 0..15 for an indexed user file, -1 for the project font, and -2 for a
     legacy unindexed user import. An old cache containing no indexed files keeps serving its
     legacy file for every index; mixed/newer caches use it only when the project font is absent.
+    A project resolution also names its ``project_file``.
     """
     if index < 0 or index >= len(LATIN_INDEX_FILES):
         raise ValueError(f"Latin index must be between 0 and {len(LATIN_INDEX_FILES) - 1}.")
@@ -812,13 +815,15 @@ def resolve_latin_index(
             return {"source": "user", "served_index": -2}
 
     if project_font_dir is not None:
-        project_path = Path(project_font_dir) / SLOT_FILES["latin"]
-        try:
-            info = _inspect(project_path.read_bytes()) if project_path.is_file() else {"accepted": False}
-        except OSError:
-            info = {"accepted": False}
-        if info.get("accepted") and info.get("slot") == "latin":
-            return {"source": "project", "served_index": -1}
+        first = PROJECT_LATIN_SMALL_FILE if index >= LATIN_SIZE_GROUP_COUNT else SLOT_FILES["latin"]
+        for name in (first, SLOT_FILES["latin"]):
+            project_path = Path(project_font_dir) / name
+            try:
+                info = _inspect(project_path.read_bytes()) if project_path.is_file() else {"accepted": False}
+            except OSError:
+                info = {"accepted": False}
+            if info.get("accepted") and info.get("slot") == "latin":
+                return {"source": "project", "served_index": -1, "project_file": name}
 
     if status == "OK" and "latin" in entries and _check_slot_file(cdir, "latin", entries["latin"])[0]:
         return {"source": "user", "served_index": -2}
@@ -840,7 +845,7 @@ def latin_index_states(
         elif served_index >= 0:
             detail = f"L{index + 1} missing; fallback {LATIN_INDEX_FILES[served_index]}"
         elif served_index == -1:
-            detail = f"L{index + 1} missing; project nkltn.pgf"
+            detail = f"L{index + 1} missing; project {resolution['project_file']}"
         elif served_index == -2:
             detail = f"L{index + 1} missing; legacy nkltn.pgf"
         else:
