@@ -24,6 +24,7 @@
 #include <string.h>
 
 #if !defined(_WIN32) && !defined(_WIN64)
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -153,6 +154,16 @@ static void expect_refused(const char *exe, const char *code, const char *folder
     assert(strcmp(before, after) == 0);
 }
 
+#if !defined(_WIN32) && !defined(_WIN64)
+/* chmod a folder through a descriptor opened once, so no name is checked and then used. */
+static void set_dir_mode(const char *dir, mode_t mode) {
+    int fd = open(dir, O_RDONLY | O_DIRECTORY);
+    assert(fd >= 0);
+    assert(fchmod(fd, mode) == 0);
+    assert(close(fd) == 0);
+}
+#endif
+
 static void test_unwritable_is_refused(void) {
     char folder[NK_MAX_PATH], exe[NK_MAX_PATH], data[NK_MAX_PATH];
     make_install("blocked", folder, sizeof(folder), exe, sizeof(exe));
@@ -167,21 +178,19 @@ static void test_unwritable_is_refused(void) {
     assert(!nk_platform_dir_exists(data));
 
 #if !defined(_WIN32) && !defined(_WIN64)
-    /* A genuinely read-only install folder, where the host enforces it (not as root). */
+    /* A genuinely read-only install folder, where the host enforces it (not as root). The
+       mode is changed through an open descriptor, never by name after a check. */
     if (geteuid() != 0) {
-        char ro[NK_MAX_PATH], ro_exe[NK_MAX_PATH];
+        char ro[NK_MAX_PATH], ro_exe[NK_MAX_PATH], ro_data[NK_MAX_PATH];
         make_install("readonly", ro, sizeof(ro), ro_exe, sizeof(ro_exe));
         write_marker(ro);
-        assert(chmod(ro, 0555) == 0);
+        set_dir_mode(ro, 0555);
         expect_refused(ro_exe, "PORTABLE_NOT_WRITABLE", ro);
-        /* And a data folder that exists but is read-only. */
-        assert(chmod(ro, 0755) == 0);
-        char ro_data[NK_MAX_PATH];
+        set_dir_mode(ro, 0755);
+        /* And a data folder that exists but is read-only: made read-only in one step. */
         assert(snprintf(ro_data, sizeof(ro_data), "%s%cdata", ro, g_sep) < (int)sizeof(ro_data));
-        assert(nk_platform_mkdir_p(ro_data));
-        assert(chmod(ro_data, 0555) == 0);
+        assert(mkdir(ro_data, 0555) == 0);
         expect_refused(ro_exe, "PORTABLE_NOT_WRITABLE", ro);
-        assert(chmod(ro_data, 0755) == 0);
     }
 #endif
 }
