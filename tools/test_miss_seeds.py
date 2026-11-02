@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import analyze  # noqa: E402
+import codegen  # noqa: E402
 import miss_seeds  # noqa: E402
 from test_codegen_entry_semantics import _synthetic_elf  # noqa: E402
 
@@ -66,6 +67,39 @@ UNEXECUTED_RESERVED_WORDS = {
     TARGET + 24: 0x00000000,     # nop (delay slot)
 }
 PADDING_FUNCTION = ENTRY + 32    # the analyzer starts a function at the padding after the return
+# The same shape with a decodable word there, which the image lists as a variable-import site:
+# the walk covers a word the emitter refuses only under the image's address space.
+IMPORT_SITE = TARGET + 12
+IMPORT_SITE_WORDS = {**UNEXECUTED_RESERVED_WORDS, IMPORT_SITE: 0x00000000}
+# A seed that translates and yet brings a stub. The data word before the seed decodes as a branch,
+# so the unseeded trace steps over the `jal` as that branch's delay slot and never sees its target;
+# the seeded trace does, and the new entry walks a reserved word the run never executes.
+CALLEE = TARGET + 20
+CALLEE_STUB_WORDS = {
+    **{a: w for a, w in WORDS.items() if a < TARGET},
+    ENTRY + 16: 0x03E0C821,      # addu t9, ra, zero (delay slot): keeps the return address
+    ENTRY + 36: 0x14A00002,      # data that decodes as bne a1, zero, TARGET+8
+    TARGET: 0x0C00400F,          # jal CALLEE
+    TARGET + 4: 0x00000000,      # nop (delay slot)
+    TARGET + 8: 0x03200008,      # jr t9
+    TARGET + 12: 0x00000000,     # nop (delay slot)
+    TARGET + 16: BREAK,
+    CALLEE: 0x00A61021,          # addu v0, a1, a2
+    CALLEE + 4: 0x14A00003,      # bne a1, zero, CALLEE+20 (taken: a1 = 40)
+    CALLEE + 8: 0x00000000,      # nop (delay slot)
+    CALLEE + 12: RESERVED,       # never executed
+    CALLEE + 16: 0x00000000,     # nop
+    CALLEE + 20: 0x03E00008,     # jr ra
+    CALLEE + 24: 0x00000000,     # nop (delay slot)
+}
+# Runs main with the image's variable-import sites replaced: no fixture builds an import table.
+WITH_IMPORT_SITE = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import codegen, {module} as tool
+codegen.variable_import_sites = lambda elf: ((), {{{site}: "word32"}})
+sys.exit(tool.main(sys.argv[1:]))
+"""
 
 # The harness mirrors the cosimulation gate's (fixtures/cosim/cosim_selftest.c): it includes the
 # production dispatch core, supplies the few host symbols a build without the scheduler and GE
@@ -184,6 +218,22 @@ def _functions(elf_path, **kwargs):
     return starts
 
 
+def _emission(stubs):
+    """A ``seed_check``: ``stubs(entries)`` names the entries the emitter stubs, with why."""
+    def check(entries, ranges, only=None):
+        stubbed = stubs(set(entries))
+        return {a: stubbed.get(a) for a in entries if only in (None, a)}
+    return check
+
+
+def _with_import_site(module, *argv):
+    return subprocess.run(
+        [sys.executable, "-c", WITH_IMPORT_SITE.format(module=module, site=IMPORT_SITE),
+         str(ROOT / "tools"), *argv],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+
+
 class _Fixture(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -273,19 +323,84 @@ class AnalysisSeedTests(_Fixture):
         _functions(path, seeds={TARGET + 8}, report=report)
         self.assertEqual(report["miss_seeds"], {TARGET + 8: analyze.SEED_NOT_CODE})
 
-    def test_a_seed_the_check_refuses_is_ignored_with_its_reason_and_adds_no_entry(self):
-        seen = []
-
-        def refuse(address, known, ranges):
-            seen.append(address)
-            return "no thanks"
-
+    def test_a_seed_the_emitter_stubs_is_ignored_with_its_reason_and_adds_no_entry(self):
+        check = _emission(lambda entries: {TARGET: "no thanks"})
         report: dict = {}
-        starts = _functions(self.elf_path, seeds={TARGET}, report=report, seed_check=refuse)
-        self.assertEqual(seen, [TARGET])
+        starts = _functions(self.elf_path, seeds={TARGET}, report=report, seed_check=check)
         self.assertEqual(report["miss_seeds"],
                          {TARGET: f"{analyze.SEED_UNTRANSLATABLE}: no thanks"})
         self.assertEqual(sorted(starts), [ENTRY, PADDING_FUNCTION])
+
+    def test_a_seed_on_a_gap_filled_entry_is_known_and_adds_nothing(self):
+        unseeded: dict = {}
+        _functions(self.elf_path, report=unseeded)
+        self.assertNotIn(PADDING_FUNCTION, unseeded["hc"])
+        report: dict = {}
+        starts = _functions(self.elf_path, seeds={PADDING_FUNCTION}, report=report)
+        self.assertEqual(report["miss_seeds"], {PADDING_FUNCTION: analyze.SEED_KNOWN})
+        self.assertEqual(starts, _functions(self.elf_path))
+
+    def test_a_stub_the_build_has_without_seeds_is_not_laid_on_the_seed(self):
+        check = _emission(lambda entries: {PADDING_FUNCTION: "stubbed anyway"})
+        report: dict = {}
+        starts = _functions(self.elf_path, seeds={PADDING_FUNCTION}, report=report,
+                            seed_check=check)
+        self.assertEqual(report["miss_seeds"], {PADDING_FUNCTION: analyze.SEED_KNOWN})
+        self.assertEqual(sorted(starts), [ENTRY, PADDING_FUNCTION])
+
+    def test_a_seed_that_turns_an_existing_entry_into_a_stub_is_refused(self):
+        check = _emission(lambda entries: {ENTRY: "split"} if TARGET in entries else {})
+        report: dict = {}
+        starts = _functions(self.elf_path, seeds={TARGET}, report=report, seed_check=check)
+        self.assertEqual(report["miss_seeds"],
+                         {TARGET: f"{analyze.SEED_UNTRANSLATABLE}: brings 0x{ENTRY:08x}: split"})
+        self.assertEqual(sorted(starts), [ENTRY, PADDING_FUNCTION])
+
+    def test_a_seed_that_is_not_emitted_is_not_applied(self):
+        check = _emission(lambda entries: {})
+
+        def without_target(entries, ranges, only=None):
+            return {a: why for a, why in check(entries, ranges, only).items() if a != TARGET}
+
+        report: dict = {}
+        starts = _functions(self.elf_path, seeds={TARGET}, report=report,
+                            seed_check=without_target)
+        self.assertEqual(report["miss_seeds"], {TARGET: analyze.SEED_NOT_EMITTED})
+        self.assertIn(TARGET, starts)
+
+    def test_only_the_seed_that_brings_a_stub_is_refused(self):
+        elf = self.work / "callee_stub.elf"
+        elf.write_bytes(_synthetic_elf(CALLEE_STUB_WORDS, ENTRY))
+        self.assertNotIn(CALLEE, _functions(elf))
+        bystanders = {ENTRY + 20, CALLEE + 20}
+        report: dict = {}
+        starts = _functions(elf, seeds={TARGET, *bystanders}, report=report,
+                            seed_check=codegen.emitter_seed_check(analyze.Elf(str(elf))))
+        self.assertEqual(report["miss_seeds"], {
+            ENTRY + 20: analyze.SEED_APPLIED,
+            TARGET: f"{analyze.SEED_UNTRANSLATABLE}: brings 0x{CALLEE:08x}: "
+                    f"opcode 0x1d at 0x{CALLEE + 12:08x}",
+            CALLEE + 20: analyze.SEED_APPLIED,
+        })
+        self.assertNotIn(CALLEE, starts)
+        self.assertLessEqual(bystanders, starts)
+
+    def test_the_report_keeps_the_discovery_state_of_the_build_it_describes(self):
+        report: dict = {}
+        _functions(self.elf_path, seeds={TARGET}, report=report,
+                   seed_check=_emission(lambda entries: {TARGET: "no"}))
+        self.assertNotIn(TARGET, report["hc"])
+
+    def test_an_import_stub_with_no_nid_counts_as_a_stub(self):
+        # The emission loop turns such an entry into an abort, as it does an untranslatable body.
+        image = analyze.Elf(str(self.elf_path))
+        section = {"addr": TARGET, "size": 12}
+        sections = image.sec
+        image.sec = lambda name: section if name == ".lib.stub" else sections(name)
+        starts, ranges = analyze.analyze(image, seeds={TARGET})
+        emission = codegen.emitter_seed_check(image)(starts, ranges)
+        self.assertEqual(emission[TARGET], "import stub without NID mapping")
+        self.assertIsNone(emission[ENTRY])
 
     def test_the_analyze_command_takes_a_seed_list(self):
         seeds = self.write_seeds("analyze_seeds.txt", "# nakagawa-miss-seeds-v1\n0x00010028\n")
@@ -298,6 +413,17 @@ class AnalysisSeedTests(_Fixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("MISS_SEEDS_APPLIED seeds=1 applied=1 known=0 ignored=0", result.stdout)
         self.assertIn("0x00010028", toml.read_text(encoding="ascii"))
+
+    def test_the_analyze_command_checks_seeds_under_the_images_address_space(self):
+        elf = self.work / "import_site_analyze.elf"
+        elf.write_bytes(_synthetic_elf(IMPORT_SITE_WORDS, ENTRY))
+        seeds = self.write_seeds("import_site_analyze.txt", "# nakagawa-miss-seeds-v1\n0x00010028\n")
+        result = _with_import_site("analyze", str(elf), f"--miss-seeds={seeds}",
+                                   f"--toml={self.work / 'import_site.toml'}", "--quiet")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MISS_SEEDS_APPLIED seeds=1 applied=0 known=0 ignored=1", result.stdout)
+        self.assertIn(f"ignored 0x00010028: untranslatable: variable-import word32 reference "
+                      f"on an executed word at 0x{IMPORT_SITE:08x}", result.stderr)
 
 
 class MergeCommandTests(_Fixture):
@@ -360,6 +486,10 @@ class CodegenSeedTests(_Fixture):
                     if line.startswith("CODEGEN_COVERAGE "))
         return int(dict(part.split("=") for part in line.split()[1:])["functions"])
 
+    @staticmethod
+    def stubs(result):
+        return [line for line in result.stderr.splitlines() if line.startswith("skip 0x")]
+
     def test_the_default_output_is_unchanged_by_an_empty_seed_list(self):
         plain, plain_result = self.build("plain")
         empty = self.write_seeds("empty.txt", "# nakagawa-miss-seeds-v1\n")
@@ -405,6 +535,57 @@ class CodegenSeedTests(_Fixture):
                 self.assertNotIn("f_00010028", generated)
                 report = json.loads((out / "m_recomp_coverage.json").read_text(encoding="ascii"))
                 self.assertTrue(report["miss_seeds"]["0x00010028"].startswith("untranslatable"))
+
+    def test_a_seed_on_a_gap_filled_entry_is_counted_as_known(self):
+        plain, _ = self.build("gap_plain")
+        seeds = self.write_seeds("gap.txt", f"# nakagawa-miss-seeds-v1\n0x{PADDING_FUNCTION:08x}\n")
+        seeded, result = self.build("gap_seeded", f"--miss-seeds={seeds}")
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=1 ignored=0", result.stdout)
+        self.assertEqual((plain / "m_recomp_funcs.h").read_bytes(),
+                         (seeded / "m_recomp_funcs.h").read_bytes())
+
+    def test_a_seed_left_to_the_dispatcher_is_not_applied(self):
+        seeds = self.write_seeds("omitted.txt", "# nakagawa-miss-seeds-v1\n0x00010028\n")
+        out, result = self.build("omitted", f"--miss-seeds={seeds}", "--omit-aot=10028")
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1", result.stdout)
+        self.assertIn("ignored 0x00010028: not-emitted", result.stderr)
+        report = json.loads((out / "m_recomp_coverage.json").read_text(encoding="ascii"))
+        self.assertEqual(report["miss_seeds"], {"0x00010028": "not-emitted"})
+
+    def test_a_word_the_image_address_space_refuses_is_checked_before_applying(self):
+        elf = self.work / "import_site.elf"
+        elf.write_bytes(_synthetic_elf(IMPORT_SITE_WORDS, ENTRY))
+        seeds = self.write_seeds("import_site.txt", "# nakagawa-miss-seeds-v1\n0x00010028\n")
+        out = self.work / "import_site_out"
+        out.mkdir()
+        result = _with_import_site("codegen", str(elf), str(out / "m_recomp.c"),
+                                   "--funcs-per-chunk=1", f"--miss-seeds={seeds}")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1", result.stdout)
+        self.assertIn(f"ignored 0x00010028: untranslatable: variable-import word32 reference "
+                      f"on an executed word at 0x{IMPORT_SITE:08x}", result.stderr)
+        self.assertNotIn("skip 0x00010028", result.stderr)
+        generated = "".join(path.read_text(encoding="ascii") for path in out.glob("m_recomp*.c"))
+        self.assertNotIn("f_00010028", generated)
+
+    def test_a_seed_that_brings_a_stub_is_named_and_the_stub_is_not_built(self):
+        elf = self.work / "brings.elf"
+        elf.write_bytes(_synthetic_elf(CALLEE_STUB_WORDS, ENTRY))
+        seeds = self.write_seeds("brings.txt", "# nakagawa-miss-seeds-v1\n0x00010028\n")
+        out = self.work / "brings_out"
+        out.mkdir()
+        plain_out = self.work / "brings_plain"
+        plain_out.mkdir()
+        plain = _codegen(elf, plain_out / "m_recomp.c")
+        result = _codegen(elf, out / "m_recomp.c", f"--miss-seeds={seeds}")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1", result.stdout)
+        self.assertIn(f"ignored 0x00010028: untranslatable: brings 0x{CALLEE:08x}: opcode 0x1d",
+                      result.stderr)
+        # The image has stubs of its own on the data around the seed; the seed adds none.
+        self.assertEqual(self.stubs(result), self.stubs(plain))
+        generated = "".join(path.read_text(encoding="ascii") for path in out.glob("m_recomp*.c"))
+        self.assertNotIn(f"f_{CALLEE:08x}", generated)
 
     def test_a_missing_seed_list_stops_the_build(self):
         result = _codegen(self.elf_path, self.work / "gone" / "m_recomp.c",
@@ -520,6 +701,19 @@ class EndToEndTests(_Fixture):
             "unexecuted", f"--miss-seeds={seeds}", words=UNEXECUTED_RESERVED_WORDS)
         self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1", generated.stdout)
         self.assertIn("ignored 0x00010028: untranslatable", generated.stderr)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("RESULT v0=42", run.stdout)
+        self.assertNotIn("sr_unimplemented", run.stderr)
+        self.assertEqual(fields["miss_targets"], "1")
+        self.assertEqual(set(miss_seeds.read_seed_file(miss_file).seeds), {TARGET})
+
+    def test_a_seed_that_brings_a_stub_leaves_the_run_unchanged(self):
+        # The seed's own entry translates; the entry its `jal` adds would not, and a run reaches
+        # that entry. The seed is refused, so the miss keeps reaching the interpreter floor.
+        seeds = self.write_seeds("brings_run.txt", "# nakagawa-miss-seeds-v1\n0x00010028\n")
+        run, fields, miss_file, generated = self.build_and_run(
+            "brings", f"--miss-seeds={seeds}", words=CALLEE_STUB_WORDS)
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1", generated.stdout)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("RESULT v0=42", run.stdout)
         self.assertNotIn("sr_unimplemented", run.stderr)

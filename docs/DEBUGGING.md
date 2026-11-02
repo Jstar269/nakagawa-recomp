@@ -352,9 +352,17 @@ python tools/miss_seeds.py merge --out <title seed list> --run <label> --elf <th
 
 `merge` keeps the run that first found each seed (`run=<label>`) and drops targets that are already
 function entries. A target inside a function's body stays: a run entered the body mid-way, and the seed
-gives that address its own body, as tail-call promotion does. Analysis checks each seed. One that is
-unaligned, outside the executable ranges, on an all-zero or all-ones word, or on an entry the code emitter
-would stub (`untranslatable: <why>`: a reserved opcode on any path its body covers, run or not) is reported
+gives that address its own body, as tail-call promotion does.
+
+Each seed is judged by what the code emitter does with and without the seeds, so the build analyzes the
+image and runs the emitter over every entry both ways before it writes anything, which takes longer than a
+build without the option. A seed that is already an entry without seeds is `known`, and it adds nothing. A
+seed that is unaligned, outside the executable ranges or on an all-zero or all-ones word is ignored. So is
+any seed that makes the emitter write a stub it does not write without seeds, on the seed's own entry
+(`untranslatable: <why>`) or on one the seed brought in (`untranslatable: brings 0x...: <why>`): a stub
+would turn a miss the interpreter floor finishes into an abort, even for a reserved word a run never
+executes. A seed the build emits no body for is `not-emitted` (`--omit-aot`). Only a seed that gives its
+address a new translated body is `applied`. Ignored seeds are reported
 (`CODEGEN_MISS_SEEDS: ignored 0x...: <reason>`) and left out, never forced. `CODEGEN_MISS_SEEDS` prints the
 applied, already-known and ignored counts, and the coverage JSON gains a `miss_seeds` map of address to
 status, only for a build given `--miss-seeds`. Without the option the output is unchanged.

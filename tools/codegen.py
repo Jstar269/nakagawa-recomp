@@ -36,7 +36,7 @@ from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
-    static_coverage, branch_kind, BRANCH_UNCOND,
+    static_coverage, branch_kind, BRANCH_UNCOND, seeds_in_analysis,
 )
 from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
 from host_stubs import HST_SIMPLE_STUBS
@@ -3114,19 +3114,49 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
     }
 }"""
 
-def emitter_seed_check(elf, profile=None):
-    """A ``seed_check`` for ``analyze`` (miss seeds, #1848): why ``emit_function`` would stub the
-    entry, or None when it translates. A stub registered for a miss target would replace the
-    interpreter floor the run reaches today with an abort, so such a seed is reported and left out."""
-    def check(address, known, ranges):
-        applied_before = set(ENHANCEMENT_APPLIED)
+def emitter_seed_check(elf, profile=None, omitted=(), stack_census=False):
+    """A ``seed_check`` for ``analyze`` (miss seeds, #1848): what the primary image's emission loop
+    in ``main`` does with an entry set. It maps each entry that loop would emit to None for a body
+    or to why it would write an abort stub there, under the image's own address space, so
+    ``analyze`` reports a seed from the emitter's result. An enhancement package does not enter
+    into it: a rewrite replaces a word's text after the stock word is translated."""
+    impmap = primary_import_map(elf)
+    is_stub = import_stub_test(elf, impmap)
+    space = AddressSpace(patched=variable_import_sites(elf)[1])
+    hand_written = set()
+    if profile == "hst":
+        hand_written = set(HST_CUSTOM_STUBS) | set(HST_SIMPLE_STUBS)
+
+    def check(entries, ranges, only=None):
+        global ADDRESS_SPACE
+        catalog = build_entry_catalog(entries, ranges, profile=profile, elf=elf)
+        for address in omitted:
+            catalog.pop(address, None)
+        known = {addr for addr, info in catalog.items() if info.callable}
+        resume_owners = {addr: info.owner for addr, info in catalog.items() if info.resumable}
+        emission = {}
+        previous_space = ADDRESS_SPACE
+        ADDRESS_SPACE = space
         try:
-            emit_function(elf, address, ranges, known, profile=profile)
-        except Unsupported as exc:
-            return str(exc).replace('"', "'")
+            for address in sorted(catalog):
+                if only is not None and address != only:
+                    continue
+                emission[address] = None
+                if address in hand_written:
+                    continue
+                if is_stub(address):
+                    if address not in impmap:
+                        emission[address] = NO_NID_IMPORT_STUB
+                    continue
+                try:
+                    emit_function(elf, address, ranges, known, resume_owners=resume_owners,
+                                  resumable=catalog[address].resumable, profile=profile,
+                                  dispatch_boundaries=set(omitted), stack_census=stack_census)
+                except Unsupported as exc:
+                    emission[address] = str(exc).replace('"', "'")
         finally:
-            ENHANCEMENT_APPLIED.intersection_update(applied_before)
-        return None
+            ADDRESS_SPACE = previous_space
+        return emission
     return check
 
 
@@ -3771,6 +3801,35 @@ def c_string(text):
 
 #: The PSP reference type of each variable-import reference kind (SrVarImportRef.kind).
 VAR_REFERENCE_KIND = {"word32": 2, "hi16": 5, "lo16": 6}
+NO_NID_IMPORT_STUB = "import stub without NID mapping"
+
+
+def primary_import_map(elf):
+    """The primary image's import stubs, {address: (library, NID)}. An image with no import table
+    has none."""
+    if elf.reloc is None and elf.sec(".rodata.sceModuleInfo") is None:
+        return {}
+    try:
+        from imports import parse_imports
+        return parse_imports(elf)
+    except ImportTableError:
+        raise
+    except Exception as e:
+        sys.stderr.write(f"warning: import table parse failed: {e}\n")
+        return {}
+
+
+def import_stub_test(elf, impmap):
+    """Whether an address of the primary image is an import stub. Stripped linked executables may
+    reconstruct the loader-owned table as .lib.stub instead of having a named .sceStub.text
+    section."""
+    stub = elf.sec(".sceStub.text") or elf.sec(".lib.stub")
+
+    def is_stub(a):
+        if a in impmap:
+            return True
+        return stub is not None and stub["addr"] <= a < stub["addr"] + stub["size"]
+    return is_stub
 
 
 def variable_import_sites(elf):
@@ -4655,7 +4714,8 @@ def main(argv):
             return 2
     try:
         if seed_args:
-            seed_args["seed_check"] = emitter_seed_check(elf, profile)
+            seed_args["seed_check"] = emitter_seed_check(elf, profile, frozenset(omit_aot.addrs),
+                                                         stack_census)
         analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate, **seed_args)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
@@ -4674,8 +4734,7 @@ def main(argv):
             try:
                 report_entries, report_ranges = analyze(
                     elf, extra_spans=extra_spans, cfg_gate=True,
-                    **({"seeds": seed_args["seeds"], "seed_check": seed_args["seed_check"]}
-                       if seed_args else {}))
+                    **({"seeds": seeds_in_analysis(miss_seed_outcome)} if seed_args else {}))
             except ImportTableError as exc:
                 sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
                 return 1
@@ -4827,16 +4886,11 @@ def main(argv):
             )
             return 1
 
-    impmap = {}
-    if elf.reloc is not None or elf.sec(".rodata.sceModuleInfo") is not None:
-        try:
-            from imports import parse_imports
-            impmap = parse_imports(elf)
-        except ImportTableError as e:
-            sys.stderr.write(f"codegen: {format_boundary(e)}\n")
-            return 1
-        except Exception as e:
-            sys.stderr.write(f"warning: import table parse failed: {e}\n")
+    try:
+        impmap = primary_import_map(elf)
+    except ImportTableError as e:
+        sys.stderr.write(f"codegen: {format_boundary(e)}\n")
+        return 1
     # The executable's variable imports: the runtime linker patches their reference sites,
     # so the code reads those immediates from memory (AddressSpace.patched).
     global ADDRESS_SPACE
@@ -4846,14 +4900,7 @@ def main(argv):
         sys.stderr.write(f"codegen: {format_boundary(e)}\n")
         return 1
     ADDRESS_SPACE = AddressSpace(patched=main_var_sites)
-
-    # Stripped linked executables may reconstruct the loader-owned table as
-    # .lib.stub instead of having a named .sceStub.text section.
-    stub = elf.sec(".sceStub.text") or elf.sec(".lib.stub")
-    def is_stub(a):
-        if a in impmap:
-            return True
-        return stub is not None and stub["addr"] <= a < stub["addr"] + stub["size"]
+    is_stub = import_stub_test(elf, impmap)
 
     emitted = []
     stubbed = []
@@ -4915,8 +4962,8 @@ def main(argv):
                 text = import_stub_text(a, lib, nid)
                 import_nids[a] = nid
             else:
-                text = f"void f_{a:08x}(CpuState *s) {{  /* import stub without NID mapping */\n"
-                text += f"    sr_unimplemented(0x{a:08x}u, \"import stub without NID mapping\");\n}}"
+                text = f"void f_{a:08x}(CpuState *s) {{  /* {NO_NID_IMPORT_STUB} */\n"
+                text += f"    sr_unimplemented(0x{a:08x}u, \"{NO_NID_IMPORT_STUB}\");\n}}"
             func_texts.append(text)
             emitted.append(a)
             continue

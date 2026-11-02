@@ -2177,41 +2177,111 @@ def _seed_address_materializations(d):
                         else: break
 
 
-#: What became of a miss seed (`analyze`'s `report["miss_seeds"]`): `applied` is a new function
-#: entry; `known` was already a high-confidence entry. Anything else names why it was ignored.
+#: What became of a miss seed (`analyze`'s `report["miss_seeds"]`), decided by comparing the build
+#: with and without seeds: `applied` is an entry the seeds added, with a translated body; `known`
+#: was an entry without them. Anything else names why it was ignored.
 SEED_APPLIED = "applied"
 SEED_KNOWN = "known"
 SEED_UNALIGNED = "unaligned"
 SEED_OUTSIDE_CODE = "outside-executable-ranges"
 SEED_NOT_CODE = "not-a-function-start"
-#: `untranslatable: <why>`: the entry decodes as a start but the emitter would stub it, and a
-#: stub registered for the address would replace the interpreter floor the miss reaches today.
+#: `untranslatable: [brings 0x...: ]<why>`: with the seed the emitter stubs an entry it does not
+#: stub without it, the seed's own or the named one. A stub registered for an address replaces
+#: the interpreter floor a run reaches there today with an abort, so the seed stays out.
 SEED_UNTRANSLATABLE = "untranslatable"
+#: The seed is an analysis entry but the build emits no body for it (--omit-aot).
+SEED_NOT_EMITTED = "not-emitted"
 
 
 def _seed_miss_targets(d, seeds):
-    """Add each dispatch-miss target that can start a function to the entries, and return the
-    status of every seed. A seed that does not look like a function start is reported and left
+    """Add each dispatch-miss target that can start a function to the entries, and return why
+    each other one cannot. A seed that does not look like a function start is reported and left
     out: seeding adds analysis input, it never forces a body (AGENTS.md Section 6)."""
-    outcome = {}
+    unusable = {}
     for address in sorted(set(seeds)):
         if address & 3:
-            outcome[address] = SEED_UNALIGNED
+            unusable[address] = SEED_UNALIGNED
         elif not d.callable_target(address):
-            outcome[address] = SEED_OUTSIDE_CODE
+            unusable[address] = SEED_OUTSIDE_CODE
         else:
             raw = d.elf.read_at_vaddr(address, 4)
             word = int.from_bytes(raw, "little") if raw is not None and len(raw) == 4 else None
             # An all-zero or all-ones word is padding or erased data, not the first instruction
             # of a function a run entered on purpose.
             if word is None or word in (0x00000000, 0xFFFFFFFF):
-                outcome[address] = SEED_NOT_CODE
-            elif address in d.hc:
-                outcome[address] = SEED_KNOWN
+                unusable[address] = SEED_NOT_CODE
             else:
                 d.hc.add(address)
-                outcome[address] = SEED_APPLIED
-    return outcome
+    return unusable
+
+
+def _seed_behind(run, seed_check, candidates, stub):
+    """A seed of `candidates` that makes `stub` a stub. The empty list leaves `stub` alone and the
+    whole list does not, so a bisection of the list's prefixes ends on a seed that makes the
+    difference, whichever others it needs."""
+    low, high = 0, len(candidates)
+    while high - low > 1:
+        middle = (low + high) // 2
+        entries, ranges = run(candidates[:middle])
+        if seed_check(entries, ranges, only=stub).get(stub) is None:
+            low = middle
+        else:
+            high = middle
+    return candidates[low]
+
+
+def _resolve_seeds(run, seeds, seed_check, report):
+    """Analyze with the seeds that leave the emitter's result no worse, and report each seed from
+    the two final results, with seeds and without, never from a state along the way.
+
+    `run(seeds, report, unusable)` is one analysis. `seed_check(entries, ranges, only=None)` maps
+    each entry the build would emit (`only` alone, when given) to None for a body or to why the
+    emitter stubs it. Without a check every entry counts as a body. Any stub the seeds add refuses
+    a seed, whatever entry it is on, and the analysis runs again without that seed."""
+    if seed_check is None:
+        def seed_check(entries, ranges, only=None):
+            return dict.fromkeys(entries)
+    entries, ranges = run(())
+    baseline = set(entries)
+    baseline_stubs = {a for a, why in seed_check(entries, ranges).items() if why is not None}
+    candidates = sorted(set(seeds) - baseline)
+    refused = {}
+    while True:
+        unusable = {}
+        result = run(candidates, report, unusable)
+        emitted = seed_check(*result)
+        new_stubs = {a: why for a, why in emitted.items()
+                     if why is not None and a not in baseline_stubs}
+        if not new_stubs:
+            break
+        own = new_stubs.keys() & set(candidates)
+        for address in own:
+            refused[address] = f"{SEED_UNTRANSLATABLE}: {new_stubs[address]}"
+        if not own:
+            stub = min(new_stubs)
+            seed = _seed_behind(run, seed_check, candidates, stub)
+            refused[seed] = f"{SEED_UNTRANSLATABLE}: brings 0x{stub:08x}: {new_stubs[stub]}"
+        candidates = [address for address in candidates if address not in refused]
+    outcome = {}
+    for address in set(seeds):
+        if address in baseline:
+            outcome[address] = SEED_KNOWN
+        elif address in refused:
+            outcome[address] = refused[address]
+        elif address in unusable:
+            outcome[address] = unusable[address]
+        else:
+            outcome[address] = SEED_APPLIED if address in emitted else SEED_NOT_EMITTED
+    if report is not None:
+        report["miss_seeds"] = outcome
+    return result
+
+
+def seeds_in_analysis(outcome):
+    """The seeds of a `report["miss_seeds"]` the analysis kept: pass them to analyze the same image
+    another way (`cfg_gate`) with the entries this build has, without resolving them again."""
+    return {address for address, status in outcome.items()
+            if status in (SEED_APPLIED, SEED_NOT_EMITTED)}
 
 
 def _promote_tail_calls(d):
@@ -2328,44 +2398,27 @@ def _owned_spans(d):
 
 def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
             entry_hints=None, seeds=None, seed_check=None):
-    # `seed_check(address, known, ranges)` returns why the emitter cannot translate an applied
-    # seed's entry, or None. A refused seed is dropped and the analysis runs again without it
-    # (its tracing may have added entries that exist only because of it), so the result names
-    # only entries the build keeps. The check sees the final entry set: it decides what the
-    # walk of the entry covers.
-    if seeds is None or seed_check is None:
-        return _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints, seeds)
-    refused = {}
-    while True:
-        seed_report = {}
-        result = _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints,
-                          set(seeds) - set(refused), seed_report)
-        known, ranges = set(result[0]), result[1]
-        newly = {}
-        for address, status in seed_report["miss_seeds"].items():
-            if status == SEED_APPLIED:
-                why = seed_check(address, known, ranges)
-                if why is not None:
-                    newly[address] = f"{SEED_UNTRANSLATABLE}: {why}"
-        if not newly:
-            break
-        refused.update(newly)
-    if report is not None:
-        report["miss_seeds"] = {**seed_report["miss_seeds"], **refused}
-    return result
+    # `seeds` are guest addresses a run reached as dispatch misses (tools/miss_seeds.py, #1848):
+    # extra function entries for this build. `report["miss_seeds"]` maps each to its status (see
+    # `_resolve_seeds`, which takes `seed_check`). None changes nothing.
+    if seeds is None:
+        return _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints)
+
+    def run(with_seeds, run_report=None, unusable=None):
+        return _analyze(elf, extra_spans, cfg_gate, trace_memo, run_report, entry_hints,
+                        with_seeds, {} if unusable is None else unusable)
+    return _resolve_seeds(run, seeds, seed_check, report)
 
 
-def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints, seeds,
-             seed_report=None):
+def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints, seeds=(),
+             unusable=None):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
     # `entry_hints` are code pointers another image holds into this one (data_section_words).
     # `report`, when a dict, receives the discovery state the import-stub census reads:
     # covered (every traced instruction address), calls (every direct-call target seen),
     # and hc (the high-confidence seeds). The return value is unchanged.
-    # `seeds` are guest addresses a run reached as dispatch misses (tools/miss_seeds.py, #1848):
-    # extra function entries for this build. Each is checked and either applied or ignored with
-    # a reason, which `report["miss_seeds"]` maps address -> status. None changes nothing.
+    # `seeds` are extra entries; `unusable`, a dict, receives why any of them cannot be one.
     d = _Discovery(elf, extra_spans, cfg_gate, trace_memo)
     _seed_entry_point(d)
     _seed_prologues_and_terminators(d)
@@ -2373,11 +2426,8 @@ def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints, seeds,
     _seed_import_stubs(d)
     _seed_function_pointer_tables(d, entry_hints)
     _seed_address_materializations(d)
-    if seeds is not None:
-        outcome = _seed_miss_targets(d, seeds)
-        for target in (report, seed_report):
-            if target is not None:
-                target["miss_seeds"] = outcome
+    if seeds:
+        unusable.update(_seed_miss_targets(d, seeds))
 
     # Trace each function's extent from the high-confidence seeds, following discovered calls.
     d.functions = set(d.hc)
@@ -2595,8 +2645,8 @@ def main(argv):
             # A report-only run describes gate-mode analysis but must not change
             # the entry set used for the model and recall output below.
             report_entries, report_ranges = analyze(
-                elf, extra_spans=extra_spans, cfg_gate=True, seeds=seeds,
-                seed_check=_emitter_seed_check(elf) if seeds else None)
+                elf, extra_spans=extra_spans, cfg_gate=True,
+                seeds=seeds_in_analysis(seed_report["miss_seeds"]) if seeds else None)
         cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
         if cfg_report_path is not None:
             parent = os.path.dirname(cfg_report_path)
