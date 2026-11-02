@@ -128,6 +128,11 @@ gate runs in exactly one part with the command it had in the serial job:
 - `translation`: the HLE, scheduler and dispatch selftests, cosimulation and its mutation
   corpus, the GPU selftests on lavapipe, the interpreter, VFPU, strbuf and ATRAC3+
   selftests, and the microtest codegen gates.
+  On the nightly schedule only, `translation` also runs `make CC=gcc selftest-repeat` after
+  the single scheduler and HLE thread runs: it reruns the three `sched_selftest_*` binaries
+  and `hle_thread_selftest` they built `SELFTEST_REPEAT` times (default 20), stops at the
+  first failure and prints the iteration and binary that failed (#1846). Pull requests, pushes,
+  merge groups and manual runs skip it, so their time is unchanged.
 - `player`: present pacing, the player UI tests and regressions, the CMake player, the
   showcase and the two player smokes that stage its ISO.
 
