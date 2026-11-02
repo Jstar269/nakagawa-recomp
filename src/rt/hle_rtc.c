@@ -325,6 +325,84 @@ static uint32_t h_RtcTickAddYears(CpuState *s) {
     if (value.month == 2u && value.day == 29u && !rtc_is_leap(value.year)) value.day = 28u;
     return rtc_write_u64(A0, rtc_datetime_to_tick(&value)) ? 0u : RTC_ILLEGAL_ADDR;
 }
+/* sceRtcTickAddMicroseconds / Seconds / Days: the source tick plus a whole number of units,
+ * written to dest. PSPAutotests tests/rtc/arithmetic.expected (rev 2ed7c9c5, recorded on a PSP,
+ * checkRtcTickAddMicroseconds, -Seconds and -Days) shows plain modulo-2^64 arithmetic with a result
+ * of 0 on every row: 0001-01-01 00:00:10 - 11 seconds wraps to year 60267, 9999-12-31 23:59:50
+ * + 10 seconds reaches year 10000 and the huge counts wrap (e.g. + 62135596800000445 seconds
+ * reaches year 26003). The count is a 64-bit value in $a2/$a3 for microseconds and seconds and a
+ * sign-extended int in $a2 for days (the day rows pass a 64-bit constant truncated to int). A NULL
+ * or unmapped pointer is not measured, so it stops the run by name, as sceRtcTickAddYears does. */
+static uint32_t rtc_tick_add(const char *name, uint32_t dest, uint32_t src, uint64_t delta) {
+    uint64_t tick;
+    if (!rtc_read_u64(src, &tick))
+        return hle_unmodelled_stop(name, "with an unreadable source 0x%08x is not measured", src);
+    if (!dest || !sr_guest_span_writable(dest, 8u))
+        return hle_unmodelled_stop(name, "with an unwritable destination 0x%08x is not measured", dest);
+    return rtc_write_u64(dest, tick + delta) ? 0u : RTC_ILLEGAL_ADDR;
+}
+static uint32_t h_RtcTickAddMicroseconds(CpuState *s) {
+    (void)s;
+    return rtc_tick_add("sceRtcTickAddMicroseconds", A0, A1, (uint64_t)A2 | ((uint64_t)A3 << 32));
+}
+static uint32_t h_RtcTickAddSeconds(CpuState *s) {
+    (void)s;
+    return rtc_tick_add("sceRtcTickAddSeconds", A0, A1, ((uint64_t)A2 | ((uint64_t)A3 << 32)) * 1000000u);
+}
+static uint32_t h_RtcTickAddDays(CpuState *s) {
+    (void)s;
+    return rtc_tick_add("sceRtcTickAddDays", A0, A1, (uint64_t)(int64_t)(int32_t)A2 * 86400000000ull);
+}
+
+/* sceRtcCheckValid(const pspTime *): 0 for a valid date, else the first failing field as a negative
+ * code. PSPAutotests tests/rtc/lookup.expected (2ed7c9c5, recorded on a PSP): 2012-09-20 07:00:00 is
+ * 0; a year 10000 or a field read as a huge unsigned value (the test stores -98 and the like in the
+ * 16-bit fields) fails with year -1, month -2, day -3, hour -4, minute -5, second -6 and
+ * microsecond -7, in that order, the first failing field deciding ("Very invalid Date" is -1).
+ * A day of 0, or one from the month's length to 31, is not measured; neither is a NULL or unmapped
+ * pointer, so each stops the run by name. */
+static uint32_t h_RtcCheckValid(CpuState *s) {
+    (void)s;
+    if (!A0 || !sr_guest_span_readable(A0, 16u))
+        return hle_unmodelled_stop("sceRtcCheckValid", "with an unreadable date 0x%08x is not measured", A0);
+    uint32_t year = MEM_R16(A0 + 0u), month = MEM_R16(A0 + 2u), day = MEM_R16(A0 + 4u);
+    if (year < 1u || year > 9999u) return (uint32_t)-1;
+    if (month < 1u || month > 12u) return (uint32_t)-2;
+    if (day > 31u) return (uint32_t)-3;
+    if (day < 1u || day > rtc_days_in_month(year, month))
+        return hle_unmodelled_stop("sceRtcCheckValid", "with day %u of month %u is not measured", day, month);
+    if (MEM_R16(A0 + 6u) > 23u) return (uint32_t)-4;
+    if (MEM_R16(A0 + 8u) > 59u) return (uint32_t)-5;
+    if (MEM_R16(A0 + 10u) > 59u) return (uint32_t)-6;
+    if (MEM_R32(A0 + 12u) > 999999u) return (uint32_t)-7;
+    return 0;
+}
+
+/* sceRtcGetDayOfWeek(year, month, day): 0 is Sunday. Measured on a PSP by PSPAutotests
+ * tests/rtc/lookup.expected (2ed7c9c5, checkDayOfWeek): 2010-04-27 is 2, and a day outside the
+ * month carries linearly (2000-01-00 is 5, 2000-01-2458 is 6, 2001-01-00 is 0, 2001-01-2458 is 1).
+ * A month of 0 or above 12 is measured only at seven exact triples, answered from that table; any
+ * other such month, and a year outside 1..9999, is not measured and stops the run by name. */
+static uint32_t h_RtcGetDayOfWeek(CpuState *s) {
+    (void)s;
+    uint32_t year = A0, month = A1, day = A2;
+    if (month < 1u || month > 12u) {
+        static const struct { uint32_t y, m, d, dow; } measured[] = {
+            { 166970016u, 1024u, 0u, 3u },
+            { 2000u, 0u, 0u, 1u }, { 2000u, 573u, 0u, 0u }, { 2000u, 4587u, 2458u, 0u },
+            { 2001u, 0u, 0u, 2u }, { 2001u, 573u, 0u, 1u }, { 2001u, 4587u, 2458u, 1u },
+        };
+        for (size_t i = 0; i < sizeof measured / sizeof measured[0]; i++)
+            if (measured[i].y == year && measured[i].m == month && measured[i].d == day) return measured[i].dow;
+        return hle_unmodelled_stop("sceRtcGetDayOfWeek", "with month %u (year %u, day %u) is not measured", month, year, day);
+    }
+    if (year < 1u || year > 9999u || day > 1000000u)
+        return hle_unmodelled_stop("sceRtcGetDayOfWeek", "with year %u, day %u is not measured", year, day);
+    /* 0001-01-01 is a Monday in the proleptic Gregorian calendar. */
+    RtcDateTime value = { year, month, 1u, 0u, 0u, 0u, 0u };
+    int64_t days = (int64_t)(rtc_datetime_to_tick(&value) / 86400000000ull) + (int64_t)day - 1;
+    return (uint32_t)((days + 1) % 7);
+}
 /* sceRtcGetTickResolution(void): ticks per second. The RTC tick is one microsecond, the unit every
  * tick conversion above uses (pspautotests rtc tests); uOFW src/kd/rtc/rtc.c (MIT) reconstructs
  * this function, marked as matching the firmware's assembly, as returning 1000000. */
@@ -412,5 +490,10 @@ void hle_register_time_rtc(void) {
 
 /* From hle_register_unregistered_import_batch(). */
 void hle_register_unregistered_import_rtc(void) {
+    sr_hle_register(0xf2a4afe5, "sceRtcTickAddSeconds", h_RtcTickAddSeconds);
+    sr_hle_register(0x26d25a5d, "sceRtcTickAddMicroseconds", h_RtcTickAddMicroseconds);
+    sr_hle_register(0xe51b4b7a, "sceRtcTickAddDays", h_RtcTickAddDays);
+    sr_hle_register(0x57726bc1, "sceRtcGetDayOfWeek", h_RtcGetDayOfWeek);
+    sr_hle_register(0x4b1b5e82, "sceRtcCheckValid", h_RtcCheckValid);
     sr_hle_register_unsupported(0x011f03c1u, "sceRtcGetAccumulativeTime", 0x80020002u);
 }

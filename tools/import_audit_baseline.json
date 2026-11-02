@@ -600,6 +600,12 @@
     "name": "__sceSasRevParam",
     "status": "unreviewed"
   },
+  "0x26d25a5d": {
+    "classification": "dedicated",
+    "handler": "h_RtcTickAddMicroseconds",
+    "name": "sceRtcTickAddMicroseconds",
+    "status": "partial"
+  },
   "0x278c0df5": {
     "classification": "dedicated",
     "handler": "h_WaitThreadEnd",
@@ -1108,6 +1114,12 @@
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
   },
+  "0x3ed62233": {
+    "classification": "dedicated",
+    "handler": "h_PsmfGetCurrentPts",
+    "name": "scePsmfPlayerGetCurrentPts",
+    "status": "partial"
+  },
   "0x3ee30821": {
     "classification": "dedicated",
     "handler": "h_DcacheRangeMaintenance",
@@ -1303,6 +1315,12 @@
     "name": "sceUtilityGamedataInstallUpdate",
     "status": "unreviewed"
   },
+  "0x4b1b5e82": {
+    "classification": "dedicated",
+    "handler": "h_RtcCheckValid",
+    "name": "sceRtcCheckValid",
+    "status": "partial"
+  },
   "0x4b85c861": {
     "classification": "fake_success",
     "handler": "h_OskUpdate",
@@ -1452,6 +1470,12 @@
     "classification": "dedicated",
     "handler": "h_RegCreateKey",
     "name": "sceRegCreateKey",
+    "status": "partial"
+  },
+  "0x57726bc1": {
+    "classification": "dedicated",
+    "handler": "h_RtcGetDayOfWeek",
+    "name": "sceRtcGetDayOfWeek",
     "status": "partial"
   },
   "0x57fcb733": {
@@ -3643,6 +3667,12 @@
     "name": "sceUtilityUnloadModule",
     "status": "partial"
   },
+  "0xe51b4b7a": {
+    "classification": "dedicated",
+    "handler": "h_RtcTickAddDays",
+    "name": "sceRtcTickAddDays",
+    "status": "partial"
+  },
   "0xe7282cb6": {
     "classification": "dedicated",
     "handler": "h_AllocateFplCB",
@@ -3837,6 +3867,12 @@
     "classification": "dedicated",
     "handler": "h_MpegAvcDecodeStopYCbCr",
     "name": "sceMpegAvcDecodeStopYCbCr",
+    "status": "partial"
+  },
+  "0xf2a4afe5": {
+    "classification": "dedicated",
+    "handler": "h_RtcTickAddSeconds",
+    "name": "sceRtcTickAddSeconds",
     "status": "partial"
   },
   "0xf3986382": {

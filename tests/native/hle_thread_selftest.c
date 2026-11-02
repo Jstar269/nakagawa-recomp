@@ -10740,6 +10740,171 @@ static void test_rtc_time_t_add_years_resolution_autotest(void) {
            "sceRtcTickAddYears stops by name on NULL pointers and on a source past year 9999");
 }
 
+/* sceRtcTickAddMicroseconds, sceRtcTickAddSeconds, sceRtcTickAddDays, sceRtcGetDayOfWeek and
+ * sceRtcCheckValid against PSPAutotests tests/rtc/{arithmetic,lookup}.expected (2ed7c9c5, recorded
+ * on a PSP). Each row is the autotest's own: the date goes to a tick through sceRtcGetTick, the
+ * count is added, and the result goes back through sceRtcSetTick. Before these handlers the five
+ * NIDs were unregistered imports that stopped 11 titles at launch. */
+enum {
+    RTCA_NID_ADD_MICROS = 0x26d25a5du, RTCA_NID_ADD_SECONDS = 0xf2a4afe5u, RTCA_NID_ADD_DAYS = 0xe51b4b7au,
+    RTCA_NID_DAY_OF_WEEK = 0x57726bc1u, RTCA_NID_CHECK_VALID = 0x4b1b5e82u,
+};
+
+static int rtca_dst_is(uint16_t y, uint16_t mo, uint16_t d, uint16_t h, uint16_t mi, uint16_t sec, uint32_t us) {
+    rtct_date(0u, 0u, 0u, 0u, 0u, 0u, 0u);
+    if (td24b_dispatch4(RTCT_NID_SET_TICK, RTCT_DATE, RTCT_DST, 0u, 0u) != 0u) return 0;
+    return MEM_R16(RTCT_DATE) == y && MEM_R16(RTCT_DATE + 2u) == mo && MEM_R16(RTCT_DATE + 4u) == d &&
+           MEM_R16(RTCT_DATE + 6u) == h && MEM_R16(RTCT_DATE + 8u) == mi &&
+           MEM_R16(RTCT_DATE + 10u) == sec && MEM_R32(RTCT_DATE + 12u) == us;
+}
+
+/* checkAddDateValue: the source date's tick, dest filled with 0x1337, then the add. */
+static uint32_t rtca_add(uint32_t nid, uint16_t y, uint16_t mo, uint16_t d, uint16_t h, uint16_t mi,
+                         uint16_t sec, uint32_t us, long long count) {
+    rtct_date(y, mo, d, h, mi, sec, us);
+    expect(td24b_dispatch4(RTCT_NID_GET_TICK, RTCT_DATE, RTCT_SRC, 0u, 0u) == 0u, "the source date converts");
+    MEM_W32(RTCT_DST, 0x1337u); MEM_W32(RTCT_DST + 4u, 0u);
+    uint32_t lo = (uint32_t)(uint64_t)count, hi = (uint32_t)((uint64_t)count >> 32);
+    if (nid == RTCA_NID_ADD_DAYS) hi = 0u;   /* a 32-bit int argument: the 64-bit row is truncated */
+    return td24b_dispatch4(nid, RTCT_DST, RTCT_SRC, lo, hi);
+}
+
+static uint32_t rtca_check_valid(uint16_t y, uint16_t mo, uint16_t d, uint16_t h, uint16_t mi, uint16_t sec,
+                                 uint32_t us) {
+    rtct_date(y, mo, d, h, mi, sec, us);
+    return td24b_dispatch4(RTCA_NID_CHECK_VALID, RTCT_DATE, 0u, 0u, 0u);
+}
+
+static void test_rtc_tick_add_day_of_week_check_valid_autotest(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(RTCA_NID_ADD_MICROS) && sr_hle_test_is_registered(RTCA_NID_ADD_SECONDS) &&
+               sr_hle_test_is_registered(RTCA_NID_ADD_DAYS) && sr_hle_test_is_registered(RTCA_NID_DAY_OF_WEEK) &&
+               sr_hle_test_is_registered(RTCA_NID_CHECK_VALID),
+           "the five sceRtc imports are registered");
+
+    /* arithmetic.expected checkRtcTickAddMicroseconds. */
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1970, 1, 1, 0, 0, 0, 445, -2000) == 0u &&
+               rtca_dst_is(1969, 12, 31, 23, 59, 59, 998445),
+           "1970-01-01 .000445 - 2000 microseconds is 1969-12-31 23:59:59.998445");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1970, 1, 1, 0, 0, 0, 445, 2000) == 0u &&
+               rtca_dst_is(1970, 1, 1, 0, 0, 0, 2445),
+           "1970-01-01 .000445 + 2000 microseconds is .002445");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1970, 1, 1, 0, 0, 0, 445, -62135596800000445LL) == 0u &&
+               rtca_dst_is(1, 1, 1, 0, 0, 0, 0),
+           "subtracting the whole tick reaches 0001-01-01");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1970, 1, 1, 0, 0, 0, 445, 62135596800000445LL) == 0u &&
+               rtca_dst_is(3939, 1, 1, 0, 0, 0, 890),
+           "adding the whole tick reaches 3939-01-01 .000890");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1, 1, 1, 0, 0, 0, 10, -10) == 0u && rtca_dst_is(1, 1, 1, 0, 0, 0, 0),
+           "0001-01-01 .000010 - 10 microseconds is 0001-01-01");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1, 1, 1, 0, 0, 0, 10, -11) == 0u &&
+               rtca_dst_is(60267, 1, 19, 8, 1, 49, 551615),
+           "one microsecond below year 1 returns 0 and wraps to year 60267");
+
+    /* arithmetic.expected checkRtcTickAddSeconds. */
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, -2000) == 0u &&
+               rtca_dst_is(1969, 12, 31, 23, 26, 40, 445),
+           "1970-01-01 - 2000 seconds is 1969-12-31 23:26:40");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, 2000) == 0u &&
+               rtca_dst_is(1970, 1, 1, 0, 33, 20, 445),
+           "1970-01-01 + 2000 seconds is 00:33:20");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, -62135596800000445LL) == 0u &&
+               rtca_dst_is(38202, 12, 23, 6, 23, 54, 394749),
+           "a huge negative second count wraps to year 38202");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, 62135596800000445LL) == 0u &&
+               rtca_dst_is(26003, 1, 28, 1, 37, 55, 157757),
+           "a huge positive second count wraps to year 26003");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1, 1, 1, 0, 0, 10, 0, -10) == 0u && rtca_dst_is(1, 1, 1, 0, 0, 0, 0),
+           "0001-01-01 00:00:10 - 10 seconds is 0001-01-01");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1, 1, 1, 0, 0, 10, 0, -11) == 0u &&
+               rtca_dst_is(60267, 1, 19, 8, 1, 48, 551616),
+           "one second below year 1 wraps to year 60267");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 9999, 12, 31, 23, 59, 50, 0, 9) == 0u &&
+               rtca_dst_is(9999, 12, 31, 23, 59, 59, 0),
+           "9999-12-31 23:59:50 + 9 seconds is 23:59:59");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 9999, 12, 31, 23, 59, 50, 0, 10) == 0u &&
+               rtca_dst_is(10000, 1, 1, 0, 0, 0, 0),
+           "9999-12-31 23:59:50 + 10 seconds reaches year 10000");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, -1) == 0u &&
+               rtca_dst_is(1969, 12, 31, 23, 59, 59, 445),
+           "1970-01-01 - 1 second is 1969-12-31 23:59:59");
+
+    /* arithmetic.expected checkRtcTickAddDays: the count is a 32-bit int. */
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, -2000) == 0u &&
+               rtca_dst_is(1964, 7, 11, 0, 0, 0, 445),
+           "1970-01-01 - 2000 days is 1964-07-11");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, 2000) == 0u &&
+               rtca_dst_is(1975, 6, 24, 0, 0, 0, 445),
+           "1970-01-01 + 2000 days is 1975-06-24");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, -62135596800000445LL) == 0u &&
+               rtca_dst_is(40053, 2, 10, 0, 0, 0, 445),
+           "a huge negative day count is truncated to an int and wraps to year 40053");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, 62135596800000445LL) == 0u &&
+               rtca_dst_is(24152, 12, 8, 8, 1, 49, 552061),
+           "a huge positive day count is truncated to an int and wraps to year 24152");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1, 1, 10, 0, 0, 0, 0, -9) == 0u && rtca_dst_is(1, 1, 1, 0, 0, 0, 0),
+           "0001-01-10 - 9 days is 0001-01-01");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1, 1, 10, 0, 0, 0, 0, -10) == 0u &&
+               rtca_dst_is(60267, 1, 18, 8, 1, 49, 551616),
+           "0001-01-10 - 10 days wraps to year 60267");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 9999, 12, 20, 0, 0, 0, 0, 11) == 0u &&
+               rtca_dst_is(9999, 12, 31, 0, 0, 0, 0),
+           "9999-12-20 + 11 days is 9999-12-31");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 9999, 12, 20, 0, 0, 0, 0, 12) == 0u &&
+               rtca_dst_is(10000, 1, 1, 0, 0, 0, 0),
+           "9999-12-20 + 12 days reaches year 10000");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, -1) == 0u &&
+               rtca_dst_is(1969, 12, 31, 0, 0, 0, 445),
+           "1970-01-01 - 1 day is 1969-12-31");
+
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(RTCA_NID_ADD_SECONDS, 0u, RTCT_SRC, 1u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_ADD_SECONDS, RTCT_DST, 0u, 1u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_ADD_MICROS, RTCT_DST, 0u, 1u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_ADD_DAYS, 0u, RTCT_SRC, 1u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 4u,
+           "the three tick adds stop by name on a NULL source or destination");
+
+    /* lookup.expected checkDayOfWeek: 0 is Sunday. */
+    static const struct { uint32_t y, m, d, dow; } dow[] = {
+        { 2010, 4, 27, 2 }, { 2000, 1, 0, 5 }, { 2000, 1, 2458, 6 }, { 2001, 1, 0, 0 }, { 2001, 1, 2458, 1 },
+        { 166970016, 1024, 0, 3 }, { 2000, 0, 0, 1 }, { 2000, 573, 0, 0 }, { 2000, 4587, 2458, 0 },
+        { 2001, 0, 0, 2 }, { 2001, 573, 0, 1 }, { 2001, 4587, 2458, 1 },
+    };
+    int dow_ok = 1;
+    for (size_t i = 0; i < sizeof dow / sizeof dow[0]; i++)
+        if (td24b_dispatch4(RTCA_NID_DAY_OF_WEEK, dow[i].y, dow[i].m, dow[i].d, 0u) != dow[i].dow) dow_ok = 0;
+    expect(dow_ok, "sceRtcGetDayOfWeek returns every row of lookup.expected");
+    stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(RTCA_NID_DAY_OF_WEEK, 2010u, 13u, 1u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_DAY_OF_WEEK, 0u, 4u, 27u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_DAY_OF_WEEK, 2010u, 4u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 3u,
+           "sceRtcGetDayOfWeek stops by name on a month and year pair, or a day, that was not measured");
+
+    /* lookup.expected checkRtcCheckValid and checkMaxYear. */
+    expect(rtca_check_valid(2012, 9, 20, 7, 0, 0, 0) == 0u, "2012-09-20 07:00:00 is valid");
+    expect(rtca_check_valid(9999, 12, 31, 23, 59, 59, 999999) == 0u, "the last microsecond of year 9999 is valid");
+    expect(rtca_check_valid(1, 1, 1, 0, 0, 0, 1) == 0u, "0001-01-01 .000001 is valid");
+    expect(rtca_check_valid(10000, 1, 1, 0, 0, 0, 1) == 0xffffffffu, "year 10000 is -1");
+    expect(rtca_check_valid((uint16_t)-98, 56, 100, 26, 61, 61, 100000000u) == 0xffffffffu,
+           "a date wrong in every field reports the year, -1");
+    expect(rtca_check_valid((uint16_t)-98, 9, 20, 7, 0, 0, 0) == 0xffffffffu, "an invalid year is -1");
+    expect(rtca_check_valid(2012, (uint16_t)-9, 20, 7, 0, 0, 0) == 0xfffffffeu, "an invalid month is -2");
+    expect(rtca_check_valid(2012, 9, (uint16_t)-20, 7, 0, 0, 0) == 0xfffffffdu, "an invalid day is -3");
+    expect(rtca_check_valid(2012, 9, 20, (uint16_t)-7, 0, 0, 0) == 0xfffffffcu, "an invalid hour is -4");
+    expect(rtca_check_valid(2012, 9, 20, 7, (uint16_t)-10, 10, 10) == 0xfffffffbu, "an invalid minute is -5");
+    expect(rtca_check_valid(2012, 9, 20, 7, 10, (uint16_t)-10, 10) == 0xfffffffau, "an invalid second is -6");
+    expect(rtca_check_valid(2012, 9, 20, 7, 10, 10, (uint32_t)-10) == 0xfffffff9u, "an invalid microsecond is -7");
+    stops = sr_hle_test_unmodelled_stops();
+    (void)rtca_check_valid(2012, 9, 0, 7, 0, 0, 0);
+    (void)rtca_check_valid(2013, 2, 29, 7, 0, 0, 0);
+    (void)td24b_dispatch4(RTCA_NID_CHECK_VALID, 0u, 0u, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 3u,
+           "sceRtcCheckValid stops by name on day 0, a day past the month length and a NULL pointer");
+}
+
 static void test_psp_measured_rtc_time64_20261024(void) {
     enum {
         NID_RTC_GET_TIME64 = 0xe1c93e47u,
@@ -43160,6 +43325,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_psp_measured_rtc_time64_20261024();
     test_power_set_bus_clock_frequency_autotest();
     test_rtc_time_t_add_years_resolution_autotest();
+    test_rtc_tick_add_day_of_week_check_valid_autotest();
     test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();
     test_ctrl_sampling_mode_cycle_matrix();

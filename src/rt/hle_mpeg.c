@@ -903,6 +903,26 @@ static uint32_t h_PsmfStatus(CpuState *s) {
     SrPsmfPlayer *p = psmf_find(A0, 0);
     return p ? p->status : PSMF_ERR_STATUS;
 }
+/* scePsmfPlayerGetCurrentPts(player, u32 *pts): the displaypts of the last picture the video getter
+ * delivered.  pspautotests video/psmfplayer/getcurrentpts.expected (recorded on a PSP, rev
+ * 2ed7c9c5): a player still INIT or deleted is 0x80616001; a player in STANDBY, or playing before
+ * its first picture, is 0x8061600c with the output untouched; once a picture was delivered it is 0
+ * and writes ONE 32-bit word, the low half of the 64-bit sentinel the test passed in (a first
+ * picture at 0 leaves "1337133700000000"), and a finished player reports its last picture (low
+ * word 0x8a90f = 567567 there).  The status check comes before the pointer check.  A NULL or
+ * unwritable pointer once a picture exists (the hardware run crashes there), and a player that
+ * returned to STANDBY after playing (Stop), are not measured and stop the run by name. */
+static uint32_t h_PsmfGetCurrentPts(CpuState *s) {
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status < PSMF_STATUS_STANDBY) return PSMF_ERR_STATUS;
+    if (!p->displayPtsValid) return PSMF_ERR_NO_DATA;
+    if (p->status == PSMF_STATUS_STANDBY)
+        return hle_unmodelled_stop("scePsmfPlayerGetCurrentPts", "on a player that returned to standby after a picture is not measured");
+    if (!A1 || !sr_guest_span_writable(A1, 4u))
+        return hle_unmodelled_stop("scePsmfPlayerGetCurrentPts", "with an unwritable output 0x%08x is not measured", A1);
+    MEM_W32(A1, (uint32_t)p->displayPts);
+    return 0;
+}
 /* scePsmfPlayerGetPsmfInfo(player, PsmfInfo *info, u32 *width, u32 *height).  PsmfInfo is five
  * words: lastFrameTs, numVideoStreams, numAudioStreams, numPcmStreams, playerVersion.  Checks and
  * their order follow PPSSPP Core/HLE/scePsmf.cpp (3f40ddc8): an unusable player or info address is
@@ -1243,6 +1263,7 @@ void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0xdf089680, "scePsmfPlayerGetPsmfInfo", h_PsmfGetPsmfInfo);
     sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
+    sr_hle_register(0x3ed62233, "scePsmfPlayerGetCurrentPts", h_PsmfGetCurrentPts);
 }
 
 /* Registration runs of the shared helpers in hle.c (#307). Each holds one run of this file's

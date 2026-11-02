@@ -8,9 +8,9 @@
 #define SR_HLE_EVIDENCE_H
 #include <stdint.h>
 
-#define SR_HLE_UNVERIFIED_NID_COUNT 224u
+#define SR_HLE_UNVERIFIED_NID_COUNT 230u
 /* Sorted ascending for binary search. */
-static const uint32_t sr_hle_unverified_nids[224] = {
+static const uint32_t sr_hle_unverified_nids[230] = {
     0x00061e74u,
     0x011f03c1u,
     0x0282a3bdu,
@@ -52,6 +52,7 @@ static const uint32_t sr_hle_unverified_nids[224] = {
     0x2255551eu,
     0x231fc6b7u,
     0x267a6dd2u,
+    0x26d25a5du,
     0x27c4594cu,
     0x27f6e642u,
     0x29681260u,
@@ -72,18 +73,21 @@ static const uint32_t sr_hle_unverified_nids[224] = {
     0x3aea8cb6u,
     0x3ea82a4bu,
     0x3eaba285u,
+    0x3ed62233u,
     0x3ee30821u,
     0x40f8f435u,
     0x42842c77u,
     0x46ebb729u,
     0x48293280u,
     0x4aa9ead6u,
+    0x4b1b5e82u,
     0x4b85c861u,
     0x4d4e10ecu,
     0x4da4c788u,
     0x52089ca1u,
     0x55f4717du,
     0x574b6fbcu,
+    0x57726bc1u,
     0x57fcb733u,
     0x5963991bu,
     0x5a014ce0u,
@@ -211,6 +215,7 @@ static const uint32_t sr_hle_unverified_nids[224] = {
     0xe26f226eu,
     0xe2d56b2du,
     0xe3eb004cu,
+    0xe51b4b7au,
     0xe792cd94u,
     0xe855bf76u,
     0xe95a012bu,
@@ -222,6 +227,7 @@ static const uint32_t sr_hle_unverified_nids[224] = {
     0xee232411u,
     0xf0a26395u,
     0xf16eaf4fu,
+    0xf2a4afe5u,
     0xf6107f00u,
     0xf64910f0u,
     0xf78ba90au,

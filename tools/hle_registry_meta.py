@@ -488,6 +488,14 @@ HANDLER_METADATA = {
         ],
         "limitation": "host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs are written only when the loaded libpsmfplayer module's exported module_sdk_version is 0x03090510 (a firmware-loaded player records no build); lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)",
     },
+    "h_PsmfGetCurrentPts": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/psmf_media_selftest.c:test_player_av_presentation_timing",
+            "PSPAutotests tests/video/psmfplayer/getcurrentpts.expected (2ed7c9c5, recorded on a PSP): Initial 0x80616001, Standby and Playing-before-a-picture 0x8061600c, then one 32-bit write of the last picture's pts",
+        ],
+        "limitation": "host HLE player; the pts is the displaypts of the last picture the video getter delivered, written as one 32-bit word; a NULL or unwritable output once a picture exists (the hardware run crashes) and a player back in standby after playing are not measured and stop the run by name",
+    },
     # The licensee key is recorded for sceNpDrmEdataSetupKey, which stays refused: no key
     # material ships with the project and nothing decrypts.
     "h_NpDrmSetLicenseeKey": {
@@ -1148,6 +1156,46 @@ HANDLER_METADATA = {
             "PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddYears",
         ],
         "limitation": "moves the calendar year with the leap day clamped to February 28, and a result outside years 1..9999 returns 0 with dest unwritten (pspautotests-recorded); a source tick past year 9999 and NULL or unmapped pointers are not measured and stop the run by name",
+    },
+    "h_RtcTickAddMicroseconds": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddMicroseconds",
+        ],
+        "limitation": "adds the 64-bit count modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name",
+    },
+    "h_RtcTickAddSeconds": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddSeconds",
+        ],
+        "limitation": "adds the 64-bit count times 1000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name",
+    },
+    "h_RtcTickAddDays": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/arithmetic.expected (2ed7c9c5, recorded on a PSP): checkRtcTickAddDays",
+        ],
+        "limitation": "adds the sign-extended 32-bit day count times 86400000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name",
+    },
+    "h_RtcGetDayOfWeek": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/lookup.expected (2ed7c9c5, recorded on a PSP): checkDayOfWeek",
+        ],
+        "limitation": "Sunday is 0; months 1..12 of years 1..9999 with the day carried linearly (the measured cells); a month of 0 or above 12 answers only the seven measured triples, and any other month, year or day outside those stops the run by name",
+    },
+    "h_RtcCheckValid": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/lookup.expected (2ed7c9c5, recorded on a PSP): checkRtcCheckValid and checkMaxYear",
+        ],
+        "limitation": "returns 0 or the first failing field as -1 year, -2 month, -3 day, -4 hour, -5 minute, -6 second, -7 microsecond (measured); a day of 0 or one from the month length to 31, and a NULL or unmapped pointer, are not measured and stop the run by name",
     },
     "h_RtcGetTickResolution": {
         "status": "complete",
