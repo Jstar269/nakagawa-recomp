@@ -344,18 +344,23 @@ int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int maxH, int st
     return sr_h264_frame_ex(id, eos, &target, NULL);
 }
 
+int sr_h264_end_stream(int id) {
+    SrH264Instance *instance = instance_for(id);
+    if (!instance || !instance->ps_demux || instance->ps_failed) return -1;
+    if (instance->ps_eos) return 0;
+    if (sr_psmf_producer_feed_stream(instance->ps_demux, NULL, 0, 1) < 0) {
+        instance->ps_failed = 1;
+        report_ps_failure(instance);
+        return -1;
+    }
+    instance->ps_eos = 1;
+    return pump_program_stream(instance);
+}
+
 int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
     SrH264Instance *instance = instance_for(id);
     if (!instance || !instance->ps_demux || instance->ps_failed) return -1;
-    if (eos && !instance->ps_eos) {
-        if (sr_psmf_producer_feed_stream(instance->ps_demux, NULL, 0, 1) < 0) {
-            instance->ps_failed = 1;
-            report_ps_failure(instance);
-            return -1;
-        }
-        instance->ps_eos = 1;
-        if (pump_program_stream(instance) < 0) return -1;
-    }
+    if (eos && sr_h264_end_stream(id) < 0) return -1;
     if (!instance->au_metadata_count) return 0;
     SrH264AuMetadata current = instance->au_metadata[instance->au_metadata_head++];
     instance->au_metadata_count--;

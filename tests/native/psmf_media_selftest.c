@@ -2186,6 +2186,7 @@ static void test_mpeg_ycbcr_guest_decode(void) {
     ctx->h264Init = 1;
     ctx->totalPackets = 1u;
     ctx->fedPackets = 1u;
+    ctx->streamEnded = 1;
     int ref = sr_h264_create();
     if (ctx->h264 < 0 || ref < 0) {
         fprintf(stderr, "SKIP: the YCbCr decode layout needs a real H.264 backend\n");
@@ -3907,6 +3908,99 @@ static void test_mpeg_avc_decode_detail(void) {
     CHECK(mpeg_delete(DD_DESC) == 0u, "decode-detail: the context is deleted");
 }
 
+/* A title that loops a movie goes on putting packets past the header's stream size, from the start
+ * of the file. The whole header's worth having been put ends nothing: pictures and audio frames
+ * keep coming from the next pass, and only a ring that runs dry with nothing following ends the
+ * stream. */
+static void test_mpeg_looped_stream_feeds_past_header_size(void) {
+    enum {
+        LP_DESC = 0x08600000u, LP_DATA = 0x08610000u, LP_RING = 0x08630000u, LP_HDR = 0x08640000u,
+        LP_AU = 0x08641000u, LP_ATTR = 0x08641100u, LP_OFF = 0x08641110u, LP_INIT = 0x08641120u,
+        LP_AAU = 0x08641200u, LP_PTR = 0x08641300u, LP_OUT = 0x08642000u,
+        LP_FRAME = 0x08680000u, LP_RING_DATA = 0x086c0000u,
+    };
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "mpeg-loop: the A/V container builds"); return; }
+    const uint32_t ps = size - 2048u;
+    const uint32_t packets = (ps + MPEG_PACKET_SIZE - 1u) / MPEG_PACKET_SIZE;
+    const uint32_t pad = packets * MPEG_PACKET_SIZE - ps;
+    CHECK(pad == 0u || pad >= 6u, "mpeg-loop: the tail is long enough for a padding packet");
+    if (LP_RING_DATA + 2u * packets * MPEG_PACKET_SIZE > 0x08000000u + ARENA_BYTES) {
+        CHECK(0, "mpeg-loop: both passes fit in the fixture arena");
+        free(image);
+        return;
+    }
+    for (uint32_t pass = 0; pass < 2u; pass++) {
+        uint32_t at = LP_RING_DATA + pass * packets * MPEG_PACKET_SIZE;
+        memcpy(SR_HOST(at), image + 2048u, ps);
+        if (pad >= 6u) {
+            uint8_t *tail = (uint8_t *)SR_HOST(at + ps);
+            tail[0] = 0x00; tail[1] = 0x00; tail[2] = 0x01; tail[3] = 0xbe;
+            tail[4] = (uint8_t)((pad - 6u) >> 8); tail[5] = (uint8_t)(pad - 6u);
+            memset(tail + 6, 0xff, pad - 6u);
+        }
+    }
+    memcpy(SR_HOST(LP_HDR), image, 2048u);
+    memcpy(SR_HOST(LP_HDR + 4u), "0015", 4u);
+    be32_at((uint8_t *)SR_HOST(LP_HDR + 12u), packets * MPEG_PACKET_SIZE);
+    MEM_W32(LP_DESC, 0u);
+    CHECK(mpeg_ringbuffer_construct(LP_RING, 2u * packets, LP_RING_DATA,
+                                    2u * packets * MPEG_RING_BYTES_PER_PKT, 0u, 0u) == 0u &&
+              mpeg_create(LP_DESC, LP_DATA, 0x10000u, LP_RING, 512u, 0u, 0u) == 0u &&
+              mpeg_query_stream_offset(LP_DESC, LP_HDR, LP_OFF) == 0u,
+          "mpeg-loop: the ring, the context and the header are set up");
+    uint32_t avc = mpeg_regist_stream(LP_DESC, MPEG_AVC_STREAM, 0u);
+    uint32_t atrac = mpeg_regist_stream(LP_DESC, MPEG_ATRAC_STREAM, 0u);
+    Mpeg *ctx = mpeg_find(LP_DESC);
+    CHECK(ctx && ctx->totalPackets == packets, "mpeg-loop: the header counts one pass");
+    CHECK(mpeg_ringbuffer_put(NULL, LP_RING, packets, packets) == packets,
+          "mpeg-loop: the first pass is put into the ring");
+    if (!ctx || ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: the looped sceMpeg stream needs a real H.264 backend\n");
+        mpeg_finish();
+        free(image);
+        return;
+    }
+    /* The game is decoding when the file's last packet goes in, then wraps to its start. */
+    int pictures = 0, blocks = 0;
+    MEM_W32(LP_PTR, LP_FRAME);
+    CHECK(mpeg_get_avc_au(LP_DESC, avc, LP_AU, LP_ATTR) == 0u,
+          "mpeg-loop: the first access unit comes out with the whole pass in the ring");
+    MEM_W32(LP_INIT, 0u);
+    CHECK(mpeg_avc_decode(LP_DESC, LP_AU, 512u, LP_PTR, LP_INIT) == 0u,
+          "mpeg-loop: the first access unit decodes");
+    pictures += MEM_R32(LP_INIT) == 1u;
+    CHECK(mpeg_get_atrac_au(LP_DESC, atrac, LP_AAU, LP_ATTR) == 0u &&
+              mpeg_atrac_decode(LP_DESC, LP_AAU, LP_OUT, 1u) == 0u,
+          "mpeg-loop: the first audio frame comes out with the whole pass in the ring");
+    blocks++;
+    CHECK(mpeg_ringbuffer_put(NULL, LP_RING, packets, packets) == packets,
+          "mpeg-loop: the second pass is put past the header's stream size");
+    CHECK(!ctx->h264DemuxFailed, "mpeg-loop: packets past the header's size are not a demux failure");
+    for (int guard = 0; guard < 4 * AV_PICTURES; guard++) {
+        uint32_t r = mpeg_get_avc_au(LP_DESC, avc, LP_AU, LP_ATTR);
+        if (r) {
+            CHECK(r == SCE_MPEG_ERROR_NO_DATA, "mpeg-loop: GetAvcAu ends with no data");
+            break;
+        }
+        MEM_W32(LP_INIT, 0u);
+        CHECK(mpeg_avc_decode(LP_DESC, LP_AU, 512u, LP_PTR, LP_INIT) == 0u,
+              "mpeg-loop: every access unit decodes");
+        pictures += MEM_R32(LP_INIT) == 1u;
+    }
+    CHECK(pictures == 2 * AV_PICTURES, "mpeg-loop: every picture of both passes comes out");
+    for (int guard = 0; guard < 4 * AV_AUDIO_BLOCKS; guard++) {
+        if (mpeg_get_atrac_au(LP_DESC, atrac, LP_AAU, LP_ATTR)) break;
+        if (mpeg_atrac_decode(LP_DESC, LP_AAU, LP_OUT, 0u)) break;
+        blocks++;
+    }
+    CHECK(blocks == 2 * AV_AUDIO_BLOCKS, "mpeg-loop: every audio frame of both passes comes out");
+    CHECK(ctx->videoEnd, "mpeg-loop: the ring running dry with nothing following ends the video");
+    mpeg_finish();
+    free(image);
+}
+
 /* The sceMpeg ATRAC path a guest PSMF player drives (#286): the registered ATRAC3+ stream is
  * demultiplexed from the ring packets, GetAtracAu hands out one frame per call, and AtracDecode
  * writes exactly what the ATRAC3+ decoder produces for that frame.  Before any data, and after
@@ -4076,8 +4170,7 @@ static void test_mpeg_csc_presentation_boundary(int copy_planes) {
     ctx->streamHeight = height;
     ctx->h264 = sr_h264_create();
     ctx->h264Init = 1;
-    ctx->totalPackets = 1u;
-    ctx->fedPackets = 1u;
+    ctx->streamEnded = 1;
     CHECK(ctx->h264 >= 0 && sr_h264_submit_au(ctx->h264, es + au_off[0], au_len[0]) == 0,
           "sceMpeg presentation picture reaches the decoder");
     memset(SR_HOST(PC_AU), 0, 24u);
@@ -4231,6 +4324,7 @@ int main(int argc, char **argv) {
     test_mpeg_csc_presentation_boundary(1);
     test_mpeg_av_audio_followed_by_content();
     test_mpeg_atrac_au_decode();
+    test_mpeg_looped_stream_feeds_past_header_size();
     test_mpeg_avc_decode_detail();
     test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
