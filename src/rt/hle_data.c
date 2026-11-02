@@ -1985,6 +1985,25 @@ static uint32_t io_open_exclusive_existing(const char *path) {
     return 0x80010011u;
 }
 
+/* PSP_O_TRUNC does not erase data on a PSP: the descriptor sees an empty file, but a game that
+ * seeks and writes still has the bytes it did not overwrite. PPSSPP says so of the PSP in
+ * Core/FileSystems/DirectoryFileSystem.cpp (DirectoryFileHandle::Open) and truncates at close
+ * instead. The descriptor's size starts at 0 and grows with its writes, which is where the host
+ * file ends. A game that installs a file in chunks reopens it with PSP_O_TRUNC for each chunk,
+ * seeks to the chunk and writes it, so truncating at open leaves only the last chunk. */
+void io_truncate_at_close(Fd *f) {
+    if (!f->truncate_at_close || !f->host) return;
+    f->truncate_at_close = 0;
+    fflush(f->host);
+#ifdef _WIN32
+    const int failed = _chsize_s(_fileno(f->host), (__int64)f->size) != 0;
+#else
+    const int failed = ftruncate(fileno(f->host), (off_t)f->size) != 0;
+#endif
+    if (failed)
+        fprintf(stderr, "sceIoClose: host truncate of %s failed\n", f->guest_path);
+}
+
 /* Host-serve a guest file from the extracted-XB data root (SR_DATAROOT).
  *
  * This is the long-term groundwork for the text-loader (.to) fix and any other
@@ -2069,7 +2088,10 @@ static uint32_t h_io_open_path_stock(const char *path, uint32_t flags, int force
          * and TRUNC or APPEND change it; with CREAT | EXCL only a new file opens (#1380). */
         char *hp = host_path_alloc(path);
         const wchar_t *mode;
-        if (flags & 0x0400) mode = L"w+b";            /* TRUNC */
+        /* PSP_O_TRUNC keeps the host bytes until close (io_truncate_at_close). */
+        const int truncate_at_close = (flags & 0x0400) && writing && !exclusive &&
+                                      !(flags & 0x0100);
+        if ((flags & 0x0400) && !truncate_at_close) mode = L"w+b";  /* TRUNC */
         else if (flags & 0x0100) mode = L"a+b";       /* APPEND */
         else if (writing || creating) mode = L"r+b"; /* update; CREAT falls back to create below */
         else mode = L"rb";                           /* read-only host file (e.g. a prior save) */
@@ -2203,8 +2225,9 @@ static uint32_t h_io_open_path_stock(const char *path, uint32_t flags, int force
             return 0x80010005;
         }
         s_fds[slot].used = 1; s_fds[slot].host = fp; s_fds[slot].lba = 0;
-        s_fds[slot].size = host_size; s_fds[slot].off = 0;
+        s_fds[slot].size = truncate_at_close ? 0u : host_size; s_fds[slot].off = 0;
         s_fds[slot].writable = writing || creating;
+        s_fds[slot].truncate_at_close = (uint8_t)truncate_at_close;
         return (uint32_t)slot;
     }
 from_iso:

@@ -757,6 +757,7 @@ typedef struct {
     uint32_t lba, size, off;
     int64_t async_res;
     int writable;
+    uint8_t truncate_at_close;   /* PSP_O_TRUNC reaches the host file at close, to size */
     int flash0;                  /* 1 = served by the read-only flash0: font device */
     IoAsyncRequest async;
     FILE *host;
@@ -1628,11 +1629,13 @@ static inline int rtc_write_u64(uint32_t addr, uint64_t value) {
  * closed standard descriptor keeps its kind (so ordinary allocation can never
  * take the slot), while a closed ordinary file becomes fully unused and is
  * eligible for reuse. */
+void io_truncate_at_close(Fd *f);
 static inline void hle_fd_release(Fd *f, int preserve_std_kind) {
     if (!f) return;
     FdKind kind = f->kind;
     uint8_t std_stream = f->std_stream;
     if (f->pgd) sr_pgd_free(f->pgd);
+    io_truncate_at_close(f);
     if (f->host) fclose(f->host);
     memset(f, 0, sizeof(*f));
     if (preserve_std_kind && kind == FD_KIND_STD) {
