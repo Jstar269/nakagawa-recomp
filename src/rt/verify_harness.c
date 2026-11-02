@@ -27,6 +27,8 @@
 #include "nested_frames.h"
 #include "verify.h"
 
+#ifdef SR_VERIFY   /* a verify build only; the strict compile of the default build sees nothing */
+
 #include <errno.h>
 #include <inttypes.h>
 #include <stdatomic.h>
@@ -110,8 +112,8 @@ static int main_stack_remaining(size_t *remaining) {
     return 1;
 }
 
-#define DATA_ADDR 0x09000000u
-#define STACK_TOP 0x09100000u
+#define DATA_ADDR (SR_RAM_BASE + 0x01000000u)   /* a data block 16 MiB into RAM */
+#define STACK_TOP (SR_RAM_BASE + 0x01100000u)   /* the stack region above it */
 #define MAX_CALLS 64u
 
 typedef struct {
@@ -245,3 +247,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "verify_harness: %u call spec(s) done, %u yield(s)\n", ncalls, s_yields);
     return 0;
 }
+
+#else
+typedef int nk_verify_harness_is_verify_build_only;
+#endif /* SR_VERIFY */
