@@ -952,6 +952,14 @@ jobs:
         if: matrix.part == 'translation'
         run: make CC=gcc -j4 sched-selftest
 
+      # Nightly only (#1846): rerun the binaries the two steps above built, 20 times each
+      # (SELFTEST_REPEAT), stopping at the first failure and naming its iteration. A rare
+      # ordering bug in the scheduler or the thread HLE can pass the single run for weeks;
+      # pull requests keep the single run, so their time is unchanged.
+      - name: Repeat the scheduler and HLE thread selftests until one fails (nightly)
+        if: matrix.part == 'translation' && github.event_name == 'schedule'
+        run: make CC=gcc selftest-repeat
+
       - name: Run Linux dispatch isolation selftest matrix
         if: matrix.part == 'translation'
         run: make CC=gcc -j4 dispatch-isolation-selftest
