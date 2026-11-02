@@ -1724,6 +1724,28 @@ _register_campaign_probe(
         "src-final-cleanup": 0, "out2-final-cleanup": 0,
     },
 )
+# hle-savedata-getsize (#308): each dialog cell carries InitStart's return as its result and 24
+# words (eight driver words, the bind word and the 15 sizeInfo words); each save-absent cell
+# carries sceIoGetstat's return and st_mode; volatile-lock-before carries TryLock's return, the
+# Unlock return and the size. Every word is an observation.
+_HLE_SAVEDATA_GETSIZE_DIALOG_CASES = (
+    "getsize-missing-secure", "getsize-missing-empty", "getsize-missing-null",
+)
+_HLE_SAVEDATA_GETSIZE_ABSENT_CASES = (
+    "save-absent-before", "save-absent-after-secure", "save-absent-after-empty",
+    "save-absent-after-null",
+)
+_register_campaign_probe(
+    "hle-savedata-getsize", "PSP-HLE-SAVEDATA-GETSIZE-001",
+    ("save-absent-before", "volatile-lock-before", "getsize-missing-secure",
+     "save-absent-after-secure", "getsize-missing-empty", "save-absent-after-empty",
+     "getsize-missing-null", "save-absent-after-null"),
+    {
+        **{case_id: 24 for case_id in _HLE_SAVEDATA_GETSIZE_DIALOG_CASES},
+        **{case_id: 1 for case_id in _HLE_SAVEDATA_GETSIZE_ABSENT_CASES},
+        "volatile-lock-before": 2,
+    },
+)
 _HLE_TIMER_ORDER_CASES = (
     "alarm-same-delay-set", "alarm-same-delay-a", "alarm-same-delay-b",
     "alarm-long-then-short-set", "alarm-long-event", "alarm-short-event",
@@ -2380,7 +2402,7 @@ def validate_hle_edram_restore(text: str) -> None:
 #: completed and SKIP when the object it needs was not obtained, and never FAIL.
 HLE_MACHINERY_STATUS_CASES = frozenset({
     "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-pool-bounds", "hle-power-float-v0",
-    "hle-null-out-pointers", "hle-audio-src", "hle-timer-order",
+    "hle-null-out-pointers", "hle-audio-src", "hle-timer-order", "hle-savedata-getsize",
 })
 VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
 #: Cases whose every cell is an unconditional observation: each record is PASS.

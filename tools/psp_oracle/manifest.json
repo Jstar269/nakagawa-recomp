@@ -1304,6 +1304,56 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-HLE-SAVEDATA-GETSIZE-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware capture exists. It is built from fixtures/psp_oracle/probe_hle_measure.c as hle_savedata_getsize.prx and its stream is strictly parsed (8 records and the done record).",
+        "group": "system",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_savedata_getsize.prx",
+        "apis": [
+          "sceDisplayWaitVblankStart",
+          "sceIoClose",
+          "sceIoGetstat",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDelayThread",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelVolatileMemTryLock",
+          "sceKernelVolatileMemUnlock",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "sceUtilitySavedataGetStatus",
+          "sceUtilitySavedataInitStart",
+          "sceUtilitySavedataShutdownStart",
+          "sceUtilitySavedataUpdate"
+        ],
+        "diagnostic_case_ids": [
+          "hle-savedata-getsize"
+        ],
+        "case_ids": [
+          "save-absent-before",
+          "volatile-lock-before",
+          "getsize-missing-secure",
+          "save-absent-after-secure",
+          "getsize-missing-empty",
+          "save-absent-after-empty",
+          "getsize-missing-null",
+          "save-absent-after-null",
+          "hle-savedata-getsize-done"
+        ],
+        "invariant": "Savedata mode 22 under the probe-owned names NKPROBE01 and GETSIZE, which no save uses: InitStart, then GetStatus once a vblank, Update(1) while RUNNING and ShutdownStart on FINISHED, at most 1200 polls. It records InitStart's return, the common result word, the bind word, the status sequence and the 15 sizeInfo words, for one secure entry, no entries and a NULL sizeInfo, and sceIoGetstat of the save directory before and after each dialog.",
+        "issues": [
+          308
+        ],
+        "risk": "medium; read-only on the Memory Stick; a NULL sizeInfo cell runs last because a NULL out pointer can fault in kernel mode; game context only",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-HLE-ISSUES-001",
         "status": "implemented",
         "hardware_evidence": "NOT_RUN",

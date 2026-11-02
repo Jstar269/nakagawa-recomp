@@ -204,6 +204,8 @@ else ifeq ($(CASE),hle-audio-src)
 CASE_ID = 102
 else ifeq ($(CASE),hle-timer-order)
 CASE_ID = 103
+else ifeq ($(CASE),hle-savedata-getsize)
+CASE_ID = 104
 # 106-108: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
 # #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells; 108 the
 # #326 VFPU form words (vh2f, vuc2i, vsocp, vwbn, vrndf1/2).
@@ -489,6 +491,9 @@ OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),hle-timer-order)
 TARGET = $(BUILD_DIR)/hle_timer_order
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-savedata-getsize)
+TARGET = $(BUILD_DIR)/hle_savedata_getsize
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_utility_imports.o
 # HLE issue cells: their own source, which installs and removes interrupt and timer
 # handlers (107) and reaches a kernel getter through the kernel bridge (106), so they
 # stay out of probe_hle_measure.c. Same ThreadManForUser block and module lifecycle.
@@ -666,6 +671,16 @@ USER_MODE_IMPORT_GATE_ARGS += --exact-library KUBridge=0x9060F69D
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceDisplay=0x984C27E7,0x9C6EAAD7
 USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library SystemCtrlForUser
+endif
+# hle_utility_imports.S declares the two system-parameter Get calls (the CRT's timezone
+# setup calls the Int one in every PRX) and, for hle-savedata-getsize (case 104) only, the
+# four savedata dialog calls. Each build is pinned to exactly its own sceUtility set, so
+# hle-sysparam cannot import a savedata call and neither can import a Set call.
+ifeq ($(CASE),hle-sysparam)
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343
+endif
+ifeq ($(CASE),hle-savedata-getsize)
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343,0x50C4CD57,0x8874DBE0,0xD4B95FFB,0x9790B33C
 endif
 ifeq ($(CASE),cpu-timing)
 # The shared probe cleanup checks interrupt state; cpu-timing also calls the
