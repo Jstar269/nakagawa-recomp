@@ -823,7 +823,7 @@ class HlePsmfPlayerBackendLinkDependencyTests(unittest.TestCase):
             "$(BUILD_DIR)/h264_null.o,$(RT_OBJS)",
         )
         filtered_offenders = _hle_link_h264_offenders(filtered_regression)
-        self.assertEqual(len(filtered_offenders), 2, "both PSMF media links must be guarded")
+        self.assertEqual(len(filtered_offenders), 3, "all three PSMF media links must be guarded")
 
 
 NESTED_FRAMES_C = "src/rt/nested_frames.c"
