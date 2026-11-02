@@ -1158,6 +1158,7 @@ PUBLIC_TARGETS := \
 	fp-convert-selftest \
 	ge-float24-selftest \
 	ge-cpu-profile-validate-selftest \
+	ge-flight-overhead \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
 	ge-raster-ref-selftest \
