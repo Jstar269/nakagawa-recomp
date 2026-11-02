@@ -633,6 +633,14 @@ HANDLER_METADATA = {
         ],
         "limitation": "moves the modeled drive to the measured deactivated state 0x12 and notifies the callback with that state, as PPSSPP does; the callback argument, the return value (0) and argument checks are not hardware measured",
     },
+    "h_UmdCancelWaitDriveStat": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_umd_cancel_wait_drive_stat",
+            "PPSSPP sceUmd.cpp sceUmdCancelWaitDriveStat (c9e2afb6): every drive waiter resumes with SCE_KERNEL_ERROR_WAIT_CANCEL and the call returns 0",
+        ],
+        "limitation": "the results follow PPSSPP and are host-selftested, not hardware measured; a stronger waiter runs at once, as after sceKernelCancelSema, which PPSSPP does not do and no measurement settles (#341)",
+    },
     "h_UmdUnRegisterUMDCallBack": {
         "status": "partial",
         "limitation": "clears the single modeled UMD callback registration; unknown IDs return 0x800201a1 (the kernel callback UNKNOWN_UID code), a project choice because PSPSDK documents only a negative error and the exact code is not hardware measured",

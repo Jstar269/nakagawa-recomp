@@ -84,7 +84,9 @@ uint32_t h_PowerGetCpuClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_cpu_
 uint32_t h_PowerGetBusClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_bus_freq; return 0; }
 
 /* scePowerSetClockFrequency(pllfreq, cpufreq, busfreq): retain the requested
- * PLL, CPU and bus clocks. Same public references as the retained state above. */
+ * PLL, CPU and bus clocks. Same public references as the retained state above.
+ * scePowerSetClockFrequency630 (0x469989ad) shares this handler: PPSSPP
+ * Core/HLE/scePower.cpp (c9e2afb6) routes it to the same function. */
 uint32_t h_PowerSetClockFrequency(CpuState *s) {
     s_pll_freq = A0;
     s_cpu_freq = A1;
@@ -245,6 +247,7 @@ void sr_hle_power_register_clock(void) {
     sr_hle_register(0x9badb3eb, "scePowerGetBusClockFrequencyFloat", h_PowerGetBusClockFrequencyFloat);
     sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
     sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
+    sr_hle_register(0x469989ad, "scePowerSetClockFrequency630", h_PowerSetClockFrequency);
     sr_hle_register(0x843fbf43, "scePowerSetCpuClockFrequency", h_PowerSetCpuClockFrequency);
     sr_hle_register(0xb8d7b3fb, "scePowerSetBusClockFrequency", h_PowerSetBusClockFrequency);
     /* Battery state query, in the shared helper so the executable harness registers it too. */
@@ -294,12 +297,4 @@ static uint32_t h_PowerCheckWlanCoexistenceClock(CpuState *s) {
 
 void hle_register_power_coexistence_handlers(void) {
     sr_hle_register(0xa85880d0u, "scePowerCheckWlanCoexistenceClock", h_PowerCheckWlanCoexistenceClock);
-}
-
-/* Registration runs of the shared helpers in hle.c (#307). Each holds one run of this file's
- * registrations, in their order, and is called from the helper where the run stood. */
-
-/* From hle_register_unregistered_import_batch(). */
-void hle_register_unregistered_import_power(void) {
-    sr_hle_register_unsupported(0x469989adu, "scePower_469989ad", 0x80020002u);
 }

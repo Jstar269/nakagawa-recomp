@@ -1219,11 +1219,10 @@
     "status": "unreviewed"
   },
   "0x469989ad": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
-    "name": "scePower_469989ad",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "classification": "dedicated",
+    "handler": "h_PowerSetClockFrequency",
+    "name": "scePowerSetClockFrequency630",
+    "status": "unreviewed"
   },
   "0x46ebb729": {
     "classification": "dedicated",
@@ -1755,11 +1754,10 @@
     "status": "unreviewed"
   },
   "0x6af9b50a": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_UmdCancelWaitDriveStat",
     "name": "sceUmdCancelWaitDriveStat",
-    "refusal_error": "0x80010086",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x6b30100f": {
     "classification": "dedicated",

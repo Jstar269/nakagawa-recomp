@@ -4015,10 +4015,6 @@ static void hle_register_launch_sweep_blocker_handlers(void) {
 static void hle_register_unregistered_import_batch(void) {
     hle_register_unregistered_import_kernel_time_1();
     hle_register_unregistered_import_kernel_thread_1();
-    /* scePower_469989ad (0x469989ad) has no public name in the sources this project may consult, so
-     * it is refused under its synthetic name rather than given a guessed one. Its contract needs a
-     * named source and a probe before it can be modelled. */
-    hle_register_unregistered_import_power();
     /* sceKernelReferSystemStatus: measured for the bytes written and the size field; see h_ReferSystemStatus. */
     hle_register_unregistered_import_kernel_thread_2();
     /* VTimer lifecycle and query surface (measured; see the VTimer block above). */
@@ -4218,7 +4214,6 @@ void sr_hle_init(void) {
     hle_register_psmf_player_handlers();
     /* sceLibFont: synchronized handles backed by parsed firmware/user PGFs. */
     hle_register_font_handlers();
-    hle_register_init_umd();
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
     hle_register_kernel_module_handlers();
     /* IoFileMgrForUser: file IO from the ISO. */

@@ -116,8 +116,8 @@ class ShippedTableTest(unittest.TestCase):
         counts = self.report["counts"]
         self.assertEqual(self.report["total"], 1615)
         self.assertEqual(counts["verified"], 1463)
-        self.assertEqual(counts["library-attributed-unknown-name"], 54)
-        self.assertEqual(counts["editorial-alias"], 10)
+        self.assertEqual(counts["library-attributed-unknown-name"], 53)
+        self.assertEqual(counts["editorial-alias"], 11)
         self.assertEqual(counts["unresolved"], 88)
 
     def test_no_sentinels_remain_in_the_shipped_table(self) -> None:

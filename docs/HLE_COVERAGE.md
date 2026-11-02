@@ -24,10 +24,10 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 16 |
-| `ppsspp-derived` | 111 | 90 |
+| `ppsspp-derived` | 114 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 334 | 200 |
-| `unverified` | 152 | 57 |
+| `synthetic` | 332 | 200 |
+| `unverified` | 151 | 57 |
 | total | 661 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -256,7 +256,7 @@ belongs to without the census's own grouping.
 | `0x446d8de6` | `sceKernelCreateThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x44e07129` | `sceMp3Init` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x4571cc64` | `sceMpegAvcDecodeFlush` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0x469989ad` | `scePower_469989ad` | power | `synthetic` | HLE selftest dispatch |
+| `0x469989ad` | `scePowerSetClockFrequency630` | power | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x46ebb729` | `sceUmdCheckMedium` | umd | `synthetic` | HLE selftest dispatch; note |
 | `0x46f186c3` | `sceDisplayWaitVblankStartCB` | display | `synthetic` | HLE selftest dispatch |
 | `0x46f61f8b` | `scePsmfPlayerGetVideoData` | mpeg | `synthetic` | HLE selftest dispatch |
@@ -344,7 +344,7 @@ belongs to without the census's own grouping.
 | `0x6a638d83` | `sceIoRead` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0x6a8c3cd5` | `sceAtracDecodeData` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x6ad345d7` | `sceKernelSetGPO` | kernel_utils | `synthetic` | HLE selftest dispatch |
-| `0x6af9b50a` | `sceUmdCancelWaitDriveStat` | umd | `unverified` | no recorded evidence |
+| `0x6af9b50a` | `sceUmdCancelWaitDriveStat` | umd | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
 | `0x6b30100f` | `sceKernelUnlockMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x6b4a146c` | `sceUmdGetDriveStat` | umd | `synthetic` | HLE selftest dispatch; note |
 | `0x6d212bac` | `sceKernelWaitSemaCB` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch |
@@ -361,7 +361,7 @@ belongs to without the census's own grouping.
 | `0x72189c48` | `sceImposeSetUMDPopup` | utility | `unverified` | no recorded evidence |
 | `0x730ed8bc` | `sceKernelReferCallbackStatus` | kernel_thread | `unverified` | no recorded evidence |
 | `0x732b042a` | `sceMp3EndEntry` | audio_codec | `unverified` | no recorded evidence |
-| `0x737486f2` | `scePowerSetClockFrequency` | power | `synthetic` | HLE selftest dispatch |
+| `0x737486f2` | `scePowerSetClockFrequency` | power | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x740fccd1` | `sceMpegAvcDecodeStop` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x74829b76` | `sceKernelReceiveMsgPipe` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x748cbed9` | `sceKernelQueryModuleInfo` | kernel_module | `synthetic` | HLE selftest dispatch |

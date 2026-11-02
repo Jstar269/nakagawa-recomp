@@ -403,6 +403,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_KERNEL_RELEASE_SUBINTR 0xd61e6961u
 #define NID_SCE_POWER_SET_CLOCK 0x737486f2u
 #define NID_SCE_POWER_SET_CLOCK_350 0xebd177d6u
+#define NID_SCE_POWER_SET_CLOCK_630 0x469989adu
 #define NID_SCE_POWER_GET_PLL_INT 0x34f9c463u
 #define NID_SCE_POWER_GET_CPU_INT 0xfdb5bfe9u
 #define NID_SCE_POWER_GET_BUS_INT 0x478fe6f5u
@@ -6381,13 +6382,11 @@ static void test_sysreg_write_model(void) {
  * writes nothing, and values equal to their defaults are not recorded. */
 /* Named refusals for NIDs whose contract is not established from the sources in this tree.
  * Each one returns its named error and does not stop the title, so the run continues past it:
- *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086);
- *  - scePower_469989ad (0x469989ad): no public name, refused under its synthetic name.
+ *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086).
  * The test pins the codes, so a later measured handler has to replace them deliberately.
  * sceKernelReferSystemStatus is no longer refused: it is measured (test_refer_system_status). */
 #define NID_REFUSE_NET_INIT                0x39af39a6u
 #define NID_REFUSE_NET_TERM                0x281928a9u
-#define NID_REFUSE_POWER_469989AD          0x469989adu
 #define REFUSE_NET_CODE                    0x80010086u
 #define REFUSE_UNSUPPORTED_CODE            0x80020002u
 
@@ -6407,8 +6406,6 @@ static void test_named_refusals(void) {
            "sceNetInit refuses with the offline network code 0x80010086");
     expect(refuse_call(NID_REFUSE_NET_TERM) == REFUSE_NET_CODE,
            "sceNetTerm has a named offline refusal instead of the unknown-NID stop");
-    expect(refuse_call(NID_REFUSE_POWER_469989AD) == REFUSE_UNSUPPORTED_CODE,
-           "scePower_469989ad is a named refusal (0x80020002), not a guessed handler");
     expect(refuse_call(0xf9d8eb63u) == REFUSE_NET_CODE,
            "sceHttpsEnd refuses with the offline HTTP code 0x80010086, as sceHttpEnd does");
     expect(refuse_call(0x011f03c1u) == REFUSE_UNSUPPORTED_CODE,
@@ -15950,6 +15947,139 @@ static void test_wake_result_is_per_thread(void) {
     s_cur = -1;
 }
 
+/* sceUmdCancelWaitDriveStat: PPSSPP Core/HLE/sceUmd.cpp (c9e2afb6) resumes every thread waiting
+ * on the drive with SCE_KERNEL_ERROR_WAIT_CANCEL and returns 0. Each of the three drive waits
+ * runs on its own coroutine, blocked for READY on a deactivated drive; the fixture thread plays
+ * the caller. The result is read from what the guest's wait returned, not from the scheduler. */
+#define UCW_NID_CANCEL 0x6af9b50au
+#define UCW_NID_ACTIVATE 0xc6183d47u
+#define UCW_NID_DEACTIVATE 0xe83742bau
+#define UCW_NID_GET_DRIVE_STAT 0x6b4a146cu
+#define UCW_READY 0x20u
+#define UCW_WAITS 3
+
+static const uint32_t s_ucw_wait_nids[UCW_WAITS] = {
+    0x8ef08fceu, /* sceUmdWaitDriveStat */
+    0x56202973u, /* sceUmdWaitDriveStatWithTimer */
+    0x4a9e5e29u, /* sceUmdWaitDriveStatCB */
+};
+static uint32_t s_ucw_ret[UCW_WAITS];
+static int s_ucw_returned[UCW_WAITS];
+
+static void ucw_waiter_body(void *arg) {
+    size_t which = (size_t)(uintptr_t)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = UCW_READY; cpu.r[5] = 1000000u;
+    s_ucw_ret[which] = sr_syscall(&cpu, s_ucw_wait_nids[which]);
+    s_ucw_returned[which] = 1;
+    selftest_park_on_scheduler();
+}
+
+/* Blocks wait `which` on the drive and leaves the fixture thread current. */
+static TCB *ucw_block(TCB *main_t, size_t which, uint32_t uid) {
+    s_ucw_ret[which] = 0xFFFFFFFFu;
+    s_ucw_returned[which] = 0;
+    TCB *waiter = fixture_thread(uid, TH_READY, 16);
+    waiter->started = 1;
+    waiter->coro = sr_coro_create(ucw_waiter_body, (void *)(uintptr_t)which, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "UMD cancel fixture: waiter coroutine created");
+    if (!waiter->coro) return NULL;
+    s_cur = (int)(waiter - s_tcb);
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    expect(waiter->state == TH_WAIT_OBJ && !s_ucw_returned[which],
+           "UMD cancel fixture: the wait for READY blocks on the deactivated drive");
+    s_cur = (int)(main_t - s_tcb);
+    main_t->state = TH_RUNNING;
+    return waiter;
+}
+
+static void ucw_resume(TCB *waiter) {
+    s_cur = (int)(waiter - s_tcb);
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+}
+
+static void ucw_finish(TCB **waiters, size_t count) {
+    for (size_t i = 0; i < count; i++)
+        if (waiters[i] && waiters[i]->coro) { sr_coro_destroy(waiters[i]->coro); waiters[i]->coro = NULL; }
+    s_cur = -1;
+}
+
+static void test_umd_cancel_wait_drive_stat(void) {
+    CpuState cpu;
+    TCB *waiters[UCW_WAITS] = {0};
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_umd_reset();
+    expect(sr_hle_test_is_registered(UCW_NID_CANCEL),
+           "sceUmdCancelWaitDriveStat has a production registration");
+    TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+    memset(&cpu, 0, sizeof cpu);
+    expect(sr_syscall(&cpu, UCW_NID_CANCEL) == 0u, "a cancel with no waiter returns 0");
+    expect(sr_syscall(&cpu, UCW_NID_DEACTIVATE) == 0u &&
+               sr_syscall(&cpu, UCW_NID_GET_DRIVE_STAT) == 0x12u,
+           "the drive is deactivated, so a wait for READY blocks");
+
+    /* Every waiter, whichever wait it used, leaves with WAIT_CANCEL. */
+    int blocked = 1;
+    for (size_t i = 0; i < UCW_WAITS; i++) {
+        waiters[i] = ucw_block(main_t, i, 0x1e2u + (uint32_t)i);
+        if (!waiters[i]) blocked = 0;
+    }
+    if (blocked) {
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, UCW_NID_CANCEL) == 0u,
+               "sceUmdCancelWaitDriveStat returns 0 with waiters");
+        for (size_t i = 0; i < UCW_WAITS; i++) {
+            expect(waiters[i]->state == TH_READY, "the cancel readies every drive waiter");
+            ucw_resume(waiters[i]);
+            expect(s_ucw_returned[i] == 1 && s_ucw_ret[i] == WCR_WAIT_CANCEL,
+                   "a cancelled drive wait returns SCE_KERNEL_ERROR_WAIT_CANCEL (0x800201A9)");
+        }
+        s_cur = (int)(main_t - s_tcb);
+        main_t->state = TH_RUNNING;
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, UCW_NID_GET_DRIVE_STAT) == 0x12u,
+               "a cancel does not change the drive state");
+    }
+    ucw_finish(waiters, UCW_WAITS);
+    s_cur = (int)(main_t - s_tcb);
+
+    /* A cancel latches nothing: a wait that starts after it ends on the drive becoming ready. */
+    memset(&cpu, 0, sizeof cpu);
+    expect(sr_syscall(&cpu, UCW_NID_CANCEL) == 0u, "a second cancel with no waiter returns 0");
+    waiters[0] = ucw_block(main_t, 0u, 0x1f0u);
+    if (waiters[0]) {
+        s_cur = -1;
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, UCW_NID_ACTIVATE) == 0u, "the drive activates with a waiter blocked");
+        ucw_resume(waiters[0]);
+        expect(s_ucw_returned[0] == 1 && s_ucw_ret[0] == 0u,
+               "a wait after an earlier cancel returns 0 when the drive becomes ready");
+    }
+    ucw_finish(waiters, 1u);
+    s_cur = (int)(main_t - s_tcb);
+
+    /* The same path hands a waiter any other wake result, as sceKernelReleaseWaitThread gives. */
+    memset(&cpu, 0, sizeof cpu);
+    expect(sr_syscall(&cpu, UCW_NID_DEACTIVATE) == 0u, "the drive is deactivated again");
+    waiters[0] = ucw_block(main_t, 0u, 0x1f1u);
+    if (waiters[0]) {
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = waiters[0]->uid;
+        expect(sr_syscall(&cpu, NID_WCR_RELEASE_WAIT) == 0u, "ReleaseWaitThread frees the drive waiter");
+        ucw_resume(waiters[0]);
+        expect(s_ucw_returned[0] == 1 && s_ucw_ret[0] == WCR_WAIT_RELEASE,
+               "a released drive wait returns SCE_KERNEL_ERROR_WAIT_RELEASE (0x800201AA)");
+    }
+    ucw_finish(waiters, 1u);
+    sr_hle_test_umd_reset();
+}
+
 static void test_cancel_release_wake_results(void) {
     char msg[192];
     CpuState cpu;
@@ -17595,6 +17725,14 @@ static void test_td24b_cheap_hle_batch(void) {
            "bus clock reflects the 350-variant Set request through shared state");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
            "PLL clock reflects the 350-variant Set request's pllfreq (333, not the earlier 222)");
+    /* PPSSPP Core/HLE/scePower.cpp (c9e2afb6) routes scePowerSetClockFrequency630 to the same
+     * function as scePowerSetClockFrequency, so a title's request moves the shared clocks. */
+    expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK_630, 266u, 133u, 66u, 0u) == 0u,
+           "scePowerSetClockFrequency630 answers success");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 133u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 66u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 266u,
+           "the 630 variant moves the same retained clocks as scePowerSetClockFrequency");
     sr_hle_test_power_reset();
     expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u &&
                td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 111u &&
@@ -33906,12 +34044,12 @@ static void check_coroutine_lifecycle(void) {
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
         extern int s_ctrlc_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
+                 "+ 3 cancel/release waiters + 5 UMD cancel waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
                  "+ 1 vblank multi waiter + 1 zero-period vblank waiter body "
@@ -38846,7 +38984,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "refused call returns its named error and the guest keeps running");
-    expect(sr_syscall(&cpu, 0x469989adu /* scePower_469989ad, a named refusal */) == 0x80020002u,
+    expect(sr_syscall(&cpu, 0x011f03c1u /* sceRtcGetAccumulativeTime, a named refusal */) == 0x80020002u,
            "a second named refusal returns its own error and the guest keeps running");
     expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "a repeated refusal returns the same error");
@@ -38874,7 +39012,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
     snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x39af39a6u);
     expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", 0x469989adu);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", 0x011f03c1u);
     expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
     remove(output);
     sr_flight_test_disable();
@@ -43330,6 +43468,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_hle_liveness_timeout_cancel_delete();
     test_hle_liveness_queue_full_empty();
     test_cancel_release_wake_results();
+    test_umd_cancel_wait_drive_stat();
     test_evf_cb_immediate();
     test_evf_cancel_outputs();
     test_evf_ordered_set();
