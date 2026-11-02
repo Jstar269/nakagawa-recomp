@@ -439,7 +439,14 @@ static void me_run_cell(const char *id, me_place *pl, unsigned api, int is_dst, 
         sceKernelDcacheInvalidateRange(s_me_sink, ME_BUF_BYTES);
     }
     if (owned) {
-        sceKernelDcacheInvalidateRange(cache_base, cache_len);
+        /* A file read leaves the kernel's own copy loop's stores in the data cache (the first
+           launch lost 192 of 256 bytes to an invalidate without a write-back), so the buffer
+           is written back before it is read; a DMA wrote memory directly and is invalidated. */
+        if (api == ME_API_IO) {
+            sceKernelDcacheWritebackInvalidateRange(cache_base, cache_len);
+        } else {
+            sceKernelDcacheInvalidateRange(cache_base, cache_len);
+        }
     }
 
     uint32_t changed = 0;
