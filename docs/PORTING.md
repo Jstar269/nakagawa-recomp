@@ -381,8 +381,8 @@ source or header carries them.
    exact trace hooks, target-pattern swallowing, and HST-address diagnostics were
    removed. A synthetic resource-shaped call now fails at the named
    `not-executable` boundary; title-configured HST Newlib bindings remain available
-   to the flagship. The second-title bring-up landed under [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285); the
-   next milestone, a second title that saves, closes and resumes, is [#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126).
+   to the flagship. The second-title bring-up landed under [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285), and its
+   follow-on milestone, a second title that saves, closes and resumes, was met and closed as [#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126) (2026-10-28).
 
 The former blocker #1, one shared scratch stack for every nested guest call, is
 retired: see C-4.

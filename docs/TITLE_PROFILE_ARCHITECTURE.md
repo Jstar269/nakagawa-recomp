@@ -178,7 +178,7 @@ For the native player’s current implementation boundary and process lifecycle,
 
 - Manifest structure is enforced by the shared schema/validator and public fixture tests.
 - Python/native identity and path resolution have source-owned parity and fail-closed regression coverage under #366.
-- The second-title bring-up landed under #285 (#552, #556); a second title that saves, closes and resumes is #1126.
+- The second-title bring-up landed under #285 (#552, #556); the milestone that a second title saves, closes and resumes was met and closed as #1126 (2026-10-28).
 - Temporary profile-owned compatibility bindings remain visible debt under #363.
 - HST reent-table configuration remains title-gated compatibility debt under #363; generic
   dispatch rejection and diagnostic cleanup do not establish full second-title support.
