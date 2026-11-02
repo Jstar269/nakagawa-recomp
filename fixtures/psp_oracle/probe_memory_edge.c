@@ -8,7 +8,7 @@
 //     buffer). The placement helper is mem_edge.h, which any probe source can include.
 //
 // What it measures. The top and bottom of user RAM from the partition allocator's answers
-// (edge-ram-hi, edge-ram-lo) and the end of VRAM from what the file calls accept
+// (edge-ram-hi, edge-ram-lo) and the end of VRAM from what a DMA copy accepts
 // (edge-vram), then three placements (the last N = 0x100 bytes of user RAM, the first
 // N bytes of user RAM, the last N bytes of VRAM). Each placement is called with length
 // N + delta (delta 0, 1, 4 and 0x1000 for the reading side, 0, 1 and 4 for the writing
@@ -24,8 +24,9 @@
 // memory the probe owns (reason 2 otherwise), so no write is sent past an edge without proof
 // that the API checks ranges. Reading past the top of user RAM runs only when the RAM above
 // it exists (reason 4 otherwise). Direct CPU loads and stores past an edge, and any file
-// call from the scratchpad (the first launch's did not return), are SKIP rows with their
-// reasons: a fault in user mode cannot be recorded by the mechanisms the current probes use.
+// call handed a scratchpad or VRAM pointer (both did not return when tried), are SKIP rows with
+// their reasons: a fault in user mode cannot be recorded by the mechanisms the current probes
+// use.
 //
 // Record stream and log: the same writer, host0 round trip and module lifecycle as
 // probe_hle_issues.c (copied byte for byte, pinned by tools/test_psp_oracle.py): a
@@ -304,19 +305,6 @@ static void me_emit_ram(const me_bounds *b)
     hle_record("edge-ram-lo", "PASS", 0, w, 8);
 }
 
-/* A read-side oracle: write `len` bytes from `ptr` to the probe's sink file. The return code
-   is the file call's own (the byte count, or an error code). */
-static uint32_t me_oracle(const void *ptr, uint32_t len)
-{
-    const SceUID fd = sceIoOpen(ME_SINK_FILE, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-    if (fd < 0) {
-        return ME_NOT_RUN;
-    }
-    const int rc = sceIoWrite(fd, ptr, len);
-    (void)sceIoClose(fd);
-    return (uint32_t)rc;
-}
-
 /* Row edge-data (3 words): the data file the sceIoRead cells read, N + the largest delta
    bytes of the pattern: bytes written, bytes expected, close result. */
 static void me_make_data(void)
@@ -336,27 +324,6 @@ static void me_make_data(void)
     }
     s_me_data_ok = w[0] == ME_BUF_BYTES && w[2] == 0u;
     hle_record("edge-data", "PASS", 0, w, 3);
-}
-
-/* Row edge-vram (4 words): what the file calls accept at the end of VRAM, as the read-side
-   oracle. 0: the last page of VRAM; 1: its last word; 2: eight bytes across the end (the
-   mirror starts there); 3: the bounds mask afterwards. A read of memory the kernel is asked to
-   copy into the probe's sink file; nothing is written. Each call has its own step. It runs
-   after the user-RAM cells because it is the first file call the probe hands a VRAM pointer. */
-static void me_emit_vram(me_bounds *b)
-{
-    uint32_t w[4];
-    hle_step("edge-vram-page");
-    w[0] = me_oracle((const void *)(uintptr_t)(b->vram_hi - ME_PAGE), ME_PAGE);
-    hle_step("edge-vram-last");
-    w[1] = me_oracle((const void *)(uintptr_t)(b->vram_hi - 4u), 4u);
-    if (w[0] == ME_PAGE && w[1] == 4u) {
-        b->mask |= ME_B_VRAM;
-    }
-    hle_step("edge-vram-cross");
-    w[2] = me_oracle((const void *)(uintptr_t)(b->vram_hi - 4u), 8u);
-    w[3] = b->mask;
-    hle_record("edge-vram", "PASS", 0, w, 4);
 }
 
 /* Row edge-place-<place> (8 words): the setup mask, buffer and block addresses, N, the block
@@ -382,6 +349,36 @@ static uint32_t me_dma(unsigned api, void *dst, const void *src, uint32_t len)
 {
     return (uint32_t)(api == ME_API_TRY ? sceDmacTryMemcpy(dst, src, len)
                                         : sceDmacMemcpy(dst, src, len));
+}
+
+/* Row edge-vram (4 words): whether the last bytes of VRAM can be copied out. 0: the
+   sceDmacMemcpy result for the last page of VRAM into the probe's sink; 1: the result for its
+   last 64 bytes; 2: how many sink bytes of the page changed; 3: the bounds mask afterwards. A
+   read of VRAM through the DMA engine, which the dma-timing probe already uses; the file
+   calls are not used here, because a file call handed a VRAM pointer did not return (the
+   second launch's sceIoWrite of the last VRAM page). Each call has its own step. */
+static void me_emit_vram(me_bounds *b)
+{
+    uint32_t w[4] = {0, 0, 0, 0};
+    const void *const page = (const void *)(uintptr_t)(b->vram_hi - ME_PAGE);
+    const void *const last = (const void *)(uintptr_t)(b->vram_hi - 64u);
+    hle_step("edge-vram-page");
+    memset(s_me_sink, ME_SINK_FILL, ME_PAGE);
+    sceKernelDcacheWritebackInvalidateRange(s_me_sink, ME_PAGE);
+    sceKernelDcacheWritebackInvalidateRange(page, ME_PAGE);
+    w[0] = me_dma(ME_API_MEMCPY, s_me_sink, page, ME_PAGE);
+    sceKernelDcacheInvalidateRange(s_me_sink, ME_PAGE);
+    for (uint32_t i = 0; i < ME_PAGE; i++) {
+        w[2] += s_me_sink[i] != ME_SINK_FILL;
+    }
+    hle_step("edge-vram-last");
+    sceKernelDcacheWritebackInvalidateRange(s_me_sink, 64u);
+    w[1] = me_dma(ME_API_MEMCPY, s_me_sink, last, 64u);
+    if (w[0] == 0u && w[1] == 0u) {
+        b->mask |= ME_B_VRAM;
+    }
+    w[3] = b->mask;
+    hle_record("edge-vram", "PASS", 0, w, 4);
 }
 
 /* One call at one placement. Words: 0 return code; 1 returned (1: this record exists);
@@ -505,6 +502,8 @@ static void me_run_place(unsigned place, me_place *pl, const me_bounds *b)
                          k_me_apis[api], is_dst ? "dst" : "src", (unsigned int)delta);
                 if (!usable) {
                     me_skip(id, pl->setup_mask, ME_SKIP_PLACEMENT);
+                } else if (place == ME_PLACE_VRAM_TAIL && api == ME_API_IO) {
+                    me_skip(id, pl->setup_mask, ME_SKIP_FAULT);
                 } else if (is_dst && !owned) {
                     me_skip(id, pl->setup_mask, ME_SKIP_NOT_OWNED);
                 } else if (delta > 0u && !ram_above) {
@@ -547,10 +546,12 @@ static int hle_run(void)
     me_run_place(ME_PLACE_VRAM_TAIL, &pl, &b);
     me_release(&pl);
 
-    /* Not run, with the reason in word 10. The first launch's file call from the scratchpad
-       (a whole-scratchpad sceIoWrite from 0x00010000) wrote its step and never returned, and
-       the console was recovered by the watchdog: the outcome is "did not return normally",
-       and repeating it would cost another recovery. */
+    /* Not run, with the reason in word 10. Two file calls handed a pointer outside user RAM
+       wrote their step and never returned, and the watchdog recovered the console each time:
+       a whole-scratchpad sceIoWrite from 0x00010000 (first launch) and a one-page sceIoWrite
+       from the last page of VRAM (third launch). The outcome is "did not return normally";
+       repeating either would cost another recovery, so every file cell at the VRAM placement
+       and the scratchpad row are SKIP. */
     me_skip("me-cpu-store-edge", b.mask, ME_SKIP_FAULT);
     me_skip("me-cpu-load-edge", b.mask, ME_SKIP_FAULT);
     me_skip("me-scratch-io", b.mask, ME_SKIP_FAULT);

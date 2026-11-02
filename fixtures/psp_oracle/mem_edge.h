@@ -9,6 +9,9 @@
 // (sceKernelAllocPartitionMemory, sceKernelGetBlockHeadAddr, sceKernelFreePartitionMemory,
 // sceKernelTotalFreeMemSize, sceKernelMaxFreeMemSize), and runs in user mode.
 //
+// The scratchpad is not a place: a file call that was handed a scratchpad pointer never
+// returned on the PSP-3000 (see probe_memory_edge.c), so it has no safe user-mode recorder.
+//
 // Three places:
 //   ME_PLACE_RAM_TAIL   the last N bytes of user RAM: a High page of partition 2 whose end is
 //                       the measured top of the partition.
@@ -46,20 +49,16 @@
 #define ME_USER_BASE_CANDIDATE 0x08800000u
 #define ME_RAM_TOP_32M 0x0A000000u
 #define ME_RAM_TOP_64M 0x0C000000u /* end of a 64 MiB console's RAM */
-#define ME_SCRATCH_LO 0x00010000u
-#define ME_SCRATCH_HI 0x00014000u
 #define ME_VRAM_LO 0x04000000u
 #define ME_VRAM_HI 0x04200000u
 
 /* me_bounds.mask */
 #define ME_B_RAM_HI 0x01u  /* top of user RAM measured */
 #define ME_B_RAM_LO 0x02u  /* bottom of user RAM measured */
-#define ME_B_SCRATCH 0x04u /* scratchpad range accepted by the read-side oracle */
-#define ME_B_VRAM 0x08u    /* VRAM range accepted by the read-side oracle */
+#define ME_B_VRAM 0x04u /* VRAM range accepted by a DMA read-side oracle */
 
 typedef struct {
     uint32_t ram_lo, ram_hi; /* 0 when not measured; ram_hi is one past the last byte */
-    uint32_t scratch_lo, scratch_hi;
     uint32_t vram_lo, vram_hi;
     uint32_t mask;
     /* Raw allocator answers behind ram_lo / ram_hi (0 = the page was handed out). */
@@ -112,8 +111,6 @@ static uint32_t me_try_page(uint32_t address)
    it. Raw answers are kept in the struct so the classification can be re-judged offline. */
 static void me_measure_ram(me_bounds *b)
 {
-    b->scratch_lo = ME_SCRATCH_LO;
-    b->scratch_hi = ME_SCRATCH_HI;
     b->vram_lo = ME_VRAM_LO;
     b->vram_hi = ME_VRAM_HI;
     b->free_total = (uint32_t)sceKernelTotalFreeMemSize();

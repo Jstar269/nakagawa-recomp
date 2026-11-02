@@ -8600,6 +8600,11 @@ class MemoryEdgeProbeTests(unittest.TestCase):
         # matching writing call decides.
         self.assertIn("for (unsigned is_dst = 0; is_dst < 2u; is_dst++)", body)
         self.assertIn("is_dst ? &unused : &s_me_refused[place][api][d]", body)
+        # No file call is ever handed a VRAM pointer: two such calls did not return.
+        self.assertIn("place == ME_PLACE_VRAM_TAIL && api == ME_API_IO", body)
+        self.assertLess(body.index("place == ME_PLACE_VRAM_TAIL && api == ME_API_IO"),
+                        body.index("me_run_cell("))
+        self.assertNotIn("me_oracle", self.code)
         cell = self.bodies["me_run_cell"]
         self.assertLess(cell.index("hle_step(id);"), cell.index("sceIoWrite(fd, ptr, len)"))
         self.assertLess(cell.index("sceIoWrite(fd, ptr, len)"), cell.index("hle_record(id"))
