@@ -1641,6 +1641,51 @@ which must report `MISMATCH r11`. On a title, build the runner the same way agai
 title's generated code. Snapshots contain guest memory: they stay private like traces and
 captures, and none is ever committed.
 
+## Sampled in-play checking
+
+Snapshot execution checks a call you chose. A verify build checks calls a title makes while it
+plays (#1843). Build with `make VERIFY=1` (default `0`): the runtime, the generated code and the
+reference interpreter in `src/ref` are compiled with `-DSR_VERIFY`, and nothing changes without
+the flag. At a sampled call entry the verifier copies guest RAM into the reference, runs the
+callee there until it returns or reaches a syscall, lets the real translated call run, and
+compares the end states at the matching return boundary (or at the first import or raw syscall)
+in the order the snapshot runner uses: stop kind, `r1`..`r31`, `hi`, `lo`, `f0`..`f31`, `fcr31`,
+out-of-range access counts, then VRAM and RAM from the lowest address up. One check is in flight
+at a time.
+
+| Setting | Meaning |
+| --- | --- |
+| `SR_VERIFY=k` | Check the first `k` calls of each function, then every call whose running count is a power of two. Required unless `SR_VERIFY_EVERY` is set. |
+| `SR_VERIFY_EVERY=n` | After the first `k`, check every `n`-th call instead. |
+| `SR_VERIFY_RATE=r` | At most `r` checks per second of host time (burst `r`). A function with no check yet may overdraw once, so a hot function cannot starve the rest. |
+| `SR_VERIFY_RANGE=lo-hi` | Only functions whose entry is in the hex range. |
+| `SR_VERIFY_STEPS=n` | Reference step budget per check (default 1000000). |
+| `SR_VERIFY_REPORT=file` | Write the report at exit. |
+| `SR_VERIFY_CAPTURE=dir`, `SR_VERIFY_CAPTURE_MAX=n` | Write a snapshot (`.nksnap`) of the first `n` (default 4) mismatches; `snapshot_runner` replays it to the same first difference. |
+
+A malformed value stops the run with status 2; it never turns checking off.
+
+The report has a totals line, one `# skip <reason> <count>` line per skip class, and one row per
+function entered: `addr calls checks match mismatch skip first_mismatch skips checked_at`.
+`checks` is `match + mismatch`; a sample that could not be compared is a skip, never a match:
+`preempted` (a yield, a guest thread switch, a callback or an interrupt ran inside the call),
+`busy` (another check was in flight), `rate`, `abandoned` (the call's boundary was unwound),
+`nonlocal-return` (the call returned somewhere other than its caller), `unknown-call-form`,
+`ref-no-vfpu`, `ref-unimplemented`, `ref-memory-fault`, `ref-break`, `ref-step-limit` and
+`no-reference`. `checked_at` lists the first 16 checked call numbers.
+
+Limits. Each check copies 64 MiB of RAM (and 2 MiB of VRAM), so use `SR_VERIFY_RATE` on a title.
+Scratchpad, the VFPU and COP0 registers and memory written by other host threads or devices are
+not compared, so a mismatch is evidence to look at, not proof. An import stop is matched to the
+reference's syscall at the stub; the import NID is not tied to the stub. Captures hold guest
+memory and stay private, like reports from a title run.
+
+`mingw32-make --no-print-directory verify-selftest` (`make CC=gcc verify-selftest` on Linux)
+runs this on a synthetic module (`fixtures/verify/`): the samplers check exactly the expected
+call numbers, every comparable case reports a match, the skip classes are counted, a generated-C
+mutant is reported as a `MISMATCH` with a capture the snapshot runner replays to the same
+verdict, and the default `recomp.c` carries no verify hook.
+
 ## Naming generated functions from a symbol map
 
 By default every generated function is named after its guest address: `f_00222a00` for a callable

@@ -933,8 +933,29 @@ RT_SRCS    := src/rt/recomp.c \
               $(RT_NK_UI_SRCS) \
               $(PLAYER_PLATFORM_SRC)
 
+# Verify build (#1843): `make VERIFY=1 ...` compiles the sampled in-play checker (src/rt/verify.c)
+# and its hooks into the runtime and the generated code, and links the reference interpreter
+# (src/ref) beside it. It is off by default and the default objects do not change. Run the
+# resulting player with SR_VERIFY=k and SR_VERIFY_REPORT=file (src/rt/verify.h lists the
+# settings). The reference's sr_bitrev is renamed in its own object, as for snapshot-selftest.
+VERIFY ?= 0
+ifeq ($(VERIFY),1)
+override CFLAGS += -DSR_VERIFY
+override RECOMP_FLAGS += -DSR_VERIFY
+RT_SRCS += src/rt/verify.c src/rt/nksnap.c
+override LIBS += -lstdc++
+VERIFY_REF_OBJS := $(BUILD_DIR)/verify_ref_interp.o $(BUILD_DIR)/verify_ref.o
+$(BUILD_DIR)/verify_ref_interp.o: src/ref/interp.cpp
+	$(CXX) -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev -c $< -o $@
+$(BUILD_DIR)/verify_ref.o: src/ref/snapshot_ref.cpp src/ref/snapshot_ref.h
+	$(CXX) -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev -c $< -o $@
+endif
+
 RT_OBJS   := $(addprefix $(BUILD_DIR)/,$(notdir $(RT_SRCS:.c=.o)))
 RT_OBJS    += $(H264_SUB_OBJS)
+ifeq ($(VERIFY),1)
+RT_OBJS    += $(VERIFY_REF_OBJS)
+endif
 
 # Everything needed to COMPILE the HLE sources ($(HLE_SRCS)), in one place. They reach into
 # the ATRAC decode bridges, so every target that compiles them needs these
@@ -1115,6 +1136,8 @@ PUBLIC_TARGETS := \
 	cosim-mutants-llvm \
 	snapshot-selftest \
 	snapshot-selftest-run \
+	verify-selftest \
+	verify-selftest-run \
 	clean \
 	clean-fixtures \
 	tidy \
@@ -1265,6 +1288,8 @@ HELP_DESCRIPTION_cosim-selftest-llvm := run the cosimulation with the opt-in LLV
 HELP_DESCRIPTION_cosim-mutants-llvm := run the LLVM IR backend's cosimulation mutation campaign (#330)
 HELP_DESCRIPTION_snapshot-selftest := run snapshot execution against the reference interpreter (#1842)
 HELP_DESCRIPTION_snapshot-selftest-run := build and run the snapshot runner and its generated-C mutant
+HELP_DESCRIPTION_verify-selftest := run sampled in-play differential checking on a synthetic module (#1843)
+HELP_DESCRIPTION_verify-selftest-run := build and run the verify harness, its generated-C mutant and the capture replay
 HELP_DESCRIPTION_clean := remove current-title build outputs
 HELP_DESCRIPTION_clean-fixtures := remove smoke, cosimulation, and oracle artifacts
 HELP_DESCRIPTION_tidy := remove intermediates while preserving linked binaries
@@ -2454,6 +2479,78 @@ snapshot-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OB
 		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(SNAPSHOT_FIXTURE)/cases.json \
 		--work $(SNAPSHOT_MUTANT_DIR)
 	@echo "snapshot-selftest: PASS"
+
+
+# ---- Sampled in-play differential checking (#1843) ------------------------------------
+#
+# src/rt/verify.c is compiled only into a verify build (-DSR_VERIFY, off by default): at
+# sampled call entries it runs the reference interpreter (src/ref) over a copy of guest RAM,
+# lets the real translated call run and compares the two end states. This gate builds
+# src/rt/verify_harness.c against a synthetic module (fixtures/verify/generate.py: the
+# snapshot module plus a counted-loop caller and a yielding loop), drives it through the
+# sampler, rate, range, skip and mismatch cases (fixtures/verify/selftest.py), then builds a
+# harness and a snapshot runner whose generated C has one changed immediate, requires the
+# MISMATCH and replays its capture to the same verdict. Last it preprocesses the default
+# runtime sources and requires that no verify hook is present in them.
+#
+# The hooks are the same C the default build compiles, behind SR_VERIFY: recomp.c's
+# preprocessed text without the flag must contain no sr_verify token, so the default
+# build's runtime objects cannot differ. Everything here links the same isolated runtime
+# as the snapshot gate (see above for SR_GATE_BUILD, sr_bitrev and SDL_GetTicksNS).
+VERIFY_DIR       := $(BUILD_ROOT)/verify
+VERIFY_FIXTURE   := $(VERIFY_DIR)/fixture
+VERIFY_GENERATOR := fixtures/verify/generate.py
+VERIFY_DRIVER    := fixtures/verify/selftest.py
+VERIFY_CORE_SRCS := $(filter-out src/rt/snapshot_runner.c,$(SNAPSHOT_RUNNER_SRCS)) src/rt/verify.c
+VERIFY_GAME_VARS = GAME_NAME=verify GAME_ELF=$(VERIFY_FIXTURE)/guest.prx \
+	GAME_BASE=$(SNAPSHOT_BASE_ADDR) GAME_ENTRY=$(SNAPSHOT_BASE_ADDR) \
+	GAME_PSP_HEADER=$(VERIFY_FIXTURE)/guest.psp GAME_EXTRA_ELFS= TITLE_MANIFEST= \
+	BUILD_DIR=$(VERIFY_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
+
+verify-selftest:
+	"$(PYTHON)" $(VERIFY_GENERATOR) generate --out-dir $(VERIFY_FIXTURE)
+	$(MAKE) $(VERIFY_DIR)/verify_image.bin $(VERIFY_DIR)/verify_recomp.c \
+		$(VERIFY_GAME_VARS) CODEGEN_TOOL=$(CODEGEN_TOOL)
+	$(MAKE) verify-selftest-run $(VERIFY_GAME_VARS) RECOMP_FLAGS="$(RECOMP_FLAGS) -DSR_VERIFY"
+
+VERIFY_MUTANT_CHUNK = $(shell "$(PYTHON)" $(VERIFY_DRIVER) find-chunk --build-dir $(BUILD_DIR) --game $(GAME_NAME) --cases $(VERIFY_FIXTURE)/cases.json)
+VERIFY_MUTANT_DIR = $(BUILD_DIR)/mutant
+VERIFY_LINK_OBJS = $(BUILD_DIR)/verify_rt_recomp.o $(LIBRARY_OBJS) \
+	$(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/verify_ref_interp.o \
+	$(BUILD_DIR)/verify_ref.o -lstdc++ -lm
+
+verify-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/interp.cpp -o $(BUILD_DIR)/verify_ref_interp.o
+	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/snapshot_ref.cpp -o $(BUILD_DIR)/verify_ref.o
+	$(CC) $(CFLAGS) -DSR_VERIFY -DSR_GATE_BUILD -DSDL_GetTicksNS=snapshot_runner_ticks_ns \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-c src/rt/recomp.c -o $(BUILD_DIR)/verify_rt_recomp.o
+	$(CC) $(CFLAGS) -DSR_VERIFY -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/verify_harness.exe src/rt/verify_harness.c $(VERIFY_CORE_SRCS) \
+		$(CHUNK_OBJS) $(VERIFY_LINK_OBJS)
+	"$(PYTHON)" $(VERIFY_DRIVER) run --harness $(BUILD_DIR)/verify_harness.exe \
+		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(VERIFY_FIXTURE)/cases.json \
+		--work $(BUILD_DIR)/cases
+	"$(PYTHON)" $(SNAPSHOT_DRIVER) mutate --chunk $(VERIFY_MUTANT_CHUNK) \
+		--cases $(VERIFY_FIXTURE)/cases.json --out $(VERIFY_MUTANT_DIR)/$(notdir $(VERIFY_MUTANT_CHUNK))
+	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK \
+		-c $(VERIFY_MUTANT_DIR)/$(notdir $(VERIFY_MUTANT_CHUNK)) -o $(VERIFY_MUTANT_DIR)/mutant_chunk.o
+	$(CC) $(CFLAGS) -DSR_VERIFY -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/verify_harness_mutant.exe src/rt/verify_harness.c $(VERIFY_CORE_SRCS) \
+		$(filter-out $(VERIFY_MUTANT_CHUNK:.c=.o),$(CHUNK_OBJS)) $(VERIFY_MUTANT_DIR)/mutant_chunk.o \
+		$(VERIFY_LINK_OBJS)
+	$(CC) $(CFLAGS) -DSR_VERIFY -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/verify_replay_mutant.exe src/rt/snapshot_runner.c $(VERIFY_CORE_SRCS) \
+		$(filter-out $(VERIFY_MUTANT_CHUNK:.c=.o),$(CHUNK_OBJS)) $(VERIFY_MUTANT_DIR)/mutant_chunk.o \
+		$(VERIFY_LINK_OBJS)
+	"$(PYTHON)" $(VERIFY_DRIVER) mutant --harness $(BUILD_DIR)/verify_harness_mutant.exe \
+		--replay $(BUILD_DIR)/verify_replay_mutant.exe \
+		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(VERIFY_FIXTURE)/cases.json \
+		--work $(VERIFY_MUTANT_DIR)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -E -P \
+		src/rt/recomp.c -o $(BUILD_DIR)/default_recomp.i
+	"$(PYTHON)" $(VERIFY_DRIVER) default-unchanged $(BUILD_DIR)/default_recomp.i
+	@echo "verify-selftest: PASS"
 
 
 # Treat profile stamps as generated included makefiles. GNU Make restarts after

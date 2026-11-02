@@ -4361,6 +4361,9 @@ static void hle_nidlog_note(uint32_t nid) {
 }
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
+#ifdef SR_VERIFY
+    sr_verify_at_stop(s, SR_VERIFY_STOP_IMPORT, nid, 0u);
+#endif
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
 #ifdef SR_HLE_THREAD_SELFTEST

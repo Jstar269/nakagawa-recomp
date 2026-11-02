@@ -1974,6 +1974,9 @@ static size_t sr_aot_return_boundary_capacity;
 static size_t sr_aot_return_boundary_floor;
 
 void sr_aot_return_boundaries_reset(void) {
+#ifdef SR_VERIFY
+    sr_verify_abandon("boundary-reset");
+#endif
     sr_aot_return_boundary_depth = 0u;
     sr_aot_return_boundary_top = NULL;
     sr_aot_return_boundary_floor = 0u;
@@ -1981,6 +1984,9 @@ void sr_aot_return_boundaries_reset(void) {
 
 void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *other) {
     if (!other) return;
+#ifdef SR_VERIFY
+    sr_verify_note_preempt("stack-swap");
+#endif
     SrAotReturnBoundaryStack active = {
         sr_aot_return_boundaries,
         sr_aot_return_boundary_depth,
@@ -2009,6 +2015,9 @@ void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack) {
 
 void sr_aot_return_boundary_scope_begin(SrAotReturnBoundaryScope *scope) {
     if (!scope) return;
+#ifdef SR_VERIFY
+    sr_verify_note_preempt("callback-or-interrupt");
+#endif
     scope->depth = sr_aot_return_boundary_depth;
     scope->previous_floor = sr_aot_return_boundary_floor;
     sr_aot_return_boundary_floor = sr_aot_return_boundary_depth;
@@ -2112,6 +2121,9 @@ int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
     boundary->unwinding = 0u;
     boundary->resume_sp = 0u;
     sr_aot_return_boundary_top = boundary;
+#ifdef SR_VERIFY
+    if (has_resume_pc && !sr_verify_suppress_direct) sr_verify_begin(s, 0u, call_pc, resume_pc);
+#endif
     return 0;
 }
 
@@ -2245,6 +2257,9 @@ int sr_aot_return_boundary_end(CpuState *s) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, call_pc, 0u, 0u);
         return 1;
     }
+#ifdef SR_VERIFY
+    sr_verify_end(s, boundary);
+#endif
     sr_aot_return_boundary_depth--;
     sr_aot_return_boundary_top = sr_aot_return_boundary_depth
         ? &sr_aot_return_boundaries[sr_aot_return_boundary_depth - 1u] : NULL;
@@ -2330,13 +2345,23 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
     if (owns_return_boundary) {
         const uint32_t call_pc = call_boundary != NULL
             ? call_boundary->resume_pc - 8u : s->pc;
-        if (sr_aot_return_boundary_begin(
+#ifdef SR_VERIFY
+        sr_verify_suppress_direct = 1;   /* this boundary is reported below, with its target */
+#endif
+        const int begin_failed = sr_aot_return_boundary_begin(
             s,
             call_boundary != NULL ? call_boundary->resume_pc : 0u,
-            call_pc, call_boundary != NULL ? 1u : 0u)) {
+            call_pc, call_boundary != NULL ? 1u : 0u);
+#ifdef SR_VERIFY
+        sr_verify_suppress_direct = 0;
+#endif
+        if (begin_failed) {
             return;
         }
         sr_aot_return_boundary_top->dispatch_owned = 1u;
+#ifdef SR_VERIFY
+        if (call_boundary != NULL) sr_verify_begin(s, target, call_pc, call_boundary->resume_pc);
+#endif
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
     int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);

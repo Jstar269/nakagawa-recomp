@@ -197,6 +197,15 @@ for every case, a named refusal for every malformed snapshot file, and `MISMATCH
 runner built with one immediate changed in the generated C. The verdicts are described in
 [`docs/DEBUGGING.md`](DEBUGGING.md#snapshot-execution).
 
+Both hosts run `verify-selftest` (#1843) in the same two jobs and parts. It builds the verify
+harness (`src/rt/verify_harness.c`, `src/rt/verify.c`, `-DSR_VERIFY`) against a source-owned
+synthetic module (`fixtures/verify/`), drives the samplers, the rate budget, the range filter
+and the skip classes, and requires a report with the expected counts for each. It then builds a
+harness and a snapshot runner whose generated C has one changed immediate and requires the
+`MISMATCH`, a capture, and the same first difference from the replay. Last it preprocesses the
+default `recomp.c` and requires that it carries no verify hook. See
+[`docs/DEBUGGING.md`](DEBUGGING.md#sampled-in-play-checking).
+
 Both hosts run `hle-thread-selftest`, the executable production-HLE suite that links
 the runtime HLE sources (`src/rt/hle.c` and its subsystem files, #306, #307): the Windows job in its
 `selftests` part, and the Linux `native_tools` job after the pinned SDL3 install, because the suite
