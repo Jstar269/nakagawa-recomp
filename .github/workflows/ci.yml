@@ -401,21 +401,21 @@ jobs:
     # and ci_required still requires its result (docs/CI.md, "Hygiene beside the substantive gates").
     needs: [classify, public_export, profile_zero_fixture]
     # The suite is ~27 minutes serially on a hosted runner under coverage (run
-    # 41105240488). Four runners split the test files with
+    # 41105240488). Six runners split the test files with
     # tools/ci_test_shards.py: a deterministic longest-first bin packing over the
     # measured per-module durations in tools/ci_test_weights.json (#693). Every
     # file runs exactly once across the shards, shards never share a working
     # tree, and modules that mutate tracked state never share a shard.
     # needs.python_tools.result is the aggregate of all shards, so ci_required is
-    # unchanged. The shard list comes from the classifier: four shards over every
+    # unchanged. The shard list comes from the classifier: six shards over every
     # module, or -- when a recipe-only Makefile edit is the only reason to run
-    # Python (#702) -- two shards over the modules that can observe that edit.
+    # Python (#702) -- four shards over the modules that can observe that edit.
     strategy:
       fail-fast: false
       matrix:
         # The fallback only keeps the expression parseable when classify produced no
         # outputs; the job's own condition skips it in that case.
-        shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3]') }}
+        shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3, 4, 5]') }}
     if: >-
       ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&

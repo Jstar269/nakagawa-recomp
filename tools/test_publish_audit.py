@@ -2403,47 +2403,18 @@ class GeneratedEmbeddingSpdxTests(unittest.TestCase):
 
 
 class RetailDiscIdTests(unittest.TestCase):
-    """Real-format disc ids outside the synthetic registry fail the audit.
+    """A game's disc id is not game data: the audit leaves it alone.
 
-    Every unregistered id below is assembled from fragments, so this file never
-    names one contiguously and the tree-wide test stays meaningful.
+    Titles and retail disc ids may appear in documentation, comments, tests and
+    tools (AGENTS.md, Hard limits), so the audit has no finding for them.
     """
 
     UMD = "UL" + "US" + "55555"
     PSN = "NP" + "UH" + "54321"
 
-    def test_every_written_form_is_reported_once_and_normalised(self) -> None:
-        from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids
-
-        umd, psn = self.UMD, self.PSN
-        text = "\n".join((
-            umd,
-            f"{umd[:4]}-{umd[4:]}",
-            f"build_{umd.lower()}.log",
-            f"{umd[:4]} {umd[4:]}",
-            f'"disc_id": "{psn[:4]}_{psn[4:]}"',
-        ))
-        self.assertEqual(unregistered_retail_disc_ids(text), [umd, psn])
-
-    def test_registered_and_non_retail_ids_pass(self) -> None:
-        from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids
-
-        text = "\n".join((
-            "UCUS98701", "hst-ucus98701.json", "UCUS-98701", "UCES01402",
-            "ULUS99998", "TEST80001", "TEST00001", "ABCD12345", "ZZZZ99999",
-            "X" + self.UMD,       # part of a longer identifier
-            self.UMD + "0",       # six digits is not a disc id
-        ))
-        self.assertEqual(unregistered_retail_disc_ids(text), [])
-
-    def test_registry_sets_are_disjoint_and_well_formed(self) -> None:
+    def test_synthetic_id_registries_are_well_formed(self) -> None:
         from nk_core import synthetic_disc_ids as ids
 
-        retail = set(ids.PUBLIC_RETAIL_DISC_IDS) | set(ids.SYNTHETIC_RETAIL_DISC_IDS)
-        self.assertFalse(set(ids.PUBLIC_RETAIL_DISC_IDS) & set(ids.SYNTHETIC_RETAIL_DISC_IDS))
-        for disc_id in sorted(retail):
-            with self.subTest(disc_id=disc_id):
-                self.assertIsNotNone(ids.RETAIL_DISC_ID.fullmatch(disc_id))
         catalog = set(ids.SYNTHETIC_DISC_IDS.values())
         self.assertFalse(catalog & ids.SYNTHETIC_TEST_DISC_IDS)
         for disc_id in sorted(catalog | ids.SYNTHETIC_TEST_DISC_IDS):
@@ -2451,38 +2422,25 @@ class RetailDiscIdTests(unittest.TestCase):
                 self.assertIsNone(ids.RETAIL_DISC_ID.search(disc_id))
                 self.assertRegex(disc_id, r"^TEST[0-9]{5}$")
 
-    def test_audit_reports_an_unregistered_id_in_a_tracked_file(self) -> None:
+    def test_retail_disc_id_pattern_matches_every_written_form(self) -> None:
+        from nk_core.synthetic_disc_ids import RETAIL_DISC_ID
+
+        for text in (self.UMD, f"{self.UMD[:4]}-{self.UMD[4:]}", f"build_{self.UMD.lower()}.log",
+                     f"{self.UMD[:4]} {self.UMD[4:]}", f"{self.PSN[:4]}_{self.PSN[4:]}"):
+            with self.subTest(text=text):
+                self.assertIsNotNone(RETAIL_DISC_ID.search(text))
+        for text in ("X" + self.UMD, self.UMD + "0", "TEST80001", "ABCD12345"):
+            with self.subTest(text=text):
+                self.assertIsNone(RETAIL_DISC_ID.search(text))
+
+    def test_audit_does_not_report_a_disc_id_in_a_tracked_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             tmp_dir = Path(tmp_dir_raw).resolve()
-            (tmp_dir / "leak.c").write_text(
-                f'static const char *k_disc = "{self.UMD}";\n', encoding="utf-8", newline="\n")
-            (tmp_dir / "clean.c").write_text(
-                'static const char *k_disc = "UCUS98701";\n', encoding="utf-8", newline="\n")
-            entries = [
-                publish_audit.GitEntry("100644", "", "0", name, "file")
-                for name in ("leak.c", "clean.c")
-            ]
+            (tmp_dir / "doc.md").write_text(
+                f"Tested with {self.UMD} and {self.PSN}.\n", encoding="utf-8", newline="\n")
+            entries = [publish_audit.GitEntry("100644", "", "0", "doc.md", "file")]
             findings = publish_audit.audit_entries(entries, repo_root=tmp_dir, is_candidate_root=True)
-        retail = [f for f in findings if f.code == "RETAIL_DISC_ID"]
-        self.assertEqual([f.path for f in retail], ["leak.c"])
-        self.assertIn(self.UMD, retail[0].detail)
-
-    def test_tracked_tree_names_no_unregistered_retail_id(self) -> None:
-        from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids
-
-        root = Path(publish_audit.ROOT)
-        listed = run_git(["ls-files", "-z"], cwd=root, check=True, capture_output=True).stdout
-        offenders = []
-        for rel in (p for p in listed.decode("utf-8").split("\0") if p):
-            path = root / rel
-            if not path.is_file():
-                continue
-            data = path.read_bytes()
-            if b"\0" in data[:8192]:
-                continue
-            for disc_id in unregistered_retail_disc_ids(data.decode("utf-8", "replace")):
-                offenders.append(f"{rel}: {disc_id}")
-        self.assertEqual(offenders, [], "\n".join(offenders))
+        self.assertEqual([f for f in findings if f.code == "RETAIL_DISC_ID"], [])
 
 
 class IndexEntryProbeTests(unittest.TestCase):
