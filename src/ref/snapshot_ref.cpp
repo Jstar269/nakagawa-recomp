@@ -30,9 +30,10 @@ extern "C" uint8_t *nk_ref_ram(NkRef *r) {
 	return r->mem.RamData();
 }
 
-extern "C" void nk_ref_run(NkRef *r, void *cpu, uint32_t entry_pc, uint32_t return_pc,
-                           const uint32_t *import_stubs, uint32_t import_count,
-                           uint64_t max_steps, NkRefResult *out) {
+static void run_until(NkRef *r, void *cpu, uint32_t entry_pc, uint32_t return_pc,
+                      int check_sp, uint32_t return_sp,
+                      const uint32_t *import_stubs, uint32_t import_count,
+                      uint64_t max_steps, NkRefResult *out) {
 	ref::CpuState s;
 	std::memcpy(&s, cpu, sizeof s);
 	s.pc = entry_pc;
@@ -43,7 +44,7 @@ extern "C" void nk_ref_run(NkRef *r, void *cpu, uint32_t entry_pc, uint32_t retu
 		// call is over. ref::Run applies a taken transfer only after its delay slot, so
 		// pc here is the architectural next instruction.
 		if (!s.in_delay_slot) {
-			if (s.pc == return_pc) {
+			if (s.pc == return_pc && (!check_sp || s.r[29] == return_sp)) {
 				out->stop = NK_REF_RETURNED;
 				out->pc = s.pc;
 				break;
@@ -82,4 +83,15 @@ extern "C" void nk_ref_run(NkRef *r, void *cpu, uint32_t entry_pc, uint32_t retu
 	}
 	out->executed = executed;
 	std::memcpy(cpu, &s, sizeof s);
+}
+
+extern "C" void nk_ref_run(NkRef *r, void *cpu, uint32_t entry_pc, uint32_t return_pc,
+                           const uint32_t *import_stubs, uint32_t import_count,
+                           uint64_t max_steps, NkRefResult *out) {
+	run_until(r, cpu, entry_pc, return_pc, 0, 0u, import_stubs, import_count, max_steps, out);
+}
+
+extern "C" void nk_ref_run_call(NkRef *r, void *cpu, uint32_t entry_pc, uint32_t return_pc,
+                                uint32_t return_sp, uint64_t max_steps, NkRefResult *out) {
+	run_until(r, cpu, entry_pc, return_pc, 1, return_sp, nullptr, 0u, max_steps, out);
 }

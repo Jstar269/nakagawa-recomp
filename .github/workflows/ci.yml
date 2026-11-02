@@ -967,6 +967,13 @@ jobs:
         if: matrix.part == 'translation'
         run: make CC=gcc snapshot-selftest
 
+      # Sampled in-play differential checking (#1843): the verify build checks sampled
+      # calls against the reference interpreter and writes a per-function report; the
+      # selftest also runs a generated-C mutant that must be reported as a MISMATCH.
+      - name: Run Linux verify selftest
+        if: matrix.part == 'translation'
+        run: make CC=gcc verify-selftest
+
       - name: Run Linux cosimulation mutation corpus
         if: matrix.part == 'translation'
         run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4
@@ -1693,6 +1700,17 @@ jobs:
         run: |
           set -euo pipefail
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 snapshot-selftest
+
+      # Sampled in-play differential checking (#1843): a verify build (-DSR_VERIFY) checks
+      # sampled calls of a synthetic module against the reference interpreter, writes the
+      # per-function report, and a generated-C mutant must be reported as a MISMATCH whose
+      # capture the snapshot runner replays to the same verdict.
+      - name: Build and run verify selftest
+        if: matrix.part == 'selftests'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 verify-selftest
 
       # A comparator that cannot fail proves nothing. Each mutant is a semantic
       # defect applied to a COPY of the interpreter under the ignored build tree;
