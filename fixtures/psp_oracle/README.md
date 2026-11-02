@@ -643,7 +643,9 @@ follow-up faulted at user EPC 0; the NULL callback follow-up stopped at
 `sceKernelCheckCallback` and the watchdog recovered the PSP without an exception frame.
 The fetch-zero case also captured an exprint frame. The `0x08000000` A3 PRX was refused
 after its transport preflight, and `0x40000000` was not launched, because the recovered
-PSP reported `pspver 6.6.1` instead of the required `6.6.0`.
+PSP reported `pspver 6.6.1` instead of the required `6.6.0`. Launches now declare the
+measured `pspver` to the runner. Both fetches were captured on 2026-11-02 at `pspver 6.6.1`
+as instruction bus errors (Cause `0x10000018`, EPC = the target).
 
 ### #312 instruction trace
 
@@ -651,9 +653,12 @@ PSP reported `pspver 6.6.1` instead of the required `6.6.0`.
 `fpu-state` and `vfpu-state` fixtures, along with the existing GPR, HI/LO and store
 state. `CASE=insn-trace-exception` raises a `break` in a branch delay slot; the
 runner keeps its EPC, Cause, BadVAddr and Status frame from `exprint` in teardown.
-The original two trace fixtures remain measured. The new FPU/VFPU and delay-slot
-exception fixtures have local tests and clean PRX builds, but their PSP runs were
-blocked by the `pspver` mismatch described above; they are not hardware evidence.
+On 2026-11-02 (`pspver` 6.6.1, exact source commit `1fbab0c6`) the `insn-trace` run
+was acceptance-eligible, and all four fixtures' PSP traces agree with Nakagawa's;
+`tools/test_insn_trace.py` pins their digests. The `insn-trace-exception` frame
+(EPC = the branch, Cause `0x90000024`) and the `0x08000000` and `0x40000000` fetch
+frames were captured as diagnostics. See `docs/HARDWARE_ORACLE.md`, "#1375 and #312
+runs 2026-11-02".
 
 The seven `hle-*` rows are single-launch probes built from `probe_hle_measure.c`, and they are
 not in the campaign queue. Five cases ran on a PSP-3000 on 2026-10-15 (build `b5d6fc5b`):
