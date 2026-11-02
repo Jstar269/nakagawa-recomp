@@ -27,10 +27,10 @@ def _mk(words, labels: set[int] | frozenset[int] = frozenset()):
 
 class StaticVerifyTests(unittest.TestCase):
     def setUp(self):
-        codegen.SV_ENABLED = True
+        codegen.OPTIONS.static_verify = True
 
     def tearDown(self):
-        codegen.SV_ENABLED = False
+        codegen.OPTIONS.static_verify = False
 
     def test_lui_addiu_chain_is_predicted(self):
         # lui $a0, 0x2d ; addiu $a0, $a0, -0x518  -> a0 = 0x002cfae8
@@ -95,7 +95,7 @@ class StaticVerifyTests(unittest.TestCase):
                 self.assertNotEqual(reg, 4, f"r4 asserted after syscall at 0x{addr:x}")
 
     def test_disabled_by_default(self):
-        codegen.SV_ENABLED = False
+        codegen.OPTIONS.static_verify = False
         words = {0x6000: (0x0F << 26) | (4 << 16) | 1,
                  0x6004: (0x0D << 26) | (4 << 21) | (4 << 16) | 2}
         elf, insns, labels = _mk(words)
