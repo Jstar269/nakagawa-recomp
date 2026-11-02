@@ -2217,6 +2217,27 @@ class LiveRepositoryTests(unittest.TestCase):
             blocks[name] = block
         self.assertEqual(len(set(blocks.values())), 1, "the two lookups must not drift apart")
 
+    def test_both_attestation_workflows_look_up_v4_deltas_first(self) -> None:
+        """A V4 (claims-bound) authority is fetched by its selector; only a confirmed 404 falls back to V3."""
+        blocks = {}
+        for name in ("provenance-attestation.yml", "provenance-attestation-merge-group.yml"):
+            raw = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            begin, end = "# v4-policy-delta-lookup:begin", "# v4-policy-delta-lookup:end"
+            self.assertEqual((raw.count(begin), raw.count(end)), (1, 1), name)
+            block = raw[raw.index(begin):raw.index(end)]
+            self.assertIn("--policy-delta-key-v4", block)
+            self.assertIn("docs/provenance/policy-deltas-v4/${v4_name}.json", block)
+            self.assertLess(block.index("[ \"${#v4_name}\" -eq 64 ]"), block.index("gh api"))
+            v4_hit, fallback = block[:block.index("else")], block[block.index("else"):]
+            self.assertNotIn("trusted_candidate_policy=", v4_hit)
+            # The V3 lookup runs only inside the V4 miss, after a confirmed absence.
+            self.assertLess(fallback.index('grep -q "HTTP 404"'), fallback.index("# v3-policy-delta-lookup:begin"))
+            self.assertIn("exit 1", fallback[:fallback.index("# v3-policy-delta-lookup:begin")])
+            self.assertIn("# v3-policy-delta-lookup:end", block)
+            self.assertLess(raw.index(begin), raw.index("# v3-policy-delta-lookup:begin"))
+            blocks[name] = block
+        self.assertEqual(len(set(blocks.values())), 1, "the two lookups must not drift apart")
+
     def test_the_trusted_workflow_is_target_triggered(self) -> None:
         raw = (ROOT / TRUSTED_WORKFLOW).read_bytes()
         self.assertIn(b"pull_request_target", raw)
@@ -3388,13 +3409,8 @@ class EphemeralGenerationBehaviorTests(EphemeralGenerationTests):
         )
 
 
-class PolicyDeltaV3Tests(EphemeralGenerationTests):
-    """V3 policy-delta authority (#1673): the approved path change, not the base profile's bytes.
-
-    Each case builds the document the admission writes (derived from the base profile, the
-    candidate profile and the candidate's blobs) and hands it to the verifier directly, the
-    way the attestation workflow does after its lookup.
-    """
+class _PolicyDeltaFixture(EphemeralGenerationTests):
+    """Profile changes on branches, the authority documents an admission writes, and landing."""
 
     NEW_A = "docs/new-a.md"
     NEW_B = "docs/new-b.md"
@@ -3468,6 +3484,16 @@ class PolicyDeltaV3Tests(EphemeralGenerationTests):
                     check=True, capture_output=True)
         run_git(["commit", "--quiet", "-m", message], cwd=self.repo.root, check=True, capture_output=True)
         return self.repo.head()
+
+
+
+class PolicyDeltaV3Tests(_PolicyDeltaFixture):
+    """V3 policy-delta authority (#1673): the approved path change, not the base profile's bytes.
+
+    Each case builds the document the admission writes (derived from the base profile, the
+    candidate profile and the candidate's blobs) and hands it to the verifier directly, the
+    way the attestation workflow does after its lookup.
+    """
 
     # -- must pass ------------------------------------------------------------
 
@@ -3646,6 +3672,376 @@ class PolicyDeltaV3Tests(EphemeralGenerationTests):
                                 "--policy-delta-key"])
         self.assertEqual((rc, out.getvalue()), (2, ""))
         self.assertIn("POLICY_DELTA_EMPTY", err.getvalue())
+
+
+class PolicyDeltaV4Tests(_PolicyDeltaFixture):
+    """V4 policy-delta authority: an admission binds each added path to its origin claim.
+
+    The claim is what the trusted record says (class, record id, record classification,
+    upstream, revision, licence). Bytes stay bound only for a byte-identical import. Each case
+    builds the document ``admit_paths.py`` writes and hands it to the verifier, as the workflow
+    does after looking it up under ``--policy-delta-key-v4``.
+    """
+
+    TOOL = "tools/new_tool.py"
+    LIB = "third_party/lib/lib.h"
+    MANIFEST = "third_party/lib/PROVENANCE.md"
+    LIB_BYTES = b"/* synthetic upstream header */\nint lib(void);\n"
+    TOOL_RECORD = {
+        "id": "new-tool-authored", "paths": [TOOL], "classification": "project-authored-independent",
+        "upstream": None, "upstream_revision": None, "upstream_license": None, "evidence_tier": "S",
+    }
+    LIB_RECORD = {
+        "id": "synthetic-lib-import", "paths": [LIB, MANIFEST], "classification": "upstream-third-party",
+        "upstream": "synthetic-lib", "upstream_revision": "commit 0123456789abcdef0123456789abcdef01234567",
+        "upstream_license": "MIT", "evidence_tier": "H",
+    }
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._records([self.TOOL_RECORD, self.LIB_RECORD])
+
+    def _records(self, extra: list[dict]) -> None:
+        authority = json.loads(self.trusted_ledger.read_text(encoding="utf-8"))
+        ids = {record["id"] for record in extra}
+        authority["records"] = [r for r in authority["records"] if r["id"] not in ids] + extra
+        self.write_trusted(authority)
+
+    def _manifest(self, kind: str = "imported byte-identical", lib: bytes | None = None) -> bytes:
+        data = self.LIB_BYTES if lib is None else lib
+        blob = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+        return (
+            "# PROVENANCE.md - `third_party/lib/`\n\n"
+            "| File | Kind | Upstream blob SHA | SHA-256 |\n| --- | --- | --- | --- |\n"
+            f"| `lib.h` | {kind} | `{blob}` | `{_sha(data)}` |\n"
+            "| `PROVENANCE.md` | project-authored manifest | n/a | n/a |\n"
+        ).encode("utf-8")
+
+    def _v4(self, base: str, head: str, label: str = "v4", bindings: dict[str, str] | None = None) -> Path:
+        """Write the V4 authority an admission of ``head``'s change against ``base`` records."""
+        blobs = verifier.read_tree(self.repo.root, verifier._rev_tree(self.repo.root, head))
+        exact, _patterns, _ids = verifier.load_trusted_records(self.trusted_ledger.read_bytes())
+        document = provenance_ledger.derive_policy_delta_v4(
+            self._profile(base), self._profile(head),
+            digest_of=lambda path: _sha(blobs[path]) if path in blobs else None,
+            claim_of=lambda path: provenance_ledger.admission_claim(path, exact.get(path)),
+            binding_of=lambda path: (bindings or {}).get(path, "claim"),
+        )
+        name = verifier.policy_delta_key_v4(repo=self.repo.root, base_rev=base, candidate_rev=head)
+        self.assertEqual(name, provenance_ledger.policy_delta_v4_key(self._profile(base), self._profile(head)))
+        path = self.outside / f"{label}-{name}.json"
+        path.write_bytes(provenance_ledger.policy_delta_v3_bytes(document))
+        return path
+
+    def _edit(self, files: dict[str, bytes], message: str) -> str:
+        for path, raw in files.items():
+            self.repo.write(path, raw)
+        return self.repo.commit(message)
+
+    def _vendored_pr(self, branch: str = "pr-lib") -> str:
+        return self._change(branch, self.base, {self.LIB: self.LIB_BYTES, self.MANIFEST: self._manifest()},
+                            include=[self.LIB, self.MANIFEST])
+
+    # -- must pass ------------------------------------------------------------
+
+    def test_an_authored_file_edited_after_admission_attests_without_readmission(self) -> None:
+        """Tonight's two re-admissions: a trimmed final blank line and one added annotation."""
+        head = self._change("pr-tool", self.base, {
+            self.TOOL: b"def run(value):\n    return value\n\n\n", self.NEW_A: b"# a\n\n\n",
+        }, include=[self.TOOL, self.NEW_A])
+        v4 = self._v4(self.base, head)
+        v3 = self._v3(self.base, head)
+        edited = self._edit({
+            self.TOOL: b"def run(value: int) -> int:\n    return value\n", self.NEW_A: b"# a\n",
+        }, "end-of-file-fixer and one type annotation, after the admission")
+
+        # The selector depends on the profiles alone: the workflow fetches the same decision.
+        self.assertEqual(verifier.policy_delta_key_v4(repo=self.repo.root, base_rev=self.base, candidate_rev=edited),
+                         v4.stem.split("-", 1)[1])
+        landed = self._land(edited, self.base, v4)
+        self.assertEqual(self._attest(landed, self.base, v4)["policy_delta"]["include_added"],
+                         sorted([self.TOOL, self.NEW_A]))
+        # Before V4 the same edit needed a whole new admission: the V3 pin refuses it.
+        self._refused("POLICY_DELTA_ADDED_BYTES_MISMATCH", edited, self.base, v3)
+
+    def test_an_unedited_byte_identical_import_lands(self) -> None:
+        head = self._vendored_pr()
+        v4 = self._v4(self.base, head, bindings={self.LIB: "bytes"})
+        (entry,) = [item for item in json.loads(v4.read_text(encoding="utf-8"))["include_added"]
+                    if item["path"] == self.LIB]
+        self.assertEqual((entry["binding"], entry["sha256"]), ("bytes", _sha(self.LIB_BYTES)))
+        self._land(head, self.base, v4)
+
+    def test_two_v4_admissions_land_in_either_order(self) -> None:
+        head_1 = self._change("first", self.base, {self.NEW_A: b"# first\n"}, include=[self.NEW_A])
+        head_2 = self._change("second", self.base, {self.TOOL: b"x = 1\n"}, include=[self.TOOL])
+        v4_1, v4_2 = self._v4(self.base, head_1, "first"), self._v4(self.base, head_2, "second")
+        main_1 = self._land(head_1, self.base, v4_1)
+        rebased = self._change("second-on-main", main_1, {self.TOOL: b"x: int = 1\n"}, include=[self.TOOL])
+        self._land(rebased, main_1, v4_2)
+
+    # -- canaries: each must fail closed ----------------------------------------
+
+    def test_a_byte_identical_import_edited_after_admission_fails(self) -> None:
+        head = self._vendored_pr()
+        v4 = self._v4(self.base, head, bindings={self.LIB: "bytes"})
+        edited = self._edit({self.LIB: self.LIB_BYTES.rstrip(b"\n")}, "a formatter drops the final newline")
+        self._refused("POLICY_DELTA_ADDED_BYTES_MISMATCH", edited, self.base, v4)
+
+    def test_an_origin_claim_change_fails(self) -> None:
+        """The trusted record changes after the admission: a new upstream licence or record class."""
+        head = self._vendored_pr()
+        v4 = self._v4(self.base, head, bindings={self.LIB: "bytes"})
+        for field, value in (("upstream_license", "GPL-2.0-or-later"), ("classification", "derived-translated"),
+                             ("upstream_revision", "commit fedcba9876543210fedcba9876543210fedcba98"),
+                             ("upstream", "another-upstream")):
+            with self.subTest(field=field):
+                self._records([{**self.LIB_RECORD, field: value}])
+                self._refused("POLICY_DELTA_CLAIM_MISMATCH", head, self.base, v4)
+        # A path the record stops covering loses its claim's record: a document falls back to its
+        # path rule (a different claim), an implementation path to no claim at all.
+        self._records([{**self.LIB_RECORD, "paths": [self.LIB]}])
+        self._refused("POLICY_DELTA_CLAIM_MISMATCH", head, self.base, v4)
+        self._records([{**self.LIB_RECORD, "paths": [self.MANIFEST]}])
+        self._refused("POLICY_DELTA_CLAIM_UNRESOLVED", head, self.base, v4)
+        self._records([self.LIB_RECORD])
+        self._land(head, self.base, v4)
+
+    def test_an_unadmitted_added_path_still_fails(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        v4 = self._v4(self.base, head)
+        widened = self._change("pr-a-widened", head, {self.TOOL: b"x = 1\n"}, include=[self.NEW_A, self.TOOL])
+        # The workflow derives another name, so the admitted decision is not even fetched ...
+        self.assertNotEqual(
+            verifier.policy_delta_key_v4(repo=self.repo.root, base_rev=self.base, candidate_rev=widened),
+            v4.stem.split("-", 1)[1])
+        # ... and supplied anyway it approves only the admitted path.
+        self._refused("POLICY_DELTA_UNAUTHORIZED", widened, self.base, v4)
+        # With no authority at all the profile change itself fails the verdict.
+        verdict = self._attest(widened, self.base, None)
+        self.assertEqual(verdict["verdict"], "fail")
+        self.assertIn("POLICY_SUBSTITUTION", {finding["code"] for finding in verdict["findings"]})
+
+    def test_an_added_path_whose_file_is_missing_fails(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        v4 = self._v4(self.base, head)
+        self.repo.remove(self.NEW_A)
+        removed = self.repo.commit("drop the admitted file, keep its profile entry")
+        self._refused("POLICY_DELTA_ADDED_PATH_MISSING", removed, self.base, v4)
+
+    def test_malformed_v4_documents_are_refused(self) -> None:
+        head = self._vendored_pr()
+        good = json.loads(self._v4(self.base, head, bindings={self.LIB: "bytes"}).read_text(encoding="utf-8"))
+
+        def tamper(name: str, change) -> Path:
+            document = json.loads(json.dumps(good))
+            change(next(item for item in document["include_added"] if item["path"] == self.LIB))
+            path = self.outside / f"tampered-{name}.json"
+            path.write_bytes(provenance_ledger.policy_delta_v3_bytes(document))
+            return path
+
+        cases = {
+            "claim-binding-with-digest": lambda item: item.update(binding="claim"),
+            "bytes-binding-without-digest": lambda item: item.pop("sha256"),
+            "unknown-binding": lambda item: item.update(binding="trust-me"),
+            "extra-claim-field": lambda item: item["claim"].update(note="x"),
+            "unresolved-claim": lambda item: item["claim"].update(classification="unresolved"),
+        }
+        for name, change in cases.items():
+            with self.subTest(case=name):
+                self._refused("POLICY_DELTA_AUTHORITY_INVALID", head, self.base, tamper(name, change))
+        # Dropping the byte binding is a different decision, so it must not match this one by accident.
+        unbound = tamper("unbound", lambda item: (item.update(binding="claim"), item.pop("sha256")))
+        self._land(head, self.base, unbound)
+
+    def test_a_v4_authority_comes_alone(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        blessed = self.outside / "blessed.json"
+        blessed.write_bytes(provenance_ledger.canonical_profile_bytes(self._profile(head)))
+        self._refused("POLICY_DELTA_ARGUMENT_REQUIRED", head, self.base, self._v4(self.base, head),
+                      trusted_candidate_policy=blessed)
+
+    def test_policy_delta_key_v4_reads_the_profiles_only(self) -> None:
+        head = self._change("pr-a", self.base, {self.NEW_A: b"# a\n"}, include=[self.NEW_A])
+        expected = self._v4(self.base, head).stem.split("-", 1)[1]
+        edited = self._edit({self.NEW_A: b"# a, edited\n"}, "edit the admitted file")
+        for candidate in (head, edited):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = verifier.main(["--repo", str(self.repo.root), "--base", self.base, "--candidate", candidate,
+                                    "--policy-delta-key-v4"])
+            self.assertEqual((rc, out.getvalue().strip()), (0, expected))
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = verifier.main(["--repo", str(self.repo.root), "--base", self.base, "--candidate", self.base,
+                                "--policy-delta-key-v4"])
+        self.assertEqual(rc, 2)
+        self.assertIn("POLICY_DELTA_EMPTY", err.getvalue())
+
+    # -- byte-identical imports after landing -----------------------------------
+
+    def test_a_landed_byte_identical_import_cannot_drift(self) -> None:
+        head = self._vendored_pr()
+        landed = self._land(head, self.base, self._v4(self.base, head, bindings={self.LIB: "bytes"}))
+        drifted_bytes = self.LIB_BYTES + b"\n"
+
+        self.repo.branch("drift", landed)
+        drifted = self._edit({self.LIB: drifted_bytes}, "a hook adds a blank line to the import")
+        verdict = self._attest(drifted, landed, None)
+        self.assertEqual(verdict["verdict"], "fail")
+        self.assertIn("VENDORED_BYTES_DRIFT", {finding["code"] for finding in verdict["findings"]})
+
+        # Dropping the manifest row, or re-wording it as anything but a LOCAL DELTA, is not a way out.
+        for code, manifest in (
+            ("VENDORED_ROW_REMOVED", b"# PROVENANCE.md - `third_party/lib/`\n"),
+            ("VENDORED_ROW_RECLASSIFIED", self._manifest("vendored, lightly tidied", drifted_bytes)),
+        ):
+            with self.subTest(code=code):
+                self.repo.branch(f"hide-{code.lower()}", drifted)
+                hidden = self._edit({self.MANIFEST: manifest}, "hide the change")
+                self.assertIn(code, {f["code"] for f in self._attest(hidden, landed, None)["findings"]})
+
+        # Re-pinning the row to the new bytes cannot approve itself (#1889 review).
+        self.repo.branch("repin", drifted)
+        repinned = self._edit({self.MANIFEST: self._manifest("imported byte-identical", drifted_bytes)},
+                              "pin the manifest row to the edited bytes")
+        verdict = self._attest(repinned, landed, None)
+        self.assertEqual(verdict["verdict"], "fail")
+        self.assertEqual([(f["code"], f["maintainer_action"]) for f in verdict["findings"]],
+                         [("VENDORED_ROW_REPINNED", True)])
+
+        # Recording it as a LOCAL DELTA is the explicit way to change an import, and it changes
+        # the import's claim, so it waits for the maintainer.
+        self.repo.branch("local-delta", drifted)
+        recorded = self._edit({self.MANIFEST: self._manifest("imported + LOCAL DELTA", drifted_bytes)},
+                              "record the change as a LOCAL DELTA")
+        verdict = self._attest(recorded, landed, None)
+        self.assertEqual([(f["code"], f["maintainer_action"]) for f in verdict["findings"]],
+                         [("VENDORED_ROW_LOCAL_DELTA", True)])
+
+        # The maintainer approves the exact new bytes in the trusted ledger, citing the path's record.
+        authority = json.loads(self.trusted_ledger.read_text(encoding="utf-8"))
+        authority["reviewed_blobs"] = [{
+            "path": self.LIB, "sha256": _sha(drifted_bytes), "classification": "upstream-third-party",
+            "record_id": self.LIB_RECORD["id"],
+        }]
+        self.write_trusted(authority)
+        verdict = self._attest(recorded, landed, None)
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+        verdict = self._attest(repinned, landed, None)
+        self.assertEqual(verdict["verdict"], "pass", verdict["findings"])
+
+
+class VendoredManifestTests(unittest.TestCase):
+    """``_vendored_manifest_findings``: an "imported byte-identical" row keeps its bytes bound."""
+
+    DATA = b"int upstream(void);\n"
+
+    @classmethod
+    def row(cls, kind: str, data: bytes | None = None, *, blob: bool = True, sha: bool = True) -> str:
+        data = cls.DATA if data is None else data
+        blob_id = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() if blob else "n/a"
+        return f"| `up.h` | {kind} | `{blob_id}` | `{_sha(data) if sha else 'n/a'}` |\n"
+
+    @staticmethod
+    def manifest(*rows: str) -> bytes:
+        return ("| File | Kind | Upstream blob SHA | SHA-256 |\n| --- | --- | --- | --- |\n"
+                + "".join(rows)).encode("utf-8")
+
+    def codes(self, candidate: dict[str, bytes], base: dict[str, bytes] | None = None, approved=None) -> list[str]:
+        return [
+            finding.code
+            for finding in verifier._vendored_manifest_findings(candidate, base or {}, change_approved=approved)
+        ]
+
+    def test_matching_rows_pass_and_drift_fails(self) -> None:
+        good = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical")), "lib/up.h": self.DATA}
+        self.assertEqual(self.codes(good), [])
+        drifted = {**good, "lib/up.h": self.DATA + b"\n"}
+        self.assertEqual(self.codes(drifted), ["VENDORED_BYTES_DRIFT", "VENDORED_BYTES_DRIFT"])
+        for blob, sha in ((True, False), (False, True)):
+            with self.subTest(blob=blob, sha=sha):
+                one_hash = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical", blob=blob, sha=sha)),
+                            "lib/up.h": self.DATA + b"\n"}
+                self.assertEqual(self.codes(one_hash), ["VENDORED_BYTES_DRIFT"])
+
+    def test_rows_that_cannot_be_checked_fail_closed(self) -> None:
+        unhashed = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical", blob=False, sha=False)),
+                    "lib/up.h": self.DATA}
+        self.assertEqual(self.codes(unhashed), ["VENDORED_ROW_UNVERIFIABLE"])
+        self.assertEqual(self.codes({"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical"))}),
+                         ["VENDORED_FILE_MISSING"])
+        escaping = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical").replace("up.h", "../../x.h"))}
+        self.assertEqual(self.codes(escaping), ["VENDORED_FILE_MISSING"])
+        self.assertEqual(self.codes({"lib/PROVENANCE.md": b"\xff\xfe"}), ["VENDORED_MANIFEST_UNREADABLE"])
+
+    def test_leaving_byte_identical_is_explicit(self) -> None:
+        base = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical")), "lib/up.h": self.DATA}
+        edited = self.DATA + b"/* local fix */\n"
+        local_delta = {"lib/PROVENANCE.md": self.manifest(self.row("imported + LOCAL DELTA", edited)),
+                       "lib/up.h": edited}
+        # The relabel changes the import's claim, so it needs the maintainer's approval of the bytes.
+        self.assertEqual(self.codes(local_delta, base), ["VENDORED_ROW_LOCAL_DELTA"])
+        self.assertEqual(self.codes(local_delta, base, approved=lambda path, data: data == edited), [])
+        removed_row = {"lib/PROVENANCE.md": self.manifest(), "lib/up.h": edited}
+        self.assertEqual(self.codes(removed_row, base), ["VENDORED_ROW_REMOVED"])
+        relabelled = {"lib/PROVENANCE.md": self.manifest(self.row("project-authored", edited)), "lib/up.h": edited}
+        self.assertEqual(self.codes(relabelled, base), ["VENDORED_ROW_RECLASSIFIED"])
+        self.assertEqual(self.codes({"lib/up.h": edited}, base), ["VENDORED_ROW_REMOVED"])
+        # Removing the import itself needs no manifest row.
+        self.assertEqual(self.codes({"lib/PROVENANCE.md": self.manifest()}, base), [])
+
+    def test_a_landed_import_cannot_approve_its_own_new_hash(self) -> None:
+        """Rewrite a landed byte-identical import and its pinned hashes together (#1889 review)."""
+        base = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical")), "lib/up.h": self.DATA}
+        edited = self.DATA + b"int injected(void);\n"
+        rehashed = {"lib/PROVENANCE.md": self.manifest(self.row("imported byte-identical", edited)), "lib/up.h": edited}
+        self.assertEqual(self.codes(rehashed), [], "the candidate manifest alone is self-consistent")
+        (finding,) = verifier._vendored_manifest_findings(rehashed, base)
+        self.assertEqual(finding.code, "VENDORED_ROW_REPINNED")
+        self.assertTrue(finding.maintainer_action)
+        self.assertTrue(finding.fatal)
+        # A new upstream revision in the header, even with the same bytes, is a new pin too.
+        relabelled_header = {
+            **base, "lib/PROVENANCE.md": base["lib/PROVENANCE.md"].replace(b"Upstream blob SHA", b"Upstream v9 blob SHA"),
+        }
+        self.assertEqual(self.codes(relabelled_header, base), ["VENDORED_ROW_REPINNED"])
+        self.assertEqual(self.codes(base, base), [])
+        # Only an approval of the candidate's exact bytes clears it.
+        self.assertEqual(self.codes(rehashed, base, approved=lambda path, data: data == edited), [])
+        self.assertEqual(self.codes(rehashed, base, approved=lambda path, data: data == self.DATA),
+                         ["VENDORED_ROW_REPINNED"])
+
+    def test_the_approval_is_a_trusted_exact_blob_entry_citing_the_path_record(self) -> None:
+        edited = self.DATA + b"/* new upstream */\n"
+        trusted = json.dumps({"records": [], "reviewed_blobs": [{
+            "path": "lib/up.h", "sha256": _sha(edited), "classification": "upstream-third-party",
+            "record_id": "lib-import",
+        }]}).encode("utf-8")
+        approved = verifier._vendored_change_approver(trusted, {"lib/up.h": {"id": "lib-import"}})
+        self.assertTrue(approved("lib/up.h", edited))
+        self.assertFalse(approved("lib/up.h", self.DATA), "another digest")
+        self.assertFalse(approved("lib/other.h", edited), "another path")
+        cites_another = verifier._vendored_change_approver(trusted, {"lib/up.h": {"id": "other-record"}})
+        self.assertFalse(cites_another("lib/up.h", edited), "an approval citing a record that does not cover the path")
+        self.assertFalse(verifier._vendored_change_approver(trusted, {})("lib/up.h", edited), "no exact record")
+        untouched = verifier._vendored_change_approver(b"not json", {})
+        self.assertEqual(self.codes({"lib/up.h": self.DATA}, {}, approved=untouched), [],
+                         "the approvals are read only when a change needs one")
+
+    def test_tables_without_a_kind_column_declare_nothing(self) -> None:
+        assets = b"| File | Archive path | SHA-256 |\n| --- | --- | --- |\n| `up.h` | x | `" + b"0" * 64 + b"` |\n"
+        self.assertEqual(self.codes({"lib/PROVENANCE.md": assets, "lib/up.h": self.DATA}), [])
+
+    def test_every_tracked_manifest_matches_its_files(self) -> None:
+        """The real tree: every byte-identical row of every PROVENANCE.md still holds."""
+        blobs = verifier.read_tree(ROOT, verifier._rev_tree(ROOT, "HEAD"))
+        rows = sum(
+            1 for path, raw in blobs.items() if path.endswith("/" + verifier.VENDOR_MANIFEST_NAME)
+            for row in verifier._manifest_rows(raw) or [] if verifier._is_byte_identical_kind(row.get("kind", ""))
+        )
+        self.assertGreater(rows, 0, "the tree carries byte-identical imports")
+        self.assertEqual([finding.as_dict() for finding in verifier._vendored_manifest_findings(blobs, blobs)], [])
 
 
 class IndependentRefreshMergeTests(EphemeralGenerationTests):
