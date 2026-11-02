@@ -120,10 +120,10 @@
     "tools/test_pgd_malformed.py": "Test for the excluded PGD implementation."
   },
   "notes": [
+    "Exclusion is evaluated before inclusion and always wins.",
     "A path that appears in no list resolves to default_disposition REJECT.",
     "Adding a path to include_paths is a publication decision and must be reviewed as one.",
-    "Excluded status is gated on qualified review, not on the administrative state of any issue tracker.",
-    "Exclusion is evaluated before inclusion and always wins."
+    "Excluded status is gated on qualified review, not on the administrative state of any issue tracker."
   ],
   "include_paths": [
     ".betterleaks.toml",
