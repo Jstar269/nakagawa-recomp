@@ -319,7 +319,7 @@ class _CodegenRun:
 def _codegen_functions(words: dict[int, int], profile: str,
                        static_verify: bool = False) -> dict[str, str]:
     """Run codegen.main in process over `words` and return its emitted functions."""
-    sv_was = codegen.SV_ENABLED
+    sv_was = codegen.OPTIONS.static_verify
     with tempfile.TemporaryDirectory(prefix="nakagawa-profile-isolation-") as tmp:
         tmp_path = Path(tmp)
         elf_path = tmp_path / "specimen.elf"
@@ -339,7 +339,7 @@ def _codegen_functions(words: dict[int, int], profile: str,
         finally:
             sys.stdout, sys.stderr = orig_out, orig_err
             # --static-verify flips a module global; never let it escape.
-            codegen.SV_ENABLED = sv_was
+            codegen.OPTIONS.static_verify = sv_was
         assert rc == 0, f"codegen failed profile={profile}: {captured}"
         texts = []
         if out_c.is_file():
@@ -514,7 +514,7 @@ class NonBodyCouplingTests(unittest.TestCase):
         return {base: LUI_T0, base + 4: ORI_T0}
 
     def test_sv_special_addresses_are_only_excluded_under_hst(self):
-        was, codegen.SV_ENABLED = codegen.SV_ENABLED, True
+        was, codegen.OPTIONS.static_verify = codegen.OPTIONS.static_verify, True
         try:
             for addr in sorted(codegen._SV_SPECIAL):
                 words = self._sv_words(addr)
@@ -540,7 +540,7 @@ class NonBodyCouplingTests(unittest.TestCase):
                     {a - control: v for a, v in ctl_pts.items()},
                 )
         finally:
-            codegen.SV_ENABLED = was
+            codegen.OPTIONS.static_verify = was
 
 
 class _FakeElf:
