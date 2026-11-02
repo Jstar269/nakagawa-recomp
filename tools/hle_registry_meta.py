@@ -1799,6 +1799,131 @@ HANDLER_METADATA = {
         ],
         "limitation": "a live block is freed once and coalesced, and a freed, zero or unknown UID returns 0x800200CB as recorded; freeing during a reschedule and the kernel's per-block header accounting are not modeled",
     },
+    "h_CpuSuspendIntr": {
+        "status": "partial",
+        "evidence": [
+            "docs/ARCHITECTURE.md#clocks (PSP-DISPLAY-001 display-mask-vcount and sceKernelCpuSuspendIntr: VCOUNT and VBLANK delivery stop while masked, system time and the display controller keep running)",
+            "PSPAutotests tests/intr/suspended.expected (the saved-state token: 1 from an enabled CPU, 0 when already suspended)",
+            "tests/native/hle_thread_selftest.c:test_interrupt_nid_semantics",
+            "tests/native/hle_thread_selftest.c:test_vcount_freezes_while_cpu_interrupts_are_masked",
+        ],
+        "limitation": "the returned token (1 enabled, 0 nested) and the masked-window VCOUNT/VBLANK freeze are measured; nesting beyond two levels, a suspend taken from an interrupt or callback context, and any thread switch while masked are not measured (#341)",
+    },
+    "h_CpuResumeIntr": {
+        "status": "partial",
+        "evidence": [
+            "docs/ARCHITECTURE.md#clocks (PSP-DISPLAY-001 display-mask-vcount: a mask crossing no source period credits +0 VCOUNT on resume, one or more credit +1)",
+            "tests/native/hle_thread_selftest.c:test_interrupt_nid_semantics",
+            "tests/native/hle_thread_selftest.c:test_vcount_credits_one_deferred_period_on_resume",
+        ],
+        "limitation": "the one coalesced VBLANK delivery and the +0/+1 VCOUNT credit on resume are measured; a token other than 0 or 1 is treated as keeping interrupts suspended, which no PSP cell records, and resume from an interrupt handler is not measured (#341)",
+    },
+    "h_CpuResumeIntrWithSync": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_interrupt_nid_semantics",
+        ],
+        "limitation": "an alias of sceKernelCpuResumeIntr with no PSP measurement of its own; the memory synchronisation the name implies is not modelled and the Resume limitations apply (#341)",
+    },
+    "h_CpuIsIntrSuspended": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/intr/suspended.expected (0 -> 1, 1 -> 0, 2 -> 0, 0xDEADBEEF -> 0, identical with interrupts enabled and suspended)",
+            "tests/native/hle_thread_selftest.c:test_is_cpu_intr_suspended_is_token_predicate",
+        ],
+        "limitation": "a pure predicate that returns 1 only for token 0; the four measured tokens match and every other token value is inferred from them (#341)",
+    },
+    "h_DisplayGetAccumulatedHcount": {
+        "status": "partial",
+        "evidence": [
+            "docs/ARCHITECTURE.md#clocks (PSP-DISPLAY-001 sceDisplayGetAccumulatedHcount: +69 scanlines over 4 ms and +857 over 50 ms through every interrupt mask, 286 lines per period)",
+            "tests/native/hle_thread_selftest.c:test_display_clock_reads_are_observational",
+        ],
+        "limitation": "the counter advances at the measured 286 lines per display period through a CPU interrupt mask; its absolute value after boot and its wrap width are not measured, and the runtime derives the phase from the 60000/1001 model rather than the device's measured 16,682,850 ns period (#341)",
+    },
+    "h_DisplayGetVcount": {
+        "status": "partial",
+        "evidence": [
+            "docs/ARCHITECTURE.md#clocks (PSP-DISPLAY-001 display-mask-vcount: VCOUNT stops under CpuSuspendIntr and credits +0 or +1 on resume)",
+            "tests/native/hle_thread_selftest.c:test_vcount_freezes_while_cpu_interrupts_are_masked",
+            "tests/native/hle_thread_selftest.c:test_vcount_credits_one_deferred_period_on_resume",
+            "tests/native/hle_thread_selftest.c:test_vcount_tracks_elapsed_source_periods",
+        ],
+        "limitation": "the masked-window freeze and the resume credit are measured; the value is the count last updated at a service point, so a VBLANK edge already passed but not yet delivered can be missing, which a live register read would not show (#341)",
+    },
+    "h_SetVTimerHandler": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/vtimers/sethandler.expected at 2ed7c9c5 (store of schedule, handler and common; uid 0 0x800201BF; unknown uid 0x800201BE)",
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-TIMER-ORDER-001: timer-order-vtimer-handler, timer-order-vtimer-event)",
+            "tests/native/hle_thread_selftest.c:test_vtimer_handler_registration_and_errors",
+            "tests/native/hle_thread_selftest.c:test_vtimer_handler_runs_at_its_schedule_and_reschedules",
+        ],
+        "limitation": "registration, the error codes, the handler arguments and the reschedule rule follow the recorded cells; a NULL time pointer is not measured (the PSP crashes) and stops the run by name, as does a Set from inside the timer's own handler (#341)",
+    },
+    "h_SetVTimerHandlerWide": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/vtimers/sethandler.expected at 2ed7c9c5 (the Wide form takes the time as a 64-bit value and behaves like SetVTimerHandler)",
+            "tests/native/hle_thread_selftest.c:test_vtimer_handler_registration_and_errors",
+            "tests/native/hle_thread_selftest.c:test_vtimer_handler_runs_at_its_schedule_and_reschedules",
+        ],
+        "limitation": "the 64-bit argument placement (a2/a3, handler and common from the stack) follows the public signature and the shared registration cells; the Wide form has no hardware cell of its own, and a Set from inside the timer's own handler stops the run by name (#341)",
+    },
+    "h_CancelVTimerHandler": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/vtimers/cancelhandler.expected at 2ed7c9c5 (clears the handler, keeps schedule and common, repeatable; from inside the timer's own handler 0x800201BF for that timer and 0x800201BE for uid 0)",
+            "tests/native/hle_thread_selftest.c:test_vtimer_handler_registration_and_errors",
+            "tests/native/hle_thread_selftest.c:test_vtimer_handler_catches_up_and_refuses_cancel_inside",
+        ],
+        "limitation": "the recorded cells match; error precedence for a cancel from inside a handler on another timer beyond the recorded uid cases is not measured (#341)",
+    },
+    "h_AllocPartitionMemory": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5 (partitions 1, 3 and 4 0x800200D6, other numbers 0x800200D2, type past 4 0x800200D8)",
+            "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: vmem-alloc-free and vmem-alloc-held, a partition-5 Low block at 0x08400000 and a partition-2 Addr block there 0x800200D9)",
+            "tests/native/hle_thread_selftest.c:test_partition_unknown_block_codes",
+            "tests/native/hle_thread_selftest.c:test_td23_guest_pointer_validation",
+            "tests/native/hle_thread_selftest.c:test_td28_partition_free_reuse",
+        ],
+        "limitation": "partition and type refusals, the volatile-partition cells and the unplaceable-Addr code match the recorded cells; where a PSP places a partition-6 block is unmeasured, partitions 2 and 6 accept a NULL name that the PSP refuses (existing callers rely on it), a zero size allocates 16 bytes rather than being checked against the recorded size cells, and blocks are placed from a bump heap rather than the kernel's allocator (#341)",
+    },
+    "h_CtrlReadBuffer": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: ctrl-empty-read, ctrl-short-read, ctrl-short-read-next consumption; a read right after a read waits for the next sample)",
+            "PSPAutotests tests/ctrl/sampling and tests/ctrl/vblank at f573fe8c (a read right after a read answers 1)",
+            "tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract",
+            "tests/native/hle_thread_selftest.c:test_ctrl_sampling_contract",
+        ],
+        "limitation": "consumption of every unread sample, the newest-sample window and the one-sample wait match the recorded cells; samples are latched once per VBLANK whatever the sampling cycle, and digital mode does not centre the stick in the delivered data (#1390, #341)",
+    },
+    "h_CtrlPeekBufferPositive": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: ctrl-peek-count, a peek of 64, 3 and 1 right after a read returns 64, 3 and 1)",
+            "PSPAutotests tests/ctrl/sampling and tests/ctrl/vblank at f573fe8c (a peek never blocks, also inside a VBLANK handler)",
+            "tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract",
+            "tests/native/hle_thread_selftest.c:test_ctrl_sampling_contract",
+        ],
+        "limitation": "the peek counts and non-consumption match the recorded cells; sample timestamps beyond the recorded counts and the stick bytes in digital mode are not measured (#1390, #341)",
+    },
+    "h_CtrlReadBufferNegative": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract",
+        ],
+        "limitation": "the positive read contract with the button word inverted, from the public pspctrl.h description; no hardware cell measures the negative variants, and the positive-read limitations apply (#341)",
+    },
+    "h_CtrlPeekBufferNegative": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract",
+        ],
+        "limitation": "the positive peek contract with the button word inverted, from the public pspctrl.h description; no hardware cell measures the negative variants, and the positive-peek limitations apply (#341)",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
@@ -1820,6 +1945,76 @@ HANDLER_LIMITATIONS = {
     for h, meta in HANDLER_METADATA.items()
     if isinstance(meta, dict) and "limitation" in meta
 }
+
+#: Partial or compatibility handlers whose status predates the rule that every such
+#: status cites evidence (#341). The list may only shrink: `validate_meta` rejects a
+#: partial/compatibility handler with no `evidence` that is not named here, and rejects
+#: an entry here that has since gained evidence or left those statuses. Graduating one
+#: means adding its evidence and deleting its line.
+PARTIAL_WITHOUT_EVIDENCE = frozenset({
+    "h_AudioSRCChRelease",
+    "h_AudioSRCChReserve",
+    "h_AudioSRCOutputBlocking",
+    "h_CancelReceiveMbx",
+    "h_CreateMbx",
+    "h_CreateVTimer",
+    "h_CtrlGetSamplingMode",
+    "h_DeleteMbx",
+    "h_DeleteVTimer",
+    "h_DisplayWaitVblankStartMulti",
+    "h_DmacMemcpy",
+    "h_DmacTryMemcpy",
+    "h_FreeMemoryBlock",
+    "h_GeListEnQueueHead",
+    "h_GetMemoryBlockAddr",
+    "h_GetSystemTime",
+    "h_GetSystemTimeLow",
+    "h_GetVTimerBase",
+    "h_GetVTimerTime",
+    "h_IoDevctl",
+    "h_IoWaitAsyncCB",
+    "h_Memcpy",
+    "h_MpegChangeGetAuMode",
+    "h_MpegQueryPcmEsSize",
+    "h_NpDrmClearLicenseeKey",
+    "h_NpDrmSetLicenseeKey",
+    "h_PollMbx",
+    "h_PsmfGetAudio",
+    "h_PsmfGetVideo",
+    "h_ReceiveMbx",
+    "h_ReceiveMbxCB",
+    "h_ReferMbxStatus",
+    "h_ReferProfilerNull",
+    "h_ReferSemaStatus",
+    "h_ReferSystemStatus",
+    "h_ReferThreadStatus",
+    "h_ReferVTimerStatus",
+    "h_RegCloseCategory",
+    "h_RegCloseRegistry",
+    "h_RegCreateKey",
+    "h_RegFlushCategory",
+    "h_RegFlushRegistry",
+    "h_RegGetKeyInfo",
+    "h_RegGetKeyInfoByName",
+    "h_RegGetKeyValue",
+    "h_RegGetKeyValueByName",
+    "h_RegGetKeys",
+    "h_RegGetKeysNum",
+    "h_RegOpenCategory",
+    "h_RegOpenRegistry",
+    "h_RegRemoveCategory",
+    "h_RegSetKeyValue",
+    "h_RtcGetWin32FileTime",
+    "h_SendMbx",
+    "h_StartVTimer",
+    "h_StopVTimer",
+    "h_SysClock2USec",
+    "h_SysClock2USecWide",
+    "h_USec2SysClock",
+    "h_USec2SysClockWide",
+    "h_UmdGetErrorStat",
+    "h_UmdUnRegisterUMDCallBack",
+})
 
 # Alias-consistency rules: every static registration whose *registered name*
 # starts with `name_prefix` must route to `required_handler`. This is how the
@@ -1955,15 +2150,11 @@ WAIVERS = ()
 PROFILE_ZERO_ISSUE = "https://github.com/Jstar269/nakagawa-recomp/issues/341"
 PROFILE_ZERO_UNREVIEWED_IMPORTS = {
     0x05DB22CE: {"name": "sceGeUnsetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeUnsetCallback
-    0x092968F4: {"name": "sceKernelCpuSuspendIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuSuspendIntr
     0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
     0x13F592BC: {"name": "sceAudioOutputPannedBlocking", "issue": PROFILE_ZERO_ISSUE},  # h_AudioOutputPannedBlocking
     0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
-    0x1F803938: {"name": "sceCtrlReadBufferPositive", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlReadBuffer
-    0x237DBD4F: {"name": "sceKernelAllocPartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_AllocPartitionMemory
     0x293B45B8: {"name": "sceKernelGetThreadId", "issue": PROFILE_ZERO_ISSUE},  # h_GetThreadIdSched
     0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
-    0x5F10D406: {"name": "sceKernelCpuResumeIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuResumeIntr
     0xA291F107: {"name": "sceKernelMaxFreeMemSize", "issue": PROFILE_ZERO_ISSUE},  # h_MaxFreeMemSize
     0xA4FC06A4: {"name": "sceGeSetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeSetCallback
     0xA6BAB2E9: {"name": "sceKernelStdout", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
