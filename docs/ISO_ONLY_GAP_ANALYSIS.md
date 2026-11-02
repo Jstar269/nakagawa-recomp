@@ -35,7 +35,7 @@ Guest middleware and title acceptance remain partial or open.
 | :--- | :--- | :--- | :--- | :--- |
 | **Main Executable** | A user-supplied decrypted MIPS ELF (`EBOOT.elf`) or the automatically selected plain `BOOT.BIN` fallback | The analyzer consumes MIPS ELF32 only; an encrypted executable without a decrypted copy fails closed as `ENCRYPTED_EXECUTABLE` | The player decrypts it from the user's disc with built-in tables ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); plain and user-decrypted inputs are accepted | **USER-SUPPLIED DECRYPTED INPUT; TITLE EXECUTION AND ACCEPTANCE REMAIN TITLE-SPECIFIC** |
 | **Encrypted PRXs** | User-decrypted copies of the modules selected by the player or required by the title manifest | An encrypted module without a plain copy fails closed as `ENCRYPTED_MODULE`; guest translation/startup and middleware support remain separate boundaries | The player decrypts them from the user's disc with built-in tables ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); genuine guest middleware execution remains incomplete | **USER-SUPPLIED DECRYPTED INPUT; GUEST MIDDLEWARE EXECUTION PARTIAL** |
-| **PSP System Fonts** | Dumped firmware PGFs (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/` | Sony PGF format has proprietary metrics; fonts reside in firmware, not on UMD | Honest prerequisite: require user firmware dump for authentic rendering; optional synthetic font provider for developer convenience | **HONEST_PREREQUISITE_REQUIRED** |
+| **PSP System Fonts** | Dumped firmware PGFs (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/` | Sony PGF format has proprietary metrics; fonts reside in firmware, not on UMD | Honest prerequisite: require the user's own console fonts for authentic rendering; optional synthetic font provider for developer convenience | **HONEST_PREREQUISITE_REQUIRED** |
 | **Video Middleware** | Host-HLE `scePsmfPlayer*` driving it over a bounded PSMF producer (see `docs/LLE_FIDELITY_ARCHITECTURE.md` §3.4) | The host-HLE player works, but the genuine `psmf.prx` / `libpsmfplayer.prx` middleware is not executing yet | Execute original guest `psmf.prx` & `libpsmfplayer.prx`; bridge only the lowest hardware codec boundary (`sceMpeg`) to host decoders | **PARTIAL — CODEC BRIDGE AND PRODUCER LANDED; GUEST MIDDLEWARE EXECUTION OPEN** |
 | **Game Assets** | Loose `xbdata_extracted/` (~56k files) or the `.xb` archives | Host filesystem previously expected flat directories | Transparent in-engine block VFS reading `.xb` archive sectors directly, preserving all PSP I/O semantics | **LANDED — READ-ONLY ARCHIVE-BACKED VFS (#298); LOOSE LAYOUT STILL ACCEPTED** |
 | **Title Manifest** | The title-specific manifest; HST's ships in `assets/titles/` | Other titles have none yet | Generic title-catalog parameterization without hardcoded patches | **GENERIC SUPPORT EXISTS; HST MANIFEST PUBLIC; OTHER TITLES NOT RUN** |
@@ -73,7 +73,7 @@ are not evidence that the paths have landed in the current player.
 * **The Authentic PGF Path:**
   * The game calls `libfont.prx` to load PGF fonts.
   * The system fonts (`jpn0.pgf`, `ltn0.pgf`) reside in PSP firmware `flash0:/font/`, not on the game disc.
-  * **Honest Prerequisite Policy:** We state truthfully that 100% authentic typography requires a user-supplied firmware font dump.
+  * **Honest Prerequisite Policy:** We state truthfully that 100% authentic typography requires the PSP's own fonts, copied by the user from their own console's `flash0:/font/`.
   * Nakagawa may offer a clearly labeled, non-authentic fallback font provider for developers without firmware files, but it will never be masqueraded as an authentic LLE replacement.
 
 ---
@@ -108,7 +108,7 @@ are not evidence that the paths have landed in the current player.
 $$\text{Ideal Target:} \quad \text{Nakagawa} + \text{Game ISO} \implies \text{Play}$$
 $$\text{Bounded Route:} \quad \text{Nakagawa} + \text{Game ISO} + \text{user-supplied decrypted files when needed} \implies \text{title-specific analysis and launch attempt}$$
 
-Authentic PGF typography separately requires user-supplied firmware fonts.
+Authentic PGF typography separately requires fonts the user copies from their own console.
 
 The project can continue automating everything possible (ISO inspection,
 transparent VFS mounting, and dynamic module loading) without compromising

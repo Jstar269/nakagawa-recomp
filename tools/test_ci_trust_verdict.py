@@ -507,7 +507,7 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", self.text)
         self.assertNotIn("head.ref", self.text)
         self.assertNotIn("github.head_ref", self.text)
-        self.assertEqual(self.text.count("actions/checkout@"), 1)
+        self.assertEqual(self.text.count("actions/checkout@"), 2)   # the approval job and the verdict job
 
     def test_least_privilege(self) -> None:
         self.assertIn("\npermissions: {}\n", self.text)
@@ -900,6 +900,549 @@ class CollectorTests(unittest.TestCase):
         gh = FakeGitHub(Scenario())
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
             self._main(gh, "--head-sha", "HEAD")
+
+
+D1 = "1" * 64
+D2 = "2" * 64
+BEFORE = "d" * 40
+LABELLED_AT = "2026-10-28T09:59:00Z"   # before PUSHED: the label predates the head, so only a carry can approve it
+VERDICT_RUN_PATH = ctv.VERDICT_WORKFLOW
+
+
+def _record(run_id: int, digest: str, *, sha: str = HEAD, path: str = VERDICT_RUN_PATH,
+            event: str = "pull_request_target", conclusion: str | None = "success",
+            status: str = "completed", name: str | None = None, job_sha: str | None = None,
+            number: int = PR, run_prs: tuple[int, ...] = (PR,), base: str = "main") -> tuple[dict, dict]:
+    """A run and its one job, shaped like the approval record the label workflow leaves."""
+    run = _run(run_id, path, event, sha=sha, prs=run_prs)
+    for item in run["pull_requests"]:
+        item["base"]["ref"] = base
+    job = _job(run_id * 100, name or f"{ctv.APPROVAL_RECORD_PREFIX}{number} {digest}", sha=job_sha or sha,
+               status=status, conclusion=conclusion)
+    return run, job
+
+
+def _carried(digest: str | None = D1, records: tuple[str, ...] = (D1,), **label) -> Scenario:
+    """A head that changes a CI tool, carrying a label applied before the head arrived."""
+    scenario = Scenario()
+    scenario.change("tools/ci_paths.py")
+    scenario.label(at=label.pop("at", LABELLED_AT), **label)
+    scenario.raw["head_digest"] = digest
+    scenario.raw["approval_records"] = list(records)
+    return scenario
+
+
+class CarriedApprovalTests(VerdictAssertions):
+    """A label applied before this head arrived approves it only when its protected content is unchanged."""
+
+    def test_unchanged_protected_content_keeps_the_approval(self) -> None:
+        verdict = self.assertVerdict(_carried(), "success")
+        self.assertEqual([item.code for item in verdict.findings], ["CI_CHANGE_APPROVED"])
+        self.assertIn("byte-identical", verdict.findings[0].message)
+
+    def test_changed_protected_content_drops_the_approval(self) -> None:
+        self.assertVerdict(_carried(digest=D2), "failure", "CI_CHANGE_UNAPPROVED")
+
+    def test_no_record_at_this_head_drops_the_approval(self) -> None:
+        self.assertVerdict(_carried(records=()), "failure", "CI_CHANGE_UNAPPROVED")
+
+    def test_a_record_of_another_digest_is_not_this_content(self) -> None:
+        self.assertVerdict(_carried(records=(D2,)), "failure", "CI_CHANGE_UNAPPROVED")
+
+    def test_a_digest_that_could_not_be_computed_drops_the_approval(self) -> None:
+        self.assertVerdict(_carried(digest=None), "failure", "CI_CHANGE_UNAPPROVED")
+
+    def test_a_retargeted_pull_request_does_not_carry_an_approval(self) -> None:
+        scenario = _carried()
+        scenario.raw["label_events"].append({"id": 9, "event": "base_ref_changed", "created_at": "2026-10-28T10:20:00Z"})
+        self.assertVerdict(scenario, "failure", "CI_CHANGE_UNAPPROVED")
+
+    def test_a_matching_record_does_not_replace_the_label(self) -> None:
+        scenario = _carried()
+        scenario.raw["pull_request"]["labels"] = []
+        self.assertVerdict(scenario, "failure", "CI_CHANGE_UNAPPROVED")
+
+    def test_a_matching_record_does_not_excuse_a_label_from_a_user_without_write(self) -> None:
+        self.assertVerdict(_carried(permission="triage", actor="helper"), "failure", "CI_CHANGE_UNAPPROVED")
+
+    def test_a_matching_record_does_not_survive_the_label_being_removed(self) -> None:
+        scenario = _carried()
+        scenario.label(at="2026-10-28T10:06:00Z", event="unlabeled")
+        self.assertVerdict(scenario, "failure", "CI_CHANGE_UNAPPROVED")
+
+    def test_a_carried_approval_still_needs_every_intended_job(self) -> None:
+        scenario = _carried()
+        scenario.job(1, "CI required")["conclusion"] = "failure"
+        self.assertVerdict(scenario, "failure", "JOB_FAILED")
+
+
+class ApprovalRecordForgeryTests(unittest.TestCase):
+    """Only a successful job of a pull_request_target run of the verdict workflow at this head is a record."""
+
+    def digests(self, *pairs: tuple[dict, dict], head: str = HEAD) -> set[str]:
+        runs = [run for run, _ in pairs]
+        jobs = {run["id"]: [job] for run, job in pairs}
+        found: set[str] = ctv.record_digests(runs, lambda run_id: jobs[run_id], head, PR, "main")
+        return found
+
+    def test_the_genuine_record_is_read(self) -> None:
+        self.assertEqual(self.digests(_record(1, D1)), {D1})
+
+    def test_a_job_of_a_pull_request_run_is_ignored(self) -> None:
+        # A candidate controls its own pull_request workflows, including a copy of this file under this path.
+        self.assertEqual(self.digests(_record(1, D1, event="pull_request")), set())
+
+    def test_a_job_of_a_workflow_run_or_dispatch_is_ignored(self) -> None:
+        self.assertEqual(self.digests(_record(1, D1, event="workflow_run"), _record(2, D1, event="workflow_dispatch")),
+                         set())
+
+    def test_a_job_of_another_workflow_is_ignored(self) -> None:
+        self.assertEqual(self.digests(_record(1, D1, path=".github/workflows/evil.yml")), set())
+
+    def test_a_record_of_another_head_is_ignored(self) -> None:
+        self.assertEqual(self.digests(_record(1, D1, sha=OTHER)), set())
+        self.assertEqual(self.digests(_record(2, D1, job_sha=OTHER)), set())
+
+    def test_a_failed_cancelled_or_unfinished_record_is_ignored(self) -> None:
+        self.assertEqual(self.digests(_record(1, D1, conclusion="failure"), _record(2, D1, conclusion="cancelled"),
+                                      _record(3, D1, conclusion=None, status="in_progress")), set())
+
+    def test_malformed_names_are_ignored(self) -> None:
+        prefix = "CI approval record v1 "
+        for name in (f"{prefix}pr{PR} {D1[:-1]}", f"{prefix}pr{PR} {D1}0", f"{prefix}pr{PR} {(chr(97) * 64).upper()}",
+                     f"{prefix}pr{PR}{D1}", f"{prefix}{D1}", f"{prefix}pr0{PR} {D1}", f"{prefix}pr-{PR} {D1}",
+                     f"CI approval record v2 pr{PR} {D1}", f"x {prefix}pr{PR} {D1}", f"{prefix}pr{PR} {D1} ",
+                     prefix, "Compute trusted CI verdict"):
+            with self.subTest(name=name):
+                self.assertEqual(self.digests(_record(1, D1, name=name)), set())
+
+    def test_a_record_for_another_pull_request_at_the_same_sha_is_ignored(self) -> None:
+        """Two pull requests can share a head SHA; a record names the pull request it was written for."""
+        self.assertEqual(self.digests(_record(1, D1, number=PR + 1)), set())
+        self.assertEqual(self.digests(_record(2, D1, number=PR)), {D1})
+
+    def test_a_run_reported_for_another_pull_request_or_base_is_ignored(self) -> None:
+        self.assertEqual(self.digests(_record(1, D1, run_prs=(PR + 1,))), set())
+        self.assertEqual(self.digests(_record(2, D1, base="release")), set())
+        self.assertEqual(self.digests(_record(3, D1, run_prs=())), {D1})   # a fork's run reports no pull requests
+
+    def test_a_retargeted_pull_request_is_never_carried(self) -> None:
+        gh = ApprovalGitHub(records=(_record(6, D1, sha=BEFORE),))
+        gh.events.append({"id": 9, "event": "base_ref_changed", "created_at": "2026-10-28T10:20:00Z"})
+        with mock.patch.object(ctv, "candidate_digest", return_value=D1), self.assertRaises(ctv.ApprovalRefused):
+            ctv.carry_approval(gh, Path("."), PR, BEFORE, HEAD, "main")
+
+    def test_a_forged_record_does_not_approve_in_the_collector(self) -> None:
+        """Failing-before: there was no record to forge, and a stale label was always withdrawn by the workflow."""
+        scenario = Scenario()
+        scenario.change("tools/ci_paths.py")
+        scenario.label(at=LABELLED_AT)
+        run, job = _record(6, D1, event="pull_request")
+        scenario.raw["workflow_runs"].append(run)
+        scenario.raw["jobs"]["6"] = [job]
+        gh = FakeGitHub(scenario)
+        with mock.patch.object(ctv, "git_facts", return_value=_facts(scenario.raw["protected_changes"])), \
+                mock.patch.object(ctv, "approval_digest", return_value=D1):
+            raw = ctv.collect(gh, Path("."), "main", HEAD, PR)
+        assert raw is not None
+        self.assertEqual(raw["approval_records"], [])
+        self.assertEqual(ctv.evaluate(ctv.normalise(raw)).state, "failure")
+
+
+class CarriedApprovalCollectorTests(unittest.TestCase):
+    def collect(self, scenario: Scenario, digest: str = D1, **errors) -> dict:
+        gh = FakeGitHub(scenario)
+        with mock.patch.object(ctv, "git_facts", return_value=_facts(scenario.raw["protected_changes"])), \
+                mock.patch.object(ctv, "approval_digest", return_value=digest, **errors), \
+                mock.patch("sys.stderr"):
+            raw = ctv.collect(gh, Path("."), "main", HEAD, PR)
+        assert raw is not None
+        result: dict = raw
+        return result
+
+    def scenario(self) -> Scenario:
+        scenario = Scenario()
+        scenario.change("tools/ci_paths.py")
+        scenario.label(at=LABELLED_AT)
+        run, job = _record(6, D1)
+        scenario.raw["workflow_runs"].append(run)
+        scenario.raw["jobs"]["6"] = [job]
+        return scenario
+
+    def test_a_recorded_unchanged_head_is_approved(self) -> None:
+        raw = self.collect(self.scenario())
+        self.assertEqual(raw["approval_records"], [D1])
+        self.assertEqual(ctv.evaluate(ctv.normalise(raw)).state, "success")
+
+    def test_changed_content_is_not(self) -> None:
+        self.assertEqual(ctv.evaluate(ctv.normalise(self.collect(self.scenario(), digest=D2))).state, "failure")
+
+    def test_a_failed_digest_computation_drops_the_approval(self) -> None:
+        raw = self.collect(self.scenario(), side_effect=subprocess.CalledProcessError(128, "git"))
+        self.assertNotIn("head_digest", raw)
+        self.assertEqual(ctv.evaluate(ctv.normalise(raw)).state, "failure")
+
+    def test_a_failed_record_lookup_drops_the_approval(self) -> None:
+        scenario = self.scenario()
+
+        class Failing(FakeGitHub):
+            def paginate(self, path: str, key: str | None = None) -> list:
+                if path.startswith("actions/runs/6/jobs"):
+                    raise urllib.error.URLError("connection reset")
+                return super().paginate(path, key)
+
+        with mock.patch.object(ctv, "git_facts", return_value=_facts(scenario.raw["protected_changes"])), \
+                mock.patch.object(ctv, "approval_digest", return_value=D1), mock.patch("sys.stderr"):
+            raw = ctv.collect(Failing(scenario), Path("."), "main", HEAD, PR)
+        assert raw is not None
+        self.assertEqual(ctv.evaluate(ctv.normalise(raw)).state, "failure")
+
+    def test_nothing_is_hashed_without_a_label_or_without_a_protected_change(self) -> None:
+        unlabelled = self.scenario()
+        unlabelled.raw["pull_request"]["labels"] = []
+        behind = self.scenario()
+        behind.raw["protected_changes"] = [{"path": CI, "kind": "behind"}]
+        for scenario in (unlabelled, behind):
+            gh = FakeGitHub(scenario)
+            with mock.patch.object(ctv, "git_facts", return_value=_facts(scenario.raw["protected_changes"])), \
+                    mock.patch.object(ctv, "approval_digest") as digest:
+                ctv.collect(gh, Path("."), "main", HEAD, PR)
+            digest.assert_not_called()
+
+
+class ApprovalGitHub(ctv.GitHub):
+    """The label workflow's reads: the pull request, its label events, a user's permission and recorded runs."""
+
+    def __init__(self, *, head: str = HEAD, labels: tuple[str, ...] = (ctv.APPROVAL_LABEL,),
+                 permission: str | None = "write", events: list[dict] | None = None,
+                 records: tuple[tuple[dict, dict], ...] = (), broken: str | None = None) -> None:
+        super().__init__("Jstar269/nakagawa-recomp", "token")
+        self.pull = _pull_request(head=head, labels=labels)
+        self.permission = permission
+        self.events = events if events is not None else [{
+            "id": 1, "event": "labeled", "created_at": LABELLED_AT, "actor": {"login": "maintainer"},
+            "label": {"name": ctv.APPROVAL_LABEL},
+        }]
+        self.records = list(records)
+        self.broken = broken
+
+    def _check(self, path: str) -> None:
+        if self.broken and path.startswith(self.broken):
+            raise urllib.error.URLError("down")
+
+    def get(self, path: str) -> object:
+        self._check(path)
+        if path == f"pulls/{PR}":
+            return self.pull
+        if path.startswith("collaborators/"):
+            return {"permission": self.permission}
+        raise AssertionError(path)
+
+    def paginate(self, path: str, key: str | None = None) -> list:
+        self._check(path)
+        if path == f"issues/{PR}/events":
+            return self.events
+        if path.startswith("actions/runs?head_sha="):
+            sha = path.split("=", 1)[1]
+            return [run for run, _ in self.records if run["head_sha"] == sha]
+        if path.startswith("actions/runs/"):
+            run_id = int(path.split("/")[2])
+            return [job for run, job in self.records if run["id"] == run_id]
+        raise AssertionError(path)
+
+
+class RecordAndCarryTests(unittest.TestCase):
+    """The label workflow's two steps: record on a label, carry on a push. Any doubt refuses."""
+
+    def record(self, gh: ApprovalGitHub, digest: str = D1) -> str:
+        with mock.patch.object(ctv, "candidate_digest", return_value=digest):
+            digest_out: str = ctv.record_approval(gh, Path("."), PR, HEAD, "main")
+            return digest_out
+
+    def carry(self, gh: ApprovalGitHub, digest: str = D1, before: str = BEFORE) -> str:
+        with mock.patch.object(ctv, "candidate_digest", return_value=digest):
+            digest_out: str = ctv.carry_approval(gh, Path("."), PR, before, HEAD, "main")
+            return digest_out
+
+    def test_a_label_from_a_user_with_write_records_the_digest(self) -> None:
+        self.assertEqual(self.record(ApprovalGitHub()), D1)
+
+    def test_a_label_from_a_user_without_write_records_nothing(self) -> None:
+        for permission in ("triage", "read", "none", None):
+            with self.subTest(permission=permission), self.assertRaises(ctv.ApprovalRefused):
+                self.record(ApprovalGitHub(permission=permission))
+
+    def test_a_removed_label_or_a_moved_head_records_nothing(self) -> None:
+        with self.assertRaises(ctv.ApprovalRefused):
+            self.record(ApprovalGitHub(labels=()))
+        with self.assertRaises(ctv.ApprovalRefused):
+            self.record(ApprovalGitHub(head=OTHER))   # the head moved after the event named HEAD
+        unlabeled = [{"id": 2, "event": "unlabeled", "created_at": "2026-10-28T10:00:00Z",
+                      "actor": {"login": "maintainer"}, "label": {"name": ctv.APPROVAL_LABEL}}]
+        with self.assertRaises(ctv.ApprovalRefused):
+            self.record(ApprovalGitHub(events=ApprovalGitHub().events + unlabeled))
+
+    def test_the_head_moving_while_it_is_hashed_records_nothing(self) -> None:
+        gh = ApprovalGitHub()
+
+        def move(*_args, **_kwargs) -> str:
+            gh.pull["head"]["sha"] = OTHER
+            return D1
+
+        with mock.patch.object(ctv, "candidate_digest", side_effect=move), self.assertRaises(ctv.ApprovalRefused):
+            ctv.record_approval(gh, Path("."), PR, HEAD, "main")
+
+    def test_an_unchanged_digest_is_carried(self) -> None:
+        self.assertEqual(self.carry(ApprovalGitHub(records=(_record(6, D1, sha=BEFORE),))), D1)
+
+    def test_a_changed_digest_is_not_carried(self) -> None:
+        with self.assertRaises(ctv.ApprovalRefused):
+            self.carry(ApprovalGitHub(records=(_record(6, D1, sha=BEFORE),)), digest=D2)
+
+    def test_no_record_at_the_previous_head_is_not_carried(self) -> None:
+        with self.assertRaises(ctv.ApprovalRefused):
+            self.carry(ApprovalGitHub())
+
+    def test_a_forged_record_at_the_previous_head_is_not_carried(self) -> None:
+        for forged in (_record(6, D1, sha=BEFORE, event="pull_request"),
+                       _record(6, D1, sha=BEFORE, path=".github/workflows/evil.yml"),
+                       _record(6, D1, sha=BEFORE, conclusion="failure"),
+                       _record(6, D1, sha=HEAD)):   # a record at the NEW head says nothing about the old one
+            with self.subTest(forged=forged[0]["path"], event=forged[0]["event"]), self.assertRaises(ctv.ApprovalRefused):
+                self.carry(ApprovalGitHub(records=(forged,)))
+
+    def test_a_record_at_an_older_head_is_not_carried_through_a_gap(self) -> None:
+        with self.assertRaises(ctv.ApprovalRefused):
+            self.carry(ApprovalGitHub(records=(_record(6, D1, sha=OTHER),)))
+
+    def test_a_label_that_is_not_from_write_is_not_carried(self) -> None:
+        with self.assertRaises(ctv.ApprovalRefused):
+            self.carry(ApprovalGitHub(permission="triage", records=(_record(6, D1, sha=BEFORE),)))
+
+    def test_a_push_that_did_not_move_the_head_is_refused(self) -> None:
+        with self.assertRaises(ctv.ApprovalRefused):
+            self.carry(ApprovalGitHub(records=(_record(6, D1, sha=HEAD),)), before=HEAD)
+
+    def test_a_closed_pull_request_or_other_base_is_not_carried(self) -> None:
+        for change in ({"state": "closed"}, {"base": {"ref": "release"}}):
+            gh = ApprovalGitHub(records=(_record(6, D1, sha=BEFORE),))
+            gh.pull |= change
+            with self.subTest(change=change), self.assertRaises(ctv.ApprovalRefused):
+                self.carry(gh)
+
+    def test_the_candidate_ref_not_matching_the_head_refuses_the_digest(self) -> None:
+        with mock.patch.object(ctv, "fetch_candidate", return_value=OTHER), self.assertRaises(ctv.ApprovalRefused):
+            ctv.candidate_digest(ApprovalGitHub(), Path("."), PR, HEAD)
+
+    def _main(self, gh: ApprovalGitHub, *args: str, output: Path) -> tuple[int, str]:
+        with mock.patch.object(ctv, "GitHub", return_value=gh), mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t"}), \
+                mock.patch.object(ctv, "candidate_digest", return_value=D1), \
+                mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+            code = ctv.main(["--repository", gh.repository, "--pull-request", str(PR), "--head-sha", HEAD,
+                             "--github-output", str(output), *args])
+        return code, output.read_text(encoding="utf-8") if output.exists() else ""
+
+    def test_the_command_writes_the_digest_for_the_job_name_only_on_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "out"
+            records = (_record(6, D1, sha=BEFORE),)
+            self.assertEqual(self._main(ApprovalGitHub(), "--approval", "record", output=output), (0, f"digest={D1}\n"))
+            output.unlink()
+            self.assertEqual(self._main(ApprovalGitHub(records=records), "--approval", "carry",
+                                        "--before-sha", BEFORE, output=output), (0, f"digest={D1}\n"))
+            output.unlink()
+            # Fail closed: no record, an API failure, or a malformed SHA leave the output empty and exit non-zero.
+            self.assertEqual(self._main(ApprovalGitHub(), "--approval", "carry", "--before-sha", BEFORE,
+                                        output=output), (1, ""))
+            self.assertEqual(self._main(ApprovalGitHub(records=records, broken="actions/runs"), "--approval", "carry",
+                                        "--before-sha", BEFORE, output=output), (1, ""))
+            self.assertEqual(self._main(ApprovalGitHub(broken="issues/"), "--approval", "record", output=output),
+                             (1, ""))
+            self.assertEqual(self._main(ApprovalGitHub(), "--approval", "carry", "--before-sha", "nope",
+                                        output=output), (2, ""))
+
+
+class ApprovalDigestTests(unittest.TestCase):
+    """The digest over a real repository: what changes it, and what must not."""
+
+    WORKFLOW = "jobs:\n  a:\n    steps:\n      - run: python tools/gate.py\n"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Path(self._tmp.name) / "origin"
+        self.repo.mkdir()
+        self.env = os.environ | {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        }
+        self.git("init", "-q", "-b", "main")
+        # Without this, ``git add -A`` in push() re-reads the working tree on Linux and resets an index-only
+        # mode change (update-index --chmod) back to 0644 before it is committed.
+        self.git("config", "core.fileMode", "false")
+        self.write(".github/workflows/ci.yml", self.WORKFLOW)
+        self.write("tools/gate.py", "print('gate')\n")
+        self.write("tools/other.py", "print('not a CI tool')\n")
+        self.write("tools/ci_trust_verdict.py", "# the classifier\n")
+        self.write("src/x.c", "int x;\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base")
+        self.trusted = Path(self._tmp.name) / "trusted"
+        subprocess.run(["git", "clone", "-q", "--single-branch", "-b", "main", str(self.repo), str(self.trusted)],
+                       check=True, capture_output=True, env=self.env)
+        self.git("checkout", "-q", "-b", "candidate")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True, text=True,
+                              env=self.env).stdout.strip()
+
+    def write(self, path: str, text: str) -> None:
+        target = self.repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8", newline="\n")
+
+    def push(self, message: str = "push") -> str:
+        """Commit the working tree as a new pull-request head, fetch it into the trusted clone, and hash it."""
+        self.git("add", "-A")
+        self.git("commit", "-q", "--allow-empty", "-m", message)
+        head = self.git("rev-parse", "HEAD")
+        self.git("update-ref", f"refs/pull/{PR}/head", head)
+        self.head = head
+        gh = ctv.GitHub("owner/repo", "token")
+        fetched = ctv.fetch_candidate(self.trusted, gh.repository, PR, remote=str(self.repo))
+        self.assertEqual(fetched, head)
+        digest: str = ctv.candidate_digest(gh, self.trusted, PR, head, remote=str(self.repo))
+        return digest
+
+    def test_a_change_to_no_protected_path_keeps_the_digest(self) -> None:
+        first = self.push()
+        self.write("src/x.c", "int x = 1;\n")
+        self.write("tools/other.py", "print('still not a CI tool')\n")
+        self.write("docs/CONTRIBUTING.md", "text\n")
+        self.assertEqual(self.push(), first)
+        self.assertEqual(self.push("empty"), first)
+
+    def test_a_change_to_a_protected_path_changes_the_digest(self) -> None:
+        first = self.push()
+        for path, text in ((".github/workflows/ci.yml", self.WORKFLOW + "      - run: true\n"),
+                           ("tools/gate.py", "raise SystemExit(0)\n"),
+                           ("tools/ci_trust_verdict.py", "# the classifier, changed\n")):
+            with self.subTest(path=path):
+                self.write(path, text)
+                changed = self.push()
+                self.assertNotEqual(changed, first)
+                self.git("checkout", "-q", "HEAD~1", "--", path)
+                self.assertEqual(self.push(), first)   # changing a file and reverting it is the same content
+
+    def test_a_pattern_matching_path_that_is_added_changes_the_digest(self) -> None:
+        first = self.push()
+        for path in (".github/workflows/new.yml", ".github/actions/x/action.yml"):
+            with self.subTest(path=path):
+                self.write(path, "name: x\n")
+                self.assertNotEqual(self.push(), first)
+                self.git("rm", "-q", path)
+                self.assertEqual(self.push(), first)
+
+    def test_a_protected_path_that_is_removed_or_renamed_changes_the_digest(self) -> None:
+        first = self.push()
+        self.git("rm", "-q", "tools/gate.py")
+        self.assertNotEqual(self.push(), first)
+        self.git("checkout", "-q", "main", "--", "tools/gate.py")
+        self.assertEqual(self.push(), first)
+        self.git("mv", "tools/gate.py", "tools/gate2.py")   # same bytes under a name no workflow runs
+        renamed = self.push()
+        self.assertNotEqual(renamed, first)
+        self.git("mv", "tools/gate2.py", "tools/gate.py")
+        self.git("mv", ".github/workflows/ci.yml", ".github/workflows/ci2.yml")
+        self.assertNotIn(self.push(), (first, renamed))
+
+    def test_a_tool_that_only_the_candidates_workflow_names_is_hashed(self) -> None:
+        """Failing-before: a head adds a gate tool through its own workflow edit and the label is applied; a later
+        push turns the tool into ``exit 0`` without touching a workflow, and the digest did not change."""
+        self.write(".github/workflows/ci.yml", self.WORKFLOW + "      - run: python tools/new_gate.py\n")
+        self.write("tools/new_gate.py", "print('real gate')\n")
+        approved = self.push()
+        self.write("tools/new_gate.py", "raise SystemExit(0)\n")
+        self.assertNotEqual(self.push(), approved)
+        # The same holds for an existing tool that only the candidate's workflow newly runs.
+        self.write(".github/workflows/ci.yml", self.WORKFLOW + "      - run: python tools/other.py\n")
+        self.write("tools/other.py", "print('now a gate')\n")
+        newly_run = self.push()
+        self.write("tools/other.py", "raise SystemExit(0)\n")
+        self.assertNotEqual(self.push(), newly_run)
+        # ... and for an action's own workflow-style file.
+        self.write(".github/actions/x/action.yml", "runs:\n  steps:\n    - run: python tools/third.py\n")
+        self.write("tools/third.py", "print(1)\n")
+        third = self.push()
+        self.write("tools/third.py", "print(2)\n")
+        self.assertNotEqual(self.push(), third)
+
+    def test_a_file_mode_change_changes_the_digest(self) -> None:
+        first = self.push()
+        self.git("update-index", "--chmod=+x", "tools/gate.py")
+        self.assertNotEqual(self.push(), first)
+
+    def test_the_trusted_classification_not_the_candidates_picks_the_paths(self) -> None:
+        """A candidate that edits a workflow to stop naming a tool still has that tool hashed: the tool set comes
+        from the default branch's workflows."""
+        self.write(".github/workflows/ci.yml", "jobs: {}\n")
+        first = self.push()
+        self.write("tools/gate.py", "raise SystemExit(0)\n")
+        self.assertNotEqual(self.push(), first)
+
+    def test_carry_on_a_real_repository(self) -> None:
+        """Failing-before: every push withdrew the approval. Now a push of unrelated files carries it and a push of
+        a CI file does not."""
+        approved = self.push()
+        before = self.head
+        gh = ApprovalGitHub(records=(_record(6, approved, sha=before),))
+
+        def carry() -> str:
+            gh.pull["head"]["sha"] = self.head
+            digest: str = ctv.carry_approval(gh, self.trusted, PR, before, self.head, "main", remote=str(self.repo))
+            return digest
+
+        self.write("src/x.c", "int x = 2;\n")
+        self.push()
+        self.assertEqual(carry(), approved)
+        self.write("tools/gate.py", "raise SystemExit(0)\n")
+        self.push()
+        with self.assertRaises(ctv.ApprovalRefused):
+            carry()
+
+
+class ApprovalWorkflowWiringTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.text = (ROOT / ctv.VERDICT_WORKFLOW).read_text(encoding="utf-8")
+
+    def test_the_record_job_name_is_what_the_verifier_reads(self) -> None:
+        match = re.search(r"(?m)^    name: (CI approval record v1 pr\$\{\{ github\.event\.pull_request\.number \}\} "
+                          r"\$\{\{ needs\.approval\.outputs\.digest \}\})$", self.text)
+        assert match is not None
+        name = match.group(1).replace("${{ needs.approval.outputs.digest }}", D1)
+        name = name.replace("${{ github.event.pull_request.number }}", str(PR))
+        self.assertRegex(name, ctv._APPROVAL_RECORD)
+        self.assertTrue(name.startswith(ctv.APPROVAL_RECORD_PREFIX))
+
+    def test_the_verdict_waits_for_the_approval_jobs(self) -> None:
+        self.assertIn("    needs: [approval, approval_record]\n", self.text)
+        self.assertNotIn("clear_approval", self.text)
+
+    def test_only_a_carried_push_keeps_the_label(self) -> None:
+        # The label is removed on every push or reopen unless the carry step produced a digest.
+        self.assertIn("github.event.action != 'labeled' && steps.carry.outputs.digest == ''", self.text)
+        self.assertIn("if: ${{ github.event.action == 'synchronize' }}", self.text)   # reopened is never carried
+        self.assertIn("!cancelled()", self.text)
+
+    def test_the_approval_jobs_run_default_branch_code_with_the_least_they_need(self) -> None:
+        approval = self.text[self.text.index("\n  approval:\n"):self.text.index("\n  approval_record:\n")]
+        record = self.text[self.text.index("\n  approval_record:\n"):self.text.index("\n  verdict:\n")]
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", approval)
+        self.assertIn("python tools/ci_trust_verdict.py", approval)
+        self.assertNotIn("statuses: write", approval)
+        self.assertIn("permissions: {}", record)
+        self.assertNotIn("checkout", record)
+        self.assertNotIn("secrets.", record)
 
 
 class CommandLineTests(unittest.TestCase):

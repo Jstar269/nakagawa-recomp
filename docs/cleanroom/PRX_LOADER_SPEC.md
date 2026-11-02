@@ -8,7 +8,7 @@ a derived C port of it that was discarded unadmitted, and the public sources in 
 nothing from the derived files is reproduced here beyond the `SEAM:` identifiers §2
 defines and the ABI facts §9 cites.
 
-**Re-scope (maintainer decision, 2026-10-20).** Rewrite unit G3 is no longer planned for its own
+**Re-scope.** Rewrite unit G3 is no longer planned for its own
 sake: working inherited code is replaced only when evidence shows it is wrong or an LLE path makes it
 unnecessary (`../INDEPENDENCE_CAMPAIGN.md`), and [#344](https://github.com/Jstar269/nakagawa-recomp/issues/344) was closed as not planned. The spec stays
 as a behaviour reference.

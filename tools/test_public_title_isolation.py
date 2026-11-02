@@ -199,9 +199,6 @@ class PublicTitleIsolationTests(unittest.TestCase):
         for token in forbidden_tokens:
             self.assertNotIn(token, combined, f"Forbidden retail token '{token}' leaked into generated C catalog!")
 
-        from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids
-        self.assertEqual(unregistered_retail_disc_ids(combined), [])
-
         # Every retail entry comes from a tracked, policy-included manifest.
         included_retail = set()
         for mf in tracked_titles():

@@ -3219,6 +3219,38 @@ def cmd_fonts_import(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    """Write (or, with --preview, only list) the local problem report bundle (#1849)."""
+    from nk_core import report_bundle
+
+    try:
+        user_root = _user_data_root(args.user_data_root)
+        logs_dir, config_dir = report_bundle.resolve_layout(user_root, args.logs_dir, args.config_dir)
+        inputs = report_bundle.ReportInputs(
+            user_data_root=user_root, logs_dir=logs_dir, config_dir=config_dir,
+            title_id=args.title or "", title_name=args.title_name or "", region=args.region or "",
+            flight_recorder=args.flight_recorder)
+        doctor = (
+            (lambda _root: "nk_doctor was skipped (--no-doctor).")
+            if args.no_doctor else report_bundle.run_doctor
+        )
+        plan = report_bundle.build_plan(inputs, report_bundle.Identity.from_environment(), ROOT,
+                                        doctor=doctor)
+        path = None if args.preview else report_bundle.write_bundle(plan, args.output_dir or user_root / "reports")
+    except (report_bundle.ReportError, PackageBuildError) as exc:
+        sys.stderr.write(f"Report error: {exc}\n")
+        return 1
+    files = plan.preview()
+    if args.json:
+        print(json.dumps({"path": str(path) if path else None, "archive": plan.archive_name,
+                          "files": files, "skipped": [list(item) for item in plan.skipped]}, indent=2))
+    else:
+        for item in files:
+            print(f"{item['name']}  ({item['bytes']} bytes)")
+        print(f"Report written: {path}" if path else f"Preview only; would write {plan.archive_name}")
+    return 0
+
+
 def cmd_redump_import(args: argparse.Namespace) -> int:
     """Import the user's own Redump PSP datafile into their data folder (nothing is uploaded)."""
     try:
@@ -5482,6 +5514,23 @@ def main() -> int:
     p_redump.add_argument("datafile", type=Path, help="The Redump PSP datafile (.dat) you downloaded")
     p_redump.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
     p_redump.set_defaults(func=cmd_redump_import)
+
+    p_report = subparsers.add_parser(
+        "report",
+        help="Write a redacted local problem report ZIP you can attach to an issue (nothing is uploaded)",
+    )
+    p_report.add_argument("--title", help="Disc id of the game the report is about")
+    p_report.add_argument("--title-name", help="Display name, used in the file name")
+    p_report.add_argument("--region", help="Region of the title, for about.txt")
+    p_report.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
+    p_report.add_argument("--logs-dir", type=Path, help="The player's logs folder")
+    p_report.add_argument("--config-dir", type=Path, help="The player's settings folder")
+    p_report.add_argument("--flight-recorder", type=Path, help="A flight-recorder bundle to summarise")
+    p_report.add_argument("--output-dir", type=Path, help="Where the ZIP goes (default <user data>/reports)")
+    p_report.add_argument("--no-doctor", action="store_true", help="Leave out the toolchain check (faster)")
+    p_report.add_argument("--preview", action="store_true", help="List the files without writing the ZIP")
+    p_report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p_report.set_defaults(func=cmd_report)
 
     p_fonts = subparsers.add_parser("fonts", help="Manage PSP firmware system fonts")
     fonts_subparsers = p_fonts.add_subparsers(dest="fonts_subcommand", required=True)

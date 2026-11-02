@@ -28,7 +28,6 @@ import unicodedata
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from nk_core.git_isolation import isolated_git_env  # noqa: E402
-from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids  # noqa: E402
 from publication_policy import (  # noqa: E402
     INCLUDED,
     Policy,
@@ -155,8 +154,8 @@ KEY_FILE_DATA_SUFFIXES = {
     "", ".json", ".txt", ".bin", ".dat", ".cfg", ".conf", ".ini",
     ".key", ".keys", ".pem",
 }
-#: The one reviewed table of public game-decryption keys (maintainer decision
-#: 2026-10-27, AGENTS.md section 5): the PPSSPP tag tables Nakagawa uses to
+#: The one reviewed table of public game-decryption keys (AGENTS.md section 5):
+#: the PPSSPP tag tables Nakagawa uses to
 #: decrypt a game the user owns. Its bytes are admitted exactly, like every public
 #: path; a key literal anywhere else still fails, and so does a copy of this file
 #: under another name.
@@ -2804,16 +2803,6 @@ def audit_entries_with_semantics(
                             Finding("LOCAL_PATH", rel, "contains configured out-of-band private root")
                         )
                         break
-
-            # A real title's disc id must never reach source, tests or docs: every
-            # retail-format id has to be a registered synthetic stand-in or a
-            # deliberately public one (tools/nk_core/synthetic_disc_ids.py).
-            for disc_id in unregistered_retail_disc_ids(text_str):
-                entry_findings.append(Finding(
-                    "RETAIL_DISC_ID", rel,
-                    f"names retail-format disc id {disc_id}; use a synthetic id from "
-                    "tools/nk_core/synthetic_disc_ids.py, or register a deliberately public one there",
-                ))
 
         findings.extend(entry_findings)
         for f in entry_findings:

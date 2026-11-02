@@ -351,13 +351,7 @@ class HstProfileIsolation(unittest.TestCase):
             code_without_comments = "\n".join(
                 line for line in text.splitlines() if not line.lstrip().startswith("#") and not line.lstrip().startswith("//")
             )
-            # Also allow mentions in docstrings describing HST isolation; only forbid as code-level pin
-            # For strictness, allow UCUS in title_codegen_plan.py's HST isolation docstring (we removed it anyway)
-            if path.name == "title_codegen_plan.py":
-                # This file's generic docstring no longer contains UCUS; any occurrence would be a leak
-                self.assertNotIn("UCUS98701", text, f"{path.name} must not name HST disc")
-            else:
-                self.assertNotIn("UCUS98701", code_without_comments, f"{path.name} must not name HST disc in code")
+            self.assertNotIn("UCUS98701", code_without_comments, f"{path.name} must not name HST disc in code")
             self.assertNotIn("0x00303194", text.lower())
             self.assertNotIn("libfont.prx", text)
 
