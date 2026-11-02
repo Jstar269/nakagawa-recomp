@@ -1126,6 +1126,7 @@ PUBLIC_TARGETS := \
 	strbuf-selftest \
 	sched-selftest \
 	sched-selftest-one \
+	selftest-repeat \
 	heap-selftest \
 	profiler-selftest \
 	gui-present-selftest \
@@ -1276,6 +1277,7 @@ HELP_DESCRIPTION_selftest := run the runtime selftest
 HELP_DESCRIPTION_strbuf-selftest := run the checked-formatting selftest
 HELP_DESCRIPTION_sched-selftest := run the scheduler selftest suite
 HELP_DESCRIPTION_sched-selftest-one := run one scheduler selftest build
+HELP_DESCRIPTION_selftest-repeat := rerun the built scheduler and HLE thread selftests until one fails
 HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
@@ -2583,6 +2585,33 @@ sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_f
 	$(CC) $(CFLAGS) -I$(SCHED_SELFTEST_DIR) -DSR_SCHED_LIVENESS_TEST $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe \
 		tests/native/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/title_config.c src/rt/ace.c $(LIBS)
 	$(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe
+
+# selftest-repeat — rerun the already built scheduler and HLE thread selftests until one fails
+# (#1846). A rare ordering bug in the cooperative scheduler or the thread HLE can pass the single
+# run each CI leg makes for weeks; the nightly matrix repeats them SELFTEST_REPEAT times and
+# names the iteration and binary that failed. It builds nothing: run sched-selftest and
+# hle-thread-selftest first, with the same GAME_NAME/BUILD_DIR. Output of a passing run is
+# discarded; a failing run's output is printed. POSIX shell recipe (Linux nightly leg).
+SELFTEST_REPEAT ?= 20
+SELFTEST_REPEAT_EXES = $(foreach cfg,$(SCHED_SELFTEST_CONFIGS),$(BUILD_DIR)/sched_selftest_$(cfg).exe) $(BUILD_DIR)/hle_thread_selftest.exe
+
+selftest-repeat:
+	@case "$(SELFTEST_REPEAT)" in ''|*[!0-9]*|0) echo "selftest-repeat: SELFTEST_REPEAT must be a positive integer, got '$(SELFTEST_REPEAT)'" >&2; exit 2;; esac
+	@for exe in $(SELFTEST_REPEAT_EXES); do \
+		[ -x "$$exe" ] || { echo "selftest-repeat: $$exe is missing; run sched-selftest and hle-thread-selftest first" >&2; exit 2; }; \
+	done
+	@log="$(BUILD_DIR)/selftest-repeat.log"; i=1; \
+	while [ "$$i" -le "$(SELFTEST_REPEAT)" ]; do \
+		for exe in $(SELFTEST_REPEAT_EXES); do \
+			if ! "$$exe" >"$$log" 2>&1; then \
+				cat "$$log"; \
+				echo "selftest-repeat: FAILED on iteration $$i of $(SELFTEST_REPEAT): $$exe" >&2; \
+				exit 1; \
+			fi; \
+		done; \
+		echo "selftest-repeat: iteration $$i of $(SELFTEST_REPEAT) passed"; \
+		i=$$((i + 1)); \
+	done
 
 # heap-selftest — white-box unit tests for the guest heap allocator's boundary-tag
 # coalescing (tests/native/heap_selftest.c). No game inputs needed; #includes recomp.c for

@@ -21,8 +21,11 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
   addresses in `src/rt/` or generic `tools/` code; a game's name or disc ID in a comment, test or
   document is fine. Evidence-backed title behavior belongs in a manifest/config with
   a retirement criterion.
-- **Evidence honesty:** preserve existing derived-code records and reject copied or
-  translated emulator code. PSP values need a measured cell, public specification, or an
+- **Evidence honesty:** preserve existing derived-code records. Code from an emulator or other
+  upstream project is acceptable only under the `AGENTS.md` section 4 import rules (GPL-compatible
+  licence, exact revision pinned, `PROVENANCE.md` and `CREDITS.md` entries, notices kept, labelled
+  `derived-translated`); reject code that breaks them, including undisclosed copying or
+  line-by-line translation. PSP values need a measured cell, public specification, or an
   explicit unmeasured/fail-closed label. Do not present engineering controls as legal
   conclusions or call code clean-room/independent without a supporting trusted record.
 - **Host neutrality:** shared runtime and `*_posix.c` changes must build on Linux as well
@@ -91,8 +94,10 @@ Authors, human or agent, check these before requesting review; reviewers flag th
   (`python tools/import_audit_gate.py`, not "the import audit").
 - **Tracking.** Every new claim, roadmap item or milestone links its tracking issue.
 - **Boundaries.** Widening an allow-list or match pattern adds refused cases that pin its edge.
-- **Indexes.** A new module under `tools/` gets its row in `tools/README.md`; only
-  `python -m unittest tools.test_lint_docs` checks it, not `tools/lint_docs.py` or `tools/tree_lint.py`.
+- **Indexes.** A new module under `tools/` needs an index entry: a module docstring whose first
+  paragraph says what it does, or a row in `tools/README.md` (#1673; no row is needed when the docstring
+  exists). Only `python -m unittest tools.test_lint_docs` checks it, not `tools/lint_docs.py` or
+  `tools/tree_lint.py`.
 - **Linux native builds.** Native code and selftests build and link on hosted Linux with and without SDL3: no
   Windows-only library, and `-lm` wherever `<math.h>` is used (`native-core-tests`, `portable-core-objects`).
 - **Native test order.** A binary added to `native-core-tests` joins `EXPECTED_RUNS` in

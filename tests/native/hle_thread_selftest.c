@@ -10574,6 +10574,106 @@ static void test_psp_measured_power_battery_20261024(void) {
     sr_hle_test_power_set_external(1);
 }
 
+/* #1814, #1815, #1816: synthetic checks that pin what the production handlers do today for
+ * NIDs the verification ledger had no recorded evidence for. They are NOT PSP measurements:
+ * a value here records this runtime's current behaviour, nothing more. (The measured power
+ * values live in test_psp_measured_power_battery_20261024; this test enters each NID by its
+ * literal number and also pins that the handlers read no argument register.) Every leg goes
+ * through sr_syscall, the production dispatch of the production registration. */
+static void test_pinned_handlers_1814_1815_1816(void) {
+    enum { CLOCK = 0x00270080u, GARBAGE = 0xa57c3de1u };
+    CpuState cpu;
+    uint32_t i;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    sr_hle_test_umd_reset();
+
+    /* #1814: scePowerIsBatteryExist(void), scePowerIsBatteryCharging(void) and
+     * scePowerGetBatteryLifePercent(void). Registers a0-a3 hold garbage: a handler that
+     * read an argument would change its answer. */
+    expect(sr_hle_test_is_registered(0x0afd0d8bu) && sr_hle_test_is_registered(0x1e490401u) &&
+               sr_hle_test_is_registered(0x2085d15du),
+           "the three power-status NIDs have a production registration");
+    for (i = 0u; i < 2u; i++) {
+        uint32_t percent = i == 0u ? 96u : 93u; /* external power online, then on battery */
+        sr_hle_test_power_set_external((int)(i == 0u));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x0afd0d8bu) == 1u,
+               "scePowerIsBatteryExist reports a battery present in both power states (pins current behaviour)");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x1e490401u) == 0u,
+               "scePowerIsBatteryCharging reports not charging in both power states (pins current behaviour)");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x2085d15du) == percent,
+               "scePowerGetBatteryLifePercent follows the external-power state (pins current behaviour)");
+    }
+    sr_hle_test_power_set_external(1);
+
+    /* #1815: sceKernelUSec2SysClock(unsigned int usec, SceKernelSysClock *clock). usec is a
+     * 32-bit register, so 0xffffffff is the largest input: a value above 2^32 cannot reach
+     * the handler. The 64-bit clock is {low = usec, high = 0}. */
+    static const uint32_t usec_cases[] = {0u, 1u, 0x7fffffffu, 0x80000000u, 0xffffffffu};
+    for (i = 0u; i < sizeof(usec_cases) / sizeof(usec_cases[0]); i++) {
+        MEM_W32(CLOCK, GARBAGE);
+        MEM_W32(CLOCK + 4u, GARBAGE);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = usec_cases[i];
+        cpu.r[5] = CLOCK;
+        cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x110dec9au) == 0u && MEM_R32(CLOCK) == usec_cases[i] &&
+                   MEM_R32(CLOCK + 4u) == 0u,
+               "sceKernelUSec2SysClock stores {usec, 0} and overwrites a stale high word (pins current behaviour)");
+    }
+    /* A null output pointer is refused with SCE_KERNEL_ERROR_ILLEGAL_ADDR (0x800200d3)
+     * and nothing in the neighbouring words changes. */
+    MEM_W32(CLOCK, GARBAGE);
+    MEM_W32(CLOCK + 4u, GARBAGE);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0xffffffffu;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, 0x110dec9au) == 0x800200d3u && MEM_R32(CLOCK) == GARBAGE &&
+               MEM_R32(CLOCK + 4u) == GARBAGE,
+           "sceKernelUSec2SysClock refuses a null output pointer and writes nothing (pins current behaviour)");
+
+    /* #1816: argument reads checked against the public signatures. sceUmdGetErrorStat(void)
+     * reads no argument; sceDisplaySetMode(int mode, int width, int height) reads a0-a2 and
+     * ignores a3. Neither handler reads a register beyond its signature, so no fix is needed
+     * and these checks pin current behaviour. */
+    expect(sr_hle_test_is_registered(0x20628e6fu) && sr_hle_test_is_registered(0x0e20f177u),
+           "sceUmdGetErrorStat and sceDisplaySetMode have a production registration");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x20628e6fu) == 0u,
+           "sceUmdGetErrorStat reports no drive error while the disc is present and active (pins current behaviour)");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, 0xe83742bau) == 0u, "sceUmdDeactivate returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x20628e6fu) == 0u,
+           "sceUmdGetErrorStat still reports no drive error with the disc present but deactivated (pins current behaviour)");
+    sr_hle_test_umd_reset();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 480u;
+    cpu.r[6] = 272u;
+    cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x0e20f177u) == 0u,
+           "sceDisplaySetMode (mode 0, 480x272) returns SCE_DISPLAY_SET_MODE_SUCCESS (pins current behaviour)");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GARBAGE;
+    cpu.r[5] = GARBAGE;
+    cpu.r[6] = GARBAGE;
+    cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x0e20f177u) == 0u,
+           "sceDisplaySetMode accepts any mode and size and still returns 0 (pins current behaviour)");
+}
+
 static void test_psp_measured_cpu_clock_user_mode_20261024(void) {
     enum { NID_POWER_SET_CPU_CLOCK = 0x843fbf43u, NID_POWER_GET_CPU_INT = 0xfdb5bfe9u };
     static const uint32_t refused[] = { 0u, 333u, 334u, 223u /* PLL + 1 */, 0xffffffffu };
@@ -43181,6 +43281,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_umd_unregister_callback();
     test_umd_replace_permission_and_disc_info();
     test_psp_measured_power_battery_20261024();
+    test_pinned_handlers_1814_1815_1816();
     test_psp_measured_cpu_clock_user_mode_20261024();
     test_psp_measured_rtc_time64_20261024();
     test_power_set_bus_clock_frequency_autotest();
