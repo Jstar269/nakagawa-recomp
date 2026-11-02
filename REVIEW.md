@@ -17,8 +17,9 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
   keep unsupported behavior fail-closed.
 - **Visible failure:** invalid guest pointers, unknown opcodes, unowned targets, missing
   inputs, and unavailable backends must be reported, not guessed or synthesized.
-- **Generic implementation:** no game names or private guest addresses in `src/rt/` or
-  generic `tools/` code. Evidence-backed title behavior belongs in a manifest/config with
+- **Generic implementation:** no title-specific branches, title-keyed overrides or private guest
+  addresses in `src/rt/` or generic `tools/` code; a game's name or disc ID in a comment, test or
+  document is fine. Evidence-backed title behavior belongs in a manifest/config with
   a retirement criterion.
 - **Evidence honesty:** preserve existing derived-code records and reject copied or
   translated emulator code. PSP values need a measured cell, public specification, or an
