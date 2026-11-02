@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import unittest
 
-import ge_flight_overhead as g
+try:
+    import ge_flight_overhead as g
+except ModuleNotFoundError:
+    from tools import ge_flight_overhead as g
 
 
 def bench_text(scene: int, prims: int, fb: str = "00ff", check: bool = True) -> str:
