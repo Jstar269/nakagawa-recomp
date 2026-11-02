@@ -2457,7 +2457,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 123)
+        self.assertEqual(len(routes), 124)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2465,7 +2465,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(set(range(1, 79)) | set(range(90, 104)) | {106, 107, 108, 109}
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
-                         | {128, 129, 130, 132, 133, 134, 135}
+                         | {128, 129, 130, 132, 133, 134, 135, 138}
                          | {150, 151},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
@@ -3169,6 +3169,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 # 2026-11-01: the #1375 P1/P2 stream has explicit non-invocation SKIPs; the
                 # fetch-zero exception has a retained frame but no completion sentinel.
                 "PSP-NULLCODE-001", "PSP-EXCEPTION-FETCH-001",
+                # 2026-11-02: memory-edge (bb3f36e4): 33 PASS and 42 intentional SKIP records
+                # (no bottom-of-RAM edge, no scratchpad or VRAM file call, no unproven overrun).
+                "PSP-MEMEDGE-001",
             },
         )
 
@@ -8513,6 +8516,179 @@ class DmaTimingProbeTests(unittest.TestCase):
         self.assertEqual(row["prx"], "dma_timing.prx")
         self.assertEqual(row["diagnostic_case_ids"], ["dma-timing"])
         self.assertEqual(row["issues"], [303])
+
+
+class MemoryEdgeProbeTests(unittest.TestCase):
+    """CASE=memory-edge (138, PSP-MEMEDGE-001) in probe_memory_edge.c with the placement fixture
+    mem_edge.h: the #303 invalid-tail and boundary cells and #1380's sceIoRead into a boundary
+    buffer. The writer and lifecycle are the HLE issue cells' copies; the fixture issues only
+    partition-memory calls; a writing call past an edge is gated on a reading-side refusal."""
+
+    header: ClassVar[str]
+    probe: ClassVar[str]
+    issues: ClassVar[str]
+    makefile: ClassVar[str]
+    code: ClassVar[str]
+    bodies: ClassVar[dict[str, str]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.header = (fixture / "mem_edge.h").read_text(encoding="utf-8")
+        cls.probe = (fixture / "probe_memory_edge.c").read_text(encoding="utf-8")
+        cls.issues = (fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        cls.code = _c_code(cls.probe)
+        cls.bodies = _c_function_bodies(cls.code)
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),memory-edge)\nCASE_ID = 138\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),memory-edge)\nTARGET = $(BUILD_DIR)/memory_edge\n"
+                      "OBJS = $(BUILD_DIR)/probe_memory_edge.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("ifneq ($(filter $(BUILD_DIR)/probe_memory_edge.o,$(OBJS)),)\n"
+                      "PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp\n", self.makefile)
+        self.assertIn("$(BUILD_DIR)/probe_memory_edge.o: probe_memory_edge.c mem_edge.h\n",
+                      self.makefile)
+        start = self.makefile.index("ifeq ($(CASE),memory-edge)\nUSER_MODE_IMPORT_GATE_ARGS")
+        block = self.makefile[start:self.makefile.index("\nendif\n", start)]
+        self.assertEqual(sorted(re.findall(r"--forbid-library (\w+)", block)),
+                         ["InterruptManager", "KUBridge", "SystemCtrlForUser", "sceCtrl",
+                          "sceOpenPSID", "sceSuspendForUser", "sceWlanDrv"])
+        self.assertIn("#define ME_CASE_EDGE 138\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "memory-edge"\n#define HLE_TEST_ID "PSP-MEMEDGE-001"\n'
+                      '#define HLE_LOG "host0:/memory_edge_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "memory-edge").name,
+                         "memory_edge_log.txt")
+        self.assertEqual(_campaign_completeness_contract("memory-edge"), "strict-golden-sequence")
+        self.assertNotIn("memory-edge", CAMPAIGN_QUEUE_CASES)
+
+    def test_writer_round_trip_and_lifecycle_are_the_hle_issues_copies(self) -> None:
+        shared = self.issues[self.issues.index("static int s_log_failed;\n"):
+                             self.issues.index("/* ---", self.issues.index("int module_stop("))]
+        self.assertIn(shared, self.probe)
+
+    def test_only_partition_memory_cache_file_and_dmac_calls_and_every_loop_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.code)), {
+            "sceDmacMemcpy", "sceDmacTryMemcpy", "sceIoOpen", "sceIoClose", "sceIoRead",
+            "sceIoWrite", "sceIoLseek32", "sceKernelDcacheWritebackInvalidateRange",
+            "sceKernelDcacheInvalidateRange", "sceKernelGetThreadId", "sceKernelSleepThread",
+            "sceKernelExitThread", "sceKernelWakeupThread", "sceKernelWaitThreadEnd",
+            "sceKernelDeleteThread"})
+        header_code = _c_code(self.header)
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", header_code)), {
+            "sceKernelAllocPartitionMemory", "sceKernelGetBlockHeadAddr",
+            "sceKernelFreePartitionMemory", "sceKernelTotalFreeMemSize",
+            "sceKernelMaxFreeMemSize", "sceKernelDcacheWritebackInvalidateRange"})
+        for text in (self.code, header_code):
+            for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceKernelDelayThread"):
+                self.assertNotIn(banned, text)
+        # Every for loop counts up to a bound; there is no while loop at all.
+        self.assertNotIn("while (", self.code.replace("while (offset < length)", "")
+                         .replace("while (!s_hle_stop_requested)", ""))
+        for header in re.findall(r"for \(([^;]*;[^;]*;[^)]*)\)", self.code):
+            self.assertRegex(header, r"^\w+ \w+ = 0; \w+ < .+; \w+\+\+$")
+        self.assertNotIn("sceKernelDcacheWritebackInvalidateRange(ptr", self.code)
+        self.assertNotIn("memset(ptr", self.code)
+        self.assertNotIn("memcpy(ptr", self.code)
+
+    def test_a_writing_call_past_an_edge_is_gated_and_every_call_is_bracketed_by_a_step(self) -> None:
+        body = self.bodies["me_run_place"]
+        gate = [body.index(token) for token in (
+            "!usable", "is_dst && !owned", "delta > 0u && !ram_above",
+            "is_dst && delta > 0u && !s_me_refused[place][api][d]", "me_run_cell(")]
+        self.assertEqual(gate, sorted(gate))
+        # The reading side is the first half of the loop, so a refusal is recorded before the
+        # matching writing call decides.
+        self.assertIn("for (unsigned is_dst = 0; is_dst < 2u; is_dst++)", body)
+        self.assertIn("is_dst ? &unused : &s_me_refused[place][api][d]", body)
+        # No file call is ever handed a VRAM pointer: two such calls did not return.
+        self.assertIn("place == ME_PLACE_VRAM_TAIL && api == ME_API_IO", body)
+        self.assertLess(body.index("place == ME_PLACE_VRAM_TAIL && api == ME_API_IO"),
+                        body.index("me_run_cell("))
+        self.assertNotIn("me_oracle", self.code)
+        cell = self.bodies["me_run_cell"]
+        self.assertLess(cell.index("hle_step(id);"), cell.index("sceIoWrite(fd, ptr, len)"))
+        self.assertLess(cell.index("sceIoWrite(fd, ptr, len)"), cell.index("hle_record(id"))
+        self.assertIn("*refused = (int32_t)rc < 0;", cell)
+        # A call's pointer comes only from the fixture, and caches are maintained only over the
+        # fixture's own block or the probe's own arrays, never over the overrun range.
+        self.assertIn("uint8_t *const ptr = me_call_ptr(pl, delta);", cell)
+        self.assertEqual(sorted(set(re.findall(r"sceKernelDcache\w+\(([^,]+),", cell))),
+                         ["cache_base", "s_me_sink", "s_me_src"])
+        # Fault-prone cells are SKIP rows with their reasons.
+        run = self.bodies["hle_run"]
+        for row, reason in (("me-cpu-store-edge", "ME_SKIP_FAULT"), ("me-cpu-load-edge", "ME_SKIP_FAULT"),
+                            ("me-scratch-io", "ME_SKIP_FAULT"), ("me-scratch-cross", "ME_SKIP_UNBACKED")):
+            self.assertIn(f'me_skip("{row}", b.mask, {reason});', run)
+
+    def test_the_fixture_reports_its_placement_in_a_setup_mask(self) -> None:
+        for bit in ("ME_SETUP_BLOCK 0x01u", "ME_SETUP_GEOMETRY 0x02u", "ME_SETUP_AT_EDGE 0x04u",
+                    "ME_SETUP_OUTSIDE 0x08u", "ME_SETUP_OWNED 0x10u"):
+            self.assertIn(f"#define {bit}", self.header)
+        self.assertIn("#define ME_SETUP_OK (ME_SETUP_BLOCK | ME_SETUP_GEOMETRY | ME_SETUP_AT_EDGE)",
+                      self.header)
+        bodies = _c_function_bodies(_c_code(self.header))
+        # The tail placement owns the block only when its end is the measured top of RAM.
+        tail = bodies["me_place_ram_tail"]
+        self.assertIn("(uint32_t)(uintptr_t)p->block + ME_PAGE == b->ram_hi", tail)
+        self.assertIn("p->setup_mask |= ME_SETUP_AT_EDGE | ME_SETUP_OWNED;", tail)
+        # Head: the allocator's block must start at the measured bottom to be owned.
+        head = bodies["me_place_ram_head"]
+        self.assertIn("p->setup_mask &= ~(ME_SETUP_AT_EDGE | ME_SETUP_OWNED);", head)
+        # The call pointer: the buffer for a tail, delta below it for a head.
+        self.assertIn("return p->kind == ME_PLACE_RAM_HEAD ? p->buf - delta : p->buf;",
+                      bodies["me_call_ptr"])
+        # The top of RAM is accepted only when the page after it is classified like a far address.
+        self.assertIn("b->hi_rc_end != 0u && b->hi_rc_end == b->hi_rc_far", bodies["me_measure_ram"])
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["memory-edge"]
+        self.assertEqual(spec.test_id, "PSP-MEMEDGE-001")
+        self.assertEqual(spec.terminal_case, "memory-edge-done")
+        rows = parse_golden.MEMORY_EDGE_ROWS
+        self.assertEqual(spec.ordered_cases[:-1], tuple(name for name, _ in rows))
+        # 3 measurement rows, 3 x (1 placement + 12 + 9) rows, the VRAM oracle row and 4
+        # always-SKIP rows.
+        self.assertEqual(len(rows), 3 + 3 * (1 + 12 + 9) + 1 + 4)
+        self.assertEqual(len(set(name for name, _ in rows)), len(rows))
+        for name, words in rows:
+            self.assertEqual(counts[name], words)
+            if name.startswith("me-"):
+                self.assertEqual(words, 12)
+        # The probe's loops produce the registry's names.
+        self.assertIn('k_me_places[3] = {"ramtail", "ramhead", "vramtail"}', self.code)
+        self.assertIn('k_me_apis[3] = {"io", "memcpy", "try"}', self.code)
+        self.assertIn("k_me_src_deltas[4] = {0u, 1u, 4u, 0x1000u}", self.code)
+        self.assertIn("k_me_dst_deltas[3] = {0u, 1u, 4u}", self.code)
+        self.assertIn('"me-%s-%s-%s-%04x"', self.code)
+        self.assertEqual(parse_golden.MEMORY_EDGE_PLACES, ("ramtail", "ramhead", "vramtail"))
+        self.assertEqual(parse_golden.MEMORY_EDGE_APIS, ("io", "memcpy", "try"))
+        self.assertEqual(parse_golden.MEMORY_EDGE_SRC_DELTAS, (0, 1, 4, 0x1000))
+        self.assertEqual(parse_golden.MEMORY_EDGE_DST_DELTAS, (0, 1, 4))
+        emitted = {name for name in re.findall(r'"(edge-[a-z0-9-]+)"', self.code)
+                   if not name.startswith("edge-vram-")} - {"edge-place-%s"}
+        self.assertEqual(emitted, {"edge-ram-hi", "edge-ram-lo", "edge-data", "edge-vram"})
+        self.assertIn('"edge-place-%s"', self.code)
+        words = re.findall(r'hle_record\("(edge-[a-z-]+)", "PASS", 0, w, (\d+)\)', self.code)
+        self.assertEqual(dict((n, int(c)) for n, c in words), {
+            "edge-ram-hi": 8, "edge-ram-lo": 8, "edge-data": 3, "edge-vram": 4})
+        self.assertIn("#define ME_WORDS 12u", self.code)
+
+    def test_manifest_row_names_the_probe(self) -> None:
+        manifest = json.loads((Path(__file__).resolve().parents[1] / "tools" / "psp_oracle"
+                               / "manifest.json").read_text(encoding="utf-8"))
+        rows = [row for row in manifest["tests"] if row.get("id") == "PSP-MEMEDGE-001"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["source"], "fixtures/psp_oracle/probe_memory_edge.c")
+        self.assertEqual(row["prx"], "memory_edge.prx")
+        self.assertEqual(row["diagnostic_case_ids"], ["memory-edge"])
+        self.assertEqual(row["issues"], [303, 1380])
+        self.assertEqual(row["case_ids"][-1], "memory-edge-done")
+        self.assertEqual(row["case_ids"], [name for name, _ in parse_golden.MEMORY_EDGE_ROWS]
+                         + ["memory-edge-done"])
 
 
 class GeRasterProbeTests(unittest.TestCase):
