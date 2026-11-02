@@ -51,7 +51,7 @@ import scratch_dir  # noqa: E402
 CC = shutil.which("gcc")
 
 HEADER = ROOT / "src" / "rt" / "fp_convert.h"
-SELFTEST = ROOT / "src" / "rt" / "fp_convert_selftest.c"
+SELFTEST = ROOT / "tests" / "native" / "fp_convert_selftest.c"
 CODEGEN = ROOT / "tools" / "codegen.py"
 REF_INTERP = ROOT / "src" / "ref" / "interp.cpp"
 

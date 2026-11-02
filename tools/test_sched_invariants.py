@@ -320,7 +320,7 @@ class LifecycleInstrumentationIsMandatoryTests(unittest.TestCase):
     """
 
     def test_selftest_refuses_to_build_without_instrumentation(self):
-        selftest = (ROOT / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
+        selftest = (ROOT / "tests" / "native" / "hle_thread_selftest.c").read_text(encoding="utf-8")
         self.assertIn("#ifndef SR_CORO_LIFECYCLE_TEST", selftest)
         self.assertIn("#error", selftest)
 
@@ -654,6 +654,7 @@ class HostCallbackEntryAuditTests(unittest.TestCase):
     ALLOWED = {
         # The SR_AUDIODUMP postmix writer copies the device's mixed output into a host WAV
         # file; it reads no guest memory and writes no state the guest reads.
+        ("src/rt/audio_sdl3.c", "SDL_SetAudioPostmixCallback"),
         ("src/rt/audio_unavailable.c", "SDL_SetAudioPostmixCallback"),
     }
 

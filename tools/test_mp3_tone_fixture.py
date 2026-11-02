@@ -3,7 +3,7 @@
 
 """The committed sceMp3 tone fixture header is exactly what its generator writes.
 
-fixtures/mp3_tone/mp3_tone.h feeds the sceMp3 HLE tests in src/rt/hle_thread_selftest.c.
+fixtures/mp3_tone/mp3_tone.h feeds the sceMp3 HLE tests in tests/native/hle_thread_selftest.c.
 It is generated, not hand-edited, and it must stay source-authored: frames built from the
 MPEG-1 Layer III syntax by fixtures/mp3_tone/generate.py, with no encoder output or recorded
 audio in the repository.

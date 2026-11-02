@@ -376,7 +376,7 @@ static inline void sr_guest_vram_read_prepare_bytes(uint32_t addr, uint32_t widt
  * record) rather than one scalar. The scalar accessors already use sr_inrange_n();
  * these give bulk boundaries the same overflow-safe guarantee under an
  * intent-revealing name. Routing existing HLE/parser call sites through them is
- * tracked by #15; the checks themselves are proven by src/rt/guestmem_selftest.c.
+ * tracked by #15; the checks themselves are proven by tests/native/guestmem_selftest.c.
  *
  * A zero-size span is always valid (it touches no bytes, so the base need not be
  * in range). readable/writable are identical today because the guest arena is one

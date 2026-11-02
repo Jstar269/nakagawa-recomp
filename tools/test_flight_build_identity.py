@@ -991,7 +991,7 @@ class MakeIdentityResolutionTests(unittest.TestCase):
         compile_line = next(
             line
             for line in flattened.splitlines()
-            if "src/rt/psmf_media_selftest.c" in line
+            if "tests/native/psmf_media_selftest.c" in line
         )
         self.assertIn("-DSR_BUILD_ID=", compile_line)
         self.assertIn(FAKE_COMMIT, compile_line)

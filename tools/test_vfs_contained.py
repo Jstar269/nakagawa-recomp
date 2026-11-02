@@ -3,7 +3,7 @@
 
 """Executable evidence for the host-neutral contained-delete seam.
 
-src/rt/vfs_contained_selftest.c builds synthetic hostile fixtures in a
+tests/native/vfs_contained_selftest.c builds synthetic hostile fixtures in a
 temporary directory and asserts the containment contract against whichever
 backend this host selects. This harness compiles and runs it three ways:
 
@@ -28,7 +28,7 @@ import unittest
 import hle_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-SELFTEST_C = ROOT / "src" / "rt" / "vfs_contained_selftest.c"
+SELFTEST_C = ROOT / "tests" / "native" / "vfs_contained_selftest.c"
 SEAM_H = ROOT / "src" / "rt" / "vfs_contained.h"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 RT = str(ROOT / "src" / "rt")

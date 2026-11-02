@@ -17,9 +17,10 @@
  *   - the launch job starts the built game as its own process
  *     (src/core/nk_launch.c).
  *
- * Code under NK_PLAYER_UI_REGRESSION_TEST drives these paths from scripted
- * events for the UI regression tests (the harness is player_ui_test.c); the
- * shipped player does not include it.
+ * The UI regression tests drive these paths from scripted events. main.c
+ * reaches that harness only through the player_ui_test_* hooks of
+ * player_ui_test.h (the harness is player_ui_test.c); the shipped player's
+ * hooks are empty.
  */
 
 #include "player_state.h"
@@ -489,39 +490,20 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
     };
     int button_id = 0;
     bool dialog_shown = false;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    /* The headless regression cannot open a modal box, so it reads the dialog
-       the host would show from these lines; the message's line break is
-       written as \n to keep it on one. */
-    printf("[PLAYER_UI_TEST] QUIT_DIALOG title=%s\n", dialog.title);
-    printf("[PLAYER_UI_TEST] QUIT_DIALOG message=");
-    for (const char *ch = dialog.message; *ch; ++ch) {
-        if (*ch == '\n') fputs("\\n", stdout);
-        else putchar(*ch);
-    }
-    putchar('\n');
-    for (int i = 0; i < dialog.numbuttons; ++i) {
-        const SDL_MessageBoxButtonData *button = &dialog.buttons[i];
-        printf("[PLAYER_UI_TEST] QUIT_DIALOG button id=%d return_default=%d "
-               "escape_default=%d label=%s\n",
-               button->buttonID,
-               (button->flags & SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT) != 0,
-               (button->flags & SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT) != 0,
-               button->text);
-    }
-    fflush(stdout);
-    if (!getenv("NK_UI_TEST_MESSAGEBOX_FAIL")) {
+    if (PLAYER_UI_TEST_BUILD) {
+        player_ui_test_report_quit_dialog(&dialog);
+        if (!player_ui_test_messagebox_fails()) {
+            dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
+        }
+    } else {
+        /* The box is owned by the launcher window: bring that to the front first,
+           or the box opens behind the running game's window. */
+        if (window != NULL) {
+            (void)SDL_RestoreWindow(window);
+            (void)SDL_RaiseWindow(window);
+        }
         dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
     }
-#else
-    /* The box is owned by the launcher window: bring that to the front first,
-       or the box opens behind the running game's window. */
-    if (window != NULL) {
-        (void)SDL_RestoreWindow(window);
-        (void)SDL_RaiseWindow(window);
-    }
-    dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
-#endif
     if (!dialog_shown) {
         player_app_note_close_confirmation_failure(app);
         fprintf(stderr,
@@ -952,22 +934,6 @@ static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
     }
 }
 
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-/* The UI test points a card at its synthetic image, and the card's own library
-   record with it: the library tells two images of a disc ID apart by their
-   files, so a card and its record must name the same one. */
-static void ui_test_set_card_image(PlayerApp *app, int index, const char *iso_path) {
-    GameRecord *card = &app->games[index];
-    for (int j = 0; j < app->library.count; j++) {
-        NkGameEntry *record = &app->library.entries[j];
-        if (strcmp(record->disc_id, card->disc_id) == 0 &&
-            strcmp(record->iso_path, card->iso_path) == 0) {
-            snprintf(record->iso_path, sizeof(record->iso_path), "%s", iso_path);
-        }
-    }
-    snprintf(card->iso_path, sizeof(card->iso_path), "%s", iso_path);
-}
-#endif
 
 /* Saves the inspected title to the library and selects it, as the existing
    wizard's Ready step does. Returns the title's index, or -1. */
@@ -1090,18 +1056,17 @@ static const char *player_report_version(void) {
    makes no connection: the browser does, as for any link the user follows. The
    regression build prints the link instead, so no browser opens in a test. */
 static void player_open_link(PlayerApp *app, const char *what, const char *url) {
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    (void)app;
-    (void)what;
-    printf("[PLAYER_UI_TEST] open_url=%s\n", url);
-    fflush(stdout);
-#else
+    if (PLAYER_UI_TEST_BUILD) {
+        (void)app;
+        (void)what;
+        player_ui_test_report_open_url(url);
+        return;
+    }
     if (!SDL_OpenURL(url)) {
         fprintf(stderr, "[PLAYER] %s could not be opened: %s\n", what, SDL_GetError());
         if (app) player_dev_log_add(app, "error", "%s could not be opened (%s)", what,
                                     SDL_GetError());
     }
-#endif
 }
 
 /* Report this game, See existing reports and a known cause's issue: links to
@@ -1130,15 +1095,7 @@ static void player_ui_copy_error_details(PlayerApp *app) {
     char report[PLAYER_ERROR_DETAILS_MAX + 4096];
     (void)player_app_format_error_report(app, player_report_version(), report, sizeof(report));
     bool copied = report[0] && SDL_SetClipboardText(report);
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    /* The test reads the report from stdout, one line: newlines become " | ". */
-    printf("[PLAYER_UI_TEST] copied_details clipboard=%d report=", copied ? 1 : 0);
-    for (const char *c = report; *c; c++) {
-        if (*c == '\n') fputs(c[1] ? " | " : "", stdout);
-        else putchar(*c);
-    }
-    putchar('\n');
-#endif
+    player_ui_test_report_copied_details(copied, report);
     app->last_error.details_copied = copied;
     if (!copied) {
         player_dev_log_add(app, "error", "Copy details: the clipboard did not take the report (%s)",
@@ -1224,84 +1181,16 @@ typedef struct {
 
 static PlayerUpdateJob *s_update_job;
 
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-/* The regression build never reaches the network: its transport answers from
-   files in NK_UI_TEST_UPDATE_DIR (releases.json for the API, otherwise the
-   URL's last part), and a missing file is "offline". */
-typedef struct {
-    FILE *file;
-    char final_url[512];
-} PlayerUpdateTestResponse;
-
-static bool player_update_test_read(void *context, unsigned char *buffer, size_t capacity,
-                                    size_t *bytes_read) {
-    PlayerUpdateTestResponse *response = (PlayerUpdateTestResponse *)context;
-    *bytes_read = fread(buffer, 1, capacity, response->file);
-    /* A slow link, so the progress and Cancel can be seen. */
-    if (getenv("NK_UI_TEST_UPDATE_SLOW") != NULL) SDL_Delay(40);
-    return !ferror(response->file);
-}
-
-static void player_update_test_close(void *context) {
-    PlayerUpdateTestResponse *response = (PlayerUpdateTestResponse *)context;
-    fclose(response->file);
-    free(response);
-}
-
-static bool player_update_test_open(void *context, const char *url, const char *allowed_hosts,
-                                    PackageHttpResponse *out) {
-    const char *dir = getenv("NK_UI_TEST_UPDATE_DIR");
-    const char *name = strrchr(url, '/');
-    char path[NK_MAX_PATH];
-    PlayerUpdateTestResponse *response;
-    int64_t size;
-    (void)context;
-    (void)allowed_hosts;
-    if (!dir || !name) return false;
-    name = strcmp(url, NK_UPDATE_RELEASES_URL) == 0 ? "releases.json" : name + 1;
-    if (snprintf(path, sizeof(path), "%s%c%s", dir, nk_platform_path_separator(), name) >=
-        (int)sizeof(path)) {
-        return false;
-    }
-    printf("[PLAYER_UI_TEST] update_request=%s\n", url);
-    fflush(stdout);
-    size = nk_platform_get_file_size(path);
-    response = (PlayerUpdateTestResponse *)calloc(1, sizeof(*response));
-    if (!response || size < 0 || !(response->file = nk_fopen_utf8(path, "rb"))) {
-        free(response);
-        return false;
-    }
-    snprintf(response->final_url, sizeof(response->final_url), "%s", url);
-    memset(out, 0, sizeof(*out));
-    out->final_url = response->final_url;
-    out->has_content_length = true;
-    out->content_length = (uint64_t)size;
-    out->context = response;
-    out->read = player_update_test_read;
-    out->close = player_update_test_close;
-    return true;
-}
-#endif
 
 /* The key update signatures are checked with: the one built into this player
    (update_check.h). The regression build takes a TEST-ONLY key from
    NK_UI_TEST_UPDATE_DIR's update_signing_key.pub when the test wrote one, so its
-   synthetic releases can be signed; without that file it uses the built-in key
-   too. */
+   synthetic releases can be signed (player_ui_test.c); without that file it
+   uses the built-in key too. */
 static bool player_update_signing_key(NkMinisignKey *out) {
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    const char *dir = getenv("NK_UI_TEST_UPDATE_DIR");
-    char path[NK_MAX_PATH];
-    char text[512];
-    FILE *file;
-    if (dir && snprintf(path, sizeof(path), "%s%cupdate_signing_key.pub", dir,
-                        nk_platform_path_separator()) < (int)sizeof(path) &&
-        (file = nk_fopen_utf8(path, "rb")) != NULL) {
-        size_t length = fread(text, 1, sizeof(text), file);
-        fclose(file);
-        return length < sizeof(text) && nk_minisign_parse_key(text, length, out);
-    }
-#endif
+    bool test_key_handled = false;
+    bool test_key_ok = player_ui_test_update_signing_key(out, &test_key_handled);
+    if (test_key_handled) return test_key_ok;
     return nk_update_builtin_signing_key(out);
 }
 
@@ -1334,22 +1223,6 @@ static int SDLCALL player_update_thread_main(void *userdata) {
     return 0;
 }
 
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-static const char *player_update_phase_name(PlayerUpdatePhase phase) {
-    switch (phase) {
-        case PLAYER_UPDATE_CHECKING: return "checking";
-        case PLAYER_UPDATE_CURRENT: return "current";
-        case PLAYER_UPDATE_AVAILABLE: return "available";
-        case PLAYER_UPDATE_DOWNLOADING: return "downloading";
-        case PLAYER_UPDATE_DOWNLOADED: return "downloaded";
-        case PLAYER_UPDATE_INSTALLING: return "installing";
-        case PLAYER_UPDATE_INSTALLED: return "installed";
-        case PLAYER_UPDATE_FAILED: return "failed";
-        case PLAYER_UPDATE_IDLE:
-        default: return "idle";
-    }
-}
-#endif
 
 static void player_update_fail(PlayerApp *app, PlayerUpdatePhase step, const char *code,
                                const char *title, const char *message) {
@@ -1375,9 +1248,7 @@ static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
         return;
     }
     job->kind = kind;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    job->transport = player_update_test_open;
-#endif
+    job->transport = player_ui_test_update_transport();
     job->release = app->update.check.newest;
     job->has_signing_key = player_update_signing_key(&job->signing_key);
     snprintf(job->zip_path, sizeof(job->zip_path), "%s", app->update.zip_path);
@@ -2058,35 +1929,12 @@ typedef struct {
     char reason[2048];
     GameRecord game;
     NkRuntimePackageStatus status;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    SDL_Semaphore *catalog_test_start;
-    SDL_Semaphore *catalog_test_done;
-    unsigned catalog_test_repetitions;
-    unsigned catalog_test_status_checks;
-    bool catalog_test_status_mismatch;
-#endif
+    PlayerUiTestCatalog catalog_test;
 } PlayerPackageStatusJob;
 
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-static const char *s_ui_test_catalog_reload_path;
-static unsigned s_ui_test_catalog_reload_count;
-static unsigned s_ui_test_catalog_reload_completed;
-static bool s_ui_test_catalog_reload_started;
-static bool s_ui_test_catalog_reload_failed;
-static bool ui_test_drop_worker_event;
-/* The cache-epoch build regression deliberately defers the automatic rescan
-   for one invalidation so an old post-build latch cannot be completed by a
-   background job before the restarted synthetic build owns the queue. */
-static bool s_ui_test_defer_cache_rescan_once;
-#endif
 
 static bool player_package_status_push_completion(SDL_Event *event) {
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    /* Models SDL refusing the push so the harness can prove the reclaim path.
-       The event must not be queued at all: a queued event the reclaim then
-       races would free a job the queue still owns. */
-    if (ui_test_drop_worker_event) return false;
-#endif
+    if (player_ui_test_drop_worker_event()) return false;
     return SDL_PushEvent(event) != 0;
 }
 
@@ -2150,21 +1998,7 @@ static PlayerOutdatedScanJob *player_outdated_scan_poll(PlayerApp *app,
 static int SDLCALL player_package_status_thread_main(void *userdata) {
     PlayerPackageStatusJob *job = (PlayerPackageStatusJob *)userdata;
     if (!job) return 1;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    const char *delay_text = getenv("NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS");
-    if (delay_text && delay_text[0]) {
-        char *end = NULL;
-        unsigned long delay = strtoul(delay_text, &end, 10);
-        /* A slow check, standing in for hashing a large package: it stops
-           when the launcher closes, as the hashing does. */
-        if (end && *end == '\0' && delay <= 5000) {
-            for (unsigned long waited = 0; waited < delay && !player_closing(NULL);
-                 waited += 10u) {
-                SDL_Delay(10);
-            }
-        }
-    }
-#endif
+    player_ui_test_delay_package_status_worker(player_closing);
     char default_root[NK_MAX_PATH];
     const char *root = NULL;
     if (player_game_is_showcase(&job->game) && job->showcase_root[0]) {
@@ -2213,26 +2047,7 @@ static int SDLCALL player_package_status_thread_main(void *userdata) {
         }
     }
 
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    /* Every exit below reaches this loop, including the warm-cache shortcut
-       above, so the UI thread's reload hand-off can never wait for a
-       repetition this worker would skip. */
-    if (job->catalog_test_start && job->catalog_test_done) {
-        for (unsigned i = 0; i < job->catalog_test_repetitions; i++) {
-            (void)SDL_WaitSemaphore(job->catalog_test_start);
-            NkRuntimePackageStatus repeated_status = job->status;
-            if (root) {
-                repeated_status = nk_launch_validate_runtime_package(
-                    root, &job->game, NULL, NULL, 0);
-            }
-            if (repeated_status != job->status) {
-                job->catalog_test_status_mismatch = true;
-            }
-            job->catalog_test_status_checks++;
-            (void)SDL_SignalSemaphore(job->catalog_test_done);
-        }
-    }
-#endif
+    player_ui_test_catalog_run_worker(&job->catalog_test, &job->game, job->status, root);
 
     if (!job->status_unchanged) {
         char after_identity[65] = "";
@@ -2358,26 +2173,7 @@ static bool player_package_status_start_next(
         app->build_session.session_generation == build_check_session_generation) {
         job->build_session_generation = build_check_session_generation;
     }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (s_ui_test_catalog_reload_count > 0 &&
-        s_ui_test_catalog_reload_path &&
-        s_ui_test_catalog_reload_path[0] &&
-        !s_ui_test_catalog_reload_started) {
-        job->catalog_test_start = SDL_CreateSemaphore(0);
-        job->catalog_test_done = SDL_CreateSemaphore(0);
-        job->catalog_test_repetitions = s_ui_test_catalog_reload_count;
-        if (!job->catalog_test_start || !job->catalog_test_done) {
-            if (job->catalog_test_start) {
-                SDL_DestroySemaphore(job->catalog_test_start);
-                job->catalog_test_start = NULL;
-            }
-            if (job->catalog_test_done) {
-                SDL_DestroySemaphore(job->catalog_test_done);
-                job->catalog_test_done = NULL;
-            }
-        }
-    }
-#endif
+    player_ui_test_catalog_begin(&job->catalog_test);
     snprintf(job->runtime_root, sizeof(job->runtime_root), "%s",
              app->runtime_root);
     snprintf(job->showcase_root, sizeof(job->showcase_root), "%s",
@@ -2403,42 +2199,14 @@ static bool player_package_status_start_next(
     if (!same_game || !cached->status_valid || job->force) {
         player_app_runtime_package_cache_mark_pending(app, index);
     }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    printf("[PLAYER_UI_TEST] package_check index=%d disc=%s\n", index, job->game.disc_id);
-    g_ui_test_package_status_thread_create_attempts++;
-    bool fail_thread_create =
-        player_ui_test_fail_thread_create_for_game(&job->game);
-    for (unsigned failure = 0;
-         failure < g_ui_test_fail_package_status_thread_create_count;
-         failure++) {
-        if (g_ui_test_package_status_thread_create_attempts ==
-            g_ui_test_fail_package_status_thread_create_on_attempts[failure]) {
-            fail_thread_create = true;
-            break;
-        }
-    }
-    if (fail_thread_create) {
-        int fail_title_index = player_ui_test_fail_title_index(job->game.disc_id);
-        if (fail_title_index >= 0) {
-            g_ui_test_fail_package_status_thread_create_for_counts[
-                fail_title_index]++;
-        }
+    if (player_ui_test_fail_package_check_thread(index, &job->game)) {
         job->thread = NULL;
-    } else
-#endif
-    {
+    } else {
         job->thread = SDL_CreateThread(player_package_status_thread_main,
                                        "nakagawa-package-status", job);
     }
     if (!job->thread) {
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (job->catalog_test_start) {
-            SDL_DestroySemaphore(job->catalog_test_start);
-        }
-        if (job->catalog_test_done) {
-            SDL_DestroySemaphore(job->catalog_test_done);
-        }
-#endif
+        player_ui_test_catalog_release(&job->catalog_test);
         player_app_runtime_package_cache_mark_failed(app, index,
                                                      SDL_GetTicks());
         fprintf(stderr,
@@ -2472,29 +2240,7 @@ static void player_package_status_finish(PlayerApp *app,
         SDL_WaitThread(job->thread, NULL);
         job->thread = NULL;
     }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (job->catalog_test_repetitions > 0) {
-        bool stress_passed = !s_ui_test_catalog_reload_failed &&
-            s_ui_test_catalog_reload_completed ==
-                job->catalog_test_repetitions &&
-            job->catalog_test_status_checks ==
-                job->catalog_test_repetitions &&
-            !job->catalog_test_status_mismatch;
-        printf("[PLAYER_UI_TEST] catalog_reload result=%s reloads=%u "
-               "status_checks=%u status=%d\n",
-               stress_passed ? "PASS" : "FAIL",
-               s_ui_test_catalog_reload_completed,
-               job->catalog_test_status_checks, (int)job->status);
-        if (job->catalog_test_start) {
-            SDL_DestroySemaphore(job->catalog_test_start);
-            job->catalog_test_start = NULL;
-        }
-        if (job->catalog_test_done) {
-            SDL_DestroySemaphore(job->catalog_test_done);
-            job->catalog_test_done = NULL;
-        }
-    }
-#endif
+    player_ui_test_catalog_report(&job->catalog_test, job->status);
     /* A title whose package variant changed while the check ran is not this
        result's title: the other variant has its own package. Of two images of
        a disc ID, the one checked. */
@@ -2547,16 +2293,11 @@ static void player_package_status_finish(PlayerApp *app,
                              *build_check_session_generation &&
                          app->build_session.session_generation ==
                              *build_check_session_generation;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (handles_build) {
-        printf("[PLAYER_UI_TEST] post_build_validation status=%d reason=%s "
-               "build_session_generation=%llu current_build_session_generation=%llu\n",
-               (int)job->status,
-               job->reason[0] ? job->reason : "none",
-               (unsigned long long)job->build_session_generation,
-               (unsigned long long)app->build_session.session_generation);
+        player_ui_test_report_post_build_validation(
+            (int)job->status, job->reason, job->build_session_generation,
+            app->build_session.session_generation);
     }
-#endif
     if (handles_build) {
         /* A Rebuild all build ends in the queue: the user stays where they
            are, and a failed check leaves the old package, which still plays. */
@@ -2594,19 +2335,8 @@ static void player_package_status_finish(PlayerApp *app,
             } else {
                 player_app_set_view(app, PLAYER_VIEW_READY_LIBRARY);
             }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-            /* runtime= is what makes the title's card offer PLAY. */
-            printf("[PLAYER_UI_TEST] post_build_transition view=ready_library "
-                   "disc=%s found=%d prepared=%d status=%d runtime=%d\n",
-                   job->game.disc_id, current_index >= 0,
-                   current_index >= 0
-                       ? app->games[current_index].is_prepared : 0,
-                   current_index >= 0
-                       ? (int)app->games[current_index].status : -1,
-                   current_index >= 0
-                       ? (int)player_app_cached_game_has_runtime(
-                             app, &app->games[current_index]) : 0);
-#endif
+            player_ui_test_report_post_build_transition(app, job->game.disc_id,
+                                                        current_index);
         } else {
             player_app_set_package_revalidation_error(
                 app, job->reason, app->build_session.log_file_path);
@@ -3063,12 +2793,7 @@ static int SDLCALL disc_check_thread_main(void *userdata) {
     if (!job) return -1;
     NkDiscExpandCallbacks callbacks = { disc_check_progress, disc_check_cancelled, job };
     NkDiscVerification check;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    /* The UI test holds the worker, to see the library draw frames while a
-       check runs. */
-    const char *hold = getenv("NK_UI_TEST_DISC_CHECK_HOLD_MS");
-    if (hold && hold[0]) SDL_Delay((Uint32)strtoul(hold, NULL, 10));
-#endif
+    player_ui_test_hold_disc_check();
     bool hashed = nk_disc_verify_image(job->item.iso_path, job->data_root, job->item.disc_id,
                                        job->verified_elsewhere, &callbacks, &check);
     SDL_LockMutex(job->mutex);
@@ -3349,17 +3074,12 @@ static bool player_parse_positive_u32(const char *text, uint32_t maximum,
 typedef struct {
     SDL_Thread *thread;
     SDL_AtomicInt done;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    uint32_t test_slow_start_ms;
-#endif
+    PlayerUiTestLaunch test;
     PlayerLaunchWork work;
 } PlayerLaunchJob;
 
 static void player_launch_job_run(PlayerLaunchJob *job) {
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    /* A synthetic slow start: the launch takes this long before its checks. */
-    if (job->test_slow_start_ms > 0u) SDL_Delay(job->test_slow_start_ms);
-#endif
+    player_ui_test_slow_start(&job->test);
     player_launch_work_run(&job->work);
     SDL_SetAtomicInt(&job->done, 1);
 }
@@ -3383,15 +3103,13 @@ static PlayerLaunchJob *player_launch_job_start(PlayerApp *app, int game_index) 
         free(job);
         return NULL;
     }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
     {
-        const char *slow = getenv("NK_UI_TEST_SLOW_START_MS");
+        const char *slow = player_ui_test_slow_start_text();
         uint32_t slow_ms = 0u;
         if (slow && player_parse_positive_u32(slow, 60000u, &slow_ms)) {
-            job->test_slow_start_ms = slow_ms;
+            job->test.slow_start_ms = slow_ms;
         }
     }
-#endif
     app->launch_pending = true;
     snprintf(app->launch_pending_disc_id, sizeof(app->launch_pending_disc_id), "%s",
              job->work.game.disc_id);
@@ -3755,79 +3473,103 @@ static void player_test_view_preflight(PlayerApp *app, bool encrypted) {
     player_app_build_compatibility_preflight(app, true, true, &executables);
 }
 
-int main(int argc, char *argv[]) {
-    /* Windows: UTF-8 console output and argv rebuilt from the UTF-16 command line. */
-    (void)nk_platform_init_utf8_main(&argc, &argv);
-
-    /* Android: system-log streams and the unpacked-files folder (no-op elsewhere). */
-    (void)nk_platform_host_startup("nakagawa");
-    if (!player_apply_user_data_root(argc, argv)) return 2;
-    /* Compressed disc images: CHD is read through the vendored libchdr. */
-    nk_disc_chd_register();
-    /* Windows (a GUI-subsystem program): the parent console, or player-output.txt in the
-       logs folder, unbuffered (#1303). Nothing to do elsewhere. */
-    nk_platform_setup_standard_streams("player-output.txt");
-    player_report_legacy_data_root();
-
-    /* Static storage: a full library (NK_MAX_GAMES titles) makes the app state
-       tens of megabytes, far more than a thread's stack. */
-    static PlayerApp app;
-    player_app_init(&app);
-    const char *executable_directory = SDL_GetBasePath();
-    if (executable_directory) {
-        player_app_discover_showcase(&app, executable_directory);
-    }
-
-    const char *screenshot_path = NULL;
-    const char *test_view = NULL;
-    const char *manifest_overlay_path = NULL;
-    const char *initial_iso_path = NULL;
-    const char *runtime_root_path = NULL;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    const char *ui_test_events = "";
-    const char *ui_test_screenshot_path = NULL;
-    const char *ui_test_error_code = NULL;
-    const char *ui_test_iso_path = NULL;
-    const char *ui_test_art_mount_source = NULL;
-    bool ui_test_wait_background = false;
-    bool ui_test_mode = false;
-    bool ui_test_failed = false;
-    bool ui_test_quit_queued = false;
-    size_t ui_test_event_cursor = 0;
-    int ui_test_frame = 0;
-    bool ui_test_waiting_for_time = false;
-    bool ui_test_waiting_for_view = false;
-    bool ui_test_waiting_for_package_status = false;
-    NkRuntimePackageStatus ui_test_wait_package_status_target =
-        NK_RUNTIME_PACKAGE_UNKNOWN;
-    bool ui_test_waiting_for_art_attempt = false;
-    bool ui_test_waiting_for_art_delay = false;
-    uint64_t ui_test_wait_art_delay_deadline = 0;
-    unsigned ui_test_wait_art_attempt_target = 0;
-    uint64_t ui_test_wait_deadline = 0;
-    uint32_t ui_test_wait_view_mask = UINT32_C(1) << VIEW_LIBRARY;
-    bool ui_test_fake_game_running = false;
-#endif
-    bool launch_now = false;
-    bool stage_initial_iso = false;
-    bool stage_only = false;
-    bool launch_index_requested = false;
-    int launch_index = -1;
-    int override_w = 1280;
-    int override_h = 720;
-    float capture_render_scale = 1.0f;
+/* One run of the player: what main() used to keep in locals, now shared by the
+   startup, window, frame and shutdown functions below. It is static because the
+   app state alone is tens of megabytes (a full library of NK_MAX_GAMES titles),
+   far more than a thread's stack. */
+typedef struct PlayerRun {
+    PlayerApp app;
+    PlayerUiTest ui_test;
+    /* The command line. */
+    const char *screenshot_path;
+    const char *test_view;
+    const char *manifest_overlay_path;
+    const char *initial_iso_path;
+    const char *runtime_root_path;
+    bool launch_now;
+    bool stage_initial_iso;
+    bool stage_only;
+    bool launch_index_requested;
+    int launch_index;
+    int override_w;
+    int override_h;
+    float capture_render_scale;
     /* Demo fixtures are opt-in. Defaulting them on meant a normal first
        launch with an empty library populated TEST00005 and, through
        player_app_add_game, PERSISTED it: a new user's first sight of the
        program was a game they do not have, written into their real library
        file, instead of the documented empty-library prompt. */
-    bool populate_sample = false;
-    bool force_empty = false;
+    bool populate_sample;
+    bool force_empty;
     /* The nk_ui launcher is the only launcher. The regression-test build keeps
        the old renderer behind --ui=legacy for the tests that still pin it;
        the shipped player has no way to reach it. */
-    bool ui_next_requested = true;
+    bool ui_next_requested;
+    /* The initial disc image: a converted PSN package or an expanded compressed image. */
+    char converted_iso_path[NK_MAX_PATH];
+    char expanded_iso_path[NK_MAX_PATH];
+    const char *initial_source_image;
+    /* Entries at or after this index were not loaded from library.json: they are
+       the bundled demo samples (or prepared showcase demos). */
+    int user_library_count;
+    /* The window. */
+    bool interactive_window;
+    SDL_Rect usable_bounds;
+    bool have_usable_bounds;
+    PlayerWindowRect requested_window;
+    PlayerWindowRect startup_window;
+    SDL_Window *window;
+    SDL_Renderer *renderer;
+    PlayerUiNk *next_ui;
+    UiInput input;
+    int capture_pixel_width;
+    int capture_pixel_height;
+    bool window_frame_measured;
+    bool applied_launcher_fullscreen;
+    bool launcher_handoff_attempted;
+    SDL_Gamepad *gamepad;
+    /* The frame loop. */
+    PlayerLaunchJob *launch_job;
+    PlayerStagingJob *staging_job;
+    PlayerPsnJob *psn_job;
+    PlayerDiscCheckJob *disc_check_job;
+    PlayerPackageStatusJob *package_status_job;
+    PlayerOutdatedScanJob *outdated_scan_job;
+    bool package_status_requested[MAX_LIBRARY_GAMES];
+    bool package_status_force_requested[MAX_LIBRARY_GAMES];
+    uint64_t last_package_cache_generation;
+    int last_package_selection;
+    uint64_t last_package_scan_tick;
+    char build_check_disc_id[MAX_DISC_ID_LEN];
+    uint64_t build_check_session_generation;
+    uint64_t build_check_cache_generation;
+    bool build_check_pending;
+    bool running;
+    uint64_t last_tick;
+} PlayerRun;
 
+/* What the startup and window steps return when the run goes on; any other value is
+   the process's exit code. */
+#define PLAYER_RUN_CONTINUE INT_MIN
+
+static void player_run_init(PlayerRun *run) {
+    memset(run, 0, sizeof(*run));
+    player_app_init(&run->app);
+    const char *executable_directory = SDL_GetBasePath();
+    if (executable_directory) {
+        player_app_discover_showcase(&run->app, executable_directory);
+    }
+    player_ui_test_init(&run->ui_test);
+    run->launch_index = -1;
+    run->override_w = 1280;
+    run->override_h = 720;
+    run->capture_render_scale = 1.0f;
+    run->ui_next_requested = true;
+}
+
+/* Reads the command line (and --help), then checks it. */
+static int player_parse_command_line(PlayerRun *run, int argc, char *argv[]) {
+    PlayerApp *app = &run->app;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nakagawa_player [--user-data-root=<folder>] "
@@ -3840,76 +3582,45 @@ int main(int argc, char *argv[]) {
                    "[--experimental-60hz]\n");
             return 0;
         } else if (strcmp(argv[i], "--experimental-60hz") == 0) {
-            player_app_set_experimental_60hz_session(&app, true);
+            player_app_set_experimental_60hz_session(app, true);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
         } else if (strcmp(argv[i], "--ui=next") == 0) {
-            ui_next_requested = true;
+            run->ui_next_requested = true;
         } else if (strcmp(argv[i], "--ui=legacy") == 0) {
-            ui_next_requested = false;
+            run->ui_next_requested = false;
+        } else if (player_ui_test_parse_arg(&run->ui_test, argv[i])) {
+            /* A --ui-test-* option, taken by the harness. */
 #endif
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
-            screenshot_path = argv[i] + 13;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        } else if (strncmp(argv[i], "--ui-test-events=", 17) == 0) {
-            ui_test_events = argv[i] + 17;
-            ui_test_mode = true;
-        } else if (strncmp(argv[i], "--ui-test-screenshot=", 21) == 0) {
-            ui_test_screenshot_path = argv[i] + 21;
-            ui_test_mode = true;
-        } else if (strncmp(argv[i], "--ui-test-error-code=", 21) == 0) {
-            ui_test_error_code = argv[i] + 21;
-            ui_test_mode = true;
-        } else if (strncmp(argv[i], "--ui-test-iso-path=", 19) == 0) {
-            ui_test_iso_path = argv[i] + 19;
-            ui_test_mode = true;
-        } else if (strncmp(argv[i], "--ui-test-art-mount-source=", 27) == 0) {
-            ui_test_art_mount_source = argv[i] + 27;
-            ui_test_mode = true;
-        } else if (strcmp(argv[i], "--ui-test-wait-background") == 0) {
-            ui_test_wait_background = true;
-            ui_test_mode = true;
-        } else if (strncmp(argv[i], "--ui-test-catalog-reload-path=", 30) == 0) {
-            s_ui_test_catalog_reload_path = argv[i] + 30;
-            ui_test_mode = true;
-        } else if (strncmp(argv[i], "--ui-test-catalog-reload-count=", 31) == 0) {
-            uint64_t count = 0;
-            if (!player_ui_test_parse_positive_u64(argv[i] + 31, &count) ||
-                count > 1024) {
-                fprintf(stderr, "[PLAYER_UI_TEST] invalid catalog reload count.\n");
-                ui_test_failed = true;
-            } else {
-                s_ui_test_catalog_reload_count = (unsigned)count;
-            }
-            ui_test_mode = true;
-#endif
+            run->screenshot_path = argv[i] + 13;
         } else if (strncmp(argv[i], "--view=", 7) == 0) {
-            test_view = argv[i] + 7;
+            run->test_view = argv[i] + 7;
         } else if (strncmp(argv[i], "--manifest-overlay=", 19) == 0) {
-            manifest_overlay_path = argv[i] + 19;
+            run->manifest_overlay_path = argv[i] + 19;
         } else if (strncmp(argv[i], "--iso=", 6) == 0) {
-            initial_iso_path = argv[i] + 6;
+            run->initial_iso_path = argv[i] + 6;
         } else if (strncmp(argv[i], "--user-data-root=", 17) == 0) {
             /* Applied by player_apply_user_data_root before the library loaded. */
         } else if (strncmp(argv[i], "--runtime-root=", 15) == 0) {
-            runtime_root_path = argv[i] + 15;
+            run->runtime_root_path = argv[i] + 15;
         } else if (strncmp(argv[i], "--runtime-bin=", 14) == 0) {
             /* Keep the old spelling as a compatibility alias. The value is a
                resolver root, not necessarily a binary path. */
-            runtime_root_path = argv[i] + 14;
+            run->runtime_root_path = argv[i] + 14;
         } else if (strcmp(argv[i], "--launch-now") == 0) {
-            launch_now = true;
+            run->launch_now = true;
         } else if (strcmp(argv[i], "--stage") == 0) {
-            stage_initial_iso = true;
+            run->stage_initial_iso = true;
         } else if (strcmp(argv[i], "--stage-only") == 0) {
-            stage_initial_iso = true;
-            stage_only = true;
+            run->stage_initial_iso = true;
+            run->stage_only = true;
         } else if (strncmp(argv[i], "--launch-index=", 15) == 0) {
-            launch_index_requested = true;
-            launch_index = atoi(argv[i] + 15);
+            run->launch_index_requested = true;
+            run->launch_index = atoi(argv[i] + 15);
         } else if (strncmp(argv[i], "--width=", 8) == 0) {
-            override_w = atoi(argv[i] + 8);
+            run->override_w = atoi(argv[i] + 8);
         } else if (strncmp(argv[i], "--height=", 9) == 0) {
-            override_h = atoi(argv[i] + 9);
+            run->override_h = atoi(argv[i] + 9);
         } else if (strncmp(argv[i], "--render-scale=", 15) == 0) {
             char *end = NULL;
             float value = strtof(argv[i] + 15, &end);
@@ -3918,15 +3629,15 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "[PLAYER] --render-scale must be a number from 0.25 to 8.\n");
                 return 2;
             }
-            capture_render_scale = value;
+            run->capture_render_scale = value;
         } else if (strcmp(argv[i], "--demo") == 0) {
-            populate_sample = true;
+            run->populate_sample = true;
         } else if (strcmp(argv[i], "--headless-launch") == 0) {
-            app.launch_headless = true;
+            app->launch_headless = true;
         } else if (strncmp(argv[i], "--headless-accept-presented-frames=", 35) == 0) {
             if (!player_parse_positive_u32(
                     argv[i] + 35, NK_HEADLESS_ACCEPTANCE_MAX_PRESENTED_FRAMES,
-                    &app.headless_accept_presented_frames)) {
+                    &app->headless_accept_presented_frames)) {
                 fprintf(stderr,
                         "[PLAYER] Invalid --headless-accept-presented-frames value.\n");
                 return 2;
@@ -3934,84 +3645,53 @@ int main(int argc, char *argv[]) {
         } else if (strncmp(argv[i], "--headless-timeout-ms=", 22) == 0) {
             if (!player_parse_positive_u32(argv[i] + 22,
                                            NK_HEADLESS_ACCEPTANCE_MAX_TIMEOUT_MS,
-                                           &app.headless_launch_timeout_ms)) {
+                                           &app->headless_launch_timeout_ms)) {
                 fprintf(stderr, "[PLAYER] Invalid --headless-timeout-ms value.\n");
                 return 2;
             }
         } else if (strcmp(argv[i], "--empty") == 0) {
-            force_empty = true;
+            run->force_empty = true;
         } else if (strcmp(argv[i], "--wizard") == 0) {
-            force_empty = true;
-            test_view = "wizard";
+            run->force_empty = true;
+            run->test_view = "wizard";
         }
     }
 
-    if ((app.headless_accept_presented_frames > 0u &&
-         (!app.launch_headless || (!launch_index_requested && !launch_now))) ||
-        (app.headless_launch_timeout_ms > 0u &&
-         app.headless_accept_presented_frames == 0u)) {
+    if ((app->headless_accept_presented_frames > 0u &&
+         (!app->launch_headless || (!run->launch_index_requested && !run->launch_now))) ||
+        (app->headless_launch_timeout_ms > 0u &&
+         app->headless_accept_presented_frames == 0u)) {
         fprintf(stderr,
                 "[PLAYER] Headless acceptance requires --headless-launch and a launch route; "
                 "--headless-timeout-ms requires an acceptance frame count.\n");
         return 2;
     }
 
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    {
-        const char *fake_running = getenv("NK_UI_TEST_GAME_RUNNING");
-        ui_test_fake_game_running = ui_test_mode && fake_running && fake_running[0];
-    }
-    const char *fail_package_thread_at =
-        getenv("NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_AT");
-    if (ui_test_mode && fail_package_thread_at) {
-        if (!player_ui_test_parse_fail_attempts(fail_package_thread_at)) {
-            fprintf(stderr,
-                    "[PLAYER_UI_TEST] invalid package status thread fail attempt.\n");
-            ui_test_failed = true;
-        }
-    }
-    const char *fail_package_thread_for =
-        getenv("NK_UI_TEST_FAIL_PACKAGE_STATUS_THREAD_CREATE_FOR");
-    if (ui_test_mode && fail_package_thread_for &&
-        !player_ui_test_parse_fail_titles(fail_package_thread_for)) {
-        fprintf(stderr,
-                "[PLAYER_UI_TEST] invalid package status thread fail title.\n");
-        ui_test_failed = true;
-    }
-    if (ui_test_mode && getenv("NK_UI_TEST_DROP_WORKER_EVENT")) {
-        /* Model SDL refusing a worker completion push, so the launcher's
-           reclaim path is exercised by the same harness that drives the real
-           event loop. */
-        ui_test_drop_worker_event = true;
-        ui_renderer_test_drop_art_events(true);
-    }
-    if ((s_ui_test_catalog_reload_count > 0) !=
-        (s_ui_test_catalog_reload_path &&
-         s_ui_test_catalog_reload_path[0])) {
-        fprintf(stderr, "[PLAYER_UI_TEST] catalog reload path/count must be paired.\n");
-        ui_test_failed = true;
-    }
-    if (ui_test_mode) setvbuf(stdout, NULL, _IONBF, 0);
-#endif
+    player_ui_test_check_environment(&run->ui_test);
+    return PLAYER_RUN_CONTINUE;
+}
 
+/* Loads the title manifests, the initial disc image and the demo entries. */
+static int player_load_library(PlayerRun *run) {
+    PlayerApp *app = &run->app;
     /* A --view= run is an explicit test or capture invocation, so it gets the
        fixture too. --empty wins regardless of argument order. */
-    if (test_view && strcmp(test_view, "empty") != 0) {
-        populate_sample = true;
+    if (run->test_view && strcmp(run->test_view, "empty") != 0) {
+        run->populate_sample = true;
     }
-    if (force_empty) {
-        populate_sample = false;
+    if (run->force_empty) {
+        run->populate_sample = false;
     }
     /* --launch-index names a library entry. It does not switch on the demo
        fixtures: an empty library is refused below unless --demo asks for them. */
-    if (runtime_root_path) {
-        player_app_set_runtime_root(&app, runtime_root_path);
+    if (run->runtime_root_path) {
+        player_app_set_runtime_root(app, run->runtime_root_path);
     }
     {
         const char *base = SDL_GetBasePath();
-        if (base) snprintf(app.install_root, sizeof(app.install_root), "%s", base);
+        if (base) snprintf(app->install_root, sizeof(app->install_root), "%s", base);
     }
-    if (stage_only && !initial_iso_path) {
+    if (run->stage_only && !run->initial_iso_path) {
         fprintf(stderr, "[PLAYER] --stage-only requires --iso=<path>.\n");
         return 2;
     }
@@ -4020,8 +3700,8 @@ int main(int argc, char *argv[]) {
      * start, so a game that needs one is recognized without command-line flags. */
     {
         char user_data_root[NK_MAX_PATH];
-        bool have_root = app.runtime_root[0]
-            ? snprintf(user_data_root, sizeof(user_data_root), "%s", app.runtime_root) > 0
+        bool have_root = app->runtime_root[0]
+            ? snprintf(user_data_root, sizeof(user_data_root), "%s", app->runtime_root) > 0
             : nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root));
         char manifest_dir[NK_MAX_PATH + 16];
         if (have_root && snprintf(manifest_dir, sizeof(manifest_dir), "%s%cmanifests",
@@ -4029,8 +3709,8 @@ int main(int argc, char *argv[]) {
             char report[2048];
             int loaded = nk_title_manifest_load_overlay_dir(manifest_dir, report, sizeof(report));
             if (report[0]) {
-                snprintf(app.title_manifest_report,
-                         sizeof(app.title_manifest_report), "%s", report);
+                snprintf(app->title_manifest_report,
+                         sizeof(app->title_manifest_report), "%s", report);
             }
             if (loaded > 0) printf("[PLAYER] Loaded %d title manifest(s) from %s\n", loaded, manifest_dir);
             if (report[0]) fprintf(stderr, "[PLAYER] Title manifests not loaded:\n%s", report);
@@ -4038,15 +3718,15 @@ int main(int argc, char *argv[]) {
     }
     /* An experimental entry saved with no selected executable recovers the
        one its profile binds, without a hand edit of library.json (#1276). */
-    for (int i = 0; i < app.game_count; i++) {
-        (void)player_app_adopt_profile_executable(&app, i);
+    for (int i = 0; i < app->game_count; i++) {
+        (void)player_app_adopt_profile_executable(app, i);
     }
 
     /* Load external manifest overlay if requested */
-    if (manifest_overlay_path) {
+    if (run->manifest_overlay_path) {
         char err_msg[256];
-        if (nk_title_manifest_load_overlay(manifest_overlay_path, err_msg, sizeof(err_msg))) {
-            printf("[PLAYER] External manifest overlay loaded successfully: %s\n", manifest_overlay_path);
+        if (nk_title_manifest_load_overlay(run->manifest_overlay_path, err_msg, sizeof(err_msg))) {
+            printf("[PLAYER] External manifest overlay loaded successfully: %s\n", run->manifest_overlay_path);
         } else {
             fprintf(stderr, "[PLAYER] Failed to load external manifest overlay: %s\n", err_msg);
             return 1;
@@ -4055,12 +3735,11 @@ int main(int argc, char *argv[]) {
 
     /* A PSN package given as --iso converts once, here, and its disc image is
        then inspected like any --iso (#295 phase 2). */
-    char converted_iso_path[NK_MAX_PATH];
-    if (initial_iso_path && player_path_is_pbp_package(initial_iso_path)) {
+    if (run->initial_iso_path && player_path_is_pbp_package(run->initial_iso_path)) {
         PlayerPsnPackage package;
         char code[48];
         char message[512];
-        bool ok = player_psn_package_inspect(initial_iso_path, &package, code, sizeof(code),
+        bool ok = player_psn_package_inspect(run->initial_iso_path, &package, code, sizeof(code),
                                              message, sizeof(message));
         if (ok && !package.iso_ready) {
             int last_percent = -1;
@@ -4072,26 +3751,24 @@ int main(int argc, char *argv[]) {
         }
         if (!ok) {
             fprintf(stderr, "[PLAYER] %s: %s\n", code, message);
-            if (stage_only || app.launch_headless) return 1;
-            populate_sample = false;
-            player_app_set_error(&app, code, "Package Not Supported", message,
+            if (run->stage_only || app->launch_headless) return 1;
+            run->populate_sample = false;
+            player_app_set_error(app, code, "Package Not Supported", message,
                                  "Try Another File", VIEW_LIBRARY);
-            initial_iso_path = NULL;
+            run->initial_iso_path = NULL;
         } else {
-            snprintf(converted_iso_path, sizeof(converted_iso_path), "%s", package.iso_path);
-            initial_iso_path = converted_iso_path;
+            snprintf(run->converted_iso_path, sizeof(run->converted_iso_path), "%s", package.iso_path);
+            run->initial_iso_path = run->converted_iso_path;
         }
     }
 
     /* A compressed disc image given as --iso expands once, here, and the
        expanded .iso is then inspected like any --iso. */
-    char expanded_iso_path[NK_MAX_PATH];
-    const char *initial_source_image = NULL;
-    if (initial_iso_path && nk_disc_image_format(initial_iso_path) != NK_DISC_FORMAT_NONE) {
+    if (run->initial_iso_path && nk_disc_image_format(run->initial_iso_path) != NK_DISC_FORMAT_NONE) {
         PlayerPsnPackage package;
         char code[48];
         char message[512];
-        bool ok = player_disc_image_inspect(initial_iso_path, &package, code, sizeof(code),
+        bool ok = player_disc_image_inspect(run->initial_iso_path, &package, code, sizeof(code),
                                             message, sizeof(message));
         if (ok && !package.iso_ready) {
             int last_percent = -1;
@@ -4103,59 +3780,59 @@ int main(int argc, char *argv[]) {
         }
         if (!ok) {
             fprintf(stderr, "[PLAYER] %s: %s\n", code, message);
-            if (stage_only || app.launch_headless) return 1;
-            populate_sample = false;
-            player_app_set_error(&app, code, player_disc_refusal_title(code), message,
+            if (run->stage_only || app->launch_headless) return 1;
+            run->populate_sample = false;
+            player_app_set_error(app, code, player_disc_refusal_title(code), message,
                                  "Try Another File", VIEW_LIBRARY);
-            initial_iso_path = NULL;
+            run->initial_iso_path = NULL;
         } else {
-            snprintf(expanded_iso_path, sizeof(expanded_iso_path), "%s", package.iso_path);
-            initial_source_image = initial_iso_path;
-            initial_iso_path = expanded_iso_path;
+            snprintf(run->expanded_iso_path, sizeof(run->expanded_iso_path), "%s", package.iso_path);
+            run->initial_source_image = run->initial_iso_path;
+            run->initial_iso_path = run->expanded_iso_path;
         }
     }
 
     /* Inspect initial ISO if requested */
-    if (initial_iso_path) {
-        populate_sample = false;
+    if (run->initial_iso_path) {
+        run->populate_sample = false;
         IsoInspectResult res;
-        if (iso_inspect_file(initial_iso_path, &res)) {
+        if (iso_inspect_file(run->initial_iso_path, &res)) {
             printf("[PLAYER] Inspected ISO %s -> Disc ID: %s, Title: %s, Supported: %d\n",
-                   initial_iso_path, res.disc_id, res.title_name, res.is_supported ? 1 : 0);
+                   run->initial_iso_path, res.disc_id, res.title_name, res.is_supported ? 1 : 0);
             char profile_error[256] = "";
-            if (!player_populate_inspected_game(&app, initial_iso_path, initial_source_image,
+            if (!player_populate_inspected_game(app, run->initial_iso_path, run->initial_source_image,
                                                 &res, profile_error, sizeof(profile_error))) {
                 fprintf(stderr, "[PLAYER] Could not create experimental profile: %s\n",
                         profile_error[0] ? profile_error : "unspecified profile error");
                 return 4;
             }
-            player_app_build_compatibility_preflight(&app, res.success,
+            player_app_build_compatibility_preflight(app, res.success,
                                                       res.param_sfo_parsed,
                                                       &res.executables);
             /* is_prepared intentionally NOT set: no preparation has run in this
              * build; the entry keeps the inspection-reported status. */
 
-            if (stage_only && !res.is_supported) {
+            if (run->stage_only && !res.is_supported) {
                 fprintf(stderr, "[PLAYER] Disc %s is not in Nakagawa's title list yet, so "
                         "its files cannot be set up. Nothing was changed.\n",
-                        app.inspecting_game.disc_id);
+                        app->inspecting_game.disc_id);
                 return 3;
             }
 
-            if (res.is_supported && stage_initial_iso) {
+            if (res.is_supported && run->stage_initial_iso) {
                 /* --stage enters the same wizard state used by the file picker,
                    while --stage-only runs the same staging transaction
                    synchronously for the command line and CI. */
-                player_app_start_setup_wizard(&app);
-                app.wizard.iso_selected = true;
-                app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
-                player_app_build_compatibility_preflight(&app, res.success,
+                player_app_start_setup_wizard(app);
+                app->wizard.iso_selected = true;
+                app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+                player_app_build_compatibility_preflight(app, res.success,
                                                           res.param_sfo_parsed,
                                                           &res.executables);
-                if (stage_only) {
-                    return player_stage_inspected_title(&app);
+                if (run->stage_only) {
+                    return player_stage_inspected_title(app);
                 }
-                player_app_wizard_begin_extraction(&app);
+                player_app_wizard_begin_extraction(app);
             } else {
             /* Catalogued titles and structurally identified experimental discs
                are offered on their card. The card's ADD TO LIBRARY stores them,
@@ -4164,90 +3841,90 @@ int main(int argc, char *argv[]) {
                record, and the wizard's LAUNCH GAME NOW likewise adds before it
                launches. Images without parsed PARAM.SFO remain refused on the
                unsupported view. */
-            bool should_store = res.is_supported || app.inspecting_game.is_experimental;
-            bool add_before_launch = should_store && launch_now &&
-                                     !app.inspecting_game.is_experimental;
-            int staging_exit = add_before_launch ? player_stage_for_launch_now(&app) : 0;
+            bool should_store = res.is_supported || app->inspecting_game.is_experimental;
+            bool add_before_launch = should_store && run->launch_now &&
+                                     !app->inspecting_game.is_experimental;
+            int staging_exit = add_before_launch ? player_stage_for_launch_now(app) : 0;
             bool stored = add_before_launch && staging_exit == 0 &&
-                          player_app_add_game(&app, &app.inspecting_game);
+                          player_app_add_game(app, &app->inspecting_game);
 
-            if (launch_now && app.inspecting_game.is_experimental) {
+            if (run->launch_now && app->inspecting_game.is_experimental) {
                 const char *message =
                     "Launch now is unavailable for experimental titles. Generic ISO-to-Play "
                     "support is in the works. This title was not added; review its "
                     "compatibility checks before adding it to the library.";
                 fprintf(stderr, "[PLAYER] EXPERIMENTAL_LAUNCH_UNAVAILABLE: %s\n", message);
-                player_app_set_error(&app, "EXPERIMENTAL_LAUNCH_UNAVAILABLE",
+                player_app_set_error(app, "EXPERIMENTAL_LAUNCH_UNAVAILABLE",
                                      "Experimental Title Cannot Launch Yet", message,
                                      "Review Compatibility", VIEW_EXPERIMENTAL_TITLE);
             } else if (add_before_launch && staging_exit != 0) {
                 /* The staging transaction already explained itself on stderr. */
-                if (app.launch_headless) return staging_exit;
-                player_app_set_error(&app, "GAME_FILES_NOT_READY", "Game Files Not Set Up",
-                                     app.wizard.extraction_error[0]
-                                         ? app.wizard.extraction_error
+                if (app->launch_headless) return staging_exit;
+                player_app_set_error(app, "GAME_FILES_NOT_READY", "Game Files Not Set Up",
+                                     app->wizard.extraction_error[0]
+                                         ? app->wizard.extraction_error
                                          : "This game's files could not be set up.",
                                      "Return to Library", VIEW_LIBRARY);
             } else if (add_before_launch && !stored) {
                 fprintf(stderr, "[PLAYER] Could not store %s in the library.\n",
-                        app.inspecting_game.disc_id);
-                if (app.launch_headless) return 2;
-                player_app_set_error(&app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                        app->inspecting_game.disc_id);
+                if (app->launch_headless) return 2;
+                player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
                                      "The title could not be stored. The library may be full, "
                                      "or the user data directory is not writable.",
                                      "Return to Library", VIEW_LIBRARY);
             } else if (should_store) {
-                player_app_set_view(&app, app.inspecting_game.is_experimental
+                player_app_set_view(app, app->inspecting_game.is_experimental
                     ? VIEW_EXPERIMENTAL_TITLE : VIEW_SUPPORTED_TITLE);
                 if (stored) {
-                    printf("[PLAYER] Launching %s now...\n", app.inspecting_game.disc_id);
+                    printf("[PLAYER] Launching %s now...\n", app->inspecting_game.disc_id);
                     /* nk_library_add_or_update updates an existing record in
                        place rather than appending it, so in a library holding
                        several games the last entry is a DIFFERENT title
                        whenever this disc was already known. Find the entry by
                        its inspected disc ID and file: another image (a fan
                        translation) can have the same disc ID. */
-                    int game_idx = player_app_find_added_game(&app, &app.inspecting_game);
+                    int game_idx = player_app_find_added_game(app, &app->inspecting_game);
                     if (game_idx < 0) {
                         fprintf(stderr, "[PLAYER] Disc %s is not in the library after adding it.\n",
-                                app.inspecting_game.disc_id);
-                        if (app.launch_headless) return 4;
-                        player_app_set_error(&app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                app->inspecting_game.disc_id);
+                        if (app->launch_headless) return 4;
+                        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
                                              "The title could not be found in the library after "
                                              "adding it. Add the disc again from the library.",
                                              "Return to Library", VIEW_LIBRARY);
-                    } else if (app.launch_headless) {
+                    } else if (app->launch_headless) {
                         /* --launch-now stands in for pressing PLAY NOW: the
                            same launch function and the same bounded wait as
                            --launch-index. */
-                        return player_run_command_line_launch(&app, game_idx, "--launch-now");
-                    } else if (player_app_launch_game(&app, game_idx)) {
-                        app.launch_time_ms = SDL_GetTicks();
+                        return player_run_command_line_launch(app, game_idx, "--launch-now");
+                    } else if (player_app_launch_game(app, game_idx)) {
+                        app->launch_time_ms = SDL_GetTicks();
                         /* The disc is in the library now, so the card's
                            ADD TO LIBRARY would be stale: show the library,
                            as the wizard's LAUNCH GAME NOW does. */
-                        player_app_set_view(&app, VIEW_LIBRARY);
+                        player_app_set_view(app, VIEW_LIBRARY);
                     } else {
                         fprintf(stderr, "[PLAYER] --launch-now could not start %s: %s\n",
-                                app.inspecting_game.disc_id,
-                                app.launch_session.last_error[0]
-                                    ? app.launch_session.last_error
-                                    : app.last_error.message);
+                                app->inspecting_game.disc_id,
+                                app->launch_session.last_error[0]
+                                    ? app->launch_session.last_error
+                                    : app->last_error.message);
                     }
                 }
             } else {
-                player_app_set_view(&app, VIEW_UNSUPPORTED_TITLE);
+                player_app_set_view(app, VIEW_UNSUPPORTED_TITLE);
             }
             }
         } else {
-            fprintf(stderr, "[PLAYER] Failed to inspect ISO: %s\n", initial_iso_path);
-            if (stage_only || app.launch_headless) return 1;
+            fprintf(stderr, "[PLAYER] Failed to inspect ISO: %s\n", run->initial_iso_path);
+            if (run->stage_only || app->launch_headless) return 1;
             const bool named_boundary = res.boundary_code[0] != '\0';
             const char *message = res.error_message[0]
                 ? res.error_message
                 : "The selected file is not a valid ISO9660 disc image.";
             player_app_set_error(
-                &app,
+                app,
                 named_boundary ? res.boundary_code : "ISO_CORRUPT",
                 named_boundary ? player_disc_refusal_title(res.boundary_code)
                                : "Not a PSP Disc Image",
@@ -4258,25 +3935,29 @@ int main(int argc, char *argv[]) {
 
     /* Entries at or after this index were not loaded from library.json: they are
        the bundled demo samples (or prepared showcase demos) added below. */
-    int user_library_count = app.library.count;
-    if (populate_sample) {
-        player_app_populate_sample_games(&app);
+    run->user_library_count = app->library.count;
+    if (run->populate_sample) {
+        player_app_populate_sample_games(app);
     }
+    return PLAYER_RUN_CONTINUE;
+}
 
+/* A --view= run's synthetic state: the screen a capture or a test asks for. */
+static void player_apply_test_view(PlayerApp *app, const char *test_view) {
     /* Configure test view if requested */
     if (test_view) {
         if (strcmp(test_view, "empty") == 0) {
-            app.game_count = 0;
-            app.selected_game_index = -1;
-            player_app_set_view(&app, VIEW_LIBRARY);
+            app->game_count = 0;
+            app->selected_game_index = -1;
+            player_app_set_view(app, VIEW_LIBRARY);
         } else if (strcmp(test_view, "library") == 0) {
-            player_app_set_view(&app, VIEW_LIBRARY);
+            player_app_set_view(app, VIEW_LIBRARY);
         } else if (strcmp(test_view, "experimental-library") == 0) {
             /* In-memory synthetic card for rendered UI regression; it is never
                admitted to the user's persistent library. */
-            nk_library_init(&app.library);
-            app.game_count = 0;
-            app.selected_game_index = -1;
+            nk_library_init(&app->library);
+            app->game_count = 0;
+            app->selected_game_index = -1;
             GameRecord experimental;
             memset(&experimental, 0, sizeof(experimental));
             snprintf(experimental.disc_id, sizeof(experimental.disc_id), "TEST00007");
@@ -4286,16 +3967,16 @@ int main(int argc, char *argv[]) {
                      "synthetic-ui-test-v1");
             experimental.status = NK_STATUS_IDENTIFIED;
             experimental.is_experimental = true;
-            app.games[0] = experimental;
-            app.game_count = 1;
-            app.selected_game_index = 0;
-            player_app_set_view(&app, VIEW_LIBRARY);
+            app->games[0] = experimental;
+            app->game_count = 1;
+            app->selected_game_index = 0;
+            player_app_set_view(app, VIEW_LIBRARY);
         } else if (strcmp(test_view, "build-preflight-encrypted") == 0 ||
                    strcmp(test_view, "build-preflight-missing-manifest") == 0) {
             /* #1286: an imported title whose current build inputs are refused
                must reach the library title page with BUILD PACKAGE gated. */
-            app.game_count = 0;
-            app.selected_game_index = -1;
+            app->game_count = 0;
+            app->selected_game_index = -1;
             GameRecord game;
             memset(&game, 0, sizeof(game));
             snprintf(game.disc_id, sizeof(game.disc_id), "TEST00009");
@@ -4315,11 +3996,11 @@ int main(int argc, char *argv[]) {
                 game.executable_eboot_kind = NK_ISO_EXEC_MIPS_ELF32;
                 game.executable_selection = NK_ISO_EXEC_SELECTION_EBOOT;
             }
-            app.games[0] = game;
-            app.game_count = 1;
-            app.selected_game_index = 0;
+            app->games[0] = game;
+            app->game_count = 1;
+            app->selected_game_index = 0;
             PlayerRuntimePackageCacheEntry *package =
-                &app.runtime_package_cache[0];
+                &app->runtime_package_cache[0];
             memset(package, 0, sizeof(*package));
             snprintf(package->disc_id, sizeof(package->disc_id), "%s",
                      game.disc_id);
@@ -4330,13 +4011,13 @@ int main(int argc, char *argv[]) {
                      game.selected_executable);
             package->status_valid = true;
             package->status = NK_RUNTIME_PACKAGE_MISSING;
-            player_app_set_view(&app, VIEW_LIBRARY);
+            player_app_set_view(app, VIEW_LIBRARY);
         } else if (strcmp(test_view, "build-ready-experimental") == 0) {
             /* #1276: an experimental entry imported while its EBOOT.BIN was
                encrypted has no selected executable; its build has just bound
                EBOOT.BIN in the profile and passed. In memory only. */
-            app.game_count = 0;
-            app.selected_game_index = -1;
+            app->game_count = 0;
+            app->selected_game_index = -1;
             GameRecord experimental;
             memset(&experimental, 0, sizeof(experimental));
             snprintf(experimental.disc_id, sizeof(experimental.disc_id), "TEST00009");
@@ -4347,21 +4028,21 @@ int main(int argc, char *argv[]) {
                      "experimental-test00009");
             experimental.status = NK_STATUS_IDENTIFIED;
             experimental.is_experimental = true;
-            app.games[0] = experimental;
-            app.game_count = 1;
-            app.selected_game_index = 0;
-            player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
-            package_builder_init_session(&app.build_session, experimental.disc_id,
+            app->games[0] = experimental;
+            app->game_count = 1;
+            app->selected_game_index = 0;
+            player_app_set_view(app, VIEW_BUILDING_PACKAGE);
+            package_builder_init_session(&app->build_session, experimental.disc_id,
                                          experimental.title_name);
-            app.build_session.is_complete = true;
+            app->build_session.is_complete = true;
         } else if (strcmp(test_view, "ready-library") == 0 ||
                    strcmp(test_view, "ready") == 0 ||
                    strcmp(test_view, "build-ready") == 0) {
             /* Synthetic capture fixture for the post-staging card. It is kept
                in memory only so the screenshot path never writes a fabricated
                title into the user's library. */
-            app.game_count = 0;
-            app.selected_game_index = -1;
+            app->game_count = 0;
+            app->selected_game_index = -1;
             {
                 GameRecord staged;
                 memset(&staged, 0, sizeof(staged));
@@ -4381,156 +4062,156 @@ int main(int argc, char *argv[]) {
                 staged.extracted_visual_count = 642;
                 staged.extracted_layout_count = 97;
                 snprintf(staged.last_played, sizeof(staged.last_played), "Never");
-                app.games[0] = staged;
-                app.game_count = 1;
-                app.selected_game_index = 0;
+                app->games[0] = staged;
+                app->game_count = 1;
+                app->selected_game_index = 0;
             }
             if (strcmp(test_view, "build-ready") == 0) {
-                player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
-                package_builder_init_session(&app.build_session,
-                                             app.games[0].disc_id,
-                                             app.games[0].title_name);
-                app.build_session.is_complete = true;
+                player_app_set_view(app, VIEW_BUILDING_PACKAGE);
+                package_builder_init_session(&app->build_session,
+                                             app->games[0].disc_id,
+                                             app->games[0].title_name);
+                app->build_session.is_complete = true;
             } else {
-                player_app_set_view(&app, PLAYER_VIEW_READY_LIBRARY);
+                player_app_set_view(app, PLAYER_VIEW_READY_LIBRARY);
             }
         } else if (strcmp(test_view, "inspecting") == 0) {
-            player_app_set_view(&app, VIEW_INSPECTING);
+            player_app_set_view(app, VIEW_INSPECTING);
         } else if (strcmp(test_view, "supported") == 0) {
-            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00001");
-            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Nakagawa Synthetic Allegrex Fixture");
-            snprintf(app.inspecting_game.title_id, sizeof(app.inspecting_game.title_id),
+            snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "TEST00001");
+            snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "Nakagawa Synthetic Allegrex Fixture");
+            snprintf(app->inspecting_game.title_id, sizeof(app->inspecting_game.title_id),
                      "synthetic-allegrex-v1");
-            player_test_view_preflight(&app, false);
-            player_app_set_view(&app, VIEW_SUPPORTED_TITLE);
+            player_test_view_preflight(app, false);
+            player_app_set_view(app, VIEW_SUPPORTED_TITLE);
         } else if (strcmp(test_view, "experimental") == 0 ||
                    strcmp(test_view, "experimental-blocked") == 0) {
-            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00007");
-            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name),
+            snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "TEST00007");
+            snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name),
                      "Nakagawa Synthetic Experimental Fixture");
-            snprintf(app.inspecting_game.title_id, sizeof(app.inspecting_game.title_id),
+            snprintf(app->inspecting_game.title_id, sizeof(app->inspecting_game.title_id),
                      "synthetic-ui-test-v1");
-            snprintf(app.inspecting_game.selected_executable,
-                     sizeof(app.inspecting_game.selected_executable), "EBOOT.BIN");
-            app.inspecting_game.status = NK_STATUS_IDENTIFIED;
-            app.inspecting_game.is_experimental = true;
-            player_test_view_preflight(&app, strcmp(test_view, "experimental-blocked") == 0);
-            player_app_set_view(&app, VIEW_EXPERIMENTAL_TITLE);
+            snprintf(app->inspecting_game.selected_executable,
+                     sizeof(app->inspecting_game.selected_executable), "EBOOT.BIN");
+            app->inspecting_game.status = NK_STATUS_IDENTIFIED;
+            app->inspecting_game.is_experimental = true;
+            player_test_view_preflight(app, strcmp(test_view, "experimental-blocked") == 0);
+            player_app_set_view(app, VIEW_EXPERIMENTAL_TITLE);
         } else if (strcmp(test_view, "unsupported") == 0) {
-            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "ULES99999");
-            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Unknown PSP Game");
-            player_app_set_view(&app, VIEW_UNSUPPORTED_TITLE);
+            snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "ULES99999");
+            snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "Unknown PSP Game");
+            player_app_set_view(app, VIEW_UNSUPPORTED_TITLE);
         } else if (strcmp(test_view, "preparing") == 0) {
             /* No preparation pipeline is connected: render honest idle state */
-            app.prep_state.stage = STAGE_IDLE;
-            app.prep_state.completed_items = 0;
-            app.prep_state.total_items = 0;
-            app.prep_state.percentage = 0.0f;
-            player_app_set_view(&app, VIEW_PREPARING);
+            app->prep_state.stage = STAGE_IDLE;
+            app->prep_state.completed_items = 0;
+            app->prep_state.total_items = 0;
+            app->prep_state.percentage = 0.0f;
+            player_app_set_view(app, VIEW_PREPARING);
         } else if (strcmp(test_view, "settings") == 0) {
-            player_app_set_view(&app, VIEW_SETTINGS);
+            player_app_set_view(app, VIEW_SETTINGS);
         } else if (strcmp(test_view, "controller") == 0 || strcmp(test_view, "controller_settings") == 0) {
-            player_app_set_view(&app, VIEW_CONTROLLER_SETTINGS);
+            player_app_set_view(app, VIEW_CONTROLLER_SETTINGS);
         } else if (strcmp(test_view, "error") == 0) {
-            player_app_set_error(&app, "SOURCE_NOT_FOUND", "Game Source File Not Found",
+            player_app_set_error(app, "SOURCE_NOT_FOUND", "Game Source File Not Found",
                                  "Nakagawa could not locate the source ISO file on disk.",
                                  "Locate Game ISO", VIEW_LIBRARY);
         } else if (strcmp(test_view, "focus") == 0) {
             /* set_view resets focus, so the focused card is chosen after it. */
-            player_app_set_view(&app, VIEW_LIBRARY);
-            app.focus_index = 1;
+            player_app_set_view(app, VIEW_LIBRARY);
+            app->focus_index = 1;
         } else if (strcmp(test_view, "wizard") == 0 || strcmp(test_view, "wizard1") == 0) {
-            player_app_start_setup_wizard(&app);
+            player_app_start_setup_wizard(app);
         } else if (strcmp(test_view, "wizard2") == 0) {
-            player_app_start_setup_wizard(&app);
-            app.wizard.step = WIZARD_STEP_SELECT_GAME;
+            player_app_start_setup_wizard(app);
+            app->wizard.step = WIZARD_STEP_SELECT_GAME;
         } else if (strcmp(test_view, "wizard3") == 0) {
-            player_app_start_setup_wizard(&app);
-            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
-            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
-            snprintf(app.inspecting_game.disc_version, sizeof(app.inspecting_game.disc_version), "1.00");
-            snprintf(app.inspecting_game.iso_path, sizeof(app.inspecting_game.iso_path), "games/tennis.iso");
-            app.inspecting_game.status = NK_STATUS_VERIFIED;
-            app.wizard.iso_selected = true;
-            app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+            player_app_start_setup_wizard(app);
+            snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "UCUS98701");
+            snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
+            snprintf(app->inspecting_game.disc_version, sizeof(app->inspecting_game.disc_version), "1.00");
+            snprintf(app->inspecting_game.iso_path, sizeof(app->inspecting_game.iso_path), "games/tennis.iso");
+            app->inspecting_game.status = NK_STATUS_VERIFIED;
+            app->wizard.iso_selected = true;
+            app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
         } else if (strcmp(test_view, "wizard-staging") == 0) {
-            player_app_start_setup_wizard(&app);
-            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00008");
-            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name),
+            player_app_start_setup_wizard(app);
+            snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "TEST00008");
+            snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name),
                      "Nakagawa Synthetic Staging Fixture");
-            snprintf(app.inspecting_game.iso_path, sizeof(app.inspecting_game.iso_path),
+            snprintf(app->inspecting_game.iso_path, sizeof(app->inspecting_game.iso_path),
                      "fixtures/synthetic_staging.iso");
-            app.inspecting_game.status = NK_STATUS_VERIFIED;
-            app.wizard.iso_selected = true;
-            app.wizard.step = WIZARD_STEP_INSPECT_VERIFY;
-            app.wizard.is_extracting = true;
-            app.wizard.extraction_percent = 67;
-            app.wizard.files_extracted = 7;
-            app.wizard.total_files = 12;
-            snprintf(app.wizard.extraction_current_file,
-                     sizeof(app.wizard.extraction_current_file),
+            app->inspecting_game.status = NK_STATUS_VERIFIED;
+            app->wizard.iso_selected = true;
+            app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+            app->wizard.is_extracting = true;
+            app->wizard.extraction_percent = 67;
+            app->wizard.files_extracted = 7;
+            app->wizard.total_files = 12;
+            snprintf(app->wizard.extraction_current_file,
+                     sizeof(app->wizard.extraction_current_file),
                      "xbdata/menu.xb");
-            snprintf(app.wizard.status_message, sizeof(app.wizard.status_message),
+            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
                      "Decoding the selected synthetic XB assets...");
         } else if (strcmp(test_view, "wizard4") == 0) {
-            player_app_start_setup_wizard(&app);
-            app.wizard.step = WIZARD_STEP_SYSTEM_FONTS;
+            player_app_start_setup_wizard(app);
+            app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
         } else if (strcmp(test_view, "wizard-options") == 0) {
-            player_app_start_setup_wizard(&app);
-            app.wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
+            player_app_start_setup_wizard(app);
+            app->wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
         } else if (strcmp(test_view, "online-settings") == 0) {
-            player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
+            player_app_set_view(app, VIEW_ONLINE_SETTINGS);
         } else if (strcmp(test_view, "accessibility-settings") == 0) {
-            player_app_set_view(&app, VIEW_ACCESSIBILITY_SETTINGS);
+            player_app_set_view(app, VIEW_ACCESSIBILITY_SETTINGS);
         } else if (strcmp(test_view, "ace-settings") == 0) {
-            player_app_set_view(&app, VIEW_ACE_SETTINGS);
+            player_app_set_view(app, VIEW_ACE_SETTINGS);
         } else if (strcmp(test_view, "build-cache") == 0) {
-            player_app_set_view(&app, VIEW_BUILD_CACHE);
+            player_app_set_view(app, VIEW_BUILD_CACHE);
         } else if (strcmp(test_view, "updates") == 0) {
-            player_app_set_view(&app, VIEW_UPDATES);
+            player_app_set_view(app, VIEW_UPDATES);
         } else if (strcmp(test_view, "factory-reset") == 0) {
-            player_app_set_view(&app, VIEW_CONFIRM_FACTORY_RESET);
+            player_app_set_view(app, VIEW_CONFIRM_FACTORY_RESET);
         } else if (strcmp(test_view, "psp-fonts") == 0) {
-            player_app_refresh_font_status(&app);
-            player_app_set_view(&app, VIEW_PSP_FONTS);
+            player_app_refresh_font_status(app);
+            player_app_set_view(app, VIEW_PSP_FONTS);
         } else if (strcmp(test_view, "developer-log") == 0) {
-            app.settings.developer_mode = true;
-            player_dev_log_add(&app, "test", "synthetic developer log line");
-            (void)player_app_open_developer_log(&app);
+            app->settings.developer_mode = true;
+            player_dev_log_add(app, "test", "synthetic developer log line");
+            (void)player_app_open_developer_log(app);
         } else if (strcmp(test_view, "wizard5") == 0) {
-            player_app_start_setup_wizard(&app);
-            snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
-            snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
-            app.wizard.step = WIZARD_STEP_READY_LAUNCH;
+            player_app_start_setup_wizard(app);
+            snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "UCUS98701");
+            snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
+            app->wizard.step = WIZARD_STEP_READY_LAUNCH;
         } else if (strcmp(test_view, "build-failed") == 0) {
             /* A build session that has ended in failure (#1277). */
-            player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
-            package_builder_init_session(&app.build_session, "TEST80001",
+            player_app_set_view(app, VIEW_BUILDING_PACKAGE);
+            package_builder_init_session(&app->build_session, "TEST80001",
                                          "Synthetic Package Fixture");
-            app.build_session.is_failed = true;
-            app.build_session.current_stage = PACKAGE_BUILD_STAGE_FAILED;
-            snprintf(app.build_session.current_stage_name,
-                     sizeof(app.build_session.current_stage_name), "compile");
-            snprintf(app.build_session.failure_boundary,
-                     sizeof(app.build_session.failure_boundary),
+            app->build_session.is_failed = true;
+            app->build_session.current_stage = PACKAGE_BUILD_STAGE_FAILED;
+            snprintf(app->build_session.current_stage_name,
+                     sizeof(app->build_session.current_stage_name), "compile");
+            snprintf(app->build_session.failure_boundary,
+                     sizeof(app->build_session.failure_boundary),
                      "Synthetic compile failure.");
         } else if (strcmp(test_view, "building") == 0 || strcmp(test_view, "building_package") == 0 ||
                    strcmp(test_view, "building-parts") == 0) {
-            player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
-            const char *disc = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
-                ? app.games[app.selected_game_index].disc_id : "TEST80001";
-            const char *title = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
-                ? app.games[app.selected_game_index].title_name : "Synthetic Package Fixture";
-            package_builder_init_session(&app.build_session, disc, title);
-            app.build_session.is_building = true;
-            app.build_session.current_stage = PACKAGE_BUILD_STAGE_COMPILE;
-            snprintf(app.build_session.current_stage_name, sizeof(app.build_session.current_stage_name), "compile");
-            snprintf(app.build_session.current_message, sizeof(app.build_session.current_message),
+            player_app_set_view(app, VIEW_BUILDING_PACKAGE);
+            const char *disc = (app->selected_game_index >= 0 && app->selected_game_index < app->game_count)
+                ? app->games[app->selected_game_index].disc_id : "TEST80001";
+            const char *title = (app->selected_game_index >= 0 && app->selected_game_index < app->game_count)
+                ? app->games[app->selected_game_index].title_name : "Synthetic Package Fixture";
+            package_builder_init_session(&app->build_session, disc, title);
+            app->build_session.is_building = true;
+            app->build_session.current_stage = PACKAGE_BUILD_STAGE_COMPILE;
+            snprintf(app->build_session.current_stage_name, sizeof(app->build_session.current_stage_name), "compile");
+            snprintf(app->build_session.current_message, sizeof(app->build_session.current_message),
                      "Compiling translated native host C sources into package binary...");
-            app.build_session.elapsed_ms = 1420;
-            package_builder_add_output_line(&app.build_session, "[preflight] PASS: Disc preflight inspection succeeded.");
-            package_builder_add_output_line(&app.build_session, "[extract] PASS: Staged plaintext guest modules to cache.");
-            package_builder_add_output_line(&app.build_session, "[compile] RUNNING: Compiling translated native C sources...");
+            app->build_session.elapsed_ms = 1420;
+            package_builder_add_output_line(&app->build_session, "[preflight] PASS: Disc preflight inspection succeeded.");
+            package_builder_add_output_line(&app->build_session, "[extract] PASS: Staged plaintext guest modules to cache.");
+            package_builder_add_output_line(&app->build_session, "[compile] RUNNING: Compiling translated native C sources...");
             if (strcmp(test_view, "building-parts") == 0) {
                 /* The compile stage's part count, through the same parser and state
                    machine as a line nk_cli writes. */
@@ -4542,181 +4223,74 @@ int main(int argc, char *argv[]) {
                 PackageProgressEvent parts_event;
                 if (package_builder_parse_progress_line(parts_line, sizeof(parts_line) - 1u,
                                                         &parts_event)) {
-                    package_builder_apply_event(&app.build_session, &parts_event);
+                    package_builder_apply_event(&app->build_session, &parts_event);
                 }
             }
         }
     }
+}
 
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (ui_test_iso_path && app.selected_game_index >= 0 &&
-        app.selected_game_index < app.game_count) {
-        ui_test_set_card_image(&app, app.selected_game_index, ui_test_iso_path);
-    }
-    const char *bind_test_eboot = getenv("NK_UI_TEST_BIND_EBOOT");
-    if (ui_test_mode && ui_test_iso_path && bind_test_eboot &&
-        strcmp(bind_test_eboot, "1") == 0 &&
-        app.selected_game_index >= 0 && app.selected_game_index < app.game_count) {
-        GameRecord *game = &app.games[app.selected_game_index];
-        snprintf(game->selected_executable, sizeof(game->selected_executable),
-                 "EBOOT.BIN");
-        game->executable_eboot_kind = NK_ISO_EXEC_MIPS_ELF32;
-        game->executable_selection = NK_ISO_EXEC_SELECTION_EBOOT;
-    }
-    if (ui_test_iso_path) {
-        for (int i = 0; i < app.game_count; i++) {
-            if (strcmp(app.games[i].disc_id, "TEST00006") == 0) {
-                ui_test_set_card_image(&app, i, ui_test_iso_path);
-            }
-        }
-    }
-    if (ui_test_fake_game_running) {
-        /* "1": some game runs. A disc ID names the running game, whose window
-           is up; "starting:<disc ID>" is that game before its window opens. */
-        const char *fake = getenv("NK_UI_TEST_GAME_RUNNING");
-        bool starting = strncmp(fake, "starting:", 9) == 0;
-        const char *disc = starting ? fake + 9 : fake;
-        app.is_game_running = true;
-        if (strcmp(disc, "1") != 0) {
-            snprintf(app.launch_session.disc_id, sizeof(app.launch_session.disc_id),
-                     "%s", disc);
-            /* A launch carries the disc's title, as nk_launch_prepare_session
-               copies it from the library record. */
-            int running_index = player_app_find_game_by_disc_id(&app, disc);
-            if (running_index >= 0) {
-                snprintf(app.launch_session.game_title,
-                         sizeof(app.launch_session.game_title), "%s",
-                         app.games[running_index].title_name);
-            }
-            app.child_window_ready = !starting;
-        }
-    }
-    if (ui_test_error_code) {
-        if (strcmp(ui_test_error_code, "CLI_NOT_FOUND") == 0) {
-            player_app_set_cli_not_found_error(&app, "Return to Library",
-                                               VIEW_LIBRARY);
-        } else if (strcmp(ui_test_error_code, "UI_TEST_LONG_ERROR") == 0) {
-            static const char long_error_message[] =
-                "Build setup could not continue because a required file was missing. "
-                "Check the message, follow the suggested recovery steps, and try again. "
-                "If the application files are incomplete, reinstall the app and keep "
-                "its folder together. Return to the library after correcting the issue. "
-                "This final sentence confirms the full message remains visible beyond "
-                "the old four-line limit. Keep every recovery step on this card so the "
-                "player can read the complete instruction before leaving this screen.";
-            player_app_set_error(&app, ui_test_error_code,
-                                 "Synthetic Long Error", long_error_message,
-                                 "Return to Library", VIEW_LIBRARY);
-        } else if (strcmp(ui_test_error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0 ||
-                   strcmp(ui_test_error_code, "RUNTIME_PREMATURE_EXIT") == 0 ||
-                   strcmp(ui_test_error_code, "RUNTIME_ERROR_EXIT") == 0) {
-            /* The cards a finished game session shows (#1282), from a synthetic
-               stop of the first library game. */
-            const char *disc = app.game_count > 0 ? app.games[0].disc_id : "";
-            static const char stop_event[] =
-                "BOOT_EVENT phase=stop reason=semantic-boundary "
-                "boundary=unsupported-import-scenetadhocinit issue=308";
-            player_dev_log_add(&app, "runtime", "%s", stop_event);
-            /* The run's output, kept as logs/game-<disc>-last.txt as a real
-               stop keeps it (#1303); the report reads its boot events there. */
-            char logs_dir[NK_MAX_PATH];
-            char run_log[NK_MAX_PATH + 64] = "";
-            if (disc[0] && nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)) &&
-                snprintf(run_log, sizeof(run_log), "%s%cgame-%s-last.txt", logs_dir,
-                         nk_platform_path_separator(), disc) < (int)sizeof(run_log)) {
-                FILE *log = nk_fopen_utf8(run_log, "wb");
-                if (!log || fprintf(log, "synthetic runtime output\n%s\n", stop_event) < 0) {
-                    run_log[0] = '\0';
-                }
-                if (log && fclose(log) != 0) run_log[0] = '\0';
-            }
-            player_app_set_game_stop_error(&app, ui_test_error_code,
-                                           "unsupported-import-scenetadhocinit", 308u,
-                                           strcmp(ui_test_error_code, "RUNTIME_ERROR_EXIT") == 0
-                                               ? 3 : 9,
-                                           strcmp(ui_test_error_code,
-                                                  "RUNTIME_PREMATURE_EXIT") == 0 ? 120u : 9000u,
-                                           disc, run_log[0] ? run_log : NULL);
-        } else if (strcmp(ui_test_error_code, "PACKAGE_BUILD_REFUSED") == 0) {
-            /* A preflight refusal (#1286): the build never started. */
-            const char *disc = app.game_count > 0 ? app.games[0].disc_id : "TEST80001";
-            package_builder_init_session(&app.build_session, disc, "Synthetic Package Fixture");
-            player_app_set_build_error(&app, "preflight",
-                                       "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and "
-                                       "built-in decryption stopped: KEY_REQUIRED.",
-                                       NULL);
-        } else {
-            player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
-                                 "Synthetic UI regression error state.",
-                                 "Return to Library", VIEW_LIBRARY);
-        }
-    }
-#endif
-
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    /* Scripted runs cut motion so their frames are steady; NK_UI_TEST_MOTION keeps the
-       settings' choice, for the tests of motion itself. */
-    if (ui_test_mode && getenv("NK_UI_TEST_MOTION") == NULL) {
-        app.settings.reduce_motion_choice = PLAYER_SYSTEM_CHOICE_ON;
-    }
-#endif
-
-    app.window_width = override_w;
-    app.window_height = override_h;
-
+/* Mechanical launch driver for the real player path (--launch-index). */
+static int player_command_line_launch(PlayerRun *run) {
+    PlayerApp *app = &run->app;
     /* Mechanical launch driver for the real player path. This deliberately
        stops before SDL initialization: the child runtime owns the game window,
        while the parent waits for its real exit status. A test can set
        SR_BOOT_EVENT_FILE to receive the child's window/first-frame milestones. */
-    if (launch_index_requested) {
-        if (app.library.count == 0 && !populate_sample) {
+    if (run->launch_index_requested) {
+        if (app->library.count == 0 && !run->populate_sample) {
             fprintf(stderr, "[PLAYER] --launch-index=%d: your library is empty, so there is "
                     "nothing to launch. Add a game first, or pass --demo to launch the "
-                    "bundled SAMPLE demo entries.\n", launch_index);
+                    "bundled SAMPLE demo entries.\n", run->launch_index);
             return 2;
         }
-        if (launch_index < 0 || launch_index >= app.game_count) {
+        if (run->launch_index < 0 || run->launch_index >= app->game_count) {
             fprintf(stderr, "[PLAYER] Invalid --launch-index=%d for library count %d.\n",
-                    launch_index, app.game_count);
+                    run->launch_index, app->game_count);
             return 2;
         }
-        app.selected_game_index = launch_index;
-        const GameRecord *launch_game = &app.games[launch_index];
+        app->selected_game_index = run->launch_index;
+        const GameRecord *launch_game = &app->games[run->launch_index];
         /* Bundled demo entries are not loaded from library.json. */
-        bool sample_entry = launch_index >= user_library_count;
+        bool sample_entry = run->launch_index >= run->user_library_count;
         NkRuntimePackageStatus launch_status =
             player_app_validate_runtime_package(
-                &app, launch_game, NULL, NULL, 0);
+                app, launch_game, NULL, NULL, 0);
         bool launch_available = launch_status == NK_RUNTIME_PACKAGE_OK ||
             (launch_status == NK_RUNTIME_PACKAGE_MISSING &&
              !launch_game->is_experimental &&
              nk_launch_runtime_available(
-                 app.runtime_root[0] ? app.runtime_root : NULL,
+                 app->runtime_root[0] ? app->runtime_root : NULL,
                  launch_game->title_id));
         if (!launch_available) {
             if (sample_entry) {
                 fprintf(stderr, "[PLAYER] Launch index %d is a bundled SAMPLE demo, not in "
                         "library.json, and has no prepared runtime; PLAY NOW is unavailable.\n",
-                        launch_index);
+                        run->launch_index);
             } else {
                 fprintf(stderr, "[PLAYER] Launch index %d has no prepared runtime; PLAY NOW is unavailable.\n",
-                        launch_index);
+                        run->launch_index);
             }
             return 3;
         }
         if (sample_entry) {
             printf("[PLAYER] Launch index %d is a bundled SAMPLE demo, not in library.json: "
                    "PLAY NOW available for %s (%s).\n",
-                   launch_index, app.games[launch_index].disc_id,
-                   app.games[launch_index].title_name);
+                   run->launch_index, app->games[run->launch_index].disc_id,
+                   app->games[run->launch_index].title_name);
         } else {
             printf("[PLAYER] Launch index %d: PLAY NOW available for %s (%s).\n",
-                   launch_index, app.games[launch_index].disc_id,
-                   app.games[launch_index].title_name);
+                   run->launch_index, app->games[run->launch_index].disc_id,
+                   app->games[run->launch_index].title_name);
         }
-        return player_run_command_line_launch(&app, launch_index, "--launch-index");
+        return player_run_command_line_launch(app, run->launch_index, "--launch-index");
     }
+    return PLAYER_RUN_CONTINUE;
+}
 
+/* Opens the SDL window and renderer and creates the launcher UI. */
+static int player_open_window(PlayerRun *run) {
+    PlayerApp *app = &run->app;
     nk_title_manifest_set_cancel_check(player_closing, NULL);
 
     /* Initialize SDL3 */
@@ -4725,52 +4299,50 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    bool interactive_window = screenshot_path == NULL
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        && !ui_test_mode
-#endif
+    run->interactive_window = run->screenshot_path == NULL
+        && !player_ui_test_active(&run->ui_test)
         ;
     SDL_DisplayID startup_display = 0;
-    SDL_Rect usable_bounds = { 0, 0, 0, 0 };
-    bool have_usable_bounds = false;
+    memset(&run->usable_bounds, 0, sizeof(run->usable_bounds));
+    run->have_usable_bounds = false;
     float display_content_scale = 1.0f;
-    PlayerWindowRect requested_window = {
-        0, 0, app.window_width, app.window_height
+    run->requested_window = (PlayerWindowRect){
+        0, 0, app->window_width, app->window_height
     };
-    PlayerWindowRect startup_window = requested_window;
+    run->startup_window = run->requested_window;
     PlayerWindowFrame estimated_frame = { 0, 0, 0, 0 };
     int minimum_width = 640;
     int minimum_height = 480;
-    if (interactive_window) {
-        startup_display = player_window_display(&app.settings);
-        have_usable_bounds = player_display_usable_bounds(startup_display,
-                                                          &usable_bounds);
+    if (run->interactive_window) {
+        startup_display = player_window_display(&app->settings);
+        run->have_usable_bounds = player_display_usable_bounds(startup_display,
+                                                          &run->usable_bounds);
         display_content_scale = player_display_content_scale(startup_display);
-        requested_window = player_requested_window(&app.settings,
+        run->requested_window = player_requested_window(&app->settings,
                                                     display_content_scale);
         estimated_frame = player_estimated_window_frame(display_content_scale);
-        if (have_usable_bounds) {
+        if (run->have_usable_bounds) {
             PlayerWindowRect usable_rect = {
-                usable_bounds.x, usable_bounds.y, usable_bounds.w, usable_bounds.h
+                run->usable_bounds.x, run->usable_bounds.y, run->usable_bounds.w, run->usable_bounds.h
             };
             if (!player_window_fit_to_display(
-                    requested_window, usable_rect, estimated_frame,
-                    app.settings.launcher_window_position_valid,
-                    &startup_window)) {
-                int fallback_width = usable_bounds.w -
+                    run->requested_window, usable_rect, estimated_frame,
+                    app->settings.launcher_window_position_valid,
+                    &run->startup_window)) {
+                int fallback_width = run->usable_bounds.w -
                     estimated_frame.left - estimated_frame.right;
-                int fallback_height = usable_bounds.h -
+                int fallback_height = run->usable_bounds.h -
                     estimated_frame.top - estimated_frame.bottom;
                 if (fallback_width < 1) fallback_width = 1;
                 if (fallback_height < 1) fallback_height = 1;
-                startup_window = (PlayerWindowRect){
-                    usable_bounds.x, usable_bounds.y,
+                run->startup_window = (PlayerWindowRect){
+                    run->usable_bounds.x, run->usable_bounds.y,
                     fallback_width, fallback_height
                 };
             }
-            int available_width = usable_bounds.w -
+            int available_width = run->usable_bounds.w -
                 estimated_frame.left - estimated_frame.right;
-            int available_height = usable_bounds.h -
+            int available_height = run->usable_bounds.h -
                 estimated_frame.top - estimated_frame.bottom;
             int scaled_min_width = (int)(PLAYER_WINDOW_MIN_LOGICAL_WIDTH *
                                          display_content_scale + 0.5f);
@@ -4778,87 +4350,80 @@ int main(int argc, char *argv[]) {
                                           display_content_scale + 0.5f);
             if (available_width < scaled_min_width) scaled_min_width = available_width;
             if (available_height < scaled_min_height) scaled_min_height = available_height;
-            minimum_width = scaled_min_width < startup_window.width
-                ? scaled_min_width : startup_window.width;
-            minimum_height = scaled_min_height < startup_window.height
-                ? scaled_min_height : startup_window.height;
+            minimum_width = scaled_min_width < run->startup_window.width
+                ? scaled_min_width : run->startup_window.width;
+            minimum_height = scaled_min_height < run->startup_window.height
+                ? scaled_min_height : run->startup_window.height;
             if (minimum_width < 1) minimum_width = 1;
             if (minimum_height < 1) minimum_height = 1;
         }
     }
 
     Uint32 win_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    if (screenshot_path != NULL
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        || ui_test_mode
-#endif
+    if (run->screenshot_path != NULL
+        || player_ui_test_active(&run->ui_test)
     ) {
         win_flags |= SDL_WINDOW_HIDDEN;
     }
 
-    SDL_Window *window = SDL_CreateWindow("Nakagawa Recomp", startup_window.width,
-                                          startup_window.height, win_flags);
-    if (!window) {
+    run->window = SDL_CreateWindow("Nakagawa Recomp", run->startup_window.width,
+                                          run->startup_window.height, win_flags);
+    if (!run->window) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
     }
+    SDL_Window *window = run->window;
     player_host_set_window_icon(window);
-    if (interactive_window && have_usable_bounds) {
-        SDL_Rect usable = usable_bounds;
+    if (run->interactive_window && run->have_usable_bounds) {
+        SDL_Rect usable = run->usable_bounds;
         player_apply_window_geometry(
-            window, requested_window,
+            run->window, run->requested_window,
             (PlayerWindowRect){ usable.x, usable.y, usable.w, usable.h },
-            estimated_frame, app.settings.launcher_window_position_valid,
-            &startup_window);
+            estimated_frame, app->settings.launcher_window_position_valid,
+            &run->startup_window);
     }
     /* Keep a useful minimum where the display permits it. On smaller displays
        the minimum shrinks to the available client area rather than covering
        the taskbar or extending onto a monitor that is no longer connected. */
-    SDL_SetWindowMinimumSize(window, minimum_width, minimum_height);
+    SDL_SetWindowMinimumSize(run->window, minimum_width, minimum_height);
     /* The window rectangle uses SDL's native screen units. Pixel density is
        only for the high-density renderer/font backing store. */
-    app.dpi_scale = SDL_GetWindowPixelDensity(window);
-    if (app.dpi_scale < 1.0f) app.dpi_scale = 1.0f;
-    bool window_frame_measured = !interactive_window;
-    if (interactive_window && have_usable_bounds) {
-        window_frame_measured = player_refit_to_actual_frame(
-            window, requested_window, usable_bounds,
-            app.settings.launcher_window_position_valid, &startup_window);
+    app->dpi_scale = SDL_GetWindowPixelDensity(run->window);
+    if (app->dpi_scale < 1.0f) app->dpi_scale = 1.0f;
+    run->window_frame_measured = !run->interactive_window;
+    if (run->interactive_window && run->have_usable_bounds) {
+        run->window_frame_measured = player_refit_to_actual_frame(
+            run->window, run->requested_window, run->usable_bounds,
+            app->settings.launcher_window_position_valid, &run->startup_window);
     }
 
-    bool applied_launcher_fullscreen = false;
-    bool launcher_handoff_attempted = false;
-    PlayerLaunchJob *launch_job = NULL;
-    if (interactive_window && app.settings.launcher_fullscreen) {
-        applied_launcher_fullscreen = SDL_SetWindowFullscreen(window, true);
-        if (!applied_launcher_fullscreen) {
-            app.settings.launcher_fullscreen = false;
-            snprintf(app.settings_notice, sizeof(app.settings_notice),
+    if (run->interactive_window && app->settings.launcher_fullscreen) {
+        run->applied_launcher_fullscreen = SDL_SetWindowFullscreen(run->window, true);
+        if (!run->applied_launcher_fullscreen) {
+            app->settings.launcher_fullscreen = false;
+            snprintf(app->settings_notice, sizeof(app->settings_notice),
                      "Could not restore launcher fullscreen mode: %.72s",
                      SDL_GetError());
         }
-    } else if (interactive_window &&
-               app.settings.launcher_window_maximized) {
-        SDL_MaximizeWindow(window);
+    } else if (run->interactive_window &&
+               app->settings.launcher_window_maximized) {
+        SDL_MaximizeWindow(run->window);
     }
 
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, NULL);
-    if (!renderer) {
+    run->renderer = SDL_CreateRenderer(run->window, NULL);
+    if (!run->renderer) {
         fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
-        SDL_DestroyWindow(window);
+        SDL_DestroyWindow(run->window);
         SDL_Quit();
         return 1;
     }
-    PlayerUiNk *next_ui = NULL;
-    if (ui_next_requested) {
+    if (run->ui_next_requested) {
         char ui_error[256] = "";
-        next_ui = player_ui_nk_create(renderer, window, &app,
+        run->next_ui = player_ui_nk_create(run->renderer, run->window, app,
                                       ui_error, sizeof(ui_error));
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        g_ui_test_next_ui = next_ui;
-#endif
-        if (next_ui == NULL) {
+        player_ui_test_set_next_ui(run->next_ui);
+        if (run->next_ui == NULL) {
             /* There is no other launcher to fall back to: say why, once, and
                stop. A build without the launcher's support needs building
                again; a missing file needs installing again. */
@@ -4867,122 +4432,104 @@ int main(int argc, char *argv[]) {
                                                 !player_ui_nk_built_with_launcher(),
                                                 message, sizeof(message));
             fprintf(stderr, "[PLAYER] LAUNCHER_UNAVAILABLE: %s\n", message);
-            if (interactive_window) {
-                SDL_HideWindow(window);
+            if (run->interactive_window) {
+                SDL_HideWindow(run->window);
                 (void)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
                                                "Nakagawa Recomp can't start", message, NULL);
             }
-            SDL_DestroyRenderer(renderer);
-            SDL_DestroyWindow(window);
+            SDL_DestroyRenderer(run->renderer);
+            SDL_DestroyWindow(run->window);
             SDL_Quit();
             return 4;
         }
     }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (next_ui != NULL && ui_test_mode) {
-        puts("[PLAYER_UI_TEST] UI_NEXT_ACTIVE");
-    }
-    if (ui_test_mode && getenv("NK_UI_TEST_REPORT_COMPATIBILITY") != NULL) {
-        player_ui_nk_test_report_compatibility();
-    }
-    if (ui_test_mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
-        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_ACE_SETTINGS. */
-        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_ACE_SETTINGS; ++view) {
-            printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
-                   player_ui_test_view_name((PlayerView)view),
-                   player_ui_nk_draws_view(view) ? 1 : 0);
-        }
-    }
-#endif
-    s_switch_presentation = interactive_window && next_ui != NULL;
-    s_ui_canvas_from_window = interactive_window;
+    player_ui_test_report_startup(&run->ui_test, run->next_ui);
+    s_switch_presentation = run->interactive_window && run->next_ui != NULL;
+    s_ui_canvas_from_window = run->interactive_window;
     /* A capture lays out --width x --height units, as before, and draws each
        as --render-scale pixels; a window at the scale player_ui_canvas_fit
        picks for it shows the same picture. */
-    s_ui_capture_canvas.width = override_w;
-    s_ui_capture_canvas.height = override_h;
-    s_ui_capture_canvas.scale = capture_render_scale;
-    int capture_pixel_width = (int)(override_w * capture_render_scale + 0.5f);
-    int capture_pixel_height = (int)(override_h * capture_render_scale + 0.5f);
-    if (interactive_window && next_ui == NULL) {
-        app.logical_ui = true;
-        player_fit_ui_canvas(&app, renderer);
-    } else if (interactive_window) {
-        int actual_width = startup_window.width;
-        int actual_height = startup_window.height;
-        if (!SDL_GetWindowSize(window, &actual_width, &actual_height)) {
-            actual_width = startup_window.width;
-            actual_height = startup_window.height;
+    s_ui_capture_canvas.width = run->override_w;
+    s_ui_capture_canvas.height = run->override_h;
+    s_ui_capture_canvas.scale = run->capture_render_scale;
+    run->capture_pixel_width = (int)(run->override_w * run->capture_render_scale + 0.5f);
+    run->capture_pixel_height = (int)(run->override_h * run->capture_render_scale + 0.5f);
+    if (run->interactive_window && run->next_ui == NULL) {
+        app->logical_ui = true;
+        player_fit_ui_canvas(app, run->renderer);
+    } else if (run->interactive_window) {
+        int actual_width = run->startup_window.width;
+        int actual_height = run->startup_window.height;
+        if (!SDL_GetWindowSize(run->window, &actual_width, &actual_height)) {
+            actual_width = run->startup_window.width;
+            actual_height = run->startup_window.height;
         }
-        app.window_width = actual_width > 0 ? actual_width : PLAYER_UI_DESIGN_WIDTH;
-        app.window_height = actual_height > 0 ? actual_height : PLAYER_UI_DESIGN_HEIGHT;
+        app->window_width = actual_width > 0 ? actual_width : PLAYER_UI_DESIGN_WIDTH;
+        app->window_height = actual_height > 0 ? actual_height : PLAYER_UI_DESIGN_HEIGHT;
     }
 
-    UiInput input;
-    memset(&input, 0, sizeof(input));
 
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    SDL_Texture *ui_test_target = NULL;
-    if (ui_test_mode) {
-        ui_test_target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-                                           SDL_TEXTUREACCESS_TARGET,
-                                           capture_pixel_width,
-                                           capture_pixel_height);
-        if (!ui_test_target || !SDL_SetRenderTarget(renderer, ui_test_target)) {
-            fprintf(stderr, "[PLAYER_UI_TEST] Could not create SDL render target: %s\n",
-                    SDL_GetError());
-            if (ui_test_target) SDL_DestroyTexture(ui_test_target);
-            player_ui_nk_destroy(next_ui);
-            ui_font_shutdown();
-            SDL_DestroyRenderer(renderer);
-            SDL_DestroyWindow(window);
-            SDL_Quit();
-            return 1;
-        }
+    if (!player_ui_test_create_target(&run->ui_test, run->renderer, run->capture_pixel_width,
+                                      run->capture_pixel_height)) {
+        player_ui_nk_destroy(run->next_ui);
+        ui_font_shutdown();
+        SDL_DestroyRenderer(run->renderer);
+        SDL_DestroyWindow(run->window);
+        SDL_Quit();
+        return 1;
     }
-#endif
+    return PLAYER_RUN_CONTINUE;
+}
 
+/* Headless Screenshot Mode: draws one frame, saves it and ends the run. */
+static int player_capture_screenshot(PlayerRun *run) {
+    PlayerApp *app = &run->app;
     /* Headless Screenshot Mode */
-    if (screenshot_path != NULL) {
-        SDL_Texture *target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
-                                                capture_pixel_width, capture_pixel_height);
+    if (run->screenshot_path != NULL) {
+        SDL_Texture *target = SDL_CreateTexture(run->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
+                                                run->capture_pixel_width, run->capture_pixel_height);
         if (target) {
-            SDL_SetRenderTarget(renderer, target);
+            SDL_SetRenderTarget(run->renderer, target);
         }
-        player_render_active_ui(next_ui, &app, renderer, window, &input);
-        if (ui_capture_screenshot(renderer, screenshot_path)) {
-            printf("[PLAYER] Screenshot saved to %s (%dx%d pixels, %dx%d layout)\n", screenshot_path,
-                   capture_pixel_width, capture_pixel_height,
-                   app.window_width, app.window_height);
+        player_render_active_ui(run->next_ui, app, run->renderer, run->window, &run->input);
+        if (ui_capture_screenshot(run->renderer, run->screenshot_path)) {
+            printf("[PLAYER] Screenshot saved to %s (%dx%d pixels, %dx%d layout)\n", run->screenshot_path,
+                   run->capture_pixel_width, run->capture_pixel_height,
+                   app->window_width, app->window_height);
         } else {
-            fprintf(stderr, "[PLAYER] Failed saving screenshot to %s: %s\n", screenshot_path, SDL_GetError());
+            fprintf(stderr, "[PLAYER] Failed saving screenshot to %s: %s\n", run->screenshot_path, SDL_GetError());
         }
         if (target) {
-            SDL_SetRenderTarget(renderer, NULL);
+            SDL_SetRenderTarget(run->renderer, NULL);
             SDL_DestroyTexture(target);
         }
 
-        if (app.is_game_running) {
+        if (app->is_game_running) {
             printf("[PLAYER] Checking child process runtime health reactively...\n");
-            if (nk_launch_is_running(&app.launch_session)) {
-                printf("[PLAYER] Child process is running. PID: %d\n", app.launch_session.process.process_id);
-                nk_launch_stop(&app.launch_session);
+            if (nk_launch_is_running(&app->launch_session)) {
+                printf("[PLAYER] Child process is running. PID: %d\n", app->launch_session.process.process_id);
+                nk_launch_stop(&app->launch_session);
                 printf("[PLAYER] Child process stopped cleanly after the screenshot.\n");
             } else {
-                int code = nk_launch_wait(&app.launch_session, 0);
+                int code = nk_launch_wait(&app->launch_session, 0);
                 printf("[PLAYER] Child process exited with code %d\n", code);
             }
-            app.is_game_running = false;
+            app->is_game_running = false;
         }
 
-        player_ui_nk_destroy(next_ui);
+        player_ui_nk_destroy(run->next_ui);
         ui_font_shutdown();
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
+        SDL_DestroyRenderer(run->renderer);
+        SDL_DestroyWindow(run->window);
         SDL_Quit();
         return 0;
     }
+    return PLAYER_RUN_CONTINUE;
+}
 
+/* Opens the first controller, starts the background jobs and draws the first frame. */
+static void player_loop_start(PlayerRun *run) {
+    PlayerApp *app = &run->app;
     /* Interactive Event Loop */
     /* SDL_INIT_GAMEPAD was requested and the UI has always had a controller
        badge and a Controller settings tab, but nothing ever opened a pad or
@@ -4991,986 +4538,610 @@ int main(int argc, char *argv[]) {
        did not exist. Open the first pad that appears, report its real name,
        and map the d-pad and shoulders onto the same library selection the
        arrow keys drive. */
-    SDL_Gamepad *gamepad = NULL;
     if (SDL_HasGamepad()) {
         int npads = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&npads);
         if (ids && npads > 0) {
-            gamepad = SDL_OpenGamepad(ids[0]);
-            if (gamepad) {
-                const char *pad_name = SDL_GetGamepadName(gamepad);
-                snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
+            run->gamepad = SDL_OpenGamepad(ids[0]);
+            if (run->gamepad) {
+                const char *pad_name = SDL_GetGamepadName(run->gamepad);
+                snprintf(app->settings.controller_name, sizeof(app->settings.controller_name),
                          "%s", pad_name ? pad_name : "Controller");
-                app.settings.controller_connected = true;
+                app->settings.controller_connected = true;
                 /* A pad present at start switches the prompt glyphs to it. */
-                player_ui_nk_note_gamepad(next_ui, ids[0], true);
+                player_ui_nk_note_gamepad(run->next_ui, ids[0], true);
             }
         }
         SDL_free(ids);
     }
-    PlayerStagingJob *staging_job = NULL;
-    PlayerPsnJob *psn_job = NULL;
-    PlayerDiscCheckJob *disc_check_job = NULL;
-    PlayerPackageStatusJob *package_status_job = NULL;
-    bool package_status_requested[MAX_LIBRARY_GAMES] = { false };
-    bool package_status_force_requested[MAX_LIBRARY_GAMES] = { false };
-    player_package_status_queue_all(&app, package_status_requested,
-                                   package_status_force_requested);
-    uint64_t last_package_cache_generation =
-        app.runtime_package_cache_generation;
-    int last_package_selection = app.selected_game_index;
-    uint64_t last_package_scan_tick = SDL_GetTicks();
-    char build_check_disc_id[MAX_DISC_ID_LEN] = "";
-    uint64_t build_check_session_generation = 0;
-    uint64_t build_check_cache_generation = 0;
-    bool build_check_pending = false;
+    player_package_status_queue_all(app, run->package_status_requested,
+                                   run->package_status_force_requested);
+    run->last_package_cache_generation =
+        app->runtime_package_cache_generation;
+    run->last_package_selection = app->selected_game_index;
+    run->last_package_scan_tick = SDL_GetTicks();
     (void)player_package_status_start_next(
-        &app, next_ui, &package_status_job, package_status_requested,
-        package_status_force_requested, build_check_disc_id,
-        build_check_session_generation, build_check_cache_generation,
-        &build_check_pending);
+        app, run->next_ui, &run->package_status_job, run->package_status_requested,
+        run->package_status_force_requested, run->build_check_disc_id,
+        run->build_check_session_generation, run->build_check_cache_generation,
+        &run->build_check_pending);
 
     /* A Rebuild all queue the last session left resumes, and a scan says which
        games an older Nakagawa built (the prompt follows it once per update). */
-    (void)player_app_rebuild_queue_load(&app);
-    app.outdated.scan_requested = true;
-    PlayerOutdatedScanJob *outdated_scan_job = NULL;
-    app.enable_focus_handoff = interactive_window;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (getenv("NK_UI_TEST_CHECK_AT_START") != NULL) app.settings.check_updates_at_start = true;
-#endif
+    (void)player_app_rebuild_queue_load(app);
+    app->outdated.scan_requested = true;
+    app->enable_focus_handoff = run->interactive_window;
+    player_ui_test_apply_update_settings(app);
     /* The one check at start, only when the user turned it on (off by default). */
-    if (app.settings.check_updates_at_start) {
-        app.update.from_start = true;
-        player_update_start(&app, PLAYER_UPDATE_JOB_CHECK);
+    if (app->settings.check_updates_at_start) {
+        app->update.from_start = true;
+        player_update_start(app, PLAYER_UPDATE_JOB_CHECK);
     }
-    bool running = true;
-    uint64_t last_tick = SDL_GetTicks();
+    run->running = true;
+    run->last_tick = SDL_GetTicks();
     /* The first frame is rendered before the event wait. A bounded wait keeps
        process-exit monitoring alive while the user is idle; staging progress
        and normal input still wake the loop immediately. */
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    uint64_t first_frame_started_ns = ui_test_mode ? SDL_GetTicksNS() : 0;
-    uint64_t first_frame_validation_count = ui_test_mode
-        ? player_app_ui_test_validation_calls() : 0;
-#endif
-    player_render_active_ui(next_ui, &app, renderer, window, &input);
-    if (interactive_window && have_usable_bounds && !window_frame_measured) {
-        window_frame_measured = player_refit_to_actual_frame(
-            window, requested_window, usable_bounds,
-            app.settings.launcher_window_position_valid, &startup_window);
+    player_ui_test_begin_first_frame(&run->ui_test);
+    player_render_active_ui(run->next_ui, app, run->renderer, run->window, &run->input);
+    if (run->interactive_window && run->have_usable_bounds && !run->window_frame_measured) {
+        run->window_frame_measured = player_refit_to_actual_frame(
+            run->window, run->requested_window, run->usable_bounds,
+            app->settings.launcher_window_position_valid, &run->startup_window);
     }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    char *ui_test_drop_data = NULL;
-    if (ui_test_mode) {
-        uint64_t validations = player_app_ui_test_validation_calls();
-        validations = validations >= first_frame_validation_count
-            ? validations - first_frame_validation_count : validations;
-        player_ui_test_report_frame(
-            0, &app, renderer, true,
-            SDL_GetTicksNS() - first_frame_started_ns, validations,
-            k_invalid_disc_message);
-    }
-#endif
-    while (running && !app.should_quit) {
-        player_update_poll(&app);
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        {
-            static PlayerUpdatePhase reported = PLAYER_UPDATE_IDLE;
-            if (ui_test_mode && app.update.phase != reported) {
-                reported = app.update.phase;
-                printf("[PLAYER_UI_TEST] update=%s error=%s notice=%d newest=%s zip=%s "
-                       "install=%s\n",
-                       player_update_phase_name(app.update.phase),
-                       app.update.error.code[0] ? app.update.error.code : "none",
-                       app.update.notice ? 1 : 0,
-                       app.update.check.newest.tag[0] ? app.update.check.newest.tag : "none",
-                       app.update.zip_path[0] ? app.update.zip_path : "none",
-                       app.update.install_dir[0] ? app.update.install_dir : "none");
-                fflush(stdout);
-            }
-        }
-#endif
-        /* A worker that could not queue its own completion has no other way
-           to report it; apply its result before anything reads the pending
-           state this frame. */
-        player_package_status_recover_lost_handoff(
-            &app, &package_status_job, package_status_requested,
-            package_status_force_requested, build_check_disc_id,
-            &build_check_session_generation,
-            &build_check_cache_generation,
-            &build_check_pending);
-        ui_renderer_recover_lost_art_handoffs();
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (ui_test_mode) {
-            uint64_t ui_test_now = SDL_GetTicks();
-            bool ui_test_block_script = false;
-            if (ui_test_waiting_for_view) {
-                uint32_t current_view_mask = (unsigned)app.active_view < 32
-                    ? UINT32_C(1) << (unsigned)app.active_view : 0;
-                if (ui_test_wait_view_mask & current_view_mask) {
-                    printf("[PLAYER_UI_TEST] wait_view actual=%s result=PASS\n",
-                           player_ui_test_view_name(app.active_view));
-                    ui_test_waiting_for_view = false;
-                } else if (ui_test_now >= ui_test_wait_deadline) {
-                    fprintf(stderr, "[PLAYER_UI_TEST] wait_view result=FAIL actual=%s\n",
-                            player_ui_test_view_name(app.active_view));
-                    ui_test_failed = true;
-                    ui_test_quit_queued = true;
-                    running = false;
-                } else {
-                    ui_test_block_script = true;
-                }
-            }
-            if (ui_test_waiting_for_package_status) {
-                const GameRecord *game = app.selected_game_index >= 0 &&
-                    app.selected_game_index < app.game_count
-                    ? &app.games[app.selected_game_index] : NULL;
-                bool ready = game &&
-                    !player_app_runtime_package_check_pending(&app, game) &&
-                    !player_app_runtime_package_check_failed(&app, game) &&
-                    player_app_cached_runtime_package_status(&app, game) ==
-                        ui_test_wait_package_status_target;
-                if (ready) {
-                    printf("[PLAYER_UI_TEST] wait_package_status result=PASS\n");
-                    ui_test_waiting_for_package_status = false;
-                } else if (ui_test_now >= ui_test_wait_deadline) {
-                    fprintf(stderr,
-                            "[PLAYER_UI_TEST] wait_package_status result=FAIL target=%d\n",
-                            (int)ui_test_wait_package_status_target);
-                    ui_test_failed = true;
-                    ui_test_quit_queued = true;
-                    running = false;
-                } else {
-                    ui_test_block_script = true;
-                }
-            }
-            if (ui_test_waiting_for_art_attempt) {
-                unsigned completed = ui_renderer_test_art_attempt_count();
-                if (completed >= ui_test_wait_art_attempt_target) {
-                    printf("[PLAYER_UI_TEST] wait_art_attempt target=%u result=PASS\n",
-                           ui_test_wait_art_attempt_target);
-                    ui_test_waiting_for_art_attempt = false;
-                } else {
-                    ui_test_block_script = true;
-                }
-            }
-            if (ui_test_waiting_for_art_delay) {
-                if (ui_renderer_test_art_delay_active()) {
-                    printf("[PLAYER_UI_TEST] wait_art_delay_active result=PASS\n");
-                    ui_test_waiting_for_art_delay = false;
-                } else if (ui_test_now >= ui_test_wait_art_delay_deadline) {
-                    fprintf(stderr,
-                            "[PLAYER_UI_TEST] wait_art_delay_active result=FAIL\n");
-                    ui_test_failed = true;
-                    ui_test_quit_queued = true;
-                    ui_test_waiting_for_art_delay = false;
-                    running = false;
-                } else {
-                    ui_test_block_script = true;
-                }
-            }
-            if (g_ui_test_waiting_for_package_failure) {
-                int failure_index = player_ui_test_fail_title_index(
-                    g_ui_test_wait_package_failure_disc);
-                unsigned completed = failure_index >= 0
-                    ? g_ui_test_fail_package_status_thread_create_for_counts[
-                        failure_index]
-                    : 0;
-                if (completed >= g_ui_test_wait_package_failure_target) {
-                    printf("[PLAYER_UI_TEST] wait_package_failure disc=%s "
-                           "target=%u result=PASS\n",
-                           g_ui_test_wait_package_failure_disc,
-                           g_ui_test_wait_package_failure_target);
-                    g_ui_test_waiting_for_package_failure = false;
-                } else {
-                    ui_test_block_script = true;
-                }
-            }
-            if (ui_test_waiting_for_time) {
-                if (ui_test_now >= ui_test_wait_deadline) {
-                    printf("[PLAYER_UI_TEST] wait_ms result=PASS\n");
-                    ui_test_waiting_for_time = false;
-                } else {
-                    ui_test_block_script = true;
-                }
-            }
-            if (!ui_test_block_script && !ui_test_quit_queued && running) {
-            SDL_Event scripted_event;
-            int next_event = player_ui_test_next_event(
-                ui_test_events, &ui_test_event_cursor, &scripted_event);
-            if (next_event > 0) {
-                if (scripted_event.type == SDL_EVENT_USER &&
-                    scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_ART_ATTEMPT) {
-                    ui_test_wait_art_attempt_target = scripted_event.user.windowID;
-                    ui_test_waiting_for_art_attempt = true;
-                    printf("[PLAYER_UI_TEST] wait_art_attempt target=%u started\n",
-                           ui_test_wait_art_attempt_target);
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE) {
-                    ui_test_waiting_for_art_delay = true;
-                    ui_test_wait_art_delay_deadline = ui_test_now + 10000;
-                    printf("[PLAYER_UI_TEST] wait_art_delay_active started\n");
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE) {
-                    g_ui_test_waiting_for_package_failure = true;
-                    printf("[PLAYER_UI_TEST] wait_package_failure disc=%s "
-                           "target=%u started\n",
-                           g_ui_test_wait_package_failure_disc,
-                           g_ui_test_wait_package_failure_target);
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE) {
-                    player_app_runtime_package_cache_invalidate(&app);
-                    printf("[PLAYER_UI_TEST] invalidate_package_cache generation=%llu\n",
-                           (unsigned long long)app.runtime_package_cache_generation);
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO) {
-                    bool mounted = player_ui_test_copy_file(
-                        ui_test_art_mount_source, ui_test_iso_path);
-                    printf("[PLAYER_UI_TEST] mount_art_iso result=%s\n",
-                           mounted ? "PASS" : "FAIL");
-                    if (!mounted) {
-                        ui_test_failed = true;
-                        ui_test_quit_queued = true;
-                        running = false;
-                    }
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_SATURATE_ART_CACHE) {
-                    if (!ui_renderer_test_saturate_art_cache(renderer, ui_test_iso_path)) {
-                        ui_test_failed = true;
-                    }
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_START_SYNTHETIC_BUILD) {
-                    bool started = player_ui_test_start_synthetic_build(
-                        &app, scripted_event.user.windowID);
-                    printf("[PLAYER_UI_TEST] synthetic_build result=%s index=%u disc=%s\n",
-                           started ? "PASS" : "FAIL",
-                           scripted_event.user.windowID,
-                           started ? app.games[app.selected_game_index].disc_id : "NONE");
-                    if (!started) {
-                        ui_test_failed = true;
-                        ui_test_quit_queued = true;
-                        running = false;
-                    }
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_INVALIDATE_AND_START_SYNTHETIC_BUILD) {
-                    player_app_runtime_package_cache_invalidate(&app);
-                    s_ui_test_defer_cache_rescan_once = true;
-                    bool started = player_ui_test_start_synthetic_build(
-                        &app, scripted_event.user.windowID);
-                    printf("[PLAYER_UI_TEST] invalidate_cache_and_synthetic_build result=%s index=%u disc=%s generation=%llu build_session_generation=%llu\n",
-                           started ? "PASS" : "FAIL",
-                           scripted_event.user.windowID,
-                           started ? app.games[app.selected_game_index].disc_id : "NONE",
-                           (unsigned long long)app.runtime_package_cache_generation,
-                           (unsigned long long)app.build_session.session_generation);
-                    if (!started) {
-                        ui_test_failed = true;
-                        ui_test_quit_queued = true;
-                        running = false;
-                    }
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                    scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_MS) {
-                    ui_test_wait_deadline = ui_test_now + scripted_event.user.windowID;
-                    ui_test_waiting_for_time = true;
-                    printf("[PLAYER_UI_TEST] wait_ms=%u started\n",
-                           scripted_event.user.windowID);
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_VIEW) {
-                    ui_test_wait_view_mask = scripted_event.user.windowID;
-                    ui_test_wait_deadline = ui_test_now + scripted_event.user.timestamp;
-                    ui_test_waiting_for_view = true;
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS) {
-                    ui_test_wait_package_status_target =
-                        (NkRuntimePackageStatus)scripted_event.user.windowID;
-                    ui_test_wait_deadline = ui_test_now + scripted_event.user.timestamp;
-                    ui_test_waiting_for_package_status = true;
-                    printf("[PLAYER_UI_TEST] wait_package_status target=%u started\n",
-                           scripted_event.user.windowID);
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_CONSENT) {
-                    bool matches = app.active_view == VIEW_PREREQ_CONSENT &&
-                        app.prerequisites.items.count == scripted_event.user.windowID &&
-                        app.prerequisites.total_bytes == scripted_event.user.timestamp;
-                    printf("[PLAYER_UI_TEST] assert_consent result=%s items=%zu expected_items=%u "
-                           "total_bytes=%llu expected_bytes=%llu\n",
-                           matches ? "PASS" : "FAIL",
-                           app.prerequisites.items.count, scripted_event.user.windowID,
-                           (unsigned long long)app.prerequisites.total_bytes,
-                           (unsigned long long)scripted_event.user.timestamp);
-                    if (!matches) {
-                        ui_test_failed = true;
-                        ui_test_quit_queued = true;
-                        running = false;
-                    }
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_VIEW) {
-                    uint32_t current_view_mask = (unsigned)app.active_view < 32
-                        ? UINT32_C(1) << (unsigned)app.active_view : 0;
-                    bool matches = (scripted_event.user.windowID & current_view_mask) != 0;
-                    printf("[PLAYER_UI_TEST] assert_view result=%s actual=%s\n",
-                           matches ? "PASS" : "FAIL",
-                           player_ui_test_view_name(app.active_view));
-                    if (!matches) {
-                        ui_test_failed = true;
-                        ui_test_quit_queued = true;
-                        running = false;
-                    }
-                } else if (scripted_event.type == SDL_EVENT_USER &&
-                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING) {
-                    printf("[PLAYER_UI_TEST] assert_game_running result=%s\n",
-                           app.is_game_running ? "PASS" : "FAIL");
-                    if (!app.is_game_running) {
-                        ui_test_failed = true;
-                        ui_test_quit_queued = true;
-                        running = false;
-                    }
-                } else {
-                    if (scripted_event.type == SDL_EVENT_DROP_FILE) {
-                        ui_test_drop_data = (char *)scripted_event.drop.data;
-                    }
-                    if (!SDL_PushEvent(&scripted_event)) {
-                        if (ui_test_drop_data) {
-                            SDL_free(ui_test_drop_data);
-                            ui_test_drop_data = NULL;
-                        }
-                        ui_test_failed = true;
-                        running = false;
-                        fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
-                    } else if (scripted_event.type == SDL_EVENT_QUIT) {
-                        ui_test_quit_queued = true;
-                    } else if (scripted_event.type == SDL_EVENT_KEY_DOWN ||
-                               scripted_event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-                        /* A scripted press is a whole tap: the release follows in
-                           the same frame, as a person's key or button does. The
-                           next UI's input model ignores a second press of a key it
-                           still holds. */
-                        SDL_Event release = scripted_event;
-                        if (release.type == SDL_EVENT_KEY_DOWN) {
-                            release.type = SDL_EVENT_KEY_UP;
-                            release.key.down = false;
-                        } else {
-                            release.type = SDL_EVENT_GAMEPAD_BUTTON_UP;
-                            release.gbutton.down = false;
-                        }
-                        if (!SDL_PushEvent(&release)) {
-                            ui_test_failed = true;
-                            running = false;
-                            fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL "
-                                            "release event.\n");
-                        }
-                    }
-                }
-            } else if (next_event == 0) {
-                if (!(ui_test_wait_background &&
-                      (package_status_job || ui_renderer_art_pending()))) {
-                    memset(&scripted_event, 0, sizeof(scripted_event));
-                    scripted_event.type = SDL_EVENT_QUIT;
-                    if (!SDL_PushEvent(&scripted_event)) {
-                        ui_test_failed = true;
-                        running = false;
-                        fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic quit.\n");
-                    } else {
-                        ui_test_quit_queued = true;
-                    }
-                }
-            } else {
-                ui_test_failed = true;
-                running = false;
-                fprintf(stderr, "[PLAYER_UI_TEST] Invalid synthetic event script near byte %llu.\n",
-                        (unsigned long long)ui_test_event_cursor);
-            }
-            }
-        }
-#endif
-        uint64_t now_tick = SDL_GetTicks();
-        uint32_t delta_ms = (uint32_t)(now_tick >= last_tick ? (now_tick - last_tick) : 0);
-        last_tick = now_tick;
-        if (app.active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app.input_settings)) {
-            input_settings_update_capture(&app.input_settings, delta_ms > 0 ? delta_ms : 1);
-        }
-        /* The Controls page has no Save step: a binding, a reset or a stick setting
-           changed last frame is written to the input profile now (#1299). */
-        (void)input_settings_save_if_dirty(&app.input_settings);
+    player_ui_test_end_first_frame(&run->ui_test, app, run->renderer, k_invalid_disc_message);
+}
 
-        input.mouse_clicked = false;
-        input.activate_pressed = false;
-        bool close_request_handled_in_batch = false;
-        SDL_Event event;
-        /* Anything still moving (a scroll's momentum, an easing ring, rule
-           or fill) draws at 60 Hz until it settles, and the waves at their
-           30 Hz; otherwise the loop wakes for input or every 50 ms. */
-        bool event_available = SDL_WaitEventTimeout(
-            &event, player_ui_nk_view_active(next_ui, &app)
-                        ? (Sint32)player_ui_nk_wait_ms(next_ui, 50u) : 50);
-        if (event_available) {
-            do {
-                if (app.logical_ui &&
-                    (event.type == SDL_EVENT_MOUSE_MOTION ||
-                     event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
-                     event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
-                     event.type == SDL_EVENT_MOUSE_WHEEL ||
-                     event.type == SDL_EVENT_FINGER_MOTION ||
-                     event.type == SDL_EVENT_FINGER_DOWN ||
-                     event.type == SDL_EVENT_FINGER_UP ||
-                     event.type == SDL_EVENT_PEN_MOTION ||
-                     event.type == SDL_EVENT_PEN_DOWN ||
-                     event.type == SDL_EVENT_PEN_UP)) {
-                    SDL_ConvertEventToRenderCoordinates(renderer, &event);
+/* The start of a frame: update state, the UI-test script step, and the tick. */
+static void player_frame_begin(PlayerRun *run) {
+    PlayerApp *app = &run->app;
+    player_update_poll(app);
+    player_ui_test_report_update_phase(&run->ui_test, app);
+    /* A worker that could not queue its own completion has no other way
+       to report it; apply its result before anything reads the pending
+       state this frame. */
+    player_package_status_recover_lost_handoff(
+        app, &run->package_status_job, run->package_status_requested,
+        run->package_status_force_requested, run->build_check_disc_id,
+        &run->build_check_session_generation,
+        &run->build_check_cache_generation,
+        &run->build_check_pending);
+    ui_renderer_recover_lost_art_handoffs();
+    if (player_ui_test_active(&run->ui_test)) {
+        player_ui_test_step_script(&run->ui_test, app, run->renderer, &run->running,
+                                   run->package_status_job != NULL ||
+                                       ui_renderer_art_pending());
+    }
+    uint64_t now_tick = SDL_GetTicks();
+    uint32_t delta_ms = (uint32_t)(now_tick >= run->last_tick ? (now_tick - run->last_tick) : 0);
+    run->last_tick = now_tick;
+    if (app->active_view == VIEW_CONTROLLER_SETTINGS && input_settings_is_capturing(&app->input_settings)) {
+        input_settings_update_capture(&app->input_settings, delta_ms > 0 ? delta_ms : 1);
+    }
+    /* The Controls page has no Save step: a binding, a reset or a stick setting
+       changed last frame is written to the input profile now (#1299). */
+    (void)input_settings_save_if_dirty(&app->input_settings);
+
+    run->input.mouse_clicked = false;
+    run->input.activate_pressed = false;
+}
+
+/* Waits for and dispatches the frame's input and worker events. */
+static void player_frame_events(PlayerRun *run) {
+    PlayerApp *app = &run->app;
+    bool close_request_handled_in_batch = false;
+    SDL_Event event;
+    /* Anything still moving (a scroll's momentum, an easing ring, rule
+       or fill) draws at 60 Hz until it settles, and the waves at their
+       30 Hz; otherwise the loop wakes for input or every 50 ms. */
+    bool event_available = SDL_WaitEventTimeout(
+        &event, player_ui_nk_view_active(run->next_ui, app)
+                    ? (Sint32)player_ui_nk_wait_ms(run->next_ui, 50u) : 50);
+    if (event_available) {
+        do {
+            if (app->logical_ui &&
+                (event.type == SDL_EVENT_MOUSE_MOTION ||
+                 event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                 event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                 event.type == SDL_EVENT_MOUSE_WHEEL ||
+                 event.type == SDL_EVENT_FINGER_MOTION ||
+                 event.type == SDL_EVENT_FINGER_DOWN ||
+                 event.type == SDL_EVENT_FINGER_UP ||
+                 event.type == SDL_EVENT_PEN_MOTION ||
+                 event.type == SDL_EVENT_PEN_DOWN ||
+                 event.type == SDL_EVENT_PEN_UP)) {
+                SDL_ConvertEventToRenderCoordinates(run->renderer, &event);
+            }
+            /* A pad arriving or leaving updates the player's state first: the
+               launcher also takes these events for its prompts, and a consumed
+               event left Settings and the wizard saying "keyboard and mouse"
+               with a controller attached. */
+            if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+                if (!run->gamepad) {
+                    run->gamepad = SDL_OpenGamepad(event.gdevice.which);
+                    if (run->gamepad) {
+                        const char *pad_name = SDL_GetGamepadName(run->gamepad);
+                        snprintf(app->settings.controller_name, sizeof(app->settings.controller_name),
+                                 "%s", pad_name ? pad_name : "Controller");
+                        app->settings.controller_connected = true;
+                        printf("[PLAYER] Gamepad connected: %s\n", app->settings.controller_name);
+                    }
                 }
-                /* A pad arriving or leaving updates the player's state first: the
-                   launcher also takes these events for its prompts, and a consumed
-                   event left Settings and the wizard saying "keyboard and mouse"
-                   with a controller attached. */
-                if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
-                    if (!gamepad) {
-                        gamepad = SDL_OpenGamepad(event.gdevice.which);
-                        if (gamepad) {
-                            const char *pad_name = SDL_GetGamepadName(gamepad);
-                            snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
-                                     "%s", pad_name ? pad_name : "Controller");
-                            app.settings.controller_connected = true;
-                            printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
-                        }
-                    }
-                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
-                    }
-                } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
-                    player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
-                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                        SDL_CloseGamepad(gamepad);
-                        gamepad = NULL;
-                        app.settings.controller_name[0] = '\0';
-                        app.settings.controller_connected = false;
-                        printf("[PLAYER] Gamepad disconnected\n");
-                    }
+                if (run->gamepad && event.gdevice.which == SDL_GetGamepadID(run->gamepad)) {
+                    player_ui_nk_note_gamepad(run->next_ui, event.gdevice.which, true);
                 }
-                if (!player_dispatch_ui_event(&app, &input, next_ui, window, &running,
-                                              &close_request_handled_in_batch,
-                                              &event)) {
-                    switch (event.type) {
-                    case SDL_EVENT_USER:
-                        if (ui_renderer_handle_async_event(renderer, &event)) {
-                            break;
-                        }
-                        if (package_status_job &&
-                            event.user.data1 == package_status_job &&
-                            event.user.code == PLAYER_PACKAGE_STATUS_EVENT_CODE) {
-                            player_package_status_finish(
-                                &app, &package_status_job,
-                                package_status_requested,
-                                package_status_force_requested,
-                                build_check_disc_id,
-                                &build_check_session_generation,
-                                &build_check_cache_generation,
-                                &build_check_pending);
-                        } else if (psn_job && event.user.data1 == psn_job) {
-                            if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
-                                sync_psn_progress(&app, psn_job);
-                            } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
-                                finish_psn_job(&app, psn_job);
-                            }
-                        } else if (disc_check_job && event.user.data1 == disc_check_job) {
-                            if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
-                                sync_disc_check_progress(&app, disc_check_job);
-                            } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
-                                finish_disc_check_job(&app, &disc_check_job);
-                            }
-                        } else if (event.user.data1 == staging_job) {
-                            if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
-                                sync_staging_progress(&app, staging_job);
-                            } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
-                                sync_staging_progress(&app, staging_job);
-                                finish_staging_job(&app, staging_job);
-                                player_package_status_queue_game(
-                                    &app, app.selected_game_index, true,
-                                    package_status_requested,
-                                    package_status_force_requested);
-                            }
-                        }
-                        break;
-                    default:
+            } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+                player_ui_nk_note_gamepad(run->next_ui, event.gdevice.which, false);
+                if (run->gamepad && event.gdevice.which == SDL_GetGamepadID(run->gamepad)) {
+                    SDL_CloseGamepad(run->gamepad);
+                    run->gamepad = NULL;
+                    app->settings.controller_name[0] = '\0';
+                    app->settings.controller_connected = false;
+                    printf("[PLAYER] Gamepad disconnected\n");
+                }
+            }
+            if (!player_dispatch_ui_event(app, &run->input, run->next_ui, run->window, &run->running,
+                                          &close_request_handled_in_batch,
+                                          &event)) {
+                switch (event.type) {
+                case SDL_EVENT_USER:
+                    if (ui_renderer_handle_async_event(run->renderer, &event)) {
                         break;
                     }
-                }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-                if (ui_test_drop_data && event.type == SDL_EVENT_DROP_FILE &&
-                    event.drop.data == ui_test_drop_data) {
-                    SDL_free(ui_test_drop_data);
-                    ui_test_drop_data = NULL;
-                }
-#endif
-            } while (SDL_PollEvent(&event));
-        }
-
-        /* A renderer control asked for the host file dialog. The renderer has
-           no window handle and must stay free of platform dialog calls, so the
-           request is serviced here. */
-        if (app.request_file_picker) {
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-            if (!ui_test_mode) {
-#endif
-            app.request_file_picker = false;
-            trigger_file_picker(window, &app);
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-            }
-#endif
-        }
-        if (app.request_font_folder_picker) {
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-            if (!ui_test_mode) {
-#endif
-            app.request_font_folder_picker = false;
-            trigger_font_folder_picker(window, &app);
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-            }
-#endif
-        }
-        if (app.request_open_folder) {
-            app.request_open_folder = false;
-            if (app.requested_open_path[0] &&
-                !player_host_open_folder(app.requested_open_path)) {
-                fprintf(stderr, "[PLAYER] The folder could not be opened: %s\n",
-                        SDL_GetError());
-                player_app_set_folder_open_error(&app, app.requested_open_path,
-                                                 SDL_GetError());
-            }
-        }
-
-        /* Step 3 requests one worker; progress and completion return through
-           SDL user events, so the UI thread never polls a job or performs ISO
-           I/O. */
-        if (player_app_wizard_take_extraction_request(&app)) {
-            start_staging_job(&app, &staging_job);
-            if (!staging_job) {
-                player_package_status_queue_game(
-                    &app, app.selected_game_index, true,
-                    package_status_requested,
-                    package_status_force_requested);
-            }
-        }
-        if (staging_job && app.wizard.is_extracting &&
-            player_app_wizard_cancel_requested(&app)) {
-            request_staging_cancel(staging_job);
-        }
-        /* A picked PSN package converts on its own worker; the wizard's cancel
-           reaches it the same way. A completion whose event was lost is
-           finished here. */
-        if (player_app_psn_conversion_take_request(&app)) {
-            start_psn_job(&app, &psn_job);
-        }
-        if (psn_job && app.psn_conversion_active &&
-            player_app_wizard_cancel_requested(&app)) {
-            request_psn_cancel(psn_job);
-        }
-        if (psn_job_finished(psn_job)) {
-            finish_psn_job(&app, psn_job);
-        }
-        /* Each added image is hashed once, on its own worker: the library's
-           Cancel reaches it here, a completion whose event was lost is
-           finished here, and the next image waiting starts. */
-        if (disc_check_job && app.disc_check.cancel_requested) {
-            request_disc_check_cancel(disc_check_job);
-        }
-        finish_disc_check_job(&app, &disc_check_job);
-        start_disc_check_job(&app, &disc_check_job);
-
-        if (app.selected_game_index != last_package_selection) {
-            last_package_selection = app.selected_game_index;
-            player_package_status_queue_game(
-                &app, app.selected_game_index, false,
-                    package_status_requested, package_status_force_requested);
-        }
-        if (app.runtime_package_cache_generation !=
-            last_package_cache_generation) {
-            memset(package_status_requested, 0,
-                   sizeof(package_status_requested));
-            memset(package_status_force_requested, 0,
-                   sizeof(package_status_force_requested));
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-            if (s_ui_test_defer_cache_rescan_once) {
-                s_ui_test_defer_cache_rescan_once = false;
-            } else
-#endif
-            player_package_status_queue_all(
-                &app, package_status_requested,
-                package_status_force_requested);
-            last_package_cache_generation =
-                app.runtime_package_cache_generation;
-        }
-        /* The periodic re-check waits for 2 s with no check running. Counted from
-           the previous rescan instead, a check that took 2 s or more (a large
-           package, a loaded host) found the next one already queued when it ended,
-           so the launcher re-checked back to back and never went idle. */
-        uint64_t package_scan_now = SDL_GetTicks();
-        if (package_status_job) {
-            last_package_scan_tick = package_scan_now;
-        } else if (package_scan_now - last_package_scan_tick >= 2000) {
-            player_package_status_queue_all(
-                &app, package_status_requested,
-                package_status_force_requested);
-            last_package_scan_tick = package_scan_now;
-        }
-        player_update_prerequisite_operation(&app);
-        if (player_app_prereq_take_resume(&app)) {
-            int game_index = app.prerequisites.game_index;
-            if (!player_app_start_package_build(&app, game_index)) {
-                /* The state helper has already opened the actionable error card. */
-            }
-        }
-
-        /* Clamp keyboard/gamepad focus before rendering so activation can
-         * never target a control the current view no longer draws. */
-        player_app_move_focus(&app, 0, ui_focus_count(&app));
-
-        bool build_check_identity_changed = build_check_pending &&
-            (!build_check_disc_id[0] ||
-             !app.build_session.disc_id[0] ||
-             strcmp(build_check_disc_id, app.build_session.disc_id) != 0 ||
-             build_check_session_generation == 0 ||
-             app.build_session.session_generation !=
-                 build_check_session_generation);
-        if (build_check_identity_changed) {
-            /* Only a different build session or title releases the latch;
-               cache epochs describe status identity, not build identity. */
-            build_check_pending = false;
-            build_check_disc_id[0] = '\0';
-            build_check_session_generation = 0;
-            build_check_cache_generation = 0;
-        }
-        bool build_check_session_already_handled =
-            build_check_session_generation != 0 &&
-            build_check_session_generation ==
-                app.build_session.session_generation &&
-            build_check_disc_id[0] && app.build_session.disc_id[0] &&
-            strcmp(build_check_disc_id, app.build_session.disc_id) == 0;
-
-        /* Poll every loop so the child keeps progressing when another view is
-           visible. Completion is keyed to the build session's disc, not the
-           current library selection. */
-        player_app_poll_package_build(&app, SDL_GetTicks());
-        if (app.build_session.is_complete && !build_check_pending &&
-            !build_check_session_already_handled) {
-            /* The card of the image built, not another image with its disc ID. */
-            int build_game_index = player_app_find_built_game(
-                &app, app.build_session.disc_id, app.build_session.iso_path);
-            if (build_game_index >= 0 && build_game_index < app.game_count) {
-                /* The build may have bound the executable this entry was
-                   saved without; the check validates against that one. */
-                (void)player_app_adopt_profile_executable(&app, build_game_index);
-                snprintf(build_check_disc_id, sizeof(build_check_disc_id),
-                         "%s", app.build_session.disc_id);
-                build_check_session_generation =
-                    app.build_session.session_generation;
-                build_check_cache_generation =
-                    app.runtime_package_cache_generation;
-                build_check_pending = true;
-                player_package_status_queue_game(
-                    &app, build_game_index, true,
-                    package_status_requested,
-                    package_status_force_requested);
-            } else {
-                snprintf(build_check_disc_id, sizeof(build_check_disc_id),
-                         "%s", app.build_session.disc_id);
-                build_check_session_generation =
-                    app.build_session.session_generation;
-                build_check_cache_generation = 0;
-                if (player_app_rebuild_queue_owns_build(&app)) {
-                    /* Its title left the library during the rebuild. */
-                    player_app_rebuild_queue_build_checked(&app, false);
-                } else {
-                    player_app_set_build_error(
-                        &app, "package",
-                        "Package completed without its library title.",
-                        app.build_session.log_file_path);
+                    if (run->package_status_job &&
+                        event.user.data1 == run->package_status_job &&
+                        event.user.code == PLAYER_PACKAGE_STATUS_EVENT_CODE) {
+                        player_package_status_finish(
+                            app, &run->package_status_job,
+                            run->package_status_requested,
+                            run->package_status_force_requested,
+                            run->build_check_disc_id,
+                            &run->build_check_session_generation,
+                            &run->build_check_cache_generation,
+                            &run->build_check_pending);
+                    } else if (run->psn_job && event.user.data1 == run->psn_job) {
+                        if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
+                            sync_psn_progress(app, run->psn_job);
+                        } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
+                            finish_psn_job(app, run->psn_job);
+                        }
+                    } else if (run->disc_check_job && event.user.data1 == run->disc_check_job) {
+                        if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
+                            sync_disc_check_progress(app, run->disc_check_job);
+                        } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
+                            finish_disc_check_job(app, &run->disc_check_job);
+                        }
+                    } else if (event.user.data1 == run->staging_job) {
+                        if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
+                            sync_staging_progress(app, run->staging_job);
+                        } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
+                            sync_staging_progress(app, run->staging_job);
+                            finish_staging_job(app, run->staging_job);
+                            player_package_status_queue_game(
+                                app, app->selected_game_index, true,
+                                run->package_status_requested,
+                                run->package_status_force_requested);
+                        }
+                    }
+                    break;
+                default:
+                    break;
                 }
             }
-        } else {
-            /* Once per session, like the completion branch above (#1277). */
-            (void)player_app_apply_build_outcome(&app);
-        }
-        /* Rebuild all: the next title starts once nothing else is building,
-           and which games an older Nakagawa built is read again when asked. */
-        player_app_rebuild_queue_step(&app);
-        outdated_scan_job = player_outdated_scan_poll(&app, outdated_scan_job, false);
+            player_ui_test_event_handled(&run->ui_test, &event);
+        } while (SDL_PollEvent(&event));
+    }
+}
 
-        (void)player_package_status_start_next(
-            &app, next_ui, &package_status_job, package_status_requested,
-            package_status_force_requested, build_check_disc_id,
-            build_check_session_generation, build_check_cache_generation,
-            &build_check_pending);
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (package_status_job && package_status_job->catalog_test_start &&
-            package_status_job->catalog_test_done &&
-            !s_ui_test_catalog_reload_started) {
-            s_ui_test_catalog_reload_started = true;
-            for (unsigned i = 0; i < s_ui_test_catalog_reload_count; i++) {
-                (void)SDL_SignalSemaphore(
-                    package_status_job->catalog_test_start);
-                char reload_error[256] = "";
-                if (!nk_title_manifest_load_overlay_ext(
-                        s_ui_test_catalog_reload_path, true, reload_error,
-                        sizeof(reload_error))) {
-                    s_ui_test_catalog_reload_failed = true;
-                } else {
-                    s_ui_test_catalog_reload_completed++;
-                }
-                (void)SDL_WaitSemaphore(package_status_job->catalog_test_done);
-            }
+/* Services what the UI asked for and the background jobs: dialogs, staging, disc
+   checks, package status and builds. */
+static void player_frame_requests(PlayerRun *run) {
+    PlayerApp *app = &run->app;
+    /* A renderer control asked for the host file dialog. The renderer has
+       no window handle and must stay free of platform dialog calls, so the
+       request is serviced here. */
+    if (app->request_file_picker) {
+        if (!player_ui_test_active(&run->ui_test)) {
+            app->request_file_picker = false;
+            trigger_file_picker(run->window, app);
         }
-#endif
-
-        /* A launch the worker finished becomes the running game, or its card. */
-        launch_job = player_launch_job_poll(&app, launch_job, false);
-
-        /* Monitor running game process */
-        bool child_exited = false;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (!(ui_test_mode && ui_test_fake_game_running)) {
-#endif
-            child_exited = player_app_monitor_game_session(&app, SDL_GetTicks());
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    }
+    if (app->request_font_folder_picker) {
+        if (!player_ui_test_active(&run->ui_test)) {
+            app->request_font_folder_picker = false;
+            trigger_font_folder_picker(run->window, app);
         }
-#endif
-        (void)child_exited;
-        /* The launcher stays open behind the game (#1298): minimizing it
-           unasked surprised users. When the game ends, it comes back to the
-           front, and a later launch gets its own handoff. */
-        if (interactive_window && launcher_handoff_attempted &&
-            !app.is_game_running) {
-            SDL_RaiseWindow(window);
-            launcher_handoff_attempted = false;
+    }
+    if (app->request_open_folder) {
+        app->request_open_folder = false;
+        if (app->requested_open_path[0] &&
+            !player_host_open_folder(app->requested_open_path)) {
+            fprintf(stderr, "[PLAYER] The folder could not be opened: %s\n",
+                    SDL_GetError());
+            player_app_set_folder_open_error(app, app->requested_open_path,
+                                             SDL_GetError());
         }
-        /* The game reports its window through the boot-event marker; the
-           launcher, still the foreground process because it kept drawing,
-           then hands that window the foreground once. The runtime asks for it
-           as well, with the permission AllowSetForegroundWindow gave its
-           process at spawn. Missing evidence keeps the launcher in front. */
-        bool child_window_ready = app.is_game_running &&
-            app.launch_session.boot_event_file_path[0] &&
-            player_app_child_window_ready(&app);
-        if (player_app_should_attempt_window_handoff(
-                interactive_window, app.is_game_running,
-                launcher_handoff_attempted, child_window_ready)) {
-            launcher_handoff_attempted = true;
-            bool fronted = nk_platform_bring_process_window_to_front(
-                &app.launch_session.process);
-            /* No POSIX backend raises another process's window: X11 and Wayland
-               leave focus to the window manager, which gives the new game
-               window focus itself. The raise always reports false there, and
-               the stall path below minimizes instead of raising. */
-            if (!fronted && nk_platform_can_front_process_windows()) {
-                fprintf(stderr, "[PLAYER] The game window could not be brought to the front; "
-                                "it stays where Windows put it.\n");
-            }
-        }
-        /* A stalled game keeps running, so its window would otherwise cover
-           the launcher and hide the only actionable notice. Raise the player
-           once when the notice first appears. When the notice is dismissed or
-           a frame resumes, return focus to the game; on platforms without a
-           process-window raise, minimize only after that explicit notice
-           transition so the previous game window can be seen again. */
-        if (app.stalled_game_notice_raise_requested) {
-            app.stalled_game_notice_raise_requested = false;
-            if (interactive_window) SDL_RaiseWindow(window);
-        }
-        if (app.stalled_game_restore_game_front_requested) {
-            app.stalled_game_restore_game_front_requested = false;
-            if (interactive_window && app.is_game_running &&
-                !nk_platform_bring_process_window_to_front(
-                    &app.launch_session.process)) {
-                SDL_MinimizeWindow(window);
-            }
-        }
-        if (interactive_window) {
-            player_apply_launcher_fullscreen(&app, window,
-                                             &applied_launcher_fullscreen);
-        }
-
-        /* Live input sampling for controller settings monitor (#357) */
-        if (gamepad) {
-            for (int b = 0; b < NK_HOST_BUTTON_COUNT; b++) {
-                app.host_buttons_live[b] = SDL_GetGamepadButton(gamepad, (SDL_GamepadButton)b);
-            }
-            for (int a = 0; a < NK_HOST_AXIS_COUNT; a++) {
-                app.host_axes_live[a] = SDL_GetGamepadAxis(gamepad, (SDL_GamepadAxis)a);
-            }
-        } else {
-            memset(app.host_buttons_live, 0, sizeof(app.host_buttons_live));
-            memset(app.host_axes_live, 0, sizeof(app.host_axes_live));
-        }
-
-        /* Update guided analog calibration when active (#357) */
-        if (app.active_view == VIEW_CONTROLLER_SETTINGS) {
-            static uint64_t s_last_cal_tick = 0;
-            uint64_t cur_tick = SDL_GetTicks();
-            if (s_last_cal_tick == 0) s_last_cal_tick = cur_tick;
-            uint32_t dt_ms = (uint32_t)(cur_tick - s_last_cal_tick);
-            s_last_cal_tick = cur_tick;
-            if (input_settings_is_calibrating(&app.input_settings)) {
-                input_settings_update_calibration(&app.input_settings, dt_ms,
-                                                  app.host_axes_live);
-            }
-        }
-
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        uint64_t frame_started_ns = ui_test_mode ? SDL_GetTicksNS() : 0;
-        uint64_t frame_validation_count = ui_test_mode
-            ? player_app_ui_test_validation_calls() : 0;
-#endif
-        player_render_active_ui(next_ui, &app, renderer, window, &input);
-        /* Consume renderer requests in the same frame that created them. A
-           later event batch may change the selected title before the next
-           loop iteration, which must not redirect this retry. */
-        if (app.request_launch) {
-            app.request_launch = false;
-            if (!launch_job) {
-                player_note_launcher_display(&app, window);
-                launch_job = player_launch_job_start(&app, app.request_launch_index);
-            }
-        }
-        if (app.request_factory_reset) {
-            app.request_factory_reset = false;
-            /* A finished staging or PSN job stays allocated until the next one. */
-            if (launch_job || package_status_job || s_update_job || disc_check_job ||
-                (staging_job && !staging_job->completion_handled) ||
-                (psn_job && !psn_job->completion_handled)) {
-                /* A worker may still have a file in the user data open. */
-                player_app_set_error(&app, "FACTORY_RESET_BUSY", "Factory Reset Has to Wait",
-                                     "Nakagawa Recomp is still checking or setting up a "
-                                     "game. Wait a moment, then reset again. Nothing was "
-                                     "moved.", "Return to Settings", VIEW_SETTINGS);
-            } else {
-                char stamp[32];
-                time_t now = time(NULL);
-                struct tm *local = localtime(&now);
-                if (!local || strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", local) == 0) {
-                    snprintf(stamp, sizeof(stamp), "%lld", (long long)now);
-                }
-                (void)player_app_factory_reset(&app, stamp);
-            }
-        }
-        if (app.request_package_status_retry) {
-            app.request_package_status_retry = false;
-            player_app_runtime_package_cache_mark_explicit_retry(
-                &app, app.selected_game_index);
-            player_package_status_queue_game(
-                &app, app.selected_game_index, true,
-                package_status_requested, package_status_force_requested);
-        }
-        if (interactive_window) {
-            player_apply_launcher_fullscreen(&app, window,
-                                             &applied_launcher_fullscreen);
-        }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (ui_test_mode) {
-            ui_test_frame++;
-            uint64_t validations = player_app_ui_test_validation_calls();
-            validations = validations >= frame_validation_count
-                ? validations - frame_validation_count : validations;
-            player_ui_test_report_frame(ui_test_frame, &app, renderer,
-                                       running && !app.should_quit,
-                                       SDL_GetTicksNS() - frame_started_ns,
-                                       validations, k_invalid_disc_message);
-            if (!running || app.should_quit) {
-                bool captured = ui_test_screenshot_path &&
-                    ui_capture_screenshot(renderer, ui_test_screenshot_path);
-                printf("[PLAYER_UI_TEST] screenshot=%s width=%d height=%d\n",
-                       captured ? "PASS" : "FAIL", app.window_width, app.window_height);
-                if (!captured) ui_test_failed = true;
-            }
-        }
-#endif
     }
 
+    /* Step 3 requests one worker; progress and completion return through
+       SDL user events, so the UI thread never polls a job or performs ISO
+       I/O. */
+    if (player_app_wizard_take_extraction_request(app)) {
+        start_staging_job(app, &run->staging_job);
+        if (!run->staging_job) {
+            player_package_status_queue_game(
+                app, app->selected_game_index, true,
+                run->package_status_requested,
+                run->package_status_force_requested);
+        }
+    }
+    if (run->staging_job && app->wizard.is_extracting &&
+        player_app_wizard_cancel_requested(app)) {
+        request_staging_cancel(run->staging_job);
+    }
+    /* A picked PSN package converts on its own worker; the wizard's cancel
+       reaches it the same way. A completion whose event was lost is
+       finished here. */
+    if (player_app_psn_conversion_take_request(app)) {
+        start_psn_job(app, &run->psn_job);
+    }
+    if (run->psn_job && app->psn_conversion_active &&
+        player_app_wizard_cancel_requested(app)) {
+        request_psn_cancel(run->psn_job);
+    }
+    if (psn_job_finished(run->psn_job)) {
+        finish_psn_job(app, run->psn_job);
+    }
+    /* Each added image is hashed once, on its own worker: the library's
+       Cancel reaches it here, a completion whose event was lost is
+       finished here, and the next image waiting starts. */
+    if (run->disc_check_job && app->disc_check.cancel_requested) {
+        request_disc_check_cancel(run->disc_check_job);
+    }
+    finish_disc_check_job(app, &run->disc_check_job);
+    start_disc_check_job(app, &run->disc_check_job);
+
+    if (app->selected_game_index != run->last_package_selection) {
+        run->last_package_selection = app->selected_game_index;
+        player_package_status_queue_game(
+            app, app->selected_game_index, false,
+                run->package_status_requested, run->package_status_force_requested);
+    }
+    if (app->runtime_package_cache_generation !=
+        run->last_package_cache_generation) {
+        memset(run->package_status_requested, 0,
+               sizeof(run->package_status_requested));
+        memset(run->package_status_force_requested, 0,
+               sizeof(run->package_status_force_requested));
+        if (!player_ui_test_take_cache_rescan_deferral())
+            player_package_status_queue_all(
+                app, run->package_status_requested,
+                run->package_status_force_requested);
+        run->last_package_cache_generation =
+            app->runtime_package_cache_generation;
+    }
+    /* The periodic re-check waits for 2 s with no check running. Counted from
+       the previous rescan instead, a check that took 2 s or more (a large
+       package, a loaded host) found the next one already queued when it ended,
+       so the launcher re-checked back to back and never went idle. */
+    uint64_t package_scan_now = SDL_GetTicks();
+    if (run->package_status_job) {
+        run->last_package_scan_tick = package_scan_now;
+    } else if (package_scan_now - run->last_package_scan_tick >= 2000) {
+        player_package_status_queue_all(
+            app, run->package_status_requested,
+            run->package_status_force_requested);
+        run->last_package_scan_tick = package_scan_now;
+    }
+    player_update_prerequisite_operation(app);
+    if (player_app_prereq_take_resume(app)) {
+        int game_index = app->prerequisites.game_index;
+        if (!player_app_start_package_build(app, game_index)) {
+            /* The state helper has already opened the actionable error card. */
+        }
+    }
+
+    /* Clamp keyboard/gamepad focus before rendering so activation can
+     * never target a control the current view no longer draws. */
+    player_app_move_focus(app, 0, ui_focus_count(app));
+
+    bool build_check_identity_changed = run->build_check_pending &&
+        (!run->build_check_disc_id[0] ||
+         !app->build_session.disc_id[0] ||
+         strcmp(run->build_check_disc_id, app->build_session.disc_id) != 0 ||
+         run->build_check_session_generation == 0 ||
+         app->build_session.session_generation !=
+             run->build_check_session_generation);
+    if (build_check_identity_changed) {
+        /* Only a different build session or title releases the latch;
+           cache epochs describe status identity, not build identity. */
+        run->build_check_pending = false;
+        run->build_check_disc_id[0] = '\0';
+        run->build_check_session_generation = 0;
+        run->build_check_cache_generation = 0;
+    }
+    bool build_check_session_already_handled =
+        run->build_check_session_generation != 0 &&
+        run->build_check_session_generation ==
+            app->build_session.session_generation &&
+        run->build_check_disc_id[0] && app->build_session.disc_id[0] &&
+        strcmp(run->build_check_disc_id, app->build_session.disc_id) == 0;
+
+    /* Poll every loop so the child keeps progressing when another view is
+       visible. Completion is keyed to the build session's disc, not the
+       current library selection. */
+    player_app_poll_package_build(app, SDL_GetTicks());
+    if (app->build_session.is_complete && !run->build_check_pending &&
+        !build_check_session_already_handled) {
+        /* The card of the image built, not another image with its disc ID. */
+        int build_game_index = player_app_find_built_game(
+            app, app->build_session.disc_id, app->build_session.iso_path);
+        if (build_game_index >= 0 && build_game_index < app->game_count) {
+            /* The build may have bound the executable this entry was
+               saved without; the check validates against that one. */
+            (void)player_app_adopt_profile_executable(app, build_game_index);
+            snprintf(run->build_check_disc_id, sizeof(run->build_check_disc_id),
+                     "%s", app->build_session.disc_id);
+            run->build_check_session_generation =
+                app->build_session.session_generation;
+            run->build_check_cache_generation =
+                app->runtime_package_cache_generation;
+            run->build_check_pending = true;
+            player_package_status_queue_game(
+                app, build_game_index, true,
+                run->package_status_requested,
+                run->package_status_force_requested);
+        } else {
+            snprintf(run->build_check_disc_id, sizeof(run->build_check_disc_id),
+                     "%s", app->build_session.disc_id);
+            run->build_check_session_generation =
+                app->build_session.session_generation;
+            run->build_check_cache_generation = 0;
+            if (player_app_rebuild_queue_owns_build(app)) {
+                /* Its title left the library during the rebuild. */
+                player_app_rebuild_queue_build_checked(app, false);
+            } else {
+                player_app_set_build_error(
+                    app, "package",
+                    "Package completed without its library title.",
+                    app->build_session.log_file_path);
+            }
+        }
+    } else {
+        /* Once per session, like the completion branch above (#1277). */
+        (void)player_app_apply_build_outcome(app);
+    }
+    /* Rebuild all: the next title starts once nothing else is building,
+       and which games an older Nakagawa built is read again when asked. */
+    player_app_rebuild_queue_step(app);
+    run->outdated_scan_job = player_outdated_scan_poll(app, run->outdated_scan_job, false);
+
+    (void)player_package_status_start_next(
+        app, run->next_ui, &run->package_status_job, run->package_status_requested,
+        run->package_status_force_requested, run->build_check_disc_id,
+        run->build_check_session_generation, run->build_check_cache_generation,
+        &run->build_check_pending);
+    if (run->package_status_job) {
+        player_ui_test_catalog_drive(&run->package_status_job->catalog_test);
+    }
+}
+
+/* The running game and the window handoff to it, and the controller's live input. */
+static void player_frame_game_session(PlayerRun *run) {
+    PlayerApp *app = &run->app;
+    /* A launch the worker finished becomes the running game, or its card. */
+    run->launch_job = player_launch_job_poll(app, run->launch_job, false);
+
+    /* Monitor running game process */
+    bool child_exited = false;
+    if (!player_ui_test_game_faked(&run->ui_test)) {
+            child_exited = player_app_monitor_game_session(app, SDL_GetTicks());
+    }
+    (void)child_exited;
+    /* The launcher stays open behind the game (#1298): minimizing it
+       unasked surprised users. When the game ends, it comes back to the
+       front, and a later launch gets its own handoff. */
+    if (run->interactive_window && run->launcher_handoff_attempted &&
+        !app->is_game_running) {
+        SDL_RaiseWindow(run->window);
+        run->launcher_handoff_attempted = false;
+    }
+    /* The game reports its window through the boot-event marker; the
+       launcher, still the foreground process because it kept drawing,
+       then hands that window the foreground once. The runtime asks for it
+       as well, with the permission AllowSetForegroundWindow gave its
+       process at spawn. Missing evidence keeps the launcher in front. */
+    bool child_window_ready = app->is_game_running &&
+        app->launch_session.boot_event_file_path[0] &&
+        player_app_child_window_ready(app);
+    if (player_app_should_attempt_window_handoff(
+            run->interactive_window, app->is_game_running,
+            run->launcher_handoff_attempted, child_window_ready)) {
+        run->launcher_handoff_attempted = true;
+        bool fronted = nk_platform_bring_process_window_to_front(
+            &app->launch_session.process);
+        /* No POSIX backend raises another process's window: X11 and Wayland
+           leave focus to the window manager, which gives the new game
+           window focus itself. The raise always reports false there, and
+           the stall path below minimizes instead of raising. */
+        if (!fronted && nk_platform_can_front_process_windows()) {
+            fprintf(stderr, "[PLAYER] The game window could not be brought to the front; "
+                            "it stays where Windows put it.\n");
+        }
+    }
+    /* A stalled game keeps running, so its window would otherwise cover
+       the launcher and hide the only actionable notice. Raise the player
+       once when the notice first appears. When the notice is dismissed or
+       a frame resumes, return focus to the game; on platforms without a
+       process-window raise, minimize only after that explicit notice
+       transition so the previous game window can be seen again. */
+    if (app->stalled_game_notice_raise_requested) {
+        app->stalled_game_notice_raise_requested = false;
+        if (run->interactive_window) SDL_RaiseWindow(run->window);
+    }
+    if (app->stalled_game_restore_game_front_requested) {
+        app->stalled_game_restore_game_front_requested = false;
+        if (run->interactive_window && app->is_game_running &&
+            !nk_platform_bring_process_window_to_front(
+                &app->launch_session.process)) {
+            SDL_MinimizeWindow(run->window);
+        }
+    }
+    if (run->interactive_window) {
+        player_apply_launcher_fullscreen(app, run->window,
+                                         &run->applied_launcher_fullscreen);
+    }
+
+    /* Live input sampling for controller settings monitor (#357) */
+    if (run->gamepad) {
+        for (int b = 0; b < NK_HOST_BUTTON_COUNT; b++) {
+            app->host_buttons_live[b] = SDL_GetGamepadButton(run->gamepad, (SDL_GamepadButton)b);
+        }
+        for (int a = 0; a < NK_HOST_AXIS_COUNT; a++) {
+            app->host_axes_live[a] = SDL_GetGamepadAxis(run->gamepad, (SDL_GamepadAxis)a);
+        }
+    } else {
+        memset(app->host_buttons_live, 0, sizeof(app->host_buttons_live));
+        memset(app->host_axes_live, 0, sizeof(app->host_axes_live));
+    }
+
+    /* Update guided analog calibration when active (#357) */
+    if (app->active_view == VIEW_CONTROLLER_SETTINGS) {
+        static uint64_t s_last_cal_tick = 0;
+        uint64_t cur_tick = SDL_GetTicks();
+        if (s_last_cal_tick == 0) s_last_cal_tick = cur_tick;
+        uint32_t dt_ms = (uint32_t)(cur_tick - s_last_cal_tick);
+        s_last_cal_tick = cur_tick;
+        if (input_settings_is_calibrating(&app->input_settings)) {
+            input_settings_update_calibration(&app->input_settings, dt_ms,
+                                              app->host_axes_live);
+        }
+    }
+}
+
+/* Draws the frame, then takes the requests the draw made. */
+static void player_frame_render(PlayerRun *run) {
+    PlayerApp *app = &run->app;
+    player_ui_test_begin_frame(&run->ui_test);
+    player_render_active_ui(run->next_ui, app, run->renderer, run->window, &run->input);
+    /* Consume renderer requests in the same frame that created them. A
+       later event batch may change the selected title before the next
+       loop iteration, which must not redirect this retry. */
+    if (app->request_launch) {
+        app->request_launch = false;
+        if (!run->launch_job) {
+            player_note_launcher_display(app, run->window);
+            run->launch_job = player_launch_job_start(app, app->request_launch_index);
+        }
+    }
+    if (app->request_factory_reset) {
+        app->request_factory_reset = false;
+        /* A finished staging or PSN job stays allocated until the next one. */
+        if (run->launch_job || run->package_status_job || s_update_job || run->disc_check_job ||
+            (run->staging_job && !run->staging_job->completion_handled) ||
+            (run->psn_job && !run->psn_job->completion_handled)) {
+            /* A worker may still have a file in the user data open. */
+            player_app_set_error(app, "FACTORY_RESET_BUSY", "Factory Reset Has to Wait",
+                                 "Nakagawa Recomp is still checking or setting up a "
+                                 "game. Wait a moment, then reset again. Nothing was "
+                                 "moved.", "Return to Settings", VIEW_SETTINGS);
+        } else {
+            char stamp[32];
+            time_t now = time(NULL);
+            struct tm *local = localtime(&now);
+            if (!local || strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", local) == 0) {
+                snprintf(stamp, sizeof(stamp), "%lld", (long long)now);
+            }
+            (void)player_app_factory_reset(app, stamp);
+        }
+    }
+    if (app->request_package_status_retry) {
+        app->request_package_status_retry = false;
+        player_app_runtime_package_cache_mark_explicit_retry(
+            app, app->selected_game_index);
+        player_package_status_queue_game(
+            app, app->selected_game_index, true,
+            run->package_status_requested, run->package_status_force_requested);
+    }
+    if (run->interactive_window) {
+        player_apply_launcher_fullscreen(app, run->window,
+                                         &run->applied_launcher_fullscreen);
+    }
+    player_ui_test_end_frame(&run->ui_test, app, run->renderer, run->running, k_invalid_disc_message);
+}
+
+/* Stops the jobs and the game, saves, and tears the window down; the exit code. */
+static int player_shutdown(PlayerRun *run) {
+    PlayerApp *app = &run->app;
     /* A binding made in the same moment as the quit is written before closing; a
        write that fails now has nowhere left to be shown, so it goes to the log. */
-    if (input_settings_flush(&app.input_settings) != NK_OK) {
+    if (input_settings_flush(&app->input_settings) != NK_OK) {
         fprintf(stderr, "[PLAYER] Controls not saved: %s\n",
-                app.input_settings.save_diagnostic);
+                app->input_settings.save_diagnostic);
     }
 
     /* Closing: a package check still hashing stops at its next read, so the
        window does not hang until every startup check is done. */
     SDL_SetAtomicInt(&s_player_closing, 1);
-    outdated_scan_job = player_outdated_scan_poll(&app, outdated_scan_job, true);
+    run->outdated_scan_job = player_outdated_scan_poll(app, run->outdated_scan_job, true);
 
     /* A launch still on its worker finishes first, so its game is stopped. */
-    launch_job = player_launch_job_poll(&app, launch_job, true);
-    if (app.is_game_running) {
-        player_app_stop_game(&app);
+    run->launch_job = player_launch_job_poll(app, run->launch_job, true);
+    if (app->is_game_running) {
+        player_app_stop_game(app);
     }
 
     /* After a factory reset nothing is saved: the settings would bring the
        config folder back. */
-    if (interactive_window && !app.factory_reset_done) {
-        player_capture_window_settings(&app, window);
-        player_app_save_settings(&app, NULL);
+    if (run->interactive_window && !app->factory_reset_done) {
+        player_capture_window_settings(app, run->window);
+        player_app_save_settings(app, NULL);
     }
-    if (app.prerequisite_job_started) {
-        package_builder_bootstrap_python_cancel(&app.bootstrap_session);
-        package_builder_bootstrap_python_close(&app.bootstrap_session);
-        app.prerequisite_job_started = false;
+    if (app->prerequisite_job_started) {
+        package_builder_bootstrap_python_cancel(&app->bootstrap_session);
+        package_builder_bootstrap_python_close(&app->bootstrap_session);
+        app->prerequisite_job_started = false;
     }
-    if (app.prerequisite_fetcher_started) {
-        package_builder_request_prerequisite_cancel(&app.build_session,
-            app.build_session.cancel_file_path);
-        while (app.build_session.is_building) {
-            package_builder_poll(&app.build_session, SDL_GetTicks());
-            if (app.build_session.is_building) {
-                (void)nk_platform_wait_process(&app.build_session.process, 1000);
+    if (app->prerequisite_fetcher_started) {
+        package_builder_request_prerequisite_cancel(&app->build_session,
+            app->build_session.cancel_file_path);
+        while (app->build_session.is_building) {
+            package_builder_poll(&app->build_session, SDL_GetTicks());
+            if (app->build_session.is_building) {
+                (void)nk_platform_wait_process(&app->build_session.process, 1000);
             }
         }
-        app.prerequisite_fetcher_started = false;
+        app->prerequisite_fetcher_started = false;
     }
 
     player_update_shutdown();
-    destroy_staging_job(&staging_job);
-    destroy_psn_job(&psn_job);
-    destroy_disc_check_job(&disc_check_job);
-    if (package_status_job) {
-        if (package_status_job->thread) {
-            SDL_WaitThread(package_status_job->thread, NULL);
-            package_status_job->thread = NULL;
+    destroy_staging_job(&run->staging_job);
+    destroy_psn_job(&run->psn_job);
+    destroy_disc_check_job(&run->disc_check_job);
+    if (run->package_status_job) {
+        if (run->package_status_job->thread) {
+            SDL_WaitThread(run->package_status_job->thread, NULL);
+            run->package_status_job->thread = NULL;
         }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (package_status_job->catalog_test_start) {
-            SDL_DestroySemaphore(package_status_job->catalog_test_start);
-            package_status_job->catalog_test_start = NULL;
-        }
-        if (package_status_job->catalog_test_done) {
-            SDL_DestroySemaphore(package_status_job->catalog_test_done);
-            package_status_job->catalog_test_done = NULL;
-        }
-#endif
-        free(package_status_job);
-        package_status_job = NULL;
+        player_ui_test_catalog_release(&run->package_status_job->catalog_test);
+        free(run->package_status_job);
+        run->package_status_job = NULL;
     }
 
-    if (gamepad) {
-        SDL_CloseGamepad(gamepad);
-        gamepad = NULL;
+    if (run->gamepad) {
+        SDL_CloseGamepad(run->gamepad);
+        run->gamepad = NULL;
     }
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (ui_test_target) {
-        SDL_SetRenderTarget(renderer, NULL);
-        SDL_DestroyTexture(ui_test_target);
-    }
-#endif
-    player_ui_nk_destroy(next_ui);
+    player_ui_test_destroy_target(&run->ui_test, run->renderer);
+    player_ui_nk_destroy(run->next_ui);
     ui_font_shutdown();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    if (app.factory_reset_done) {
-        bool start_copy = interactive_window;
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-        if (ui_test_mode) {
-            puts("[PLAYER_UI_TEST] factory_reset restart=skipped");
+    SDL_DestroyRenderer(run->renderer);
+    SDL_DestroyWindow(run->window);
+    if (app->factory_reset_done) {
+        bool start_copy = run->interactive_window;
+        if (player_ui_test_skip_factory_restart(&run->ui_test)) {
             start_copy = false;
         }
-#endif
         if (start_copy && !player_start_fresh_copy()) {
             fprintf(stderr, "[PLAYER] Factory reset is done, but a new copy of the player could "
                             "not be started (%s). Start it again to set it up.\n", SDL_GetError());
@@ -5979,8 +5150,48 @@ int main(int argc, char *argv[]) {
         }
     }
     SDL_Quit();
-#ifdef NK_PLAYER_UI_REGRESSION_TEST
-    if (ui_test_mode && ui_test_failed) return 1;
-#endif
+    if (player_ui_test_active(&run->ui_test) && player_ui_test_failed(&run->ui_test)) return 1;
     return 0;
+}
+
+int main(int argc, char *argv[]) {
+    /* Windows: UTF-8 console output and argv rebuilt from the UTF-16 command line. */
+    (void)nk_platform_init_utf8_main(&argc, &argv);
+
+    /* Android: system-log streams and the unpacked-files folder (no-op elsewhere). */
+    (void)nk_platform_host_startup("nakagawa");
+    if (!player_apply_user_data_root(argc, argv)) return 2;
+    /* Compressed disc images: CHD is read through the vendored libchdr. */
+    nk_disc_chd_register();
+    /* Windows (a GUI-subsystem program): the parent console, or player-output.txt in the
+       logs folder, unbuffered (#1303). Nothing to do elsewhere. */
+    nk_platform_setup_standard_streams("player-output.txt");
+    player_report_legacy_data_root();
+
+    static PlayerRun run;
+    player_run_init(&run);
+
+    int code = player_parse_command_line(&run, argc, argv);
+    if (code == PLAYER_RUN_CONTINUE) code = player_load_library(&run);
+    if (code == PLAYER_RUN_CONTINUE) {
+        player_apply_test_view(&run.app, run.test_view);
+        player_ui_test_prepare_app(&run.ui_test, &run.app);
+        player_ui_test_apply_motion(&run.ui_test, &run.app);
+        run.app.window_width = run.override_w;
+        run.app.window_height = run.override_h;
+        code = player_command_line_launch(&run);
+    }
+    if (code == PLAYER_RUN_CONTINUE) code = player_open_window(&run);
+    if (code == PLAYER_RUN_CONTINUE) code = player_capture_screenshot(&run);
+    if (code != PLAYER_RUN_CONTINUE) return code;
+
+    player_loop_start(&run);
+    while (run.running && !run.app.should_quit) {
+        player_frame_begin(&run);
+        player_frame_events(&run);
+        player_frame_requests(&run);
+        player_frame_game_session(&run);
+        player_frame_render(&run);
+    }
+    return player_shutdown(&run);
 }

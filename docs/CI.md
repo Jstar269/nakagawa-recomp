@@ -189,6 +189,14 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
+Both hosts run `snapshot-selftest` (#1842): the Windows job in its `selftests` part and the Linux
+`native_tools` job in its `translation` part. It builds `src/rt/snapshot_runner.c` against a
+source-owned synthetic module (`fixtures/snapshot/`), runs each case's translated function and
+the reference interpreter in `src/ref` from the same snapshot, and requires the exact verdict
+for every case, a named refusal for every malformed snapshot file, and `MISMATCH r11` from a
+runner built with one immediate changed in the generated C. The verdicts are described in
+[`docs/DEBUGGING.md`](DEBUGGING.md#snapshot-execution).
+
 Both hosts run `hle-thread-selftest`, the executable production-HLE suite that links
 the runtime HLE sources (`src/rt/hle.c` and its subsystem files, #306, #307): the Windows job in its
 `selftests` part, and the Linux `native_tools` job after the pinned SDL3 install, because the suite
@@ -219,7 +227,8 @@ device after a terminal failure; an exit 77 skip fails the gate. A separate step
 `gpu-coherence-selftest` the same way on lavapipe: the Vulkan backend's render-target coherence,
 texture cache, per-draw state template, filtering and blend cases against the software GE, where
 an exit 77 skip also fails. Its scaled-upload case then runs alone at render scales 2 and 4, where
-every device pixel of an uploaded target must hold its guest pixel. The job also runs
+every device pixel of an uploaded target must hold its guest pixel, and so does its mip-lod case,
+where the shader's per-fragment mip level must not change with the render scale. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by

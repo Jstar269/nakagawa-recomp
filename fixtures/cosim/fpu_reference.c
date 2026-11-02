@@ -17,7 +17,7 @@
  * src/rt/fp_convert.h cites PSPAutotests commit
  * ea71108f00933712c4662276261b39cd42249b1e for conversion non-finite results,
  * and the captured fpu.expected anchors for RM, FCC0 at FCR31 bit 23, and the
- * FS result-flush gate. src/rt/fp_convert_selftest.c fixes the observable
+ * FS result-flush gate. tests/native/fp_convert_selftest.c fixes the observable
  * conversion words, gradual subnormal inputs, and min-normal*0.5 FS result;
  * tools/test_codegen_fp_convert.py pins generated AOT compare/branch and
  * cvt.s.w results. Mul.s infinity*zero is the repository's explicit canonical

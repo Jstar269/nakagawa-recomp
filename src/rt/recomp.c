@@ -1363,7 +1363,7 @@ void sr_vwrite(CpuState *s, const uint8_t *idx, float *d, int n, uint32_t dprefi
 /* ---- dispatch table (issue #45) ----
  *
  * The data structure and its lock-free primitives live in dispatch_table.h so the exact
- * production logic can be exercised host-neutrally (src/rt/dispatch_selftest.c). This file
+ * production logic can be exercised host-neutrally (tests/native/dispatch_selftest.c). This file
  * owns the single live instance and the external sr_register/sr_lookup entry points that
  * the generated chunks and dispatch() call.
  *

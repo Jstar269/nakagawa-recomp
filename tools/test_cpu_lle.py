@@ -110,7 +110,7 @@ def _emit_generated_fatal_flow_fixture():
 
 # LL/SC parity sequences (opcode 0x30/0x38). The same words are emitted as real
 # generated C here and run through the production interpreter by
-# src/rt/cpu_lle_selftest.c, which compares the two lanes and the expected values.
+# tests/native/cpu_lle_selftest.c, which compares the two lanes and the expected values.
 LLSC_DEFAULT_ENTRY = 0x08810900   # default-lane emission of LLSC_SEQUENCE
 LLSC_LLE_ENTRY = 0x08810980       # --lle-cpu emission of LLSC_SEQUENCE
 LLSC_LLE_MISALIGNED_SC_ENTRY = 0x08810A00
@@ -134,7 +134,7 @@ def _beq(rs, rt, offset_words):
     return (0x04 << 26) | (rs << 21) | (rt << 16) | (offset_words & 0xFFFF)
 
 
-# Mirrored word-for-word by LLSC_SEQUENCE in src/rt/cpu_lle_selftest.c.
+# Mirrored word-for-word by LLSC_SEQUENCE in tests/native/cpu_lle_selftest.c.
 LLSC_SEQUENCE = (
     _sc(A0, T1, 0),          # 0x00 sc    t1, 0(a0)    link as seeded
     _ll(A0, T2, 4),          # 0x04 ll    t2, 4(a0)
@@ -154,7 +154,7 @@ LLSC_SEQUENCE = (
 
 # The three link windows PSP-LLSC-001 measured on a PSP-3000 (fixtures/psp_oracle/probe.c,
 # run_llsc_link), one 16-byte row per cell with word A at +0 and word B at +4. Mirrored
-# word-for-word by LLSC_MEASURED_SEQUENCE in src/rt/cpu_lle_selftest.c, which pins both
+# word-for-word by LLSC_MEASURED_SEQUENCE in tests/native/cpu_lle_selftest.c, which pins both
 # lanes to the words the console returned.
 LLSC_MEASURED_DEFAULT_ENTRY = 0x08810B00
 LLSC_MEASURED_LLE_ENTRY = 0x08810B80
@@ -196,12 +196,12 @@ def _emit_llsc_parity_fixture():
 
 # INTC Cause.IP mirroring sequence (spec 6.1, PR 5). Emitted as --lle-cpu
 # generated C here and run through the production interpreter by
-# src/rt/cpu_lle_selftest.c (test_intc_cause_aot_interp_parity), which compares
+# tests/native/cpu_lle_selftest.c (test_intc_cause_aot_interp_parity), which compares
 # both lanes with each other and with the expected values.
 INTC_CAUSE_ENTRY = 0x08810A40
 CP0_CAUSE = 13
 
-# Mirrored word-for-word by INTC_CAUSE_SEQUENCE in src/rt/cpu_lle_selftest.c.
+# Mirrored word-for-word by INTC_CAUSE_SEQUENCE in tests/native/cpu_lle_selftest.c.
 INTC_CAUSE_SEQUENCE = (
     mfc0(T0, CP0_CAUSE),     # 0x00 mfc0 t0, Cause
     mtc0(T1, CP0_CAUSE),     # 0x04 mtc0 t1, Cause   t1 = all ones
@@ -270,7 +270,7 @@ class LlScLleCodegenTests(unittest.TestCase):
     def test_measured_windows_mirror_the_native_selftest(self):
         # The interpreter lane of the PSP-LLSC-001 pin runs the C copy of these words; the
         # two copies must be the same program or the lanes would measure different things.
-        text = (ROOT / "src" / "rt" / "cpu_lle_selftest.c").read_text(encoding="utf-8")
+        text = (ROOT / "tests" / "native" / "cpu_lle_selftest.c").read_text(encoding="utf-8")
         body = text.split("static const uint32_t LLSC_MEASURED_SEQUENCE[] = {", 1)[1]
         body = body.split("};", 1)[0]
         words = tuple(int(word, 16) for word in re.findall(r"0x([0-9A-Fa-f]{8})u,", body))
@@ -1087,7 +1087,7 @@ def _c_function_body(text, signature):
 class IntcLleTests(unittest.TestCase):
     """PR 5 (spec 6.1): synthetic INTC state, Cause.IP mirroring, no delivery yet.
 
-    The behavior is asserted natively by src/rt/cpu_lle_selftest.c; these pin
+    The behavior is asserted natively by tests/native/cpu_lle_selftest.c; these pin
     the source contract that keeps it fail-closed and tier-symmetric."""
 
     def test_header_declares_the_intc_api(self):
@@ -1120,7 +1120,7 @@ class IntcLleTests(unittest.TestCase):
         comment = text[text.rindex("/*", 0, define):define]
         for fact in ("PSP-INTR-CAUSE-001", "0x90000420", "0x00088600"):
             self.assertIn(fact, comment)
-        selftest = (ROOT / "src" / "rt" / "cpu_lle_selftest.c").read_text(encoding="utf-8")
+        selftest = (ROOT / "tests" / "native" / "cpu_lle_selftest.c").read_text(encoding="utf-8")
         body = _c_function_body(selftest, "static void test_hw_psp_intr_cause_ip2_while_suspended(void)")
         self.assertIn("config.cpu_ip_bit = SR_INTC_PSP_CPU_IP_BIT;", body)
         for word in ("0x90000020u", "0x90000420u", "0x00088600u", "0x00088601u"):
@@ -1177,7 +1177,7 @@ class MakefileWiringTests(unittest.TestCase):
     def test_cpu_lle_selftest_target_exists(self):
         self.assertIn("cpu-lle-selftest:", MAKEFILE)
         recipe = MAKEFILE.split("cpu-lle-selftest:", 1)[1].split("\n\n", 1)[0]
-        self.assertIn("src/rt/cpu_lle_selftest.c", recipe)
+        self.assertIn("tests/native/cpu_lle_selftest.c", recipe)
         self.assertIn("src/rt/guest_interp.c", recipe)
         self.assertIn("$(BUILD_DIR)/cpu_lle_selftest.exe", recipe)
 

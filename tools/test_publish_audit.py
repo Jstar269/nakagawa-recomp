@@ -784,7 +784,7 @@ class TestPublishAudit(unittest.TestCase):
         self.assertFalse(publish_audit._spdx_required("src/rt/atrac3p/libavutil/mem.c"))
         self.assertFalse(publish_audit._spdx_required("src/rt/atrac3p/libavcodec/vlc.h"))
         self.assertTrue(publish_audit._spdx_required("src/rt/atrac3p/atrac3p_api.c"))
-        self.assertTrue(publish_audit._spdx_required("src/rt/atrac3p_selftest.c"))
+        self.assertTrue(publish_audit._spdx_required("tests/native/atrac3p_selftest.c"))
         self.assertTrue(publish_audit._spdx_required("src/rt/recomp.c"))
         self.assertTrue(publish_audit._spdx_required("tools/codegen.py"))
 

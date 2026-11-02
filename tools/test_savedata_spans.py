@@ -601,7 +601,7 @@ class TestWindowsContainmentArchitecture(unittest.TestCase):
     """Source-shape gates for the Windows OPEN -> HANDLE -> FINAL PATH VERIFY ->
     OPERATION architecture (reconstruction of PR #114 plus audit findings
     F114-1..F114-5). These complement the executable junction/hostile fixtures
-    in src/rt/vfs_selftest.c: a mutation that reintroduces verify-then-unlink-by-
+    in tests/native/vfs_selftest.c: a mutation that reintroduces verify-then-unlink-by-
     name, creates below an unverified mid-path component, or drops the
     component-boundary discipline must fail one of these checks."""
 
@@ -687,7 +687,7 @@ class TestPortableContainedDeleteArchitecture(unittest.TestCase):
     pathname on every step: stat(path) then unlink(path), opendir(dir) then
     rmdir(dir). An actor able to replace an intermediate save-directory
     component redirected the deletion outside the memstick root. These gates
-    pin the shape of the repair; src/rt/vfs_contained_selftest.c is the
+    pin the shape of the repair; tests/native/vfs_contained_selftest.c is the
     executable half, and it demonstrates the old design being redirected on a
     live fixture before showing the new one refusing the same fixture."""
 

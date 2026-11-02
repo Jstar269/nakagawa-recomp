@@ -1318,7 +1318,7 @@ def _spdx_required(path: str) -> bool:
         return False
     if path.startswith(SPDX_BYTE_EXACT_IMPORT_TREES) or path in SPDX_BYTE_EXACT_IMPORT_PATHS:
         return False
-    if path.startswith(("src/", "tools/")):
+    if path.startswith(("src/", "tools/", "tests/native/")):
         return True
     return len(pure.parts) == 1
 
