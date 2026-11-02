@@ -619,6 +619,7 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: the result is the larger of the span below the lowest live thread stack and the biggest freed block; only the unchanged-after-stack-free case is measured, so the absolute value at boot, the kernel's block-header and alignment accounting, and the value with several free blocks are not measured (#341)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-MODULE-START-001: after the module_start thread's 0x40000-byte stack is freed, sceKernelMaxFreeMemSize does not change, because the stack of the thread module_start created sits directly below the freed range)
   - Evidence: tests/native/hle_thread_selftest.c:test_partition_ends_at_lowest_live_stack
+  - Evidence: tests/native/hle_thread_selftest.c:test_max_free_unchanged_after_top_stack_deleted
   - Evidence: tests/native/hle_thread_selftest.c:test_partition_spans_the_whole_user_partition
 - **`h_Memcpy`** (`sceKernel`): `sceKernelMemcpy` (0x1839852a)
   - Limitation: copies with memmove semantics for overlapping spans, which the PSP's memcpy does not promise and whose overlap behaviour is unmeasured; bad guest spans are refused through the runtime's out-of-range path, not a PSP error code

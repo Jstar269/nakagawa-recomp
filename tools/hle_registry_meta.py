@@ -1804,6 +1804,7 @@ HANDLER_METADATA = {
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-MODULE-START-001: after the module_start thread's 0x40000-byte stack is freed, sceKernelMaxFreeMemSize does not change, because the stack of the thread module_start created sits directly below the freed range)",
             "tests/native/hle_thread_selftest.c:test_partition_ends_at_lowest_live_stack",
+            "tests/native/hle_thread_selftest.c:test_max_free_unchanged_after_top_stack_deleted",
             "tests/native/hle_thread_selftest.c:test_partition_spans_the_whole_user_partition",
         ],
         "limitation": "the result is the larger of the span below the lowest live thread stack and the biggest freed block; only the unchanged-after-stack-free case is measured, so the absolute value at boot, the kernel's block-header and alignment accounting, and the value with several free blocks are not measured (#341)",
