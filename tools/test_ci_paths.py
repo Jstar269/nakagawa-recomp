@@ -685,7 +685,7 @@ class MergeGroupRoutingTests(unittest.TestCase):
                     self.assertEqual(result[key], "true", key)
                 self.assertEqual(result["security_publication"], "true")
                 self.assertEqual(result["python_scope"], "all")
-                self.assertEqual(result["python_num_shards"], "4")
+                self.assertEqual(result["python_num_shards"], str(ci_paths_module.PYTHON_SHARDS_FULL))
                 self.assertEqual(result["docs_only"], "false")
                 self.assertEqual(result["draft"], "false")
 
@@ -997,8 +997,8 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         self.assertEqual(result["run_windows"], "true")
         self.assertEqual(result["run_python"], "true")
         self.assertEqual(result["python_scope"], "makefile")
-        self.assertEqual(json.loads(result["python_shards"]), [0, 1])
-        self.assertEqual(result["python_num_shards"], "2")
+        self.assertEqual(json.loads(result["python_shards"]), list(range(ci_paths_module.PYTHON_SHARDS_MAKEFILE)))
+        self.assertEqual(result["python_num_shards"], str(ci_paths_module.PYTHON_SHARDS_MAKEFILE))
 
     def test_any_other_python_routing_restores_the_full_suite(self) -> None:
         for other in ("tools/codegen.py", "src/rt/hle.c", ".github/workflows/ci.yml",
@@ -1006,7 +1006,7 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
             with self.subTest(other=other):
                 result = classify(["Makefile", other], makefile_change=("player-ui-regressions",))
                 self.assertEqual(result["python_scope"], "all")
-                self.assertEqual(json.loads(result["python_shards"]), [0, 1, 2, 3])
+                self.assertEqual(json.loads(result["python_shards"]), list(range(ci_paths_module.PYTHON_SHARDS_FULL)))
                 self.assertEqual(result["run_native"], "true")
 
     def test_unproven_or_absent_analysis_keeps_build_system_routing(self) -> None:
@@ -1014,7 +1014,7 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         self.assertEqual(result["build_system"], "true")
         self.assertEqual(result["makefile_recipe_only"], "false")
         self.assertEqual(result["python_scope"], "all")
-        self.assertEqual(json.loads(result["python_shards"]), [0, 1, 2, 3])
+        self.assertEqual(json.loads(result["python_shards"]), list(range(ci_paths_module.PYTHON_SHARDS_FULL)))
         # The analysis result is ignored when the Makefile is not among the changes,
         # and a manual dispatch is always the full matrix.
         self.assertEqual(classify(["docs/CI.md"], makefile_change=())["run_native"], "false")
