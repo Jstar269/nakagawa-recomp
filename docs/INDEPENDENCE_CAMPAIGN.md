@@ -26,8 +26,8 @@ changing a classification live in
 Base of this plan: public `main` at `6a4f359` (the mission statement named
 `a36c296`; `origin/main` has since advanced past it through the LLE Phase 1
 PR 1 landing and two follow-ups — all three are present in this checkout).
-The LLE Phase 1 stack (`CpuState` ABI v2, COP0/exceptions, domain modes +
-import seam) was read from its PR branch while PR 1 alone had landed. PR 1
+The LLE Phase 1 stack (COP0/exceptions, domain modes + import seam, and `CpuState` ABI v2
+at that base; `SR_CPUSTATE_ABI_VERSION` in `src/rt/recomp.h` holds the current version) was read from its PR branch while PR 1 alone had landed. PR 1
 (#217), PR 2 (#219) and PR 3 (#223) have all since landed on `main`.
 
 Companion: `docs/cleanroom/SCHED_SPEC.md` is the first clean-room behaviour
@@ -49,8 +49,9 @@ addresses, saves, captures, or run details appear in this plan.
   firmware modules supplied by the user) on the recompiled/interpreter
   platform, with host code only at genuine hardware/OS boundaries, per
   `docs/LLE_FIDELITY_ARCHITECTURE.md`.
-- **Line counts** are `wc -l` at the base commit; they size the work, not its
-  difficulty.
+- **Line counts** are `wc -l` at the base commit `6a4f359`; they size the work, not its
+  difficulty. The files have grown since (the HLE and analyzer figures most of all), and the
+  tables are a dated record that is not refreshed: run `wc -l` on a path for its current size.
 
 ## 1. Claim verification — what the ledger and headers actually say
 
@@ -168,7 +169,7 @@ Additions the mission list missed (all `upstream_derived` in the ledger):
 One row per rewrite unit. "Depends" names in-tree consumers (production or
 test). "Tests today" names only tests that run without private inputs;
 anything needing external oracle traces or retail inputs has an explicit blocked or not-run disposition; v1 and `PPSSPP_CORROBORATIVE` traces are corroborative only for hardware evidence.
-Sizes at base.
+Sizes are `wc -l` at base `6a4f359`, as above, and are not refreshed.
 
 | # | Group (paths) | Upstream | Lines | Depended on by | Tests today | LLE relevance |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -178,7 +179,7 @@ Sizes at base.
 | G4 | PGF reader (excluded `src/rt/pgf.c`/`.h`; public reader `src/rt/pgf_public.c`; seam `src/rt/pgf_api.h`) + project-owned PGF converter (new) + replacement payloads (new, excluded until review) + font-slot layout `src/core/nk_font_slots.h` and host stub `src/core/nk_pgf_host.c` (ledger class `project_authored_attested`; added 2026-10-09; the G4 rewrite target covers them) | PPSSPP `Core/Font/PGF.cpp` lineage for the excluded `pgf.c`; the public reader `pgf_public.c` is project-authored (its header); payloads PPSSPP-camouflaged Ume/Adobe outlines | UNKNOWN in public tree | `hle.c` sceFont path (the public-safe build compiles `src/rt/pgf_public.c` as its PGF backend), guest `libfont.prx` metric-compatibility work | `tests/native/test_pgf_public.c` (`native-core-tests`, synthetic fonts) and `tools/test_pgf_validate_parity.py` exercise `pgf_public.c`; nothing runs the excluded `pgf.c`. Converter/payload requirements are in the font-origins record (route 2) | High: flagship UI text; LLE runs guest `libfont.prx` but host HLE + fallback need an honest reader; converter must be clean-room (pgftool has no licence — must not be adopted) |
 | G5 | VFPU interpreter `src/rt/vfpu_interp.c` (681) + PPSSPP-origin tables `assets/vfpu/*.dat` + project-authored loader `vfpu_tables.c` | PPSSPP (`MIPSVFPUUtils.cpp`, `vcst`) | 681 + 15 data files | codegen VFPU fallback emission, `vfpu_fuzz.c` differential harness, production interpreter fallback | `vfpu-interp-selftest`, `vfpu_tables_selftest`, `test_vfpu_*` (nan_payload, synth_corpus, oracle, provenance, table_manifest, trace_bits), hardware Group A/B cells (measured, indexed in `HARDWARE_ORACLE.md`) | High: VFPU executes as guest code under LLE, but every host evaluation (fallback, fuzz, oracle comparison) needs independently established semantics |
 | G6 | Reference interpreter `src/ref/*` (5 files) | sal063 | 1,650 | `microtest_gate.py`, `codegen_gate.py` (`oracle=interp` mode), funcdiff flows; **not** linked into any game executable | `src/ref/selftest.cpp`, gates (need PPSSPP traces → BLOCKED without; `oracle=interp` self-modes run) | Medium: differential oracle for the pipeline; partly superseded by source-owned cosimulation (AOT vs production interpreter) |
-| G7 | Analyzer + codegen `tools/analyze.py` (2,473) + `tools/analyze_cfg.py` (the canonical CFG report moved out of `analyze.py`, #1531) + `tools/codegen.py` (2,468) + `tools/codegen_hst_stubs.py` (the HST stub bodies split out of `codegen.py`, #1531) + gates/tooling slice (~1,395) | sal063 | ~6,336 | Makefile `pipeline`, all generated C, `codegen_gate.py`, cosim fixtures, title codegen plan | `test_analyze_*`, `test_codegen_*` (continuations, entry, fp_convert, madd/msub, vfpu_fallback, transfer timing…), `production-smoke`, `cosim-selftest` + `cosim-mutants`, `test_nid_name_proof.py` | Highest: the translation core is the "definitive static-recompilation platform" claim; codegen gates are LLE-touched (ABI v2, flow metadata) |
+| G7 | Analyzer + codegen `tools/analyze.py` (2,473) + `tools/analyze_cfg.py` (the canonical CFG report moved out of `analyze.py`, #1531) + `tools/codegen.py` (2,468) + `tools/codegen_hst_stubs.py` (the HST stub bodies split out of `codegen.py`, #1531) + gates/tooling slice (~1,395) | sal063 | ~6,336 | Makefile `pipeline`, all generated C, `codegen_gate.py`, cosim fixtures, title codegen plan | `test_analyze_*`, `test_codegen_*` (continuations, entry, fp_convert, madd/msub, vfpu_fallback, transfer timing…), `production-smoke`, `cosim-selftest` + `cosim-mutants`, `test_nid_name_proof.py` | Highest: the translation core is the "definitive static-recompilation platform" claim; codegen gates are LLE-touched (ABI v2 at base, flow metadata) |
 | G8 | CPU core runtime `src/rt/recomp.c` (2,364) + `src/rt/recomp.h` (827) | PPSSPP lineage (unaligned LWL/LWR/SWL/SWR, VFPU prefix/transcendentals) | 3,191 | Every generated translation unit, all of `src/rt`, `src/ref`, LLE `cpu_lle`/`domain_mode` layers | `test_dispatch_c.py`, `test_dispatch_call_boundary.py`, `test_dispatch_fatal_policy.py`, `dispatch-selftest`s, cosim four-channel comparison, `test_codegen_fp_convert.py` | Highest: load-bearing ABI; LLE PRs 1–3 already modify it — collision ground, not first-mover ground |
 | G9 | HLE core `src/rt/hle.c` and the files split from it (#307): `src/rt/hle_audio.c` `src/rt/hle_audio_codec.c` `src/rt/hle_cache_dma.c` `src/rt/hle_data.c` `src/rt/hle_display.c` `src/rt/hle_font.c` `src/rt/hle_ge.c` `src/rt/hle_host.c` `src/rt/hle_input.c` `src/rt/hle_internal.h` `src/rt/sce_kernel_errors.h` `src/rt/hle_io.c` `src/rt/hle_kernel_interrupt.c` `src/rt/hle_kernel_memory.c` `src/rt/hle_kernel_module.c` `src/rt/hle_kernel_sync.c` `src/rt/hle_kernel_thread.c` `src/rt/hle_kernel_time.c` `src/rt/hle_kernel_utils.c` `src/rt/hle_mpeg.c` `src/rt/hle_network.c` `src/rt/hle_npdrm.c` `src/rt/hle_route.c` `src/rt/hle_rtc.c` `src/rt/hle_system.c` `src/rt/hle_umd.c` `src/rt/hle_utility.c` | PPSSPP lineage (`sceKernel*`, `sceCtrl`, `sceFont`, `sceGe`, …) | 11,733 | Generated-code `sr_syscall` dispatch, all title boot paths, `hle-thread-selftest` | `hle-thread-selftest` (game-input-free NID-driven harness), `test_hle_*`, `test_compat_manifest.py` (live census), production-smoke (real NID dispatch) | Highest — but direction is *replacement*, not rewrite: per-domain LLE guest execution (PR 3 seam) shrinks this file module by module |
 | G10 | Software GE rasterizer `src/rt/ge.c` (3,604) + `src/rt/ge_shared.h` (226) + `src/rt/ge_vram_cli.c` | PPSSPP (`GPU/Software/*`, `GPU/Common/VertexDecoder*`) | 3,830 | `gpu_sdl3vk` (consumes screen-space primitives via hooks), `ppmdiff.py` A/B, `ge_capture`/`ge_replay` | `ge_capture_selftest`, `gpu_capture/coherence-selftest`s, `test_ge_capture.py`, A/B snapshot agreement (local consistency only, never PSP truth) | Medium: host must present pixels regardless; software path is the comparison oracle, Vulkan path is the presentation path |
