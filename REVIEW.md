@@ -78,8 +78,8 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
   linkage valid.
 - Interpreter: `cosim-mutants` still kills every mutant. A changed pattern count means
   update the mutant, not weaken the gate.
-- Docs: `python -m unittest tools.test_lint_docs`, Markdown lint, and resolved links,
-  paths, flags, and Make targets.
+- Docs: the docs row of `AGENTS.md` section 9, and resolved links, paths, flags, and Make
+  targets.
 - Report skipped or blocked gates as such. Never imply an unrun gate passed.
 
 ## Findings to pre-empt

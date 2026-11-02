@@ -1,23 +1,14 @@
 # AGENTS.md — Nakagawa Recomp
 
-This file is for AI coding agents working in this repository: Claude Code, Codex, GitHub Copilot,
-Cursor, Gemini CLI, Jules and the rest. People can read it too; it is the same set of rules a human
+This file is for AI coding agents working in this repository. It is the same set of rules a human
 contributor follows, kept in one place. Tool-specific files (`CLAUDE.md`,
-`.github/copilot-instructions.md`) only point here and add no rules of their own.
+`.github/copilot-instructions.md`) only point here and add no rules of their own
+([how each tool reaches this file](docs/AI_USAGE.md#how-each-tool-reads-these-rules)). Personal
+instruction files and tool settings stay local; `.gitignore` keeps them out of the repository.
 
-Codex, Cursor, Jules and most other agents read this file on their own. Claude Code and Copilot
-reach it through those two files. Gemini CLI reads only `GEMINI.md` unless told otherwise: set
-`"context": {"fileName": ["AGENTS.md"]}` in your own `.gemini/settings.json`. With Aider, pass
-`--read AGENTS.md`. Personal instruction files and tool settings stay local; `.gitignore` keeps
-them out of the repository.
-
-How it is laid out:
-
-- **Where to start** is the quick start: what the project is, how to build and test, the hard
-  limits, and what a good pull request looks like. Most tasks need nothing more.
+- **Where to start** is the quick start. Most tasks need nothing more.
 - **Sections 1 to 11** are the full contract. Code, tests and other documents cite them by number.
-- **Maintainer process**, at the end, applies only to agents the maintainer runs. A contributor's
-  agent can skip it.
+- **Maintainer process**, at the end, applies only to agents the maintainer runs.
 
 When this file and the live source, tests or Makefiles disagree about how something works, the
 source wins. When they disagree about a rule, ask in the issue.
@@ -75,7 +66,7 @@ make contrib-check               # the checks that apply to the files you change
 
 On either platform, run one Python test module with `python -m unittest tools.test_<name>`. The whole
 Python suite (`python -m unittest discover -s tools -p "test_*.py"`) is long; hosted CI runs it in
-shards on every pull request, so run it locally only when hosted CI cannot.
+shards whenever a change routes Python, so run it locally only when hosted CI cannot.
 
 `contrib-check` compares your branch with `origin/main` and runs only the gates that apply: Ruff, the
 matching Python tests, a strict C compile of changed C, markdownlint and the documentation lint for
@@ -388,7 +379,7 @@ focused gate for the area you changed. The table uses the Windows spelling; on L
 | `guest_interp`, `recomp`, or dispatch | `tools/test_dispatch_c.py`, `tools/test_dispatch_call_boundary.py`, cosim tests, then native selftests |
 | scheduler/HLE lifecycle | `tools/test_sched_invariants.py` and `mingw32-make --no-print-directory sched-selftest` |
 | FPU/VFPU conversion | relevant `tools/test_*fpu*.py` plus `fp-convert-selftest`/`vfpu-interp-selftest` |
-| publication/provenance | `tools/policy_sync.py`, both publication-audit legs, and `tools/modified_file_notice_audit.py` |
+| publication/provenance | `tools/policy_sync.py`, both publication-audit legs (the command below, with and without `--worktree`), and `tools/modified_file_notice_audit.py` |
 | docs and agent policy | `python -m unittest tools.test_lint_docs tools.test_dco_policy`, markdownlint (below), and `python tools/audit_public_issue_links.py` |
 | workflow/configuration | `tools/test_ci_paths.py`, pre-commit, and the full applicable hosted matrix |
 | LLE CPU / domain modes | `tools/test_cpu_lle.py`, `tools/test_domain_mode.py`, then `mingw32-make native-core-tests` |
@@ -407,10 +398,10 @@ Before the first push, check every item in [`REVIEW.md`](REVIEW.md#findings-to-p
 pre-empt"; hosted CI rejects most of them. Native code also builds and runs on hosted Linux, with and
 without SDL3: check it in a Linux shell such as WSL.
 
-Hosted CI is the full Python suite. An exact head whose required hosted CI is green meets the Python-suite
-requirement for readiness (Section 2); run the full suite locally only when hosted CI cannot run for the change.
-Which modules hosted CI routes, and the Windows-only modules a Windows-host change runs locally, are in
-[`docs/CI.md`](docs/CI.md#what-hosted-ci-does-not-run). The PR template's checklist is satisfied the same way.
+An exact head whose required hosted CI is green meets the Python-suite requirement for readiness
+(Section 2) and the PR template's checklist; run the full suite locally only when hosted CI cannot run
+for the change. Which modules hosted CI routes, and the Windows-only modules a Windows-host change runs
+locally, are in [`docs/CI.md`](docs/CI.md#what-hosted-ci-does-not-run).
 
 Windows host pitfalls: [`docs/SETUP.md`](docs/SETUP.md#windows-host-pitfalls). Quick recipes (find an HLE
 handler, run one native self-test, capture frames unattended):
