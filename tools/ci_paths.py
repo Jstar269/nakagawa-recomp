@@ -1193,7 +1193,7 @@ def classify(
     gated = [path for path in files if not _is_unexecuted_test(path)]
     native_without_recipe = force_full or any(
         _is_native_runtime(path)
-        or (_is_build_system(path) and not (makefile_recipe_only and path == "Makefile"))
+        or (_is_build_system(path) and not (makefile_recipe_only and _is_makefile_source(path)))
         or _is_manager(path)
         or _is_title_manifest(path)
         or _is_native_tool(path)
