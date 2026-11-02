@@ -1069,7 +1069,8 @@ _C_LEADING_CAST_RE = re.compile(r"^\(\s*(?:const\s+)?(?:uint32_t|unsigned(?:\s+i
 
 def _split_call_args(text: str, open_paren: int) -> list[str]:
     """The top-level arguments of the call whose ``(`` is at ``open_paren``."""
-    depth, start, args = 0, open_paren + 1, []
+    args: list[str] = []
+    depth, start = 0, open_paren + 1
     for i in range(open_paren, len(text)):
         c = text[i]
         if c in "([{":
@@ -1117,14 +1118,14 @@ def selftest_dispatched_nids(selftest_text: str) -> set[int]:
     spans: list[tuple[int, int, str, list[str]]] = []
     pos = 0
     while True:
-        m = _SELFTEST_FUNC_HEAD_RE.search(text, pos)
-        if not m:
+        head = _SELFTEST_FUNC_HEAD_RE.search(text, pos)
+        if not head:
             break
-        if m.group("name") in _C_NOT_A_FUNCTION:
-            pos = m.end()
+        if head.group("name") in _C_NOT_A_FUNCTION:
+            pos = head.end()
             continue
         depth, end = 0, len(text)
-        for i in range(m.end() - 1, len(text)):
+        for i in range(head.end() - 1, len(text)):
             if text[i] == "{":
                 depth += 1
             elif text[i] == "}":
@@ -1133,10 +1134,10 @@ def selftest_dispatched_nids(selftest_text: str) -> set[int]:
                     end = i + 1
                     break
         names = []
-        for param in m.group("params").split(","):
+        for param in head.group("params").split(","):
             idents = _C_IDENT_RE.findall(param)
             names.append(idents[-1] if idents else "")
-        spans.append((m.start(), end, m.group("name"), names))
+        spans.append((head.start(), end, head.group("name"), names))
         pos = end
     starts = [s[0] for s in spans]
 
