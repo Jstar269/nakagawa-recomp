@@ -5590,7 +5590,8 @@ class HleMeasureProbeTests(unittest.TestCase):
                     "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
                 )
                 self.assertTrue(set(entry["case_ids"]).issubset(entry["evidence_cases"]))
-                self.assertIn("2026-10-15", entry["measurement_note"])
+                self.assertIn("2026-11-02" if case == "hle-savedata-getsize" else "2026-10-15",
+                              entry["measurement_note"])
                 self.assertIn("acceptance-eligible", entry["measurement_note"])
                 self.assertEqual(entry["status"], "implemented")
                 self.assertEqual(entry["source"], "fixtures/psp_oracle/probe_hle_measure.c")
@@ -6166,7 +6167,8 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
                                      list(spec.ordered_cases))
                     self.assertNotIn("uncited_cases", row)
                     self.assertNotIn("evidence_note", row)
-                    for word in ("2026-10-15", self.RUN_COMMIT[case],
+                    run_date = "2026-11-02" if case == "hle-savedata-getsize" else "2026-10-15"
+                    for word in (run_date, self.RUN_COMMIT[case],
                                  "acceptance-eligible with 0 blockers"):
                         self.assertIn(word, row["measurement_note"])
                 else:
