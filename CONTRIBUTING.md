@@ -130,6 +130,15 @@ closed until the admission lands. Any other finding (`CONTENT_MISMATCH`, `CLAIM_
 `EXPORT_FIELD_MISMATCH`, a policy or CI finding) is about your change and is yours to fix. The
 summary distinguishes the two so a new file never reads as a mistake you made.
 
+A `VENDORED_*` finding means a file that a `PROVENANCE.md` manifest lists as imported byte-identical no longer
+matches the blob ID or SHA-256 in its row. It can also mean such a row was removed or reclassified. The check
+compares every pull request's tree with those rows. If you meant to change the file, mark the row
+`imported + LOCAL DELTA`, keep the upstream notices, and add a one-line modification note to the file. Otherwise,
+restore the upstream bytes. To update an import to a new upstream revision, change the file and its row together.
+Changing the row of a landed byte-identical import, or moving it to LOCAL DELTA, reports `VENDORED_ROW_REPINNED` or
+`VENDORED_ROW_LOCAL_DELTA`. That is a maintainer's step, not a mistake: the check stays red until a maintainer
+approves the new bytes, or re-admits a file that has not landed yet.
+
 ### What the pull-request checks mean
 
 | Check | What it verifies | If it fails |
@@ -169,7 +178,7 @@ Signed-off-by: Real Name <email@example.com>
 ```
 
 - Use `git commit -s` to automatically append this line. Only the person who wrote a commit may sign it off, and no tool or agent adds one for anyone.
-- A pull request without sign-offs is not blocked for that reason; the maintainer may merge it (maintainer decision, 2026-10-30). The same goes for a box you forgot to tick or a disclosure you left out: the maintainer asks in review instead of closing the pull request. Only code from another project has a firm rule, because the license requires it: name where it came from, and it must be under a GPL-compatible license.
+- A pull request without sign-offs is not blocked for that reason; the maintainer may merge it. The same goes for a box you forgot to tick or a disclosure you left out: the maintainer asks in review instead of closing the pull request. Only code from another project has a firm rule, because the license requires it: name where it came from, and it must be under a GPL-compatible license.
 - Neither the confirmation nor a sign-off is a copyright assignment—you retain ownership of your original contributions.
 - Disclose third-party source origins and AI-assisted generation separately in pull request descriptions. Commits that an AI tool helped produce end with one `Assisted-by: <tool> (<model>)` line per tool; see [docs/AI_USAGE.md](docs/AI_USAGE.md#disclosing-ai-help-in-commits).
 - For complete policy details, bot exceptions, and how to add sign-offs to your own open pull request, see [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
@@ -177,7 +186,7 @@ Signed-off-by: Real Name <email@example.com>
 ## Development setup
 
 Follow the [authoritative development baseline in docs/SETUP.md](docs/SETUP.md). The core toolchain
-is Windows 11 x64, PowerShell 7.4+ (`pwsh`), CPython 3.15.x, current MSYS2 UCRT64, and a current
+is Windows 11 x64, PowerShell 7.4+ (`pwsh`), CPython 3.15.x (3.14.x is also accepted), current MSYS2 UCRT64, and a current
 auto-detected Vulkan SDK/loader. The native player is the repository's only user interface.
 
 ## Contributing without a game disc
@@ -285,14 +294,24 @@ Run checks proportional to the change:
 .\nk_manager.ps1 -Action Test  # uses the public synthetic manifest by default
 mingw32-make --no-print-directory native-core-tests  # runtime change
 mingw32-make --no-print-directory display-smoke      # codegen/pipeline change: full build of a synthetic fixture, no game needed
-python -m unittest discover -s tools -p "test_*.py" -v
-python tools/publish_audit.py --tracked-only --worktree
+python -m unittest tools.test_<name>                 # each Python test module that matches a file you changed
+python tools/tree_lint.py --check
+python tools/lint_docs.py
+python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+python -m pre_commit run --all-files
 ```
+
+These are the gates [AGENTS.md section 9](AGENTS.md#9-validation-and-gate-routing) lists, and its table gives
+the focused gate for each changed surface. The whole Python suite
+(`python -m unittest discover -s tools -p "test_*.py"`) is not on this list: hosted CI runs it in shards on
+every pull request, so run it locally only when hosted CI cannot
+([what hosted CI does not run](docs/CI.md#what-hosted-ci-does-not-run)).
 
 To rebuild a game you own, pass its local title manifest:
 `.\nk_manager.ps1 -Action BuildFast -TitleManifest <your manifest> -GameName <name>` for a runtime-only change, or
-`-Action BuildFull` after a codegen or pipeline change ([docs/SETUP.md](docs/SETUP.md#3-build)). Title manifests
-that name a retail game, such as the maintainer's Hot Shots Tennis one, stay local and are not in the repository.
+`-Action BuildFull` after a codegen or pipeline change ([docs/SETUP.md](docs/SETUP.md#3-build)). The repository
+carries one retail manifest, Hot Shots Tennis (`assets/titles/hst-ucus98701.json`); a manifest for any other
+retail game stays local unless a maintainer admits it as a public path.
 
 Pass `--worktree` when auditing by hand: it reads the bytes on disk. The bare `--tracked-only`
 form reads staged Git blobs, which is correct for the pre-commit hook (it stashes unstaged
@@ -317,7 +336,7 @@ end of file, YAML, JSON and TOML syntax, merge-conflict markers, private-key det
 `documentation-freshness` (`tools/lint_docs.py`), `publication-policy-sync` (`tools/policy_sync.py`),
 the publication audit (`tools/publish_audit.py`), the modified-file notice audit and the provenance-record gap
 check. The commit stage adds a secret scan (`betterleaks`) and a staged-whitespace check. The hooks never need
-a game, but they do read the whole tree, so a new file that carries a game name, disc ID, key or private path is
+a game, but they do read the whole tree, so a new file that carries game data, a key or a private path is
 rejected before it leaves your machine. Never bypass them with `--no-verify`; fix what they report.
 
 `install` sets up both the commit and the push hook (`default_install_hook_types` in
@@ -334,11 +353,17 @@ a pass.
 A new file is a new public path, and only the maintainer can admit one: the provenance record that covers it is
 private. In your pull request, say who wrote each new file (and with which AI tool, if any) or, for code from
 another project, the project, exact revision and licence. Open the pull request as a draft anyway and list the new
-files there; do not edit `PUBLIC_EXPORT.json` or the ledger to make the check pass. The maintainer admits the exact
-bytes of each new file (so change a new file after admission only by asking), then runs or asks you to run
-`make contrib-refresh` and commit what it stages. The **Trusted provenance attestation** check stays red until the
-admission, which is expected: a pull request that is otherwise green with only this check red is ready for review.
-Edits to existing files need no admission.
+files there; do not edit `PUBLIC_EXPORT.json` or the ledger to make the check pass. The maintainer admits each new
+file's origin: its class and, for imported code, the upstream project, revision and licence. Your later edits to
+a file you wrote need no new admission, as long as that claim still holds. The exception is a file imported
+byte-identical from another project: the admission binds its exact bytes. To change one, ask first. Its row in that
+directory's `PROVENANCE.md` must move to LOCAL DELTA, which needs a new admission. Before admitting, the maintainer's
+tool checks the new files against the whitespace, end-of-file, line-ending and byte-order-mark hook rules. It
+refuses if a hook would change a byte. Run `python -m pre_commit run --files <new files>` and commit what it
+changes before asking for admission. The
+maintainer then runs or asks you to run `make contrib-refresh` and commit what it stages. The **Trusted provenance
+attestation** check stays red until the admission, which is expected: a pull request that is otherwise green with
+only this check red is ready for review. Edits to existing files need no admission.
 
 ## Developer Certificate of Origin (DCO 1.1)
 

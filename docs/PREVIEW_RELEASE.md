@@ -54,7 +54,7 @@ The verified native host contract is the Windows contract in [`SETUP.md`](SETUP.
 
 - Windows 11 x64.
 - PowerShell 7.4 or newer; Windows PowerShell 5.1 is not supported.
-- CPython 3.15.x.
+- CPython 3.15.x (3.14.x is also accepted).
 - MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
 - Explicit SDL3 dependency discovery ([#331](https://github.com/Jstar269/nakagawa-recomp/issues/331)).
 - A current Vulkan SDK and Vulkan-capable GPU.
@@ -368,7 +368,7 @@ python tools/publish_audit.py --candidate-root $Source --candidate-tree --public
 
 ### Bundled prerequisite licensing policy
 
-Owner decisions of 2026-10-26 on [#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285), implemented by the package script above:
+The policy agreed on [#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285), implemented by the package script above:
 
 - **Corresponding source ships with the release, not as a written offer.** The prerequisite source archive holds, for every bundled prerequisite, the source it was built from: the MSYS2 source package (`*.src.tar.zst`, with the PKGBUILD, the MSYS2 patches and the upstream source tarballs) of each MSYS2 package's pkgbase at the pinned version, the python.org source release of CPython, and the upstream source release of each third-party library built into the CPython runtime (below). It is published next to the ZIP in the same release.
 - **Every bundled package is covered**, not only the copyleft ones, so no licence classification decides what ships.
