@@ -1897,6 +1897,22 @@ void sr_null_code_pointer(CpuState *s, uint32_t transfer_pc) {
     exit(1);
 }
 
+/* SR_NULL_PAGE_GUARD (recomp.h). `function` is the translated body that made the access:
+ * a load carries no guest pc, and s->pc is only as fresh as the last return. */
+void sr_null_data_pointer(uint32_t address, const char *function) {
+    fprintf(stderr,
+            "NULL_DATA_POINTER: %s accessed guest 0x%08" PRIx32 ", below the PSP's first mapped "
+            "address ra=0x%08" PRIx32 " sp=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
+            function, address, s_cpu ? s_cpu->r[31] : 0u, s_cpu ? s_cpu->r[29] : 0u,
+            sched_current_uid());
+    fprintf(stderr, "  SEMANTIC_BOUNDARY: null-data-pointer; see #363\n");
+    dispatch_record_semantic_stop_issue("null-data-pointer", 363u);
+    dump_dispatch_trace();
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0u, address, 0u);
+    fflush(stderr);
+    exit(1);
+}
+
 void sr_null_return_address(CpuState *s) {
     fprintf(stderr,
             "NULL_CODE_POINTER: jr $ra returns to 0x00000000 sp=0x%08" PRIx32 " uid=0x%" PRIx32

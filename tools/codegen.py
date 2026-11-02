@@ -108,6 +108,13 @@ class CodegenOptions:
     # they expand to ((void)0) and neither half changes behaviour on its own.
     nan_trap: bool = False
 
+    # Null-page guard (#363). True when the primary image starts inside the range the PSP
+    # leaves unmapped, so a null base plus a field offset would reach its first bytes
+    # instead of faulting. The generated header then defines SR_NULL_PAGE_GUARD, and those
+    # accesses stop by name (src/rt/recomp.h). main() sets it from the image; any other
+    # image's generated C is byte-identical.
+    null_page_guard: bool = False
+
     # Local guest-register promotion (#284). When True, runs of simple instructions
     # keep the guest GPRs they touch in C locals (`_gpr<n>`) and write them back to
     # s->r[] before every label, control transfer, non-promoted instruction and the
@@ -121,6 +128,9 @@ class CodegenOptions:
 
 
 OPTIONS = CodegenOptions()
+
+#: First address the PSP maps, the scratchpad; SR_PSP_UNMAPPED_END in src/rt/recomp.h.
+PSP_UNMAPPED_END = 0x00010000
 
 
 @contextlib.contextmanager
@@ -225,6 +235,12 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
             f"    else {{ {stock_line.strip()} }}")
 
 
+def code_word_read(width, address):
+    """C read of a word of translated code. The body is reading its own instruction, which
+    is not a guest data access, so it does not pass through the null-page guard."""
+    return f"sr_r{width}({address})" if OPTIONS.null_page_guard else f"MEM_R{width}({address})"
+
+
 class RelocatedWord(int):
     """An instruction word whose 16-bit immediate the module loader relocates.
 
@@ -307,7 +323,7 @@ class AddressSpace:
             if (w >> 26) not in _RELOCATABLE_IMMEDIATE_OPS:
                 raise Unsupported(
                     f"variable-import {kind} reference on opcode 0x{w >> 26:02x} at 0x{addr:08x}")
-            return RelocatedWord(w, f"MEM_R16({self.pc(addr)})")
+            return RelocatedWord(w, code_word_read(16, self.pc(addr)))
         if not self.runtime_module:
             return w
         site = self._site(addr)
@@ -319,7 +335,7 @@ class AddressSpace:
                 raise Unsupported(
                     f"{site.kind} relocation on opcode 0x{op:02x} at 0x{addr:08x}")
             # Little-endian: the immediate is the halfword at the word's address.
-            return RelocatedWord(w, f"MEM_R16({self.pc(addr)})")
+            return RelocatedWord(w, code_word_read(16, self.pc(addr)))
         if site.kind == "jump26":
             if op not in (2, 3):
                 raise Unsupported(f"jump relocation on opcode 0x{op:02x} at 0x{addr:08x}")
@@ -893,6 +909,8 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
     renames = renames or {}
     with open(path, "w", encoding="ascii", newline="\n") as f:
         f.write("#ifndef RECOMP_FUNCS_H\n#define RECOMP_FUNCS_H\n")
+        if OPTIONS.null_page_guard:
+            f.write("#define SR_NULL_PAGE_GUARD 1\n")
         f.write('#include "recomp.h"\n\n')
         f.write("#ifndef SR_CPUSTATE_ABI_VERSION\n")
         f.write('#error "generated functions require SR_CPUSTATE_ABI_VERSION"\n')
@@ -993,7 +1011,7 @@ def emit_decoded_jump_target(addr):
     memory when the transfer runs: the delay slot's 256 MiB segment and the word's 26-bit
     index (AddressSpace.unrelocated_jump)."""
     return (f"((({G(addr)} + 4u) & 0xF0000000u) | "
-            f"((MEM_R32({G(addr)}) & 0x03FFFFFFu) << 2))")
+            f"(({code_word_read(32, G(addr))} & 0x03FFFFFFu) << 2))")
 
 
 def emit_checked_body_call(symbol, call_pc):
@@ -3424,7 +3442,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 3 and ADDRESS_SPACE.unrelocated_jump(addr):  # jal the loader leaves as linked
             resume = G((addr + 8) & 0xFFFFFFFF)
             out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
-            out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); s->r[31] = {resume}; sr_end(s, 0u, 0);")
+            out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); s->r[31] = {resume}; sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                         resumable=resumable, indent="      "))
             out.append(f"      dispatch_call(s, _t, {resume}); }}")
@@ -3532,7 +3550,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             continue
         if op == 2 and ADDRESS_SPACE.unrelocated_jump(addr):  # j the loader leaves as linked
             out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
-            out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); sr_end(s, 0u, 0);")
+            out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                         resumable=resumable, indent="      "))
             out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
@@ -4590,6 +4608,8 @@ def main(argv):
                 "code pointer (#1375); place it at a nonzero base\n")
             return 2
     elf = Elf(elf_path, base=base)
+    OPTIONS.null_page_guard = (
+        min(seg["vaddr"] for seg in elf.segments if seg["type"] == 1) < PSP_UNMAPPED_END)
     try:
         module_record = main_module_record(elf)
     except MainModuleRecordError as exc:
@@ -4806,6 +4826,9 @@ def main(argv):
     def llvm_body(text, image, a, image_ranges, image_known, **kwargs):
         """--backend=llvm: the function's LLVM body, else its C text with the reason."""
         if backend != "llvm":
+            return text
+        if OPTIONS.null_page_guard:
+            llvm_fallbacks.append((a, "the LLVM backend has no null-page guard (#363)"))
             return text
         try:
             body = codegen_llvm.lower(sys.modules[__name__], image, a, image_ranges, image_known,

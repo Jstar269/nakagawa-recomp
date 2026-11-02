@@ -50,7 +50,10 @@ EBOOT.elf is required or used.
 from __future__ import annotations
 
 import ast
+import functools
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1154,6 +1157,83 @@ class RetiredNullBaseLoadTests(unittest.TestCase):
                     _, body = _find(funcs, addr)
                     self.assertIn("MEM_R32(s->r[4] + 0x00000000u)", body)
                     self.assertNotIn("== 0u ?", body, "a load at this address reads 0 from null")
+
+
+@functools.lru_cache(maxsize=None)
+def _generated(base: int) -> tuple[str, str]:
+    """(generated header, generated chunks) for the specimen placed at `base`."""
+    words = _build_specimen_words()
+    with tempfile.TemporaryDirectory(prefix="nakagawa-null-page-") as tmp:
+        tmp_path = Path(tmp)
+        elf_path = tmp_path / "specimen.elf"
+        _write_elf(elf_path, words, entry=ENTRY)
+        out_c = tmp_path / "out.c"
+        orig_out, orig_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout, sys.stderr = StringIO(), StringIO()
+            rc = codegen.main(["codegen.py", str(elf_path), str(out_c), f"--base=0x{base:x}",
+                               "--profile=none", "--funcs-per-chunk=4000"])
+            captured = sys.stdout.getvalue() + sys.stderr.getvalue()
+        finally:
+            sys.stdout, sys.stderr = orig_out, orig_err
+        assert rc == 0, f"codegen failed at base 0x{base:x}: {captured}"
+        chunks = "".join(c.read_text(encoding="ascii", errors="ignore")
+                         for c in sorted(tmp_path.glob("out*.c")))
+        return (tmp_path / "out_funcs.h").read_text(encoding="ascii"), chunks
+
+
+class NullPageGuardTests(unittest.TestCase):
+    """A zero-based image occupies the range the PSP leaves unmapped, so a null base plus a
+    field offset reaches real image bytes instead of faulting (#363)."""
+
+    def test_a_zero_based_image_turns_the_guard_on_before_the_runtime_header(self):
+        header, _ = _generated(0)
+        self.assertLess(header.index("#define SR_NULL_PAGE_GUARD 1"),
+                        header.index('#include "recomp.h"'),
+                        "the define must precede the header that reads it")
+
+    def test_an_image_above_the_range_keeps_its_output(self):
+        header, chunks = _generated(0x08804000)
+        self.assertNotIn("SR_NULL_PAGE_GUARD", header)
+        self.assertNotIn("sr_r32(", chunks)
+
+    def test_a_body_reading_its_own_code_is_not_a_guest_data_access(self):
+        was = codegen.OPTIONS.null_page_guard
+        try:
+            codegen.OPTIONS.null_page_guard = True
+            guarded = codegen.emit_decoded_jump_target(0x100)
+            codegen.OPTIONS.null_page_guard = False
+            plain = codegen.emit_decoded_jump_target(0x100)
+        finally:
+            codegen.OPTIONS.null_page_guard = was
+        self.assertIn("sr_r32(", guarded)
+        self.assertNotIn("MEM_R32(", guarded)
+        self.assertIn("MEM_R32(", plain)
+
+    def test_every_generated_access_form_goes_through_the_guard(self):
+        cc = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+        if cc is None:
+            self.skipTest("no C compiler")
+        forms = ("MEM_R8(a)", "MEM_R16(a)", "MEM_R32(a)", "MEM_W8(a, v)", "MEM_W16(a, v)",
+                 "MEM_W32(a, v)", "MEM_W8_PC(a, v, p)", "MEM_W16_PC(a, v, p)",
+                 "MEM_W32_PC(a, v, p)", "sr_lwl(v, a)", "sr_lwr(v, a)",
+                 "sr_swl_pc(a, v, p)", "sr_swr_pc(a, v, p)")
+        source = '#include "recomp.h"\n' + "".join(f"@@ {f}\n" for f in forms)
+        rt = Path(__file__).resolve().parent.parent / "src" / "rt"
+
+        def expanded(*defines: str) -> list[str]:
+            result = subprocess.run([cc, "-E", "-P", f"-I{rt}", *defines, "-x", "c", "-"],
+                                    input=source, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+            return [line for line in result.stdout.splitlines() if line.startswith("@@")]
+
+        guarded = expanded("-DSR_NULL_PAGE_GUARD=1")
+        self.assertEqual(len(guarded), len(forms))
+        for form, line in zip(forms, guarded):
+            with self.subTest(form=form):
+                self.assertIn("sr_null_page_checked", line)
+        self.assertNotIn("sr_null_page_checked", "".join(expanded()),
+                         "runtime code keeps the plain accessors")
 
 
 class RetiredStubBodyTests(unittest.TestCase):

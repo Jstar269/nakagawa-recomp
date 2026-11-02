@@ -2001,6 +2001,20 @@ static void test_null_code_pointer_is_not_the_offset0_function(const char *self_
           "generated-code null code pointer check did not stop the run with status 1 "
           "(status=%d)", child_status);
 
+    /* #363: a zero-based image's generated data access. An address past the PSP's unmapped
+     * range passes, and a null base plus a field offset ends the process by name. */
+    CHECK(sr_null_page_checked(SR_PSP_UNMAPPED_END, __func__) == SR_PSP_UNMAPPED_END,
+          "the first mapped address did not pass the null-page guard");
+    remove(event_path);
+    set_boot_event_file(event_path);
+    child_status = run_dispatch_child(self_path, "--null-data-pointer-child");
+    set_boot_event_file("");
+    CHECK(child_status == 1,
+          "generated-code null data pointer check did not stop the run with status 1 "
+          "(status=%d)", child_status);
+    CHECK(boot_event_file_names(event_path, "boundary=null-data-pointer issue=363"),
+          "null data pointer stop did not record its boot event naming #363");
+
     sr_exec_span_reset();
 }
 
@@ -2230,6 +2244,10 @@ int main(int argc, char **argv) {
         CpuState s = nullptr_state(NULLPTR_EXEC_START);
         SR_CODE_POINTER(&s, s.r[25], NULLPTR_EXEC_START);
         return 99; /* fail-open: a null code pointer must never fall through */
+    }
+    if (argc == 2 && strcmp(argv[1], "--null-data-pointer-child") == 0) {
+        (void)sr_null_page_checked(8u, "null_data_pointer_child");
+        return 99; /* fail-open: a null base must never reach image bytes */
     }
     if (argc == 2 && strcmp(argv[1], "--host-tail-return-child") == 0)
         return run_host_tail_return_child();

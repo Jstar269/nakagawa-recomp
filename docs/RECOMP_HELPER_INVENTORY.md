@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **419** (declared in `recomp.h`: 354)
-- reach class: emitter-reached 75, production-runtime-only 311, selftest-only 17, address-only 7, none 9
-- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 391
+- helpers: **421** (declared in `recomp.h`: 356)
+- reach class: emitter-reached 75, production-runtime-only 312, selftest-only 18, address-only 7, none 9
+- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 393
 
 ## Helpers
 
@@ -374,6 +374,8 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_newlib_realloc` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_null_code_entry` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_null_code_pointer` | `rt/recomp.c` | yes | emitter-reached (via `SR_CODE_POINTER`) | `rt/recomp.c`: upstream_derived |
+| `sr_null_data_pointer` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_null_page_checked` | `rt/recomp.h` | yes | selftest-only | `rt/recomp.h`: upstream_derived |
 | `sr_null_return_address` | `rt/recomp.c` | yes | emitter-reached (via `SR_AOT_RETURN_CAPTURE`) | `rt/recomp.c`: upstream_derived |
 | `sr_oor` | `rt/ge_replay.c`, `rt/ge_vram_cli.c`, `rt/recomp.c` | yes | emitter-reached (direct) | `rt/ge_replay.c`: project_authored_attested; `rt/ge_vram_cli.c`: upstream_derived; `rt/recomp.c`: upstream_derived |
 | `sr_parse_display_bounds` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
