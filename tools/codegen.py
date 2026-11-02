@@ -158,9 +158,8 @@ ENHANCEMENT_UPDATE_BOUNDARY: int | None = None
 ENHANCEMENT_DATA_PATCHES: list[tuple[str, bytes, bytes, str]] = []
 # Verified disc data files: (disc path, stock sha256, rewritten bytes, id).
 ENHANCEMENT_DATA_FILES: list[tuple[str, str, bytes, str]] = []
-# Callable entries whose body loads $sp (guest_owns_entry_sp), or that chain to such a body
-# (guest_sp_chains): no exit restores their entry $sp, so the stack census leaves them
-# unwrapped, as it leaves resume bodies.
+# Callable entries whose body loads $sp (guest_owns_entry_sp): no exit restores their entry
+# $sp, so the stack census leaves them unwrapped, as it leaves resume bodies.
 GUEST_SP_ENTRIES: set[int] = set()
 
 
@@ -923,69 +922,31 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
 
 
 def guest_owns_entry_sp(elf, insns):
-    """True when a body loads $sp from memory, so its returns leave the guest's $sp.
+    """True when a body loads $sp from memory it did not save it to, so its returns leave it.
 
     A callable body owes its caller the entry $sp, and its returns restore it (F3E). A body
     that loads $sp from memory is a longjmp or a context switch: it returns into the frame
     whose $sp it loaded, and restoring the entry $sp there would undo it. Its returns, its
     tail transfers and its fall-through end therefore leave $sp as the guest set it, as a
     resume body's do. A frame adjustment (`addiu sp, sp, imm`) or `move sp, fp` keeps the
-    callable contract.
+    callable contract, and so does freeing an alloca: `sw sp, n(fp)` then `lw sp, n(fp)`
+    reloads this frame's own $sp, and the function still returns to its caller. Its body
+    must record the entry $sp at its tail transfers, because the pieces of the function
+    that follow are entries entered at a lowered $sp, and the first restore of a chain is
+    the one that survives (#1892). A slot through any other base is not known to be the
+    frame's: `sw sp, 0(a0)` then `lw sp, 0(a0)` can be a context switch that changed a0.
     """
+    saved, loaded = set(), set()
     for addr in insns:
         w = read32(elf, addr)
-        if w is not None and (w >> 26) == 0x23 and ((w >> 16) & 0x1F) == 29:
-            return True
-    return False
-
-
-def body_tail_targets(elf, flow):
-    """The addresses a body can hand its tail chain to without a linked call."""
-    insns, _labels, continuations = flow
-    targets = set(continuations.values())
-    for addr in insns:
-        w = read32(elf, addr)
-        if w is None:
+        if w is None or ((w >> 16) & 0x1F) != 29:
             continue
-        if (w >> 26) == 2:
-            targets.add(jump_target(addr, w))
-        elif is_cond_branch(w) and not is_link(w):
-            targets.add(branch_target(addr, w))
-    return targets
-
-
-def guest_sp_chains(elf, starts, ranges, known, resume_owners=None, dispatch_boundaries=None):
-    """Walk the bodies once; return their flows and the entries that lead to a guest $sp.
-
-    A body that hands its tail chain to a body that loads $sp owes no entry $sp either: the
-    drain would apply the restore after the guest's own return and undo it, exactly as
-    guest_owns_entry_sp says of the loading body. The common shape is a switch inside a
-    function that frees an alloca: its cases are entries of their own, entered at the
-    lowered $sp, and only the shared exit loads the saved one. ``flows`` holds the walks, so
-    emission need not repeat them; an entry that cannot be walked is left out of both.
-    """
-    spans = span_index(ranges)
-    flows = {}
-    for start in starts:
-        try:
-            flows[start] = function_flow(elf, start, spans, known, resume_owners=resume_owners,
-                                         dispatch_boundaries=dispatch_boundaries)
-        except Unsupported:
-            continue
-    tail_sources = {}
-    pending = []
-    for start, flow in flows.items():
-        if guest_owns_entry_sp(elf, flow[0]):
-            pending.append(start)
-        for target in body_tail_targets(elf, flow):
-            tail_sources.setdefault(target, []).append(start)
-    chains = set(pending)
-    while pending:
-        for source in tail_sources.get(pending.pop(), ()):
-            if source not in chains:
-                chains.add(source)
-                pending.append(source)
-    return flows, chains
+        slot = (rs(w), w & 0xFFFF)
+        if (w >> 26) == 0x2B:
+            saved.add(slot)
+        elif (w >> 26) == 0x23:
+            loaded.add(slot)
+    return any(slot[0] != 30 or slot not in saved for slot in loaded)
 
 
 def emit_host_return(resumable, comment=None, stack_census=False):
@@ -3942,9 +3903,6 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     previous_space = ADDRESS_SPACE
     ADDRESS_SPACE = space
     try:
-        # One walk serves the chains, the body and its translated-word count.
-        flows, chains = guest_sp_chains(elf, [a for a in sorted(known) if not is_stub(a)],
-                                        spans, known)
         for a in sorted(known):
             nwords = 0
             if is_stub(a):
@@ -3957,9 +3915,10 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
                             f'    sr_unimplemented({G(a)}, "import stub without NID mapping");\n}}')
             else:
                 try:
-                    flow = flows.get(a) or function_flow(elf, a, spans, known)
+                    # One walk serves the body and its translated-word count.
+                    flow = function_flow(elf, a, spans, known)
                     text = "\n".join(emit_function(elf, a, spans, known, profile=profile,
-                                                   flow=flow, resumable=a in chains))
+                                                   flow=flow))
                     nwords = len(head_run_words(elf, a, flow[0]))
                 except Unsupported as exc:
                     reason = str(exc).replace('"', "'")
@@ -4894,13 +4853,6 @@ def main(argv):
     hst_profile = profile == "hst"
     SIMPLE_STUBS = HST_SIMPLE_STUBS if hst_profile else {}
 
-    flows, chains = guest_sp_chains(
-        elf,
-        [a for a in sorted(catalog)
-         if not (is_stub(a) or a in SIMPLE_STUBS or (hst_profile and a in HST_CUSTOM_STUBS))],
-        ranges, known, resume_owners=resume_owners, dispatch_boundaries=dispatch_boundaries)
-    GUEST_SP_ENTRIES.update(a for a in chains if not catalog[a].resumable)
-
     for a in sorted(catalog):
         # The hand-written --profile=hst bodies are data: HST_CUSTOM_STUBS maps an address to
         # its C text (tools/codegen_hst_stubs.py).
@@ -4919,9 +4871,9 @@ def main(argv):
         if hst_profile and a == HST_GAME_LOOP_ADDR:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable or a in chains, profile=profile,
+                resumable=catalog[a].resumable, profile=profile,
                 dispatch_boundaries=dispatch_boundaries,
-                stack_census=stack_census, flow=flows.get(a))))
+                stack_census=stack_census)))
             func_texts[-1] = func_texts[-1].replace("void f_000468c8(CpuState *s)", "void f_000468c8_real(CpuState *s)")
             func_texts.append(HST_GAME_LOOP_WRAPPER); emitted.append(a); continue
 
@@ -4941,9 +4893,9 @@ def main(argv):
         try:
             func_texts.append(llvm_body("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable or a in chains, profile=profile,
+                resumable=catalog[a].resumable, profile=profile,
                 dispatch_boundaries=dispatch_boundaries,
-                stack_census=stack_census, flow=flows.get(a))), elf, a, ranges, known,
+                stack_census=stack_census)), elf, a, ranges, known,
                 resume_owners=resume_owners, resumable=catalog[a].resumable,
                 dispatch_boundaries=dispatch_boundaries))
             emitted.append(a)
@@ -5053,10 +5005,6 @@ def main(argv):
         # A module at a fixed base reads its own variable-import sites from memory.
         main_space = ADDRESS_SPACE
         ADDRESS_SPACE = AddressSpace(patched=extra_var_sites)
-        extra_flows, extra_chains = guest_sp_chains(
-            extra_elf, [a for a in sorted(extra_known) if not is_extra_stub(a)],
-            extra_ranges, extra_known)
-        GUEST_SP_ENTRIES.update(extra_chains)
         for a in sorted(extra_known):
             if is_extra_stub(a):
                 lib_nid = extra_impmap.get(a)
@@ -5073,8 +5021,7 @@ def main(argv):
             try:
                 func_texts.append(llvm_body("\n".join(emit_function(
                     extra_elf, a, extra_ranges, extra_known, profile=profile,
-                    resumable=a in extra_chains, stack_census=stack_census,
-                    flow=extra_flows.get(a))), extra_elf, a, extra_ranges, extra_known))
+                    stack_census=stack_census)), extra_elf, a, extra_ranges, extra_known))
                 emitted.append(a)
             except Unsupported as e:
                 reason = str(e).replace('"', "'")

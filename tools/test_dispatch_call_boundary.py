@@ -477,15 +477,19 @@ def _linked_branch_into_own_tail() -> tuple[int, ...]:
 _A1 = 5
 
 
-def _longjmp_into_live_frame() -> tuple[int, ...]:
+def _longjmp_into_live_frame(*, saves_through_its_base: bool = False) -> tuple[int, ...]:
     """setjmp in F, longjmp from G called by F: F's setjmp returns again, v0 = 0x107.
 
     F saves $sp and $ra in a two-word jmp_buf on its frame, then calls G, which calls
     longjmp(buf, 7). longjmp reloads $sp and $ra and returns to the word after F's setjmp
     call with v0 = 7, a call that returned long before; F adds 0x100 and returns. The word
-    after `jal G` (v0 = 0xde0) runs only if G returns normally.
+    after `jal G` (v0 = 0xde0) runs only if G returns normally. With
+    ``saves_through_its_base``, longjmp first stores $sp through a0 at the offset it loads
+    from, with a0 pointing elsewhere: the same base and offset, but not the same memory.
     """
     t, g, setjmp, longjmp, done = 0x1020, 0x1044, 0x1060, 0x1070, 0x1034
+    saves = ([_addu(_T8, _A0, 0), _addiu(_A0, _A0, 8), _sw(_SP, 0, _A0), _addu(_A0, _T8, 0)]
+             if saves_through_its_base else [])
     words = _probe_program([
         _addiu(_SP, _SP, -0x40), _sw(_RA, 0x3C, _SP),        # 0x1010 F
         _jal(setjmp), _addiu(_A0, _SP, 0x10),                # 0x1018 setjmp(&buf)
@@ -499,41 +503,96 @@ def _longjmp_into_live_frame() -> tuple[int, ...]:
         _lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20),
         _sw(_SP, 0, _A0), _sw(_RA, 4, _A0),                  # 0x1060 setjmp
         _jr(_RA), _addu(_V0, 0, 0),
-        _lw(_SP, 0, _A0), _lw(_RA, 4, _A0),                  # 0x1070 longjmp
+        *saves,                                              # 0x1070 longjmp
+        _lw(_SP, 0, _A0), _lw(_RA, 4, _A0),
         _jr(_RA), _addu(_V0, _A1, 0),
     ])
-    assert len(words) == (0x1080 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    assert len(words) == (0x1080 + 4 * len(saves) - _PROBE_BASE) // 4, "the fixture's labels moved"
     return words
 
 
-def _alloca_switch_chain(*, falls_through: bool) -> tuple[int, ...]:
+def _alloca_switch_chain(*, reach: str) -> tuple[int, ...]:
     """A function that frees an alloca from memory, entered through a switch case.
 
     F saves $sp in its frame, lowers $sp and computes a jump to CASE, the way a switch over
     a jump table reaches its cases. CASE is an entry of its own, entered at the lowered $sp,
     and it does not load $sp: it hands its chain to EXIT, which does, and which returns to
-    F's caller with the frame released. F branches to EXIT too, so F owns its $sp and
-    records no restore of its own. CASE reaches EXIT by `j`, or by falling through, where
-    its own walk takes EXIT in and the body loads $sp itself (the control).
+    F's caller with the frame released. F branches to EXIT too, so F's body holds the load.
+    It reloads its own slot, so F still owes its entry $sp and records it at the switch.
+    CASE reaches EXIT by ``reach``: `j`, a computed `jr` or falling through a continuation.
+    The `jal` after the return is never run: it makes EXIT an entry in every shape.
     """
     case = 0x1048
-    exit_body = 0x104C if falls_through else 0x1054
+    exit_body = 0x104C + {"fall": 0, "j": 8, "computed": 16}[reach]
+    to_exit = {
+        "fall": [],
+        "j": [_j(exit_body), _NOP],
+        "computed": [_lui(_T9, 0), _ori(_T9, _T9, exit_body), _jr(_T9), _NOP],
+    }[reach]
     words = _probe_program([
         _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
         _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),             # 0x1018
         _sw(_SP, 0x10, _FP),                                 # 0x1020 save $sp
         _i(0x05, _A0, 0, (exit_body - 0x1028) >> 2), _NOP,   # 0x1024 bne a0, zero, EXIT
         _addiu(_SP, _SP, -0x30),                             # 0x102C alloca
-        _lui(_T8, 0), _ori(_T8, _T8, exit_body),             # 0x1030 EXIT is address-taken
+        _lui(_T8, 0), _ori(_T8, _T8, exit_body),             # 0x1030
         _lui(_T9, 0), _ori(_T9, _T9, case),                  # 0x1038
         _jr(_T9), _NOP,                                      # 0x1040 the switch
         _addiu(_V0, 0, 0x56),                                # 0x1048 CASE
-        *([] if falls_through else [_j(exit_body), _NOP]),
+        *to_exit,
         _lw(_SP, 0x10, _FP), _addu(_SP, _FP, 0),             # EXIT: reload the saved $sp
         _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
         _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _jal(exit_body), _NOP,
     ])
-    assert len(words) == (exit_body + 0x18 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    assert len(words) == (exit_body + 0x20 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+def _alloca_tail_end() -> tuple[int, ...]:
+    """A function that frees an alloca in the delay slot of a `j` to its own epilogue.
+
+    TAIL is an entry of its own and does not load $sp. It sets $sp from $fp, entered at a
+    $sp that is not its caller's, so only F's record can give F's caller its $sp back.
+    """
+    tail = 0x1034
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
+        _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),             # 0x1018
+        _sw(_SP, 0x10, _FP),                                 # 0x1020 save $sp
+        _addiu(_SP, _SP, -0x30),                             # 0x1024 alloca
+        _addiu(_V0, 0, 0x57),                                # 0x1028
+        _j(tail), _lw(_SP, 0x10, _FP),                       # 0x102C free it in the slot
+        _addu(_SP, _FP, 0),                                  # 0x1034 TAIL
+        _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
+        _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _jal(tail), _NOP,                                    # 0x1048 TAIL is an entry
+    ])
+    assert len(words) == (0x1050 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+def _balanced_with_a_load_on_one_path(*, computed: bool) -> tuple[int, ...]:
+    """A balanced function that reaches a foreign $sp load only on its error path.
+
+    CASE runs in F's frame and returns for it, and only F's record gives F's caller its $sp
+    back. The load on the other path changes nothing about this one.
+    """
+    case, loader = 0x103C, 0x104C
+    to_case = ([_lui(_T9, 0), _ori(_T9, _T9, case), _jr(_T9), _NOP] if computed
+               else [_j(case), _NOP, _NOP, _NOP])
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
+        _i(0x05, _A0, 0, (0x1030 - 0x101C) >> 2), _NOP,      # 0x1018 bne a0, zero, FAIL
+        *to_case,                                            # 0x1020
+        _addiu(_SP, _SP, 0x20), _j(loader), _NOP,            # 0x1030 FAIL
+        _addiu(_V0, 0, 0x56), _lw(_RA, 0x1C, _SP),           # 0x103C CASE
+        _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _sw(_SP, -4, _SP), _lw(_SP, -4, _SP),                # 0x104C LOADER
+        _jr(_RA), _addiu(_V0, 0, 0x57),
+        _jal(case), _NOP, _jal(loader), _NOP,                # 0x105C both are entries
+    ])
+    assert len(words) == (0x106C - _PROBE_BASE) // 4, "the fixture's labels moved"
     return words
 
 
@@ -1032,6 +1091,15 @@ class StackCensusPipelineTests(unittest.TestCase):
         self.assertEqual(run_rc, 0, run_output)
         self.assertIn("STACK_CENSUS status=COMPLETE entries=1 returns=1", run_output)
 
+    def test_an_alloca_tail_end_balances_under_the_census(self):
+        # The census wrapper of F restores after its own drain, so the chain ends at F's
+        # caller's $sp here too.
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            _alloca_tail_end(), "SR_STACK_CENSUS_COMPLETE",
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+
     def test_generated_stack_leak_reports_failure(self):
         compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
             (0x27BDFFF0, 0x03E00008, 0x00000000),
@@ -1260,10 +1328,9 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # Each case is an entry entered at the alloca-lowered $sp. Before: CASE owed that
         # $sp as its entry SP, the chain drain applied it after EXIT had returned, and F's
         # caller came back with its $sp too low and read its saved $ra from the wrong slot.
-        for falls_through in (False, True):
-            with self.subTest(falls_through=falls_through):
-                generated, results = self._probe(
-                    _alloca_switch_chain(falls_through=falls_through), (0, 1))
+        for reach in ("j", "fall", "computed"):
+            with self.subTest(reach=reach):
+                generated, results = self._probe(_alloca_switch_chain(reach=reach), (0, 1))
                 rc, output, fields = results[0]
                 self.assertEqual(rc, 0, output)
                 self.assertEqual(fields.get("v0"), 0x56, output)
@@ -1271,17 +1338,50 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 rc, output, fields = results[1]
                 self.assertEqual(rc, 0, output)
                 self.assertEqual(fields.get("v1"), _PROBE_SP, output)
-                body = generated[generated.index("void f_00001048(CpuState *s) {"):]
+                body = generated[generated.index("void f_00001010(CpuState *s) {"):]
                 body = body[:body.index("\n}")]
-                self.assertNotIn("_sp_entry", body, "a chain to a loaded $sp restores none")
+                self.assertIn("_sp_entry, 1u", body, "F records its entry $sp at the switch")
+
+    def test_an_interpreted_exit_leaves_the_callers_sp(self):
+        # EXIT runs in the interpreter, where no analysis of the generated bodies can see its
+        # load: F's own record is what gives F's caller its $sp back.
+        _generated, results = self._probe(
+            _alloca_switch_chain(reach="j"), (0, 1), codegen_args=("--omit-aot=0x00001054",))
+        for rc, output, fields in results:
+            self.assertEqual(rc, 0, output)
+            self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_an_alloca_tail_end_leaves_the_callers_sp(self):
+        # F's epilogue is an entry reached from F with the alloca freed. Before: F counted as
+        # a longjmp and recorded nothing, TAIL's return wrote back the $sp it was entered at
+        # over the one its own slot released, and F's caller came back $sp too low.
+        generated, results = self._probe(_alloca_tail_end(), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 0x57, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_a_load_on_another_path_keeps_the_entry_sp_of_this_one(self):
+        for computed in (False, True):
+            with self.subTest(computed=computed):
+                _generated, results = self._probe(
+                    _balanced_with_a_load_on_one_path(computed=computed), (0, 1))
+                rc, output, fields = results[0]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x56, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+                rc, output, fields = results[1]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x57, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
 
     def test_longjmp_mutants_fail_for_their_semantic(self):
         # J1: codegen restores longjmp's entry $sp again: the return no longer reaches F's
         # frame, so the run stops or F's code runs on G's frame.
         self._assert_mutant_fails(
             "J1-longjmp-restores-its-entry-sp", _longjmp_into_live_frame(), (0,),
-            {"codegen.py": ("if w is not None and (w >> 26) == 0x23 and ((w >> 16) & 0x1F) == 29:",
-                            "if False:")},
+            {"codegen.py": ("    return any(slot[0] != 30 or slot not in saved for slot in loaded)",
+                            "    return False")},
             lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107
             or r[0][2].get("v1") != _PROBE_SP,
         )
@@ -1292,12 +1392,33 @@ class GeneratedCallDepthTests(unittest.TestCase):
             lambda r: "AOT_RETURN_TARGET_MISMATCH" in r[0][1] and r[0][2].get("v0") != 0x107,
         )
 
-    def test_guest_sp_chain_mutant_fails_for_its_semantic(self):
-        # S1: the walk records no tail edges: CASE owes its entry SP again.
+    def test_own_slot_mutant_fails_for_its_semantic(self):
+        # S1: reloading the frame's own slot counts as a longjmp again: F records no restore.
+        loads_are_foreign = {"codegen.py": (
+            "    return any(slot[0] != 30 or slot not in saved for slot in loaded)",
+            "    return bool(loaded)")}
+        for name, fixture in (
+                ("S1-own-slot-is-foreign-switch", _alloca_switch_chain(reach="j")),
+                ("S1-own-slot-is-foreign-continuation", _alloca_switch_chain(reach="fall")),
+                ("S1-own-slot-is-foreign-computed", _alloca_switch_chain(reach="computed")),
+                ("S1-own-slot-is-foreign-tail-end", _alloca_tail_end())):
+            self._assert_mutant_fails(
+                name, fixture, (0,), loads_are_foreign,
+                lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+            )
+
+    def test_a_slot_through_another_base_is_not_the_frames(self):
+        # longjmp stores $sp through a0 at the offset it loads from, with a0 elsewhere. The
+        # match alone would call that a frame's own slot and restore longjmp's entry $sp.
+        _generated, results = self._probe(_longjmp_into_live_frame(saves_through_its_base=True), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 0x107, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
         self._assert_mutant_fails(
-            "S1-chain-not-followed", _alloca_switch_chain(falls_through=False), (0,),
-            {"codegen.py": ("            tail_sources.setdefault(target, []).append(start)",
-                            "            tail_sources.setdefault(target, [])")},
+            "S2-any-base-is-the-frame", _longjmp_into_live_frame(saves_through_its_base=True), (0,),
+            {"codegen.py": ("    return any(slot[0] != 30 or slot not in saved for slot in loaded)",
+                            "    return any(slot not in saved for slot in loaded)")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
         )
 
