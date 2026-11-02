@@ -587,19 +587,19 @@ class FakeGitHub(ctv.GitHub):
             returned: list[Any] = self.raw["open_pull_requests"]
             return returned
         if path == f"issues/{PR}/events":
-            returned: list[Any] = self.raw["label_events"]
+            returned = self.raw["label_events"]
             return returned
         if path.startswith("actions/runs?head_sha="):
-            returned: list[Any] = self.raw["workflow_runs"]
+            returned = self.raw["workflow_runs"]
             return returned
         if path.startswith("actions/runs/"):
-            returned: list[Any] = self.raw["jobs"][path.split("/")[2]]
+            returned = self.raw["jobs"][path.split("/")[2]]
             return returned
         if path.startswith(f"commits/{HEAD}/check-runs"):
-            returned: list[Any] = self.raw["check_runs"]
+            returned = self.raw["check_runs"]
             return returned
         if path == f"commits/{HEAD}/statuses":
-            returned: list[Any] = self.raw["statuses"]
+            returned = self.raw["statuses"]
             return returned
         raise AssertionError(path)
 

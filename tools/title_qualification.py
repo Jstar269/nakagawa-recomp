@@ -446,24 +446,24 @@ def launch_report(
             "VIDEO_UNAVAILABLE": "HEADLESS_UNAVAILABLE",
         }.get(kind, "LAUNCH_FAILED")
         _stage_fail(report, "launch", failure, duration_ms)
-        returned: dict[str, Any] = report
+        returned = report
         return returned
     spawned = _spawned_runtime_title(output)
     play_now = _PLAY_NOW.search(output)
     if spawned != title["id"] or not play_now or play_now.group(1) != title["display_name"]:
         _stage_fail(report, "launch", "LAUNCH_FAILED", duration_ms)
-        returned: dict[str, Any] = report
+        returned = report
         return returned
     if "BOOT_EVENT phase=window_ready backend=offscreen" not in output or _first_checkpoint(output) is None:
         _stage_fail(report, "launch", "DISPLAY_PROGRESS_UNVERIFIED", duration_ms)
-        returned: dict[str, Any] = report
+        returned = report
         return returned
     if not presentation_ok:
         _stage_fail(report, "launch", "NO_FRAME_SUBMISSIONS", duration_ms)
-        returned: dict[str, Any] = report
+        returned = report
         return returned
     report["stages"]["launch"] = {"status": "PASS", "duration_ms": duration_ms}
-    returned: dict[str, Any] = report
+    returned = report
     return returned
 
 

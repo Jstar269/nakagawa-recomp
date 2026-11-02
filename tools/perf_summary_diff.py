@@ -182,7 +182,7 @@ def _close(before: Any, after: Any, tolerance: float) -> bool:
         returned: bool = before == after
         return returned
     if tolerance == 0.0:
-        returned: bool = before == after
+        returned = before == after
         return returned
     # str() is the shortest decimal that round-trips, so 0.3 means exactly 3/10 as typed,
     # not its binary neighbour (which sits just below 3/10 and would flip the inclusive bound).

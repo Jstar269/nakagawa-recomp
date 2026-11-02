@@ -140,7 +140,7 @@ def _resolve_base(repo: Path, requested: str | None) -> str:
             "",
             "cannot resolve a base from merge-base(HEAD, origin/main); pass --base <commit>",
         )
-    returned: str = value
+    returned = value
     return returned
 
 

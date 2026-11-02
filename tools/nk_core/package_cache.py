@@ -1407,7 +1407,7 @@ def _key_from_document(value: Mapping[str, Any] | None) -> Mapping[str, Any] | N
         returned: Mapping[str, Any] | None = cache["key"]
         return returned
     if isinstance(value.get("key"), Mapping) and "aot" not in value:
-        returned: Mapping[str, Any] | None = value["key"]
+        returned = value["key"]
         return returned
     if "aot" in value and "native" in value:
         return value
