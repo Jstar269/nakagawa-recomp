@@ -54,13 +54,18 @@ of 2026-11-02, whole history, hosted runners):
 A `tools/test_<subject>.py` file used to route by its subject: `test_codegen_x.py` counted
 as a `codegen` change and started the native and Windows jobs, about nine runner legs. Those
 jobs never run a test module unless a build or CI descriptor names it (the Makefile, `mk/`,
-`CMakeLists.txt`, the workflows) or a tool script does: they run make targets and a few
-fixed `unittest` module names, not a discovery sweep. `tools/ci_paths.py` therefore reads
-those descriptors (`_native_gate_sources`) and treats a test module none of them names as
-checked by the Python shards alone. Anything else keeps its route: a module a descriptor
-names (for example `test_flash0_font` and `test_public_ci_wiring`, which `ci.yml` runs on
-Windows), a classifier test (`test_ci_paths`, `test_ci_required`, `test_ci_test_shards`),
-any non-test file beside it, and every unreadable-descriptor case. The exported subject
+`CMakeLists.txt`, the workflows) or a tool, driver or fixture script does: they run make
+targets and a few fixed `unittest` module names, not a discovery sweep. `tools/ci_paths.py`
+therefore reads those files (`_native_gate_sources`) and treats a test module as checked by
+the Python shards alone unless one of them names it as a whole identifier, or a module that
+is run imports it or names it as a string, transitively (`_gate_executed_tests`;
+`tests/native/test_player_ui.py` imports `tools/test_player_package_route`, which therefore
+stays routed). Anything else keeps its route: a module a descriptor names (for example
+`test_flash0_font` and `test_public_ci_wiring`, which `ci.yml` runs on Windows), a deleted
+module a descriptor still names, a classifier test (`test_ci_paths`, `test_ci_required`,
+`test_ci_test_shards`), any non-test file beside it, an unparsable gate module (every test
+then counts as run), and every unreadable-descriptor case. A gate that loads a test module
+by a computed name would escape this and must name the module literally. The exported subject
 flags (`build_system`, `python_tools`, ...) are unchanged; only `run_native` and
 `run_windows` skip.
 
@@ -74,8 +79,10 @@ pull request and decides in `prepare`, from the default branch's `tools/ci_paths
 --codeql-scope BASE MERGE`, whether the diff can change a result:
 
 - **Analysed in full:** any added, changed, deleted or renamed C/C++ source or header, Python
-  file, workflow, action or `.github/codeql/` file; an unreadable diff; a merge-queue group;
-  a push to `main`; the weekly schedule; and a manual dispatch with `force_scan`.
+  file, workflow, action or `.github/codeql/` file; an unreadable diff or any name that cannot
+  be classified with confidence (the diff is read with `git diff -z`, so names are verbatim;
+  a quote, backslash, control character or edge whitespace still forces a scan); a
+  merge-queue group; a push to `main`; the weekly schedule; and a manual dispatch with `force_scan`.
 - **Skipped:** a diff made only of other files (documentation, assets, `Makefile` and `mk/`,
   JSON, PowerShell). `build-mode: none` means the C analysis reads source files and never
   builds, so a build file cannot change it. The `upload` job then writes one empty SARIF

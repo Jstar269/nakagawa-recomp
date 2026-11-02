@@ -22,6 +22,7 @@ runs.
 from __future__ import annotations
 
 import argparse
+import ast
 from functools import lru_cache
 import json
 import os
@@ -569,7 +570,20 @@ def _is_python_tool(path: str) -> bool:
 #: Those gates run make targets and fixed ``unittest`` module names, never a discovery
 #: sweep (that is the Python shards' job), so a test module none of these files names is
 #: executed by the Python shards alone.
-_NATIVE_GATE_SOURCE_GLOBS = ("Makefile", "GNUmakefile", "mk/*.mk", "CMakeLists.txt", ".github/workflows/*.yml")
+#: ``tests/`` and ``fixtures/`` are included because a native-side Python driver can import a
+#: tools test module (``tests/native/test_player_ui.py`` imports ``test_player_package_route``).
+_NATIVE_GATE_SOURCE_GLOBS = (
+    "Makefile",
+    "GNUmakefile",
+    "mk/*.mk",
+    "CMakeLists.txt",
+    ".github/workflows/*.yml",
+    ".github/actions/**/*.yml",
+    "tests/**/*.py",
+    "fixtures/**/*.py",
+    "tools/*.sh",
+    "tools/*.ps1",
+)
 _NATIVE_GATE_SCRIPT_GLOB = "tools/*.py"
 
 
@@ -612,7 +626,59 @@ def _is_unexecuted_test(path: str) -> bool:
     if _is_workflow_ci(normalised):
         return False
     sources = _native_gate_sources()
-    return sources is not None and pure.stem not in sources
+    if sources is None:
+        return False
+    # A module that no longer exists (a deleted test) is still run by a descriptor that
+    # names it, so the direct name check does not depend on the file being present.
+    return pure.stem not in _gate_executed_tests(sources) and not _names_module(sources, pure.stem)
+
+
+@lru_cache(maxsize=8)
+def _identifiers(text: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[A-Za-z0-9_]+", text))
+
+
+def _names_module(text: str, module: str) -> bool:
+    """Whether ``text`` names ``module`` as a whole identifier (``test_a`` is not in ``test_a_b``)."""
+
+    return module in _identifiers(text)
+
+
+@lru_cache(maxsize=8)
+def _gate_executed_tests(sources: str) -> frozenset[str]:
+    """The ``tools/test_*.py`` modules a native or Windows gate runs, directly or by import.
+
+    A module is run when the gate descriptors and scripts in ``sources`` name it. A module
+    that one of those imports, or names as a string (``importlib.import_module``, a
+    ``unittest`` target), is run through it, and so on. A module that cannot be parsed
+    hides its imports, so every test module counts as run then.
+    """
+
+    tools = ROOT / "tools"
+    modules = {path.stem for path in tools.glob("test_*.py")}
+    executed = {module for module in modules if _names_module(sources, module)}
+    pending = sorted(executed)
+    while pending:
+        module = pending.pop()
+        try:
+            tree = ast.parse((tools / f"{module}.py").read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError):
+            return frozenset(modules)
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                names.add(node.module or "")
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                names.add(node.value)
+        for name in names:
+            for part in name.split("."):
+                if part in modules and part not in executed:
+                    executed.add(part)
+                    pending.append(part)
+    return frozenset(executed)
 
 
 #: Languages Trusted CodeQL analyses (.github/workflows/codeql.yml). ``c-cpp`` and
@@ -637,31 +703,80 @@ def _is_codeql_relevant(path: str) -> bool:
 def codeql_scan_needed(paths: Iterable[str]) -> bool:
     """Whether a pull request's changed paths can change a Trusted CodeQL result.
 
-    Fails closed: no paths, an unreadable history, or any C/C++, Python or workflow path
-    (a deleted or renamed one included) means a full analysis. Only a change made wholly
-    of other files, for example documentation, assets or Makefiles, skips it.
+    Fails closed: no paths, an unreadable history, any C/C++, Python or workflow path
+    (a deleted or renamed one included), or a path this function cannot classify with
+    confidence (a quoted, escaped or control-character name, or one with leading or
+    trailing whitespace) means a full analysis. Only a change made wholly of plainly named
+    other files, for example documentation, assets or Makefiles, skips it.
     """
 
-    files = [_normalise(path) for path in paths if path.strip()]
-    if not files or "<history-unavailable>" in files:
+    listed = list(paths)
+    if not listed or "<history-unavailable>" in listed:
         return True
-    return any(_is_codeql_relevant(path) for path in files)
+    if not all(_is_plain_path(path) for path in listed):
+        return True
+    return any(_is_codeql_relevant(path) for path in listed)
 
 
-def codeql_scope_from_git(base: str, head: str) -> list[str]:
+#: Characters ``git diff`` uses to quote a name it printed without ``-z``.
+QUOTING_CHARACTERS = '"'+chr(92)
+
+
+def _is_plain_path(path: str) -> bool:
+    """True when ``path`` is a name whose suffix can be trusted.
+
+    ``git diff`` without ``-z`` prints a name with non-ASCII bytes as a double-quoted,
+    octal-escaped string, so the suffix of ``src/<e-acute>.c`` becomes ``.c"``. Callers use
+    ``-z``, but a quote, a backslash, a control character or edge whitespace still means
+    the name was not read as written.
+    """
+
+    return (
+        bool(path)
+        and path == path.strip()
+        and not any(ord(char) < 0x20 or ord(char) == 0x7F or char in QUOTING_CHARACTERS for char in path)
+    )
+
+
+def codeql_scope_from_git(base: str, head: str, cwd: Path | None = None) -> list[str]:
     """The paths that differ between a pull request's base and its merge commit."""
 
+    # ``-z`` prints each name verbatim, NUL-terminated, instead of quoting non-ASCII names.
     try:
         result = subprocess.run(
-            ["git", "diff", "--name-status", "--find-renames", base, head],
-            cwd=ROOT,
+            ["git", "diff", "--name-status", "--find-renames", "-z", base, head],
+            cwd=cwd or ROOT,
             check=True,
             capture_output=True,
-            text=True,
         )
     except (OSError, subprocess.CalledProcessError):
         return ["<history-unavailable>"]
-    return _parse_changed_paths(result.stdout)
+    return _parse_changed_paths_z(result.stdout.decode("utf-8", errors="replace"))
+
+
+def _parse_changed_paths_z(output: str) -> list[str]:
+    """Parse ``git diff --name-status -z``, keeping both sides of a rename or copy.
+
+    Names are returned exactly as git printed them. Any record that does not parse makes
+    the whole answer ``<history-unavailable>``.
+    """
+
+    if output and not output.endswith("\0"):
+        return ["<history-unavailable>"]
+    tokens = output.split("\0")
+    if tokens and tokens[-1] == "":
+        tokens.pop()
+    paths: list[str] = []
+    index = 0
+    while index < len(tokens):
+        status = tokens[index]
+        width = 2 if re.fullmatch(r"[RC](?:100|0?[0-9]{1,2})", status) else 1 if re.fullmatch(r"[ACDMTUXB]", status) else 0
+        names = tokens[index + 1 : index + 1 + width]
+        if width == 0 or len(names) != width or not all(names):
+            return ["<history-unavailable>"]
+        paths.extend(names)
+        index += 1 + width
+    return paths
 
 
 def _is_recognised(path: str) -> bool:

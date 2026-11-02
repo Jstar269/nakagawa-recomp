@@ -22,6 +22,7 @@ except ModuleNotFoundError:  # Running as ``python -m unittest tools.test_ci_pat
     import tools.ci_paths as ci_paths_module
 
 classify = ci_paths_module.classify
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class CiPathClassificationTests(unittest.TestCase):
@@ -482,9 +483,13 @@ class CiPathAdversarialTests(unittest.TestCase):
                 self.assertEqual(classify([path])["build_system"], "true")
 
     def test_codegen_test_uses_its_logical_native_subject(self) -> None:
-        result = classify(["tools/test_codegen.py"])
+        # The subject is native; the route follows whether a gate names the module, and a
+        # deleted module that a descriptor still names keeps it.
+        with patch.object(ci_paths_module, "_native_gate_sources", return_value="run test_codegen here"):
+            result = classify(["tools/test_codegen.py"])
         self.assertEqual(result["run_native"], "true")
         self.assertEqual(result["run_windows"], "true")
+        self.assertEqual(result["build_system"], "false")
 
     def test_c_harness_tests_use_their_logical_native_subject(self) -> None:
         for path in (
@@ -569,9 +574,48 @@ class CiPathAdversarialTests(unittest.TestCase):
         tools_root = Path(__file__).resolve().parent
         for test_path in sorted(tools_root.glob("test_*.py")):
             relative = test_path.relative_to(tools_root.parent).as_posix()
-            if test_path.stem in sources:
+            if ci_paths_module._names_module(sources, test_path.stem):
                 with self.subTest(path=relative):
                     self.assertFalse(ci_paths_module._is_unexecuted_test(relative))
+
+    def test_a_test_module_imported_by_a_gate_run_driver_stays_routed(self) -> None:
+        """tests/native/test_player_ui.py imports tools/test_player_package_route."""
+
+        driver = (ROOT / "tests" / "native" / "test_player_ui.py").read_text(encoding="utf-8")
+        self.assertIn("test_player_package_route", driver)
+        self.assertFalse(ci_paths_module._is_unexecuted_test("tools/test_player_package_route.py"))
+
+    def test_a_module_reached_only_through_imports_is_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            tools = Path(scratch) / "tools"
+            tools.mkdir()
+            (tools / "test_gate.py").write_text("import test_helper_one\n", encoding="utf-8")
+            (tools / "test_helper_one.py").write_text("from tools import test_helper_two\n", encoding="utf-8")
+            (tools / "test_helper_two.py").write_text("name = 'tools.test_helper_three'\n", encoding="utf-8")
+            (tools / "test_helper_three.py").write_text("", encoding="utf-8")
+            (tools / "test_alone.py").write_text("", encoding="utf-8")
+            with patch.object(ci_paths_module, "ROOT", Path(scratch)):
+                ci_paths_module._gate_executed_tests.cache_clear()
+                executed = ci_paths_module._gate_executed_tests("python -m unittest test_gate")
+                ci_paths_module._gate_executed_tests.cache_clear()
+        self.assertEqual(executed, frozenset({"test_gate", "test_helper_one", "test_helper_two", "test_helper_three"}))
+
+    def test_an_unparsable_gate_module_makes_every_test_count_as_run(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            tools = Path(scratch) / "tools"
+            tools.mkdir()
+            (tools / "test_gate.py").write_text("def (:\n", encoding="utf-8")
+            (tools / "test_other.py").write_text("", encoding="utf-8")
+            with patch.object(ci_paths_module, "ROOT", Path(scratch)):
+                ci_paths_module._gate_executed_tests.cache_clear()
+                executed = ci_paths_module._gate_executed_tests("unittest test_gate")
+                ci_paths_module._gate_executed_tests.cache_clear()
+        self.assertEqual(executed, frozenset({"test_gate", "test_other"}))
+
+    def test_a_test_whose_name_only_prefixes_a_gate_module_is_not_run(self) -> None:
+        # test_codegen is not named by "test_codegen_llvm".
+        self.assertFalse(ci_paths_module._names_module("python -m unittest test_codegen_llvm", "test_codegen"))
+        self.assertTrue(ci_paths_module._names_module("tools" + chr(92) + "test_codegen.py", "test_codegen"))
 
     def test_python_only_test_keeps_native_gates_off(self) -> None:
         result = classify(["tools/test_progress_tracker.py"])
@@ -1548,18 +1592,83 @@ class CodeqlScopeTests(unittest.TestCase):
             self.assertEqual(ci_paths_module.codeql_scope_from_git("a" * 40, "b" * 40), ["<history-unavailable>"])
 
     def test_cli_writes_only_the_scan_decision(self) -> None:
+        nul = chr(0)
         with tempfile.TemporaryDirectory() as scratch:
             output_path = Path(scratch) / "github_output"
-            diff = subprocess.CompletedProcess([], 0, stdout="M\tdocs/CI.md\nA\tassets/x.png\n")
+            diff = subprocess.CompletedProcess([], 0, stdout=f"M{nul}docs/CI.md{nul}A{nul}assets/x.png{nul}".encode())
             with patch.object(ci_paths_module.subprocess, "run", return_value=diff) as run, patch("sys.stdout"):
                 ci_paths_module.main(["--codeql-scope", "a" * 40, "b" * 40, "--github-output", str(output_path)])
             self.assertEqual(run.call_args.args[0][:3], ["git", "diff", "--name-status"])
-            self.assertEqual(output_path.read_text(encoding="utf-8"), "scan=false\n")
-            diff.stdout = "M\tdocs/CI.md\nM\tsrc/rt/sched.c\n"
+            self.assertIn("-z", run.call_args.args[0])
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "scan=false" + chr(10))
+            diff.stdout = f"M{nul}docs/CI.md{nul}M{nul}src/rt/sched.c{nul}".encode()
             output_path.unlink()
             with patch.object(ci_paths_module.subprocess, "run", return_value=diff), patch("sys.stdout"):
                 ci_paths_module.main(["--codeql-scope", "a" * 40, "b" * 40, "--github-output", str(output_path)])
-            self.assertEqual(output_path.read_text(encoding="utf-8"), "scan=true\n")
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "scan=true" + chr(10))
+
+    def test_nul_separated_records_keep_both_sides_of_a_rename(self) -> None:
+        nul = chr(0)
+        parsed = ci_paths_module._parse_changed_paths_z(
+            f"D{nul}src/rt/removed.c{nul}R100{nul}src/rt/old.c{nul}docs/new.md{nul}M{nul}a b.txt{nul}"
+        )
+        self.assertEqual(parsed, ["src/rt/removed.c", "src/rt/old.c", "docs/new.md", "a b.txt"])
+        for broken in (f"R100{nul}only-one{nul}", f"Z{nul}x{nul}", f"M{nul}{nul}", f"M{nul}x"):
+            with self.subTest(broken=broken):
+                self.assertEqual(ci_paths_module._parse_changed_paths_z(broken), ["<history-unavailable>"])
+
+    def test_a_quoted_or_unreadable_name_forces_the_analysis(self) -> None:
+        """Unquoted git output prints src/<e-acute>.c as a double-quoted octal string ending in .c and a quote."""
+
+        bs = chr(92)
+        for name in (
+            '"src' + bs + "303" + bs + '251.c"',
+            "src/odd" + bs + "name.c",
+            "src/tab" + chr(9) + "name.c",
+            "src/line" + chr(10) + "break.py",
+            " docs/leading.md",
+            "docs/trailing.md ",
+            "",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(self.needed(["docs/a.md", name]))
+
+    def test_a_non_ascii_source_name_is_read_verbatim_and_analysed(self) -> None:
+        for name in ("src/" + chr(0xE9) + ".c", "tools/" + chr(0x4E2D) + ".py"):
+            with self.subTest(name=name):
+                self.assertTrue(self.needed([name]))
+        self.assertFalse(self.needed(["docs/" + chr(0xE9) + ".md", "assets/" + chr(0x4E2D) + ".png"]))
+
+    def test_real_git_reports_a_non_ascii_new_source_verbatim(self) -> None:
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+        def git(root: Path, *args: str) -> str:
+            return subprocess.run(["git", *args], cwd=root, env=env, check=True,
+                                  capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            git(root, "init", "-q")
+            (root / "README.md").write_text("x", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "base")
+            base = git(root, "rev-parse", "HEAD")
+            (root / "docs").mkdir()
+            (root / "docs" / "a.md").write_text("y", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / ("caf" + chr(0xE9) + ".c")).write_text("int x;", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "change")
+            head = git(root, "rev-parse", "HEAD")
+            paths = ci_paths_module.codeql_scope_from_git(base, head, root)
+            self.assertIn("src/caf" + chr(0xE9) + ".c", paths)
+            self.assertTrue(self.needed(paths))
+            # The quoted form the old parser would have seen ends in a double quote, not .c.
+            legacy = ci_paths_module._parse_changed_paths(git(root, "diff", "--name-status", base, head))
+            self.assertTrue(any(path.endswith('"') for path in legacy))
+            self.assertTrue(self.needed(legacy))
 
 
 if __name__ == "__main__":
