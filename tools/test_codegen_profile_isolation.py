@@ -562,7 +562,14 @@ class _FakeElf:
 ADDR_OPERANDS = frozenset({"addr", "a", "start"})
 
 #: Functions whose bodies decide what translated C is emitted.
-EMITTERS = frozenset({"effect", "normal_line", "emit_function", "main", "sv_plan"})
+EMITTERS = frozenset({
+    "effect", "normal_line", "emit_function", "main", "sv_plan",
+    # The steps emit_function and main were split into (#1531).
+    "_translate", "_dup_slot_skips", "_emit_hst_patch_site", "_emit_non_control_word", "_emit_eret",
+    "_emit_slot_exit", "_emit_unrelocated_jal", "_emit_jal", "_emit_jalr", "_emit_jr",
+    "_emit_unrelocated_j", "_emit_j", "_emit_conditional_branch", "_emit_control_transfer",
+    "_emit_continuation_blocks",
+})
 
 #: Title-owned address tables, and how each one's profile gate is enforced.
 #: A membership test against one of these binds guest addresses to HST
@@ -602,7 +609,7 @@ IMAGE_DERIVED_TABLES = {
 #: excused every future site below 0x1000 -- ``GUEST_ABORT`` already lives at
 #: 0x00000a1c, well inside the range that threshold discarded.
 NON_ADDRESS_CONSTANTS = {
-    ("emit_function", "a", 31):
+    ("_emit_jr", "a", 31):
         "`a` is rebound to rs(w) for the jr/jalr form; 31 is register $ra",
 }
 

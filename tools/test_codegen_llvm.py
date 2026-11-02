@@ -211,11 +211,12 @@ class LoweringTests(unittest.TestCase):
             self.lower(program(JR_RA, NOP))
 
     def test_hst_emission_sites_cover_every_hst_address_in_emit_function(self):
-        # Every `hst_profile and ... addr == <literal>` site in emit_function emits
+        # Every `hst_profile and ... addr == <literal>` site in emit_function (its
+        # `_emit_hst_patch_site` step, #1531) emits
         # something other than the plain word; the LLVM backend must refuse each one.
         tree = ast.parse((ROOT / "tools" / "codegen.py").read_text(encoding="utf-8"))
         emit = next(n for n in ast.walk(tree)
-                    if isinstance(n, ast.FunctionDef) and n.name == "emit_function")
+                    if isinstance(n, ast.FunctionDef) and n.name == "_emit_hst_patch_site")
         literals = set()
         for node in ast.walk(emit):
             if not isinstance(node, ast.If):
