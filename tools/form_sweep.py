@@ -83,6 +83,22 @@ def field_of(word: int, name: str) -> int:
     return (word >> shift) & ((1 << width) - 1)
 
 
+def reserved_encoding(word: int) -> bool:
+    """True for a SPECIAL3 ext/ins word whose size field is reserved (UNPREDICTABLE).
+
+    ext needs lsb + size <= 32, that is lsb + msbd <= 31; ins needs msb >= lsb
+    (MIPS32 Release 2). The reference interpreter refuses such words, and codegen
+    translates an ext of that shape anyway, so the sweep must not generate them: they are
+    not instructions, and left in they would be NOT_CHECKED instances of a form that
+    otherwise matches.
+    """
+    if word >> 26 != 0x1F:
+        return False
+    lsb, size_field = field_of(word, "sa"), field_of(word, "rd")
+    fn = word & 0x3F
+    return (fn == 0x00 and lsb + size_field > 31) or (fn == 0x04 and size_field < lsb)
+
+
 # ---------------------------------------------------------------------------------------
 # Probing codegen
 # ---------------------------------------------------------------------------------------
@@ -426,7 +442,7 @@ def _group_forms(op: int, outer: dict[str, int], census: Census) -> None:
         if p.vfpu:
             census.excluded.setdefault("VFPU (#326, vfpu_fuzz)", []).append(f"op {op:02x}")
             return
-        if p.text is None:
+        if p.text is None or reserved_encoding(word):
             continue
         sh = shape(p.text)
         clusters.setdefault(sh, []).append(values)
@@ -806,6 +822,24 @@ def parse_verdicts(text: str) -> dict[int, tuple[str, str]]:
     return out
 
 
+#: Forms whose reference run is expected to stop, so their NOT_CHECKED instances are
+#: allowed. Any other form with a NOT_CHECKED instance, even beside MATCH instances, fails
+#: the report: a reference regression must not hide behind the instances that still pass.
+EXPECTED_NOT_CHECKED = frozenset({"sync", "cache"})
+
+
+def unexpected_not_checked(man: dict, verdicts: dict[int, tuple[str, str]]) -> dict[str, int]:
+    """{form name: NOT_CHECKED instance count} for forms outside EXPECTED_NOT_CHECKED."""
+    names = {f["key"]: f["name"] for f in man["forms"]}
+    out: dict[str, int] = {}
+    for rec in man["instances"]:
+        if verdicts.get(rec["index"], ("MISSING", ""))[0] == "NOT_CHECKED":
+            name = names.get(rec["form"], rec["form"])
+            if name not in EXPECTED_NOT_CHECKED:
+                out[name] = out.get(name, 0) + 1
+    return out
+
+
 def summarize(man: dict, verdicts: dict[int, tuple[str, str]]) -> tuple[list[str], dict]:
     """One report line per form, and the totals."""
     per_form: dict[str, dict] = {}
@@ -860,7 +894,13 @@ def report(manifest_path: Path, results_path: Path) -> int:
           f"{totals['AOT_FAILED']} AOT_FAILED, {totals['MISSING']} MISSING; seed {man['seed']}, {man['states']} states")
     if unchecked:
         print("form-sweep: forms with no checked instance (NOT_CHECKED): " + ", ".join(unchecked))
-    return 1 if totals["MISMATCH"] or totals["AOT_FAILED"] or totals["MISSING"] else 0
+    unexpected = unexpected_not_checked(man, verdicts)
+    if unexpected:
+        print("form-sweep: NOT_CHECKED instances outside the expected set ("
+              + ", ".join(sorted(EXPECTED_NOT_CHECKED)) + "): "
+              + ", ".join(f"{n} x{c}" for n, c in sorted(unexpected.items())))
+    return 1 if (totals["MISMATCH"] or totals["AOT_FAILED"] or totals["MISSING"]
+                 or unexpected) else 0
 
 
 # ---------------------------------------------------------------------------------------

@@ -168,6 +168,22 @@ class Instances(unittest.TestCase):
         cls.census = fs.census()
         cls.forms = {f.name: f for f in cls.census.forms}
 
+    def test_the_generator_emits_no_reserved_bitfield_encoding(self):
+        # ext with lsb + msbd > 31 and ins with msb < lsb are UNPREDICTABLE; the reference
+        # refuses them, so a generated one would be a NOT_CHECKED instance of a live form.
+        self.assertTrue(fs.reserved_encoding(0x7C080FC0))          # ext, lsb 31, msbd 1
+        self.assertFalse(fs.reserved_encoding(0x7C08F800))         # ext, lsb 0, msbd 31
+        self.assertTrue(fs.reserved_encoding(0x7C080004 | (5 << 6)))  # ins, msb 0 < lsb 5
+        self.assertFalse(fs.reserved_encoding(0x7C08F804))         # ins, msb 31, lsb 0
+        for name in ("ext", "ins"):
+            if name not in self.forms:
+                continue
+            instances, _total = fs.form_instances(self.forms[name], seed=1, cap=None)
+            self.assertTrue(instances, name)
+            for inst in instances:
+                self.assertFalse(fs.reserved_encoding(inst.word), f"{inst.word:#010x}")
+        self.assertIn("ext", self.forms)
+
     def test_addu_covers_every_aliasing_pattern_once(self):
         instances, total = fs.form_instances(self.forms["addu"], seed=1, cap=None)
         self.assertEqual(total, len(fs.alias_patterns(3)))
@@ -296,6 +312,32 @@ class Reporting(unittest.TestCase):
             results.write_text(text)
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(fs.report(manifest, results), 1)
+
+    def test_not_checked_outside_the_pinned_set_fails_even_beside_a_match(self):
+        man = {"seed": 1, "states": 4, "excluded": {},
+               "forms": [{"key": "a", "name": "addu"}, {"key": "s", "name": "sync"}],
+               "instances": [
+                   {"index": 0, "form": "a", "word": 1, "pattern": "p"},
+                   {"index": 1, "form": "a", "word": 2, "pattern": "q"},
+                   {"index": 2, "form": "s", "word": 3, "pattern": "p"}]}
+        text = ("INST 0 MATCH states=4\n"
+                "INST 1 NOT_CHECKED ref-unimplemented pc=0x0 op=0x2 state=0\n"
+                "INST 2 NOT_CHECKED ref-unimplemented pc=0x0 op=0x3 state=0\n")
+        verdicts = fs.parse_verdicts(text)
+        self.assertEqual(fs.unexpected_not_checked(man, verdicts), {"addu": 1})
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, results = Path(tmp, "m.json"), Path(tmp, "r.txt")
+            manifest.write_text(json.dumps(man))
+            results.write_text(text)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(fs.report(manifest, results), 1)
+            self.assertIn("addu x1", out.getvalue())
+            # The pinned forms alone still pass.
+            results.write_text("INST 0 MATCH states=4\nINST 1 MATCH states=4\n"
+                               "INST 2 NOT_CHECKED ref-unimplemented pc=0x0 op=0x3 state=0\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(fs.report(manifest, results), 0)
 
 
 class Mutant(unittest.TestCase):
