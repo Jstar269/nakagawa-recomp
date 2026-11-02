@@ -1975,8 +1975,11 @@ static int runtime_module_identity(const char *path, SrModuleCode *code) {
     size_t n = fread(bytes, 1, sizeof(bytes), f);
     fclose(f);
     if (n == 0 || n == sizeof(bytes)) return 0;
+    char *digest = realloc((char *)code->file_sha256, 65u);
+    if (!digest) return 0;
+    sr_module_code_sha256(bytes, n, digest);
     code->file_size = (uint32_t)n;
-    code->file_fnv1a64 = sr_module_code_fnv1a64(bytes, n);
+    code->file_sha256 = digest;
     return 1;
 }
 

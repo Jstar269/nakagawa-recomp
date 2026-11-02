@@ -1724,6 +1724,11 @@ static SrModuleCode s_rt_alpha_code = {
     "rt-alpha.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_alpha_base,
     s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u, 0u, 0u,
 };
+static uint32_t s_rt_identity_base;
+static SrModuleCode s_rt_identity_code = {
+    "rt-identity.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_identity_base,
+    s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u, 0u, 0u,
+};
 /* A library module with no start routine; its stop body is the alpha one. */
 static uint32_t s_rt_nostart_base;
 static const SrModuleFunc s_rt_nostart_funcs[] = {
@@ -1983,8 +1988,11 @@ static int runtime_module_identity(const char *path, SrModuleCode *code) {
     size_t n = fread(bytes, 1, sizeof(bytes), f);
     fclose(f);
     if (n == 0 || n == sizeof(bytes)) return 0;
+    char *digest = realloc((char *)code->file_sha256, 65u);
+    if (!digest) return 0;
+    sr_module_code_sha256(bytes, n, digest);
     code->file_size = (uint32_t)n;
-    code->file_fnv1a64 = sr_module_code_fnv1a64(bytes, n);
+    code->file_sha256 = digest;
     return 1;
 }
 
@@ -2186,6 +2194,43 @@ static void test_runtime_placed_guest_owned_library(void) {
 }
 
 static TCB *fixture_thread(uint32_t uid, int state, int priority);
+static int write_runtime_module_bytes(const char *path, const uint8_t *bytes, size_t size) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(bytes, 1, size, f);
+    int close_result = fclose(f);
+    return written == size && close_result == 0;
+}
+
+/* A staged file is the translated module only if it holds the same bytes. These two files have
+ * one size and one FNV-1a digest, so only a digest that separates them can tell them apart. */
+static void test_runtime_module_identity_separates_files(void) {
+    extern int loadexec_module_file_matches_translation(const char *file);
+    static const uint8_t translated[8] = {0xBC, 0x43, 0xEC, 0x56, 0x60, 0x9C, 0xEA, 0xF3};
+    static const uint8_t other[8] = {0xBD, 0x98, 0x12, 0x56, 0xD6, 0xD4, 0x0F, 0x4C};
+    char path[1024], digest[65];
+    sr_module_code_sha256("abc", 3u, digest);
+    expect(strcmp(digest, "ba7816bf8f01cfea414140de5dae2223"
+                          "b00361a396177a9cb410ff61f20015ad") == 0,
+           "module identity: the digest is lowercase hex SHA-256, as codegen records it");
+    runtime_module_path(path, sizeof(path), "rt-identity.prx");
+    expect(sr_module_code_fnv1a64(translated, sizeof(translated)) ==
+               sr_module_code_fnv1a64(other, sizeof(other)),
+           "module identity: the fixture files agree on size and FNV-1a");
+    expect(write_runtime_module_bytes(path, translated, sizeof(translated)) &&
+               runtime_module_identity(path, &s_rt_identity_code),
+           "module identity: the descriptor records the translated file");
+    sr_module_code_reset();
+    sr_module_code_register(&s_rt_identity_code);
+    expect(loadexec_module_file_matches_translation("rt-identity.prx") == 1,
+           "module identity: the translated bytes match");
+    expect(write_runtime_module_bytes(path, other, sizeof(other)) &&
+               loadexec_module_file_matches_translation("rt-identity.prx") == 0,
+           "module identity: other bytes do not match, though size and FNV-1a agree");
+    sr_module_code_reset();
+    remove(path);
+}
+
 static void test_runtime_placed_modules(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
@@ -2219,6 +2264,7 @@ static void test_runtime_placed_modules(void) {
     expect(runtime_module_identity(alpha_path, &s_rt_alpha_code) &&
                runtime_module_identity(delta_path, &s_rt_delta_code),
            "runtime placement: descriptors record the fixture identities");
+    test_runtime_module_identity_separates_files();
 
     hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();

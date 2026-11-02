@@ -1176,6 +1176,8 @@ class PackageCacheTests(unittest.TestCase):
                 package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:analyzer_sha256")
         refused(stage, self.key(generated_code_abi_epoch=package_cache.GENERATED_CODE_ABI_EPOCH + 1),
                 package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:generated_code_abi_epoch")
+        refused(stage, self.key(generated_code_abi_epoch=package_cache.GENERATED_CODE_ABI_EPOCH - 1),
+                package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:generated_code_abi_epoch")
         refused(stage, self.key(codegen_options={"profile": "none", "funcs_per_chunk": 1000}),
                 package_cache.AOT_STAGE_OPTIONS_CHANGED, "aot:codegen_options_sha256")
         refused(
