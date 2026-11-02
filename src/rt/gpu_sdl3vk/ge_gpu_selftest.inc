@@ -4460,7 +4460,8 @@ int gegpu_snapshot_sync_selftest(void) {
     }
     printf("gpu snapshot sync selftest: present_target_failure_reports_target_failed\n");
     if (gegpu_sync_guest_fb(&d) != GEGPU_SYNC_OK || t->clean_gen != t->render_gen ||
-        memcmp(guest, &(uint32_t){ coherence_g1(fmt) }, sizeof(uint32_t)) != 0) {
+        memcmp((const uint8_t *)guest + (15u * stride + 15u) * 4u, &(uint32_t){ coherence_gbatch(fmt) },
+               sizeof(uint32_t)) != 0) {
         fprintf(stderr, "gpu snapshot sync selftest: guest VRAM was not current after a target failure\n");
         coherence_reset_targets();
         return 0;
