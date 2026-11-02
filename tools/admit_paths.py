@@ -24,37 +24,54 @@ or misordered step failed with its own code (``CANDIDATE_TREE_STALE``,
 no path: removed paths, exclude-list changes, and rule changes (bound to each
 changed field's exact before and after values).
 
-Every policy delta it writes is a V3 authority (#1673): it records only what the
-pull request changes in the profile -- each added path with the SHA-256 of its
-admitted bytes, the removed paths, the exclude-list changes and the rule changes
--- under ``docs/provenance/policy-deltas-v3/<sha256 of its bytes>.json``. It is
-not bound to the base profile's bytes, so it stays valid when another
+Every policy delta it writes is a V4 authority: it records only what the pull
+request changes in the profile -- each added path with its origin claim, the
+removed paths, the exclude-list changes and the rule changes -- under
+``docs/provenance/policy-deltas-v4/<sha256 of its selector>.json``. It is not
+bound to the base profile's bytes (#1673), so it stays valid when another
 path-adding pull request lands first, and any landing order works.
+
+An added path's origin claim is what the trusted record says about it: the
+public class, the record id, and the record's classification, upstream,
+upstream revision and upstream licence. A path bound to its claim (the default)
+may be edited after its admission -- a hook trimming a blank line, a type
+annotation -- with no new admission, as long as the record still says the same.
+A path bound to its bytes (``--binding bytes``; the default for a
+``third_party`` origin, a file imported byte-identical from an upstream
+revision) keeps its exact SHA-256: changing it needs a new admission that
+records it as a LOCAL DELTA (``--binding claim``).
 
 The command does the mechanical parts and nothing else:
 
-1. reads each path's exact committed bytes from the pull request's ``HEAD``;
-2. derives each path's classification with the gate's own classifier
+1. checks the committed paths against the byte-rewriting pre-commit hooks'
+   rules (``REWRITING_HOOKS``: trailing whitespace, final newline, line
+   endings, byte-order mark) in pure Python, with the exclusions of the trusted
+   base's ``.pre-commit-config.yaml``, and refuses if a hook would change a
+   byte, so the next commit cannot quietly edit what was just admitted. Nothing
+   from the pull request is executed;
+2. reads each path's exact committed bytes from the pull request's ``HEAD``;
+3. derives each path's classification with the gate's own classifier
    (``provenance_ledger``); an implementation path needs an exact record that
    already exists in the private ``IMPLEMENTATION_PROVENANCE.json`` -- this
    command never writes one;
-3. writes the private records under ``docs/provenance/`` in the authority
-   checkout: each admission has its own document and V3 policy delta, then
+4. writes the private records under ``docs/provenance/`` in the authority
+   checkout: each admission has its own document and V4 policy delta, then
    commits only those files locally. ``--batch`` accepts two or more
-   independent PR entries and writes one admission and one V3 delta per PR,
+   independent PR entries and writes one admission and one V4 delta per PR,
    valid in any landing order, with no batch-size cap;
-4. builds a clean candidate commit holding only the base, the new paths and
+5. builds a clean candidate commit holding only the base, the new paths and
    their profile entries, runs ``admit-new-reviewed`` on it, and commits the
    generated controls on a local ``admit/<slug>-<date>`` branch;
-5. prints exactly what is left: the private push, the merge and the refresh.
+6. prints exactly what is left: the private push, the merge and the refresh.
 
-``--rekey`` is for a pull request admitted before V3 deltas existed, whose
-nested V1/V2 delta expired because another path-adding pull request landed
-first. It reuses the admission already recorded for exactly these paths and
-bytes, records no new decision, and writes the V3 delta, so no later landing
-needs another re-key. ``--batch-resume`` does the same for a list of entries.
-Run ``--merge-profile`` during a merge to write the three-way merge of the path
-lists before staging the profile.
+``--rekey`` is for a pull request admitted before V4 deltas existed: a V3 delta
+binds every added path to its bytes, and a nested V1/V2 delta expires when
+another path-adding pull request lands first. It reuses the admission already
+recorded for exactly these paths (with the recorded bytes for a byte-bound
+path), records no new decision, and writes the V4 delta, so no later edit or
+landing needs another re-key. ``--batch-resume`` does the same for a list of
+entries. Run ``--merge-profile`` during a merge to write the three-way merge of
+the path lists before staging the profile.
 
 It pushes nothing unless ``--push`` is given, and then only the private
 ``main``. The approval basis is the human decision and is taken verbatim from
@@ -91,7 +108,19 @@ TRUSTED_LEDGER = "docs/provenance/IMPLEMENTATION_PROVENANCE.json"
 ADMISSIONS = "docs/provenance/admissions"
 #: Nested and flat V1/V2 deltas from before #1673; the attestation still reads them, nothing writes them.
 POLICY_DELTAS = "docs/provenance/policy-deltas"
+#: Byte-bound V3 deltas from before V4; the attestation still reads them, ``--rekey`` replaces them.
 POLICY_DELTAS_V3 = provenance_ledger.POLICY_DELTA_V3_DIR
+POLICY_DELTAS_V4 = provenance_ledger.POLICY_DELTA_V4_DIR
+PRE_COMMIT_CONFIG = ".pre-commit-config.yaml"
+#: The pre-commit hooks that rewrite file bytes, each checked in pure Python on the committed
+#: paths before anything is read or pinned (``check_rewriting_hooks``). Nothing from the pull
+#: request runs: its hook definitions and any module it ships are never executed.
+REWRITING_HOOKS = ("trailing-whitespace", "end-of-file-fixer", "mixed-line-ending", "fix-byte-order-marker")
+#: The bytes ``identify`` (pre-commit's file typing) accepts as text; a file whose first 1024
+#: bytes hold any other byte is binary, and the text hooks leave it alone.
+_TEXT_BYTES = bytes(sorted({7, 8, 9, 10, 11, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7F}))
+#: The exclusion of a hook that is declared without one.
+_NO_EXCLUSION = re.compile(r"(?!)")
 
 #: Variables that would point a Git command at a different repository or index.
 #: Identity and configuration are kept: commits are the operator's own.
@@ -154,13 +183,14 @@ def _candidate_policy(base_policy: bytes, added_paths: set[str]) -> tuple[bytes,
 
 
 def policy_delta_authority(
-    baseline_policy: bytes, candidate_policy: bytes, digests: dict[str, str] | None = None,
+    baseline_policy: bytes, candidate_policy: bytes, added: dict[str, dict] | None = None,
 ) -> tuple[str, bytes, dict]:
-    """Return ``(record path, authority bytes, derived delta)`` for the V3 authority of a profile change.
+    """Return ``(record path, authority bytes, derived delta)`` for the V4 authority of a profile change.
 
-    ``digests`` maps each added path to the SHA-256 of its admitted bytes. The record path is
-    ``policy-deltas-v3/<sha256 of the bytes>.json``, the name the attestation derives from the
-    same two profiles and the candidate's blobs.
+    ``added`` maps each added path to ``{"sha256", "binding", "claim"}``: the digest of its
+    admitted bytes, ``"claim"`` or ``"bytes"``, and its ``provenance_ledger.admission_claim``. The
+    record path is ``policy-deltas-v4/<sha256 of the selector>.json``, the name the attestation
+    derives from the same two profiles alone.
     """
     try:
         baseline_document = json.loads(baseline_policy.decode("utf-8"))
@@ -168,22 +198,26 @@ def policy_delta_authority(
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise AdmitError("POLICY_PROFILE_INVALID", f"cannot read policy JSON: {error}") from error
     delta = provenance_ledger._classify_policy_delta(baseline_document, candidate_document)
+    added = added or {}
     try:
-        document = provenance_ledger.derive_policy_delta_v3(
-            baseline_document, candidate_document, (digests or {}).get,
+        document = provenance_ledger.derive_policy_delta_v4(
+            baseline_document, candidate_document,
+            digest_of=lambda path: added[path]["sha256"] if path in added else None,
+            claim_of=lambda path: added[path]["claim"],
+            binding_of=lambda path: added[path]["binding"],
         )
+        key = provenance_ledger.policy_delta_v4_key(baseline_document, candidate_document)
     except RefreshError as error:
         raise AdmitError(error.code, str(error)) from error
     authority = provenance_ledger.policy_delta_v3_bytes(document)
-    record = f"{POLICY_DELTAS_V3}/{provenance_ledger.policy_delta_v3_name(authority)}.json"
-    return record, authority, delta
+    return f"{POLICY_DELTAS_V4}/{key}.json", authority, delta
 
 
 def _policy_delta_records(
-    baseline_policy: bytes, candidate_policy: bytes, added_paths: list[str], digests: dict[str, str],
+    baseline_policy: bytes, candidate_policy: bytes, added_paths: list[str], added: dict[str, dict],
 ) -> tuple[str, bytes]:
-    """Return the record path and exact bytes of the V3 delta that adds exactly ``added_paths``."""
-    record, authority, delta = policy_delta_authority(baseline_policy, candidate_policy, digests)
+    """Return the record path and exact bytes of the V4 delta that adds exactly ``added_paths``."""
+    record, authority, delta = policy_delta_authority(baseline_policy, candidate_policy, added)
     if delta["include_added"] != sorted(added_paths) or any(
         delta[key] for key in ("include_removed", "exclude_added", "exclude_removed", "rule_changes")
     ):
@@ -202,6 +236,163 @@ def _blob(repo: Path, rev: str, path: str) -> tuple[str, str]:
     if kind != "blob" or listed != path or mode not in ("100644", "100755"):
         raise AdmitError("ADMIT_PATH_NOT_FILE", f"{path} is not a regular file at the pull request HEAD")
     return mode, sha
+
+
+def _yaml_scalar(lines: list[str], index: int, indent: int, rest: str) -> tuple[str, int]:
+    """The scalar value starting at ``rest`` on line ``index`` and the next line to read.
+
+    Reads only the forms a hook ``exclude`` takes in practice: a plain, single-quoted or
+    escape-free double-quoted one-line scalar, or a ``|``/``>`` block (with ``-`` chomping).
+    Anything else is refused, so an unexpected form cannot silently widen an exclusion.
+    """
+    rest = rest.strip()
+    if rest in ("|", "|-", ">", ">-"):
+        block = []
+        index += 1
+        while index < len(lines) and (not lines[index].strip() or len(lines[index]) - len(lines[index].lstrip()) > indent):
+            block.append(lines[index].strip())
+            index += 1
+        while block and not block[-1]:
+            block.pop()
+        return ("\n" if rest.startswith("|") else " ").join(block), index
+    if rest.startswith("'"):
+        if len(rest) < 2 or not rest.endswith("'"):
+            raise ValueError("unterminated single-quoted scalar")
+        return rest[1:-1].replace("''", "'"), index + 1
+    if rest.startswith('"'):
+        if len(rest) < 2 or not rest.endswith('"') or "\\" in rest:
+            raise ValueError("double-quoted scalars with escapes are not read")
+        return rest[1:-1], index + 1
+    if not rest or rest[0] in "[{&*!%@`":
+        raise ValueError(f"unsupported scalar {rest!r}")
+    return rest.split(" #", 1)[0].strip(), index + 1
+
+
+def rewriting_hook_exclusions(config: str) -> tuple[re.Pattern[str] | None, dict[str, re.Pattern[str]]]:
+    """The top-level ``exclude`` and, for each ``REWRITING_HOOKS`` hook ``config`` declares, its own ``exclude``.
+
+    A declared hook without an ``exclude`` maps to a pattern that matches nothing. ``config`` is the trusted base's ``.pre-commit-config.yaml``, never the pull request's.
+    Raises ``AdmitError("ADMIT_HOOKS_CONFIG_INVALID")`` for a form this reader does not
+    understand, an invalid pattern, or a rewriting hook declared twice.
+    """
+    lines = config.splitlines()
+    top: re.Pattern[str] | None = None
+    hooks: dict[str, re.Pattern[str]] = {}
+    seen: set[str] = set()
+    hook: str | None = None
+    hook_indent = -1
+    index = 0
+    try:
+        while index < len(lines):
+            line = lines[index]
+            indent = len(line) - len(line.lstrip())
+            item = re.match(r"\s*-\s+id:\s*(.*)$", line)
+            if item:
+                hook_id, _ = _yaml_scalar(lines, index, indent, item.group(1))
+                hook, hook_indent = hook_id, indent
+                if hook in REWRITING_HOOKS:
+                    if hook in seen:
+                        raise ValueError(f"{hook} is declared twice")
+                    seen.add(hook)
+                    hooks[hook] = _NO_EXCLUSION
+                index += 1
+                continue
+            if hook is not None and line.strip() and not line.lstrip().startswith("#") and indent <= hook_indent:
+                hook = None
+            key = re.match(r"\s*exclude:\s*(.*)$", line)
+            if key:
+                value, index = _yaml_scalar(lines, index, indent, key.group(1))
+                if indent == 0:
+                    top = re.compile(value)
+                elif hook in REWRITING_HOOKS and indent == hook_indent + 2:
+                    hooks[hook] = re.compile(value)
+                continue
+            index += 1
+    except (ValueError, re.error) as error:
+        raise AdmitError(
+            "ADMIT_HOOKS_CONFIG_INVALID", f"cannot read the trusted base's {PRE_COMMIT_CONFIG}: {error}",
+        ) from None
+    return top, hooks
+
+
+def rewriting_hook_findings(data: bytes) -> dict[str, str]:
+    """What each ``REWRITING_HOOKS`` hook would change in ``data``, by hook (empty: nothing).
+
+    The same rules as the pinned pre-commit-hooks: trailing whitespace (``bytes.rstrip()``
+    before each line ending), exactly one line ending at the end of a non-empty file, LF
+    line endings only (``.gitattributes`` stores text as LF), and no UTF-8 byte-order mark.
+    A binary file, as ``identify`` would type it, is left alone.
+    """
+    if data[:1024].translate(None, _TEXT_BYTES):
+        return {}
+    found: dict[str, str] = {}
+    for number, line in enumerate(data.split(b"\n"), 1):
+        body = line[:-1] if line.endswith(b"\r") else line
+        if body != body.rstrip():
+            found["trailing-whitespace"] = f"trailing whitespace on line {number}"
+            break
+    if data:
+        body = data.rstrip(b"\r\n")
+        tail = data[len(body):]
+        if not body:
+            found["end-of-file-fixer"] = "only line endings (the hook empties the file)"
+        elif tail not in (b"\n", b"\r\n"):
+            found["end-of-file-fixer"] = (
+                "no line ending at the end of the file" if not tail else "more than one line ending at the end of the file"
+            )
+    if b"\r" in data:
+        found["mixed-line-ending"] = "CRLF or CR line endings (the repository stores text with LF)"
+    if data.startswith(b"\xef\xbb\xbf"):
+        found["fix-byte-order-marker"] = "a UTF-8 byte-order mark"
+    return found
+
+
+def check_rewriting_hooks(pr: Path, base: str, head: str, paths: list[str]) -> list[str]:
+    """Refuse unless the byte-rewriting hooks would leave every committed path unchanged.
+
+    The four ``REWRITING_HOOKS`` rules run in pure Python on each path's blob at ``head``,
+    honouring the exclusions in the trusted ``base``'s ``.pre-commit-config.yaml`` (top-level
+    and per hook; none when the base has no configuration). Nothing is checked out and nothing
+    from the pull request is executed: a candidate ``.pre-commit-config.yaml``, a planted
+    ``pre_commit`` module or a redefined local hook has no effect. Returns the hooks checked.
+    """
+    try:
+        config = _git(pr, "cat-file", "blob", f"{base}:{PRE_COMMIT_CONFIG}").decode("utf-8")
+    except AdmitError:
+        config = ""
+    except UnicodeDecodeError:
+        raise AdmitError(
+            "ADMIT_HOOKS_CONFIG_INVALID", f"the trusted base's {PRE_COMMIT_CONFIG} is not UTF-8",
+        ) from None
+    top, excluded = rewriting_hook_exclusions(config)
+    # Git stores a file the base's .gitattributes marks -text (or binary) as it is, so its line
+    # endings are only rewritten when the base configures mixed-line-ending itself.
+    attributes = _git(pr, "check-attr", "-z", f"--source={base}", "text", "--", *paths).split(b"\0")
+    verbatim = {
+        attributes[index].decode("utf-8")
+        for index in range(0, len(attributes) - 2, 3)
+        if attributes[index + 2] == b"unset"
+    }
+    problems = []
+    for path in paths:
+        if top is not None and top.search(path):
+            continue
+        findings = rewriting_hook_findings(_git(pr, "cat-file", "blob", f"{head}:{path}"))
+        for hook, problem in findings.items():
+            if hook in excluded and excluded[hook].search(path):
+                continue
+            if hook == "mixed-line-ending" and hook not in excluded and path in verbatim:
+                continue
+            problems.append(f"{path}: {problem} ({hook})")
+    if problems:
+        raise AdmitError(
+            "ADMIT_HOOKS_WOULD_REWRITE",
+            "the next commit's pre-commit hooks would rewrite these committed files, so an admission "
+            "now would not survive it:\n  " + "\n  ".join(problems) + "\nFix them on the pull request "
+            f"branch (its author can run `python -m pre_commit run --files {' '.join(paths)}`), "
+            "commit, then admit",
+        )
+    return list(REWRITING_HOOKS)
 
 
 def default_slug(branch: str, paths: list[str]) -> str:
@@ -270,36 +461,78 @@ def classify(
     return statements
 
 
+def statement_binding(statement: dict) -> str:
+    """How an admission statement binds its path: as recorded, else ``bytes`` for a ``third_party`` origin.
+
+    Admissions written before V4 record no binding. A ``third_party`` origin is a file imported
+    from an upstream revision, so it stays bound to its bytes unless a reviewer recorded it as a
+    LOCAL DELTA (``"claim"``); every other origin is bound to its claim.
+    """
+    binding = statement.get("binding")
+    if binding is None:
+        return "bytes" if statement.get("origin_kind") == "third_party" else "claim"
+    if binding not in provenance_ledger.POLICY_DELTA_BINDINGS:
+        raise AdmitError(
+            "ADMISSION_BINDING_INVALID",
+            f"{statement.get('path')}: binding must be one of {list(provenance_ledger.POLICY_DELTA_BINDINGS)}",
+        )
+    return str(binding)
+
+
 def find_admission(authority_root: Path, statements: list[dict], digests: dict[str, str]) -> Path:
-    """The one existing admission that already decided exactly these paths and bytes.
+    """The one existing admission that already decided exactly these paths (and bytes, where bound).
 
     Re-keying reuses that decision for a new base; it never makes a new one, so
-    a path set or digest that no admission names is refused. The recorded
-    classes are the decision and are reused as recorded: a reviewer may have
-    admitted a path under a stricter class than the path rule derives today
+    a path set that no admission names is refused. An admission whose paths and
+    bytes both match is preferred. Otherwise a path bound to its claim may carry
+    new bytes -- that is what claim binding means -- while a path bound to its
+    bytes (a byte-identical import) must still carry the recorded ones. The
+    recorded classes are the decision and are reused as recorded: a reviewer may
+    have admitted a path under a stricter class than the path rule derives today
     (for example an upstream licence file recorded as upstream_derived with its
     import record), and that must not block a re-key (2026-10-22, the Clay
-    admission).
+    admission). Several admissions of the same paths (a re-admission after an
+    edit, before V4) are one decision when they agree on everything but the
+    digests and the approval wording; the newest is reused.
     """
-    def key(statement: dict) -> tuple:
-        return (statement["path"], statement["sha256"])
-
-    wanted = sorted(key({**statement, "sha256": digests[statement["path"]]}) for statement in statements)
-    matches = []
+    wanted_paths = sorted(statement["path"] for statement in statements)
+    exact, by_claim = [], []
     for candidate in sorted((authority_root / ADMISSIONS).glob("*.json")):
         try:
             document = json.loads(candidate.read_text(encoding="utf-8"))
-            named = sorted(key(statement) for statement in document["reviewed_new_paths"])
+            recorded = document["reviewed_new_paths"]
+            named = sorted(statement["path"] for statement in recorded)
         except (ValueError, KeyError, TypeError):
             continue
-        if document.get("kind") == provenance_ledger.ADMISSION_KIND and named == wanted:
-            matches.append(candidate)
-    if len(matches) != 1:
-        raise AdmitError(
-            "REKEY_ADMISSION_MISSING" if not matches else "REKEY_ADMISSION_AMBIGUOUS",
-            f"--rekey needs exactly one existing admission naming exactly these paths and bytes; found {len(matches)}",
+        if document.get("kind") != provenance_ledger.ADMISSION_KIND or named != wanted_paths:
+            continue
+        if all(statement.get("sha256") == digests[statement["path"]] for statement in recorded):
+            exact.append(candidate)
+        elif all(
+            statement_binding(statement) == "claim" or statement.get("sha256") == digests[statement["path"]]
+            for statement in recorded
+        ):
+            by_claim.append(candidate)
+    matches = exact or by_claim
+
+    def decision(path: Path) -> list:
+        return sorted(
+            json.dumps({key: value for key, value in statement.items() if key != "sha256"}, sort_keys=True)
+            for statement in json.loads(path.read_text(encoding="utf-8"))["reviewed_new_paths"]
         )
-    return matches[0]
+    if not matches:
+        raise AdmitError(
+            "REKEY_ADMISSION_MISSING",
+            "--rekey needs an existing admission naming exactly these paths, with the recorded bytes for "
+            "every byte-identical import; found none",
+        )
+    if len(matches) > 1 and len({json.dumps(decision(match)) for match in matches}) > 1:
+        raise AdmitError(
+            "REKEY_ADMISSION_AMBIGUOUS",
+            f"--rekey found {len(matches)} admissions of these paths that record different decisions: "
+            + ", ".join(match.name for match in matches),
+        )
+    return matches[-1]
 
 
 def build_records(
@@ -309,10 +542,27 @@ def build_records(
     digests: dict[str, str],
     statements: list[dict],
     approval_basis: str,
+    records: dict[str, dict],
 ) -> tuple[bytes, str, bytes, bytes]:
-    """Return ``(candidate policy, V3 record path, V3 authority, admission)``."""
+    """Return ``(candidate policy, V4 record path, V4 authority, admission)``.
+
+    ``records`` is the private ledger's exact-path record map; each path's origin claim is
+    derived from it with the gate's own ``admission_claim``.
+    """
     candidate_policy, _candidate_document = _candidate_policy(base_policy, set(paths))
-    delta_record, authority = _policy_delta_records(base_policy, candidate_policy, paths, digests)
+    by_path = {statement["path"]: statement for statement in statements}
+    try:
+        added = {
+            path: {
+                "sha256": digests[path],
+                "binding": statement_binding(by_path[path]),
+                "claim": provenance_ledger.admission_claim(path, records.get(path)),
+            }
+            for path in paths
+        }
+    except RefreshError as error:
+        raise AdmitError(error.code, str(error)) from error
+    delta_record, authority = _policy_delta_records(base_policy, candidate_policy, paths, added)
     admission = _canonical({
         "approval_basis": approval_basis,
         "kind": provenance_ledger.ADMISSION_KIND,
@@ -367,13 +617,18 @@ def _remove_scratch(path: Path) -> None:
     shutil.rmtree(path, onexc=_onexc)
 
 
-def _write_record(target: Path, raw: bytes, created: list[Path]) -> None:
+def _write_record(target: Path, raw: bytes, created: list[Path], *, replace: bool = False) -> None:
     if target.exists():
         if target.read_bytes() != raw:
-            raise AdmitError(
-                "ADMISSION_RECORD_CONFLICT",
-                f"{target.name} already exists in the authority checkout with different bytes",
-            )
+            if not replace:
+                raise AdmitError(
+                    "ADMISSION_RECORD_CONFLICT",
+                    f"{target.name} already exists in the authority checkout with different bytes",
+                )
+            # A V4 delta is named by its profile change alone, so a new admission of the same
+            # change (a different claim or binding) records its decision under the same name.
+            target.write_bytes(raw)
+            created.append(target)
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(raw)
@@ -445,6 +700,9 @@ def _prepare_admission(
     dirty = _text(pr, "status", "--porcelain=v1", "--", *paths)
     if dirty:
         raise AdmitError("ADMIT_PATH_UNCOMMITTED", f"commit the new paths before admitting them:\n{dirty}")
+    # Before any byte is read or pinned: the hooks every later commit runs must have nothing
+    # left to change, or the first commit after the admission would edit an admitted file.
+    check_rewriting_hooks(pr, base, head, paths)
     base_policy = _git(pr, "cat-file", "blob", f"{base}:{POLICY}")
     with tempfile.TemporaryDirectory(prefix="nakagawa-admit-base-") as policy_scratch:
         policy_path = Path(policy_scratch) / "policy.json"
@@ -474,17 +732,25 @@ def _prepare_admission(
             for statement in recorded["reviewed_new_paths"]
         ]
         admit_branch = f"admit/{slug}-{date}-{base[:8]}"
+    if not rekey:
+        for statement in statements:
+            # Recorded only where it departs from the default for the origin, so an admission
+            # that takes the default keeps the record shape admissions had before V4.
+            origin = (origins or {}).get(statement["path"], {})
+            chosen = statement_binding({**statement, **origin})
+            if chosen != statement_binding(statement):
+                statement["binding"] = chosen
     candidate_policy, delta_record, authority_bytes, admission_bytes = build_records(
         base_policy=base_policy, paths=paths, digests=digests,
-        statements=statements, approval_basis=approval_basis,
+        statements=statements, approval_basis=approval_basis, records=records,
     )
     if rekey:
         admission_bytes = admission_path.read_bytes()
     candidate_sha = hashlib.sha256(candidate_policy).hexdigest()
     admission_rel = admission_path.relative_to(authority_root).as_posix()
-    # One V3 delta, valid on any base where this change is still exactly the approved one
-    # (#1673). No nested V1/V2 record: one would let an edited new file pass on the old,
-    # byte-free binding when the V3 name stopped matching.
+    # One V4 delta, valid on any base where this change is still exactly the approved one
+    # (#1673) and for any later bytes of a claim-bound path. No nested V1/V2 record: it binds
+    # no claim, so the attestation refuses one for an added path anyway.
     record_bytes = {
         admission_rel: admission_bytes,
         delta_record: authority_bytes,
@@ -504,8 +770,15 @@ def _prepare_admission(
         _git(candidate, "checkout-index", "-f", "--", *paths, POLICY, EXPORT)
         candidate_commit = _commit(candidate, f"candidate: admit {slug}", assisted_by)
 
+        # The generation checks each statement's digest against the candidate, which carries the
+        # current bytes. A re-key of a claim-bound path may differ from the digest recorded at
+        # admission; find_admission already held every byte-bound path to its recorded digest.
+        generation = json.loads(admission_bytes.decode("utf-8"))
+        generation["reviewed_new_paths"] = [
+            {**statement, "sha256": digests[statement["path"]]} for statement in generation["reviewed_new_paths"]
+        ]
         admission_authority = scratch / "admission-authority.json"
-        admission_authority.write_bytes(admission_bytes)
+        admission_authority.write_bytes(_canonical(generation))
         base_policy_path = scratch / "base-policy.json"
         base_policy_path.write_bytes(base_policy)
         try:
@@ -544,6 +817,7 @@ def _prepare_admission(
         "policy_delta_record": delta_record,
         "records": sorted(record_bytes),
         "record_bytes": record_bytes,
+        "replaceable": frozenset() if rekey else frozenset({delta_record}),
         "private_commit": None,
         "pushed": False,
         "ledger": ledger,
@@ -557,15 +831,28 @@ def _prepare_admission(
 
 def _write_authority_commit(
     *, authority_root: Path, records: dict[str, bytes], message: str, assisted_by: str | None, push: bool,
+    replaceable: frozenset[str] = frozenset(),
 ) -> tuple[list[str], str, bool]:
-    """Write a set of authority files and commit them together, optionally pushing private main."""
+    """Write a set of authority files and commit them together, optionally pushing private main.
+
+    ``replaceable`` names the records a new decision may overwrite (a fresh admission's V4
+    delta); any other existing record with different bytes is a conflict.
+    """
     created: list[Path] = []
+    originals = {
+        relative: (authority_root / relative).read_bytes()
+        for relative in records if (authority_root / relative).is_file()
+    }
     try:
         for relative, raw in sorted(records.items()):
-            _write_record(authority_root / relative, raw, created)
+            _write_record(authority_root / relative, raw, created, replace=relative in replaceable)
     except BaseException:
         for target in created:
-            target.unlink(missing_ok=True)
+            relative = target.relative_to(authority_root).as_posix()
+            if relative in originals:
+                target.write_bytes(originals[relative])
+            else:
+                target.unlink(missing_ok=True)
         raise
     private_commit = _text(authority_root, "rev-parse", "HEAD")
     if created:
@@ -608,7 +895,7 @@ def admit(
     rekey: bool = False,
     scratch_root: Path | None = None,
 ) -> dict:
-    """Admit ``paths`` and write their V3 policy delta."""
+    """Admit ``paths`` and write their V4 policy delta."""
     authority_root, authority_ledger, records = _authority_inputs(private_repo)
     resolved_date = date or datetime.date.today().isoformat()
     plan = _prepare_admission(
@@ -618,16 +905,23 @@ def admit(
         rekey=rekey, scratch_root=scratch_root,
     )
     commit_kind = "re-key" if rekey else "admit"
-    record_paths, private_commit, pushed = _write_authority_commit(
-        authority_root=authority_root,
-        records=plan["record_bytes"],
-        message=(
-            f"provenance: {commit_kind} {plan['slug']} ({resolved_date})\n\n"
-            f"V3 policy delta {Path(plan['policy_delta_record']).stem[:8]}; "
-            f"admission and delta bind {len(plan['paths'])} new path(s) to their exact SHA-256."
-        ),
-        assisted_by=assisted_by, push=push,
-    )
+    bytes_bound = sum(1 for statement in plan["statements"] if statement_binding(statement) == "bytes")
+    try:
+        record_paths, private_commit, pushed = _write_authority_commit(
+            authority_root=authority_root,
+            records=plan["record_bytes"],
+            message=(
+                f"provenance: {commit_kind} {plan['slug']} ({resolved_date})\n\n"
+                f"V4 policy delta {Path(plan['policy_delta_record']).stem[:8]}; the delta binds "
+                f"{len(plan['paths'])} new path(s) to their origin claims, {bytes_bound} of them also to "
+                "their exact SHA-256 as byte-identical imports."
+            ),
+            assisted_by=assisted_by, push=push, replaceable=plan["replaceable"],
+        )
+    except AdmitError:
+        # Nothing was recorded, so the admission branch this run created describes no decision.
+        _remove_created_branches([plan])
+        raise
     plan.update(records=record_paths, private_commit=private_commit, pushed=pushed)
     return plan
 
@@ -699,11 +993,11 @@ def admit_batch(
     assisted_by: str | None = None, push: bool = False, scratch_root: Path | None = None,
     resume: bool = False,
 ) -> dict:
-    """Admit independent pull requests together, one admission and one V3 delta each.
+    """Admit independent pull requests together, one admission and one V4 delta each.
 
-    Each V3 delta records only its own pull request's paths, so the entries may land in
+    Each V4 delta records only its own pull request's paths, so the entries may land in
     any order with no re-key. ``resume`` re-issues the deltas from the recorded admissions
-    (for entries admitted before V3 deltas existed).
+    (for entries admitted before V4 deltas existed).
     """
     entries = _batch_entries(batch, resume=resume)
     authority_root, authority_ledger, ledger_records = _authority_inputs(private_repo)
@@ -725,6 +1019,7 @@ def admit_batch(
             ))
 
         all_record_bytes: dict[str, bytes] = {}
+        replaceable = frozenset().union(*(plan["replaceable"] for plan in plans))
         for plan in plans:
             for path, raw in plan["record_bytes"].items():
                 if path in all_record_bytes and all_record_bytes[path] != raw:
@@ -734,17 +1029,17 @@ def admit_batch(
             {"entry_slug": plan["slug"], "paths": plan["paths"], "record": plan["policy_delta_record"]}
             for plan in plans
         ]
-        verb = "re-issue V3 deltas for" if resume else "batch admit"
+        verb = "re-issue V4 deltas for" if resume else "batch admit"
         message = (
             f"provenance: {verb} {len(plans)} pull requests ({resolved_date})\n\n"
-            f"One V3 policy delta per pull request, valid in any landing order."
+            f"One V4 policy delta per pull request, valid in any landing order."
         )
 
         _record_paths, private_commit, pushed = _write_authority_commit(
             authority_root=authority_root,
             records=all_record_bytes,
             message=message,
-            assisted_by=assisted_by, push=False,
+            assisted_by=assisted_by, push=False, replaceable=replaceable,
         )
         private_committed = True
         if push:
@@ -758,6 +1053,7 @@ def admit_batch(
     for plan in plans:
         plan.update(private_commit=private_commit, pushed=pushed)
         plan.pop("record_bytes", None)
+        plan.pop("replaceable", None)
     return {
         "base": shared_base,
         "entries": plans,
@@ -778,11 +1074,11 @@ def issue_policy_delta(
     assisted_by: str | None = None,
     push: bool = False,
 ) -> dict:
-    """Write the V3 policy delta for a pull request whose profile change adds no path.
+    """Write the V4 policy delta for a pull request whose profile change adds no path.
 
     This covers removed paths, exclude-list changes and rule changes. The change is
     read from the profile at ``base`` (default: the merge-base of HEAD and
-    origin/main) to the committed profile at HEAD. The V3 delta stays valid on a
+    origin/main) to the committed profile at HEAD. The V4 delta stays valid on a
     later base as long as each removed or excluded path's precondition and each
     changed rule field's earlier value still hold there. A delta that adds a path
     needs an admission with trusted records instead, so it is refused here.
@@ -820,7 +1116,7 @@ def issue_policy_delta(
         authority_root=authority_root,
         records={record: authority},
         message=(
-            f"provenance: V3 policy delta {Path(record).stem[:8]} (from profile {baseline_sha[:8]} "
+            f"provenance: V4 policy delta {Path(record).stem[:8]} (from profile {baseline_sha[:8]} "
             f"to {candidate_sha[:8]})\n\n"
             f"{summary}.\n\nApproval basis: {approval_basis.strip()}"
         ),
@@ -940,7 +1236,11 @@ def _origins(args: argparse.Namespace) -> dict[str, dict]:
     shared = {"origin_kind": args.origin_kind, "origin": args.origin, "license": args.license}
     if any(shared.values()):
         for path in args.paths:
-            origins.setdefault(path, shared)
+            origins.setdefault(path, dict(shared))
+    if args.binding is not None:
+        for path in args.paths:
+            origins.setdefault(path, {})
+            origins[path].setdefault("binding", args.binding)
     return origins
 
 
@@ -951,7 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--batch", type=Path, help="JSON list of two or more independent pull-request admissions")
     modes.add_argument("--batch-resume", type=Path,
-                       help="JSON list of entries admitted before V3; re-issue their V3 deltas from recorded "
+                       help="JSON list of entries admitted before V4; re-issue their V4 deltas from recorded "
                             "admissions")
     modes.add_argument("--merge-profile", type=Path, metavar="WORKTREE",
                        help="write the three-way merge of the profile paths during an active merge")
@@ -961,7 +1261,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--approval-basis", help="the human decision, recorded verbatim (not with --rekey)")
     parser.add_argument(
         "--rekey", action="store_true",
-        help="write the V3 delta and a new admission commit from the admission already recorded",
+        help="write the V4 delta and a new admission commit from the admission already recorded",
     )
     parser.add_argument(
         "--private-repo", type=Path, default=os.environ.get("NK_PRIVATE_AUTHORITY"),
@@ -974,7 +1274,13 @@ def main(argv: list[str] | None = None) -> int:
         sorted(provenance_ledger.ADMISSION_ORIGIN_KINDS)))
     parser.add_argument("--origin", help="implementation paths: reviewer's origin statement")
     parser.add_argument("--license", help="implementation paths: licence basis")
-    parser.add_argument("--origin-json", type=Path, help="per-path {origin_kind, origin, license} overrides")
+    parser.add_argument("--origin-json", type=Path,
+                        help="per-path {origin_kind, origin, license, binding} overrides")
+    parser.add_argument(
+        "--binding", choices=provenance_ledger.POLICY_DELTA_BINDINGS,
+        help="bind the paths to their origin claim (edits flow without re-admission) or also to their exact "
+             "bytes (a byte-identical import); default: bytes for a third_party origin, claim otherwise",
+    )
     parser.add_argument("--assisted-by", help="append an Assisted-by: trailer to the commits this makes")
     parser.add_argument("--push", action="store_true", help="also push the private records to the authority main")
     args = parser.parse_args(argv)
@@ -990,7 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.policy_delta is not None:
             if args.pr_worktree is not None or args.paths or args.rekey or args.slug or args.origin_kind \
-                    or args.origin or args.license or args.origin_json is not None:
+                    or args.origin or args.license or args.origin_json is not None or args.binding is not None:
                 raise AdmitError("ADMIT_ARGUMENT_INVALID", "--policy-delta cannot be combined with admission arguments")
             if args.private_repo is None:
                 raise AdmitError("AUTHORITY_REQUIRED", "pass --private-repo or set NK_PRIVATE_AUTHORITY")
@@ -1008,13 +1314,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    {record}")
             if not result["pushed"]:
                 print(f'\nLeft to do: git -C "{result["authority_root"]}" push origin main')
-            print("The V3 delta stays valid when unrelated profile changes land; re-issue it only if one of its "
+            print("The V4 delta stays valid when unrelated profile changes land; re-issue it only if one of its "
                   "removed or excluded paths, or a changed rule field, was changed on main too.")
             return 0
 
         if args.batch is not None or args.batch_resume is not None:
             if args.pr_worktree is not None or args.paths or args.approval_basis or args.rekey or args.slug \
-                    or args.origin_kind or args.origin or args.license or args.origin_json is not None:
+                    or args.origin_kind or args.origin or args.license or args.origin_json is not None \
+                    or args.binding is not None:
                 raise AdmitError("ADMIT_ARGUMENT_INVALID", "batch modes cannot be combined with single-admission arguments")
             if args.private_repo is None:
                 raise AdmitError("AUTHORITY_REQUIRED", "pass --private-repo or set NK_PRIVATE_AUTHORITY")
@@ -1025,9 +1332,9 @@ def main(argv: list[str] | None = None) -> int:
                 batch=_read_batch_file(batch_path), private_repo=args.private_repo, base=args.base,
                 date=args.date, assisted_by=args.assisted_by, push=args.push, resume=resuming,
             )
-            action = "re-issued V3 deltas for" if resuming else "admitted"
+            action = "re-issued V4 deltas for" if resuming else "admitted"
             print(f"admit paths: {action} {len(result['entries'])} pull requests on shared base {result['base']}")
-            print(f"  wrote {result['delta_count']} V3 policy deltas, valid in any landing order")
+            print(f"  wrote {result['delta_count']} V4 policy deltas, valid in any landing order")
             print(f"  private records ({'pushed' if result['pushed'] else 'committed locally'} at "
                   f"{result['private_commit'][:12]}):")
             for record in result["records"]:
@@ -1068,9 +1375,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"admit paths: admitted {len(result['paths'])} path(s) on base {result['base']}")
     for statement in result["statements"]:
-        print(f"  {statement['path']}: {statement['classification']}")
+        print(f"  {statement['path']}: {statement['classification']} (bound to its "
+              f"{'bytes' if statement_binding(statement) == 'bytes' else 'claim'})")
     print(f"  candidate profile sha256 {result['candidate_policy_sha256']}")
-    print(f"  V3 policy delta {result['policy_delta_record']}")
+    print(f"  V4 policy delta {result['policy_delta_record']}")
     print(f"  private records ({'pushed' if result['pushed'] else 'committed locally'} at "
           f"{result['private_commit'][:12]}):")
     for record in result["records"]:

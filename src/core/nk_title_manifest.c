@@ -495,6 +495,1229 @@ static bool check_object_keys(
     return true;
 }
 
+/* State the parse stages share. The stages fill it in order; a later stage
+ * reads only what an earlier one stored. */
+typedef struct ManifestParse {
+    JsonNode *root;
+    char *error_buf;
+    size_t error_buf_len;
+    JsonNode *id_node;
+    JsonNode *dn_node;
+    JsonNode *gn_node;
+    JsonNode *disc_node;
+    JsonNode *mods_node;
+    JsonNode *dr_node;
+    JsonNode *ms_node;
+    JsonNode *hle_node;
+    JsonNode *cg_node;
+    NkTitleKind kind;
+    uint32_t exe_base;
+    uint32_t exe_entry;
+    const char *bss_src;
+    char loose_root_paths[MAX_LOOSE_CONTENT_ROOTS][241];
+    char loose_root_mounts[MAX_LOOSE_CONTENT_ROOTS][241];
+    char loose_root_excludes[MAX_LOOSE_CONTENT_ROOTS][MAX_LOOSE_CONTENT_EXCLUDES][241];
+    size_t loose_root_exclude_counts[MAX_LOOSE_CONTENT_ROOTS];
+    bool loose_root_skip_primary[MAX_LOOSE_CONTENT_ROOTS];
+    uint32_t loose_root_precedence[MAX_LOOSE_CONTENT_ROOTS];
+    size_t loose_root_count;
+    bool has_font_feature;
+    bool has_psmf_feature;
+    uint32_t expected_file_count;
+    uint32_t fallback_entry;
+} ManifestParse;
+
+/* Root keys, schema version, id, names and kind (checks 1-5). */
+static bool manifest_parse_identity(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    /* 1. Root keys validation */
+    static const char * const allowed_root_keys[] = {
+        "schema_version", "id", "display_name", "kind", "disc", "executable",
+        "modules", "filesystem", "hle_profile", "feature_requirements",
+        "compatibility_manifest", "verification_profile", "codegen_profile", "notes",
+        "runtime_contract", "profile_zero", "runtime_bindings", "game_name", NULL
+    };
+    static const char * const required_root_keys[] = {
+        "schema_version", "id", "display_name", "kind", "executable",
+        "modules", "filesystem", "hle_profile", "feature_requirements",
+        "verification_profile", NULL
+    };
+
+    if (!check_object_keys(root, "$", allowed_root_keys, required_root_keys, error_buf, error_buf_len)) {
+        return false;
+    }
+
+    /* 2. schema_version == 1 */
+    JsonNode *sv_node = obj_get(root, "schema_version");
+    if (sv_node->type != JSON_NUMBER || !sv_node->u.num.is_integer || sv_node->u.num.int_val != 1) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.schema_version: only schema version 1 is supported");
+        return false;
+    }
+
+    /* 3. id: valid identifier */
+    mp->id_node = obj_get(root, "id");
+    if (mp->id_node->type != JSON_STRING || !is_valid_identifier(mp->id_node->u.str_val)) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.id: must match ^[a-z0-9][a-z0-9._-]{0,63}$");
+        return false;
+    }
+
+    /* 4. display_name */
+    mp->dn_node = obj_get(root, "display_name");
+    if (mp->dn_node->type != JSON_STRING || strlen(mp->dn_node->u.str_val) < 1 || strlen(mp->dn_node->u.str_val) > 128) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.display_name: length must be in range 1..128");
+        return false;
+    }
+
+    /* 4b. game_name: optional explicit build-name declaration (issue #196 Phase 4).
+     * The manager accepts -GameName, this field, or a portable id derivation —
+     * never an id-prefix mint. Same identifier contract as $.id. */
+    mp->gn_node = obj_get(root, "game_name");
+    if (mp->gn_node && (mp->gn_node->type != JSON_STRING || !is_valid_identifier(mp->gn_node->u.str_val))) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.game_name: must match ^[a-z0-9][a-z0-9._-]{0,63}$");
+        return false;
+    }
+
+    /* 5. kind */
+    JsonNode *kind_node = obj_get(root, "kind");
+    if (kind_node->type != JSON_STRING) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.kind: must be a string");
+        return false;
+    }
+    if (strcmp(kind_node->u.str_val, "retail") == 0) mp->kind = NK_TITLE_KIND_RETAIL;
+    else if (strcmp(kind_node->u.str_val, "synthetic") == 0) mp->kind = NK_TITLE_KIND_SYNTHETIC;
+    else if (strcmp(kind_node->u.str_val, "homebrew") == 0) mp->kind = NK_TITLE_KIND_HOMEBREW;
+    else {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.kind: unsupported title kind '%s'", kind_node->u.str_val);
+        return false;
+    }
+    return true;
+}
+
+/* The disc object: required for retail, forbidden otherwise (check 6). */
+static bool manifest_parse_disc(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    JsonNode *kind_node = obj_get(root, "kind");
+    /* 6. disc object validation */
+    mp->disc_node = obj_get(root, "disc");
+    if (mp->kind == NK_TITLE_KIND_RETAIL) {
+        if (!mp->disc_node || mp->disc_node->type != JSON_OBJECT) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$: retail kind requires disc object");
+            return false;
+        }
+        static const char * const allowed_disc_keys[] = {
+            "id", "region", "revision_policy", "compatible_revisions",
+            "require_local_compatibility_record", NULL
+        };
+        static const char * const required_disc_keys[] = {"id", "region", "revision_policy", NULL};
+        if (!check_object_keys(mp->disc_node, "$.disc", allowed_disc_keys, required_disc_keys, error_buf, error_buf_len)) {
+            return false;
+        }
+
+        JsonNode *disc_id_node = obj_get(mp->disc_node, "id");
+        if (!disc_id_node || disc_id_node->type != JSON_STRING || !is_valid_disc_id(disc_id_node->u.str_val)) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.id: must match a nine-character PSP disc ID such as TEST00001");
+            return false;
+        }
+
+        JsonNode *reg_node = obj_get(mp->disc_node, "region");
+        if (!reg_node || reg_node->type != JSON_STRING) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.region: must be a string");
+            return false;
+        }
+        const char *reg = reg_node->u.str_val;
+        if (strcmp(reg, "JP") != 0 && strcmp(reg, "NA") != 0 && strcmp(reg, "EU") != 0 &&
+            strcmp(reg, "KR") != 0 && strcmp(reg, "ASIA") != 0 && strcmp(reg, "OTHER") != 0) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.region: unsupported region");
+            return false;
+        }
+
+        JsonNode *pol_node = obj_get(mp->disc_node, "revision_policy");
+        if (!pol_node || pol_node->type != JSON_STRING) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.revision_policy: must be a string");
+            return false;
+        }
+        const char *pol = pol_node->u.str_val;
+        if (strcmp(pol, "exact-disc-id") != 0 && strcmp(pol, "explicit-compatible-revisions") != 0) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.revision_policy: unsupported revision policy");
+            return false;
+        }
+        JsonNode *local_record_node = obj_get(mp->disc_node, "require_local_compatibility_record");
+        if (local_record_node && local_record_node->type != JSON_BOOL) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "$.disc.require_local_compatibility_record: must be a boolean");
+            return false;
+        }
+
+        JsonNode *cr_node = obj_get(mp->disc_node, "compatible_revisions");
+        if (strcmp(pol, "exact-disc-id") == 0) {
+            if (cr_node) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions: is forbidden for exact-disc-id policy");
+                return false;
+            }
+        } else {
+            if (!cr_node || cr_node->type != JSON_ARRAY) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions: is required for explicit-compatible-revisions");
+                return false;
+            }
+            if (cr_node->u.arr.count < 1 || cr_node->u.arr.count > MAX_COMPAT_DISC_IDS) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions: must contain 1..%d items", MAX_COMPAT_DISC_IDS);
+                return false;
+            }
+            for (size_t c = 0; c < cr_node->u.arr.count; c++) {
+                JsonNode *citem = cr_node->u.arr.items[c];
+                if (!citem || citem->type != JSON_STRING || !is_valid_disc_id(citem->u.str_val)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions[%zu]: must be a distinct PSP disc ID", c);
+                    return false;
+                }
+                if (strcmp(citem->u.str_val, disc_id_node->u.str_val) == 0) {
+                    if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions[%zu]: must be a distinct PSP disc ID from primary", c);
+                    return false;
+                }
+                for (size_t prev = 0; prev < c; prev++) {
+                    if (strcmp(cr_node->u.arr.items[prev]->u.str_val, citem->u.str_val) == 0) {
+                        if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions[%zu]: duplicate disc ID", c);
+                        return false;
+                    }
+                }
+            }
+        }
+    } else {
+        if (mp->disc_node) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc: disc object is forbidden for non-retail kind '%s'", kind_node->u.str_val);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The executable object and its extra spans (check 7). */
+static bool manifest_parse_executable(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    /* 7. executable validation */
+    JsonNode *exe_node = obj_get(root, "executable");
+    static const char * const allowed_exe_keys[] = {
+        "base", "entry", "bss_metadata_source", "extra_executable_spans",
+        "load_address", "load_address_evidence", NULL
+    };
+    static const char * const required_exe_keys[] = {
+        "base", "entry", "bss_metadata_source", "extra_executable_spans", NULL
+    };
+    if (!check_object_keys(exe_node, "$.executable", allowed_exe_keys,
+                           required_exe_keys, error_buf, error_buf_len)) {
+        return false;
+    }
+    if (!parse_uint32(obj_get(exe_node, "base"), &mp->exe_base)) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.base: invalid base address");
+        return false;
+    }
+    if (!parse_uint32(obj_get(exe_node, "entry"), &mp->exe_entry)) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.entry: invalid entry address");
+        return false;
+    }
+    JsonNode *load_address_node = obj_get(exe_node, "load_address");
+    JsonNode *load_address_evidence_node = obj_get(exe_node, "load_address_evidence");
+    if (load_address_node) {
+        uint32_t load_address = 0;
+        if (!parse_uint32(load_address_node, &load_address)) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.executable.load_address: invalid address");
+            return false;
+        }
+        if (mp->exe_base != load_address) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.executable.base: must match load_address when a main executable load binding is declared");
+            return false;
+        }
+        if (!load_address_evidence_node || load_address_evidence_node->type != JSON_STRING ||
+            !is_load_address_evidence(load_address_evidence_node->u.str_val)) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.executable.load_address_evidence: unsupported evidence class");
+            return false;
+        }
+    } else if (load_address_evidence_node) {
+        if (error_buf) snprintf(error_buf, error_buf_len,
+                                "$.executable.load_address_evidence: requires load_address");
+        return false;
+    }
+    JsonNode *bss_node = obj_get(exe_node, "bss_metadata_source");
+    if (!bss_node || bss_node->type != JSON_STRING) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.bss_metadata_source: must be a string");
+        return false;
+    }
+    mp->bss_src = bss_node->u.str_val;
+    if (strcmp(mp->bss_src, "elf") != 0 && strcmp(mp->bss_src, "psp-header") != 0 && strcmp(mp->bss_src, "none") != 0) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.bss_metadata_source: unsupported metadata source");
+        return false;
+    }
+    JsonNode *spans_node = obj_get(exe_node, "extra_executable_spans");
+    if (!spans_node || spans_node->type != JSON_ARRAY) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.extra_executable_spans: must be an array");
+        return false;
+    }
+    if (spans_node->u.arr.count > 64) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.extra_executable_spans: contains %zu items; maximum is 64", spans_node->u.arr.count);
+        return false;
+    }
+    for (size_t s = 0; s < spans_node->u.arr.count; s++) {
+        JsonNode *span = spans_node->u.arr.items[s];
+        static const char * const span_keys[] = {"start", "end", NULL};
+        char span_path[64];
+        snprintf(span_path, sizeof(span_path), "$.executable.extra_executable_spans[%zu]", s);
+        if (!check_object_keys(span, span_path, span_keys, span_keys, error_buf, error_buf_len)) {
+            return false;
+        }
+        uint32_t s_start = 0;
+        uint32_t s_end = 0;
+        if (!parse_uint32(obj_get(span, "start"), &s_start) || !parse_uint32(obj_get(span, "end"), &s_end) || s_end <= s_start) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "%s: end must be greater than start", span_path);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The module list (check 8). */
+static bool manifest_parse_modules(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    /* 8. modules validation */
+    mp->mods_node = obj_get(root, "modules");
+    if (!mp->mods_node || mp->mods_node->type != JSON_ARRAY) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.modules: must be an array");
+        return false;
+    }
+    if (mp->mods_node->u.arr.count > MAX_MODULES) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.modules: contains %zu modules; maximum is %d", mp->mods_node->u.arr.count, MAX_MODULES);
+        return false;
+    }
+    /* guest_path and load_address_evidence are optional schema v1 module declarations: the
+       manifest names where a guest module's image lives on the PSP's own device tree, and how
+       its base was established. Both are part of the schema and are validated by the Python
+       parser, so they belong in the accepted set here rather than being rejected as unknown
+       fields -- rejecting them made the two parsers disagree on any manifest that uses them. */
+    static const char * const allowed_mod_keys[] = {"name", "load_address", "required", "role",
+                                                    "guest_path", "load_address_evidence",
+                                                    "placement", NULL};
+    static const char * const required_mod_keys[] = {"name", "required", "role", NULL};
+    for (size_t i = 0; i < mp->mods_node->u.arr.count; i++) {
+        JsonNode *m = mp->mods_node->u.arr.items[i];
+        char mod_path[64];
+        snprintf(mod_path, sizeof(mod_path), "$.modules[%zu]", i);
+        if (!check_object_keys(m, mod_path, allowed_mod_keys, required_mod_keys, error_buf, error_buf_len)) {
+            return false;
+        }
+        JsonNode *mname = obj_get(m, "name");
+        if (!mname || mname->type != JSON_STRING || !is_valid_filename(mname->u.str_val)) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].name: must be a portable module filename without path separators", i);
+            return false;
+        }
+        /* Check case-insensitive duplicate module names */
+        for (size_t prev = 0; prev < i; prev++) {
+            JsonNode *pm = mp->mods_node->u.arr.items[prev];
+            JsonNode *pname = obj_get(pm, "name");
+            if (pname && pname->type == JSON_STRING) {
+                if (nk_ascii_casecmp(pname->u.str_val, mname->u.str_val) == 0)
+                {
+                    if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].name: duplicate module name under case-insensitive comparison", i);
+                    return false;
+                }
+            }
+        }
+
+        JsonNode *req_node = obj_get(m, "required");
+        if (!req_node || req_node->type != JSON_BOOL) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].required: must be a boolean", i);
+            return false;
+        }
+
+        JsonNode *role_node = obj_get(m, "role");
+        if (!role_node || role_node->type != JSON_STRING) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].role: must be a string", i);
+            return false;
+        }
+        const char *role_str = role_node->u.str_val;
+        if (strcmp(role_str, "guest-prx") != 0 && strcmp(role_str, "hle-capability") != 0 && strcmp(role_str, "optional-guest-prx") != 0) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].role: unsupported module role", i);
+            return false;
+        }
+        if (strcmp(role_str, "optional-guest-prx") == 0 && req_node->u.bool_val) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu]: optional-guest-prx cannot be marked required", i);
+            return false;
+        }
+        if (strcmp(role_str, "hle-capability") == 0 && !req_node->u.bool_val) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu]: hle-capability must be marked required", i);
+            return false;
+        }
+        /* placement "runtime": the module carries no address; it is translated position-
+           independently and laid out by the guest allocator when the game loads it. Absent
+           or "fixed" keeps the manifest load_address contract below. Mirrors
+           validate_modules in tools/title_manifest.py. */
+        bool runtime_placed = false;
+        JsonNode *placement_node = obj_get(m, "placement");
+        if (placement_node) {
+            if (placement_node->type != JSON_STRING ||
+                (strcmp(placement_node->u.str_val, "fixed") != 0 &&
+                 strcmp(placement_node->u.str_val, "runtime") != 0)) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].placement: unsupported module placement", i);
+                return false;
+            }
+            runtime_placed = strcmp(placement_node->u.str_val, "runtime") == 0;
+        }
+        uint32_t mod_addr = 0;
+        if (runtime_placed) {
+            if (strcmp(role_str, "guest-prx") != 0 && strcmp(role_str, "optional-guest-prx") != 0) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].placement: only a guest module is placed by the runtime", i);
+                return false;
+            }
+            if (obj_get(m, "load_address") || obj_get(m, "load_address_evidence")) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: a runtime-placed module has no manifest load address", i);
+                return false;
+            }
+        } else {
+            if (!parse_uint32(obj_get(m, "load_address"), &mod_addr)) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: invalid address", i);
+                return false;
+            }
+            for (size_t prev = 0; prev < i; prev++) {
+                uint32_t prev_addr = 0;
+                if (parse_uint32(obj_get(mp->mods_node->u.arr.items[prev], "load_address"), &prev_addr)) {
+                    if (prev_addr == mod_addr) {
+                        if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: duplicate module load address", i);
+                        return false;
+                    }
+                }
+            }
+        }
+        if (!runtime_placed &&
+            (strcmp(role_str, "guest-prx") == 0 || strcmp(role_str, "optional-guest-prx") == 0)) {
+            /* A guest module's code AND data live at load_address, so it must be real user RAM:
+               a base outside it lets translated code run while every data write is dropped (the
+               late-PRX bases once sat at 0x322xxxxx). The Python parser enforces the same window. */
+            if (mod_addr < GUEST_MODULE_RAM_LO || mod_addr >= GUEST_MODULE_RAM_HI) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: guest module base must lie in user RAM [0x%08x, 0x%08x)", i, GUEST_MODULE_RAM_LO, GUEST_MODULE_RAM_HI);
+                return false;
+            }
+        }
+        JsonNode *gpath_node = obj_get(m, "guest_path");
+        if (gpath_node) {
+            if (gpath_node->type != JSON_STRING || !is_guest_device_path(gpath_node->u.str_val)) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].guest_path: must be an absolute PSP device path (e.g. disc0:/...)", i);
+                return false;
+            }
+        }
+        JsonNode *evidence_node = obj_get(m, "load_address_evidence");
+        if (evidence_node) {
+            if (evidence_node->type != JSON_STRING || !is_load_address_evidence(evidence_node->u.str_val)) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address_evidence: unsupported evidence class", i);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/* The filesystem object, without loose content roots (check 9). */
+static bool manifest_parse_filesystem(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    /* 9. filesystem validation */
+    JsonNode *fs_node = obj_get(root, "filesystem");
+    /* executable/module_dir/psp_header/disc_image are optional input-location declarations
+     * (issue #196 Phase 4): a manifest declares where its private inputs live.
+     * The runtime consumes only the required runtime-filesystem contract today;
+     * the optional declarations are accepted (and validated) for tool parity. */
+    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "executable", "module_dir", "psp_header", "disc_image", "loose_content_roots", NULL};
+    static const char * const required_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", NULL};
+    if (!check_object_keys(fs_node, "$.filesystem", allowed_fs_keys, required_fs_keys, error_buf, error_buf_len)) {
+        return false;
+    }
+    mp->dr_node = obj_get(fs_node, "data_root");
+    mp->ms_node = obj_get(fs_node, "memory_stick_root");
+    if (!mp->dr_node || mp->dr_node->type != JSON_STRING ||
+        (mp->dr_node->u.str_val[0] && !is_valid_portable_path(mp->dr_node->u.str_val))) {
+        if (error_buf) snprintf(error_buf, error_buf_len,
+            "$.filesystem.data_root: must be empty or a portable relative POSIX-style path");
+        return false;
+    }
+    if (!mp->ms_node || mp->ms_node->type != JSON_STRING || !is_valid_portable_path(mp->ms_node->u.str_val)) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.memory_stick_root: must be a portable relative POSIX-style path");
+        return false;
+    }
+    {
+        /* Paths the manager hands to Make keep the strict Make-safe component rule. */
+        static const char * const optional_fs_paths[] = {"executable", "module_dir", "psp_header"};
+        for (int oi = 0; oi < 3; oi++) {
+            JsonNode *opt_node = obj_get(fs_node, optional_fs_paths[oi]);
+            if (opt_node && (opt_node->type != JSON_STRING || !is_valid_portable_path(opt_node->u.str_val))) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "$.filesystem.%s: must be a portable relative POSIX-style path", optional_fs_paths[oi]);
+                return false;
+            }
+        }
+        JsonNode *disc_image_node = obj_get(fs_node, "disc_image");
+        if (disc_image_node && (disc_image_node->type != JSON_STRING || !is_valid_disc_image_path(disc_image_node->u.str_val))) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "$.filesystem.disc_image: must be a relative POSIX-style path without Windows-forbidden characters");
+            return false;
+        }
+    }
+    JsonNode *pfx_node = obj_get(fs_node, "device_prefixes");
+    if (!pfx_node || pfx_node->type != JSON_ARRAY) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes: must be an array");
+        return false;
+    }
+    if (pfx_node->u.arr.count > 16) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes: contains %zu items; maximum is 16", pfx_node->u.arr.count);
+        return false;
+    }
+    for (size_t p = 0; p < pfx_node->u.arr.count; p++) {
+        JsonNode *item = pfx_node->u.arr.items[p];
+        if (!item || item->type != JSON_STRING) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes[%zu]: must be a string", p);
+            return false;
+        }
+        const char *ps = item->u.str_val;
+        size_t plen = strlen(ps);
+        if (plen < 2 || plen > 17 || ps[plen - 1] != ':' || !isalpha((unsigned char)ps[0])) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes[%zu]: must look like host0: or ms0:", p);
+            return false;
+        }
+        for (size_t prev = 0; prev < p; prev++) {
+            if (nk_ascii_casecmp(pfx_node->u.arr.items[prev]->u.str_val, ps) == 0)
+            {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes[%zu]: duplicate device prefix", p);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/* The optional loose content roots, canonicalised by precedence (check 9). */
+static bool manifest_parse_loose_roots(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    JsonNode *fs_node = obj_get(root, "filesystem");
+    JsonNode *loose_node = obj_get(fs_node, "loose_content_roots");
+    if (loose_node) {
+        if (loose_node->type != JSON_ARRAY) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.filesystem.loose_content_roots: must be an array");
+            return false;
+        }
+        if (loose_node->u.arr.count > MAX_LOOSE_CONTENT_ROOTS) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                                    "$.filesystem.loose_content_roots: contains %zu items; maximum is %d",
+                                    loose_node->u.arr.count, MAX_LOOSE_CONTENT_ROOTS);
+            return false;
+        }
+        static const char * const allowed_root_keys[] = {
+            "root", "mount", "precedence", "skip_primary_root", "exclude", NULL
+        };
+        static const char * const required_root_keys[] = {"root", "mount", "precedence", NULL};
+        for (size_t i = 0; i < loose_node->u.arr.count; i++) {
+            char item_path[96];
+            snprintf(item_path, sizeof(item_path), "$.filesystem.loose_content_roots[%zu]", i);
+            JsonNode *item = loose_node->u.arr.items[i];
+            if (!check_object_keys(item, item_path, allowed_root_keys,
+                                   required_root_keys, error_buf, error_buf_len)) {
+                return false;
+            }
+            JsonNode *root_path = obj_get(item, "root");
+            JsonNode *mount = obj_get(item, "mount");
+            JsonNode *priority = obj_get(item, "precedence");
+            JsonNode *skip_primary_node = obj_get(item, "skip_primary_root");
+            JsonNode *exclude_node = obj_get(item, "exclude");
+            if (!root_path || root_path->type != JSON_STRING ||
+                strlen(root_path->u.str_val) > 240 ||
+                !is_valid_loose_root_path(root_path->u.str_val)) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.root: must be '.' or a portable relative POSIX-style path without traversal",
+                    item_path);
+                return false;
+            }
+            if (!mount || mount->type != JSON_STRING || strlen(mount->u.str_val) > 240 ||
+                (mount->u.str_val[0] && !is_valid_portable_path(mount->u.str_val))) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.mount: must be empty or a portable relative POSIX-style path",
+                    item_path);
+                return false;
+            }
+            uint32_t precedence = 0;
+            if (!parse_uint32(priority, &precedence) || precedence > 65535u) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.precedence: must be an integer in range 0..65535", item_path);
+                return false;
+            }
+            bool skip_primary = strcmp(root_path->u.str_val, ".") == 0;
+            if (skip_primary_node) {
+                if (skip_primary_node->type != JSON_BOOL) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.skip_primary_root: must be a boolean", item_path);
+                    return false;
+                }
+                skip_primary = skip_primary_node->u.bool_val;
+            }
+            if (skip_primary != (strcmp(root_path->u.str_val, ".") == 0)) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.skip_primary_root: must be true exactly when root is '.'",
+                    item_path);
+                return false;
+            }
+            if (exclude_node && exclude_node->type != JSON_ARRAY) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.exclude: must be an array", item_path);
+                return false;
+            }
+            size_t exclude_count = exclude_node ? exclude_node->u.arr.count : 0u;
+            if (exclude_count > MAX_LOOSE_CONTENT_EXCLUDES) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "%.72s.exclude: contains %zu items; maximum is %d",
+                    item_path, exclude_count, MAX_LOOSE_CONTENT_EXCLUDES);
+                return false;
+            }
+            for (size_t exclude_index = 0; exclude_index < exclude_count; exclude_index++) {
+                JsonNode *exclude_path = exclude_node->u.arr.items[exclude_index];
+                char exclude_item_path[128];
+                snprintf(exclude_item_path, sizeof(exclude_item_path),
+                         "%.64s.exclude[%zu]", item_path, exclude_index);
+                if (!exclude_path || exclude_path->type != JSON_STRING ||
+                    strlen(exclude_path->u.str_val) > 240 ||
+                    !is_valid_portable_path(exclude_path->u.str_val)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.120s: must be a portable relative POSIX-style path without traversal",
+                        exclude_item_path);
+                    return false;
+                }
+                for (size_t previous_exclude = 0; previous_exclude < exclude_index;
+                     previous_exclude++) {
+                    if (nk_ascii_casecmp(mp->loose_root_excludes[i][previous_exclude],
+                                          exclude_path->u.str_val) == 0) {
+                        if (error_buf) snprintf(error_buf, error_buf_len,
+                            "%.120s: duplicate excluded path", exclude_item_path);
+                        return false;
+                    }
+                }
+                snprintf(mp->loose_root_excludes[i][exclude_index],
+                         sizeof(mp->loose_root_excludes[i][exclude_index]), "%s",
+                         exclude_path->u.str_val);
+            }
+            for (size_t previous = 0; previous < i; previous++) {
+                if (mp->loose_root_precedence[previous] == precedence) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.precedence: duplicate loose-content precedence", item_path);
+                    return false;
+                }
+                if (nk_ascii_casecmp(mp->loose_root_paths[previous], root_path->u.str_val) == 0) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.root: duplicate loose-content root", item_path);
+                    return false;
+                }
+                if (loose_root_paths_overlap(mp->loose_root_paths[previous], root_path->u.str_val)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len,
+                        "%.72s.root: overlapping loose-content roots", item_path);
+                    return false;
+                }
+            }
+            snprintf(mp->loose_root_paths[i], sizeof(mp->loose_root_paths[i]), "%s", root_path->u.str_val);
+            snprintf(mp->loose_root_mounts[i], sizeof(mp->loose_root_mounts[i]), "%s", mount->u.str_val);
+            mp->loose_root_exclude_counts[i] = exclude_count;
+            mp->loose_root_skip_primary[i] = skip_primary;
+            mp->loose_root_precedence[i] = precedence;
+            mp->loose_root_count++;
+        }
+        /* Array order is canonicalized by numeric precedence, so every consumer
+         * applies the same first-wins duplicate-file rule. */
+        for (size_t i = 1; i < mp->loose_root_count; i++) {
+            size_t j = i;
+            while (j > 0 && mp->loose_root_precedence[j] < mp->loose_root_precedence[j - 1]) {
+                char path_swap[241], mount_swap[241];
+                char excludes_swap[MAX_LOOSE_CONTENT_EXCLUDES][241];
+                size_t exclude_count_swap = mp->loose_root_exclude_counts[j];
+                bool skip_primary_swap = mp->loose_root_skip_primary[j];
+                memcpy(path_swap, mp->loose_root_paths[j], sizeof(path_swap));
+                memcpy(mp->loose_root_paths[j], mp->loose_root_paths[j - 1], sizeof(path_swap));
+                memcpy(mp->loose_root_paths[j - 1], path_swap, sizeof(path_swap));
+                memcpy(mount_swap, mp->loose_root_mounts[j], sizeof(mount_swap));
+                memcpy(mp->loose_root_mounts[j], mp->loose_root_mounts[j - 1], sizeof(mount_swap));
+                memcpy(mp->loose_root_mounts[j - 1], mount_swap, sizeof(mount_swap));
+                memcpy(excludes_swap, mp->loose_root_excludes[j], sizeof(excludes_swap));
+                memcpy(mp->loose_root_excludes[j], mp->loose_root_excludes[j - 1], sizeof(excludes_swap));
+                memcpy(mp->loose_root_excludes[j - 1], excludes_swap, sizeof(excludes_swap));
+                mp->loose_root_exclude_counts[j] = mp->loose_root_exclude_counts[j - 1];
+                mp->loose_root_exclude_counts[j - 1] = exclude_count_swap;
+                mp->loose_root_skip_primary[j] = mp->loose_root_skip_primary[j - 1];
+                mp->loose_root_skip_primary[j - 1] = skip_primary_swap;
+                uint32_t priority_swap = mp->loose_root_precedence[j];
+                mp->loose_root_precedence[j] = mp->loose_root_precedence[j - 1];
+                mp->loose_root_precedence[j - 1] = priority_swap;
+                j--;
+            }
+        }
+    }
+    return true;
+}
+
+/* The hle, verification and codegen profiles (checks 10-11). */
+static bool manifest_parse_profiles(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    /* 10. hle_profile & verification_profile */
+    mp->hle_node = obj_get(root, "hle_profile");
+    if (!mp->hle_node || mp->hle_node->type != JSON_STRING || !is_valid_identifier(mp->hle_node->u.str_val)) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.hle_profile: must match ^[a-z0-9][a-z0-9._-]{0,63}$");
+        return false;
+    }
+    JsonNode *vp_node = obj_get(root, "verification_profile");
+    if (!vp_node || vp_node->type != JSON_STRING || !is_valid_identifier(vp_node->u.str_val)) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.verification_profile: must match ^[a-z0-9][a-z0-9._-]{0,63}$");
+        return false;
+    }
+
+    /* 11. codegen_profile (optional) */
+    mp->cg_node = obj_get(root, "codegen_profile");
+    if (mp->cg_node) {
+        if (mp->cg_node->type != JSON_STRING) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.codegen_profile: must be a string");
+            return false;
+        }
+        if (strcmp(mp->cg_node->u.str_val, "none") != 0 && strcmp(mp->cg_node->u.str_val, "hst") != 0) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.codegen_profile: unsupported codegen profile");
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The feature requirements (check 12). */
+static bool manifest_parse_features(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    /* 12. feature_requirements */
+    JsonNode *feats_node = obj_get(root, "feature_requirements");
+    if (!feats_node || feats_node->type != JSON_ARRAY) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.feature_requirements: must be an array");
+        return false;
+    }
+    if (feats_node->u.arr.count > 64) {
+        if (error_buf) snprintf(error_buf, error_buf_len, "$.feature_requirements: contains %zu items; maximum is 64", feats_node->u.arr.count);
+        return false;
+    }
+    for (size_t i = 0; i < feats_node->u.arr.count; i++) {
+        JsonNode *fitem = feats_node->u.arr.items[i];
+        if (!fitem || fitem->type != JSON_STRING || !is_valid_identifier(fitem->u.str_val)) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.feature_requirements[%zu]: must match ^[a-z0-9][a-z0-9._-]{0,63}$", i);
+            return false;
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(feats_node->u.arr.items[j]->u.str_val, fitem->u.str_val) == 0) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.feature_requirements: duplicate feature requirement '%s'", fitem->u.str_val);
+                return false;
+            }
+        }
+        if (strcmp(fitem->u.str_val, "font") == 0 || strcmp(fitem->u.str_val, "font-firmware") == 0) {
+            mp->has_font_feature = true;
+        }
+        if (strcmp(fitem->u.str_val, "psmf") == 0) {
+            mp->has_psmf_feature = true;
+        }
+    }
+    return true;
+}
+
+/* The optional compatibility manifest and notes (checks 13-14). */
+static bool manifest_parse_optional_fields(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    /* 13. compatibility_manifest (optional) */
+    JsonNode *compat_mf_node = obj_get(root, "compatibility_manifest");
+    if (compat_mf_node) {
+        if (compat_mf_node->type != JSON_STRING || !is_valid_portable_path(compat_mf_node->u.str_val)) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.compatibility_manifest: must be a portable relative POSIX-style path");
+            return false;
+        }
+    }
+
+    /* 14. notes (optional) */
+    JsonNode *notes_node = obj_get(root, "notes");
+    if (notes_node) {
+        if (notes_node->type != JSON_STRING || strlen(notes_node->u.str_val) > 2048) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.notes: must be a string <= 2048 characters");
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The optional runtime bindings (check 15). */
+static bool manifest_parse_runtime_bindings(ManifestParse *mp) {
+    char *error_buf = mp->error_buf;
+    size_t error_buf_len = mp->error_buf_len;
+    JsonNode *root = mp->root;
+    /* 15. runtime_bindings (optional) */
+    JsonNode *rb_node = obj_get(root, "runtime_bindings");
+    if (rb_node) {
+        if (rb_node->type != JSON_OBJECT) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings: must be an object");
+            return false;
+        }
+        JsonNode *retired_vf = obj_get(rb_node, "vblank_frame_counter_addr");
+        if (retired_vf) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_frame_counter_addr: retired; runtime does not write guest VBLANK counters");
+            return false;
+        }
+        JsonNode *retired_vs = obj_get(rb_node, "vblank_vsync_counter_addr");
+        if (retired_vs) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_vsync_counter_addr: retired; runtime does not write guest VBLANK counters");
+            return false;
+        }
+        JsonNode *retired_libfont = obj_get(rb_node, "libfont_ready_flag_addr");
+        if (retired_libfont) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "$.runtime_bindings.libfont_ready_flag_addr: LIBFONT_READY_FLAG_RETIRED: "
+                "host readiness injection is not supported yet; remove this field and "
+                "provide translated guest libfont startup");
+            return false;
+        }
+        static const char * const retired_assist_keys[] = {
+            "frame_ready_latch_addr", "display_bringup", "runtime_sync", NULL
+        };
+        for (int r = 0; retired_assist_keys[r]; r++) {
+            if (obj_get(rb_node, retired_assist_keys[r])) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "$.runtime_bindings.%s: HLE_TITLE_ASSIST_RETIRED: the runtime no longer "
+                    "replays title display bring-up, seeds runtime sync state or advances a "
+                    "frame latch; remove this field and let the title's own code initialize "
+                    "that state", retired_assist_keys[r]);
+                return false;
+            }
+        }
+        static const char * const allowed_rb_keys[] = {
+            "schema_version", "fallback_entry", "worker_thread_entry", "launcher_thread_entry",
+            "expected_data_file_count", "dispatch_aliases", "callback_terminators", NULL
+        };
+        static const char * const required_rb_keys[] = {"schema_version", NULL};
+        if (!check_object_keys(rb_node, "$.runtime_bindings", allowed_rb_keys, required_rb_keys, error_buf, error_buf_len)) {
+            return false;
+        }
+        JsonNode *rb_sv = obj_get(rb_node, "schema_version");
+        if (rb_sv->type != JSON_NUMBER || !rb_sv->u.num.is_integer || rb_sv->u.num.int_val != 1) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.schema_version: only runtime-binding schema version 1 is supported");
+            return false;
+        }
+        if (rb_node->u.obj.count <= 1) {
+            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings: must configure at least one binding; omit the block instead");
+            return false;
+        }
+
+        /* Validate scalar addresses in runtime_bindings */
+        static const char * const scalar_binding_fields[] = {
+            "fallback_entry", "worker_thread_entry", "launcher_thread_entry", NULL
+        };
+        for (int s = 0; scalar_binding_fields[s]; s++) {
+            JsonNode *s_node = obj_get(rb_node, scalar_binding_fields[s]);
+            if (s_node) {
+                uint32_t bind_addr = 0;
+                if (!parse_uint32(s_node, &bind_addr) || bind_addr == 0 || (bind_addr % 4 != 0)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.%s: must be a non-zero 4-byte aligned integer", scalar_binding_fields[s]);
+                    return false;
+                }
+                if (strcmp(scalar_binding_fields[s], "fallback_entry") == 0) mp->fallback_entry = bind_addr;
+            }
+        }
+
+        /* Check distinct worker and launcher */
+        JsonNode *wk = obj_get(rb_node, "worker_thread_entry");
+        JsonNode *ln = obj_get(rb_node, "launcher_thread_entry");
+        if (wk && ln) {
+            uint32_t wk_a = 0, ln_a = 0;
+            parse_uint32(wk, &wk_a);
+            parse_uint32(ln, &ln_a);
+            if (wk_a == ln_a) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings: worker and launcher must be distinct");
+                return false;
+            }
+        }
+
+        /* Check expected_data_file_count */
+        JsonNode *ef_node = obj_get(rb_node, "expected_data_file_count");
+        if (ef_node) {
+            uint32_t count = 0;
+            if (!parse_uint32(ef_node, &count) || count == 0 || count > 1000000) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.expected_data_file_count: must be > 0 and <= 1000000");
+                return false;
+            }
+            mp->expected_file_count = count;
+        }
+
+        /* Check dispatch_aliases */
+        JsonNode *da_node = obj_get(rb_node, "dispatch_aliases");
+        if (da_node) {
+            if (da_node->type != JSON_ARRAY) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.dispatch_aliases: must be an array");
+                return false;
+            }
+            if (da_node->u.arr.count == 0) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.dispatch_aliases: must not be empty; omit the field instead");
+                return false;
+            }
+            if (da_node->u.arr.count > 32) {
+                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.dispatch_aliases: contains %zu items; maximum is 32", da_node->u.arr.count);
+                return false;
+            }
+            uint32_t da_srcs[32];
+            uint32_t da_dsts[32];
+            static const char * const da_keys[] = {"from", "to", NULL};
+            for (size_t a = 0; a < da_node->u.arr.count; a++) {
+                JsonNode *da_item = da_node->u.arr.items[a];
+                char item_path[64];
+                snprintf(item_path, sizeof(item_path), "$.runtime_bindings.dispatch_aliases[%zu]", a);
+                if (!check_object_keys(da_item, item_path, da_keys, da_keys, error_buf, error_buf_len)) {
+                    return false;
+                }
+                uint32_t src = 0, dst = 0;
+                JsonNode *from_n = obj_get(da_item, "from");
+                JsonNode *to_n = obj_get(da_item, "to");
+                if (!parse_uint32(from_n, &src) || src == 0 || (src % 4 != 0)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len, "%s.from: must be a non-zero 4-byte aligned integer", item_path);
+                    return false;
+                }
+                if (!parse_uint32(to_n, &dst) || dst == 0 || (dst % 4 != 0)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len, "%s.to: must be a non-zero 4-byte aligned integer", item_path);
+                    return false;
+                }
+                if (is_core_reserved_target(src)) {
+                    if (error_buf) snprintf(error_buf, error_buf_len, "%s.from: 0x%08x is inside the core VFPU dispatch-target range", item_path, src);
+                    return false;
+                }
+                if (src == dst) {
+                    if (error_buf) snprintf(error_buf, error_buf_len, "%s: from and to must differ", item_path);
+                    return false;
+                }
+                for (size_t prev = 0; prev < a; prev++) {
+                    if (da_srcs[prev] == src) {
+                        if (error_buf) snprintf(error_buf, error_buf_len, "%s.from: duplicate alias source", item_path);
+                        return false;
+                    }
+                }
+                da_srcs[a] = src;
+                da_dsts[a] = dst;
+            }
+            for (size_t a = 0; a < da_node->u.arr.count; a++) {
+                for (size_t b = 0; b < da_node->u.arr.count; b++) {
+                    if (da_dsts[a] == da_srcs[b]) {
+                        if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.dispatch_aliases[%zu].to: is itself an alias source", a);
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+/* Copy the validated fields into the caller-provided slot (check 16). */
+static void manifest_build_slot(const ManifestParse *mp, OverlayStorageSlot *out) {
+    memset(out, 0, sizeof(*out));
+
+    snprintf(out->id, sizeof(out->id), "%s", mp->id_node->u.str_val);
+    if (mp->gn_node) {
+        snprintf(out->game_name, sizeof(out->game_name), "%s", mp->gn_node->u.str_val);
+    } else {
+        derive_game_name(out->id, out->game_name, sizeof(out->game_name));
+    }
+    snprintf(out->display_name, sizeof(out->display_name), "%s", mp->dn_node->u.str_val);
+    out->kind = mp->kind;
+
+    if (mp->disc_node) {
+        JsonNode *did = obj_get(mp->disc_node, "id");
+        snprintf(out->primary_disc_id, sizeof(out->primary_disc_id), "%s", did->u.str_val);
+
+        JsonNode *cr_node = obj_get(mp->disc_node, "compatible_revisions");
+        if (cr_node && cr_node->type == JSON_ARRAY) {
+            int c_count = 0;
+            for (size_t c = 0; c < cr_node->u.arr.count && c < MAX_COMPAT_DISC_IDS; c++) {
+                JsonNode *citem = cr_node->u.arr.items[c];
+                if (citem && citem->type == JSON_STRING) {
+                    snprintf(out->compat_ids_storage[c_count], 17, "%s", citem->u.str_val);
+                    out->compat_id_ptrs[c_count] = out->compat_ids_storage[c_count];
+                    c_count++;
+                }
+            }
+            out->compat_id_ptrs[c_count] = NULL;
+        }
+    }
+
+    out->executable_base = mp->exe_base;
+    out->executable_entry = mp->exe_entry; /* Canonical projection: represents executable.entry */
+    out->has_executable_base = true;
+    out->has_executable_entry = true;
+    /* Where a run starts: a declared fallback entry wins, as in the Python planner. */
+    out->run_entry = mp->fallback_entry ? mp->fallback_entry : mp->exe_entry;
+    snprintf(out->bss_metadata_source, sizeof(out->bss_metadata_source), "%s", mp->bss_src);
+    snprintf(out->data_root, sizeof(out->data_root), "%s", mp->dr_node->u.str_val);
+    out->loose_root_count = mp->loose_root_count;
+    for (size_t i = 0; i < mp->loose_root_count; i++) {
+        snprintf(out->loose_root_paths[i], sizeof(out->loose_root_paths[i]), "%s",
+                 mp->loose_root_paths[i]);
+        snprintf(out->loose_root_mounts[i], sizeof(out->loose_root_mounts[i]), "%s",
+                 mp->loose_root_mounts[i]);
+        for (size_t exclude_index = 0;
+             exclude_index < mp->loose_root_exclude_counts[i]; exclude_index++) {
+            snprintf(out->loose_root_exclude_paths[i][exclude_index],
+                     sizeof(out->loose_root_exclude_paths[i][exclude_index]), "%s",
+                     mp->loose_root_excludes[i][exclude_index]);
+            out->loose_root_exclude_ptrs[i][exclude_index] =
+                out->loose_root_exclude_paths[i][exclude_index];
+        }
+        out->loose_roots[i].root = out->loose_root_paths[i];
+        out->loose_roots[i].mount = out->loose_root_mounts[i];
+        out->loose_roots[i].precedence = mp->loose_root_precedence[i];
+        out->loose_roots[i].skip_primary_root = mp->loose_root_skip_primary[i];
+        out->loose_roots[i].exclude = mp->loose_root_exclude_counts[i]
+            ? out->loose_root_exclude_ptrs[i] : NULL;
+        out->loose_roots[i].exclude_count = (int)mp->loose_root_exclude_counts[i];
+    }
+    snprintf(out->memory_stick_root, sizeof(out->memory_stick_root), "%s", mp->ms_node->u.str_val);
+    snprintf(out->hle_profile, sizeof(out->hle_profile), "%s", mp->hle_node->u.str_val);
+
+    if (mp->cg_node && mp->cg_node->type == JSON_STRING) {
+        snprintf(out->codegen_profile, sizeof(out->codegen_profile), "%s", mp->cg_node->u.str_val);
+    } else {
+        snprintf(out->codegen_profile, sizeof(out->codegen_profile), "none");
+    }
+
+    out->expected_data_file_count = mp->expected_file_count;
+    out->requires_font_firmware = mp->has_font_feature;
+    out->requires_psmf = mp->has_psmf_feature;
+
+    out->module_count = (int)mp->mods_node->u.arr.count;
+    for (int i = 0; i < out->module_count; i++) {
+        JsonNode *m = mp->mods_node->u.arr.items[i];
+        JsonNode *mn = obj_get(m, "name");
+        snprintf(out->module_names[i], sizeof(out->module_names[i]), "%s", mn->u.str_val);
+        out->modules[i].name = out->module_names[i];
+
+        /* A runtime-placed module has no load_address and records 0: its base is chosen
+           when the game loads it. A fixed guest-module base always lies in user RAM, so 0
+           never names a fixed placement. */
+        uint32_t laddr = 0;
+        parse_uint32(obj_get(m, "load_address"), &laddr);
+        out->modules[i].load_address = laddr;
+
+        JsonNode *req = obj_get(m, "required");
+        out->modules[i].required = (req && req->type == JSON_BOOL) ? req->u.bool_val : false;
+    }
+
+    out->entry.id = out->id;
+    out->entry.game_name = out->game_name;
+    out->entry.display_name = out->display_name;
+    out->entry.kind = out->kind;
+    out->entry.primary_disc_id = out->primary_disc_id[0] ? out->primary_disc_id : NULL;
+    out->entry.compatible_disc_ids = out->compat_id_ptrs[0] ? out->compat_id_ptrs : NULL;
+    out->entry.executable_base = out->executable_base;
+    out->entry.executable_entry = out->executable_entry;
+    out->entry.has_executable_base = out->has_executable_base;
+    out->entry.has_executable_entry = out->has_executable_entry;
+    out->entry.run_entry = out->run_entry;
+    out->entry.bss_metadata_source = out->bss_metadata_source;
+    out->entry.data_root = out->data_root;
+    out->entry.loose_content_roots = out->loose_root_count ? out->loose_roots : NULL;
+    out->entry.loose_content_root_count = (int)out->loose_root_count;
+    out->entry.memory_stick_root = out->memory_stick_root;
+    out->entry.hle_profile = out->hle_profile;
+    out->entry.codegen_profile = out->codegen_profile;
+    out->entry.expected_data_file_count = out->expected_data_file_count;
+    out->entry.requires_font_firmware = out->requires_font_firmware;
+    out->entry.requires_psmf = out->requires_psmf;
+    out->entry.modules = out->modules;
+    out->entry.module_count = out->module_count;
+}
+
+/* Check the new identities against the public catalog and the loaded overlays (check 17). */
+static bool manifest_check_collision(const OverlayStorageSlot *temp, bool allow_override,
+                                     char *error_buf, size_t error_buf_len) {
+    bool collision = false;
+    const char *collision_id = NULL;
+
+    /* Check against public canonical catalog */
+    for (int i = 0; i < nk_title_catalog_count; i++) {
+        const NkTitleEntry *pub = &nk_title_catalog_entries[i];
+        if (strcmp(pub->id, temp->entry.id) == 0) {
+            collision = true;
+            collision_id = pub->id;
+            break;
+        }
+        if (temp->entry.primary_disc_id && pub->primary_disc_id) {
+            if (strcmp(pub->primary_disc_id, temp->entry.primary_disc_id) == 0) {
+                collision = true;
+                collision_id = pub->id;
+                break;
+            }
+        }
+        if (temp->entry.primary_disc_id && pub->compatible_disc_ids) {
+            for (int c = 0; pub->compatible_disc_ids[c]; c++) {
+                if (strcmp(pub->compatible_disc_ids[c], temp->entry.primary_disc_id) == 0) {
+                    collision = true;
+                    collision_id = pub->id;
+                    break;
+                }
+            }
+            if (collision) break;
+        }
+        if (temp->entry.compatible_disc_ids && pub->primary_disc_id) {
+            for (int c = 0; temp->entry.compatible_disc_ids[c]; c++) {
+                if (strcmp(temp->entry.compatible_disc_ids[c], pub->primary_disc_id) == 0) {
+                    collision = true;
+                    collision_id = pub->id;
+                    break;
+                }
+            }
+            if (collision) break;
+        }
+        if (temp->entry.compatible_disc_ids && pub->compatible_disc_ids) {
+            for (int c = 0; temp->entry.compatible_disc_ids[c]; c++) {
+                for (int pc = 0; pub->compatible_disc_ids[pc]; pc++) {
+                    if (strcmp(temp->entry.compatible_disc_ids[c], pub->compatible_disc_ids[pc]) == 0) {
+                        collision = true;
+                        collision_id = pub->id;
+                        break;
+                    }
+                }
+                if (collision) break;
+            }
+            if (collision) break;
+        }
+    }
+
+    /* The caller holds the catalog lock: registered entries point into these
+       slots, so collision checks and slot replacement must be indivisible
+       with package-status snapshots. */
+    /* Check against already-loaded external overlay identities */
+    if (!collision) {
+        for (int i = 0; i < s_overlay_slot_count; i++) {
+            const OverlayStorageSlot *ov = &s_overlay_slots[i];
+            /* Allow self-update if reloading the exact same overlay id */
+            if (strcmp(ov->entry.id, temp->entry.id) == 0) continue;
+
+            if (strcmp(ov->entry.id, temp->entry.id) == 0) {
+                collision = true;
+                collision_id = ov->entry.id;
+                break;
+            }
+            if (temp->entry.primary_disc_id && ov->entry.primary_disc_id) {
+                if (strcmp(ov->entry.primary_disc_id, temp->entry.primary_disc_id) == 0) {
+                    collision = true;
+                    collision_id = ov->entry.id;
+                    break;
+                }
+            }
+            if (temp->entry.primary_disc_id && ov->entry.compatible_disc_ids) {
+                for (int c = 0; ov->entry.compatible_disc_ids[c]; c++) {
+                    if (strcmp(ov->entry.compatible_disc_ids[c], temp->entry.primary_disc_id) == 0) {
+                        collision = true;
+                        collision_id = ov->entry.id;
+                        break;
+                    }
+                }
+                if (collision) break;
+            }
+            if (temp->entry.compatible_disc_ids && ov->entry.primary_disc_id) {
+                for (int c = 0; temp->entry.compatible_disc_ids[c]; c++) {
+                    if (strcmp(temp->entry.compatible_disc_ids[c], ov->entry.primary_disc_id) == 0) {
+                        collision = true;
+                        collision_id = ov->entry.id;
+                        break;
+                    }
+                }
+                if (collision) break;
+            }
+            if (temp->entry.compatible_disc_ids && ov->entry.compatible_disc_ids) {
+                for (int c = 0; temp->entry.compatible_disc_ids[c]; c++) {
+                    for (int pc = 0; ov->entry.compatible_disc_ids[pc]; pc++) {
+                        if (strcmp(temp->entry.compatible_disc_ids[c], ov->entry.compatible_disc_ids[pc]) == 0) {
+                            collision = true;
+                            collision_id = ov->entry.id;
+                            break;
+                        }
+                    }
+                    if (collision) break;
+                }
+                if (collision) break;
+            }
+        }
+    }
+
+    if (collision) {
+        if (!allow_override) {
+            if (error_buf) {
+                snprintf(error_buf, error_buf_len,
+                    "Overlay identity '%s' conflicts with public canonical catalog title '%s'; override forbidden in standard mode",
+                    temp->entry.id, collision_id);
+            }
+            return false;
+        } else {
+            fprintf(stderr, "[WARNING] Overriding title definition for '%s' with external manifest (conflict: '%s')!\n", temp->entry.id, collision_id);
+        }
+    }
+    return true;
+}
+
+/* Store the accepted manifest in the caller slot, or publish it as a catalog generation (#670). */
+static bool manifest_publish_slot(const OverlayStorageSlot *temp, NkTitleEntry *out_entry,
+                                  OverlayStorageSlot *validate_into) {
+    if (validate_into) {
+        *validate_into = *temp;
+        overlay_slot_anchor(validate_into);
+        if (out_entry) *out_entry = validate_into->entry;
+        return true;
+    }
+
+    /* Assign to multi-overlay storage slot */
+    int target_slot = -1;
+    for (int i = 0; i < s_overlay_slot_count; i++) {
+        if (strcmp(s_overlay_slots[i].entry.id, temp->entry.id) == 0) {
+            target_slot = i;
+            break;
+        }
+    }
+    if (target_slot == -1) {
+        if (s_overlay_slot_count < NK_MANIFEST_MAX_OVERLAYS) {
+            target_slot = s_overlay_slot_count++;
+        } else {
+            target_slot = NK_MANIFEST_MAX_OVERLAYS - 1; /* bounded replacement of last slot */
+        }
+    }
+
+    nk_title_catalog_set_overlay_storage_reset_locked(nk_manifest_reset_overlay_storage);
+    s_overlay_slots[target_slot] = *temp;
+    /* Re-anchor self pointers for the chosen slot */
+    OverlayStorageSlot *dest = &s_overlay_slots[target_slot];
+    overlay_slot_anchor(dest);
+
+    /* The parser-owned slot may back an entry already present in the catalog.
+       Publish its new contents as a catalog generation before unlocking. */
+    nk_title_catalog_advance_epoch_locked();
+
+    if (out_entry) {
+        *out_entry = dest->entry;
+    }
+
+    return true;
+}
+
 /* -----------------------------------------------------------------------------
  * Manifest Buffer Parser
  * -------------------------------------------------------------------------- */
@@ -527,1249 +1750,30 @@ static bool nk_manifest_parse_locked(
     JsonNode *root = json_parse(json_str, json_len, error_buf, error_buf_len);
     if (!root) return false;
 
-    char loose_root_paths[MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
-    char loose_root_mounts[MAX_LOOSE_CONTENT_ROOTS][241] = {{0}};
-    char loose_root_excludes[MAX_LOOSE_CONTENT_ROOTS][MAX_LOOSE_CONTENT_EXCLUDES][241] = {{{0}}};
-    size_t loose_root_exclude_counts[MAX_LOOSE_CONTENT_ROOTS] = {0};
-    bool loose_root_skip_primary[MAX_LOOSE_CONTENT_ROOTS] = {0};
-    uint32_t loose_root_precedence[MAX_LOOSE_CONTENT_ROOTS] = {0};
-    size_t loose_root_count = 0;
+    ManifestParse mp;
+    memset(&mp, 0, sizeof(mp));
+    mp.root = root;
+    mp.error_buf = error_buf;
+    mp.error_buf_len = error_buf_len;
 
-    /* 1. Root keys validation */
-    static const char * const allowed_root_keys[] = {
-        "schema_version", "id", "display_name", "kind", "disc", "executable",
-        "modules", "filesystem", "hle_profile", "feature_requirements",
-        "compatibility_manifest", "verification_profile", "codegen_profile", "notes",
-        "runtime_contract", "profile_zero", "runtime_bindings", "game_name", NULL
-    };
-    static const char * const required_root_keys[] = {
-        "schema_version", "id", "display_name", "kind", "executable",
-        "modules", "filesystem", "hle_profile", "feature_requirements",
-        "verification_profile", NULL
-    };
-
-    if (!check_object_keys(root, "$", allowed_root_keys, required_root_keys, error_buf, error_buf_len)) {
-        json_free(root);
-        return false;
+    bool ok = manifest_parse_identity(&mp) &&
+              manifest_parse_disc(&mp) &&
+              manifest_parse_executable(&mp) &&
+              manifest_parse_modules(&mp) &&
+              manifest_parse_filesystem(&mp) &&
+              manifest_parse_loose_roots(&mp) &&
+              manifest_parse_profiles(&mp) &&
+              manifest_parse_features(&mp) &&
+              manifest_parse_optional_fields(&mp) &&
+              manifest_parse_runtime_bindings(&mp);
+    if (ok) {
+        OverlayStorageSlot temp;
+        manifest_build_slot(&mp, &temp);
+        ok = manifest_check_collision(&temp, allow_override, error_buf, error_buf_len) &&
+             manifest_publish_slot(&temp, out_entry, validate_into);
     }
-
-    /* 2. schema_version == 1 */
-    JsonNode *sv_node = obj_get(root, "schema_version");
-    if (sv_node->type != JSON_NUMBER || !sv_node->u.num.is_integer || sv_node->u.num.int_val != 1) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.schema_version: only schema version 1 is supported");
-        json_free(root);
-        return false;
-    }
-
-    /* 3. id: valid identifier */
-    JsonNode *id_node = obj_get(root, "id");
-    if (id_node->type != JSON_STRING || !is_valid_identifier(id_node->u.str_val)) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.id: must match ^[a-z0-9][a-z0-9._-]{0,63}$");
-        json_free(root);
-        return false;
-    }
-
-    /* 4. display_name */
-    JsonNode *dn_node = obj_get(root, "display_name");
-    if (dn_node->type != JSON_STRING || strlen(dn_node->u.str_val) < 1 || strlen(dn_node->u.str_val) > 128) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.display_name: length must be in range 1..128");
-        json_free(root);
-        return false;
-    }
-
-    /* 4b. game_name: optional explicit build-name declaration (issue #196 Phase 4).
-     * The manager accepts -GameName, this field, or a portable id derivation —
-     * never an id-prefix mint. Same identifier contract as $.id. */
-    JsonNode *gn_node = obj_get(root, "game_name");
-    if (gn_node && (gn_node->type != JSON_STRING || !is_valid_identifier(gn_node->u.str_val))) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.game_name: must match ^[a-z0-9][a-z0-9._-]{0,63}$");
-        json_free(root);
-        return false;
-    }
-
-    /* 5. kind */
-    JsonNode *kind_node = obj_get(root, "kind");
-    if (kind_node->type != JSON_STRING) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.kind: must be a string");
-        json_free(root);
-        return false;
-    }
-    NkTitleKind kind;
-    if (strcmp(kind_node->u.str_val, "retail") == 0) kind = NK_TITLE_KIND_RETAIL;
-    else if (strcmp(kind_node->u.str_val, "synthetic") == 0) kind = NK_TITLE_KIND_SYNTHETIC;
-    else if (strcmp(kind_node->u.str_val, "homebrew") == 0) kind = NK_TITLE_KIND_HOMEBREW;
-    else {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.kind: unsupported title kind '%s'", kind_node->u.str_val);
-        json_free(root);
-        return false;
-    }
-
-    /* 6. disc object validation */
-    JsonNode *disc_node = obj_get(root, "disc");
-    if (kind == NK_TITLE_KIND_RETAIL) {
-        if (!disc_node || disc_node->type != JSON_OBJECT) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$: retail kind requires disc object");
-            json_free(root);
-            return false;
-        }
-        static const char * const allowed_disc_keys[] = {
-            "id", "region", "revision_policy", "compatible_revisions",
-            "require_local_compatibility_record", NULL
-        };
-        static const char * const required_disc_keys[] = {"id", "region", "revision_policy", NULL};
-        if (!check_object_keys(disc_node, "$.disc", allowed_disc_keys, required_disc_keys, error_buf, error_buf_len)) {
-            json_free(root);
-            return false;
-        }
-
-        JsonNode *disc_id_node = obj_get(disc_node, "id");
-        if (!disc_id_node || disc_id_node->type != JSON_STRING || !is_valid_disc_id(disc_id_node->u.str_val)) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.id: must match a nine-character PSP disc ID such as TEST00001");
-            json_free(root);
-            return false;
-        }
-
-        JsonNode *reg_node = obj_get(disc_node, "region");
-        if (!reg_node || reg_node->type != JSON_STRING) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.region: must be a string");
-            json_free(root);
-            return false;
-        }
-        const char *reg = reg_node->u.str_val;
-        if (strcmp(reg, "JP") != 0 && strcmp(reg, "NA") != 0 && strcmp(reg, "EU") != 0 &&
-            strcmp(reg, "KR") != 0 && strcmp(reg, "ASIA") != 0 && strcmp(reg, "OTHER") != 0) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.region: unsupported region");
-            json_free(root);
-            return false;
-        }
-
-        JsonNode *pol_node = obj_get(disc_node, "revision_policy");
-        if (!pol_node || pol_node->type != JSON_STRING) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.revision_policy: must be a string");
-            json_free(root);
-            return false;
-        }
-        const char *pol = pol_node->u.str_val;
-        if (strcmp(pol, "exact-disc-id") != 0 && strcmp(pol, "explicit-compatible-revisions") != 0) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.revision_policy: unsupported revision policy");
-            json_free(root);
-            return false;
-        }
-        JsonNode *local_record_node = obj_get(disc_node, "require_local_compatibility_record");
-        if (local_record_node && local_record_node->type != JSON_BOOL) {
-            if (error_buf) snprintf(error_buf, error_buf_len,
-                "$.disc.require_local_compatibility_record: must be a boolean");
-            json_free(root);
-            return false;
-        }
-
-        JsonNode *cr_node = obj_get(disc_node, "compatible_revisions");
-        if (strcmp(pol, "exact-disc-id") == 0) {
-            if (cr_node) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions: is forbidden for exact-disc-id policy");
-                json_free(root);
-                return false;
-            }
-        } else {
-            if (!cr_node || cr_node->type != JSON_ARRAY) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions: is required for explicit-compatible-revisions");
-                json_free(root);
-                return false;
-            }
-            if (cr_node->u.arr.count < 1 || cr_node->u.arr.count > MAX_COMPAT_DISC_IDS) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions: must contain 1..%d items", MAX_COMPAT_DISC_IDS);
-                json_free(root);
-                return false;
-            }
-            for (size_t c = 0; c < cr_node->u.arr.count; c++) {
-                JsonNode *citem = cr_node->u.arr.items[c];
-                if (!citem || citem->type != JSON_STRING || !is_valid_disc_id(citem->u.str_val)) {
-                    if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions[%zu]: must be a distinct PSP disc ID", c);
-                    json_free(root);
-                    return false;
-                }
-                if (strcmp(citem->u.str_val, disc_id_node->u.str_val) == 0) {
-                    if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions[%zu]: must be a distinct PSP disc ID from primary", c);
-                    json_free(root);
-                    return false;
-                }
-                for (size_t prev = 0; prev < c; prev++) {
-                    if (strcmp(cr_node->u.arr.items[prev]->u.str_val, citem->u.str_val) == 0) {
-                        if (error_buf) snprintf(error_buf, error_buf_len, "$.disc.compatible_revisions[%zu]: duplicate disc ID", c);
-                        json_free(root);
-                        return false;
-                    }
-                }
-            }
-        }
-    } else {
-        if (disc_node) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.disc: disc object is forbidden for non-retail kind '%s'", kind_node->u.str_val);
-            json_free(root);
-            return false;
-        }
-    }
-
-    /* 7. executable validation */
-    JsonNode *exe_node = obj_get(root, "executable");
-    static const char * const allowed_exe_keys[] = {
-        "base", "entry", "bss_metadata_source", "extra_executable_spans",
-        "load_address", "load_address_evidence", NULL
-    };
-    static const char * const required_exe_keys[] = {
-        "base", "entry", "bss_metadata_source", "extra_executable_spans", NULL
-    };
-    if (!check_object_keys(exe_node, "$.executable", allowed_exe_keys,
-                           required_exe_keys, error_buf, error_buf_len)) {
-        json_free(root);
-        return false;
-    }
-    uint32_t exe_base = 0;
-    uint32_t exe_entry = 0;
-    if (!parse_uint32(obj_get(exe_node, "base"), &exe_base)) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.base: invalid base address");
-        json_free(root);
-        return false;
-    }
-    if (!parse_uint32(obj_get(exe_node, "entry"), &exe_entry)) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.entry: invalid entry address");
-        json_free(root);
-        return false;
-    }
-    JsonNode *load_address_node = obj_get(exe_node, "load_address");
-    JsonNode *load_address_evidence_node = obj_get(exe_node, "load_address_evidence");
-    if (load_address_node) {
-        uint32_t load_address = 0;
-        if (!parse_uint32(load_address_node, &load_address)) {
-            if (error_buf) snprintf(error_buf, error_buf_len,
-                                    "$.executable.load_address: invalid address");
-            json_free(root);
-            return false;
-        }
-        if (exe_base != load_address) {
-            if (error_buf) snprintf(error_buf, error_buf_len,
-                                    "$.executable.base: must match load_address when a main executable load binding is declared");
-            json_free(root);
-            return false;
-        }
-        if (!load_address_evidence_node || load_address_evidence_node->type != JSON_STRING ||
-            !is_load_address_evidence(load_address_evidence_node->u.str_val)) {
-            if (error_buf) snprintf(error_buf, error_buf_len,
-                                    "$.executable.load_address_evidence: unsupported evidence class");
-            json_free(root);
-            return false;
-        }
-    } else if (load_address_evidence_node) {
-        if (error_buf) snprintf(error_buf, error_buf_len,
-                                "$.executable.load_address_evidence: requires load_address");
-        json_free(root);
-        return false;
-    }
-    JsonNode *bss_node = obj_get(exe_node, "bss_metadata_source");
-    if (!bss_node || bss_node->type != JSON_STRING) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.bss_metadata_source: must be a string");
-        json_free(root);
-        return false;
-    }
-    const char *bss_src = bss_node->u.str_val;
-    if (strcmp(bss_src, "elf") != 0 && strcmp(bss_src, "psp-header") != 0 && strcmp(bss_src, "none") != 0) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.bss_metadata_source: unsupported metadata source");
-        json_free(root);
-        return false;
-    }
-    JsonNode *spans_node = obj_get(exe_node, "extra_executable_spans");
-    if (!spans_node || spans_node->type != JSON_ARRAY) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.extra_executable_spans: must be an array");
-        json_free(root);
-        return false;
-    }
-    if (spans_node->u.arr.count > 64) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.executable.extra_executable_spans: contains %zu items; maximum is 64", spans_node->u.arr.count);
-        json_free(root);
-        return false;
-    }
-    for (size_t s = 0; s < spans_node->u.arr.count; s++) {
-        JsonNode *span = spans_node->u.arr.items[s];
-        static const char * const span_keys[] = {"start", "end", NULL};
-        char span_path[64];
-        snprintf(span_path, sizeof(span_path), "$.executable.extra_executable_spans[%zu]", s);
-        if (!check_object_keys(span, span_path, span_keys, span_keys, error_buf, error_buf_len)) {
-            json_free(root);
-            return false;
-        }
-        uint32_t s_start = 0;
-        uint32_t s_end = 0;
-        if (!parse_uint32(obj_get(span, "start"), &s_start) || !parse_uint32(obj_get(span, "end"), &s_end) || s_end <= s_start) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "%s: end must be greater than start", span_path);
-            json_free(root);
-            return false;
-        }
-    }
-
-    /* 8. modules validation */
-    JsonNode *mods_node = obj_get(root, "modules");
-    if (!mods_node || mods_node->type != JSON_ARRAY) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.modules: must be an array");
-        json_free(root);
-        return false;
-    }
-    if (mods_node->u.arr.count > MAX_MODULES) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.modules: contains %zu modules; maximum is %d", mods_node->u.arr.count, MAX_MODULES);
-        json_free(root);
-        return false;
-    }
-    /* guest_path and load_address_evidence are optional schema v1 module declarations: the
-       manifest names where a guest module's image lives on the PSP's own device tree, and how
-       its base was established. Both are part of the schema and are validated by the Python
-       parser, so they belong in the accepted set here rather than being rejected as unknown
-       fields -- rejecting them made the two parsers disagree on any manifest that uses them. */
-    static const char * const allowed_mod_keys[] = {"name", "load_address", "required", "role",
-                                                    "guest_path", "load_address_evidence",
-                                                    "placement", NULL};
-    static const char * const required_mod_keys[] = {"name", "required", "role", NULL};
-    for (size_t i = 0; i < mods_node->u.arr.count; i++) {
-        JsonNode *m = mods_node->u.arr.items[i];
-        char mod_path[64];
-        snprintf(mod_path, sizeof(mod_path), "$.modules[%zu]", i);
-        if (!check_object_keys(m, mod_path, allowed_mod_keys, required_mod_keys, error_buf, error_buf_len)) {
-            json_free(root);
-            return false;
-        }
-        JsonNode *mname = obj_get(m, "name");
-        if (!mname || mname->type != JSON_STRING || !is_valid_filename(mname->u.str_val)) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].name: must be a portable module filename without path separators", i);
-            json_free(root);
-            return false;
-        }
-        /* Check case-insensitive duplicate module names */
-        for (size_t prev = 0; prev < i; prev++) {
-            JsonNode *pm = mods_node->u.arr.items[prev];
-            JsonNode *pname = obj_get(pm, "name");
-            if (pname && pname->type == JSON_STRING) {
-                if (nk_ascii_casecmp(pname->u.str_val, mname->u.str_val) == 0)
-                {
-                    if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].name: duplicate module name under case-insensitive comparison", i);
-                    json_free(root);
-                    return false;
-                }
-            }
-        }
-
-        JsonNode *req_node = obj_get(m, "required");
-        if (!req_node || req_node->type != JSON_BOOL) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].required: must be a boolean", i);
-            json_free(root);
-            return false;
-        }
-
-        JsonNode *role_node = obj_get(m, "role");
-        if (!role_node || role_node->type != JSON_STRING) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].role: must be a string", i);
-            json_free(root);
-            return false;
-        }
-        const char *role_str = role_node->u.str_val;
-        if (strcmp(role_str, "guest-prx") != 0 && strcmp(role_str, "hle-capability") != 0 && strcmp(role_str, "optional-guest-prx") != 0) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].role: unsupported module role", i);
-            json_free(root);
-            return false;
-        }
-        if (strcmp(role_str, "optional-guest-prx") == 0 && req_node->u.bool_val) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu]: optional-guest-prx cannot be marked required", i);
-            json_free(root);
-            return false;
-        }
-        if (strcmp(role_str, "hle-capability") == 0 && !req_node->u.bool_val) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu]: hle-capability must be marked required", i);
-            json_free(root);
-            return false;
-        }
-        /* placement "runtime": the module carries no address; it is translated position-
-           independently and laid out by the guest allocator when the game loads it. Absent
-           or "fixed" keeps the manifest load_address contract below. Mirrors
-           validate_modules in tools/title_manifest.py. */
-        bool runtime_placed = false;
-        JsonNode *placement_node = obj_get(m, "placement");
-        if (placement_node) {
-            if (placement_node->type != JSON_STRING ||
-                (strcmp(placement_node->u.str_val, "fixed") != 0 &&
-                 strcmp(placement_node->u.str_val, "runtime") != 0)) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].placement: unsupported module placement", i);
-                json_free(root);
-                return false;
-            }
-            runtime_placed = strcmp(placement_node->u.str_val, "runtime") == 0;
-        }
-        uint32_t mod_addr = 0;
-        if (runtime_placed) {
-            if (strcmp(role_str, "guest-prx") != 0 && strcmp(role_str, "optional-guest-prx") != 0) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].placement: only a guest module is placed by the runtime", i);
-                json_free(root);
-                return false;
-            }
-            if (obj_get(m, "load_address") || obj_get(m, "load_address_evidence")) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: a runtime-placed module has no manifest load address", i);
-                json_free(root);
-                return false;
-            }
-        } else {
-            if (!parse_uint32(obj_get(m, "load_address"), &mod_addr)) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: invalid address", i);
-                json_free(root);
-                return false;
-            }
-            for (size_t prev = 0; prev < i; prev++) {
-                uint32_t prev_addr = 0;
-                if (parse_uint32(obj_get(mods_node->u.arr.items[prev], "load_address"), &prev_addr)) {
-                    if (prev_addr == mod_addr) {
-                        if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: duplicate module load address", i);
-                        json_free(root);
-                        return false;
-                    }
-                }
-            }
-        }
-        if (!runtime_placed &&
-            (strcmp(role_str, "guest-prx") == 0 || strcmp(role_str, "optional-guest-prx") == 0)) {
-            /* A guest module's code AND data live at load_address, so it must be real user RAM:
-               a base outside it lets translated code run while every data write is dropped (the
-               late-PRX bases once sat at 0x322xxxxx). The Python parser enforces the same window. */
-            if (mod_addr < GUEST_MODULE_RAM_LO || mod_addr >= GUEST_MODULE_RAM_HI) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address: guest module base must lie in user RAM [0x%08x, 0x%08x)", i, GUEST_MODULE_RAM_LO, GUEST_MODULE_RAM_HI);
-                json_free(root);
-                return false;
-            }
-        }
-        JsonNode *gpath_node = obj_get(m, "guest_path");
-        if (gpath_node) {
-            if (gpath_node->type != JSON_STRING || !is_guest_device_path(gpath_node->u.str_val)) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].guest_path: must be an absolute PSP device path (e.g. disc0:/...)", i);
-                json_free(root);
-                return false;
-            }
-        }
-        JsonNode *evidence_node = obj_get(m, "load_address_evidence");
-        if (evidence_node) {
-            if (evidence_node->type != JSON_STRING || !is_load_address_evidence(evidence_node->u.str_val)) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.modules[%zu].load_address_evidence: unsupported evidence class", i);
-                json_free(root);
-                return false;
-            }
-        }
-    }
-
-    /* 9. filesystem validation */
-    JsonNode *fs_node = obj_get(root, "filesystem");
-    /* executable/module_dir/psp_header/disc_image are optional input-location declarations
-     * (issue #196 Phase 4): a manifest declares where its private inputs live.
-     * The runtime consumes only the required runtime-filesystem contract today;
-     * the optional declarations are accepted (and validated) for tool parity. */
-    static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "executable", "module_dir", "psp_header", "disc_image", "loose_content_roots", NULL};
-    static const char * const required_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", NULL};
-    if (!check_object_keys(fs_node, "$.filesystem", allowed_fs_keys, required_fs_keys, error_buf, error_buf_len)) {
-        json_free(root);
-        return false;
-    }
-    JsonNode *dr_node = obj_get(fs_node, "data_root");
-    JsonNode *ms_node = obj_get(fs_node, "memory_stick_root");
-    if (!dr_node || dr_node->type != JSON_STRING ||
-        (dr_node->u.str_val[0] && !is_valid_portable_path(dr_node->u.str_val))) {
-        if (error_buf) snprintf(error_buf, error_buf_len,
-            "$.filesystem.data_root: must be empty or a portable relative POSIX-style path");
-        json_free(root);
-        return false;
-    }
-    if (!ms_node || ms_node->type != JSON_STRING || !is_valid_portable_path(ms_node->u.str_val)) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.memory_stick_root: must be a portable relative POSIX-style path");
-        json_free(root);
-        return false;
-    }
-    {
-        /* Paths the manager hands to Make keep the strict Make-safe component rule. */
-        static const char * const optional_fs_paths[] = {"executable", "module_dir", "psp_header"};
-        for (int oi = 0; oi < 3; oi++) {
-            JsonNode *opt_node = obj_get(fs_node, optional_fs_paths[oi]);
-            if (opt_node && (opt_node->type != JSON_STRING || !is_valid_portable_path(opt_node->u.str_val))) {
-                if (error_buf) snprintf(error_buf, error_buf_len,
-                    "$.filesystem.%s: must be a portable relative POSIX-style path", optional_fs_paths[oi]);
-                json_free(root);
-                return false;
-            }
-        }
-        JsonNode *disc_node = obj_get(fs_node, "disc_image");
-        if (disc_node && (disc_node->type != JSON_STRING || !is_valid_disc_image_path(disc_node->u.str_val))) {
-            if (error_buf) snprintf(error_buf, error_buf_len,
-                "$.filesystem.disc_image: must be a relative POSIX-style path without Windows-forbidden characters");
-            json_free(root);
-            return false;
-        }
-    }
-    JsonNode *pfx_node = obj_get(fs_node, "device_prefixes");
-    if (!pfx_node || pfx_node->type != JSON_ARRAY) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes: must be an array");
-        json_free(root);
-        return false;
-    }
-    if (pfx_node->u.arr.count > 16) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes: contains %zu items; maximum is 16", pfx_node->u.arr.count);
-        json_free(root);
-        return false;
-    }
-    for (size_t p = 0; p < pfx_node->u.arr.count; p++) {
-        JsonNode *item = pfx_node->u.arr.items[p];
-        if (!item || item->type != JSON_STRING) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes[%zu]: must be a string", p);
-            json_free(root);
-            return false;
-        }
-        const char *ps = item->u.str_val;
-        size_t plen = strlen(ps);
-        if (plen < 2 || plen > 17 || ps[plen - 1] != ':' || !isalpha((unsigned char)ps[0])) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes[%zu]: must look like host0: or ms0:", p);
-            json_free(root);
-            return false;
-        }
-        for (size_t prev = 0; prev < p; prev++) {
-            if (nk_ascii_casecmp(pfx_node->u.arr.items[prev]->u.str_val, ps) == 0)
-            {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.filesystem.device_prefixes[%zu]: duplicate device prefix", p);
-                json_free(root);
-                return false;
-            }
-        }
-    }
-
-    JsonNode *loose_node = obj_get(fs_node, "loose_content_roots");
-    if (loose_node) {
-        if (loose_node->type != JSON_ARRAY) {
-            if (error_buf) snprintf(error_buf, error_buf_len,
-                                    "$.filesystem.loose_content_roots: must be an array");
-            json_free(root);
-            return false;
-        }
-        if (loose_node->u.arr.count > MAX_LOOSE_CONTENT_ROOTS) {
-            if (error_buf) snprintf(error_buf, error_buf_len,
-                                    "$.filesystem.loose_content_roots: contains %zu items; maximum is %d",
-                                    loose_node->u.arr.count, MAX_LOOSE_CONTENT_ROOTS);
-            json_free(root);
-            return false;
-        }
-        static const char * const allowed_root_keys[] = {
-            "root", "mount", "precedence", "skip_primary_root", "exclude", NULL
-        };
-        static const char * const required_root_keys[] = {"root", "mount", "precedence", NULL};
-        for (size_t i = 0; i < loose_node->u.arr.count; i++) {
-            char item_path[96];
-            snprintf(item_path, sizeof(item_path), "$.filesystem.loose_content_roots[%zu]", i);
-            JsonNode *item = loose_node->u.arr.items[i];
-            if (!check_object_keys(item, item_path, allowed_root_keys,
-                                   required_root_keys, error_buf, error_buf_len)) {
-                json_free(root);
-                return false;
-            }
-            JsonNode *root_path = obj_get(item, "root");
-            JsonNode *mount = obj_get(item, "mount");
-            JsonNode *priority = obj_get(item, "precedence");
-            JsonNode *skip_primary_node = obj_get(item, "skip_primary_root");
-            JsonNode *exclude_node = obj_get(item, "exclude");
-            if (!root_path || root_path->type != JSON_STRING ||
-                strlen(root_path->u.str_val) > 240 ||
-                !is_valid_loose_root_path(root_path->u.str_val)) {
-                if (error_buf) snprintf(error_buf, error_buf_len,
-                    "%.72s.root: must be '.' or a portable relative POSIX-style path without traversal",
-                    item_path);
-                json_free(root);
-                return false;
-            }
-            if (!mount || mount->type != JSON_STRING || strlen(mount->u.str_val) > 240 ||
-                (mount->u.str_val[0] && !is_valid_portable_path(mount->u.str_val))) {
-                if (error_buf) snprintf(error_buf, error_buf_len,
-                    "%.72s.mount: must be empty or a portable relative POSIX-style path",
-                    item_path);
-                json_free(root);
-                return false;
-            }
-            uint32_t precedence = 0;
-            if (!parse_uint32(priority, &precedence) || precedence > 65535u) {
-                if (error_buf) snprintf(error_buf, error_buf_len,
-                    "%.72s.precedence: must be an integer in range 0..65535", item_path);
-                json_free(root);
-                return false;
-            }
-            bool skip_primary = strcmp(root_path->u.str_val, ".") == 0;
-            if (skip_primary_node) {
-                if (skip_primary_node->type != JSON_BOOL) {
-                    if (error_buf) snprintf(error_buf, error_buf_len,
-                        "%.72s.skip_primary_root: must be a boolean", item_path);
-                    json_free(root);
-                    return false;
-                }
-                skip_primary = skip_primary_node->u.bool_val;
-            }
-            if (skip_primary != (strcmp(root_path->u.str_val, ".") == 0)) {
-                if (error_buf) snprintf(error_buf, error_buf_len,
-                    "%.72s.skip_primary_root: must be true exactly when root is '.'",
-                    item_path);
-                json_free(root);
-                return false;
-            }
-            if (exclude_node && exclude_node->type != JSON_ARRAY) {
-                if (error_buf) snprintf(error_buf, error_buf_len,
-                    "%.72s.exclude: must be an array", item_path);
-                json_free(root);
-                return false;
-            }
-            size_t exclude_count = exclude_node ? exclude_node->u.arr.count : 0u;
-            if (exclude_count > MAX_LOOSE_CONTENT_EXCLUDES) {
-                if (error_buf) snprintf(error_buf, error_buf_len,
-                    "%.72s.exclude: contains %zu items; maximum is %d",
-                    item_path, exclude_count, MAX_LOOSE_CONTENT_EXCLUDES);
-                json_free(root);
-                return false;
-            }
-            for (size_t exclude_index = 0; exclude_index < exclude_count; exclude_index++) {
-                JsonNode *exclude_path = exclude_node->u.arr.items[exclude_index];
-                char exclude_item_path[128];
-                snprintf(exclude_item_path, sizeof(exclude_item_path),
-                         "%.64s.exclude[%zu]", item_path, exclude_index);
-                if (!exclude_path || exclude_path->type != JSON_STRING ||
-                    strlen(exclude_path->u.str_val) > 240 ||
-                    !is_valid_portable_path(exclude_path->u.str_val)) {
-                    if (error_buf) snprintf(error_buf, error_buf_len,
-                        "%.120s: must be a portable relative POSIX-style path without traversal",
-                        exclude_item_path);
-                    json_free(root);
-                    return false;
-                }
-                for (size_t previous_exclude = 0; previous_exclude < exclude_index;
-                     previous_exclude++) {
-                    if (nk_ascii_casecmp(loose_root_excludes[i][previous_exclude],
-                                          exclude_path->u.str_val) == 0) {
-                        if (error_buf) snprintf(error_buf, error_buf_len,
-                            "%.120s: duplicate excluded path", exclude_item_path);
-                        json_free(root);
-                        return false;
-                    }
-                }
-                snprintf(loose_root_excludes[i][exclude_index],
-                         sizeof(loose_root_excludes[i][exclude_index]), "%s",
-                         exclude_path->u.str_val);
-            }
-            for (size_t previous = 0; previous < i; previous++) {
-                if (loose_root_precedence[previous] == precedence) {
-                    if (error_buf) snprintf(error_buf, error_buf_len,
-                        "%.72s.precedence: duplicate loose-content precedence", item_path);
-                    json_free(root);
-                    return false;
-                }
-                if (nk_ascii_casecmp(loose_root_paths[previous], root_path->u.str_val) == 0) {
-                    if (error_buf) snprintf(error_buf, error_buf_len,
-                        "%.72s.root: duplicate loose-content root", item_path);
-                    json_free(root);
-                    return false;
-                }
-                if (loose_root_paths_overlap(loose_root_paths[previous], root_path->u.str_val)) {
-                    if (error_buf) snprintf(error_buf, error_buf_len,
-                        "%.72s.root: overlapping loose-content roots", item_path);
-                    json_free(root);
-                    return false;
-                }
-            }
-            snprintf(loose_root_paths[i], sizeof(loose_root_paths[i]), "%s", root_path->u.str_val);
-            snprintf(loose_root_mounts[i], sizeof(loose_root_mounts[i]), "%s", mount->u.str_val);
-            loose_root_exclude_counts[i] = exclude_count;
-            loose_root_skip_primary[i] = skip_primary;
-            loose_root_precedence[i] = precedence;
-            loose_root_count++;
-        }
-        /* Array order is canonicalized by numeric precedence, so every consumer
-         * applies the same first-wins duplicate-file rule. */
-        for (size_t i = 1; i < loose_root_count; i++) {
-            size_t j = i;
-            while (j > 0 && loose_root_precedence[j] < loose_root_precedence[j - 1]) {
-                char path_swap[241], mount_swap[241];
-                char excludes_swap[MAX_LOOSE_CONTENT_EXCLUDES][241];
-                size_t exclude_count_swap = loose_root_exclude_counts[j];
-                bool skip_primary_swap = loose_root_skip_primary[j];
-                memcpy(path_swap, loose_root_paths[j], sizeof(path_swap));
-                memcpy(loose_root_paths[j], loose_root_paths[j - 1], sizeof(path_swap));
-                memcpy(loose_root_paths[j - 1], path_swap, sizeof(path_swap));
-                memcpy(mount_swap, loose_root_mounts[j], sizeof(mount_swap));
-                memcpy(loose_root_mounts[j], loose_root_mounts[j - 1], sizeof(mount_swap));
-                memcpy(loose_root_mounts[j - 1], mount_swap, sizeof(mount_swap));
-                memcpy(excludes_swap, loose_root_excludes[j], sizeof(excludes_swap));
-                memcpy(loose_root_excludes[j], loose_root_excludes[j - 1], sizeof(excludes_swap));
-                memcpy(loose_root_excludes[j - 1], excludes_swap, sizeof(excludes_swap));
-                loose_root_exclude_counts[j] = loose_root_exclude_counts[j - 1];
-                loose_root_exclude_counts[j - 1] = exclude_count_swap;
-                loose_root_skip_primary[j] = loose_root_skip_primary[j - 1];
-                loose_root_skip_primary[j - 1] = skip_primary_swap;
-                uint32_t priority_swap = loose_root_precedence[j];
-                loose_root_precedence[j] = loose_root_precedence[j - 1];
-                loose_root_precedence[j - 1] = priority_swap;
-                j--;
-            }
-        }
-    }
-
-    /* 10. hle_profile & verification_profile */
-    JsonNode *hle_node = obj_get(root, "hle_profile");
-    if (!hle_node || hle_node->type != JSON_STRING || !is_valid_identifier(hle_node->u.str_val)) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.hle_profile: must match ^[a-z0-9][a-z0-9._-]{0,63}$");
-        json_free(root);
-        return false;
-    }
-    JsonNode *vp_node = obj_get(root, "verification_profile");
-    if (!vp_node || vp_node->type != JSON_STRING || !is_valid_identifier(vp_node->u.str_val)) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.verification_profile: must match ^[a-z0-9][a-z0-9._-]{0,63}$");
-        json_free(root);
-        return false;
-    }
-
-    /* 11. codegen_profile (optional) */
-    JsonNode *cg_node = obj_get(root, "codegen_profile");
-    if (cg_node) {
-        if (cg_node->type != JSON_STRING) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.codegen_profile: must be a string");
-            json_free(root);
-            return false;
-        }
-        if (strcmp(cg_node->u.str_val, "none") != 0 && strcmp(cg_node->u.str_val, "hst") != 0) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.codegen_profile: unsupported codegen profile");
-            json_free(root);
-            return false;
-        }
-    }
-
-    /* 12. feature_requirements */
-    JsonNode *feats_node = obj_get(root, "feature_requirements");
-    if (!feats_node || feats_node->type != JSON_ARRAY) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.feature_requirements: must be an array");
-        json_free(root);
-        return false;
-    }
-    if (feats_node->u.arr.count > 64) {
-        if (error_buf) snprintf(error_buf, error_buf_len, "$.feature_requirements: contains %zu items; maximum is 64", feats_node->u.arr.count);
-        json_free(root);
-        return false;
-    }
-    bool has_font_feature = false;
-    bool has_psmf_feature = false;
-    for (size_t i = 0; i < feats_node->u.arr.count; i++) {
-        JsonNode *fitem = feats_node->u.arr.items[i];
-        if (!fitem || fitem->type != JSON_STRING || !is_valid_identifier(fitem->u.str_val)) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.feature_requirements[%zu]: must match ^[a-z0-9][a-z0-9._-]{0,63}$", i);
-            json_free(root);
-            return false;
-        }
-        for (size_t j = 0; j < i; j++) {
-            if (strcmp(feats_node->u.arr.items[j]->u.str_val, fitem->u.str_val) == 0) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.feature_requirements: duplicate feature requirement '%s'", fitem->u.str_val);
-                json_free(root);
-                return false;
-            }
-        }
-        if (strcmp(fitem->u.str_val, "font") == 0 || strcmp(fitem->u.str_val, "font-firmware") == 0) {
-            has_font_feature = true;
-        }
-        if (strcmp(fitem->u.str_val, "psmf") == 0) {
-            has_psmf_feature = true;
-        }
-    }
-
-    /* 13. compatibility_manifest (optional) */
-    JsonNode *compat_mf_node = obj_get(root, "compatibility_manifest");
-    if (compat_mf_node) {
-        if (compat_mf_node->type != JSON_STRING || !is_valid_portable_path(compat_mf_node->u.str_val)) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.compatibility_manifest: must be a portable relative POSIX-style path");
-            json_free(root);
-            return false;
-        }
-    }
-
-    /* 14. notes (optional) */
-    JsonNode *notes_node = obj_get(root, "notes");
-    if (notes_node) {
-        if (notes_node->type != JSON_STRING || strlen(notes_node->u.str_val) > 2048) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.notes: must be a string <= 2048 characters");
-            json_free(root);
-            return false;
-        }
-    }
-
-    /* 15. runtime_bindings (optional) */
-    uint32_t expected_file_count = 0;
-    uint32_t fallback_entry = 0;
-    JsonNode *rb_node = obj_get(root, "runtime_bindings");
-    if (rb_node) {
-        if (rb_node->type != JSON_OBJECT) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings: must be an object");
-            json_free(root);
-            return false;
-        }
-        JsonNode *retired_vf = obj_get(rb_node, "vblank_frame_counter_addr");
-        if (retired_vf) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_frame_counter_addr: retired; runtime does not write guest VBLANK counters");
-            json_free(root);
-            return false;
-        }
-        JsonNode *retired_vs = obj_get(rb_node, "vblank_vsync_counter_addr");
-        if (retired_vs) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.vblank_vsync_counter_addr: retired; runtime does not write guest VBLANK counters");
-            json_free(root);
-            return false;
-        }
-        JsonNode *retired_libfont = obj_get(rb_node, "libfont_ready_flag_addr");
-        if (retired_libfont) {
-            if (error_buf) snprintf(error_buf, error_buf_len,
-                "$.runtime_bindings.libfont_ready_flag_addr: LIBFONT_READY_FLAG_RETIRED: "
-                "host readiness injection is not supported yet; remove this field and "
-                "provide translated guest libfont startup");
-            json_free(root);
-            return false;
-        }
-        static const char * const retired_assist_keys[] = {
-            "frame_ready_latch_addr", "display_bringup", "runtime_sync", NULL
-        };
-        for (int r = 0; retired_assist_keys[r]; r++) {
-            if (obj_get(rb_node, retired_assist_keys[r])) {
-                if (error_buf) snprintf(error_buf, error_buf_len,
-                    "$.runtime_bindings.%s: HLE_TITLE_ASSIST_RETIRED: the runtime no longer "
-                    "replays title display bring-up, seeds runtime sync state or advances a "
-                    "frame latch; remove this field and let the title's own code initialize "
-                    "that state", retired_assist_keys[r]);
-                json_free(root);
-                return false;
-            }
-        }
-        static const char * const allowed_rb_keys[] = {
-            "schema_version", "fallback_entry", "worker_thread_entry", "launcher_thread_entry",
-            "expected_data_file_count", "dispatch_aliases", "callback_terminators", NULL
-        };
-        static const char * const required_rb_keys[] = {"schema_version", NULL};
-        if (!check_object_keys(rb_node, "$.runtime_bindings", allowed_rb_keys, required_rb_keys, error_buf, error_buf_len)) {
-            json_free(root);
-            return false;
-        }
-        JsonNode *rb_sv = obj_get(rb_node, "schema_version");
-        if (rb_sv->type != JSON_NUMBER || !rb_sv->u.num.is_integer || rb_sv->u.num.int_val != 1) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.schema_version: only runtime-binding schema version 1 is supported");
-            json_free(root);
-            return false;
-        }
-        if (rb_node->u.obj.count <= 1) {
-            if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings: must configure at least one binding; omit the block instead");
-            json_free(root);
-            return false;
-        }
-
-        /* Validate scalar addresses in runtime_bindings */
-        static const char * const scalar_binding_fields[] = {
-            "fallback_entry", "worker_thread_entry", "launcher_thread_entry", NULL
-        };
-        for (int s = 0; scalar_binding_fields[s]; s++) {
-            JsonNode *s_node = obj_get(rb_node, scalar_binding_fields[s]);
-            if (s_node) {
-                uint32_t bind_addr = 0;
-                if (!parse_uint32(s_node, &bind_addr) || bind_addr == 0 || (bind_addr % 4 != 0)) {
-                    if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.%s: must be a non-zero 4-byte aligned integer", scalar_binding_fields[s]);
-                    json_free(root);
-                    return false;
-                }
-                if (strcmp(scalar_binding_fields[s], "fallback_entry") == 0) fallback_entry = bind_addr;
-            }
-        }
-
-        /* Check distinct worker and launcher */
-        JsonNode *wk = obj_get(rb_node, "worker_thread_entry");
-        JsonNode *ln = obj_get(rb_node, "launcher_thread_entry");
-        if (wk && ln) {
-            uint32_t wk_a = 0, ln_a = 0;
-            parse_uint32(wk, &wk_a);
-            parse_uint32(ln, &ln_a);
-            if (wk_a == ln_a) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings: worker and launcher must be distinct");
-                json_free(root);
-                return false;
-            }
-        }
-
-        /* Check expected_data_file_count */
-        JsonNode *ef_node = obj_get(rb_node, "expected_data_file_count");
-        if (ef_node) {
-            uint32_t count = 0;
-            if (!parse_uint32(ef_node, &count) || count == 0 || count > 1000000) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.expected_data_file_count: must be > 0 and <= 1000000");
-                json_free(root);
-                return false;
-            }
-            expected_file_count = count;
-        }
-
-        /* Check dispatch_aliases */
-        JsonNode *da_node = obj_get(rb_node, "dispatch_aliases");
-        if (da_node) {
-            if (da_node->type != JSON_ARRAY) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.dispatch_aliases: must be an array");
-                json_free(root);
-                return false;
-            }
-            if (da_node->u.arr.count == 0) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.dispatch_aliases: must not be empty; omit the field instead");
-                json_free(root);
-                return false;
-            }
-            if (da_node->u.arr.count > 32) {
-                if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.dispatch_aliases: contains %zu items; maximum is 32", da_node->u.arr.count);
-                json_free(root);
-                return false;
-            }
-            uint32_t da_srcs[32];
-            uint32_t da_dsts[32];
-            static const char * const da_keys[] = {"from", "to", NULL};
-            for (size_t a = 0; a < da_node->u.arr.count; a++) {
-                JsonNode *da_item = da_node->u.arr.items[a];
-                char item_path[64];
-                snprintf(item_path, sizeof(item_path), "$.runtime_bindings.dispatch_aliases[%zu]", a);
-                if (!check_object_keys(da_item, item_path, da_keys, da_keys, error_buf, error_buf_len)) {
-                    json_free(root);
-                    return false;
-                }
-                uint32_t src = 0, dst = 0;
-                JsonNode *from_n = obj_get(da_item, "from");
-                JsonNode *to_n = obj_get(da_item, "to");
-                if (!parse_uint32(from_n, &src) || src == 0 || (src % 4 != 0)) {
-                    if (error_buf) snprintf(error_buf, error_buf_len, "%s.from: must be a non-zero 4-byte aligned integer", item_path);
-                    json_free(root);
-                    return false;
-                }
-                if (!parse_uint32(to_n, &dst) || dst == 0 || (dst % 4 != 0)) {
-                    if (error_buf) snprintf(error_buf, error_buf_len, "%s.to: must be a non-zero 4-byte aligned integer", item_path);
-                    json_free(root);
-                    return false;
-                }
-                if (is_core_reserved_target(src)) {
-                    if (error_buf) snprintf(error_buf, error_buf_len, "%s.from: 0x%08x is inside the core VFPU dispatch-target range", item_path, src);
-                    json_free(root);
-                    return false;
-                }
-                if (src == dst) {
-                    if (error_buf) snprintf(error_buf, error_buf_len, "%s: from and to must differ", item_path);
-                    json_free(root);
-                    return false;
-                }
-                for (size_t prev = 0; prev < a; prev++) {
-                    if (da_srcs[prev] == src) {
-                        if (error_buf) snprintf(error_buf, error_buf_len, "%s.from: duplicate alias source", item_path);
-                        json_free(root);
-                        return false;
-                    }
-                }
-                da_srcs[a] = src;
-                da_dsts[a] = dst;
-            }
-            for (size_t a = 0; a < da_node->u.arr.count; a++) {
-                for (size_t b = 0; b < da_node->u.arr.count; b++) {
-                    if (da_dsts[a] == da_srcs[b]) {
-                        if (error_buf) snprintf(error_buf, error_buf_len, "$.runtime_bindings.dispatch_aliases[%zu].to: is itself an alias source", a);
-                        json_free(root);
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-
-    /* 16. Extract parsed fields into temporary storage */
-    OverlayStorageSlot temp;
-    memset(&temp, 0, sizeof(temp));
-
-    snprintf(temp.id, sizeof(temp.id), "%s", id_node->u.str_val);
-    if (gn_node) {
-        snprintf(temp.game_name, sizeof(temp.game_name), "%s", gn_node->u.str_val);
-    } else {
-        derive_game_name(temp.id, temp.game_name, sizeof(temp.game_name));
-    }
-    snprintf(temp.display_name, sizeof(temp.display_name), "%s", dn_node->u.str_val);
-    temp.kind = kind;
-
-    if (disc_node) {
-        JsonNode *did = obj_get(disc_node, "id");
-        snprintf(temp.primary_disc_id, sizeof(temp.primary_disc_id), "%s", did->u.str_val);
-
-        JsonNode *cr_node = obj_get(disc_node, "compatible_revisions");
-        if (cr_node && cr_node->type == JSON_ARRAY) {
-            int c_count = 0;
-            for (size_t c = 0; c < cr_node->u.arr.count && c < MAX_COMPAT_DISC_IDS; c++) {
-                JsonNode *citem = cr_node->u.arr.items[c];
-                if (citem && citem->type == JSON_STRING) {
-                    snprintf(temp.compat_ids_storage[c_count], 17, "%s", citem->u.str_val);
-                    temp.compat_id_ptrs[c_count] = temp.compat_ids_storage[c_count];
-                    c_count++;
-                }
-            }
-            temp.compat_id_ptrs[c_count] = NULL;
-        }
-    }
-
-    temp.executable_base = exe_base;
-    temp.executable_entry = exe_entry; /* Canonical projection: represents executable.entry */
-    temp.has_executable_base = true;
-    temp.has_executable_entry = true;
-    /* Where a run starts: a declared fallback entry wins, as in the Python planner. */
-    temp.run_entry = fallback_entry ? fallback_entry : exe_entry;
-    snprintf(temp.bss_metadata_source, sizeof(temp.bss_metadata_source), "%s", bss_src);
-    snprintf(temp.data_root, sizeof(temp.data_root), "%s", dr_node->u.str_val);
-    temp.loose_root_count = loose_root_count;
-    for (size_t i = 0; i < loose_root_count; i++) {
-        snprintf(temp.loose_root_paths[i], sizeof(temp.loose_root_paths[i]), "%s",
-                 loose_root_paths[i]);
-        snprintf(temp.loose_root_mounts[i], sizeof(temp.loose_root_mounts[i]), "%s",
-                 loose_root_mounts[i]);
-        for (size_t exclude_index = 0;
-             exclude_index < loose_root_exclude_counts[i]; exclude_index++) {
-            snprintf(temp.loose_root_exclude_paths[i][exclude_index],
-                     sizeof(temp.loose_root_exclude_paths[i][exclude_index]), "%s",
-                     loose_root_excludes[i][exclude_index]);
-            temp.loose_root_exclude_ptrs[i][exclude_index] =
-                temp.loose_root_exclude_paths[i][exclude_index];
-        }
-        temp.loose_roots[i].root = temp.loose_root_paths[i];
-        temp.loose_roots[i].mount = temp.loose_root_mounts[i];
-        temp.loose_roots[i].precedence = loose_root_precedence[i];
-        temp.loose_roots[i].skip_primary_root = loose_root_skip_primary[i];
-        temp.loose_roots[i].exclude = loose_root_exclude_counts[i]
-            ? temp.loose_root_exclude_ptrs[i] : NULL;
-        temp.loose_roots[i].exclude_count = (int)loose_root_exclude_counts[i];
-    }
-    snprintf(temp.memory_stick_root, sizeof(temp.memory_stick_root), "%s", ms_node->u.str_val);
-    snprintf(temp.hle_profile, sizeof(temp.hle_profile), "%s", hle_node->u.str_val);
-
-    if (cg_node && cg_node->type == JSON_STRING) {
-        snprintf(temp.codegen_profile, sizeof(temp.codegen_profile), "%s", cg_node->u.str_val);
-    } else {
-        snprintf(temp.codegen_profile, sizeof(temp.codegen_profile), "none");
-    }
-
-    temp.expected_data_file_count = expected_file_count;
-    temp.requires_font_firmware = has_font_feature;
-    temp.requires_psmf = has_psmf_feature;
-
-    temp.module_count = (int)mods_node->u.arr.count;
-    for (int i = 0; i < temp.module_count; i++) {
-        JsonNode *m = mods_node->u.arr.items[i];
-        JsonNode *mn = obj_get(m, "name");
-        snprintf(temp.module_names[i], sizeof(temp.module_names[i]), "%s", mn->u.str_val);
-        temp.modules[i].name = temp.module_names[i];
-
-        /* A runtime-placed module has no load_address and records 0: its base is chosen
-           when the game loads it. A fixed guest-module base always lies in user RAM, so 0
-           never names a fixed placement. */
-        uint32_t laddr = 0;
-        parse_uint32(obj_get(m, "load_address"), &laddr);
-        temp.modules[i].load_address = laddr;
-
-        JsonNode *req = obj_get(m, "required");
-        temp.modules[i].required = (req && req->type == JSON_BOOL) ? req->u.bool_val : false;
-    }
-
-    temp.entry.id = temp.id;
-    temp.entry.game_name = temp.game_name;
-    temp.entry.display_name = temp.display_name;
-    temp.entry.kind = temp.kind;
-    temp.entry.primary_disc_id = temp.primary_disc_id[0] ? temp.primary_disc_id : NULL;
-    temp.entry.compatible_disc_ids = temp.compat_id_ptrs[0] ? temp.compat_id_ptrs : NULL;
-    temp.entry.executable_base = temp.executable_base;
-    temp.entry.executable_entry = temp.executable_entry;
-    temp.entry.has_executable_base = temp.has_executable_base;
-    temp.entry.has_executable_entry = temp.has_executable_entry;
-    temp.entry.run_entry = temp.run_entry;
-    temp.entry.bss_metadata_source = temp.bss_metadata_source;
-    temp.entry.data_root = temp.data_root;
-    temp.entry.loose_content_roots = temp.loose_root_count ? temp.loose_roots : NULL;
-    temp.entry.loose_content_root_count = (int)temp.loose_root_count;
-    temp.entry.memory_stick_root = temp.memory_stick_root;
-    temp.entry.hle_profile = temp.hle_profile;
-    temp.entry.codegen_profile = temp.codegen_profile;
-    temp.entry.expected_data_file_count = temp.expected_data_file_count;
-    temp.entry.requires_font_firmware = temp.requires_font_firmware;
-    temp.entry.requires_psmf = temp.requires_psmf;
-    temp.entry.modules = temp.modules;
-    temp.entry.module_count = temp.module_count;
-
-    /* 17. Collision Checking across all identities:
-     * - id
-     * - primary_disc_id
-     * - each compatible_revisions disc ID
-     * Against:
-     * - All public catalog entries
-     * - All already-loaded external overlay identities
-     */
-    bool collision = false;
-    const char *collision_id = NULL;
-
-    /* Check against public canonical catalog */
-    for (int i = 0; i < nk_title_catalog_count; i++) {
-        const NkTitleEntry *pub = &nk_title_catalog_entries[i];
-        if (strcmp(pub->id, temp.entry.id) == 0) {
-            collision = true;
-            collision_id = pub->id;
-            break;
-        }
-        if (temp.entry.primary_disc_id && pub->primary_disc_id) {
-            if (strcmp(pub->primary_disc_id, temp.entry.primary_disc_id) == 0) {
-                collision = true;
-                collision_id = pub->id;
-                break;
-            }
-        }
-        if (temp.entry.primary_disc_id && pub->compatible_disc_ids) {
-            for (int c = 0; pub->compatible_disc_ids[c]; c++) {
-                if (strcmp(pub->compatible_disc_ids[c], temp.entry.primary_disc_id) == 0) {
-                    collision = true;
-                    collision_id = pub->id;
-                    break;
-                }
-            }
-            if (collision) break;
-        }
-        if (temp.entry.compatible_disc_ids && pub->primary_disc_id) {
-            for (int c = 0; temp.entry.compatible_disc_ids[c]; c++) {
-                if (strcmp(temp.entry.compatible_disc_ids[c], pub->primary_disc_id) == 0) {
-                    collision = true;
-                    collision_id = pub->id;
-                    break;
-                }
-            }
-            if (collision) break;
-        }
-        if (temp.entry.compatible_disc_ids && pub->compatible_disc_ids) {
-            for (int c = 0; temp.entry.compatible_disc_ids[c]; c++) {
-                for (int pc = 0; pub->compatible_disc_ids[pc]; pc++) {
-                    if (strcmp(temp.entry.compatible_disc_ids[c], pub->compatible_disc_ids[pc]) == 0) {
-                        collision = true;
-                        collision_id = pub->id;
-                        break;
-                    }
-                }
-                if (collision) break;
-            }
-            if (collision) break;
-        }
-    }
-
-    /* The caller holds the catalog lock: registered entries point into these
-       slots, so collision checks and slot replacement must be indivisible
-       with package-status snapshots. */
-    /* Check against already-loaded external overlay identities */
-    if (!collision) {
-        for (int i = 0; i < s_overlay_slot_count; i++) {
-            const OverlayStorageSlot *ov = &s_overlay_slots[i];
-            /* Allow self-update if reloading the exact same overlay id */
-            if (strcmp(ov->entry.id, temp.entry.id) == 0) continue;
-
-            if (strcmp(ov->entry.id, temp.entry.id) == 0) {
-                collision = true;
-                collision_id = ov->entry.id;
-                break;
-            }
-            if (temp.entry.primary_disc_id && ov->entry.primary_disc_id) {
-                if (strcmp(ov->entry.primary_disc_id, temp.entry.primary_disc_id) == 0) {
-                    collision = true;
-                    collision_id = ov->entry.id;
-                    break;
-                }
-            }
-            if (temp.entry.primary_disc_id && ov->entry.compatible_disc_ids) {
-                for (int c = 0; ov->entry.compatible_disc_ids[c]; c++) {
-                    if (strcmp(ov->entry.compatible_disc_ids[c], temp.entry.primary_disc_id) == 0) {
-                        collision = true;
-                        collision_id = ov->entry.id;
-                        break;
-                    }
-                }
-                if (collision) break;
-            }
-            if (temp.entry.compatible_disc_ids && ov->entry.primary_disc_id) {
-                for (int c = 0; temp.entry.compatible_disc_ids[c]; c++) {
-                    if (strcmp(temp.entry.compatible_disc_ids[c], ov->entry.primary_disc_id) == 0) {
-                        collision = true;
-                        collision_id = ov->entry.id;
-                        break;
-                    }
-                }
-                if (collision) break;
-            }
-            if (temp.entry.compatible_disc_ids && ov->entry.compatible_disc_ids) {
-                for (int c = 0; temp.entry.compatible_disc_ids[c]; c++) {
-                    for (int pc = 0; ov->entry.compatible_disc_ids[pc]; pc++) {
-                        if (strcmp(temp.entry.compatible_disc_ids[c], ov->entry.compatible_disc_ids[pc]) == 0) {
-                            collision = true;
-                            collision_id = ov->entry.id;
-                            break;
-                        }
-                    }
-                    if (collision) break;
-                }
-                if (collision) break;
-            }
-        }
-    }
-
-    if (collision) {
-        if (!allow_override) {
-            if (error_buf) {
-                snprintf(error_buf, error_buf_len,
-                    "Overlay identity '%s' conflicts with public canonical catalog title '%s'; override forbidden in standard mode",
-                    temp.entry.id, collision_id);
-            }
-            json_free(root);
-            return false;
-        } else {
-            fprintf(stderr, "[WARNING] Overriding title definition for '%s' with external manifest (conflict: '%s')!\n", temp.entry.id, collision_id);
-        }
-    }
-
-    if (validate_into) {
-        *validate_into = temp;
-        overlay_slot_anchor(validate_into);
-        if (out_entry) *out_entry = validate_into->entry;
-        json_free(root);
-        return true;
-    }
-
-    /* Assign to multi-overlay storage slot */
-    int target_slot = -1;
-    for (int i = 0; i < s_overlay_slot_count; i++) {
-        if (strcmp(s_overlay_slots[i].entry.id, temp.entry.id) == 0) {
-            target_slot = i;
-            break;
-        }
-    }
-    if (target_slot == -1) {
-        if (s_overlay_slot_count < NK_MANIFEST_MAX_OVERLAYS) {
-            target_slot = s_overlay_slot_count++;
-        } else {
-            target_slot = NK_MANIFEST_MAX_OVERLAYS - 1; /* bounded replacement of last slot */
-        }
-    }
-
-    nk_title_catalog_set_overlay_storage_reset_locked(nk_manifest_reset_overlay_storage);
-    s_overlay_slots[target_slot] = temp;
-    /* Re-anchor self pointers for the chosen slot */
-    OverlayStorageSlot *dest = &s_overlay_slots[target_slot];
-    overlay_slot_anchor(dest);
-
-    /* The parser-owned slot may back an entry already present in the catalog.
-       Publish its new contents as a catalog generation before unlocking. */
-    nk_title_catalog_advance_epoch_locked();
-
-    if (out_entry) {
-        *out_entry = dest->entry;
-    }
-
     json_free(root);
-    return true;
+    return ok;
 }
 
 static bool nk_title_manifest_parse_buffer_locked(

@@ -1066,12 +1066,92 @@ def conformance_cells(header_text: str) -> dict[int, list[dict]]:
     return cells
 
 
+def _blank_literals(stripped: str) -> str:
+    """Blank string and character literal contents, keeping quotes, offsets and newlines.
+
+    Run on comment-free text. A name inside a string (an ``expect`` message, a log
+    line) is then not a use, and a brace inside one cannot unbalance a function body.
+    """
+    out = list(stripped)
+    i, n = 0, len(stripped)
+    while i < n:
+        c = stripped[i]
+        if c in ('"', "'"):
+            quote = c
+            i += 1
+            while i < n and stripped[i] != quote:
+                step = 2 if stripped[i] == "\\" else 1
+                for j in range(i, min(i + step, n)):
+                    if stripped[j] != "\n":
+                        out[j] = " "
+                i += step
+        i += 1
+    return "".join(out)
+
+
+#: A top-level function definition: a column-0 head up to its opening brace.
+_SELFTEST_FUNC_HEAD_RE = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*[ \t\*]+)+(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*"
+    r"\((?P<params>[^;{}()]*)\)[ \t\r\n]*\{",
+    re.MULTILINE,
+)
+_C_NOT_A_FUNCTION = frozenset({"if", "for", "while", "switch", "return", "sizeof", "else", "do"})
+#: `enum { A = 0x1u, B = 0x2u }` -- the body of one enum.
+_SELFTEST_ENUM_RE = re.compile(r"\benum\b[^;{}]*\{(?P<body>[^{}]*)\}")
+_SELFTEST_ENUM_MEMBER_RE = re.compile(
+    r"(?:^|[{,])\s*(?P<sym>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*0x(?P<nid>[0-9a-fA-F]{1,8})[uU]?\s*(?=,|$)"
+)
+#: `static const uint32_t nid_x = 0x1u;`
+_SELFTEST_CONST_RE = re.compile(
+    r"\bconst\s+(?:uint32_t|unsigned(?:\s+int)?|int|u32)\s+(?P<sym>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"0x(?P<nid>[0-9a-fA-F]{1,8})[uU]?\s*;"
+)
+_SELFTEST_ANY_DEFINE_RE = re.compile(
+    r"^#define[ \t]+(?P<sym>[A-Za-z_][A-Za-z0-9_]*)[ \t]+0x(?P<nid>[0-9a-fA-F]{1,8})[uU]?[ \t]*$",
+    re.MULTILINE,
+)
+_C_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_C_LITERAL_NID_RE = re.compile(r"0x(?P<nid>[0-9a-fA-F]{1,8})[uU]?")
+_C_LEADING_CAST_RE = re.compile(r"^\(\s*(?:const\s+)?(?:uint32_t|unsigned(?:\s+int)?|u32)\s*\)\s*")
+
+
+def _split_call_args(text: str, open_paren: int) -> list[str]:
+    """The top-level arguments of the call whose ``(`` is at ``open_paren``."""
+    args: list[str] = []
+    depth, start = 0, open_paren + 1
+    for i in range(open_paren, len(text)):
+        c = text[i]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                tail = text[start:i].strip()
+                if tail or args:
+                    args.append(tail)
+                return args
+        elif c == "," and depth == 1:
+            args.append(text[start:i].strip())
+            start = i + 1
+    return args
+
+
 def selftest_dispatched_nids(selftest_text: str) -> set[int]:
     """NIDs the executable HLE selftest enters through ``sr_syscall``.
 
-    Both spellings the file uses are collected: a ``NID_*`` define that is
-    referenced elsewhere in the file, and a bare literal handed to sr_syscall.
-    A define that is never referenced is deliberately not counted.
+    A NID counts when one of these holds:
+
+    * a top-level ``#define NID_*`` constant that is referenced elsewhere in the
+      file (the original rule; a define that is never referenced does not count);
+    * a literal NID handed to ``sr_syscall`` or to a dispatch helper;
+    * a named constant (``#define``, ``enum`` member or ``const`` integer) handed
+      to ``sr_syscall`` or to a dispatch helper, resolved in the enclosing function
+      first and the file second.
+
+    A dispatch helper is a function that passes one of its own parameters to
+    ``sr_syscall`` or to another dispatch helper as the NID, found to a fixed
+    point. Naming a constant anywhere else (``sr_hle_test_is_registered``, a
+    comment, a string, a table) is not a dispatch and credits nothing.
     """
     nids: set[int] = set()
     for m in _SELFTEST_NID_DEFINE_RE.finditer(selftest_text):
@@ -1079,6 +1159,85 @@ def selftest_dispatched_nids(selftest_text: str) -> set[int]:
             nids.add(int(m.group("nid"), 16))
     for m in _SELFTEST_LITERAL_DISPATCH_RE.finditer(selftest_text):
         nids.add(int(m.group("nid"), 16))
+
+    text = _blank_literals(_strip_comments(selftest_text))
+
+    # Function spans, so an enum or const local to one test resolves only inside it.
+    spans: list[tuple[int, int, str, list[str]]] = []
+    pos = 0
+    while True:
+        head = _SELFTEST_FUNC_HEAD_RE.search(text, pos)
+        if not head:
+            break
+        if head.group("name") in _C_NOT_A_FUNCTION:
+            pos = head.end()
+            continue
+        depth, end = 0, len(text)
+        for i in range(head.end() - 1, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        names = []
+        for param in head.group("params").split(","):
+            idents = _C_IDENT_RE.findall(param)
+            names.append(idents[-1] if idents else "")
+        spans.append((head.start(), end, head.group("name"), names))
+        pos = end
+    starts = [s[0] for s in spans]
+
+    def owner(offset: int) -> int | None:
+        i = bisect.bisect_right(starts, offset) - 1
+        return i if i >= 0 and offset < spans[i][1] else None
+
+    consts: dict[int | None, dict[str, set[int]]] = {}
+
+    def add_const(offset: int, sym: str, value: str) -> None:
+        consts.setdefault(owner(offset), {}).setdefault(sym, set()).add(int(value, 16))
+
+    for m in _SELFTEST_ANY_DEFINE_RE.finditer(text):
+        add_const(m.start(), m.group("sym"), m.group("nid"))
+    for m in _SELFTEST_CONST_RE.finditer(text):
+        add_const(m.start(), m.group("sym"), m.group("nid"))
+    for m in _SELFTEST_ENUM_RE.finditer(text):
+        for member in _SELFTEST_ENUM_MEMBER_RE.finditer(m.group("body")):
+            add_const(m.start(), member.group("sym"), member.group("nid"))
+
+    # Dispatch helpers: function name -> indexes of the parameters it forwards as the NID.
+    dispatch: dict[str, set[int]] = {"sr_syscall": {1}}
+
+    def find_calls() -> list[tuple[int, str, list[str]]]:
+        pattern = re.compile(r"\b(" + "|".join(sorted(map(re.escape, dispatch))) + r")[ \t]*\(")
+        return [(m.start(), m.group(1), _split_call_args(text, m.end() - 1)) for m in pattern.finditer(text)]
+
+    changed = True
+    while changed:
+        changed = False
+        for offset, name, args in find_calls():
+            fn = owner(offset)
+            if fn is None:
+                continue
+            fn_name, params = spans[fn][2], spans[fn][3]
+            for index in dispatch[name]:
+                arg = args[index] if index < len(args) else ""
+                if arg and arg in params and params.index(arg) not in dispatch.get(fn_name, set()):
+                    dispatch.setdefault(fn_name, set()).add(params.index(arg))
+                    changed = True
+
+    for offset, name, args in find_calls():
+        fn = owner(offset)
+        for index in dispatch[name]:
+            if index >= len(args):
+                continue
+            arg = _C_LEADING_CAST_RE.sub("", args[index]).strip()
+            literal = _C_LITERAL_NID_RE.fullmatch(arg)
+            if literal:
+                nids.add(int(literal.group("nid"), 16))
+            elif _C_IDENT_RE.fullmatch(arg):
+                nids.update(consts.get(fn, {}).get(arg) or consts.get(None, {}).get(arg) or set())
     return nids
 
 

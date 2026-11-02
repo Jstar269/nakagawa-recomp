@@ -251,5 +251,18 @@ class ContribRefreshRefusalTests(unittest.TestCase):
         self.assertIn("CANDIDATE_INDEX_STALE", output)
 
 
+class PublicSourceProfileOrderingTests(unittest.TestCase):
+    """The committed profile keeps its string lists sorted so diffs stay small."""
+
+    def test_profile_lists_are_sorted(self) -> None:
+        profile = json.loads(
+            (Path(__file__).resolve().parent.parent / "assets" / "public_source_profile.json")
+            .read_text(encoding="utf-8")
+        )
+        for key in ("exclude_paths", "notes", "include_paths"):
+            self.assertEqual(profile[key], sorted(profile[key]), key)
+            self.assertEqual(len(profile[key]), len(set(profile[key])), key)
+
+
 if __name__ == "__main__":
     unittest.main()

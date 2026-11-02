@@ -21,6 +21,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -85,24 +86,44 @@ def write(root: Path, relative: str, content: str) -> None:
     path.write_text(content, encoding="utf-8", newline="\n")
 
 
-def assert_v3_delta(
+_REAL_HOOK_CHECK = admit_paths.check_rewriting_hooks
+
+
+def setUpModule() -> None:
+    # Every admission first applies the byte-rewriting hooks' rules; HookCheckTest covers that
+    # step, so the synthetic content elsewhere need not be shaped for it.
+    patcher = mock.patch.object(admit_paths, "check_rewriting_hooks", return_value=[])
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
+def authority_claims(fixture: "_Fixture"):
+    """``claim_of`` over the fixture authority's committed ledger, as the attestation derives it."""
+    records = provenance_ledger._detailed_records(json.loads(
+        (fixture.authority / admit_paths.TRUSTED_LEDGER).read_text(encoding="utf-8")))
+    return lambda path: provenance_ledger.admission_claim(path, records.get(path))
+
+
+def assert_policy_delta(
     testcase: unittest.TestCase, fixture: "_Fixture", record: str, *,
     baseline: bytes, candidate: bytes, files: dict[str, bytes],
 ) -> dict:
-    """The stored V3 delta is named after its bytes and approves exactly ``baseline`` -> ``candidate``.
+    """The stored V4 delta is named after its selector and approves exactly ``baseline`` -> ``candidate``.
 
-    ``files`` are the candidate's new files; the delta binds each one's SHA-256.
+    ``files`` are the candidate's new files; the delta binds each one's origin claim.
     """
-    testcase.assertTrue(record.startswith(f"{admit_paths.POLICY_DELTAS_V3}/"), record)
+    testcase.assertTrue(record.startswith(f"{admit_paths.POLICY_DELTAS_V4}/"), record)
     raw = (fixture.authority / record).read_bytes()
-    testcase.assertEqual(Path(record).stem, hashlib.sha256(raw).hexdigest())
+    testcase.assertEqual(Path(record).stem, provenance_ledger.policy_delta_v4_key(
+        json.loads(baseline.decode("utf-8")), json.loads(candidate.decode("utf-8"))))
     with tempfile.TemporaryDirectory() as scratch:
         policy_file = Path(scratch) / "candidate-policy.json"
         policy_file.write_bytes(candidate)
         candidate_policy = admit_paths.load_policy(policy_file)
-    return provenance_ledger.verify_policy_delta_v3(
+    return provenance_ledger.verify_policy_delta_v4(
         raw, baseline_policy_bytes=baseline, candidate_policy_bytes=candidate,
         base_blobs={}, candidate_blobs=files, candidate_policy=candidate_policy,
+        claim_of=authority_claims(fixture),
     )
 
 
@@ -245,21 +266,26 @@ class AdmitPathsTest(unittest.TestCase):
 
         base_policy = git(fixture.pr, "show", f"{fixture.base}:assets/public_source_profile.json") + "\n"
         candidate_policy, _ = admit_paths._candidate_policy(base_policy.encode(), {"docs/new-page.md"})
-        # One V3 delta and no nested V1/V2 record (#1673): it binds the new file's bytes.
+        # One V4 delta and no nested V1/V2 record (#1673): it binds the new file's origin claim.
         record = result["records"][1]
         self.assertEqual(result["policy_delta_record"], record)
         self.assertEqual(len(result["records"]), 2)
         self.assertEqual(fixture.record(record), {
             "exclude_added": [], "exclude_removed": [],
-            "include_added": [{"path": "docs/new-page.md", "sha256": digest}], "include_removed": [],
-            "kind": "policy-delta-authority", "rule_changes": [], "schema_version": 3,
+            "include_added": [{"path": "docs/new-page.md", "binding": "claim", "claim": {
+                "classification": "reviewed_documentation", "record_id": None, "record_classification": None,
+                "upstream": None, "upstream_revision": None, "upstream_license": None,
+            }}],
+            "include_removed": [],
+            "kind": "policy-delta-authority", "rule_changes": [], "schema_version": 4,
         })
-        allowed = assert_v3_delta(self, fixture, record, baseline=base_policy.encode(), candidate=candidate_policy,
+        allowed = assert_policy_delta(self, fixture, record, baseline=base_policy.encode(), candidate=candidate_policy,
                                   files={"docs/new-page.md": b"# New page\n"})
         self.assertEqual(allowed["include_added"], ["docs/new-page.md"])
         # The name the attestation derives from the admission commit is the stored file's name.
         self.assertEqual(
-            verifier.policy_delta_key(repo=fixture.pr, base_rev=fixture.base, candidate_rev=result["admission_commit"]),
+            verifier.policy_delta_key_v4(repo=fixture.pr, base_rev=fixture.base,
+                                         candidate_rev=result["admission_commit"]),
             Path(record).stem,
         )
 
@@ -402,9 +428,10 @@ class AdmitPathsTest(unittest.TestCase):
             git(fixture.pr, "branch", "-q", "-D", "admit/new-pages-2026-10-22")
             fixture.admit("docs/new-page.md", approval_basis="A different decision.")
         self.assertEqual(caught.exception.code, "ADMISSION_RECORD_CONFLICT")
+        self.assertEqual(git(fixture.pr, "branch", "--list", "admit/*"), "", "a refused admission leaves no branch")
 
     def test_rekey_after_another_admission_lands(self) -> None:
-        """A lands first. B's V3 delta still holds on the new main; a pre-V3 admission re-keys once."""
+        """A lands first. B's V4 delta still holds on the new main; a pre-V4 admission re-keys once."""
         fixture = _Fixture(self)
         fixture.add("docs/b.md", "# B\n")
         first = fixture.admit("docs/b.md")
@@ -426,16 +453,16 @@ class AdmitPathsTest(unittest.TestCase):
         recorded = admission.read_bytes()
         private_before = git(fixture.authority, "rev-parse", "HEAD")
 
-        # B's V3 delta from before A landed already approves B's change on the new main.
+        # B's V4 delta from before A landed already approves B's change on the new main.
         main_policy = (git(fixture.pr, "show", f"{new_main}:assets/public_source_profile.json") + "\n").encode()
         union_policy, _ = admit_paths._candidate_policy(main_policy, {"docs/b.md"})
-        assert_v3_delta(self, fixture, first["policy_delta_record"], baseline=main_policy, candidate=union_policy,
+        assert_policy_delta(self, fixture, first["policy_delta_record"], baseline=main_policy, candidate=union_policy,
                         files={"docs/b.md": b"# B\n"})
 
         result = fixture.admit("docs/b.md", rekey=True, approval_basis=None)
 
         self.assertEqual(result["base"], new_main)
-        self.assertEqual(result["records"], first["records"], "the same decision and the same V3 delta")
+        self.assertEqual(result["records"], first["records"], "the same decision and the same V4 delta")
         self.assertEqual(admission.read_bytes(), recorded)
         self.assertEqual(git(fixture.authority, "rev-parse", "HEAD"), private_before, "nothing new to record")
         self.assertEqual(len(list((fixture.authority / admit_paths.ADMISSIONS).iterdir())), 2)
@@ -443,9 +470,9 @@ class AdmitPathsTest(unittest.TestCase):
         self.assertEqual(result["admit_branch"], f"admit/new-pages-2026-10-22-{new_main[:8]}")
         git(fixture.pr, "merge", "-q", "--no-edit", result["admit_branch"])
 
-        # An admission recorded before V3 deltas existed has no V3 file: the re-key writes it, once.
+        # An admission recorded before V4 deltas existed has no V4 file: the re-key writes it, once.
         git(fixture.authority, "rm", "-q", first["policy_delta_record"])
-        git(fixture.authority, "commit", "-qm", "an admission from before V3 deltas")
+        git(fixture.authority, "commit", "-qm", "an admission from before V4 deltas")
         git(fixture.pr, "branch", "-q", "-D", result["admit_branch"])
         rekeyed = fixture.admit("docs/b.md", rekey=True, approval_basis=None)
         self.assertEqual(rekeyed["policy_delta_record"], first["policy_delta_record"])
@@ -483,11 +510,22 @@ class AdmitPathsTest(unittest.TestCase):
         git(fixture.pr, "checkout", "-q", "docs/new-pages-20261022")
         git(fixture.pr, "merge", "-q", "--no-edit", "main")
 
+        # A re-key never rewrites a V4 decision already recorded under the same name.
+        with self.assertRaises(AdmitError) as caught:
+            fixture.admit("docs/b.md", rekey=True, approval_basis=None)
+        self.assertEqual(caught.exception.code, "ADMISSION_RECORD_CONFLICT")
+        # As an admission from before V4 (no V4 file), it re-keys from the recorded decision.
+        git(fixture.authority, "rm", "-q", first["policy_delta_record"])
+        git(fixture.authority, "commit", "-qm", "an admission from before V4 deltas")
         result = fixture.admit("docs/b.md", rekey=True, approval_basis=None)
 
         self.assertEqual(result["records"][0], first["records"][0], "the recorded decision is reused")
         self.assertEqual(json.loads(admission.read_text(encoding="utf-8")), document, "and left as recorded")
         self.assertEqual(result["base"], new_main)
+        # The recorded third_party origin binds the import to its bytes; the claim names the record.
+        (entry,) = fixture.record(result["policy_delta_record"])["include_added"]
+        self.assertEqual((entry["binding"], entry["sha256"]), ("bytes", hashlib.sha256(b"# B\n").hexdigest()))
+        self.assertEqual(entry["claim"]["record_id"], "b-upstream-import")
 
     def test_cli_prints_the_remaining_steps(self) -> None:
         fixture = _Fixture(self)
@@ -530,13 +568,13 @@ class BatchAdmitPathsTest(unittest.TestCase):
     def verify_delta(
         self, fixture: _Fixture, *, baseline: bytes, candidate: bytes, path: str, record: str,
     ) -> None:
-        """The entry's V3 delta approves exactly its own path, on the given base."""
-        allowed = assert_v3_delta(self, fixture, record, baseline=baseline, candidate=candidate,
+        """The entry's V4 delta approves exactly its own path, on the given base."""
+        allowed = assert_policy_delta(self, fixture, record, baseline=baseline, candidate=candidate,
                                   files={path: f"# {Path(path).stem}\n".encode()})
         self.assertEqual(allowed, {"exclude_added": [], "exclude_removed": [], "include_added": [path],
                                    "include_removed": [], "rule_changes": []})
 
-    def test_two_and_three_entry_batches_write_one_v3_delta_each_valid_in_any_order(self) -> None:
+    def test_two_and_three_entry_batches_write_one_v4_delta_each_valid_in_any_order(self) -> None:
         for count in (2, 3):
             with self.subTest(count=count):
                 fixture = _Fixture(self)
@@ -560,7 +598,7 @@ class BatchAdmitPathsTest(unittest.TestCase):
                 self.assertEqual(len(admissions), count)
                 committed_paths = git(fixture.authority, "show", "--format=", "--name-only", "HEAD").splitlines()
                 self.assertEqual(set(committed_paths), set(result["records"]))
-                self.assertEqual(len(result["records"]), 2 * count, "one admission and one V3 delta per entry")
+                self.assertEqual(len(result["records"]), 2 * count, "one admission and one V4 delta per entry")
                 self.assertEqual(git(fixture.authority, "status", "--porcelain"), "")
 
                 # Each delta holds on every base the others' landings can produce.
@@ -629,7 +667,7 @@ class BatchAdmitPathsTest(unittest.TestCase):
                 expected_profile = self.profile_union(base_policy, set(paths))
                 actual_profile = git_bytes(landing, "show", f"HEAD:{admit_paths.POLICY}")
                 self.assertEqual(actual_profile, expected_profile)
-                # The second PR's own V3 delta, issued against the old base, approves the merge.
+                # The second PR's own V4 delta, issued against the old base, approves the merge.
                 second = next(delta for delta in batch["deltas"] if delta["paths"] == [paths[order[1]]])
                 self.verify_delta(
                     fixture, baseline=first_policy, candidate=expected_profile,
@@ -702,10 +740,10 @@ class BatchAdmitPathsTest(unittest.TestCase):
                 "--base", new_base, "--date", self.DATE,
             ])
         self.assertEqual(code, 0)
-        self.assertIn("re-issued V3 deltas for 4 pull requests", output.getvalue())
+        self.assertIn("re-issued V4 deltas for 4 pull requests", output.getvalue())
         self.assertEqual(len(list((fixture.authority / admit_paths.ADMISSIONS).glob("*.json"))), 7)
         self.assertEqual(git(fixture.authority, "rev-parse", "HEAD"), private_before,
-                         "the V3 deltas re-derived on the new base are the ones already recorded")
+                         "the V4 deltas re-derived on the new base are the ones already recorded")
 
     def test_overlapping_batch_paths_are_rejected_before_mutation(self) -> None:
         fixture = _Fixture(self)
@@ -773,13 +811,13 @@ class BatchAdmitPathsTest(unittest.TestCase):
         self.assertNotIn("docs/guide.md", merged["include_paths"])
         git(ours, "merge", "--abort")
 
-    def test_v3_delta_verifies_and_legacy_nested_and_flat_deltas_remain_readable(self) -> None:
+    def test_v4_delta_verifies_and_legacy_nested_and_flat_deltas_remain_readable(self) -> None:
         fixture = _Fixture(self)
         fixture.add("docs/new-page.md", "# New page\n")
         result = fixture.admit("docs/new-page.md")
         baseline_policy = (git(fixture.pr, "show", f"{fixture.base}:{admit_paths.POLICY}") + "\n").encode()
         candidate_policy, _ = admit_paths._candidate_policy(baseline_policy, {"docs/new-page.md"})
-        verified = assert_v3_delta(self, fixture, result["policy_delta_record"], baseline=baseline_policy,
+        verified = assert_policy_delta(self, fixture, result["policy_delta_record"], baseline=baseline_policy,
                                    candidate=candidate_policy, files={"docs/new-page.md": b"# New page\n"})
         self.assertEqual(verified["include_added"], ["docs/new-page.md"])
 
@@ -824,7 +862,7 @@ class BatchAdmissionTest(unittest.TestCase):
         return entries, prs
 
     def _assert_every_transition(self, fixture: _Fixture, result: dict) -> None:
-        """Every entry's V3 delta approves its own paths on every base the other entries can produce."""
+        """Every entry's V4 delta approves its own paths on every base the other entries can produce."""
         base_policy = (git(fixture.pr, "show", f"{result['base']}:{admit_paths.POLICY}") + "\n").encode("utf-8")
         path_sets = [set(entry["paths"]) for entry in result["entries"]]
         for mask in range(1 << len(path_sets)):
@@ -839,7 +877,7 @@ class BatchAdmissionTest(unittest.TestCase):
                 with self.subTest(subset=selected, candidate=candidate_index):
                     files = {path: (Path(result["entries"][candidate_index]["pr_worktree"]) / path).read_bytes()
                              for path in paths}
-                    authority = assert_v3_delta(self, fixture, record, baseline=baseline_policy,
+                    authority = assert_policy_delta(self, fixture, record, baseline=baseline_policy,
                                                 candidate=candidate_policy, files=files)
                     self.assertEqual(authority["include_added"], sorted(paths))
                     self.assertEqual(authority["include_removed"], [])
@@ -898,7 +936,7 @@ class BatchAdmissionTest(unittest.TestCase):
             ])
         self.assertEqual(code, 0)
         self.assertIn("admitted 2 pull requests on shared base", out.getvalue())
-        self.assertIn("wrote 2 V3 policy deltas, valid in any landing order", out.getvalue())
+        self.assertIn("wrote 2 V4 policy deltas, valid in any landing order", out.getvalue())
 
     def test_batch_refuses_overlapping_paths_and_has_no_size_cap(self) -> None:
         fixture = _Fixture(self)
@@ -956,7 +994,7 @@ class BatchAdmissionTest(unittest.TestCase):
         git(waiting_root, "commit", "-qm", "merge the other admitted path")
 
         record = result["entries"][1 - first]["policy_delta_record"]
-        verified = assert_v3_delta(self, fixture, record, baseline=baseline_policy, candidate=profile,
+        verified = assert_policy_delta(self, fixture, record, baseline=baseline_policy, candidate=profile,
                                    files={waiting_path: (waiting_root / waiting_path).read_bytes()})
         self.assertEqual(verified["include_added"], [waiting_path])
         self.assertEqual(verified["include_removed"], [])
@@ -1023,12 +1061,15 @@ class PolicyDeltaIssueTest(unittest.TestCase):
 
     def _authority(self, fixture: _Fixture, result: dict) -> tuple[Path, dict]:
         (record,) = result["records"]
-        self.assertTrue(record.startswith(f"{admit_paths.POLICY_DELTAS_V3}/"))
+        self.assertTrue(record.startswith(f"{admit_paths.POLICY_DELTAS_V4}/"))
         path = fixture.authority / record
-        self.assertEqual(path.stem, hashlib.sha256(path.read_bytes()).hexdigest())
-        return path, json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(path.read_text(encoding="utf-8"))
+        selector = {**document, "include_added": [item["path"] for item in document["include_added"]]}
+        self.assertEqual(path.stem, hashlib.sha256(provenance_ledger.policy_delta_v3_bytes(selector)).hexdigest(),
+                         "a V4 delta is named after its selector")
+        return path, document
 
-    def test_rule_change_issues_a_v3_delta_the_gate_reads(self) -> None:
+    def test_rule_change_issues_a_v4_delta_the_gate_reads(self) -> None:
         fixture = _Fixture(self)
 
         def change(policy: dict) -> None:
@@ -1038,7 +1079,7 @@ class PolicyDeltaIssueTest(unittest.TestCase):
         baseline, candidate = self._commit_profile(fixture, change)
         result = self._issue(fixture, push=True)
 
-        self.assertEqual(result["schema_version"], 3)
+        self.assertEqual(result["schema_version"], 4)
         self.assertEqual(result["base"], fixture.base)
         self.assertEqual(fixture.remote_main(), result["private_commit"])
         path, authority = self._authority(fixture, result)
@@ -1049,7 +1090,7 @@ class PolicyDeltaIssueTest(unittest.TestCase):
             "candidate_sha256": hashlib.sha256(b'"PUBLIC_SAFE=2"').hexdigest(),
         }])
         self.assertIn(self.BASIS, git(fixture.authority, "log", "-1", "--format=%B"))
-        allowed = assert_v3_delta(self, fixture, path.relative_to(fixture.authority).as_posix(),
+        allowed = assert_policy_delta(self, fixture, path.relative_to(fixture.authority).as_posix(),
                                   baseline=baseline, candidate=candidate, files={})
         self.assertEqual(allowed, provenance_ledger._classify_policy_delta(
             json.loads(baseline), json.loads(candidate)))
@@ -1066,18 +1107,18 @@ class PolicyDeltaIssueTest(unittest.TestCase):
         result = self._issue(fixture)
 
         _, authority = self._authority(fixture, result)
-        self.assertEqual(authority["schema_version"], 3)
+        self.assertEqual(authority["schema_version"], 4)
         self.assertEqual(authority["rule_changes"][0]["candidate_sha256"],
                          hashlib.sha256(json.dumps({"docs/private-notes.md": "Private."}).encode()).hexdigest())
         self.assertFalse(result["pushed"])
         self.assertNotEqual(fixture.remote_main(), result["private_commit"], "nothing is pushed without --push")
 
-    def test_path_only_removal_is_a_v3_delta_with_no_rule_change(self) -> None:
+    def test_path_only_removal_is_a_v4_delta_with_no_rule_change(self) -> None:
         fixture = _Fixture(self)
         self._commit_profile(fixture, lambda policy: policy["exclude_paths"].remove("docs/private-notes.md"))
         result = self._issue(fixture)
         _, authority = self._authority(fixture, result)
-        self.assertEqual(authority["schema_version"], 3)
+        self.assertEqual(authority["schema_version"], 4)
         self.assertEqual(authority["exclude_removed"], ["docs/private-notes.md"])
         self.assertEqual(authority["rule_changes"], [])
 
@@ -1105,8 +1146,264 @@ class PolicyDeltaIssueTest(unittest.TestCase):
                 "--approval-basis", self.BASIS,
             ])
         self.assertEqual(code, 0)
-        self.assertIn("issued a V3 policy delta", out.getvalue())
+        self.assertIn("issued a V4 policy delta", out.getvalue())
         self.assertIn("rule_changes: build_mode", out.getvalue())
+
+
+class ClaimBindingAdmissionTest(unittest.TestCase):
+    """V4 admissions bind each new path to its origin claim, and to its bytes only for a byte-identical import."""
+
+    THIRD_PARTY = {"origin_kind": "third_party", "origin": "Synthetic upstream header, byte-identical.",
+                   "license": "MIT"}
+    RECORD = {"id": "PROV-UPSTREAM", "classification": "upstream-third-party", "evidence_tier": "H",
+              "paths": ["src/lib/up.h"], "upstream": "synthetic-upstream",
+              "upstream_revision": "commit 0123456789abcdef0123456789abcdef01234567", "upstream_license": "MIT"}
+
+    def _entry(self, fixture: _Fixture, result: dict, path: str) -> dict:
+        return next(item for item in fixture.record(result["policy_delta_record"])["include_added"]
+                    if item["path"] == path)
+
+    def _forget_v4(self, fixture: _Fixture, result: dict) -> None:
+        """Make ``result`` look like an admission recorded before V4 deltas existed."""
+        git(fixture.authority, "rm", "-q", result["policy_delta_record"])
+        git(fixture.authority, "commit", "-qm", "an admission from before V4 deltas")
+        git(fixture.pr, "branch", "-q", "-D", result["admit_branch"])
+
+    def test_bindings_default_by_origin_and_are_recorded_only_when_chosen(self) -> None:
+        fixture = _Fixture(self, records=[self.RECORD])
+        fixture.add("src/lib/up.h", "int up(void);\n")
+        fixture.add("docs/notice.md", "# Notice\n")
+        result = fixture.admit("src/lib/up.h", "docs/notice.md", origins={"src/lib/up.h": self.THIRD_PARTY})
+        statements = {s["path"]: s for s in fixture.record(result["records"][0])["reviewed_new_paths"]}
+        self.assertNotIn("binding", statements["src/lib/up.h"], "the default for a third_party origin")
+        self.assertNotIn("binding", statements["docs/notice.md"])
+        up, notice = self._entry(fixture, result, "src/lib/up.h"), self._entry(fixture, result, "docs/notice.md")
+        self.assertEqual((up["binding"], up["sha256"]), ("bytes", hashlib.sha256(b"int up(void);\n").hexdigest()))
+        self.assertEqual(up["claim"], {
+            "classification": "upstream_derived", "record_id": "PROV-UPSTREAM",
+            "record_classification": "upstream-third-party", "upstream": "synthetic-upstream",
+            "upstream_revision": self.RECORD["upstream_revision"], "upstream_license": "MIT",
+        })
+        self.assertEqual(notice["binding"], "claim")
+        self.assertNotIn("sha256", notice)
+
+        # A reviewer's LOCAL DELTA (claim) or a byte-pinned document (bytes) is recorded explicitly.
+        git(fixture.pr, "branch", "-q", "-D", result["admit_branch"])
+        chosen = fixture.admit(
+            "src/lib/up.h", "docs/notice.md", slug="new-pages-v2",
+            origins={"src/lib/up.h": {**self.THIRD_PARTY, "binding": "claim"}, "docs/notice.md": {"binding": "bytes"}},
+        )
+        statements = {s["path"]: s for s in fixture.record(chosen["records"][0])["reviewed_new_paths"]}
+        self.assertEqual((statements["src/lib/up.h"]["binding"], statements["docs/notice.md"]["binding"]),
+                         ("claim", "bytes"))
+        # The same profile change selects the same V4 name; a fresh admission records its new decision there.
+        self.assertEqual(chosen["policy_delta_record"], result["policy_delta_record"])
+        self.assertEqual(self._entry(fixture, chosen, "src/lib/up.h")["binding"], "claim")
+        self.assertEqual(self._entry(fixture, chosen, "docs/notice.md")["binding"], "bytes")
+        self.assertIn(chosen["policy_delta_record"],
+                      git(fixture.authority, "show", "--name-only", "--format=", chosen["private_commit"]))
+
+        with self.assertRaises(AdmitError) as caught:
+            fixture.admit("docs/notice.md", slug="bad", origins={"docs/notice.md": {"binding": "trust-me"}})
+        self.assertEqual(caught.exception.code, "ADMISSION_BINDING_INVALID")
+
+    def test_cli_binding_flag(self) -> None:
+        fixture = _Fixture(self)
+        fixture.add("docs/new-page.md", "# New page\n")
+        out = io.StringIO()
+        with mock.patch.object(admit_paths.tempfile, "tempdir", str(fixture.tmp)), contextlib.redirect_stdout(out):
+            code = admit_paths.main([
+                str(fixture.pr), "docs/new-page.md", "--approval-basis", "Owner request.", "--binding", "bytes",
+                "--private-repo", str(fixture.authority), "--date", "2026-10-22",
+            ])
+        self.assertEqual(code, 0)
+        self.assertIn("docs/new-page.md: reviewed_documentation (bound to its bytes)", out.getvalue())
+        self.assertIn("V4 policy delta docs/provenance/policy-deltas-v4/", out.getvalue())
+
+    def test_rekey_of_an_edited_claim_bound_path_reuses_its_admission(self) -> None:
+        """Tonight's case: admitted, then a hook trimmed a blank line. One re-key, no new decision."""
+        fixture = _Fixture(self)
+        fixture.add("docs/b.md", "# B\n\n\n")
+        first = fixture.admit("docs/b.md")
+        recorded = (fixture.authority / first["records"][0]).read_bytes()
+        self._forget_v4(fixture, first)
+        fixture.add("docs/b.md", "# B\n")
+
+        rekeyed = fixture.admit("docs/b.md", rekey=True, approval_basis=None)
+        self.assertEqual(rekeyed["records"][0], first["records"][0])
+        self.assertEqual((fixture.authority / first["records"][0]).read_bytes(), recorded, "no new decision")
+        self.assertEqual(self._entry(fixture, rekeyed, "docs/b.md")["binding"], "claim")
+
+    def test_rekey_of_an_edited_byte_bound_path_is_refused(self) -> None:
+        fixture = _Fixture(self, records=[self.RECORD])
+        fixture.add("src/lib/up.h", "int up(void);\n")
+        first = fixture.admit("src/lib/up.h", origins={"src/lib/up.h": self.THIRD_PARTY})
+        self._forget_v4(fixture, first)
+        fixture.add("src/lib/up.h", "int up(void);\n\n")
+        with self.assertRaises(AdmitError) as caught:
+            fixture.admit("src/lib/up.h", rekey=True, approval_basis=None)
+        self.assertEqual(caught.exception.code, "REKEY_ADMISSION_MISSING")
+
+    def test_rekey_refuses_admissions_that_record_different_decisions(self) -> None:
+        fixture = _Fixture(self)
+        fixture.add("docs/b.md", "# B\n")
+        first = fixture.admit("docs/b.md")
+        git(fixture.pr, "branch", "-q", "-D", first["admit_branch"])
+        second = fixture.admit("docs/b.md", slug="new-pages-v2", origins={"docs/b.md": {"binding": "bytes"}})
+        self._forget_v4(fixture, second)
+        with self.assertRaises(AdmitError) as caught:
+            fixture.admit("docs/b.md", rekey=True, approval_basis=None)
+        self.assertEqual(caught.exception.code, "REKEY_ADMISSION_AMBIGUOUS")
+
+
+class HookCheckTest(unittest.TestCase):
+    """Before reading or pinning a byte, admit_paths applies the byte-rewriting hooks' rules.
+
+    The rules run in pure Python on the blobs at the pull request head, with the trusted base's
+    exclusions. Nothing from the pull request is executed (#1889 security review).
+    """
+
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(admit_paths, "check_rewriting_hooks", _REAL_HOOK_CHECK))
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="nakagawa-admit-hooks-test-")))
+
+    def _repo(self, base_files: dict[str, bytes], head_files: dict[str, bytes]) -> tuple[Path, str, str]:
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q")
+        git(repo, "config", "core.autocrlf", "false")
+        for files in (base_files, head_files):
+            for relative, data in files.items():
+                path = repo / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            (repo / "anchor").write_bytes(str(len(files)).encode() + b"\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-qm", "commit")
+            if files is base_files:
+                base = git(repo, "rev-parse", "HEAD")
+        return repo, base, git(repo, "rev-parse", "HEAD")
+
+    def test_refuses_when_the_hooks_would_rewrite_and_admits_after_the_fix_is_committed(self) -> None:
+        fixture = _Fixture(self)
+        fixture.add("docs/new-page.md", "# New page  \n\n\n")
+        private_before = git(fixture.authority, "rev-parse", "HEAD")
+        with self.assertRaises(AdmitError) as caught:
+            fixture.admit("docs/new-page.md")
+        self.assertEqual(caught.exception.code, "ADMIT_HOOKS_WOULD_REWRITE")
+        self.assertIn("docs/new-page.md: trailing whitespace on line 1 (trailing-whitespace)", str(caught.exception))
+        self.assertIn("more than one line ending", str(caught.exception))
+        self.assertEqual(git(fixture.authority, "rev-parse", "HEAD"), private_before, "nothing recorded")
+        self.assertEqual(git(fixture.pr, "branch", "--list", "admit/*"), "", "no admission branch")
+        self.assertEqual(git(fixture.pr, "status", "--porcelain"), "", "the pull request worktree is untouched")
+
+        digest = fixture.add("docs/new-page.md", "# New page\n")
+        result = fixture.admit("docs/new-page.md")
+        (statement,) = fixture.record(result["records"][0])["reviewed_new_paths"]
+        self.assertEqual(statement["sha256"], digest)
+
+    def test_each_rule_matches_the_hook_it_stands_for(self) -> None:
+        findings = admit_paths.rewriting_hook_findings
+        self.assertEqual(findings(b""), {})
+        self.assertEqual(findings(b"clean\ntext\n"), {})
+        self.assertEqual(set(findings(b"a \nb\n")), {"trailing-whitespace"})
+        self.assertEqual(set(findings(b"a\nb\t")), {"trailing-whitespace", "end-of-file-fixer"})
+        self.assertEqual(set(findings(b"a\nb")), {"end-of-file-fixer"})
+        self.assertEqual(set(findings(b"a\n\n")), {"end-of-file-fixer"})
+        self.assertEqual(set(findings(b"\n")), {"end-of-file-fixer"})
+        self.assertEqual(set(findings(b"a\r\nb\r\n")), {"mixed-line-ending"})
+        self.assertEqual(set(findings(b"a\rb\n")), {"mixed-line-ending"})
+        self.assertEqual(set(findings(b"\xef\xbb\xbfa\n")), {"fix-byte-order-marker"})
+        self.assertEqual(findings(b"\x00\x01binary \r\n\n\n"), {}, "binary files are left alone, as identify types them")
+
+    def test_exclusions_come_from_the_trusted_base_not_the_pull_request(self) -> None:
+        base_config = (
+            b"exclude: |\n  (?x)^(\n      third_party/|\n      build/\n  )\n"
+            b"repos:\n  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: v6.0.0\n    hooks:\n"
+            b"      - id: trailing-whitespace\n        # a comment\n        exclude: ^docs/legacy\\.md$\n"
+            b"      - id: end-of-file-fixer\n        exclude: >-\n          ^docs/table\\.dat$\n"
+            b"      - id: check-json\n        exclude: ^docs/legacy2\\.md$\n"
+        )
+        repo, base, head = self._repo(
+            {admit_paths.PRE_COMMIT_CONFIG: base_config},
+            {
+                # The candidate widens every exclusion; it must have no effect.
+                admit_paths.PRE_COMMIT_CONFIG: b"exclude: .*\n",
+                "docs/legacy.md": b"kept as recorded \n",
+                "docs/legacy2.md": b"not excluded for this hook \n",
+                "docs/table.dat": b"no final newline",
+                "third_party/lib/x.c": b"int x; \r\n\r\n",
+                "docs/clean.md": b"# Clean\n",
+            },
+        )
+        check = admit_paths.check_rewriting_hooks
+        self.assertEqual(
+            check(repo, base, head, ["docs/legacy.md", "docs/table.dat", "third_party/lib/x.c", "docs/clean.md"]),
+            list(admit_paths.REWRITING_HOOKS),
+        )
+        with self.assertRaises(AdmitError) as caught:
+            check(repo, base, head, ["docs/legacy2.md", "docs/clean.md"])
+        self.assertEqual(caught.exception.code, "ADMIT_HOOKS_WOULD_REWRITE")
+        self.assertIn("docs/legacy2.md", str(caught.exception))
+        self.assertNotIn("docs/clean.md:", str(caught.exception))
+
+    def test_line_endings_follow_the_base_gitattributes(self) -> None:
+        repo, base, head = self._repo(
+            {".gitattributes": b"* text=auto eol=lf\n*.dat -text\n"},
+            {".gitattributes": b"* -text\n", "assets/table.dat": b"a\r\nb\r\n", "docs/page.md": b"a\r\nb\r\n"},
+        )
+        admit_paths.check_rewriting_hooks(repo, base, head, ["assets/table.dat"])
+        with self.assertRaises(AdmitError) as caught:
+            admit_paths.check_rewriting_hooks(repo, base, head, ["docs/page.md"])
+        self.assertIn("docs/page.md: CRLF", str(caught.exception), "the candidate's -text is ignored")
+
+    def test_nothing_from_the_pull_request_is_executed(self) -> None:
+        marker = (self.tmp / "executed").as_posix()
+        payload = f"open({marker!r}, 'w').write('ran')\n".encode()
+        candidate_config = (
+            "repos:\n  - repo: local\n    hooks:\n      - id: trailing-whitespace\n"
+            "        name: trailing-whitespace\n"
+            f'        entry: "{shlex.join([Path(sys.executable).as_posix(), "-c", payload.decode()])}"\n'
+            "        language: system\n"
+        ).encode()
+        repo, base, head = self._repo(
+            {"README": b"base\n"},
+            {
+                admit_paths.PRE_COMMIT_CONFIG: candidate_config,
+                "pre_commit.py": payload,
+                "pre_commit/__init__.py": payload,
+                "pre_commit/__main__.py": payload,
+                "docs/new.md": b"# New \n",
+                "docs/clean.md": b"# Clean\n",
+            },
+        )
+        with self.assertRaises(AdmitError) as caught:
+            admit_paths.check_rewriting_hooks(repo, base, head, ["docs/new.md"])
+        self.assertEqual(caught.exception.code, "ADMIT_HOOKS_WOULD_REWRITE")
+        admit_paths.check_rewriting_hooks(repo, base, head, ["docs/clean.md", "pre_commit/__main__.py"])
+        self.assertFalse(Path(marker).exists(), "a pull request's hook or pre_commit module ran")
+        self.assertEqual(git(repo, "status", "--porcelain"), "", "nothing was checked out or rewritten")
+
+    def test_an_unreadable_base_configuration_is_refused(self) -> None:
+        for config in (
+            "repos:\n  - repo: x\n    hooks:\n      - id: trailing-whitespace\n        exclude: \"a\\.md\"\n",
+            "repos:\n  - repo: x\n    hooks:\n      - id: trailing-whitespace\n      - id: trailing-whitespace\n",
+            "exclude: ^(unclosed\n",
+            "exclude: [a, b]\n",
+        ):
+            with self.subTest(config=config), self.assertRaises(AdmitError) as caught:
+                admit_paths.rewriting_hook_exclusions(config)
+            self.assertEqual(caught.exception.code, "ADMIT_HOOKS_CONFIG_INVALID")
+
+    def test_the_repository_configuration_is_read(self) -> None:
+        config = (ROOT / admit_paths.PRE_COMMIT_CONFIG).read_text(encoding="utf-8")
+        top, hooks = admit_paths.rewriting_hook_exclusions(config)
+        assert top is not None
+        self.assertTrue(top.search("third_party/lib/x.c"))
+        self.assertFalse(top.search("tools/admit_paths.py"))
+        self.assertTrue(hooks["trailing-whitespace"].search("src/core/nk_psp_aes.c"))
+        self.assertTrue(hooks["end-of-file-fixer"].search("src/rt/minimp3/LICENSE"))
+        self.assertFalse(hooks["end-of-file-fixer"].search("tools/admit_paths.py"))
 
 
 class RecompJsonRegressionTest(unittest.TestCase):
@@ -1138,7 +1435,7 @@ class RecompJsonRegressionTest(unittest.TestCase):
 
     def test_records_and_controls_are_byte_identical(self) -> None:
         # The private commit that added the admission, and its latest form. Since #1673 the
-        # policy delta is the V3 record, not the historical nested candidate/baseline pair.
+        # policy delta is the V4 record, not the historical nested candidate/baseline pair.
         added = git(self.authority, "log", "--diff-filter=A", "--format=%H", "--", self.ADMISSION).splitlines()[-1]
         latest = git(self.authority, "log", "-1", "--format=%H", "--", self.ADMISSION)
         expected = {self.ADMISSION: subprocess.run(["git", "show", f"{latest}:{self.ADMISSION}"], cwd=self.authority,
@@ -1162,7 +1459,7 @@ class RecompJsonRegressionTest(unittest.TestCase):
         self.assertEqual(result["records"], [self.ADMISSION, result["policy_delta_record"]])
         self.assertEqual((private / self.ADMISSION).read_bytes(), expected[self.ADMISSION])
         self.assertEqual(
-            verifier.policy_delta_key(repo=pr, base_rev=self.BASE, candidate_rev=result["admission_commit"]),
+            verifier.policy_delta_key_v4(repo=pr, base_rev=self.BASE, candidate_rev=result["admission_commit"]),
             Path(result["policy_delta_record"]).stem,
         )
         self.assertEqual(result["statements"], [{"path": ".recomp.json", "classification": "reviewed_configuration"}])
