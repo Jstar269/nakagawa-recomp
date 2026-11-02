@@ -81,7 +81,8 @@ no network.
    against `SHA256SUMS.txt`.
 2. Start `bin\nakagawa_player.exe` (`wine bin/nakagawa_player.exe`, or add it to Steam as a non-Steam game
    and pick a Proton version). The first run used Wine 9.0 only; no minimum version is claimed.
-3. Pick a folder of your own discs in the library and confirm the scan lists them.
+3. Optional, the one step that needs a disc: pick a folder of your own discs in the library and confirm the
+   scan lists them. Without a disc, record this step as `NOT_RUN`.
 4. Run a showcase demo from **Test this PC** (they ship in `bin\demos\` and need no disc) and confirm it
    draws and runs. The repository's `display-smoke` target needs the MSYS2 toolchain from a source checkout
    and is not part of the ZIP.
@@ -93,8 +94,7 @@ Known unknowns, each to be recorded by the first run rather than assumed:
 
 - **BUILD PACKAGE.** The player compiles a game on your machine with the bundled `prereqs/` toolchain
   (`gcc.exe` and `mingw32-make.exe`). Whether that toolchain starts under Wine, and how long a build takes
-  there, has not been measured. If it does not start, a package built on Windows can still be copied into the
-  data folder and played.
+  there, has not been measured.
 - **Audio and gamepads** depend on the Wine audio driver and on SDL3's gamepad support under Wine.
 - **Check for updates** does the same network request as on Windows, so it works only if the prefix has
   network access.

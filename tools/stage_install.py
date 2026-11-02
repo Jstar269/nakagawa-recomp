@@ -533,6 +533,13 @@ def check_release_assets(names) -> list[str]:
         for archive in found:
             if f"{archive}.sha256" not in names:
                 problems.append(f"ASSET_CHECKSUM_MISSING: {archive}.sha256")
+    sources = [name for name in names if _SOURCE_ZIP.fullmatch(name)]
+    if not sources:
+        problems.append("ASSET_SOURCE_MISSING: no nakagawa-recomp-<version>-prerequisite-sources.zip; the ZIP "
+                        "bundles prerequisites and is published only with their source archive")
+    elif len(sources) > 1:
+        problems.append(f"ASSET_SOURCE_DUPLICATE: {', '.join(sources)}")
+    problems += [f"ASSET_CHECKSUM_MISSING: {name}.sha256" for name in sources if f"{name}.sha256" not in names]
     if len(versions) > 1:
         problems.append(f"ASSET_VERSION_MIXED: {', '.join(sorted(versions))}")
     kept = [name for name in names if not is_auxiliary_asset(name) and name.lower().endswith(_ARCHIVE_SUFFIXES)]

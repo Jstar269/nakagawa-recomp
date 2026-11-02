@@ -446,7 +446,7 @@ class ReleaseAssetContractTests(unittest.TestCase):
         # "checksums.txt" is listed nowhere in the contract, and a name without a checksum word is no checksum file.
         self.assertEqual(self._codes(_GOOD_ASSETS + ["hashes.txt"]), ["ASSET_NAME_UNKNOWN"])
         self.assertEqual(self._codes([_PLAYER, "nakagawa-recomp-0.0.2-windows-x64.zip.hash"]),
-                         ["ASSET_CHECKSUM_MISSING", "ASSET_NAME_UNKNOWN"])
+                         ["ASSET_CHECKSUM_MISSING", "ASSET_NAME_UNKNOWN", "ASSET_SOURCE_MISSING"])
 
     def test_a_player_name_a_filter_would_drop_fails(self):
         names = ["nakagawa-recomp-0.0.2-windows-x64-debug.zip"]
@@ -454,11 +454,30 @@ class ReleaseAssetContractTests(unittest.TestCase):
         self.assertIn("ASSET_PLAYER_MISSING", self._codes(names))
 
     def test_missing_checksum_orphans_and_mixed_versions_fail(self):
-        self.assertEqual(self._codes([_PLAYER]), ["ASSET_CHECKSUM_MISSING"])
+        self.assertEqual(self._codes(_GOOD_ASSETS[:1] + _GOOD_ASSETS[3:]), ["ASSET_CHECKSUM_MISSING"])
         self.assertEqual(self._codes([n for n in _GOOD_ASSETS if n != _PLAYER]),
                          ["ASSET_ORPHAN", "ASSET_ORPHAN", "ASSET_PLAYER_MISSING"])
-        self.assertEqual(self._codes(_GOOD_ASSETS[:3] + ["nakagawa-recomp-0.0.1-prerequisite-sources.zip"]),
-                         ["ASSET_VERSION_MIXED"])
+        mixed = "nakagawa-recomp-0.0.1-prerequisite-sources.zip"
+        self.assertEqual(self._codes(_GOOD_ASSETS[:3] + [mixed, f"{mixed}.sha256"]), ["ASSET_VERSION_MIXED"])
+
+    def test_the_source_archive_and_its_checksum_are_required(self):
+        # Review of #1915: a ZIP and its checksum alone, or a source archive without its checksum, passed.
+        self.assertEqual(self._codes(_GOOD_ASSETS[:2]), ["ASSET_SOURCE_MISSING"])
+        self.assertEqual(self._codes(_GOOD_ASSETS[:4]), ["ASSET_CHECKSUM_MISSING"])
+        self.assertEqual(self._codes(_GOOD_ASSETS + ["nakagawa-recomp-0.0.2-prerequisite-sources.zip.bak"]),
+                         ["ASSET_NAME_UNKNOWN"])
+
+    def test_a_folder_that_also_holds_the_staged_tree_is_named_by_files_instead(self):
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            (folder / "nakagawa-recomp-0.0.2-windows-x64").mkdir()
+            files = []
+            for name in _GOOD_ASSETS:
+                (folder / name).write_bytes(b"")
+                files.append(str(folder / name))
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(stage_install.main(["--check-assets", str(folder)]), 1)
+            self.assertEqual(stage_install.main(["--check-assets", *files]), 0)
 
     def test_a_second_platform_is_two_archives_only_when_the_contract_lists_it(self):
         self.assertEqual(self._codes(_GOOD_ASSETS + ["nakagawa-recomp-0.0.2-linux-x64.zip"]),

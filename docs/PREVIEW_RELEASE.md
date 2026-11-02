@@ -413,12 +413,18 @@ name, and refuses a file whose checksum changed after it first recorded it. The 
 - **A published asset is never replaced or edited.** A changed file is a new version, so a recorded checksum
   stays true.
 
-`python tools/stage_install.py --check-assets <folder with the files to publish>` checks the names and exits
-1 with a named problem (`ASSET_PLATFORM_DUPLICATE`, `ASSET_SECOND_ARCHIVE`, `ASSET_PLAYER_MISSING`,
-`ASSET_CHECKSUM_MISSING`, `ASSET_ORPHAN`, `ASSET_VERSION_MIXED`, `ASSET_FILTER_MISMATCH`,
-`ASSET_NAME_UNKNOWN`). Run it on the folder holding the ZIP, the source archive and their `.sha256` files,
-and again with the `.minisig` added, before anything is attached to a release. `tools/test_stage_install.py`
-keeps the rule from drifting.
+`--check-assets` takes either one folder that holds only the files to publish, or the files themselves. It
+checks the names and exits 1 with a named problem (`ASSET_PLATFORM_DUPLICATE`, `ASSET_SECOND_ARCHIVE`,
+`ASSET_PLAYER_MISSING`, `ASSET_SOURCE_MISSING`, `ASSET_SOURCE_DUPLICATE`, `ASSET_CHECKSUM_MISSING`,
+`ASSET_ORPHAN`, `ASSET_VERSION_MIXED`, `ASSET_FILTER_MISMATCH`, `ASSET_NAME_UNKNOWN`). The recipe's
+`$ArtifactRoot` also holds the staged folder, so name the files:
+
+```powershell
+python tools/stage_install.py --check-assets $Zip "$Zip.sha256" $SourceZip "$SourceZip.sha256"
+```
+
+Run it before the signature exists, and again with `"$Zip.sha256.minisig"` added, before anything is
+attached to a release. `tools/test_stage_install.py` keeps the rule from drifting.
 
 Wine and Proton: the Windows ZIP is the build used there. The smoke run and its known limits are in
 [`SETUP.md`](SETUP.md#wine-and-proton).
