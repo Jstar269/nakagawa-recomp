@@ -926,7 +926,8 @@ intended job from a candidate's.
 naming a pull request. It checks out the default branch, fetches `refs/pull/<n>/head` as
 objects only, and never checks out or runs candidate files. The verdict job has `actions`,
 `checks`, `contents`, `issues` and `pull-requests` read, and `statuses: write`; a separate
-job with only `pull-requests: write` withdraws the approval label on a new head. The verifier
+job, with `pull-requests: write` and no way to post a status, records, carries or withdraws
+the approval label (see "Approving a CI change"). The verifier
 reads the head's workflow runs, latest-attempt jobs, check runs, statuses and label events
 from GitHub's API and posts `success`, `pending` or `failure` (or `error` if it cannot judge
 the head, which replaces an older success).
@@ -963,11 +964,70 @@ list is derived on each run from the default branch's workflows (a path named ou
 comment line), so it follows the workflows as they change.
 
 **Approving a CI change.** A maintainer reviews the change and applies the
-`ci-change-approved` label. The label counts only when its latest event is `labeled`, the
-user who applied it has write, maintain or admin permission, and it was applied after the
-head's first pull-request run. A push or reopen removes the label, so it approves exactly
-one reviewed head. The label waives only `CI_CHANGE_UNAPPROVED`: an approved change still
-needs every intended job, once, green, from its intended workflow.
+`ci-change-approved` label. The label counts only when its latest event is `labeled` and the
+user who applied it has write, maintain or admin permission. It counts for a head in one of
+two ways: it was applied after the head's first pull-request run, or it was carried to the
+head (next paragraph). A reopen, and any push that is not carried, removes the label, so the
+label approves one reviewed head, or later heads whose protected files are byte-identical to
+it. The label waives only `CI_CHANGE_UNAPPROVED`: an approved change still needs every
+intended job, once, green, from its intended workflow.
+
+**Carried approval.** A push that changes no CI-relevant file keeps the label, so a
+maintainer does not re-apply it for a documentation line, a test entry or a merge of `main`
+that left the protected files alone. "CI-relevant" is the same classification the verdict
+uses for `CI_CHANGE_UNAPPROVED`: the protected paths above, listed by `protected_paths` in
+`tools/ci_trust_verdict.py` from the default branch's workflows. There is no second list.
+
+- *The digest.* `approval_digest` is a SHA-256 over the mode and SHA-256 of the bytes of every
+  protected path present in the head's tree, in path order, under a version tag. The path set is
+  the verdict's own, plus every `tools/` file that a workflow or action of the head itself names
+  outside a comment, so a gate tool that only the candidate's workflow runs (a new tool, or an
+  existing one newly run) is hashed, and a later push that turns it into `exit 0` withdraws the
+  label. A protected path added to or removed from the head changes it, so an added workflow or action file, a
+  deleted gate tool and a rename (a removal plus an addition) all change it. A mode change
+  changes it. The candidate's copy of `tools/ci_trust_verdict.py`, `tools/ci_paths.py`, the
+  verdict workflow and the other gate files are protected paths, so changing the
+  classification itself changes it. Changing a protected file and reverting it gives the
+  original digest again, but only the head-to-head comparison below ever carries, and a
+  head in between whose digest differs has already withdrawn the label.
+- *The record.* The workflow's `approval` job runs the default branch's copy of the tool,
+  with the candidate fetched as objects only. On a `labeled` event it hashes the labelled
+  head, provided the label's latest event is `labeled` by a user with write access, the pull
+  request is open against the default branch, and `refs/pull/<n>/head` still is the head the
+  event named, before and after hashing. The next job, `approval_record`, is named `CI approval
+  record v1 pr<number> <digest>`; the pull request number and the digest are the job's name.
+  The record is read back only from a successful job of that name, in a `pull_request_target`
+  run of `.github/workflows/ci-trust-verdict.yml`, at exactly the head being judged and for
+  that pull request's number (one SHA can head two pull requests). GitHub takes a
+  `pull_request_target` run's workflow definition from the pull request's base branch, not from
+  the pull request, so a pull request cannot produce such a job. That base is the default
+  branch only for a pull request that targets it: a run GitHub reports for another base or
+  another pull request is ignored, and a pull request that was ever retargeted (a
+  `base_ref_changed` event) never carries an approval, because GitHub does not report a fork
+  pull request's runs against it. A job in a `pull_request` run, another workflow, another
+  head or a failed job is ignored.
+- *The carry.* On a `synchronize` event the `approval` job reads the digest recorded at the
+  push's previous head (`github.event.before`), recomputes it for the new head with trusted
+  code, and succeeds only on an exact match, with the label still on the pull request from a
+  write-access user and the head still current. It then writes a record for the new head, so
+  the next push compares with this one. Any other outcome (no record, a different digest, an
+  API or git failure, a head that moved, a reopen) removes the label; the step failing is the
+  same as the step not running.
+- *The verdict.* A label older than the head approves it only if the verdict recomputes the
+  digest itself and finds the same digest recorded at this head. A label that no longer has a
+  record, or a record whose digest the head no longer has, fails with `CI_CHANGE_UNAPPROVED`
+  whether or not the workflow removed the label.
+
+The digest covers the same boundary `protected_paths` draws and nothing wider: it does not hash a helper
+module that a gate tool imports, or a script outside `tools/` that a workflow runs, so review those
+in the head that introduces them.
+
+A force-push of an unrelated history is judged by content alone: the previous head is the
+push's `before`, whatever its ancestry, and an identical digest is identical bytes. Two pushes
+in quick succession can find no record yet at the first one's head and withdraw the label;
+so can a labeling run that a newer pending run replaced (the workflow's concurrency group
+keeps one pending run per head). Both fail closed: re-apply the label after reviewing the
+head. A merge of `main` that changes a protected file also changes the digest; re-review it.
 
 **Re-running.** Every run reads GitHub's state afresh. The provenance workflow is not a
 `workflow_run` trigger, because its verifier refuses any other workflow that names its
@@ -981,7 +1041,10 @@ gh workflow run ci-trust-verdict.yml -f pull_request_number=<n>
 **What stays outside it.** Candidate tests and build files are still candidate code: the
 gate proves the intended jobs ran from trusted definitions, not that the tests are honest.
 A workflow on a same-repository branch could post a commit status under `Trusted CI
-verdict` with its own token; fork pull requests get a read-only token and cannot. A GitHub
+verdict` with its own token; fork pull requests get a read-only token and cannot. The
+approval record is not a status for that reason: a same-repository workflow can post a status
+with any text, but it cannot make a job of the default branch's `pull_request_target` run carry
+a name. A GitHub
 App that posts the status, pinned by `integration_id` in the ruleset, would close that (see
 [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md#required-check-identity-what-github-can-and-cannot-enforce-here)).
 A closed pull request with the same head and an older base branch could leave a later run
