@@ -489,7 +489,7 @@
       "id": "PSP-EXCEPTION-FETCH-001",
       "status": "implemented",
       "hardware_evidence": "CAPTURED",
-      "evidence_ref": "docs/HARDWARE_ORACLE.md#1375-and-312-captures-2026-11-01",
+      "evidence_ref": "docs/HARDWARE_ORACLE.md#1375-and-312-runs-2026-11-02",
       "group": "cpu",
       "source": "fixtures/psp_oracle/probe_exception_a3.c",
       "prx": "per-case A3 fetch PRX",
@@ -507,7 +507,7 @@
       "risk": "low-medium; each case issues one user-mode fetch and no persistent write",
       "reset": "capture exprint before recovery; one case per launch",
       "evidence_cases": ["fetch-armed"],
-      "evidence_note": "On 2026-11-01, the owner-reported system identity was system software 6.61, ARK-5.1.0; pspver was measured for each launch. Fetch from 0x00000000 at pspver 6.6.0, source commit 9e78dd00d628d07d1f7cc28e6d7af5970ab994f9, reported an instruction bus error with EPC=0, BadVAddr=0 and Cause=0x10000018 (BD clear); it is diagnostic-only because the faulting case has no completion marker or host0 round trip. Fetch from 0x08000000 at pspver 6.6.1, with the same PRX source commit while the worktree HEAD had advanced to 194abdf0, reported an instruction bus error with EPC=0x08000000, BadVAddr=0, Cause=0x10000018 (BD clear) and Status=0x40088613; it is diagnostic-only because the host0 round trip failed and source commit binding did not match the worktree HEAD. An exact-head 194abdf0 rebuild passed the PSPSDK build and import gate, but its 0x08000000 rerun returned the earlier 0x40000000 frame from exprint and is not cited. Fetch from 0x40000000 at pspver 6.6.0, source commit 9e78dd00d628d07d1f7cc28e6d7af5970ab994f9, reported an instruction bus error with EPC=0x40000000, BadVAddr=0, Cause=0x10000018 (BD clear) and Status=0x40088613; it is diagnostic-only because the host0 round trip failed and source commit binding did not match the worktree HEAD. No exact-head 0x40000000 follow-up was run. Do not compare the 6.6.0 and 6.6.1 fault outcomes; they are separate firmware observations."
+      "evidence_note": "On 2026-11-01, the owner-reported system identity was system software 6.61, ARK-5.1.0; pspver was measured for each launch. Fetch from 0x00000000 at pspver 6.6.0, source commit 9e78dd00d628d07d1f7cc28e6d7af5970ab994f9, reported an instruction bus error with EPC=0, BadVAddr=0 and Cause=0x10000018 (BD clear); it is diagnostic-only because the faulting case has no completion marker or host0 round trip. Fetch from 0x08000000 at pspver 6.6.1, with the same PRX source commit while the worktree HEAD had advanced to 194abdf0, reported an instruction bus error with EPC=0x08000000, BadVAddr=0, Cause=0x10000018 (BD clear) and Status=0x40088613; it is diagnostic-only because the host0 round trip failed and source commit binding did not match the worktree HEAD. An exact-head 194abdf0 rebuild passed the PSPSDK build and import gate, but its 0x08000000 rerun returned the earlier 0x40000000 frame from exprint and is not cited. Fetch from 0x40000000 at pspver 6.6.0, source commit 9e78dd00d628d07d1f7cc28e6d7af5970ab994f9, reported an instruction bus error with EPC=0x40000000, BadVAddr=0, Cause=0x10000018 (BD clear) and Status=0x40088613; it is diagnostic-only because the host0 round trip failed and source commit binding did not match the worktree HEAD. No exact-head 0x40000000 follow-up was run on 2026-11-01. On 2026-11-02 (pspver 6.6.1), exact source commit 1fbab0c6 on a clean committed tree, each launch on a boot whose transport-write preflight exprint reported no exception: fetch from 0x08000000 (boot 98) reported EPC=0x08000000, Cause=0x10000018 (ExcCode 6, BD 0), Status=0x40088613, and fetch from 0x40000000 (boot 100) reported EPC=0x40000000, Cause=0x10000018, Status=0x40088613; both read BadVAddr=0x0000002D. A bus error does not write BadVAddr, so the BadVAddr values in these frames, 0 included, are left over and measure nothing. Both 2026-11-02 frames are diagnostic: the faulting case has no completion marker or host0 round trip. Do not compare the 6.6.0 and 6.6.1 fault outcomes as firmware claims; EPC, Cause and Status agree between them only as firmware-insensitive CPU behaviour."
     },
     {
       "id": "PSP-FPU-001",
@@ -1929,14 +1929,14 @@
         "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
         "evidence_cases": [
           "alu-branch-ls-*",
-          "delay-slots-*"
+          "delay-slots-*",
+          "fpu-state-*",
+          "vfpu-state-*"
         ],
         "uncited_cases": [
-          "fpu-state-*",
-          "vfpu-state-*",
           "insn-trace-done"
         ],
-        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink 3.2.1, boot 65) of commit 84568280, case insn-trace after the transport-write preflight: 136 records and the done record, all PASS, acceptance-eligible with 0 blockers. Cited: every step record of both fixtures, which tools/psp_oracle/insn_trace.py turns into v2 PSP_HARDWARE traces (105 and 27 records) that agree with Nakagawa LOCAL_COSIM traces under strict_hardware_diff. An earlier launch of 3edde7f2 is not cited (its step records were cut to 34 of 35 words). On 2026-11-01, exact-head 194abdf0 PRXs built and passed the user-mode import gate, but insn-trace stopped at transport-write preflight because unload state from the preceding faulting fetch was unproven. The runner reached PHYSICAL_INTERVENTION_REQUIRED and the one bounded nkctl recovery returned NEEDS_PERSON after PSPLink stayed unresponsive. The trace PRX was not loaded; fpu-state-* and vfpu-state-* remain uncited and unmeasured. PSP-TRACE-EXCEPTION-001 was not launched. The raw logs and traces stay private; do not compare the new, unmeasured fixtures with the older 6.6.1 trace evidence.",
+        "measurement_note": "Measured by the 2026-10-29 PSP-3000 single-case run (firmware 6.6.1, PSPLink 3.2.1, boot 65) of commit 84568280, case insn-trace after the transport-write preflight: 136 records and the done record, all PASS, acceptance-eligible with 0 blockers. Cited: every step record of both fixtures, which tools/psp_oracle/insn_trace.py turns into v2 PSP_HARDWARE traces (105 and 27 records) that agree with Nakagawa LOCAL_COSIM traces under strict_hardware_diff. An earlier launch of 3edde7f2 is not cited (its step records were cut to 34 of 35 words). On 2026-11-01, exact-head 194abdf0 PRXs built and passed the user-mode import gate, but insn-trace stopped at transport-write preflight because unload state from the preceding faulting fetch was unproven. The runner reached PHYSICAL_INTERVENTION_REQUIRED and the one bounded nkctl recovery returned NEEDS_PERSON after PSPLink stayed unresponsive. The trace PRX was not loaded then. On 2026-11-02, after the owner power-cycled the PSP (system software 6.61, ARK-5.1.0 (owner); pspver 6.6.1, boot 98), a single-case run of exact source commit 1fbab0c6 on a clean committed tree was acceptance-eligible with 0 blockers: 149 records and the done record, all PASS. Cited from that run: the fpu-state (4) and vfpu-state (5) step records, whose v2 PSP_HARDWARE traces agree with Nakagawa LOCAL_COSIM traces under strict_hardware_diff; its alu-branch-ls and delay-slots traces reproduce the 2026-10-29 step-record digests exactly. tools/test_insn_trace.py pins all four digests. The raw logs and traces stay private.",
         "evidence_note": "Built from fixtures/psp_oracle/probe_insn_trace.c (with insn_trace_tramp.S and insn_trace_fixtures.h) as insn_trace.prx and run as a single launch, not in the campaign queue; its stream is fixed-shape (CAMPAIGN_PROBE_CASES['insn-trace']). tools/psp_oracle/insn_trace.py turns the host0 log into one v2 PSP_HARDWARE trace per fixture.",
         "group": "cpu",
         "source": "fixtures/psp_oracle/probe_insn_trace.c",
@@ -1982,8 +1982,9 @@
       {
         "id": "PSP-TRACE-EXCEPTION-001",
         "status": "implemented",
-        "hardware_evidence": "NOT_RUN",
-        "evidence_note": "Built at exact source commit 194abdf0 and passed the PSPSDK build and user-mode import gate, but not launched on 2026-11-01. The preceding insn-trace transport preflight ended with PHYSICAL_INTERVENTION_REQUIRED; nkctl recovery returned NEEDS_PERSON after PSPLink remained unresponsive. No delay-slot exception frame was captured.",
+        "hardware_evidence": "CAPTURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#1375-and-312-runs-2026-11-02",
+        "evidence_note": "Not launched on 2026-11-01: the preceding insn-trace transport preflight ended with PHYSICAL_INTERVENTION_REQUIRED and nkctl recovery returned NEEDS_PERSON. On 2026-11-02 (system software 6.61, ARK-5.1.0 (owner); pspver 6.6.1, boot 99), a launch of exact source commit 1fbab0c6 on a clean committed tree, whose transport-write preflight exprint reported no exception, retained a Breakpoint frame: EPC=0x0880464C (the armed branch address), Cause=0x90000024 (ExcCode 9, BD 1), Status=0x40088613; BadVAddr=0x0000002D is left over, not written by the exception. EPC and Cause match PSP-A2-01. The break ends the PRX before a completion marker or host0 round trip, so the envelope is not acceptance-eligible and the frame is diagnostic. An earlier boot-98 launch is not cited: exprint returned that boot's earlier fetch frame and the worktree was dirty.",
         "group": "cpu",
         "source": "fixtures/psp_oracle/probe_insn_trace.c",
         "prx": "insn_trace_exception.prx",

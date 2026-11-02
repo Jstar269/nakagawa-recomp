@@ -28,6 +28,8 @@ FIXTURE_DIR = ROOT / "fixtures" / "psp_oracle"
 PSP_MEASURED_STREAM_SHA256 = {
     "alu-branch-ls": "6d0acdf1a49be864ffe909991c302d534d8f75b7fa588da3a50d6ff2fd85654c",
     "delay-slots": "4b70f42c94fc8460efd0f81295fdbe9b9c680ae67d59a47a7ff587a2fecbfbec",
+    "fpu-state": "d6ab944213f8e5fd57bb018f2fc228a5e18677e8b383e369ce191ab3f3f2e2e7",
+    "vfpu-state": "a42868073c7695c17dbb3b7775e0f036b45e218173d8025511d71ca37bb392aa",
 }
 
 REG = {f"${i}": i for i in range(32)}

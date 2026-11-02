@@ -1163,6 +1163,23 @@ One console is one data point; see §11. Nothing here closes issue #70
   codegen mutation that emits the fixture's `xor` as `or` is reported at step 13, pc `0x08900034`, the first
   `xor`, with its differing `r16` write.
 
+- **PSP-3000 single-case run of the `insn-trace` probe on commit `1fbab0c6` (2026-11-02)**: system software
+  6.61, ARK-5.1.0 (owner); `pspver` 6.6.1, PSPLink 3.2.1, boot 98, one launch after the `transport-write`
+  preflight. The build adds the `fpu-state` and `vfpu-state` fixtures. The case envelope is
+  acceptance-eligible with 0 blockers: source commit binding `MATCH` on a clean committed tree, and a strict
+  golden sequence of 149 records plus the done record, all PASS.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-02, `1fbab0c6`) |
+  | --- | --- | --- | --- |
+  | `PSP-TRACE-001` | `fpu-state-*`, `vfpu-state-*` | `insn-trace-done`; FPU or VFPU registers and instruction forms outside the two fixtures | MEASURED (`insn-trace`) |
+
+  All four v2 `PSP_HARDWARE` traces agree with Nakagawa's `LOCAL_COSIM` traces under `strict_hardware_diff`.
+  `fpu-state` has 4 records (`d6ab944213f8e5fd57bb018f2fc228a5e18677e8b383e369ce191ab3f3f2e2e7`) and
+  `vfpu-state` 5 (`a42868073c7695c17dbb3b7775e0f036b45e218173d8025511d71ca37bb392aa`).
+  `alu-branch-ls` and `delay-slots` reproduce the 2026-10-29 digests above, and `tools/test_insn_trace.py`
+  pins all four. Values and the boot's other runs are in
+  [#1375 and #312 runs 2026-11-02](#1375-and-312-runs-2026-11-02).
+
 - **PSP-3000 single-case runs for #325 on commits `77a1a5e3` and `2c199df8` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000, standalone PSPLink. Two launches, each on its own boot after
   a PSPLink soft reset and the `transport-write` preflight (PSP-TRANSPORT-001 is not re-cited): boot 66 ran
@@ -2985,7 +3002,7 @@ not expected PSP values.
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
 | `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
 | `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |
-| `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; single launch, not in the campaign queue) | #312: per instruction of two source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot), the traced register state and any store. 136 result records; the v2 traces agree with Nakagawa's. |
+| `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; 2026-11-02, `1fbab0c6`, boot 98; single launches, not in the campaign queue) | #312: per instruction of four source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot; `add.s`/`mfc1`/`c.eq.s`/`cfc1` and `mfv`/`mtv`), the traced register state, including FCR31 and selected VFPU registers, and any store. 136 result records in 2026-10-29's two-fixture build, 149 in the four-fixture build; the v2 traces agree with Nakagawa's. See [#1375 and #312 runs 2026-11-02](#1375-and-312-runs-2026-11-02). |
 | `ge-sync-ids` | `PSP-GE-SYNC-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue; captured earlier from `96fe29f6` and `f6da6125`) | #1374: `sceGeListSync`, `sceGeDrawSync` and `sceGeListDeQueue` on an unknown queue id, on completed lists before and after later lists, on a list a `sceGeBreak(1)` reset removed, and with sync types other than 0 and 1, each blocking call bounded in a helper thread. See [PSP-GE-SYNC-001 runs 2026-10-31](#psp-ge-sync-001-runs-2026-10-31). |
 | `ge-mip` | `PSP-GE-MIP-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue) | #1373: the raw pixels of a 16x4 window after 57 textured draws over eight one-colour mip levels: constant, automatic, slope and the unused level mode, biases and their rounding, blends, the highest-level clamp, footprints along either axis, and transform-mode quads at fixed and varying w. 285 result records. |
 
@@ -3058,7 +3075,61 @@ The runner marked `PHYSICAL_INTERVENTION_REQUIRED`; the one bounded `nkctl` reco
 `NEEDS_PERSON` after the PSPLink channel remained unavailable. The trace PRX was not loaded, so no
 FPU/VFPU state records or delay-slot exception frame were captured. `insn-trace-exception` was not
 launched. The lock was released and the WSL USBHostFS server stopped; further PSP work needs owner
-intervention.
+intervention. The owner power-cycled the PSP, and these runs were made on 2026-11-02; see
+[#1375 and #312 runs 2026-11-02](#1375-and-312-runs-2026-11-02).
+
+### #1375 and #312 runs 2026-11-02
+
+After the owner's power cycle, five launches ran under the hardware-lock protocol on the project
+PSP-3000. The console is system software 6.61 with ARK-5.1.0 (owner-reported), and PSPLink reported
+`pspver` 6.6.1 (0x06060110) on boots 98, 99 and 100. Every launch was one case through `nkctl probe`,
+after the runner's `transport-write` preflight. The PRXs were built from a clean clone at exact source
+commit `1fbab0c665766a70ac4375fa4d2820be2ae9a986`, and the worktree stayed at that commit. Each
+preflight's `exprint` reported "No exception occurred" except where noted. So every frame cited below
+was raised by its own launch. The raw logs and frames stay private.
+
+- **`insn-trace` (`PSP-TRACE-001`, boot 98).** The envelope is acceptance-eligible: source commit
+  binding `MATCH` on a clean committed tree, a strict golden sequence, teardown `PASS`.
+  `tools/psp_oracle/insn_trace.py` turned the log into four v2 `PSP_HARDWARE` traces, and each one
+  agrees with Nakagawa's `LOCAL_COSIM` trace of the same words under `strict_hardware_diff`
+  (`STRICT_V2_AGREEMENT`). `alu-branch-ls` (105 records) and `delay-slots` (27) reproduce the
+  2026-10-29 step-record digests exactly. These are same-`pspver` repeats.
+  - `fpu-state` (4 records, SHA-256 of the step records
+    `d6ab944213f8e5fd57bb018f2fc228a5e18677e8b383e369ce191ab3f3f2e2e7`): `add.s` wrote f2 =
+    `0x40700000`, `mfc1` moved it to r8, `c.eq.s` left FCR31 = `0x00800000` (condition bit set) and
+    `cfc1` read that into r9.
+  - `vfpu-state` (5 records, `a42868073c7695c17dbb3b7775e0f036b45e218173d8025511d71ca37bb392aa`):
+    `mfv` read S000 `0x3f000000`, S001 `0x40000000` and S200 `0x40400000`, `mtv` wrote S000 from r10
+    (`0x0a0a0a0a`), and a second `mfv` read `0x0a0a0a0a` back.
+
+  `tools/test_insn_trace.py` pins all four digests.
+- **`exception-a3-fetch-08000000` (`PSP-EXCEPTION-FETCH-001`, boot 98).** This was an instruction bus
+  error: EPC `0x08000000`, Cause `0x10000018` (ExcCode 6, BD 0), Status `0x40088613`, BadVAddr
+  `0x0000002D`. The faulting thread outlived the module unload, and the case has no completion marker
+  or host0 round trip, so the envelope is not acceptance-eligible and the frame is diagnostic.
+- **`insn-trace-exception` (`PSP-TRACE-EXCEPTION-001`, boot 99).** This was a Breakpoint exception:
+  EPC `0x0880464C`, Cause `0x90000024` (ExcCode 9, BD 1), Status `0x40088613`, BadVAddr `0x0000002D`.
+  The EPC is the armed record's address of the always-taken `beq`, so the `break` in its delay slot
+  reports the branch address with BD set. That is the same EPC and Cause as PSP-A2-01 (2026-09-17).
+  Status differs from that run's `0x00088613` only in CU2 (`0x40000000`), which the probe's VFPU-enabled
+  thread carries. The module stayed loaded after the break, so `nkctl` requalified the PSP with a
+  PSPLink soft reset (boot 99 to 100). The envelope is diagnostic for the same reasons as the fetch
+  cases.
+- **`exception-a3-fetch-40000000` (`PSP-EXCEPTION-FETCH-001`, boot 100).** This was an instruction bus
+  error: EPC `0x40000000`, Cause `0x10000018` (ExcCode 6, BD 0), Status `0x40088613`, BadVAddr
+  `0x0000002D`. The frame is diagnostic.
+
+Not cited: an earlier `insn-trace-exception` launch on boot 98. Its `exprint` returned the
+`0x08000000` fetch frame from the same boot unchanged (same thread ID and EPC), and the worktree was
+dirty during it. PSPLink's `exprint` showed the first exception of a boot for the rest of that boot.
+So a faulting launch is cited only when it ran on a boot with no earlier exception, with that boot's
+preflight `exprint` reporting none.
+
+BadVAddr read `0x0000002D` in the bus error frames and in the Breakpoint frame on boots 98, 99 and 100.
+On 2026-11-01 it read 0. Neither an instruction bus error nor a breakpoint writes BadVAddr, so that
+field holds an earlier value, and none of these frames measures it. Values at `pspver` 6.6.1 match the
+2026-11-01 captures at `pspver` 6.6.0 for EPC, Cause and Status. That comparison is offered only as
+firmware-insensitive CPU behaviour, not as a firmware claim.
 
 ### PSP-GE-SYNC-001 runs 2026-10-31
 

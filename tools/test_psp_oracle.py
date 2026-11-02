@@ -3146,7 +3146,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-DMAC-002",
                 # The 2026-10-29 acceptance-eligible ge-raster run of 990748ec (#343).
                 "PSP-GE-RASTER-001",
-                # The 2026-10-29 acceptance-eligible insn-trace run of 84568280 (#312).
+                # The 2026-10-29 acceptance-eligible insn-trace run of 84568280 and the 2026-11-02
+                # run of 1fbab0c6, which adds the FPU/VFPU fixtures (#312).
                 "PSP-TRACE-001",
                 # The 2026-10-29 acceptance-eligible #325 runs: hle-intr-cells of 77a1a5e3 and
                 # intr-cause of 2c199df8.
@@ -3169,6 +3170,9 @@ class PspDmacProbeTests(unittest.TestCase):
                 # 2026-11-01: the #1375 P1/P2 stream has explicit non-invocation SKIPs; the
                 # fetch-zero exception has a retained frame but no completion sentinel.
                 "PSP-NULLCODE-001", "PSP-EXCEPTION-FETCH-001",
+                # 2026-11-02: the delay-slot break frame was retained; the break ends the PRX
+                # before its completion sentinel.
+                "PSP-TRACE-EXCEPTION-001",
             },
         )
 
@@ -6405,13 +6409,20 @@ class KernelEntryNullcodeProbeTests(unittest.TestCase):
         self.assertIn("EPC=0x40000000", exception["evidence_note"])
         self.assertIn("source commit binding did not match", exception["evidence_note"])
         self.assertIn("Do not compare the 6.6.0 and 6.6.1 fault outcomes", exception["evidence_note"])
+        # 2026-11-02 exact-head frames; BadVAddr is not written by a bus error, so not a measurement.
+        self.assertIn("exact source commit 1fbab0c6", exception["evidence_note"])
+        self.assertIn("A bus error does not write BadVAddr", exception["evidence_note"])
         trace = rows["PSP-TRACE-001"]
-        self.assertIn("fpu-state-*", trace["uncited_cases"])
-        self.assertIn("vfpu-state-*", trace["uncited_cases"])
+        self.assertIn("fpu-state-*", trace["evidence_cases"])
+        self.assertIn("vfpu-state-*", trace["evidence_cases"])
+        self.assertNotIn("fpu-state-*", trace["uncited_cases"])
+        self.assertNotIn("vfpu-state-*", trace["uncited_cases"])
         trace_exception = rows["PSP-TRACE-EXCEPTION-001"]
         self.assertEqual(trace_exception["diagnostic_case_ids"], ["insn-trace-exception"])
-        self.assertEqual(trace_exception["hardware_evidence"], "NOT_RUN")
-        self.assertIn("NEEDS_PERSON", trace_exception["evidence_note"])
+        self.assertEqual(trace_exception["hardware_evidence"], "CAPTURED")
+        self.assertIn("EPC=0x0880464C", trace_exception["evidence_note"])
+        self.assertIn("Cause=0x90000024", trace_exception["evidence_note"])
+        self.assertIn("not acceptance-eligible", trace_exception["evidence_note"])
 
 
 class HleIssuesProbeTests(unittest.TestCase):
