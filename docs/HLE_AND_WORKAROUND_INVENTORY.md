@@ -52,10 +52,10 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 215 | 220 |
+| `partial` | 229 | 234 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 302 | 311 |
+| `unreviewed` | 288 | 297 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -63,15 +63,15 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
-| `sceCtrl` | 0 | 6 | 0 | 0 | 6 | 12 | 12 |
-| `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
+| `sceCtrl` | 0 | 10 | 0 | 0 | 2 | 12 | 12 |
+| `sceDisplay` | 1 | 5 | 0 | 0 | 8 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 3 | 0 | 0 | 11 | 14 | 14 |
 | `sceGe` | 2 | 8 | 0 | 0 | 4 | 14 | 14 |
 | `sceHprm` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 93 | 0 | 0 | 93 | 189 | 207 |
+| `sceKernel` | 3 | 101 | 0 | 0 | 85 | 189 | 207 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 11 | 0 | 1 | 25 | 37 | 37 |
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
@@ -85,7 +85,7 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 | `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
 | `sceUtility` | 0 | 7 | 0 | 0 | 27 | 34 | 34 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **215** | **1** | **2** | **302** | **534** | **561** |
+| **Total** | **14** | **229** | **1** | **2** | **288** | **534** | **561** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -207,10 +207,28 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: PSPAutotests tests/ctrl/sampling (power-on cycle 0, set/get round trip)
 - **`h_CtrlGetSamplingMode`** (`sceCtrl`): `sceCtrlGetSamplingMode` (0xda6b76a1)
   - Limitation: reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured
+- **`h_CtrlPeekBufferNegative`** (`sceCtrl`): `sceCtrlPeekBufferNegative` (0xc152080a)
+  - Limitation: the positive peek contract with the button word inverted, from the public pspctrl.h description; no hardware cell measures the negative variants, and the positive-peek limitations apply (#341)
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract
+- **`h_CtrlPeekBufferPositive`** (`sceCtrl`): `sceCtrlPeekBufferPositive` (0x3a622550)
+  - Limitation: the peek counts and non-consumption match the recorded cells; sample timestamps beyond the recorded counts and the stick bytes in digital mode are not measured (#1390, #341)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: ctrl-peek-count, a peek of 64, 3 and 1 right after a read returns 64, 3 and 1)
+  - Evidence: PSPAutotests tests/ctrl/sampling and tests/ctrl/vblank at f573fe8c (a peek never blocks, also inside a VBLANK handler)
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_sampling_contract
 - **`h_CtrlPeekLatch`** (`sceCtrl`): `sceCtrlPeekLatch` (0xb1d0e5cd)
   - Limitation: the transition and return words are the sceCtrlReadLatch model, source-tested; the non-clearing peek is the project's model and is not hardware measured, because PSP-HLE-CTRL-LATCH-001 cannot tell clearing from keeping (its release field stays saturated with no input)
   - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-CTRL-LATCH-001 cases latch-peek-initial and latch-peek-after-poll (no input gives make break press 0 and release 0xFFFFFFFF)
+- **`h_CtrlReadBuffer`** (`sceCtrl`): `sceCtrlReadBufferPositive` (0x1f803938)
+  - Limitation: consumption of every unread sample, the newest-sample window and the one-sample wait match the recorded cells; samples are latched once per VBLANK whatever the sampling cycle, and digital mode does not centre the stick in the delivered data (#1390, #341)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: ctrl-empty-read, ctrl-short-read, ctrl-short-read-next consumption; a read right after a read waits for the next sample)
+  - Evidence: PSPAutotests tests/ctrl/sampling and tests/ctrl/vblank at f573fe8c (a read right after a read answers 1)
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_sampling_contract
+- **`h_CtrlReadBufferNegative`** (`sceCtrl`): `sceCtrlReadBufferNegative` (0x60b81f86)
+  - Limitation: the positive read contract with the button word inverted, from the public pspctrl.h description; no hardware cell measures the negative variants, and the positive-read limitations apply (#341)
+  - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_read_buffer_contract
 - **`h_CtrlReadLatch`** (`sceCtrl`): `sceCtrlReadLatch` (0x0b588501)
   - Limitation: with no input the measured make, break and press words are 0 and release is 0xFFFFFFFF, which the runtime matches; whether a read clears the latch is not established by the cells (the release word stays saturated), so the clearing contract and the returned cycle count are the project's model, and the null-pointer code is source-selftested only
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-CTRL-LATCH-001: latch-read-initial, latch-read-after-poll, latch-read-clears-peek-keeps)
@@ -223,6 +241,16 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: validates and stores the mode, but digital mode does not yet centre the sampled analog axes (#1390); whether firmware truncates the argument to 8 bits before the range check is not measured
   - Evidence: tests/native/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
   - Evidence: PSPAutotests tests/ctrl/sampling (modes 2 and -1 refused with 0x80000107, mode kept)
+- **`h_DisplayGetAccumulatedHcount`** (`sceDisplay`): `sceDisplayGetAccumulatedHcount` (0x210eab3a)
+  - Limitation: the counter advances at the measured 286 lines per display period through a CPU interrupt mask; its absolute value after boot and its wrap width are not measured, and the runtime derives the phase from the 60000/1001 model rather than the device's measured 16,682,850 ns period (#341)
+  - Evidence: docs/ARCHITECTURE.md#clocks (PSP-DISPLAY-001 sceDisplayGetAccumulatedHcount: +69 scanlines over 4 ms and +857 over 50 ms through every interrupt mask, 286 lines per period)
+  - Evidence: tests/native/hle_thread_selftest.c:test_display_clock_reads_are_observational
+- **`h_DisplayGetVcount`** (`sceDisplay`): `sceDisplayGetVcount` (0x9c6eaad7)
+  - Limitation: the masked-window freeze and the resume credit are measured; the value is the count last updated at a service point, so a VBLANK edge already passed but not yet delivered can be missing, which a live register read would not show (#341)
+  - Evidence: docs/ARCHITECTURE.md#clocks (PSP-DISPLAY-001 display-mask-vcount: VCOUNT stops under CpuSuspendIntr and credits +0 or +1 on resume)
+  - Evidence: tests/native/hle_thread_selftest.c:test_vcount_freezes_while_cpu_interrupts_are_masked
+  - Evidence: tests/native/hle_thread_selftest.c:test_vcount_credits_one_deferred_period_on_resume
+  - Evidence: tests/native/hle_thread_selftest.c:test_vcount_tracks_elapsed_source_periods
 - **`h_DisplaySetFrameBuf`** (`sceDisplay`): `sceDisplaySetFrameBuf` (0x289d82fe)
   - Limitation: display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -394,6 +422,13 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_kernel_import_sweep_memory_blocks_and_sdk_alias
   - Evidence: PSPAutotests tests/sysmem/memblock.expected (2ed7c9c5, recorded on a PSP): names, types, sizes, option sizes and type-1 placement deltas
   - Evidence: uOFW src/kd/sysmem/memblock.c (MIT): validation order and the AllocPartitionMemory call
+- **`h_AllocPartitionMemory`** (`sceKernel`): `sceKernelAllocPartitionMemory` (0x237dbd4f)
+  - Limitation: partition and type refusals, the volatile-partition cells and the unplaceable-Addr code match the recorded cells; where a PSP places a partition-6 block is unmeasured, partitions 2 and 6 accept a NULL name that the PSP refuses (existing callers rely on it), a zero size allocates 16 bytes rather than being checked against the recorded size cells, and blocks are placed from a bump heap rather than the kernel's allocator (#341)
+  - Evidence: PSPAutotests tests/sysmem/partition.expected at 2ed7c9c5 (partitions 1, 3 and 4 0x800200D6, other numbers 0x800200D2, type past 4 0x800200D8)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: vmem-alloc-free and vmem-alloc-held, a partition-5 Low block at 0x08400000 and a partition-2 Addr block there 0x800200D9)
+  - Evidence: tests/native/hle_thread_selftest.c:test_partition_unknown_block_codes
+  - Evidence: tests/native/hle_thread_selftest.c:test_td23_guest_pointer_validation
+  - Evidence: tests/native/hle_thread_selftest.c:test_td28_partition_free_reuse
 - **`h_AllocateFpl`** (`sceKernel`): `sceKernelAllocateFpl` (0xd979e9bf)
   - Limitation: ordinary allocation, one finite timeout, one-waiter hand-off, delete wake, and measured block/status layout are covered; invalid output pointers, negative timeout handling, and multiple-waiter ordering are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 FPL cells)
@@ -419,6 +454,11 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: the cited cells establish the -1 reset and a blocked waiter's WAIT_CANCEL outcome; other replacement counts, over-max refusal, optional waiter-count output, unknown IDs, pointer errors, and multiple-waiter ordering are not established by those citations
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema(-1) restores the create-time initial count)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
+- **`h_CancelVTimerHandler`** (`sceKernel`): `sceKernelCancelVTimerHandler` (0xd2d615ef)
+  - Limitation: the recorded cells match; error precedence for a cancel from inside a handler on another timer beyond the recorded uid cases is not measured (#341)
+  - Evidence: PSPAutotests tests/threads/vtimers/cancelhandler.expected at 2ed7c9c5 (clears the handler, keeps schedule and common, repeatable; from inside the timer's own handler 0x800201BF for that timer and 0x800201BE for uid 0)
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_handler_registration_and_errors
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_handler_catches_up_and_refuses_cancel_inside
 - **`h_CheckThreadStack`** (`sceKernel`): `sceKernelCheckThreadStack` (0xd13bde95)
   - Limitation: returns the caller's $sp minus its stack's low end, the quantity the recorded cells follow; a $sp outside the calling thread's stack and a call with no current thread are not measured and stop the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_check_thread_stack_contract
@@ -426,6 +466,24 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 - **`h_ClearEventFlag`** (`sceKernel`): `sceKernelClearEventFlag` (0x812346e4)
   - Limitation: the measured mask behavior matches the normal-object path; an unknown UID, or a UID of another kernel-object kind, returns the measured unknown-event-flag code 0x8002019A; error precedence is not covered
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)
+- **`h_CpuIsIntrSuspended`** (`sceKernel`): `sceKernelIsCpuIntrSuspended` (0x47a0b729)
+  - Limitation: a pure predicate that returns 1 only for token 0; the four measured tokens match and every other token value is inferred from them (#341)
+  - Evidence: PSPAutotests tests/intr/suspended.expected (0 -> 1, 1 -> 0, 2 -> 0, 0xDEADBEEF -> 0, identical with interrupts enabled and suspended)
+  - Evidence: tests/native/hle_thread_selftest.c:test_is_cpu_intr_suspended_is_token_predicate
+- **`h_CpuResumeIntr`** (`sceKernel`): `sceKernelCpuResumeIntr` (0x5f10d406)
+  - Limitation: the one coalesced VBLANK delivery and the +0/+1 VCOUNT credit on resume are measured; a token other than 0 or 1 is treated as keeping interrupts suspended, which no PSP cell records, and resume from an interrupt handler is not measured (#341)
+  - Evidence: docs/ARCHITECTURE.md#clocks (PSP-DISPLAY-001 display-mask-vcount: a mask crossing no source period credits +0 VCOUNT on resume, one or more credit +1)
+  - Evidence: tests/native/hle_thread_selftest.c:test_interrupt_nid_semantics
+  - Evidence: tests/native/hle_thread_selftest.c:test_vcount_credits_one_deferred_period_on_resume
+- **`h_CpuResumeIntrWithSync`** (`sceKernel`): `sceKernelCpuResumeIntrWithSync` (0x3b84732d)
+  - Limitation: an alias of sceKernelCpuResumeIntr with no PSP measurement of its own; the memory synchronisation the name implies is not modelled and the Resume limitations apply (#341)
+  - Evidence: tests/native/hle_thread_selftest.c:test_interrupt_nid_semantics
+- **`h_CpuSuspendIntr`** (`sceKernel`): `sceKernelCpuSuspendIntr` (0x092968f4)
+  - Limitation: the returned token (1 enabled, 0 nested) and the masked-window VCOUNT/VBLANK freeze are measured; nesting beyond two levels, a suspend taken from an interrupt or callback context, and any thread switch while masked are not measured (#341)
+  - Evidence: docs/ARCHITECTURE.md#clocks (PSP-DISPLAY-001 display-mask-vcount and sceKernelCpuSuspendIntr: VCOUNT and VBLANK delivery stop while masked, system time and the display controller keep running)
+  - Evidence: PSPAutotests tests/intr/suspended.expected (the saved-state token: 1 from an enabled CPU, 0 when already suspended)
+  - Evidence: tests/native/hle_thread_selftest.c:test_interrupt_nid_semantics
+  - Evidence: tests/native/hle_thread_selftest.c:test_vcount_freezes_while_cpu_interrupts_are_masked
 - **`h_CreateEventFlag`** (`sceKernel`): `sceKernelCreateEventFlag` (0x55c20a00)
   - Limitation: the name, attribute and pattern cells match; the shared semaphore/event-flag/LwMutex table holds 128 objects, while the same PSP-recorded output shows 1024 event flags created, and the exhaustion code 0x80020000 is not measured; the option struct is ignored
   - Evidence: PSPAutotests tests/threads/events/create/create.expected at 2ed7c9c5 (NULL name 0x80020001, attr 0x100/0x122/0x300/0x900/0x1200 refused with 0x80020191, long names cut to 31 bytes)
@@ -617,6 +675,17 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: the cited cells cover setting bits that satisfy a waiter and selected wait modes; invalid UIDs, all-bit masks, result precedence, and multiple-waiter ordering are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-signal-before-deadline-late-dispatch)
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics: selected event-flag pattern and wait-mode cells)
+- **`h_SetVTimerHandler`** (`sceKernel`): `sceKernelSetVTimerHandler` (0xd8b299ae)
+  - Limitation: registration, the error codes, the handler arguments and the reschedule rule follow the recorded cells; a NULL time pointer is not measured (the PSP crashes) and stops the run by name, as does a Set from inside the timer's own handler (#341)
+  - Evidence: PSPAutotests tests/threads/vtimers/sethandler.expected at 2ed7c9c5 (store of schedule, handler and common; uid 0 0x800201BF; unknown uid 0x800201BE)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-TIMER-ORDER-001: timer-order-vtimer-handler, timer-order-vtimer-event)
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_handler_registration_and_errors
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_handler_runs_at_its_schedule_and_reschedules
+- **`h_SetVTimerHandlerWide`** (`sceKernel`): `sceKernelSetVTimerHandlerWide` (0x53b00e9a)
+  - Limitation: the 64-bit argument placement (a2/a3, handler and common from the stack) follows the public signature and the shared registration cells; the Wide form has no hardware cell of its own, and a Set from inside the timer's own handler stops the run by name (#341)
+  - Evidence: PSPAutotests tests/threads/vtimers/sethandler.expected at 2ed7c9c5 (the Wide form takes the time as a 64-bit value and behaves like SetVTimerHandler)
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_handler_registration_and_errors
+  - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_handler_runs_at_its_schedule_and_reschedules
 - **`h_SetVTimerTime`** (`sceKernel`): `sceKernelSetVTimerTime` (0x542ad630)
   - Limitation: swaps the time through the SceKernelSysClock pointer and returns 0, 0x800201BE for uid 0, an invalid and a deleted uid with the clock untouched (pspautotests-recorded); a NULL or unwritable pointer (a crash on the PSP per the test's note) stops the run by name; running-timer timing as for SetVTimerTimeWide
   - Evidence: tests/native/hle_thread_selftest.c:test_vtimer_time_wide_and_setters

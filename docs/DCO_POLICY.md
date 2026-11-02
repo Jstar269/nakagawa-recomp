@@ -1,6 +1,6 @@
 # Contribution Rights and Sign-Off Policy (DCO 1.1)
 
-This document defines how contributions to Nakagawa Recomp (`https://github.com/Jstar269/nakagawa-recomp`) record the contributor's right to submit them. A sign-off under the standard **Developer Certificate of Origin (DCO) 1.1** is welcome but optional (maintainer decision, 2026-10-30).
+This document defines how contributions to Nakagawa Recomp (`https://github.com/Jstar269/nakagawa-recomp`) record the contributor's right to submit them. A sign-off under the standard **Developer Certificate of Origin (DCO) 1.1** is welcome but optional.
 
 > [!IMPORTANT]
 > **How a contribution is licensed**: the project is licensed under GPL-3.0-or-later. Under GitHub's Terms of Service ("inbound = outbound", section D.6), a contribution you submit to this repository is provided under that same licence. In the pull request template, you confirm that you wrote the change or have the right to submit it under that licence. You retain copyright to your original work; neither the confirmation nor a sign-off is a copyright assignment.
