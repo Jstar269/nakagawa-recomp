@@ -1677,8 +1677,10 @@ mingw32-make --no-print-directory form-sweep-selftest
   256-byte scratch window and the out-of-range access counters.
 - **Verdicts.** One report line per form: `MATCH`, `MISMATCH` (with the first encoding, its
   aliasing pattern, the first state and the differing field), `NOT_CHECKED` (the reference
-  stopped on the instruction: `sync` and `cache` today, listed by name with their op word) or
-  `MISSING`. `NOT_CHECKED` is never a pass.
+  stopped on the instruction: `sync` and `cache` today, listed by name with their op word),
+  `AOT_FAILED` (the translated side stopped or had no body for an instruction the reference
+  ran) or `MISSING`. `NOT_CHECKED` is never a pass; `AOT_FAILED` and `MISSING` fail the run
+  even when another instance of the same form matched.
 - **Replay.** `build/form-sweep/public/form_sweep.exe --only <index> --dump <state>
   <image> 0x08C00000 <plan>` runs one instance and prints that state's inputs; the index is in
   `fixture/manifest.json`.

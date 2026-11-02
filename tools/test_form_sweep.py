@@ -9,6 +9,8 @@ The execution half (the translated body against the reference interpreter) is
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import struct
 import sys
@@ -274,6 +276,26 @@ class Reporting(unittest.TestCase):
         self.assertTrue(lines[2].startswith("MISSING"))
         self.assertEqual(totals["MISSING"], 1)
         self.assertEqual(totals["forms_unchecked"], 1)
+
+    def test_a_translated_side_failure_fails_the_report_even_beside_a_match(self):
+        man = {"seed": 1, "states": 4, "excluded": {},
+               "forms": [{"key": "a", "name": "alpha"}],
+               "instances": [
+                   {"index": 0, "form": "a", "word": 1, "pattern": "p"},
+                   {"index": 1, "form": "a", "word": 2, "pattern": "q"}]}
+        text = ("INST 0 MATCH states=4\n"
+                "INST 1 AOT_FAILED aot-dispatch-error code=-1000 op=0x00000002 state=0\n")
+        verdicts = fs.parse_verdicts(text)
+        self.assertEqual(verdicts[1][0], "AOT_FAILED")
+        lines, totals = fs.summarize(man, verdicts)
+        self.assertTrue(lines[0].startswith("AOT_FAILED"))
+        self.assertEqual(totals["AOT_FAILED"], 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, results = Path(tmp, "m.json"), Path(tmp, "r.txt")
+            manifest.write_text(json.dumps(man))
+            results.write_text(text)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(fs.report(manifest, results), 1)
 
 
 class Mutant(unittest.TestCase):

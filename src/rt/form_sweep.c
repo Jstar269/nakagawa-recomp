@@ -34,10 +34,12 @@
  *   INST <index> MATCH states=<n>
  *   INST <index> MISMATCH states=<n> bad=<k> first=<state> <field> aot=<v> ref=<v>
  *   INST <index> NOT_CHECKED <reason> [key=value...]
+ *   INST <index> AOT_FAILED <reason> [key=value...]
  *
  * NOT_CHECKED is never a pass: the reference stopped on the instruction (unimplemented,
- * fault, break) or the translated body has no entry. Exit status: 0 when no instance
- * mismatched, 1 otherwise, 2 for a usage or input error.
+ * fault, break). AOT_FAILED is a failure: the translated side stopped or has no body for
+ * an instruction the reference ran. Exit status: 0 when no instance mismatched or failed,
+ * 1 otherwise, 2 for a usage or input error.
  *
  * The harness links snapshot_runner.c for its stand-ins of the scheduler, GE and host
  * symbols (see that file) and reuses its stop handling; only main is renamed.
@@ -300,13 +302,14 @@ int main(int argc, char **argv) {
      * fetch: copy the RAM the runtime holds so both sides run the same instruction bytes. */
     memcpy(nk_ref_ram(ref), g_mem, NK_REF_RAM_SIZE);
 
-    uint32_t mismatched = 0u;
+    uint32_t mismatched = 0u, aot_failed = 0u;
     for (uint32_t k = 0; k < count; k++) {
         const SweepInst *in = &insts[k];
         if (only >= 0 && (uint32_t)only != in->index) continue;
         RecompFn fn = sr_lookup(in->entry);
         if (!fn) {
-            printf("INST %u NOT_CHECKED aot-no-body pc=0x%08x op=0x%08x\n", in->index, in->entry, in->word);
+            printf("INST %u AOT_FAILED aot-no-body pc=0x%08x op=0x%08x\n", in->index, in->entry, in->word);
+            aot_failed++;
             continue;
         }
         uint32_t bad_states = 0u, first_state = 0u;
@@ -363,8 +366,9 @@ int main(int argc, char **argv) {
             oor_reads = g_oor_reads - oor_reads;
             oor_writes = g_oor_writes - oor_writes;
             if (dispatch_rc < 0) {
-                printf("INST %u NOT_CHECKED aot-dispatch-error code=%d op=0x%08x state=%u\n", in->index,
+                printf("INST %u AOT_FAILED aot-dispatch-error code=%d op=0x%08x state=%u\n", in->index,
                        dispatch_rc, in->word, st);
+                aot_failed++;
                 not_checked = 1;
                 break;
             }
@@ -404,5 +408,5 @@ int main(int argc, char **argv) {
             "made equal (operand-order-dependent result, PSP choice unmeasured)\n", g_nan_ties);
     nk_ref_destroy(ref);
     free(insts);
-    return mismatched ? 1 : 0;
+    return (mismatched || aot_failed) ? 1 : 0;
 }

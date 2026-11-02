@@ -793,7 +793,7 @@ def generate(out_dir: Path, seed: int, cap: int | None, states: int, only: set[s
 # Verdicts and report
 # ---------------------------------------------------------------------------------------
 
-_VERDICT = re.compile(r"^INST (\d+) (MATCH|MISMATCH|NOT_CHECKED)(?: (.*))?$")
+_VERDICT = re.compile(r"^INST (\d+) (MATCH|MISMATCH|NOT_CHECKED|AOT_FAILED)(?: (.*))?$")
 
 
 def parse_verdicts(text: str) -> dict[int, tuple[str, str]]:
@@ -812,14 +812,14 @@ def summarize(man: dict, verdicts: dict[int, tuple[str, str]]) -> tuple[list[str
     for rec in man["instances"]:
         v = verdicts.get(rec["index"], ("MISSING", ""))
         row = per_form.setdefault(rec["form"], {"MATCH": 0, "MISMATCH": 0, "NOT_CHECKED": 0,
-                                                 "MISSING": 0, "first": None, "why": None})
+                                                 "AOT_FAILED": 0, "MISSING": 0, "first": None, "why": None})
         row[v[0]] += 1
         if v[0] == "MISMATCH" and row["first"] is None:
             row["first"] = (rec["word"], rec["pattern"], v[1])
-        if v[0] == "NOT_CHECKED" and row["why"] is None:
+        if v[0] in ("NOT_CHECKED", "AOT_FAILED") and row["why"] is None:
             row["why"] = (rec["word"], v[1])
     lines = []
-    totals = {"MATCH": 0, "MISMATCH": 0, "NOT_CHECKED": 0, "MISSING": 0, "forms": 0,
+    totals = {"MATCH": 0, "MISMATCH": 0, "NOT_CHECKED": 0, "AOT_FAILED": 0, "MISSING": 0, "forms": 0,
               "forms_unchecked": 0}
     for form in man["forms"]:
         found = per_form.get(form["key"])
@@ -827,14 +827,16 @@ def summarize(man: dict, verdicts: dict[int, tuple[str, str]]) -> tuple[list[str
             continue
         row = found
         totals["forms"] += 1
-        for k in ("MATCH", "MISMATCH", "NOT_CHECKED", "MISSING"):
+        for k in ("MATCH", "MISMATCH", "NOT_CHECKED", "AOT_FAILED", "MISSING"):
             totals[k] += row[k]
-        status = ("MISMATCH" if row["MISMATCH"] else "MISSING" if row["MISSING"]
+        status = ("MISMATCH" if row["MISMATCH"] else "AOT_FAILED" if row["AOT_FAILED"]
+                  else "MISSING" if row["MISSING"]
                   else "NOT_CHECKED" if row["MATCH"] == 0 else "MATCH")
         if status == "NOT_CHECKED":
             totals["forms_unchecked"] += 1
         line = (f"{status:11s} {form['key']:9s} {form['name']:10s} match={row['MATCH']} "
-                f"mismatch={row['MISMATCH']} not_checked={row['NOT_CHECKED']}")
+                f"mismatch={row['MISMATCH']} not_checked={row['NOT_CHECKED']} "
+                f"aot_failed={row['AOT_FAILED']}")
         if row["first"]:
             word, pattern, detail = row["first"]
             line += f" first: op {word:#010x} [{pattern}] {detail}"
@@ -855,10 +857,10 @@ def report(manifest_path: Path, results_path: Path) -> int:
     unchecked = [ln.split()[2] for ln in lines if ln.startswith("NOT_CHECKED")]
     print(f"form-sweep: {totals['forms']} forms, {totals['MATCH']} instances MATCH, "
           f"{totals['MISMATCH']} MISMATCH, {totals['NOT_CHECKED']} NOT_CHECKED, "
-          f"{totals['MISSING']} MISSING; seed {man['seed']}, {man['states']} states")
+          f"{totals['AOT_FAILED']} AOT_FAILED, {totals['MISSING']} MISSING; seed {man['seed']}, {man['states']} states")
     if unchecked:
         print("form-sweep: forms with no checked instance (NOT_CHECKED): " + ", ".join(unchecked))
-    return 1 if totals["MISMATCH"] or totals["MISSING"] else 0
+    return 1 if totals["MISMATCH"] or totals["AOT_FAILED"] or totals["MISSING"] else 0
 
 
 # ---------------------------------------------------------------------------------------
@@ -916,7 +918,7 @@ def check_mutant(manifest_path: Path, results_path: Path) -> int:
     verdicts = parse_verdicts(results_path.read_text())
     expected = mutant_expected(man)
     got = {i for i, (v, _d) in verdicts.items() if v == "MISMATCH"}
-    unchecked = sorted(i for i, (v, _d) in verdicts.items() if v == "NOT_CHECKED")
+    unchecked = sorted(i for i, (v, _d) in verdicts.items() if v in ("NOT_CHECKED", "AOT_FAILED"))
     missing = [r["index"] for r in man["instances"] if r["index"] not in verdicts]
     print(f"form-sweep mutant: {len(man['instances'])} addu instances, "
           f"{len(expected)} with rd == rs != rt, {len(got)} MISMATCH")
