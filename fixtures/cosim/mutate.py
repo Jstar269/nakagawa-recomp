@@ -346,8 +346,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "GENERATOR: a not-taken branch-likely still runs its delay slot",
         [(
             # In-body labels, entry crossings of split bodies, and foreign targets.
-            "            if is_likely(w):\n",
-            "            if False and is_likely(w):\n",
+            "        if is_likely(w):\n",
+            "        if False and is_likely(w):\n",
             3,
         )],
         target="generator",
@@ -374,18 +374,18 @@ MUTANTS: tuple[Mutant, ...] = (
             # spelled through the generator's address space, G(addr), which a
             # runtime-placed module translates base-relative.
             (
-                "            out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
-                "            out.append(f\"      {emit_code_pointer_check('_t', addr)}\")\n"
-                "            out.append(f\"      sr_begin(s, {G(addr)}, 0x{w:08x}u); "
+                "    out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
+                "    out.append(f\"      {emit_code_pointer_check('_t', addr)}\")\n"
+                "    out.append(f\"      sr_begin(s, {G(addr)}, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
-                "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
-                "                                        indent=\"      \"))",
-                "            out.append(f\"    sr_begin(s, {G(addr)}, 0x{w:08x}u); "
+                "    out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
+                "                                indent=\"      \"))",
+                "    out.append(f\"    sr_begin(s, {G(addr)}, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
-                "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
-                "                                        indent=\"      \"))\n"
-                "            out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
-                "            out.append(f\"      {emit_code_pointer_check('_t', addr)}\")",
+                "    out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
+                "                                indent=\"      \"))\n"
+                "    out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
+                "    out.append(f\"      {emit_code_pointer_check('_t', addr)}\")",
                 1,
             ),
         ],
@@ -515,9 +515,9 @@ MUTANTS: tuple[Mutant, ...] = (
         "split-crossing-drops-slot",
         "SPLIT GENERATOR: a branch into another entry loses its delay slot",
         [(
-            '                out.extend("   " + line for line in _delay)\n'
-            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
-            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            '            out.extend("   " + line for line in _delay)\n'
+            '            out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            '            out.append(f"      if (_c) {{ {tail} }} }}")\n',
             1,
         )],
         target="split-generator",
@@ -526,9 +526,9 @@ MUTANTS: tuple[Mutant, ...] = (
         "split-crossing-runs-annulled-slot",
         "SPLIT GENERATOR: a not-taken branch-likely into another entry runs its slot",
         [(
-            '                out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")\n',
-            '                out.extend("   " + line for line in _delay)\n'
-            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            '            out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")\n',
+            '            out.extend("   " + line for line in _delay)\n'
+            '            out.append(f"      if (_c) {{ {tail} }} }}")\n',
             1,
         )],
         target="split-generator",
@@ -539,8 +539,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "split-crossing-ignores-condition",
         "SPLIT GENERATOR: a forward branch into another entry transfers when not taken",
         [(
-            '                out.append(f"      if (_c) {{ {tail} }} }}")\n',
-            '                out.append(f"      if ({\'_c\' if target <= addr else \'1\'}) {{ {tail} }} }}")\n',
+            '            out.append(f"      if (_c) {{ {tail} }} }}")\n',
+            '            out.append(f"      if ({\'_c\' if target <= addr else \'1\'}) {{ {tail} }} }}")\n',
             1,
         )],
         target="split-generator",
@@ -549,12 +549,9 @@ MUTANTS: tuple[Mutant, ...] = (
         "split-fall-through-lost",
         "SPLIT GENERATOR: a not-taken branch does not continue into the next entry",
         [(
-            "        if addr in continuations:\n"
-            "            out.append(f\"    goto _sr_cont_{continuations[addr]:08x};\")\n"
-            "        elif addr in dup_slot_skips:\n"
-            "            out.append(f\"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled)",
-            "        if addr in dup_slot_skips:\n"
-            "            out.append(f\"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled)",
+            "    _emit_slot_exit(ctx, out, addr, \"slot already ran inline (or was annulled)\")\n",
+            "    if addr in ctx.dup_slot_skips:\n"
+            "        out.append(f\"    goto L_{ctx.dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */\")\n",
             1,
         )],
         target="split-generator",
