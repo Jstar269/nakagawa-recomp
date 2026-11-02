@@ -21,7 +21,7 @@ runs this script:
                      snapshot runner replays that capture.
 ``default-unchanged`` requires that the default build's preprocessed ``recomp.c`` and
                      ``hle.c``, the two runtime units that carry a hook, have no verify token.
-``exit-paths``       requires every ``_Exit`` in the runtime sources to write the verify
+``exit-paths``       requires every ``_Exit`` and ``_exit`` in the runtime sources to write the verify
                      report first (``SR_VERIFY_REPORT_NOW``), as it writes the other reports.
 ``recomp-flags``     requires that ``make VERIFY=1`` keeps the generated-code compile flags
                      (``RECOMP_OPT``, ``-fno-strict-aliasing``, ``NAN_TRAP``) beside ``-DSR_VERIFY``.
@@ -270,7 +270,7 @@ def default_unchanged(args: argparse.Namespace) -> None:
 
 
 def exit_paths(_args: argparse.Namespace) -> None:
-    """Each `_Exit(` call skips atexit, so it has to write the verify report itself."""
+    """Each `_Exit(` or `_exit(` call skips atexit, so it has to write the verify report itself."""
     missing = []
     count = 0
     for path in sorted((ROOT / "src" / "rt").glob("*.c")):
@@ -278,15 +278,15 @@ def exit_paths(_args: argparse.Namespace) -> None:
             continue
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         for number, line in enumerate(lines):
-            if not re.search(r"\b_Exit\(", line) or line.lstrip().startswith(("*", "/")):
+            if not re.search(r"\b_[Ee]xit\(", line) or line.lstrip().startswith(("*", "/")):
                 continue
             count += 1
             window = lines[max(0, number - 8):number + 1]
             if not any("SR_VERIFY_REPORT_NOW" in w for w in window):
                 missing.append(f"{path.name}:{number + 1}")
-    expect(count >= 9, f"found only {count} _Exit sites; the scan is out of date")
-    expect(not missing, f"_Exit without SR_VERIFY_REPORT_NOW before it: {missing}")
-    print(f"PASS exit-paths: all {count} runtime _Exit sites write the verify report")
+    expect(count >= 10, f"found only {count} _Exit/_exit sites; the scan is out of date")
+    expect(not missing, f"_Exit/_exit without SR_VERIFY_REPORT_NOW before it: {missing}")
+    print(f"PASS exit-paths: all {count} runtime _Exit/_exit sites write the verify report")
 
 
 def recomp_flags(args: argparse.Namespace) -> None:
