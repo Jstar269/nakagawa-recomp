@@ -29,7 +29,7 @@ the runtime HLE sources, `tools/hle_sources.py`). Regenerate with `python tools/
 
 Open-owner counts:
 
-- #341: 36
+- #341: 33
 
 ## Census
 
@@ -39,7 +39,7 @@ Open-owner counts:
 | `sceAudioSRCChRelease` | implemented | - | dedicated | partial | `h_AudioSRCChRelease` | `0x5c37c0ae` |
 | `sceAudioSRCChReserve` | implemented | - | dedicated | partial | `h_AudioSRCChReserve` | `0x38553111` |
 | `sceAudioSRCOutputBlocking` | implemented | - | dedicated | partial | `h_AudioSRCOutputBlocking` | `0xe0727056` |
-| `sceCtrlReadBufferPositive` | implemented | #341 | dedicated | unreviewed | `h_CtrlReadBuffer` | `0x1f803938` |
+| `sceCtrlReadBufferPositive` | implemented | - | dedicated | partial | `h_CtrlReadBuffer` | `0x1f803938` |
 | `sceDisplayIsVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayIsVblank` | `0x4d4e10ec` |
 | `sceDisplayWaitVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblank` | `0x36cdfade` |
 | `sceDisplayWaitVblankCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankCB` | `0x8eb9ec49` |
@@ -61,8 +61,8 @@ Open-owner counts:
 | `sceKernelAllocateVpl` | implemented | - | dedicated | partial | `h_AllocateVpl` | `0xbed27435` |
 | `sceKernelAllocateVplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateVplCB` | `0xec0a693f` |
 | `sceKernelCancelReceiveMbx` | implemented | - | dedicated | partial | `h_CancelReceiveMbx` | `0x87d4dd36` |
-| `sceKernelCpuResumeIntr` | implemented | #341 | dedicated | unreviewed | `h_CpuResumeIntr` | `0x5f10d406` |
-| `sceKernelCpuSuspendIntr` | implemented | #341 | dedicated | unreviewed | `h_CpuSuspendIntr` | `0x092968f4` |
+| `sceKernelCpuResumeIntr` | implemented | - | dedicated | partial | `h_CpuResumeIntr` | `0x5f10d406` |
+| `sceKernelCpuSuspendIntr` | implemented | - | dedicated | partial | `h_CpuSuspendIntr` | `0x092968f4` |
 | `sceKernelCreateMbx` | implemented | - | dedicated | partial | `h_CreateMbx` | `0x8125221d` |
 | `sceKernelCreateTlspl` | implemented | #341 | dedicated | unreviewed | `h_CreateTlspl` | `0x8daff657` |
 | `sceKernelDelaySysClockThread` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThread` | `0xbd123d9e` |

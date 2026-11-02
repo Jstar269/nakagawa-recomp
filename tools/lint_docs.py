@@ -132,7 +132,7 @@ HISTORICAL_EVIDENCE_DOCS = {
 # rather than editing these files.
 PROJECT_TRUTH_SNAPSHOT_PREFIX = "docs/research/project-truth/"
 
-# The HST title manifest is tracked and public (owner decision, 2026-10-27).
+# The HST title manifest is tracked and public.
 # While it is tracked, no maintained document may still call it untracked, not
 # checked in, publication-excluded, Git-ignored, private or local: a line that
 # names the manifest and makes one of those claims is stale.
