@@ -223,8 +223,8 @@ def _build_specimen_words(extra: dict[int, list[int]] | None = None) -> dict[int
     return words
 
 
-def _write_elf(path: Path, words: dict[int, int], entry: int) -> None:
-    """One r-x PT_LOAD at vaddr 0 holding `words`, with e_entry = entry."""
+def _write_elf(path: Path, words: dict[int, int], entry: int, vaddr: int = 0) -> None:
+    """One r-x PT_LOAD at `vaddr` holding `words`, with e_entry = entry."""
     filesz = max(max(words) + 8, 0x1000)
     payload_off = 52 + 32
     blob = bytearray(payload_off + filesz)
@@ -236,7 +236,7 @@ def _write_elf(path: Path, words: dict[int, int], entry: int) -> None:
         1, entry, 52, 0, 0,
         52, 32, 1, 0, 0, 0,
     )
-    struct.pack_into("<8I", blob, 52, 1, payload_off, 0, 0, filesz, filesz, 5, 4)
+    struct.pack_into("<8I", blob, 52, 1, payload_off, vaddr, vaddr, filesz, filesz, 5, 4)
     for addr, word in words.items():
         struct.pack_into("<I", blob, payload_off + addr, word)
     path.write_bytes(blob)
@@ -1160,23 +1160,23 @@ class RetiredNullBaseLoadTests(unittest.TestCase):
 
 
 @functools.lru_cache(maxsize=None)
-def _generated(base: int) -> tuple[str, str]:
-    """(generated header, generated chunks) for the specimen placed at `base`."""
-    words = _build_specimen_words()
+def _generated(vaddr: int) -> tuple[str, str]:
+    """(generated header, generated chunks) for a one-function image loaded at `vaddr`."""
+    words = {0: JR_RA, 4: NOP}
     with tempfile.TemporaryDirectory(prefix="nakagawa-null-page-") as tmp:
         tmp_path = Path(tmp)
         elf_path = tmp_path / "specimen.elf"
-        _write_elf(elf_path, words, entry=ENTRY)
+        _write_elf(elf_path, words, entry=vaddr, vaddr=vaddr)
         out_c = tmp_path / "out.c"
         orig_out, orig_err = sys.stdout, sys.stderr
         try:
             sys.stdout, sys.stderr = StringIO(), StringIO()
-            rc = codegen.main(["codegen.py", str(elf_path), str(out_c), f"--base=0x{base:x}",
+            rc = codegen.main(["codegen.py", str(elf_path), str(out_c), f"--base=0x{vaddr:x}",
                                "--profile=none", "--funcs-per-chunk=4000"])
             captured = sys.stdout.getvalue() + sys.stderr.getvalue()
         finally:
             sys.stdout, sys.stderr = orig_out, orig_err
-        assert rc == 0, f"codegen failed at base 0x{base:x}: {captured}"
+        assert rc == 0, f"codegen failed at 0x{vaddr:x}: {captured}"
         chunks = "".join(c.read_text(encoding="ascii", errors="ignore")
                          for c in sorted(tmp_path.glob("out*.c")))
         return (tmp_path / "out_funcs.h").read_text(encoding="ascii"), chunks
