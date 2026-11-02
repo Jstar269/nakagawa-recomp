@@ -1641,6 +1641,65 @@ which must report `MISMATCH r11`. On a title, build the runner the same way agai
 title's generated code. Snapshots contain guest memory: they stay private like traces and
 captures, and none is ever committed.
 
+## Form sweep
+
+`tools/form_sweep.py` and `src/rt/form_sweep.c` check every scalar instruction form the code
+generator translates against the reference interpreter, across register aliasing and edge
+values (#1844). Aliasing is where a translator goes wrong: a temporary read after the
+destination was written, a sign extension on the wrong copy.
+
+```sh
+mingw32-make --no-print-directory form-sweep-selftest
+```
+
+- **The form list is derived, not typed.** `census` probes `codegen.effect` over the
+  encodings, normalises each emission (register indices and numerals blanked) and groups
+  words with the same shape under the same decode selector into one form. A form added to the
+  generator appears as a new row and is swept with no edit to the sweep; an opcode whose low
+  bits select the form is detected the same way. Named exclusions are printed: `syscall` and
+  `break` (they stop the run; the snapshot cases cover them), COP0 and `vflush`. VFPU words
+  are recognised because codegen routes them to the VFPU emitter (#326 and `vfpu_fuzz`).
+- **Instances.** Per form, every aliasing pattern of its register operands (`rd == rs`,
+  `rd == rt`, `rs == rt`, `$zero` operands, in first-appearance renaming) crossed with each
+  immediate bucket (exact for 0..8, 16, 24, 31, 32; then small, large, max, min and the
+  negative ranges), sampled down to `FORM_SWEEP_CAP` (40) per form with every pattern and
+  every bucket kept. A memory form never gets `$zero` as its base. A form whose delay-slot
+  emission differs from its plain emission is also placed in the delay slot (none does
+  today). Each instance is one tiny guest function in a synthetic module, translated by
+  the ordinary pipeline.
+- **States.** `FORM_SWEEP_STATES` (64) seeded states per instance, from `FORM_SWEEP_SEED`
+  (1844): registers from {0, 1, 2, -1, sign boundaries, a byte, random bits, a scratch pointer},
+  floats 30% from a special list (signed zeros, denormals, infinities, NaNs, FLT_MAX), a
+  random FCR31 rounding mode, and on odd states every named register holds a different value
+  so an aliasing defect cannot hide behind equal values. A state is a pure function of
+  (seed, instance, state index).
+- **Compared.** r1..r31, HI/LO, f0..f31 (raw bits), FCR31, the FP condition, the LL bit, the
+  256-byte scratch window and the out-of-range access counters.
+- **Verdicts.** One report line per form: `MATCH`, `MISMATCH` (with the first encoding, its
+  aliasing pattern, the first state and the differing field), `NOT_CHECKED` (the reference
+  stopped on the instruction: `sync` and `cache` today, listed by name with their op word) or
+  `MISSING`. `NOT_CHECKED` is never a pass.
+- **Replay.** `build/form-sweep/public/form_sweep.exe --only <index> --dump <state>
+  <image> 0x08C00000 <plan>` runs one instance and prints that state's inputs; the index is in
+  `fixture/manifest.json`.
+- **The sweep can fail.** The second half of `form-sweep-selftest` builds a mutant of the code
+  generator (a wrapper that emits `addu` as a write of `rt` into `rd` followed by `rd = rs +
+  rd`, reading `rs` after `rd` was written), generates, compiles and runs the sweep over that
+  form, and requires a `MISMATCH` on exactly the instances where `rd` is `rs` and `rs` differs
+  from `rt`.
+- **Deeper run.** `mingw32-make --no-print-directory form-sweep-deep` runs every instance of every
+  form with 2048 states each.
+
+Two choices keep the comparison honest. When two named float registers hold NaNs with different
+payloads the harness makes them equal and counts it on stderr: an arithmetic result then carries
+whichever payload the host compiler's operand order picks inside the shared helper
+(`src/rt/fp_convert.h`), the translated body and the reference are built with different flags,
+and the PSP's own pick is unmeasured. And the reference's results come from `src/ref`, which
+shares the `sr_fpu_*` helpers with generated code for the float arithmetic: for those forms the
+sweep checks the translation around the helper (operand and destination handling, aliasing,
+rounding-mode plumbing), not the helper's arithmetic, which `fp_convert_selftest` and the cosim
+FPU reference cover.
+
 ## Naming generated functions from a symbol map
 
 By default every generated function is named after its guest address: `f_00222a00` for a callable
