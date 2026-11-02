@@ -2337,7 +2337,8 @@ uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence,
                                     const char *api, uint32_t *position) {
     static atomic_flag reported = ATOMIC_FLAG_INIT;
     int64_t base = whence == 1u ? (int64_t)f->off : whence == 2u ? (int64_t)f->size : 0;
-    if (offset < -base) return 0xffffffffu;
+    if (offset < -base)   /* before the start: EINVAL on the Memory Stick (measured) */
+        return f->host && loadexec_ms0_path(f->guest_path) ? 0x80010016u : 0xffffffffu;
     if (offset <= (int64_t)UINT32_MAX - base) {
         *position = (uint32_t)(base + offset);
         return 0u;

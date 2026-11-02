@@ -2457,7 +2457,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 123)
+        self.assertEqual(len(routes), 124)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2465,7 +2465,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(set(range(1, 79)) | set(range(90, 104)) | {106, 107, 108, 109}
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
-                         | {128, 129, 130, 132, 133, 134, 135}
+                         | {128, 129, 130, 132, 133, 134, 135, 136}
                          | {150, 151},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
@@ -3139,6 +3139,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 # The 2026-10-29 acceptance-eligible module-start run of fd2a75fd.
                 "PSP-MODULE-START-001",
                 "PSP-KERNEL-SEM-001",
+                # The 2026-11-02 acceptance-eligible io-seek-eof run of f484ef58 (#1380).
+                "PSP-IO-EOF-001",
                 # The 2026-10-28 acceptance-eligible ge-sample run of 86e55611 (#282).
                 "PSP-GE-SAMPLE-001",
                 # The 2026-10-29 acceptance-eligible dma-timing runs of 0e40e7d3, 281a21a4 and
@@ -8707,6 +8709,7 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         # Every path the probe names outside the shared writer is host0 or the probe's own.
         literals = set(re.findall(r'"((?:ms0|host0|flash0|disc0|umd0):[^"]*)"', self.code))
         self.assertEqual(literals, {"ms0:/NKKSEM00", "host0:/kernel_semantics_log.txt",
+                                    "ms0:/NKKSEM01", "host0:/io_seek_eof_log.txt",
                                     "host0:/nakagawa_transport_write.bin"})
         io = self.bodies["ks_io"]
         for call in re.findall(r"\b(sceIo(?:Open|Mkdir|Remove|Rmdir|Getstat))\(([^,)]+)", io):
@@ -8726,6 +8729,25 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         cleanup = io[io.index('hle_step("io-cleanup");'):]
         for call in ("sceIoRemove(KS_FILE)", "sceIoRmdir(KS_DIR)", "sceIoDopen(KS_DIR)"):
             self.assertIn(call, cleanup)
+        # io-seek-eof (#1380) uses its own directory under the same rules.
+        self.assertIn('#define KE_DIR "ms0:/NKKSEM01"\n', self.probe)
+        self.assertIn('#define KE_FILE KE_DIR "/e.bin"\n', self.probe)
+        self.assertIn('#define KE_MISSING KE_DIR "/missing.bin"\n', self.probe)
+        eof = self.bodies["ke_io"]
+        for call in re.findall(r"\b(sceIo(?:Open|Mkdir|Remove|Rmdir|Getstat|Dopen))\(([^,)]+)", eof):
+            self.assertIn(call[1].strip(), ("KE_FILE", "KE_DIR", "KE_MISSING"), call)
+        precheck = eof.index("const SceUID pre = sceIoDopen(KE_DIR);")
+        guard = eof.index("if (pre >= 0) {")
+        first_write = min(eof.index(token) for token in ("sceIoOpen(", "sceIoMkdir(", "sceIoRemove("))
+        self.assertLess(precheck, guard)
+        self.assertLess(eof.index("return;", guard), first_write)
+        # Two writes: the 16-byte file, then the 4-byte tail after the seek past its end.
+        self.assertEqual(eof.count("sceIoWrite("), 2)
+        self.assertIn("sceIoWrite(fd, bytes, sizeof(bytes))", eof)
+        self.assertIn("sceIoWrite(fd, tail, sizeof(tail))", eof)
+        cleanup = eof[eof.index('hle_step("io-eof-cleanup");'):]
+        for call in ("sceIoRemove(KE_FILE)", "sceIoRmdir(KE_DIR)", "sceIoDopen(KE_DIR)"):
+            self.assertIn(call, cleanup)
 
     def test_every_loop_is_bounded_and_nothing_waits_without_a_bound(self) -> None:
         self.assertEqual(sorted(re.findall(r"while \(([^{]*)\) \{", self.code)),
@@ -8738,9 +8760,10 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         for header in headers:
             with self.subTest(loop=header):
                 # The two shared-writer loops are bounded by the line and the round-trip buffer.
-                self.assertRegex(header, r"^(?:unsigned|int|uint32_t|size_t) (\w+) = \d+; \1 < "
-                                         r"(?:\d+u?|[A-Z][A-Z0-9_]*|k_ks_io_words\[r\]|"
-                                         r"sizeof\(\w+\)|count && n > 0 && .*); \1\+\+$")
+                self.assertRegex(header, r"^(?:unsigned|int|uint32_t|size_t) (\w+) = (?:\d+|first); "
+                                         r"\1 < (?:\d+u?|[A-Z][A-Z0-9_]*|k_ks_io_words\[r\]|"
+                                         r"k_ke_words\[r\]|sizeof\(\w+\)|count && n > 0 && .*); "
+                                         r"\1\+\+$")
         for delay in re.findall(r"sceKernelDelayThread\((\w+)\)", self.code):
             self.assertLessEqual(int(delay), 100000, delay)
         # Every blocking controller read follows a sample at most one VBLANK or one cycle away;
@@ -8778,7 +8801,8 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         self.assertEqual(spec.terminal_case, "kernel-semantics-done")
         self.assertEqual(spec.ordered_cases[:-1], tuple(parse_golden.KERNEL_SEM_ROWS))
         named = re.findall(r'"((?:subintr|ctrl|vmem|io|wlan)-[a-z0-9-]+)"', self.code)
-        self.assertEqual(set(named) - {"ctrl-mode", "ctrl-cycle", "io-precheck"},
+        self.assertEqual({row for row in named if not row.startswith("io-eof-")}
+                         - {"ctrl-mode", "ctrl-cycle", "io-precheck", "io-seek-eof"},
                          set(parse_golden.KERNEL_SEM_ROWS))
         run = self.bodies["hle_run"]
         order = [run.index(call) for call in (
@@ -8796,6 +8820,39 @@ class KernelSemanticsProbeTests(unittest.TestCase):
         rows = re.findall(r'"([a-z0-9-]+)"', io_rows)
         words = [int(w.rstrip("u")) for w in re.findall(r"\d+u", io_words)]
         self.assertEqual([counts[row] for row in rows], words)
+
+    def test_io_seek_eof_route_registry_and_stream_shape(self) -> None:
+        # CASE=io-seek-eof (136, PSP-IO-EOF-001): #1380's open-without-create, negative-seek and
+        # past-end cells, built from the same file with only its own section compiled in.
+        self.assertIn("else ifeq ($(CASE),io-seek-eof)\nCASE_ID = 136\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),io-seek-eof)\nTARGET = $(BUILD_DIR)/io_seek_eof\n"
+                      "OBJS = $(BUILD_DIR)/probe_kernel_semantics.o "
+                      "$(BUILD_DIR)/threadman_user_imports.o\n", self.makefile)
+        start = self.makefile.index("ifeq ($(CASE),io-seek-eof)\nUSER_MODE_IMPORT_GATE_ARGS")
+        block = self.makefile[start:self.makefile.index("\nendif\n", start)]
+        self.assertEqual(sorted(re.findall(r"--forbid-library (\w+)", block)),
+                         ["InterruptManager", "KUBridge", "SystemCtrlForUser", "sceCtrl",
+                          "sceOpenPSID", "sceSuspendForUser", "sceWlanDrv"])
+        self.assertIn("#define KS_CASE_IO_EOF 136\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "io-seek-eof"\n'
+                      '#define HLE_TEST_ID "PSP-IO-EOF-001"\n'
+                      '#define HLE_LOG "host0:/io_seek_eof_log.txt"', self.probe)
+        run = self.bodies["hle_run"]
+        self.assertLess(run.index("ke_io();"), run.index("ks_subintr_order();"))
+        spec, counts = CAMPAIGN_PROBE_CASES["io-seek-eof"]
+        self.assertEqual(spec.test_id, "PSP-IO-EOF-001")
+        self.assertEqual(spec.terminal_case, "io-seek-eof-done")
+        rows = tuple(row for row, _ in parse_golden.IO_SEEK_EOF_ROWS)
+        self.assertEqual(spec.ordered_cases[:-1], rows)
+        table = cast(re.Match[str], re.search(r"k_ke_rows\[KE_ROWS\] = \{([^}]*)\}", self.code))
+        sizes = cast(re.Match[str], re.search(r"k_ke_words\[KE_ROWS\] = \{([^}]*)\}", self.code))
+        self.assertEqual(tuple(re.findall(r'"([a-z0-9-]+)"', table.group(1))), rows)
+        self.assertEqual([counts[row] for row in rows],
+                         [int(w.rstrip("u")) for w in re.findall(r"\d+u", sizes.group(1))])
+        named = set(re.findall(r'"(io-eof-[a-z0-9-]+)"', self.code)) - {"io-eof-precheck"}
+        self.assertEqual(named, set(rows))
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "io-seek-eof").name,
+                         "io_seek_eof_log.txt")
 
 
 class GeMipProbeTests(unittest.TestCase):
