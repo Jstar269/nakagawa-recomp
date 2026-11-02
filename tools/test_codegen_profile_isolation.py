@@ -569,6 +569,12 @@ EMITTERS = frozenset({
     "_emit_slot_exit", "_emit_unrelocated_jal", "_emit_jal", "_emit_jalr", "_emit_jr",
     "_emit_unrelocated_j", "_emit_j", "_emit_conditional_branch", "_emit_control_transfer",
     "_emit_continuation_blocks",
+    # ... and the steps split from main.
+    "_check_delay_slot_labels", "_command_line_parser", "_validated_options",
+    "_extra_images", "_refuse_offset0_pointers", "_cfg_report_and_gate",
+    "_refuse_unemitted_enhancement_sites", "_registrable_exec_spans", "_apply_options",
+    "_load_enhancement_package", "_symbol_names", "_registration_lines", "_write_chunks",
+    "_write_unit_fallbacks", "_remove_stale_chunks", "_print_summary",
 })
 
 #: Title-owned address tables, and how each one's profile gate is enforced.
