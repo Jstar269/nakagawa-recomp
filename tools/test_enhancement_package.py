@@ -47,6 +47,7 @@ from enhancement_package import (
     UPDATE_BOUNDARY_KEYS,
     VALID_CATEGORIES,
     EnhancementPackageError,
+    _gpr_written,
     _validate_site_extras,
     compute_stock_words_digest,
     draft_package_declaration,
@@ -1211,6 +1212,18 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                 self._codegen_with(tmp, "loop", pkg, symbols)
             self.assertIn("branches back to its entry", str(ctx.exception))
 
+    def test_argument_x2_refuses_a_function_that_jumps_back_to_its_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            pkg, symbols = self._argument_package(tmp, {
+                0x00001700: 0x8C820080,  # lw v0,128(a0)
+                0x00001704: 0x08000000 | (0x00001700 >> 2),  # j entry: a second pass would double again
+                0x00001708: 0x00000000,
+            })
+            with self.assertRaises(EnhancementPackageError) as ctx:
+                self._codegen_with(tmp, "selfj", pkg, symbols)
+            self.assertIn("branches back to its entry", str(ctx.exception))
+
     def test_a_site_that_is_never_emitted_refuses_the_package(self) -> None:
         """Every verified site must be emitted; a site whose function is stubbed refuses."""
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1462,6 +1475,47 @@ class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
         with self.assertRaises(EnhancementPackageError) as ctx:
             self._plan("argument_x2", 0x8C870080, **site)
         self.assertIn("writes an argument", str(ctx.exception))
+        # Every other form that writes a3 refuses too, not only the plain loads.
+        for name, word in self._A3_WRITERS:
+            with self.subTest(form=name):
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    self._plan("argument_x2", word, **site)
+                self.assertIn("writes an argument", str(ctx.exception))
+
+    # (form, encoding) of instructions that write a3 (r7).
+    _A3_WRITERS = (
+        ("lwl", 0x88870000),
+        ("lwr", 0x98870000),
+        ("ll", 0xC0870000),
+        ("sc", 0xE0870000),
+        ("mfc1", 0x44071000),
+        ("cfc1", 0x4447F800),
+        ("mfc0", 0x40076000),
+        ("ext", 0x7C873800),
+        ("ins", 0x7C873804),
+        ("seb", 0x7C043C20),
+        ("seh", 0x7C043E20),
+        ("clz", 0x00803816),
+        ("clo", 0x00803817),
+    )
+
+    def test_gpr_written_table(self) -> None:
+        for name, word in self._A3_WRITERS:
+            with self.subTest(form=name):
+                self.assertEqual(_gpr_written(word), 7)
+        for name, word in (
+            ("sw", 0xAFA70000),
+            ("mtc1", 0x44843800),
+            ("mthi", 0x00800011),
+            ("mtlo", 0x00800013),
+            ("mult", 0x00870018),
+            ("jr", 0x03E00008),
+            ("syscall", 0x0000000C),
+            ("sync", 0x0000000F),
+            ("beq", 0x10870002),
+        ):
+            with self.subTest(form=name):
+                self.assertIsNone(_gpr_written(word))
 
     def test_argument_x2_validation(self) -> None:
         for extra, why in (

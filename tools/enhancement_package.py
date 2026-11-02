@@ -1569,11 +1569,26 @@ def _global_address(words: Mapping[int, int], addr: int, w: int) -> int | None:
 
 
 def _gpr_written(w: int) -> int | None:
+    """The general register `w` writes, or None when it writes none this decoder knows."""
     op = w >> 26
-    if op == 0x00 and w & 0x3F not in (0x08, 0x09, 0x0C, 0x0D, 0x18, 0x19, 0x1A, 0x1B):
+    rs = (w >> 21) & 31
+    if op == 0x00 and w & 0x3F not in (0x08, 0x09, 0x0C, 0x0D, 0x0F, 0x11, 0x13, 0x18, 0x19, 0x1A, 0x1B):
         return (w >> 11) & 31
-    if op in (0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x20, 0x21, 0x23, 0x24, 0x25):
+    # ALU immediates; lb lh lwl lw lbu lhu lwr; ll; sc (writes its success flag to rt)
+    if op in (0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+              0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x30, 0x38):
         return (w >> 16) & 31
+    if op == 0x10 and rs in (0x00, 0x02):  # mfc0
+        return (w >> 16) & 31
+    if op == 0x11 and rs in (0x00, 0x02):  # mfc1, cfc1
+        return (w >> 16) & 31
+    if op == 0x1F:
+        funct = w & 0x3F
+        if funct in (0x00, 0x04):  # ext, ins
+            return (w >> 16) & 31
+        if funct == 0x20:  # seb, seh, wsbh, bitrev
+            return (w >> 11) & 31
+    # clz and clo (SPECIAL 0x16, 0x17) are covered by the rd case above.
     return None
 
 

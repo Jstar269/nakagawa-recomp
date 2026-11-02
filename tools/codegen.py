@@ -3574,6 +3574,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+            if target == start:
+                # A `j` to the entry is a tail edge, not a label, so the check on labels
+                # above misses it; it enters the entry again and would double again.
+                _refuse_argument_site_on_a_loop(start)
             if target == addr:
                 # Self-loop (a spin wait): the native call below would recurse on the host
                 # stack once per iteration. Keep it a backward goto with the preemption point.
