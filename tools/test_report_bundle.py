@@ -50,7 +50,7 @@ class RedactionTests(unittest.TestCase):
         out = rb.redact_text(text, IDENTITY)
         for needle in ("jasonquill", "quill-desktop"):
             self.assertNotIn(needle, out.lower(), msg=f"{text!r} -> {out!r}")
-        return out
+        return str(out)
 
     def test_windows_path_forms(self) -> None:
         cases = {
