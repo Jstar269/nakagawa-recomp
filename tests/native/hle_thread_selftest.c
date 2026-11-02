@@ -23968,6 +23968,225 @@ static void test_ge_blocking_sync_waits_for_stalled_list(void) {
     sr_test_guest_fn_reset();
 }
 
+/* #1296: a stronger thread whose deadline comes during a GE list runs inside the call. The run
+ * stops at a command boundary as at a stall, sched_preempt_point runs the thread, and the list
+ * goes on. sr_preempt_due stands in for the preemption timer, and the hook for what another
+ * thread does while a list is stopped: without a guest thread nothing switches, so each cell
+ * below is one exact interleaving.
+ *
+ * MUTANT: drop the stop check in ge_run_list_inner -- the base behaviour: the list runs to its
+ *   END in one piece and the stronger thread runs after the call. MUTANT: drop the state check
+ *   after sched_preempt_point in ge_list_run -- a run goes on over a list another caller paused,
+ *   ended or replaced. MUTANT: drop guard != 0 -- a fresh list can stop before its first command
+ *   and resume with a stale call stack; the stop count here goes up by one. MUTANT: drop
+ *   !pending_signal -- the stop count of the SIGNAL cell goes up by one. */
+enum {
+    GPP_MAIN_ENTRY = 0x08a62000u,
+    GPP_STRONG_ENTRY = 0x08a62040u,
+    GPP_FINISH_ENTRY = 0x08a62080u,
+    GPP_NAME = 0x08a620c0u,
+    GPP_CALLBACK = 0x08a62100u,
+    GPP_LIST = 0x08a63000u,
+    GPP_LIST2 = 0x08a65000u,
+    GPP_FINISH_OP = 0x0f000000u,
+    GPP_END_OP = 0x0c000000u,
+    GPP_SIGNAL_OP = 0x0e000000u,
+    GPP_NOPS = 32u,
+    GPP_LONG_NOPS = 1000u
+};
+enum { GPP_STOP_EVERY, GPP_ADVANCE, GPP_PAUSE, GPP_REPLACE, GPP_ENQUEUE, GPP_ENQUEUE_HEAD };
+void sr_hle_test_ge_preempt_hook(void (*hook)(uint32_t list_id));
+static int s_gpp_mode;
+static unsigned s_gpp_stops, s_gpp_finishes, s_gpp_strong_done, s_gpp_strong_at_return;
+static uint32_t s_gpp_id, s_gpp_end, s_gpp_list2_id, s_gpp_peek_list, s_gpp_peek_draw, s_gpp_paused_peek;
+static uint32_t s_gpp_cbid;
+
+static void gpp_finish_fn(CpuState *cpu) {
+    s_gpp_finishes++;
+    cpu->r[2] = 0u;
+}
+
+/* `nops` NOPs, then FINISH and END: nops + 2 commands. Returns the address after them. */
+static uint32_t gpp_write_list(uint32_t list, uint32_t nops) {
+    for (uint32_t i = 0; i < nops; i++) MEM_W32(list + i * 4u, 0u);
+    MEM_W32(list + nops * 4u, GPP_FINISH_OP);
+    MEM_W32(list + nops * 4u + 4u, GPP_END_OP);
+    return list + nops * 4u + 8u;
+}
+
+static void gpp_stop_again(void) { atomic_store_explicit(&sr_preempt_due, 1, memory_order_relaxed); }
+
+static void gpp_hook(uint32_t list_id) {
+    s_gpp_id = list_id;
+    if (++s_gpp_stops == 1u) {
+        s_gpp_peek_list = gsw_call(NID_SCE_GE_LIST_SYNC, list_id, 1u, 0u, 0u);
+        s_gpp_peek_draw = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+    }
+    if (s_gpp_stops != 3u || s_gpp_mode == GPP_STOP_EVERY) {
+        gpp_stop_again();
+        return;
+    }
+    switch (s_gpp_mode) {
+    case GPP_ADVANCE:
+        (void)gsw_call(NID_SCE_GE_LIST_UPDATE_STALL_ADDR, list_id, s_gpp_end, 0u, 0u);
+        break;
+    case GPP_PAUSE:
+        (void)gsw_call(NID_SCE_GE_BREAK, 0u, 0u, 0u, 0u);
+        s_gpp_paused_peek = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+        break;
+    case GPP_REPLACE:
+        (void)gpp_write_list(GPP_LIST2, 0u);
+        (void)gsw_call(NID_SCE_GE_BREAK, 1u, 0u, 0u, 0u);
+        for (unsigned i = 0; i < 64u && s_gpp_list2_id != list_id; i++)
+            s_gpp_list2_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST2, GPP_LIST2, 0xffffffffu, 0u);
+        break;
+    case GPP_ENQUEUE:
+        (void)gpp_write_list(GPP_LIST2, 0u);
+        s_gpp_list2_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST2, 0u, s_gpp_cbid, 0u);
+        gpp_stop_again();
+        break;
+    case GPP_ENQUEUE_HEAD:
+        (void)gpp_write_list(GPP_LIST2, 0u);
+        s_gpp_list2_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE_HEAD, GPP_LIST2, 0u, s_gpp_cbid, 0u);
+        break;
+    default:
+        break;
+    }
+}
+
+/* Reset for one cell, and run a list so that it stops after every command. */
+static uint32_t gpp_cell(int mode, uint32_t stall_words) {
+    sr_hle_test_ge_lists_reset();
+    s_gpp_mode = mode;
+    s_gpp_stops = s_gpp_finishes = 0u;
+    s_gpp_list2_id = 0u;
+    s_gpp_peek_list = s_gpp_peek_draw = s_gpp_paused_peek = 0xdeadbeefu;
+    s_gpp_end = gpp_write_list(GPP_LIST, GPP_NOPS);
+    gpp_stop_again();
+    return gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST, stall_words ? GPP_LIST + stall_words * 4u : 0u,
+                    s_gpp_cbid, 0u);
+}
+
+static void gpp_strong_fn(CpuState *cpu) {
+    (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, 1u, 0u, 0u, 0u);
+    s_gpp_peek_draw = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+    s_gpp_peek_list = gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_id, 1u, 0u, 0u);
+    (void)gpp_write_list(GPP_LIST2, 0u);
+    s_gpp_list2_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST2, 0u, s_gpp_cbid, 0u);
+    s_gpp_strong_done = 1u;
+    cpu->r[2] = 0u;
+}
+
+static void gpp_main_fn(CpuState *cpu) {
+    uint32_t thid = gsw_call(NID_SCE_KERNEL_CREATE_THREAD, GPP_NAME, GPP_STRONG_ENTRY, 16u, 0x1000u);
+    (void)gsw_call(NID_SCE_KERNEL_START_THREAD, thid, 0u, 0u, 0u);   /* it runs and parks */
+    (void)gpp_write_list(GPP_LIST, GPP_LONG_NOPS);
+    s_gpp_mode = GPP_STOP_EVERY;
+    gpp_stop_again();
+    (void)gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST, 0u, s_gpp_cbid, 0u);
+    s_gpp_strong_at_return = s_gpp_strong_done;
+    cpu->r[2] = 0u;
+}
+
+static void test_ge_list_stops_for_a_stronger_thread(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(GPP_FINISH_ENTRY, gpp_finish_fn);
+    sr_test_register_guest_fn(GPP_MAIN_ENTRY, gpp_main_fn);
+    sr_test_register_guest_fn(GPP_STRONG_ENTRY, gpp_strong_fn);
+    title_hle_write_cstr(GPP_NAME, "ge-strong");
+    MEM_W32(GPP_CALLBACK, 0u);
+    MEM_W32(GPP_CALLBACK + 4u, 0u);
+    MEM_W32(GPP_CALLBACK + 8u, GPP_FINISH_ENTRY);
+    MEM_W32(GPP_CALLBACK + 12u, 0u);
+    s_gpp_cbid = gsw_call(NID_SCE_GE_SET_CALLBACK, GPP_CALLBACK, 0u, 0u, 0u);
+    expect(s_gpp_cbid < 16u, "the GE finish callback registers");
+    sr_hle_test_ge_preempt_hook(gpp_hook);
+
+    /* A stop before every command but the first; the list still ends once. */
+    uint32_t id = gpp_cell(GPP_STOP_EVERY, 0u);
+    expect(s_gpp_stops == GPP_NOPS + 1u,
+           "a run stops at every command boundary after the first, as at a stall address");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 1u,
+           "a list stopped at every command reaches its END and fires its finish callback once");
+    expect(s_gpp_peek_list == 2u && s_gpp_peek_draw == 2u,
+           "a stopped list peeks as drawing (2), not as a stall the guest asked for (3)");
+
+    /* SIGNAL pairs with the END after it: no stop between them. */
+    sr_hle_test_ge_lists_reset();
+    s_gpp_mode = GPP_STOP_EVERY;
+    s_gpp_stops = s_gpp_finishes = 0u;
+    MEM_W32(GPP_LIST, 0u);
+    MEM_W32(GPP_LIST + 4u, GPP_SIGNAL_OP | 0x010000u);
+    MEM_W32(GPP_LIST + 8u, GPP_END_OP);
+    MEM_W32(GPP_LIST + 12u, GPP_FINISH_OP);
+    MEM_W32(GPP_LIST + 16u, GPP_END_OP);
+    gpp_stop_again();
+    id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST, 0u, s_gpp_cbid, 0u);
+    expect(s_gpp_stops == 3u, "no stop between a SIGNAL and the END it pairs with");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 1u,
+           "a list with a SIGNAL stopped around it still ends once");
+
+    /* A stop on the way to the guest's stall address, and the stall itself, stay different. */
+    id = gpp_cell(GPP_STOP_EVERY, 8u);
+    expect(s_gpp_stops == 7u && gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 3u &&
+               s_gpp_finishes == 0u,
+           "a run that stopped on the way to a stall address ends at that stall, not past it");
+
+    /* Another thread drives the list on to its END while it is stopped. */
+    id = gpp_cell(GPP_ADVANCE, 8u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 1u,
+           "a list another thread ran to its END fires its finish callback once, not twice");
+
+    /* Another thread pauses it: the run leaves it paused, and sceGeContinue finishes it. */
+    id = gpp_cell(GPP_PAUSE, 0u);
+    expect(s_gpp_paused_peek == 2u, "sceGeDrawSync(1) reads a paused head as 2");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 4u && s_gpp_finishes == 0u,
+           "a run does not go on over a list another thread paused");
+    expect(gsw_call(NID_SCE_GE_CONTINUE, 0u, 0u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 1u,
+           "sceGeContinue resumes a paused stopped list at the command after the stop");
+
+    /* Another thread resets the GE and a new list takes the same slot and id. */
+    id = gpp_cell(GPP_REPLACE, 0u);
+    expect(s_gpp_list2_id == id && gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 3u &&
+               s_gpp_finishes == 0u,
+           "a run does not go on as the list that replaced it in the same slot");
+
+    /* A list enqueued behind the stopped one waits for its END. */
+    id = gpp_cell(GPP_ENQUEUE, 0u);
+    expect(s_gpp_list2_id != 0u && s_gpp_finishes == 2u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_list2_id, 1u, 0u, 0u) == 0u,
+           "a list enqueued during a stop runs after the stopped list's END");
+
+    /* sceGeListEnQueueHead refuses an outstanding stall by name. A stop is not one. */
+    id = gpp_cell(GPP_ENQUEUE_HEAD, 0u);
+    expect(s_gpp_list2_id != 0u && gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u &&
+               s_gpp_finishes == 2u,
+           "sceGeListEnQueueHead during a stop finishes the stopped list instead of stopping the run");
+
+    /* The production path: a real stronger thread, on its own coroutine, runs inside the call. */
+    sr_hle_test_ge_lists_reset();
+    s_gpp_stops = s_gpp_finishes = s_gpp_strong_done = s_gpp_strong_at_return = 0u;
+    s_gpp_peek_list = s_gpp_peek_draw = 0xdeadbeefu;
+    s_gpp_list2_id = 0u;
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(GPP_MAIN_ENTRY, 0u, 0u);
+    expect(s_gpp_strong_at_return == 1u,
+           "a stronger thread due during a list runs before sceGeListEnQueue returns");
+    expect(s_gpp_peek_draw == 2u && s_gpp_peek_list == 2u,
+           "the stronger thread finds the list drawing");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_list2_id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 2u,
+           "the stronger thread's own list queues behind the stopped one and both end once");
+
+    sr_hle_test_ge_preempt_hook(NULL);
+    atomic_store_explicit(&sr_preempt_due, 0, memory_order_relaxed);
+    sr_hle_test_ge_lists_reset();
+    sr_test_guest_fn_reset();
+}
+
 /* #1374: what the sync calls return for ids that name no list, for completed lists and
  * for sync types other than 0 and 1. Every expected value is a PSP-GE-SYNC-001 cell
  * (PSP-3000, probe ge-sync-ids, captured by the runs of 96fe29f6 and f6da6125 on
@@ -43049,6 +43268,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
     test_ge_blocking_sync_waits_for_stalled_list();
+    test_ge_list_stops_for_a_stronger_thread();
     test_ge_sync_ids_match_psp();
     test_ge_break_continue();
     test_ge_completion_timing();

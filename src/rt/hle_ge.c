@@ -284,6 +284,51 @@ static uint32_t h_GeGetCmd(CpuState *s) {
  * chunks than the list has commands is normal traffic, not an error. */
 static unsigned s_ge_late_stall_ignored;
 
+#ifdef SR_HLE_THREAD_SELFTEST
+/* What another thread does while a list is stopped for it: runs between the chunks of a list. */
+static void (*s_ge_test_preempt_hook)(uint32_t list_id);
+void sr_hle_test_ge_preempt_hook(void (*hook)(uint32_t list_id)) { s_ge_test_preempt_hook = hook; }
+#endif
+
+/* Run the list in `slot` from `pc` until it stalls or reaches its END, and give *next_pc what
+ * ge_run_list returned; or return 0 when another caller took the list over.
+ *
+ * On the PSP the GE draws beside the CPU, so a stronger thread whose deadline comes during a list
+ * does not wait for it. Here the list runs on its caller's host thread, and a long one kept that
+ * thread for tens of milliseconds at a time (#1296). When the deadline comes the run stops at a
+ * command boundary, which is a stall the guest did not ask for: no frame of the run stays on the
+ * stack, and the list is stalled at current_pc with work left, a state every entry point already
+ * handles. The other thread's enqueue queues behind it and its sync waits for it.
+ *
+ * The stronger thread may also drive this list: advance its stall address or run it on, pause it,
+ * or reset the GE and reuse the slot. So the state is read again after the switch; whoever ran the
+ * list to its END has done everything that follows the END. */
+static int ge_list_run(int slot, uint32_t pc, int resume, uint32_t *next_pc) {
+    GeListInfo *l = &s_ge_lists[slot];
+    const uint64_t order = l->order;
+    for (;;) {
+        int stopped = 0;
+        l->preempted = 0;
+        g_ge_stall_addr = l->stall_addr;
+        uint32_t next = ge_run_list_until(pc, resume, &sr_preempt_due, &stopped);
+        g_ge_stall_addr = 0;
+        if (ge_timing_on()) ge_timing_charge_run();
+        if (!stopped) {
+            *next_pc = next;
+            return 1;
+        }
+        l->current_pc = next;
+        l->preempted = 1;
+        sched_preempt_point();
+#ifdef SR_HLE_THREAD_SELFTEST
+        if (s_ge_test_preempt_hook) s_ge_test_preempt_hook(l->uid);
+#endif
+        if (l->order != order || l->status != GE_LIST_STALLED) return 0;
+        pc = l->current_pc;
+        resume = 1;
+    }
+}
+
 /* Start the list in `slot`: it becomes the head and the GE runs it until it stalls or reaches
  * its END. stall == list is an empty ring: running it now would read uninitialised eDRAM, so it
  * stays stalled for sceGeListUpdateStallAddr to drive. A stall address of 0 runs it to its END. */
@@ -299,10 +344,11 @@ static void ge_list_start(CpuState *s, int slot) {
                     l->uid, l->start_pc, l->stall_addr, l->cbid);
         return;
     }
-    g_ge_stall_addr = l->stall_addr;
-    uint32_t next_pc = ge_run_list(l->start_pc, 0);
-    g_ge_stall_addr = 0;
-    if (ge_timing_on()) ge_timing_charge_run();
+    uint32_t next_pc = 0;
+    if (!ge_list_run(slot, l->start_pc, 0, &next_pc)) {
+        ge_enqueue_trace_result(s, "enqueue", l->uid, "taken_over", l->current_pc, 0);
+        return;
+    }
 
     ge_enqueue_trace_result(s, "enqueue", l->uid, next_pc == 0 ? "done" : "stalled", next_pc, next_pc == 0);
     if (ge_log_on())
@@ -378,6 +424,20 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
  * insertion yet. */
 static uint32_t h_GeListEnQueueHead(CpuState *s) {
     for (int i = 0; i < GE_LIST_MAX; i++) {
+        /* A list stopped for this thread would have ended before the thread ran. */
+        if (s_ge_lists[i].status == GE_LIST_STALLED && s_ge_lists[i].preempted) {
+            uint32_t next_pc = 0;
+            if (ge_list_run(i, s_ge_lists[i].current_pc, 1, &next_pc)) {
+                if (next_pc == 0) {
+                    ge_list_reached_end(s, i);
+                    ge_queue_run(s);
+                } else {
+                    s_ge_lists[i].current_pc = next_pc;
+                }
+            }
+        }
+    }
+    for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
             return hle_unmodelled_stop("sceGeListEnQueueHead",
                                        "queue ordering is not supported yet");
@@ -442,11 +502,12 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
                 list_id, s_ge_lists[slot].stall_addr, s_ge_lists[slot].current_pc, new_stall);
 
     s_ge_lists[slot].stall_addr = new_stall;
-    g_ge_stall_addr = new_stall;
 
-    uint32_t next_pc = ge_run_list(s_ge_lists[slot].current_pc, 1); // 1 = resume
-    g_ge_stall_addr = 0;
-    if (ge_timing_on()) ge_timing_charge_run();
+    uint32_t next_pc = 0;
+    if (!ge_list_run(slot, s_ge_lists[slot].current_pc, 1, &next_pc)) { // 1 = resume
+        ge_enqueue_trace_result(s, "update_stall", list_id, "taken_over", s_ge_lists[slot].current_pc, 0);
+        return 0;
+    }
 
     ge_enqueue_trace_result(s, "update_stall", list_id,
                             next_pc == 0 ? "done" : "stalled",
@@ -534,7 +595,7 @@ static uint32_t h_GeListSync(CpuState *s) {
     if (syncType != 1u) return GE_ERROR_INVALID_MODE;
     switch (l->status) {
     case GE_LIST_QUEUED: return 1u; /* uofw SCE_GE_LIST_QUEUED */
-    case GE_LIST_STALLED: return GE_LIST_SYNC_STALLED;
+    case GE_LIST_STALLED: return l->preempted ? GE_SYNC_DRAWING : GE_LIST_SYNC_STALLED;
     case GE_LIST_PAUSED: return GE_LIST_SYNC_PAUSED;
     case GE_LIST_DRAWING: return GE_SYNC_DRAWING;
     case GE_LIST_COMPLETED:
@@ -619,6 +680,8 @@ static uint32_t h_GeDrawSync(CpuState *s) {
         }
         if (mode == 1u) {
             if (head < 0) return 0u;
+            if (s_ge_lists[head].status == GE_LIST_STALLED && s_ge_lists[head].preempted)
+                return GE_SYNC_DRAWING;
             return s_ge_lists[head].status == GE_LIST_PAUSED ? GE_DRAW_SYNC_PAUSED : GE_DRAW_SYNC_STALLED;
         }
         if (head < 0) break;
@@ -719,10 +782,9 @@ static uint32_t h_GeContinue(CpuState *s) {
 
     if (s_ge_lists[paused_slot].stall_addr == 0 ||
         s_ge_lists[paused_slot].current_pc != s_ge_lists[paused_slot].stall_addr) {
-        g_ge_stall_addr = s_ge_lists[paused_slot].stall_addr;
-        uint32_t next_pc = ge_run_list(s_ge_lists[paused_slot].current_pc, 1); /* 1 = resume */
-        g_ge_stall_addr = 0;
-        if (ge_timing_on()) ge_timing_charge_run();
+        uint32_t next_pc = 0;
+        if (!ge_list_run(paused_slot, s_ge_lists[paused_slot].current_pc, 1, &next_pc)) /* 1 = resume */
+            return 0;
 
         if (next_pc == 0) {
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
