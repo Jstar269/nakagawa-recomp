@@ -25622,6 +25622,26 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
     expect(s_gpu_dirty_calls == 0u,
            "no rejected DMA request issues a GPU dirty notification");
 
+    /* PSP-MEMEDGE-001: the last 256 bytes of VRAM as a source with the request running 4
+     * bytes (and 0x1000) past the end into the 0x04200000 mirror returned 0 and copied the
+     * whole request on a PSP-3000, for both APIs. The first 256 bytes are the VRAM bytes. */
+    {
+        static const uint32_t over[] = {4u, 0x1000u};
+        for (size_t i = 0; i < sizeof(over) / sizeof(over[0]); i++) {
+            dmac_fill(0x041fff00u, 256u);
+            dmac_clear(dst, 0x1200u, 0xa5u);
+            expect(bulk_call(nid, dst, 0x041fff00u, 256u + over[i]) == 0u,
+                   "PSP: a VRAM source running past the end of VRAM returns success");
+            expect(dmac_span_matches(dst, 256u, 0u),
+                   "PSP: a VRAM source running past the end of VRAM copies its VRAM bytes");
+            expect(!dmac_span_is(dst + 256u, 4u, 0xa5u),
+                   "PSP: a VRAM source running past the end of VRAM copies the bytes past it");
+            expect(dmac_span_is(dst + 256u + over[i], 4u, 0xa5u),
+                   "PSP: a VRAM source running past the end copies no more than requested");
+        }
+        gpu_dirty_reset();
+    }
+
     /* Exactly-to-the-end must still be accepted: the bound is the real arena
      * end, not a conservative margin that would reject legal transfers. */
     dmac_fill(src, 16u);

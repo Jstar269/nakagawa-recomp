@@ -128,7 +128,7 @@
     "classification": "dedicated",
     "handler": "h_CpuSuspendIntr",
     "name": "sceKernelCpuSuspendIntr",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x099ef33c": {
     "classification": "dedicated",
@@ -480,7 +480,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlReadBuffer",
     "name": "sceCtrlReadBufferPositive",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x1fb15a32": {
     "classification": "dedicated",
@@ -536,7 +536,7 @@
     "classification": "dedicated",
     "handler": "h_DisplayGetAccumulatedHcount",
     "name": "sceDisplayGetAccumulatedHcount",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x211a057c": {
     "classification": "dedicated",
@@ -580,7 +580,7 @@
     "classification": "dedicated",
     "handler": "h_AllocPartitionMemory",
     "name": "sceKernelAllocPartitionMemory",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x24ac31eb": {
     "classification": "dedicated",
@@ -1033,7 +1033,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlPeekBufferPositive",
     "name": "sceCtrlPeekBufferPositive",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x3ad58b8c": {
     "classification": "dedicated",
@@ -1063,7 +1063,7 @@
     "classification": "dedicated",
     "handler": "h_CpuResumeIntrWithSync",
     "name": "sceKernelCpuResumeIntrWithSync",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x3c2fa058": {
     "classification": "dedicated",
@@ -1259,7 +1259,7 @@
     "classification": "dedicated",
     "handler": "h_CpuIsIntrSuspended",
     "name": "sceKernelIsCpuIntrSuspended",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x48293280": {
     "classification": "dedicated",
@@ -1398,7 +1398,7 @@
     "classification": "dedicated",
     "handler": "h_SetVTimerHandlerWide",
     "name": "sceKernelSetVTimerHandlerWide",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x542ad630": {
     "classification": "dedicated",
@@ -1553,7 +1553,7 @@
     "classification": "dedicated",
     "handler": "h_CpuResumeIntr",
     "name": "sceKernelCpuResumeIntr",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x5f32beaa": {
     "classification": "dedicated",
@@ -1589,7 +1589,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlReadBufferNegative",
     "name": "sceCtrlReadBufferNegative",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x611e9e11": {
     "classification": "dedicated",
@@ -2526,7 +2526,7 @@
     "classification": "dedicated",
     "handler": "h_DisplayGetVcount",
     "name": "sceDisplayGetVcount",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x9cd7de03": {
     "classification": "dedicated",
@@ -3112,7 +3112,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlPeekBufferNegative",
     "name": "sceCtrlPeekBufferNegative",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xc1734599": {
     "classification": "dedicated",
@@ -3322,7 +3322,7 @@
     "classification": "dedicated",
     "handler": "h_CancelVTimerHandler",
     "name": "sceKernelCancelVTimerHandler",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xd3075926": {
     "classification": "dedicated",
@@ -3418,7 +3418,7 @@
     "classification": "dedicated",
     "handler": "h_SetVTimerHandler",
     "name": "sceKernelSetVTimerHandler",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xd8b73127": {
     "classification": "dedicated",

@@ -1,23 +1,14 @@
 # AGENTS.md — Nakagawa Recomp
 
-This file is for AI coding agents working in this repository: Claude Code, Codex, GitHub Copilot,
-Cursor, Gemini CLI, Jules and the rest. People can read it too; it is the same set of rules a human
+This file is for AI coding agents working in this repository. It is the same set of rules a human
 contributor follows, kept in one place. Tool-specific files (`CLAUDE.md`,
-`.github/copilot-instructions.md`) only point here and add no rules of their own.
+`.github/copilot-instructions.md`) only point here and add no rules of their own
+([how each tool reaches this file](docs/AI_USAGE.md#how-each-tool-reads-these-rules)). Personal
+instruction files and tool settings stay local; `.gitignore` keeps them out of the repository.
 
-Codex, Cursor, Jules and most other agents read this file on their own. Claude Code and Copilot
-reach it through those two files. Gemini CLI reads only `GEMINI.md` unless told otherwise: set
-`"context": {"fileName": ["AGENTS.md"]}` in your own `.gemini/settings.json`. With Aider, pass
-`--read AGENTS.md`. Personal instruction files and tool settings stay local; `.gitignore` keeps
-them out of the repository.
-
-How it is laid out:
-
-- **Where to start** is the quick start: what the project is, how to build and test, the hard
-  limits, and what a good pull request looks like. Most tasks need nothing more.
+- **Where to start** is the quick start. Most tasks need nothing more.
 - **Sections 1 to 11** are the full contract. Code, tests and other documents cite them by number.
-- **Maintainer process**, at the end, applies only to agents the maintainer runs. A contributor's
-  agent can skip it.
+- **Maintainer process**, at the end, applies only to agents the maintainer runs.
 
 When this file and the live source, tests or Makefiles disagree about how something works, the
 source wins. When they disagree about a rule, ask in the issue.
@@ -40,8 +31,7 @@ Before you change anything:
    one label and a milestone ([which milestone](CONTRIBUTING.md#start-here)).
 3. Run `git fetch origin` and start a branch from current `origin/main`. Check that the problem is
    not already fixed there and that no open pull request already covers it.
-4. Make the change, with a test that fails before it and passes after it. Related fixes in the same
-   area, or a feature with its tests and docs, can share one pull request; unrelated changes cannot.
+4. Make the change, with a test that fails before it and passes after it.
 5. Run the checks for the files you changed (below, and Section 9).
 6. Open a **Draft** pull request and fill in the template.
 
@@ -51,7 +41,7 @@ pull request.
 ### Build and test
 
 **Windows 11** is the supported desktop platform. You need PowerShell 7.4 or later, MSYS2 UCRT64
-(GCC, GNU Make, SDL3, SDL3_ttf, the Vulkan headers and loader), CPython 3.15 and the Vulkan SDK.
+(GCC, GNU Make, SDL3, SDL3_ttf, the Vulkan headers and loader), CPython 3.15 (3.14 is also accepted) and the Vulkan SDK.
 [`docs/SETUP.md`](docs/SETUP.md) has the full steps, including the
 [`PATH` order](docs/SETUP.md#path-order) that matters on Windows. From the repository root, with
 MSYS2 UCRT64's `bin` folder on `PATH`:
@@ -75,13 +65,11 @@ make contrib-check               # the checks that apply to the files you change
 
 On either platform, run one Python test module with `python -m unittest tools.test_<name>`. The whole
 Python suite (`python -m unittest discover -s tools -p "test_*.py"`) is long; hosted CI runs it in
-shards on every pull request, so run it locally only when hosted CI cannot.
+shards whenever a change routes Python, so run it locally only when hosted CI cannot.
 
-`contrib-check` compares your branch with `origin/main` and runs only the gates that apply: Ruff, the
-matching Python tests, a strict C compile of changed C, markdownlint and the documentation lint for
-changed Markdown, and the publication audit. It is a quick local check, not a substitute for hosted
-CI. Each gate reports `PASS`, `FAIL`, `SKIP` (tool not installed: not a pass), `NOT_RUN` or
-`MAINTAINER-SIDE` ([what each means](CONTRIBUTING.md#the-fast-path-one-command)).
+`contrib-check` compares your branch with `origin/main` and runs only the gates that apply. It is a
+quick local check, not a substitute for hosted CI, and `SKIP` (tool not installed) is not a pass
+([the gates and what each result means](CONTRIBUTING.md#the-fast-path-one-command)).
 
 ### Hard limits
 
@@ -91,14 +79,18 @@ the full rules.
 - **No game data.** No ISOs, executables, decrypted modules, extracted assets (icons, textures, audio,
   fonts), saves, game-byte Ghidra databases, or C generated from a retail game (everything under
   `build/`). The only game images allowed are the curated presentation media Section 5 describes,
-  and the maintainer chooses those.
+  and the maintainer chooses those. Game titles and retail disc IDs are not game data: they may
+  appear in documentation, comments, tests, tools and the compatibility table.
 - **No keys or credentials.** No console-bound values (fuse ID, secure-install ID, licence files),
   user keys, tokens or passwords. The public key tables for built-in game decryption live only in
   `src/core/nk_psp_builtin_keys.c`.
 - **No private captures.** No traces, frame or memory dumps, private logs, or anything showing a
   user name or local path.
-- **No firmware.** No firmware files, no firmware decryption, and no key that only firmware uses.
-  Decrypting the user's own game disc on their machine is allowed (Section 5).
+- **No firmware.** The operating system is HLE and the project carries none of the console's. No
+  firmware files, no firmware decryption, and no key that only firmware uses. A user may supply plain
+  files from their own console's `flash0`, such as its fonts, in a local folder the runtime reads;
+  those are never committed, packaged, shipped or uploaded. Decrypting the user's own game disc on
+  their machine is allowed (Section 5).
 - **No hidden failures.** No loop caps, sleeps, forced returns or fake success that hide missing
   behaviour. Unknown functions and dispatch misses stay visible (Section 6).
 - **No hand edits to generated code.** Never edit `build/<game>/<game>_recomp_*.c`; change the
@@ -128,9 +120,9 @@ the full rules.
 
 ### New files: what to put in the pull request
 
-Every public file has a provenance entry: where it came from and the evidence for that. Its bytes are
-bound by the trusted attestation, which regenerates each file's hash from the record behind those
-entries. That record is kept privately by the maintainer, so you cannot add an entry, and you do not
+Every public file has a provenance entry: where it came from and the evidence for that. The trusted
+attestation checks each file against the origin claim recorded behind those entries (and the exact
+bytes of a file imported byte-identical). That record is kept privately by the maintainer, so you cannot add an entry, and you do not
 need to. **The maintainer admits new paths.** For each file you add, say in the pull
 request:
 
@@ -208,9 +200,8 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 
 ## 4. Provenance and publication
 
-- Every public path has a provenance record. A new path is admitted by the maintainer; a pull
-  request that adds one says where each new file came from (see
-  [New files](#new-files-what-to-put-in-the-pull-request)). The maintainer's own steps are under
+- Every public path has a provenance record. For a new path, see
+  [New files](#new-files-what-to-put-in-the-pull-request); the maintainer's own steps are under
   [Maintainer process](#maintainer-process).
 - Deterministic documentation/configuration paths and explicitly synthetic tests may use
   their narrow classes. Never label project implementation as a synthetic fixture.
@@ -232,10 +223,11 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   adapted when it works better or lands faster than a rewrite: for example FFmpeg codec subsets
   (the `src/rt/atrac3p/` pattern), uofw (github.com/uofw/uofw, MIT), GPL-compatible emulator
   source (PPSSPP, GPL-2.0-or-later; JPCSP, GPL-3.0), MIT, BSD, Apache-2.0 or zlib code, and CC0 or
-  public-domain dedications such as NVIDIA's MIT-licensed dxvk-remix API (maintainer decisions of
-  2026-10-20, 2026-10-22 and 2026-10-25; no further decision is needed per import). Each file must
+  public-domain dedications such as NVIDIA's MIT-licensed dxvk-remix API. No further decision is
+  needed per import. Each file must
   be pinned to an exact upstream revision, listed in a `PROVENANCE.md` manifest as byte-identical or
-  LOCAL DELTA, keep its licence and copyright notices, be credited in `CREDITS.md`, and get a trusted
+  LOCAL DELTA (the trusted attestation checks every byte-identical row's blob ID or SHA-256 against
+  the file, and against the base's row, on every pull request), keep its licence and copyright notices, be credited in `CREDITS.md`, and get a trusted
   record and admission like any new path. An adapted file keeps the upstream copyright header and
   adds a one-line note that it was modified, as the GPL requires; no special path or naming is
   needed beyond that. Emulator-derived units are labelled `derived-translated`
@@ -247,7 +239,12 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 - Do not call code "clean-room" or "independent" unless its trusted record supports that
   label (see `docs/provenance/INDEPENDENCE_MODEL.md`); prefer "project-authored".
 - Adding or removing a public path changes `assets/public_source_profile.json`, which only the
-  maintainer's admission can authorize. `provenance-refresh` and `tools/contrib_refresh.py` refuse
+  maintainer's admission can authorize. An admission binds each new path to its origin claim (its
+  class and, from its trusted record, the record, upstream, revision and licence), so later edits
+  flow through the normal refresh while that claim holds. A file imported byte-identical stays bound
+  to its exact bytes; changing it, or recording it as a LOCAL DELTA in its `PROVENANCE.md`, needs
+  the maintainer's approval of the new bytes: a new admission before it lands, a trusted exact-blob
+  approval after. `provenance-refresh` and `tools/contrib_refresh.py` refuse
   added or removed paths and only refresh admitted ones. A commit carries the regenerated controls
   for the paths it changes and nothing more; a refresh after merging `main` is a commit of its own.
   Never hand-edit them.
@@ -257,18 +254,23 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 - Never commit or publish retail executables/ISOs/assets, decrypted modules, generated
   retail C, saves, console-unique or user-specific keys, game-byte Ghidra databases, private
   traces/captures, or private paths, except as the presentation-media bullet below allows.
-- Built-in game decryption (maintainer decision, 2026-10-27, the way PPSSPP does it): the player
+- Built-in game decryption, the way PPSSPP does it: the player
   and tools decrypt the encrypted executable and modules of a game the user owns, locally, from
   the user's own disc image, into the private per-title folder. The public key tables PPSSPP
   ships may be carried, in the reviewed table `src/core/nk_psp_builtin_keys.c` only (the one path
   the publication audit lets hold key literals). Console-bound values (fuse ID, secure-install
   ID, licence files) come only from the user, locally, and are never committed. Decrypted output
-  stays on the user's machine under the rules below. Firmware is never decrypted, even privately:
-  updater PSAR archives, the IPL, the Media Engine image and system-menu files are refused by
-  name before any decryption step runs, and no key only firmware uses is carried.
-- Presentation screenshots and short clips are the exception (maintainer policy deltas of 2026-10-21 for screenshots
-  and 2026-10-27 for clips, following established recomp practice in Zelda64Recomp, Unleashed Recompiled and Ship of
-  Harkinian): curated PNGs, and H.264 MP4 clips of about 60 seconds at most with the game's own sound, of a title
+  stays on the user's machine under the rules below.
+- Firmware follows PPSSPP's model: the operating system is HLE, the modules a game ships on its
+  disc may run as LLE, and the project ships no firmware and carries no key that only firmware
+  uses. It ships open replacement fonts (`font/`, `docs/provenance/FONT_ORIGINS.md`). A user may
+  supply plain, unencrypted files from their own console's `flash0`, such as the real fonts, in a
+  local folder under their user data that the runtime reads. Those files stay on the user's machine:
+  they are never committed, packaged, shipped or uploaded. Nakagawa never decrypts firmware, even
+  privately: updater PSAR archives, the IPL, the Media Engine image, system-menu files and
+  encrypted `flash0` modules are refused by name before any decryption step runs.
+- Presentation screenshots and short clips are the exception (established recomp practice in Zelda64Recomp,
+  Unleashed Recompiled and Ship of Harkinian): curated PNGs, and H.264 MP4 clips of about 60 seconds at most with the game's own sound, of a title
   running in Nakagawa, including the launcher or library with it loaded, may be published when each is checked for
   personal data (no profile names, user paths or private menus) and carries a notice that the game belongs to its
   publisher, that no game data is in the repository, and that users need their own copy. Raw evidence captures,
@@ -280,17 +282,17 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   or external-oracle inputs are `NOT_RUN`, `BLOCKED`, or `SKIP`, never silent passes.
 - Do not run title or physical-hardware routes for a source/configuration mission unless
   explicitly required. Remote host work stays reversible and non-overlapping.
-- Product network rule: offline by default (maintainer decision, 2026-10-22). The player and runtime make no network
+- Product network rule: offline by default. The player and runtime make no network
   connection unless the user enables a documented, opt-in feature; today there are two: the
-  consented prerequisite download, and Check for updates (maintainer decision, 2026-10-28):
+  consented prerequisite download, and Check for updates:
   GitHub's Releases API for this repository when the user asks, or once at start if they turned
   that on (off by default), then that release's Windows ZIP on a separate click, kept only if it
   matches the release's published SHA-256. A new egress needs a maintainer decision, a "Network use"
   entry in `docs/SETUP.md`, and an update to the egress allowlist test in
   `tools/test_prereq_fetcher.py`. The reserved `network_mode` setting accepts only `"offline"`,
   and a value a build does not know reads back as offline, never as something more permissive.
-- A user may move their own packages and saves to their own devices, for example an Android phone
-  (maintainer decision, 2026-10-23); such a transfer is started by the user and goes directly to
+- A user may move their own packages and saves to their own devices, for example an Android phone;
+  such a transfer is started by the user and goes directly to
   their device, never through a server. No feature uploads game code, game data, decrypted
   modules, packages, saves or guest memory to any server or third party, and nothing built from a
   user's game is ever published or shared. No telemetry. Tests never touch the internet. Network
@@ -303,17 +305,19 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   arbitrary state writes, invented assets, or VFS aliases that hide missing behavior.
 - **LLE first.** When the guest code for a function exists, for example a module the game ships
   on its disc, and running it needs no firmware, run that code (LLE) instead of writing a new HLE
-  handler for it, as #1645 did for the game's own libfont. HLE stays for the kernel and hardware
-  boundary: firmware modules the project does not carry, syscalls, and device access.
+  handler for it, as #1645 did for the game's own libfont. HLE stays for the operating system:
+  the kernel and hardware boundary, firmware modules the project does not carry, syscalls, and
+  device access. Where a game asks for a system file that only a console's `flash0` holds, such
+  as a font, the runtime reads the user's own copy if they supplied one, and otherwise serves the
+  project's open replacement and says so.
 - Unknown NIDs and dispatch misses remain visible. No switch makes a miss permissive: the interpreter
   runs only inside analyzer-owned spans (the PR #118 floor), and every rejection terminates the run.
   Correctness evidence asserts PSP-visible results, state, and wakes.
 - Validate complete guest spans and checked size arithmetic before forming bulk host
   pointers.
 - `src/rt/recomp.h` is a load-bearing ABI: MIPS `$ra` is `r[31]`, with no separate `lr`.
-- Never hand-edit generated `build/<game>/<game>_recomp_*.c`. Change the generator,
-  analysis, or runtime and regenerate. Chunk count is dynamic; `FUNCS_PER_CHUNK` is not
-  a fixed ABI.
+- Generated code is never hand-edited (Hard limits). Chunk count is dynamic; `FUNCS_PER_CHUNK`
+  is not a fixed ABI.
 - A private title run proves only its qualified route. A white-box fixture is not a
   production syscall proof; software/Vulkan agreement is not a PSP hardware oracle.
 - A mutation is behavioral evidence only when it generates, compiles, executes, and fails
@@ -376,7 +380,7 @@ focused gate for the area you changed. The table uses the Windows spelling; on L
 | `guest_interp`, `recomp`, or dispatch | `tools/test_dispatch_c.py`, `tools/test_dispatch_call_boundary.py`, cosim tests, then native selftests |
 | scheduler/HLE lifecycle | `tools/test_sched_invariants.py` and `mingw32-make --no-print-directory sched-selftest` |
 | FPU/VFPU conversion | relevant `tools/test_*fpu*.py` plus `fp-convert-selftest`/`vfpu-interp-selftest` |
-| publication/provenance | `tools/policy_sync.py`, both publication-audit legs, and `tools/modified_file_notice_audit.py` |
+| publication/provenance | `tools/policy_sync.py`, both publication-audit legs (the command below, with and without `--worktree`), and `tools/modified_file_notice_audit.py` |
 | docs and agent policy | `python -m unittest tools.test_lint_docs tools.test_dco_policy`, markdownlint (below), and `python tools/audit_public_issue_links.py` |
 | workflow/configuration | `tools/test_ci_paths.py`, pre-commit, and the full applicable hosted matrix |
 | LLE CPU / domain modes | `tools/test_cpu_lle.py`, `tools/test_domain_mode.py`, then `mingw32-make native-core-tests` |
@@ -395,10 +399,10 @@ Before the first push, check every item in [`REVIEW.md`](REVIEW.md#findings-to-p
 pre-empt"; hosted CI rejects most of them. Native code also builds and runs on hosted Linux, with and
 without SDL3: check it in a Linux shell such as WSL.
 
-Hosted CI is the full Python suite. An exact head whose required hosted CI is green meets the Python-suite
-requirement for readiness (Section 2); run the full suite locally only when hosted CI cannot run for the change.
-Which modules hosted CI routes, and the Windows-only modules a Windows-host change runs locally, are in
-[`docs/CI.md`](docs/CI.md#what-hosted-ci-does-not-run). The PR template's checklist is satisfied the same way.
+An exact head whose required hosted CI is green meets the Python-suite requirement for readiness
+(Section 2) and the PR template's checklist; run the full suite locally only when hosted CI cannot run
+for the change. Which modules hosted CI routes, and the Windows-only modules a Windows-host change runs
+locally, are in [`docs/CI.md`](docs/CI.md#what-hosted-ci-does-not-run).
 
 Windows host pitfalls: [`docs/SETUP.md`](docs/SETUP.md#windows-host-pitfalls). Quick recipes (find an HLE
 handler, run one native self-test, capture frames unattended):
@@ -500,9 +504,10 @@ covers the maintainer's workspace, how new paths are admitted, and how pull requ
   worktree. Do not edit, stage, commit, merge or push there.
 - The integrator lands from one landing run, one PR at a time. When the queue is long, the desk lands
   pull requests in batches instead: a linear batch branch with one commit per folded PR, one CI and
-  CodeQL run for the batch, then a rebase-merge. A path-adding PR admitted with a V3 policy
-  delta needs no re-key when another path-adding PR lands first; one admitted before V3
-  deltas existed needs one `--rekey`, and a batch carries at most one profile-changing PR
+  CodeQL run for the batch, then a rebase-merge. A path-adding PR admitted with a V4 policy
+  delta needs no re-key when another path-adding PR lands first or when its claim-bound files are
+  edited; one admitted with a V3 delta needs one `--rekey` once its files change, and one admitted
+  before V3 deltas existed needs one `--rekey`, and a batch carries at most one profile-changing PR
   ([landing order](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
   Never hold a ready pull request for an unrelated one.
 - At the end of a mission, also state whether canonical main was fast-forwarded or left

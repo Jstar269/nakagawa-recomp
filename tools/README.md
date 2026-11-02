@@ -1,6 +1,6 @@
 # `tools/` — Host-side recompiler scripts
 
-These scripts require Python 3.15.x. PowerShell entrypoints require PowerShell 7.4+ (`pwsh`); they
+These scripts require Python 3.15.x (3.14.x is also accepted). PowerShell entrypoints require PowerShell 7.4+ (`pwsh`); they
 run on the development host and are never executed by `hst.exe` at runtime. For HST, use the canonical `nk_manager.ps1` with `-GameName hst` and `-TitleManifest`; it supplies the required zero base/entry values and drives the Makefile's two-phase build.
 
 ## Pipeline (in order)
@@ -228,6 +228,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `nk_doctor_core.py` | Shared data structures and bounded file-format validators for the doctor. |
 | `hst_test_fixtures.py` | Small source-owned ELF, PSP-header and ISO envelope fixtures for the doctor tests. |
 | `nk_clean.py` | Preview-first workspace cleaner for allowlisted output roots. |
+| `compdb_relocate.py` | Rewrite a `compile_commands.json` so paths under the checkout are root-relative and only `directory` stays absolute. |
 | `title_manifest.py` | Validate and deterministically normalize public title manifests. |
 | `title_qualification.py` | Qualify public titles: validate manifests, input profiles and bring-up reports, and smoke-launch a public title through the native player in a sandbox. |
 | `title_codegen_plan.py` | Build a deterministic code-generation plan or AOT package from a title manifest. |
@@ -448,6 +449,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_iso_parity.py` | Differential parity between the native disc, library and launch code and Python. |
 | `test_manager_safety.py` | Manager filesystem, process and build safety guarantees. |
 | `test_nk_clean.py` | Preview and allowlist safety contracts for the workspace cleaner. |
+| `test_compdb_relocate.py` | Path relativising, backslash roots, sibling-prefix safety and in-place rewrite for the compilation-database relocator. |
 | `test_nk_cli_progress.py` | CLI progress reporting and log-file options. |
 | `test_nk_core.py` | Unit tests for the portable preparation and runtime library. |
 | `test_package_cache.py` | Cache tiering, cache-key separation, in-checkout write refusal, bounded external JSON. |

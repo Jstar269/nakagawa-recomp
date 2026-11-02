@@ -1,7 +1,7 @@
 # Workspace Doctor
 
 `tools/nk_doctor.py` is the fail-closed preflight for Nakagawa Recomp. It checks the supported
-Windows 11 x64 / PowerShell 7.4+ / CPython 3.15.x host contract, current MSYS2 UCRT64 tools,
+Windows 11 x64 / PowerShell 7.4+ / CPython 3.15.x (3.14.x also accepted) host contract, current MSYS2 UCRT64 tools,
 Vulkan SDK discovery, the repository, private game-input layout, runtime dependencies, and build
 products without copying, decrypting, extracting, modifying, or uploading private material.
 
@@ -51,7 +51,7 @@ checks depend on the selected manifest.
 
 ### Toolchain identity
 
-The doctor requires Windows 11 x64, PowerShell 7.4+ (`pwsh`), and CPython 3.15.x. It resolves
+The doctor requires Windows 11 x64, PowerShell 7.4+ (`pwsh`), and CPython 3.15.x (3.14.x is also accepted; the check is `>=3.14,<3.16`). It resolves
 `mingw32-make`, `gcc`, and `g++`, records their first version line, and fails when they do not
 resolve from an MSYS2 UCRT64 path. It checks the SDL3 import library and discovers a usable Vulkan
 SDK using `-vulkan-sdk`, `VULKAN_SDK`, then the newest numerically named `C:\VulkanSDK\<version>`
@@ -72,14 +72,15 @@ runtime defects.
 
 The doctor does more than test path existence:
 
-- `EBOOT.elf` and the three PRXs must be ELF32, little-endian, MIPS, contain bounded program headers,
+- The selected title's EBOOT ELF and each PRX its manifest marks `required` (the `modules` entries with
+  `role: guest-prx`) must be ELF32, little-endian, MIPS, contain bounded program headers,
   and contain at least one `PT_LOAD` segment.
-- `EBOOT.BIN` must contain a valid `~PSP` header with a bounded segment count and nonzero declared
-  segment sizes.
-- `EBOOT.elf` and `EBOOT.BIN` must agree on their load-segment count.
+- When the manifest asks for it (`bss_metadata_source: psp-header`), `EBOOT.BIN` must contain a valid
+  `~PSP` header with a bounded segment count and nonzero declared segment sizes.
+- The EBOOT ELF and `EBOOT.BIN` must agree on their load-segment count.
 - exactly one ISO candidate must be selected; ambiguous multiple-ISO workspaces fail closed;
 - the ISO must contain an ISO9660 primary volume descriptor;
-- the supported `UCUS98701` disc ID is searched for as an additional identity signal;
+- the disc ID that the title manifest declares is searched for in the ISO as an additional identity signal; without a manifest disc ID the check is skipped with an `INPUT_DISC_ID` note;
 - `xbdata_extracted/` (or configured `SR_DATAROOT`) must contain files rather than merely exist as an empty placeholder;
 - `memstick/` (or configured `SR_MEMSTICK`) is verified for directory presence and writability (`SAVE_ROOT`).
 
@@ -289,7 +290,10 @@ The governance work intentionally leaves these as separate, evidence-backed foll
    outright; `clean-preview` still reports only the roots listed above, and linked-worktree build
    output is now surfaced by `WORKTREES_BUILD_SIZE`, but a non-build route that writes outside the
    listed roots is not yet surfaced by a single inventory;
-7. eliminate absolute paths from generated `compile_commands.json` where tooling permits;
+7. [DONE - #368] eliminate absolute paths from generated `compile_commands.json`:
+   `python tools/compdb_relocate.py compile_commands.json` rewrites every path under the checkout
+   to a root-relative form and keeps only `directory` absolute, so a moved or cloned workspace
+   repoints with `--root`;
 8. [DONE - #368] audit and bound agent database/worktree accumulation:
    `check_worktree_accumulation` in `tools/nk_doctor_checks.py` inventories every registered
    worktree (count, nesting inside a checkout, unregistered directories in the sibling

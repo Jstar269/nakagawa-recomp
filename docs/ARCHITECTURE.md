@@ -281,6 +281,9 @@ The runtime executes generated guest functions and implements the host side of P
 | `driver.c` | Runtime entry point, image setup, tracing/termination plumbing |
 | `debug.c` / `debug.h` | Centralized debug categories and memory-watch support |
 | `perf.c` / `perf.h` | Runtime performance counters/telemetry |
+| `domain_mode.c` / `domain_mode.h` | LLE Phase 1 per-domain HLE/LLE mode table (every domain defaults to HLE), the NID-to-domain and export registries, and the `sr_import_call()` seam that generated import stubs use instead of calling `sr_syscall()` directly |
+| `fbcap.c` / `fbcap.h` | Presenter-neutral frame-capture service: owns the capture state and the atomic P6 PPM publisher, so a capture means the same thing whichever presenter showed the frame |
+| `fbcap_policy.c` / `fbcap_policy.h` | Deterministic policy for who owns the single frame-capture slot when both `SR_FBDUMP` and `SR_FBSNAP` are set |
 
 ### HLE
 
@@ -288,6 +291,8 @@ The runtime executes generated guest functions and implements the host side of P
 | --- | --- |
 | `hle.c` | PSP syscall/NID dispatch (`sr_syscall()`), the handler table and registration API, kernel object UIDs and the user-memory allocator, HLE code shared by two or more subsystems, and `sr_hle_init()`, which calls every subsystem's registrations in order |
 | `hle_<subsystem>.c` | One file per subsystem in `tools/hle_registry_meta.py` (`hle_audio.c`, `hle_io.c`, `hle_kernel_thread.c`, ...): its handlers, their state and its registrations (#307) |
+| `hle_power.c` / `hle_power.h` | `scePower` battery and power-source getters and the emulated boot and bus clocks, with values measured on a PSP-3000 |
+| `hle_evidence.h` | Generated table of registered HLE NIDs whose evidence class is `unverified` (by `tools/verification_ledger.py`); `sr_syscall` logs the first call of each and nothing else reads it |
 | `hle_host.c` / `hle_data.c` / `hle_route.c` | HLE infrastructure that registers no NIDs: host primitives and checked host paths; the data-root lookup and `/DATA/FONT`; acceptance routes and frame capture |
 | `hle_internal.h` | Private header of the runtime HLE files: shared types, macros and small helpers, and the declarations one file defines and another uses. `tools/hle_sources.py` lists the files |
 | `hle_thread_selftest.c` | Game-input-free Windows and Linux harness that executes selected production HLE handlers through registered NIDs against a synthetic scheduler world |
@@ -874,9 +879,9 @@ the maintained references for exact behavior.
 | `SR_THLOG` | present/unset | Scheduler/thread diagnostics |
 | `SR_BLOCKLOG` | present/unset | Blocking/basic diagnostic output where consumed |
 | `SR_IOLOG` | present/unset | Filesystem/I/O diagnostics |
-| `SR_AUDIOLOG` | present/unset | Bounded audio diagnostics |
+| `SR_AUDIOSTAT` | present/unset | Audio queue and drift telemetry (`AUDIOSTAT_LEAD`) |
+| `SR_AUDIO_DISABLED` | `1` | Use the null audio backend; `SR_AUDIO_BACKEND=null\|none\|0\|off` does the same, `dummy` selects SDL's dummy driver |
 | `SR_MSGLOG` | present/unset | Bounded message-pipe diagnostics |
-| `SR_PLTLOG` | present/unset | PLT/import-resolution diagnostics |
 | `PSP_VFPU_TABLES` | path | Override VFPU lookup-table directory |
 | `PSP_ISO` | path | Private ISO path where a route consumes it |
 | `SR_MEMSTICK` | path | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |

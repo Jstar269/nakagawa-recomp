@@ -119,7 +119,7 @@ player and your own game.
 ## Linux headless showcase
 
 Linux can build and run the two source-owned showcase packages through the runtime.
-The route needs GCC, GNU Make, Python 3.15, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.18,
+The route needs GCC, GNU Make, Python 3.15 (3.14 is also accepted), CMake, Ninja, `libvulkan-dev`, SDL3 3.4.18,
 and PSPDEV v20261001 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
 3.4.18 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
@@ -144,7 +144,7 @@ The supported and tested core development environment is:
 - CPython 3.15.x (3.14.x is also accepted, `>=3.14,<3.16`), with `python` resolving to that feature line. 3.15 is the default: hosted CI and the pinned prerequisite use 3.15.1.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
   manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
-  (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.15. The rolling
+  (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.15 (the manifest says `>=3.15,<3.16`; the tooling itself also accepts 3.14, see the first bullet). The rolling
   MSYS2 packages are not pinned; `tools/record_toolchain.py` records the versions a release
   candidate was really built with (#367).
 - A current Vulkan SDK and Vulkan-capable GPU.
@@ -179,7 +179,7 @@ pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make mingw-w6
 
 Also install:
 
-- CPython 3.15.x on `PATH`.
+- CPython 3.15.x (3.14.x is also accepted) on `PATH`.
 - The [Vulkan SDK](https://vulkan.lunarg.com/sdk/home). The manager follows the discovery order above; pass `-VulkanSdk "C:\path\to\sdk"` or set `VULKAN_SDK` when an explicit location is needed.
 - Git, to fetch optional third-party source.
 
@@ -423,7 +423,7 @@ Similarly, `python tools/nk_cli.py build-package` searches `assets/titles` first
 
 ### System fonts
 
-Authentic in-game typography requires PSP system fonts in Sony's PlayStation Glyph Format (`.pgf`), dumped from the user's own physical PSP console firmware (`flash0:/font/`). The project does not bundle or distribute proprietary firmware fonts.
+Firmware follows PPSSPP's model. The operating system is HLE, the modules a game ships on its disc may run as LLE, and Nakagawa ships no firmware and decrypts none. It ships open replacement fonts. Authentic in-game typography needs the PSP's own system fonts in Sony's PlayStation Glyph Format (`.pgf`): you may copy those plain files from your own console's `flash0:/font/` into a local folder that Nakagawa reads. They stay on your PC. The project never bundles, commits, packages or uploads them, and it does not decrypt anything from `flash0`.
 
 > [!NOTE]
 > Do not confuse system fonts with `libfont.prx`. `libfont.prx` (located under `place_game_here/EXTRACTED/decrypted/libfont.prx` or `<user data>/titles/<DISC_ID>/decrypted/libfont.prx`) is a game-supplied guest middleware PRX executable module implementing the `sceFont` API; it does not contain the actual font glyph outlines. Typography requires the separate `.pgf` font files.
@@ -829,7 +829,7 @@ following any link does, and nothing opens on its own. A report link holds only 
 version, the Nakagawa version, the system and the stop reason, never a path, user name, log or
 setting ([`ONLINE_FEATURES.md`](ONLINE_FEATURES.md#reports)).
 
-The update check (maintainer decision, 2026-10-28) asks GitHub's public Releases API which versions of
+The update check asks GitHub's public Releases API which versions of
 `Jstar269/nakagawa-recomp` exist, and nothing else. The request is anonymous: it names itself
 `NakagawaRecomp/UpdateCheck` and carries no ID and no information about your PC or your games. The
 Updates page then shows this version, the newest one (pre-releases count), the release page link and the
@@ -1054,6 +1054,31 @@ outside the published repository.
   `WATCHDOG_PSMF` activity -- rather than from the threshold alone. If a title
   waits for a profile/save or cannot open a title-specific cache, inspect the
   local diagnostic log. Do not copy that input or its path into Git.
+
+### Local problem report (`nk_cli.py report`)
+
+`python tools/nk_cli.py report --title <DISC_ID>` writes one ZIP you can attach to an issue yourself. It
+is made on your PC and **nothing is uploaded**: the code uses no network library, and a test fails if it
+opens a connection. The ZIP goes to `<user data>\reports\<UTC time>-<title>.zip`; `--preview` lists the
+files without writing it, `--json` prints the list for a tool, and `--no-doctor` leaves out the toolchain
+check (the one slow step).
+
+| File in the ZIP | What it is |
+| --- | --- |
+| `about.txt` | Nakagawa version and source commit, tools version, OS, CPU, GPU and driver, RAM, title id and region, package state, and every file here with its size |
+| `logs/game-<DISC_ID>-last.txt` and `-prev.txt` | The title's last two runtime logs (without `--title`, the two newest of any title) |
+| `logs/developer-log.txt`, `logs/player-output.txt` | The launcher's logs |
+| `settings/*.json` | The `.json` files directly in the player's settings folder; a value under a key named like a token, secret or password is replaced |
+| `flight-recorder-summary.json` | The newest `flight-recorder*.json`'s scalar fields and the size of each list; never its events or memory |
+| `nk_doctor.txt` | `tools/nk_doctor.py --json` |
+
+Only those files are ever opened, so nothing is "everything except a few exclusions". Each is also
+refused by rule when it is a game file or disc image, a decrypted module, a save, a frame or memory dump,
+a trace, a key or a console-bound value, or when it is not plain text, and long logs keep their last 2 MiB
+from a whole line. Every line is redacted: your home folder (backslash or slash, the doubled slashes of
+JSON, the `\\?\` and `file:///` prefixes, the `/mnt/c` mount, and the Windows, Linux and macOS profile
+folders, found both by the account this PC names and by their shape) becomes `~`, your account name becomes `<user>` and this PC's name `<host>`. Read the ZIP before you
+attach it. The launcher button for this is not built yet (#1849).
 
 ### Windows host pitfalls
 

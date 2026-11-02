@@ -15,6 +15,11 @@ on:
         description: Open pull request number to scan from the trusted default branch
         required: true
         type: number
+      force_scan:
+        description: Analyse the pull request even when no C/C++, Python or workflow file changed
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
   schedule:
@@ -50,6 +55,7 @@ jobs:
       head_sha: ${{ steps.target.outputs.head_sha }}
       tree_sha: ${{ steps.materialize.outputs.tree_sha }}
       analyze_runner: ${{ steps.runner.outputs.runner }}
+      scan: ${{ steps.scope.outputs.scan }}
     steps:
       - name: Check out trusted default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -295,7 +301,31 @@ jobs:
           print(f"materialized {len(blobs)} regular files from tree {os.environ['TREE_SHA']}")
           PY
 
+      # Whether the change can alter an analysis result. Only a pull request whose diff touches
+      # no C/C++, Python or workflow file skips the three analyses; the upload job then posts
+      # empty results under the same categories, so the required "CodeQL" check still reports
+      # on this exact merge commit (docs/CI.md, "Trusted CodeQL on pull requests"). The
+      # classifier is the default branch's copy, like this definition, and reads the diff of
+      # the merge commit already fetched above as git objects. A merge group, a push to the
+      # default branch, the schedule and a forced dispatch always analyse in full.
+      - name: Decide whether the change can affect the analysis
+        id: scope
+        env:
+          TARGET_KIND: ${{ steps.target.outputs.kind }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          BASE_SHA: ${{ steps.target.outputs.base_sha }}
+          FORCE_SCAN: ${{ github.event.inputs.force_scan }}
+        run: |
+          set -euo pipefail
+          if [ "${TARGET_KIND}" != "pull-request" ] || [ "${FORCE_SCAN}" = "true" ]; then
+            echo "scan=true" >> "${GITHUB_OUTPUT}"
+            echo "full analysis: ${TARGET_KIND} target, forced=${FORCE_SCAN:-false}"
+            exit 0
+          fi
+          python tools/ci_paths.py --codeql-scope "${BASE_SHA}" "${TARGET_SHA}" --github-output "${GITHUB_OUTPUT}"
+
       - name: Retain source data for isolated CodeQL jobs
+        if: ${{ steps.scope.outputs.scan == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codeql-source-${{ github.run_id }}-${{ github.run_attempt }}
@@ -308,7 +338,7 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     needs: prepare
-    if: ${{ needs.prepare.result == 'success' }}
+    if: ${{ needs.prepare.result == 'success' && needs.prepare.outputs.scan == 'true' }}
     # The fallback keeps the expression parseable; the condition above means prepare
     # succeeded, so its runner output always decides.
     runs-on: ${{ fromJSON(needs.prepare.outputs.analyze_runner || '"ubuntu-26.04"') }}
@@ -402,7 +432,12 @@ jobs:
   upload:
     name: Upload complete CodeQL analysis
     needs: [prepare, analyze]
-    if: ${{ needs.prepare.result == 'success' && needs.analyze.result == 'success' }}
+    # A skipped analysis (no analysed file changed) is complete only when prepare decided to
+    # skip it; a skipped analysis for any other reason leaves no upload, as before.
+    if: >-
+      ${{ needs.prepare.result == 'success' &&
+          (needs.analyze.result == 'success' ||
+           (needs.analyze.result == 'skipped' && needs.prepare.outputs.scan == 'false')) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
@@ -412,11 +447,51 @@ jobs:
       security-events: write
     steps:
       - name: Download all three completed language results
+        if: ${{ needs.prepare.outputs.scan == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: codeql-sarif-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: codeql-sarif
           merge-multiple: true
+
+      # No analysed file changed: empty results, in the shape the analyses produce, under the
+      # same three categories. They say so in a notification instead of claiming a scan.
+      - name: Write empty results for a change that cannot affect the analysis
+        if: ${{ needs.prepare.outputs.scan == 'false' }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          destination = Path("codeql-sarif")
+          destination.mkdir()
+          message = (
+              "Analysis skipped: this pull request changes no C/C++, Python or GitHub Actions "
+              "workflow file, so it cannot alter a CodeQL result for them. "
+              "The default branch is analysed in full on every push."
+          )
+          for language in ("actions", "c-cpp", "python"):
+              document = {
+                  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+                  "version": "2.1.0",
+                  "runs": [
+                      {
+                          "tool": {"driver": {"name": "CodeQL"}},
+                          "automationDetails": {"id": f"/language:{language}/"},
+                          "results": [],
+                          "invocations": [
+                              {
+                                  "executionSuccessful": True,
+                                  "toolExecutionNotifications": [
+                                      {"level": "note", "message": {"text": message}}
+                                  ],
+                              }
+                          ],
+                      }
+                  ],
+              }
+              (destination / f"{language}.sarif").write_text(json.dumps(document), encoding="utf-8")
+          PY
 
       # One upload happens only after all three language analyses succeeded.
       # The SARIF API binds the result to the exact PR merge ref/commit; the
@@ -431,6 +506,7 @@ jobs:
           PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
           BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
           HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          SCAN: ${{ needs.prepare.outputs.scan }}
         with:
           script: |
             const fs = require("fs");
@@ -574,7 +650,9 @@ jobs:
             }
 
             await core.summary
-              .addHeading("Trusted CodeQL analysis uploaded")
+              .addHeading(process.env.SCAN === "false"
+                ? "Trusted CodeQL: no analysed file changed, empty results uploaded"
+                : "Trusted CodeQL analysis uploaded")
               .addTable([
                 [{ data: "Languages", header: true }, { data: "Target", header: true }],
                 [expected.join(", "), `${targetRef} @ ${targetSha}`],

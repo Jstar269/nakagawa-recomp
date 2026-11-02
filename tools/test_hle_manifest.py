@@ -1064,12 +1064,12 @@ class LiveManifestTests(unittest.TestCase):
 
     def test_route_a_batches_eleven_and_twelve_leave_uncovered_contracts_unreviewed(self) -> None:
         # The oracle cells use CreateThread/StartThread only as setup, the WritebackInvalidate
-        # range variant is not measured, and AllocPartitionMemory diverges from
-        # sysmem/partition.expected (NULL name, partition, type and size validation, High
-        # placement). None of them may ride along with the batches above.
+        # range variant is not measured. None of them may ride along with the batches above.
+        # AllocPartitionMemory left this list in the later #341 batch: its partition and type
+        # refusals now follow partition.expected, and the NULL-name and placement divergences
+        # are named in its partial limitation instead of keeping it unreviewed.
         for nid, handler in ((0x446D8DE6, "h_CreateThread"), (0xF475845D, "h_StartThread"),
-                             (0x34B9FA9E, "h_DcacheWritebackInvalidateRange"),
-                             (0x237DBD4F, "h_AllocPartitionMemory")):
+                             (0x34B9FA9E, "h_DcacheWritebackInvalidateRange")):
             with self.subTest(handler=handler):
                 self.assertEqual(self.regs[nid]["handler"], handler)
                 self.assertEqual(self.regs[nid]["status"], "unreviewed")
@@ -1603,6 +1603,81 @@ class ConformanceJoinTests(unittest.TestCase):
             0x05572A5F,
             hle_manifest.selftest_dispatched_nids("(void)sr_syscall(&cpu, 0x05572a5fu);"),
         )
+
+    def test_selftest_dispatch_sees_enum_and_const_constants(self) -> None:
+        source = (
+            "static void test_a(void) {\n"
+            "    enum { NID_A = 0x11111111u, OTHER = 3 };\n"
+            "    static const uint32_t nid_b = 0x22222222u;\n"
+            "    CpuState cpu;\n"
+            "    expect(sr_syscall(&cpu, NID_A) == 0u, \"a\");\n"
+            "    expect(sr_syscall(&cpu, (uint32_t)nid_b) == 0u, \"b\");\n"
+            "}\n"
+        )
+        found = hle_manifest.selftest_dispatched_nids(source)
+        self.assertIn(0x11111111, found)
+        self.assertIn(0x22222222, found)
+
+    def test_selftest_dispatch_follows_helpers_that_forward_the_nid(self) -> None:
+        source = (
+            "static uint32_t call4(uint32_t nid, uint32_t a0) {\n"
+            "    CpuState cpu;\n"
+            "    cpu.r[4] = a0;\n"
+            "    return sr_syscall(&cpu, nid);\n"
+            "}\n"
+            "static uint32_t call_twice(uint32_t a0, uint32_t id) {\n"
+            "    return call4(id, a0) + call4(id, a0);\n"
+            "}\n"
+            "static void test_b(void) {\n"
+            "    enum { NID_VIA_HELPER = 0x33333333u, NID_VIA_CHAIN = 0x44444444u };\n"
+            "    expect(call4(NID_VIA_HELPER, 0u) == 0u, \"helper\");\n"
+            "    expect(call4(0x55555555u, 0u) == 0u, \"literal through a helper\");\n"
+            "    expect(call_twice(0u, NID_VIA_CHAIN) == 0u, \"two levels\");\n"
+            "}\n"
+        )
+        found = hle_manifest.selftest_dispatched_nids(source)
+        self.assertEqual(found, {0x33333333, 0x55555555, 0x44444444})
+
+    def test_selftest_dispatch_ignores_names_that_are_not_dispatched(self) -> None:
+        """Decoys: a constant that only appears near a test is not an exercise."""
+        source = (
+            "static uint32_t check_only(uint32_t nid) {\n"
+            "    return sr_hle_test_is_registered(nid);\n"
+            "}\n"
+            "static void test_c(void) {\n"
+            "    enum { NID_REG_ONLY = 0x66666666u, NID_IN_TABLE = 0x77777777u,\n"
+            "           NID_IN_COMMENT = 0x88888888u, NID_IN_STRING = 0x99999999u,\n"
+            "           NID_UNUSED = 0xaaaaaaaau, NID_VIA_CHECK = 0xbbbbbbbbu };\n"
+            "    static const uint32_t table[] = { NID_IN_TABLE };\n"
+            "    CpuState cpu;\n"
+            "    expect(sr_hle_test_is_registered(NID_REG_ONLY), \"registered\");\n"
+            "    expect(check_only(NID_VIA_CHECK), \"a helper that does not dispatch\");\n"
+            "    /* sr_syscall(&cpu, NID_IN_COMMENT); */\n"
+            "    puts(\"sr_syscall(&cpu, NID_IN_STRING)\");\n"
+            "    (void)table; (void)cpu;\n"
+            "}\n"
+        )
+        self.assertEqual(hle_manifest.selftest_dispatched_nids(source), set())
+
+    def test_selftest_dispatch_resolves_a_constant_in_its_own_function(self) -> None:
+        """Two tests may reuse a name for different NIDs; only the dispatching one counts."""
+        source = (
+            "static void test_d(void) {\n"
+            "    enum { NID_SAME = 0xc1c1c1c1u };\n"
+            "}\n"
+            "static void test_e(void) {\n"
+            "    enum { NID_SAME = 0x1d1d1d1du };\n"
+            "    expect(sr_hle_test_is_registered(NID_SAME), \"registered only\");\n"
+            "}\n"
+            "static void test_f(void) {\n"
+            "    enum { NID_SAME = 0x2e2e2e2eu };\n"
+            "    CpuState cpu;\n"
+            "    expect(sr_syscall(&cpu, NID_SAME) == 0u, \"dispatched\");\n"
+            "}\n"
+        )
+        found = hle_manifest.selftest_dispatched_nids(source)
+        self.assertIn(0x2E2E2E2E, found)
+        self.assertNotIn(0x1D1D1D1D, found)
 
 
 class EvidenceTierTests(unittest.TestCase):
@@ -2417,6 +2492,55 @@ class CensusTests(unittest.TestCase):
             with self.assertRaises(ManifestError) as ctx:
                 hle_manifest.validate_meta(self.raw_regs)
             self.assertIn("has no named limitation", str(ctx.exception))
+
+    def test_new_partial_without_evidence_is_rejected(self) -> None:
+        self.assertNotIn("h_DisplayGetFrameBuf", meta.HANDLER_EVIDENCE)
+        with mock.patch.dict(meta.HANDLER_STATUS, {"h_DisplayGetFrameBuf": "partial"}), \
+                mock.patch.dict(meta.HANDLER_LIMITATIONS, {"h_DisplayGetFrameBuf": "a limit (#341)"}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("cites no evidence", str(ctx.exception))
+
+    def test_ratchet_entry_that_gained_evidence_is_rejected(self) -> None:
+        self.assertIn("h_DmacMemcpy", meta.PARTIAL_WITHOUT_EVIDENCE)
+        with mock.patch.dict(meta.HANDLER_EVIDENCE, {"h_DmacMemcpy": ["tools/hle_manifest.py"]}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("now cites evidence", str(ctx.exception))
+
+    def test_ratchet_entry_that_left_partial_is_rejected(self) -> None:
+        with mock.patch.dict(meta.HANDLER_STATUS, {"h_DmacMemcpy": "unreviewed"}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("no longer a partial or compatibility handler", str(ctx.exception))
+
+    def test_cited_oracle_id_must_exist(self) -> None:
+        with mock.patch.dict(
+            meta.HANDLER_EVIDENCE,
+            {"h_DisplaySetFrameBuf": ["docs/HARDWARE_ORACLE.md (PSP-NOSUCH-ROW-999)"]},
+        ):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("PSP-NOSUCH-ROW-999", str(ctx.exception))
+
+    def test_interrupt_display_timer_ctrl_batch_has_evidence_and_named_limits(self) -> None:
+        """The #341 graduation batch: each handler cites evidence and names what is unmeasured."""
+        batch = (
+            "h_CpuSuspendIntr", "h_CpuResumeIntr", "h_CpuResumeIntrWithSync",
+            "h_CpuIsIntrSuspended", "h_DisplayGetAccumulatedHcount", "h_DisplayGetVcount",
+            "h_SetVTimerHandler", "h_SetVTimerHandlerWide", "h_CancelVTimerHandler",
+            "h_AllocPartitionMemory", "h_CtrlReadBuffer", "h_CtrlPeekBufferPositive",
+            "h_CtrlReadBufferNegative", "h_CtrlPeekBufferNegative",
+        )
+        for handler in batch:
+            with self.subTest(handler=handler):
+                self.assertEqual(meta.HANDLER_STATUS.get(handler), "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE.get(handler))
+                self.assertIn("#341", meta.HANDLER_LIMITATIONS.get(handler, ""))
+                self.assertNotIn(handler, meta.PARTIAL_WITHOUT_EVIDENCE)
+        # The profile-zero imports that moved off `unreviewed` leave the allowlist.
+        for nid in (0x092968F4, 0x5F10D406, 0x237DBD4F, 0x1F803938):
+            self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
 
     def test_census_is_deterministic(self) -> None:
         c1 = hle_manifest.build_census(self.manifest)
