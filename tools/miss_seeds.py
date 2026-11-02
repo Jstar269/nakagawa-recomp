@@ -160,7 +160,7 @@ def main(argv=None) -> int:
     except SeedFileError as exc:
         sys.stderr.write(f"miss_seeds: {exc}\n")
         return 1
-    known = frozenset()
+    known: frozenset[int] = frozenset()
     if args.elf is not None:
         import analyze
 
