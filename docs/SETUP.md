@@ -423,7 +423,7 @@ Similarly, `python tools/nk_cli.py build-package` searches `assets/titles` first
 
 ### System fonts
 
-Authentic in-game typography requires PSP system fonts in Sony's PlayStation Glyph Format (`.pgf`), dumped from the user's own physical PSP console firmware (`flash0:/font/`). The project does not bundle or distribute proprietary firmware fonts.
+Firmware follows PPSSPP's model. The operating system is HLE, the modules a game ships on its disc may run as LLE, and Nakagawa ships no firmware and decrypts none. It ships open replacement fonts. Authentic in-game typography needs the PSP's own system fonts in Sony's PlayStation Glyph Format (`.pgf`): you may copy those plain files from your own console's `flash0:/font/` into a local folder that Nakagawa reads. They stay on your PC. The project never bundles, commits, packages or uploads them, and it does not decrypt anything from `flash0`.
 
 > [!NOTE]
 > Do not confuse system fonts with `libfont.prx`. `libfont.prx` (located under `place_game_here/EXTRACTED/decrypted/libfont.prx` or `<user data>/titles/<DISC_ID>/decrypted/libfont.prx`) is a game-supplied guest middleware PRX executable module implementing the `sceFont` API; it does not contain the actual font glyph outlines. Typography requires the separate `.pgf` font files.
@@ -829,7 +829,7 @@ following any link does, and nothing opens on its own. A report link holds only 
 version, the Nakagawa version, the system and the stop reason, never a path, user name, log or
 setting ([`ONLINE_FEATURES.md`](ONLINE_FEATURES.md#reports)).
 
-The update check (maintainer decision, 2026-10-28) asks GitHub's public Releases API which versions of
+The update check asks GitHub's public Releases API which versions of
 `Jstar269/nakagawa-recomp` exist, and nothing else. The request is anonymous: it names itself
 `NakagawaRecomp/UpdateCheck` and carries no ID and no information about your PC or your games. The
 Updates page then shows this version, the newest one (pre-releases count), the release page link and the
