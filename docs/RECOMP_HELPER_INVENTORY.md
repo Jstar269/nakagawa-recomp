@@ -107,7 +107,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_block_on` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_block_on_timeout` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_change_current_thread_attr` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_clear_current_join_target` | `rt/sched.c` | yes | none | `rt/sched.c`: upstream_derived |
+| `sched_clear_current_join_target` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | none | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sched_count_waiters` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_create_thread` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
 | `sched_create_thread_ex` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
@@ -117,16 +117,16 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_current_join_result_pending` | `rt/sched.c` | yes | none | `rt/sched.c`: upstream_derived |
 | `sched_current_priority` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_current_thread_stack_range` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_current_uid` | `rt/ge_replay.c`, `rt/sched.c` | yes | production-runtime-only | `rt/ge_replay.c`: project_authored_attested; `rt/sched.c`: upstream_derived |
+| `sched_current_uid` | `rt/ge_replay.c`, `rt/sched.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/ge_replay.c`: project_authored_attested; `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sched_delay_current` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_delete_thread` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_delete_thread` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sched_dispatch_enabled` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_display_accumulated_hcount` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_display_current_hcount` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_display_is_vblank` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_dump_threads` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_exit_current` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_exit_current_delete` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_exit_current` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
+| `sched_exit_current_delete` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sched_exit_current_unchecked` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_guest_thread_running` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_init` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
@@ -158,7 +158,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_rotate_thread_ready_queue` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_run` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_current_cb_wait` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_set_current_join_target` | `rt/sched.c` | yes | none | `rt/sched.c`: upstream_derived |
+| `sched_set_current_join_target` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | none | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sched_set_current_wait_kind` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_ge_timing_hooks` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_guest_process_gp` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
@@ -168,13 +168,13 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_set_thread_exit_hook` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_vtimer_hooks` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_watchdog_describers` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_start_thread` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_start_thread` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sched_suspend_dispatch` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_suspend_interrupts` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_suspend_thread` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_take_current_join_result` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
+| `sched_take_current_join_result` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | selftest-only | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sched_take_wake_result` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_terminate_thread` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_terminate_thread` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sched_thread_cancel_wakeup` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_thread_exit_status` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_thread_info` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
@@ -183,7 +183,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_thread_sleep` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_thread_sleep_cb` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_thread_stack_free_size` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_thread_wakeup` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_thread_wakeup` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sched_transfer_begin` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_transfer_enqueue` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_transfer_granted` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
@@ -266,9 +266,9 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_exp2_approx` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_exp2_fixed` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_fixed_var_imports_register` | `rt/hle_kernel_module.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived |
-| `sr_ge_vram_read_prepare` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
-| `sr_ge_vram_write_commit` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
-| `sr_ge_vram_write_prepare` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
+| `sr_ge_vram_read_prepare` | `rt/ge.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
+| `sr_ge_vram_write_commit` | `rt/ge.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
+| `sr_ge_vram_write_prepare` | `rt/ge.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sr_guest_copy_in` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_copy_out` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_fill` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
@@ -325,7 +325,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_hle_register` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_hle_register_late_import` | `rt/hle_kernel_module.c` | yes | production-runtime-only | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_hle_release_thread_resources` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
-| `sr_hle_resolve_late_import` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
+| `sr_hle_resolve_late_import` | `rt/hle.c`, `rt/snapshot_runner.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sr_host_address` | `rt/recomp.h` | yes | emitter-reached (direct, via `SR_HOST`) | `rt/recomp.h`: upstream_derived |
 | `sr_host_data_entry_count` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: upstream_derived |
 | `sr_host_data_prepare` | `rt/hle_data.c` | yes | production-runtime-only | `rt/hle_data.c`: upstream_derived |
@@ -344,7 +344,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_lookup` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_lwl` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_lwr` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
-| `sr_main_module_register` | `rt/hle_kernel_module.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived |
+| `sr_main_module_register` | `rt/hle_kernel_module.c`, `rt/snapshot_runner.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sr_main_var_exports_register` | `rt/hle_kernel_module.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_main_var_imports_register` | `rt/hle_kernel_module.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_mem_init` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
@@ -387,7 +387,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_r16` | `rt/recomp.h` | yes | emitter-reached (via `MEM_R16`) | `rt/recomp.h`: upstream_derived |
 | `sr_r32` | `rt/recomp.h` | yes | emitter-reached (via `MEM_R32`) | `rt/recomp.h`: upstream_derived |
 | `sr_r8` | `rt/recomp.h` | yes | emitter-reached (via `MEM_R8`) | `rt/recomp.h`: upstream_derived |
-| `sr_raw_syscall` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `sr_raw_syscall` | `rt/recomp.c`, `rt/snapshot_runner.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sr_rcp_approx` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_register` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_register_count` | `rt/recomp.c` | yes | none | `rt/recomp.c`: upstream_derived |
@@ -414,7 +414,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_swl_pc` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_swr` | `rt/recomp.c` | yes | selftest-only | `rt/recomp.c`: upstream_derived |
 | `sr_swr_pc` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
-| `sr_syscall` | `rt/hle.c` | yes | emitter-reached (direct) | `rt/hle.c`: upstream_derived |
+| `sr_syscall` | `rt/hle.c`, `rt/snapshot_runner.c` | yes | emitter-reached (direct) | `rt/hle.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sr_tail_assert_empty` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_tail_drain` | `rt/guest_interp.c` | yes | emitter-reached (via `SR_TAIL_DRAIN`) | `rt/guest_interp.c`: project_authored_attested |
 | `sr_tail_drain_segment` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
@@ -462,4 +462,4 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_window_title_format` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_window_title_sanitize` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_window_title_utf8_len` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_yield` | `rt/sched.c` | yes | emitter-reached (via `SR_YIELD`) | `rt/sched.c`: upstream_derived |
+| `sr_yield` | `rt/sched.c`, `rt/snapshot_runner.c` | yes | emitter-reached (via `SR_YIELD`) | `rt/sched.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |

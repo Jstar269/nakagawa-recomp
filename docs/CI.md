@@ -189,6 +189,14 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
+Both hosts run `snapshot-selftest` (#1842): the Windows job in its `selftests` part and the Linux
+`native_tools` job in its `translation` part. It builds `src/rt/snapshot_runner.c` against a
+source-owned synthetic module (`fixtures/snapshot/`), runs each case's translated function and
+the reference interpreter in `src/ref` from the same snapshot, and requires the exact verdict
+for every case, a named refusal for every malformed snapshot file, and `MISMATCH r11` from a
+runner built with one immediate changed in the generated C. The verdicts are described in
+[`docs/DEBUGGING.md`](DEBUGGING.md#snapshot-execution).
+
 Both hosts run `hle-thread-selftest`, the executable production-HLE suite that links
 the runtime HLE sources (`src/rt/hle.c` and its subsystem files, #306, #307): the Windows job in its
 `selftests` part, and the Linux `native_tools` job after the pinned SDL3 install, because the suite
