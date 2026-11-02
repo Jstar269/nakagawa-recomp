@@ -2189,14 +2189,40 @@ SEED_NOT_CODE = "not-a-function-start"
 #: stub without it, the seed's own or the named one. A stub registered for an address replaces
 #: the interpreter floor a run reaches there today with an abort, so the seed stays out.
 SEED_UNTRANSLATABLE = "untranslatable"
+#: `not-callable: <role>[: where]`: the frame walk does not prove a real function entry. A seed
+#: becomes a callable body that restores the `$sp` it was entered with, and the interpreter floor
+#: hands off to any address with a body. Inside a live frame that restore undoes the epilogue, so
+#: the address stays on the floor, which runs it on the guest's own `$sp`.
+SEED_NOT_CALLABLE = "not-callable"
 #: The seed is an analysis entry but the build emits no body for it (--omit-aot).
 SEED_NOT_EMITTED = "not-emitted"
 
 
+def _seed_not_callable(d, address):
+    """Why the seed at `address` is not a function entry, or None when it is proven one: every
+    return nets `$sp` to zero, and no computed jump leaves with a frame released that the seed did
+    not allocate. Anything the walk cannot prove is refused: the floor still runs that address."""
+    # entry_frame_balance imports this module, so it is imported where it is used.
+    import entry_frame_balance
+    profile = entry_frame_balance.profile_entry(
+        d.elf, address, [*d.ranges, *d.file_exec_ranges, *d.proven_spans])
+    role = entry_frame_balance.classify(profile)
+    released_at_tail = sorted(delta for delta in profile.tail_deltas if delta > 0)
+    if role == entry_frame_balance.CALLABLE and not released_at_tail:
+        return None
+    if role == entry_frame_balance.CONTINUATION:
+        return f"{SEED_NOT_CALLABLE}: {role}: $sp net {profile.continuation_delta:+d} at a return"
+    if role == entry_frame_balance.CALLABLE:
+        return (f"{SEED_NOT_CALLABLE}: {entry_frame_balance.CONTINUATION}: "
+                f"$sp net {released_at_tail[0]:+d} at a computed jump")
+    return f"{SEED_NOT_CALLABLE}: {role}"
+
+
 def _seed_miss_targets(d, seeds):
     """Add each dispatch-miss target that can start a function to the entries, and return why
-    each other one cannot. A seed that does not look like a function start is reported and left
-    out: seeding adds analysis input, it never forces a body (AGENTS.md Section 6)."""
+    each other one cannot. A seed that does not look like a function start, or that the frame
+    walk does not prove is one, is reported and left out: seeding adds analysis input, it never
+    forces a body (AGENTS.md Section 6)."""
     unusable = {}
     for address in sorted(set(seeds)):
         if address & 3:
@@ -2211,7 +2237,11 @@ def _seed_miss_targets(d, seeds):
             if word is None or word in (0x00000000, 0xFFFFFFFF):
                 unusable[address] = SEED_NOT_CODE
             else:
-                d.hc.add(address)
+                refused = _seed_not_callable(d, address)
+                if refused is None:
+                    d.hc.add(address)
+                else:
+                    unusable[address] = refused
     return unusable
 
 

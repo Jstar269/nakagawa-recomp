@@ -88,8 +88,9 @@ def format_seed_file(seeds: dict[int, str]) -> str:
 def known_entries(elf, extra_spans=None):
     """The function entries the analysis finds without seeds. A target that is already an entry
     gains nothing from a seed, so ``merge`` drops it. A target inside a function's body is kept:
-    a run entered the body mid-way (a computed jump into a switch arm, say), the dispatcher has
-    no body registered at that address, and a seed gives it one."""
+    a run entered the body mid-way (a computed jump into a switch arm, say) and the dispatcher has
+    no body registered at that address. The build gives it one only if the frame walk proves it
+    a function entry, and refuses it otherwise (``analyze.SEED_NOT_CALLABLE``)."""
     import analyze
 
     functions, _ranges = analyze.analyze(elf, extra_spans=extra_spans)

@@ -74,16 +74,17 @@ IMPORT_SITE_WORDS = {**UNEXECUTED_RESERVED_WORDS, IMPORT_SITE: 0x00000000}
 # A seed that translates and yet brings a stub. The data word before the seed decodes as a branch,
 # so the unseeded trace steps over the `jal` as that branch's delay slot and never sees its target;
 # the seeded trace does, and the new entry walks a reserved word the run never executes.
-CALLEE = TARGET + 20
+CALLEE = TARGET + 24
 CALLEE_STUB_WORDS = {
     **{a: w for a, w in WORDS.items() if a < TARGET},
     ENTRY + 16: 0x03E0C821,      # addu t9, ra, zero (delay slot): keeps the return address
     ENTRY + 36: 0x14A00002,      # data that decodes as bne a1, zero, TARGET+8
-    TARGET: 0x0C00400F,          # jal CALLEE
+    TARGET: 0x0C004010,          # jal CALLEE
     TARGET + 4: 0x00000000,      # nop (delay slot)
-    TARGET + 8: 0x03200008,      # jr t9
-    TARGET + 12: 0x00000000,     # nop (delay slot)
-    TARGET + 16: BREAK,
+    TARGET + 8: 0x0320F821,      # addu ra, t9, zero
+    TARGET + 12: 0x03E00008,     # jr ra
+    TARGET + 16: 0x00000000,     # nop (delay slot)
+    TARGET + 20: BREAK,
     CALLEE: 0x00A61021,          # addu v0, a1, a2
     CALLEE + 4: 0x14A00003,      # bne a1, zero, CALLEE+20 (taken: a1 = 40)
     CALLEE + 8: 0x00000000,      # nop (delay slot)
@@ -91,6 +92,86 @@ CALLEE_STUB_WORDS = {
     CALLEE + 16: 0x00000000,     # nop
     CALLEE + 20: 0x03E00008,     # jr ra
     CALLEE + 24: 0x00000000,     # nop (delay slot)
+}
+# A miss whose body reaches a word inside its own frame. The seed list names that word, not the
+# miss: it has a valid first instruction and a translatable body, but it releases a frame it never
+# allocated.
+MID_FRAME = TARGET + 24
+MID_FRAME_WORDS = {
+    **{a: w for a, w in WORDS.items() if a < TARGET},
+    TARGET: 0x27BDFFF0,          # addiu sp, sp, -16
+    TARGET + 4: 0xAFBF0000,      # sw ra, 0(sp)
+    TARGET + 8: 0x14A00003,      # bne a1, zero, MID_FRAME (taken: a1 = 40)
+    TARGET + 12: 0x00000000,     # nop (delay slot)
+    TARGET + 16: RESERVED,       # never executed
+    TARGET + 20: 0x00000000,     # nop
+    MID_FRAME: 0x00A61021,       # addu v0, a1, a2
+    MID_FRAME + 4: 0x8FBF0000,   # lw ra, 0(sp)
+    MID_FRAME + 8: 0x03E00008,   # jr ra
+    MID_FRAME + 12: 0x27BD0010,  # addiu sp, sp, 16 (delay slot)
+}
+# Interior words the frame walk cannot prove: one that leaves only through a computed jump, with
+# no return to read a frame from; one that returns on one path and releases a frame just before
+# such a jump on the other; and one that reloads $sp from memory, as longjmp does. The word before
+# each is the analyzer's gap entry.
+ADDU = 0x00A61021                # addu v0, a1, a2
+UNPROVEN_TAIL = TARGET + 16
+RELEASED_TAIL = TARGET + 32
+RELOADED_SP = TARGET + 60
+UNPROVEN_WORDS = {
+    **WORDS,
+    TARGET + 12: ADDU,
+    UNPROVEN_TAIL: ADDU,
+    UNPROVEN_TAIL + 4: 0x01000008,    # jr t0
+    UNPROVEN_TAIL + 8: 0x00000000,    # nop (delay slot)
+    RELEASED_TAIL - 4: ADDU,
+    RELEASED_TAIL: 0x10A00003,        # beq a1, zero, RELEASED_TAIL+16
+    RELEASED_TAIL + 4: 0x00000000,    # nop (delay slot)
+    RELEASED_TAIL + 8: 0x01000008,    # jr t0
+    RELEASED_TAIL + 12: 0x27BD0010,   # addiu sp, sp, 16 (delay slot)
+    RELEASED_TAIL + 16: 0x03E00008,   # jr ra
+    RELEASED_TAIL + 20: 0x00000000,   # nop (delay slot)
+    RELOADED_SP - 4: ADDU,
+    RELOADED_SP: ADDU,
+    RELOADED_SP + 4: 0x8C9D0004,      # lw sp, 4(a0)
+    RELOADED_SP + 8: 0x03E00008,      # jr ra
+    RELOADED_SP + 12: 0x00000000,     # nop (delay slot)
+}
+# A synthetic setjmp/longjmp. E calls F; F builds a frame and calls setjmp; the second return from
+# setjmp, by way of longjmp, lands on CONTINUATION, the word after the setjmp call, in F's frame.
+F = ENTRY + 0x1C
+CONTINUATION = F + 0x10
+DONE = CONTINUATION + 0x10
+SETJMP = DONE + 0x10
+LONGJMP = SETJMP + 0x10
+LONGJMP_WORDS = {
+    ENTRY: 0x27BDFFF0,           # addiu sp, sp, -16
+    ENTRY + 4: 0xAFBF0000,       # sw ra, 0(sp)
+    ENTRY + 8: 0x0C000000 | F >> 2,    # jal F
+    ENTRY + 12: 0x00000000,      # nop (delay slot)
+    ENTRY + 16: 0x8FBF0000,      # lw ra, 0(sp)
+    ENTRY + 20: 0x03E00008,      # jr ra
+    ENTRY + 24: 0x27BD0010,      # addiu sp, sp, 16 (delay slot)
+    F: 0x27BDFFF0,               # addiu sp, sp, -16
+    F + 4: 0xAFBF0000,           # sw ra, 0(sp)
+    F + 8: 0x0C000000 | SETJMP >> 2,   # jal SETJMP
+    F + 12: 0x00000000,          # nop (delay slot)
+    CONTINUATION: 0x14400003,    # bne v0, zero, DONE (taken on the return from longjmp)
+    CONTINUATION + 4: 0x00000000,      # nop (delay slot)
+    CONTINUATION + 8: 0x0C000000 | LONGJMP >> 2,  # jal LONGJMP
+    CONTINUATION + 12: 0x00000000,     # nop (delay slot)
+    DONE: 0x00A61021,            # addu v0, a1, a2
+    DONE + 4: 0x8FBF0000,        # lw ra, 0(sp)
+    DONE + 8: 0x03E00008,        # jr ra
+    DONE + 12: 0x27BD0010,       # addiu sp, sp, 16 (delay slot)
+    SETJMP: 0xAC9F0000,          # sw ra, 0(a0)
+    SETJMP + 4: 0xAC9D0004,      # sw sp, 4(a0)
+    SETJMP + 8: 0x03E00008,      # jr ra
+    SETJMP + 12: 0x00001021,     # addu v0, zero, zero (delay slot)
+    LONGJMP: 0x8C9F0000,         # lw ra, 0(a0)
+    LONGJMP + 4: 0x8C9D0004,     # lw sp, 4(a0)
+    LONGJMP + 8: 0x03E00008,     # jr ra
+    LONGJMP + 12: 0x24020001,    # addiu v0, zero, 1 (delay slot)
 }
 # Runs main with the image's variable-import sites replaced: no fixture builds an import table.
 WITH_IMPORT_SITE = """
@@ -372,18 +453,45 @@ class AnalysisSeedTests(_Fixture):
         elf = self.work / "callee_stub.elf"
         elf.write_bytes(_synthetic_elf(CALLEE_STUB_WORDS, ENTRY))
         self.assertNotIn(CALLEE, _functions(elf))
-        bystanders = {ENTRY + 20, CALLEE + 20}
+        bystanders = {TARGET + 12, CALLEE + 20}
         report: dict = {}
         starts = _functions(elf, seeds={TARGET, *bystanders}, report=report,
                             seed_check=codegen.emitter_seed_check(analyze.Elf(str(elf))))
         self.assertEqual(report["miss_seeds"], {
-            ENTRY + 20: analyze.SEED_APPLIED,
+            TARGET + 12: analyze.SEED_APPLIED,
             TARGET: f"{analyze.SEED_UNTRANSLATABLE}: brings 0x{CALLEE:08x}: "
                     f"opcode 0x1d at 0x{CALLEE + 12:08x}",
             CALLEE + 20: analyze.SEED_APPLIED,
         })
         self.assertNotIn(CALLEE, starts)
         self.assertLessEqual(bystanders, starts)
+
+    def test_a_seed_that_is_not_a_function_entry_is_refused_with_why(self):
+        unproven = self.work / "unproven.elf"
+        unproven.write_bytes(_synthetic_elf(UNPROVEN_WORDS, ENTRY))
+        mid_frame = self.work / "mid_frame.elf"
+        mid_frame.write_bytes(_synthetic_elf(MID_FRAME_WORDS, ENTRY))
+        longjmp = self.work / "longjmp.elf"
+        longjmp.write_bytes(_synthetic_elf(LONGJMP_WORDS, ENTRY))
+        for elf, seed, why in (
+                (self.elf_path, ENTRY + 20, "continuation: $sp net +16 at a return"),
+                (mid_frame, MID_FRAME, "continuation: $sp net +16 at a return"),
+                (longjmp, CONTINUATION, "continuation: $sp net +16 at a return"),
+                (unproven, UNPROVEN_TAIL, "indeterminate"),
+                (unproven, RELEASED_TAIL, "continuation: $sp net +16 at a computed jump"),
+                (unproven, RELOADED_SP, "indeterminate")):
+            with self.subTest(hex(seed)):
+                report: dict = {}
+                starts = _functions(elf, seeds={seed}, report=report)
+                self.assertEqual(report["miss_seeds"],
+                                 {seed: f"{analyze.SEED_NOT_CALLABLE}: {why}"})
+                self.assertEqual(starts, _functions(elf))
+
+    def test_a_word_inside_a_body_with_no_frame_live_is_still_a_seed(self):
+        report: dict = {}
+        starts = _functions(self.elf_path, seeds={TARGET + 4}, report=report)
+        self.assertEqual(report["miss_seeds"], {TARGET + 4: analyze.SEED_APPLIED})
+        self.assertIn(TARGET + 4, starts)
 
     def test_the_report_keeps_the_discovery_state_of_the_build_it_describes(self):
         report: dict = {}
@@ -643,7 +751,9 @@ class EndToEndTests(_Fixture):
         run = subprocess.run(
             [str(exe), str(image), f"{ENTRY:x}", f"{ENTRY:x}", f"{TARGET:x}"],
             cwd=out, capture_output=True, text=True, env=env)
-        share = next(line for line in run.stderr.splitlines() if line.startswith("EXEC_SHARE "))
+        share = next((line for line in run.stderr.splitlines()
+                      if line.startswith("EXEC_SHARE ")), None)
+        self.assertIsNotNone(share, f"the run stopped: {run.stderr[-1000:]}")
         fields = dict(part.split("=") for part in share.split()[1:])
         return run, fields, miss_file, generated
 
@@ -719,6 +829,44 @@ class EndToEndTests(_Fixture):
         self.assertNotIn("sr_unimplemented", run.stderr)
         self.assertEqual(fields["miss_targets"], "1")
         self.assertEqual(set(miss_seeds.read_seed_file(miss_file).seeds), {TARGET})
+
+    def test_a_seed_inside_a_live_frame_leaves_the_run_unchanged(self):
+        # MID_FRAME has a valid body, but as a callable entry that body restores the $sp it was
+        # entered with, which undoes its own epilogue. The floor hands off to any address with a
+        # body, so a body here would stop a run the floor finishes.
+        seeds = self.write_seeds("mid_frame.txt", f"# nakagawa-miss-seeds-v1\n0x{MID_FRAME:08x}\n")
+        run, fields, miss_file, generated = self.build_and_run(
+            "mid_frame", f"--miss-seeds={seeds}", words=MID_FRAME_WORDS)
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1", generated.stdout)
+        self.assertIn(f"ignored 0x{MID_FRAME:08x}: not-callable: continuation", generated.stderr)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("RESULT v0=42", run.stdout)
+        self.assertNotIn("SEMANTIC_BOUNDARY", run.stderr)
+        self.assertEqual(fields["miss_targets"], "1")
+        self.assertEqual(set(miss_seeds.read_seed_file(miss_file).seeds), {TARGET})
+
+    def test_the_loop_leaves_a_longjmp_continuation_on_the_floor(self):
+        # The floor runs the continuation by design: nothing misses, yet the run's file lists it
+        # and `merge` keeps it. The build refuses it, and the second run ends as the first did.
+        first, _fields, first_miss, _gen = self.build_and_run("longjmp_1", words=LONGJMP_WORDS)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("RESULT v0=42", first.stdout)
+        self.assertNotIn("DISPATCH_MISS_NEW", first.stderr)
+        seed_list = self.work / "longjmp_seeds.txt"
+        merged = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "miss_seeds.py"), "merge", f"--out={seed_list}",
+             "--run=fixture-1", f"--elf={self.work / 'longjmp_1.elf'}", str(first_miss)],
+            cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(merged.returncode, 0, merged.stderr)
+        self.assertEqual(set(miss_seeds.read_seed_file(seed_list).seeds), {CONTINUATION})
+
+        second, _fields, _miss, generated = self.build_and_run(
+            "longjmp_2", f"--miss-seeds={seed_list}", words=LONGJMP_WORDS)
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1", generated.stdout)
+        self.assertIn(f"ignored 0x{CONTINUATION:08x}: not-callable: continuation", generated.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("RESULT v0=42", second.stdout)
+        self.assertNotIn("SEMANTIC_BOUNDARY", second.stderr)
 
 
 if __name__ == "__main__":
