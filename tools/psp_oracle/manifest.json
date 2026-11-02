@@ -1307,7 +1307,7 @@
         "id": "PSP-HLE-SAVEDATA-GETSIZE-001",
         "status": "implemented",
         "hardware_evidence": "NOT_RUN",
-        "evidence_note": "No hardware capture exists. It is built from fixtures/psp_oracle/probe_hle_measure.c as hle_savedata_getsize.prx and its stream is strictly parsed (8 records and the done record).",
+        "evidence_note": "No hardware capture exists. It is built from fixtures/psp_oracle/probe_hle_measure.c as hle_savedata_getsize.prx and its stream is strictly parsed (10 records and the done record).",
         "group": "system",
         "source": "fixtures/psp_oracle/probe_hle_measure.c",
         "prx": "hle_savedata_getsize.prx",
@@ -1342,11 +1342,13 @@
           "save-absent-after-secure",
           "getsize-missing-empty",
           "save-absent-after-empty",
+          "getsize-missing-shortfall",
+          "save-absent-after-shortfall",
           "getsize-missing-null",
           "save-absent-after-null",
           "hle-savedata-getsize-done"
         ],
-        "invariant": "Savedata mode 22 under the probe-owned names NKPROBE01 and GETSIZE, which no save uses: InitStart, then GetStatus once a vblank, Update(1) while RUNNING and ShutdownStart on FINISHED, at most 1200 polls. It records InitStart's return, the common result word, the bind word, the status sequence and the 15 sizeInfo words, for one secure entry, no entries and a NULL sizeInfo, and sceIoGetstat of the save directory before and after each dialog.",
+        "invariant": "Savedata mode 22 under the probe-owned names NKPROBE01 and GETSIZE, which no save uses: InitStart, then GetStatus once a vblank, Update(1) while RUNNING and ShutdownStart on FINISHED, at most 1200 polls. It records InitStart's return, the common result word, the bind word, the status sequence and the 15 sizeInfo words, for one secure entry that fits, no entries, one secure entry larger than the Memory Stick and a NULL sizeInfo, and sceIoGetstat of the save directory before and after each dialog.",
         "issues": [
           308
         ],

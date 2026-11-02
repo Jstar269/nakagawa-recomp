@@ -1947,7 +1947,8 @@ static int hle_run(void)
 #define HLE_SD_POLL_VBLANKS 1200u
 #define HLE_SD_SIZE_INFO_WORDS 15u
 #define HLE_SD_SIZE_ENTRY_BYTES 24u
-#define HLE_SD_SECURE_ENTRY_BYTES 0x2000u
+#define HLE_SD_SECURE_FITS_BYTES 0x2000ull
+#define HLE_SD_SECURE_TOO_BIG_BYTES 0x1000000000ull
 #define HLE_SD_DRIVER_WORDS 9u
 #define HLE_SD_DIALOG_WORDS 24u
 #define HLE_SD_SEQ_NIBBLES 8u
@@ -1985,10 +1986,10 @@ static void hle_sd_put_text(uint32_t offset, const char *text)
 }
 
 /* The block one GETSIZE reads, at the offsets src/rt/savedata.c reads (its SDP_* enum). A
-   field not set here is zero: no data buffer, no key. With `secure_entries` 1, sizeInfo lists
-   one secure file of HLE_SD_SECURE_ENTRY_BYTES bytes. With `with_size_info` 0 the pointer
-   stays NULL. */
-static void hle_sd_param(int with_size_info, uint32_t secure_entries)
+   field not set here is zero: no data buffer, no key. A non-zero `secure_bytes` lists one
+   secure file of that size in sizeInfo; it is only a number the utility adds up, so 64 GiB
+   writes nothing. With `with_size_info` 0 the pointer stays NULL. */
+static void hle_sd_param(int with_size_info, uint64_t secure_bytes)
 {
     memset(s_hle_sd_param, 0, sizeof(s_hle_sd_param));
     memset(s_hle_sd_entry, 0, sizeof(s_hle_sd_entry));
@@ -2008,13 +2009,12 @@ static void hle_sd_param(int with_size_info, uint32_t secure_entries)
         s_hle_sd_size_info[i] = HLE_SENTINEL;
     }
     if (with_size_info) {
-        s_hle_sd_size_info[0] = secure_entries;
+        s_hle_sd_size_info[0] = secure_bytes ? 1u : 0u;
         s_hle_sd_size_info[1] = 0u;
-        s_hle_sd_size_info[2] = secure_entries ? (uint32_t)(uintptr_t)s_hle_sd_entry : 0u;
+        s_hle_sd_size_info[2] = secure_bytes ? (uint32_t)(uintptr_t)s_hle_sd_entry : 0u;
         s_hle_sd_size_info[3] = 0u;
-        if (secure_entries) {
-            const uint32_t size = HLE_SD_SECURE_ENTRY_BYTES;
-            memcpy(s_hle_sd_entry, &size, sizeof(size));
+        if (secure_bytes) {
+            memcpy(s_hle_sd_entry, &secure_bytes, sizeof(secure_bytes));
             memcpy(s_hle_sd_entry + 8u, "DATA.BIN", sizeof("DATA.BIN"));
         }
         hle_sd_put32(0x5fcu, (uint32_t)(uintptr_t)s_hle_sd_size_info);
@@ -2072,18 +2072,18 @@ static int hle_sd_run(const char *step, uint32_t *words)
     return init;
 }
 
-static void hle_sd_dialog(const char *case_id, int with_size_info, uint32_t secure_entries)
+static void hle_sd_dialog(const char *case_id, int with_size_info, uint64_t secure_bytes)
 {
     uint32_t out[HLE_SD_DIALOG_WORDS];
     memset(out, 0, sizeof(out));
-    hle_sd_param(with_size_info, secure_entries);
+    hle_sd_param(with_size_info, secure_bytes);
     const int init = hle_sd_run(case_id, out);
     out[0] = hle_sd_get32(0x1cu);
     out[8] = hle_sd_get32(0x34u);
     for (uint32_t i = 0; i < HLE_SD_SIZE_INFO_WORDS; i++) {
         out[HLE_SD_DRIVER_WORDS + i] = s_hle_sd_size_info[i];
     }
-    if (secure_entries && s_hle_sd_size_info[2] == (uint32_t)(uintptr_t)s_hle_sd_entry) {
+    if (secure_bytes && s_hle_sd_size_info[2] == (uint32_t)(uintptr_t)s_hle_sd_entry) {
         out[HLE_SD_DRIVER_WORDS + 2] = 1u;
     }
     hle_record(case_id, "PASS", (uint32_t)init, out, HLE_SD_DIALOG_WORDS);
@@ -2119,10 +2119,12 @@ static int hle_run(void)
 {
     hle_sd_absent("save-absent-before");
     hle_sd_volatile_lock("volatile-lock-before");
-    hle_sd_dialog("getsize-missing-secure", 1, 1u);
+    hle_sd_dialog("getsize-missing-secure", 1, HLE_SD_SECURE_FITS_BYTES);
     hle_sd_absent("save-absent-after-secure");
     hle_sd_dialog("getsize-missing-empty", 1, 0u);
     hle_sd_absent("save-absent-after-empty");
+    hle_sd_dialog("getsize-missing-shortfall", 1, HLE_SD_SECURE_TOO_BIG_BYTES);
+    hle_sd_absent("save-absent-after-shortfall");
     /* Last: a NULL out pointer can fault in kernel mode, and the cells above are on host0. */
     hle_sd_dialog("getsize-missing-null", 0, 0u);
     hle_sd_absent("save-absent-after-null");

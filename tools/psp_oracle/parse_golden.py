@@ -1729,16 +1729,18 @@ _register_campaign_probe(
 # carries sceIoGetstat's return and st_mode; volatile-lock-before carries TryLock's return, the
 # Unlock return and the size. Every word is an observation.
 _HLE_SAVEDATA_GETSIZE_DIALOG_CASES = (
-    "getsize-missing-secure", "getsize-missing-empty", "getsize-missing-null",
+    "getsize-missing-secure", "getsize-missing-empty", "getsize-missing-shortfall",
+    "getsize-missing-null",
 )
 _HLE_SAVEDATA_GETSIZE_ABSENT_CASES = (
     "save-absent-before", "save-absent-after-secure", "save-absent-after-empty",
-    "save-absent-after-null",
+    "save-absent-after-shortfall", "save-absent-after-null",
 )
 _register_campaign_probe(
     "hle-savedata-getsize", "PSP-HLE-SAVEDATA-GETSIZE-001",
     ("save-absent-before", "volatile-lock-before", "getsize-missing-secure",
      "save-absent-after-secure", "getsize-missing-empty", "save-absent-after-empty",
+     "getsize-missing-shortfall", "save-absent-after-shortfall",
      "getsize-missing-null", "save-absent-after-null"),
     {
         **{case_id: 24 for case_id in _HLE_SAVEDATA_GETSIZE_DIALOG_CASES},
