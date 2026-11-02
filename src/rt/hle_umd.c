@@ -196,6 +196,8 @@ void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
     /* Shared with the executable harness so it dispatches the production mapping (#341). */
     sr_hle_register(0x46ebb729u, "sceUmdCheckMedium", h_UmdCheckMedium);
+    /* Shared with the executable harness for the same reason (#1816). */
+    sr_hle_register(0x20628e6f, "sceUmdGetErrorStat", h_UmdGetErrorStat);
 }
 
 /* Registration runs of the shared helpers in hle.c (#307). Each holds one run of this file's
@@ -213,7 +215,6 @@ void hle_register_wait_conformance_umd(void) {
 /* From sr_hle_init(). */
 void hle_register_init_umd(void) {
     sr_hle_register_unsupported(0x6af9b50a, "sceUmdCancelWaitDriveStat", 0x80010086u); /* SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED */
-    sr_hle_register(0x20628e6f, "sceUmdGetErrorStat", h_UmdGetErrorStat);
 }
 #endif
 #endif
