@@ -211,6 +211,8 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
         enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
     elif kind == "scale_int_reg":
         enh = f"{stock_line.strip()} s->r[{rw['reg']}] <<= 1;"
+    elif kind == "scale_int_args":
+        enh = " ".join([stock_line.strip()] + [f"s->r[{r}] <<= 1;" for r in rw["regs"]])
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
     elif kind == "scale_f_store":
@@ -3136,6 +3138,12 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     if not resumable and guest_owns_entry_sp(elf, insns):
         resumable = True
         GUEST_SP_ENTRIES.add(start)
+    if start in labels and start in ENHANCEMENT_SITES \
+            and ENHANCEMENT_SITES[start]["rewrite"]["kind"] == "scale_int_args":
+        raise enhancement_package.EnhancementPackageError(
+            f"site {ENHANCEMENT_SITES[start]['id']}: argument_x2 doubles once per call, and this "
+            "function branches back to its entry (fail-closed refusal)"
+        )
     for label in labels:
         # A label on the delay slot of a transfer that never falls through runs the slot
         # as an ordinary word; when that word goes on to the next one, the walk owns that

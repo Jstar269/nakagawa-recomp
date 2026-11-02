@@ -47,6 +47,7 @@ from enhancement_package import (
     UPDATE_BOUNDARY_KEYS,
     VALID_CATEGORIES,
     EnhancementPackageError,
+    _validate_site_extras,
     compute_stock_words_digest,
     draft_package_declaration,
     draft_timing_package,
@@ -1155,6 +1156,61 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                 hashlib.sha256(package_cache.canonical_json(opts_enhanced).encode("utf-8")).hexdigest(),
             )
 
+    def _argument_package(self, tmp: Path, helper_words: dict[int, int]) -> tuple[dict[str, Any], dict[str, str]]:
+        """A package with one argument_x2 site on a helper the entry calls."""
+        words = dict(self.words)
+        words[0x00001030] = 0x0C000000 | (0x00001700 >> 2)  # jal helper, then the stock return
+        words[0x00001034] = 0x00000000
+        words[0x00001038] = 0x03E00008
+        words[0x0000103C] = 0x00000000
+        words.update(helper_words)
+        elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", words, self.entry)
+        pkg, symbols = self._make_package_and_symbols(elf_bytes)
+        symbols["synth_repeat_helper"] = "0x00001700"
+        pkg["sites"].append({
+            "id": "SYNTH_ARGS",
+            "function": "synth_repeat_helper",
+            "insn_offset": 0,
+            "stock_digest": compute_stock_words_digest([helper_words[0x00001700]]),
+            "transform": "argument_x2",
+            "arguments": ["a3", "t0"],
+        })
+        return pkg, symbols
+
+    def test_argument_x2_doubles_the_named_arguments_only_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            pkg, symbols = self._argument_package(tmp, {
+                0x00001700: 0x8C820080,  # lw v0,128(a0)
+                0x00001704: 0x03E00008,
+                0x00001708: 0x00000000,
+            })
+            rc, output, files = self._codegen_with(tmp, "args", pkg, symbols)
+            self.assertEqual(rc, 0, output)
+            combined = b"\n".join(files.values()).decode("utf-8")
+            lines = combined.splitlines()
+            at = next(i for i, line in enumerate(lines) if "s->r[7] <<= 1; s->r[8] <<= 1;" in line)
+            self.assertIn("if (nk_enhancement_on()) {", lines[at])
+            # The doubling follows the stock load, and the other arm is the stock load alone.
+            self.assertLess(lines[at].index("0x8c820080"), lines[at].index("s->r[7] <<= 1"))
+            self.assertIn("else {", lines[at + 1])
+            self.assertIn("0x8c820080", lines[at + 1])
+            self.assertNotIn("<<= 1", lines[at + 1])
+
+    def test_argument_x2_refuses_a_function_that_branches_back_to_its_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            pkg, symbols = self._argument_package(tmp, {
+                0x00001700: 0x8C820080,  # lw v0,128(a0)
+                0x00001704: 0x1040FFFE,  # beqz v0, entry: a second pass would double again
+                0x00001708: 0x00000000,
+                0x0000170C: 0x03E00008,
+                0x00001710: 0x00000000,
+            })
+            with self.assertRaises(EnhancementPackageError) as ctx:
+                self._codegen_with(tmp, "loop", pkg, symbols)
+            self.assertIn("branches back to its entry", str(ctx.exception))
+
     def test_a_site_that_is_never_emitted_refuses_the_package(self) -> None:
         """Every verified site must be emitted; a site whose function is stubbed refuses."""
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1396,6 +1452,36 @@ class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
                 with self.assertRaises(EnhancementPackageError) as ctx:
                     self._plan(transform, word)
                 self.assertIn(why, str(ctx.exception))
+
+    def test_argument_x2_plans_and_refuses(self) -> None:
+        site = {"arguments": ["a3", "t0"], "insn_offset": 0, "word_count": 1}
+        # lw v0,128(a0) leaves the arguments alone.
+        self.assertEqual(self._plan("argument_x2", 0x8C820080, **site),
+                         {"kind": "scale_int_args", "regs": [7, 8]})
+        # lw a3,128(a0) writes one: doubling after it would double the loaded value.
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            self._plan("argument_x2", 0x8C870080, **site)
+        self.assertIn("writes an argument", str(ctx.exception))
+
+    def test_argument_x2_validation(self) -> None:
+        for extra, why in (
+            ({}, "needs a list"),
+            ({"arguments": []}, "needs a list"),
+            ({"arguments": ["s0"]}, "needs a list"),
+            ({"arguments": ["a3", "a3"]}, "needs a list"),
+            ({"arguments": "a3"}, "needs a list"),
+            ({"arguments": ["a3"], "insn_offset": 4}, "function entry"),
+            ({"arguments": ["a3"], "word_count": 2}, "function entry"),
+        ):
+            with self.subTest(extra=extra):
+                site = dict({"transform": "argument_x2", "insn_offset": 0, "word_count": 1}, **extra)
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    _validate_site_extras(site, "sites[0]")
+                self.assertIn(why, str(ctx.exception))
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            _validate_site_extras({"transform": "count_x2", "insn_offset": 0, "word_count": 1,
+                                   "arguments": ["a3"]}, "sites[0]")
+        self.assertIn("belongs only to argument_x2", str(ctx.exception))
 
     def test_accel_and_double_upper_words(self) -> None:
         # lui v0,0x3d05 (the upper half of 0.0326667): two exponent steps are exact.

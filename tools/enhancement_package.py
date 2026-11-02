@@ -71,6 +71,7 @@ SITE_TRANSFORMS = frozenset({
     "launch_velocity_x0.5",
     "offset_x2",
     "window_start_x2",
+    "argument_x2",
 })
 
 # What a site's instruction builds, when its encoding alone cannot say: the upper
@@ -78,6 +79,19 @@ SITE_TRANSFORMS = frozenset({
 SITE_OPERANDS = frozenset({
     "f64_high",
 })
+
+# The registers that carry a function's first eight arguments (MIPS EABI): the
+# caller rebuilds them for each call, so an argument_x2 site may double them.
+ARGUMENT_REGISTERS = {
+    "a0": 4,
+    "a1": 5,
+    "a2": 6,
+    "a3": 7,
+    "t0": 8,
+    "t1": 9,
+    "t2": 10,
+    "t3": 11,
+}
 
 RNG_POLICY_MODES = frozenset({
     "rescale_probability",
@@ -199,6 +213,7 @@ SITE_KEYS = frozenset({
     "word_count",
     "transform",
     "operand",
+    "arguments",
     "acceleration_site",
     "low_insn_offset",
     "low_stock_digest",
@@ -627,8 +642,19 @@ def validate_package(data: Any) -> dict[str, Any]:
 
 
 def _validate_site_extras(site: Mapping[str, Any], path: str) -> None:
-    """The optional site fields: operand, acceleration_site and a pinned low word."""
+    """The optional site fields: operand, arguments, acceleration_site and a pinned low word."""
     transform = site["transform"]
+    if transform == "argument_x2":
+        arguments = site.get("arguments")
+        if (not isinstance(arguments, list) or not arguments
+                or not all(isinstance(name, str) and name in ARGUMENT_REGISTERS for name in arguments)
+                or len(set(arguments)) != len(arguments)):
+            fail(f"{path}.arguments",
+                 f"argument_x2 needs a list of distinct argument registers from {sorted(ARGUMENT_REGISTERS)}")
+        if site["insn_offset"] != 0 or site["word_count"] != 1:
+            fail(path, "argument_x2 names the one instruction at the function entry (insn_offset 0)")
+    elif "arguments" in site:
+        fail(f"{path}.arguments", "arguments belongs only to argument_x2")
     if "operand" in site:
         if site["operand"] not in SITE_OPERANDS:
             fail(f"{path}.operand", f"Unknown operand {site['operand']!r}; must be one of {sorted(SITE_OPERANDS)}")
@@ -1357,7 +1383,8 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
       ``word``            execute ``word`` instead of the stock word;
       ``gate``            execute the stock instruction on alternate 60 Hz updates only;
       ``scale_int_reg``   after the stock load, multiply GPR ``reg`` by 2;
-      ``scale_f_reg``     after the stock instruction, multiply FPR ``reg`` by ``factor``;
+      ``scale_int_args``  after the stock entry instruction, multiply the GPRs ``regs`` by 2;
+      ``scale_f_reg``   after the stock instruction, multiply FPR ``reg`` by ``factor``;
       ``scale_f_store``   store FPR ``reg`` multiplied by ``factor`` (the register is kept);
       ``scale_f_addend``  run ``fd = fd +/- ft`` with ``ft`` multiplied by ``factor``.
     """
@@ -1404,6 +1431,14 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
         if op not in (0x08, 0x09) or simm16 > -2 or 2 * simm16 + 1 < -0x8000:
             _refuse(site, w, "window_start_x2 takes an addi/addiu of an offset of -2 or less")
         return {"kind": "word", "word": _with_imm(w, 2 * simm16 + 1)}
+
+    if tf == "argument_x2":
+        # A helper that takes a duration in updates from every caller doubles it once
+        # at its entry. The stock instruction must leave the arguments as they came.
+        regs = [ARGUMENT_REGISTERS[name] for name in site["arguments"]]
+        if _gpr_written(w) in regs:
+            _refuse(site, w, "the entry instruction writes an argument it should double")
+        return {"kind": "scale_int_args", "regs": regs}
 
     if tf == "accel_x0.25":
         # A lone lui of a float: two exponent steps are an exact x0.25.
