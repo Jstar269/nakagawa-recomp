@@ -112,8 +112,15 @@ class Fixture:
 class Revisions:
     """Analyses both revisions once per test class."""
 
+    _tmp: tempfile.TemporaryDirectory
+    root: Path
+    old_cfg: Path
+    new_cfg: Path
+    old: dict[str, int]
+    new: dict[str, int]
+
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls._tmp = tempfile.TemporaryDirectory()
         cls.root = Path(cls._tmp.name)
         fixture = Fixture(cls.root)

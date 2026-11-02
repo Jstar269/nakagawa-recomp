@@ -431,7 +431,7 @@ class Matcher:
         matcher = difflib.SequenceMatcher(None, old_fn["tokens"], new_fn["tokens"], autojunk=False)
         for a, b, size in matcher.get_matching_blocks():
             if a <= index < a + size:
-                address = new_fn["addresses"][b + index - a]
+                address: int = new_fn["addresses"][b + index - a]
                 if self.method[old_entry] in TRUSTED_METHODS and address - new_entry != old_address - old_entry:
                     return None
                 return address
