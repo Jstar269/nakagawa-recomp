@@ -186,7 +186,7 @@ Signed-off-by: Real Name <email@example.com>
 ## Development setup
 
 Follow the [authoritative development baseline in docs/SETUP.md](docs/SETUP.md). The core toolchain
-is Windows 11 x64, PowerShell 7.4+ (`pwsh`), CPython 3.15.x, current MSYS2 UCRT64, and a current
+is Windows 11 x64, PowerShell 7.4+ (`pwsh`), CPython 3.15.x (3.14.x is also accepted), current MSYS2 UCRT64, and a current
 auto-detected Vulkan SDK/loader. The native player is the repository's only user interface.
 
 ## Contributing without a game disc
@@ -294,9 +294,18 @@ Run checks proportional to the change:
 .\nk_manager.ps1 -Action Test  # uses the public synthetic manifest by default
 mingw32-make --no-print-directory native-core-tests  # runtime change
 mingw32-make --no-print-directory display-smoke      # codegen/pipeline change: full build of a synthetic fixture, no game needed
-python -m unittest discover -s tools -p "test_*.py" -v
-python tools/publish_audit.py --tracked-only --worktree
+python -m unittest tools.test_<name>                 # each Python test module that matches a file you changed
+python tools/tree_lint.py --check
+python tools/lint_docs.py
+python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+python -m pre_commit run --all-files
 ```
+
+These are the gates [AGENTS.md section 9](AGENTS.md#9-validation-and-gate-routing) lists, and its table gives
+the focused gate for each changed surface. The whole Python suite
+(`python -m unittest discover -s tools -p "test_*.py"`) is not on this list: hosted CI runs it in shards on
+every pull request, so run it locally only when hosted CI cannot
+([what hosted CI does not run](docs/CI.md#what-hosted-ci-does-not-run)).
 
 To rebuild a game you own, pass its local title manifest:
 `.\nk_manager.ps1 -Action BuildFast -TitleManifest <your manifest> -GameName <name>` for a runtime-only change, or

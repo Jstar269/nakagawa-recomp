@@ -119,7 +119,7 @@ player and your own game.
 ## Linux headless showcase
 
 Linux can build and run the two source-owned showcase packages through the runtime.
-The route needs GCC, GNU Make, Python 3.15, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.18,
+The route needs GCC, GNU Make, Python 3.15 (3.14 is also accepted), CMake, Ninja, `libvulkan-dev`, SDL3 3.4.18,
 and PSPDEV v20261001 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
 3.4.18 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
@@ -144,7 +144,7 @@ The supported and tested core development environment is:
 - CPython 3.15.x (3.14.x is also accepted, `>=3.14,<3.16`), with `python` resolving to that feature line. 3.15 is the default: hosted CI and the pinned prerequisite use 3.15.1.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
   manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
-  (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.15. The rolling
+  (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.15 (the manifest says `>=3.15,<3.16`; the tooling itself also accepts 3.14, see the first bullet). The rolling
   MSYS2 packages are not pinned; `tools/record_toolchain.py` records the versions a release
   candidate was really built with (#367).
 - A current Vulkan SDK and Vulkan-capable GPU.
@@ -179,7 +179,7 @@ pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make mingw-w6
 
 Also install:
 
-- CPython 3.15.x on `PATH`.
+- CPython 3.15.x (3.14.x is also accepted) on `PATH`.
 - The [Vulkan SDK](https://vulkan.lunarg.com/sdk/home). The manager follows the discovery order above; pass `-VulkanSdk "C:\path\to\sdk"` or set `VULKAN_SDK` when an explicit location is needed.
 - Git, to fetch optional third-party source.
 
