@@ -26,13 +26,13 @@ from nk_core import report_bundle as rb  # noqa: E402
 USERS = "Us" + "ers"  # spelled in pieces: the publication audit forbids such paths in source
 HOMEDIR = "ho" + "me"
 BS = chr(92)
-USER = "Jasonquill"
-HOST = "QUILL-DESKTOP"
-WIN_HOME = f"C:\\{USERS}\\Jasonquill"
-POSIX_HOME = f"/{HOMEDIR}/jasonquill"
+USER = "Exampleuser"
+HOST = "EXAMPLE-HOST"
+WIN_HOME = f"C:\\{USERS}\\Exampleuser"
+POSIX_HOME = f"/{HOMEDIR}/exampleuser"
 NOW = dt.datetime(2026, 11, 2, 12, 30, 44, tzinfo=dt.timezone.utc)
-IDENTITY = rb.Identity(home_dirs=(WIN_HOME, POSIX_HOME, "D:\\Profiles\\jasonquill"),
-                       user_names=(USER, "jasonquill"), host_names=(HOST,))
+IDENTITY = rb.Identity(home_dirs=(WIN_HOME, POSIX_HOME, "D:\\Profiles\\exampleuser"),
+                       user_names=(USER, "exampleuser"), host_names=(HOST,))
 
 
 def no_doctor(_root: Path) -> str:
@@ -51,20 +51,20 @@ def build(inputs: rb.ReportInputs, **kwargs: object) -> rb.BundlePlan:
 class RedactionTests(unittest.TestCase):
     def assertClean(self, text: str) -> str:
         out = rb.redact_text(text, IDENTITY)
-        for needle in ("jasonquill", "quill-desktop"):
+        for needle in ("exampleuser", "example-host"):
             self.assertNotIn(needle, out.lower(), msg=f"{text!r} -> {out!r}")
         return str(out)
 
     def test_windows_path_forms(self) -> None:
         cases = {
-            f"C:\\{USERS}\\Jasonquill\\AppData\\Local\\Nakagawa": "~\\AppData\\Local\\Nakagawa",
-            f"C:/{USERS}/Jasonquill/AppData/Local": "~/AppData/Local",
-            "c:\\users\\jasonquill\\Desktop\\a.iso": "~\\Desktop\\a.iso",
-            f"C:\\\\{USERS}\\\\Jasonquill\\\\x": "~\\\\x",           # JSON-escaped
-            f"\\\\?\\C:\\{USERS}\\Jasonquill\\x": "~\\x",
-            f"file:///C:/{USERS}/Jasonquill/x": "~/x",
-            f"/mnt/c/{USERS}/Jasonquill/x": "~/x",
-            "D:\\Profiles\\jasonquill\\games": "~\\games",
+            f"C:\\{USERS}\\Exampleuser\\AppData\\Local\\Nakagawa": "~\\AppData\\Local\\Nakagawa",
+            f"C:/{USERS}/Exampleuser/AppData/Local": "~/AppData/Local",
+            f"c:\\{USERS.lower()}\\exampleuser\\Desktop\\a.iso": "~\\Desktop\\a.iso",
+            f"C:\\\\{USERS}\\\\Exampleuser\\\\x": "~\\\\x",           # JSON-escaped
+            f"\\\\?\\C:\\{USERS}\\Exampleuser\\x": "~\\x",
+            f"file:///C:/{USERS}/Exampleuser/x": "~/x",
+            f"/mnt/c/{USERS}/Exampleuser/x": "~/x",
+            "D:\\Profiles\\exampleuser\\games": "~\\games",
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
@@ -72,12 +72,12 @@ class RedactionTests(unittest.TestCase):
 
     def test_posix_path_forms(self) -> None:
         cases = {
-            f"/{HOMEDIR}/jasonquill/.local/share/nakagawa-recomp": "~/.local/share/nakagawa-recomp",
-            f"/var/{HOMEDIR}/jasonquill/x": "~/x",
-            f"/{USERS}/jasonquill/Library/Application Support/NakagawaRecomp":
+            f"/{HOMEDIR}/exampleuser/.local/share/nakagawa-recomp": "~/.local/share/nakagawa-recomp",
+            f"/var/{HOMEDIR}/exampleuser/x": "~/x",
+            f"/{USERS}/exampleuser/Library/Application Support/NakagawaRecomp":
                 "~/Library/Application Support/NakagawaRecomp",
-            f"path=/{HOMEDIR}/jasonquill": "path=~",
-            f"(/{HOMEDIR}/jasonquill/x)": "(~/x)",
+            f"path=/{HOMEDIR}/exampleuser": "path=~",
+            f"(/{HOMEDIR}/exampleuser/x)": "(~/x)",
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
@@ -86,20 +86,20 @@ class RedactionTests(unittest.TestCase):
     def test_another_account_and_shape_only(self) -> None:
         """A path under a profile this machine does not name is still a home folder."""
         # A profile name with a space is matched whole when this machine names it.
-        spaced = rb.Identity(home_dirs=(f"C:\\{USERS}\\Jane Quill",), user_names=("Jane Quill",))
-        self.assertEqual(rb.redact_text(f"C:\\{USERS}\\Jane Quill\\x and Jane Quill", spaced),
+        spaced = rb.Identity(home_dirs=(f"C:\\{USERS}\\Example Person",), user_names=("Example Person",))
+        self.assertEqual(rb.redact_text(f"C:\\{USERS}\\Example Person\\x and Example Person", spaced),
                          "~\\x and <user>")
         self.assertEqual(rb.redact_text(f"C:\\{USERS}\\other\\x", IDENTITY), "~\\x")
         self.assertEqual(rb.redact_text(f"/{HOMEDIR}/other/x", IDENTITY), "~/x")
         self.assertEqual(rb.redact_text(f"C:\\{USERS}\\Public\\Documents", IDENTITY),
                          f"C:\\{USERS}\\Public\\Documents")
-        self.assertEqual(rb.redact_text(f"C:\\{USERS}\\Jasonquill2\\x", IDENTITY), "~\\x")
+        self.assertEqual(rb.redact_text(f"C:\\{USERS}\\Exampleuser2\\x", IDENTITY), "~\\x")
 
     def test_names(self) -> None:
-        self.assertEqual(self.assertClean("user=Jasonquill, USER: JASONQUILL."), "user=<user>, USER: <user>.")
-        self.assertEqual(self.assertClean("host QUILL-DESKTOP up"), "host <host> up")
+        self.assertEqual(self.assertClean("user=Exampleuser, USER: EXAMPLEUSER."), "user=<user>, USER: <user>.")
+        self.assertEqual(self.assertClean("host EXAMPLE-HOST up"), "host <host> up")
         # Whole words only: a longer word that merely contains the name stays.
-        self.assertEqual(rb.redact_text("Jasonquills_game", IDENTITY), "Jasonquills_game")
+        self.assertEqual(rb.redact_text("Exampleusers_game", IDENTITY), "Exampleusers_game")
         # A name under three characters is not a safe thing to search for.
         short = rb.Identity(user_names=("ab",))
         self.assertEqual(rb.redact_text("a cab ab", short), "a cab ab")
@@ -192,8 +192,8 @@ class Fixture:
 
 FORBIDDEN_MARKERS = (b"SAVE-MARKER", b"DUMP-MARKER", b"TRACE-MARKER", b"KEY-MARKER", b"FRAME-MARKER",
                      b"FUSE-MARKER", b"GAME-MARKER", b"MEMORY-MARKER", b"SECRET-TOKEN-VALUE")
-IDENTITY_STRINGS = (USER.lower().encode(), HOST.lower().encode(), b"c:\\users\\jasonquill",
-                    b"/" + HOMEDIR.encode() + b"/jasonquill")
+IDENTITY_STRINGS = (USER.lower().encode(), HOST.lower().encode(), f"c:\\{USERS.lower()}\\exampleuser".encode(),
+                    b"/" + HOMEDIR.encode() + b"/exampleuser")
 
 
 class BundleTests(unittest.TestCase):
