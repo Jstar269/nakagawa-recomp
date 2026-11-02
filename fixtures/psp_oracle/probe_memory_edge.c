@@ -8,8 +8,8 @@
 //     buffer). The placement helper is mem_edge.h, which any probe source can include.
 //
 // What it measures. The top and bottom of user RAM from the partition allocator's answers
-// (edge-ram-hi, edge-ram-lo), the scratchpad and the end of VRAM from what the file calls
-// accept (edge-fixed), then three placements (the last N = 0x100 bytes of user RAM, the first
+// (edge-ram-hi, edge-ram-lo) and the end of VRAM from what the file calls accept
+// (edge-vram), then three placements (the last N = 0x100 bytes of user RAM, the first
 // N bytes of user RAM, the last N bytes of VRAM). Each placement is called with length
 // N + delta (delta 0, 1, 4 and 0x1000 for the reading side, 0, 1 and 4 for the writing
 // side) and every call's outcome is one record: the return code, the bytes of the buffer that
@@ -23,9 +23,9 @@
 // overrun on the reading side with a negative return code (reason 3 otherwise), and only on
 // memory the probe owns (reason 2 otherwise), so no write is sent past an edge without proof
 // that the API checks ranges. Reading past the top of user RAM runs only when the RAM above
-// it exists (reason 4 otherwise). Direct CPU loads and stores past an edge, and any range
-// past the scratchpad, are SKIP rows with their reasons: a fault in user mode cannot be
-// recorded by the mechanisms the current probes use.
+// it exists (reason 4 otherwise). Direct CPU loads and stores past an edge, and any file
+// call from the scratchpad (the first launch's did not return), are SKIP rows with their
+// reasons: a fault in user mode cannot be recorded by the mechanisms the current probes use.
 //
 // Record stream and log: the same writer, host0 round trip and module lifecycle as
 // probe_hle_issues.c (copied byte for byte, pinned by tools/test_psp_oracle.py): a
@@ -338,31 +338,25 @@ static void me_make_data(void)
     hle_record("edge-data", "PASS", 0, w, 3);
 }
 
-/* Row edge-fixed (8 words): what the file calls accept at the fixed ranges, as the read-side
-   oracle. 0: the whole scratchpad; 1: its last word; 2: the last page of VRAM; 3: its last
-   word; 4: the last word of user RAM; 5: the last page of user RAM; 6: eight bytes across the
-   end of VRAM; 7: the bounds mask afterwards. Everything is a read of memory the kernel is
-   asked to copy; nothing is written outside the probe's sink file. */
-static void me_emit_fixed(me_bounds *b)
+/* Row edge-vram (4 words): what the file calls accept at the end of VRAM, as the read-side
+   oracle. 0: the last page of VRAM; 1: its last word; 2: eight bytes across the end (the
+   mirror starts there); 3: the bounds mask afterwards. A read of memory the kernel is asked to
+   copy into the probe's sink file; nothing is written. Each call has its own step. It runs
+   after the user-RAM cells because it is the first file call the probe hands a VRAM pointer. */
+static void me_emit_vram(me_bounds *b)
 {
-    uint32_t w[8];
-    hle_step("edge-fixed");
-    w[0] = me_oracle((const void *)(uintptr_t)b->scratch_lo, b->scratch_hi - b->scratch_lo);
-    w[1] = me_oracle((const void *)(uintptr_t)(b->scratch_hi - 4u), 4u);
-    w[2] = me_oracle((const void *)(uintptr_t)(b->vram_hi - ME_PAGE), ME_PAGE);
-    w[3] = me_oracle((const void *)(uintptr_t)(b->vram_hi - 4u), 4u);
-    w[4] = b->ram_hi ? me_oracle((const void *)(uintptr_t)(b->ram_hi - 4u), 4u) : ME_NOT_RUN;
-    w[5] = b->ram_hi ? me_oracle((const void *)(uintptr_t)(b->ram_hi - ME_PAGE), ME_PAGE)
-                     : ME_NOT_RUN;
-    w[6] = me_oracle((const void *)(uintptr_t)(b->vram_hi - 4u), 8u);
-    if (w[0] == b->scratch_hi - b->scratch_lo && w[1] == 4u) {
-        b->mask |= ME_B_SCRATCH;
-    }
-    if (w[2] == ME_PAGE && w[3] == 4u) {
+    uint32_t w[4];
+    hle_step("edge-vram-page");
+    w[0] = me_oracle((const void *)(uintptr_t)(b->vram_hi - ME_PAGE), ME_PAGE);
+    hle_step("edge-vram-last");
+    w[1] = me_oracle((const void *)(uintptr_t)(b->vram_hi - 4u), 4u);
+    if (w[0] == ME_PAGE && w[1] == 4u) {
         b->mask |= ME_B_VRAM;
     }
-    w[7] = b->mask;
-    hle_record("edge-fixed", "PASS", 0, w, 8);
+    hle_step("edge-vram-cross");
+    w[2] = me_oracle((const void *)(uintptr_t)(b->vram_hi - 4u), 8u);
+    w[3] = b->mask;
+    hle_record("edge-vram", "PASS", 0, w, 4);
 }
 
 /* Row edge-place-<place> (8 words): the setup mask, buffer and block addresses, N, the block
@@ -536,7 +530,6 @@ static int hle_run(void)
     me_measure_ram(&b);
     me_emit_ram(&b);
     me_make_data();
-    me_emit_fixed(&b);
 
     me_place_ram_tail(&pl, &b, ME_N);
     me_emit_place("ramtail", &pl);
@@ -548,13 +541,19 @@ static int hle_run(void)
     me_run_place(ME_PLACE_RAM_HEAD, &pl, &b);
     me_release(&pl);
 
+    me_emit_vram(&b);
     me_place_vram_tail(&pl, &b, ME_N);
     me_emit_place("vramtail", &pl);
     me_run_place(ME_PLACE_VRAM_TAIL, &pl, &b);
     me_release(&pl);
 
+    /* Not run, with the reason in word 10. The first launch's file call from the scratchpad
+       (a whole-scratchpad sceIoWrite from 0x00010000) wrote its step and never returned, and
+       the console was recovered by the watchdog: the outcome is "did not return normally",
+       and repeating it would cost another recovery. */
     me_skip("me-cpu-store-edge", b.mask, ME_SKIP_FAULT);
     me_skip("me-cpu-load-edge", b.mask, ME_SKIP_FAULT);
+    me_skip("me-scratch-io", b.mask, ME_SKIP_FAULT);
     me_skip("me-scratch-cross", b.mask, ME_SKIP_UNBACKED);
     return 1;
 }
