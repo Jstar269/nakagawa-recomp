@@ -3951,7 +3951,9 @@ def _bringup_human_summary(report: dict) -> str:
     elif report["failure_class"] == "EXECUTABLE_UNSUPPORTED":
         detail = (" (the disc's program file is not usable yet; an encrypted one is "
                   "decrypted by the player's disc check, so open this disc in the player "
-                  "once and run this again)")
+                  "once, then run this again with --user-data-root set to the player's "
+                  "data folder: this run looks for the decrypted program only in its own "
+                  "data folder)")
     elif report["failure_class"] == "LAUNCH_TIMEOUT":
         frames = (report.get("presentation") or {}).get("frame_submissions") or 0
         detail = (
@@ -3991,8 +3993,9 @@ def _bringup_human_summary(report: dict) -> str:
         detail = (
             " (ENCRYPTED_MODULE: a guest module is encrypted. The player decrypts it "
             "from your own disc when it checks the disc: open this disc in the player "
-            "once and run this again, or place a decrypted copy from your own copy in "
-            "the title's decrypted folder)"
+            "once, then run this again with --user-data-root set to the player's data "
+            "folder, or place a decrypted copy from your own copy in the title's "
+            "decrypted folder)"
         )
     elif report["failure_class"] == "RUNTIME_HLE_REGISTRY_UNAVAILABLE":
         detail = (

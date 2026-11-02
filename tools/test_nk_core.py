@@ -231,10 +231,10 @@ class NkCoreTests(unittest.TestCase):
             report.update(extra)
             return nk_cli._bringup_human_summary(report)
 
-        self.assertIn("open this disc in the player", summary("EXECUTABLE_UNSUPPORTED"))
+        self.assertIn("--user-data-root", summary("EXECUTABLE_UNSUPPORTED"))
         decrypt = summary("GUEST_MODULE_DECRYPTION_REQUIRED")
         self.assertNotIn("does not decrypt", decrypt)
-        self.assertIn("open this disc in the player", decrypt)
+        self.assertIn("--user-data-root", decrypt)
         running = summary("LAUNCH_TIMEOUT", reached_stage="launch",
                           presentation={"frame_submissions": 310})
         self.assertIn("still running", running)
