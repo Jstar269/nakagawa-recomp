@@ -137,4 +137,3 @@ ATRAC3P_SRCS := src/rt/atrac3p/atrac3p_api.c \
 	src/rt/atrac3p/libavutil/log2_tab.c \
 	src/rt/atrac3p/libavutil/mem.c \
 	src/rt/atrac3p/libavutil/reverse.c
-

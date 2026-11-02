@@ -114,4 +114,3 @@ SCHED_SELFTEST_MANIFEST_fixture-b := assets/titles/synthetic.json
 
 sched-selftest:
 	@$(foreach cfg,$(SCHED_SELFTEST_CONFIGS),$(MAKE) --no-print-directory sched-selftest-one SCHED_SELFTEST_CONFIG=$(cfg)$(NEWLINE)	)
-

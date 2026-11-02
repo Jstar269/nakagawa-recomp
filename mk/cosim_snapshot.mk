@@ -188,5 +188,3 @@ snapshot-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OB
 		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(SNAPSHOT_FIXTURE)/cases.json \
 		--work $(SNAPSHOT_MUTANT_DIR)
 	@echo "snapshot-selftest: PASS"
-
-

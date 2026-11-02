@@ -207,4 +207,3 @@ check:
 		tools/test_ci_required.py \
 		tools/test_provenance_record_gap.py
 	@echo "== All public verification checks PASSED =="
-

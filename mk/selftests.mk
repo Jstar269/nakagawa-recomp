@@ -698,4 +698,3 @@ selftest:
 		-DSR_SELFTEST_ONLY -fno-exceptions
 	$(BUILD_DIR)/selftest.exe
 	@echo "selftest passed"
-
