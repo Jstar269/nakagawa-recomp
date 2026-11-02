@@ -182,6 +182,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `import_stub_census.py` | Import-stub census: every import-table stub of an image is owned, bodied and reaches the HLE (or a named refusal). |
 | `psp_import_table.py` | Defensive PSP ELF import-table parser for the import-coverage gate. |
 | `flight_diff.py` | Compare two source-safe flight-recorder bundles. |
+| `ge_flight_overhead.py` | Compare the GE draw path with the flight recorder linked and disarmed against compiled out (`ge-flight-overhead`). |
 | `ge_transition_diff.py` | Offline diff for the narrow GE transition trace. |
 | `ge_replay_metrics.py` | Strict parsers for aggregate GE replay CPU-profile summaries. |
 | `ge_stat_windows.py` | Read the runtime's `SR_GESTAT` windows by the vblank that closed them, for gates such as the showcase smoke. |
@@ -495,6 +496,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_extract_xb_security.py` | Synthetic, retail-free coverage for extraction containment and limits. |
 | `test_flight_build_identity.py` | Reproducible build identity of the flight recorder's build block. |
 | `test_flight_diff.py` | Flight-recorder bundle schema, comparability refusal and cross-run diffing. |
+| `test_ge_flight_overhead.py` | Bench-output parsing, bootstrap interval and verdicts of the GE flight-recorder overhead driver. |
 | `test_funcdiff_cmp.py` | Fail-closed oracle trace comparison: divergence, empty and truncated traces fail. |
 | `test_gate_exit_resolution.py` | Shared exit-stub discovery and trace helpers used by the correctness gates. |
 | `test_ge_capture.py` | GE capture route regressions. |
