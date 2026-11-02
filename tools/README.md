@@ -175,6 +175,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `funcdiff_cmp.py` | Fail-closed per-function trace comparison against a developer-supplied oracle trace. |
 | `verify_gates.py` | Run the optional differential verification gates without shell-specific syntax. |
 | `tracediff.py` | Diff two runtime traces in the format documented in `TRACE_FORMAT.md`. |
+| `nksnap.py` | Read and write `nksnap` v1 snapshots and parse the snapshot runner's verdict lines (#1842). |
 | `import_audit.py` | Classify a PSP ELF's imports against the HLE registration manifest. |
 | `import_audit_gate.py` | Public CI gate for import coverage and fake-success regressions. |
 | `import_fixtures.py` | Synthetic PSP ELF fixtures for the import-coverage audit gate. |
@@ -361,6 +362,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_codegen_transfer_target_timing.py` | A computed transfer must read its target register at the transfer. |
 | `test_codegen_vfpu_fallback.py` | VFPU fallback emission, including unsupported forms failing closed. |
 | `test_cosim_fixture.py` | Structural gates for the AOT/interpreter cosimulation fixture. |
+| `test_snapshot_format.py` | Pins the `nksnap` v1 format, every loader refusal and the snapshot runner's verdict grammar. |
 | `test_compat_manifest.py` | Every custom codegen stub and dispatch hook must be in the manifest. |
 | `test_cosim_mutation_gate_outcome.py` | Cosim mutation driver verdicts bound to process status, the timeout verdict and child-tree reaping. |
 | `test_cpu_lle.py` | Low-level emulation CPU gates: COP0, exceptions, eret, interpreter support. |
