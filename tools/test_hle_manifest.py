@@ -2465,6 +2465,18 @@ class CensusTests(unittest.TestCase):
         for nid in (0x092968F4, 0x5F10D406, 0x237DBD4F, 0x1F803938):
             self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
 
+    def test_profile_zero_thread_memory_ge_batch_has_evidence_and_named_limits(self) -> None:
+        """The second #341 profile-zero batch: cited evidence, named limits, allowlist shrunk."""
+        batch = ("h_MaxFreeMemSize", "h_GeSetCallback", "h_GeUnsetCallback", "h_LockLwMutex")
+        for handler in batch:
+            with self.subTest(handler=handler):
+                self.assertEqual(meta.HANDLER_STATUS.get(handler), "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE.get(handler))
+                self.assertIn("#341", meta.HANDLER_LIMITATIONS.get(handler, ""))
+                self.assertNotIn(handler, meta.PARTIAL_WITHOUT_EVIDENCE)
+        for nid in (0xA291F107, 0xA4FC06A4, 0x05DB22CE, 0xBEA46419):
+            self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+
     def test_census_is_deterministic(self) -> None:
         c1 = hle_manifest.build_census(self.manifest)
         c2 = hle_manifest.build_census(self.manifest)
