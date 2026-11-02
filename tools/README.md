@@ -142,6 +142,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `analyze.py` | Discover function boundaries, executable spans and tail calls in a guest ELF. |
 | `analyze_cfg.py` | The canonical CFG report, its gate and the static coverage census, with the branch decode they use. `analyze.py` imports every name back. |
 | `analysis_ir.py` | Advisory analysis IR from a `codegen.py --cfg-report` file: blocks, functions, call graph, xrefs, register use; parity check, annotation comparison and `explain`. |
+| `binding_carry.py` | Proposes a title manifest's `runtime_bindings` for another revision by matching functions on masked code (exact, neighbour tie-break, fuzzy, via callers); refuses ambiguous matches (#1847). |
 | `imports.py` | Walk guest import tables and resolve MIPS NIDs to HLE handler names. |
 | `codegen.py` | Translate guest MIPS to C and split the output into `<g>_recomp_<n>.c` chunks. |
 | `codegen_llvm.py` | The opt-in LLVM IR backend (`--backend=llvm`, #330): lower supported functions to `<g>_recomp_<n>.ll`. |
@@ -338,6 +339,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | Module | Purpose |
 | --- | --- |
 | `test_analysis_ir.py` | Analysis IR parity with codegen's CFG report, JSON round trip, annotation comparison and `explain` (#305). |
+| `test_binding_carry.py` | Binding carry over two synthetic revisions: exact, neighbour, fuzzy, caller, ambiguous decoy, unmatched and NID-matched stubs (#1847). |
 | `test_analyze_tailcall.py` | Regression tests for the analyzer's tail-call promotion. |
 | `test_analyze_import_stub_entries.py` | Import-table stubs outside the named code sections are owned function entries, with codegen bodies. |
 | `test_analyze_toml_emit.py` | Locks the analyzer TOML emitter's fail-closed string contract. |
