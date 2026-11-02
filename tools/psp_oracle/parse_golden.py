@@ -1879,6 +1879,21 @@ _register_campaign_probe(
     "kernel-semantics", "PSP-KERNEL-SEM-001", tuple(KERNEL_SEM_ROWS), dict(KERNEL_SEM_ROWS),
 )
 
+# io-seek-eof (136, probe_kernel_semantics.c): #1380 in the probe-owned ms0:/NKKSEM01: opens
+# of a missing file without PSP_O_CREAT, negative seeks on read-write and read-only
+# descriptors, a write after a seek past the end (size, gap bytes, tail) and a read past it.
+# Every row is emitted on every run with a fixed word count (SKIP rows keep the shape).
+IO_SEEK_EOF_ROWS = (
+    ("io-eof-mkdir", 1), ("io-eof-missing", 5), ("io-eof-create", 3),
+    ("io-eof-seek-negative", 16), ("io-eof-seek-negative-rdonly", 5),
+    ("io-eof-write-past", 8), ("io-eof-gap", 8), ("io-eof-read-past", 5),
+    ("io-eof-cleanup", 3),
+)
+_register_campaign_probe(
+    "io-seek-eof", "PSP-IO-EOF-001", tuple(row for row, _ in IO_SEEK_EOF_ROWS),
+    dict(IO_SEEK_EOF_ROWS),
+)
+
 # vfpu-forms2 (121, probe_hle_issues.c): the second #326 batch of VFPU forms, two passes. Every
 # row is emitted on every run, so the stream is fixed-shape. Per pass: vrnds.s over 24 seed
 # words from two RCX states (rnds-p<pass>-<i>-<a|b>, 25 words), vrndi, vrndf1 and vrndf2 at
