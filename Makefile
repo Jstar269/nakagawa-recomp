@@ -1196,7 +1196,11 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-build \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest \
-	gpu-selftest-status
+	gpu-selftest-status \
+	form-sweep-build \
+	form-sweep-link \
+	form-sweep-selftest \
+	form-sweep-deep
 
 PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
 INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
