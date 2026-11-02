@@ -26,7 +26,7 @@ import tempfile
 from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "tools"
@@ -915,6 +915,7 @@ def build_census() -> dict[str, object]:
 
 def render_markdown(census: dict[str, object]) -> str:
     summary = census["summary"]
+    typed_summary = cast("dict[str, Any]", summary)
     dispositions = summary["by_disposition"]
     total_rows = summary["rows"]
     lines = [
@@ -951,8 +952,8 @@ def render_markdown(census: dict[str, object]) -> str:
             "",
             "Differential coverage proves AOT/interpreter agreement, not PSP hardware equivalence. Hardware IDs and partial coverage are recorded per JSON row.",
             f"Evidence tiers: `{json.dumps(summary['by_evidence_tier'], sort_keys=True)}`.",
-            f"Semantic verification of supported forms: `{json.dumps(summary['by_semantic_verification'], sort_keys=True)}`. "
-            f"{len(summary['supported_without_semantic_verification'])} supported rows have no differential or hardware result check; "
+            f"Semantic verification of supported forms: `{json.dumps(typed_summary['by_semantic_verification'], sort_keys=True)}`. "
+            f"{len(typed_summary['supported_without_semantic_verification'])} supported rows have no differential or hardware result check; "
             "they are listed in the JSON `supported_without_semantic_verification` array.",
             "",
             "## #292 acceleration gate",
