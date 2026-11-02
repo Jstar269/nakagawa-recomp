@@ -2779,12 +2779,13 @@ class NativePlayerUiTests(unittest.TestCase):
     def test_problem_report_page_previews_then_writes_one_local_bundle(self) -> None:
         """#1849: the Problem report page lists every file with a size, Create writes the
         ZIP on this PC, and the page then shows where it went."""
+        # The GPU probe in the report tool takes up to ~10 s on a hosted runner, so the waits are long.
         # The report tool refuses a data folder inside the repository, where the
         # sandbox lies, so the regression build writes under a folder outside it.
         with tempfile.TemporaryDirectory(prefix="nk-report-test-") as tmp:
             env = {"NK_UI_TEST_REPORT_DATA_ROOT": tmp}
             run = self.next_ui_run(
-                "problem-report", ("WAIT_MS=8000", "KEY_RETURN", "WAIT_MS=12000"), env_extra=env)
+                "problem-report", ("WAIT_MS=22000", "KEY_RETURN", "WAIT_MS=30000"), env_extra=env)
             stdout = run["stdout"]
             assert isinstance(stdout, str)
             steps, names = self.problem_report_steps(stdout)
