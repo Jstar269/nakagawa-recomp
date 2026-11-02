@@ -353,7 +353,8 @@ python tools/miss_seeds.py merge --out <title seed list> --run <label> --elf <th
 `merge` keeps the run that first found each seed (`run=<label>`) and drops targets that are already
 function entries. A target inside a function's body stays: a run entered the body mid-way, and the seed
 gives that address its own body, as tail-call promotion does. Analysis checks each seed. One that is
-unaligned, outside the executable ranges or on an all-zero or all-ones word is reported
+unaligned, outside the executable ranges, on an all-zero or all-ones word, or on an entry the code emitter
+would stub (`untranslatable: <why>`: a reserved opcode on any path its body covers, run or not) is reported
 (`CODEGEN_MISS_SEEDS: ignored 0x...: <reason>`) and left out, never forced. `CODEGEN_MISS_SEEDS` prints the
 applied, already-known and ignored counts, and the coverage JSON gains a `miss_seeds` map of address to
 status, only for a build given `--miss-seeds`. Without the option the output is unchanged.

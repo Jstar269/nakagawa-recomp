@@ -49,6 +49,22 @@ WORDS = {
     TARGET + 4: 0x03E00008,      # jr ra
     TARGET + 8: 0x00000000,      # nop (delay slot)
 }
+RESERVED = 0x74786574            # ASCII "text": opcode 0x1d, which no instruction decodes
+# A wild pointer into data: the word at TARGET is not code at all.
+RESERVED_WORDS = {**WORDS, TARGET: RESERVED}
+# A valid first word whose run path returns normally, with a reserved word on the side the
+# walk covers but a run never executes: the entry cannot be translated, yet the interpreter
+# floor runs it correctly.
+UNEXECUTED_RESERVED_WORDS = {
+    **{a: w for a, w in WORDS.items() if a < TARGET},
+    TARGET: 0x00A61021,          # addu v0, a1, a2
+    TARGET + 4: 0x14A00003,      # bne a1, zero, TARGET+20 (taken: a1 = 40)
+    TARGET + 8: 0x00000000,      # nop (delay slot)
+    TARGET + 12: RESERVED,       # never executed
+    TARGET + 16: 0x00000000,     # nop
+    TARGET + 20: 0x03E00008,     # jr ra
+    TARGET + 24: 0x00000000,     # nop (delay slot)
+}
 PADDING_FUNCTION = ENTRY + 32    # the analyzer starts a function at the padding after the return
 
 # The harness mirrors the cosimulation gate's (fixtures/cosim/cosim_selftest.c): it includes the
@@ -257,6 +273,20 @@ class AnalysisSeedTests(_Fixture):
         _functions(path, seeds={TARGET + 8}, report=report)
         self.assertEqual(report["miss_seeds"], {TARGET + 8: analyze.SEED_NOT_CODE})
 
+    def test_a_seed_the_check_refuses_is_ignored_with_its_reason_and_adds_no_entry(self):
+        seen = []
+
+        def refuse(address, known, ranges):
+            seen.append(address)
+            return "no thanks"
+
+        report: dict = {}
+        starts = _functions(self.elf_path, seeds={TARGET}, report=report, seed_check=refuse)
+        self.assertEqual(seen, [TARGET])
+        self.assertEqual(report["miss_seeds"],
+                         {TARGET: f"{analyze.SEED_UNTRANSLATABLE}: no thanks"})
+        self.assertEqual(sorted(starts), [ENTRY, PADDING_FUNCTION])
+
     def test_the_analyze_command_takes_a_seed_list(self):
         seeds = self.write_seeds("analyze_seeds.txt", "# nakagawa-miss-seeds-v1\n0x00010028\n")
         toml = self.work / "seeded.toml"
@@ -356,6 +386,26 @@ class CodegenSeedTests(_Fixture):
         self.assertEqual(report["miss_seeds"],
                          {"0x00010022": "unaligned", "0x00010028": "applied"})
 
+    def test_a_seed_the_emitter_cannot_translate_is_reported_and_left_unregistered(self):
+        for name, words in (("reserved", RESERVED_WORDS),
+                            ("unexecuted", UNEXECUTED_RESERVED_WORDS)):
+            with self.subTest(name):
+                elf = self.work / f"{name}.elf"
+                elf.write_bytes(_synthetic_elf(words, ENTRY))
+                seeds = self.write_seeds(f"{name}.txt", "# nakagawa-miss-seeds-v1\n0x00010028\n")
+                out = self.work / f"{name}_out"
+                out.mkdir()
+                result = _codegen(elf, out / "m_recomp.c", f"--miss-seeds={seeds}")
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1",
+                              result.stdout)
+                self.assertIn("ignored 0x00010028: untranslatable", result.stderr)
+                generated = "".join(path.read_text(encoding="ascii")
+                                    for path in out.glob("m_recomp*.c"))
+                self.assertNotIn("f_00010028", generated)
+                report = json.loads((out / "m_recomp_coverage.json").read_text(encoding="ascii"))
+                self.assertTrue(report["miss_seeds"]["0x00010028"].startswith("untranslatable"))
+
     def test_a_missing_seed_list_stops_the_build(self):
         result = _codegen(self.elf_path, self.work / "gone" / "m_recomp.c",
                           f"--miss-seeds={self.work / 'absent.txt'}")
@@ -387,10 +437,15 @@ class EndToEndTests(_Fixture):
         cls.harness = cls.work / "harness.c"
         cls.harness.write_text(HARNESS, encoding="ascii", newline="\n")
 
-    def build_and_run(self, name, *codegen_args):
+    def build_and_run(self, name, *codegen_args, words=None):
+        elf_path, image = self.elf_path, self.image
+        if words is not None:
+            elf_path, image = self.work / f"{name}.elf", self.work / f"{name}.bin"
+            elf_path.write_bytes(_synthetic_elf(words, ENTRY))
+            image.write_bytes(_image_bytes(words))
         out = self.work / name
         out.mkdir()
-        generated = _codegen(self.elf_path, out / "m_recomp.c", *codegen_args)
+        generated = _codegen(elf_path, out / "m_recomp.c", *codegen_args)
         self.assertEqual(generated.returncode, 0, generated.stderr + generated.stdout)
         sources = [str(self.harness), *sorted(map(str, out.glob("m_recomp*.c"))),
                    *(str(ROOT / "src" / "rt" / name) for name in RUNTIME_SOURCES)]
@@ -405,7 +460,7 @@ class EndToEndTests(_Fixture):
         miss_file = out / "miss.txt"
         env = dict(os.environ, SR_MISS_SEEDS=str(miss_file))
         run = subprocess.run(
-            [str(exe), str(self.image), f"{ENTRY:x}", f"{ENTRY:x}", f"{TARGET:x}"],
+            [str(exe), str(image), f"{ENTRY:x}", f"{ENTRY:x}", f"{TARGET:x}"],
             cwd=out, capture_output=True, text=True, env=env)
         share = next(line for line in run.stderr.splitlines() if line.startswith("EXEC_SHARE "))
         fields = dict(part.split("=") for part in share.split()[1:])
@@ -453,6 +508,21 @@ class EndToEndTests(_Fixture):
         self.assertIn("ignored 0x00020000: outside-executable-ranges", generated.stderr)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn(f"DISPATCH_MISS_NEW[1]: target=0x{TARGET:08x}", run.stderr)
+        self.assertEqual(fields["miss_targets"], "1")
+        self.assertEqual(set(miss_seeds.read_seed_file(miss_file).seeds), {TARGET})
+
+    def test_a_seed_on_an_entry_codegen_would_stub_leaves_the_run_unchanged(self):
+        # The first word is valid and the run returns normally, but the walk covers a reserved
+        # word the run never executes. Registering the entry would stub it and abort the run on
+        # entry; the seed is ignored instead and the miss keeps reaching the interpreter floor.
+        seeds = self.write_seeds("stub.txt", "# nakagawa-miss-seeds-v1\n0x00010028\n")
+        run, fields, miss_file, generated = self.build_and_run(
+            "unexecuted", f"--miss-seeds={seeds}", words=UNEXECUTED_RESERVED_WORDS)
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1", generated.stdout)
+        self.assertIn("ignored 0x00010028: untranslatable", generated.stderr)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("RESULT v0=42", run.stdout)
+        self.assertNotIn("sr_unimplemented", run.stderr)
         self.assertEqual(fields["miss_targets"], "1")
         self.assertEqual(set(miss_seeds.read_seed_file(miss_file).seeds), {TARGET})
 

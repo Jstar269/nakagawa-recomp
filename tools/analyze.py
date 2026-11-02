@@ -2184,6 +2184,9 @@ SEED_KNOWN = "known"
 SEED_UNALIGNED = "unaligned"
 SEED_OUTSIDE_CODE = "outside-executable-ranges"
 SEED_NOT_CODE = "not-a-function-start"
+#: `untranslatable: <why>`: the entry decodes as a start but the emitter would stub it, and a
+#: stub registered for the address would replace the interpreter floor the miss reaches today.
+SEED_UNTRANSLATABLE = "untranslatable"
 
 
 def _seed_miss_targets(d, seeds):
@@ -2324,7 +2327,36 @@ def _owned_spans(d):
 
 
 def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
-            entry_hints=None, seeds=None):
+            entry_hints=None, seeds=None, seed_check=None):
+    # `seed_check(address, known, ranges)` returns why the emitter cannot translate an applied
+    # seed's entry, or None. A refused seed is dropped and the analysis runs again without it
+    # (its tracing may have added entries that exist only because of it), so the result names
+    # only entries the build keeps. The check sees the final entry set: it decides what the
+    # walk of the entry covers.
+    if seeds is None or seed_check is None:
+        return _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints, seeds)
+    refused = {}
+    while True:
+        seed_report = {}
+        result = _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints,
+                          set(seeds) - set(refused), seed_report)
+        known, ranges = set(result[0]), result[1]
+        newly = {}
+        for address, status in seed_report["miss_seeds"].items():
+            if status == SEED_APPLIED:
+                why = seed_check(address, known, ranges)
+                if why is not None:
+                    newly[address] = f"{SEED_UNTRANSLATABLE}: {why}"
+        if not newly:
+            break
+        refused.update(newly)
+    if report is not None:
+        report["miss_seeds"] = {**seed_report["miss_seeds"], **refused}
+    return result
+
+
+def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints, seeds,
+             seed_report=None):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
     # `entry_hints` are code pointers another image holds into this one (data_section_words).
@@ -2343,8 +2375,9 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     _seed_address_materializations(d)
     if seeds is not None:
         outcome = _seed_miss_targets(d, seeds)
-        if report is not None:
-            report["miss_seeds"] = outcome
+        for target in (report, seed_report):
+            if target is not None:
+                target["miss_seeds"] = outcome
 
     # Trace each function's extent from the high-confidence seeds, following discovered calls.
     d.functions = set(d.hc)
@@ -2508,6 +2541,12 @@ def _build_arg_parser():
     return parser
 
 
+def _emitter_seed_check(elf):
+    """The seed check of the standalone command: the code emitter decides what it can translate."""
+    import codegen  # codegen imports this module, so import it only when a seed list is given
+    return codegen.emitter_seed_check(elf)
+
+
 def main(argv):
     # Unknown options and extra positionals have always been ignored here, so keep ignoring them.
     try:
@@ -2534,7 +2573,8 @@ def main(argv):
     seed_report = {}
     try:
         starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate,
-                                 seeds=seeds, report=seed_report)
+                                 seeds=seeds, report=seed_report,
+                                 seed_check=_emitter_seed_check(elf) if seeds else None)
     except Exception as exc:
         boundary_code = getattr(exc, "code", None)
         if not isinstance(boundary_code, str) or not boundary_code.startswith("ANALYZER_"):
@@ -2554,8 +2594,9 @@ def main(argv):
         if not cfg_gate:
             # A report-only run describes gate-mode analysis but must not change
             # the entry set used for the model and recall output below.
-            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True,
-                                                    seeds=seeds)
+            report_entries, report_ranges = analyze(
+                elf, extra_spans=extra_spans, cfg_gate=True, seeds=seeds,
+                seed_check=_emitter_seed_check(elf) if seeds else None)
         cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
         if cfg_report_path is not None:
             parent = os.path.dirname(cfg_report_path)

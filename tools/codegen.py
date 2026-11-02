@@ -3114,6 +3114,22 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
     }
 }"""
 
+def emitter_seed_check(elf, profile=None):
+    """A ``seed_check`` for ``analyze`` (miss seeds, #1848): why ``emit_function`` would stub the
+    entry, or None when it translates. A stub registered for a miss target would replace the
+    interpreter floor the run reaches today with an abort, so such a seed is reported and left out."""
+    def check(address, known, ranges):
+        applied_before = set(ENHANCEMENT_APPLIED)
+        try:
+            emit_function(elf, address, ranges, known, profile=profile)
+        except Unsupported as exc:
+            return str(exc).replace('"', "'")
+        finally:
+            ENHANCEMENT_APPLIED.intersection_update(applied_before)
+        return None
+    return check
+
+
 def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False,
                   profile=None, dispatch_boundaries=None, lle_cpu=False,
                   stack_census=False, flow=None):
@@ -4638,6 +4654,8 @@ def main(argv):
             sys.stderr.write(f"codegen: {exc}\n")
             return 2
     try:
+        if seed_args:
+            seed_args["seed_check"] = emitter_seed_check(elf, profile)
         analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate, **seed_args)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
@@ -4656,7 +4674,8 @@ def main(argv):
             try:
                 report_entries, report_ranges = analyze(
                     elf, extra_spans=extra_spans, cfg_gate=True,
-                    **({"seeds": seed_args["seeds"]} if seed_args else {}))
+                    **({"seeds": seed_args["seeds"], "seed_check": seed_args["seed_check"]}
+                       if seed_args else {}))
             except ImportTableError as exc:
                 sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
                 return 1
