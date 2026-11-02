@@ -92,6 +92,7 @@ extern "C" void nk_ref_run(NkRef *r, void *cpu, uint32_t entry_pc, uint32_t retu
 }
 
 extern "C" void nk_ref_run_call(NkRef *r, void *cpu, uint32_t entry_pc, uint32_t return_pc,
-                                uint32_t return_sp, uint64_t max_steps, NkRefResult *out) {
-	run_until(r, cpu, entry_pc, return_pc, 1, return_sp, nullptr, 0u, max_steps, out);
+                                uint32_t return_sp, const uint32_t *import_stubs,
+                                uint32_t import_count, uint64_t max_steps, NkRefResult *out) {
+	run_until(r, cpu, entry_pc, return_pc, 1, return_sp, import_stubs, import_count, max_steps, out);
 }

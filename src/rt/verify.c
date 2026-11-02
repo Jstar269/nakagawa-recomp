@@ -13,8 +13,11 @@
  * lowest address up. The order and the field names are those of src/rt/snapshot_runner.c,
  * so a captured mismatch replays to the same first difference.
  *
- * The reference runs first on a private copy of RAM, so nothing it does is visible to the
- * guest and the translated call runs on exactly the state the reference saw. One check is
+ * The reference runs on a private copy of RAM taken when the call starts, and runs when the
+ * translated call stops, so nothing it does is visible to the guest and it sees exactly the
+ * state the translated call started from. It runs late because an import stub's address,
+ * which it needs to stop at the host boundary, is known only once the translated call has
+ * reached the stub (the last function the runtime entered). One check is
  * in flight at a time; a sampled call that enters while one is in flight is counted as
  * SKIP busy. A guest thread switch, an interrupt or a callback inside the checked call
  * (sr_yield, a return-boundary scope, a stack swap) makes the sample SKIP preempted, and
@@ -24,8 +27,8 @@
  * What is not compared: scratchpad, CpuState fields other than the ones above (VFPU
  * registers, COP0), and anything a guest thread or a device writes to guest memory while
  * the checked call runs on the single guest thread (the report is evidence, not proof).
- * An import stop is matched to the reference's syscall stop at the stub; the import NID is
- * not tied to the stub's syscall instruction.
+ * An import stop is matched to the reference's stop at the same stub address; the import
+ * NID is not compared (the reference does not know the import tables).
  */
 
 #ifdef SR_VERIFY
@@ -99,6 +102,7 @@ static uint64_t (*s_clock)(void);
 static double s_tokens;
 static uint64_t s_last_ns;
 static int s_rate_started;
+static uint32_t s_entered;      /* the last function the runtime entered; 0: none yet */
 int sr_verify_suppress_direct;
 
 static uint8_t *arena_base(void) { return g_mem - SR_RAM_BASE; }
@@ -178,8 +182,17 @@ static void free_state(void) {
     s_rate_started = 0;
 }
 
+static int s_reported;
+
+/* Once: the runtime's _Exit paths call this by hand, and the atexit hook then finds it done. */
+void sr_verify_report_now(void) {
+    if (s_reported || !s_cfg.report_path) return;
+    s_reported = 1;
+    sr_verify_report_write(s_cfg.report_path);
+}
+
 static void report_at_exit(void) {
-    if (s_cfg.report_path) sr_verify_report_write(s_cfg.report_path);
+    sr_verify_report_now();
 }
 
 void sr_verify_configure(const SrVerifyConfig *cfg) {
@@ -187,6 +200,7 @@ void sr_verify_configure(const SrVerifyConfig *cfg) {
     s_cfg = *cfg;
     if (s_cfg.max_steps == 0) s_cfg.max_steps = 1000000u;
     s_inited = 1;
+    s_reported = 0;
     if (!s_atexit) { atexit(report_at_exit); s_atexit = 1; }
 }
 
@@ -314,21 +328,6 @@ static void start_check(CpuState *s, uint32_t target, uint32_t resume_pc, VFn *f
     memset(a, 0, sizeof *a);
     a->entry_cpu = start;
     a->ref_cpu = start;
-    nk_ref_run_call(s_ref, &a->ref_cpu, target, resume_pc, start.r[29], s_cfg.max_steps, &a->rr);
-    SkipReason why = SKIP_COUNT;
-    switch (a->rr.stop) {
-    case NK_REF_UNIMPLEMENTED:
-        why = is_vfpu_opcode(a->rr.op) ? SKIP_REF_NO_VFPU : SKIP_REF_UNIMPLEMENTED; break;
-    case NK_REF_MEMORY_FAULT: why = SKIP_REF_FAULT; break;
-    case NK_REF_BREAK: why = SKIP_REF_BREAK; break;
-    case NK_REF_STEP_LIMIT: why = SKIP_REF_STEP_LIMIT; break;
-    default: break;
-    }
-    if (why != SKIP_COUNT) {
-        memset(a, 0, sizeof *a);
-        record_skip(f, why);
-        return;
-    }
     a->live = 1;
     a->serial = ++s_serial;
     a->fn = f;
@@ -341,14 +340,20 @@ static void start_check(CpuState *s, uint32_t target, uint32_t resume_pc, VFn *f
     a->oor_writes0 = g_oor_writes;
 }
 
+void sr_verify_note_entry(uint32_t target) {
+    s_entered = target;
+}
+
 void sr_verify_begin(CpuState *s, uint32_t target, uint32_t call_pc, uint32_t resume_pc) {
     ensure_init();
     if (!s_cfg.enabled) return;
     if (target == 0u && !call_target(call_pc, &target)) {
+        s_entered = 0u;
         /* The callee of this call is unknown, so there is no function to count it under. */
         if (sampled(1u) && !s_active.live) record_skip(NULL, SKIP_CALL_FORM);
         return;
     }
+    s_entered = target;
     if (s_cfg.has_range && (target < s_cfg.range_lo || target > s_cfg.range_hi)) return;
     VFn *f = fn_get(target);
     uint64_t n = ++f->calls;
@@ -381,10 +386,8 @@ static int compare(const Active *a, const CpuState *aot, int aot_stop, uint32_t 
                    uint32_t stop_code, char *out, size_t cap) {
     static const char *const names[] = { "return", "syscall", "import" };
     const CpuState *r = &a->ref_cpu;
-    int ref_stop = a->rr.stop == NK_REF_SYSCALL ? 1 : 0;
-    /* An import stub's body ends in a syscall instruction: both are the host boundary. */
-    int kinds_agree = aot_stop == ref_stop || (aot_stop == 2 && ref_stop == 1);
-    if (!kinds_agree) {
+    int ref_stop = a->rr.stop == NK_REF_IMPORT ? 2 : a->rr.stop == NK_REF_SYSCALL ? 1 : 0;
+    if (aot_stop != ref_stop) {
         snprintf(out, cap, "stop aot=%s ref=%s", names[aot_stop], names[ref_stop]);
         return 1;
     }
@@ -473,9 +476,32 @@ static void finish_skip(SkipReason why) {
     s_active.live = 0;
 }
 
+/* Run the reference over the call that just stopped. An import stop names the stub the
+ * runtime entered last (the sampled function itself when nothing else was entered): the
+ * stub's own bytes are `jr $ra; nop` in a PRX image, so only its address marks the stop. */
+static int run_reference(int aot_stop) {
+    Active *a = &s_active;
+    uint32_t stub = s_entered ? s_entered : a->target;
+    nk_ref_run_call(s_ref, &a->ref_cpu, a->target, a->resume_pc, a->entry_sp,
+                    aot_stop == 2 ? &stub : NULL, aot_stop == 2 ? 1u : 0u, s_cfg.max_steps, &a->rr);
+    SkipReason why = SKIP_COUNT;
+    switch (a->rr.stop) {
+    case NK_REF_UNIMPLEMENTED:
+        why = is_vfpu_opcode(a->rr.op) ? SKIP_REF_NO_VFPU : SKIP_REF_UNIMPLEMENTED; break;
+    case NK_REF_MEMORY_FAULT: why = SKIP_REF_FAULT; break;
+    case NK_REF_BREAK: why = SKIP_REF_BREAK; break;
+    case NK_REF_STEP_LIMIT: why = SKIP_REF_STEP_LIMIT; break;
+    default: break;
+    }
+    if (why == SKIP_COUNT) return 1;
+    finish_skip(why);
+    return 0;
+}
+
 static void finish(CpuState *s, int aot_stop, uint32_t pc, uint32_t code) {
     Active *a = &s_active;
     if (a->preempted) { finish_skip(SKIP_PREEMPTED); return; }
+    if (!run_reference(aot_stop)) return;
     char what[sizeof a->fn->first_mismatch];
     int bad = compare(a, s, aot_stop, pc, code, what, sizeof what);
     VFn *f = a->fn;

@@ -732,6 +732,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                 sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, 1u);
                 sr_compat_report();
                 sr_perf_shutdown();
+                SR_VERIFY_REPORT_NOW();
                 _Exit(1);
             }
             {
@@ -740,6 +741,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
                 psmf_av_final("capture_exit");
                 sr_compat_report();
                 sr_perf_shutdown();
+                SR_VERIFY_REPORT_NOW();
                 _Exit(capture_exit_status);
             }
         }
@@ -1008,6 +1010,7 @@ void sr_vblank_tick(void) {
               sr_flight_hang(diff, (uint32_t)wde);
               sr_compat_report();
               sr_perf_shutdown();
+              SR_VERIFY_REPORT_NOW();
               _Exit(1);
           }
         }
@@ -1084,6 +1087,7 @@ void sr_vblank_tick(void) {
             psmf_av_final("exit_at_vblank");
             sr_compat_report();
             sr_perf_shutdown();
+            SR_VERIFY_REPORT_NOW();
             hle_state_sample_close();
             _Exit(0);
         }

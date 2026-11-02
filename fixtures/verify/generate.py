@@ -4,7 +4,7 @@
 """Generate the source-owned guest module for the verify selftest (#1843).
 
 The module is the snapshot-execution module (``fixtures/snapshot/generate.py``, #1842) with
-two more functions, built by the same PRX writer:
+two more functions and an import stub that is `jr $ra; nop`, built by the same PRX writer:
 
   drive    calls ``leaf`` ``a0`` times with a direct ``jal`` inside a counted loop, so the
            verifier sees many direct calls of one callee from one caller
@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -101,10 +102,25 @@ def cases() -> dict:
 
 
 base_cases = base.cases
+base_build_text_segment = base.build_text_segment
+
+
+def build_text_segment() -> bytes:
+    """The snapshot module with its import stub as a PRX image carries it: `jr $ra; nop`.
+
+    The snapshot fixture hand-writes `jr $ra; syscall`. The stub's delay slot is not a host
+    boundary in a real module, so the verifier has to stop at the stub by address.
+    """
+    text = bytearray(base_build_text_segment())
+    _placed, stub, _entry = layout()
+    text[stub : stub + 8] = struct.pack("<II", base.JR_RA, base.NOP)
+    return bytes(text)
+
 # The PRX writer looks these up by name at call time.
 base.CASE_ORDER = CASE_ORDER
 base.layout = layout
 base.cases = cases
+base.build_text_segment = build_text_segment
 
 
 def main(argv: list[str]) -> int:

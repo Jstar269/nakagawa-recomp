@@ -57,10 +57,13 @@ void nk_ref_run(NkRef *ref, void *cpu, uint32_t entry_pc, uint32_t return_pc,
 
 /* A call inside a running program (src/rt/verify.c, issue #1843). The call is over when the
  * next fetch is return_pc with $sp equal to return_sp, so a recursive call that reaches
- * its own call site's return address deeper in the stack does not end it early. Imports
- * are not named: a syscall instruction (an import stub's delay slot included) is a stop. */
+ * its own call site's return address deeper in the stack does not end it early. A fetch at
+ * one of the import_count import_stubs stops with NK_REF_IMPORT, as in nk_ref_run: an import
+ * stub in a PRX image is `jr $ra; nop`, so only its address, not its bytes, marks the host
+ * boundary. A syscall instruction is a stop too. */
 void nk_ref_run_call(NkRef *ref, void *cpu, uint32_t entry_pc, uint32_t return_pc,
-                     uint32_t return_sp, uint64_t max_steps, NkRefResult *out);
+                     uint32_t return_sp, const uint32_t *import_stubs, uint32_t import_count,
+                     uint64_t max_steps, NkRefResult *out);
 
 #ifdef __cplusplus
 }

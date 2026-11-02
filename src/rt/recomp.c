@@ -2364,6 +2364,9 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
 #endif
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
+#ifdef SR_VERIFY
+    sr_verify_note_entry(target);
+#endif
     int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
     fn(s);
     /* Complete the body's TAIL chain (#855) where the nested calls used to complete it:

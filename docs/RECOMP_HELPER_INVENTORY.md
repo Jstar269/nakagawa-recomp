@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **424** (declared in `recomp.h`: 359)
-- reach class: emitter-reached 75, production-runtime-only 316, selftest-only 17, address-only 7, none 9
-- provenance class of the home definition: declared-only 1, project_authored_attested 32, upstream_derived 391
+- helpers: **426** (declared in `recomp.h`: 361)
+- reach class: emitter-reached 75, production-runtime-only 318, selftest-only 17, address-only 7, none 9
+- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 391
 
 ## Helpers
 
@@ -433,7 +433,9 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_verify_at_stop` | `rt/verify.c` | yes | production-runtime-only | `rt/verify.c`: project_authored_attested |
 | `sr_verify_begin` | `rt/verify.c` | yes | production-runtime-only | `rt/verify.c`: project_authored_attested |
 | `sr_verify_end` | `rt/verify.c` | yes | production-runtime-only | `rt/verify.c`: project_authored_attested |
+| `sr_verify_note_entry` | `rt/verify.c` | yes | production-runtime-only | `rt/verify.c`: project_authored_attested |
 | `sr_verify_note_preempt` | `rt/verify.c` | yes | production-runtime-only | `rt/verify.c`: project_authored_attested |
+| `sr_verify_report_now` | `rt/verify.c` | yes | production-runtime-only | `rt/verify.c`: project_authored_attested |
 | `sr_vfpu_asin` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_c2i` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_cos` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |

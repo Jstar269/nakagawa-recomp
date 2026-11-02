@@ -19,8 +19,12 @@ runs this script:
                      never build-only) and requires MISMATCH on exactly the register the
                      immediate reaches, a capture, and the same first difference when the
                      snapshot runner replays that capture.
-``default-unchanged`` requires that the default build's preprocessed ``recomp.c`` has no
-                     verify hook.
+``default-unchanged`` requires that the default build's preprocessed ``recomp.c`` and
+                     ``hle.c``, the two runtime units that carry a hook, have no verify token.
+``exit-paths``       requires every ``_Exit`` in the runtime sources to write the verify
+                     report first (``SR_VERIFY_REPORT_NOW``), as it writes the other reports.
+``recomp-flags``     requires that ``make VERIFY=1`` keeps the generated-code compile flags
+                     (``RECOMP_OPT``, ``-fno-strict-aliasing``, ``NAN_TRAP``) beside ``-DSR_VERIFY``.
 """
 
 from __future__ import annotations
@@ -207,6 +211,12 @@ def run(args: argparse.Namespace) -> None:
     expect(not report.rows and report.header["checks"] == 0, f"off: {report}")
     print("PASS off: without SR_VERIFY nothing is checked")
 
+    # The runtime's _Exit paths skip atexit: the report is written by hand before them.
+    report = go("hard-exit", {"SR_VERIFY": "1"}, "--hard-exit", "--call", f"{alu:x}:2")
+    row = only_row(report, alu, "hard-exit")
+    expect(row.calls == 2 and row.checks == 2 and row.match == 2, f"hard-exit: {row}")
+    print("PASS hard-exit: the report survives an _Exit, which skips atexit")
+
     for bad in ({"SR_VERIFY": "abc"}, {"SR_VERIFY": "1", "SR_VERIFY_RANGE": "10"},
                 {"SR_VERIFY": "1", "SR_VERIFY_RATE": "0"}, {"SR_VERIFY_EVERY": "0"}):
         # The harness reads the environment itself, before any call.
@@ -251,10 +261,46 @@ def mutant(args: argparse.Namespace) -> None:
 
 
 def default_unchanged(args: argparse.Namespace) -> None:
-    text = Path(args.preprocessed).read_text(encoding="utf-8", errors="replace")
-    hits = sorted(set(re.findall(r"\bsr_verify\w*|\bSR_VERIFY\w*", text)))
-    expect(not hits, f"the default build's recomp.c carries verify tokens: {hits}")
-    print("PASS default-unchanged: the default recomp.c has no verify hook")
+    for name in args.preprocessed:
+        text = Path(name).read_text(encoding="utf-8", errors="replace")
+        hits = sorted(set(re.findall(r"\bsr_verify\w*|\bSR_VERIFY\w*", text)))
+        expect(not hits, f"the default build's {Path(name).name} carries verify tokens: {hits}")
+    names = ", ".join(Path(n).name for n in args.preprocessed)
+    print(f"PASS default-unchanged: the default {names} have no verify hook")
+
+
+def exit_paths(_args: argparse.Namespace) -> None:
+    """Each `_Exit(` call skips atexit, so it has to write the verify report itself."""
+    missing = []
+    count = 0
+    for path in sorted((ROOT / "src" / "rt").glob("*.c")):
+        if path.name.endswith("selftest.c") or path.name.startswith(("verify", "snapshot")):
+            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for number, line in enumerate(lines):
+            if not re.search(r"\b_Exit\(", line) or line.lstrip().startswith(("*", "/")):
+                continue
+            count += 1
+            window = lines[max(0, number - 8):number + 1]
+            if not any("SR_VERIFY_REPORT_NOW" in w for w in window):
+                missing.append(f"{path.name}:{number + 1}")
+    expect(count >= 9, f"found only {count} _Exit sites; the scan is out of date")
+    expect(not missing, f"_Exit without SR_VERIFY_REPORT_NOW before it: {missing}")
+    print(f"PASS exit-paths: all {count} runtime _Exit sites write the verify report")
+
+
+def recomp_flags(args: argparse.Namespace) -> None:
+    command = [*args.make.split(), "--no-print-directory", "compiler-info", "VERIFY=1",
+               "RECOMP_OPT=-O2", "NAN_TRAP=1", f"BUILD_DIR={args.build_dir}"]
+    done = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+    flags = [line[len("RECOMP_FLAGS="):] for line in done.stdout.splitlines()
+             if line.startswith("RECOMP_FLAGS=")]
+    expect(done.returncode == 0 and len(flags) == 1,
+           f"compiler-info: exit {done.returncode}, {len(flags)} RECOMP_FLAGS lines\n{done.stderr}")
+    have = flags[0].split()
+    for want in ("-O2", "-w", "-fno-strict-aliasing", "-DSR_NAN_TRAP", "-DSR_VERIFY"):
+        expect(want in have, f"VERIFY=1 RECOMP_FLAGS lacks {want}: {flags[0]}")
+    print("PASS recomp-flags: VERIFY=1 keeps the generated-code flags and adds -DSR_VERIFY")
 
 
 def main(argv: list[str]) -> int:
@@ -276,11 +322,16 @@ def main(argv: list[str]) -> int:
     p.add_argument("--cases", required=True)
     p.add_argument("--work", required=True)
     p = sub.add_parser("default-unchanged")
-    p.add_argument("preprocessed")
+    p.add_argument("preprocessed", nargs="+")
+    p = sub.add_parser("exit-paths")
+    p = sub.add_parser("recomp-flags")
+    p.add_argument("--make", required=True)
+    p.add_argument("--build-dir", required=True)
     args = parser.parse_args(argv)
     try:
         {"run": run, "find-chunk": find_chunk, "mutant": mutant,
-         "default-unchanged": default_unchanged}[args.command](args)
+         "default-unchanged": default_unchanged, "exit-paths": exit_paths,
+         "recomp-flags": recomp_flags}[args.command](args)
     except Failure as error:
         print(f"FAIL {error}", file=sys.stderr)
         return 1

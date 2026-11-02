@@ -1476,10 +1476,16 @@ typedef struct {
 #define SR_VERIFY_STOP_IMPORT  2
 extern int sr_verify_suppress_direct;
 void sr_verify_begin(CpuState *s, uint32_t target, uint32_t call_pc, uint32_t resume_pc);
+void sr_verify_note_entry(uint32_t target);
 void sr_verify_end(CpuState *s, const SrAotReturnBoundary *boundary);
 void sr_verify_at_stop(CpuState *s, int kind, uint32_t code, uint32_t pc);
 void sr_verify_note_preempt(const char *why);
 void sr_verify_abandon(const char *why);
+/* Write SR_VERIFY_REPORT now, once. The runtime's _Exit paths skip atexit and call this. */
+void sr_verify_report_now(void);
+#define SR_VERIFY_REPORT_NOW() sr_verify_report_now()
+#else
+#define SR_VERIFY_REPORT_NOW() ((void)0)
 #endif
 
 extern SrAotReturnBoundary *sr_aot_return_boundary_top;

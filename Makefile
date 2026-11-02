@@ -941,7 +941,6 @@ RT_SRCS    := src/rt/recomp.c \
 VERIFY ?= 0
 ifeq ($(VERIFY),1)
 override CFLAGS += -DSR_VERIFY
-override RECOMP_FLAGS += -DSR_VERIFY
 RT_SRCS += src/rt/verify.c src/rt/nksnap.c
 override LIBS += -lstdc++
 VERIFY_REF_OBJS := $(BUILD_DIR)/verify_ref_interp.o $(BUILD_DIR)/verify_ref.o
@@ -1943,6 +1942,9 @@ endif
 ifeq ($(PERF_AOT_INSTRUCTIONS),1)
 override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
 endif
+ifeq ($(VERIFY),1)
+override RECOMP_FLAGS += -DSR_VERIFY
+endif
 export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
 
 # profile_hash(ENTRIES_VAR, COMPILER, ENTRIES_FILE): the parse-time hash of a build
@@ -2509,6 +2511,7 @@ VERIFY_GAME_VARS = GAME_NAME=verify GAME_ELF=$(VERIFY_FIXTURE)/guest.prx \
 
 verify-selftest:
 	"$(PYTHON)" $(VERIFY_GENERATOR) generate --out-dir $(VERIFY_FIXTURE)
+	"$(PYTHON)" $(VERIFY_DRIVER) recomp-flags --make "$(MAKE)" --build-dir $(VERIFY_DIR)/flags
 	$(MAKE) $(VERIFY_DIR)/verify_image.bin $(VERIFY_DIR)/verify_recomp.c \
 		$(VERIFY_GAME_VARS) CODEGEN_TOOL=$(CODEGEN_TOOL)
 	$(MAKE) verify-selftest-run $(VERIFY_GAME_VARS) RECOMP_FLAGS="$(RECOMP_FLAGS) -DSR_VERIFY"
@@ -2549,7 +2552,9 @@ verify-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS
 		--work $(VERIFY_MUTANT_DIR)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -E -P \
 		src/rt/recomp.c -o $(BUILD_DIR)/default_recomp.i
-	"$(PYTHON)" $(VERIFY_DRIVER) default-unchanged $(BUILD_DIR)/default_recomp.i
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(HLE_INCLUDES) -E -P src/rt/hle.c -o $(BUILD_DIR)/default_hle.i
+	"$(PYTHON)" $(VERIFY_DRIVER) default-unchanged $(BUILD_DIR)/default_recomp.i $(BUILD_DIR)/default_hle.i
+	"$(PYTHON)" $(VERIFY_DRIVER) exit-paths
 	@echo "verify-selftest: PASS"
 
 

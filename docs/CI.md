@@ -286,8 +286,10 @@ harness (`src/rt/verify_harness.c`, `src/rt/verify.c`, `-DSR_VERIFY`) against a 
 synthetic module (`fixtures/verify/`), drives the samplers, the rate budget, the range filter
 and the skip classes, and requires a report with the expected counts for each. It then builds a
 harness and a snapshot runner whose generated C has one changed immediate and requires the
-`MISMATCH`, a capture, and the same first difference from the replay. Last it preprocesses the
-default `recomp.c` and requires that it carries no verify hook. See
+`MISMATCH`, a capture, and the same first difference from the replay. It also requires that
+`make VERIFY=1` keeps the generated-code compile flags, that every runtime `_Exit` writes the
+verify report first, and that the default `recomp.c` and `hle.c`, the two hooked units, carry
+no verify hook once preprocessed. See
 [`docs/DEBUGGING.md`](DEBUGGING.md#sampled-in-play-checking).
 
 Both hosts run `hle-thread-selftest`, the executable production-HLE suite that links

@@ -7,7 +7,7 @@
  * verdicts to the report (SR_VERIFY_REPORT) and the captures (SR_VERIFY_CAPTURE).
  *
  *   verify_harness [--call ADDR:COUNT[:A0[:A1[:A2]]]]... [--sched-slice N] [--frozen-clock]
- *                  <image.bin> <base-hex>
+ *                  [--hard-exit] <image.bin> <base-hex>
  *
  * Each --call enters the translated function at ADDR (hex) COUNT times (decimal) through
  * production dispatch as a host entry, with the arguments in hex (default: the data block
@@ -15,6 +15,8 @@
  * flag on with a slice of N yield points; each time the slice expires guest code reaches sr_yield,
  * which here only re-arms the slice, so a call that yields is reported SKIP preempted.
  * --frozen-clock fixes the verifier's clock at zero, to test the rate budget.
+ * --hard-exit ends the run with _Exit, which skips atexit, after the report call the
+ * runtime's own _Exit paths make (SR_VERIFY_REPORT_NOW).
  *
  * The harness links the generated module, recomp.c and the dispatch and interpreter units
  * but no scheduler, HLE, GE or host platform. The definitions below stand in for those, as
@@ -153,7 +155,7 @@ static int parse_call(const char *text, CallSpec *c) {
 static int usage(void) {
     fprintf(stderr,
             "usage: verify_harness [--call ADDR:COUNT[:A0[:A1[:A2]]]]... [--sched-slice N]\n"
-            "                      [--frozen-clock] <image.bin> <base-hex>\n");
+            "                      [--frozen-clock] [--hard-exit] <image.bin> <base-hex>\n");
     return 2;
 }
 
@@ -181,7 +183,7 @@ int main(int argc, char **argv) {
     CallSpec calls[MAX_CALLS];
     unsigned ncalls = 0;
     unsigned long slice = 0;
-    int frozen = 0, positional = 0;
+    int frozen = 0, hard_exit = 0, positional = 0;
     const char *image_path = NULL;
     uint32_t base = 0;
     for (int i = 1; i < argc; i++) {
@@ -195,6 +197,8 @@ int main(int argc, char **argv) {
             if (!end || *end != '\0' || slice == 0ul) return usage();
         } else if (!strcmp(a, "--frozen-clock")) {
             frozen = 1;
+        } else if (!strcmp(a, "--hard-exit")) {
+            hard_exit = 1;
         } else if (a[0] == '-' && a[1] == '-') {
             return usage();
         } else if (positional == 0) {
@@ -245,6 +249,11 @@ int main(int argc, char **argv) {
         }
     }
     fprintf(stderr, "verify_harness: %u call spec(s) done, %u yield(s)\n", ncalls, s_yields);
+    if (hard_exit) {
+        fflush(stderr);
+        SR_VERIFY_REPORT_NOW();
+        _Exit(0);
+    }
     return 0;
 }
 
