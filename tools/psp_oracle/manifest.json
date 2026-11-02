@@ -1320,7 +1320,6 @@
           "sceIoOpen",
           "sceIoRead",
           "sceIoWrite",
-          "sceKernelDelayThread",
           "sceKernelDeleteThread",
           "sceKernelExitThread",
           "sceKernelGetThreadId",
