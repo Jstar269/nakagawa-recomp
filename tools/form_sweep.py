@@ -822,9 +822,10 @@ def summarize(man: dict, verdicts: dict[int, tuple[str, str]]) -> tuple[list[str
     totals = {"MATCH": 0, "MISMATCH": 0, "NOT_CHECKED": 0, "MISSING": 0, "forms": 0,
               "forms_unchecked": 0}
     for form in man["forms"]:
-        row = per_form.get(form["key"])
-        if row is None:
+        found = per_form.get(form["key"])
+        if found is None:
             continue
+        row = found
         totals["forms"] += 1
         for k in ("MATCH", "MISMATCH", "NOT_CHECKED", "MISSING"):
             totals[k] += row[k]
