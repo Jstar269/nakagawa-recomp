@@ -864,6 +864,7 @@ def _build_depth_probe(
         [
             CC, "-std=c11", "-O0", "-fno-strict-aliasing",
             "-Wall", "-Wextra", "-DSR_SDL3VK", "-D_CRT_SECURE_NO_WARNINGS",
+            *(("-DSR_STACK_CENSUS_ENABLED",) if "--stack-census" in codegen_args else ()),
             "-I", str(work), "-I", str(ROOT / "src" / "rt"),
             str(harness), str(generated), str(work / "probe_0.c"),
             str(guest_interp), str(PERF),
@@ -1090,15 +1091,6 @@ class StackCensusPipelineTests(unittest.TestCase):
         self.assertEqual(compile_rc, 0, compile_output)
         self.assertEqual(run_rc, 0, run_output)
         self.assertIn("STACK_CENSUS status=COMPLETE entries=1 returns=1", run_output)
-
-    def test_an_alloca_tail_end_balances_under_the_census(self):
-        # The census wrapper of F restores after its own drain, so the chain ends at F's
-        # caller's $sp here too.
-        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
-            _alloca_tail_end(), "SR_STACK_CENSUS_COMPLETE",
-        )
-        self.assertEqual(compile_rc, 0, compile_output)
-        self.assertEqual(run_rc, 0, run_output)
 
     def test_generated_stack_leak_reports_failure(self):
         compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
@@ -1356,6 +1348,16 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # a longjmp and recorded nothing, TAIL's return wrote back the $sp it was entered at
         # over the one its own slot released, and F's caller came back $sp too low.
         generated, results = self._probe(_alloca_tail_end(), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 0x57, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_an_alloca_tail_end_leaves_the_callers_sp_under_the_census(self):
+        # The census wrapper of F restores after its own drain, so the chain ends at F's
+        # caller's $sp here too.
+        _generated, results = self._probe(_alloca_tail_end(), (0,),
+                                          codegen_args=("--stack-census",))
         rc, output, fields = results[0]
         self.assertEqual(rc, 0, output)
         self.assertEqual(fields.get("v0"), 0x57, output)
