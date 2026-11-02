@@ -37046,7 +37046,7 @@ static void test_module_without_entry_runs_no_code(void) {
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
     uint32_t stops_before = sr_hle_test_libfont_startup_stops();
-    int starts_before = s_synth_libfont_start_calls;
+    uint32_t starts_before = s_synth_libfont_start_calls;
     hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
     uint32_t uid = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/module/libfont.prx", 0u, 0u);

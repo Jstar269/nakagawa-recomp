@@ -1229,7 +1229,7 @@ class NullPageGuardTests(unittest.TestCase):
 
         guarded = expanded("-DSR_NULL_PAGE_GUARD=1")
         self.assertEqual(len(guarded), len(forms))
-        for form, line in zip(forms, guarded):
+        for form, line in zip(forms, guarded, strict=True):
             with self.subTest(form=form):
                 self.assertIn("sr_null_page_checked", line)
         self.assertNotIn("sr_null_page_checked", "".join(expanded()),
