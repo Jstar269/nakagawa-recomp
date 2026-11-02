@@ -1496,10 +1496,353 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
     _refuse(site, w, "instruction class has no defined rescale")
 
 
+#: Display NIDs a frame-pacing wait is built from.
+VBLANK_WAIT_NIDS = {
+    0x984C27E7: "sceDisplayWaitVblankStart",
+    0x46F186C3: "sceDisplayWaitVblankStartCB",
+    0x36CDFADE: "sceDisplayWaitVblank",
+    0x8EB9EC49: "sceDisplayWaitVblankCB",
+}
+VBLANK_WAIT_MULTI_NIDS = {
+    0x40F1469C: "sceDisplayWaitVblankStartMulti",
+    0x77ED8B3A: "sceDisplayWaitVblankStartMultiCB",
+}
+REGISTER_SUB_INTR_HANDLER_NID = 0xCA04A2B9
+_LOOKBACK = 5
+
+
+def _sx16(imm: int) -> int:
+    return imm - 0x10000 if imm & 0x8000 else imm
+
+
+def _jal_target(addr: int, w: int) -> int | None:
+    return (addr & 0xF0000000) | ((w & 0x3FFFFFF) << 2) if w >> 26 == 0x03 else None
+
+
+def _global_address(words: Mapping[int, int], addr: int, w: int) -> int | None:
+    """The absolute address a load or store reaches through a `lui` of its base register."""
+    base = (w >> 21) & 31
+    for k in range(1, _LOOKBACK + 1):
+        prev = words.get(addr - 4 * k)
+        if prev is None:
+            return None
+        if prev >> 26 == 0x0F and (prev >> 16) & 31 == base:
+            return (((prev & 0xFFFF) << 16) + _sx16(w & 0xFFFF)) & 0xFFFFFFFF
+        if _gpr_written(prev) == base:
+            return None
+    return None
+
+
+def _gpr_written(w: int) -> int | None:
+    op = w >> 26
+    if op == 0x00 and w & 0x3F not in (0x08, 0x09, 0x0C, 0x0D, 0x18, 0x19, 0x1A, 0x1B):
+        return (w >> 11) & 31
+    if op in (0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x20, 0x21, 0x23, 0x24, 0x25):
+        return (w >> 16) & 31
+    return None
+
+
+def _is_move(w: int) -> bool:
+    """`addu/or rd, rs, zero`: a register copy."""
+    return w >> 26 == 0x00 and w & 0x3F in (0x21, 0x25) and (w >> 16) & 31 == 0
+
+
+def _register_values(
+    words: Mapping[int, int],
+    addr: int,
+    reg: int,
+    entry: Any,
+    callers: Any,
+    depth: int = 1,
+) -> set[int]:
+    """Constants `reg` can hold at `addr`: `lui`+`addiu/ori` built in this routine, copies
+    followed back, and, when the value is an argument of the routine, the constants its
+    callers pass (one level of wrapper per `depth`)."""
+    low = None
+    start = entry(addr)
+    pc = addr - 4
+    # Without a known entry, read a short window: the value is not followed into callers.
+    lowest = start if start is not None else addr - 4 * 4 * _LOOKBACK
+    while pc >= lowest:
+        w = words.get(pc)
+        if w is None:
+            return set()
+        op = w >> 26
+        if op in (0x09, 0x0D) and (w >> 16) & 31 == reg and (w >> 21) & 31 == reg and low is None:
+            low = _sx16(w & 0xFFFF) if op == 0x09 else w & 0xFFFF
+        elif op == 0x0F and (w >> 16) & 31 == reg:
+            return {(((w & 0xFFFF) << 16) + (low or 0)) & 0xFFFFFFFF}
+        elif _is_move(w) and (w >> 11) & 31 == reg and low is None:
+            reg = (w >> 21) & 31
+        elif _gpr_written(w) == reg:
+            return set()
+        pc -= 4
+    if start is None or low is not None or not 4 <= reg <= 11 or depth == 0:
+        return set()
+    found: set[int] = set()
+    for call in callers(start):
+        found |= _register_values(words, call + 8, reg, entry, callers, depth - 1)
+    return found
+
+
+def draft_timing_package(
+    words: Mapping[int, int],
+    imports: Mapping[int, int],
+    *,
+    function_starts: Sequence[int] = (),
+) -> dict[str, Any]:
+    """Find the frame-pacing waits a 60 Hz package starts from, in one executable.
+
+    `words` maps every code address to its instruction word, `imports` maps import stub
+    addresses to NIDs, and `function_starts` adds symbol entries to the `jal` targets that
+    name functions. Two forms are recognised, each rewritten by `vblank_wait_2_to_1`:
+
+    * a VBLANK counter poll: a global that one routine increments by 1 (usually a VBLANK
+      sub-interrupt handler), that the wait compares with `slti/sltiu rX, 2`, and that the
+      wait clears with `sw zero`;
+    * `sceDisplayWaitVblankStartMulti(2)` (or its CB form), with the 2 loaded into `a0`.
+
+    Waits that neither form explains (for example two plain `sceDisplayWaitVblankStart`
+    calls per frame) are listed for review, since no transform rewrites them. The routines
+    that call each pacing wait are update-boundary candidates: the boundary must be the
+    routine that runs once per logic update, which only the title's own code can confirm.
+    """
+    stub_nid = {addr: nid for addr, nid in imports.items()}
+    calls: dict[int, list[int]] = {}
+    for addr, w in words.items():
+        target = _jal_target(addr, w)
+        if target is not None:
+            calls.setdefault(target, []).append(addr)
+    starts = sorted(set(calls) | {int(a) for a in function_starts})
+
+    def function_of(addr: int) -> int | None:
+        lo, hi = 0, len(starts)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if starts[mid] <= addr:
+                lo = mid + 1
+            else:
+                hi = mid
+        return starts[lo - 1] if lo else None
+
+    increments: dict[int, list[int]] = {}
+    polls: dict[int, list[int]] = {}
+    clears: dict[int, list[int]] = {}
+    for addr, w in sorted(words.items()):
+        op = w >> 26
+        if op == 0x23:  # lw rt, G
+            counter = _global_address(words, addr, w)
+            if counter is None:
+                continue
+            rt = (w >> 16) & 31
+            for k in (1, 2):
+                nxt = words.get(addr + 4 * k, 0)
+                if (nxt >> 21) & 31 != rt:
+                    continue
+                if nxt >> 26 in (0x0A, 0x0B) and _sx16(nxt & 0xFFFF) == 2:
+                    polls.setdefault(counter, []).append(addr + 4 * k)
+                elif nxt >> 26 == 0x09 and _sx16(nxt & 0xFFFF) == 1:
+                    increments.setdefault(counter, []).append(addr + 4 * k)
+        elif op == 0x2B and (w >> 16) & 31 == 0:  # sw zero, G
+            counter = _global_address(words, addr, w)
+            if counter is not None:
+                clears.setdefault(counter, []).append(addr)
+
+    handlers: set[int] = set()
+    for stub, nid in stub_nid.items():
+        if nid != REGISTER_SUB_INTR_HANDLER_NID:
+            continue
+        for call in calls.get(stub, ()):
+            # a2 is the handler, set before the call or in its delay slot.
+            handlers |= _register_values(words, call + 8, 6, function_of, lambda fn: calls.get(fn, ()))
+    # A registered handler is a routine entry even though nothing calls it directly.
+    starts = sorted(set(starts) | {h for h in handlers if h in words})
+
+    pacing: list[dict[str, Any]] = []
+    explained_waits: set[int] = set()
+    poll_functions: set[int] = set()
+    for counter in sorted(polls):
+        if counter not in increments or counter not in clears:
+            continue
+        incrementers = sorted({function_of(a) for a in increments[counter]} - {None})
+        for site in polls[counter]:
+            fn = function_of(site)
+            if fn is None:
+                continue
+            pacing.append({
+                "kind": "vblank_counter_poll",
+                "address": site,
+                "function": fn,
+                "insn_offset": site - fn,
+                "counter": counter,
+                "increments": sorted(increments[counter]),
+                "clears": sorted(clears[counter]),
+                "handler_registered": any(f in handlers for f in incrementers),
+            })
+            poll_functions.add(fn)
+    for stub, nid in sorted(stub_nid.items()):
+        if nid not in VBLANK_WAIT_MULTI_NIDS:
+            continue
+        for call in calls.get(stub, ()):
+            for site in [call + 4] + [call - 4 * k for k in range(1, _LOOKBACK)]:
+                w = words.get(site)
+                if w is None or (w >> 16) & 31 != 4 or (w >> 21) & 31 != 0:
+                    continue
+                if w >> 26 in (0x09, 0x0D) and w & 0xFFFF == 2:
+                    fn = function_of(site)
+                    if fn is not None:
+                        pacing.append({"kind": "wait_multi_2", "address": site, "function": fn,
+                                       "insn_offset": site - fn, "api": VBLANK_WAIT_MULTI_NIDS[nid]})
+                        explained_waits.add(call)
+                    break
+                if _gpr_written(w) == 4:
+                    break
+
+    unexplained = []
+    for stub, nid in sorted(stub_nid.items()):
+        if nid in VBLANK_WAIT_NIDS or nid in VBLANK_WAIT_MULTI_NIDS:
+            for call in calls.get(stub, ()):
+                if call not in explained_waits and function_of(call) not in poll_functions:
+                    unexplained.append({"call": call, "function": function_of(call),
+                                        "api": VBLANK_WAIT_NIDS.get(nid) or VBLANK_WAIT_MULTI_NIDS[nid]})
+
+    boundary: dict[int, list[int]] = {}
+    for site in pacing:
+        for call in calls.get(site["function"], ()):
+            caller = function_of(call)
+            if caller is not None:
+                boundary.setdefault(caller, []).append(call)
+    return {
+        "pacing_sites": pacing,
+        "boundary_candidates": [{"function": fn, "calls": sorted(c)} for fn, c in sorted(boundary.items())],
+        "unexplained_waits": unexplained,
+    }
+
+
+def draft_package_declaration(
+    draft: Mapping[str, Any],
+    words: Mapping[int, int],
+    *,
+    package_id: str,
+    title_id: str,
+    executable_sha256: str,
+    game_version: str,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """A validating package with the draft's pacing sites, and its function-name sidecar.
+
+    The update boundary is filled in only when exactly one routine calls the pacing waits;
+    otherwise the candidates stay in the draft report for a person to choose from. The
+    package is a starting point: the frame-counted constants of the title are not in it.
+    """
+    if not draft["pacing_sites"]:
+        raise EnhancementPackageError("No frame-pacing wait was recognised; nothing to draft.")
+    symbols: dict[str, str] = {}
+
+    def name(fn: int) -> str:
+        label = f"draft_fn_{fn:08x}"
+        symbols[label] = f"0x{fn:08x}"
+        return label
+
+    sites = []
+    for i, site in enumerate(draft["pacing_sites"], 1):
+        sites.append({
+            "id": f"pacing_{i}",
+            "function": name(site["function"]),
+            "insn_offset": site["insn_offset"],
+            "stock_digest": compute_stock_words_digest([words[site["address"]]]),
+            "transform": "vblank_wait_2_to_1",
+        })
+    package: dict[str, Any] = {
+        "schema_version": SUPPORTED_SCHEMA_VERSION,
+        "id": package_id,
+        "display_name": "60 FPS game logic (draft)",
+        "version": "0.1.0",
+        "category": "timing_frame_presentation",
+        "target_title_id": title_id,
+        "capabilities": ["logic_60hz_rescale", "vblank_wait_2_to_1"],
+        "game_version": game_version,
+        "executable_sha256": executable_sha256,
+        "rng_policy": {
+            "mode": "rescale_probability",
+            "reason": "Draft: confirm against the title's per-update random rolls before use.",
+        },
+        "sites": sites,
+    }
+    if len(draft["boundary_candidates"]) == 1:
+        fn = draft["boundary_candidates"][0]["function"]
+        package["update_boundary"] = {
+            "function": name(fn),
+            "insn_offset": 0,
+            "stock_digest": compute_stock_words_digest([words[fn]]),
+        }
+    validate_package(package)
+    return package, symbols
+
+
+def _executable_view(path: Path) -> tuple[dict[int, int], dict[int, int], list[int], str]:
+    """Code words, import NIDs, symbol entries and SHA-256 of one PSP executable."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from analyze import Elf, exec_ranges  # noqa: PLC0415 - only the draft command needs them
+    from imports import parse_imports  # noqa: PLC0415
+
+    data = path.read_bytes()
+    elf = Elf(data, base=0)
+    words: dict[int, int] = {}
+    for lo, hi in exec_ranges(elf):
+        raw = elf.read_at_vaddr(lo, hi - lo)
+        if raw is not None:
+            for off in range(0, len(raw) - 3, 4):
+                words[lo + off] = int.from_bytes(raw[off:off + 4], "little")
+    imports = {addr: nid for addr, (_lib, nid) in parse_imports(elf).items()}
+    return words, imports, sorted(elf.func_symbols() or ()), hashlib.sha256(data).hexdigest()
+
+
+def _draft_main(args: argparse.Namespace) -> int:
+    words, imports, starts, sha = _executable_view(args.draft)
+    draft = draft_timing_package(words, imports, function_starts=starts)
+    for site in draft["pacing_sites"]:
+        extra = (f" counter 0x{site['counter']:08x}, handler registered: {site['handler_registered']}"
+                 if site["kind"] == "vblank_counter_poll" else f" {site['api']}(2)")
+        print(f"pacing {site['kind']} at 0x{site['address']:08x} (FUN_{site['function']:08x}"
+              f" +{site['insn_offset']}):{extra}")
+    for cand in draft["boundary_candidates"]:
+        print(f"update boundary candidate FUN_{cand['function']:08x} (calls the wait at "
+              + ", ".join(f"0x{c:08x}" for c in cand["calls"]) + ")")
+    for wait in draft["unexplained_waits"]:
+        fn = f"FUN_{wait['function']:08x}" if wait["function"] is not None else "?"
+        print(f"review: {wait['api']} called at 0x{wait['call']:08x} in {fn}; no transform rewrites it")
+    try:
+        package, symbols = draft_package_declaration(
+            draft, words, package_id=args.id, title_id=args.title_id,
+            executable_sha256=sha, game_version=args.game_version)
+    except EnhancementPackageError as exc:
+        print(f"draft: FAIL: {exc}", file=sys.stderr)
+        return 1
+    out = Path(args.out)
+    out.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
+    out.with_name(out.stem + ".symbols.json").write_text(json.dumps(symbols, indent=2) + "\n", encoding="utf-8")
+    print(f"draft: wrote {out} ({len(package['sites'])} pacing site(s), "
+          f"update boundary {'set' if 'update_boundary' in package else 'not chosen'})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate Nakagawa enhancement package declarations.")
-    parser.add_argument("packages", nargs="+", type=Path, help="Package JSON files to validate.")
+    parser.add_argument("packages", nargs="*", type=Path, help="Package JSON files to validate.")
+    draft = parser.add_argument_group("draft a 60 Hz package from a title's executable")
+    draft.add_argument("--draft", type=Path, metavar="ELF",
+                       help="Decrypted executable (for example the package cache's selected.elf).")
+    draft.add_argument("--title-id", help="The library title_id the package targets.")
+    draft.add_argument("--id", default="draft-60hz", help="Package id (default draft-60hz).")
+    draft.add_argument("--game-version", default="1.00", help="Game version (default 1.00).")
+    draft.add_argument("--out", type=Path, help="Where to write the draft package JSON.")
     args = parser.parse_args(argv)
+    if args.draft is not None:
+        if not args.title_id or args.out is None:
+            parser.error("--draft needs --title-id and --out")
+        return _draft_main(args)
+    if not args.packages:
+        parser.error("name package files to validate, or --draft an executable")
 
     failures = 0
     for pkg_path in args.packages:
