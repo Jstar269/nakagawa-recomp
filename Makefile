@@ -1308,6 +1308,7 @@ HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
 HELP_DESCRIPTION_ge-cpu-profile-validate-selftest := run the GE CPU-profile validator selftest on the production GE object
+HELP_DESCRIPTION_ge-flight-overhead := measure the disarmed flight recorder cost on the GE draw path (recorder linked vs absent; no game data)
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
 HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
@@ -2795,6 +2796,24 @@ ge-cpu-profile-validate-selftest: $(RT_GE_O)
 	$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled
 
 native-core-tests: ge-cpu-profile-validate-selftest
+
+# ge-flight-overhead -- cost of the disarmed flight recorder on the GE paths (#320): the
+# ge-cpu-profile-validate-selftest harness's --bench mode on the production ge.c, built once
+# with the recorder linked (SR_FLIGHT unset) and once with -USR_FLIGHT_RECORDER_LINKED, run
+# in alternating pairs.  Not part of native-core-tests: it measures, it does not gate.
+# GE_FLIGHT_ROUNDS is the samples per workload and pair; GE_FLIGHT_PAIRS the pair count.
+GE_FLIGHT_DIR := $(BUILD_DIR)/ge-flight-overhead
+GE_FLIGHT_ROUNDS ?= 30
+GE_FLIGHT_PAIRS ?= 5
+GE_FLIGHT_SRCS := tests/native/ge_cpu_profile_validate_selftest.c src/rt/ge_capture.c src/rt/flight_recorder.c src/rt/perf.c
+
+ge-flight-overhead:
+	"$(PYTHON)" -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" $(GE_FLIGHT_DIR)/linked $(GE_FLIGHT_DIR)/absent
+	$(CC) $(GE_CFLAGS) -c src/rt/ge.c -o $(GE_FLIGHT_DIR)/linked/ge.o
+	$(CC) $(GE_CFLAGS) -USR_FLIGHT_RECORDER_LINKED -c src/rt/ge.c -o $(GE_FLIGHT_DIR)/absent/ge.o
+	$(CC) $(CFLAGS) -O2 $(LDFLAGS) -o $(GE_FLIGHT_DIR)/linked/bench$(EXE_EXT) $(GE_FLIGHT_SRCS) $(GE_FLIGHT_DIR)/linked/ge.o -lm
+	$(CC) $(CFLAGS) -O2 -USR_FLIGHT_RECORDER_LINKED $(LDFLAGS) -o $(GE_FLIGHT_DIR)/absent/bench$(EXE_EXT) $(GE_FLIGHT_SRCS) $(GE_FLIGHT_DIR)/absent/ge.o -lm
+	"$(PYTHON)" tools/ge_flight_overhead.py --dir "$(GE_FLIGHT_DIR)" --rounds $(GE_FLIGHT_ROUNDS) --pairs $(GE_FLIGHT_PAIRS)
 
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
