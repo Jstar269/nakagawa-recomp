@@ -6194,6 +6194,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             if (s_gelog_stall) {
                 fprintf(stderr, "GE STALL reached: 0x%08" PRIx32 "\n", addr);
             }
+            /* A list streamed through stall updates reaches its END in a later run, which
+             * counts only its own primitives: count these toward the capture now. */
+            if (ge_capture_active()) s_capture_total_prims += prims;
             return addr;
         }
         uint32_t op=MEM_R32(addr); addr+=4;
