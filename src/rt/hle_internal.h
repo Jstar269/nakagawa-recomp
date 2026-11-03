@@ -1441,6 +1441,7 @@ void hle_register_ctrl_sampling_handlers(void);
 void hle_register_gpi_gpo_handlers(void);
 void hle_register_mpeg_shared_handlers(void);
 void hle_register_mpeg_avc_decode_handler(void);
+void hle_register_mpeg_userdata_handlers(void);
 void hle_register_mpeg_ycbcr_handlers(void);
 void hle_register_impose_handlers(void);
 void hle_register_font_handlers(void);

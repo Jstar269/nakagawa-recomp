@@ -595,6 +595,15 @@ HANDLER_METADATA = {
         "status": "controlled_unsupported",
         "description": "PCM access-unit production is deliberately refused with NO_DATA; no PCM decoder or hardware-oracle queue contract is available (#302)",
     },
+    "h_MpegQueryUserdataEsSize": {
+        "status": "partial",
+        "evidence": ["tests/native/psmf_media_selftest.c:test_mpeg_userdata_imports"],
+        "limitation": "writes the 0xA0000 ES and output sizes PPSSPP c9e2afb6 uses and refuses a bad handle or pointer with -1; neither is measured on a PSP (#302)",
+    },
+    "h_MpegGetUserdataAu": {
+        "status": "controlled_unsupported",
+        "description": "userdata access-unit production is deliberately refused with NO_DATA after clearing the two result words, because the demuxer extracts no userdata and the first call says so (#302)",
+    },
     "h_MpegChangeGetAuMode": {
         "status": "partial",
         "limitation": "decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)",

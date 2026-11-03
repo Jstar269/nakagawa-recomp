@@ -46,15 +46,15 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **679** (dedicated **572**, fake_success **5**, controlled_unsupported **102**).
-Semantic handler census: **549** handlers across **26** API families, covering **578** handler-associated NID registrations.
+Registered NIDs: **681** (dedicated **573**, fake_success **5**, controlled_unsupported **103**).
+Semantic handler census: **551** handlers across **26** API families, covering **580** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 250 | 258 |
+| `partial` | 251 | 259 |
 | `compatibility` | 1 | 1 |
-| `controlled_unsupported` | 2 | 6 |
+| `controlled_unsupported` | 3 | 7 |
 | `unreviewed` | 282 | 290 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
@@ -73,7 +73,7 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
 | `sceKernel` | 3 | 104 | 0 | 0 | 83 | 190 | 208 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
-| `sceMpeg` | 0 | 11 | 0 | 1 | 25 | 37 | 37 |
+| `sceMpeg` | 0 | 12 | 0 | 2 | 25 | 39 | 39 |
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
@@ -85,7 +85,7 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 | `sceUmd` | 0 | 6 | 1 | 0 | 7 | 14 | 14 |
 | `sceUtility` | 0 | 9 | 0 | 0 | 27 | 36 | 36 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **250** | **1** | **2** | **282** | **549** | **578** |
+| **Total** | **14** | **251** | **1** | **3** | **282** | **551** | **580** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -845,6 +845,9 @@ Semantic handler census: **549** handlers across **26** API families, covering *
   - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_atrac_au_decode
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
+- **`h_MpegQueryUserdataEsSize`** (`sceMpeg`): `sceMpegQueryUserdataEsSize` (0xc45c99cc)
+  - Limitation: writes the 0xA0000 ES and output sizes PPSSPP c9e2afb6 uses and refuses a bad handle or pointer with -1; neither is measured on a PSP (#302)
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_userdata_imports
 - **`h_NetEtherNtostr`** (`sceNet`): `sceNetEtherNtostr` (0x89360950)
   - Limitation: formats a readable six-byte MAC address into the bounded 18-byte lowercase text form without a network stack and returns the text address; the return value (PPSSPP treats the call as void), invalid pointer precedence and the complete text domain are not hardware measured
   - Evidence: tests/native/hle_thread_selftest.c:test_named_refusals
@@ -1057,6 +1060,7 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 #### Controlled Unsupported Dedicated Handlers
 
 - **`h_MpegGetPcmAu`** (`sceMpeg`): `sceMpegGetPcmAu` (0x8c1e027d)
+- **`h_MpegGetUserdataAu`** (`sceMpeg`): `sceMpegGetUserdataAu` (0x01977054)
 - **`h_SasUnsupportedVoice`** (`sceSas`): `__sceSasSetVoiceATRAC3` (0x4aa9ead6), `__sceSasConcatenateATRAC3` (0x7497ea85), `__sceSasSetTrianglarWave` (0xa232cbe6), `__sceSasSetSteepWave` (0xd5ebbbcd), `__sceSasUnsetATRAC3` (0xf6107f00)
 <!-- END GENERATED HLE STATUS CENSUS -->
 
