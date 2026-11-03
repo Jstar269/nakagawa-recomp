@@ -150,6 +150,19 @@ static int g_failures = 0;
 #define INTERP_EXEC_END   (INTERP_EXEC_START + 20u)
 #define INTERP_DATA_ADDR  0x00601000u
 #define WATCH_AOT_PC      0x00608004u
+#define WATCH_RAM_ADDR    0x08801000u
+
+/* The SR_WATCH reports one store of `width` bytes at `addr` makes: 1 when the armed ADDR:LEN
+ * range overlaps it, else 0. The watch itself is configured once from the same variable. */
+static uint64_t watch_hits(uint32_t addr, uint32_t width) {
+    const char *spec = getenv("SR_WATCH");
+    if (!SR_WATCH_ACTIVE() || !spec) return 0u;
+    char *end = NULL;
+    const unsigned long long start = strtoull(spec, &end, 0);
+    if (!end || *end != ':') return 0u;
+    const unsigned long long len = strtoull(end + 1, NULL, 0);
+    return (uint64_t)addr < start + len && (uint64_t)addr + width > start ? 1u : 0u;
+}
 #define INTERP_REJECT_ADDR 0x00602000u
 #define INTERP_UNOWNED_AOT_ADDR 0x00603000u
 #define INTERP_PARTIAL_AOT_ADDR 0x00604000u
@@ -321,22 +334,22 @@ static const SrModuleFunc k_module_b_funcs[] = {
 static const SrModuleSpan k_module_spans[] = { { 0x00u, 0x60u } };
 static const SrModuleCode k_module_a = {
     "overlay_a.prx", 0x200u, 0x1111u, 0x00u, 0x100u, 0x10u, 1u, NULL, &g_module_a_base,
-    k_module_a_funcs, 2u, k_module_spans, 1u, 0u, 0u,
+    k_module_a_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u,
 };
 static const SrModuleCode k_module_b = {
     "overlay_b.prx", 0x300u, 0x2222u, 0x00u, 0x200u, 0x10u, 1u, NULL, &g_module_b_base,
-    k_module_b_funcs, 2u, k_module_spans, 1u, 0u, 0u,
+    k_module_b_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u,
 };
 static const SrModuleFunc k_module_fixed_funcs[] = { { MODULE_FIXED_LINK, 2u, module_a_entry } };
 static const SrModuleSpan k_module_fixed_spans[] = { { MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x20u } };
 static const SrModuleCode k_module_fixed = {
     "fixed.prx", 0x80u, 0x3333u, MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x40u, 0x4u, 0u, NULL,
-    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u,
+    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u, NULL, 0u,
 };
 static const SrModuleCode k_module_unsupported = {
     "untranslatable.prx", 0x80u, 0x4444u, 0x00u, 0x40u, 0x4u, 1u,
     "relocations cannot be translated: synthetic", &g_module_fixed_base,
-    NULL, 0u, NULL, 0u, 0u, 0u,
+    NULL, 0u, NULL, 0u, 0u, 0u, NULL, 0u,
 };
 
 /* Two code overlays translated for the same link range. Each is bound only while guest
@@ -359,11 +372,11 @@ static const SrModuleFunc k_overlay_b_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_b
 static const SrModuleSpan k_overlay_spans[] = { { OVERLAY_ENTRY, OVERLAY_LINK + 0x70u } };
 static SrModuleCode k_overlay_a = {
     "A.ovl", OVERLAY_CHECK_BYTES, 0x5555u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
-    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
+    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u,
 };
 static SrModuleCode k_overlay_b = {
     "B.ovl", OVERLAY_CHECK_BYTES, 0x6666u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
-    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
+    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u,
 };
 
 static uint32_t overlay_word(uint32_t tag, uint32_t off) { return tag | off; }
@@ -719,8 +732,8 @@ static void test_valid_aot_miss_executes_guest_bytes(void) {
     CHECK(MEM_R32(INTERP_DATA_ADDR) == 0x00001234u,
           "valid executable miss did not perform the guest store (mem=0x%08x)",
           MEM_R32(INTERP_DATA_ADDR));
-    CHECK(!SR_WATCH_ACTIVE() || sr_watch_match_count() == watch_before + 1u,
-          "interpreter store did not trigger exactly one SR_WATCH hit");
+    CHECK(sr_watch_match_count() == watch_before + watch_hits(INTERP_DATA_ADDR, 4u),
+          "interpreter store did not trigger exactly the SR_WATCH hits its range implies");
     CHECK(s.r[2] == 0x00001235u,
           "valid executable miss did not execute load + return delay slot (v0=0x%08x)",
           s.r[2]);
@@ -746,15 +759,46 @@ static void synthetic_aot_watch_body(CpuState *s) {
 }
 
 static void test_aot_store_watch_synthetic_guest(void) {
-    if (!SR_WATCH_ACTIVE()) return;
     const uint64_t watch_before = sr_watch_match_count();
     CpuState s;
     memset(&s, 0, sizeof s);
     synthetic_aot_watch_body(&s);
     CHECK(MEM_R32(INTERP_DATA_ADDR) == 0x89abcdefu,
           "synthetic AOT body did not perform its guest store");
-    CHECK(sr_watch_match_count() == watch_before + 1u,
-          "AOT store did not trigger exactly one SR_WATCH hit");
+    CHECK(sr_watch_match_count() == watch_before + watch_hits(INTERP_DATA_ADDR, 4u),
+          "AOT store did not trigger exactly the SR_WATCH hits its range implies");
+}
+
+/* A store to main RAM takes the accessors' inline path unless store instrumentation is armed
+ * (recomp.h sr_store_plain). An armed SR_WATCH must still see every such store, of every width,
+ * and no store beside the range. memory-watch-selftest arms WATCH_RAM_ADDR:4. */
+static void test_ram_store_watch_every_width(void) {
+    CHECK(sr_ram_offset(WATCH_RAM_ADDR) < 0x04000000u,
+          "WATCH_RAM_ADDR must be main RAM, where the inline store path applies");
+    MEM_W32(WATCH_RAM_ADDR, 0u);
+    MEM_W32(WATCH_RAM_ADDR + 4u, 0u);
+    const uint64_t before = sr_watch_match_count();
+    MEM_W8_PC(WATCH_RAM_ADDR + 3u, 0x5au, WATCH_AOT_PC);
+    const uint64_t after8 = sr_watch_match_count();
+    MEM_W16_PC(WATCH_RAM_ADDR, 0x1234u, WATCH_AOT_PC);
+    const uint64_t after16 = sr_watch_match_count();
+    MEM_W32_PC(WATCH_RAM_ADDR, 0x89abcdefu, WATCH_AOT_PC);
+    const uint64_t after32 = sr_watch_match_count();
+    MEM_W32_PC(WATCH_RAM_ADDR + 4u, 0x01020304u, WATCH_AOT_PC);
+    const uint64_t after_beside = sr_watch_match_count();
+    CHECK(after8 == before + watch_hits(WATCH_RAM_ADDR + 3u, 1u),
+          "a byte store to watched RAM went unreported (hits=%llu)",
+          (unsigned long long)(after8 - before));
+    CHECK(after16 == after8 + watch_hits(WATCH_RAM_ADDR, 2u),
+          "a halfword store to watched RAM went unreported (hits=%llu)",
+          (unsigned long long)(after16 - after8));
+    CHECK(after32 == after16 + watch_hits(WATCH_RAM_ADDR, 4u),
+          "a word store to watched RAM went unreported (hits=%llu)",
+          (unsigned long long)(after32 - after16));
+    CHECK(after_beside == after32 + watch_hits(WATCH_RAM_ADDR + 4u, 4u),
+          "a store beside the watched range was reported");
+    CHECK(MEM_R32(WATCH_RAM_ADDR) == 0x89abcdefu && MEM_R32(WATCH_RAM_ADDR + 4u) == 0x01020304u,
+          "watched RAM stores did not land");
 }
 
 static int g_call_continuation_hits = 0;
@@ -2324,6 +2368,7 @@ int main(int argc, char **argv) {
     test_configured_build_declares_both_collections();
     test_valid_aot_miss_executes_guest_bytes();
     test_aot_store_watch_synthetic_guest();
+    test_ram_store_watch_every_width();
     test_aot_call_returns_before_native_continuation();
     test_interpreter_tail_transfers_remain_untyped();
     test_interpreter_rejects_unowned_and_invalid_fetches();
