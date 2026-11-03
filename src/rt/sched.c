@@ -2738,6 +2738,9 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
         sched_destroy_thread_coro(t);
         t->started = 0;
         t->wakeups = 0; t->sleeping = 0; t->wait_obj = 0; t->wake = 0;
+        /* The re-seeded pc is the entry, where the thread really resumes: the "switched out
+         * inside a call" mark from its last run must not hide it from unload safety (#286). */
+        t->pc_stale = 0;
         memset(&t->saved, 0, sizeof(t->saved));
         t->saved.r[26] = t->k0_init;
         t->saved.r[29] = t->sp_init;

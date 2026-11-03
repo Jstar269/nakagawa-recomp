@@ -37724,6 +37724,33 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
            "lifecycle: a caller inside the image is still a continuation");
     *s_cpu = cpu_before_unloader;
+
+    /* A thread that exited from inside a call keeps that mark while dormant. Started again
+     * through sceKernelStartThread, it re-enters at its entry, and an entry inside the image is
+     * a continuation into it: the restart must not leave the old mark hiding that pc. */
+    uint32_t restart_uid = sched_create_thread(in_a, 30, 0x2000u);
+    TCB *restarted = tcb_by_uid(restart_uid);
+    expect(restart_uid != 0u && restarted != NULL,
+           "lifecycle: a thread whose entry is in the image is created");
+    if (restarted) {
+        restarted->started = 1;   /* as the scheduler leaves a thread that ran and exited */
+        restarted->state = TH_DORMANT;
+        restarted->pc_stale = 1;
+        s_cpu->r[4] = restart_uid;
+        s_cpu->r[5] = 0u;
+        s_cpu->r[6] = 0u;
+        expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0u,
+               "lifecycle: sceKernelStartThread restarts the exited thread");
+        *s_cpu = cpu_before_unloader;
+        expect(restarted->state == TH_READY && restarted->saved.pc == in_a &&
+                   restarted->saved.r[31] == 0u,
+               "lifecycle: the restarted thread is ready at its entry with no return address");
+        expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+               "lifecycle: a restarted thread whose entry is in the image keeps unload refused");
+        restarted->state = TH_DORMANT;
+        restarted->deleted = 1;
+        restarted->entry = 0u;
+    }
     s_cur = cur_before_unloader;
     unloader->state = TH_DORMANT;
     unloader->deleted = 1;
