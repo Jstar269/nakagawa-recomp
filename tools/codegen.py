@@ -33,6 +33,7 @@ if _TOOLS_DIRECTORY not in sys.path:
 
 # Import the local analyzer
 import build_profile
+import code_capture
 from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
@@ -4043,19 +4044,23 @@ def word_runs(addresses):
 
 
 def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
-                             entry_hints=None):
+                             entry_hints=None, data=None, name=None, entries=None):
     """Translate one runtime-placed module in its own link space.
 
     Returns a ``RuntimeModuleTranslation``; a module the build cannot translate
     position-independently still gets a descriptor carrying the reason, so the
     runtime names that boundary if, and only if, the game loads the module.
     Analyzer boundaries keep their existing fail-closed exit status (an int).
+    ``data`` and ``name`` stand for the file's bytes and name when it has none (a code
+    capture); ``entries``, when not None, are the analysis's only seeds (analyze).
     """
     global ADDRESS_SPACE
     import prx_reloc_model
-    with open(module_path, "rb") as source:
-        data = source.read()
-    name = os.path.basename(module_path)
+    if data is None:
+        with open(module_path, "rb") as source:
+            data = source.read()
+        name = os.path.basename(module_path)
+    module_path = module_path or name
     module = RuntimeModuleTranslation(
         index=index, name=name, file_size=len(data),
         file_sha256=hashlib.sha256(data).hexdigest(), file_fnv1a64=fnv1a64(data),
@@ -4102,7 +4107,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         # A code overlay's entry points are held by the executable (entry_hints).
         analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
                               entry_hints=entry_hints if overlay else None,
-                              mixed_code_data=fixed_overlay, report=discovery)
+                              mixed_code_data=fixed_overlay, report=discovery, entries=entries)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1
@@ -4200,6 +4205,30 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         elf, ranges, known,
         translated={a for a, _ in module.functions} - module_stubbed,
         interpreted=module_stubbed)
+    return module
+
+
+def translate_code_capture(index, image, profile=None, cfg_gate=False):
+    """Translate code a game installed at run time (#1933) from the captures of it.
+
+    ``image`` is a ``code_capture.CaptureImage``: a window of guest memory and the addresses
+    runs called in it. It translates as an ELF type 0xFFA8 overlay at the window's address,
+    seeded only from those addresses, so its identity (overlay_check_spans) is the words its
+    code holds and nothing else in the window. Its range is the extent of that code, so a
+    capture of other code nearby can be bound beside it. A target the translation does not
+    give a body is named here; at run time a call to it still stops by name."""
+    import code_capture
+    module = translate_runtime_module(index, None, profile=profile, cfg_gate=cfg_gate,
+                                      data=code_capture.image_overlay_elf(image),
+                                      name=image.name, entries=image.targets)
+    if isinstance(module, int):
+        return module
+    if module.unsupported_reason is None and module.spans:
+        module.link_low, module.link_high = module.spans[0][0], module.spans[-1][1]
+    bodies = {a for a, _ in module.functions} - {a for a, _ in module.stubbed}
+    for target in sorted(image.targets - bodies):
+        sys.stderr.write(f"codegen: {image.name}: captured target 0x{target:08x} has no "
+                         "translation; a call to it still stops by name\n")
     return module
 
 
@@ -4641,7 +4670,7 @@ _USAGE = (
     "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
     "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
     "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm] "
-    "[--miss-seeds=FILE]\n"
+    "[--miss-seeds=FILE] [--code-capture=PATH]...\n"
     "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
 )
 
@@ -4683,6 +4712,9 @@ def _command_line_parser():
     flag("--name-imports", "name each import stub after the function its NID imports")
     value("--backend", "c (default) or llvm (#330)")
     value("--miss-seeds", "a dispatch-miss seed list (tools/miss_seeds.py): extra function entries")
+    parser.add_argument("--code-capture", action="append", default=[], metavar="PATH",
+                        help="a code capture a run wrote (SR_CODE_CAPTURE), or a folder of them "
+                             "(tools/code_capture.py, #1933)")
     parser.add_argument("--omit-aot", action="append", default=[], metavar="ADDR[,ADDR...]",
                         help="leave these entries to the dispatcher instead of direct C calls")
     value("--enhancement-package", "enhancement package to apply")
@@ -5342,6 +5374,13 @@ def main(argv):
             module_hashes.append(fnv1a64(source.read()))
     module_translations = []
     main_data_words = data_section_words(elf) if runtime_modules else set()
+    # Code the game installs at run time, from the captures runs wrote (#1933). Each image is
+    # bound only while guest memory holds the words its translation was made from.
+    try:
+        capture_images = code_capture.group_captures(code_capture.read_captures(cli.code_capture))
+    except code_capture.CaptureError as exc:
+        sys.stderr.write(f"codegen: {exc}\n")
+        return 2
     for index, module_path in enumerate(runtime_modules):
         shared = not stack_census and module_hashes.count(module_hashes[index]) == 1
         translated = translate_runtime_module(index, module_path, profile=profile,
@@ -5352,6 +5391,13 @@ def main(argv):
         module_translations.append(translated)
         if not translated.shared:
             func_texts.extend(translated.texts)
+    for offset, image in enumerate(capture_images):
+        translated = translate_code_capture(len(runtime_modules) + offset, image,
+                                            profile=profile, cfg_gate=cfg_gate)
+        if isinstance(translated, int):
+            return translated
+        module_translations.append(translated)
+        func_texts.extend(translated.texts)
 
     if stack_census:
         try:

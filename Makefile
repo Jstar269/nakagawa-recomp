@@ -3385,6 +3385,31 @@ memory-watch-selftest: dispatch-isolation-selftest-one
 
 native-core-tests: memory-watch-selftest
 
+# code-capture-selftest — code a game installs at run time (#1933), end to end with no game
+# inputs: tests/native/code_capture_selftest.c installs a synthetic routine in unowned RAM and
+# calls it, which stops and, under SR_CODE_CAPTURE, writes a capture; tools/code_capture.py
+# translates the capture; the same harness linked with that translation proves the binding
+# takes the call only while memory holds the captured code. Exit code 0 = all hold.
+CODE_CAPTURE_SELFTEST_DIR := $(BUILD_DIR)/code-capture-selftest
+CODE_CAPTURE_SELFTEST_SRCS := src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c \
+	src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c \
+	src/rt/vfpu_tables.c src/rt/perf.c
+
+code-capture-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
+	"$(PYTHON)" -c "import pathlib, sys; d = pathlib.Path(sys.argv[1]); d.mkdir(parents=True, exist_ok=True); [p.unlink() for p in d.glob('*.nkcap')]" "$(CODE_CAPTURE_SELFTEST_DIR)"
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/code_capture_selftest_capture.exe \
+		tests/native/code_capture_selftest.c $(CODE_CAPTURE_SELFTEST_SRCS) -lm
+	$(BUILD_DIR)/code_capture_selftest_capture.exe $(CODE_CAPTURE_SELFTEST_DIR)
+	"$(PYTHON)" tools/code_capture.py translate --out $(CODE_CAPTURE_SELFTEST_DIR)/code_capture_unit.c $(CODE_CAPTURE_SELFTEST_DIR)
+	$(CC) $(RECOMP_FLAGS) -Isrc/rt -DSR_SDL3VK -c $(CODE_CAPTURE_SELFTEST_DIR)/code_capture_unit.c \
+		-o $(CODE_CAPTURE_SELFTEST_DIR)/code_capture_unit.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -DCODE_CAPTURE_TRANSLATED \
+		-o $(BUILD_DIR)/code_capture_selftest_bound.exe tests/native/code_capture_selftest.c \
+		$(CODE_CAPTURE_SELFTEST_DIR)/code_capture_unit.o $(CODE_CAPTURE_SELFTEST_SRCS) -lm
+	$(BUILD_DIR)/code_capture_selftest_bound.exe $(CODE_CAPTURE_SELFTEST_DIR)
+
+native-core-tests: code-capture-selftest
+
 # asset-index-selftest — host-neutral dynamic extracted-data index regression (issue #223).
 # The production Windows HLE supplies the path enumeration and wide I/O; this target proves the
 # shared ownership/growth/sort/lookup core with a synthetic long host path and no game input.

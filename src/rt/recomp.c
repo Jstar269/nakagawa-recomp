@@ -1948,6 +1948,78 @@ _Static_assert((SR_HOST_RETURN_PC & SR_DISPATCH_VFPU_MASK) != SR_DISPATCH_VFPU_T
 _Static_assert(SR_PHYS(SR_HOST_RETURN_PC) >= 0x0C000000u,
                "no dispatch normalization maps SR_HOST_RETURN_PC into the guest arena");
 
+/* SR_CODE_CAPTURE=<folder> (#1933): a game may copy code into its BSS or heap and call it, and
+ * no translation covers that code. When such a call stops as not-executable, write the bytes
+ * around the target to the folder (the title's private folder) for tools/code_capture.py, whose
+ * translation a later build binds only while memory holds the same code. The stop itself is
+ * unchanged: this adds one line naming the capture. The window reaches up to
+ * SR_CODE_CAPTURE_REACH bytes on each side of the target over main RAM that no executable span
+ * and no bound module owns. The file format is documented in tools/code_capture.py. */
+#define SR_CODE_CAPTURE_REACH 0x10000u
+#define SR_CODE_CAPTURE_HEADER 32u
+static char s_code_capture_last[64];   /* the last capture's file name (the self-test reads it) */
+
+static int code_capture_word_free(uint32_t address) {
+    return address >= SR_RAM_BASE && SR_PHYS(address) == address && sr_inrange_n(address, 4u) &&
+           !sr_exec_span_owns_fetch(address) && sr_module_code_fetch_authority(address) < 0;
+}
+
+static void code_capture_put32(unsigned char *out, uint32_t value) {
+    for (unsigned b = 0; b < 4u; b++) out[b] = (unsigned char)(value >> (8u * b));
+}
+
+static void code_capture_note(uint32_t target, uint32_t pc, uint32_t ra) {
+    const char *folder = getenv("SR_CODE_CAPTURE");
+    if (!folder || !folder[0]) return;
+    if ((target & 3u) != 0u || !code_capture_word_free(target)) {
+        fprintf(stderr, "  CODE_CAPTURE: none; 0x%08" PRIx32 " is not unowned main RAM\n", target);
+        return;
+    }
+    uint32_t lo = target, hi = target + 4u;
+    while (target - lo < SR_CODE_CAPTURE_REACH && code_capture_word_free(lo - 4u)) lo -= 4u;
+    while (hi - target < SR_CODE_CAPTURE_REACH && hi != 0u && code_capture_word_free(hi)) hi += 4u;
+    uint32_t size = hi - lo;
+    unsigned char *file = (unsigned char *)malloc(SR_CODE_CAPTURE_HEADER + (size_t)size);
+    if (!file || !sr_guest_copy_in(file + SR_CODE_CAPTURE_HEADER, lo, size)) {
+        free(file);
+        fprintf(stderr, "  CODE_CAPTURE: failed; cannot read [0x%08" PRIx32 ",0x%08" PRIx32 ")\n",
+                lo, hi);
+        return;
+    }
+    memcpy(file, "NKCODE01", 8u);
+    const uint32_t fields[6] = { lo, size, target, pc, ra, 0u };
+    for (unsigned i = 0; i < 6u; i++) code_capture_put32(file + 8u + 4u * i, fields[i]);
+    snprintf(s_code_capture_last, sizeof s_code_capture_last,
+             "code_capture_%08" PRIx32 "_%016" PRIx64 ".nkcap", target,
+             sr_module_code_fnv1a64(file + SR_CODE_CAPTURE_HEADER, size));
+    char path[4096], partial[4096 + 8];
+    int written = 0, exists = 0;
+    if ((size_t)snprintf(path, sizeof path, "%s/%s", folder, s_code_capture_last) < sizeof path) {
+        FILE *old = fopen(path, "rb");
+        if (old) {
+            exists = 1;
+            fclose(old);
+        } else {
+            snprintf(partial, sizeof partial, "%s.part", path);
+            FILE *out = fopen(partial, "wb");
+            if (out) {
+                written = fwrite(file, 1u, SR_CODE_CAPTURE_HEADER + (size_t)size, out) ==
+                          SR_CODE_CAPTURE_HEADER + (size_t)size;
+                written = (fclose(out) == 0) && written && rename(partial, path) == 0;
+                if (!written) remove(partial);
+            }
+        }
+    }
+    free(file);
+    if (exists || written)
+        fprintf(stderr, "  CODE_CAPTURE: %s %s [0x%08" PRIx32 ",0x%08" PRIx32 ") target=0x%08" PRIx32
+                "; translate it with tools/code_capture.py (#1933)\n",
+                exists ? "already holds" : "wrote", s_code_capture_last, lo, hi, target);
+    else
+        fprintf(stderr, "  CODE_CAPTURE: failed; cannot write %s to the SR_CODE_CAPTURE folder\n",
+                s_code_capture_last);
+}
+
 static int dispatch_run_interp(
     CpuState *s,
     uint32_t target,
@@ -1978,6 +2050,7 @@ static int dispatch_run_interp(
             fault.opcode_valid ? "" : "unavailable/", fault.opcode, fault.address);
     fprintf(stderr, "  SEMANTIC_BOUNDARY: %s; in the works: #308\n",
             dispatch_semantic_boundary_name(interp_result));
+    if (interp_result == SR_GUEST_INTERP_NOT_EXECUTABLE) code_capture_note(fault.pc, s->pc, s->r[31]);
     dispatch_record_semantic_stop(dispatch_semantic_boundary_name(interp_result));
     dump_dispatch_trace();
     return (int)interp_result;

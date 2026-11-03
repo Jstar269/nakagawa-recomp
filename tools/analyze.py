@@ -2559,6 +2559,19 @@ def _keep_prologue_seeds(d):
     d.jtails = {a for a in d.jtails if is_prologue(a)}
 
 
+def _seed_only_entries(d, entries):
+    """Make ``entries`` the image's only seeds.
+
+    An image of bytes a run captured from guest memory (tools/code_capture.py, #1933) is a
+    window around code the game installed at run time: nothing in it says where that code
+    ends, and the rest of the window is whatever the game kept there. No word is a seed by its
+    shape, then, and the code is what control flow from the addresses the run called reaches."""
+    d.hc.clear()
+    d.hc.update(a for a in entries if (a & 3) == 0 and d.in_text(a))
+    d.noisy.clear()
+    d.jtails.clear()
+
+
 def _traced_word(d, addr):
     """The word at ``addr`` when it is traced code, else ``None``."""
     if addr not in d.covered:
@@ -2813,26 +2826,30 @@ def _seed_materialized_code(d, entry_hints=(), work=None):
 
 
 def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
-            entry_hints=None, mixed_code_data=False, seeds=None, seed_check=None):
+            entry_hints=None, mixed_code_data=False, seeds=None, seed_check=None,
+            entries=None):
     # `seeds` are guest addresses a run reached as dispatch misses (tools/miss_seeds.py, #1848):
     # extra function entries for this build. `report["miss_seeds"]` maps each to its status (see
     # `_resolve_seeds`, which takes `seed_check`). None changes nothing.
+    # `entries`, when not None, are the image's only seeds (_seed_only_entries): the targets a
+    # run called in code it captured from guest memory (tools/code_capture.py, #1933).
     if seeds is None:
         return _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints,
-                        mixed_code_data)
+                        mixed_code_data, entries=entries)
 
     unseeded = _analyze(elf, extra_spans, cfg_gate, trace_memo, None, entry_hints,
-                        mixed_code_data)
+                        mixed_code_data, entries=entries)
 
     def run(with_seeds, run_report=None, unusable=None, unproven=None):
         return _analyze(elf, extra_spans, cfg_gate, trace_memo, run_report, entry_hints,
                         mixed_code_data, with_seeds, {} if unusable is None else unusable,
-                        unseeded[1], {} if unproven is None else unproven)
+                        unseeded[1], {} if unproven is None else unproven, entries=entries)
     return _resolve_seeds(unseeded, run, seeds, seed_check, report)
 
 
 def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints,
-             mixed_code_data=False, seeds=(), unusable=None, floor=(), unproven=None):
+             mixed_code_data=False, seeds=(), unusable=None, floor=(), unproven=None,
+             entries=None):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
     # `entry_hints` are code pointers another image holds into this one (data_section_words).
@@ -2857,6 +2874,8 @@ def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints,
     _seed_address_materializations(d)
     if mixed_code_data:
         _keep_prologue_seeds(d)
+    if entries is not None:
+        _seed_only_entries(d, entries)
     if seeds:
         unusable.update(_seed_miss_targets(d, seeds, floor, unproven))
 

@@ -50,6 +50,7 @@
     X("SR_CALLCOUNT_ALL", "flag-presence", "off (top 18 NIDs listed)", "hle.c", "Makes the HLE call-count report list every distinct NID instead of the top 18.") \
     X("SR_CBLOG", "flag-presence", "off", "debug.h,hle.c,hle_kernel_module.c,hle_kernel_thread.c,hle_umd.c", "Logs kernel callback creation, notification and registration events and enables the misc debug class.") \
     X("SR_CBSNAP", "flag-presence", "off", "sched.c", "Diagnostic switch read in sched.c that enables callback snapshots at each delivered vblank.") \
+    X("SR_CODE_CAPTURE", "path", "unset (no capture written)", "recomp.c", "Folder to which a run stopped by a call into unowned RAM writes the code around the target, for tools/code_capture.py (#1933).") \
     X("SR_DATAROOT", "path", "unset", "hle_thread_selftest.c", "Extracted data root directory used to serve guest files from the host; the self-test saves and restores it.") \
     X("SR_DEBUG", "list", "unset (legacy per-subsystem variables decide)", "debug.h,hle.c", "Bitmask (strtoul, base 0) selecting debug log categories; 0x08 also enables GE display-list dumping.") \
     X("SR_DEBUG_THREAD_LOG", "flag-presence", "off", "hle_kernel_interrupt.c", "Diagnostic switch read in hle_kernel_interrupt.c for thread and interrupt logging.") \
