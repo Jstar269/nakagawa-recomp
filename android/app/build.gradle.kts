@@ -93,8 +93,8 @@ android {
 
     sourceSets {
         getByName("main") {
-            java.srcDir("$depsDir/SDL/android-project/app/src/main/java")
-            assets.srcDir(bundledAssets)
+            java.directories.add("$depsDir/SDL/android-project/app/src/main/java")
+            assets.directories.add(bundledAssets.path)
         }
     }
 
