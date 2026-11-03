@@ -157,7 +157,7 @@ static const uint32_t k_tnl_vert_spv[] =
 ;
 /* psp_tnl.vert reads GeTnlParams as P_WORDS 32-bit words and GeTnlVtx as the vertex layout
  * pipe_create gives it. */
-_Static_assert(sizeof(GeTnlParams) == 227u * 4u, "psp_tnl.vert P_WORDS");
+_Static_assert(sizeof(GeTnlParams) == 247u * 4u, "psp_tnl.vert P_WORDS");
 _Static_assert(sizeof(GeTnlVtx) == 72u, "psp_tnl.vert vertex layout");
 
 /* ---- captured vertex (must match psp.vert input layout) ------------------------------ */
