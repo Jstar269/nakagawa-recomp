@@ -934,8 +934,28 @@ RT_SRCS    := src/rt/recomp.c \
               $(RT_NK_UI_SRCS) \
               $(PLAYER_PLATFORM_SRC)
 
+# Verify build (#1843): `make VERIFY=1 ...` compiles the sampled in-play checker (src/rt/verify.c)
+# and its hooks into the runtime and the generated code, and links the reference interpreter
+# (src/ref) beside it. It is off by default and the default objects do not change. Run the
+# resulting player with SR_VERIFY=k and SR_VERIFY_REPORT=file (src/rt/verify.h lists the
+# settings). The reference's sr_bitrev is renamed in its own object, as for snapshot-selftest.
+VERIFY ?= 0
+ifeq ($(VERIFY),1)
+override CFLAGS += -DSR_VERIFY
+RT_SRCS += src/rt/verify.c src/rt/nksnap.c
+override LIBS += -lstdc++
+VERIFY_REF_OBJS := $(BUILD_DIR)/verify_ref_interp.o $(BUILD_DIR)/verify_ref.o
+$(BUILD_DIR)/verify_ref_interp.o: src/ref/interp.cpp
+	$(CXX) -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev -c $< -o $@
+$(BUILD_DIR)/verify_ref.o: src/ref/snapshot_ref.cpp src/ref/snapshot_ref.h
+	$(CXX) -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev -c $< -o $@
+endif
+
 RT_OBJS   := $(addprefix $(BUILD_DIR)/,$(notdir $(RT_SRCS:.c=.o)))
 RT_OBJS    += $(H264_SUB_OBJS)
+ifeq ($(VERIFY),1)
+RT_OBJS    += $(VERIFY_REF_OBJS)
+endif
 
 # Everything needed to COMPILE the HLE sources ($(HLE_SRCS)), in one place. They reach into
 # the ATRAC decode bridges, so every target that compiles them needs these
@@ -1116,6 +1136,8 @@ PUBLIC_TARGETS := \
 	cosim-mutants-llvm \
 	snapshot-selftest \
 	snapshot-selftest-run \
+	verify-selftest \
+	verify-selftest-run \
 	clean \
 	clean-fixtures \
 	tidy \
@@ -1200,7 +1222,11 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-build \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest \
-	gpu-selftest-status
+	gpu-selftest-status \
+	form-sweep-build \
+	form-sweep-link \
+	form-sweep-selftest \
+	form-sweep-deep
 
 PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-latin-small-font project-korean-font
 INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
@@ -1269,6 +1295,12 @@ HELP_DESCRIPTION_cosim-selftest-llvm := run the cosimulation with the opt-in LLV
 HELP_DESCRIPTION_cosim-mutants-llvm := run the LLVM IR backend's cosimulation mutation campaign (#330)
 HELP_DESCRIPTION_snapshot-selftest := run snapshot execution against the reference interpreter (#1842)
 HELP_DESCRIPTION_snapshot-selftest-run := build and run the snapshot runner and its generated-C mutant
+HELP_DESCRIPTION_verify-selftest := run sampled in-play differential checking on a synthetic module (#1843)
+HELP_DESCRIPTION_verify-selftest-run := build and run the verify harness, its generated-C mutant and the capture replay
+HELP_DESCRIPTION_form-sweep-build := generate, translate, build and run one form sweep (#1844)
+HELP_DESCRIPTION_form-sweep-link := build and run the form-sweep harness over an already translated module
+HELP_DESCRIPTION_form-sweep-selftest := sweep every scalar instruction form codegen emits against the reference interpreter, with a generated mutant (#1844)
+HELP_DESCRIPTION_form-sweep-deep := the form sweep with every instance and 2048 states per instance (#1844)
 HELP_DESCRIPTION_clean := remove current-title build outputs
 HELP_DESCRIPTION_clean-fixtures := remove smoke, cosimulation, and oracle artifacts
 HELP_DESCRIPTION_tidy := remove intermediates while preserving linked binaries
@@ -1925,6 +1957,9 @@ endif
 ifeq ($(PERF_AOT_INSTRUCTIONS),1)
 override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
 endif
+ifeq ($(VERIFY),1)
+override RECOMP_FLAGS += -DSR_VERIFY
+endif
 export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
 
 # profile_hash(ENTRIES_VAR, COMPILER, ENTRIES_FILE): the parse-time hash of a build
@@ -2461,6 +2496,159 @@ snapshot-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OB
 		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(SNAPSHOT_FIXTURE)/cases.json \
 		--work $(SNAPSHOT_MUTANT_DIR)
 	@echo "snapshot-selftest: PASS"
+
+# ---- Form sweep (#1844) ---------------------------------------------------------------
+#
+# tools/form_sweep.py asks tools/codegen.py which scalar instruction forms it translates,
+# expands each form into encodings (every aliasing pattern x immediate bucket, sampled to
+# FORM_SWEEP_CAP per form) and writes a synthetic module with one tiny guest function per
+# encoding. The ordinary pipeline translates it; src/rt/form_sweep.c then runs every
+# function on the translated body and on the reference interpreter (src/ref) from the same
+# seeded states and compares the architectural results. A form the reference cannot run is
+# NOT_CHECKED and named in the report, never a pass.
+#
+# form-sweep-selftest builds the sweep twice. The first build is the public sweep and must
+# report zero mismatches. The second uses a generated mutant of the code generator (a
+# wrapper that emits one wrong statement for addu: it reads rs after writing rd) over only
+# that form, and the check requires a MISMATCH on exactly the instances where rd is rs and
+# rs differs from rt. FORM_SWEEP_STATES and FORM_SWEEP_CAP size a deeper run
+# (`form-sweep-deep`); the pull request defaults are small and the seed is fixed.
+FORM_SWEEP_SEED   ?= 1844
+FORM_SWEEP_CAP    ?= 40
+FORM_SWEEP_STATES ?= 64
+FORM_SWEEP_CHUNK  ?= 400
+FORM_SWEEP_CODEGEN_ARGS ?=
+FORM_SWEEP_ROOT   := $(BUILD_ROOT)/form-sweep
+FORM_SWEEP_BASE_ADDR := 0x08C00000
+FORM_SWEEP_TOOL   := tools/form_sweep.py
+FORM_SWEEP_REF_FLAGS := -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev
+FORM_SWEEP_SRCS   := src/rt/form_sweep.c src/rt/nksnap.c src/rt/guest_interp.c \
+	src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c \
+	src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/vfpu_interp.c \
+	src/rt/perf.c src/rt/nested_frames.c
+# One sweep: FORM_SWEEP_DIR holds fixture/ (the module and plan) and the build tree.
+FORM_SWEEP_DIR    ?= $(FORM_SWEEP_ROOT)/public
+FORM_SWEEP_ONLY   ?=
+FORM_SWEEP_CODEGEN ?= tools/codegen.py
+FORM_SWEEP_GAME_VARS = GAME_NAME=formsweep GAME_ELF=$(FORM_SWEEP_DIR)/fixture/guest.prx \
+	GAME_BASE=$(FORM_SWEEP_BASE_ADDR) GAME_ENTRY=$(FORM_SWEEP_BASE_ADDR) \
+	GAME_PSP_HEADER=$(FORM_SWEEP_DIR)/fixture/guest.psp GAME_EXTRA_ELFS= TITLE_MANIFEST= \
+	BUILD_DIR=$(FORM_SWEEP_DIR) FUNCS_PER_CHUNK=$(FORM_SWEEP_CHUNK) PUBLIC_SAFE=1 \
+	CODEGEN_USER_ARGS="$(FORM_SWEEP_CODEGEN_ARGS)"
+
+form-sweep-build:
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) generate --out-dir $(FORM_SWEEP_DIR)/fixture \
+		--seed $(FORM_SWEEP_SEED) --cap $(FORM_SWEEP_CAP) --states $(FORM_SWEEP_STATES) \
+		$(foreach k,$(FORM_SWEEP_ONLY),--only $(k))
+	$(MAKE) $(FORM_SWEEP_DIR)/formsweep_image.bin $(FORM_SWEEP_DIR)/formsweep_recomp.c \
+		$(FORM_SWEEP_GAME_VARS) CODEGEN_TOOL=$(FORM_SWEEP_CODEGEN)
+	$(MAKE) form-sweep-link $(FORM_SWEEP_GAME_VARS) CODEGEN_TOOL=$(FORM_SWEEP_CODEGEN)
+
+# Second phase: the chunk objects exist only after codegen ran.
+form-sweep-link: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	$(CXX) $(FORM_SWEEP_REF_FLAGS) -c src/ref/interp.cpp -o $(BUILD_DIR)/sweep_ref_interp.o
+	$(CXX) $(FORM_SWEEP_REF_FLAGS) -c src/ref/snapshot_ref.cpp -o $(BUILD_DIR)/sweep_ref.o
+	$(CC) $(CFLAGS) -DSR_GATE_BUILD -DSDL_GetTicksNS=snapshot_runner_ticks_ns \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-c src/rt/recomp.c -o $(BUILD_DIR)/sweep_rt_recomp.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/form_sweep.exe $(FORM_SWEEP_SRCS) $(CHUNK_OBJS) \
+		$(BUILD_DIR)/sweep_rt_recomp.o $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
+		$(BUILD_DIR)/sweep_ref_interp.o $(BUILD_DIR)/sweep_ref.o -lstdc++ -lm
+	-$(BUILD_DIR)/form_sweep.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin $(FORM_SWEEP_BASE_ADDR) \
+		$(BUILD_DIR)/fixture/plan.txt > $(BUILD_DIR)/results.txt
+
+form-sweep-selftest:
+	$(MAKE) form-sweep-build FORM_SWEEP_DIR=$(FORM_SWEEP_ROOT)/public
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) report --manifest $(FORM_SWEEP_ROOT)/public/fixture/manifest.json \
+		--results $(FORM_SWEEP_ROOT)/public/results.txt
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) write-mutant --out $(FORM_SWEEP_ROOT)/mutant/mutant_codegen.py
+	$(MAKE) form-sweep-build FORM_SWEEP_DIR=$(FORM_SWEEP_ROOT)/mutant FORM_SWEEP_ONLY=00.21 \
+		FORM_SWEEP_CODEGEN=$(FORM_SWEEP_ROOT)/mutant/mutant_codegen.py
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) check-mutant --manifest $(FORM_SWEEP_ROOT)/mutant/fixture/manifest.json \
+		--results $(FORM_SWEEP_ROOT)/mutant/results.txt
+	@echo "form-sweep-selftest: PASS"
+
+form-sweep-deep:
+	$(MAKE) form-sweep-build FORM_SWEEP_DIR=$(FORM_SWEEP_ROOT)/deep FORM_SWEEP_CAP=0 FORM_SWEEP_STATES=2048
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) report --manifest $(FORM_SWEEP_ROOT)/deep/fixture/manifest.json \
+		--results $(FORM_SWEEP_ROOT)/deep/results.txt
+
+
+# ---- Sampled in-play differential checking (#1843) ------------------------------------
+#
+# src/rt/verify.c is compiled only into a verify build (-DSR_VERIFY, off by default): at
+# sampled call entries it runs the reference interpreter (src/ref) over a copy of guest RAM,
+# lets the real translated call run and compares the two end states. This gate builds
+# src/rt/verify_harness.c against a synthetic module (fixtures/verify/generate.py: the
+# snapshot module plus a counted-loop caller and a yielding loop), drives it through the
+# sampler, rate, range, skip and mismatch cases (fixtures/verify/selftest.py), then builds a
+# harness and a snapshot runner whose generated C has one changed immediate, requires the
+# MISMATCH and replays its capture to the same verdict. Last it preprocesses the default
+# runtime sources and requires that no verify hook is present in them.
+#
+# The hooks are the same C the default build compiles, behind SR_VERIFY: recomp.c's
+# preprocessed text without the flag must contain no sr_verify token, so the default
+# build's runtime objects cannot differ. Everything here links the same isolated runtime
+# as the snapshot gate (see above for SR_GATE_BUILD, sr_bitrev and SDL_GetTicksNS).
+VERIFY_DIR       := $(BUILD_ROOT)/verify
+VERIFY_FIXTURE   := $(VERIFY_DIR)/fixture
+VERIFY_GENERATOR := fixtures/verify/generate.py
+VERIFY_DRIVER    := fixtures/verify/selftest.py
+VERIFY_CORE_SRCS := $(filter-out src/rt/snapshot_runner.c,$(SNAPSHOT_RUNNER_SRCS)) src/rt/verify.c
+# Preprocess one hooked runtime unit as the default build compiles it: no -DSR_VERIFY.
+VERIFY_PREPROCESS = $(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(HLE_INCLUDES) -E -P src/rt/$(1).c -o $(BUILD_DIR)/default_$(1).i
+VERIFY_GAME_VARS = GAME_NAME=verify GAME_ELF=$(VERIFY_FIXTURE)/guest.prx \
+	GAME_BASE=$(SNAPSHOT_BASE_ADDR) GAME_ENTRY=$(SNAPSHOT_BASE_ADDR) \
+	GAME_PSP_HEADER=$(VERIFY_FIXTURE)/guest.psp GAME_EXTRA_ELFS= TITLE_MANIFEST= \
+	BUILD_DIR=$(VERIFY_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
+
+verify-selftest:
+	"$(PYTHON)" $(VERIFY_GENERATOR) generate --out-dir $(VERIFY_FIXTURE)
+	"$(PYTHON)" $(VERIFY_DRIVER) recomp-flags --make "$(MAKE)" --build-dir $(VERIFY_DIR)/flags
+	$(MAKE) $(VERIFY_DIR)/verify_image.bin $(VERIFY_DIR)/verify_recomp.c \
+		$(VERIFY_GAME_VARS) CODEGEN_TOOL=$(CODEGEN_TOOL)
+	$(MAKE) verify-selftest-run $(VERIFY_GAME_VARS) RECOMP_FLAGS="$(RECOMP_FLAGS) -DSR_VERIFY"
+
+VERIFY_MUTANT_CHUNK = $(shell "$(PYTHON)" $(VERIFY_DRIVER) find-chunk --build-dir $(BUILD_DIR) --game $(GAME_NAME) --cases $(VERIFY_FIXTURE)/cases.json)
+VERIFY_MUTANT_DIR = $(BUILD_DIR)/mutant
+VERIFY_LINK_OBJS = $(BUILD_DIR)/verify_rt_recomp.o $(LIBRARY_OBJS) \
+	$(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/verify_ref_interp.o \
+	$(BUILD_DIR)/verify_ref.o -lstdc++ -lm
+
+verify-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/interp.cpp -o $(BUILD_DIR)/verify_ref_interp.o
+	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/snapshot_ref.cpp -o $(BUILD_DIR)/verify_ref.o
+	$(CC) $(CFLAGS) -DSR_VERIFY -DSR_GATE_BUILD -DSDL_GetTicksNS=snapshot_runner_ticks_ns \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-c src/rt/recomp.c -o $(BUILD_DIR)/verify_rt_recomp.o
+	$(CC) $(CFLAGS) -DSR_VERIFY -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/verify_harness.exe src/rt/verify_harness.c $(VERIFY_CORE_SRCS) \
+		$(CHUNK_OBJS) $(VERIFY_LINK_OBJS)
+	"$(PYTHON)" $(VERIFY_DRIVER) run --harness $(BUILD_DIR)/verify_harness.exe \
+		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(VERIFY_FIXTURE)/cases.json \
+		--work $(BUILD_DIR)/cases
+	"$(PYTHON)" $(SNAPSHOT_DRIVER) mutate --chunk $(VERIFY_MUTANT_CHUNK) \
+		--cases $(VERIFY_FIXTURE)/cases.json --out $(VERIFY_MUTANT_DIR)/$(notdir $(VERIFY_MUTANT_CHUNK))
+	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK \
+		-c $(VERIFY_MUTANT_DIR)/$(notdir $(VERIFY_MUTANT_CHUNK)) -o $(VERIFY_MUTANT_DIR)/mutant_chunk.o
+	$(CC) $(CFLAGS) -DSR_VERIFY -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/verify_harness_mutant.exe src/rt/verify_harness.c $(VERIFY_CORE_SRCS) \
+		$(filter-out $(VERIFY_MUTANT_CHUNK:.c=.o),$(CHUNK_OBJS)) $(VERIFY_MUTANT_DIR)/mutant_chunk.o \
+		$(VERIFY_LINK_OBJS)
+	$(CC) $(CFLAGS) -DSR_VERIFY -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/verify_replay_mutant.exe src/rt/snapshot_runner.c $(VERIFY_CORE_SRCS) \
+		$(filter-out $(VERIFY_MUTANT_CHUNK:.c=.o),$(CHUNK_OBJS)) $(VERIFY_MUTANT_DIR)/mutant_chunk.o \
+		$(VERIFY_LINK_OBJS)
+	"$(PYTHON)" $(VERIFY_DRIVER) mutant --harness $(BUILD_DIR)/verify_harness_mutant.exe \
+		--replay $(BUILD_DIR)/verify_replay_mutant.exe \
+		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(VERIFY_FIXTURE)/cases.json \
+		--work $(VERIFY_MUTANT_DIR)
+	$(call VERIFY_PREPROCESS,recomp)
+	$(call VERIFY_PREPROCESS,hle)
+	"$(PYTHON)" $(VERIFY_DRIVER) default-unchanged $(BUILD_DIR)/default_recomp.i $(BUILD_DIR)/default_hle.i
+	"$(PYTHON)" $(VERIFY_DRIVER) exit-paths
+	@echo "verify-selftest: PASS"
 
 
 # Treat profile stamps as generated included makefiles. GNU Make restarts after
@@ -3155,9 +3343,9 @@ domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		tests/native/domain_mode_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/domain_mode_selftest.exe
 
-# dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
-# title configuration owns (dispatch aliases, callback terminators) act only where that
-# configuration names them. No game inputs needed; tests/native/dispatch_isolation_selftest.c
+# dispatch-isolation-selftest — executable proof that the TYPED dispatch binding a
+# title configuration owns (dispatch aliases) acts only where that configuration names
+# it. No game inputs needed; tests/native/dispatch_isolation_selftest.c
 # #includes recomp.c and drives the real dispatch() entry point, asserting its observable
 # effect on CpuState.
 #
@@ -3227,6 +3415,9 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 2 --case readback-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case readback-rows
 	$(GPU_COHERENCE_BIN) --scale 4 --case readback-rows --readback-full 1
+	$(GPU_COHERENCE_BIN) --scale 2 --case undrawn-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows --readback-full 1
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
@@ -3860,7 +4051,7 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		tests/native/pcm_wav_dump.c tests/native/test_pcm_wav_dump.c -o $(BUILD_ROOT)/test_pcm_wav_dump$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pcm_wav_dump$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/archive_vfs.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters 100
 	$(call PSMF_PRODUCER_SELFTEST_CMD,100)
@@ -3868,6 +4059,9 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_profile$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_input_profile$(EXE_EXT)
 	$(call ED25519_VERIFY_SELFTEST_CMD)
+	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/native_test_isolation.c tests/native/test_portable_mode.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_portable_mode$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_portable_mode$(EXE_EXT)
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o $(BUILD_ROOT)/argv_echo_helper$(EXE_EXT)
 	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
@@ -3889,7 +4083,7 @@ endif
 fuzz-parsers:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/archive_vfs.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)
 	$(MAKE) --no-print-directory psmf-producer-selftest \

@@ -90,19 +90,38 @@ void sreg_build_font_registry(void) {
     }
 }
 
-/* The overlay file: SR_SYSTEM_REGISTRY when set, else <per-user data dir>/registry/system.json.
- * NULL when neither resolves, or when the variable is set but cannot be read as UTF-8 (falling
- * back to the default file then would silently write somewhere the user did not choose). */
+/* The overlay file: SR_SYSTEM_REGISTRY when set, else <data root>/registry/system.json, where the
+ * data root is SR_USER_DATA_ROOT (the root the launcher resolved, so portable mode and
+ * --user-data-root reach the game process) or, with that unset or empty, the platform's per-user
+ * directory. NULL when neither resolves, or when a variable is set but unusable (unreadable, or a
+ * relative SR_USER_DATA_ROOT): falling back to the default file then would silently write somewhere
+ * the user did not choose. */
 char *sreg_overlay_path(void) {
-    char *env = NULL, *path;
+    char *env = NULL, *path, *root_utf8 = NULL;
+    wchar_t *configured = NULL, *root = NULL;
     char dir[4096];
     char sep = nk_platform_path_separator();
-    int present = 0;
+    int present = 0, root_present = 0;
     size_t need;
     if (!sr_utf8_env_alloc(L"SR_SYSTEM_REGISTRY", &env, &present)) return NULL;
     if (present && env && env[0]) return env;
     free(env);
-    if (!nk_platform_resolve_app_data_dir(dir, sizeof(dir))) return NULL;
+    if (!sr_wide_env_alloc(L"SR_USER_DATA_ROOT", &configured, &root_present)) return NULL;
+    if (root_present && configured && configured[0]) {
+        int valid = sr_wide_configured_root_wide_alloc(configured, &root) &&
+                    sr_wide_to_utf8_alloc(root, &root_utf8) && strlen(root_utf8) < sizeof(dir);
+        free(configured);
+        free(root);
+        if (!valid) {
+            free(root_utf8);
+            return NULL;
+        }
+        snprintf(dir, sizeof(dir), "%s", root_utf8);
+        free(root_utf8);
+    } else {
+        free(configured);
+        if (!nk_platform_resolve_app_data_dir(dir, sizeof(dir))) return NULL;
+    }
     need = strlen(dir) + sizeof("/registry/system.json");
     path = (char *)malloc(need);
     if (!path) return NULL;
@@ -1985,6 +2004,42 @@ static uint32_t io_open_exclusive_existing(const char *path) {
     return 0x80010011u;
 }
 
+/* PSP_O_TRUNC on a PSP's Memory Stick, measured on a PSP-3000 (#1892): the file is empty from
+ * the open on, for sceIoGetstat, a seek to the end, a read and any other descriptor. But a write
+ * past the end does not leave zeros below it: the old bytes come back. So a game that installs a
+ * file in chunks can reopen it with PSP_O_TRUNC for each chunk, seek to the chunk and write it.
+ * The host file is cut at open, and the descriptor keeps the bytes for such a write. */
+static uint8_t *io_truncate_keeping_bytes(FILE *host, uint32_t size) {
+    uint8_t *bytes = (uint8_t *)malloc(size);
+    if (!bytes) return NULL;
+    rewind(host);
+    int failed = fread(bytes, 1, size, host) != size;
+    if (!failed) {
+        rewind(host);
+#ifdef _WIN32
+        failed = _chsize_s(_fileno(host), 0) != 0;
+#else
+        failed = ftruncate(fileno(host), 0) != 0;
+#endif
+    }
+    if (failed) {
+        free(bytes);
+        return NULL;
+    }
+    rewind(host);
+    return bytes;
+}
+
+/* Before a write at f->off: the bytes PSP_O_TRUNC kept that a gap below it brings back. */
+int io_restore_truncated_gap(Fd *f) {
+    uint32_t end = 0;
+    if (!sr_stream_size_u32(f->host, &end)) return 0;
+    const uint32_t stop = f->off < f->truncated_size ? f->off : f->truncated_size;
+    if (end >= stop) return 1;
+    return io_host_seek(f->host, end) == 0 &&
+           fwrite(f->truncated_bytes + end, 1, stop - end, f->host) == stop - end;
+}
+
 /* Host-serve a guest file from the extracted-XB data root (SR_DATAROOT).
  *
  * This is the long-term groundwork for the text-loader (.to) fix and any other
@@ -2069,7 +2124,10 @@ static uint32_t h_io_open_path_stock(const char *path, uint32_t flags, int force
          * and TRUNC or APPEND change it; with CREAT | EXCL only a new file opens (#1380). */
         char *hp = host_path_alloc(path);
         const wchar_t *mode;
-        if (flags & 0x0400) mode = L"w+b";            /* TRUNC */
+        /* A written file is cut below, once its bytes are kept (io_truncate_keeping_bytes). */
+        const int truncate_keeping = (flags & 0x0400) && writing && !exclusive &&
+                                     !(flags & 0x0100);
+        if ((flags & 0x0400) && !truncate_keeping) mode = L"w+b";  /* TRUNC */
         else if (flags & 0x0100) mode = L"a+b";       /* APPEND */
         else if (writing || creating) mode = L"r+b"; /* update; CREAT falls back to create below */
         else mode = L"rb";                           /* read-only host file (e.g. a prior save) */
@@ -2202,9 +2260,22 @@ static uint32_t h_io_open_path_stock(const char *path, uint32_t flags, int force
                     path);
             return 0x80010005;
         }
+        uint8_t *truncated_bytes = NULL;
+        const uint32_t truncated_size = host_size;
+        if (truncate_keeping && host_size) {
+            truncated_bytes = io_truncate_keeping_bytes(fp, host_size);
+            if (!truncated_bytes) {
+                fclose(fp);
+                fprintf(stderr, "sceIoOpen: PSP_O_TRUNC failed on the host file: %s\n", path);
+                return 0x80010005;
+            }
+            host_size = 0;
+        }
         s_fds[slot].used = 1; s_fds[slot].host = fp; s_fds[slot].lba = 0;
         s_fds[slot].size = host_size; s_fds[slot].off = 0;
         s_fds[slot].writable = writing || creating;
+        s_fds[slot].truncated_bytes = truncated_bytes;
+        s_fds[slot].truncated_size = truncated_bytes ? truncated_size : 0u;
         return (uint32_t)slot;
     }
 from_iso:
@@ -2321,10 +2392,23 @@ uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot) {
         fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: the run stops here\n");
         sr_trace_close();
         sr_perf_shutdown();
+        SR_VERIFY_REPORT_NOW();
         fflush(stderr);
         _Exit(1);
     }
     return rc;
+}
+
+/* A read-only open of path that is closed again at once: 0 when the open succeeds, or the
+ * error sceIoOpen returns. sceKernelLoadModule opens its file this way before it reads a
+ * byte, so a path that opens nothing fails with the open's error (uofw modulemgr,
+ * src/kd/modulemgr/loadModule.c, sceKernelLoadModule). */
+uint32_t hle_io_probe_open(const char *path) {
+    uint32_t rc = h_io_open_path_stock(path, 1u, -1);
+    if (rc >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0]))) return rc;
+    if (s_fds[rc].used) hle_fd_release(&s_fds[rc], 0);
+    s_closed_res[rc] = 0;
+    return 0u;
 }
 int io_host_seek(FILE *host, uint32_t offset) {
 #ifdef _WIN32

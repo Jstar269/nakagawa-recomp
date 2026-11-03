@@ -1315,6 +1315,9 @@ static const NkPackageBuildIdentity *g_fixture_build_identity = NULL;
 /* Extra build-report members the next fixture package carries, each with its leading
  * comma; empty for none. */
 static const char *g_fixture_report_extra = "";
+/* The generated-code epoch a fixture records: the current one but for the case that
+   writes a package from before it. */
+static int g_fixture_generated_code_abi_epoch = NK_AOT_GENERATED_CODE_ABI_EPOCH;
 
 /* `folder_enhancement_id` names the package folder (NULL: the authentic
    packages/<disc_id>, else packages/<disc_id>-enhanced-<id>), and
@@ -1443,7 +1446,7 @@ static void write_runtime_package_fixture_variant(
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
         "\"runtime_abi_epoch\":%d,\"title_input_identity_sha256\":\"%s\"}",
         analyzer_sha256, codegen_options_digest, codegen_sha256, input_executable_sha256,
-        NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        g_fixture_generated_code_abi_epoch, 0,
         modules_digest, NK_AOT_RUNTIME_ABI_EPOCH, identity_digest);
     assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
     int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
@@ -10014,6 +10017,24 @@ int main(int argc, char **argv) {
         assert(previous_abi_info.package_root[0] == '\0');
         assert(previous_abi_info.executable_path[0] == '\0');
         assert(previous_abi_info.image_path[0] == '\0');
+        /* A package from before the current generated-code epoch recorded older module
+           identities. It is refused, and the player says how to replace it. */
+        g_fixture_generated_code_abi_epoch = NK_AOT_GENERATED_CODE_ABI_EPOCH - 1;
+        write_runtime_package_fixture_with_report_size(
+            validation_root, cached_disc_id, "synthetic-allegrex-v1",
+            SR_CPUSTATE_ABI_VERSION, "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL,
+            (size_t)accepted_report_size + 128u);
+        g_fixture_generated_code_abi_epoch = NK_AOT_GENERATED_CODE_ABI_EPOCH;
+        NkRuntimePackageInfo previous_epoch_info;
+        memset(&previous_epoch_info, 0xA5, sizeof(previous_epoch_info));
+        reason[0] = '\0';
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &previous_epoch_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+        assert(!previous_epoch_info.validation_cache_hit);
+        assert(strstr(reason, "package cache AOT key is invalid or incompatible") != NULL);
+        assert(strstr(reason, "build it from the library") != NULL);
+        assert(previous_epoch_info.executable_path[0] == '\0');
         write_runtime_package_fixture(validation_root, cached_disc_id,
                                       "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);

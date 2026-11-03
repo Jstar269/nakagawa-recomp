@@ -96,10 +96,14 @@ static void sr_umd_signal_ready(void) {
  * fall inside the current drive state (see s_umd_drive_stat) is satisfied
  * immediately; otherwise the caller waits on the UMD object until sceUmdActivate
  * signals the drive ready or the timeout passes, and the state is read again:
- * still unsatisfied reports SCE_KERNEL_ERROR_WAIT_TIMEOUT. */
+ * still unsatisfied reports SCE_KERNEL_ERROR_WAIT_TIMEOUT. A wait that something
+ * ended with a result (sceUmdCancelWaitDriveStat, sceKernelReleaseWaitThread)
+ * returns that result whatever the drive state. */
 static uint32_t umd_wait_drive_stat(uint32_t want, uint32_t timeout_us) {
     if ((s_umd_drive_stat & want) == want) return 0;
     (void)sched_block_on_timeout(0x554D44u, timeout_us);
+    uint32_t result = 0u;
+    if (sched_take_wake_result(&result)) return result;
     return (s_umd_drive_stat & want) == want ? 0u : 0x800201A8u;
 }
 
@@ -132,10 +136,28 @@ static uint32_t h_UmdWaitDriveStatCB(CpuState *s) {
     int timed_out = sched_block_on_timeout(0x554D44u, timeout);
     sched_set_current_cb_wait(0);
 
+    /* Taken before callbacks run: a callback that blocks would replace it. */
+    uint32_t result = 0u;
+    int has_result = sched_take_wake_result(&result);
+
     if (sr_thread_has_pending_callbacks(self))
         sr_thread_dispatch_callbacks();
 
+    if (has_result) return result;
     return timed_out ? 0x800201A8u : 0u;
+}
+
+/* sceUmdCancelWaitDriveStat(): resume every thread waiting on the drive with
+ * SCE_KERNEL_ERROR_WAIT_CANCEL and return 0, as PPSSPP Core/HLE/sceUmd.cpp (c9e2afb6) does. PPSSPP
+ * does not reschedule here; a stronger waiter runs at once as it does after sceKernelCancelSema,
+ * and that order is UNMEASURED for this call. No waiter leaves nothing behind for a later wait. */
+static uint32_t h_UmdCancelWaitDriveStat(CpuState *s) {
+    (void)s;
+    if (sched_count_waiters(0x554D44u)) {
+        sched_wake_with_result(0x554D44u, SCE_KERNEL_ERROR_WAIT_CANCEL);
+        sched_preempt();
+    }
+    return 0;
 }
 
 /* sceUmdActivate: real PSP spins up the laser motor; do a small blocking delay before reporting
@@ -208,13 +230,5 @@ void hle_register_wait_conformance_umd(void) {
     sr_hle_register(0x8ef08fce, "sceUmdWaitDriveStat", h_UmdWaitDriveStat);
     sr_hle_register(0x56202973, "sceUmdWaitDriveStatWithTimer", h_UmdWaitDriveStatWithTimer);
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
+    sr_hle_register(0x6af9b50a, "sceUmdCancelWaitDriveStat", h_UmdCancelWaitDriveStat);
 }
-
-#ifndef SR_MPEG_MEDIA_SELFTEST
-#ifndef SR_HLE_THREAD_SELFTEST
-/* From sr_hle_init(). */
-void hle_register_init_umd(void) {
-    sr_hle_register_unsupported(0x6af9b50a, "sceUmdCancelWaitDriveStat", 0x80010086u); /* SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED */
-}
-#endif
-#endif

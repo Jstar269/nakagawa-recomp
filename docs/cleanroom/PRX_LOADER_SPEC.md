@@ -111,7 +111,8 @@ Field order, helper structure, and internal names are the implementer's own.
 The entry address is `e_entry + base` for relocatable inputs and `e_entry` for
 `ET_EXEC` [C1]. When the export list (§3.7) contains the system-library NID
 `0xD632ACDB` (`module_start`), that export's address is reported separately; when it
-does not, callers use the entry address as the start routine [C4].
+does not, callers use the entry address as the start routine [C4]. An `e_entry` of
+`0xFFFFFFFF` declares no entry, so a module with neither has no start routine.
 
 ### 3.4 Module information block
 

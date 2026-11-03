@@ -276,8 +276,9 @@ The governance work intentionally leaves these as separate, evidence-backed foll
    base folder, where it used to fall back to the shell's working directory, so a compressed disc
    was expanded and a raw disc placed under whichever checkout ran the command
    (`ExplicitAssetRootTests` in `tools/test_workspace_paths.py`). The library classes
-   `RuntimeLauncher` and `PreparationEngine` still default to the working directory when a caller
-   names no root; every shipped caller now names one;
+   `RuntimeLauncher` defaults to the checkout that holds the module and `PreparationEngine`
+   requires an explicit base folder, so neither follows the working directory; the remaining gap
+   is a two-worktree test proving each checkout consumes only its own assets;
 4. [DONE - #368] add a long-path diagnostic to the workspace doctor:
    implemented in `tools/nk_doctor_checks.py` (`check_long_paths`, `query_windows_long_paths_enabled`)
    under code `LONG_PATHS`, reporting Windows `LongPathsEnabled` registry policy and both the

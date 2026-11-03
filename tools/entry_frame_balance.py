@@ -282,6 +282,17 @@ def profile_entry(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
     return _walk_frame(elf, addr, ranges, limit, gated=True)
 
 
+def profile_exact_paths(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
+    """:func:`profile_entry`'s walk, with each path dropped at a ``$sp`` write it cannot model.
+
+    ``unknown_sp`` is one flag for a whole walk, and a delta read past such a write means
+    nothing, so a profile cannot say which of its deltas are exact. Here each recorded return and
+    tail delta comes from a path with every ``$sp`` write modelled, so each is exact for its path;
+    ``unknown_sp`` says whether any path was dropped.
+    """
+    return _walk_frame(elf, addr, ranges, limit, gated=True, exact_paths=True)
+
+
 def linked_branch_is_call(elf, source, word, ranges, limit=DEFAULT_STEP_LIMIT):
     """Is the linking branch ``word`` at ``source`` a CALL of its target (#968)?
 
@@ -336,10 +347,14 @@ def linked_target_role(elf, target, ranges, limit=DEFAULT_STEP_LIMIT):
     return role
 
 
-def _walk_frame(elf, addr, ranges, limit, gated):
+def _walk_frame(elf, addr, ranges, limit, gated, exact_paths=False):
     """:func:`profile_entry`'s walk.  ``gated=False`` is the structural form
     :func:`linked_target_role` uses: there every linking branch except
-    ``bal .+8`` is a call, without asking for its target's role."""
+    ``bal .+8`` is a call, without asking for its target's role.
+    ``exact_paths`` is :func:`profile_exact_paths`'s form: a path ends at the
+    first ``$sp`` write it cannot model, its own or its delay slot's.  A
+    branch-likely annuls its slot when not taken, so such a slot ends only the
+    taken path."""
     # One membership test per step: index the spans once per walk.
     ranges = span_index(ranges)
     seen = set()
@@ -373,6 +388,12 @@ def _walk_frame(elf, addr, ranges, limit, gated):
             op, fn = word >> 26, word & 0x3F
 
             slot_step, slot_unknown = sp_effect(read32(elf, pc + 4))
+            if exact_paths and (unk or (slot_unknown and _runs_delay_slot(pc, word)
+                                        and not branch_likely(word))):
+                unknown = True
+                break
+            # Only a branch-likely gets here with a slot it cannot model: its taken path ends.
+            drop_taken = exact_paths and slot_unknown
 
             if op == 3 or (op == 0 and fn == 0x09 and ((word >> 11) & 0x1F) != 0):  # jal / linked jalr: the call returns
                 unknown = unknown or slot_unknown
@@ -405,6 +426,8 @@ def _walk_frame(elf, addr, ranges, limit, gated):
                 unknown = unknown or slot_unknown
                 if branch_likely(word):
                     stack.append((pc + 8, delta))
+                    if drop_taken:
+                        break
                 delta += slot_step
                 pc += 8
                 continue
@@ -413,7 +436,7 @@ def _walk_frame(elf, addr, ranges, limit, gated):
             target = branch_target(pc, word)
             if target is not None:
                 unknown = unknown or slot_unknown
-                if in_ranges(target, ranges):
+                if in_ranges(target, ranges) and not (is_likely and drop_taken):
                     stack.append((target, delta + slot_step))
                 if op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0:
                     break  # unconditional `b`: no fall-through path
@@ -439,6 +462,14 @@ def _walk_frame(elf, addr, ranges, limit, gated):
         truncated=truncated,
         depths={pc: frozenset(values) for pc, values in depths.items()},
     )
+
+
+def _runs_delay_slot(pc, word):
+    """True when the walk applies the word after ``word`` as its delay slot."""
+    op, fn = word >> 26, word & 0x3F
+    return (op in (2, 3) or (op == 0 and fn in (0x08, 0x09))
+            or (op == 1 and linked_branch_target(pc, word) is not None)
+            or branch_target(pc, word) is not None)
 
 
 def owner_covers(elf, owner, addr, ranges, callables):

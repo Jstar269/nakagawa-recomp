@@ -195,7 +195,11 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t *re
             uint32_t ch = MEM_R16(p + 10u);      /* channels */
             uint32_t align = MEM_R16(p + 20u);   /* blockAlign = bytes per frame */
             uint32_t rate = MEM_R32(p + 16u);    /* nAvgBytesPerSec = declared byte rate */
-            if (ch < 1u || ch > 8u) return 0;
+            /* Mono or stereo only: sceAtracDecodeData fills a buffer sized for at most
+             * two channels, and the public PPSSPP reference (GPL-2.0-or-later,
+             * Core/Util/AtracTrack.cpp at 06893a55, AnalyzeTrack) refuses any other
+             * count as UNKNOWN_FORMAT. UNMEASURED on a PSP (#969). */
+            if (ch < 1u || ch > 2u) return 0;
             if (align < 1u || align > 0x10000u) return 0;
             if (a->codecType == ATRAC_CODEC_AT3) {
                 if (sz < 18u || MEM_R16(p + 24u) != sizeof(at3Extradata) ||
