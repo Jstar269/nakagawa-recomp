@@ -3217,9 +3217,10 @@ static void build_state(int persp, int sprite, Batch *b) {
                  | (mb >= 0x80 ? 0 : VK_COLOR_COMPONENT_B_BIT);
         if (g->stencil_enable && stencil_fixed_alpha(g) != SFIX_KEEP) k->cmask |= VK_COLOR_COMPONENT_A_BIT;
     }
-    /* An unblended stencil state that cannot read the destination (stencil_fixed_alpha) needs
-     * no shader stencil test: the colour takes the path of a draw without the stencil test,
-     * and the stored stencil is the write mask above or F_SALPHA's value. */
+    /* A stencil state that cannot read the destination (stencil_fixed_alpha) needs no shader
+     * stencil test: the colour takes the path of a draw without the stencil test (blended, the
+     * fixed-function blend, within blend-parity-ff's bound of ge.c), and the stored stencil is
+     * the write mask above, F_SALPHA's value or, blended, PipeKey.azero's 0. */
     const int sfix = !clear && g->stencil_enable ? stencil_fixed_alpha(g) : SFIX_NONE;
     const int stencil = !clear && g->stencil_enable && sfix == SFIX_NONE;
 

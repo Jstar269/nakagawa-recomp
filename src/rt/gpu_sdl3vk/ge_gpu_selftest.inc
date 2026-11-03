@@ -3245,8 +3245,10 @@ static int coherence_run_native_bulk_copy(void) {
 }
 
 /* Stencil parity: the GPU stencil path against ge.c, bit for bit, in every framebuffer
- * format, except the 8888 blended cells that read no destination (s_stp_ff_blend): their
- * alpha is exact and their colour within the fixed-function blend's bound. Each cell of the matrix is one state (test function, reference, mask, the three
+ * format, except the 8888 blended cells whose state took the fixed-function path
+ * (stp_classify): their alpha is exact and their colour within the fixed-function blend's
+ * bound. No state of a 16-bit list may take that path. Each cell of the matrix is one state
+ * (test function, reference, mask, the three
  * ops, the alpha write mask, blending) drawing two overlapping sprites onto a hashed
  * background, so the second sprite reads what the first wrote: a state that reads its own
  * writes must split there (stencil_splits). The depth list fills a striped depth buffer in
@@ -3313,23 +3315,18 @@ static void stp_cell_sprites(StpList *l, uint32_t *vaddr, uint32_t cell, float z
     *vaddr += 4u * (uint32_t)sizeof(ParityGuestVtx);
 }
 
-/* Per cell of the last list built: 1 if, on an 8888 target, its state is blended and stores
- * the old stencil or a constant 0 under a test that always passes, so it reads no destination
- * and blends in fixed function (ge_gpu.c stencil_fixed_alpha). */
+/* Per cell of the 8888 list being checked: 1 if its state is blended and took the
+ * fixed-function stencil path (stp_classify). */
 static uint8_t s_stp_ff_blend[8u * 6u * 6u];
 
 static void stp_cell_state(StpList *l, uint32_t cell, uint32_t func, uint32_t ops) {
     static const uint32_t smask[5] = { 0xFFu, 0xF0u, 0x0Fu, 0x80u, 0x81u };
     static const uint32_t amask[5] = { 0x00u, 0x00u, 0xF0u, 0x0Fu, 0x80u };
     uint32_t h = wrap_hash(0xA11u + cell);
-    uint32_t ref = h & 0xFFu, am = amask[(cell / 5u) % 5u], zpass = (ops >> 16) & 7u;
-    stp_emit(l, 0xDC, func | (ref << 8) | (smask[cell % 5u] << 16));
+    stp_emit(l, 0xDC, func | ((h & 0xFFu) << 8) | (smask[cell % 5u] << 16));
     stp_emit(l, 0xDD, ops);
-    stp_emit(l, 0xE9, am);
+    stp_emit(l, 0xE9, amask[(cell / 5u) % 5u]);
     stp_emit(l, 0x21, (cell & 1u) ? 1u : 0u);
-    s_stp_ff_blend[cell] = (uint8_t)((cell & 1u) && func == 1u &&
-                                     (zpass == 0u || am == 0xFFu ||
-                                      (am == 0u && (zpass == 1u || (zpass == 2u && ref == 0u)))));
 }
 
 /* Two sprites overlap in each cell, so a pixel blends at most twice; each fixed-function blend
@@ -3343,13 +3340,16 @@ static void stp_end(StpList *l) {
     stp_emit(l, 0x0C, 0);
 }
 
-/* Matrix list: every test function with every stencil-fail and depth-pass op, depth off. */
-static uint32_t stp_matrix_list(uint32_t base, uint32_t fmt) {
+/* Matrix list: every test function with every stencil-fail and depth-pass op, depth off. With
+ * `only` >= 0 the list holds that cell alone. */
+#define STP_MATRIX_CELLS (8u * 6u * 6u)
+static uint32_t stp_matrix_list(uint32_t base, uint32_t fmt, int only) {
     StpList l; stp_begin(&l, base, fmt, 0);
     uint32_t vaddr = 0x08060000u, cell = 0;
     for (uint32_t func = 0; func < 8u; func++)
         for (uint32_t sfail = 0; sfail < 6u; sfail++)
             for (uint32_t zpass = 0; zpass < 6u; zpass++, cell++) {
+                if (only >= 0 && cell != (uint32_t)only) continue;
                 stp_cell_state(&l, cell, func, sfail | (((cell / 7u) % 6u) << 8) | (zpass << 16));
                 stp_cell_sprites(&l, &vaddr, cell, 0.0f);
             }
@@ -3357,26 +3357,32 @@ static uint32_t stp_matrix_list(uint32_t base, uint32_t fmt) {
     return 0x08040000u;
 }
 
-/* Depth list: a striped depth buffer, then depth-tested cells. */
-static uint32_t stp_depth_list(uint32_t base, uint32_t fmt) {
+/* Depth list: a striped depth buffer, then depth-tested cells. With `only` >= 0 the list
+ * holds that cell alone, without the depth buffer. */
+#define STP_DEPTH_CELLS (8u * 6u + 5u)
+static uint32_t stp_depth_list(uint32_t base, uint32_t fmt, int only) {
     static const uint32_t zfunc[4] = { 4u, 5u, 6u, 7u };   /* less, lequal, greater, gequal */
     StpList l; stp_begin(&l, base, fmt, 1);
     uint32_t vaddr = 0x08060000u;
-    stp_emit(&l, 0xD3, 1u | 0x400u | 0x100u);              /* depth and colour, stencil kept */
-    for (uint32_t x = 0; x < STP_CELLS_X * STP_PITCH; x += 2u)
-        stp_sprite(&l, &vaddr, 0xFF808080u, (float)(STP_ORIGIN + x), (float)STP_ORIGIN,
-                   (float)(STP_ORIGIN + x + 2u), (float)(STP_ORIGIN + 8u * STP_PITCH),
-                   (x & 2u) ? 49152.0f : 16384.0f);
-    stp_emit(&l, 0xD3, 0);
+    if (only < 0) {
+        stp_emit(&l, 0xD3, 1u | 0x400u | 0x100u);          /* depth and colour, stencil kept */
+        for (uint32_t x = 0; x < STP_CELLS_X * STP_PITCH; x += 2u)
+            stp_sprite(&l, &vaddr, 0xFF808080u, (float)(STP_ORIGIN + x), (float)STP_ORIGIN,
+                       (float)(STP_ORIGIN + x + 2u), (float)(STP_ORIGIN + 8u * STP_PITCH),
+                       (x & 2u) ? 49152.0f : 16384.0f);
+        stp_emit(&l, 0xD3, 0);
+    }
     uint32_t cell = 0;
     for (uint32_t func = 0; func < 8u; func++)
         for (uint32_t zpass = 0; zpass < 6u; zpass++, cell++) {
+            if (only >= 0 && cell != (uint32_t)only) continue;
             stp_cell_state(&l, cell, func, zpass << 16);
             stp_emit(&l, 0xDE, zfunc[cell % 4u]);
             stp_emit(&l, 0xE7, (cell / 4u) & 1u);          /* depth writes on and off */
             stp_cell_sprites(&l, &vaddr, cell, 32768.0f);
         }
     for (uint32_t sfail = 1; sfail < 6u; sfail++, cell++) {
+        if (only >= 0 && cell != (uint32_t)only) continue;
         stp_cell_state(&l, cell, 1u, sfail | (2u << 16));   /* always: the fail op never runs */
         stp_emit(&l, 0xDE, zfunc[cell % 4u]);
         stp_emit(&l, 0xE7, 0);
@@ -3398,23 +3404,42 @@ static void stp_fill_background(uint32_t base, uint32_t fmt) {
     sr_gpu_vram_dirty(base, FB_W * FB_H * (fmt == 3u ? 4u : 2u));
 }
 
+/* Which cells of an 8888 list took the fixed-function stencil path, as ge_gpu.c decided: each
+ * cell runs alone and its state builds are read from stencil_fixed. Blended ones get the
+ * fixed-function blend's bound; unblended ones stay exact. Returns how many are blended. */
+static unsigned stp_classify(uint32_t base, int depth) {
+    const unsigned cells = depth ? STP_DEPTH_CELLS : STP_MATRIX_CELLS;
+    unsigned blended = 0;
+    memset(s_stp_ff_blend, 0, sizeof s_stp_ff_blend);
+    ge_set_gpu_hooks(&k_hooks);
+    for (unsigned c = 0; c < cells; c++) {
+        const unsigned long long fixed0 = s_replay_stats.stencil_fixed;
+        ge_run_list(depth ? stp_depth_list(base, 3u, (int)c) : stp_matrix_list(base, 3u, (int)c), 0);
+        s_stp_ff_blend[c] = (uint8_t)((c & 1u) && s_replay_stats.stencil_fixed != fixed0);
+        blended += s_stp_ff_blend[c];
+    }
+    coherence_reset_targets();
+    return blended;
+}
+
 static int coherence_run_stencil_parity(void) {
     const uint32_t base = 0x04000000u | 0x00140000u;
     const uint32_t max_bytes = FB_W * FB_H * 4u;
     uint8_t *gpu_out = (uint8_t *)malloc(max_bytes);
     if (!gpu_out) return 0;
     GeState saved = *s_ge;                 /* the lists leave the stencil test and masks on */
-    int ok = 1, ff_max = 0;
-    unsigned runs = 0, differing = 0;
+    int ok = 1, max_delta = 0;
+    unsigned runs = 0, differing = 0, ff_cells = 0;
     const unsigned long long splits0 = s_replay_stats.stencil_splits;
     for (uint32_t fmt = 0; fmt < 4u && ok; fmt++) {
         for (int depth = 0; depth < 2 && ok; depth++) {
             const uint32_t bytes = FB_W * FB_H * (fmt == 3u ? 4u : 2u);
-            memset(s_stp_ff_blend, 0, sizeof s_stp_ff_blend);
-            const uint32_t list = depth ? stp_depth_list(base, fmt) : stp_matrix_list(base, fmt);
+            if (fmt == 3u) ff_cells += stp_classify(base, depth);
+            const uint32_t list = depth ? stp_depth_list(base, fmt, -1) : stp_matrix_list(base, fmt, -1);
             coherence_reset_targets();
             stp_fill_background(base, fmt);
             const unsigned long long fallback0 = s_replay_stats.fallback_prims;
+            const unsigned long long fixed0 = s_replay_stats.stencil_fixed;
             ge_set_gpu_hooks(&k_hooks);
             ge_run_list(list, 0);
             GeGpuFbDescriptor desc = { .addr = base, .format = fmt, .stride = 512u,
@@ -3422,6 +3447,12 @@ static int coherence_run_stencil_parity(void) {
             if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) { ok = 0; break; }
             memcpy(gpu_out, SR_HOST(base), bytes);
             const unsigned long long fallbacks = s_replay_stats.fallback_prims - fallback0;
+            if (fmt != 3u && s_replay_stats.stencil_fixed != fixed0) {
+                fprintf(stderr, "gpu coherence selftest [stencil-parity]: fmt=%u %s list: %llu states "
+                                "took the fixed-function stencil path, which needs an 8888 target\n",
+                        fmt, depth ? "depth" : "matrix", s_replay_stats.stencil_fixed - fixed0);
+                ok = 0;
+            }
 
             coherence_reset_targets();
             stp_fill_background(base, fmt);
@@ -3456,17 +3487,16 @@ static int coherence_run_stencil_parity(void) {
                 memcpy(&g, gpu_out + i * bpp, bpp); memcpy(&w, sw_out + i * bpp, bpp);
                 uint32_t x = i % FB_W, y = i / FB_W;
                 uint32_t cell = (y - STP_ORIGIN) / STP_PITCH * STP_CELLS_X + (x - STP_ORIGIN) / STP_PITCH;
-                if (fmt == 3u && x >= STP_ORIGIN && y >= STP_ORIGIN &&
-                    x < STP_ORIGIN + STP_CELLS_X * STP_PITCH &&
-                    cell < sizeof s_stp_ff_blend && s_stp_ff_blend[cell] && (g >> 24) == (w >> 24)) {
-                    int d = 0;
-                    for (int c = 0; c < 3; c++) {
-                        int e = abs((int)((g >> (8 * c)) & 0xFFu) - (int)((w >> (8 * c)) & 0xFFu));
-                        if (e > d) d = e;
-                    }
-                    if (d > ff_max) ff_max = d;
-                    if (d <= STP_FF_BLEND_BOUND) continue;
+                int d = 0;
+                for (uint32_t c = 0; c < bpp; c++) {
+                    int e = abs((int)((g >> (8 * c)) & 0xFFu) - (int)((w >> (8 * c)) & 0xFFu));
+                    if (e > d) d = e;
                 }
+                if (d > max_delta) max_delta = d;
+                if (fmt == 3u && x >= STP_ORIGIN && y >= STP_ORIGIN &&
+                    x < STP_ORIGIN + STP_CELLS_X * STP_PITCH && cell < sizeof s_stp_ff_blend &&
+                    s_stp_ff_blend[cell] && (g >> 24) == (w >> 24) && d <= STP_FF_BLEND_BOUND)
+                    continue;
                 if (!differing++) {
                     fprintf(stderr, "gpu coherence selftest [stencil-parity]: fmt=%u %s cell=%u "
                                     "x=%u y=%u gpu=%08x ge_c=%08x\n",
@@ -3489,9 +3519,9 @@ static int coherence_run_stencil_parity(void) {
                 differing);
         return 0;
     }
-    printf("gpu coherence selftest: PASS %-22s lists=%u splits=%llu max_delta_vs_ge_c=0 "
-           "(fixed-function blended cells: alpha exact, rgb %d, bound %d)\n",
-           "stencil-parity", runs, splits, ff_max, STP_FF_BLEND_BOUND);
+    printf("gpu coherence selftest: PASS %-22s lists=%u splits=%llu max_delta_vs_ge_c=%d "
+           "(exact but for %u blended cells on the fixed-function path: alpha exact, rgb bound %d)\n",
+           "stencil-parity", runs, splits, max_delta, ff_cells, STP_FF_BLEND_BOUND);
     return 1;
 }
 
@@ -3505,7 +3535,12 @@ static int coherence_run_stencil_parity(void) {
  *  - Blended cells must store ge.c's alpha bit for bit, and a colour within the fixed-function
  *    blend's bound of ge.c (STP_FF_BLEND_BOUND), as a draw without the stencil test gives.
  * Their overlapping sprites must share a batch with no destination snapshot and no software
- * fallback. A blended constant other than 0 keeps the shader path (stencil-parity). */
+ * fallback. The refused list holds the same tests and ops in the states the fast path must
+ * leave to the shader: dither with blending, each kind of blend that needs the shader, a
+ * blended constant other than 0 and a partial alpha mask. None of them may count as fixed,
+ * and all must match ge.c bit for bit. */
+enum { STC_FLAT, STC_DEPTH, STC_BLENDED, STC_REFUSED, STC_KINDS };
+
 static const uint32_t k_stc_blend_modes[4] = {
     2u | (3u << 4),                  /* src alpha, 1 - src alpha */
     4u | (5u << 4),                  /* dst alpha (the stencil), 1 - dst alpha */
@@ -3513,8 +3548,21 @@ static const uint32_t k_stc_blend_modes[4] = {
     0u | (1u << 4) | (4u << 8),      /* max */
 };
 
-static uint32_t stc_list(uint32_t base, int depth, int blended) {
+/* One refused state per entry: blend mode, dither, reference, alpha mask and the depth-pass ops
+ * it is drawn with (a bit per op: KEEP 1, ZERO 2, REPLACE 4). KEEP is left out where it is
+ * still fixed, because the reason for refusing concerns only a stored constant. */
+static const struct { uint32_t mode, dither, ref, amask, zpass_ops; } k_stc_refused[6] = {
+    { 2u | (3u << 4), 1u, 0u, 0u, 7u },                /* dither with blending */
+    { 2u | (3u << 4) | (5u << 8), 0u, 0u, 0u, 7u },    /* absolute difference */
+    { 6u | (3u << 4), 0u, 0u, 0u, 7u },                /* doubled source alpha */
+    { 10u | (10u << 4), 0u, 0u, 0u, 7u },              /* two distinct FIX colours */
+    { 2u | (3u << 4), 0u, 0x5Au, 0u, 4u },             /* blended REPLACE of a constant other than 0 */
+    { 0xFFu, 0u, 0x5Au, 0x0Fu, 6u },                   /* partial alpha mask, unblended */
+};
+
+static uint32_t stc_list(uint32_t base, int kind) {
     static const uint32_t zfunc[2] = { 7u, 4u };           /* gequal, less */
+    const int depth = kind == STC_DEPTH, blended = kind == STC_BLENDED;
     StpList l; stp_begin(&l, base, 3u, depth);
     uint32_t vaddr = 0x08060000u, cell = 0;
     if (depth) {
@@ -3525,7 +3573,27 @@ static uint32_t stc_list(uint32_t base, int depth, int blended) {
                        (x & 2u) ? 49152.0f : 16384.0f);
         stp_emit(&l, 0xD3, 0);
     }
-    for (uint32_t zpass = 0; zpass < 3u; zpass++)
+    if (kind == STC_REFUSED) {
+        stp_emit(&l, 0xE2, 0x4E2Bu); stp_emit(&l, 0xE3, 0xC1F3u);   /* a dither matrix */
+        stp_emit(&l, 0xE4, 0x2A7Eu); stp_emit(&l, 0xE5, 0xD05Bu);
+        stp_emit(&l, 0xE0, 0x3C6E91u); stp_emit(&l, 0xE1, 0xA05D27u);
+        for (uint32_t r = 0; r < 6u; r++)
+            for (uint32_t zpass = 0; zpass < 3u; zpass++)
+                for (uint32_t rep = 0; rep < 2u; rep++) {
+                    if (!(k_stc_refused[r].zpass_ops & (1u << zpass))) continue;
+                    uint32_t h = wrap_hash(0x5C7u + cell);
+                    const int blend = k_stc_refused[r].mode != 0xFFu;
+                    stp_emit(&l, 0xDC, 1u | (k_stc_refused[r].ref << 8) | (((h >> 8) & 0xFFu) << 16));
+                    stp_emit(&l, 0xDD, (h >> 16) % 6u | (zpass << 16));
+                    stp_emit(&l, 0xE9, k_stc_refused[r].amask);
+                    stp_emit(&l, 0x21, blend ? 1u : 0u);
+                    stp_emit(&l, 0x20, k_stc_refused[r].dither);
+                    if (blend) stp_emit(&l, 0xDF, k_stc_refused[r].mode);
+                    stp_cell_sprites(&l, &vaddr, cell++, 32768.0f);
+                }
+        stp_emit(&l, 0x20, 0);
+    }
+    for (uint32_t zpass = 0; kind != STC_REFUSED && zpass < 3u; zpass++)
         for (uint32_t amask = 0; amask < 2u; amask++)
             for (uint32_t v = 0; v < (blended ? 4u : 6u); v++) {
                 uint32_t h = wrap_hash(0x5C7u + cell);
@@ -3563,29 +3631,38 @@ static int stc_run(uint32_t base, uint32_t list, int gpu, uint8_t *out) {
 }
 
 static int coherence_run_stencil_constant(void) {
-    static const char *const names[3] = { "flat", "depth", "blended" };
+    static const char *const names[STC_KINDS] = { "flat", "depth", "blended", "refused" };
     const uint32_t base = 0x04000000u | 0x00140000u, bytes = FB_W * FB_H * 4u;
     uint8_t *gpu_out = (uint8_t *)malloc(bytes);
     if (!gpu_out) return 0;
     GeState saved = *s_ge;
     int ok = 1, max_rgb = 0;
     unsigned differing = 0;
-    for (int kind = 0; kind < 3 && ok; kind++) {
-        const int depth = kind == 1, blended = kind == 2;
+    for (int kind = 0; kind < STC_KINDS && ok; kind++) {
+        const int blended = kind == STC_BLENDED, refused = kind == STC_REFUSED;
         const char *name = names[kind];
         const GeGpuReplayStats before = s_replay_stats;
-        if (!stc_run(base, stc_list(base, depth, blended), 1, gpu_out)) { ok = 0; break; }
+        if (!stc_run(base, stc_list(base, kind), 1, gpu_out)) { ok = 0; break; }
         const GeGpuReplayStats after = s_replay_stats;
-        (void)stc_run(base, stc_list(base, depth, blended), 0, NULL);
+        (void)stc_run(base, stc_list(base, kind), 0, NULL);
         const uint8_t *sw_out = (const uint8_t *)SR_HOST(base);
-        if (after.fallback_prims != before.fallback_prims ||
-            after.snapshot_copies != before.snapshot_copies ||
-            after.stencil_splits != before.stencil_splits ||
-            after.stencil_fixed == before.stencil_fixed) {
-            fprintf(stderr, "gpu coherence selftest [stencil-constant]: %s list: fallbacks=%llu "
-                            "snapshot_copies=%llu splits=%llu fixed_states=%llu, want 0 0 0 and "
-                            "some fixed states\n", name,
-                    after.fallback_prims - before.fallback_prims,
+        if (after.fallback_prims != before.fallback_prims) {
+            fprintf(stderr, "gpu coherence selftest [stencil-constant]: %s list took the software "
+                            "fallback for %llu primitives\n", name,
+                    after.fallback_prims - before.fallback_prims);
+            ok = 0;
+        }
+        if (refused && after.stencil_fixed != before.stencil_fixed) {
+            fprintf(stderr, "gpu coherence selftest [stencil-constant]: refused list: %llu states "
+                            "took the fixed path, want 0\n",
+                    after.stencil_fixed - before.stencil_fixed);
+            ok = 0;
+        }
+        if (!refused && (after.snapshot_copies != before.snapshot_copies ||
+                         after.stencil_splits != before.stencil_splits ||
+                         after.stencil_fixed == before.stencil_fixed)) {
+            fprintf(stderr, "gpu coherence selftest [stencil-constant]: %s list: snapshot_copies=%llu "
+                            "splits=%llu fixed_states=%llu, want 0 0 and some fixed states\n", name,
                     after.snapshot_copies - before.snapshot_copies,
                     after.stencil_splits - before.stencil_splits,
                     after.stencil_fixed - before.stencil_fixed);
@@ -3625,9 +3702,9 @@ static int coherence_run_stencil_constant(void) {
                 differing);
         return 0;
     }
-    printf("gpu coherence selftest: PASS %-22s lists=3 snapshot_copies=0 alpha_delta_vs_ge_c=0 "
-           "rgb_max_delta=%d (unblended 0, blended bound %d)\n", "stencil-constant", max_rgb,
-           STP_FF_BLEND_BOUND);
+    printf("gpu coherence selftest: PASS %-22s lists=%d fixed lists: snapshot_copies=0 "
+           "alpha_delta_vs_ge_c=0 rgb_max_delta=%d (unblended 0, blended bound %d); refused list: "
+           "fixed_states=0, exact\n", "stencil-constant", STC_KINDS, max_rgb, STP_FF_BLEND_BOUND);
     return 1;
 }
 
