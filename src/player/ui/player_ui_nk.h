@@ -661,9 +661,23 @@ typedef struct {
     size_t reset_folder_count;
     const char *font_summary;       /* how many of the PSP fonts are the user's own */
     bool fonts_all_own;
+    /* The display the launcher is on, in Hz; 0 when unknown (no advisory then) */
+    double display_refresh_hz;
     float logical_width;
     float logical_height;
 } PlayerUiSettingsModel;
+
+/* Whether a display refresh rate (Hz) gives the game's 60 Hz (59.94 Hz) frames even motion.
+   A whole multiple of either (60, 120, 180, 240, 59.94 ...) is silent, and so is an unknown
+   rate (0 or less, NaN); anything else (75, 90, 144, 165 ...) earns the Settings advisory. */
+typedef enum {
+    PLAYER_UI_REFRESH_SILENT = 0,
+    PLAYER_UI_REFRESH_ADVISORY
+} PlayerUiRefreshAdvice;
+
+PlayerUiRefreshAdvice player_ui_refresh_advice(double refresh_hz);
+/* The advisory sentence for `refresh_hz` into out, or an empty string when it is silent. */
+void player_ui_refresh_advisory_text(double refresh_hz, char *out, size_t out_size);
 
 /* The controller settings page (VIEW_CONTROLLER_SETTINGS): the controller or
    keyboard mapping, or a step of the guided stick and trigger calibration while

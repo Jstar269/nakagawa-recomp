@@ -194,12 +194,17 @@ STRICT_C_UNITS: dict[str, StrictUnit] = {
 #: A missing header from an SDK the build discovers rather than vendors.  The
 #: compile cannot run without it, so the file is SKIP (never PASS, never FAIL).
 _MISSING_HEADER = re.compile(r"fatal error: ([^:\s]+): No such file or directory")
+_REAL_ERROR = re.compile(r"(?<!fatal )\berror:")
 _SDK_HEADER_PREFIXES = {
     "vulkan/": "the Vulkan SDK",
     "vk_video/": "the Vulkan SDK",
     "SDL3/": "the SDL3 development headers",
     "SDL3_ttf/": "the SDL3_ttf development headers",
 }
+#: PSPSDK headers (`pspkernel.h`, `psputility_osk.h`, ...) sit at the include
+#: root with no directory.  A letter or digit must follow `psp`, so the
+#: project's own `psp_*` headers are never mistaken for the SDK.
+_PSPSDK_HEADER = re.compile(r"psp[a-z0-9]+(?:_[a-z0-9]+)*\.h")
 
 #: A shared tool is exercised by more than the module named after it.  These
 #: extra modules are the ones whose failures the hosted Python gate attributes
@@ -432,10 +437,16 @@ def _missing_sdk(output: str) -> str | None:
     match = _MISSING_HEADER.search(output)
     if not match:
         return None
+    if _REAL_ERROR.search(output):
+        # The compiler also reported an error that is not the missing header,
+        # so the change is broken whether or not the SDK is installed.
+        return None
     header = match.group(1)
     for prefix, sdk in _SDK_HEADER_PREFIXES.items():
         if header.startswith(prefix):
             return f"{sdk} ({header}) is not installed"
+    if _PSPSDK_HEADER.fullmatch(header):
+        return f"the PSPSDK ({header}) is not installed"
     return None
 
 

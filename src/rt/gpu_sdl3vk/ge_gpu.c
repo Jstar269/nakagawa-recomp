@@ -63,8 +63,9 @@
  *    pre-batch destination — the standard shader-blend hazard, same as PPSSPP.
  *  - Stencil (the PSP keeps it in destination alpha): the fragment shader runs ge.c's
  *    stencil test and ops against the destination snapshot, with pipeline blending off.
- *    Where the depth test runs, its fail op and the stencil-fail op must be KEEP, so the
- *    pipeline depth test and a discard give ge.c's order exactly (stencil_gpu_supported);
+ *    Where the depth test runs, its fail op (unless it always passes) and the stencil-fail
+ *    op must be KEEP, so the pipeline depth test and a discard give ge.c's order exactly
+ *    (stencil_gpu_supported);
  *    other states take the software rasterizer. A stencil state whose result depends on
  *    the stencil it overwrites (stencil_reads_own_writes) never shares a batch between
  *    primitives whose boxes meet, so each reads a snapshot holding the ones before it.
@@ -156,7 +157,7 @@ static const uint32_t k_tnl_vert_spv[] =
 ;
 /* psp_tnl.vert reads GeTnlParams as P_WORDS 32-bit words and GeTnlVtx as the vertex layout
  * pipe_create gives it. */
-_Static_assert(sizeof(GeTnlParams) == 227u * 4u, "psp_tnl.vert P_WORDS");
+_Static_assert(sizeof(GeTnlParams) == 247u * 4u, "psp_tnl.vert P_WORDS");
 _Static_assert(sizeof(GeTnlVtx) == 72u, "psp_tnl.vert vertex layout");
 
 /* ---- captured vertex (must match psp.vert input layout) ------------------------------ */
@@ -1689,7 +1690,12 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
     int ok = cmd_batch_record(SR_PERF_GE_RENDER_BATCH);
     t->gpu_valid = 1;
     t->render_gen++;
-    if (t->dep) t->dep->guest_dirty = 1;
+    /* Only a batch that writes depth (a depth test with writes on, or a clear that fills depth)
+     * makes the depth surface newer than guest VRAM. A title that writes no depth may leave zbp on
+     * a colour buffer, and writing the untouched surface back would overwrite those pixels. */
+    int zwrite = 0;
+    for (uint32_t i = b0; i < b1 && !zwrite; i++) zwrite = s_batch[i].key.zwrite;
+    if (t->dep && zwrite) t->dep->guest_dirty = 1;
     sr_vram_mark_renderer_pending();
     s_cnt_submit++;
     if (s_stats) {
@@ -3577,12 +3583,13 @@ static int native_rgb_mask_exact(void) {
 /* The shader runs the stencil test before the pipeline depth test, so a stencil-fail
  * pixel the depth test would also reject, or a depth-fail pixel, can only be dropped: the
  * ops for them must be KEEP while the depth test is on. A test that always passes never
- * runs the stencil-fail op. Clear mode ignores the stencil test (ge.c put_px_rgba). */
+ * runs its fail op: a stencil test the stencil-fail op, a depth test the depth-fail op.
+ * Clear mode ignores the stencil test (ge.c put_px_rgba). */
 static int stencil_gpu_supported(void) {
     if (!s_ge->stencil_enable || s_ge->clear || !s_ge->ztest_enable) return 1;
     const uint32_t func = s_ge->stencil_test & 7u, sfail = s_ge->stencil_op & 7u;
     const uint32_t zfail = (s_ge->stencil_op >> 8) & 7u;
-    return (sfail == 0u || func == 1u) && zfail == 0u;
+    return (sfail == 0u || func == 1u) && (zfail == 0u || (s_ge->ztest & 7u) == 1u);
 }
 
 static int gpu_state_unsupported_reason(void) {

@@ -156,6 +156,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `miss_seeds.py` | Merge the dispatch-miss files a run writes (`SR_MISS_SEEDS`) into a per-title seed list that `analyze.py` and `codegen.py` take as `--miss-seeds` (#1848). |
 | `elf_bounds.py` | Shared, fail-closed ELF32 envelope checks for the offline PSP tools. |
 | `hle_manifest.py` | Generate the authoritative HLE registration manifest from the runtime HLE table, plus the semantic-status census artifact (`--census-json` / `--census-markdown`). |
+| `hle_focus_check.py` | Prove a focused HLE selftest executable links only the HLE files it names: compares the executable's code symbols with those of the excluded files' objects (#307). |
 | `hle_registry_meta.py` | Curated classification metadata for the HLE registration manifest. |
 | `gen_nidnames.py` | Generate the NID name header from the tracked NID corpus. |
 | `gen_ui_assets.py` | Embed the vendored Kenney prompt glyphs and UI sounds (`third_party/kenney/`) in `src/ui/nk_ui_assets.c`; `--check` reports a stale file. |
@@ -391,6 +392,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_nidseq.py` | Fail-closed import-sequence extraction and oracle comparison. |
 | `test_gen_nidnames.py` | Tests for the corpus-driven NID name-table generator. |
 | `test_hle_manifest.py` | Tests for the fail-closed HLE registration manifest. |
+| `test_hle_focus_check.py` | Tests for the focused-HLE-link check, on small compiled objects. |
 | `test_stale_code_detect.py` | Opt-in stale translated-code tracking: detection and invalidation. |
 | `test_trace_window_probe.py` | Contract test for the address-windowed instruction trace. |
 | `test_callback_correctness.py` | Run the callback dispatcher for real instead of grepping its source. |
@@ -420,7 +422,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_savedata_security.py` | Production-path regressions for the bounded savedata security successor. |
 | `test_savedata_spans.py` | Guest span validation, preflight ordering and portable contained-delete seams. |
 | `test_sched_invariants.py` | Source-level guards for scheduler and thread-lifecycle invariants. |
-| `test_scripted_input.py` | Scripted controller input reaches the guest in guest time, including on a starved host. |
+| `test_scripted_input.py` | Scripted controller input reaches the guest in guest time, including on a starved host, and a held left stick lasts exactly its segment. |
 | `test_sdkver_c.py` | Retained-state regression for the compiled SDK-version contract. |
 | `test_tracediff_local_coverage.py` | Strict local trace coverage contract for `tracediff.py --strict-local` and the codegen/microtest gates. |
 | `test_vfs_c.py` | Host-neutral VFS path joining regression test. |
