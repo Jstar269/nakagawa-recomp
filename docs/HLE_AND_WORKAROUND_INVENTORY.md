@@ -46,13 +46,13 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **679** (dedicated **570**, fake_success **5**, controlled_unsupported **104**).
-Semantic handler census: **549** handlers across **26** API families, covering **576** handler-associated NID registrations.
+Registered NIDs: **679** (dedicated **571**, fake_success **5**, controlled_unsupported **103**).
+Semantic handler census: **550** handlers across **26** API families, covering **577** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 248 | 254 |
+| `partial` | 249 | 255 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 284 | 292 |
@@ -64,7 +64,7 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 | `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 10 | 0 | 0 | 2 | 12 | 12 |
-| `sceDisplay` | 1 | 6 | 0 | 0 | 8 | 15 | 15 |
+| `sceDisplay` | 1 | 7 | 0 | 0 | 8 | 16 | 16 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 7 | 0 | 0 | 11 | 18 | 18 |
 | `sceGe` | 2 | 10 | 0 | 0 | 2 | 14 | 14 |
@@ -85,7 +85,7 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 | `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
 | `sceUtility` | 0 | 9 | 0 | 0 | 27 | 36 | 36 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **248** | **1** | **2** | **284** | **549** | **576** |
+| **Total** | **14** | **249** | **1** | **2** | **284** | **550** | **577** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -271,6 +271,9 @@ Semantic handler census: **549** handlers across **26** API families, covering *
   - Evidence: tools/test_sched_invariants.py:test_the_two_display_nids_have_separate_handlers
 - **`h_DisplayWaitVblankStartMulti`** (`sceDisplay`): `sceDisplayWaitVblankStartMulti` (0x40f1469c)
   - Limitation: waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured
+- **`h_DisplayWaitVblankStartMultiCB`** (`sceDisplay`): `sceDisplayWaitVblankStartMultiCB` (0x77ed8b3a)
+  - Limitation: the requested positive count of scheduler VBLANK periods, servicing the caller's callbacks in each; the zero-count and wait-context refusals follow the non-CB form; hardware timing is not measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_display_multi_cb_wait
 - **`h_DmacMemcpy`** (`sceDmac`): `sceDmacMemcpy` (0x617f3fe6)
   - Limitation: active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
@@ -1086,12 +1089,12 @@ Title Configuration Overrides (src/rt/title_config.c):
 - **Root Cause:** An earlier compatibility bypass skipped `module_start` and wrote readiness during load. Translated startup and export routing now have a source-owned production-path fixture. Real-title startup readiness remains unverified when no locally supplied decrypted executable and PRXs are available.
 - **Lower-Level Solution:** Provide translated guest startup and its kernel, thread, callback, heap and file dependencies; remove the retired field from existing manifests.
 
-#### 2. `psmf.prx` and `libpsmfplayer.prx` Start Module Skip
+#### 2. `psmf.prx` and `libpsmfplayer.prx` Start Module
 
-- **Location:** `src/rt/hle_kernel_module.c` (`h_StartModule`).
-- **Mechanism:** Explicitly skips calling `f_32280000` (`psmf`) and `f_322f8868` (`libpsmfplayer`). A guest-placed module (placed by the guest allocator at run time) keeps the same bypass when host HLE implements one of its named exports, so its importers stay on the host implementation.
+- **Location:** `src/rt/hle_kernel_module.c` (`h_StartModule`, `guest_module_owns_library`).
+- **Mechanism:** A title's staged `psmf.prx` and `libpsmfplayer.prx` are guest-placed and start like any guest module, and their exports take over the host `scePsmfPlayer` handlers once started. The start skip remains only for a guest-placed module that exports a library host HLE serves and no guest module owns, and for fixed-address modules.
 - **Root Cause:** Sony SDK initialization assumes low-level kernel callbacks and ring buffer allocation.
-- **Lower-Level Solution:** Provide faithful kernel memory partition allocation (`sceKernelAllocPartitionMemory`) and let the genuine PSMF modules execute their lifecycle.
+- **Lower-Level Solution:** Provide faithful kernel memory partition allocation (`sceKernelAllocPartitionMemory`) and let the genuine PSMF modules execute their lifecycle (#286).
 
 #### 3. `INIT_LANG` Hardcoded Japanese Language Injection
 

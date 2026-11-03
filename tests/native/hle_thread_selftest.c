@@ -331,6 +331,7 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_KERNEL_LOAD_EXEC 0xbd2f1094u
 #define NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE 0xd675ebb8u
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
+#define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB 0x77ed8b3au
 #define NID_SCE_REG_CLOSE_CATEGORY 0x0cae832bu
 #define NID_SCE_REG_OPEN_CATEGORY 0x1d8a762eu
 #define NID_SCE_REG_OPEN_REGISTRY 0x92e41280u
@@ -6835,7 +6836,6 @@ static void test_unregistered_batch_refusals(void) {
         const char *name;
     } refused[] = {
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
-        {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
         {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
         {0x8c943191u, 0x80010086u, "sceImposeGetBatteryIconStatus"},
         {0x0bf0a3aeu, 0x80010086u, "sceNetGetLocalEtherAddr"},
@@ -34375,7 +34375,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
         extern int s_ctrlc_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
+        int expected_parks = 1 /* MultiCB waiter */ + 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -37608,9 +37608,38 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     cpu.r[4] = uid_a;
     expect(sr_syscall(&cpu, 0x2e0911aau) == 0x80020002u,
            "lifecycle: unload refuses while a module thread is ready to execute its image");
+    /* A thread inside a call goes on at $ra; its pc still shows its last slice's end, and that
+     * can be the image it has left, as for a title that deletes its player and unloads the
+     * module from its own code (#286). A thread that left at a yield resumes at its pc. */
+    uint32_t in_a = LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1;
+    active_module_thread->pc_stale = 1;
+    active_module_thread->saved.r[31] = 0x08900000u;
+    expect(!sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a ready thread parked in a call is not held to its stale pc");
+    active_module_thread->saved.r[31] = in_a;
+    expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a ready thread parked in a call still returns into the image at $ra");
     active_module_thread->state = TH_DORMANT;
     active_module_thread->deleted = 1;
     active_module_thread->entry = 0u;
+
+    TCB *unloader = fixture_thread(0x6f1u, TH_RUNNING, 20);
+    unloader->started = 1;
+    int cur_before_unloader = s_cur;
+    s_cur = (int)(unloader - s_tcb);
+    CpuState cpu_before_unloader = *s_cpu;
+    s_cpu->pc = in_a;
+    s_cpu->r[31] = 0x08900000u;
+    expect(!sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: the unload's own caller is not held to its stale pc");
+    s_cpu->r[31] = in_a;
+    expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a caller inside the image is still a continuation");
+    *s_cpu = cpu_before_unloader;
+    s_cur = cur_before_unloader;
+    unloader->state = TH_DORMANT;
+    unloader->deleted = 1;
+    unloader->entry = 0u;
 
     /* ---- unload A: retire exactly its own state ---- */
     unsigned images_before = sr_hle_test_image_count();
@@ -40249,6 +40278,73 @@ static void test_issue339_callback_wait_dispatch(void) {
     s_oracle_mode = saved_oracle_mode;
 }
 
+/* The CB form of the multi-period wait (#286): a title's own PSMF player route calls it once a
+ * frame, and a refusal returned at once left that thread spinning with no display wait at all.
+ * It refuses as the plain form does, services the caller's callbacks, and returns after the
+ * requested periods.
+ *
+ * MUTANT: register the NID as a refusal again -- every check here fails.
+ * MUTANT: stop after one period -- the waiter does not block for the second. */
+static void test_display_multi_cb_wait(void) {
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+
+    reset_fixture();
+    sr_hle_init();
+    s_cur = -1;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB) == 0x800001feu,
+           "sceDisplayWaitVblankStartMultiCB rejects a zero period with INVALID_VALUE");
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB) == CNW_ERR,
+           "sceDisplayWaitVblankStartMultiCB refuses to report success without a current thread");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x77e0u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x77e1u, TH_READY, 40);
+    waiter->started = 1;
+    SelftestVblankWaitCtx wait;
+    memset(&wait, 0, sizeof(wait));
+    wait.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB;
+    wait.arg0 = 2u;
+    waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &wait, (size_t)4 << 20);
+    s_cur = (int)(waiter - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(callback_uid != 0 && s_oracle_callback_calls == 1 && !wait.returned &&
+               waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+               waiter->is_cb_wait,
+           "MultiCB services a callback then blocks on the first VBLANK period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(!wait.returned && waiter->state == TH_WAIT_OBJ &&
+               waiter->wait_obj == VBLANK_WAIT_OBJ && s_vbl_count == 1u,
+           "MultiCB waits again for its remaining period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(wait.returned && wait.ret == 0u && s_vbl_count == 2u,
+           "MultiCB returns success after both periods");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "MultiCB callback unregisters cleanly");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
+    s_oracle_mode = saved_oracle_mode;
+}
+
 static void test_issue339_vblank_cb_wait_requires_a_current_thread(void) {
     reset_fixture();
     s_cur = -1;
@@ -40274,6 +40370,7 @@ static void test_issue339_wait_nids_production_dispatch(void) {
     test_issue339_terminate_waiting_thread();
     test_issue339_sysclock_delay_dispatch();
     test_issue339_callback_wait_dispatch();
+    test_display_multi_cb_wait();
     test_issue339_vblank_cb_wait_requires_a_current_thread();
 }
 

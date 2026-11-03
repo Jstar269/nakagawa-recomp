@@ -216,6 +216,13 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured",
     },
+    "h_DisplayWaitVblankStartMultiCB": {
+        "status": "partial",
+        "limitation": "the requested positive count of scheduler VBLANK periods, servicing the caller's callbacks in each; the zero-count and wait-context refusals follow the non-CB form; hardware timing is not measured",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_display_multi_cb_wait",
+        ],
+    },
     # sceDisplayGetFramePerSec: writes the measured 60000/1001 float refresh
     # rate (59.9400599f) into $f0 under the unified display clock. The API has
     # no parameters; the full observable contract is the float bits.

@@ -203,6 +203,7 @@ typedef struct {
      * the import the thread itself is inside, never another thread's. */
     int      import_active;
     uint32_t import_nid;
+    int      pc_stale;            /* switched out inside a call: saved.pc is its last yield */
     int      has_block_nid;       /* the last block happened inside an import */
     uint32_t block_nid;           /* NID of that import */
     int      block_start_valid;   /* block_start_us is the start of the current wait */
@@ -1469,6 +1470,24 @@ static void scheduler_progress_time(void) {
         scheduler_add_time(10000u); /* deterministic scheduler quantum, never a clock-read side effect */
     }
     scheduler_latch_due_events();
+}
+
+/* Time also passes for threads that hand the CPU to one another. sr_yield's slow path runs only
+ * when a slice reaches its count, and a dispatch grants a fresh count, so threads that block and
+ * wake each other within their slices, with one always ready, reach neither that path nor the
+ * idle loop. Then the clock stood still and no VBLANK came due: a title's own PSMF player, its
+ * threads passing a picture around while the game waited for the display, never saw another
+ * VBLANK (#286). So each pass of the scheduler keeps time and serves what came due. Turbo has no
+ * host clock to read, and scheduler_progress_time charges it a whole quantum, so it charges one
+ * per TIMESLICE dispatches, the rate at which a dispatch counts as a yield. */
+static uint32_t s_dispatches_since_time;
+
+static void scheduler_keep_time_at_dispatch(void) {
+    pace_setup();
+    if (!s_pace_on && ++s_dispatches_since_time < TIMESLICE) return;
+    s_dispatches_since_time = 0;
+    scheduler_progress_time();
+    scheduler_service_pending();
 }
 
 static void scheduler_add_time(uint64_t delta) {
@@ -4422,6 +4441,12 @@ static int sched_pc_in_module(uint32_t pc, uint32_t start, uint32_t end) {
  * module image being retired. Refuse that synthetic safety case. Threads in
  * object/timer waits are deliberately excluded: PSP-3000 measurement #1106
  * showed that such waiters and their kernel objects survive late-module unload.
+ *
+ * Generated code writes pc only at a yield that ends a slice, so a thread inside a call, the
+ * caller of this check among them, still shows where its last slice ended. That can be the
+ * image: a title that deletes its player and unloads the module from its own code was refused
+ * for a pc it had left, and its next load of the player failed for good (#286). Such a thread
+ * goes on at $ra, the check that stays.
  */
 int sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid) {
     if (start >= end) return 0;
@@ -4431,7 +4456,8 @@ int sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid) 
         if (t->state != TH_READY && t->state != TH_RUNNING) continue;
         const CpuState *state = (t->state == TH_RUNNING && i == s_cur && s_cpu)
                               ? s_cpu : &t->saved;
-        if (sched_pc_in_module(state->pc, start, end) ||
+        int pc_stale = i == s_cur || t->pc_stale;
+        if ((!pc_stale && sched_pc_in_module(state->pc, start, end)) ||
             sched_pc_in_module(state->r[31], start, end))
             return 1;
     }
@@ -5189,6 +5215,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
                 fprintf(stderr, "  uid 0x%x entry 0x%08x %s prio %d wait_obj 0x%x\n",
                         s_tcb[i].uid, s_tcb[i].entry, stn[s_tcb[i].state], s_tcb[i].priority, s_tcb[i].wait_obj);
         }
+        scheduler_keep_time_at_dispatch();
         int idx = pick_next();
         if (idx < 0) {
             if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
@@ -5316,6 +5343,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         sr_exec_slice_begin(t->exec_tier);
         sr_coro_switch(t->coro);           /* run until it yields/blocks/exits */
         t->exec_tier = sr_exec_slice_end();
+        t->pc_stale = !s_pause_switch_from_yield;
         sr_aot_return_boundary_stack_swap(&t->aot_return_boundary_stack);
         if (sr_perf_enabled) sr_perf_guest_end();
         t->hle_depth = g_hle_depth;

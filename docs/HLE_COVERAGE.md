@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 16 |
 | `ppsspp-derived` | 111 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 341 | 226 |
-| `unverified` | 163 | 31 |
+| `synthetic` | 342 | 226 |
+| `unverified` | 162 | 31 |
 | total | 679 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -385,7 +385,7 @@ belongs to without the census's own grouping.
 | `0x773dd3a3` | `sceDisplayGetCurrentHcount` | display | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x779103a0` | `sceIoRename` | io | `unverified` | no recorded evidence |
 | `0x779242a2` | `sceRtcConvertLocalTimeToUTC` | rtc | `synthetic` | HLE selftest dispatch |
-| `0x77ed8b3a` | `sceDisplayWaitVblankStartMultiCB` | display | `unverified` | no recorded evidence |
+| `0x77ed8b3a` | `sceDisplayWaitVblankStartMultiCB` | display | `synthetic` | HLE selftest dispatch |
 | `0x780f88d1` | `sceAtracGetAtracID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x7853182d` | `sceUtilityGameSharingUpdate` | utility | `synthetic` | HLE selftest dispatch |
 | `0x787d04d5` | `__sceSasSetPause` | audio | `unverified` | no recorded evidence |

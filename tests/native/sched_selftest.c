@@ -344,6 +344,7 @@ static void reset_sched(void) {
     s_vblank_q_us = -1;
     s_last_vblank_ns = 0;
     s_vbl_latch_ns = 0;
+    s_dispatches_since_time = 0;
     g_test_vblank_delivered = 0;
     g_test_vcount = 0;
     g_test_savedata_busy = 0;
@@ -1186,6 +1187,66 @@ static void test_stop_request_returns_a_lone_runner_to_the_scheduler(void) {
                          : "stop: no guest code ran after the stop was raised");
     }
     g_qs_suspend_dispatch = 0;
+}
+
+/* Two threads that block and wake each other within their slices keep one thread always ready,
+ * so neither sr_yield's slow path nor the idle loop runs. A third thread waits for the display.
+ * Time still passes and the VBLANK arrives, paced and in turbo: a title's own PSMF player
+ * stopped every VBLANK this way, for good (#286).
+ *
+ * MUTANT: drop scheduler_keep_time_at_dispatch() from sched_run -- the clock stands still, the
+ *   display waiter never returns and the run reaches its cap. */
+enum {
+    PP_FIRST_ENTRY = 0x09340000u, PP_SECOND_ENTRY = 0x09340100u, PP_DISPLAY_ENTRY = 0x09340200u,
+    PP_FIRST_OBJ = 0x09340300u, PP_SECOND_OBJ = 0x09340304u,
+    PP_HOST_STEP_US = 1000u, PP_TURBO_ROUNDS = 8u * TIMESLICE, PP_PACED_ROUNDS = 200u
+};
+static unsigned g_pp_rounds, g_pp_cap;
+static int g_pp_display_returned;
+static void ping_pong_body(CpuState *s) {
+    (void)s;
+    uint32_t entry = s_tcb[s_cur].entry;
+    if (entry == PP_DISPLAY_ENTRY) {
+        sched_wait_vblank_start();
+        g_pp_display_returned = 1;
+        return;
+    }
+    if (entry != PP_FIRST_ENTRY && entry != PP_SECOND_ENTRY) {   /* the root starts the three */
+        static const uint32_t entries[] = { PP_DISPLAY_ENTRY, PP_FIRST_ENTRY, PP_SECOND_ENTRY };
+        for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++)
+            sched_start_thread(sched_create_thread(entries[i], 32, 0), 0, 0);
+        return;
+    }
+    uint32_t mine = entry == PP_FIRST_ENTRY ? PP_FIRST_OBJ : PP_SECOND_OBJ;
+    uint32_t theirs = entry == PP_FIRST_ENTRY ? PP_SECOND_OBJ : PP_FIRST_OBJ;
+    for (;;) {
+        g_pp_rounds++;
+        set_host_us(g_test_host_ns / 1000ull + PP_HOST_STEP_US);
+        sched_wake(theirs);
+        sched_block_on(mine);
+    }
+}
+static int ping_pong_stop(void) { return g_pp_display_returned || g_pp_rounds >= g_pp_cap; }
+
+static void test_threads_that_never_idle_still_reach_the_next_vblank(void) {
+    for (int paced = 0; paced <= 1; paced++) {
+        reset_sched();
+        begin_clock_fixture(paced, 1000u);
+        g_pp_rounds = 0;
+        g_pp_cap = paced ? PP_PACED_ROUNDS : PP_TURBO_ROUNDS;
+        g_pp_display_returned = 0;
+        g_test_body = ping_pong_body;
+        sr_sched_stop_requested = ping_pong_stop;
+        sched_run(0x09340400u, 0u, 0u);
+        sr_sched_stop_requested = NULL;
+        s_host_ns_fn = NULL;
+        expect(g_pp_rounds > 1u, "ping-pong: the two threads ran each other");
+        expect(g_pp_display_returned,
+               paced ? "ping-pong: paced, the display waiter got its VBLANK with a thread always "
+                       "ready"
+                     : "ping-pong: turbo, the display waiter got its VBLANK with a thread always "
+                       "ready");
+    }
 }
 
 /* A stop raised in the scheduler's own pass is honoured before any thread gets a fresh slice
@@ -5525,6 +5586,7 @@ int main(int argc, char **argv) {
     test_paced_vblank_has_one_authority();
     test_busy_guest_observes_every_display_period();
     test_masked_window_keeps_the_enabled_backlog();
+    test_threads_that_never_idle_still_reach_the_next_vblank();
     test_saturated_source_owes_one_deliverable_episode();
     test_expired_timed_wait_enters_strict_priority();
     test_liveness_semaphore_handoff();

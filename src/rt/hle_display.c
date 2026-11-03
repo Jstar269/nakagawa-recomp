@@ -819,10 +819,9 @@ static uint32_t h_DisplayWaitVblankStart(CpuState *s) {
 }
 
 /* The public multi-wait contract blocks through the requested number of
- * vertical periods, then returns at the following VBLANK start. */
-static uint32_t h_DisplayWaitVblankStartMulti(CpuState *s) {
-    (void)s;
-    uint32_t periods = A0;
+ * vertical periods, then returns at the following VBLANK start. The CB form
+ * also services the caller's callbacks in each period. */
+static uint32_t display_wait_vblank_start_periods(uint32_t periods, int callbacks) {
     if (periods == 0u) {
         /* The waits-matrix transcription records INVALID_VALUE (0x800001fe)
          * for an invalid count before the blocking-context result. */
@@ -830,9 +829,19 @@ static uint32_t h_DisplayWaitVblankStartMulti(CpuState *s) {
     }
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
     if (sched_current_uid() == 0u) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-    for (uint32_t period = 0; period < periods; period++)
-        sched_wait_vblank_start();
+    for (uint32_t period = 0; period < periods; period++) {
+        if (!callbacks) sched_wait_vblank_start();
+        else if (sched_wait_vblank_cb(1) < 0) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+    }
     return 0;
+}
+
+static uint32_t h_DisplayWaitVblankStartMulti(CpuState *s) {
+    return display_wait_vblank_start_periods(A0, 0);
+}
+
+static uint32_t h_DisplayWaitVblankStartMultiCB(CpuState *s) {
+    return display_wait_vblank_start_periods(A0, 1);
 }
 
 static uint32_t h_DisplayWaitVblank(CpuState *s) {
@@ -1173,12 +1182,12 @@ void hle_register_display_handlers(void) {
 /* From hle_register_kernel_import_sweep_handlers(). */
 void hle_register_kernel_import_sweep_display(void) {
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
+    sr_hle_register(0x77ed8b3a, "sceDisplayWaitVblankStartMultiCB", h_DisplayWaitVblankStartMultiCB);
 }
 
 /* From hle_register_unregistered_import_batch(). */
 void hle_register_unregistered_import_display(void) {
     sr_hle_register_unsupported(0x7ed59bc4u, "sceDisplaySetHoldMode", 0x80020002u);
-    sr_hle_register_unsupported(0x77ed8b3au, "sceDisplayWaitVblankStartMultiCB", 0x80020002u);
 }
 
 /* From hle_register_wait_conformance_handlers(). */
