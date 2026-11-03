@@ -268,12 +268,12 @@ def build_sweep_cases() -> tuple[tuple[str, ...], tuple[tuple[int, int, str], ..
         random.Random(rep).shuffle(combos)
         seen = {encoded}
         for combo in combos[:SWEEP_TRIES]:
-            values = {name: value for (name, _), value in zip(active, combo)}
+            values = {name: value for (name, _), value in zip(active, combo, strict=True)}
             signature = alias_signature(values, size)
             if signature in seen:
                 continue
             word = rep
-            for (_, shift), value in zip(active, combo):
+            for (_, shift), value in zip(active, combo, strict=True):
                 word = _with_field(word, shift, value)
             other = _direct_body(word)
             if other is None or vfpu_coverage_report._aot_structure(other) != structure:
