@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 16 |
 | `ppsspp-derived` | 111 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 334 | 200 |
-| `unverified` | 152 | 57 |
+| `synthetic` | 334 | 226 |
+| `unverified` | 152 | 31 |
 | total | 661 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -791,8 +791,8 @@ belongs to without the census's own grouping.
 | `vfpu-19-66008000-a21bfdaec595` | `0x19` | `0x66008008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-a, issue-40-group-b |
 | `vfpu-19-66808000-e34d27a47e20` | `0x19` | `0x66808001` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
 | `vfpu-1b-6c000000-c3c11660a80b` | `0x1b` | `0x6c000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c018100-35968732032f` | `0x1b` | `0x6c01810f` | 3 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c018100-b8b444e70e06` | `0x1b` | `0x6c01818f` | 4 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-1b-6c018100-35968732032f` | `0x1b` | `0x6c01810f` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c018100-b8b444e70e06` | `0x1b` | `0x6c01818f` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-1b-6c020000-3c835b4d17fc` | `0x1b` | `0x6c020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c028000-9340359d1b9e` | `0x1b` | `0x6c028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c028000-d8a78b010d2a` | `0x1b` | `0x6c028004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -800,24 +800,24 @@ belongs to without the census's own grouping.
 | `vfpu-1b-6c030100-dd458aca8e67` | `0x1b` | `0x6c030105` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c038100-2a248253ae1d` | `0x1b` | `0x6c038105` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c038100-bb708866aad1` | `0x1b` | `0x6c038185` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c050100-b22e268335ba` | `0x1b` | `0x6c050101` | 1 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c050100-efc06a11ea23` | `0x1b` | `0x6c05010f` | 1 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c058100-3d5b5325cfff` | `0x1b` | `0x6c058181` | 4 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c080000-d8932454186f` | `0x1b` | `0x6c0800ff` | 2 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-1b-6c050100-b22e268335ba` | `0x1b` | `0x6c050101` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c050100-efc06a11ea23` | `0x1b` | `0x6c05010f` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c058100-3d5b5325cfff` | `0x1b` | `0x6c058181` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c080000-d8932454186f` | `0x1b` | `0x6c0800ff` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-1b-6c0a0800-17b5909369e7` | `0x1b` | `0x6c0a080c` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c0a0800-9bc084e3e2cb` | `0x1b` | `0x6c0a088c` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c0a8800-d82f94555599` | `0x1b` | `0x6c0a888c` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c0a8800-da7f16f9194a` | `0x1b` | `0x6c0a880c` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c170100-41342d6cca15` | `0x1b` | `0x6c170181` | 2 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c3f8100-09cbcbd04122` | `0x1b` | `0x6c3f8101` | 3 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-1b-6c170100-41342d6cca15` | `0x1b` | `0x6c170181` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c3f8100-09cbcbd04122` | `0x1b` | `0x6c3f8101` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-1b-6d000000-6c9ec6f00b6b` | `0x1b` | `0x6d000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6d018000-67a821de4443` | `0x1b` | `0x6d01807f` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6d018100-342c1b50a7cf` | `0x1b` | `0x6d018180` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6d020000-05c5b518292e` | `0x1b` | `0x6d020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6e800000-5892d48f0b5a` | `0x1b` | `0x6e800000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6e808000-60c44851743e` | `0x1b` | `0x6e808001` | 3 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6e808000-d5aff2b94fa6` | `0x1b` | `0x6e808090` | 4 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6e810100-2116777d0d40` | `0x1b` | `0x6e810190` | 2 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-1b-6e800000-5892d48f0b5a` | `0x1b` | `0x6e800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6e808000-60c44851743e` | `0x1b` | `0x6e808001` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6e808000-d5aff2b94fa6` | `0x1b` | `0x6e808090` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6e810100-2116777d0d40` | `0x1b` | `0x6e810190` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-1b-6f000000-c76c882fac89` | `0x1b` | `0x6f000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6f010100-ea8a350b708d` | `0x1b` | `0x6f01018f` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6f028000-9b185cb51eac` | `0x1b` | `0x6f028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -834,8 +834,8 @@ belongs to without the census's own grouping.
 | `vfpu-32-c80a8000-03e9778a09ca` | `0x32` | `0xc80a8010` | - | `aot-direct` | `unverified` | no recorded evidence |
 | `vfpu-32-c8200000-e6a0811adc19` | `0x32` | `0xc8200000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-32-c8208000-9661c284ed73` | `0x32` | `0xc8208010` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-32-c8218000-7da4ff69d5a3` | `0x32` | `0xc821800f` | - | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-32-c8250000-237b2992f72e` | `0x32` | `0xc825000f` | - | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-32-c8218000-7da4ff69d5a3` | `0x32` | `0xc821800f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-32-c8250000-237b2992f72e` | `0x32` | `0xc825000f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-32-c8258000-1c3c462e8d50` | `0x32` | `0xc8258081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-32-c8260000-266eef066eaf` | `0x32` | `0xc8260001` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-34-d0000000-0d11775c2fde` | `0x34` | `0xd0000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -931,7 +931,7 @@ belongs to without the census's own grouping.
 | `vfpu-34-d01f8000-13306d9c22d2` | `0x34` | `0xd01f8004` | 3 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
 | `vfpu-34-d01f8000-4a572d3f61f1` | `0x34` | `0xd01f8084` | 4 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
 | `vfpu-34-d0200000-569020674441` | `0x34` | `0xd0200000` | 1 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
-| `vfpu-34-d0210000-12b37ebc278e` | `0x34` | `0xd0210000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_vrndi_rule_cells` |
+| `vfpu-34-d0210000-12b37ebc278e` | `0x34` | `0xd0210000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff`, `vfpu-interp-selftest:check_vrndi_rule_cells` |
 | `vfpu-34-d0218000-ac69ea1bf731` | `0x34` | `0xd021800f` | 3 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0220000-41aec2c1ea09` | `0x34` | `0xd0220000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0228000-bf2dcb1482da` | `0x34` | `0xd022808f` | 4 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
@@ -999,7 +999,7 @@ belongs to without the census's own grouping.
 | `vfpu-36-d8018100-a59abdf93d57` | `0x36` | `0xd801810f` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-36-d8050100-311bbc14b1ed` | `0x36` | `0xd8050101` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-36-d8200000-21b49665cf78` | `0x36` | `0xd8200000` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-36-d8218000-44bff127c0fe` | `0x36` | `0xd821800f` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-36-d8218000-44bff127c0fe` | `0x36` | `0xd821800f` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-36-d8258000-b04c26043d59` | `0x36` | `0xd8258081` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-37-dc000000-04aa804c6140` | `0x37` | `0xdc000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-37-dd000000-fc234082344e` | `0x37` | `0xdd000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -1013,41 +1013,41 @@ belongs to without the census's own grouping.
 | `vfpu-3a-e80a8000-9cb883fdeff7` | `0x3a` | `0xe80a8010` | - | `aot-direct` | `unverified` | no recorded evidence |
 | `vfpu-3a-e8200000-5783c16d2ba9` | `0x3a` | `0xe8200000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3a-e8208000-680691006847` | `0x3a` | `0xe8208010` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3a-e8218000-853dd708f98b` | `0x3a` | `0xe821800f` | - | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-3a-e8250000-ef69f6c7813d` | `0x3a` | `0xe825000f` | - | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3a-e8218000-853dd708f98b` | `0x3a` | `0xe821800f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-3a-e8250000-ef69f6c7813d` | `0x3a` | `0xe825000f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3a-e8258000-aa889c2278dc` | `0x3a` | `0xe8258081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3a-e8260000-420666dfdabb` | `0x3a` | `0xe8260001` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f0000000-36a0dfd6f25e` | `0x3c` | `0xf0000000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f0000000-36a0dfd6f25e` | `0x3c` | `0xf0000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f0018100-5a4cbf0afcde` | `0x3c` | `0xf001818f` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f0018100-ae9fcb3f5729` | `0x3c` | `0xf001810f` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-vmmul-vtfm3-nan |
 | `vfpu-3c-f0040000-87e8800f7077` | `0x3c` | `0xf0040088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f0800000-6269167e2f9b` | `0x3c` | `0xf0800080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f0800000-74175c7ed704` | `0x3c` | `0xf0800000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f0800000-74175c7ed704` | `0x3c` | `0xf0800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f0818100-1436ad21d7ee` | `0x3c` | `0xf081818f` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f0818100-a21cd625cf03` | `0x3c` | `0xf0818101` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f1000000-c53432ee06d9` | `0x3c` | `0xf1000000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f1000000-c53432ee06d9` | `0x3c` | `0xf1000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f1018000-f4f54cf36cf1` | `0x3c` | `0xf101807f` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f1018100-ad659c2f8f04` | `0x3c` | `0xf1018180` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f1040000-75031de63abb` | `0x3c` | `0xf1040088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f1800000-698ca1415af9` | `0x3c` | `0xf1800000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f1800000-698ca1415af9` | `0x3c` | `0xf1800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f1808000-7629a00da228` | `0x3c` | `0xf1808010` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-vmmul-vtfm3-nan |
 | `vfpu-3c-f1818000-f4d5da436b74` | `0x3c` | `0xf1818090` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f1830000-a250b91c407a` | `0x3c` | `0xf18300ff` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f2000000-6c250f1e9dc1` | `0x3c` | `0xf2000000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f2000000-6c250f1e9dc1` | `0x3c` | `0xf2000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f2008000-5b136f7b67ad` | `0x3c` | `0xf200807f` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
 | `vfpu-3c-f2018000-10d8b1518c48` | `0x3c` | `0xf20180ff` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f2030100-67f127769a35` | `0x3c` | `0xf20301ff` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f2808000-28bdadf840d9` | `0x3c` | `0xf2808090` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f2808000-a8b7c9270777` | `0x3c` | `0xf2808001` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3800000-33c04b695fcc` | `0x3c` | `0xf3800088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3800000-8a57926c1d7d` | `0x3c` | `0xf3800000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f3800000-8a57926c1d7d` | `0x3c` | `0xf3800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f3808000-7b56bb3b366e` | `0x3c` | `0xf3808008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3808000-c9722109ff7d` | `0x3c` | `0xf3808081` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3810000-67f127769a35` | `0x3c` | `0xf3810088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3810000-6c250f1e9dc1` | `0x3c` | `0xf3810000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f3810000-6c250f1e9dc1` | `0x3c` | `0xf3810000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f3818000-10d8b1518c48` | `0x3c` | `0xf3818088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3818000-5b136f7b67ad` | `0x3c` | `0xf3818008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
-| `vfpu-3c-f3830000-4d3e36431900` | `0x3c` | `0xf3830000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f3830000-4d3e36431900` | `0x3c` | `0xf3830000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f3830000-b0763af87a26` | `0x3c` | `0xf3830080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3838000-2559d0e2853f` | `0x3c` | `0xf3838008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3838000-4172a423a232` | `0x3c` | `0xf3838088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -1084,6 +1084,6 @@ belongs to without the census's own grouping.
 | `vfpu-3e-f8018100-bdb3647af048` | `0x3e` | `0xf801810f` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-3e-f8050100-e50967e96480` | `0x3e` | `0xf8050101` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-3e-f8200000-c7eee1612aba` | `0x3e` | `0xf8200000` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3e-f8218000-9dd390013655` | `0x3e` | `0xf821800f` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-3e-f8218000-9dd390013655` | `0x3e` | `0xf821800f` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3e-f8258000-51b5a0cb59ca` | `0x3e` | `0xf8258081` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3f-fc000000-2f62df9cdfc2` | `0x3f` | `0xfc000000` | - | `aot-direct` | `unverified` | no recorded evidence |
