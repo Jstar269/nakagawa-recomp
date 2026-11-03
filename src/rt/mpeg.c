@@ -1693,16 +1693,21 @@ uint32_t mpeg_get_pcm_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     return mpeg_contract_error("sceMpegGetPcmAu", "PCM decode is not implemented", SCE_MPEG_ERROR_NO_DATA);
 }
 
-/* sceMpegChangeGetAuMode(mpeg, stream, mode): decode mode is retained; skip mode has no measured
- * queue/timestamp contract and therefore fails closed. */
+/* sceMpegChangeGetAuMode(mpeg, stream, mode): the mode applies to a registered stream.  A stream
+ * that was registered and has since been unregistered takes the call and nothing changes, as
+ * PPSSPP's unregister keeps the id in its stream map: a guest PSMF player keeps its stream ids
+ * across a movie change and resets them all, and it treats a refusal here as a failed reset.  An
+ * id that was never issued stays refused.  Unmeasured on this project's PSP. */
 uint32_t mpeg_change_get_au_mode(uint32_t mpegAddr, uint32_t sid, uint32_t mode) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     if (mode != MPEG_AU_MODE_DECODE && mode != MPEG_AU_MODE_SKIP)
         return mpeg_contract_error("sceMpegChangeGetAuMode", "unsupported AU mode", SCE_MPEG_ERROR_INVALID_VALUE);
     int index = mpeg_stream_index(ctx, sid);
-    if (index < 0)
+    if (index < 0) {
+        if (sid && sid < s_streamIdGen) return 0;
         return mpeg_contract_error("sceMpegChangeGetAuMode", "unknown stream", SCE_MPEG_ERROR_INVALID_VALUE);
+    }
     ctx->streams[index].auMode = (int)mode;
     return 0;
 }

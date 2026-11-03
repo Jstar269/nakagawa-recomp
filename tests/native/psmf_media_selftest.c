@@ -2309,6 +2309,18 @@ static void test_mpeg_pcm_and_au_mode(void) {
     CHECK(mpeg_change_get_au_mode(PM_DESC, pcm_sid, MPEG_AU_MODE_SKIP) == 0u &&
               mpeg_change_get_au_mode(PM_DESC, pcm_sid, 2u) != 0u,
           "MPEG AU skip mode is accepted and an unknown mode is refused");
+    /* A guest PSMF player keeps the stream ids of the movie before and resets them all. */
+    uint32_t next_sid = mpeg_regist_stream(PM_DESC, MPEG_PCM_STREAM, 1u);
+    CHECK(mpeg_unregist_stream(PM_DESC, pcm_sid) == 0u &&
+              mpeg_change_get_au_mode(PM_DESC, pcm_sid, MPEG_AU_MODE_DECODE) == 0u,
+          "MPEG AU mode takes a stream that was unregistered");
+    CHECK(mpeg_change_get_au_mode(PM_DESC, next_sid, MPEG_AU_MODE_DECODE) == 0u,
+          "MPEG AU mode still reaches the live stream");
+    CHECK(mpeg_change_get_au_mode(PM_DESC, next_sid + 1u, MPEG_AU_MODE_DECODE) ==
+                  SCE_MPEG_ERROR_INVALID_VALUE &&
+              mpeg_change_get_au_mode(PM_DESC, 0u, MPEG_AU_MODE_DECODE) ==
+                  SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG AU mode refuses an id that was never issued");
     mpeg_finish();
 }
 
