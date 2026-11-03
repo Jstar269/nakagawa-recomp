@@ -3649,18 +3649,44 @@ static int hook_finite(const GeVtx *const *v, int n) {
     return 1;
 }
 
+/* The triangles of one PRIM share its state: the fallback verdict, the batch state and the
+ * bound target depend only on GE state, which a GE command changes (the state serial), and
+ * on the backend's own submissions and target changes. hook_tri keeps the verdict of the
+ * PRIM's first accepted triangle and reuses it until one of those moves. */
+static struct {
+    int valid;
+    int persp;
+    uint32_t serial;
+    uint32_t flushgen;
+    const Target *target;
+    Batch batch;
+} s_tri_state;
+
 static int hook_tri(const GeVtx *A, const GeVtx *B, const GeVtx *C, int persp) {
     if (!s_ready) return 0;
     cpu_profile_hook_enter();
     { const GeVtx *vv[3] = { A, B, C };
       if (!hook_finite(vv, 3)) return cpu_profile_hook_leave(1); }
-    if (software_fallback_begin(-1)) return cpu_profile_hook_leave(0);
-    static int nocull = -1;
-    if (nocull < 0) nocull = getenv("SR_NOCULL") ? 1 : 0;
     Batch b;
-    state_get(persp, 0, &b);
-    if (nocull) b.key.cull = VK_CULL_MODE_NONE;
-    if (!begin_target()) return cpu_profile_hook_leave(1); /* target alloc failed: drop draw */
+    if (s_tri_state.valid && s_tri_state.persp == persp && s_cur &&
+        s_tri_state.target == s_cur && s_tri_state.serial == ge_state_serial() &&
+        s_tri_state.flushgen == s_flushgen) {
+        b = s_tri_state.batch;
+    } else {
+        s_tri_state.valid = 0;
+        if (software_fallback_begin(-1)) return cpu_profile_hook_leave(0);
+        static int nocull = -1;
+        if (nocull < 0) nocull = getenv("SR_NOCULL") ? 1 : 0;
+        state_get(persp, 0, &b);
+        if (nocull) b.key.cull = VK_CULL_MODE_NONE;
+        if (!begin_target()) return cpu_profile_hook_leave(1); /* target alloc failed: drop draw */
+        s_tri_state.valid = 1;
+        s_tri_state.persp = persp;
+        s_tri_state.serial = ge_state_serial();
+        s_tri_state.flushgen = s_flushgen;
+        s_tri_state.target = s_cur;
+        s_tri_state.batch = b;
+    }
     ensure_room(3);
     uint64_t vertex_started = cpu_profile_now();
     uint32_t first = s_nverts;
