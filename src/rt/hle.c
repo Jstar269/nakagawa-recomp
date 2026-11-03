@@ -3548,9 +3548,14 @@ int hle_fd_allocate(void) {
     }
     return -1;
 }
-/* Destination of a seek on a file descriptor (#1380). pspautotests tests/io/file at
- * f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 for a destination before the start
- * and accepts one past the end (a read there returns 0). A Memory Stick file's position is
+/* Destination of a seek on a file descriptor (#1380). A Memory Stick seek to a destination
+ * before the start answers EINVAL (0x80010016; sceIoLseek's high word 0xFFFFFFFF) with the
+ * position unchanged, from SEEK_SET, SEEK_CUR and SEEK_END and through sceIoLseek32, on
+ * read-write and read-only descriptors (measured on a PSP-3000 6.61 by PSP-IO-EOF-001
+ * io-eof-seek-negative and io-eof-seek-negative-rdonly, 2026-11-02, probe f484ef58). Other
+ * devices keep the -1 pspautotests tests/io/file at f573fe8c9122a8ff5db4f030d74557bed644b4e0
+ * records there (UNMEASURED). A destination past the end is accepted and a read there returns
+ * 0 (pspautotests; also measured by io-eof-read-past). A Memory Stick file's position is
  * 32 bits wide: a destination of 0xFFFFFFFF is accepted and one past it answers EINVAL
  * (0x80010016) with the position unchanged, from SEEK_SET and from SEEK_END alike (measured on
  * a PSP-3000 6.61 by PSP-KERNEL-SEM-001 io-seek64 and io-seek64-rdwr, 2026-10-31, probe
