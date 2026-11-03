@@ -1342,6 +1342,13 @@ typedef struct SrVarExportDecl {
     uint32_t addr;
 } SrVarExportDecl;
 void sr_main_var_exports_register(const SrVarExportDecl *exports, uint32_t count);
+/* A function the main image exports. The table is sorted by NID, unique, and outlives the run:
+ * the executable is started before any module, so importers link to these from boot. */
+typedef struct SrMainFuncExport {
+    uint32_t nid;
+    uint32_t addr;
+} SrMainFuncExport;
+void sr_main_func_exports_register(const SrMainFuncExport *exports, uint32_t count);
 /* The variable imports of a module translated at a fixed base (absolute sites), keyed by its
  * file name; they link when that module loads and unlink when it unloads. */
 void sr_fixed_var_imports_register(const char *module, const SrVarImport *imports,

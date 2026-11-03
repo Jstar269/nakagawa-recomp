@@ -250,14 +250,51 @@ static uint32_t module_entry_call(CpuState *s, const LoadedModule *mod, uint32_t
     return ge_call_guest_rv(s, entry, arglen, argp, 0);
 }
 
-/* module_stop is a module-manager entry, so execute it in its own guest thread.
- * Thread creation uses the runtime's existing synthetic defaults (priority 32,
- * default stack); callers that need a physical PSP's module-thread option rules
- * remain behind this explicitly labelled boundary. The scheduler copies argp to
- * the stop thread's stack before starting it, then this caller joins and deletes
- * the temporary thread. */
+/* The thread a module's stop entry runs on: the module-init priority and the default stack
+ * unless the caller's SceKernelSMOption says otherwise. */
+typedef struct ModuleStopThread {
+    int priority;
+    uint32_t stack_size;
+    uint32_t attr;
+} ModuleStopThread;
+#define MODULE_STOP_THREAD_DEFAULT ((ModuleStopThread){SCE_KERNEL_MODULE_INIT_PRIORITY, 0u, 0u})
+
+/* The attributes a SceKernelSMOption may ask for: NO_FILLSTACK, CLEAR_STACK, LOW_STACK, the
+ * unnamed 0x00800000, USE_VFPU and NEVERUSE_FPU (uOFW THREAD_SM_LEGAL_ATTR). */
+#define MODULE_SM_LEGAL_ATTR 0x00f06000u
+#define MODULE_SM_OPTION_SIZE 20u
+#define GUEST_MODULE_PARTITION_USER 2u
+
+/* Apply a SceKernelSMOption {size, mpIdStack, stackSize, priority, attribute}, as the module
+ * manager reads it (uOFW src/kd/modulemgr/loadModuleChecks_inline.h, _checkSMOptionConditions,
+ * and modulemgr.c, _StopModule): a size from SDK 2.08 on, legal attributes, and a zero
+ * priority or stack size leaving the default in place. Only the user partition is modelled
+ * for the stack, so another one is refused by name. */
+static uint32_t read_module_stop_option(uint32_t option, ModuleStopThread *thread) {
+    if (!option) return 0u;
+    if (!sr_guest_span_readable(option, MODULE_SM_OPTION_SIZE)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if ((sr_sdkver_get(&g_sdk_version) & 0xffff0000u) >= 0x02080000u &&
+        MEM_R32(option) != MODULE_SM_OPTION_SIZE)
+        return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    const uint32_t mpid = MEM_R32(option + 4u), stack_size = MEM_R32(option + 8u);
+    const uint32_t priority = MEM_R32(option + 12u), attr = MEM_R32(option + 16u);
+    if (attr & ~MODULE_SM_LEGAL_ATTR) return 0x80020001u; /* SCE_KERNEL_ERROR_ERROR */
+    if (mpid != 0u && mpid != GUEST_MODULE_PARTITION_USER) {
+        fprintf(stderr, "SEMANTIC_BOUNDARY: MODULE_STOP_PARTITION_UNSUPPORTED: stop thread stack "
+                        "in partition %u; only the user partition is modelled; refusing\n", mpid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (priority != 0u) thread->priority = (int)priority;
+    if (stack_size != 0u) thread->stack_size = stack_size;
+    thread->attr = attr;
+    return 0u;
+}
+
+/* module_stop is a module-manager entry, so execute it in its own guest thread. The
+ * scheduler copies argp to the stop thread's stack before starting it, then this caller
+ * joins and deletes the temporary thread. */
 static uint32_t module_stop_thread_invoke(CpuState *caller, const LoadedModule *mod,
-                                          uint32_t arglen, uint32_t argp,
+                                          ModuleStopThread thread, uint32_t arglen, uint32_t argp,
                                           uint32_t *status_out) {
     if (!caller || !mod || !mod->module_stop || sched_current_uid() == 0u) {
         fprintf(stderr, "PRX_MODULE_STOP_THREAD_UNAVAILABLE_SYNTHETIC: no running guest "
@@ -267,8 +304,8 @@ static uint32_t module_stop_thread_invoke(CpuState *caller, const LoadedModule *
     if (arglen != 0u && (!argp || !sr_guest_span_readable(argp, arglen)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
 
-    uint32_t thread_uid = sched_create_thread_ex(mod->module_stop, 32, 0u, 0u,
-                                                 "module_stop");
+    uint32_t thread_uid = sched_create_thread_ex(mod->module_stop, thread.priority,
+                                                 thread.stack_size, thread.attr, "module_stop");
     if (!thread_uid) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
     uint32_t gp = mod->runtime_placed ? mod->gp : caller->r[28];
     if (sched_thread_set_gp(thread_uid, gp) != 0) {
@@ -878,7 +915,6 @@ static int populate_guest_module(const char *file, uint32_t base, int required) 
 /* SceKernelLMOption, from the public PSPSDK pspmodulemgr.h: size, mpidtext, mpiddata,
  * flags, position, access, reserved[2]. Fields past `size` are absent and default. */
 #define GUEST_MODULE_OPTION_BYTES 20u
-#define GUEST_MODULE_PARTITION_USER 2u
 #define GUEST_MODULE_POSITION_LOW 0u
 #define GUEST_MODULE_POSITION_HIGH 1u
 /* The user partition hands out 256-byte slots (alloc_block). */
@@ -1265,6 +1301,9 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
  * declares (by guest_path) were translated; any other path gets a record whose start
  * the host bypass serves. */
 uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
+    /* A title may spell a raw sector extent several ways; the manifest declares one. */
+    char extent[64];
+    if (iso_sector_extent_path(path, extent, sizeof(extent))) path = extent;
     const char *file = NULL;
     uint32_t base = 0;
     int required = 0;
@@ -1586,11 +1625,9 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
         return SCE_ERROR_MODULE_BAD_ID;
     }
 
-    if (stack_arg(s, 0) != 0u) {
-        fprintf(stderr, "PRX_MODULE_STOP_OPTION_SYNTHETIC: nonzero SceKernelSMOption is "
-                        "unmeasured; refusing instead of guessing thread parameters\n");
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
-    }
+    ModuleStopThread stop_thread = MODULE_STOP_THREAD_DEFAULT;
+    uint32_t option_error = read_module_stop_option(stack_arg(s, 0), &stop_thread);
+    if (option_error != 0u) return option_error;
 
     if (!mod->start_entry_ran) {
         fprintf(stderr, "PRX_MODULE_HOST_SKIPPED_STOP: sceKernelStopModule uid=0x%x "
@@ -1616,11 +1653,8 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
         return SCE_KERNEL_ERROR_CAN_NOT_STOP;
     }
     mod->state = MODULE_STATE_STOPPING;
-    fprintf(stderr, "PRX_MODULE_STOP_THREAD_SYNTHETIC: uid=0x%x stop=0x%08x "
-                    "uses scheduler default priority/stack; module option rules remain unmeasured\n",
-            modid, mod->module_stop);
     uint32_t rv = 0u;
-    uint32_t call_rc = module_stop_thread_invoke(s, mod, arglen, argp, &rv);
+    uint32_t call_rc = module_stop_thread_invoke(s, mod, stop_thread, arglen, argp, &rv);
     if (call_rc != 0u) {
         mod->state = MODULE_STATE_STARTED;
         return call_rc;
@@ -1735,7 +1769,8 @@ static uint32_t h_SelfStopUnloadModule(CpuState *s) {
         if (sr_lookup(mod->module_stop) == NULL)
             return SCE_KERNEL_ERROR_CAN_NOT_STOP;
         mod->state = MODULE_STATE_STOPPING;
-        uint32_t rc = module_stop_thread_invoke(s, mod, arglen, argp, &stop_status);
+        uint32_t rc = module_stop_thread_invoke(s, mod, MODULE_STOP_THREAD_DEFAULT, arglen, argp,
+                                                &stop_status);
         if (rc != 0u) {
             mod->state = MODULE_STATE_STARTED;
             return rc;
@@ -1839,7 +1874,8 @@ static uint32_t h_LoadExec(CpuState *s) {
                 return SCE_KERNEL_ERROR_CAN_NOT_STOP;
             uint32_t stop_status = 0u;
             current_module->state = MODULE_STATE_STOPPING;
-            uint32_t stop_rc = module_stop_thread_invoke(s, current_module, 0u, 0u,
+            uint32_t stop_rc = module_stop_thread_invoke(s, current_module,
+                                                         MODULE_STOP_THREAD_DEFAULT, 0u, 0u,
                                                          &stop_status);
             if (stop_rc != 0u) {
                 current_module->state = MODULE_STATE_STARTED;

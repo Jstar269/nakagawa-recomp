@@ -829,6 +829,19 @@ class MainModuleRecordTest(unittest.TestCase):
         self.assertNotIn("SrMainModuleRecord", outputs["without"])
         self.assertNotIn("sr_main_module_register", outputs["without"])
 
+    def test_codegen_registers_the_executables_function_exports_only_when_it_has_some(self):
+        out_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(out_dir, ignore_errors=True))
+        outputs = {}
+        for label, exports in (("with", ((0x11, 0x08804000),)), ("without", ())):
+            out_c = os.path.join(out_dir, f"{label}_recomp.c")
+            with unittest.mock.patch("imports.function_exports", return_value=exports):
+                self.assertEqual(codegen.main(["codegen.py", self._write(_elf(_text())), out_c]), 0)
+            outputs[label] = Path(out_c).read_text(encoding="ascii")
+        self.assertIn("    { 0x00000011u, 0x08804000u },", outputs["with"])
+        self.assertIn("    sr_main_func_exports_register(sr_main_func_exports, 1u);", outputs["with"])
+        self.assertNotIn("sr_main_func_exports", outputs["without"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -745,6 +745,11 @@ static int s_psmf_synthetic_enabled;
 static int s_umd_io_synthetic_enabled;
 static const char *const s_psmf_synthetic_path = "disc0:/media/synthetic.psmf";
 
+int iso_sector_extent_path(const char *guest_path, char *out, size_t out_size) {
+    (void)guest_path; (void)out; (void)out_size;
+    return 0;
+}
+
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     if (s_umd_io_synthetic_enabled && guest_path) {
         static const char *const paths[] = {
@@ -1687,6 +1692,7 @@ enum {
 #define RT_PATH_ADDR 0x08906000u
 #define RT_ARG_ADDR 0x08906080u
 #define RT_STATUS_ADDR 0x089060C0u
+#define RT_OPTION_ADDR 0x089060D0u
 #define RT_OPTION_ADDR 0x08906100u
 
 static void fd_host_path(char *out, size_t capacity, const char *guest);
@@ -1705,8 +1711,10 @@ static void rt_alpha_start(CpuState *s) {
     s->r[2] = 0u;
 }
 
+static int s_rt_stop_priority;
 static void rt_alpha_stop(CpuState *s) {
     s_rt_stop_calls++;
+    s_rt_stop_priority = sched_current_priority();
     s->r[2] = RT_STOP_STATUS;
 }
 
@@ -2033,6 +2041,24 @@ static uint32_t rt_lifecycle(uint32_t (*handler)(CpuState *), uint32_t uid,
     return handler(&cpu);
 }
 
+/* A SceKernelSMOption of size bytes: {size, mpIdStack, stackSize, priority, attribute}. */
+static void rt_write_stop_option(uint32_t size, uint32_t mpid, uint32_t priority, uint32_t attr) {
+    MEM_W32(RT_OPTION_ADDR, size);
+    MEM_W32(RT_OPTION_ADDR + 4u, mpid);
+    MEM_W32(RT_OPTION_ADDR + 8u, 0u);
+    MEM_W32(RT_OPTION_ADDR + 12u, priority);
+    MEM_W32(RT_OPTION_ADDR + 16u, attr);
+}
+
+static uint32_t rt_stop_with_option(uint32_t uid, uint32_t option) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    cpu.r[7] = RT_STATUS_ADDR;
+    cpu.r[8] = option;
+    return sr_hle_test_stop_module(&cpu);
+}
+
 /* A started module that exports a NID host HLE also serves takes that NID over, and only
  * while it is started (#286). scePsmfPlayerGetAudioOutSize is the shadowed NID: the host
  * handler answers a handle it does not know with its status error, and the guest body
@@ -2314,11 +2340,41 @@ static void test_runtime_placed_modules(void) {
                "runtime placement: a linked guest export does not clear the caller's LLbit");
     }
 
+    /* A SceKernelSMOption the module manager refuses leaves the module started. */
+    {
+        CpuState sdk;
+        memset(&sdk, 0, sizeof(sdk));
+        sdk.r[4] = 0x02080000u;
+        (void)sr_syscall(&sdk, 0x7591c7dbu); /* sceKernelSetCompiledSdkVersion */
+    }
+    rt_write_stop_option(16u, 2u, 0u, 0u);
+    expect(rt_stop_with_option(uid, RT_OPTION_ADDR) == SCE_KERNEL_ERROR_ILLEGAL_SIZE &&
+               s_rt_stop_calls == 0u,
+           "runtime placement: from SDK 2.08 a stop option of the wrong size is refused");
+    rt_write_stop_option(20u, 2u, 0u, 0x80000000u);
+    expect(rt_stop_with_option(uid, RT_OPTION_ADDR) == 0x80020001u && s_rt_stop_calls == 0u,
+           "runtime placement: a stop option with an illegal attribute is refused");
+    rt_write_stop_option(20u, 5u, 0u, 0u);
+    expect(rt_stop_with_option(uid, RT_OPTION_ADDR) == 0x80020002u &&
+               s_rt_stop_calls == 0u,
+           "runtime placement: a stop thread stack outside the user partition is refused");
+    expect(rt_stop_with_option(uid, 0x00000010u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR &&
+               s_rt_stop_calls == 0u,
+           "runtime placement: an unreadable stop option is refused");
+
     /* Stop, then unload: the image, its exports, its dispatch and its memory go. */
     MEM_W32(RT_STATUS_ADDR, 0u);
-    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, RT_STATUS_ADDR) == 0u &&
-               s_rt_stop_calls == 1u && MEM_R32(RT_STATUS_ADDR) == RT_STOP_STATUS,
-           "runtime placement: StopModule runs module_stop and reports its status");
+    rt_write_stop_option(20u, 2u, 0x30u, 0x00004000u);
+    expect(rt_stop_with_option(uid, RT_OPTION_ADDR) == 0u &&
+               s_rt_stop_calls == 1u && MEM_R32(RT_STATUS_ADDR) == RT_STOP_STATUS &&
+               s_rt_stop_priority == 0x30,
+           "runtime placement: StopModule runs module_stop at the option's priority and "
+           "reports its status");
+    {
+        CpuState sdk;
+        memset(&sdk, 0, sizeof(sdk));
+        (void)sr_syscall(&sdk, 0x7591c7dbu);
+    }
     rt_capture_begin();
     uint32_t unloaded = rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u);
     out = rt_capture_end();
@@ -4718,6 +4774,37 @@ static void test_variable_import_linker(void) {
            "variable import: another module's load links nothing of this table");
     sr_hle_test_var_reset();
     sr_hle_test_var_fixed_reset();
+}
+
+static uint32_t s_main_export_calls;
+static void main_export_fn(CpuState *s) { s_main_export_calls++; s->r[2] = 0x5au; }
+
+/* A module calling a function the executable exports runs the executable's code, and needs no
+ * module to have started first: the executable is the module that is already running. */
+static void test_main_function_exports_link_from_boot(void) {
+    enum { EXPORT_ADDR = 0x08804000u };
+    static const SrMainFuncExport exports[] = {
+        {0x7a000010u, 0x08804100u}, {0x7a000020u, EXPORT_ADDR}, {0x7a000030u, 0x08804200u},
+    };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    sr_main_func_exports_register(exports, 3u);
+    sr_test_register_guest_fn(EXPORT_ADDR, main_export_fn);
+
+    expect(sr_hle_test_started_image_count() == 0 &&
+               sr_hle_test_started_export(0x7a000020u) == EXPORT_ADDR,
+           "main export: linked with no module started");
+    expect(sr_hle_test_started_export(0x7a000025u) == 0u,
+           "main export: a NID the executable does not export is not linked");
+    memset(&cpu, 0, sizeof(cpu));
+    s_main_export_calls = 0u;
+    expect(sr_syscall(&cpu, 0x7a000020u) == 0x5au && s_main_export_calls == 1u,
+           "main export: an import of it runs the executable's translated code");
+    sr_hle_test_module_reset();
+    sr_test_guest_fn_reset();
 }
 
 static void test_umd_io_console_model(void) {
@@ -43143,6 +43230,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_module_identity_is_its_export_table();
     test_variable_import_linker();
     test_fd_namespace();
+    test_main_function_exports_link_from_boot();
     test_umd_io_console_model();
     test_ms0_unified_namespace();
     test_utility_av_module_state();
