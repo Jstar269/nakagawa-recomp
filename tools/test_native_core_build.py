@@ -56,6 +56,10 @@ _RUNS_BEFORE_PROCESS_TEST = (
 ) + (
     "build/mygame/ge_raster_ref_selftest",
     "build/mygame/psmf_media_focused_selftest --fuzz-iters 0",
+    # memory-watch-selftest: the store watch on the interpreter's data word (SR_WATCH from
+    # the target), then on a main-RAM word, where unwatched stores take the inline path.
+    "build/mygame/dispatch_isolation_selftest_generic",
+    "build/mygame/dispatch_isolation_selftest_generic --watch 0x08801000:4",
     "build/test_pgf_public",
     "build/test_core_catalog",
     "build/test_parsers_hostile",

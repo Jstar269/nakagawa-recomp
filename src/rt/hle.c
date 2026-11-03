@@ -2094,9 +2094,31 @@ PrxImage s_prx_images[HLE_MAX_LOADED_MODULES];
 unsigned s_prx_image_count;
 atomic_int s_prx_started_count;
 
+static const SrMainFuncExport *s_main_func_exports;
+static uint32_t s_main_func_export_count;
+
+void sr_main_func_exports_register(const SrMainFuncExport *exports, uint32_t count) {
+    s_main_func_exports = exports;
+    s_main_func_export_count = count;
+}
+
+static uint32_t main_func_export(uint32_t nid) {
+    uint32_t lo = 0u, hi = s_main_func_export_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if (s_main_func_exports[mid].nid < nid) lo = mid + 1u;
+        else hi = mid;
+    }
+    return lo < s_main_func_export_count && s_main_func_exports[lo].nid == nid
+        ? s_main_func_exports[lo].addr : 0u;
+}
+
 /* The guest address a started module exports for `nid`, or 0. Importers are linked to a
- * module's exports only after that module has been initialised, as the kernel does. */
+ * module's exports only after that module has been initialised, as the kernel does; the
+ * executable is the first module started, so its exports link from boot. */
 static uint32_t started_module_export(uint32_t nid) {
+    uint32_t main_export = main_func_export(nid);
+    if (main_export) return main_export;
     if (atomic_load_explicit(&s_prx_started_count, memory_order_acquire) == 0) return 0;
     uint32_t t = sr_hle_resolve_late_import(nid);
     if (!t || t == SR_HLE_LATE_BUILTIN) return 0;
@@ -2994,6 +3016,8 @@ int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint
 }
 
 void sr_hle_test_module_reset(void) {
+    s_main_func_exports = NULL;
+    s_main_func_export_count = 0u;
     s_main_module_uid = 0u;
     s_main_module_record = NULL;
     s_deferred_self_stop_uid = 0u;

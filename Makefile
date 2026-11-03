@@ -3411,10 +3411,15 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 
 # memory-watch-selftest — exercise the opt-in shared AOT/interpreter store hook
-# against the source-owned synthetic guest in dispatch_isolation_selftest.c.
+# against the source-owned synthetic guest in dispatch_isolation_selftest.c: once with the
+# watch on the interpreter's data word, once on a main-RAM word, where a store with nothing
+# armed takes the accessors' inline path (every width there must still be reported).
 memory-watch-selftest: export SR_WATCH = 0x00601000:4
 memory-watch-selftest: DISPATCH_ISO_CONFIG = generic
 memory-watch-selftest: dispatch-isolation-selftest-one
+	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe --watch 0x08801000:4
+
+native-core-tests: memory-watch-selftest
 
 # asset-index-selftest — host-neutral dynamic extracted-data index regression (issue #223).
 # The production Windows HLE supplies the path enumeration and wide I/O; this target proves the

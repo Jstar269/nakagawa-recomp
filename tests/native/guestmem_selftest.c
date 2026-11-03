@@ -215,6 +215,8 @@ void sr_oor(uint32_t a, uint32_t v, int store) {
 void sr_heap_note_bulk_write(uint32_t addr, uint32_t width, uint32_t pc) {
     (void)addr; (void)width; (void)pc;
 }
+/* The GE status word sr_r32 serves at 0x04084000; no load here reads it. */
+uint32_t sr_get_ge_status(void) { return 0u; }
 void sr_ge_vram_read_prepare(uint32_t physical_addr, uint32_t width) {
     (void)physical_addr; (void)width;
 }
@@ -581,6 +583,25 @@ static void fuzz_differential(void) {
     CHECK(mul_mismatch == 0, "checked mul disagreed with reference %d time(s)", mul_mismatch);
 }
 
+/* #1732: the scalar loads take an inline path for plain RAM and the full body for
+ * everything else. Through every view both must read the same bytes. */
+static void test_inline_loads_match_full_bodies(void) {
+    static const uint32_t addrs[] = {
+        0x08000000u, 0x08001235u, 0x0bfffffcu, 0x88004000u, 0xa8004010u, 0x48004020u,
+        0x04001000u, 0x04201f00u, 0x04403040u, 0x04603040u, 0x44001010u,
+    };
+    for (size_t k = 0; k < sizeof addrs / sizeof addrs[0]; k++) {
+        const uint32_t a = addrs[k];
+        for (uint32_t i = 0; i < 4u; i++) SR_HOST(a + i)[0] = (uint8_t)(0x31u + 17u * i + k);
+        CHECK(sr_r8(a) == sr_r8_slow(a), "sr_r8 at 0x%08x matches the full body", a);
+        CHECK(sr_r16(a) == sr_r16_slow(a), "sr_r16 at 0x%08x matches the full body", a);
+        CHECK(sr_r32(a) == sr_r32_slow(a), "sr_r32 at 0x%08x matches the full body", a);
+        CHECK(sr_r32(a) == ((uint32_t)SR_HOST(a)[0] | (uint32_t)SR_HOST(a + 1u)[0] << 8 |
+                            (uint32_t)SR_HOST(a + 2u)[0] << 16 | (uint32_t)SR_HOST(a + 3u)[0] << 24),
+              "sr_r32 at 0x%08x reads the bytes the view maps", a);
+    }
+}
+
 int main(void) {
     test_scalar_bounds();
     test_overflow_safety();
@@ -598,6 +619,7 @@ int main(void) {
     test_vram_mirror_bulk_copy();
     test_any_view_span_predicate();
     test_vram_mirror_write_primitives();
+    test_inline_loads_match_full_bodies();
     free(g_committed);
     free(arena);
     if (g_fail == 0) {
