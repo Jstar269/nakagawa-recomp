@@ -2222,6 +2222,29 @@ _register_campaign_probe(
     {case: (9 if case.endswith("-draw") else 16) for case in GE_MIP_CASES},
 )
 
+# ge-light (139, probe_ge_sample.c): the #1732 GE lighting cells. Per specular coefficient of the
+# gl_coefs table, in order: seventeen `-zN` and seventeen `-yN` records (the float bits of the
+# normals' z and y, 16 samples each), then for family s (specular) and family d (powered
+# diffuse) one `-draw` record (10 words: the GE wait outcome, the list length, k's float bits,
+# its 24-bit command data and the light component) and seventeen `-rN` window rows.
+GE_LIGHT_COEFS = ("k1", "k2", "k3p5", "k8", "k10", "k16", "k31", "k64", "k100", "k128")
+GE_LIGHT_FAMILIES = ("s", "d")
+GE_LIGHT_ROWS = tuple(range(17))
+GE_LIGHT_CASES = tuple(
+    case for coef in GE_LIGHT_COEFS
+    for case in (
+        *(f"{coef}-z{y}" for y in GE_LIGHT_ROWS),
+        *(f"{coef}-y{y}" for y in GE_LIGHT_ROWS),
+        *(case for family in GE_LIGHT_FAMILIES
+          for case in (f"{family}-{coef}-draw",
+                       *(f"{family}-{coef}-r{y}" for y in GE_LIGHT_ROWS))),
+    )
+)
+_register_campaign_probe(
+    "ge-light", "PSP-GE-LIGHT-001", GE_LIGHT_CASES,
+    {case: (10 if case.endswith("-draw") else 16) for case in GE_LIGHT_CASES},
+)
+
 # module-start (124, probe_module_start.c): the module_start thread cell. A fixed-shape
 # stream of raw words: module_start's own sceKernelReferThreadStatus (return code and the
 # 26-word SceKernelThreadInfo), the user-partition free sizes before and after the helper
