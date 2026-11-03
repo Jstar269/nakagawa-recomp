@@ -207,11 +207,12 @@ class PreparationEngine:
 
     def __init__(
         self,
-        base_dir: Optional[Path] = None,
+        base_dir: Path,
         registry: Optional[TitleRegistry] = None,
         native_stager: Optional[NativeStager] = None,
     ) -> None:
-        self.base_dir = Path(base_dir or Path.cwd()).resolve()
+        # No working-directory default: the caller names the per-user data root.
+        self.base_dir = Path(base_dir).resolve()
         self.registry = registry or get_default_registry()
         self.native_stager = native_stager
 
