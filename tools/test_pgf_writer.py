@@ -292,6 +292,13 @@ class PgfWriterRefusalTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assert_refused("font-field-invalid", font_name=name)
 
+    def test_resolution_and_header_extents_outside_their_range_are_refused(self):
+        for value in (0, -1, True, 1 << 31):
+            with self.subTest(value=value):
+                self.assert_refused("resolution-out-of-range", resolution_26_6=value)
+        self.assert_refused("header-metric-out-of-range", ascender_26_6=-1)
+        self.assert_refused("header-metric-out-of-range", descender_26_6=1)
+
     def test_nominal_em_size_outside_the_header_range_is_refused(self):
         for value in (0, -1, 1 << 31):
             with self.subTest(value=value):
@@ -413,6 +420,13 @@ class PgfWriterSparseAndHeaderTests(unittest.TestCase):
         self.assertEqual(_signed(image, 0x2C), pgf_writer.DEFAULT_RESOLUTION)
         self.assertEqual(_signed(image, 0x30), pgf_writer.DEFAULT_RESOLUTION)
         self.assertEqual(_signed(image, 0xEC), 3000, "the extrema stay in their own fields")
+
+    def test_resolution_and_header_extents_replace_the_derived_values(self):
+        glyphs = [Glyph(code=0x41, width=2, height=2, samples=(15,) * 4, y_base=2 * 64)]
+        image = build_pgf(glyphs, resolution_26_6=8192, ascender_26_6=576, descender_26_6=-131)
+        self.assertEqual(struct.unpack_from("<ii", image, 0x2C), (8192, 8192))
+        self.assertEqual(struct.unpack_from("<ii", image, 0xD4), (576, -131))
+        self.assertEqual(struct.unpack_from("<i", build_pgf(glyphs), 0xD4)[0], 2 * 64)
 
     def test_default_nominal_em_size_is_the_documented_twelve_pixels(self):
         image = build_pgf(GLYPHS)

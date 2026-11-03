@@ -96,6 +96,7 @@ scaling.
 | `japanese-codec-unavailable` / `japanese-mapping-invalid` | A built-in ASCII/EUC-JP codec or its pinned Japanese mapping is unavailable or has changed. |
 | `ppem-out-of-range` | Size outside 1..128. |
 | `embolden-out-of-range` | `--embolden-x`, `--embolden-y`, or `--embolden-advance` outside 0..8 sub-samples. |
+| `baseline-ellipsis-unavailable` | `--baseline-ellipsis` without U+2026 in the code set, or without an outline for U+2026 or U+002E. |
 | `glyph-too-large` | A raster exceeds the writer's 7-bit record fields (127 px). |
 | `composite-too-deep` / `composite-too-many-components` | Composite expansion bounds. |
 | `metric-targets-invalid` / `metric-target-unreachable` | Policy document is malformed / no size satisfies it. |
@@ -187,6 +188,10 @@ manifest in memory first and writes only after every stage succeeds.
     and left edge stay put. The box first grows by `ceil(N / 8)` columns on the
     right and `ceil(M / 8)` rows on the top so the extra ink is never clipped.
     With both at 0 the output is byte-identical to the plain rasterizer.
+11. **Baseline ellipsis** (optional, default off). `--baseline-ellipsis` shifts
+    the U+2026 outline, in font units, so that its lowest point meets the
+    lowest point of U+002E. A Japanese font centres the ellipsis on the em,
+    which reads as three raised dots in Latin text.
 
 Same pinned input plus same parameters plus same converter version therefore
 produce byte-identical `.pgf` and manifest output on every supported host,
@@ -210,10 +215,13 @@ For a glyph whose raster box is `left, bottom, right, top` in whole pixels
 
 Header extrema are then whatever `pgf_writer` derives from those records:
 `ascender = max(y_base)`, `descender = min(y_base - dimension_height)`, and
-the maxima of dimension, advance, and pixel size. The header's horizontal and
+the maxima of dimension, advance, and pixel size. `--header-ascender` and
+`--header-descender` replace those two extrema, in 26.6 pixels, for a font that
+stands in for one with design values there. The header's horizontal and
 vertical size fields (`0x24`, `0x28`) are not extrema: they carry the nominal
-em size, `ppem * 64` in 26.6 units, so a game reads the chosen size rather than
-the largest advance. A glyph with no covered
+em size, `ppem * 64` in 26.6 units unless `--nominal-size` gives another, so a
+game reads the chosen size rather than the largest advance. `--resolution` sets
+the two resolution fields (`0x2C`, `0x30`), 26.6 dpi, default 1920. A glyph with no covered
 pixel (a space) is emitted as a zero-area record with only its advance, which
 the reader reports as present-but-unmapped exactly like `PGF_SPEC.md`
 section 3.9 describes.
@@ -297,7 +305,7 @@ Generated PGFs are fixtures, never an authenticity claim.
 | `code_points` | For `--codepoints`: the file's leaf name, count, and SHA-256; `null` for a range. |
 | `glyphs` | Count, zero-area codes, maximum pixel dimensions. |
 | `metric_targets` | The policy, the chosen ppem, and achieved 26.6 values - or `null`. |
-| `parameters` | ppem, nominal em size (26.6), supersample, coverage bits, rounding formulas, hinting mode, and the `embolden` strengths (x, y, advance, in sub-samples). |
+| `parameters` | ppem, nominal em size (26.6), resolution (26.6), any header ascender and descender given, whether the ellipsis was set on the baseline, supersample, coverage bits, rounding formulas, hinting mode, and the `embolden` strengths (x, y, advance, in sub-samples). |
 | `license` | SPDX id, copyright line, reserved font names, the **full licence text**, its digest, and the source pin's provenance record - or `null` without a pin. |
 
 ## 8. Independence and provenance record
