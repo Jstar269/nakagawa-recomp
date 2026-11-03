@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 try:
     import perf_summary_diff
@@ -351,7 +352,8 @@ class PerfSummaryDiffTests(unittest.TestCase):
             self.assertEqual(ran.returncode, 0, ran.stderr)
             value = json.loads(out.read_text(encoding="utf-8"))
         perf_summary_diff.validate_summary(value)
-        return value
+        returned: dict[str, Any] = value
+        return returned
 
     def test_census_build_samples_native_aot_vfpu_time_per_family(self):
         value = self._run_aot_vfpu_harness(census=True)

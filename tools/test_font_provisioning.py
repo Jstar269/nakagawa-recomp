@@ -44,7 +44,8 @@ def _glyph(code: int) -> Glyph:
 
 
 def latin_pgf() -> bytes:
-    return build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin")
+    returned: bytes = build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin")
+    return returned
 
 
 def latin_strike_pgf(name: str, nominal_em_26_6: int) -> bytes:
@@ -53,19 +54,23 @@ def latin_strike_pgf(name: str, nominal_em_26_6: int) -> bytes:
 
 
 def japanese_pgf() -> bytes:
-    return build_pgf([_glyph(0x41), _glyph(0x3042)], font_name="Nakagawa Test Japanese")
+    returned: bytes = build_pgf([_glyph(0x41), _glyph(0x3042)], font_name="Nakagawa Test Japanese")
+    return returned
 
 
 def korean_pgf() -> bytes:
-    return build_pgf([_glyph(0x41), _glyph(0xAC00)], font_name="Nakagawa Test Korean")
+    returned: bytes = build_pgf([_glyph(0x41), _glyph(0xAC00)], font_name="Nakagawa Test Korean")
+    return returned
 
 
 def dense_pgf() -> bytes:
-    return build_pgf([_glyph(code) for code in range(0x41, 0x5B)], font_name="Nakagawa Test Dense")
+    returned: bytes = build_pgf([_glyph(code) for code in range(0x41, 0x5B)], font_name="Nakagawa Test Dense")
+    return returned
 
 
 def sparse_pgf() -> bytes:
-    return build_pgf([_glyph(0x41), _glyph(0x5A)], font_name="Nakagawa Test Sparse")
+    returned: bytes = build_pgf([_glyph(0x41), _glyph(0x5A)], font_name="Nakagawa Test Sparse")
+    return returned
 
 
 class FontProvisioningTests(unittest.TestCase):

@@ -503,7 +503,8 @@ class XBProbeTests(unittest.TestCase):
                 self._real_file.close()
 
             def fileno(self) -> int:
-                return self._real_file.fileno()
+                returned: int = self._real_file.fileno()
+                return returned
 
             def read(self, size: int = -1) -> bytes:
                 if self._pos >= len(self._data):

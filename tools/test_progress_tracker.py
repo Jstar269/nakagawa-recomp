@@ -151,7 +151,8 @@ class TestUmdWakeupCorrelation(TrackerTestBase):
 
     def check(self, lines) -> str:
         self.write_log("stderr_run1.log", lines)
-        return pt._check_umd_wakeup(last_log="stderr_run1.log")
+        returned: str = pt._check_umd_wakeup(last_log="stderr_run1.log")
+        return returned
 
     def test_correlated_chain_verifies(self):
         self.assertEqual(self.check(self.CHAIN), "verified")
