@@ -190,6 +190,25 @@ static int module_path_is(const char *path, const char *name) {
     return 0;
 }
 
+/* A path on device, which is lower case and ends in ':'. Device names are
+ * case-insensitive. */
+static int module_path_on_device(const char *path, const char *device) {
+    for (size_t i = 0; device[i]; i++) {
+        char c = path ? path[i] : '\0';
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != device[i]) return 0;
+    }
+    return 1;
+}
+
+/* The running program came from the disc: the program the last sceKernelLoadExec booted, or
+ * before any LoadExec the boot path the driver seeds, names disc0: or umd0:. */
+static int module_program_from_disc(void) {
+    const char *program = s_loadexec_program_path[0] ? s_loadexec_program_path
+                                                     : getenv("SR_BOOT_PATH");
+    return module_path_on_device(program, "disc0:") || module_path_on_device(program, "umd0:");
+}
+
 /* Text/data/bss sizes of a PRX image as the kernel's loader sums them (uOFW
  * src/kd/loadcore/loadelf.c): with a section table, CheckElfSectionPRX -- PROGBITS sections
  * flagged exactly ALLOC|EXECINSTR or ALLOC are text, WRITE|ALLOC data, NOBITS WRITE|ALLOC
@@ -977,6 +996,25 @@ static unsigned char *read_guest_module_file(const char *path, size_t *size_out,
     return bytes;
 }
 
+void sr_module_code_sha256(const void *bytes, size_t size, char out[65]) {
+    static const char hex[] = "0123456789abcdef";
+    uint8_t digest[32];
+    sr_vfpu_sha256((const uint8_t *)bytes, size, digest);
+    for (size_t i = 0u; i < sizeof(digest); i++) {
+        out[i * 2u] = hex[digest[i] >> 4];
+        out[i * 2u + 1u] = hex[digest[i] & 15u];
+    }
+    out[64] = '\0';
+}
+
+/* Whether these are the exact bytes the build translated. digest is filled either way. */
+static int module_file_is_translated(const SrModuleCode *code, const void *bytes, size_t size,
+                                     char digest[65]) {
+    sr_module_code_sha256(bytes, size, digest);
+    return (uint64_t)size == code->file_size && code->file_sha256 &&
+           strcmp(digest, code->file_sha256) == 0;
+}
+
 int loadexec_module_file_matches_translation(const char *file) {
     if (!file || !file[0]) return 0;
     const SrModuleCode *code = sr_module_code_find(file);
@@ -988,9 +1026,10 @@ int loadexec_module_file_matches_translation(const char *file) {
     int unreadable = 0;
     unsigned char *bytes = read_guest_module_file(path, &size, &unreadable);
     if (!bytes) return 0;
-    uint64_t digest = sr_module_code_fnv1a64(bytes, size);
+    char digest[65];
+    int matches = module_file_is_translated(code, bytes, size, digest);
     free(bytes);
-    return size == code->file_size && digest == code->file_fnv1a64;
+    return matches;
 }
 
 /* Libraries a title ships as its own module, for which host HLE only stands in. When the
@@ -1060,13 +1099,13 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
         return guest_module_boundary("guest-module-untranslated", file,
                                      "the build did not translate this module");
     }
-    uint64_t digest = sr_module_code_fnv1a64(bytes, size);
-    if ((uint64_t)size != code->file_size || digest != code->file_fnv1a64) {
+    char digest[65];
+    if (!module_file_is_translated(code, bytes, size, digest)) {
         free(bytes);
-        snprintf(detail, sizeof(detail), "the staged file (0x%x bytes, FNV-1a 0x%016llx) is "
-                 "not the file the build translated (0x%x bytes, FNV-1a 0x%016llx)",
-                 (unsigned)size, (unsigned long long)digest,
-                 code->file_size, (unsigned long long)code->file_fnv1a64);
+        snprintf(detail, sizeof(detail), "the staged file (0x%x bytes, SHA-256 %.16s) is "
+                 "not the file the build translated (0x%x bytes, SHA-256 %.16s)",
+                 (unsigned)size, digest, code->file_size,
+                 code->file_sha256 ? code->file_sha256 : "none");
         return guest_module_boundary("guest-module-identity-mismatch", file, detail);
     }
     if (code->unsupported_reason) {
@@ -2007,6 +2046,31 @@ static uint32_t h_LoadModule(CpuState *s) {
     /* An unreadable path string is the module manager's illegal address, not an I/O error. */
     if (rc == 0x80010016u) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (rc != 0u) return rc;
+    /* The module manager opens the file, then asks the device whether it may load a
+     * module from it, before it reads a byte (uofw modulemgr, src/kd/modulemgr/loadModule.c,
+     * sceKernelLoadModule). A path that opens nothing fails with the open's error. When the
+     * running program came from the disc, the Memory Stick refuses to serve a module: the
+     * device's check fails and the load fails with PROHIBIT_LOADMODULE_DEVICE. A program a
+     * LoadExec booted from ms0: may load from it. Tekken 6 (ULUS10466) loads files on ms0:
+     * and reads a load that succeeds, or fails on the file's format, as a copy running from
+     * the Memory Stick. The refusal is the result the title's own check expects; it is
+     * unmeasured on this project's PSP.
+     * A module the manifest declares was staged by the build, and flash0: holds firmware
+     * modules the runtime carries no file for, so neither is checked here. */
+    if (!sr_title_config_guest_module(resolved, NULL, NULL, NULL, NULL) &&
+        !module_path_on_device(resolved, "flash0:")) {
+        rc = hle_io_probe_open(resolved);
+        if (rc == 0u && module_program_from_disc() &&
+            (module_path_on_device(resolved, "ms0:") || module_path_on_device(resolved, "fatms0:")))
+            rc = SCE_KERNEL_ERROR_PROHIBIT_LOADMODULE_DEVICE;
+        if (rc != 0u) {
+            fprintf(stderr, "sceKernelLoadModule(\"%s\") -> 0x%08x (%s)\n", resolved, rc,
+                    rc == SCE_KERNEL_ERROR_PROHIBIT_LOADMODULE_DEVICE
+                        ? "a disc title may not load from the Memory Stick"
+                        : "the file does not open");
+            return rc;
+        }
+    }
     return load_module_by_guest_path(resolved, A2);
 }
 
@@ -2178,6 +2242,11 @@ uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
 uint32_t sr_hle_test_load_module_by_id(CpuState *s) { return h_LoadModuleByID(s); }
 uint32_t sr_hle_test_start_module(CpuState *s) { return h_StartModule(s); }
 uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
+/* Forget the program a test LoadExec booted, so the boot path decides again. */
+void sr_hle_test_loadexec_program_reset(void) {
+    s_loadexec_program_path[0] = '\0';
+    s_loadexec_boot_uid = 0u;
+}
 #endif
 static const char *hle_fd_guest_path(uint32_t fd) {
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used ||

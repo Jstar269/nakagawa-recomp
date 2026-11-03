@@ -369,6 +369,7 @@ class HostEntriesReturnToTheHost(unittest.TestCase):
         "dispatch_call_try": {
             ("domain_mode.c", "sr_import_call_guest"),  # the stub's resume
             ("snapshot_runner.c", "main"),              # one snapshot call, $ra = host return (#1842)
+            ("form_sweep.c", "main"),                   # one AOT instance, $ra = host return (#1844)
         },
         "dispatch_call": {("verify_harness.c", "main")},   # sampled-check harness host entry (#1843)
         "dispatch": {("vfpu_fuzz.c", "check_unaligned_dispatch")},  # the VFPU fallback tag
