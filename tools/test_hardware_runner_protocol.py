@@ -88,6 +88,7 @@ from psp_oracle.parse_golden import (
 from psp_oracle.protocol import ParsedOutput, TestResult
 from psp_oracle.protocol import ProtocolError as PspProtocolError
 from psp_oracle.protocol import model_identity_fields
+from typing import Any
 
 MAGIC = b"NR"
 VERSION = 2
@@ -3780,7 +3781,8 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
 
     @staticmethod
     def _checkpoint(plan_path: Path) -> dict:
-        return json.loads((plan_path.parent / "checkpoint.json").read_text(encoding="utf-8"))
+        returned: dict[str, Any] = json.loads((plan_path.parent / "checkpoint.json").read_text(encoding="utf-8"))
+        return returned
 
     @staticmethod
     def _launched(transport: SimulatedPsplinkTransport) -> list[str]:

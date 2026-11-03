@@ -165,7 +165,8 @@ class DiscDecryption:
     def __call__(self, iso: Path, user_data_root: Path, disc_id: str) -> list[dict]:
         if self.tool is None:
             self.tool = decrypt_tool.find_or_build_tool(ROOT)
-        return decrypt_tool.decrypt_disc(iso, user_data_root, disc_id, self.tool)
+        returned: list[dict[str, Any]] = decrypt_tool.decrypt_disc(iso, user_data_root, disc_id, self.tool)
+        return returned
 
 
 def bringup_command(iso: Path, user_data_root: Path, work_dir: Path,

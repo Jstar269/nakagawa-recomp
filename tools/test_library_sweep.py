@@ -2003,7 +2003,8 @@ class MachineIdleInspectionTests(unittest.TestCase):
             outcome = outcomes.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
-            return outcome
+            returned: set[str] = outcome
+            return returned
 
         with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
             wait_ms, remained_active = library_sweep._wait_for_machine_idle(

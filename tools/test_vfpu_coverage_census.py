@@ -152,7 +152,8 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         self.assertEqual(rows[0]["compatibility_disposition"], "aot-direct")
         self.assertIsNone(rows[0]["boundary_issue"])
         self.assertEqual(rows[0]["differential_tests"],
-                         ["vfpu-interp-selftest:check_vrndi_rule_cells"])
+                         ["vfpu-interp-selftest:check_overlap_diff",
+                          "vfpu-interp-selftest:check_vrndi_rule_cells"])
 
     def test_vfpu_forms_are_direct_in_both_lanes_at_measured_widths(self):
         # PSP-VFPU-FORMS-001 (issue #326): the two retail stops (FF III vh2f.p, Super
@@ -246,6 +247,86 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         self.assertTrue(census.acceleration_verified(row))
         row["compatibility_disposition"] = "unsupported-encoding"
         self.assertFalse(census.acceleration_verified(row))
+
+    # Supported rows with no differential or semantic-hardware result check, as
+    # (opcode, canonical word). Pinned so a newly supported form with no verification
+    # fails this test until it gains evidence (add its word to the overlap-diff, fuzz
+    # or interpreter-selftest paths) or is added here deliberately (issue #326).
+    EXPECTED_UNVERIFIED = (
+        # mfv/mtv with rt = r0 or a register the oracle corpus does not drive.
+        ("0x12", "0x48600000"), ("0x12", "0x48e0008f"), ("0x12", "0x48e00000"),
+        # lv.s/sv.s/lv.q/sv.q rows visited only with base register r0: the fuzz harness
+        # refuses r0 (it cannot relocate the address), so these decode paths have no
+        # cross-check of their own; their rs != 0 neighbours are verified.
+        ("0x32", "0xc8000000"), ("0x32", "0xc801810f"), ("0x32", "0xc805010f"),
+        ("0x32", "0xc8050101"), ("0x32", "0xc8058181"), ("0x32", "0xc80a8010"),
+        ("0x36", "0xd8000000"), ("0x36", "0xd801810f"), ("0x36", "0xd8050101"),
+        ("0x3a", "0xe8000000"), ("0x3a", "0xe801810f"), ("0x3a", "0xe805010f"),
+        ("0x3a", "0xe8050101"), ("0x3a", "0xe8058181"), ("0x3a", "0xe80a8010"),
+        ("0x3e", "0xf8000000"), ("0x3e", "0xf801810f"), ("0x3e", "0xf8050101"),
+        # VFPU4 forms the AOT routes to sr_vfpu_interp: both lanes are one implementation,
+        # so a cross-check would compare the interpreter with itself.
+        ("0x34", "0xd0200000"), ("0x34", "0xd0328090"), ("0x34", "0xd0390000"),
+        ("0x34", "0xd046807f"), ("0x34", "0xd04780ff"), ("0x34", "0xd0488090"),
+        ("0x34", "0xd04a0000"), ("0x34", "0xd04a80ff"), ("0x34", "0xd0598090"),
+        # vflush (AOT-owned control).
+        ("0x3f", "0xfc000000"),
+    )
+
+    def test_supported_forms_without_verification_are_listed_and_pinned(self):
+        summary = self.census["summary"]
+        listed = summary["supported_without_semantic_verification"]
+        derived = [
+            row for row in self.census["rows"]
+            if row["compatibility_disposition"] in {"aot-direct", "aot-routes-to-sr-vfpu-interp"}
+            and not row["differential_tests"]
+            and not any(item["kind"] == "semantic" for item in row["hardware_measured"])
+        ]
+        self.assertEqual({item["form_id"] for item in listed}, {row["form_id"] for row in derived})
+        self.assertEqual(
+            sorted((item["opcode"], item["canonical_word"]) for item in listed),
+            sorted(self.EXPECTED_UNVERIFIED),
+            "the unverified supported-form set changed: verify the new form or update the pin",
+        )
+        counts = summary["by_semantic_verification"]
+        self.assertEqual(sum(counts.values()), summary["rows"])
+        self.assertEqual(counts["none"], len(listed))
+
+    def test_semantic_verification_ignores_addressing_only_hardware(self):
+        addressing = [{"oracle_id": "hardware_vfpu_addr_001", "kind": "addressing", "coverage": "x"}]
+        semantic = [{"oracle_id": "issue-40-group-a", "kind": "semantic", "coverage": "x"}]
+        verify = census._semantic_verification
+        self.assertEqual(verify("aot-direct", [], addressing), "none")
+        self.assertEqual(verify("aot-direct", ["t"], addressing), "differential")
+        self.assertEqual(verify("aot-direct", [], semantic), "hardware")
+        self.assertEqual(verify("unsupported-encoding", ["t"], semantic), "not-applicable")
+
+    def test_differential_evidence_names_real_selftest_checks(self):
+        source = (ROOT / "tests" / "native" / "vfpu_interp_selftest.c").read_text(encoding="utf-8")
+        for row in self.census["rows"]:
+            for test in row["differential_tests"]:
+                if test.startswith("vfpu-interp-selftest:"):
+                    name = test.split(":", 1)[1]
+                    self.assertIn(f"static int {name}(", source, f"{row['form_id']}: {test}")
+
+    def test_census_gap_words_are_cross_checked_without_fallback(self):
+        import codegen
+        import vfpu_overlap_diff_gen as gen
+        import vfpu_synth_gen
+
+        for word in gen.CENSUS_GAP_WORDS:
+            body, _, _ = codegen.vfpu_effect(0x08900000, word)
+            self.assertNotIn("sr_vfpu_interp", body, f"0x{word:08x}")
+            self.assertIn(word, census.overlap_diff_words())
+            record = census.classify_words([word])[0]
+            self.assertTrue(record["interpreter_supported"], f"0x{word:08x}")
+        memory = set(vfpu_synth_gen.generate_memory_cop2_corpus())
+        for op, lows in ((0x32, vfpu_synth_gen._CENSUS_GAP_SCALAR_MEMORY),
+                         (0x3A, vfpu_synth_gen._CENSUS_GAP_SCALAR_MEMORY),
+                         (0x36, vfpu_synth_gen._CENSUS_GAP_QUAD_MEMORY),
+                         (0x3E, vfpu_synth_gen._CENSUS_GAP_QUAD_MEMORY)):
+            for low in lows:
+                self.assertIn((op << 26) | low, memory)
 
     def test_acceleration_gate_rejects_unknown_form_ids(self):
         original = census.ACCELERATED_FORMS

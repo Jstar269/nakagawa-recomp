@@ -250,7 +250,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     output = render_json(report, args.strict) if args.json else render_text(report)
     print(output)
-    return report.exit_code(args.strict)
+    returned: int = report.exit_code(args.strict)
+    return returned
 
 
 if __name__ == "__main__":

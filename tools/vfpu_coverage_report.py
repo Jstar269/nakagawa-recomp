@@ -26,7 +26,7 @@ import tempfile
 from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "tools"
@@ -544,9 +544,20 @@ def validate_agreement(records: Iterable[dict[str, object]]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+@lru_cache(maxsize=1)
+def overlap_diff_words() -> frozenset[int]:
+    """Words vfpu_interp_selftest runs through check_overlap_diff (AOT body vs sr_vfpu_interp)."""
+    import vfpu_overlap_diff_gen
+
+    cases, _, _ = vfpu_overlap_diff_gen.build_cases()
+    return frozenset(word for word, _, _ in cases)
+
+
 def _differential_tests(record: dict[str, object], synthetic_words: set[int]) -> list[str]:
     word = int(record["word"])
     tests: list[str] = []
+    if word in overlap_diff_words() and record["interpreter_supported"]:
+        tests.append("vfpu-interp-selftest:check_overlap_diff")
     if word in synthetic_words:
         tests.extend(
             [
@@ -657,6 +668,22 @@ def _evidence_tier(disposition: str, differential: list[str], hardware: list[dic
     return "S"
 
 
+def _semantic_verification(disposition: str, differential: list[str], hardware: list[dict[str, str]]) -> str:
+    """How a supported form's results are checked: hardware, differential, or none.
+
+    Addressing and alignment hardware cells do not check a form's results, so a row
+    with only those (tier HP) is still "none" here. Unsupported forms are fail-closed,
+    not verified, and report "not-applicable".
+    """
+    if disposition in BOUNDARY_DISPOSITIONS:
+        return "not-applicable"
+    if any(item["kind"] == "semantic" for item in hardware):
+        return "hardware"
+    if differential:
+        return "differential"
+    return "none"
+
+
 def acceleration_verified(row: dict[str, object]) -> bool:
     supported = row["compatibility_disposition"] in {
         "aot-direct",
@@ -753,6 +780,7 @@ def _make_rows(records: list[dict[str, object]]) -> list[dict[str, object]]:
             "hardware_measured": hardware,
             "hardware_sensitive": hardware_sensitive,
             "evidence_tier": evidence_tier,
+            "semantic_verification": _semantic_verification(disposition, differential, hardware),
             "sufficiently_verified_for_acceleration": False,
         }
         row["sufficiently_verified_for_acceleration"] = acceleration_verified(row)
@@ -800,6 +828,18 @@ def build_census() -> dict[str, object]:
         "tools/psp_oracle/manifest.json",
         "docs/HARDWARE_ORACLE.md",
     )
+    verification_counts = Counter(str(row["semantic_verification"]) for row in rows)
+    unverified_forms = [
+        {
+            "form_id": row["form_id"],
+            "opcode": row["opcode"],
+            "canonical_word": row["canonical_word"],
+            "vector_size": row["vector_size"],
+            "compatibility_disposition": row["compatibility_disposition"],
+        }
+        for row in rows
+        if row["semantic_verification"] == "none"
+    ]
     return {
         "schema": CENSUS_SCHEMA,
         "tracking_issue": TRACKING_ISSUE,
@@ -822,6 +862,8 @@ def build_census() -> dict[str, object]:
             "rows": len(rows),
             "by_disposition": dict(sorted(disposition_counts.items())),
             "by_evidence_tier": dict(sorted(tier_counts.items())),
+            "by_semantic_verification": dict(sorted(verification_counts.items())),
+            "supported_without_semantic_verification": unverified_forms,
             "by_opcode": {
                 op: dict(sorted(counts.items())) for op, counts in sorted(by_opcode.items())
             },
@@ -873,6 +915,7 @@ def build_census() -> dict[str, object]:
 
 def render_markdown(census: dict[str, object]) -> str:
     summary = census["summary"]
+    typed_summary = cast("dict[str, Any]", summary)
     dispositions = summary["by_disposition"]
     total_rows = summary["rows"]
     lines = [
@@ -909,6 +952,9 @@ def render_markdown(census: dict[str, object]) -> str:
             "",
             "Differential coverage proves AOT/interpreter agreement, not PSP hardware equivalence. Hardware IDs and partial coverage are recorded per JSON row.",
             f"Evidence tiers: `{json.dumps(summary['by_evidence_tier'], sort_keys=True)}`.",
+            f"Semantic verification of supported forms: `{json.dumps(typed_summary['by_semantic_verification'], sort_keys=True)}`. "
+            f"{len(typed_summary['supported_without_semantic_verification'])} supported rows have no differential or hardware result check; "
+            "they are listed in the JSON `supported_without_semantic_verification` array.",
             "",
             "## #292 acceleration gate",
             "",

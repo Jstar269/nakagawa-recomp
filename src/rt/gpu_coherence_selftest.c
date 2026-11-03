@@ -102,12 +102,13 @@ static int set_env(const char *name, const char *value) {
 #endif
 }
 
-/* `--scale N` and `--case NAME` set SR_GPU_SCALE and SR_GPU_COHERENCE_CASE before the backend
- * starts. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does not accept. */
+/* `--scale N`, `--case NAME` and `--readback-full 1` set SR_GPU_SCALE, SR_GPU_COHERENCE_CASE and
+ * SR_GPU_READBACK_FULL before the backend starts. Recipes pass arguments, not a `VAR=value` prefix, which cmd.exe does not accept. */
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *name = strcmp(argv[i], "--scale") == 0 ? "SR_GPU_SCALE"
-                         : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE" : NULL;
+                         : strcmp(argv[i], "--case") == 0  ? "SR_GPU_COHERENCE_CASE"
+                         : strcmp(argv[i], "--readback-full") == 0 ? "SR_GPU_READBACK_FULL" : NULL;
         if (!name || i + 1 >= argc || !set_env(name, argv[++i])) {
             fprintf(stderr, "usage: gpu_coherence_selftest [--scale N] [--case scaled-upload|mip-lod]\n");
             return 2;
