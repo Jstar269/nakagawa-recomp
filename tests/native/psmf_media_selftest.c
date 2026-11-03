@@ -1432,6 +1432,32 @@ static void test_backend_malformed_input(void) {
     conformance_backend.destroy(id);
 }
 
+/* The seam's timed submit carries the producer's normalized 90 kHz PTS.  Every backend converts or
+ * forwards it (Media Foundation multiplies by 1000 / 9), so a value outside
+ * +-SR_H264_PTS_ABS_MAX is refused like any malformed unit instead of overflowing int64. */
+static void test_backend_pts_range(void) {
+    static const uint8_t au[] = { 0, 0, 1, 0x09, 0x10 };
+    struct { int64_t pts; int has_pts; int accepted; const char *what; } cases[] = {
+        { SR_H264_PTS_ABS_MAX, 1, 1, "a PTS at the bound is accepted" },
+        { -SR_H264_PTS_ABS_MAX, 1, 1, "a negative PTS at the bound is accepted" },
+        { SR_H264_PTS_ABS_MAX + 1, 1, 0, "a PTS one past the bound is refused" },
+        { -SR_H264_PTS_ABS_MAX - 1, 1, 0, "a negative PTS one past the bound is refused" },
+        { INT64_MAX, 1, 0, "INT64_MAX as a PTS is refused" },
+        { INT64_MIN, 1, 0, "INT64_MIN as a PTS is refused" },
+        { INT64_MAX, 0, 1, "an unknown-PTS unit ignores the PTS value" }
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int id = conformance_backend.create();
+        if (id < 0) {
+            fprintf(stderr, "SKIP: PTS range contract needs a real H.264 backend\n");
+            return;
+        }
+        int r = sr_h264_submit_au_timed(id, au, sizeof(au), cases[i].pts, cases[i].has_pts);
+        CHECK(cases[i].accepted ? r == 0 : r < 0, cases[i].what);
+        conformance_backend.destroy(id);
+    }
+}
+
 static uint64_t demux_fuzz_state = 0x3194844345584D58ULL;
 
 static uint64_t demux_fuzz_rand64(void) {
@@ -4901,6 +4927,7 @@ int main(int argc, char **argv) {
     test_backend_registry_fail_closed();
     test_backend_reset_and_restart();
     test_backend_malformed_input();
+    test_backend_pts_range();
     test_video_eos_waits_for_all_access_units();
     test_mpeg_ps_demux_error_fails_closed();
     test_mpeg_ycbcr_measured_contract();

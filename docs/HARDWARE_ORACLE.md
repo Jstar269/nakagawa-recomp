@@ -62,6 +62,14 @@ proposals. Each claim covers only the exact fixture named:
   full-span-validation-vs-truncation precedence remains NOT_MEASURED (the
   probe's setup gate SKIPped; the assumed boundary was invalid for the
   64 MiB route), and main keeps its conservative behavior there.
+- **DMA size-zero pointer cells** (issue #303): on a PSP-3000 / 6.61 /
+  ARK-5.1.0, pspver 6.6.0 (2026-11-03, boot 109, commit `99a384bb`),
+  `invalid-tail-s0-a-memcpy`, `invalid-tail-s0-b-memcpy`,
+  `invalid-tail-s0-c-memcpy`, `invalid-tail-s0-d-memcpy`,
+  `invalid-tail-s0-a-try`, `invalid-tail-s0-b-try`, `invalid-tail-s0-c-try`
+  and `invalid-tail-s0-d-try` each returned `0x80000104` with no byte changed:
+  size 0 with a NULL destination, a NULL source, both pointers owned, or
+  destination `0xFFFFFFFF`. The size check precedes the pointer checks.
 - **VFPU fixtures** (live record: issue #40): Group A vhdp/vdot NaN/Inf
   matrix, 13 records PASS across 4 launches in two sessions; Group B 91-cell
   overlap matrix, all PASS across 3 bitwise-identical launches; same qualified
@@ -173,8 +181,9 @@ proposals. Each claim covers only the exact fixture named:
   `NOT_RUN`. The source-owned buffer matrix covers both APIs, unaligned source
   and destination residues, paired unaligned addresses, and overlap in both
   directions. It records cache-disciplined copy observations and owned-buffer
-  guards; the previously measured size matrix is not repeated. The Tier S and
-  Tier B invalid-tail cells below are built but `NOT_RUN`; they exercise only
+  guards; the previously measured size matrix is not repeated. The Tier S
+  invalid-tail cells below were measured on 2026-11-03; the Tier B cells are
+  built but `NOT_RUN`. Both tiers exercise only
   zero-length pointer validation and bounded copies wholly inside owned RAM.
   Kernel validation of an actually invalid span, including the K3/K4 atomicity
   distinction, remains in the works under #303.
@@ -187,8 +196,11 @@ therefore remains `SKIP`. The new `dma-invalid-tail-s0` and four existing
 `NOT_RUN` until a physical PSP run is recorded. These are oracle measurements,
 not claims about the emulator or runtime.
 
-Each launch obtains one page-aligned partition-2 block from `PSP_SMEM_High`
-with `sceKernelAllocPartitionMemory`. Its `0x11000` bytes have this fixed
+Each launch obtains one page-aligned partition-2 block from sysmem's
+HighAligned type (4, alignment `0x1000`) with `sceKernelAllocPartitionMemory`.
+Plain `PSP_SMEM_High` gave a page-aligned block in the standalone-PSPLink
+context but not under the XMB, where the top of partition 2 is partly
+allocated (2026-11-03, `setup_mask=0x1`). Its `0x11000` bytes have this fixed
 layout:
 
 | Region | Size | Fill | Purpose |
@@ -201,16 +213,21 @@ layout:
 
 A compile-time `_Static_assert` proves `K + max_delta` fits between the payload
 start and the end of the post-guard plus overflow band. While the block is
-held, the probe asks `PSP_SMEM_Addr` to allocate one page at `block_end` and at
-`block_begin - 0x1000`. Both must be refused and recorded in `setup_mask`; an
-allocation success or invalid geometry emits `SKIP` before any DMAC call. Each
-transfer is bracketed by `sceKernelDcacheWritebackInvalidateRange` and
+held, the probe asks `PSP_SMEM_Addr` to allocate one page at `block_end`. It
+must be refused and is recorded in `setup_mask`; an allocation success or
+invalid geometry emits `SKIP` before any DMAC call. Each transfer is bracketed
+by `sceKernelDcacheWritebackInvalidateRange` and
 `sceKernelDcacheInvalidateRange` through the shared DMAC cache helpers.
-`setup_mask=0x0F` means allocation, page geometry, end-neighbor refusal, and
-begin-neighbor refusal all passed (bits 0 through 3 respectively).
+`setup_mask=0x07` means allocation, page geometry and end-neighbor refusal all
+passed (bits 0 through 2). The end is the only boundary a cell can cross: a
+Tier B request runs from the payload towards it and a Tier S request moves
+nothing. Until 2026-11-03 the gate also demanded a refused page below the
+block (bit 3); below a High block that page is ordinary allocatable user
+memory, so every cell was `SKIP` (2026-10-10, 2026-10-15 and 2026-11-02 runs,
+`setup_mask=0x7`).
 
 The setup-failure **SKIP rule is shared by Tier S (S0) and Tier B (B1-B4)**:
-`setup_mask != 0x0F`, `executed=0`, `cache_discipline=0`, and
+`setup_mask != 0x07`, `executed=0`, `cache_discipline=0`, and
 `source_intact=0` (unmeasured, not a failed integrity observation). `P`,
 `matches`, `guards_outside`, `post_guard`, `overflow_band`, and
 `payload_mutations` must all be zero; SKIP cannot claim transfer observations.
@@ -233,6 +250,17 @@ source, and the complete ownership proof. `S0-c` is the control for firmware tha
 reject a zero size even when both pointers are owned. These cells isolate
 pointer handling at zero length; the K1-K4 large-span hypotheses do not define
 all zero-length pointer outcomes, so raw return codes remain observations.
+
+**Tier S measured 2026-11-03** (PSP-3000, system software 6.61, ARK-5.1.0
+(owner); pspver 6.6.0; boot 109; commit `99a384bb`; `dma-invalid-tail-s0` after
+the transport-write preflight; 8 records and the done record, all PASS,
+acceptance-eligible, `setup_mask=0x07`). Every S0 cell answered `0x80000104`
+(illegal size) from both `sceDmacMemcpy` and `sceDmacTryMemcpy`: a NULL
+destination, a NULL source, both pointers owned, and destination `0xFFFFFFFF`,
+all with size 0. No payload, guard or source byte changed. The size check
+therefore precedes the pointer checks; `src/rt/hle_cache_dma.c` already orders
+them so, and `test_dmac_hardware_semantics` pins the three bad-pointer shapes.
+The Tier B launches were not run.
 
 Tier B keeps each entire request inside the same allocation or a module-owned
 array. The four existing launch names map to B1-B4, each with
@@ -1156,7 +1184,7 @@ One console is one data point; see §11. Nothing here closes issue #70
 
   | Evidence id | Cells cited | Not cited | Outcome (2026-10-31, `66940d76`) |
   | --- | --- | --- | --- |
-  | `PSP-GE-MIP-001` | `c-b0-*`, `c-b1-*`, `c-b3-*`, `c-b7-*`, `c-b7f-*`, `c-bm1-*`, `c-b0f7-*`, `c-b0f8-*`, `c-b0f9-*`, `c-b1f8-*`, `cl-b0f1-*`, `cl-b0f4-*`, `cl-b0f8-*`, `cl-b1fc-*`, `cl-b6ff-*`, `cl-b7f8-*`, `c-max2-b4-*`, `cl-max2-b2f8-*`, `c-nomip-b3-*`, `c-f5-b2-*`, `c-f7-b2f8-*`, `m3-b2-*`, `m3-b0-4x-*`, `a-1x-*`, `a-2x-*`, `a-4x-*`, `a-8x-*`, `a-16x-*`, `a-1x5-*`, `a-3x-*`, `a-half-*`, `al-1x5-*`, `al-3x-*`, `al-6x-*`, `a-u4-*`, `a-v4-*`, `a-u4v2-*`, `al-u3v2-*`, `a-4x-b1-*`, `a-4x-bm1-*`, `al-2x-b0f8-*`, `a-quad-w2-*`, `s-s1-w1-*`, `s-s1-w2-*`, `s-s1-w3-*`, `s-s1-w4-*`, `s-s1-w8-*`, `s-s1-wh-*`, `s-s2-w1-*`, `s-s2-w4-*`, `s-sh-w8-*`, `s-s1-w2-b1-*`, `s-s1-w2-4x-*`, `sn-s1-w3-*`, `s-spr-s4-*`, `ge-mip-done` | `a-quad-w1to4-*` and `s-s1-w1to8-*` (w varies across the window), filtering within a level, the wait timings | MEASURED (`ge-mip`) |
+  | `PSP-GE-MIP-001` | `c-b0-*`, `c-b1-*`, `c-b3-*`, `c-b7-*`, `c-b7f-*`, `c-bm1-*`, `c-b0f7-*`, `c-b0f8-*`, `c-b0f9-*`, `c-b1f8-*`, `cl-b0f1-*`, `cl-b0f4-*`, `cl-b0f8-*`, `cl-b1fc-*`, `cl-b6ff-*`, `cl-b7f8-*`, `c-max2-b4-*`, `cl-max2-b2f8-*`, `c-nomip-b3-*`, `c-f5-b2-*`, `c-f7-b2f8-*`, `m3-b2-*`, `m3-b0-4x-*`, `a-1x-*`, `a-2x-*`, `a-4x-*`, `a-8x-*`, `a-16x-*`, `a-1x5-*`, `a-3x-*`, `a-half-*`, `al-1x5-*`, `al-3x-*`, `al-6x-*`, `a-u4-*`, `a-v4-*`, `a-u4v2-*`, `al-u3v2-*`, `a-4x-b1-*`, `a-4x-bm1-*`, `al-2x-b0f8-*`, `a-quad-w2-*`, `s-s1-w1-*`, `s-s1-w2-*`, `s-s1-w3-*`, `s-s1-w4-*`, `s-s1-w8-*`, `s-s1-wh-*`, `s-s2-w1-*`, `s-s2-w4-*`, `s-sh-w8-*`, `s-s1-w2-b1-*`, `s-s1-w2-4x-*`, `sn-s1-w3-*`, `s-spr-s4-*`, `ge-mip-done`, `a-quad-w1to4-*`, `s-s1-w1to8-*` (2026-11-03), `a-quad-v16-w1to8-*`, `a-quad-v16-w8to1-*`, `a-quad-v8-w1to8-*`, `a-quad-u48-w1to4-*`, `a-quad-w4to1-*`, `an-quad-w1to4-*`, `a-quad-w1to4-bm1f8-*`, `s-s1-w8to1-*`, `s-s3-w1to8-*` (2026-11-03, `99a384bb`) | filtering within a level, the wait timings | MEASURED (`ge-mip`) |
   | `PSP-GE-SYNC-001` | `ge-list-sync-unknown-poll`, `ge-list-dequeue-unknown`, `ge-sync-invalid-mode`, `ge-list-sync-after-draw-wait`, `ge-list-sync-cancelled-poll`, `ge-list-sync-completed-wait`, `ge-list-sync-cancelled-wait`, `ge-list-sync-unknown-wait`, `ge-list-sync-stale-wait`, `ge-sync-quiesce`, `ge-sync-ids-done` | A completed list's peek and dequeue before any `sceGeDrawSync(0)`, `sceGeDrawSync(0)` after a reset, the wait timings (see [PSP-GE-SYNC-001 runs 2026-10-31](#psp-ge-sync-001-runs-2026-10-31)) | MEASURED (`ge-sync-ids`) |
 
   `ge-mip` (#1373): each cell is one display list of project-written command words (no game data) that draws
@@ -1178,9 +1206,18 @@ One console is one data point; see §11. Nothing here closes issue #70
     (c0 (16 - f) + c1 f) >> 4 (`cl-b0f1` .. `cl-b6ff`). A level of detail up to 0 is level 0 (`c-bm1`,
     `a-half`); TEXMODE's highest level clamps it with no blend (`cl-b7f8`, `c-max2-b4`, `cl-max2-b2f8`); without
     a mipmap filter the GE stays on level 0 (`c-nomip-b3`).
-  - *Where w varies across a triangle* (`a-quad-w1to4`, `s-s1-w1to8`) the PSP holds one level of detail per
-    4-pixel span of a row, aligned to the screen, at a point that differs between the strip's two triangles.
-    The software GE evaluates every fragment and does not reproduce those two windows.
+  - *Where w varies across a triangle* (`a-quad-w1to4`, `s-s1-w1to8`, and the nine cells added on 2026-11-03)
+    the GE holds one level of detail per 4-pixel span of a row (x & ~3) and triangle, read at the span's
+    second pixel, or at its first covered pixel when that lies further right; the strip's diagonal moves
+    where each triangle's spans start, row by row. Automatic mode is log16(rho) - log16(q), two quantised
+    logarithms, with rho the largest absolute screen gradient of `u * q` and `v * q` (the planes the triangle
+    interpolates; `a-quad-v16-w1to8` and `a-quad-v8-w1to8` rule out using only the u-along-x and v-along-y
+    terms) and q the 1/w at the reference pixel; the slope mode reads the same q (`s-s1-w8to1`,
+    `s-s3-w1to8`), and the bias is added after both logarithms (`a-quad-w1to4-bm1f8`). The 2026-11-03 run
+    (pspver 6.6.0, boot 111, `99a384bb`, 330 records and the done record, all PASS, acceptance-eligible)
+    repeated the 57 earlier windows bit for bit; the software GE now reproduces all 66. These cells cannot
+    tell whether an uncovered second pixel is still the reference, or whether the span grid follows the
+    screen or the triangle: the quad never moves.
 
 - **PSP-3000 single-case run of the `insn-trace` probe on commit `84568280` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000, case 119 in `fixtures/psp_oracle/probe_insn_trace.c` with
@@ -3050,7 +3087,7 @@ not expected PSP values.
 | `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |
 | `insn-trace` | `PSP-TRACE-001` | `MEASURED` (2026-10-29, `84568280`; 2026-11-02, `1fbab0c6`, boot 98; single launches, not in the campaign queue) | #312: per instruction of four source-owned microprograms single-stepped on the Allegrex (ALU, shifts, compares, mult/divu, loads and stores of every width, a delay-slot loop; branches and likely branches, bal/bltzal calls returning by jr, a store in a delay slot; `add.s`/`mfc1`/`c.eq.s`/`cfc1` and `mfv`/`mtv`), the traced register state, including FCR31 and selected VFPU registers, and any store. 136 result records in 2026-10-29's two-fixture build, 149 in the four-fixture build; the v2 traces agree with Nakagawa's. See [#1375 and #312 runs 2026-11-02](#1375-and-312-runs-2026-11-02). |
 | `ge-sync-ids` | `PSP-GE-SYNC-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue; captured earlier from `96fe29f6` and `f6da6125`) | #1374: `sceGeListSync`, `sceGeDrawSync` and `sceGeListDeQueue` on an unknown queue id, on completed lists before and after later lists, on a list a `sceGeBreak(1)` reset removed, and with sync types other than 0 and 1, each blocking call bounded in a helper thread. See [PSP-GE-SYNC-001 runs 2026-10-31](#psp-ge-sync-001-runs-2026-10-31). |
-| `ge-mip` | `PSP-GE-MIP-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86; single launch, not in the campaign queue) | #1373: the raw pixels of a 16x4 window after 57 textured draws over eight one-colour mip levels: constant, automatic, slope and the unused level mode, biases and their rounding, blends, the highest-level clamp, footprints along either axis, and transform-mode quads at fixed and varying w. 285 result records. |
+| `ge-mip` | `PSP-GE-MIP-001` | `MEASURED` (2026-10-31, `66940d76`, boot 86, 57 cells; 2026-11-03, `99a384bb`, boot 111, 66 cells; single launches, not in the campaign queue) | #1373: the raw pixels of a 16x4 window after 66 textured draws over eight one-colour mip levels: constant, automatic, slope and the unused level mode, biases and their rounding, blends, the highest-level clamp, footprints along either axis, and transform-mode quads at fixed and varying w, mirrored ramps included. 330 result records (285 in the 57-cell run, whose windows the 66-cell run repeats bit for bit). |
 | `memory-edge` | `PSP-MEMEDGE-001` | `CAPTURED` (2026-11-02, `bb3f36e4`, boot 104, game context, firmware 6.6.1; single launch, not in the campaign queue; 33 PASS and 42 intentional SKIP, so not acceptance-eligible) | #303, #1380: the top of user RAM from the partition allocator and the end of VRAM from the DMA engine; `sceIoWrite`, `sceIoRead`, `sceDmacMemcpy` and `sceDmacTryMemcpy` with a buffer whose last 0x100 bytes sit at the edge and lengths 0x100 plus 0, 1, 4 and 0x1000. See [PSP-MEMEDGE-001 capture 2026-11-02](#psp-memedge-001-capture-2026-11-02). |
 
 ### PSP-MEMEDGE-001 capture 2026-11-02
