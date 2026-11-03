@@ -3542,7 +3542,11 @@ enum {
     TNLC_MORPH2, TNLC_SKIN1, TNLC_SKIN2_U8, TNLC_SKIN4_U16, TNLC_SKIN8_F, TNLC_LIGHT_DIR,
     TNLC_LIGHT_POINT, TNLC_LIGHT4_MATUPD, TNLC_LIGHT_SKIN, TNLC_OFFSET_VIEWPORT,
     TNLC_NEAR_CROSS, TNLC_SPECULAR, TNLC_FLAT, TNLC_TEXGEN, TNLC_LIGHT_SUBNORMAL,
+    TNLC_SPECULAR_EXACT, TNLC_LIGHT4_POW,
 };
+
+/* The cells whose specular and powered-diffuse power is ge_powf on both routes. */
+static int tnlc_pow_exact(int kind) { return kind == TNLC_SPECULAR_EXACT || kind == TNLC_LIGHT4_POW; }
 
 typedef struct TnlCell {
     const char *name;
@@ -3812,24 +3816,31 @@ static uint32_t tnlp_build(const TnlCell *c) {
     /* Lighting. */
     int lit = c->kind == TNLC_LIGHT_DIR || c->kind == TNLC_LIGHT_POINT ||
               c->kind == TNLC_LIGHT4_MATUPD || c->kind == TNLC_LIGHT_SKIN || c->kind == TNLC_SPECULAR ||
-              c->kind == TNLC_LIGHT_SUBNORMAL;
+              c->kind == TNLC_LIGHT_SUBNORMAL || tnlc_pow_exact(c->kind);
     if (lit) {
         TNLP_W(&L, 0x17, 1);
-        TNLP_W(&L, 0x53, c->kind == TNLC_LIGHT4_MATUPD ? 3u : 0u);
+        TNLP_W(&L, 0x53, c->kind == TNLC_LIGHT4_MATUPD ? 3u : c->kind == TNLC_LIGHT4_POW ? 7u : 0u);
         TNLP_W(&L, 0x54, 0x00080402u);
         TNLP_W(&L, 0x55, 0x00405060u);
         TNLP_W(&L, 0x56, 0x00c0a0e0u);
         TNLP_W(&L, 0x57, 0x00ffffffu);
         TNLP_W(&L, 0x58, 0xb0);
-        /* A positive power only where the cell means to decline (powf); the powered-diffuse
-           light of the four-light cell then lights as plain diffuse. */
-        TNLP_W(&L, 0x5B, tnlp_f24(c->kind == TNLC_SPECULAR ? 8.0f : 0.0f));
+        /* A positive power where the cell means to decline (the C library's powf) or to run
+           ge_powf on both routes; the powered-diffuse light of the matupdate cell then lights
+           as plain diffuse. A fractional power exercises the whole of ge_powf. */
+        TNLP_W(&L, 0x5B, tnlp_f24(c->kind == TNLC_SPECULAR ? 8.0f : c->kind == TNLC_SPECULAR_EXACT ? 10.5f :
+                                  c->kind == TNLC_LIGHT4_POW ? 3.25f : 0.0f));
         TNLP_W(&L, 0x5C, 0x00303030u);
         TNLP_W(&L, 0x5D, 0xc0);
-        int nl = c->kind == TNLC_LIGHT4_MATUPD ? 4 : 1;
+        int four = c->kind == TNLC_LIGHT4_MATUPD || c->kind == TNLC_LIGHT4_POW;
+        int nl = four ? 4 : 1;
         for (int i = 0; i < nl; i++) {
-            int point = c->kind == TNLC_LIGHT_POINT || (c->kind == TNLC_LIGHT4_MATUPD && (i & 1));
-            uint32_t comp = c->kind == TNLC_SPECULAR ? 1u : (c->kind == TNLC_LIGHT4_MATUPD && i == 2 ? 2u : 0u);
+            int point = c->kind == TNLC_LIGHT_POINT || (four && (i & 1));
+            /* The ge_powf four-light cell: specular, powered diffuse, specular, diffuse. */
+            static const uint32_t pow_comps[4] = { 1u, 2u, 3u, 0u };
+            uint32_t comp = c->kind == TNLC_SPECULAR || c->kind == TNLC_SPECULAR_EXACT ? 1u :
+                            c->kind == TNLC_LIGHT4_POW ? pow_comps[i] :
+                            (c->kind == TNLC_LIGHT4_MATUPD && i == 2 ? 2u : 0u);
             TNLP_W(&L, 0x18 + (uint32_t)i, 1);
             TNLP_W(&L, 0x5F + (uint32_t)i, comp | ((uint32_t)(point ? 1 : 0) << 8));
             float pos[3] = { tnlp_rand(-3, 3), tnlp_rand(-3, 3), tnlp_rand(1, 4) };
@@ -3969,6 +3980,7 @@ static int tnlp_run(const TnlCell *c, int mode, TnlpOut *out, unsigned long long
     sr_gpu_vram_dirty(fb, TNLP_STRIDE * FB_H * 4u);
     sr_gpu_vram_dirty(zb, TNLP_STRIDE * FB_H * 2u);
     uint32_t list = tnlp_build(c);
+    ge_pow_set_exact(tnlc_pow_exact(c->kind));
     ge_tnl_set_enabled(mode == 2);
     ge_tnl_counts(NULL, NULL, 1);
     ge_set_gpu_hooks(mode ? &k_hooks : NULL);
@@ -3976,6 +3988,7 @@ static int tnlp_run(const TnlCell *c, int mode, TnlpOut *out, unsigned long long
     ge_set_gpu_hooks(&k_hooks);
     ge_tnl_counts(taken, NULL, 0);
     ge_tnl_set_enabled(-1);
+    ge_pow_set_exact(0);
     if (mode) {
         GeGpuFbDescriptor desc = { .addr = fb, .format = 3, .stride = TNLP_STRIDE, .width = 480, .height = FB_H };
         if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) return 0;
@@ -4021,6 +4034,8 @@ static int coherence_run_tnl_parity(void) {
         { "flat", TNLC_FLAT, 0 },
         { "texgen", TNLC_TEXGEN, 0 },
         { "light-subnormal-length", TNLC_LIGHT_SUBNORMAL, 1 },
+        { "specular-ge-powf", TNLC_SPECULAR_EXACT, 1 },
+        { "light-4-ge-powf", TNLC_LIGHT4_POW, 1 },
     };
     const size_t px = (size_t)TNLP_STRIDE * FB_H;
     TnlpOut sw = { (uint32_t *)malloc(px * 4u), (uint16_t *)malloc(px * 2u) };
