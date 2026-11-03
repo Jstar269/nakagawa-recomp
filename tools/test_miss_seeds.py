@@ -299,6 +299,13 @@ MIXED_RETURN_WORDS = {
     TARGET + 16: 0x03E00008,     # jr ra
     TARGET + 20: 0x00000000,     # nop (delay slot)
 }
+# The release path as in MIXED_RETURN_WORDS; the other path moves $sp from fp before it returns.
+MIXED_UNKNOWN_WORDS = {
+    **MIXED_RETURN_WORDS,
+    TARGET + 16: 0x03C0E821,     # addu sp, fp, zero
+    TARGET + 20: 0x03E00008,     # jr ra
+    TARGET + 24: 0x00000000,     # nop (delay slot)
+}
 UNKNOWN_SP_WORDS = {
     **_HEAD,
     TARGET: 0x03C0E821,          # addu sp, fp, zero: the walk cannot follow $sp from here
@@ -709,7 +716,8 @@ class AnalysisSeedTests(_Fixture):
     def test_a_frame_release_the_walk_sees_is_refused_with_no_return_or_with_a_mixed_one(self):
         for name, words, why in (
                 ("tail", TAIL_RELEASE_WORDS, "continuation: $sp net +16 at a computed jump"),
-                ("mixed", MIXED_RETURN_WORDS, "continuation: $sp net +16 at a return")):
+                ("mixed", MIXED_RETURN_WORDS, "continuation: $sp net +16 at a return"),
+                ("mixed_unknown", MIXED_UNKNOWN_WORDS, "continuation: $sp net +16 at a return")):
             with self.subTest(name):
                 elf = self.work / f"{name}_release.elf"
                 elf.write_bytes(_text_ends_at(_synthetic_elf(words, ENTRY), TARGET))
@@ -749,6 +757,18 @@ class AnalysisSeedTests(_Fixture):
             LOOP_HEAD: f"{analyze.SEED_NOT_CALLABLE}: indeterminate",
             LOOP_BRANCH: analyze.SEED_APPLIED,
         })
+
+    def test_a_seed_owned_only_by_a_seed_a_stub_refuses_keeps_its_entry(self):
+        elf = self.work / "loop_stub.elf"
+        elf.write_bytes(_text_ends_at(_synthetic_elf(LOOP_WORDS, ENTRY), TARGET))
+        check = _emission(lambda entries: {LOOP_BRANCH: "no thanks"})
+        report: dict = {}
+        starts = _functions(elf, seeds={LOOP_HEAD, LOOP_BRANCH}, report=report, seed_check=check)
+        self.assertEqual(report["miss_seeds"], {
+            LOOP_HEAD: analyze.SEED_APPLIED,
+            LOOP_BRANCH: f"{analyze.SEED_UNTRANSLATABLE}: no thanks",
+        })
+        self.assertIn(LOOP_HEAD, starts)
 
     def test_a_word_inside_a_body_with_no_frame_live_is_still_a_seed(self):
         report: dict = {}

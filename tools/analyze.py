@@ -2203,23 +2203,25 @@ SEED_NOT_EMITTED = "not-emitted"
 
 def _seed_not_callable(d, address):
     """None for a proven entry: every return nets `$sp` to zero, and any computed jump leaves a
-    frame the seed allocated itself. Otherwise `(why, released)`: `released` when the walk saw the
-    seed release a frame it did not allocate, which no `$sp` it failed to follow can blur; false
-    when it only cannot prove an entry. At net 0 from a seed with no frame, a computed jump says
+    frame the seed allocated itself. Otherwise `(why, released)`: `released` when a path the walk
+    follows exactly releases a frame the seed did not allocate, whatever the other paths do; false
+    when the walk only cannot prove an entry. At net 0 from a seed with no frame, a computed jump says
     nothing: the frame the seed is inside can be released in the arm the walk cannot follow, and
     `_walk_frame` falls out of a noreturn call into the next function's return."""
     # entry_frame_balance imports this module, so it is imported where it is used.
     import entry_frame_balance
-    profile = entry_frame_balance.profile_entry(
-        d.elf, address, [*d.ranges, *d.file_exec_ranges, *d.proven_spans])
+    ranges = [*d.ranges, *d.file_exec_ranges, *d.proven_spans]
+    exact = entry_frame_balance.profile_exact_paths(d.elf, address, ranges)
+    for where, deltas in (("a return", exact.return_deltas),
+                          ("a computed jump", exact.tail_deltas)):
+        released = sorted(delta for delta in deltas if delta > 0)
+        if released:
+            return (f"{SEED_NOT_CALLABLE}: {entry_frame_balance.CONTINUATION}: "
+                    f"$sp net {released[0]:+d} at {where}", True)
+    # The proof of an entry stays a whole-walk one: one `$sp` write the walk cannot follow, on any
+    # path, leaves the seed unproven.
+    profile = entry_frame_balance.profile_entry(d.elf, address, ranges)
     role = entry_frame_balance.classify(profile)
-    if not profile.unknown_sp:
-        for where, deltas in (("a return", profile.return_deltas),
-                              ("a computed jump", profile.tail_deltas)):
-            released = sorted(delta for delta in deltas if delta > 0)
-            if released:
-                return (f"{SEED_NOT_CALLABLE}: {entry_frame_balance.CONTINUATION}: "
-                        f"$sp net {released[0]:+d} at {where}", True)
     if role != entry_frame_balance.CALLABLE:
         return f"{SEED_NOT_CALLABLE}: {role}", False
     if profile.tail_deltas and not profile.has_prologue:
@@ -2278,6 +2280,7 @@ def _seed_behind(run, seed_check, candidates, stub):
 
 def _refuse_seeds_on_seeds_floor(run, candidates, refused):
     """The `candidates` left once each unproven seed a kept seed's trace owns is in `refused`.
+    `_resolve_seeds` asks again whenever it drops a seed, so this judges the final set.
 
     A list grows by rounds: the build with a seed's body owns more words, the floor runs them, and
     the next list names them. The floor runs such a seed in the build without it, so it needs the
@@ -2299,19 +2302,23 @@ def _resolve_seeds(unseeded, run, seeds, seed_check, report):
     """Analyze with the seeds that leave the emitter's result no worse, and report each seed from
     the two final results, with seeds and without, never from a state along the way.
 
-    `unseeded` is the analysis without seeds, `run(seeds, report, unusable, unproven)` one with them.
-    `seed_check(entries, ranges, only=None)` maps each entry the build would emit (`only` alone,
-    when given) to None for a body or to why the emitter stubs it. Without a check every entry counts as a body. Any stub the seeds add refuses
-    a seed, whatever entry it is on, and the analysis runs again without that seed."""
+    `unseeded` is the analysis without seeds, `run(seeds, report, unusable, unproven)` one with
+    them. `seed_check(entries, ranges, only=None)` maps each entry the build would emit (`only`
+    alone, when given) to None for a body or to why the emitter stubs it. Without a check every
+    entry counts as a body. Any stub the seeds add refuses a seed, whatever entry it is on. Each
+    refusal for a stub can take away the trace that owned an unproven seed, so the ownership test
+    runs again over every seed not refused for a stub, until no stub refuses one more."""
     if seed_check is None:
         def seed_check(entries, ranges, only=None):
             return dict.fromkeys(entries)
     entries, ranges = unseeded
     baseline = set(entries)
     baseline_stubs = {a for a, why in seed_check(entries, ranges).items() if why is not None}
-    refused = {}
-    candidates = _refuse_seeds_on_seeds_floor(run, sorted(set(seeds) - baseline), refused)
+    stubbed = {}
     while True:
+        refused = dict(stubbed)
+        candidates = _refuse_seeds_on_seeds_floor(
+            run, sorted(set(seeds) - baseline - stubbed.keys()), refused)
         unusable = {}
         result = run(candidates, report, unusable)
         emitted = seed_check(*result)
@@ -2321,12 +2328,11 @@ def _resolve_seeds(unseeded, run, seeds, seed_check, report):
             break
         own = new_stubs.keys() & set(candidates)
         for address in own:
-            refused[address] = f"{SEED_UNTRANSLATABLE}: {new_stubs[address]}"
+            stubbed[address] = f"{SEED_UNTRANSLATABLE}: {new_stubs[address]}"
         if not own:
             stub = min(new_stubs)
             seed = _seed_behind(run, seed_check, candidates, stub)
-            refused[seed] = f"{SEED_UNTRANSLATABLE}: brings 0x{stub:08x}: {new_stubs[stub]}"
-        candidates = [address for address in candidates if address not in refused]
+            stubbed[seed] = f"{SEED_UNTRANSLATABLE}: brings 0x{stub:08x}: {new_stubs[stub]}"
     outcome = {}
     for address in set(seeds):
         if address in baseline:
