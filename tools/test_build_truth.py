@@ -729,7 +729,11 @@ def _psmf_media_filtered_out(makefile: str) -> str:
 
 H264_BACKENDS = ("src/rt/h264_mf.c", "src/rt/h264_null.c")
 H264_BACKEND_OBJECTS = ("h264_mf.o", "h264_null.o")
-HLE_RUNTIME_BUNDLES = ("$(RT_SRCS)", "$(RT_OBJS)", "$(PSMF_MEDIA_RUNTIME_OBJS)")
+# The focused media link (#307) takes PSMF_MEDIA_RUNTIME_OBJS minus the src/core objects, which it
+# links from the native-core set; _hle_link_supplies_h264_backends checks that derivation.
+HLE_RUNTIME_BUNDLES = (
+    "$(RT_SRCS)", "$(RT_OBJS)", "$(PSMF_MEDIA_RUNTIME_OBJS)", "$(PSMF_MEDIA_FOCUSED_OBJS)",
+)
 
 
 def _rt_runtime_sources(makefile: str) -> set[str]:
@@ -753,7 +757,16 @@ def _hle_link_supplies_h264_backends(link: str, makefile: str) -> bool:
     if not all(source in runtime_sources for source in H264_BACKENDS):
         return False
 
-    if "$(PSMF_MEDIA_RUNTIME_OBJS)" in bundles:
+    if "$(PSMF_MEDIA_FOCUSED_OBJS)" in bundles:
+        # Only a bundle built from the PSMF media object set, minus src/core objects, keeps the backends.
+        derived = re.search(
+            r"(?m)^PSMF_MEDIA_FOCUSED_RT_OBJS\s*:=\s*\$\(filter-out\s+\$\(PSMF_MEDIA_FOCUSED_CORE_RT\),"
+            r"\s*\$\(PSMF_MEDIA_RUNTIME_OBJS\)\)",
+            makefile,
+        )
+        if derived is None:
+            return False
+    if "$(PSMF_MEDIA_RUNTIME_OBJS)" in bundles or "$(PSMF_MEDIA_FOCUSED_OBJS)" in bundles:
         filtered_out = _psmf_media_filtered_out(makefile)
         if any(obj in filtered_out for obj in H264_BACKEND_OBJECTS):
             return False
