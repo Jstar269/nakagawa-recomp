@@ -4286,21 +4286,22 @@ static void test_mpeg_atrac_au_decode(void) {
               mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 1u) == 0u,
           "mpeg-atrac: after a flush the refed stream decodes again");
 
-    /* sceMpegFlushStream (0x500f0429) through the production handler: the stream's held frame is
-     * dropped and its demux starts over, the ring counters stay (the ring is shared), and an id the
-     * context never issued is refused. */
+    /* sceMpegFlushStream (0x500f0429) through the production handler checks its arguments and
+     * changes nothing, as PPSSPP's does: a flush in mid-playback keeps the frame the game holds,
+     * the frames still queued and the shared ring counters (an unmeasured PSP behaviour). */
     const uint32_t flush_stream_nid = 0x500f0429u;
     CHECK(mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u,
           "mpeg-atrac: a second frame is held before FlushStream");
     uint32_t avail_before = MEM_R32(AT_RING + 12u);
+    uint32_t read_before = MEM_R32(AT_RING + 4u);
     CHECK(guest_mpeg_import(flush_stream_nid, AT_DESC, sid, 0u, 0u, 0u) == 0u,
           "mpeg-atrac: FlushStream on the registered ATRAC stream returns 0");
-    CHECK(MEM_R32(AT_RING + 12u) == avail_before,
+    CHECK(MEM_R32(AT_RING + 12u) == avail_before && MEM_R32(AT_RING + 4u) == read_before,
           "mpeg-atrac: FlushStream leaves the shared ring counters alone");
-    CHECK(mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 0u) == SCE_MPEG_ERROR_NO_DATA,
-          "mpeg-atrac: FlushStream dropped the held frame");
-    CHECK(mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == SCE_MPEG_ERROR_NO_DATA,
-          "mpeg-atrac: after FlushStream the demux holds no frame until the game refeeds it");
+    CHECK(mpeg_atrac_decode(AT_DESC, AT_AU, AT_OUT, 0u) == 0u,
+          "mpeg-atrac: FlushStream keeps the frame the game holds");
+    CHECK(mpeg_get_atrac_au(AT_DESC, sid, AT_AU, AT_ATTR) == 0u,
+          "mpeg-atrac: FlushStream keeps the frames still queued");
     CHECK(guest_mpeg_import(flush_stream_nid, AT_DESC, sid + 1000u, 0u, 0u, 0u) == SCE_MPEG_ERROR_INVALID_VALUE,
           "mpeg-atrac: FlushStream refuses a stream id the context never issued");
     CHECK(guest_mpeg_import(flush_stream_nid, 0u, sid, 0u, 0u, 0u) == 0x80020003u,

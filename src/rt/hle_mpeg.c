@@ -1209,11 +1209,12 @@ static uint32_t h_MpegFlushAllStream(CpuState *s) {
     return 0;
 }
 
-/* sceMpegFlushStream(mpeg, stream): flush one registered stream (stream is the id
- * sceMpegRegistStream returned).  Behaviour reference: PPSSPP Core/HLE/sceMpeg.cpp; the stream
- * state it resets is described at mpeg_flush_stream in src/rt/mpeg.c.  The descriptor check
- * matches sceMpegFlushAllStream.  In the executable HLE harness mpeg.c is not linked, so the
- * handler only checks the descriptor there. */
+/* sceMpegFlushStream(mpeg, stream): validates the context and the stream id (the value
+ * sceMpegRegistStream returned) and returns 0, following PPSSPP (caa91b54, Core/HLE/sceMpeg.cpp),
+ * whose handler does no flush.  What a PSP discards is unmeasured; the stream and ring state stay
+ * as they are (sceMpegFlushAllStream clears them).  The descriptor check matches
+ * sceMpegFlushAllStream.  In the executable HLE harness mpeg.c is not linked, so the handler only
+ * checks the descriptor there. */
 static uint32_t h_MpegFlushStream(CpuState *s) {
     uint32_t mpegAddr = A0;
     if (!mpegAddr || !sr_guest_span_readable(mpegAddr, 4u)) return 0x80020003u;
