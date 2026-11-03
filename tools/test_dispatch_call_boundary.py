@@ -1508,7 +1508,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # that is an entry of its own. Leaving early and leaving through the scope both end
         # at F's caller's $sp.
         _generated, results = self._probe(_scoped_arrays_function(), (0, 2))
-        for (rc, output, fields), v0 in zip(results, (0x59, 0x58)):
+        for (rc, output, fields), v0 in zip(results, (0x59, 0x58), strict=True):
             self.assertEqual(rc, 0, output)
             self.assertEqual(fields.get("v0"), v0, output)
             self.assertEqual(fields.get("v1"), _PROBE_SP, output)
