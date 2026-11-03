@@ -5985,6 +5985,17 @@
       }
     },
     {
+      "path": "src/rt/form_sweep.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "form-sweep-1844",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "src/rt/fp_convert.h",
       "classification": "project_authored_attested",
       "evidence": {
@@ -13513,6 +13524,17 @@
       }
     },
     {
+      "path": "tools/form_sweep.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "form-sweep-1844",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/format_portability_check.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -15727,6 +15749,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "user-font-provisioning-300",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_form_sweep.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "form-sweep-1844",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
