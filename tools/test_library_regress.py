@@ -54,7 +54,8 @@ def manifest(titles: dict[str, dict], *, commit: str | None = OLD, launch_timeou
 
 class LadderTests(unittest.TestCase):
     def place(self, record: dict, frames: int = 60) -> dict | None:
-        return library_regress.classify(record, frames)
+        place: dict | None = library_regress.classify(record, frames)
+        return place
 
     def test_every_launch_ending_gets_its_rung_and_end(self) -> None:
         cases = [
@@ -357,7 +358,7 @@ class FastSelectionTests(unittest.TestCase):
     def baseline(self, count: int, wall: float = 600.0) -> dict:
         titles = {f"t{index:03d}.iso": built(400) for index in range(count)}
         titles["noframe.iso"] = built(0)
-        snapshot = library_regress.snapshot_from_manifest(manifest(titles))
+        snapshot: dict = library_regress.snapshot_from_manifest(manifest(titles))
         for place in snapshot["titles"].values():
             place["wall_seconds"] = wall
         return snapshot
