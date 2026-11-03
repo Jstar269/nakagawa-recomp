@@ -958,13 +958,21 @@ static uint32_t run_getsize(uint32_t si, uint32_t n_sec, uint32_t n_norm,
     return sr_savedata_execute(PARAM);
 }
 
+/* GETSIZE reports RW_NO_DATA beside its figures when the save is missing, so a request the
+ * bounds checks must refuse is one that returned neither success nor that. */
+#define GETSIZE_NO_DATA 0x80110327u
+static int getsize_refused(uint32_t result) {
+    return result != 0 && result != GETSIZE_NO_DATA;
+}
+
 static void check_getsize_cases(void) {
     uint32_t result;
 
-    /* G1: a normal zero-count request remains a successful no-op calculation. */
+    /* G1: a normal zero-count request remains a no-op calculation. No save exists here, so it
+     * reports RW_NO_DATA beside the figures. */
     reset_guest();
     result = run_getsize(SIZE_INFO, 0, 0, 0, 0);
-    CHECK(result == 0 && MEM_R32(SIZE_INFO + 36) == 0 && MEM_R32(SIZE_INFO + 48) == 0,
+    CHECK(result == GETSIZE_NO_DATA && MEM_R32(SIZE_INFO + 36) == 0 && MEM_R32(SIZE_INFO + 48) == 0,
           "normal zero-count GETSIZE needs nothing more (neededKB and overwriteKB stay 0)");
 
     /* G1: normal small request and the existing cluster model. */
@@ -972,7 +980,7 @@ static void check_getsize_cases(void) {
     set_size_entry(SEC_ENTRIES, 0, 0x400);
     set_size_entry(NORM_ENTRIES, 0, 0x100);
     result = run_getsize(SIZE_INFO, 1, 1, SEC_ENTRIES, NORM_ENTRIES);
-    CHECK(result == 0, "normal GETSIZE must succeed");
+    CHECK(result == GETSIZE_NO_DATA, "normal GETSIZE must complete its calculation");
     CHECK(MEM_R32(SIZE_INFO + 16) == CLUSTER && MEM_R32(SIZE_INFO + 36) == 0,
           "normal GETSIZE that fits reports 32 KiB sectors and no shortfall");
 
@@ -984,7 +992,7 @@ static void check_getsize_cases(void) {
     }
     result = run_getsize(SIZE_INFO, SAVEDATA_MAX_FILE_ENTRIES,
                          SAVEDATA_MAX_FILE_ENTRIES, SEC_ENTRIES, NORM_ENTRIES);
-    CHECK(result == 0 && g_oor == 0, "largest legitimate GETSIZE must succeed without OOR");
+    CHECK(result == GETSIZE_NO_DATA && g_oor == 0, "largest legitimate GETSIZE must complete without OOR");
 
     /* G3/G4/G5: one-past, huge unsigned, and negative signed counts reject
      * before any entry is read or output is changed. */
@@ -995,36 +1003,36 @@ static void check_getsize_cases(void) {
     sr_w32(SIZE_INFO + 8, SEC_ENTRIES);
     sr_w32(SIZE_INFO + 16, 0xdeadbeefu);
     result = sr_savedata_execute(PARAM);
-    CHECK(result != 0 && MEM_R32(SIZE_INFO + 16) == 0xdeadbeefu && g_oor == 0,
+    CHECK(getsize_refused(result) && MEM_R32(SIZE_INFO + 16) == 0xdeadbeefu && g_oor == 0,
           "one-past GETSIZE count must fail before output");
 
     reset_guest();
     result = run_getsize(SIZE_INFO, UINT32_MAX, 0, SEC_ENTRIES, 0);
-    CHECK(result != 0 && g_oor == 0, "huge unsigned GETSIZE count must fail pre-loop");
+    CHECK(getsize_refused(result) && g_oor == 0, "huge unsigned GETSIZE count must fail pre-loop");
     reset_guest();
     result = run_getsize(SIZE_INFO, 0, UINT32_MAX, 0, NORM_ENTRIES);
-    CHECK(result != 0 && g_oor == 0, "negative signed GETSIZE count must fail pre-loop");
+    CHECK(getsize_refused(result) && g_oor == 0, "negative signed GETSIZE count must fail pre-loop");
 
     /* G6: 2^29 * 24 overflows uint32_t, even though the raw count is positive. */
     reset_guest();
     result = run_getsize(SIZE_INFO, 0x20000000u, 0, SEC_ENTRIES, 0);
-    CHECK(result != 0 && g_oor == 0, "count-times-entry overflow must fail pre-loop");
+    CHECK(getsize_refused(result) && g_oor == 0, "count-times-entry overflow must fail pre-loop");
 
     /* G7: a count with no readable entry span must not be iterated. */
     reset_guest();
     result = run_getsize(SIZE_INFO, 1, 0, 0x0bfffff0u, 0);
-    CHECK(result != 0 && g_oor == 0, "too-small entry span must fail pre-loop");
+    CHECK(getsize_refused(result) && g_oor == 0, "too-small entry span must fail pre-loop");
 
     /* G8: the nested output object itself is a 60-byte read/write span. */
     reset_guest();
     result = run_getsize(0x0bffffd0u, 0, 0, 0, 0);
-    CHECK(result != 0 && g_oor == 0, "too-small output span must fail before scalar writes");
+    CHECK(getsize_refused(result) && g_oor == 0, "too-small output span must fail before scalar writes");
 
     /* Checked rounding/accumulation also refuses a forged u64 size. */
     reset_guest();
     set_size_entry(SEC_ENTRIES, 0, UINT64_MAX);
     result = run_getsize(SIZE_INFO, 1, 0, SEC_ENTRIES, 0);
-    CHECK(result != 0 && g_oor == 0, "u64 size rounding overflow must fail closed");
+    CHECK(getsize_refused(result) && g_oor == 0, "u64 size rounding overflow must fail closed");
 
     /* Existing null-sizeInfo compatibility remains success/no-op. */
     reset_guest();
