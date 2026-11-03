@@ -1470,7 +1470,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             _require_plain_guest_module(destination, name, disc_name)
             continue
         extracted = False
-        members = []
+        members: list[tuple[str, ...]] = []
         sector_extent = _guest_sector_extent(module.get("guest_path"))
         guest_components = _source_iso_guest_components(module.get("guest_path"))
         if sector_extent is not None:
