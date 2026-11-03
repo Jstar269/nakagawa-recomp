@@ -1700,8 +1700,11 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
     default:
         return SCE_ERROR_MODULE_BAD_ID;
     }
+    /* The calling thread is inside this call, so where it goes next is its return address,
+     * not the pc saved at its last dispatch, which may lie in a module it called earlier. */
     if (mod->image_base && mod->image_end > mod->image_base &&
-        sched_module_range_busy(mod->image_base, mod->image_end, 0u)) {
+        ((s->r[31] >= mod->image_base && s->r[31] < mod->image_end) ||
+         sched_module_range_busy(mod->image_base, mod->image_end, sched_current_uid()))) {
         fprintf(stderr, "PRX_MODULE_UNLOAD_ACTIVE_THREAD_SYNTHETIC: uid=0x%x image="
                         "[0x%08x,0x%08x) has a ready/running continuation; refusing "
                         "with NOT_IMPLEMENTED (active-thread unload result unmeasured)\n",

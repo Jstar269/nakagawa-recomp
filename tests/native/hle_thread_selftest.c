@@ -1692,7 +1692,7 @@ enum {
 #define RT_PATH_ADDR 0x08906000u
 #define RT_ARG_ADDR 0x08906080u
 #define RT_STATUS_ADDR 0x089060C0u
-#define RT_OPTION_ADDR 0x089060D0u
+#define RT_STOP_OPTION_ADDR 0x089060D0u
 #define RT_OPTION_ADDR 0x08906100u
 
 static void fd_host_path(char *out, size_t capacity, const char *guest);
@@ -2043,11 +2043,11 @@ static uint32_t rt_lifecycle(uint32_t (*handler)(CpuState *), uint32_t uid,
 
 /* A SceKernelSMOption of size bytes: {size, mpIdStack, stackSize, priority, attribute}. */
 static void rt_write_stop_option(uint32_t size, uint32_t mpid, uint32_t priority, uint32_t attr) {
-    MEM_W32(RT_OPTION_ADDR, size);
-    MEM_W32(RT_OPTION_ADDR + 4u, mpid);
-    MEM_W32(RT_OPTION_ADDR + 8u, 0u);
-    MEM_W32(RT_OPTION_ADDR + 12u, priority);
-    MEM_W32(RT_OPTION_ADDR + 16u, attr);
+    MEM_W32(RT_STOP_OPTION_ADDR, size);
+    MEM_W32(RT_STOP_OPTION_ADDR + 4u, mpid);
+    MEM_W32(RT_STOP_OPTION_ADDR + 8u, 0u);
+    MEM_W32(RT_STOP_OPTION_ADDR + 12u, priority);
+    MEM_W32(RT_STOP_OPTION_ADDR + 16u, attr);
 }
 
 static uint32_t rt_stop_with_option(uint32_t uid, uint32_t option) {
@@ -2348,14 +2348,14 @@ static void test_runtime_placed_modules(void) {
         (void)sr_syscall(&sdk, 0x7591c7dbu); /* sceKernelSetCompiledSdkVersion */
     }
     rt_write_stop_option(16u, 2u, 0u, 0u);
-    expect(rt_stop_with_option(uid, RT_OPTION_ADDR) == SCE_KERNEL_ERROR_ILLEGAL_SIZE &&
+    expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == SCE_KERNEL_ERROR_ILLEGAL_SIZE &&
                s_rt_stop_calls == 0u,
            "runtime placement: from SDK 2.08 a stop option of the wrong size is refused");
     rt_write_stop_option(20u, 2u, 0u, 0x80000000u);
-    expect(rt_stop_with_option(uid, RT_OPTION_ADDR) == 0x80020001u && s_rt_stop_calls == 0u,
+    expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == 0x80020001u && s_rt_stop_calls == 0u,
            "runtime placement: a stop option with an illegal attribute is refused");
     rt_write_stop_option(20u, 5u, 0u, 0u);
-    expect(rt_stop_with_option(uid, RT_OPTION_ADDR) == 0x80020002u &&
+    expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == 0x80020002u &&
                s_rt_stop_calls == 0u,
            "runtime placement: a stop thread stack outside the user partition is refused");
     expect(rt_stop_with_option(uid, 0x00000010u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR &&
@@ -2365,7 +2365,7 @@ static void test_runtime_placed_modules(void) {
     /* Stop, then unload: the image, its exports, its dispatch and its memory go. */
     MEM_W32(RT_STATUS_ADDR, 0u);
     rt_write_stop_option(20u, 2u, 0x30u, 0x00004000u);
-    expect(rt_stop_with_option(uid, RT_OPTION_ADDR) == 0u &&
+    expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == 0u &&
                s_rt_stop_calls == 1u && MEM_R32(RT_STATUS_ADDR) == RT_STOP_STATUS &&
                s_rt_stop_priority == 0x30,
            "runtime placement: StopModule runs module_stop at the option's priority and "
@@ -37254,11 +37254,29 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     active_module_thread->deleted = 1;
     active_module_thread->entry = 0u;
 
+    /* The calling thread is inside the call: the pc saved at its last dispatch may lie in A,
+     * which it called earlier, and only its return address says where it goes next. */
+    TCB *unload_caller = fixture_thread(0x6f1u, TH_RUNNING, 20);
+    unload_caller->started = 1;
+    const int cur_before_unload = s_cur;
+    s_cur = (int)(unload_caller - s_tcb);
+    s_cpu->pc = LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    cpu.r[31] = LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0x80020002u,
+           "lifecycle: unload refuses a caller that returns into the image");
+
     /* ---- unload A: retire exactly its own state ---- */
     unsigned images_before = sr_hle_test_image_count();
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_a;
-    expect(sr_syscall(&cpu, 0x2e0911aau) == 0, "lifecycle: unload module A returns 0");
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0,
+           "lifecycle: unload module A returns 0, whatever pc its caller was last dispatched at");
+    s_cpu->pc = 0u;
+    s_cur = cur_before_unload;
+    unload_caller->state = TH_DORMANT;
+    unload_caller->deleted = 1;
 
     /* Stale-export result: the old export is no longer authorized, and the registry no
      * longer resolves it at all. These are the two conditions link_started_export()
