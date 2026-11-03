@@ -169,6 +169,19 @@ class TitleManifestTests(unittest.TestCase):
                         title_manifest.validate_manifest(value)
                     self.assertIn(message, str(caught.exception))
 
+    def test_retired_callback_terminators_collection_has_a_named_migration_error(self) -> None:
+        """The runtime no longer reports a dispatch target as a completed walk, so a
+        manifest that still names the collection fails by name instead of as an unknown
+        field."""
+        self.assertIn("callback_terminators", title_manifest.RETIRED_RUNTIME_BINDING_FIELDS)
+        self.assertTrue(title_manifest.CALLBACK_TERMINATOR_RETIRED_MESSAGE
+                        .startswith("CALLBACK_TERMINATOR_RETIRED: "))
+        configured = copy.deepcopy(self.fixture)
+        configured["runtime_bindings"]["callback_terminators"] = [
+            {"sentinel": 0xFFFFFFFF, "pc": 0x08900100, "ra": 0x08900200}]
+        with self.assertRaisesRegex(ValueError, "CALLBACK_TERMINATOR_RETIRED: "):
+            title_manifest.validate_manifest(configured)
+
     def test_duplicate_json_key_is_rejected(self) -> None:
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate JSON object key"):
             title_manifest.loads_manifest('{"schema_version":1,"schema_version":1}')

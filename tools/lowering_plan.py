@@ -272,8 +272,7 @@ HST_GUEST_ABORT = 0x00000a1c
 
 def hst_emission_sites(cg) -> set[int]:
     """Addresses where emit_function emits HST-profile code instead of the plain word."""
-    return (set(cg._SV_SPECIAL) | set(cg.GUEST_PATCHES) | set(cg.NULL_BASE_WORD_LOADS)
-            | {HST_GUEST_ABORT})
+    return (set(cg._SV_SPECIAL) | set(cg.GUEST_PATCHES) | {HST_GUEST_ABORT})
 
 
 def plan_function(cg, elf, start, ranges, known, *, resume_owners=None, resumable=False,
