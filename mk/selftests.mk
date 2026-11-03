@@ -419,6 +419,40 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 		   ! grep -Fq "FAIL: ycbcr-decode: CSC writes the measured conversion of the decoded samples" $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc mutant was not killed by the guest pixel assertion" >&2; exit 1; fi; \
 		echo "psmf-media-selftest-csc-mutant: killed by the CSC write assertions"
 
+# psmf-media-focused-selftest -- the same media selftest (#307), linked against six HLE files, not
+# all twenty-seven: hle_mpeg.c and the presentation boundary its A/V measurement drives
+# (display, audio, audio_codec, route, input), plus tests/native/hle_focus_media_stubs.c for the
+# calls into the rest of HLE. tools/hle_focus_check.py then reads the executable's symbol table
+# and fails if any excluded HLE file was linked. $(HLE_OBJS) are only the symbol reference.
+# The runtime's src/core objects (nk_font, nk_json, nk_xb, nk_input_profile and the platform file)
+# come from native-core-objects-core, which native-core-tests builds for the product core tests
+# already: the same sources, no runtime-only define, so the focused link does not compile them a
+# third time (tools/test_native_core_build.py counts one compile per flag set).
+HLE_MEDIA_FOCUS_SRCS := src/rt/hle_mpeg.c src/rt/hle_display.c src/rt/hle_audio.c \
+                        src/rt/hle_audio_codec.c src/rt/hle_route.c src/rt/hle_input.c
+# NC_OBJ_DIR is set here because the prerequisite list below is read before the Native Product Core
+# Tests block that used to define it.
+NC_OBJ_DIR := $(BUILD_ROOT)/native-core
+PSMF_MEDIA_FOCUSED_CORE_RT := $(addprefix $(BUILD_DIR)/,$(notdir $(patsubst %.c,%.o,$(filter src/core/%,$(RT_SRCS)))))
+PSMF_MEDIA_FOCUSED_RT_OBJS := $(filter-out $(PSMF_MEDIA_FOCUSED_CORE_RT),$(PSMF_MEDIA_RUNTIME_OBJS))
+PSMF_MEDIA_FOCUSED_OBJS := $(PSMF_MEDIA_FOCUSED_RT_OBJS) \
+                           $(patsubst $(BUILD_DIR)/%,$(NC_OBJ_DIR)/core/%,$(PSMF_MEDIA_FOCUSED_CORE_RT))
+psmf-media-focused-selftest: native-core-objects-core $(PSMF_MEDIA_FOCUSED_RT_OBJS) $(HLE_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o tests/native/hle_focus_media_stubs.c tools/hle_focus_check.py
+	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest.o
+	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -c tests/native/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Werror -c tests/native/hle_focus_media_stubs.c -o $(BUILD_DIR)/hle_focus_media_stubs.o
+	$(file >$(BUILD_DIR)/psmf_media_focused_selftest.rsp,$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o $(PSMF_MEDIA_FOCUSED_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o)
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
+		-o $(BUILD_DIR)/psmf_media_focused_selftest.exe \
+		$(HLE_MEDIA_FOCUS_SRCS) $(BUILD_DIR)/hle_focus_media_stubs.o @$(BUILD_DIR)/psmf_media_focused_selftest.rsp \
+		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
+	$(PYTHON) tools/hle_focus_check.py --exe $(BUILD_DIR)/psmf_media_focused_selftest.exe --objdir $(BUILD_DIR) \
+		--include $(HLE_MEDIA_FOCUS_SRCS) --stub $(BUILD_DIR)/hle_focus_media_stubs.o --require hle_register_psmf_player_handlers sr_hle_test_psmf_av_reset
+	$(BUILD_DIR)/psmf_media_focused_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
+
+# The hosted gate for the focused link (#307): native-core-tests runs on every pull request.
+native-core-tests: psmf-media-focused-selftest
+
 audio-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt -DSR_AUDIO_SELFTEST \
 		src/rt/audio_sdl3.c src/rt/perf.c -lSDL3 -lm \

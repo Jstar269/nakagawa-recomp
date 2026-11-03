@@ -356,7 +356,7 @@ class NewProbeResultParserTests(unittest.TestCase):
                                 post_guard: int = 0, overflow_band: int = 0,
                                 source_intact: int = 1,
                                 payload_mutations: int = 0,
-                                setup_mask: int = 0xF,
+                                setup_mask: int = 0x7,
                                 source_addr: int = 0x08811000,
                                 destination_addr: int = 0x08822000) -> str:
         rc = 0
@@ -518,7 +518,8 @@ class NewProbeResultParserTests(unittest.TestCase):
             probe,
             r"\*block_uid\s*=\s*sceKernelAllocPartitionMemory\(\s*"
             r"DMAC_INVALID_PARTITION,\s*\"oracle-dmac-scratch\",\s*"
-            r"PSP_SMEM_High,\s*DMAC_INVALID_SCRATCH_BYTES,\s*NULL\);",
+            r"DMAC_INVALID_SMEM_HIGH_ALIGNED,\s*DMAC_INVALID_SCRATCH_BYTES,\s*"
+            r"\(void \*\)\(uintptr_t\)DMAC_INVALID_NEIGHBOR_BYTES\);",
         )
         self.assertIn(
             "*block_head = (uint8_t *)sceKernelGetBlockHeadAddr(*block_uid);",
@@ -707,7 +708,7 @@ class NewProbeResultParserTests(unittest.TestCase):
         rows = [
             self._invalid_tail_named_row(
                 f"invalid-tail-s0-{cell}-{api}", api=api, endpoint=endpoint,
-                tier="S", status="SKIP", executed=0, setup_mask=0x7,
+                tier="S", status="SKIP", executed=0, setup_mask=0x3,
                 source_intact=0,
                 source_addr=0, destination_addr=0,
             )
@@ -727,6 +728,36 @@ class NewProbeResultParserTests(unittest.TestCase):
         )
         with self.assertRaises(ProtocolError):
             parse_dmac_invalid_tail_output(claimed_intact, campaign_case)
+
+    def test_invalid_tail_ownership_proof_is_the_end_boundary_only(self) -> None:
+        """setup_mask 0x7 (block, geometry, refused end page) is the whole proof."""
+        campaign_case = "dma-invalid-tail-s0"
+        cells = [(api, cell, endpoint) for api in ("memcpy", "try")
+                 for cell, endpoint in (("a", "dst"), ("b", "src"),
+                                        ("c", "both"), ("d", "dst"))]
+        pointers = {"a": (0x08811000, 0), "b": (0, 0x08822000),
+                    "c": (0x08811000, 0x08822000), "d": (0x08811000, 0xFFFFFFFF)}
+
+        def stream(mask: int, status: str = "PASS") -> str:
+            return self._stream([
+                self._invalid_tail_named_row(
+                    f"invalid-tail-s0-{cell}-{api}", api=api, endpoint=endpoint,
+                    tier="S", status=status, setup_mask=mask,
+                    executed=1 if status == "PASS" else 0,
+                    source_intact=1 if status == "PASS" else 0,
+                    source_addr=pointers[cell][0] if status == "PASS" else 0,
+                    destination_addr=pointers[cell][1] if status == "PASS" else 0,
+                )
+                for api, cell, endpoint in cells
+            ])
+
+        self.assertEqual(
+            len(parse_dmac_invalid_tail_output(stream(0x7), campaign_case).results), 8
+        )
+        with self.assertRaises(ProtocolError):
+            parse_dmac_invalid_tail_output(stream(0xF), campaign_case)
+        with self.assertRaises(ProtocolError):
+            parse_dmac_invalid_tail_output(stream(0x7, "SKIP"), campaign_case)
 
 
     def test_campaign_probe_parsers_accept_complete_synthetic_records(self) -> None:
@@ -2457,7 +2488,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 126)
+        self.assertEqual(len(routes), 127)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
@@ -2465,7 +2496,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(set(range(1, 79)) | set(range(90, 105)) | {106, 107, 108, 109}
                          | {110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126,
                             127}
-                         | {128, 129, 130, 132, 133, 134, 135, 136, 138}
+                         | {128, 129, 130, 132, 133, 134, 135, 136, 138, 139}
                          | {150, 151},
                          set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
@@ -2830,7 +2861,8 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn("PSP_SMEM_Addr", self.probe)
         self.assertIn('"oracle-dmac-scratch"', self.probe)
         self.assertIn("DMAC_INVALID_SETUP_END_NEIGHBOR", self.probe)
-        self.assertIn("DMAC_INVALID_SETUP_BEGIN_NEIGHBOR", self.probe)
+        self.assertNotIn("DMAC_INVALID_SETUP_BEGIN_NEIGHBOR", self.probe)
+        self.assertIn("#define DMAC_INVALID_SETUP_MASK 0x07u", self.probe)
         self.assertIn("0xffffffff", self.probe.lower())
         self.assertIn("dst = (void *)(uintptr_t)UINT32_MAX", self.probe)
         self.assertIn("DMAC_INVALID_PAYLOAD_BYTES + DMAC_INVALID_MAX_DELTA <=", self.probe)
@@ -9279,6 +9311,90 @@ class GeMipProbeTests(unittest.TestCase):
         self.assertEqual(len(parse_golden.GE_MIP_CASES), len(cells) * 5)
         self.assertEqual(counts[f"{cells[0]}-draw"], 9)
         self.assertEqual(counts[f"{cells[-1]}-r3"], 16)
+
+
+class GeLightProbeTests(unittest.TestCase):
+    """CASE=ge-light (139, PSP-GE-LIGHT-001) in probe_ge_sample.c: the #1732 GE lighting cells.
+    Per specular coefficient, the normals' float bits and one specular and one powered-diffuse
+    draw read back raw; the stream matches the registry, and the list sets the lighting state
+    the cells claim."""
+
+    probe: ClassVar[str]
+    makefile: ClassVar[str]
+    section: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        cls.probe = (fixture / "probe_ge_sample.c").read_text(encoding="utf-8")
+        cls.makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        start = cls.probe.index("#if PSP_ORACLE_CASE == GE_CASE_LIGHT\n\n")
+        end = cls.probe.index("#endif /* GE_CASE_LIGHT */", start)
+        cls.section = _c_code(cls.probe[start:end])
+
+    def test_route_registration_and_log(self) -> None:
+        self.assertIn("else ifeq ($(CASE),ge-light)\nCASE_ID = 139\n", self.makefile)
+        self.assertIn("else ifeq ($(CASE),ge-light)\nTARGET = $(BUILD_DIR)/ge_light\n"
+                      "OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o\n",
+                      self.makefile)
+        self.assertIn("#define GE_CASE_LIGHT 139\n", self.probe)
+        self.assertIn('#define HLE_CAMPAIGN_ID "ge-light"\n#define HLE_TEST_ID "PSP-GE-LIGHT-001"\n'
+                      '#define HLE_LOG "host0:/ge_light_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("/scratch"), "ge-light").name,
+                         "ge_light_log.txt")
+        self.assertEqual(_campaign_completeness_contract("ge-light"), "strict-golden-sequence")
+        self.assertNotIn("ge-light", CAMPAIGN_QUEUE_CASES)
+
+    def test_section_calls_only_the_ge_and_cache_imports_and_is_bounded(self) -> None:
+        self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", self.section)), {
+            "sceGeEdramGetAddr", "sceGeListEnQueue", "sceGeListSync", "sceGeDrawSync",
+            "sceGeBreak", "sceKernelDcacheWritebackAll", "sceKernelDelayThread",
+            "sceKernelGetSystemTimeLow"})
+        self.assertNotIn("while (", self.section)
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceGu", "sceDisplay", "sceIo"):
+            self.assertNotIn(banned, self.section)
+        self.assertEqual(self.section.count("i < GL_WAIT_POLLS; i++"), 2)
+        self.assertIn("#define GL_WAIT_POLLS 5000u", self.probe)
+        # The 8 KiB colour block at VRAM 0x100000 holds the 16x17 window.
+        self.assertIn("#define GL_FB_OFFSET 0x00100000u", self.probe)
+        self.assertIn("for (unsigned i = 0; i < GL_STRIDE * GL_ROWS; i++) {", self.section)
+        self.assertIn("#define GL_STRIDE 64u", self.probe)
+        self.assertIn("#define GL_ROWS 32u", self.probe)
+        body = _c_function_bodies(self.section)["gl_draw"]
+        self.assertLess(body.index("hle_step(name);"), body.index("sceGeListEnQueue("))
+        self.assertLess(body.index("sceGeListEnQueue("), body.index("hle_record("))
+
+    def test_list_sets_one_directional_light_and_no_other_colour_source(self) -> None:
+        body = _c_function_bodies(self.section)["gl_list"]
+        for word in ("GL_W(0x17, 1);", "GL_W(0x18, 1);", "GL_W(0x19, 0);", "GL_W(0x1a, 0);",
+                     "GL_W(0x1b, 0);", "GL_W(0x5f, f->comp);", "GL_W(0x65, one);",
+                     "GL_W(0x53, 0);", "GL_W(0x54, 0);", "GL_W(0x55, 0);", "GL_W(0x5c, 0);",
+                     "GL_W(0x8f, 0);", "GL_W(0x5e, 0);", "GL_W(0x1e, 0);", "GL_W(0x50, 0);",
+                     "GL_W(0x5b, gl_fbits(k) >> 8);", "GL_W(0x12, 0x000001e0u);"):
+            self.assertIn(word, body)
+        # The light type word's bits 8-9 (directional) are 0 and the components are 1 and 2.
+        self.assertIn('{"s", 1u, 0x000000u, 0xffffffu, 0x000000u, 0xffffffu},', self.section)
+        self.assertIn('{"d", 2u, 0xffffffu, 0x000000u, 0xffffffu, 0x000000u},', self.section)
+        # Lighting is turned on only after the shared off list clears it.
+        self.assertLess(body.index("off_units[i]"), body.index("GL_W(0x17, 1);"))
+
+    def test_stream_shape_matches_the_registry(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES["ge-light"]
+        self.assertEqual(spec.test_id, "PSP-GE-LIGHT-001")
+        self.assertEqual(spec.terminal_case, "ge-light-done")
+        coefs = tuple(re.findall(r'\{"(k[0-9p]+)", [0-9.]+f\}', self.probe))
+        self.assertEqual(coefs, parse_golden.GE_LIGHT_COEFS)
+        self.assertIn(f"#define GL_COEF_COUNT {len(coefs)}u", self.probe)
+        self.assertIn("#define GL_WH 17u", self.probe)
+        self.assertEqual(len(parse_golden.GE_LIGHT_ROWS), 17)
+        self.assertEqual(len(parse_golden.GE_LIGHT_CASES), len(coefs) * (17 * 2 + 2 * 18))
+        self.assertEqual(spec.ordered_cases[:2], ("k1-z0", "k1-z1"))
+        self.assertEqual(spec.ordered_cases[34], "s-k1-draw")
+        self.assertEqual(spec.ordered_cases[52], "d-k1-draw")
+        self.assertEqual(counts["s-k1-draw"], 10)
+        self.assertEqual(counts["k128-y16"], 16)
+        self.assertEqual(counts["d-k128-r16"], 16)
 
 
 class ModuleStartProbeTests(unittest.TestCase):

@@ -1226,7 +1226,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
             [
                 CC, "-std=c11", "-O0", "-fno-strict-aliasing", "-Wall", "-Wextra",
                 "-DSR_SDL3VK", "-D_CRT_SECURE_NO_WARNINGS",
-                "-I", str(self.root), "-I", str(ROOT / "src" / "rt"),
+                "-I", str(self.root), "-I", str(ROOT / "src" / "rt"), "-I", str(ROOT / "tests" / "native"),
                 str(harness), str(out_c), str(out_dir / "mutant_0.c"),
                 str(ROOT / "src" / "rt" / "guest_interp.c"),
                 str(ROOT / "src" / "rt" / "perf.c"),

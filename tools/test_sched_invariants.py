@@ -656,7 +656,6 @@ class HostCallbackEntryAuditTests(unittest.TestCase):
         # The SR_AUDIODUMP postmix writer copies the device's mixed output into a host WAV
         # file; it reads no guest memory and writes no state the guest reads.
         ("src/rt/audio_sdl3.c", "SDL_SetAudioPostmixCallback"),
-        ("src/rt/audio_unavailable.c", "SDL_SetAudioPostmixCallback"),
     }
 
     def _registrations(self):

@@ -154,6 +154,5 @@ shader-repro-verify:
 NC_CFLAGS_CORE   := -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt
 NC_CFLAGS_PLAYER := $(NC_CFLAGS_CORE) -Isrc/player
 NC_SOURCES       := $(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES)
-NC_OBJ_DIR       := $(BUILD_ROOT)/native-core
 NC_OBJS_CORE     := $(addprefix $(NC_OBJ_DIR)/core/,$(notdir $(NC_SOURCES:.c=.o)))
 NC_OBJS_PLAYER   := $(addprefix $(NC_OBJ_DIR)/player/,$(notdir $(NC_SOURCES:.c=.o)))

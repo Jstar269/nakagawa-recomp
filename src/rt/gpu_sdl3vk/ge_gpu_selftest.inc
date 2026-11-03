@@ -628,6 +628,73 @@ static int coherence_run_undrawn_rows(void) {
     return 1;
 }
 
+/* A title that never writes depth may leave zbp on its own colour buffer: a 16-bit depth surface
+ * at stride 512 covers the first 136 rows of a 32-bit one. Draws that do not write depth leave the
+ * depth surface as it was loaded, so it is not newer than guest VRAM, and a CPU access to those
+ * rows must not write it back over the colour pixels the GPU drew there. */
+static int coherence_run_depth_alias_no_zwrite(void) {
+    const char *name = "depth-alias-no-zwrite";
+    const uint32_t fba = 0x00100000u, base = 0x04000000u | fba, stride = 512u;
+    const uint32_t bytes = stride * FB_H * 4u, probe = (5u * stride + 20u) * 4u;
+    coherence_reset_targets();
+    g_sr_vram_read_pending = 0;
+    for (int i = 0; i < MAX_DEP; i++) {
+        if (s_deps[i].used) {
+            s_deps[i].guest_dirty = 0;
+            s_deps[i].cpu_dirty = 1;
+        }
+    }
+    coherence_fill_raw(SR_HOST(base), stride * FB_H, 4u, coherence_g0(3u));
+    uint8_t *expected = malloc(bytes);
+    if (!expected) return 0;
+
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = stride;
+    s_ge->fbfmt = 3u;
+    s_ge->zbp = base;                      /* depth aliases rows 0..135 of the colour buffer */
+    s_ge->zbw = stride;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535u;
+    GeVtx p0 = { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0x40, 0x50, 0x60, 0xff };
+    GeVtx p1 = p0;
+    p1.x = 480.0f;
+    p1.y = (float)FB_H;
+    int ok = hook_sprite(&p0, &p1, 0) && s_nbatch && submit_pending();
+    Target *t = target_find_by_fba(fba);
+    DepthEnt *d = t ? t->dep : NULL;
+    ok = ok && t && d && target_readback(t) && t->clean_gen == t->render_gen;
+    if (ok) memcpy(expected, SR_HOST(base), bytes);
+    uint32_t drawn = 0u;
+    if (ok) memcpy(&drawn, expected + probe, sizeof drawn);
+    if (!ok || drawn == coherence_g0(3u)) {
+        fprintf(stderr, "gpu coherence selftest [%s]: setup failed (target=%p depth=%p drawn=0x%08x)\n",
+                name, (void *)t, (void *)d, drawn);
+        free(expected);
+        coherence_reset_targets();
+        return 0;
+    }
+    const int depth_newer = d->guest_dirty;
+    const uint32_t loaded = MEM_R32(base + probe);
+    const int kept = memcmp(SR_HOST(base), expected, bytes) == 0;
+    uint32_t first_bad = UINT32_MAX;
+    for (uint32_t off = 0; !kept && off < bytes; off += 4u)
+        if (memcmp(SR_HOST(base + off), expected + off, 4u) != 0) { first_bad = off; break; }
+    free(expected);
+    if (depth_newer || loaded != drawn || !kept) {
+        fprintf(stderr, "gpu coherence selftest [%s]: a draw without depth writes marked depth newer "
+                        "(%d) and a CPU load returned 0x%08x, expected 0x%08x; first changed colour row %d\n",
+                name, depth_newer, loaded, drawn,
+                first_bad == UINT32_MAX ? -1 : (int)(first_bad / (stride * 4u)));
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n", name, stride, s_scale);
+    coherence_reset_targets();
+    return 1;
+}
+
 static int coherence_run_tflt_descriptor_capacity(void) {
     const uint32_t stride = FB_W;
     coherence_reset_targets();
@@ -3501,17 +3568,19 @@ static int coherence_run_fallback_reasons(void) {
     s_ge->stencil_enable = 1; s_ge->color_test_enable = 1;   /* stencil is tested first */
     if (gpu_state_unsupported_reason() != GEGPU_FALLBACK_STENCIL) ok = 0;
     /* The stencil states the GPU path takes: clear mode (ge.c ignores the test there), no
-     * depth test, or KEEP for the ops the depth test can leave to run. */
-    struct { const char *what; int clear, ztest; uint32_t test, op; int want; } st[] = {
-        {"stencil clear", 1, 1, 2u, 0x000004u, -1},
-        {"stencil no depth", 0, 0, 2u, 0x040404u, -1},
-        {"stencil always", 0, 1, 1u, 0x020004u, -1},
-        {"stencil keep", 0, 1, 2u, 0x050000u, -1},
-        {"stencil zfail op", 0, 1, 1u, 0x000100u, GEGPU_FALLBACK_STENCIL},
+     * depth test, or KEEP for the ops the depth test can leave to run. A depth test that
+     * always passes (func 1) never runs its fail op. */
+    struct { const char *what; int clear, ztest; uint32_t zfunc, test, op; int want; } st[] = {
+        {"stencil clear", 1, 1, 4u, 2u, 0x000004u, -1},
+        {"stencil no depth", 0, 0, 4u, 2u, 0x040404u, -1},
+        {"stencil always", 0, 1, 4u, 1u, 0x020004u, -1},
+        {"stencil keep", 0, 1, 4u, 2u, 0x050000u, -1},
+        {"stencil zfail op", 0, 1, 4u, 1u, 0x000100u, GEGPU_FALLBACK_STENCIL},
+        {"stencil zfail op, depth always", 0, 1, 1u, 1u, 0x010101u, -1},
     };
     s_ge->color_test_enable = 0;
     for (unsigned i = 0; i < sizeof(st) / sizeof(st[0]); i++) {
-        s_ge->clear = st[i].clear; s_ge->ztest_enable = st[i].ztest;
+        s_ge->clear = st[i].clear; s_ge->ztest_enable = st[i].ztest; s_ge->ztest = st[i].zfunc;
         s_ge->stencil_test = st[i].test; s_ge->stencil_op = st[i].op;
         const int got = gpu_state_unsupported_reason();
         if (got != st[i].want) {
@@ -3521,7 +3590,7 @@ static int coherence_run_fallback_reasons(void) {
         }
     }
     *s_ge = saved;
-    if (ok) printf("gpu coherence selftest: PASS %-22s 11 cells\n", "fallback-reasons");
+    if (ok) printf("gpu coherence selftest: PASS %-22s 12 cells\n", "fallback-reasons");
     return ok;
 }
 
@@ -3542,7 +3611,11 @@ enum {
     TNLC_MORPH2, TNLC_SKIN1, TNLC_SKIN2_U8, TNLC_SKIN4_U16, TNLC_SKIN8_F, TNLC_LIGHT_DIR,
     TNLC_LIGHT_POINT, TNLC_LIGHT4_MATUPD, TNLC_LIGHT_SKIN, TNLC_OFFSET_VIEWPORT,
     TNLC_NEAR_CROSS, TNLC_SPECULAR, TNLC_FLAT, TNLC_TEXGEN, TNLC_LIGHT_SUBNORMAL,
+    TNLC_SPECULAR_EXACT, TNLC_LIGHT4_POW,
 };
+
+/* The cells whose specular and powered-diffuse power is ge_powf on both routes. */
+static int tnlc_pow_exact(int kind) { return kind == TNLC_SPECULAR_EXACT || kind == TNLC_LIGHT4_POW; }
 
 typedef struct TnlCell {
     const char *name;
@@ -3812,24 +3885,31 @@ static uint32_t tnlp_build(const TnlCell *c) {
     /* Lighting. */
     int lit = c->kind == TNLC_LIGHT_DIR || c->kind == TNLC_LIGHT_POINT ||
               c->kind == TNLC_LIGHT4_MATUPD || c->kind == TNLC_LIGHT_SKIN || c->kind == TNLC_SPECULAR ||
-              c->kind == TNLC_LIGHT_SUBNORMAL;
+              c->kind == TNLC_LIGHT_SUBNORMAL || tnlc_pow_exact(c->kind);
     if (lit) {
         TNLP_W(&L, 0x17, 1);
-        TNLP_W(&L, 0x53, c->kind == TNLC_LIGHT4_MATUPD ? 3u : 0u);
+        TNLP_W(&L, 0x53, c->kind == TNLC_LIGHT4_MATUPD ? 3u : c->kind == TNLC_LIGHT4_POW ? 7u : 0u);
         TNLP_W(&L, 0x54, 0x00080402u);
         TNLP_W(&L, 0x55, 0x00405060u);
         TNLP_W(&L, 0x56, 0x00c0a0e0u);
         TNLP_W(&L, 0x57, 0x00ffffffu);
         TNLP_W(&L, 0x58, 0xb0);
-        /* A positive power only where the cell means to decline (powf); the powered-diffuse
-           light of the four-light cell then lights as plain diffuse. */
-        TNLP_W(&L, 0x5B, tnlp_f24(c->kind == TNLC_SPECULAR ? 8.0f : 0.0f));
+        /* A positive power where the cell means to decline (the C library's powf) or to run
+           ge_powf on both routes; the powered-diffuse light of the matupdate cell then lights
+           as plain diffuse. A fractional power exercises the whole of ge_powf. */
+        TNLP_W(&L, 0x5B, tnlp_f24(c->kind == TNLC_SPECULAR ? 8.0f : c->kind == TNLC_SPECULAR_EXACT ? 10.5f :
+                                  c->kind == TNLC_LIGHT4_POW ? 3.25f : 0.0f));
         TNLP_W(&L, 0x5C, 0x00303030u);
         TNLP_W(&L, 0x5D, 0xc0);
-        int nl = c->kind == TNLC_LIGHT4_MATUPD ? 4 : 1;
+        int four = c->kind == TNLC_LIGHT4_MATUPD || c->kind == TNLC_LIGHT4_POW;
+        int nl = four ? 4 : 1;
         for (int i = 0; i < nl; i++) {
-            int point = c->kind == TNLC_LIGHT_POINT || (c->kind == TNLC_LIGHT4_MATUPD && (i & 1));
-            uint32_t comp = c->kind == TNLC_SPECULAR ? 1u : (c->kind == TNLC_LIGHT4_MATUPD && i == 2 ? 2u : 0u);
+            int point = c->kind == TNLC_LIGHT_POINT || (four && (i & 1));
+            /* The ge_powf four-light cell: specular, powered diffuse, specular, diffuse. */
+            static const uint32_t pow_comps[4] = { 1u, 2u, 3u, 0u };
+            uint32_t comp = c->kind == TNLC_SPECULAR || c->kind == TNLC_SPECULAR_EXACT ? 1u :
+                            c->kind == TNLC_LIGHT4_POW ? pow_comps[i] :
+                            (c->kind == TNLC_LIGHT4_MATUPD && i == 2 ? 2u : 0u);
             TNLP_W(&L, 0x18 + (uint32_t)i, 1);
             TNLP_W(&L, 0x5F + (uint32_t)i, comp | ((uint32_t)(point ? 1 : 0) << 8));
             float pos[3] = { tnlp_rand(-3, 3), tnlp_rand(-3, 3), tnlp_rand(1, 4) };
@@ -3969,6 +4049,7 @@ static int tnlp_run(const TnlCell *c, int mode, TnlpOut *out, unsigned long long
     sr_gpu_vram_dirty(fb, TNLP_STRIDE * FB_H * 4u);
     sr_gpu_vram_dirty(zb, TNLP_STRIDE * FB_H * 2u);
     uint32_t list = tnlp_build(c);
+    ge_pow_set_exact(tnlc_pow_exact(c->kind));
     ge_tnl_set_enabled(mode == 2);
     ge_tnl_counts(NULL, NULL, 1);
     ge_set_gpu_hooks(mode ? &k_hooks : NULL);
@@ -3976,6 +4057,7 @@ static int tnlp_run(const TnlCell *c, int mode, TnlpOut *out, unsigned long long
     ge_set_gpu_hooks(&k_hooks);
     ge_tnl_counts(taken, NULL, 0);
     ge_tnl_set_enabled(-1);
+    ge_pow_set_exact(0);
     if (mode) {
         GeGpuFbDescriptor desc = { .addr = fb, .format = 3, .stride = TNLP_STRIDE, .width = 480, .height = FB_H };
         if (gegpu_sync_guest_fb(&desc) != GEGPU_SYNC_OK) return 0;
@@ -4021,6 +4103,8 @@ static int coherence_run_tnl_parity(void) {
         { "flat", TNLC_FLAT, 0 },
         { "texgen", TNLC_TEXGEN, 0 },
         { "light-subnormal-length", TNLC_LIGHT_SUBNORMAL, 1 },
+        { "specular-ge-powf", TNLC_SPECULAR_EXACT, 1 },
+        { "light-4-ge-powf", TNLC_LIGHT4_POW, 1 },
     };
     const size_t px = (size_t)TNLP_STRIDE * FB_H;
     TnlpOut sw = { (uint32_t *)malloc(px * 4u), (uint16_t *)malloc(px * 2u) };
@@ -4394,6 +4478,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
+        if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -4435,6 +4520,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_clut_format_list()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
     if (!coherence_run_undrawn_rows()) ok = 0;
+    if (!coherence_run_depth_alias_no_zwrite()) ok = 0;
     if (!coherence_run_scalar_vram_read(0x04080000u)) ok = 0;
     /* zbp 0x0a2000: bit 13 set, so the absolute XOR differs from the within-buffer form (0x0a6854 vs
      * 0x0a2854 for pixel 10,10). The 0x0ce000 placement used by the software selftest would overlap the

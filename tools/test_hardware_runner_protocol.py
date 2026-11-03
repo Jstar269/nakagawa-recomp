@@ -1643,7 +1643,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 "result": 0, "rc": 0, "P": prefix, "matches": matches,
                 "guards_outside": 0, "post_guard": post,
                 "overflow_band": band, "source_intact": 1,
-                "setup_mask": 0xF, "K": 0xC000, "delta": delta,
+                "setup_mask": 0x7, "K": 0xC000, "delta": delta,
                 "api": api, "endpoint": endpoint,
                 "cache_discipline": 1, "tier": tier, "executed": 1,
                 "payload_mutations": 0, "source_addr": source_addr,
