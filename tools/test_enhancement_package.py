@@ -20,8 +20,10 @@ import copy
 import hashlib
 from io import StringIO
 import json
+import math
 import os
 from pathlib import Path
+import random
 import shutil
 import struct
 import subprocess
@@ -1243,7 +1245,8 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         lwc1 = 0xC4430010  # lwc1 $f3, 0x10($v0)
         saved = codegen.ENHANCEMENT_SITES
         try:
-            for kind, expr in (("decay", "1.0f - sqrtf(1.0f - s->f[3])"), ("retention", "sqrtf(s->f[3])")):
+            for kind, expr in (("decay", "(float)(1.0 - sqrt(1.0 - (double)s->f[3]))"),
+                               ("retention", "sqrtf(s->f[3])")):
                 with self.subTest(map=kind):
                     codegen.ENHANCEMENT_SITES = {
                         0x1300: {"rewrite": {"kind": "map_f_reg", "reg": 3, "map": kind}}
@@ -1255,6 +1258,60 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                     self.assertIn(f"if (s->f[3] > 0.0f && s->f[3] < 1.0f) {{ s->f[3] = {expr}; }}", enhanced)
                     self.assertLess(enhanced.index("s->fi[3]"), enhanced.index(expr))
                     self.assertNotIn("sqrtf", stock)
+        finally:
+            codegen.ENHANCEMENT_SITES = saved
+            codegen.ENHANCEMENT_APPLIED.clear()
+
+    @unittest.skipUnless(GCC, "needs a host C compiler")
+    def test_mapped_factor_values_match_the_lui_path(self) -> None:
+        """Compile the emitted map and run it: each result is the f32 that the lui path's double
+        formula rounds to, including factors so small that a float evaluation loses them."""
+        lwc1 = 0xC4430010  # lwc1 $f3, 0x10($v0)
+        rng = random.Random(1932)
+        ks = [2.0 ** -25, 1e-7, 1e-4, 0.2, 0.5, 0.75, 0.999, struct.unpack("<f", bytes.fromhex("ffff7f3f"))[0]]
+        ks += [rng.random() for _ in range(2000)]
+        ks = [struct.unpack("<f", struct.pack("<f", k))[0] for k in ks]
+        saved = codegen.ENHANCEMENT_SITES
+        try:
+            for kind in ("decay", "retention"):
+                with self.subTest(map=kind):
+                    codegen.ENHANCEMENT_SITES = {
+                        0x1300: {"rewrite": {"kind": "map_f_reg", "reg": 3, "map": kind}}
+                    }
+                    codegen.ENHANCEMENT_APPLIED.clear()
+                    enhanced = codegen.normal_line(0x1300, lwc1, lle_cpu=False).split("else", 1)[0]
+                    mapped = enhanced[enhanced.index("if (s->f[3] >"):].rsplit("}", 1)[0]
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        tmp = Path(tmp_dir)
+                        (tmp / "k.txt").write_text("\n".join(struct.pack("<f", k).hex() for k in ks),
+                                                   encoding="utf-8")
+                        harness = tmp / "map.c"
+                        harness.write_text(
+                            "#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n"
+                            "typedef struct { float f[32]; } S;\n"
+                            "int main(int argc, char **argv) {\n"
+                            "    FILE *in = fopen(argv[1], \"r\"); char hex[16]; S st, *s = &st;\n"
+                            "    if (!in) return 1;\n"
+                            "    while (fscanf(in, \"%15s\", hex) == 1) {\n"
+                            "        uint8_t b[4]; uint32_t bits;\n"
+                            "        for (int i = 0; i < 4; i++) sscanf(hex + 2 * i, \"%2hhx\", &b[i]);\n"
+                            "        memcpy(&s->f[3], b, 4);\n"
+                            f"        {mapped}\n"
+                            "        memcpy(&bits, &s->f[3], 4); printf(\"%08x\\n\", (unsigned)bits);\n"
+                            "    }\n"
+                            "    fclose(in); return 0;\n"
+                            "}\n",
+                            encoding="utf-8",
+                        )
+                        exe = tmp / "map.exe"
+                        subprocess.run([GCC, "-std=c11", "-O2", "-Wall", "-Werror", "-o", str(exe), str(harness),
+                                        "-lm"], check=True, capture_output=True)
+                        out = subprocess.run([str(exe), str(tmp / "k.txt")], check=True, capture_output=True,
+                                             text=True).stdout.split()
+                    for k, got in zip(ks, out, strict=True):
+                        exact = 1.0 - math.sqrt(1.0 - k) if kind == "decay" else math.sqrt(k)
+                        want = struct.unpack("<I", struct.pack("<f", exact))[0]
+                        self.assertEqual(int(got, 16), want, f"k={k!r}")
         finally:
             codegen.ENHANCEMENT_SITES = saved
             codegen.ENHANCEMENT_APPLIED.clear()

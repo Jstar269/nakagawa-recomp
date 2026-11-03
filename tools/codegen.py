@@ -216,7 +216,9 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
     elif kind == "map_f_reg":
         r = rw["reg"]
         # A factor read from memory is only known at run time: outside (0, 1) it keeps the stock value.
-        expr = {"decay": f"1.0f - sqrtf(1.0f - s->f[{r}])", "retention": f"sqrtf(s->f[{r}])"}[rw["map"]]
+        # Decay is evaluated in double and rounded once, as the lui path does; sqrtf is already exact.
+        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->f[{r}]))",
+                "retention": f"sqrtf(s->f[{r}])"}[rw["map"]]
         enh = (f"{stock_line.strip()} if (s->f[{r}] > 0.0f && s->f[{r}] < 1.0f) "
                f"{{ s->f[{r}] = {expr}; }}")
     elif kind == "scale_f_store":
