@@ -38,7 +38,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 ### What else starts on a pull request push
 
-The table above is the `CI` workflow. Four other workflows start on the same push, and
+The table above is the `CI` workflow. Other workflows start on the same push, and
 two of them are now path-gated too (measured on the repository's Actions usage export
 of 2026-11-02, whole history, hosted runners):
 
@@ -185,8 +185,9 @@ the page's status text in step with `README.md`, `docs/COMPATIBILITY.md` and the
 
 ### Hygiene beside the substantive gates
 
-The Python, native and Windows jobs wait only for `classify` and the
-public-export audit (`needs: [classify, public_export]`). They do not wait for
+The native job waits only for `classify` and the public-export audit
+(`needs: [classify, public_export]`); the Python and Windows jobs also wait for the
+profile-zero fixture build (`profile_zero_fixture`). None of them waits for
 `hygiene`, which runs beside them. Before this change they waited for hygiene too,
 so its all-files pre-commit run, Betterleaks history scan and canaries (98 s median
 across 40 recent pull requests, as measured from their job timings) sat in front of
@@ -782,8 +783,8 @@ belongs to a new subsystem.
 ## Cost and caching rules
 
 GitHub-hosted Windows time is billed at a higher multiplier than Linux time. The
-workflow therefore gates the Windows runner behind the cheaper Linux hygiene and
-native gates, cancels superseded PR runs, and avoids repeating the full matrix on
+workflow therefore starts the Windows runner only after the cheaper Linux classify,
+public-export and fixture jobs, cancels superseded PR runs, and avoids repeating the full matrix on
 ordinary main pushes. Besides dependency and tool caches (pip, the SDL3 installs),
 the only cache is the Windows compiler cache below. Build trees and generated
 shader/code output are not cached across jobs or runs, so the repository's

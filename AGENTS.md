@@ -269,8 +269,8 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   they are never committed, packaged, shipped or uploaded. Nakagawa never decrypts firmware, even
   privately: updater PSAR archives, the IPL, the Media Engine image, system-menu files and
   encrypted `flash0` modules are refused by name before any decryption step runs.
-- Presentation screenshots and short clips are the exception (established recomp practice in Zelda64Recomp,
-  Unleashed Recompiled and Ship of Harkinian): curated PNGs, and H.264 MP4 clips of about 60 seconds at most with the game's own sound, of a title
+- Presentation screenshots and short clips are the exception (established practice in other recompilation
+  projects): curated PNGs, and H.264 MP4 clips of about 60 seconds at most with the game's own sound, of a title
   running in Nakagawa, including the launcher or library with it loaded, may be published when each is checked for
   personal data (no profile names, user paths or private menus) and carries a notice that the game belongs to its
   publisher, that no game data is in the repository, and that users need their own copy. Raw evidence captures,
@@ -286,8 +286,8 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   connection unless the user enables a documented, opt-in feature; today there are two: the
   consented prerequisite download, and Check for updates:
   GitHub's Releases API for this repository when the user asks, or once at start if they turned
-  that on (off by default), then that release's Windows ZIP on a separate click, kept only if it
-  matches the release's published SHA-256. A new egress needs a maintainer decision, a "Network use"
+  that on (off by default), then that release's Windows ZIP on a separate click, kept only if its published SHA-256
+  checksum file carries a valid signature from the project's update-signing key and the ZIP matches it. A new egress needs a maintainer decision, a "Network use"
   entry in `docs/SETUP.md`, and an update to the egress allowlist test in
   `tools/test_prereq_fetcher.py`. The reserved `network_mode` setting accepts only `"offline"`,
   and a value a build does not know reads back as offline, never as something more permissive.

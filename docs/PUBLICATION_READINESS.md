@@ -292,7 +292,9 @@ python tools/contrib_refresh.py
 
 This verifies that no new or removed public paths are introduced, keeps every changed path's claim,
 and writes both controls in their committed form from the public controls alone; for an ordinary
-change neither file changes. Note that `contrib_refresh.py` is a contributor
+change neither file changes. Stage your own changes first: it refuses unstaged edits
+(`CANDIDATE_INDEX_STALE`), and it stages the controls it writes, so commit what it stages.
+`make contrib-refresh` (`mingw32-make contrib-refresh` on Windows) runs it. Note that `contrib_refresh.py` is a contributor
 convenience, not provenance authorization; external trusted attestation still decides acceptance.
 
 The lower-level exact-path API remains available for narrowly scoped refresh
@@ -641,7 +643,9 @@ gates.
 ## Step by step: a pull request that adds a public path
 
 The sections above define each command. This is the order that works for an ordinary pull request that adds or
-removes a public file, with the failure each skipped step produces.
+removes a public file, with the failure each skipped step produces. The maintainer runs these steps. A
+contributor's pull request only says where each new file came from
+([`AGENTS.md`](../AGENTS.md#new-files-what-to-put-in-the-pull-request)) and leaves the rest to the maintainer.
 
 1. **Commit the files with their publication entries.** `python tools/policy_sync.py --apply --regen-export` adds the
    paths to `assets/public_source_profile.json` and regenerates `PUBLIC_EXPORT.json`; commit both with the files. The
