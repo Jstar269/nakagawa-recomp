@@ -13158,6 +13158,17 @@
       }
     },
     {
+      "path": "tools/binding_carry.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "binding-carry-1847",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/boot_gate.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -15022,6 +15033,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "c-gap-publication-provenance",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_binding_carry.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "binding-carry-1847",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
