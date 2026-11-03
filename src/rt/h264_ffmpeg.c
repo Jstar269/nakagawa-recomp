@@ -397,7 +397,10 @@ static int ff_submit_au(int id, const SrH264AccessUnit *au) {
     int start_code = (au->size >= 3 && au->data[0] == 0 && au->data[1] == 0 && au->data[2] == 1) ||
                      (au->size >= 4 && au->data[0] == 0 && au->data[1] == 0 &&
                       au->data[2] == 0 && au->data[3] == 1);
-    if (!start_code) { d->failed = 1; return -1; }
+    if (!start_code || (au->has_pts && !sr_h264_pts_in_range(au->pts))) {
+        d->failed = 1;
+        return -1;
+    }
     if (!ff_append_au(d, au)) { d->failed = 1; return -1; }
     return 0;
 }

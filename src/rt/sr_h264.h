@@ -72,6 +72,15 @@ typedef struct {
     int has_pts;
 } SrH264FrameInfo;
 
+/* Largest magnitude of a normalized 90 kHz PTS a backend accepts.  A 33-bit PSMF timestamp minus
+ * any presentation base the producer opens with stays far inside it, and it keeps the Media
+ * Foundation conversion to 100 ns units (x1000 / 9) from overflowing int64.  A unit whose PTS is
+ * outside the range is refused like any other malformed unit. */
+#define SR_H264_PTS_ABS_MAX (INT64_C(1) << 53)
+static inline int sr_h264_pts_in_range(int64_t pts) {
+    return pts >= -SR_H264_PTS_ABS_MAX && pts <= SR_H264_PTS_ABS_MAX;
+}
+
 typedef struct {
     /* One complete H.264 access unit in Annex-B form, beginning with a 3- or 4-byte start code. */
     const uint8_t *data;

@@ -84,6 +84,7 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
 };
 
 struct PlayerUiNk {
+    SDL_Window *window;     /* the launcher window: Settings reads its display's refresh rate */
     NkUi *ui;
     NkUiSdlr *backend;
     NkUiTtf *ttf;
@@ -329,7 +330,6 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window, Play
     PlayerUiNk *player;
     const char *base_path;
     NkUiConfig config;
-    (void)window;
     if (renderer == NULL) {
         player_ui_set_error(error, error_size,
                             "The next UI could not access the player renderer.");
@@ -346,9 +346,10 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window, Play
                             "The next UI could not allocate its renderer state.");
         return NULL;
     }
+    player->window = window;
     player->rest_index = SIZE_MAX;
     player->backdrop_index = SIZE_MAX;
-    player->router = nk_ui_router_create();
+    player->router =nk_ui_router_create();
     if (player->router == NULL) {
         player_ui_set_error(error, error_size,
                             "The next UI could not allocate its screen router.");
@@ -762,6 +763,15 @@ typedef char player_ui_update_step_order[
      PLAYER_UI_UPDATE_DOWNLOADED == (int)PLAYER_UPDATE_DOWNLOADED &&
      PLAYER_UI_UPDATE_FAILED == (int)PLAYER_UPDATE_FAILED) ? 1 : -1];
 
+/* The refresh rate of the display the launcher window is on, in Hz; 0 when SDL does not say.
+   It is the launcher's best answer before a game window exists. */
+static double player_ui_display_refresh_hz(SDL_Window *window) {
+    const SDL_DisplayMode *mode;
+    if (window == NULL) return 0.0;
+    mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
+    return mode != NULL && mode->refresh_rate > 0.0f ? (double)mode->refresh_rate : 0.0;
+}
+
 /* The Settings pages' model, from the settings the existing renderer shows. */
 static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *app,
                                                 NkUiScale scale) {
@@ -812,6 +822,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.pacing = app->settings.fps_cap < 0 ? "PSP timing" : "No extra cap";
     model.scaling = player_present_scaling_label(app->settings.present_scaling);
     model.vsync = app->settings.vsync;
+    model.display_refresh_hz = player_ui_display_refresh_hz(player->window);
     model.fullscreen = app->settings.fullscreen;
     model.volume = app->settings.master_volume;
     model.ui_sounds = app->settings.ui_sounds;

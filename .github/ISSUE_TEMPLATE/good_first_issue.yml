@@ -38,7 +38,7 @@ body:
       description: File paths (and function or test names) to start in. Add the nearest existing test that shows the pattern.
       placeholder: |
         - src/rt/hle_power.c: h_PowerIsBatteryExist
-        - src/rt/hle_thread_selftest.c: the nearest existing check
+        - tests/native/hle_thread_selftest.c: the nearest existing check
     validations:
       required: true
 

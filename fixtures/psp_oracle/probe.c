@@ -2058,12 +2058,23 @@ static void run_dmac_concurrency(int emulated) {
     (DMAC_INVALID_POST_OFFSET + DMAC_INVALID_POST_GUARD_BYTES)
 #define DMAC_INVALID_TAIL_OFFSET \
     (DMAC_INVALID_OVERFLOW_OFFSET + DMAC_INVALID_OVERFLOW_BAND_BYTES)
-#define DMAC_INVALID_SETUP_MASK 0x0fu
+/* The ownership proof is the block, its page geometry and a refused page at its end: a
+ * Tier B request runs from the payload towards the end and a Tier S request moves nothing,
+ * so the end is the only boundary a cell can cross. The block sits High in partition 2,
+ * where the page below it is ordinary allocatable user memory, so a begin-side refusal
+ * can never hold there (2026-11-02, setup_mask 0x7) and is not part of the proof. */
+#define DMAC_INVALID_SETUP_MASK 0x07u
 #define DMAC_INVALID_SETUP_BLOCK 0x01u
 #define DMAC_INVALID_SETUP_GEOMETRY 0x02u
 #define DMAC_INVALID_SETUP_END_NEIGHBOR 0x04u
-#define DMAC_INVALID_SETUP_BEGIN_NEIGHBOR 0x08u
 #define DMAC_INVALID_NEIGHBOR_BYTES 0x1000u
+/* sysmem block type 4 (HighAligned, uofw sysmem): the highest free address aligned to the
+ * power of two passed as the address argument. PSPSDK's enum stops at PSP_SMEM_Addr. Plain
+ * PSP_SMEM_High gave a page-aligned block in the standalone-PSPLink context (2026-11-02) but
+ * not under the XMB, where the top of partition 2 is partly allocated (2026-11-03, setup_mask
+ * 0x1). The free gap left above an aligned block is under one page, so the end-neighbour
+ * refusal still holds. */
+#define DMAC_INVALID_SMEM_HIGH_ALIGNED 4
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST
 #define DMAC_INVALID_API DMAC_API_MEMCPY
@@ -2197,8 +2208,9 @@ static int dmac_invalid_acquire(uint32_t *setup_mask, uint32_t *setup_error,
     *setup_mask = 0;
     *setup_error = 0;
     *block_uid = sceKernelAllocPartitionMemory(
-        DMAC_INVALID_PARTITION, "oracle-dmac-scratch", PSP_SMEM_High,
-        DMAC_INVALID_SCRATCH_BYTES, NULL);
+        DMAC_INVALID_PARTITION, "oracle-dmac-scratch",
+        DMAC_INVALID_SMEM_HIGH_ALIGNED, DMAC_INVALID_SCRATCH_BYTES,
+        (void *)(uintptr_t)DMAC_INVALID_NEIGHBOR_BYTES);
     if (*block_uid < 0) {
         *setup_error = (uint32_t)*block_uid;
         return 0;
@@ -2206,8 +2218,8 @@ static int dmac_invalid_acquire(uint32_t *setup_mask, uint32_t *setup_error,
     *setup_mask |= DMAC_INVALID_SETUP_BLOCK;
     *block_head = (uint8_t *)sceKernelGetBlockHeadAddr(*block_uid);
     if (!*block_head || ((uintptr_t)*block_head & 0xfffu) != 0u ||
-        (uintptr_t)*block_head < DMAC_INVALID_NEIGHBOR_BYTES ||
-        (uintptr_t)*block_head > UINTPTR_MAX - DMAC_INVALID_SCRATCH_BYTES) {
+        (uintptr_t)*block_head > UINTPTR_MAX - DMAC_INVALID_SCRATCH_BYTES -
+            DMAC_INVALID_NEIGHBOR_BYTES) {
         *setup_error = 1u;
         sceKernelFreePartitionMemory(*block_uid);
         *block_uid = -1;
@@ -2223,15 +2235,6 @@ static int dmac_invalid_acquire(uint32_t *setup_mask, uint32_t *setup_error,
         return 0;
     }
     *setup_mask |= DMAC_INVALID_SETUP_END_NEIGHBOR;
-    if (!dmac_invalid_probe_neighbor(
-            "oracle-dmac-neighbor-begin",
-            *block_head - DMAC_INVALID_NEIGHBOR_BYTES)) {
-        *setup_error = 1u;
-        sceKernelFreePartitionMemory(*block_uid);
-        *block_uid = -1;
-        return 0;
-    }
-    *setup_mask |= DMAC_INVALID_SETUP_BEGIN_NEIGHBOR;
     return 1;
 }
 
@@ -11442,6 +11445,34 @@ static void run_mpeg_ycbcr(int emulated) {
         mpy_csc(emulated, &mpeg, "empty", 0, 0, 0, 0, MPY_STRIDE, 0);
         mpy_csc(emulated, &mpeg, "fw480", 0, 0, pic_w, pic_h, 480, 0);
         mpy_csc(emulated, &mpeg, "fw256", 0, 0, pic_w, pic_h, 256, 0);
+        /* The range's y origin: the 64x64 window at x 16 with y 0, 1, 32 and 160 (its bottom on the
+           picture's last row), 161 and 200 (past it) and -16, an odd height, and full-width ranges
+           from y 16. Every successful one is dumped, so where its rows came from and where they
+           landed in the destination can both be read. */
+        mpy_csc(emulated, &mpeg, "sub-y0", 16, 0, 64, 64, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "sub-y1", 16, 1, 64, 64, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "sub-y32", 16, 32, 64, 64, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "sub-y160", 16, 160, 64, 64, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "sub-y161", 16, 161, 64, 64, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "sub-y200", 16, 200, 64, 64, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "sub-yneg", 16, -16, 64, 64, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "sub-h-odd", 16, 16, 64, 63, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "y16-hrest", 0, 16, pic_w, pic_h - 16, MPY_STRIDE, 1);
+        mpy_csc(emulated, &mpeg, "y16-hfull", 0, 16, pic_w, pic_h, MPY_STRIDE, 1);
+        /* The 16-bit pixel formats: the decode mode switched to 5650, 5551 and 4444 in turn, one
+           64x64 window each, then back to 8888. */
+        for (int format = 0; format <= 3; format++) {
+            SceMpegAvcMode mode16 = {-1, format == 3 ? SCE_MPEG_AVC_FORMAT_8888 : format};
+            char step[32];
+            (void)snprintf(step, sizeof(step), "decode-mode-f%d", format);
+            probe_step(emulated, "mpeg-ycbcr", step);
+            rc = sceMpegAvcDecodeMode(&mpeg, &mode16);
+            mpy_rc(emulated, step, rc, NULL);
+            if (format < 3) {
+                (void)snprintf(step, sizeof(step), "f%d", format);
+                mpy_csc(emulated, &mpeg, step, 0, 0, 64, 64, MPY_STRIDE, 1);
+            }
+        }
 
         /* One direct sceMpegAvcDecode of the following pictures into the destination buffer. */
         SceInt32 init2 = 0;

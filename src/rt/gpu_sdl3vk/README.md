@@ -102,8 +102,9 @@ Enabled with `SR_GPU_GE=1`. Implementation:
   fog and light constants, to `hook_tnl_prim`; `shaders/psp_tnl.vert` then skins, transforms,
   fogs, lights (ambient and diffuse, directional and point) and projects them. ge.c offers a
   draw only when a clip-space bound shows that no vertex is clipped, dropped or non-finite, and
-  only in states the shader repeats exactly: no specular or powered-diffuse light (host `powf`
-  has no exact shader counterpart), texture map mode 0, gouraud shading, no clear mode, every
+  only in states the shader repeats exactly: no specular or powered-diffuse light while ge.c's
+  lighting uses the C library's `powf` (the default), texture map mode 0, gouraud shading, no
+  clear mode, every
   float input zero or of magnitude 2^-40..2^40. The shader evaluates ge.c's arithmetic in C's
   order with `precise` (Vulkan rounds add and multiply correctly; the reference has no fused
   multiply-add) and divides and takes square roots exactly in integer arithmetic, subnormal
@@ -115,8 +116,16 @@ Enabled with `SR_GPU_GE=1`. Implementation:
   `SR_GPU_TNL=1` says so once. Everything else, and a draw the fragment state sends to
   software, keeps ge.c's T&L. The `tnl-parity` cells of `gpu-coherence-selftest` compare the
   two routes byte for byte (on a device without the feature, every cell on ge.c's route). Left:
-  texgen, flat shading, specular light, sprites, lines, points, clipped draws, and devices that
-  flush fp32 subnormals.
+  texgen, flat shading, specular light by default, sprites, lines, points, clipped draws, and
+  devices that flush fp32 subnormals.
+- `ge_powf`, the specular and powered-diffuse power, is one text in ge.c and `psp_tnl.vert`
+  (between the `BEGIN ge_pow helpers` and `END ge_powf` markers): 32-bit integer arithmetic
+  only, table-driven log2 and exp2 in 64-bit fixed point, correctly rounded. With
+  `ge_pow_set_exact(1)` ge.c's lighting uses it and the GPU T&L takes specular and
+  powered-diffuse lights; it stays off until it is measured against the PSP (#1732, the
+  `ge-light` oracle case). `tools/test_shader_embed.py` keeps the two copies identical and runs
+  the shader's copy as C against ge.c's, and the `specular-ge-powf` and `light-4-ge-powf`
+  parity cells compare the routes on a device that runs the T&L stage.
 - Render-to-texture chains (the hangar uses fbp swaps), depth readbacks if any game code
   reads zbuf, small-tri rasterization rules (top-left bias already documented in
   raster_tri) via conservative settings.
