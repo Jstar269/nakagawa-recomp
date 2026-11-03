@@ -976,6 +976,25 @@ static unsigned char *read_guest_module_file(const char *path, size_t *size_out,
     return bytes;
 }
 
+void sr_module_code_sha256(const void *bytes, size_t size, char out[65]) {
+    static const char hex[] = "0123456789abcdef";
+    uint8_t digest[32];
+    sr_vfpu_sha256((const uint8_t *)bytes, size, digest);
+    for (size_t i = 0u; i < sizeof(digest); i++) {
+        out[i * 2u] = hex[digest[i] >> 4];
+        out[i * 2u + 1u] = hex[digest[i] & 15u];
+    }
+    out[64] = '\0';
+}
+
+/* Whether these are the exact bytes the build translated. digest is filled either way. */
+static int module_file_is_translated(const SrModuleCode *code, const void *bytes, size_t size,
+                                     char digest[65]) {
+    sr_module_code_sha256(bytes, size, digest);
+    return (uint64_t)size == code->file_size && code->file_sha256 &&
+           strcmp(digest, code->file_sha256) == 0;
+}
+
 int loadexec_module_file_matches_translation(const char *file) {
     if (!file || !file[0]) return 0;
     const SrModuleCode *code = sr_module_code_find(file);
@@ -987,9 +1006,10 @@ int loadexec_module_file_matches_translation(const char *file) {
     int unreadable = 0;
     unsigned char *bytes = read_guest_module_file(path, &size, &unreadable);
     if (!bytes) return 0;
-    uint64_t digest = sr_module_code_fnv1a64(bytes, size);
+    char digest[65];
+    int matches = module_file_is_translated(code, bytes, size, digest);
     free(bytes);
-    return size == code->file_size && digest == code->file_fnv1a64;
+    return matches;
 }
 
 /* Libraries a title ships as its own module, for which host HLE only stands in. When the
@@ -1059,13 +1079,13 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
         return guest_module_boundary("guest-module-untranslated", file,
                                      "the build did not translate this module");
     }
-    uint64_t digest = sr_module_code_fnv1a64(bytes, size);
-    if ((uint64_t)size != code->file_size || digest != code->file_fnv1a64) {
+    char digest[65];
+    if (!module_file_is_translated(code, bytes, size, digest)) {
         free(bytes);
-        snprintf(detail, sizeof(detail), "the staged file (0x%x bytes, FNV-1a 0x%016llx) is "
-                 "not the file the build translated (0x%x bytes, FNV-1a 0x%016llx)",
-                 (unsigned)size, (unsigned long long)digest,
-                 code->file_size, (unsigned long long)code->file_fnv1a64);
+        snprintf(detail, sizeof(detail), "the staged file (0x%x bytes, SHA-256 %.16s) is "
+                 "not the file the build translated (0x%x bytes, SHA-256 %.16s)",
+                 (unsigned)size, digest, code->file_size,
+                 code->file_sha256 ? code->file_sha256 : "none");
         return guest_module_boundary("guest-module-identity-mismatch", file, detail);
     }
     if (code->unsupported_reason) {

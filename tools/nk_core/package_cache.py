@@ -24,7 +24,7 @@ COMPLETION_SCHEMA_VERSION = 2
 TITLE_INPUT_IDENTITY_FORMAT = "nakagawa-title-input-identity"
 TITLE_INPUT_IDENTITY_SCHEMA_VERSION = 2
 ANALYZER_CODEGEN_SEMANTICS_EPOCH = "analyzer-codegen-v1"
-GENERATED_CODE_ABI_EPOCH = 2
+GENERATED_CODE_ABI_EPOCH = 3
 RUNTIME_ABI_EPOCH = 2
 # The CpuState layout (src/rt/recomp.h SR_CPUSTATE_ABI_VERSION) is part of both contracts:
 # generated C addresses CpuState fields by offset, and the runtime package shares the struct
@@ -34,7 +34,9 @@ RUNTIME_ABI_EPOCH = 2
 # src/core/nk_title_manifest.h to each other, so a layout change cannot land without the bump.
 CPUSTATE_ABI_EPOCHS: dict[int, tuple[int, int]] = {
     2: (1, 1),  # the 996-byte CpuState
-    3: (2, 2),  # #812 appended llbit (offset 996, size 1000)
+    # #812 appended llbit (offset 996, size 1000); generated code 3 records each module's
+    # identity as SHA-256 (#969).
+    3: (3, 2),
 }
 # previous runtime epoch -> the runtime epochs whose packages may reuse its generated C with a
 # native recompile. A CpuState layout change is never compatible: the generated C carries the
