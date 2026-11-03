@@ -24,7 +24,7 @@ COMPLETION_SCHEMA_VERSION = 2
 TITLE_INPUT_IDENTITY_FORMAT = "nakagawa-title-input-identity"
 TITLE_INPUT_IDENTITY_SCHEMA_VERSION = 2
 ANALYZER_CODEGEN_SEMANTICS_EPOCH = "analyzer-codegen-v1"
-GENERATED_CODE_ABI_EPOCH = 2
+GENERATED_CODE_ABI_EPOCH = 3
 RUNTIME_ABI_EPOCH = 2
 # The CpuState layout (src/rt/recomp.h SR_CPUSTATE_ABI_VERSION) is part of both contracts:
 # generated C addresses CpuState fields by offset, and the runtime package shares the struct
@@ -34,7 +34,9 @@ RUNTIME_ABI_EPOCH = 2
 # src/core/nk_title_manifest.h to each other, so a layout change cannot land without the bump.
 CPUSTATE_ABI_EPOCHS: dict[int, tuple[int, int]] = {
     2: (1, 1),  # the 996-byte CpuState
-    3: (2, 2),  # #812 appended llbit (offset 996, size 1000)
+    # #812 appended llbit (offset 996, size 1000); generated code 3 records each module's
+    # identity as SHA-256 (#969).
+    3: (3, 2),
 }
 # previous runtime epoch -> the runtime epochs whose packages may reuse its generated C with a
 # native recompile. A CpuState layout change is never compatible: the generated C carries the
@@ -1255,7 +1257,8 @@ def _input_sha(value: Any, label: str) -> str:
     digest = value["sha256"]
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise PackageCacheError(f"{label} input digest is invalid")
-    return digest
+    returned: str = digest
+    return returned
 
 
 def _canonical_load_address(value: Any) -> Any:
@@ -1403,9 +1406,11 @@ def _key_from_document(value: Mapping[str, Any] | None) -> Mapping[str, Any] | N
         return None
     cache = value.get("cache")
     if isinstance(cache, Mapping) and isinstance(cache.get("key"), Mapping):
-        return cache["key"]
+        returned: Mapping[str, Any] | None = cache["key"]
+        return returned
     if isinstance(value.get("key"), Mapping) and "aot" not in value:
-        return value["key"]
+        returned = value["key"]
+        return returned
     if "aot" in value and "native" in value:
         return value
     return None

@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,7 +30,8 @@ def load_manifest(path: Path = MANIFEST) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema_version") != 1 or not isinstance(data.get("files"), list):
         raise ValueError("unsupported or malformed VFPU provenance manifest")
-    return data
+    returned: dict[str, Any] = data
+    return returned
 
 
 def verify_local(manifest: dict, asset_dir: Path = ASSET_DIR) -> list[str]:

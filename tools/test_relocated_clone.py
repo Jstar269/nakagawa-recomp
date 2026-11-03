@@ -83,6 +83,7 @@ def copy_tracked_tree(source: Path, destination: Path) -> int:
 
 class RelocatedCloneTests(unittest.TestCase):
     """The documented contributor commands, run from a path with spaces."""
+    copied: int
 
     clone: Path
     make: str
@@ -90,8 +91,8 @@ class RelocatedCloneTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.make = shutil.which("mingw32-make") or shutil.which("make")
-        if not cls.make:
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if not make:
             reason = "GNU Make is required for the relocated-contributor check"
             print(f"SKIP {__name__}: {reason} (no mingw32-make or make on PATH)")
             raise unittest.SkipTest(reason)
@@ -104,6 +105,7 @@ class RelocatedCloneTests(unittest.TestCase):
             print(f"SKIP {__name__}: {reason} (no gcc or cc on PATH)")
             raise unittest.SkipTest(reason)
 
+        cls.make = make
         base = Path(tempfile.mkdtemp(prefix=f"{SPACED_DIR_NAME} "))
         cls.clone = base / "nakagawa"
         cls.clone.mkdir()

@@ -65,6 +65,59 @@ Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the p
   processor, as far as memory allows, and the build screen counts the parts as they finish.
   A first build takes several minutes. To choose the job count yourself, set the
   `NK_PACKAGE_JOBS` environment variable to a number from 1 to 8 before starting the player.
+- **Where your data lives.** Imported discs, built games, saves and settings are in the per-user data
+  folder (`%LOCALAPPDATA%\Nakagawa\data`, [below](#2-supply-local-game-inputs)), never inside the unpacked
+  release. An update unpacks into a new folder and leaves the data folder alone, so deleting an old release
+  folder deletes no games or saves.
+
+## Wine and Proton
+
+The Windows ZIP is the only player build; there is no Linux build yet ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)).
+Wine or Proton is not a supported platform, and nothing in the project is changed to make it work. This is
+the smoke run for [#1876](https://github.com/Jstar269/nakagawa-recomp/issues/1876). It needs no game disc and
+no network.
+
+1. Unpack `nakagawa-recomp-<version>-windows-x64.zip` into an empty folder and check the unpacked files
+   against `SHA256SUMS.txt`.
+2. Start `bin\nakagawa_player.exe` (`wine bin/nakagawa_player.exe`, or add it to Steam as a non-Steam game
+   and pick a Proton version). The first run used Wine 9.0 only; no minimum version is claimed.
+3. Optional, the one step that needs a disc: pick a folder of your own discs in the library and confirm the
+   scan lists them. Without a disc, record this step as `NOT_RUN`.
+4. Run a showcase demo from **Test this PC** (they ship in `bin\demos\` and need no disc) and confirm it
+   draws and runs. The repository's `display-smoke` target needs the MSYS2 toolchain from a source checkout
+   and is not part of the ZIP.
+
+Record the Wine or Proton version, the graphics driver and each step's result as `PASS`, `FAIL` or
+`NOT_RUN` in the issue or the pull request. A failure is reported as a failure.
+
+Known unknowns, each to be recorded by the first run rather than assumed:
+
+- **BUILD PACKAGE.** The player compiles a game on your machine with the bundled `prereqs/` toolchain
+  (`gcc.exe` and `mingw32-make.exe`). Whether that toolchain starts under Wine, and how long a build takes
+  there, has not been measured.
+- **Audio and gamepads** depend on the Wine audio driver and on SDL3's gamepad support under Wine.
+- **Check for updates** does the same network request as on Windows, so it works only if the prefix has
+  network access.
+
+Result of the first run (2026-11-02, [#1876](https://github.com/Jstar269/nakagawa-recomp/issues/1876)),
+on the ZIP layout from `tools/stage_install.py --dest` and `--portable-zip` built from the pull request's
+head (the player, its runtime DLLs and `source/`; not the attested release ZIP, so no `prereqs/`, no demos):
+Wine 9.0 (Ubuntu 24.04 `wine64`, 64-bit prefix only) under WSL 2, Xvfb as the display, Mesa software Vulkan drivers installed, no
+GPU, no audio device, no game disc.
+
+| Step | Result |
+| --- | --- |
+| Unpack the ZIP, check `SHA256SUMS.txt` | `PASS` |
+| `nakagawa_player.exe --help` | `PASS` |
+| Player renders the library, About and Settings views to 1280x720 screenshots | `PASS` (non-blank) |
+| The synthetic display-smoke fixture, built natively, run under Wine with `--sched` | `PASS` (`DRIVER_EXPECT_U32 ... status=PASS`) |
+| The same fixture with `--gui` in a window, and with `--sched --gui` offscreen | `PASS` |
+| Scan a folder of real discs | `NOT_RUN` (no disc; the scan is not exercised by the synthetic route) |
+| BUILD PACKAGE with the bundled `prereqs/` toolchain | `NOT_RUN` (the local ZIP has no `prereqs/`) |
+| Audio, gamepad, Check for updates | `NOT_RUN` |
+| Proton | `NOT_RUN` (not installed) |
+
+Wine printed `failed to open C:\windows\syswow64\rundll32.exe` once while creating the prefix, and every 64-bit program above ran regardless.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
@@ -421,6 +474,29 @@ On start-up, `nakagawa_player.exe` automatically scans `<user data>/manifests` a
 
 Similarly, `python tools/nk_cli.py build-package` searches `assets/titles` first and then `<user data>/manifests`, resolving title manifests identically to the native player so user-configured titles build without command-line overlay arguments.
 
+### Portable mode (`portable.txt`)
+
+By default every per-user folder lives under the per-user data root (on Windows,
+`%LOCALAPPDATA%\Nakagawa\data`). To keep the library, saves, settings, logs, cache and downloads
+beside the program instead, for a USB stick, a handheld PC or two versions that must not share
+settings, create an empty file named `portable.txt` in the same folder as `nakagawa_player.exe`.
+
+- The data root is then `data` in that folder (`<program folder>\data`, made on first start); the
+  config, cache, logs and saves folders sit inside it, exactly as with
+  `--user-data-root=<folder>`.
+- The decision is made once, in `src/core/nk_portable.h`, and handed to the platform's one
+  override (`nk_platform_set_app_data_dir_override`), so the library, packages, fonts, settings,
+  saves, logs and the folders the player hands to the build tools and the game all follow it.
+- An explicit `--user-data-root=<folder>` wins over the marker.
+- If the folder cannot be written (a read-only install, a full or write-protected drive) the player
+  refuses to start with `PORTABLE_NOT_WRITABLE` (a dialog on Windows, stderr elsewhere). It never
+  falls back to the per-user root, so nothing is saved somewhere you did not choose. Delete
+  `portable.txt` to go back to the per-user root; the two data folders are separate and neither is
+  moved or deleted.
+- **About** shows the data folder in use and says when it is the portable one.
+- Updating: unpack the new version, then copy `portable.txt` and the `data` folder beside the new
+  program. Nakagawa does not move or delete the old folder.
+
 ### System fonts
 
 Firmware follows PPSSPP's model. The operating system is HLE, the modules a game ships on its disc may run as LLE, and Nakagawa ships no firmware and decrypts none. It ships open replacement fonts. Authentic in-game typography needs the PSP's own system fonts in Sony's PlayStation Glyph Format (`.pgf`): you may copy those plain files from your own console's `flash0:/font/` into a local folder that Nakagawa reads. They stay on your PC. The project never bundles, commits, packages or uploads them, and it does not decrypt anything from `flash0`.
@@ -497,7 +573,7 @@ The import copies each accepted file into the per-user cache and writes `manifes
 └── nkkr.pgf    (Korean slot)
 ```
 
-Japanese and Korean keep their existing imported-file-then-project-file resolution. Each Latin index uses its exact imported `ltnN.pgf` first. If it is absent or invalid, the runtime uses the nearest valid indexed import in that index's eight-file size group (the lower index wins an equal-distance tie). A cache containing only the older single-file Latin import continues to serve that file for all indices, preserving pre-index behavior. Other caches fall back to project `nkltn.pgf`, then to the legacy import only when the project Latin font is unavailable. The player status and one startup log line per index identify every fallback, including an absent exact file. The log line names the requested PSP file, the file that backs it and its source: `selection=exact` for the user's own file, `selection=substitute fallback=same-size`, `fallback=legacy` or `fallback=project` for a stand-in, and `backing=none fallback=missing` when nothing serves the index. The Japanese and Korean fonts (registry indices 0 and 17, `jpn0.pgf` and `kr0.pgf` on a PSP) get one such line each, where the project font is a substitute. `fonts remove --slot latin` removes the generic Latin import and all sixteen indexed files; the other slot removals are unchanged.
+Japanese and Korean keep their existing imported-file-then-project-file resolution. Each Latin index uses its exact imported `ltnN.pgf` first. If it is absent or invalid, the runtime uses the nearest valid indexed import in that index's eight-file size group (the lower index wins an equal-distance tie). A cache containing only the older single-file Latin import continues to serve that file for all indices, preserving pre-index behavior. Other caches fall back to the project font of that size, `nkltn.pgf` for `ltn0` to `ltn7` and `nkltns.pgf` for `ltn8` to `ltn15`, then to the legacy import only when the project Latin font is unavailable. The player status and one startup log line per index identify every fallback, including an absent exact file. Those lines list every font a game could ask for; a `flash0: game opened` line, once per file, names each font the game does open, with the file that serves it and its source. The log line names the requested PSP file, the file that backs it and its source: `selection=exact` for the user's own file, `selection=substitute fallback=same-size`, `fallback=legacy` or `fallback=project` for a stand-in, and `backing=none fallback=missing` when nothing serves the index. The Japanese and Korean fonts (registry indices 0 and 17, `jpn0.pgf` and `kr0.pgf` on a PSP) get one such line each, where the project font is a substitute. `fonts remove --slot latin` removes the generic Latin import and all sixteen indexed files; the other slot removals are unchanged.
 
 The per-user data directory is the one font root. The import, the status and the preflight in the player, the launcher, and the runtime all read `<user data>/fonts/v2`; the launcher hands that root to the runtime as `SR_USER_DATA_ROOT`. A runtime root (`--runtime-root`) does not hold fonts, so an import written under `<runtime root>/fonts/v2` by an earlier build is no longer read. The launcher's old lookup under a showcase demo's `<demos>/fonts/v2` is removed for the same reason: the demos read the per-user directory too, so an import placed there is no longer read. To use it again, run `python tools/nk_cli.py fonts import <folder>` on the original `.pgf` folder (with the same `--user-data-root` you use for the player), or copy that `fonts/v2` folder unchanged to `<user data>/fonts/v2`. The manifest's size and SHA-256 are checked on use, so a copy that does not match is refused rather than served.
 
@@ -1078,7 +1154,12 @@ a trace, a key or a console-bound value, or when it is not plain text, and long 
 from a whole line. Every line is redacted: your home folder (backslash or slash, the doubled slashes of
 JSON, the `\\?\` and `file:///` prefixes, the `/mnt/c` mount, and the Windows, Linux and macOS profile
 folders, found both by the account this PC names and by their shape) becomes `~`, your account name becomes `<user>` and this PC's name `<host>`. Read the ZIP before you
-attach it. The launcher button for this is not built yet (#1849).
+attach it.
+
+In the launcher, **Settings > Problem report** does the same: it lists every file with its size, **Create the
+report** writes the ZIP, and **Open folder** shows it. The launcher runs the command above with your
+Python, so without a Python it shows the command to run yourself instead of failing quietly. Creating
+the report runs the toolchain check, which can take a minute.
 
 ### Windows host pitfalls
 

@@ -149,7 +149,10 @@ The summary fields mean:
   do not add `triangle_total` or `empty_control` to the stage sum.
 - `vulkan.submit_ns`, `wait_ns`, `readback_ns`, and `pipeline_creation_ns` measure separate host
   API regions. Readback and general wait can overlap and are intentionally not additive;
-  `readbacks` counts completed CPU readback commits, not every fence poll.
+  `readbacks` counts completed CPU readback commits, not every fence poll, and `readback_bytes` the
+  bytes those commits copied out of the image. A readback takes only the rows guest memory keeps, one
+  device row per guest row, so the bytes grow with the render scale, not its square;
+  `SR_GPU_READBACK_FULL=1` copies the whole scaled target, the reference path (#323).
 - `textures` counts cache hits/misses and central decode calls. `storage` separates public ISO and
   VFS byte/read/failure counters. `media` counts H.264 and ATRAC decode calls, elapsed time, and
   failures. If the host H.264 backend is unavailable, the runtime reports its named boundary
@@ -1556,8 +1559,52 @@ first table gives medians, and the second the intervals on (linked minus absent)
 The ladder rows run with `SR_FLIGHT` and `SR_PERF` both removed by the fixture's `SR_*` rule, so
 they measure the compiled-in cost with the recorder disarmed, as the smoke rows do. The direct
 executable interval is the tightest bound. Neither workload is a GE or presentation workload (the
-smoke summary shows zero GE and Vulkan calls), so the recorder sites in
-`src/rt/gpu_sdl3vk/ge_gpu.c` are not measured here.
+smoke summary shows zero GE and Vulkan calls), so the GE and present recorder sites are measured
+separately, below.
+
+#### GE and present sites
+
+The GE recorder sites are in `src/rt/ge.c` (one `sr_flight_class_enabled(SR_FLIGHT_CLASS_GE)` call
+per list, then an `if (flight_ge_enabled)` test at each draw and at FINISH) and `src/rt/hle_ge.c`
+(`SR_FLIGHT_RECORD_CLASS` at list enqueue, sync, stall update and finish). The present sites are in
+`src/rt/hle_display.c` (one at each `sceDisplaySetFrameBuf` and one per presented frame). Every one
+is that class test with the recorder disarmed; none allocates, locks, sleeps or reads guest memory.
+
+`mingw32-make ge-flight-overhead` measures the draw path. It builds `ge.c` twice, once as the default
+build does and once with `-USR_FLIGHT_RECORDER_LINKED`, and links each into the
+`ge-cpu-profile-validate-selftest` harness, whose `--bench ROUNDS` mode runs two source-owned lists
+through `ge_run_list()` with every profile off and the recorder disarmed (`SR_FLIGHT` unset):
+`scene` (the selftest's main list: every primitive type, patches, a block transfer, a CLUT load) and
+`prims` (1024 zero-area through-mode triangles, so per-primitive work other than rasterization
+dominates, about 215 us a list). `tools/ge_flight_overhead.py` runs the two builds in alternating
+pairs (`GE_FLIGHT_PAIRS`, default 5, with `GE_FLIGHT_ROUNDS` timed rounds of 40 list runs each, default
+30) and checks three things before it reports:
+
+- the linked `ge.o` references `sr_flight_` symbols and the absent one references none (2 and 0);
+- both builds draw the same pixels (a hash of the 512 x 272 framebuffer is equal for each workload);
+- the interval on (linked minus absent) is a 95% percentile bootstrap over the pairs (2000
+  resamples, fixed seed). The verdict is `linked slower` only if the whole interval is above zero.
+  A whole interval below zero is reported as `linked faster (code layout or drift, not a recorder
+  saving)`.
+
+It also times the class test alone: one call to the disarmed `sr_flight_class_enabled()` across
+translation units, 20 million in a row.
+
+Measured on the same Windows 11 host and MSYS2 UCRT64 GCC as the series above, 15 pairs of 60
+rounds, base `cb0080c11`:
+
+| Workload | Linked, disarmed (us a list) | Absent (us a list) | 95% interval on linked minus absent (us) | Result |
+| --- | --- | --- | --- | --- |
+| `prims` (1024 draws) | 219.6 | 216.5 | [-18.8, +4.0] | not distinguishable from noise at 15 pairs |
+| `scene` | 1055.3 | 1144.8 | [-130.5, -3.1] | linked faster; layout or drift, not a saving |
+
+The class test costs 1.8 ns a call with the recorder disarmed. A list pays it once and a present
+or setframebuf site once, so the present sites cost about two calls a frame (3.6 ns at 60 Hz: 216 ns
+a second). The per-draw cost is one test of a local `int`, below what a 1024-draw list can resolve:
+the `prims` interval bounds the whole list, 1024 draws included, at +4.0 us (under 2%), which is
+under 4 ns a draw. The measurement bounds the cost on the draw path; it does not measure the Vulkan
+backend, which has no recorder site. Timings from a shared desktop host move between runs, so repeat
+the target rather than reading one run as a figure.
 
 ## Crash Reporter
 
@@ -1640,6 +1687,67 @@ and every refusal, and builds a second runner with one immediate changed in the 
 which must report `MISMATCH r11`. On a title, build the runner the same way against that
 title's generated code. Snapshots contain guest memory: they stay private like traces and
 captures, and none is ever committed.
+
+## Form sweep
+
+`tools/form_sweep.py` and `src/rt/form_sweep.c` check every scalar instruction form the code
+generator translates against the reference interpreter, across register aliasing and edge
+values (#1844). Aliasing is where a translator goes wrong: a temporary read after the
+destination was written, a sign extension on the wrong copy.
+
+```sh
+mingw32-make --no-print-directory form-sweep-selftest
+```
+
+- **The form list is derived, not typed.** `census` probes `codegen.effect` over the
+  encodings, normalises each emission (register indices and numerals blanked) and groups
+  words with the same shape under the same decode selector into one form. A form added to the
+  generator appears as a new row and is swept with no edit to the sweep; an opcode whose low
+  bits select the form is detected the same way. Named exclusions are printed: `syscall` and
+  `break` (they stop the run; the snapshot cases cover them), COP0 and `vflush`. VFPU words
+  are recognised because codegen routes them to the VFPU emitter (#326 and `vfpu_fuzz`).
+- **Instances.** Per form, every aliasing pattern of its register operands (`rd == rs`,
+  `rd == rt`, `rs == rt`, `$zero` operands, in first-appearance renaming) crossed with each
+  immediate bucket (exact for 0..8, 16, 24, 31, 32; then small, large, max, min and the
+  negative ranges), sampled down to `FORM_SWEEP_CAP` (40) per form with every pattern and
+  every bucket kept. A memory form never gets `$zero` as its base. A form whose delay-slot
+  emission differs from its plain emission is also placed in the delay slot (none does
+  today). Each instance is one tiny guest function in a synthetic module, translated by
+  the ordinary pipeline.
+- **States.** `FORM_SWEEP_STATES` (64) seeded states per instance, from `FORM_SWEEP_SEED`
+  (1844): registers from {0, 1, 2, -1, sign boundaries, a byte, random bits, a scratch pointer},
+  floats 30% from a special list (signed zeros, denormals, infinities, NaNs, FLT_MAX), a
+  random FCR31 rounding mode, and on odd states every named register holds a different value
+  so an aliasing defect cannot hide behind equal values. A state is a pure function of
+  (seed, instance, state index).
+- **Compared.** r1..r31, HI/LO, f0..f31 (raw bits), FCR31, the FP condition, the LL bit, the
+  256-byte scratch window and the out-of-range access counters.
+- **Verdicts.** One report line per form: `MATCH`, `MISMATCH` (with the first encoding, its
+  aliasing pattern, the first state and the differing field), `NOT_CHECKED` (the reference
+  stopped on the instruction: `sync` and `cache` today, listed by name with their op word),
+  `AOT_FAILED` (the translated side stopped or had no body for an instruction the reference
+  ran) or `MISSING`. `NOT_CHECKED` is never a pass; `AOT_FAILED` and `MISSING` fail the run
+  even when another instance of the same form matched.
+- **Replay.** `build/form-sweep/public/form_sweep.exe --only <index> --dump <state>
+  <image> 0x08C00000 <plan>` runs one instance and prints that state's inputs; the index is in
+  `fixture/manifest.json`.
+- **The sweep can fail.** The second half of `form-sweep-selftest` builds a mutant of the code
+  generator (a wrapper that emits `addu` as a write of `rt` into `rd` followed by `rd = rs +
+  rd`, reading `rs` after `rd` was written), generates, compiles and runs the sweep over that
+  form, and requires a `MISMATCH` on exactly the instances where `rd` is `rs` and `rs` differs
+  from `rt`.
+- **Deeper run.** `mingw32-make --no-print-directory form-sweep-deep` runs every instance of every
+  form with 2048 states each.
+
+Two choices keep the comparison honest. When two named float registers hold NaNs with different
+payloads the harness makes them equal and counts it on stderr: an arithmetic result then carries
+whichever payload the host compiler's operand order picks inside the shared helper
+(`src/rt/fp_convert.h`), the translated body and the reference are built with different flags,
+and the PSP's own pick is unmeasured. And the reference's results come from `src/ref`, which
+shares the `sr_fpu_*` helpers with generated code for the float arithmetic: for those forms the
+sweep checks the translation around the helper (operand and destination handling, aliasing,
+rounding-mode plumbing), not the helper's arithmetic, which `fp_convert_selftest` and the cosim
+FPU reference cover.
 
 ## Naming generated functions from a symbol map
 

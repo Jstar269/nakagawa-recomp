@@ -43,27 +43,33 @@ def _glyph(code: int, width: int = 2, height: int = 2, row_order: int = 1) -> Gl
 
 
 def _latin_dense() -> bytes:
-    return build_pgf([_glyph(code) for code in range(0x41, 0x5B)], font_name="Nakagawa Test Latin")
+    returned: bytes = build_pgf([_glyph(code) for code in range(0x41, 0x5B)], font_name="Nakagawa Test Latin")
+    return returned
 
 
 def _latin_sparse() -> bytes:
-    return build_pgf([_glyph(0x41), _glyph(0x5A)], font_name="Nakagawa Test Latin")
+    returned: bytes = build_pgf([_glyph(0x41), _glyph(0x5A)], font_name="Nakagawa Test Latin")
+    return returned
 
 
 def _japanese() -> bytes:
-    return build_pgf([_glyph(0x3042), _glyph(0x30A2), _glyph(0x4E00)], font_name="Nakagawa Test Japanese")
+    returned: bytes = build_pgf([_glyph(0x3042), _glyph(0x30A2), _glyph(0x4E00)], font_name="Nakagawa Test Japanese")
+    return returned
 
 
 def _korean() -> bytes:
-    return build_pgf([_glyph(0xAC00), _glyph(0xD55C), _glyph(0x41)], font_name="Nakagawa Test Korean")
+    returned: bytes = build_pgf([_glyph(0xAC00), _glyph(0xD55C), _glyph(0x41)], font_name="Nakagawa Test Korean")
+    return returned
 
 
 def _mixed_kana_hangul() -> bytes:
-    return build_pgf([_glyph(0x3042), _glyph(0xAC00)], font_name="Nakagawa Test Mixed")
+    returned: bytes = build_pgf([_glyph(0x3042), _glyph(0xAC00)], font_name="Nakagawa Test Mixed")
+    return returned
 
 
 def _digits_only() -> bytes:
-    return build_pgf([_glyph(0x30 + index) for index in range(10)], font_name="Nakagawa Test Digits")
+    returned: bytes = build_pgf([_glyph(0x30 + index) for index in range(10)], font_name="Nakagawa Test Digits")
+    return returned
 
 
 def _metric_missing_sentinel() -> bytes:
@@ -321,6 +327,9 @@ def _native_verdicts(executable: Path, paths: list) -> list:
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class PgfValidatorParityTests(unittest.TestCase):
+    exe: Path
+    tmp: scratch_dir.TemporaryDirectory
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.tmp = scratch_dir.TemporaryDirectory(prefix="pgf_parity_")
@@ -473,11 +482,13 @@ class PgfValidatorParityTests(unittest.TestCase):
         def define(name: str) -> str:
             match = re.search(rf'^#define {name} "([^"]*)"', header, re.M)
             self.assertIsNotNone(match, f"{name} missing from nk_font_slots.h")
+            assert match is not None
             return match.group(1)
 
         def number(name: str) -> int:
             match = re.search(rf"^#define {name} (\d+)", header, re.M)
             self.assertIsNotNone(match, f"{name} missing from nk_font_slots.h")
+            assert match is not None
             return int(match.group(1))
 
         self.assertEqual(define("NK_FONT_CACHE_PARENT"), fonts.CACHE_PARENT)
@@ -497,6 +508,7 @@ class PgfValidatorParityTests(unittest.TestCase):
         api = PGF_API_H.read_text(encoding="utf-8")
         enum_body = re.search(r"typedef enum PgfRefusal \{(.*?)\} PgfRefusal;", api, re.S)
         self.assertIsNotNone(enum_body)
+        assert enum_body is not None
         names = re.findall(r"PGF_REFUSE_([A-Z_]+)", enum_body.group(1))
         self.assertEqual(names, list(fonts.REFUSAL_NAMES))
 

@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -164,7 +165,8 @@ class _Harness:
         self.output = tmp / "build" / "compiler-compare"
 
     def compare(self, compilers: list[str]) -> dict:
-        return compiler_compare.compare(compilers, make=MAKE, python=sys.executable, output=self.output)
+        returned: dict[str, Any] = compiler_compare.compare(compilers, make=MAKE, python=sys.executable, output=self.output)
+        return returned
 
 
 class _CompareCase:
@@ -331,7 +333,8 @@ class TestReportShape(unittest.TestCase):
                                                   python=sys.executable,
                                                   output=root or Path(tmp) / "out")
         compiler_compare.validate_report(report)
-        return report
+        returned: dict[str, Any] = report
+        return returned
 
     @staticmethod
     def _shape(value, path: str = "$"):

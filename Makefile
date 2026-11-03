@@ -1159,6 +1159,7 @@ PUBLIC_TARGETS := \
 	fp-convert-selftest \
 	ge-float24-selftest \
 	ge-cpu-profile-validate-selftest \
+	ge-flight-overhead \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
 	ge-raster-ref-selftest \
@@ -1197,10 +1198,14 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-build \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest \
-	gpu-selftest-status
+	gpu-selftest-status \
+	form-sweep-build \
+	form-sweep-link \
+	form-sweep-selftest \
+	form-sweep-deep
 
-PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
-INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-latin-small-font project-korean-font
+INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1266,6 +1271,10 @@ HELP_DESCRIPTION_cosim-selftest-llvm := run the cosimulation with the opt-in LLV
 HELP_DESCRIPTION_cosim-mutants-llvm := run the LLVM IR backend's cosimulation mutation campaign (#330)
 HELP_DESCRIPTION_snapshot-selftest := run snapshot execution against the reference interpreter (#1842)
 HELP_DESCRIPTION_snapshot-selftest-run := build and run the snapshot runner and its generated-C mutant
+HELP_DESCRIPTION_form-sweep-build := generate, translate, build and run one form sweep (#1844)
+HELP_DESCRIPTION_form-sweep-link := build and run the form-sweep harness over an already translated module
+HELP_DESCRIPTION_form-sweep-selftest := sweep every scalar instruction form codegen emits against the reference interpreter, with a generated mutant (#1844)
+HELP_DESCRIPTION_form-sweep-deep := the form sweep with every instance and 2048 states per instance (#1844)
 HELP_DESCRIPTION_clean := remove current-title build outputs
 HELP_DESCRIPTION_clean-fixtures := remove smoke, cosimulation, and oracle artifacts
 HELP_DESCRIPTION_tidy := remove intermediates while preserving linked binaries
@@ -1310,6 +1319,7 @@ HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
 HELP_DESCRIPTION_ge-cpu-profile-validate-selftest := run the GE CPU-profile validator selftest on the production GE object
+HELP_DESCRIPTION_ge-flight-overhead := measure the disarmed flight recorder cost on the GE draw path (recorder linked vs absent; no game data)
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
 HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
@@ -2457,6 +2467,83 @@ snapshot-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OB
 		--work $(SNAPSHOT_MUTANT_DIR)
 	@echo "snapshot-selftest: PASS"
 
+# ---- Form sweep (#1844) ---------------------------------------------------------------
+#
+# tools/form_sweep.py asks tools/codegen.py which scalar instruction forms it translates,
+# expands each form into encodings (every aliasing pattern x immediate bucket, sampled to
+# FORM_SWEEP_CAP per form) and writes a synthetic module with one tiny guest function per
+# encoding. The ordinary pipeline translates it; src/rt/form_sweep.c then runs every
+# function on the translated body and on the reference interpreter (src/ref) from the same
+# seeded states and compares the architectural results. A form the reference cannot run is
+# NOT_CHECKED and named in the report, never a pass.
+#
+# form-sweep-selftest builds the sweep twice. The first build is the public sweep and must
+# report zero mismatches. The second uses a generated mutant of the code generator (a
+# wrapper that emits one wrong statement for addu: it reads rs after writing rd) over only
+# that form, and the check requires a MISMATCH on exactly the instances where rd is rs and
+# rs differs from rt. FORM_SWEEP_STATES and FORM_SWEEP_CAP size a deeper run
+# (`form-sweep-deep`); the pull request defaults are small and the seed is fixed.
+FORM_SWEEP_SEED   ?= 1844
+FORM_SWEEP_CAP    ?= 40
+FORM_SWEEP_STATES ?= 64
+FORM_SWEEP_CHUNK  ?= 400
+FORM_SWEEP_CODEGEN_ARGS ?=
+FORM_SWEEP_ROOT   := $(BUILD_ROOT)/form-sweep
+FORM_SWEEP_BASE_ADDR := 0x08C00000
+FORM_SWEEP_TOOL   := tools/form_sweep.py
+FORM_SWEEP_REF_FLAGS := -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev
+FORM_SWEEP_SRCS   := src/rt/form_sweep.c src/rt/nksnap.c src/rt/guest_interp.c \
+	src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c \
+	src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/vfpu_interp.c \
+	src/rt/perf.c src/rt/nested_frames.c
+# One sweep: FORM_SWEEP_DIR holds fixture/ (the module and plan) and the build tree.
+FORM_SWEEP_DIR    ?= $(FORM_SWEEP_ROOT)/public
+FORM_SWEEP_ONLY   ?=
+FORM_SWEEP_CODEGEN ?= tools/codegen.py
+FORM_SWEEP_GAME_VARS = GAME_NAME=formsweep GAME_ELF=$(FORM_SWEEP_DIR)/fixture/guest.prx \
+	GAME_BASE=$(FORM_SWEEP_BASE_ADDR) GAME_ENTRY=$(FORM_SWEEP_BASE_ADDR) \
+	GAME_PSP_HEADER=$(FORM_SWEEP_DIR)/fixture/guest.psp GAME_EXTRA_ELFS= TITLE_MANIFEST= \
+	BUILD_DIR=$(FORM_SWEEP_DIR) FUNCS_PER_CHUNK=$(FORM_SWEEP_CHUNK) PUBLIC_SAFE=1 \
+	CODEGEN_USER_ARGS="$(FORM_SWEEP_CODEGEN_ARGS)"
+
+form-sweep-build:
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) generate --out-dir $(FORM_SWEEP_DIR)/fixture \
+		--seed $(FORM_SWEEP_SEED) --cap $(FORM_SWEEP_CAP) --states $(FORM_SWEEP_STATES) \
+		$(foreach k,$(FORM_SWEEP_ONLY),--only $(k))
+	$(MAKE) $(FORM_SWEEP_DIR)/formsweep_image.bin $(FORM_SWEEP_DIR)/formsweep_recomp.c \
+		$(FORM_SWEEP_GAME_VARS) CODEGEN_TOOL=$(FORM_SWEEP_CODEGEN)
+	$(MAKE) form-sweep-link $(FORM_SWEEP_GAME_VARS) CODEGEN_TOOL=$(FORM_SWEEP_CODEGEN)
+
+# Second phase: the chunk objects exist only after codegen ran.
+form-sweep-link: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	$(CXX) $(FORM_SWEEP_REF_FLAGS) -c src/ref/interp.cpp -o $(BUILD_DIR)/sweep_ref_interp.o
+	$(CXX) $(FORM_SWEEP_REF_FLAGS) -c src/ref/snapshot_ref.cpp -o $(BUILD_DIR)/sweep_ref.o
+	$(CC) $(CFLAGS) -DSR_GATE_BUILD -DSDL_GetTicksNS=snapshot_runner_ticks_ns \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-c src/rt/recomp.c -o $(BUILD_DIR)/sweep_rt_recomp.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/form_sweep.exe $(FORM_SWEEP_SRCS) $(CHUNK_OBJS) \
+		$(BUILD_DIR)/sweep_rt_recomp.o $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
+		$(BUILD_DIR)/sweep_ref_interp.o $(BUILD_DIR)/sweep_ref.o -lstdc++ -lm
+	-$(BUILD_DIR)/form_sweep.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin $(FORM_SWEEP_BASE_ADDR) \
+		$(BUILD_DIR)/fixture/plan.txt > $(BUILD_DIR)/results.txt
+
+form-sweep-selftest:
+	$(MAKE) form-sweep-build FORM_SWEEP_DIR=$(FORM_SWEEP_ROOT)/public
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) report --manifest $(FORM_SWEEP_ROOT)/public/fixture/manifest.json \
+		--results $(FORM_SWEEP_ROOT)/public/results.txt
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) write-mutant --out $(FORM_SWEEP_ROOT)/mutant/mutant_codegen.py
+	$(MAKE) form-sweep-build FORM_SWEEP_DIR=$(FORM_SWEEP_ROOT)/mutant FORM_SWEEP_ONLY=00.21 \
+		FORM_SWEEP_CODEGEN=$(FORM_SWEEP_ROOT)/mutant/mutant_codegen.py
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) check-mutant --manifest $(FORM_SWEEP_ROOT)/mutant/fixture/manifest.json \
+		--results $(FORM_SWEEP_ROOT)/mutant/results.txt
+	@echo "form-sweep-selftest: PASS"
+
+form-sweep-deep:
+	$(MAKE) form-sweep-build FORM_SWEEP_DIR=$(FORM_SWEEP_ROOT)/deep FORM_SWEEP_CAP=0 FORM_SWEEP_STATES=2048
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) report --manifest $(FORM_SWEEP_ROOT)/deep/fixture/manifest.json \
+		--results $(FORM_SWEEP_ROOT)/deep/results.txt
+
 
 # Treat profile stamps as generated included makefiles. GNU Make restarts after
 # creating a missing flavour, so objects invalidated by that recipe are absent
@@ -2477,9 +2564,10 @@ PROJECT_FONT_GENERATED_DIR_PY := $(subst \,/,$(PROJECT_FONT_GENERATED_DIR))
 # Keep every internal target visible to the static target inventory.
 project-japanese-font:
 project-latin-font:
+project-latin-small-font:
 project-korean-font:
 
-# All three project slots use this rule family. Each source pin, repertoire, and
+# The project fonts use this rule family. Each source pin, repertoire, and
 # project-owned PGF name is data; output staging is handled once by tools/copy_build_assets.ps1.
 define PROJECT_FONT_RULE
 project-$(1)-font: $(PROJECT_FONT_GENERATED_DIR)/$(2)
@@ -2490,8 +2578,15 @@ $(PROJECT_FONT_GENERATED_DIR)/$(2): $(3) $(4) $(5) tools/ttf2pgf.py tools/pgf_wr
 	"$(PYTHON)" -c "import shutil; shutil.copyfile('$(5)', '$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2))-OFL.txt')"
 endef
 
+# The console's two Latin sizes, 10.125 and 7 points at 128 dpi. Each strike is sized and weighted so
+# that its ink meets the console font of that size: x-height, cap height, stem width and spacing
+# (font/README.md). The header ascender and descender are the console fonts' design values.
+PROJECT_LATIN_FONT_ARGS := --ppem 19 --embolden-x 7 --embolden-advance 8 --nominal-size 648 --resolution 8192 --header-ascender 863 --header-descender -196 --baseline-ellipsis
+PROJECT_LATIN_SMALL_FONT_ARGS := --ppem 13 --embolden-x 3 --embolden-y 2 --embolden-advance 5 --nominal-size 448 --resolution 8192 --header-ascender 576 --header-descender -131 --baseline-ellipsis
+
 $(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese,--ppem 12))
-$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,--ppem 13 --embolden-x 6 --embolden-y 4 --embolden-advance 3))
+$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,$(PROJECT_LATIN_FONT_ARGS)))
+$(eval $(call PROJECT_FONT_RULE,latin-small,nkltns.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,$(PROJECT_LATIN_SMALL_FONT_ARGS)))
 $(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean,--ppem 12))
 
 project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
@@ -2824,6 +2919,24 @@ ge-cpu-profile-validate-selftest: $(RT_GE_O)
 	$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled
 
 native-core-tests: ge-cpu-profile-validate-selftest
+
+# ge-flight-overhead -- cost of the disarmed flight recorder on the GE paths (#320): the
+# ge-cpu-profile-validate-selftest harness's --bench mode on the production ge.c, built once
+# with the recorder linked (SR_FLIGHT unset) and once with -USR_FLIGHT_RECORDER_LINKED, run
+# in alternating pairs.  Not part of native-core-tests: it measures, it does not gate.
+# GE_FLIGHT_ROUNDS is the samples per workload and pair; GE_FLIGHT_PAIRS the pair count.
+GE_FLIGHT_DIR := $(BUILD_DIR)/ge-flight-overhead
+GE_FLIGHT_ROUNDS ?= 30
+GE_FLIGHT_PAIRS ?= 5
+GE_FLIGHT_SRCS := tests/native/ge_cpu_profile_validate_selftest.c src/rt/ge_capture.c src/rt/flight_recorder.c src/rt/perf.c
+
+ge-flight-overhead:
+	"$(PYTHON)" -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" $(GE_FLIGHT_DIR)/linked $(GE_FLIGHT_DIR)/absent
+	$(CC) $(GE_CFLAGS) -c src/rt/ge.c -o $(GE_FLIGHT_DIR)/linked/ge.o
+	$(CC) $(GE_CFLAGS) -USR_FLIGHT_RECORDER_LINKED -c src/rt/ge.c -o $(GE_FLIGHT_DIR)/absent/ge.o
+	$(CC) $(CFLAGS) -O2 $(LDFLAGS) -o $(GE_FLIGHT_DIR)/linked/bench$(EXE_EXT) $(GE_FLIGHT_SRCS) $(GE_FLIGHT_DIR)/linked/ge.o -lm
+	$(CC) $(CFLAGS) -O2 -USR_FLIGHT_RECORDER_LINKED $(LDFLAGS) -o $(GE_FLIGHT_DIR)/absent/bench$(EXE_EXT) $(GE_FLIGHT_SRCS) $(GE_FLIGHT_DIR)/absent/ge.o -lm
+	"$(PYTHON)" tools/ge_flight_overhead.py --dir "$(GE_FLIGHT_DIR)" --rounds $(GE_FLIGHT_ROUNDS) --pairs $(GE_FLIGHT_PAIRS)
 
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
@@ -3175,7 +3288,8 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-# The scaled-upload case (#1296) and the per-fragment mip level case (#1373) run again alone
+# The scaled-upload case (#1296), the per-fragment mip level case (#1373) and the readback-rows
+# case (#323, also on its SR_GPU_READBACK_FULL reference path) run again alone
 # at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
 # cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
@@ -3192,6 +3306,12 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 4 --case scaled-upload
 	$(GPU_COHERENCE_BIN) --scale 2 --case mip-lod
 	$(GPU_COHERENCE_BIN) --scale 4 --case mip-lod
+	$(GPU_COHERENCE_BIN) --scale 2 --case readback-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case readback-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case readback-rows --readback-full 1
+	$(GPU_COHERENCE_BIN) --scale 2 --case undrawn-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows --readback-full 1
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
@@ -3803,7 +3923,7 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		tests/native/pcm_wav_dump.c tests/native/test_pcm_wav_dump.c -o $(BUILD_ROOT)/test_pcm_wav_dump$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pcm_wav_dump$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/archive_vfs.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters 100
 	$(call PSMF_PRODUCER_SELFTEST_CMD,100)
@@ -3811,6 +3931,9 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_profile$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_input_profile$(EXE_EXT)
 	$(call ED25519_VERIFY_SELFTEST_CMD)
+	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/native_test_isolation.c tests/native/test_portable_mode.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_portable_mode$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_portable_mode$(EXE_EXT)
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o $(BUILD_ROOT)/argv_echo_helper$(EXE_EXT)
 	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
@@ -3832,7 +3955,7 @@ endif
 fuzz-parsers:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/archive_vfs.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)
 	$(MAKE) --no-print-directory psmf-producer-selftest \

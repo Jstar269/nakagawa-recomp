@@ -29,7 +29,7 @@ the runtime HLE sources, `tools/hle_sources.py`). Regenerate with `python tools/
 
 Open-owner counts:
 
-- #341: 33
+- #341: 32
 
 ## Census
 
@@ -74,7 +74,7 @@ Open-owner counts:
 | `sceKernelEnableSubIntr` | implemented | #341 | dedicated | unreviewed | `h_EnableSubIntr` | `0xfb8e22ec` |
 | `sceKernelFreeTlspl` | implemented | #341 | dedicated | unreviewed | `h_FreeTlspl` | `0x4a719fb2` |
 | `sceKernelGetTlsAddr` | implemented | #341 | dedicated | unreviewed | `h_GetTlsAddr` | `0xfa835cde` |
-| `sceKernelLockLwMutex` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutex` | `0xbea46419` |
+| `sceKernelLockLwMutex` | implemented | - | dedicated | partial | `h_LockLwMutex` | `0xbea46419` |
 | `sceKernelLockLwMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutexCB` | `0x1fc64e09` |
 | `sceKernelLockMutex` | implemented | - | dedicated | partial | `h_LockMutex` | `0xb011b11f` |
 | `sceKernelLockMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockMutexCB` | `0x5bf4dd27` |

@@ -403,6 +403,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_KERNEL_RELEASE_SUBINTR 0xd61e6961u
 #define NID_SCE_POWER_SET_CLOCK 0x737486f2u
 #define NID_SCE_POWER_SET_CLOCK_350 0xebd177d6u
+#define NID_SCE_POWER_SET_CLOCK_630 0x469989adu
 #define NID_SCE_POWER_GET_PLL_INT 0x34f9c463u
 #define NID_SCE_POWER_GET_CPU_INT 0xfdb5bfe9u
 #define NID_SCE_POWER_GET_BUS_INT 0x478fe6f5u
@@ -744,8 +745,24 @@ static uint32_t s_psmf_synthetic_size;
 static int s_psmf_synthetic_enabled;
 static int s_umd_io_synthetic_enabled;
 static const char *const s_psmf_synthetic_path = "disc0:/media/synthetic.psmf";
+/* Disc files the module-identity test loads by path, present only while it asks: the
+ * module manager opens a file before it loads it, so a missing one would never load. */
+static const char *const s_identity_disc_files[] = {
+    "disc0:/PSP_GAME/USRDIR/notpsmf.prx",
+    "disc0:/PSP_GAME/USRDIR/libpsmfplayer.prx.bak",
+};
+static int s_identity_disc_files_enabled;
 
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
+    if (s_identity_disc_files_enabled && guest_path) {
+        for (uint32_t i = 0; i < sizeof(s_identity_disc_files) / sizeof(s_identity_disc_files[0]); i++) {
+            if (strcmp(guest_path, s_identity_disc_files[i]) == 0) {
+                if (out_lba) *out_lba = 0x2000u + i;
+                if (out_size) *out_size = 2048u;
+                return 0;
+            }
+        }
+    }
     if (s_umd_io_synthetic_enabled && guest_path) {
         static const char *const paths[] = {
             "disc0:/PSP_GAME",
@@ -1724,6 +1741,11 @@ static SrModuleCode s_rt_alpha_code = {
     "rt-alpha.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_alpha_base,
     s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u, 0u, 0u,
 };
+static uint32_t s_rt_identity_base;
+static SrModuleCode s_rt_identity_code = {
+    "rt-identity.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_identity_base,
+    s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u, 0u, 0u,
+};
 /* A library module with no start routine; its stop body is the alpha one. */
 static uint32_t s_rt_nostart_base;
 static const SrModuleFunc s_rt_nostart_funcs[] = {
@@ -1983,8 +2005,11 @@ static int runtime_module_identity(const char *path, SrModuleCode *code) {
     size_t n = fread(bytes, 1, sizeof(bytes), f);
     fclose(f);
     if (n == 0 || n == sizeof(bytes)) return 0;
+    char *digest = realloc((char *)code->file_sha256, 65u);
+    if (!digest) return 0;
+    sr_module_code_sha256(bytes, n, digest);
     code->file_size = (uint32_t)n;
-    code->file_fnv1a64 = sr_module_code_fnv1a64(bytes, n);
+    code->file_sha256 = digest;
     return 1;
 }
 
@@ -2186,6 +2211,43 @@ static void test_runtime_placed_guest_owned_library(void) {
 }
 
 static TCB *fixture_thread(uint32_t uid, int state, int priority);
+static int write_runtime_module_bytes(const char *path, const uint8_t *bytes, size_t size) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(bytes, 1, size, f);
+    int close_result = fclose(f);
+    return written == size && close_result == 0;
+}
+
+/* A staged file is the translated module only if it holds the same bytes. These two files have
+ * one size and one FNV-1a digest, so only a digest that separates them can tell them apart. */
+static void test_runtime_module_identity_separates_files(void) {
+    extern int loadexec_module_file_matches_translation(const char *file);
+    static const uint8_t translated[8] = {0xBC, 0x43, 0xEC, 0x56, 0x60, 0x9C, 0xEA, 0xF3};
+    static const uint8_t other[8] = {0xBD, 0x98, 0x12, 0x56, 0xD6, 0xD4, 0x0F, 0x4C};
+    char path[1024], digest[65];
+    sr_module_code_sha256("abc", 3u, digest);
+    expect(strcmp(digest, "ba7816bf8f01cfea414140de5dae2223"
+                          "b00361a396177a9cb410ff61f20015ad") == 0,
+           "module identity: the digest is lowercase hex SHA-256, as codegen records it");
+    runtime_module_path(path, sizeof(path), "rt-identity.prx");
+    expect(sr_module_code_fnv1a64(translated, sizeof(translated)) ==
+               sr_module_code_fnv1a64(other, sizeof(other)),
+           "module identity: the fixture files agree on size and FNV-1a");
+    expect(write_runtime_module_bytes(path, translated, sizeof(translated)) &&
+               runtime_module_identity(path, &s_rt_identity_code),
+           "module identity: the descriptor records the translated file");
+    sr_module_code_reset();
+    sr_module_code_register(&s_rt_identity_code);
+    expect(loadexec_module_file_matches_translation("rt-identity.prx") == 1,
+           "module identity: the translated bytes match");
+    expect(write_runtime_module_bytes(path, other, sizeof(other)) &&
+               loadexec_module_file_matches_translation("rt-identity.prx") == 0,
+           "module identity: other bytes do not match, though size and FNV-1a agree");
+    sr_module_code_reset();
+    remove(path);
+}
+
 static void test_runtime_placed_modules(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
@@ -2219,6 +2281,7 @@ static void test_runtime_placed_modules(void) {
     expect(runtime_module_identity(alpha_path, &s_rt_alpha_code) &&
                runtime_module_identity(delta_path, &s_rt_delta_code),
            "runtime placement: descriptors record the fixture identities");
+    test_runtime_module_identity_separates_files();
 
     hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
@@ -2495,7 +2558,61 @@ static void test_runtime_placed_modules(void) {
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = fd;
         (void)sr_hle_test_io_close(&cpu);
+
+        /* sceKernelLoadModule opens its file, then asks the device whether it may load
+         * from it: an undeclared path that opens loads as the descriptor's does, and one
+         * that opens nothing fails with the open's error and leaves no record. A title
+         * booted from the disc may not load from the Memory Stick. Tekken 6 (ULUS10466)
+         * reads a load of its files on ms0: that succeeds as a copy that does not run
+         * from its disc. */
+        uid = rt_load(undeclared_guest, 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u && sr_hle_test_module_count() == 1u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+               "runtime placement: LoadModule of an undeclared path that opens records the module");
+        hle_test_setenv("SR_BOOT_PATH", "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN");
+        uid = rt_load(undeclared_guest, 0u);
+        expect(uid == 0x80020146u /* PROHIBIT_LOADMODULE_DEVICE */ &&
+                   sr_hle_test_module_count() == 0u,
+               "runtime placement: a disc title's LoadModule from ms0: is refused by the device");
+        /* The program a LoadExec boots decides from then on: the disc title replaced by
+         * its ms0: program (the manifest's required runtime module) may load from ms0:. */
+        {
+            extern void sr_hle_test_loadexec_program_reset(void);
+            extern uint32_t s_loadexec_boot_uid;
+            uint32_t exec_entry = 0u, exec_gp = 0u;
+            int booted = sr_hle_loadexec_boot_module(alpha_guest, &exec_entry, &exec_gp);
+            uint32_t exec_uid = s_loadexec_boot_uid;
+            uid = rt_load(undeclared_guest, 0u);
+            expect(booted && exec_entry != 0u && uid != 0u && (uid & 0x80000000u) == 0u &&
+                       rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+                   "runtime placement: after a LoadExec to an ms0: program, LoadModule from ms0: records the module");
+            expect(rt_lifecycle(sr_hle_test_stop_module, exec_uid, 0u, 0u, 0u) == 0u &&
+                       rt_lifecycle(sr_hle_test_unload_module, exec_uid, 0u, 0u, 0u) == 0u,
+                   "runtime placement: the LoadExec program unloads");
+            sr_hle_test_loadexec_program_reset();
+            uid = rt_load(undeclared_guest, 0u);
+            expect(uid == 0x80020146u && sr_hle_test_module_count() == 0u,
+                   "runtime placement: with the disc program running again, LoadModule from ms0: is refused");
+        }
+        hle_test_setenv("SR_BOOT_PATH", "ms0:/PSP/GAME/NKRT/EBOOT.PBP");
+        uid = rt_load(undeclared_guest, 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+               "runtime placement: a Memory Stick title's LoadModule from ms0: records the module");
+        hle_test_setenv("SR_BOOT_PATH", "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN");
         remove(host);
+        uid = rt_load(undeclared_guest, 0u);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = RT_PATH_ADDR;
+        cpu.r[5] = 1u;
+        expect(uid == 0x80010002u && sr_hle_test_module_count() == 0u &&
+                   sr_hle_test_io_open(&cpu) == 0x80010002u,
+               "runtime placement: LoadModule of a missing file returns sceIoOpen's error");
+        uid = rt_load("flash0:/kd/nk_absent.prx", 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+               "runtime placement: a flash0: module path keeps its host-served record");
+        hle_test_setenv("SR_BOOT_PATH", NULL);
 
         /* sceKernelLoadModule opens its path through the file manager in the caller's
          * context, so a relative path resolves against the calling thread's current
@@ -2911,11 +3028,9 @@ static void test_module_identity_is_its_export_table(void) {
     sr_hle_test_unregister_late_imports(base, base + 0x100u);
     remove(path);
 
-    static const char *const lookalikes[] = {
-        "disc0:/PSP_GAME/USRDIR/notpsmf.prx",
-        "disc0:/PSP_GAME/USRDIR/libpsmfplayer.prx.bak",
-    };
-    for (size_t i = 0; i < sizeof(lookalikes) / sizeof(lookalikes[0]); i++) {
+    const char *const *lookalikes = s_identity_disc_files;
+    s_identity_disc_files_enabled = 1;
+    for (size_t i = 0; i < sizeof(s_identity_disc_files) / sizeof(s_identity_disc_files[0]); i++) {
         CpuState cpu;
         char what[160];
         title_hle_write_cstr(0x08906000u, lookalikes[i]);
@@ -2931,6 +3046,7 @@ static void test_module_identity_is_its_export_table(void) {
         snprintf(what, sizeof(what), "module identity: starting %s runs no entry", lookalikes[i]);
         expect(sr_hle_test_start_module(&cpu) == 0u, what);
     }
+    s_identity_disc_files_enabled = 0;
     sr_hle_test_module_reset();
 }
 
@@ -3847,6 +3963,56 @@ static void test_fd_namespace(void) {
                    fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
                "TRUNC without PSP_O_CREAT truncates the existing file");
         remove(flags_host);
+
+        /* PSP_O_TRUNC, measured on a PSP-3000 (#1892): the file is empty from the open on, but
+         * a write past the end brings back the old bytes below it, which is how a game installs
+         * a file in chunks, and the file ends at that write. */
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0602u;
+        uint32_t chunk_fd = sr_hle_test_io_open(&cpu);
+        fd_guest_copy(payload_addr, "abcdefgh", 8u);
+        fd_set_write(&cpu, chunk_fd, payload_addr, 8u);
+        expect(sr_hle_test_io_write(&cpu) == 8u, "TRUNC fixture writes its first chunk");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        (void)sr_hle_test_io_close(&cpu);
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0603u; /* RDWR | CREAT | TRUNC */
+        chunk_fd = sr_hle_test_io_open(&cpu);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        cpu.r[5] = 0u;
+        cpu.r[6] = 2u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 0u, "a TRUNC descriptor sees an empty file");
+        expect(fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
+               "a TRUNC open leaves the host file empty, whatever happens before close");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        cpu.r[5] = 4u;
+        cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 4u, "TRUNC fixture seeks to its second chunk");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        cpu.r[5] = payload_addr;
+        cpu.r[6] = 2u;
+        expect(sr_hle_test_io_read(&cpu) == 0u, "a read past the TRUNC end returns nothing");
+        fd_guest_copy(payload_addr, "WX", 2u);
+        fd_set_write(&cpu, chunk_fd, payload_addr, 2u);
+        expect(sr_hle_test_io_write(&cpu) == 2u, "TRUNC fixture writes its second chunk");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"abcdWX", 6u),
+               "a write past the TRUNC end brings back the bytes below it and ends the file");
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0602u;
+        chunk_fd = sr_hle_test_io_open(&cpu);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
+               "TRUNC with no write ends at an empty file");
+        remove(flags_host);
     }
 
     /* DOS device names (join rule): create-open is not-found, matching the POSIX open
@@ -4060,8 +4226,10 @@ static void test_fd_namespace(void) {
      * file size again. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = fd; cpu.r[5] = 0xfffffff6u; cpu.r[6] = 0u;
-    expect(sr_hle_test_io_lseek32(&cpu) == 0xffffffffu,
-           "a seek before the start returns -1");
+    /* On the Memory Stick a seek before the start answers EINVAL, not pspautotests' -1
+     * (PSP-IO-EOF-001 io-eof-seek-negative, measured on a PSP-3000 6.61). */
+    expect(sr_hle_test_io_lseek32(&cpu) == 0x80010016u,
+           "a Memory Stick seek before the start answers EINVAL");
     cpu.r[4] = fd; cpu.r[5] = 200u; cpu.r[6] = 0u;
     expect(sr_hle_test_io_lseek32(&cpu) == 200u,
            "a seek past the end of the file succeeds");
@@ -4110,6 +4278,33 @@ static void test_fd_namespace(void) {
     expect(sr_hle_test_io_lseek32(&cpu) == sizeof(payload) - 1u,
            "the refused write did not change the file size");
 
+    /* A Memory Stick seek before the start answers EINVAL with the error high word, from
+     * SEEK_SET, SEEK_CUR and SEEK_END alike, and leaves the position unchanged
+     * (PSP-IO-EOF-001 io-eof-seek-negative). */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[5] = 8u; cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 8u, "lseek32 places the descriptor at 8");
+    {
+        static const struct { uint32_t low, whence; } before_start[] = {
+            {0xffffffffu, 0u}, {0xfffffff0u, 1u}, {0xffffffe0u, 2u},
+        };
+        for (size_t i = 0; i < sizeof(before_start) / sizeof(before_start[0]); i++) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd; cpu.r[6] = before_start[i].low; cpu.r[7] = 0xffffffffu;
+            cpu.r[8] = before_start[i].whence;
+            expect(sr_hle_test_io_lseek(&cpu) == 0x80010016u && cpu.r[3] == 0xffffffffu,
+                   "a Memory Stick lseek before the start answers EINVAL with the error high word");
+        }
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = 0xffffffffu; cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 0x80010016u,
+               "a Memory Stick lseek32 to -1 answers EINVAL");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 1u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 8u,
+               "the refused seeks before the start left the position at 8");
+    }
+
     /* Negative and unrepresentable destinations leave the position unchanged. */
     {
         const uint32_t file_size = (uint32_t)(sizeof(payload) - 1u);
@@ -4149,9 +4344,9 @@ static void test_fd_namespace(void) {
                 rc = sr_hle_test_io_lseek(&cpu);
                 expect(cpu.r[3] == 0xffffffffu, "a refused lseek reports an error high word");
             }
-            /* Past 32 bits a Memory Stick seek answers EINVAL (PSP-KERNEL-SEM-001 io-seek64). */
-            int negative = i < sizeof(bad32) / sizeof(bad32[0]) || i == 3u || i == 5u;
-            expect(rc == (negative ? 0xffffffffu : 0x80010016u),
+            /* Before the start or past 32 bits a Memory Stick seek answers EINVAL
+             * (PSP-IO-EOF-001 io-eof-seek-negative, PSP-KERNEL-SEM-001 io-seek64). */
+            expect(rc == 0x80010016u,
                    "a negative or too large seek is refused, not clamped");
             memset(&cpu, 0, sizeof(cpu));
             cpu.r[4] = fd;
@@ -4160,6 +4355,35 @@ static void test_fd_namespace(void) {
             expect(sr_hle_test_io_lseek32(&cpu) == 5u,
                    "a refused seek leaves the descriptor position unchanged");
         }
+    }
+
+    /* A write after a seek past the end extends the file to the end of the write, and the
+     * position follows it (PSP-IO-EOF-001 io-eof-write-past and io-eof-gap, measured on a
+     * PSP-3000 6.61: a 4-byte write at 0x20 into a 16-byte file leaves it 0x24 bytes long with
+     * the tail readable at 0x20). The PSP leaves the gap's old Memory Stick bytes in place, so
+     * no gap content is asserted. */
+    {
+        const uint32_t file_size = (uint32_t)(sizeof(payload) - 1u);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = file_size + 16u; cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size + 16u,
+               "a seek 16 bytes past the end succeeds");
+        fd_set_write(&cpu, fd, payload_addr, 4u);
+        expect(sr_hle_test_io_write(&cpu) == 4u, "a write past the end writes its 4 bytes");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 1u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size + 20u,
+               "the position follows the write past the end");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 2u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size + 20u,
+               "the write past the end extends the file to its end");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = file_size + 16u; cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size + 16u, "a seek back to the tail succeeds");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = payload_addr; cpu.r[6] = 8u;
+        expect(sr_hle_test_io_read(&cpu) == 4u, "the tail reads back and the read stops at the end");
     }
 
     /* Closed descriptor behavior */
@@ -4368,6 +4592,34 @@ static void test_fd_namespace(void) {
     expect(fd_host_bytes_equal(rename_dst_host, overwrite_payload, sizeof(overwrite_payload) - 1u),
            "sceIoRename replaced destination contains new payload");
     nk_remove_utf8(rename_dst_host);
+
+    /* A write longer than the host copy buffer (4096 bytes) reaches the file whole. It used to
+     * stop after the first buffer and report 4096, and a game takes that short count for a
+     * failed save. */
+    {
+        enum { LONG_WRITE_SIZE = 2 * 4096 + 17 };
+        static const char long_guest[] = "ms0:/LONG_WRITE.BIN";
+        static uint8_t long_payload[LONG_WRITE_SIZE], long_back[LONG_WRITE_SIZE + 1];
+        char long_host[256];
+        for (size_t i = 0; i < sizeof(long_payload); i++) long_payload[i] = (uint8_t)(i * 31u + 7u);
+        fd_host_path(long_host, sizeof(long_host), long_guest);
+        fd_set_path(&cpu, path_addr, long_guest);
+        uint32_t long_fd = sr_hle_test_io_open(&cpu);
+        fd_guest_copy(payload_addr, long_payload, sizeof(long_payload));
+        fd_set_write(&cpu, long_fd, payload_addr, (uint32_t)sizeof(long_payload));
+        expect(sr_hle_test_io_write(&cpu) == sizeof(long_payload),
+               "a write longer than the host copy buffer reports its full count");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = long_fd;
+        (void)sr_hle_test_io_close(&cpu);
+        FILE *long_file = fopen(long_host, "rb");
+        size_t long_got = long_file ? fread(long_back, 1, sizeof(long_back), long_file) : 0u;
+        if (long_file) fclose(long_file);
+        expect(long_got == sizeof(long_payload) &&
+                   memcmp(long_back, long_payload, sizeof(long_payload)) == 0,
+               "a write longer than the host copy buffer persists every byte");
+        nk_remove_utf8(long_host);
+    }
 
     nk_remove_utf8(result_host);
     rmdir(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
@@ -5840,6 +6092,41 @@ static void profile_read(uint8_t mac[6], uint8_t psid[16]) {
     for (uint32_t i = 0; i < 16u; i++) psid[i] = MEM_R8(PROFILE_OUT + 16u + i);
 }
 
+/* Portable mode (#1850): the game process's registry overlay follows SR_USER_DATA_ROOT, the root the
+ * launcher resolved, not the platform default; SR_SYSTEM_REGISTRY still wins, and a relative root
+ * is refused rather than answered with the default. */
+char *sreg_overlay_path(void);
+static void test_sysreg_overlay_follows_user_data_root(void) {
+    char cwd[1024], root[2048];
+    char *path;
+    size_t len;
+    const char suffix[] = "registry";
+    if (!getcwd(cwd, sizeof(cwd))) {
+        expect(0, "getcwd for the user-data-root test");
+        return;
+    }
+    snprintf(root, sizeof(root), "%s/%s/udr", cwd, SYSREG_SCRATCH_DIR);
+    sysreg_env(NULL);
+    hle_test_setenv("SR_USER_DATA_ROOT", root);
+    path = sreg_overlay_path();
+    len = path ? strlen(path) : 0u;
+    expect(path && strstr(path, "udr") && strstr(path, suffix) && len > 11u &&
+               strcmp(path + len - 11u, "system.json") == 0,
+           "SR_USER_DATA_ROOT sets the registry overlay's folder");
+    free(path);
+    sysreg_env(SYSREG_SCRATCH_FILE);
+    path = sreg_overlay_path();
+    expect(path && strcmp(path, SYSREG_SCRATCH_FILE) == 0, "SR_SYSTEM_REGISTRY wins over SR_USER_DATA_ROOT");
+    free(path);
+    sysreg_env(NULL);
+    hle_test_setenv("SR_USER_DATA_ROOT", "relative-root");
+    path = sreg_overlay_path();
+    expect(path == NULL, "a relative SR_USER_DATA_ROOT is refused, not answered with the default folder");
+    free(path);
+    hle_test_setenv("SR_USER_DATA_ROOT", NULL);
+    sysreg_env(SYSREG_SCRATCH_FILE);
+}
+
 static void test_console_profile_identity(void) {
     static const char configured[] =
         "{\"schema\": \"nakagawa.psp-system-registry-overlay\", \"schema_version\": 1, "
@@ -6381,13 +6668,11 @@ static void test_sysreg_write_model(void) {
  * writes nothing, and values equal to their defaults are not recorded. */
 /* Named refusals for NIDs whose contract is not established from the sources in this tree.
  * Each one returns its named error and does not stop the title, so the run continues past it:
- *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086);
- *  - scePower_469989ad (0x469989ad): no public name, refused under its synthetic name.
+ *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086).
  * The test pins the codes, so a later measured handler has to replace them deliberately.
  * sceKernelReferSystemStatus is no longer refused: it is measured (test_refer_system_status). */
 #define NID_REFUSE_NET_INIT                0x39af39a6u
 #define NID_REFUSE_NET_TERM                0x281928a9u
-#define NID_REFUSE_POWER_469989AD          0x469989adu
 #define REFUSE_NET_CODE                    0x80010086u
 #define REFUSE_UNSUPPORTED_CODE            0x80020002u
 
@@ -6407,8 +6692,6 @@ static void test_named_refusals(void) {
            "sceNetInit refuses with the offline network code 0x80010086");
     expect(refuse_call(NID_REFUSE_NET_TERM) == REFUSE_NET_CODE,
            "sceNetTerm has a named offline refusal instead of the unknown-NID stop");
-    expect(refuse_call(NID_REFUSE_POWER_469989AD) == REFUSE_UNSUPPORTED_CODE,
-           "scePower_469989ad is a named refusal (0x80020002), not a guessed handler");
     expect(refuse_call(0xf9d8eb63u) == REFUSE_NET_CODE,
            "sceHttpsEnd refuses with the offline HTTP code 0x80010086, as sceHttpEnd does");
     expect(refuse_call(0x011f03c1u) == REFUSE_UNSUPPORTED_CODE,
@@ -8093,6 +8376,76 @@ static void test_msg_dialog_abort_without_update(void) {
     sr_hle_test_osk_slot_reset();
 }
 
+/* #1386 cancel cleanup: a game that gives up on a dialog calls ShutdownStart while it is still
+ * RUNNING. Savedata, netconf, gamedata and game sharing take that (the message dialog refuses it,
+ * tests/utility/dialog/status.expected). The shutdown must leave nothing behind: the dialog winds
+ * down to NONE, writes no result into the abandoned block, and the next InitStart, of the same
+ * type or another, starts fresh from INIT with a cleared result word. Which status a non-message
+ * dialog reports after a RUNNING shutdown is not measured; only that the slot comes back is
+ * asserted. Gamedata and sharing are cancelled before their first Update, which would create
+ * memory-stick directories. */
+static void test_utility_dialog_cancel_cleanup(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+    };
+    char what[256];
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    for (size_t i = 0; i < sizeof(dialogs) / sizeof(dialogs[0]); i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const int works = savedata || dialogs[i].init == NID_NETCONF_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
+        snprintf(what, sizeof(what), "%s reaches RUNNING before it is cancelled", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 2u,
+               what);
+        if (works) (void)utility_call(&cpu, dialogs[i].update, 0u); /* its work has started */
+        snprintf(what, sizeof(what), "%s accepts ShutdownStart while RUNNING", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u, what);
+        int none = 0;
+        for (int frame = 0; frame < 4 && !none; frame++)
+            none = utility_call(&cpu, dialogs[i].status, 0u) == 0u;
+        snprintf(what, sizeof(what), "%s winds down to NONE after a cancel", dialogs[i].name);
+        expect(none, what);
+        /* Nothing may write into the abandoned block from here on. */
+        MEM_W32(block + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+        for (int k = 0; k < 4; k++) {
+            (void)utility_call(&cpu, dialogs[i].update, 0u);
+            (void)utility_call(&cpu, dialogs[i].status, 0u);
+        }
+        snprintf(what, sizeof(what), "%s writes no result into its cancelled block", dialogs[i].name);
+        expect(MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED, what);
+
+        /* A message dialog takes the freed slot and finishes into its own block only. */
+        utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+        snprintf(what, sizeof(what), "a message dialog starts after %s is cancelled", dialogs[i].name);
+        expect(msg_dialog_run_to_finished(&cpu, UTILITY_MSG_PARAM_ADDR), what);
+        snprintf(what, sizeof(what), "the message dialog leaves the cancelled %s block alone",
+                 dialogs[i].name);
+        expect(MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED, what);
+
+        /* The same type starts again from INIT with its result word cleared. */
+        snprintf(what, sizeof(what), "%s starts again from INIT after a cancel", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
+                   MEM_R32(block + 0x1cu) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u,
+               what);
+        sr_hle_test_osk_slot_reset();
+    }
+}
+
 static void test_msg_dialog_answer_field(void) {
     enum { OPTIONS = 0x23cu, BUTTON_PRESSED = 0x240u, OPT_YESNO = 0x10u };
     CpuState cpu;
@@ -8429,10 +8782,11 @@ static void test_io_devctl_memory_stick(void) {
 /* ---- savedata GETSIZE / SIZES free space (#308) ---------------------------------------------
  * GETSIZE reports a shortfall, never the size of the data. On a PSP (pspautotests
  * tests/utility/savedata/getsize.expected, revision 2ed7c9c5) a zero-filled sizeInfo with no
- * entries for a save that does not exist changes only sectorSize (0x8000), freeSectors,
- * freeKB and freeString, and the result is 0. Free space is the host-backed Memory Stick the
- * capacity devctl measures, in 32 KiB sectors; the shortfall arithmetic for listed entries
- * follows PPSSPP SavedataParam::GetSize as a behaviour reference. */
+ * entries for a save that exists changes only sectorSize (0x8000), freeSectors, freeKB and
+ * freeString, and the result is 0. A save that does not exist fills in the same figures and
+ * reports RW_NO_DATA (PPSSPP as the behaviour reference, UNMEASURED on a PSP). Free space is the
+ * host-backed Memory Stick the capacity devctl measures, in 32 KiB sectors; the shortfall
+ * arithmetic for listed entries follows PPSSPP SavedataParam::GetSize as a behaviour reference. */
 extern void sr_hle_test_set_memstick_free_bytes(int mode, uint64_t bytes);
 
 enum {
@@ -8520,7 +8874,7 @@ static void test_savedata_getsize_free_space(void) {
     sr_hle_test_register_iofilemgr();
     sr_hle_test_set_memstick_free_bytes(0, 0u);
 
-    /* 1. The hardware case: zero-filled sizeInfo, no entries, save missing. */
+    /* 1. Zero-filled sizeInfo, no entries, save missing: the figures, then RW_NO_DATA. */
     {
         uint64_t before = 0, after = 0;
         getsize_param(22u, "_GameData0");
@@ -8530,7 +8884,7 @@ static void test_savedata_getsize_free_space(void) {
         uint64_t lo = before < after ? before : after, hi = before < after ? after : before;
         uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
         expect(measured, "the capacity devctl measures the synthetic Memory Stick's host volume");
-        expect(rc == 0u, "GETSIZE for a save that does not exist returns 0, as on a PSP");
+        expect(rc == 0x80110327u, "GETSIZE for a save that does not exist reports RW_NO_DATA");
         expect(MEM_R32(GETSIZE_INFO_ADDR + 0u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 4u) == 0u &&
                    MEM_R32(GETSIZE_INFO_ADDR + 8u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 12u) == 0u,
                "GETSIZE leaves the entry counts and pointers alone");
@@ -8550,17 +8904,19 @@ static void test_savedata_getsize_free_space(void) {
                "GETSIZE with no entries leaves neededString and overwriteString untouched");
     }
 
-    /* 2. One secure entry of a few KB on a missing save fits: nothing needed. */
+    /* 2. One secure entry of a few KB on a missing save fits: nothing needed, still no data. A
+     * game reads this pair as "no save yet, and room to make one". */
     {
         getsize_param(22u, "_GameData0");
         getsize_entry(GETSIZE_SECURE_ADDR, 0x2000u, "DATA.BIN");
         MEM_W32(GETSIZE_INFO_ADDR + 0u, 1u);
         MEM_W32(GETSIZE_INFO_ADDR + 8u, GETSIZE_SECURE_ADDR);
-        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0u &&
+        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0x80110327u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 16u) == 0x8000u &&
                    MEM_R32(GETSIZE_INFO_ADDR + 36u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 48u) == 0u &&
                    getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, zero8) &&
                    getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 52u, zero8),
-               "GETSIZE for one small secure file on a missing save reports neededKB 0, overwriteKB 0");
+               "GETSIZE for one small secure file on a missing save reports RW_NO_DATA, neededKB 0, overwriteKB 0");
     }
 
     /* 3. A shortfall: 64 KiB free (plus a partial sector), more data than that. */
@@ -8605,10 +8961,11 @@ static void test_savedata_getsize_free_space(void) {
                "GETSIZE needs nothing when the files it replaces free enough space");
     }
 
-    /* 4. SIZES msFree reports the same free figures as GETSIZE: the PSP's 1 GB record. */
+    /* 4. SIZES msFree reports the same free figures as GETSIZE: the PSP's 1 GB record, whose
+     * save exists. */
     sr_hle_test_set_memstick_free_bytes(1, 0x40000000u + 0x7fffu);
     {
-        getsize_param(22u, "_GameData0");
+        getsize_param(22u, "_GameData1");
         uint32_t getsize_rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
         uint32_t sector_size = MEM_R32(GETSIZE_INFO_ADDR + 16u);
         uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
@@ -10734,6 +11091,66 @@ static void test_power_set_bus_clock_frequency_autotest(void) {
     sr_hle_test_power_reset();
 }
 
+/* scePowerSetClockFrequency and its 350 and 630 variants, which PPSSPP Core/HLE/scePower.cpp
+ * (c9e2afb6) routes to one function. PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded
+ * on a PSP) calls it with (n, n, n / 2): -1..18 and 334 return 0x800001FE, 19..333 return 0. The
+ * independent CPU and bus limits are PPSSPP's, not measured. A refused request moves no clock. */
+static int power_clocks_are(uint32_t pll, uint32_t cpu, uint32_t bus) {
+    return td24b_dispatch4(0x34f9c463u, 0u, 0u, 0u, 0u) == pll &&
+           td24b_dispatch4(0xfdb5bfe9u, 0u, 0u, 0u, 0u) == cpu &&
+           td24b_dispatch4(0xbd681969u, 0u, 0u, 0u, 0u) == bus;
+}
+
+static void test_power_set_clock_frequency_range_checks(void) {
+    static const struct { uint32_t nid; const char *name; } setters[] = {
+        {0x737486f2u, "scePowerSetClockFrequency"},
+        {0xebd177d6u, "scePowerSetClockFrequency350"},
+        {0x469989adu, "scePowerSetClockFrequency630"},
+    };
+    static const struct { uint32_t pll, cpu, bus; const char *why; } refused[] = {
+        {18u, 18u, 9u, "PLL below 19 (recorded)"},
+        {334u, 334u, 167u, "PLL above 333 (recorded)"},
+        {222u, 223u, 111u, "PLL below the CPU clock"},
+        {222u, 0u, 111u, "CPU clock 0"},
+        {333u, 334u, 166u, "CPU clock above 333, which also puts it above the PLL"},
+        {222u, 222u, 0u, "bus clock 0"},
+        {333u, 333u, 167u, "bus clock above 166"},
+    };
+    static const struct { uint32_t pll, cpu, bus; } accepted[] = {
+        {19u, 19u, 9u}, {333u, 333u, 166u}, {333u, 1u, 1u}, {222u, 222u, 111u},
+    };
+    char msg[192];
+    reset_fixture();
+    sr_hle_init();
+    for (size_t n = 0; n < sizeof(setters) / sizeof(setters[0]); n++) {
+        uint32_t nid = setters[n].nid;
+        for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+            sr_hle_test_power_reset();
+            snprintf(msg, sizeof msg, "%s refuses %s with 0x800001FE and moves no clock",
+                     setters[n].name, refused[i].why);
+            expect(td24b_dispatch4(nid, refused[i].pll, refused[i].cpu, refused[i].bus, 0u) == 0x800001feu &&
+                       power_clocks_are(222u, 222u, 111u), msg);
+        }
+        int sweep_ok = 1;
+        for (int32_t freq = -1; freq <= 334; freq++) {
+            uint32_t want = (freq >= 19 && freq <= 333) ? 0u : 0x800001feu;
+            if (td24b_dispatch4(nid, (uint32_t)freq, (uint32_t)freq, (uint32_t)(freq / 2), 0u) != want)
+                sweep_ok = 0;
+        }
+        snprintf(msg, sizeof msg, "%s answers the recorded (n, n, n / 2) sweep from -1 to 334",
+                 setters[n].name);
+        expect(sweep_ok, msg);
+        for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+            sr_hle_test_power_reset();
+            snprintf(msg, sizeof msg, "%s accepts %u/%u/%u and retains it", setters[n].name,
+                     accepted[i].pll, accepted[i].cpu, accepted[i].bus);
+            expect(td24b_dispatch4(nid, accepted[i].pll, accepted[i].cpu, accepted[i].bus, 0u) == 0u &&
+                       power_clocks_are(accepted[i].pll, accepted[i].cpu, accepted[i].bus), msg);
+        }
+    }
+    sr_hle_test_power_reset();
+}
+
 /* sceRtcGetTime_t, sceRtcTickAddYears and sceRtcGetTickResolution against PSPAutotests
  * tests/rtc/{convert,arithmetic}.expected (2ed7c9c5, recorded on a PSP). Dates go to ticks and
  * back through sceRtcGetTick / sceRtcSetTick, as the autotests do. Before these handlers the
@@ -10838,6 +11255,171 @@ static void test_rtc_time_t_add_years_resolution_autotest(void) {
     (void)td24b_dispatch4(RTCT_NID_ADD_YEARS, RTCT_DST, RTCT_SRC, 1u, 0u);
     expect(sr_hle_test_unmodelled_stops() == stops + 3u,
            "sceRtcTickAddYears stops by name on NULL pointers and on a source past year 9999");
+}
+
+/* sceRtcTickAddMicroseconds, sceRtcTickAddSeconds, sceRtcTickAddDays, sceRtcGetDayOfWeek and
+ * sceRtcCheckValid against PSPAutotests tests/rtc/{arithmetic,lookup}.expected (f573fe8c, recorded
+ * on a PSP). Each row is the autotest's own: the date goes to a tick through sceRtcGetTick, the
+ * count is added, and the result goes back through sceRtcSetTick. Before these handlers the five
+ * NIDs were unregistered imports that stopped 11 titles at launch. */
+enum {
+    RTCA_NID_ADD_MICROS = 0x26d25a5du, RTCA_NID_ADD_SECONDS = 0xf2a4afe5u, RTCA_NID_ADD_DAYS = 0xe51b4b7au,
+    RTCA_NID_DAY_OF_WEEK = 0x57726bc1u, RTCA_NID_CHECK_VALID = 0x4b1b5e82u,
+};
+
+static int rtca_dst_is(uint16_t y, uint16_t mo, uint16_t d, uint16_t h, uint16_t mi, uint16_t sec, uint32_t us) {
+    rtct_date(0u, 0u, 0u, 0u, 0u, 0u, 0u);
+    if (td24b_dispatch4(RTCT_NID_SET_TICK, RTCT_DATE, RTCT_DST, 0u, 0u) != 0u) return 0;
+    return MEM_R16(RTCT_DATE) == y && MEM_R16(RTCT_DATE + 2u) == mo && MEM_R16(RTCT_DATE + 4u) == d &&
+           MEM_R16(RTCT_DATE + 6u) == h && MEM_R16(RTCT_DATE + 8u) == mi &&
+           MEM_R16(RTCT_DATE + 10u) == sec && MEM_R32(RTCT_DATE + 12u) == us;
+}
+
+/* checkAddDateValue: the source date's tick, dest filled with 0x1337, then the add. */
+static uint32_t rtca_add(uint32_t nid, uint16_t y, uint16_t mo, uint16_t d, uint16_t h, uint16_t mi,
+                         uint16_t sec, uint32_t us, long long count) {
+    rtct_date(y, mo, d, h, mi, sec, us);
+    expect(td24b_dispatch4(RTCT_NID_GET_TICK, RTCT_DATE, RTCT_SRC, 0u, 0u) == 0u, "the source date converts");
+    MEM_W32(RTCT_DST, 0x1337u); MEM_W32(RTCT_DST + 4u, 0u);
+    uint32_t lo = (uint32_t)(uint64_t)count, hi = (uint32_t)((uint64_t)count >> 32);
+    if (nid == RTCA_NID_ADD_DAYS) hi = 0u;   /* a 32-bit int argument: the 64-bit row is truncated */
+    return td24b_dispatch4(nid, RTCT_DST, RTCT_SRC, lo, hi);
+}
+
+static uint32_t rtca_check_valid(uint16_t y, uint16_t mo, uint16_t d, uint16_t h, uint16_t mi, uint16_t sec,
+                                 uint32_t us) {
+    rtct_date(y, mo, d, h, mi, sec, us);
+    return td24b_dispatch4(RTCA_NID_CHECK_VALID, RTCT_DATE, 0u, 0u, 0u);
+}
+
+static void test_rtc_tick_add_day_of_week_check_valid_autotest(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(RTCA_NID_ADD_MICROS) && sr_hle_test_is_registered(RTCA_NID_ADD_SECONDS) &&
+               sr_hle_test_is_registered(RTCA_NID_ADD_DAYS) && sr_hle_test_is_registered(RTCA_NID_DAY_OF_WEEK) &&
+               sr_hle_test_is_registered(RTCA_NID_CHECK_VALID),
+           "the five sceRtc imports are registered");
+
+    /* arithmetic.expected checkRtcTickAddMicroseconds. */
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1970, 1, 1, 0, 0, 0, 445, -2000) == 0u &&
+               rtca_dst_is(1969, 12, 31, 23, 59, 59, 998445),
+           "1970-01-01 .000445 - 2000 microseconds is 1969-12-31 23:59:59.998445");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1970, 1, 1, 0, 0, 0, 445, 2000) == 0u &&
+               rtca_dst_is(1970, 1, 1, 0, 0, 0, 2445),
+           "1970-01-01 .000445 + 2000 microseconds is .002445");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1970, 1, 1, 0, 0, 0, 445, -62135596800000445LL) == 0u &&
+               rtca_dst_is(1, 1, 1, 0, 0, 0, 0),
+           "subtracting the whole tick reaches 0001-01-01");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1970, 1, 1, 0, 0, 0, 445, 62135596800000445LL) == 0u &&
+               rtca_dst_is(3939, 1, 1, 0, 0, 0, 890),
+           "adding the whole tick reaches 3939-01-01 .000890");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1, 1, 1, 0, 0, 0, 10, -10) == 0u && rtca_dst_is(1, 1, 1, 0, 0, 0, 0),
+           "0001-01-01 .000010 - 10 microseconds is 0001-01-01");
+    expect(rtca_add(RTCA_NID_ADD_MICROS, 1, 1, 1, 0, 0, 0, 10, -11) == 0u &&
+               rtca_dst_is(60267, 1, 19, 8, 1, 49, 551615),
+           "one microsecond below year 1 returns 0 and wraps to year 60267");
+
+    /* arithmetic.expected checkRtcTickAddSeconds. */
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, -2000) == 0u &&
+               rtca_dst_is(1969, 12, 31, 23, 26, 40, 445),
+           "1970-01-01 - 2000 seconds is 1969-12-31 23:26:40");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, 2000) == 0u &&
+               rtca_dst_is(1970, 1, 1, 0, 33, 20, 445),
+           "1970-01-01 + 2000 seconds is 00:33:20");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, -62135596800000445LL) == 0u &&
+               rtca_dst_is(38202, 12, 23, 6, 23, 54, 394749),
+           "a huge negative second count wraps to year 38202");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, 62135596800000445LL) == 0u &&
+               rtca_dst_is(26003, 1, 28, 1, 37, 55, 157757),
+           "a huge positive second count wraps to year 26003");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1, 1, 1, 0, 0, 10, 0, -10) == 0u && rtca_dst_is(1, 1, 1, 0, 0, 0, 0),
+           "0001-01-01 00:00:10 - 10 seconds is 0001-01-01");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1, 1, 1, 0, 0, 10, 0, -11) == 0u &&
+               rtca_dst_is(60267, 1, 19, 8, 1, 48, 551616),
+           "one second below year 1 wraps to year 60267");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 9999, 12, 31, 23, 59, 50, 0, 9) == 0u &&
+               rtca_dst_is(9999, 12, 31, 23, 59, 59, 0),
+           "9999-12-31 23:59:50 + 9 seconds is 23:59:59");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 9999, 12, 31, 23, 59, 50, 0, 10) == 0u &&
+               rtca_dst_is(10000, 1, 1, 0, 0, 0, 0),
+           "9999-12-31 23:59:50 + 10 seconds reaches year 10000");
+    expect(rtca_add(RTCA_NID_ADD_SECONDS, 1970, 1, 1, 0, 0, 0, 445, -1) == 0u &&
+               rtca_dst_is(1969, 12, 31, 23, 59, 59, 445),
+           "1970-01-01 - 1 second is 1969-12-31 23:59:59");
+
+    /* arithmetic.expected checkRtcTickAddDays: the count is a 32-bit int. */
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, -2000) == 0u &&
+               rtca_dst_is(1964, 7, 11, 0, 0, 0, 445),
+           "1970-01-01 - 2000 days is 1964-07-11");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, 2000) == 0u &&
+               rtca_dst_is(1975, 6, 24, 0, 0, 0, 445),
+           "1970-01-01 + 2000 days is 1975-06-24");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, -62135596800000445LL) == 0u &&
+               rtca_dst_is(40053, 2, 10, 0, 0, 0, 445),
+           "a huge negative day count is truncated to an int and wraps to year 40053");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, 62135596800000445LL) == 0u &&
+               rtca_dst_is(24152, 12, 8, 8, 1, 49, 552061),
+           "a huge positive day count is truncated to an int and wraps to year 24152");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1, 1, 10, 0, 0, 0, 0, -9) == 0u && rtca_dst_is(1, 1, 1, 0, 0, 0, 0),
+           "0001-01-10 - 9 days is 0001-01-01");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1, 1, 10, 0, 0, 0, 0, -10) == 0u &&
+               rtca_dst_is(60267, 1, 18, 8, 1, 49, 551616),
+           "0001-01-10 - 10 days wraps to year 60267");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 9999, 12, 20, 0, 0, 0, 0, 11) == 0u &&
+               rtca_dst_is(9999, 12, 31, 0, 0, 0, 0),
+           "9999-12-20 + 11 days is 9999-12-31");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 9999, 12, 20, 0, 0, 0, 0, 12) == 0u &&
+               rtca_dst_is(10000, 1, 1, 0, 0, 0, 0),
+           "9999-12-20 + 12 days reaches year 10000");
+    expect(rtca_add(RTCA_NID_ADD_DAYS, 1970, 1, 1, 0, 0, 0, 445, -1) == 0u &&
+               rtca_dst_is(1969, 12, 31, 0, 0, 0, 445),
+           "1970-01-01 - 1 day is 1969-12-31");
+
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(RTCA_NID_ADD_SECONDS, 0u, RTCT_SRC, 1u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_ADD_SECONDS, RTCT_DST, 0u, 1u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_ADD_MICROS, RTCT_DST, 0u, 1u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_ADD_DAYS, 0u, RTCT_SRC, 1u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 4u,
+           "the three tick adds stop by name on a NULL source or destination");
+
+    /* lookup.expected checkDayOfWeek: 0 is Sunday. */
+    static const struct { uint32_t y, m, d, dow; } dow[] = {
+        { 2010, 4, 27, 2 }, { 2000, 1, 0, 5 }, { 2000, 1, 2458, 6 }, { 2001, 1, 0, 0 }, { 2001, 1, 2458, 1 },
+        { 166970016, 1024, 0, 3 }, { 2000, 0, 0, 1 }, { 2000, 573, 0, 0 }, { 2000, 4587, 2458, 0 },
+        { 2001, 0, 0, 2 }, { 2001, 573, 0, 1 }, { 2001, 4587, 2458, 1 },
+    };
+    int dow_ok = 1;
+    for (size_t i = 0; i < sizeof dow / sizeof dow[0]; i++)
+        if (td24b_dispatch4(RTCA_NID_DAY_OF_WEEK, dow[i].y, dow[i].m, dow[i].d, 0u) != dow[i].dow) dow_ok = 0;
+    expect(dow_ok, "sceRtcGetDayOfWeek returns every row of lookup.expected");
+    stops = sr_hle_test_unmodelled_stops();
+    (void)td24b_dispatch4(RTCA_NID_DAY_OF_WEEK, 2010u, 13u, 1u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_DAY_OF_WEEK, 0u, 4u, 27u, 0u);
+    (void)td24b_dispatch4(RTCA_NID_DAY_OF_WEEK, 2010u, 4u, 0xffffffffu, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 3u,
+           "sceRtcGetDayOfWeek stops by name on a month and year pair, or a day, that was not measured");
+
+    /* lookup.expected checkRtcCheckValid and checkMaxYear. */
+    expect(rtca_check_valid(2012, 9, 20, 7, 0, 0, 0) == 0u, "2012-09-20 07:00:00 is valid");
+    expect(rtca_check_valid(9999, 12, 31, 23, 59, 59, 999999) == 0u, "the last microsecond of year 9999 is valid");
+    expect(rtca_check_valid(1, 1, 1, 0, 0, 0, 1) == 0u, "0001-01-01 .000001 is valid");
+    expect(rtca_check_valid(10000, 1, 1, 0, 0, 0, 1) == 0xffffffffu, "year 10000 is -1");
+    expect(rtca_check_valid((uint16_t)-98, 56, 100, 26, 61, 61, 100000000u) == 0xffffffffu,
+           "a date wrong in every field reports the year, -1");
+    expect(rtca_check_valid((uint16_t)-98, 9, 20, 7, 0, 0, 0) == 0xffffffffu, "an invalid year is -1");
+    expect(rtca_check_valid(2012, (uint16_t)-9, 20, 7, 0, 0, 0) == 0xfffffffeu, "an invalid month is -2");
+    expect(rtca_check_valid(2012, 9, (uint16_t)-20, 7, 0, 0, 0) == 0xfffffffdu, "an invalid day is -3");
+    expect(rtca_check_valid(2012, 9, 20, (uint16_t)-7, 0, 0, 0) == 0xfffffffcu, "an invalid hour is -4");
+    expect(rtca_check_valid(2012, 9, 20, 7, (uint16_t)-10, 10, 10) == 0xfffffffbu, "an invalid minute is -5");
+    expect(rtca_check_valid(2012, 9, 20, 7, 10, (uint16_t)-10, 10) == 0xfffffffau, "an invalid second is -6");
+    expect(rtca_check_valid(2012, 9, 20, 7, 10, 10, (uint32_t)-10) == 0xfffffff9u, "an invalid microsecond is -7");
+    stops = sr_hle_test_unmodelled_stops();
+    (void)rtca_check_valid(2012, 9, 0, 7, 0, 0, 0);
+    (void)rtca_check_valid(2013, 2, 29, 7, 0, 0, 0);
+    (void)td24b_dispatch4(RTCA_NID_CHECK_VALID, 0u, 0u, 0u, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 3u,
+           "sceRtcCheckValid stops by name on day 0, a day past the month length and a NULL pointer");
 }
 
 static void test_psp_measured_rtc_time64_20261024(void) {
@@ -15950,6 +16532,139 @@ static void test_wake_result_is_per_thread(void) {
     s_cur = -1;
 }
 
+/* sceUmdCancelWaitDriveStat: PPSSPP Core/HLE/sceUmd.cpp (c9e2afb6) resumes every thread waiting
+ * on the drive with SCE_KERNEL_ERROR_WAIT_CANCEL and returns 0. Each of the three drive waits
+ * runs on its own coroutine, blocked for READY on a deactivated drive; the fixture thread plays
+ * the caller. The result is read from what the guest's wait returned, not from the scheduler. */
+#define UCW_NID_CANCEL 0x6af9b50au
+#define UCW_NID_ACTIVATE 0xc6183d47u
+#define UCW_NID_DEACTIVATE 0xe83742bau
+#define UCW_NID_GET_DRIVE_STAT 0x6b4a146cu
+#define UCW_READY 0x20u
+#define UCW_WAITS 3
+
+static const uint32_t s_ucw_wait_nids[UCW_WAITS] = {
+    0x8ef08fceu, /* sceUmdWaitDriveStat */
+    0x56202973u, /* sceUmdWaitDriveStatWithTimer */
+    0x4a9e5e29u, /* sceUmdWaitDriveStatCB */
+};
+static uint32_t s_ucw_ret[UCW_WAITS];
+static int s_ucw_returned[UCW_WAITS];
+
+static void ucw_waiter_body(void *arg) {
+    size_t which = (size_t)(uintptr_t)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = UCW_READY; cpu.r[5] = 1000000u;
+    s_ucw_ret[which] = sr_syscall(&cpu, s_ucw_wait_nids[which]);
+    s_ucw_returned[which] = 1;
+    selftest_park_on_scheduler();
+}
+
+/* Blocks wait `which` on the drive and leaves the fixture thread current. */
+static TCB *ucw_block(TCB *main_t, size_t which, uint32_t uid) {
+    s_ucw_ret[which] = 0xFFFFFFFFu;
+    s_ucw_returned[which] = 0;
+    TCB *waiter = fixture_thread(uid, TH_READY, 16);
+    waiter->started = 1;
+    waiter->coro = sr_coro_create(ucw_waiter_body, (void *)(uintptr_t)which, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "UMD cancel fixture: waiter coroutine created");
+    if (!waiter->coro) return NULL;
+    s_cur = (int)(waiter - s_tcb);
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    expect(waiter->state == TH_WAIT_OBJ && !s_ucw_returned[which],
+           "UMD cancel fixture: the wait for READY blocks on the deactivated drive");
+    s_cur = (int)(main_t - s_tcb);
+    main_t->state = TH_RUNNING;
+    return waiter;
+}
+
+static void ucw_resume(TCB *waiter) {
+    s_cur = (int)(waiter - s_tcb);
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+}
+
+static void ucw_finish(TCB **waiters, size_t count) {
+    for (size_t i = 0; i < count; i++)
+        if (waiters[i] && waiters[i]->coro) { sr_coro_destroy(waiters[i]->coro); waiters[i]->coro = NULL; }
+    s_cur = -1;
+}
+
+static void test_umd_cancel_wait_drive_stat(void) {
+    CpuState cpu;
+    TCB *waiters[UCW_WAITS] = {0};
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_umd_reset();
+    expect(sr_hle_test_is_registered(UCW_NID_CANCEL),
+           "sceUmdCancelWaitDriveStat has a production registration");
+    TCB *main_t = fixture_thread(0x1e1u, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+    memset(&cpu, 0, sizeof cpu);
+    expect(sr_syscall(&cpu, UCW_NID_CANCEL) == 0u, "a cancel with no waiter returns 0");
+    expect(sr_syscall(&cpu, UCW_NID_DEACTIVATE) == 0u &&
+               sr_syscall(&cpu, UCW_NID_GET_DRIVE_STAT) == 0x12u,
+           "the drive is deactivated, so a wait for READY blocks");
+
+    /* Every waiter, whichever wait it used, leaves with WAIT_CANCEL. */
+    int blocked = 1;
+    for (size_t i = 0; i < UCW_WAITS; i++) {
+        waiters[i] = ucw_block(main_t, i, 0x1e2u + (uint32_t)i);
+        if (!waiters[i]) blocked = 0;
+    }
+    if (blocked) {
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, UCW_NID_CANCEL) == 0u,
+               "sceUmdCancelWaitDriveStat returns 0 with waiters");
+        for (size_t i = 0; i < UCW_WAITS; i++) {
+            expect(waiters[i]->state == TH_READY, "the cancel readies every drive waiter");
+            ucw_resume(waiters[i]);
+            expect(s_ucw_returned[i] == 1 && s_ucw_ret[i] == WCR_WAIT_CANCEL,
+                   "a cancelled drive wait returns SCE_KERNEL_ERROR_WAIT_CANCEL (0x800201A9)");
+        }
+        s_cur = (int)(main_t - s_tcb);
+        main_t->state = TH_RUNNING;
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, UCW_NID_GET_DRIVE_STAT) == 0x12u,
+               "a cancel does not change the drive state");
+    }
+    ucw_finish(waiters, UCW_WAITS);
+    s_cur = (int)(main_t - s_tcb);
+
+    /* A cancel latches nothing: a wait that starts after it ends on the drive becoming ready. */
+    memset(&cpu, 0, sizeof cpu);
+    expect(sr_syscall(&cpu, UCW_NID_CANCEL) == 0u, "a second cancel with no waiter returns 0");
+    waiters[0] = ucw_block(main_t, 0u, 0x1f0u);
+    if (waiters[0]) {
+        s_cur = -1;
+        memset(&cpu, 0, sizeof cpu);
+        expect(sr_syscall(&cpu, UCW_NID_ACTIVATE) == 0u, "the drive activates with a waiter blocked");
+        ucw_resume(waiters[0]);
+        expect(s_ucw_returned[0] == 1 && s_ucw_ret[0] == 0u,
+               "a wait after an earlier cancel returns 0 when the drive becomes ready");
+    }
+    ucw_finish(waiters, 1u);
+    s_cur = (int)(main_t - s_tcb);
+
+    /* The same path hands a waiter any other wake result, as sceKernelReleaseWaitThread gives. */
+    memset(&cpu, 0, sizeof cpu);
+    expect(sr_syscall(&cpu, UCW_NID_DEACTIVATE) == 0u, "the drive is deactivated again");
+    waiters[0] = ucw_block(main_t, 0u, 0x1f1u);
+    if (waiters[0]) {
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = waiters[0]->uid;
+        expect(sr_syscall(&cpu, NID_WCR_RELEASE_WAIT) == 0u, "ReleaseWaitThread frees the drive waiter");
+        ucw_resume(waiters[0]);
+        expect(s_ucw_returned[0] == 1 && s_ucw_ret[0] == WCR_WAIT_RELEASE,
+               "a released drive wait returns SCE_KERNEL_ERROR_WAIT_RELEASE (0x800201AA)");
+    }
+    ucw_finish(waiters, 1u);
+    sr_hle_test_umd_reset();
+}
+
 static void test_cancel_release_wake_results(void) {
     char msg[192];
     CpuState cpu;
@@ -17595,6 +18310,14 @@ static void test_td24b_cheap_hle_batch(void) {
            "bus clock reflects the 350-variant Set request through shared state");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
            "PLL clock reflects the 350-variant Set request's pllfreq (333, not the earlier 222)");
+    /* PPSSPP Core/HLE/scePower.cpp (c9e2afb6) routes scePowerSetClockFrequency630 to the same
+     * function as scePowerSetClockFrequency, so a title's request moves the shared clocks. */
+    expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK_630, 266u, 133u, 66u, 0u) == 0u,
+           "scePowerSetClockFrequency630 answers success");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 133u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 66u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 266u,
+           "the 630 variant moves the same retained clocks as scePowerSetClockFrequency");
     sr_hle_test_power_reset();
     expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u &&
                td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 111u &&
@@ -31361,6 +32084,40 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     s_fixture_loaded_end = 0x00400000u;
 }
 
+/* PSP-MODULE-START-001: the module_start thread's 0x40000-byte stack is at the top of the user
+ * partition and the stack of the thread it creates sits directly below. Deleting the top stack
+ * returns 0x40000 bytes to the partition but leaves sceKernelMaxFreeMemSize unchanged, because
+ * the freed range is a block of its own below the lower live stack, not part of the span. */
+static void test_max_free_unchanged_after_top_stack_deleted(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+    const uint32_t NID_MAX_FREE = 0xa291f107u;
+    const uint32_t NID_DELETE_THREAD = 0x9fa03cd3u;
+    CpuState cpu;
+    reset_fixture();
+    s_fixture_loaded_end = 0x08a00000u;
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+    uint32_t top = sched_create_thread(0x2000u, 32, 0x40000u);
+    uint32_t top_floor = sched_guest_stack_floor();
+    uint32_t lower = sched_create_thread(0x2004u, 32, 0x4000u);
+    uint32_t lower_floor = sched_guest_stack_floor();
+    expect(top != 0u && lower != 0u && top_floor == 0x0a000000u - 0x40000u &&
+           lower_floor == top_floor - 0x4000u,
+           "a 0x40000-byte top stack and a 0x4000-byte stack directly below it are created");
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t before = sr_syscall(&cpu, NID_MAX_FREE);
+    expect(before == lower_floor - base0, "MaxFreeMemSize stops at the lower live stack");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = top;
+    expect(sr_syscall(&cpu, NID_DELETE_THREAD) == 0u, "the top-most stack's thread is deleted");
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t after = sr_syscall(&cpu, NID_MAX_FREE);
+    expect(after == before && after == lower_floor - base0,
+           "MaxFreeMemSize is unchanged after the top stack is freed (PSP-MODULE-START-001)");
+    s_fixture_loaded_end = 0x00400000u;
+}
+
 /* sceKernelQueryModuleInfo answers the main module from its generated record, as uOFW
  * queryModule.c fills SceKernelModuleInfo: buffer before size, size 64 or 96 from SDK 2.80,
  * unknown uid refused, attribute without privilege bits and a NUL-padded name only at size 96.
@@ -31530,6 +32287,154 @@ static void test_module_id_queries_resolve_owning_module(void) {
     sr_hle_test_module_reset();
     s_fixture_loaded_base = UINT32_MAX;
     s_fixture_loaded_end = 0x00400000u;
+}
+
+/* sceDisplayIsForeground, sceKernelGetModuleIdList, LoadExecForUser_362A956B and the utility
+ * dialog GetStatus calls without a dialog, against PSPAutotests (rev 1a9e6c31, recorded on a
+ * PSP): display/isstate.expected, modules/idlist/idlist.expected, threads/callbacks/exit.expected
+ * and utility/dialog/{status,htmlviewer}.expected. Before these handlers the NIDs were unregistered
+ * imports. */
+static void test_imports_20261102_measured_contracts(void) {
+    CpuState cpu;
+    uint32_t stops;
+    reset_fixture();
+    sr_hle_init();
+
+    /* isstate.expected: 0 while the scanout address is 0, 1 once a framebuffer is set, and still 1
+     * after a latched request for address 0, which only takes effect at the next vblank. */
+    const uint32_t NID_IS_FOREGROUND = 0xb4f378fau, NID_SET_FRAMEBUF = 0x289d82feu;
+    expect(sr_hle_test_is_registered(NID_IS_FOREGROUND), "sceDisplayIsForeground is registered");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[7] = 1u;
+    expect(sr_syscall(&cpu, NID_SET_FRAMEBUF) == 0u, "a latched request for framebuffer 0 is accepted");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SET_FRAMEBUF) == 0u, "an immediate request for framebuffer 0 is accepted");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_IS_FOREGROUND) == 0u, "no framebuffer: not foreground");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x04000000u; cpu.r[5] = 512u; cpu.r[6] = 3u; cpu.r[7] = 1u;
+    expect(sr_syscall(&cpu, NID_SET_FRAMEBUF) == 0u, "a latched request for the framebuffer at 0x04000000 is accepted");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x04000000u; cpu.r[5] = 512u; cpu.r[6] = 3u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, NID_SET_FRAMEBUF) == 0u, "the framebuffer at 0x04000000 is set");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_IS_FOREGROUND) == 1u, "a framebuffer is set: foreground");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[7] = 1u;
+    (void)sr_syscall(&cpu, NID_SET_FRAMEBUF);
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_IS_FOREGROUND) == 1u,
+           "a latched request for framebuffer 0 leaves it foreground until the vblank");
+
+    /* idlist.expected: byte size, whole entries, count is the module total, the caller's module is in it. */
+    const uint32_t NID_ID_LIST = 0x644395e2u, NID_GET_ID_BY_ADDR = 0xd8b73127u;
+    const uint32_t BUF = 0x00200600u, CNT = 0x00200680u;
+    const uint32_t A_BASE = 0x08a10000u, B_BASE = 0x08a20000u, SPAN = 0x10000u;
+    s_fixture_loaded_base = 0x08804000u;
+    s_fixture_loaded_end = 0x08a00000u;
+    sr_hle_test_module_reset();
+    uint32_t uid_a = sr_hle_test_register_module("late_a.prx", A_BASE + 0x70u, 0u);
+    uint32_t uid_b = sr_hle_test_register_module("late_b.prx", B_BASE + 0x70u, 0u);
+    expect(uid_a && uid_b && sr_hle_test_set_module_image(uid_a, A_BASE, A_BASE + SPAN, 0u) &&
+               sr_hle_test_set_module_image(uid_b, B_BASE, B_BASE + SPAN, 0u),
+           "two late modules are loaded");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08804100u;
+    uint32_t main_id = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    expect(sr_hle_test_is_registered(NID_ID_LIST), "sceKernelGetModuleIdList is registered");
+    static const struct { int32_t size; uint32_t written; } sizes[] = {
+        { 0, 0 }, { 1, 1 }, { 3, 1 }, { 4, 1 }, { 5, 2 }, { 8, 2 }, { 9, 3 }, { 12, 3 }, { 64, 3 },
+    };
+    int sizes_ok = 1;
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        for (uint32_t w = 0; w < 8u; w++) MEM_W32(BUF + 4u * w, 0xdeadbeefu);
+        MEM_W32(CNT, 0xffffffffu);
+        memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = (uint32_t)sizes[i].size; cpu.r[6] = CNT;
+        uint32_t r = sr_syscall(&cpu, NID_ID_LIST);
+        uint32_t written = 0;
+        for (uint32_t w = 0; w < 8u; w++) if (MEM_R32(BUF + 4u * w) != 0xdeadbeefu) written = w + 1u;
+        if (r != 0u || MEM_R32(CNT) != 3u || written != sizes[i].written) sizes_ok = 0;
+    }
+    expect(sizes_ok, "sizes 0..64 write ceil(size / 4) entries, at most the 3 modules, and count is the total");
+    for (uint32_t w = 0; w < 8u; w++) MEM_W32(BUF + 4u * w, 0xdeadbeefu);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = 32u; cpu.r[6] = CNT;
+    (void)sr_syscall(&cpu, NID_ID_LIST);
+    expect(MEM_R32(BUF) == main_id && MEM_R32(BUF + 4u) == uid_a && MEM_R32(BUF + 8u) == uid_b &&
+               MEM_R32(BUF + 12u) == 0xdeadbeefu,
+           "the list holds the caller's own module and the two late modules");
+    MEM_W32(CNT, 0xffffffffu);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = 0xfffffffcu; cpu.r[6] = CNT;
+    expect(sr_syscall(&cpu, NID_ID_LIST) == 0x800200d3u && MEM_R32(CNT) == 0xffffffffu,
+           "a negative size is 0x800200d3 and leaves count untouched");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[5] = 0u; cpu.r[6] = CNT;
+    expect(sr_syscall(&cpu, NID_ID_LIST) == 0x800200d3u && MEM_R32(CNT) == 0xffffffffu,
+           "a NULL buffer with size 0 is 0x800200d3 and leaves count untouched");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_b;
+    expect(sr_hle_test_unload_module(&cpu) == 0u, "the second late module is unloaded");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = 32u; cpu.r[6] = CNT;
+    (void)sr_syscall(&cpu, NID_ID_LIST);
+    expect(MEM_R32(CNT) == 2u, "an unloaded module leaves the list");
+    stops = sr_hle_test_unmodelled_stops();
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = BUF; cpu.r[5] = 8u;
+    (void)sr_syscall(&cpu, NID_ID_LIST);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u, "a NULL count pointer stops by name");
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = UINT32_MAX;
+    s_fixture_loaded_end = 0x00400000u;
+
+    /* exit.expected: LoadExecForUser_362A956B reads the registered exit callback's argument block. */
+    const uint32_t NID_LOADEXEC_362 = 0x362a956bu, NID_CREATE_CB = 0xe81caf8fu, NID_REG_EXIT = 0x4ac57943u;
+    const uint32_t NAME = 0x00200700u, BLOCK = 0x00200720u, PARAMS = 0x00200740u;
+    expect(sr_hle_test_is_registered(NID_LOADEXEC_362), "LoadExecForUser_362A956B is registered");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_LOADEXEC_362) == 0x800201a1u, "without an exit callback: UNKNOWN_CBID");
+    MEM_W32(NAME, 0x31626300u);   /* "cb1" */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = NAME; cpu.r[5] = 0x08804000u; cpu.r[6] = 0u;
+    uint32_t cb1 = sr_syscall(&cpu, NID_CREATE_CB);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb1;
+    expect(cb1 != 0u && sr_syscall(&cpu, NID_REG_EXIT) == 0u, "an exit callback with a NULL argument is registered");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_LOADEXEC_362) == 0x800200d3u, "a NULL callback argument: ILLEGAL_ADDR");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = NAME; cpu.r[5] = 0x08804000u; cpu.r[6] = BLOCK + 8u;
+    uint32_t cb2 = sr_syscall(&cpu, NID_CREATE_CB);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb2;
+    expect(cb2 != 0u && sr_syscall(&cpu, NID_REG_EXIT) == 0u, "an exit callback with an argument block is registered");
+    MEM_W32(BLOCK + 4u, PARAMS);
+    static const struct { int32_t mode; uint32_t result; int cleared; } modes[] = {
+        { -1, 0x800200d2u, 0 }, { 0, 0u, 1 }, { 1, 0u, 1 }, { 2, 0u, 1 }, { 3, 0u, 1 }, { 4, 0x800200d2u, 0 },
+    };
+    int modes_ok = 1;
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        MEM_W32(BLOCK, (uint32_t)modes[i].mode);
+        MEM_W32(PARAMS, 12u); MEM_W32(PARAMS + 4u, 0x1337u); MEM_W32(PARAMS + 8u, 0x1337u);
+        memset(&cpu, 0, sizeof(cpu));
+        uint32_t r = sr_syscall(&cpu, NID_LOADEXEC_362);
+        int cleared = MEM_R32(PARAMS + 4u) == 0u && MEM_R32(PARAMS + 8u) == 0xffffffffu;
+        if (r != modes[i].result || cleared != modes[i].cleared || MEM_R32(PARAMS) != 12u) modes_ok = 0;
+    }
+    expect(modes_ok, "mode 0..3 clears the parameter block and succeeds; mode -1 and 4 are ILLEGAL_ARGUMENT");
+    static const struct { uint32_t size; uint32_t result; } psizes[] = {
+        { 0xffffffffu, 0u }, { 0u, 0x800201bcu }, { 1u, 0x800201bcu }, { 4u, 0x800201bcu }, { 11u, 0x800201bcu },
+        { 12u, 0u }, { 13u, 0u }, { 16u, 0u },
+    };
+    int psizes_ok = 1;
+    MEM_W32(BLOCK, 0u);
+    for (size_t i = 0; i < sizeof(psizes) / sizeof(psizes[0]); i++) {
+        MEM_W32(PARAMS, psizes[i].size); MEM_W32(PARAMS + 4u, 0x1337u); MEM_W32(PARAMS + 8u, 0x1337u);
+        memset(&cpu, 0, sizeof(cpu));
+        uint32_t r = sr_syscall(&cpu, NID_LOADEXEC_362);
+        int cleared = MEM_R32(PARAMS + 4u) == 0u && MEM_R32(PARAMS + 8u) == 0xffffffffu;
+        if (r != psizes[i].result || cleared != (psizes[i].result == 0u)) psizes_ok = 0;
+    }
+    expect(psizes_ok, "a parameter size of 12 or more (or -1) succeeds; below 12 is ILLEGAL_SIZE, untouched");
+
+    /* status.expected, htmlviewer.expected: no HTML viewer or screenshot dialog was started. */
+    const uint32_t NID_HTML_STATUS = 0xbda7d894u, NID_SHOT_STATUS = 0xd81957b7u;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_HTML_STATUS) == 0x80110005u && sr_syscall(&cpu, NID_SHOT_STATUS) == 0x80110005u,
+           "sceUtilityHtmlViewerGetStatus and sceUtilityScreenshotGetStatus are WRONG_TYPE");
+
+    /* The exit callback slot is global: delete both so later tests see none registered. */
+    const uint32_t NID_DELETE_CB = 0xedba5844u;
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb1;
+    (void)sr_syscall(&cpu, NID_DELETE_CB);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = cb2;
+    (void)sr_syscall(&cpu, NID_DELETE_CB);
 }
 
 /* The runtime keeps none of the PSP user partition for itself. Its VBLANK interrupt stack and
@@ -33926,12 +34831,12 @@ static void check_coroutine_lifecycle(void) {
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
         extern int s_ctrlc_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
-                 "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
+                 "+ 3 cancel/release waiters + 5 UMD cancel waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
                  "+ 1 vblank multi waiter + 1 zero-period vblank waiter body "
@@ -38485,6 +39390,56 @@ static uint32_t psmf_start_call(CpuState *cpu, uint32_t init_pts, uint32_t t0_le
     return sr_syscall(cpu, NID_SCE_PSMF_PLAYER_START);
 }
 
+/* scePsmfPlayerGetCurrentPts after scePsmfPlayerStop: getcurrentpts.expected (pspautotests
+ * f573fe8c, recorded on a PSP) measures a never-played STANDBY player (0x8061600c), not one
+ * that played and was stopped.  Stop resets the media state, so the player has to remember the
+ * Stop itself; the call then stops the run by name until SetPsmf or Release gives it a new
+ * stream.  psmf_media_selftest cannot count stops (its build has no stop counter), so this
+ * lives here, on the same synthetic stream. */
+static void test_psmf_get_current_pts_after_stop_stops_by_name(void) {
+    enum { NID_GET_CURRENT_PTS = 0x3ed62233u, NID_RELEASE_PSMF = 0xe792cd94u };
+    CpuState cpu;
+    sr_hle_init();
+    psmf_synthetic_build();
+    s_psmf_synthetic_enabled = 1;
+    MEM_W32(PSMF_SELFTEST_CREATE + 0, PSMF_SELFTEST_BUFFER);
+    MEM_W32(PSMF_SELFTEST_CREATE + 4, 0x00285800u);
+    MEM_W32(PSMF_SELFTEST_CREATE + 8, 0x30u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 0, 0x0eu);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 4, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 8, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 20, 0u);
+    title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_CREATE, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_CREATE) == 0u,
+           "psmf pts: the player is created");
+    expect(psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO) == 0x80616001u,
+           "psmf pts: an initial player is the status error");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF_CB, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_PATH) == 0u,
+           "psmf pts: the stream is opened");
+    expect(psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO) == PSMF_ERR_NO_DATA,
+           "psmf pts: a standby player that never played is NO_DATA (measured)");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_START, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_CONFIG) == 0u,
+           "psmf pts: playback starts");
+    expect(psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO) == PSMF_ERR_NO_DATA,
+           "psmf pts: a playing player before its first picture is NO_DATA (measured)");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_STOP, PSMF_SELFTEST_PLAYER, 0u) == 0u, "psmf pts: playback stops");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    uint32_t r = psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u && r != PSMF_ERR_NO_DATA,
+           "psmf pts: a played-then-stopped player stops the run by name, not NO_DATA");
+    expect(psmf_call(&cpu, NID_RELEASE_PSMF, PSMF_SELFTEST_PLAYER, 0u) == 0u, "psmf pts: the stream is released");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF_CB, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_PATH) == 0u,
+           "psmf pts: a new stream is opened");
+    expect(psmf_call(&cpu, NID_GET_CURRENT_PTS, PSMF_SELFTEST_PLAYER, PSMF_SELFTEST_VIDEO) == PSMF_ERR_NO_DATA &&
+               sr_hle_test_unmodelled_stops() == stops + 1u,
+           "psmf pts: a new stream clears the stopped state");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_DELETE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf pts: the player is deleted");
+    s_psmf_synthetic_enabled = 0;
+}
+
 /* A version-1 stream (a zero bound in its video stream entry) accepts only initPts 0. The
  * handler used to read initPts from t0, so a title calling Start(player, data, 0) with a
  * nonzero value left in t0 got a parameter error and its movie never started, while a
@@ -38866,7 +39821,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "refused call returns its named error and the guest keeps running");
-    expect(sr_syscall(&cpu, 0x469989adu /* scePower_469989ad, a named refusal */) == 0x80020002u,
+    expect(sr_syscall(&cpu, 0x011f03c1u /* sceRtcGetAccumulativeTime, a named refusal */) == 0x80020002u,
            "a second named refusal returns its own error and the guest keeps running");
     expect(sr_syscall(&cpu, 0x39af39a6u) == 0x80010086u,
            "a repeated refusal returns the same error");
@@ -38894,7 +39849,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
     snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x39af39a6u);
     expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", 0x469989adu);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", 0x011f03c1u);
     expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
     remove(output);
     sr_flight_test_disable();
@@ -40216,6 +41171,31 @@ static void test_flash0_latin_index_resolution(void) {
                    SR_FONT_REGISTRY_PRESENT &&
                project_info.source && strcmp(project_info.source, "project") == 0,
            "with no import, Latin index 16 is served by the project font");
+
+    /* #1300: the project's Latin font has the console's two sizes, one for each size group. */
+    SrFontRegistryInfo project_large, project_small;
+    expect(sr_flash0_font_registry_info(&project_sources, 2u, &project_large) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               sr_flash0_font_registry_info(&project_sources, 10u, &project_small) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               strcmp(project_large.font_name, "Nakagawa Project Latin") == 0 &&
+               strcmp(project_small.font_name, "Nakagawa Project Latin Second") == 0 &&
+               project_large.h_size != project_small.h_size,
+           "the project's Latin font serves each size group its own strike");
+
+    /* #1300: resolving a font for the font list says nothing of what the game draws with; only
+     * an open does, and the open is what the log has to name. */
+    const uint32_t opened_bit = 1u << 14;
+    expect((sr_flash0_font_test_opens_logged() & opened_bit) == 0u,
+           "resolving a Latin index for the font list is not reported as a game's open");
+    FILE *opened = NULL;
+    uint32_t opened_size = 0;
+    expect(sr_flash0_font_open("flash0:/font/ltn14.pgf", 1u, &project_sources, &opened,
+                               &opened_size) == 0u && opened != NULL,
+           "the device opens a Latin index the project font serves");
+    if (opened) fclose(opened);
+    expect((sr_flash0_font_test_opens_logged() & opened_bit) != 0u,
+           "a game's open of a Latin index is named in the log");
 }
 
 /* The guest-visible /DATA/FONT subtree over the synthetic roots the device test set up. Latin and
@@ -40543,6 +41523,50 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
     expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
 }
 
+/* #1384: the error-code output of every Open call and of NewLib is a span-checked output (a
+ * NULL one crashes the PSP, so it is an unmeasured stop, never a quiet write), and DoneLib with
+ * a font still open retires the font as well. The PSP's result for that DoneLib is UNMEASURED:
+ * the assertions pin the host's behaviour, not hardware. */
+static void test_font_error_ptr_and_done_lib(uint32_t served_index) {
+    if (!sr_hle_test_is_registered(FLT_NID_NEWLIB)) sr_hle_init();
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    flt_write_params(FLT_PARAMS, 4u);
+    flt_write_params(FLT_PARAMS + 0x100u, 4u);
+    s_flt_alloc_ret = FLT_LIB_A;
+    uint32_t lib = flt_call(FLT_NID_NEWLIB, FLT_PARAMS, FLT_ERR, 0u, 0u);
+    expect(lib == FLT_LIB_A, "a library for the error-pointer checks");
+
+    const uint32_t bad[2] = { 0u, FLT_GUEST_TOP - 2u };
+    for (int b = 0; b < 2; b++) {
+        s_flt_alloc_calls = 0;
+        uint32_t stops = sr_hle_test_unmodelled_stops();
+        (void)flt_call(FLT_NID_NEWLIB, FLT_PARAMS, bad[b], 0u, 0u);
+        (void)flt_call(FLT_NID_OPEN, lib, served_index, 0u, bad[b]);
+        (void)flt_call(FLT_NID_USERMEM, lib, FLT_PARAMS, 0x100u, bad[b]);
+        (void)flt_call(0x57fcb733u, lib, FLT_PARAMS, 1u, bad[b]);
+        expect(sr_hle_test_unmodelled_stops() == stops + 4u,
+               "NewLib and the Open calls stop on a NULL or unwritable error pointer");
+        expect(s_flt_alloc_calls == 0u, "a stopped call reaches no allocator");
+    }
+    expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u, "the error-pointer library is retired");
+
+    /* DoneLib while a font is still open frees the font's block and then the library's. */
+    s_flt_alloc_ret = FLT_LIB_A;
+    lib = flt_call(FLT_NID_NEWLIB, FLT_PARAMS, FLT_ERR, 0u, 0u);
+    s_flt_alloc_ret = FLT_FONT;
+    uint32_t font = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(lib == FLT_LIB_A && font == FLT_FONT && MEM_R32(FLT_ERR) == 0u, "a library with an open font");
+    s_flt_free_calls = 0;
+    expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u && s_flt_free_calls == 2u &&
+               s_flt_last_free == FLT_LIB_A,
+           "sceFontDoneLib with a font open retires it and frees the font and the library once each");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG && s_flt_free_calls == 2u,
+           "sceFontClose after sceFontDoneLib fails closed without freeing again");
+    expect(flt_call(FLT_NID_INFO, font, FLT_INFO, 0u, 0u) == FLT_ERR_INVALID_ARG,
+           "a font retired by sceFontDoneLib is refused");
+}
+
 /* #1384: what pspautotests tests/font (f573fe8c9122a8ff5db4f030d74557bed644b4e0, recorded on a PSP)
  * measures about libraries and handles, driven through production dispatch: newlib.expected
  * (numFonts -1, 0, 10 and 100 all succeed: a count above 9 serves 9, 0 is accepted), open.expected
@@ -40641,6 +41665,53 @@ static void test_font_measured_contract(uint32_t served_index) {
                    flt_call_f(FLT_NID_SET_RESOLUTION, lib, INFINITY, INFINITY) == 0u &&
                    flt_call_f(FLT_NID_SET_RESOLUTION, lib, 128.0f, 128.0f) == 0u,
                "sceFontSetResolution accepts 1, infinity and 128");
+    }
+
+    /* resolution.expected: PixelToPoint/PointToPixel H and V at 128 x 128 and 64 x 64, 0 in errorCode. */
+    {
+        static const struct { uint32_t nid; const char *name; int to_points; } conv[] = {
+            { 0x74b21701u, "sceFontPixelToPointH", 1 }, { 0xf8f0752eu, "sceFontPixelToPointV", 1 },
+            { 0x472694cdu, "sceFontPointToPixelH", 0 }, { 0x3c4b7e82u, "sceFontPointToPixelV", 0 },
+        };
+        for (size_t i = 0; i < sizeof(conv) / sizeof(conv[0]); i++) {
+            expect(sr_hle_test_is_registered(conv[i].nid), "the font unit conversion is registered");
+            if (!sr_hle_test_is_registered(conv[i].nid)) continue;
+            static const float res[] = { 128.0f, 64.0f };
+            static const float in[] = { 5.0f, -5.0f, 0.0f };
+            /* [resolution][input]: points are 5*72/res, pixels are 5*res/72 */
+            static const float to_points[2][3] = { { 2.8125f, -2.8125f, 0.0f }, { 5.625f, -5.625f, 0.0f } };
+            static const float to_pixels[2][3] = { { 8.888889f, -8.888889f, 0.0f }, { 4.444445f, -4.444445f, 0.0f } };
+            int ok = 1;
+            for (int r = 0; r < 2; r++) {
+                (void)flt_call_f(FLT_NID_SET_RESOLUTION, lib, res[r], res[r]);
+                for (int v = 0; v < 3; v++) {
+                    CpuState cpu;
+                    memset(&cpu, 0, sizeof(cpu));
+                    cpu.r[4] = lib; cpu.r[5] = FLT_ERR; cpu.f[12] = in[v]; cpu.f[0] = -777.0f;
+                    MEM_W32(FLT_ERR, 0xdeadbeefu);
+                    const float want = conv[i].to_points ? to_points[r][v] : to_pixels[r][v];
+                    if (sr_syscall(&cpu, conv[i].nid) != 0u || MEM_R32(FLT_ERR) != 0u ||
+                        fabsf(cpu.f[0] - want) > 1e-5f * (fabsf(want) + 1.0f)) ok = 0;
+                }
+            }
+            char msg2[120];
+            snprintf(msg2, sizeof(msg2), "%s matches resolution.expected at 128 and 64", conv[i].name);
+            expect(ok, msg2);
+            CpuState cpu;
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[5] = FLT_ERR; cpu.f[12] = 5.0f; cpu.f[0] = -777.0f;
+            MEM_W32(FLT_ERR, 0u);
+            expect(sr_syscall(&cpu, conv[i].nid) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB &&
+                       cpu.f[0] == 0.0f,
+                   "a unit conversion on a NULL library writes INVALID_LIB and returns 0.0");
+            uint32_t stops_c = sr_hle_test_unmodelled_stops();
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = lib; cpu.r[5] = 0u; cpu.f[12] = 5.0f;
+            (void)sr_syscall(&cpu, conv[i].nid);
+            expect(sr_hle_test_unmodelled_stops() == stops_c + 1u,
+                   "a unit conversion with a NULL errorCode stops by name");
+        }
+        (void)flt_call_f(FLT_NID_SET_RESOLUTION, lib, 128.0f, 128.0f);
     }
 
     for (uint32_t i = 0; i < 0xa8u; i += 4u) MEM_W32(FLT_STYLE_REQ + i, 0u);   /* one SceFontStyle */
@@ -41179,6 +42250,7 @@ static void test_flash0_font_device(void) {
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_measured_contract(served_index);
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_error_ptr_and_done_lib(served_index);
         test_font_list_contract(&expected_sources);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_alt_char_contract(served_index);
     }
@@ -43153,6 +44225,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();
     test_sysreg_virtual_registry();
+    test_sysreg_overlay_follows_user_data_root();
     test_console_profile_identity();
     test_sysreg_write_model();
     test_sysparam_nickname_string();
@@ -43185,6 +44258,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_storage_dialog_parameter_sizes();
     test_netconf_parameter_sizes();
     test_utility_dialog_single_slot();
+    test_utility_dialog_cancel_cleanup();
     test_utility_dialog_status_sequence();
     test_savedata_older_parameter_versions();
     test_msg_dialog_answer_field();
@@ -43280,7 +44354,10 @@ static int hle_selftest_main(int argc, char **argv) {
     test_psp_measured_cpu_clock_user_mode_20261024();
     test_psp_measured_rtc_time64_20261024();
     test_power_set_bus_clock_frequency_autotest();
+    test_power_set_clock_frequency_range_checks();
     test_rtc_time_t_add_years_resolution_autotest();
+    test_rtc_tick_add_day_of_week_check_valid_autotest();
+    test_imports_20261102_measured_contracts();
     test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();
     test_ctrl_sampling_mode_cycle_matrix();
@@ -43350,6 +44427,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_hle_liveness_timeout_cancel_delete();
     test_hle_liveness_queue_full_empty();
     test_cancel_release_wake_results();
+    test_umd_cancel_wait_drive_stat();
     test_evf_cb_immediate();
     test_evf_cancel_outputs();
     test_evf_ordered_set();
@@ -43402,6 +44480,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
     test_partition_ends_at_lowest_live_stack();
+    test_max_free_unchanged_after_top_stack_deleted();
     test_partition_spans_the_whole_user_partition();
     test_partition_unknown_block_codes();
     test_module_id_queries_resolve_owning_module();
@@ -43430,6 +44509,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_late_prx_unload_keeps_module_owned_objects();
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();
+    test_psmf_get_current_pts_after_stop_stops_by_name();
     test_psmf_start_reads_init_pts_from_the_third_argument();
     test_psmf_set_psmf_and_change_play_mode();
     test_flight_recorder_trace();

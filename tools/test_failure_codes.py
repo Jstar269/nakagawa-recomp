@@ -293,6 +293,7 @@ class DecryptTests(unittest.TestCase):
                                                 body)}
         default = re.search(r"default: rc = (NK_PSP_[A-Z_]+); exit_code = (\d+);", body)
         self.assertIsNotNone(default)
+        assert default is not None
         exits[int(default.group(2))] = names.get(default.group(1), "INTERNAL_ERROR")
         self.assertEqual(exits, decrypt_tool.EXIT_STATUS_CODES)
         self.assertLessEqual(set(exits.values()), codes_in("decrypt"))

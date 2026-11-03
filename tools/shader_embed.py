@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,7 +126,8 @@ def load_manifest(path: Path) -> dict:
         raise ValueError("shader manifest target environment is not vulkan1.1")
     if not compiler.get("version"):
         raise ValueError("shader manifest does not record compiler identity/version")
-    return manifest
+    returned: dict[str, Any] = manifest
+    return returned
 
 
 def verify(

@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -43,11 +44,14 @@ SYNTHETIC_SPAN_TEXT = "0x00400000,0x00400100"
 
 
 class TitleManagerAdapterTests(unittest.TestCase):
+    shell: str
+
     @classmethod
     def setUpClass(cls) -> None:
-        cls.shell = shutil.which("pwsh")
-        if cls.shell is None:
+        shell = shutil.which("pwsh")
+        if shell is None:
             raise unittest.SkipTest("PowerShell 7.4+ (pwsh) is required")
+        cls.shell = shell
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-title-adapter-")
@@ -66,7 +70,8 @@ class TitleManagerAdapterTests(unittest.TestCase):
             "funcs_per_chunk": 64,
         }
         values.update(overrides)
-        return title_codegen_plan.build_manager_plan(self.manifest, **values)
+        returned: dict[str, Any] = title_codegen_plan.build_manager_plan(self.manifest, **values)
+        return returned
 
     def run_pwsh(self, body: str, plan: dict | None = None) -> subprocess.CompletedProcess:
         """Dot-source the adapter and run `body`, with `$plan` pre-bound if given."""
@@ -271,12 +276,14 @@ class RunEntryIsPlanOwned(unittest.TestCase):
     the same one src/rt/title_config.c compiles in. Three copies of one title address,
     only one of them validated.
     """
+    shell: str
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.shell = shutil.which("pwsh")
-        if cls.shell is None:
+        shell = shutil.which("pwsh")
+        if shell is None:
             raise unittest.SkipTest("PowerShell 7.4+ (pwsh) is required")
+        cls.shell = shell
 
     def build(self, manifest: dict) -> dict:
         return title_codegen_plan.build_manager_plan(
@@ -288,7 +295,8 @@ class RunEntryIsPlanOwned(unittest.TestCase):
         )
 
     def manifest(self) -> dict:
-        return title_manifest.load_manifest(TITLES / "synthetic.json")
+        returned: dict[str, Any] = title_manifest.load_manifest(TITLES / "synthetic.json")
+        return returned
 
     def test_run_entry_is_the_configured_fallback_entry(self) -> None:
         manifest = self.manifest()

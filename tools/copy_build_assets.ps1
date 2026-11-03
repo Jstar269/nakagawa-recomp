@@ -75,6 +75,7 @@ if (Test-Path -LiteralPath $generatedFontDir -PathType Container) {
     foreach ($name in @(
         'nkjpn.pgf', 'nkjpn.json', 'nkjpn-OFL.txt',
         'nkltn.pgf', 'nkltn.json', 'nkltn-OFL.txt',
+        'nkltns.pgf', 'nkltns.json', 'nkltns-OFL.txt',
         'nkkr.pgf', 'nkkr.json', 'nkkr-OFL.txt'
     )) {
         $source = Join-Path $generatedFontDir $name

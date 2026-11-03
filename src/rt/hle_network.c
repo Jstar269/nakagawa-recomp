@@ -71,6 +71,12 @@ void hle_register_unregistered_import_network_1(void) {
     /* A title that sees sceNetInit fail may still execute its cleanup path. Keep that
      * cleanup as a named offline refusal instead of the unknown-NID stop. */
     sr_hle_register_unsupported(0x281928a9u, "sceNetTerm", 0x80010086u);
+    /* The same offline refusal for the net stack's thread and memory bookkeeping a title reaches
+     * after sceNetInit refused and for adhoc discovery, which has no peers to find: no network
+     * stack exists to hold a pool or a thread record (the 0x80010086 convention above). */
+    sr_hle_register_unsupported(0x50647530u, "sceNetFreeThreadinfo", 0x80010086u);
+    sr_hle_register_unsupported(0xcc393e48u, "sceNetGetMallocStat", 0x80010086u);
+    sr_hle_register_unsupported(0xf7d13214u, "sceNetAdhocDiscoverStop", 0x80010086u);
     /* sceHttpsEnd follows the offline HTTP policy of sceHttpEnd and sceHttpInit: no network stack. */
     sr_hle_register_unsupported(0xf9d8eb63u, "sceHttpsEnd", 0x80010086u);
     /* The SSL library has no handler in this runtime, which has no network stack. sceSslEnd follows

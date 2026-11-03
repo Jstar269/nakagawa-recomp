@@ -73,6 +73,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/psmf_producer_selftest --fuzz-iters 100",
     "build/test_input_profile",
     "build/test_nk_sig",
+    "build/test_portable_mode",
 )
 _PROCESS_TEST = "build/test_win32_process" if os.name == "nt" else "build/test_posix_process"
 EXPECTED_RUNS = _RUNS_BEFORE_PROCESS_TEST + (_PROCESS_TEST,)
@@ -143,6 +144,8 @@ def _link_outputs(commands: list[str]) -> set[str]:
 
 
 class NativeCoreTestsContractTests(unittest.TestCase):
+    commands: list[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.commands = _dry_run("native-core-tests")

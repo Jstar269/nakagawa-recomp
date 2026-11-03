@@ -760,6 +760,7 @@ bool nk_font_resolve_latin_index(const char *user_data_root, const char *project
     if (!out || (unsigned)index >= NK_FONT_LATIN_INDEX_COUNT) return false;
     out->source = NK_FONT_SOURCE_NONE;
     out->served_index = -3;
+    out->project_file = NULL;
     memset(&manifest, 0, sizeof(manifest));
     if (nk_font_get_cache_dir(user_data_root, cache_dir, sizeof(cache_dir)))
         manifest_status = font_load_manifest(cache_dir, &manifest, manifest_message,
@@ -803,16 +804,23 @@ bool nk_font_resolve_latin_index(const char *user_data_root, const char *project
     }
 
     if (project_font_dir && *project_font_dir) {
-        char project_path[NK_MAX_PATH * 2];
-        NkFontInspection inspection;
-        char error[NK_FONT_DETAIL_MAX] = "";
-        font_join(project_path, sizeof(project_path), project_font_dir, NK_FONT_SLOT_LATIN_FILE);
-        if (nk_platform_file_exists(project_path) &&
-            nk_font_inspect_pgf(project_path, &inspection, error, sizeof(error)) &&
-            inspection.slot == NK_FONT_SLOT_LATIN) {
-            out->source = NK_FONT_SOURCE_PROJECT;
-            out->served_index = -1;
-            return true;
+        const char *const candidates[2] = {
+            index >= NK_FONT_LATIN_SIZE_GROUP_COUNT ? NK_FONT_PROJECT_LATIN_SMALL_FILE : NK_FONT_SLOT_LATIN_FILE,
+            NK_FONT_SLOT_LATIN_FILE
+        };
+        for (int candidate = 0; candidate < 2; candidate++) {
+            char project_path[NK_MAX_PATH * 2];
+            NkFontInspection inspection;
+            char error[NK_FONT_DETAIL_MAX] = "";
+            font_join(project_path, sizeof(project_path), project_font_dir, candidates[candidate]);
+            if (nk_platform_file_exists(project_path) &&
+                nk_font_inspect_pgf(project_path, &inspection, error, sizeof(error)) &&
+                inspection.slot == NK_FONT_SLOT_LATIN) {
+                out->source = NK_FONT_SOURCE_PROJECT;
+                out->served_index = -1;
+                out->project_file = candidates[candidate];
+                return true;
+            }
         }
     }
 
@@ -851,7 +859,7 @@ void nk_font_latin_index_states(const char *user_data_root, const char *project_
                      nk_font_latin_index_filename(resolution.served_index));
         } else if (resolution.source == NK_FONT_SOURCE_PROJECT) {
             snprintf(states[index].detail, sizeof(states[index].detail),
-                     "L%d missing; project nkltn.pgf", index + 1);
+                     "L%d missing; project %s", index + 1, resolution.project_file);
         } else {
             snprintf(states[index].detail, sizeof(states[index].detail),
                      "L%d missing; legacy nkltn.pgf", index + 1);

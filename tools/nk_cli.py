@@ -342,7 +342,8 @@ class ExperimentalProfileBuildError(PackageBuildError):
 
 def default_user_data_root() -> Path:
     try:
-        return default_data_root()
+        returned: Path = default_data_root()
+        return returned
     except PrerequisiteFetchError as exc:
         raise PackageBuildError(str(exc)) from exc
 
@@ -738,7 +739,8 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
 
 def _encrypted_prx_header_supported(header: bytes) -> bool:
     """The ``~PSP`` shape the decryption step takes (iso_inspect, shared rule)."""
-    return _prx_container_header_supported(header)
+    returned: bool = _prx_container_header_supported(header)
+    return returned
 
 
 def _psp_container_kernel_mode(header: bytes) -> bool:
@@ -989,7 +991,8 @@ def _experimental_build_modules(
         if not isinstance(profile, dict):
             raise ValueError("the experimental profile is not an object")
         if not bindings:
-            return title_manifest.validate_manifest(profile["manifest"])
+            returned: dict[str, Any] = title_manifest.validate_manifest(profile["manifest"])
+            return returned
         return _write_experimental_module_bindings(profile_path, profile, bindings)
     except (OSError, KeyError, ValueError) as exc:
         raise ExperimentalProfileBuildError(
@@ -3948,6 +3951,21 @@ def _bringup_human_summary(report: dict) -> str:
     elif report["failure_class"] == "DISC_FILES_STAGE_FAILED":
         detail = (" (the game's files on the disc could not be set up; the message above "
                   "says why and what to do next)")
+    elif report["failure_class"] == "EXECUTABLE_UNSUPPORTED":
+        detail = (" (the disc's program file is not usable yet; an encrypted one is "
+                  "decrypted by the player's disc check, so open this disc in the player "
+                  "once, then run this again with --user-data-root set to the player's "
+                  "data folder: this run looks for the decrypted program only in its own "
+                  "data folder)")
+    elif report["failure_class"] == "LAUNCH_TIMEOUT":
+        frames = (report.get("presentation") or {}).get("frame_submissions") or 0
+        detail = (
+            f" (the game was still running when the launch time limit ended and had presented "
+            f"{frames} frame(s); raise --launch-timeout to watch it longer)"
+            if frames else
+            " (the game was still running when the launch time limit ended without presenting "
+            "a frame; raise --launch-timeout to wait longer)"
+        )
     elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
         detail = " (no validated framebuffer was submitted to the GUI presenter)"
     elif report["failure_class"] == "DISC_IMAGE_REFUSED":
@@ -3976,9 +3994,11 @@ def _bringup_human_summary(report: dict) -> str:
         )
     elif report["failure_class"] == "GUEST_MODULE_DECRYPTION_REQUIRED":
         detail = (
-            " (ENCRYPTED_MODULE: a guest module is encrypted. Nakagawa does not "
-            "decrypt games; place a decrypted copy from your own copy in the "
-            "title's decrypted folder)"
+            " (ENCRYPTED_MODULE: a guest module is encrypted. The player decrypts it "
+            "from your own disc when it checks the disc: open this disc in the player "
+            "once, then run this again with --user-data-root set to the player's data "
+            "folder, or place a decrypted copy from your own copy in the title's "
+            "decrypted folder)"
         )
     elif report["failure_class"] == "RUNTIME_HLE_REGISTRY_UNAVAILABLE":
         detail = (
@@ -4231,7 +4251,8 @@ def _write_experimental_module_bindings(profile_path: Path, profile: dict,
         (json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
         .encode("utf-8"),
     )
-    return manifest
+    returned: dict[str, Any] = manifest
+    return returned
 
 
 def _public_import_rows(rows: list[dict]) -> list[dict]:
@@ -5563,7 +5584,7 @@ def main() -> int:
     p_inspect = subparsers.add_parser("inspect", help="Inspect a PSP ISO image")
     p_inspect.add_argument("iso", help="Path to PSP ISO image")
     p_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    p_inspect.add_argument("--root", default=None,
+    p_inspect.add_argument("--user-data-root", "--root", dest="root", default=None,
                            help="Player per-user data directory for package, font, and decrypted-input checks")
     p_inspect.set_defaults(func=cmd_inspect)
 
@@ -5667,7 +5688,8 @@ def main() -> int:
     p_vram.set_defaults(func=cmd_vram)
 
     args = parser.parse_args()
-    return args.func(args)
+    returned: int = args.func(args)
+    return returned
 
 
 if __name__ == "__main__":
