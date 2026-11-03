@@ -242,6 +242,23 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
         enh = " ".join([stock_line.strip()] + [f"s->r[{r}] <<= 1;" for r in rw["regs"]])
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
+    elif kind == "map_f_reg":
+        r = rw["reg"]
+        # A factor read from memory is only known at run time: outside (0, 1) it keeps the stock value.
+        # Decay is evaluated in double and rounded once, as the lui path does; sqrtf is already exact.
+        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->f[{r}]))",
+                "retention": f"sqrtf(s->f[{r}])"}[rw["map"]]
+        enh = (f"{stock_line.strip()} if (s->f[{r}] > 0.0f && s->f[{r}] < 1.0f) "
+               f"{{ s->f[{r}] = {expr}; }}")
+    elif kind == "scale_v_reg":
+        v = vreg_indices(rw["vreg"], 1)[0]
+        enh = f"{stock_line.strip()} s->v[{v}] *= {rw['factor']!r}f;"
+    elif kind == "map_v_reg":
+        v = vreg_indices(rw["vreg"], 1)[0]
+        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->v[{v}]))",
+                "retention": f"sqrtf(s->v[{v}])"}[rw["map"]]
+        enh = (f"{stock_line.strip()} if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
+               f"{{ s->v[{v}] = {expr}; }}")
     elif kind == "scale_f_store":
         enh = _scaled_store_line(rw, stock_line)
     elif kind == "scale_f_addend":
