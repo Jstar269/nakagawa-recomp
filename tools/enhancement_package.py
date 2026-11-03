@@ -1388,7 +1388,10 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
       ``scale_int_args``  after the stock entry instruction, multiply the GPRs ``regs`` by 2;
       ``scale_f_reg``   after the stock instruction, multiply FPR ``reg`` by ``factor``;
       ``scale_f_store``   store FPR ``reg`` multiplied by ``factor`` (the register is kept);
-      ``scale_f_addend``  run ``fd = fd +/- ft`` with ``ft`` multiplied by ``factor``.
+      ``scale_f_addend``  run ``fd = fd +/- ft`` with ``ft`` multiplied by ``factor``;
+      ``map_f_reg``       after the stock lwc1, map FPR ``reg`` by ``map`` (decay or retention);
+      ``scale_v_reg``     after the stock lv.s, multiply VFPU register ``vreg`` by ``factor``;
+      ``map_v_reg``       after the stock lv.s, map VFPU register ``vreg`` by ``map``.
     """
     w = int(w) & 0xFFFFFFFF
     tf = site["transform"]
@@ -1403,6 +1406,7 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
     is_jal = op == 0x03
     is_jalr = op == 0x00 and fn == 0x09
     is_fpu_s = op == 0x11 and rs == 0x10
+    vt = rt | ((w & 3) << 5)  # lv.s: the VFPU register number
 
     if tf == "vblank_wait_2_to_1":
         if op in _IMM_ARITH_OPS + (0x0D,) and simm16 == 2:
@@ -1466,8 +1470,13 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
         _refuse(site, w, "gate_30hz needs a call or an accumulating update")
 
     if tf in ("decay_k_to_1-sqrt(1-k)", "retention_m_to_sqrt(m)"):
+        mapping = "decay" if tf == "decay_k_to_1-sqrt(1-k)" else "retention"
+        if op == 0x31:  # lwc1 of a per-update factor: map the loaded register
+            return {"kind": "map_f_reg", "reg": rt, "map": mapping}
+        if op == 0x32:  # lv.s of a per-update factor: map the loaded VFPU register
+            return {"kind": "map_v_reg", "vreg": vt, "map": mapping}
         if op != 0x0F:
-            _refuse(site, w, "expects the lui of a float constant")
+            _refuse(site, w, "expects the lui of a float constant, an lwc1 or an lv.s")
         value = _f32(imm16 << 16)
         if not 0.0 < value < 1.0:
             _refuse(site, w, f"float constant {value!r} is outside (0, 1)")
@@ -1522,6 +1531,8 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
         return {"kind": "scale_int_reg", "reg": rt}
     if op == 0x31:  # lwc1
         return {"kind": "scale_f_reg", "reg": rt, "factor": factor}
+    if op == 0x32:  # lv.s
+        return {"kind": "scale_v_reg", "vreg": vt, "factor": factor}
     if op == 0x39:  # swc1
         return {"kind": "scale_f_store", "reg": rt, "factor": factor}
     if is_fpu_s and fn in (0x00, 0x01) and sa == rd and rt != rd:
