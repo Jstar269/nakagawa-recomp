@@ -227,6 +227,10 @@ CASE_ID = 123
 # and slope TEXLEVEL modes over a texture whose every level is one colour.
 else ifeq ($(CASE),ge-mip)
 CASE_ID = 126
+# 139: the GE lighting cells (probe_ge_sample.c, #1732): the 8-bit specular and
+# powered-diffuse colour per specular coefficient, one flat-shaded quad per pixel.
+else ifeq ($(CASE),ge-light)
+CASE_ID = 139
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -565,6 +569,10 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE mip cells: the same source as the sample-point cells, case 126.
 else ifeq ($(CASE),ge-mip)
 TARGET = $(BUILD_DIR)/ge_mip
+OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
+# The GE lighting cells: the same source as the sample-point cells, case 139.
+else ifeq ($(CASE),ge-light)
+TARGET = $(BUILD_DIR)/ge_light
 OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 # The instruction trace: its own source, the single-step trampoline and the fixtures
 # header, with the same writer, ThreadManForUser block and module lifecycle as the HLE

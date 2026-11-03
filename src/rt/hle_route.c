@@ -53,6 +53,8 @@ typedef struct {
     int      reads;                  /* the widths above count guest reads, not vblanks
                                       * (WIDTHS READS, or a READS line); the timeouts never do */
     uint32_t nid;                    /* PRESS_UNTIL_NID: the import whose call completes the step */
+    uint32_t stick;                  /* STICK <lx> <ly>: the left stick its presses hold
+                                      * (SR_INPUT_STICK); 0 leaves the stick centred */
 } RouteStep;
 
 static RouteCheckpoint s_route_cp[ROUTE_MAX_CP];
@@ -66,6 +68,9 @@ static int      s_route_state = ROUTE_OFF;
 static int      s_route_tol = 12;
 static int      s_route_sample_every = 20;
 static uint32_t s_route_keys;
+/* A step held the stick while the guest sampled in digital mode, which reads it centred; said
+ * once per route so a route that moves nothing names why. */
+static int      s_route_stick_digital_noted;
 /* Elapsed-cadence bookkeeping for the route observer (#109): the delivered
  * VCOUNT of the last due sampling attempt and whether one has happened since
  * the route (re)started. Reset by sr_route_reset and sr_route_load so a fresh
@@ -539,9 +544,41 @@ static int route_parse_line(char *line, int lineno, const char *path) {
         return 0;
     }
 
-    /* READS and VBLANKS come first on a line and state the unit of that one step. Existing
-     * lines never begin with either word, so they parse exactly as before. Only the four
-     * steps whose widths can differ accept one; anything else would ignore the unit silently. */
+    /* STICK <lx> <ly> comes first on a line and holds the left analog stick at that position
+     * (0-255 on each axis, 128 centred) for as long as the step that follows presses: the press
+     * itself, and each pressed half of a repeated press. Released stretches and every other
+     * step leave the stick centred, as they leave the buttons released. Existing lines never
+     * begin with the word, so they parse exactly as before. Only the steps that press take it:
+     * anything else would hold nothing and ignore the stick silently. */
+    uint32_t line_stick = 0u;
+    if (strcmp(tok, "STICK") == 0) {
+        char *xs = strtok(NULL, " \t\r\n"), *ys = strtok(NULL, " \t\r\n");
+        unsigned long axis[2];
+        const char *given[2] = { xs, ys };
+        for (int i = 0; i < 2; i++) {
+            const char *t = given[i];
+            char *end = NULL;
+            axis[i] = t && t[0] >= '0' && t[0] <= '9' ? strtoul(t, &end, 10) : 256ul;
+            if (!end || *end || axis[i] > 255ul) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: STICK <lx> <ly> <step>: '%s' is not a stick "
+                                "position (decimal 0-255, 128 centred)\n",
+                        path, lineno, t ? t : "");
+                return -1;
+            }
+        }
+        tok = strtok(NULL, " \t\r\n");
+        if (!tok || tok[0] == '#') {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: STICK <lx> <ly> must be followed by PRESS, PRESS_UNTIL, "
+                            "PRESS_WHILE or PRESS_UNTIL_NID\n", path, lineno);
+            return -1;
+        }
+        line_stick = SR_INPUT_STICK(axis[0], axis[1]);
+    }
+
+    /* READS and VBLANKS come first on a line (after a STICK) and state the unit of that one
+     * step. Existing lines never begin with either word, so they parse exactly as before. Only
+     * the four steps whose widths can differ accept one; anything else would ignore the unit
+     * silently. */
     int line_reads = s_route_widths_reads;
     if (strcmp(tok, "READS") == 0 || strcmp(tok, "VBLANKS") == 0) {
         line_reads = tok[0] == 'R';
@@ -558,6 +595,12 @@ static int route_parse_line(char *line, int lineno, const char *path) {
                             "and PRESS_WHILE, and PRESS_UNTIL_NID, not '%s'\n", path, lineno, tok);
             return -1;
         }
+    }
+    if (line_stick && strcmp(tok, "PRESS") != 0 && strcmp(tok, "PRESS_UNTIL") != 0 &&
+        strcmp(tok, "PRESS_WHILE") != 0 && strcmp(tok, "PRESS_UNTIL_NID") != 0) {
+        fprintf(stderr, "ROUTE_PARSE: %s:%d: STICK applies to PRESS, PRESS_UNTIL, PRESS_WHILE and "
+                        "PRESS_UNTIL_NID, not '%s'\n", path, lineno, tok);
+        return -1;
     }
 
     if (strcmp(tok, "SIGGRID") == 0) {
@@ -628,6 +671,7 @@ static int route_parse_line(char *line, int lineno, const char *path) {
         memset(&st, 0, sizeof st);
         st.line = lineno;
         st.reads = line_reads;
+        st.stick = line_stick;
         if (strcmp(tok, "WAIT") == 0 || strcmp(tok, "EXPECT") == 0) {
             st.op = tok[0] == 'W' ? ROUTE_OP_WAIT : ROUTE_OP_EXPECT;
             char *name = strtok(NULL, " \t\r\n");
@@ -785,6 +829,7 @@ void sr_route_reset(void) {
     s_route_widths_reads = 0;
     s_route_widths_set = 0;
     s_route_keys = 0;
+    s_route_stick_digital_noted = 0;
     s_route_while_seen = 0;
     s_route_last_attempt = 0;
     s_route_have_attempt = 0;
@@ -808,6 +853,7 @@ int sr_route_load(const char *path) {
     s_route_step_started = 0;
     route_until_nid_arm(0, 0u);
     s_route_keys = 0;
+    s_route_stick_digital_noted = 0;
     s_route_while_seen = 0;
     s_route_last_attempt = 0;
     s_route_have_attempt = 0;
@@ -868,6 +914,13 @@ int sr_route_load(const char *path) {
                     st->op == ROUTE_OP_PRESS ? "PRESS" :
                     st->op == ROUTE_OP_UNTIL ? "PRESS_UNTIL" : "PRESS_WHILE", what,
                     st->reads ? " (widths in guest reads)" : "");
+        }
+        /* And where each step that holds the stick holds it. */
+        for (int i = 0; i < s_route_nsteps; i++) {
+            RouteStep *st = &s_route_prog[i];
+            if (!st->stick) continue;
+            fprintf(stderr, "ROUTE: step %d holds the left stick at %u,%u while it presses\n", i,
+                    (unsigned)((st->stick >> 8) & 0xffu), (unsigned)(st->stick & 0xffu));
         }
         /* And say what each WAIT_NID is waiting for, the same way: a route that stalls on an
          * event names the event in the log instead of leaving a reader to guess. */
@@ -937,16 +990,18 @@ static void route_input_overdue(const char *what_step, uint32_t v) {
 }
 
 /* The segment a step starts: `mask` held (or released, when mask is 0) for `width` of the
- * step's unit. A vblank width is controller samples. A read width is guest reads, and the
- * sample count is left at its minimum, because a read-width segment is delivered by its reads. */
+ * step's unit, with the left stick at `stick` (0 = centred). A vblank width is controller
+ * samples. A read width is guest reads, and the sample count is left at its minimum, because a
+ * read-width segment is delivered by its reads. */
 static SrInputSegment route_segment(uint32_t mask, uint32_t width, int reads, uint32_t not_before,
-                                    uint32_t budget) {
+                                    uint32_t budget, uint32_t stick) {
     SrInputSegment s;
     s.mask = mask;
     s.samples = reads ? 1u : width;
     s.not_before = not_before;
     s.budget = budget;
     s.reads = reads ? width : 0u;
+    s.stick = stick;
     return s;
 }
 
@@ -992,9 +1047,10 @@ static void route_advance(void) {
  * reads (the boot prefix they exist for can legitimately ignore the pad for a while). */
 static uint32_t route_pulse(const RouteStep *st, uint32_t v) {
     if (sr_input_delivered(&s_input)) {
-        SrInputSegment next = s_input.seg.mask
-            ? route_segment(0u, st->c - st->b, st->reads, v, 0u)
-            : route_segment(st->a, st->b, st->reads, v, 0u);
+        /* A press that holds only the stick is still the pressed half, so it is released next. */
+        SrInputSegment next = (s_input.seg.mask || s_input.seg.stick)
+            ? route_segment(0u, st->c - st->b, st->reads, v, 0u, 0u)
+            : route_segment(st->a, st->b, st->reads, v, 0u, st->stick);
         sr_input_start(&s_input, &next, v);
     }
     return sr_input_mask(&s_input);
@@ -1034,10 +1090,11 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE ||
                 st->op == ROUTE_OP_UNTIL_NID) {
                 SrInputSegment press = route_segment(st->a, st->b, st->reads, v,
-                                                     st->op == ROUTE_OP_PRESS ? s_input_budget : 0u);
+                                                     st->op == ROUTE_OP_PRESS ? s_input_budget : 0u,
+                                                     st->stick);
                 sr_input_start(&s_input, &press, v);
             } else if (st->op == ROUTE_OP_DELAY && st->a > 0u) {
-                SrInputSegment gap = route_segment(0u, st->a, st->reads, v, 0u);
+                SrInputSegment gap = route_segment(0u, st->a, st->reads, v, 0u, 0u);
                 sr_input_start(&s_input, &gap, v);
             } else {
                 sr_input_idle(&s_input);
@@ -1267,13 +1324,13 @@ static uint32_t auto_pulse_keys(uint32_t mask, uint32_t period, uint32_t width, 
     if (s_input.current) {
         if (!sr_input_delivered(&s_input)) return sr_input_mask(&s_input);
         if (s_input.seg.mask) {               /* the press was read: release it */
-            SrInputSegment gap = { 0u, 1u, v, 0u, 0u };
+            SrInputSegment gap = { 0u, 1u, v, 0u, 0u, 0u };
             sr_input_start(&s_input, &gap, v);
             return 0u;
         }
     }
     if (v < s_pulse.next || v < start) return 0u;
-    SrInputSegment press = { mask, width, v, 0u, 0u };
+    SrInputSegment press = { mask, width, v, 0u, 0u, 0u };
     sr_input_start(&s_input, &press, v);
     s_pulse.next = (v / period + 1u) * period;  /* the boundary after this press */
     return mask;
@@ -1342,12 +1399,26 @@ void sr_ctrl_sample(void) {
      * sample at the request boundary; the first post-resume sample owns that
      * guest-time input transition. */
     if (sched_pause_pending()) return;
+    /* The left stick. Digital mode reads it centred whatever holds it (measured, see hle.c).
+     * In analog mode the live stick is the window's pad (a test build's stand-in replaces it),
+     * and a route step that holds the stick replaces both for the samples it holds it, then
+     * hands the stick back. A route takes the stick outright rather than mixing with it, as
+     * buttons are OR'd, because a pad at rest is not at 128,128 (a PSP's reads 0x75,0x7c) and
+     * any mix would move the scripted position by however far that pad sits off centre. */
     uint8_t lx = 128u, ly = 128u;
+    uint8_t route_lx = 128u, route_ly = 128u;
+    int route_stick = s_route_state != ROUTE_OFF && sr_input_stick(&s_input, &route_lx, &route_ly);
     if (s_ctrl_sampling_mode == 1u) {
         if (gui_on()) gui_analog(&lx, &ly);
 #ifdef SR_HLE_THREAD_SELFTEST
         if (s_ctrl_test_stick) { lx = s_ctrl_test_lx; ly = s_ctrl_test_ly; }
 #endif
+        if (route_stick) { lx = route_lx; ly = route_ly; }
+    } else if (route_stick && !s_route_stick_digital_noted) {
+        s_route_stick_digital_noted = 1;
+        fprintf(stderr, "ROUTE: vblank %u: a step holds the left stick at %u,%u, but the guest samples "
+                        "the pad in digital mode (sceCtrlSetSamplingMode 0), which reads the stick "
+                        "centred\n", s_vcount_fwd, route_lx, route_ly);
     }
     uint32_t buttons = h_CtrlButtons();
     /* The on-screen keyboard is a system dialog: while it is open the title's pad reads
