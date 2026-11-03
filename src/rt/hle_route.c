@@ -237,6 +237,7 @@ static void route_fail(const char *fmt, ...) {
         hle_exit_close_audio_dump();
         sr_compat_report();
         sr_perf_shutdown();
+        SR_VERIFY_REPORT_NOW();
         _Exit(ROUTE_FAIL_EXIT);
     }
 }
@@ -1566,6 +1567,7 @@ static FILE *s_sample_out;
 static void hle_state_sample_refuse(const char *path, int line, const char *why) {
     fprintf(stderr, "SR_SAMPLE_SPEC: %s line %d: %s; the run stops here\n", path, line, why);
     sr_perf_shutdown();
+    SR_VERIFY_REPORT_NOW();
     fflush(stderr);
     _Exit(2);
 }

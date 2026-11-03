@@ -47,13 +47,6 @@
         "from": 151130112,
         "to": 151138304
       }
-    ],
-    "callback_terminators": [
-      {
-        "sentinel": 4294967295,
-        "pc": 151195648,
-        "ra": 151199744
-      }
     ]
   },
   "runtime_contract": {

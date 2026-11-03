@@ -1636,6 +1636,24 @@ static void test_draw_rejections_and_dirty_spans(void) {
     CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR));
     CHECK(dirty_count == 1u && dirty_spans[0].address == TEST_BUFFER_ADDR &&
           dirty_spans[0].size == 2u);
+
+    /* The status separates a glyph image that cannot be placed from one with nothing to draw. */
+    test_set_image(2u, 0, 0, 8u, 8u, 8u, TEST_BUFFER_ADDR);
+    CHECK(pgf_draw_glyph_status(pgf, 65, 0, TEST_IMAGE_ADDR) == PGF_DRAW_DONE);
+    CHECK(pgf_draw_glyph_status(pgf, 64, 0, TEST_IMAGE_ADDR) == PGF_DRAW_NOTHING);
+    CHECK(pgf_draw_glyph_status(NULL, 65, 0, TEST_IMAGE_ADDR) == PGF_DRAW_NOTHING);
+    CHECK(pgf_draw_glyph_status(pgf, 65, 0, 0x0bfffff0u) == PGF_DRAW_BAD_IMAGE);
+    CHECK(pgf_draw_glyph_status(pgf, 64, 0, 0x0bfffff0u) == PGF_DRAW_BAD_IMAGE);
+    CHECK(pgf_draw_glyph_by_id_status(pgf, 0, 0x0bfffff0u) == PGF_DRAW_BAD_IMAGE);
+    CHECK(pgf_draw_glyph_by_id_status(pgf, 1, TEST_IMAGE_ADDR) == PGF_DRAW_NOTHING);
+    test_set_image(5u, 0, 0, 8u, 8u, 8u, TEST_BUFFER_ADDR);
+    CHECK(pgf_draw_glyph_status(pgf, 65, 0, TEST_IMAGE_ADDR) == PGF_DRAW_BAD_IMAGE);
+    test_set_image(2u, 0, 0, 8u, 8u, 8u, 0u);
+    CHECK(pgf_draw_glyph_status(pgf, 65, 0, TEST_IMAGE_ADDR) == PGF_DRAW_BAD_IMAGE);
+    test_set_image(2u, 0, 0, 0u, 8u, 8u, 0u);
+    CHECK(pgf_draw_glyph_status(pgf, 65, 0, TEST_IMAGE_ADDR) == PGF_DRAW_NOTHING);
+    test_set_image(2u, 10 * 64, 0, 8u, 8u, 8u, TEST_BUFFER_ADDR);
+    CHECK(pgf_draw_glyph_status(pgf, 65, 0, TEST_IMAGE_ADDR) == PGF_DRAW_NOTHING);
     pgf_close(pgf);
 
     /* A bad later row fails before changing an earlier valid row. */
@@ -1660,6 +1678,8 @@ static void test_draw_rejections_and_dirty_spans(void) {
           test_guest(0x0bfffff9u)[1] == 0xc7u &&
           test_guest(0x0bfffff9u)[2] == 0xc7u &&
           test_guest(0x0bfffff9u)[3] == 0xc7u && dirty_count == 0u);
+    CHECK(pgf_draw_glyph_status(pgf, 65, 0, TEST_IMAGE_ADDR) == PGF_DRAW_BAD_BUFFER);
+    CHECK(test_guest(0x0bfffff9u)[0] == 0xc7u && dirty_count == 0u);
     pgf_close(pgf);
 }
 

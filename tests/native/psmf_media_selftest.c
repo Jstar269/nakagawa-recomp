@@ -2310,6 +2310,37 @@ static void test_mpeg_pcm_and_au_mode(void) {
     CHECK(mpeg_change_get_au_mode(PM_DESC, pcm_sid, MPEG_AU_MODE_SKIP) == 0u &&
               mpeg_change_get_au_mode(PM_DESC, pcm_sid, 2u) != 0u,
           "MPEG AU skip mode is accepted and an unknown mode is refused");
+    /* A guest PSMF player keeps the stream ids of the movie before and resets them all. */
+    uint32_t next_sid = mpeg_regist_stream(PM_DESC, MPEG_PCM_STREAM, 1u);
+    CHECK(mpeg_unregist_stream(PM_DESC, pcm_sid) == 0u &&
+              mpeg_change_get_au_mode(PM_DESC, pcm_sid, MPEG_AU_MODE_DECODE) == 0u,
+          "MPEG AU mode takes a stream that was unregistered");
+    CHECK(mpeg_change_get_au_mode(PM_DESC, next_sid, MPEG_AU_MODE_DECODE) == 0u,
+          "MPEG AU mode still reaches the live stream");
+    CHECK(mpeg_change_get_au_mode(PM_DESC, next_sid + 1u, MPEG_AU_MODE_DECODE) ==
+                  SCE_MPEG_ERROR_INVALID_VALUE &&
+              mpeg_change_get_au_mode(PM_DESC, 0u, MPEG_AU_MODE_DECODE) ==
+                  SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG AU mode refuses an id that was never issued");
+    /* The unregistered ids a context keeps are its own: another context's ids, live or
+     * unregistered, stay refused, and so does an id handed out with every stream slot full. */
+    enum { PM_DESC_B = 0x08130000u, PM_DATA_B = 0x08140000u };
+    MEM_W32(PM_DESC_B, 0u);
+    CHECK(mpeg_create(PM_DESC_B, PM_DATA_B, 0x10000u, 0, 64u, 0, 0) == 0,
+          "MPEG AU mode fixture creates a second context");
+    CHECK(mpeg_change_get_au_mode(PM_DESC_B, pcm_sid, MPEG_AU_MODE_DECODE) ==
+                  SCE_MPEG_ERROR_INVALID_VALUE &&
+              mpeg_change_get_au_mode(PM_DESC_B, next_sid, MPEG_AU_MODE_DECODE) ==
+                  SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG AU mode refuses another context's stream ids");
+    uint32_t slot_sid = 0u;
+    for (int i = 0; i < 8; i++) slot_sid = mpeg_regist_stream(PM_DESC_B, MPEG_PCM_STREAM, (uint32_t)i);
+    uint32_t over_sid = mpeg_regist_stream(PM_DESC_B, MPEG_PCM_STREAM, 8u);
+    CHECK(mpeg_change_get_au_mode(PM_DESC_B, slot_sid, MPEG_AU_MODE_DECODE) == 0u &&
+              mpeg_unregist_stream(PM_DESC_B, over_sid) == 0u &&
+              mpeg_change_get_au_mode(PM_DESC_B, over_sid, MPEG_AU_MODE_DECODE) ==
+                  SCE_MPEG_ERROR_INVALID_VALUE,
+          "MPEG AU mode refuses an id given with every stream slot full");
     mpeg_finish();
 }
 

@@ -216,6 +216,13 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured",
     },
+    "h_DisplayWaitVblankStartMultiCB": {
+        "status": "partial",
+        "limitation": "the requested positive count of scheduler VBLANK periods, servicing the caller's callbacks in each; the zero-count and wait-context refusals follow the non-CB form; hardware timing is not measured",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_display_multi_cb_wait",
+        ],
+    },
     # sceDisplayGetFramePerSec: writes the measured 60000/1001 float refresh
     # rate (59.9400599f) into $f0 under the unified display clock. The API has
     # no parameters; the full observable contract is the float bits.
@@ -996,6 +1003,23 @@ HANDLER_METADATA = {
     "h_AudioSRCOutputBlocking": {
         "status": "partial",
         "limitation": "returns 0x80260008 with nothing reserved and the reserved sample count after a reserve (0x400), both measured (PSP-HLE-AUDIO-SRC-001); the volume bound reuses the Output2 bound and the NULL or unreadable buffer result follows the regular output, both unmeasured; the host mixer runs at 44100 Hz, so a 48000 Hz block passes through a band-limited converter and keeps its source-rate pacing (#339)",
+    },
+    # sceVaudio* (#286): played through the SRC slot above. No PSP measurement; the
+    # behaviour follows the public reference named at h_VaudioChReserve.
+    "h_VaudioChReserve": {
+        "status": "partial",
+        "limitation": "reserves the SRC slot with the SRC reserve's exclusion (0x80268002) and rates (44100 and 48000 Hz; a rate of 0 is taken as 44100 Hz); the sample counts 256, 576, 1024, 1152 and 2048 (others 0x80000104), stereo format 2 only (others 0x80000108) and the second-reserve word 0x80000021 follow the public reference and are unmeasured on a PSP",
+        "evidence": ["tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot"],
+    },
+    "h_VaudioChRelease": {
+        "status": "partial",
+        "limitation": "releases only a Vaudio reservation (0x80260008 otherwise, so an SRC reservation stays); whether a release waits for queued samples, and whether it frees an SRC reservation as the public reference does, are unmeasured",
+        "evidence": ["tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot"],
+    },
+    "h_VaudioOutputBlocking": {
+        "status": "partial",
+        "limitation": "the SRC blocking output for a Vaudio reservation: returns the reserved sample count, 0x80260008 with no Vaudio reservation, and 0x8026000b above volume 0x8000 (the Output2 bound, reused); unmeasured on a PSP",
+        "evidence": ["tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot"],
     },
     # Route-A graduation batch 1 (#341, 2026-10-19). Each status is bounded to
     # the named accepted hardware cells; audio's unmeasured argument/error paths
@@ -2395,6 +2419,7 @@ SUBSYSTEM_BY_PREFIX = {
     # --- audio output and the SAS mixer ---
     "sceAudio": "audio",
     "sceSas": "audio",
+    "sceVaudio": "audio",
     # --- compressed-audio decoders ---
     "sceAtrac": "audio_codec",
     "sceAudiocodec": "audio_codec",

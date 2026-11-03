@@ -331,6 +331,7 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_KERNEL_LOAD_EXEC 0xbd2f1094u
 #define NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE 0xd675ebb8u
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
+#define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB 0x77ed8b3au
 #define NID_SCE_REG_CLOSE_CATEGORY 0x0cae832bu
 #define NID_SCE_REG_OPEN_CATEGORY 0x1d8a762eu
 #define NID_SCE_REG_OPEN_REGISTRY 0x92e41280u
@@ -382,6 +383,9 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_AUDIO_SRC_CH_RESERVE 0x38553111u
 #define NID_SCE_AUDIO_SRC_CH_RELEASE 0x5c37c0aeu
 #define NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING 0xe0727056u
+#define NID_SCE_VAUDIO_CH_RESERVE 0x03b6807du
+#define NID_SCE_VAUDIO_CH_RELEASE 0x67585dfdu
+#define NID_SCE_VAUDIO_OUTPUT_BLOCKING 0x8986295eu
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
@@ -7090,7 +7094,6 @@ static void test_unregistered_batch_refusals(void) {
         const char *name;
     } refused[] = {
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
-        {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
         {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
         {0x8c943191u, 0x80010086u, "sceImposeGetBatteryIconStatus"},
         {0x0bf0a3aeu, 0x80010086u, "sceNetGetLocalEtherAddr"},
@@ -10538,6 +10541,91 @@ static void test_audio_src_matches_the_measured_contract(void) {
            "an unmodelled rate is refused, and nothing is reserved");
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
            "the refused reserve left the slot free");
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+}
+
+/* sceVaudioChReserve / sceVaudioOutputBlocking / sceVaudioChRelease (#286). A title's own PSMF
+ * player route reserved Vaudio with (1152, 44100, 2) and stopped there while the NIDs had no
+ * handler. Vaudio plays through the SRC slot; the sample-count set, the format and the second-
+ * reserve word follow the public behaviour reference named at h_VaudioChReserve and are
+ * unmeasured. */
+static void test_vaudio_plays_through_the_src_slot(void) {
+    enum { VA_BUF = 0x08a00000u };   /* 1152 stereo frames: 4608 bytes inside the arena */
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    expect(sr_hle_test_is_registered(NID_SCE_VAUDIO_CH_RESERVE) &&
+           sr_hle_test_is_registered(NID_SCE_VAUDIO_CH_RELEASE) &&
+           sr_hle_test_is_registered(NID_SCE_VAUDIO_OUTPUT_BLOCKING),
+           "the three Vaudio NIDs have production registrations");
+
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "Vaudio release with nothing reserved returns 0x80260008");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) ==
+               0x80260008u,
+           "Vaudio output with nothing reserved returns 0x80260008");
+
+    /* The title's reservation, a blocking output, and the release. */
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1152u, 44100u, 2u) == 0u,
+           "Vaudio reserves 1152 samples at 44100 Hz, format 2");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1152u, 44100u, 2u) == 0x80000021u,
+           "a second Vaudio reserve returns 0x80000021");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0x80268002u,
+           "SRC reserve while Vaudio holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 512u, 0u, 0u) == 0x80268002u,
+           "Output2 reserve while Vaudio holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u &&
+               audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) ==
+                   0x80260008u,
+           "the SRC release and output do not act on a Vaudio reservation");
+    expect(s_audio_push_calls == 0u, "nothing reached the mixer through the other API");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8001u, VA_BUF, 0u) ==
+               0x8026000bu,
+           "a Vaudio volume above 0x8000 returns 0x8026000b");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) == 1152u,
+           "Vaudio output returns the reserved sample count");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames == 1152,
+           "the 44100 Hz block reaches the mixer once, with all 1152 frames");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "Vaudio release after the output returns 0");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "a second Vaudio release returns 0x80260008");
+
+    /* A Vaudio release does not free an SRC reservation, and Vaudio cannot reserve over it. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0u,
+           "SRC reserves for the cross-API check");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1024u, 44100u, 2u) == 0x80268002u,
+           "Vaudio reserve while SRC holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "a Vaudio release does not free an SRC reservation");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "the SRC reservation survived and now releases");
+
+    /* The reserve shapes, each released at once when accepted. */
+    static const struct {
+        uint32_t samples, freq, format, want;
+    } shapes[] = {
+        {256u,  44100u, 2u, 0u},
+        {576u,  44100u, 2u, 0u},
+        {1024u, 48000u, 2u, 0u},            /* the SRC converter's other rate */
+        {2048u, 0u,     2u, 0u},            /* rate 0: taken as 44100 Hz */
+        {1000u, 44100u, 2u, 0x80000104u},   /* not one of the five sample counts */
+        {0u,    44100u, 2u, 0x80000104u},
+        {1152u, 44100u, 0u, 0x80000108u},   /* format 0 */
+        {1152u, 44100u, 1u, 0x80000108u},   /* format 1 */
+        {1152u, 22050u, 2u, 0x80000003u},   /* a rate the SRC converter does not model */
+    };
+    for (unsigned i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) {
+        const uint32_t got = audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, shapes[i].samples,
+                                            shapes[i].freq, shapes[i].format);
+        expect(got == shapes[i].want, "Vaudio reserve shape returns the modelled word");
+        expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) ==
+                   (got == 0u ? 0u : 0x80260008u),
+               "an accepted shape releases at once, and a refused one reserved nothing");
+    }
     sr_hle_test_audio_reset();
     audio_fixture_reset();
 }
@@ -24791,6 +24879,288 @@ static void test_ge_blocking_sync_waits_for_stalled_list(void) {
     sr_test_guest_fn_reset();
 }
 
+/* #1296: a stronger thread whose deadline comes during a GE list runs inside the call. The run
+ * stops at a command boundary as at a stall, sched_preempt_point runs the thread, and the list
+ * goes on. sr_preempt_due stands in for the preemption timer, and the hook for what another
+ * thread does while a list is stopped: without a guest thread nothing switches, so each cell
+ * below is one exact interleaving.
+ *
+ * MUTANT: drop the stop check in ge_run_list_inner -- the base behaviour: the list runs to its
+ *   END in one piece and the stronger thread runs after the call. MUTANT: drop the state check
+ *   after sched_preempt_point in ge_list_run -- a run goes on over a list another caller paused,
+ *   ended or replaced. MUTANT: drop guard != 0 -- a run stops before its first command, so with
+ *   the flag set again at every stop the list never moves and this test does not end. MUTANT: drop
+ *   !pending_signal -- the stop count of the SIGNAL cell goes up by one. */
+enum {
+    GPP_MAIN_ENTRY = 0x08a62000u,
+    GPP_STRONG_ENTRY = 0x08a62040u,
+    GPP_FINISH_ENTRY = 0x08a62080u,
+    GPP_NAME = 0x08a620c0u,
+    GPP_CALLBACK = 0x08a62100u,
+    GPP_OWNER_ENTRY = 0x08a62140u,
+    GPP_LIST = 0x08a63000u,
+    GPP_LIST2 = 0x08a65000u,
+    GPP_FINISH_OP = 0x0f000000u,
+    GPP_END_OP = 0x0c000000u,
+    GPP_SIGNAL_OP = 0x0e000000u,
+    GPP_NOPS = 32u,
+    GPP_LONG_NOPS = 1000u
+};
+enum {
+    GPP_STOP_EVERY, GPP_ADVANCE, GPP_PAUSE, GPP_REPLACE, GPP_ENQUEUE, GPP_ENQUEUE_HEAD, GPP_PEEK_LIST,
+    GPP_PEEK_DRAW
+};
+enum { GPP_THREADS_PEEK, GPP_THREADS_LOST_OWNER_LIST, GPP_THREADS_LOST_OWNER_DRAW };
+void sr_hle_test_ge_preempt_hook(void (*hook)(uint32_t list_id));
+static int s_gpp_mode;
+static unsigned s_gpp_stops, s_gpp_finishes, s_gpp_strong_done, s_gpp_strong_at_return;
+static uint32_t s_gpp_id, s_gpp_end, s_gpp_list2_id, s_gpp_peek_list, s_gpp_peek_draw, s_gpp_paused_peek;
+static uint32_t s_gpp_cbid, s_gpp_owner, s_gpp_wait_result;
+static int s_gpp_threads;
+
+static void gpp_finish_fn(CpuState *cpu) {
+    s_gpp_finishes++;
+    cpu->r[2] = 0u;
+}
+
+/* `nops` NOPs, then FINISH and END: nops + 2 commands. Returns the address after them. */
+static uint32_t gpp_write_list(uint32_t list, uint32_t nops) {
+    for (uint32_t i = 0; i < nops; i++) MEM_W32(list + i * 4u, 0u);
+    MEM_W32(list + nops * 4u, GPP_FINISH_OP);
+    MEM_W32(list + nops * 4u + 4u, GPP_END_OP);
+    return list + nops * 4u + 8u;
+}
+
+static void gpp_stop_again(void) { atomic_store_explicit(&sr_preempt_due, 1, memory_order_relaxed); }
+
+static void gpp_hook(uint32_t list_id) {
+    s_gpp_id = list_id;
+    if (++s_gpp_stops != 3u || s_gpp_mode == GPP_STOP_EVERY) {
+        gpp_stop_again();
+        return;
+    }
+    switch (s_gpp_mode) {
+    case GPP_ADVANCE:
+        (void)gsw_call(NID_SCE_GE_LIST_UPDATE_STALL_ADDR, list_id, s_gpp_end, 0u, 0u);
+        break;
+    case GPP_PAUSE:
+        (void)gsw_call(NID_SCE_GE_BREAK, 0u, 0u, 0u, 0u);
+        s_gpp_paused_peek = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+        break;
+    case GPP_REPLACE:
+        (void)gpp_write_list(GPP_LIST2, 0u);
+        (void)gsw_call(NID_SCE_GE_BREAK, 1u, 0u, 0u, 0u);
+        for (unsigned i = 0; i < 64u && s_gpp_list2_id != list_id; i++)
+            s_gpp_list2_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST2, GPP_LIST2, 0xffffffffu, 0u);
+        break;
+    case GPP_ENQUEUE:
+        (void)gpp_write_list(GPP_LIST2, 0u);
+        s_gpp_list2_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST2, 0u, s_gpp_cbid, 0u);
+        gpp_stop_again();
+        break;
+    case GPP_ENQUEUE_HEAD:
+        (void)gpp_write_list(GPP_LIST2, 0u);
+        s_gpp_list2_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE_HEAD, GPP_LIST2, 0u, s_gpp_cbid, 0u);
+        break;
+    case GPP_PEEK_LIST:
+        s_gpp_peek_list = gsw_call(NID_SCE_GE_LIST_SYNC, list_id, 1u, 0u, 0u);
+        gpp_stop_again();   /* a run that went on from the wrong place would stop here again */
+        break;
+    case GPP_PEEK_DRAW:
+        s_gpp_peek_draw = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+        break;
+    default:
+        break;
+    }
+}
+
+/* Reset for one cell, and run a list so that it stops after every command. */
+static uint32_t gpp_cell(int mode, uint32_t stall_words) {
+    sr_hle_test_ge_lists_reset();
+    s_gpp_mode = mode;
+    s_gpp_stops = s_gpp_finishes = 0u;
+    s_gpp_list2_id = 0u;
+    s_gpp_peek_list = s_gpp_peek_draw = s_gpp_paused_peek = 0xdeadbeefu;
+    s_gpp_end = gpp_write_list(GPP_LIST, GPP_NOPS);
+    gpp_stop_again();
+    return gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST, stall_words ? GPP_LIST + stall_words * 4u : 0u,
+                    s_gpp_cbid, 0u);
+}
+
+static void gpp_strong_fn(CpuState *cpu) {
+    (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, 1u, 0u, 0u, 0u);
+    if (s_gpp_threads != GPP_THREADS_PEEK) {
+        (void)gsw_call(NID_SCE_KERNEL_TERMINATE_THREAD, s_gpp_owner, 0u, 0u, 0u);
+        s_gpp_wait_result = s_gpp_threads == GPP_THREADS_LOST_OWNER_LIST
+                                ? gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_id, 0u, 0u, 0u)
+                                : gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u);
+        s_gpp_strong_done = 1u;
+        cpu->r[2] = 0u;
+        return;
+    }
+    s_gpp_peek_draw = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+    s_gpp_peek_list = gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_id, 1u, 0u, 0u);
+    (void)gpp_write_list(GPP_LIST2, 0u);
+    s_gpp_list2_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST2, 0u, s_gpp_cbid, 0u);
+    s_gpp_strong_done = 1u;
+    cpu->r[2] = 0u;
+}
+
+static void gpp_owner_fn(CpuState *cpu) {
+    gpp_stop_again();
+    (void)gsw_call(NID_SCE_GE_LIST_UPDATE_STALL_ADDR, s_gpp_id, s_gpp_end, 0u, 0u);
+    cpu->r[2] = 0u;
+}
+
+static void gpp_main_fn(CpuState *cpu) {
+    uint32_t thid = gsw_call(NID_SCE_KERNEL_CREATE_THREAD, GPP_NAME, GPP_STRONG_ENTRY, 16u, 0x1000u);
+    (void)gsw_call(NID_SCE_KERNEL_START_THREAD, thid, 0u, 0u, 0u);   /* it runs and parks */
+    s_gpp_end = gpp_write_list(GPP_LIST, GPP_LONG_NOPS);
+    s_gpp_mode = GPP_STOP_EVERY;
+    if (s_gpp_threads != GPP_THREADS_PEEK) {
+        /* A list held at its start, so the strong thread knows its id before the run stops. */
+        s_gpp_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST, GPP_LIST, s_gpp_cbid, 0u);
+        s_gpp_owner = gsw_call(NID_SCE_KERNEL_CREATE_THREAD, GPP_NAME, GPP_OWNER_ENTRY, 24u, 0x1000u);
+        (void)gsw_call(NID_SCE_KERNEL_START_THREAD, s_gpp_owner, 0u, 0u, 0u);
+        cpu->r[2] = 0u;
+        return;
+    }
+    gpp_stop_again();
+    (void)gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST, 0u, s_gpp_cbid, 0u);
+    s_gpp_strong_at_return = s_gpp_strong_done;
+    cpu->r[2] = 0u;
+}
+
+static void gpp_setup(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(GPP_FINISH_ENTRY, gpp_finish_fn);
+    sr_test_register_guest_fn(GPP_MAIN_ENTRY, gpp_main_fn);
+    sr_test_register_guest_fn(GPP_STRONG_ENTRY, gpp_strong_fn);
+    sr_test_register_guest_fn(GPP_OWNER_ENTRY, gpp_owner_fn);
+    title_hle_write_cstr(GPP_NAME, "ge-strong");
+    MEM_W32(GPP_CALLBACK, 0u);
+    MEM_W32(GPP_CALLBACK + 4u, 0u);
+    MEM_W32(GPP_CALLBACK + 8u, GPP_FINISH_ENTRY);
+    MEM_W32(GPP_CALLBACK + 12u, 0u);
+    s_gpp_cbid = gsw_call(NID_SCE_GE_SET_CALLBACK, GPP_CALLBACK, 0u, 0u, 0u);
+    expect(s_gpp_cbid < 16u, "the GE finish callback registers");
+    sr_hle_test_ge_preempt_hook(gpp_hook);
+}
+
+/* The production path: real threads on their own coroutines. */
+static void gpp_threads_cell(int threads) {
+    gpp_setup();
+    sr_hle_test_ge_lists_reset();
+    s_gpp_threads = threads;
+    s_gpp_stops = s_gpp_finishes = s_gpp_strong_done = s_gpp_strong_at_return = 0u;
+    s_gpp_peek_list = s_gpp_peek_draw = s_gpp_wait_result = 0xdeadbeefu;
+    s_gpp_list2_id = 0u;
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(GPP_MAIN_ENTRY, 0u, 0u);
+}
+
+static void test_ge_list_stops_for_a_stronger_thread(void) {
+    gpp_setup();
+
+    /* A stop before every command but the first; the list still ends once. */
+    uint32_t id = gpp_cell(GPP_STOP_EVERY, 0u);
+    expect(s_gpp_stops == GPP_NOPS + 1u,
+           "a run stops at every command boundary after the first, as at a stall address");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 1u,
+           "a list stopped at every command reaches its END and fires its finish callback once");
+
+    /* A peek finishes a stopped list and reads it done, so a spinning stronger thread cannot
+     * wait on a list that needs a weaker one to move. */
+    (void)gpp_cell(GPP_PEEK_LIST, 0u);
+    expect(s_gpp_peek_list == 0u && s_gpp_finishes == 1u && s_gpp_stops == 3u,
+           "sceGeListSync(1) finishes a stopped list on the calling thread and reads it done");
+    (void)gpp_cell(GPP_PEEK_DRAW, 0u);
+    expect(s_gpp_peek_draw == 0u && s_gpp_finishes == 1u && s_gpp_stops == 3u,
+           "sceGeDrawSync(1) finishes a stopped list on the calling thread and reads it done");
+    (void)gpp_cell(GPP_PEEK_LIST, 8u);
+    expect(s_gpp_peek_list == 3u && s_gpp_finishes == 0u && s_gpp_stops == 3u,
+           "a peek at a list stopped on the way to a stall address reads that stall");
+
+    /* SIGNAL pairs with the END after it: no stop between them. */
+    sr_hle_test_ge_lists_reset();
+    s_gpp_mode = GPP_STOP_EVERY;
+    s_gpp_stops = s_gpp_finishes = 0u;
+    MEM_W32(GPP_LIST, 0u);
+    MEM_W32(GPP_LIST + 4u, GPP_SIGNAL_OP | 0x010000u);
+    MEM_W32(GPP_LIST + 8u, GPP_END_OP);
+    MEM_W32(GPP_LIST + 12u, GPP_FINISH_OP);
+    MEM_W32(GPP_LIST + 16u, GPP_END_OP);
+    gpp_stop_again();
+    id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST, 0u, s_gpp_cbid, 0u);
+    expect(s_gpp_stops == 3u, "no stop between a SIGNAL and the END it pairs with");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 1u,
+           "a list with a SIGNAL stopped around it still ends once");
+
+    /* A stop on the way to the guest's stall address, and the stall itself, stay different. */
+    id = gpp_cell(GPP_STOP_EVERY, 8u);
+    expect(s_gpp_stops == 7u && gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 3u &&
+               s_gpp_finishes == 0u,
+           "a run that stopped on the way to a stall address ends at that stall, not past it");
+
+    /* Another thread drives the list on to its END while it is stopped. */
+    id = gpp_cell(GPP_ADVANCE, 8u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 1u,
+           "a list another thread ran to its END fires its finish callback once, not twice");
+
+    /* Another thread pauses it: the run leaves it paused, and sceGeContinue finishes it. */
+    id = gpp_cell(GPP_PAUSE, 0u);
+    expect(s_gpp_paused_peek == 2u, "sceGeDrawSync(1) reads a paused head as 2");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 4u && s_gpp_finishes == 0u,
+           "a run does not go on over a list another thread paused");
+    expect(gsw_call(NID_SCE_GE_CONTINUE, 0u, 0u, 0u, 0u) == 0u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 1u,
+           "sceGeContinue resumes a paused stopped list at the command after the stop");
+
+    /* Another thread resets the GE and a new list takes the same slot and id. */
+    id = gpp_cell(GPP_REPLACE, 0u);
+    expect(s_gpp_list2_id == id && gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 3u &&
+               s_gpp_finishes == 0u,
+           "a run does not go on as the list that replaced it in the same slot");
+
+    /* A list enqueued behind the stopped one waits for its END. */
+    id = gpp_cell(GPP_ENQUEUE, 0u);
+    expect(s_gpp_list2_id != 0u && s_gpp_finishes == 2u &&
+               gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_list2_id, 1u, 0u, 0u) == 0u,
+           "a list enqueued during a stop runs after the stopped list's END");
+
+    /* sceGeListEnQueueHead refuses an outstanding stall by name. A stop is not one. */
+    id = gpp_cell(GPP_ENQUEUE_HEAD, 0u);
+    expect(s_gpp_list2_id != 0u && gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u &&
+               s_gpp_finishes == 2u,
+           "sceGeListEnQueueHead during a stop finishes the stopped list instead of stopping the run");
+
+    /* A stronger thread runs inside the call, and what it asks finishes the list. */
+    gpp_threads_cell(GPP_THREADS_PEEK);
+    expect(s_gpp_strong_at_return == 1u,
+           "a stronger thread due during a list runs before sceGeListEnQueue returns");
+    expect(s_gpp_peek_draw == 0u && s_gpp_peek_list == 0u,
+           "the stronger thread's peeks read the stopped list finished, as if it had not stopped");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_list2_id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 2u,
+           "the stronger thread's own list and the stopped one both end once");
+
+    /* The thread that was running the list never comes back. */
+    gpp_threads_cell(GPP_THREADS_LOST_OWNER_LIST);
+    expect(s_gpp_strong_done == 1u && s_gpp_wait_result == 0u && s_gpp_finishes == 1u,
+           "a blocking sceGeListSync finishes a list whose thread was terminated during a stop");
+    gpp_threads_cell(GPP_THREADS_LOST_OWNER_DRAW);
+    expect(s_gpp_strong_done == 1u && s_gpp_wait_result == 0u && s_gpp_finishes == 1u,
+           "a blocking sceGeDrawSync finishes a list whose thread was terminated during a stop");
+    s_gpp_threads = GPP_THREADS_PEEK;
+
+    sr_hle_test_ge_preempt_hook(NULL);
+    atomic_store_explicit(&sr_preempt_due, 0, memory_order_relaxed);
+    sr_hle_test_ge_lists_reset();
+    sr_test_guest_fn_reset();
+}
+
 /* #1374: what the sync calls return for ids that name no list, for completed lists and
  * for sync types other than 0 and 1. Every expected value is a PSP-GE-SYNC-001 cell
  * (PSP-3000, probe ge-sync-ids, captured by the runs of 96fe29f6 and f6da6125 on
@@ -34831,7 +35201,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
         extern int s_ctrlc_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
+        int expected_parks = 1 /* MultiCB waiter */ + 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -37919,6 +38289,52 @@ static int write_lifecycle_prx(const char *path, uint32_t payload) {
     return written == sizeof(image) && close_result == 0;
 }
 
+uint32_t sr_hle_test_prx_start_entry(const char *host_path, uint32_t base);
+uint32_t sr_hle_test_populated_start_entry(const char *file, uint32_t base);
+int sr_hle_test_set_fixed_module_image(uint32_t uid, uint32_t base, uint32_t end);
+
+/* A library module can declare no start routine: no module_start export and an ELF entry of
+ * 0xFFFFFFFF. A retail libfont is one, and running its first function as module_start read
+ * and wrote through a null argument pointer (#363). */
+static void test_module_without_entry_runs_no_code(void) {
+    enum { BASE = 0x09ebfc00u, E_ENTRY_OFF = 24 };
+    const char *path = HLE_BUILD_ROOT "/hle_no_entry.prx";
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    expect(write_lifecycle_prx(path, 0x11111111u), "no-entry module: fixture written");
+    expect(sr_hle_test_prx_start_entry(path, BASE) == BASE,
+           "an ELF entry of 0 is a start routine at the module's first address");
+    FILE *image = fopen(path, "r+b");
+    expect(image != NULL, "no-entry module: fixture reopened");
+    if (image) {
+        static const uint8_t none[4] = {0xff, 0xff, 0xff, 0xff};
+        fseek(image, E_ENTRY_OFF, SEEK_SET);
+        fwrite(none, 1, sizeof(none), image);
+        fclose(image);
+    }
+    expect(sr_hle_test_prx_start_entry(path, BASE) == 0u,
+           "an ELF entry of 0xFFFFFFFF declares no start routine");
+    remove(path);
+    expect(sr_hle_test_populated_start_entry("absent_no_entry.prx", BASE) == 0u,
+           "a manifest module with no image does not start at its base");
+
+    /* The start itself: exports become linkable, nothing runs, and the run does not stop. */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t stops_before = sr_hle_test_libfont_startup_stops();
+    uint32_t starts_before = s_synth_libfont_start_calls;
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
+    sr_hle_test_module_reset();
+    uint32_t uid = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/module/libfont.prx", 0u, 0u);
+    expect(uid != 0u && sr_hle_test_set_fixed_module_image(uid, BASE, BASE + 0x8000u),
+           "no-entry module: fixed-address record registered");
+    expect(libfont_start_call(&cpu, uid) == 0u,
+           "a fixed-address module with no start routine starts");
+    expect(s_synth_libfont_start_calls == starts_before &&
+               sr_hle_test_libfont_startup_stops() == stops_before,
+           "starting it runs no guest code and takes no libfont stop");
+    sr_hle_test_module_reset();
+}
+
 static void test_late_prx_unload_reload_lifecycle(void) {
     const char *path_a = HLE_BUILD_ROOT "/hle_lifecycle_a.prx";
     const char *path_b = HLE_BUILD_ROOT "/hle_lifecycle_b.prx";
@@ -38064,9 +38480,65 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     cpu.r[4] = uid_a;
     expect(sr_syscall(&cpu, 0x2e0911aau) == 0x80020002u,
            "lifecycle: unload refuses while a module thread is ready to execute its image");
+    /* A thread inside a call goes on at $ra; its pc still shows its last slice's end, and that
+     * can be the image it has left, as for a title that deletes its player and unloads the
+     * module from its own code (#286). A thread that left at a yield resumes at its pc. */
+    uint32_t in_a = LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1;
+    active_module_thread->pc_stale = 1;
+    active_module_thread->saved.r[31] = 0x08900000u;
+    expect(!sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a ready thread parked in a call is not held to its stale pc");
+    active_module_thread->saved.r[31] = in_a;
+    expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a ready thread parked in a call still returns into the image at $ra");
     active_module_thread->state = TH_DORMANT;
     active_module_thread->deleted = 1;
     active_module_thread->entry = 0u;
+
+    TCB *unloader = fixture_thread(0x6f1u, TH_RUNNING, 20);
+    unloader->started = 1;
+    int cur_before_unloader = s_cur;
+    s_cur = (int)(unloader - s_tcb);
+    CpuState cpu_before_unloader = *s_cpu;
+    s_cpu->pc = in_a;
+    s_cpu->r[31] = 0x08900000u;
+    expect(!sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: the unload's own caller is not held to its stale pc");
+    s_cpu->r[31] = in_a;
+    expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a caller inside the image is still a continuation");
+    *s_cpu = cpu_before_unloader;
+
+    /* A thread that exited from inside a call keeps that mark while dormant. Started again
+     * through sceKernelStartThread, it re-enters at its entry, and an entry inside the image is
+     * a continuation into it: the restart must not leave the old mark hiding that pc. */
+    uint32_t restart_uid = sched_create_thread(in_a, 30, 0x2000u);
+    TCB *restarted = tcb_by_uid(restart_uid);
+    expect(restart_uid != 0u && restarted != NULL,
+           "lifecycle: a thread whose entry is in the image is created");
+    if (restarted) {
+        restarted->started = 1;   /* as the scheduler leaves a thread that ran and exited */
+        restarted->state = TH_DORMANT;
+        restarted->pc_stale = 1;
+        s_cpu->r[4] = restart_uid;
+        s_cpu->r[5] = 0u;
+        s_cpu->r[6] = 0u;
+        expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0u,
+               "lifecycle: sceKernelStartThread restarts the exited thread");
+        *s_cpu = cpu_before_unloader;
+        expect(restarted->state == TH_READY && restarted->saved.pc == in_a &&
+                   restarted->saved.r[31] == 0u,
+               "lifecycle: the restarted thread is ready at its entry with no return address");
+        expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+               "lifecycle: a restarted thread whose entry is in the image keeps unload refused");
+        restarted->state = TH_DORMANT;
+        restarted->deleted = 1;
+        restarted->entry = 0u;
+    }
+    s_cur = cur_before_unloader;
+    unloader->state = TH_DORMANT;
+    unloader->deleted = 1;
+    unloader->entry = 0u;
 
     /* ---- unload A: retire exactly its own state ---- */
     unsigned images_before = sr_hle_test_image_count();
@@ -40705,6 +41177,73 @@ static void test_issue339_callback_wait_dispatch(void) {
     s_oracle_mode = saved_oracle_mode;
 }
 
+/* The CB form of the multi-period wait (#286): a title's own PSMF player route calls it once a
+ * frame, and a refusal returned at once left that thread spinning with no display wait at all.
+ * It refuses as the plain form does, services the caller's callbacks, and returns after the
+ * requested periods.
+ *
+ * MUTANT: register the NID as a refusal again -- every check here fails.
+ * MUTANT: stop after one period -- the waiter does not block for the second. */
+static void test_display_multi_cb_wait(void) {
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+
+    reset_fixture();
+    sr_hle_init();
+    s_cur = -1;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB) == 0x800001feu,
+           "sceDisplayWaitVblankStartMultiCB rejects a zero period with INVALID_VALUE");
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB) == CNW_ERR,
+           "sceDisplayWaitVblankStartMultiCB refuses to report success without a current thread");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x77e0u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x77e1u, TH_READY, 40);
+    waiter->started = 1;
+    SelftestVblankWaitCtx wait;
+    memset(&wait, 0, sizeof(wait));
+    wait.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB;
+    wait.arg0 = 2u;
+    waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &wait, (size_t)4 << 20);
+    s_cur = (int)(waiter - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(callback_uid != 0 && s_oracle_callback_calls == 1 && !wait.returned &&
+               waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+               waiter->is_cb_wait,
+           "MultiCB services a callback then blocks on the first VBLANK period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(!wait.returned && waiter->state == TH_WAIT_OBJ &&
+               waiter->wait_obj == VBLANK_WAIT_OBJ && s_vbl_count == 1u,
+           "MultiCB waits again for its remaining period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(wait.returned && wait.ret == 0u && s_vbl_count == 2u,
+           "MultiCB returns success after both periods");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "MultiCB callback unregisters cleanly");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
+    s_oracle_mode = saved_oracle_mode;
+}
+
 static void test_issue339_vblank_cb_wait_requires_a_current_thread(void) {
     reset_fixture();
     s_cur = -1;
@@ -40730,6 +41269,7 @@ static void test_issue339_wait_nids_production_dispatch(void) {
     test_issue339_terminate_waiting_thread();
     test_issue339_sysclock_delay_dispatch();
     test_issue339_callback_wait_dispatch();
+    test_display_multi_cb_wait();
     test_issue339_vblank_cb_wait_requires_a_current_thread();
 }
 
@@ -41523,6 +42063,145 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
     expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
 }
 
+/* #1384: glyph-image spans, allocator alignment and the handle lifecycle, through production
+ * dispatch. A GlyphImage (0x18 bytes: u32 pixel format, s32 x and y in 1/64 pixel, u16 buffer
+ * width, height and bytes per line, u16 pad, u32 buffer) that the draw cannot place stops the run
+ * by name: the PSP's libfont stores through it unchecked, so its behaviour is UNMEASURED. A glyph
+ * wholly outside the buffer draws nothing and answers 0. The handle results after close and
+ * DoneLib are host policy (the PSP result is UNMEASURED): a handle that is not live is refused
+ * and freeFunc never sees a block twice. */
+#define FLT_NID_GLYPH  0x980f4895u
+#define FLT_GI         0x09050400u
+#define FLT_BITMAP     0x09050800u
+#define FLT_FONT_2     0x09070100u
+static void flt_write_glyph_image(uint32_t at, uint32_t format, int32_t x64, uint16_t w,
+                                  uint16_t h, uint16_t bpl, uint32_t buffer) {
+    MEM_W32(at + 0x00u, format);
+    MEM_W32(at + 0x04u, (uint32_t)x64);
+    MEM_W32(at + 0x08u, 0u);
+    MEM_W16(at + 0x0cu, w);
+    MEM_W16(at + 0x0eu, h);
+    MEM_W16(at + 0x10u, bpl);
+    MEM_W16(at + 0x12u, 0u);
+    MEM_W32(at + 0x14u, buffer);
+}
+static void test_font_glyph_image_and_handles(uint32_t served_index) {
+    if (!sr_hle_test_is_registered(FLT_NID_NEWLIB)) sr_hle_init();
+    expect(sr_hle_test_is_registered(FLT_NID_GLYPH), "sceFontGetCharGlyphImage is registered");
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    flt_write_params(FLT_PARAMS, 4u);
+
+    /* An allocator block that is not word-aligned is refused before anything is written to it. */
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+    MEM_W32(FLT_LIB_A, 0x5a5a5a5au);
+    MEM_W32(FLT_LIB_A + 4u, 0x5a5a5a5au);
+    expect(flt_new_lib(FLT_PARAMS, FLT_LIB_A + 2u) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_OOM &&
+               s_flt_alloc_calls == 1u && MEM_R32(FLT_LIB_A + 4u) == 0x5a5a5a5au &&
+               flt_call(FLT_NID_DONELIB, FLT_LIB_A + 2u, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB &&
+               s_flt_free_calls == 0u,
+           "sceFontNewLib refuses a misaligned allocator block, writes nothing and publishes no library");
+    const uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+    expect(lib == FLT_LIB_A && MEM_R32(FLT_ERR) == 0u, "a library opens at an aligned block");
+    s_flt_alloc_ret = FLT_FONT + 2u;
+    MEM_W32(FLT_FONT + 4u, 0x5a5a5a5au);
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_OOM && MEM_R32(lib + 0x14u) == 0u &&
+               MEM_R32(FLT_FONT + 4u) == 0x5a5a5a5au && s_flt_free_calls == 0u,
+           "sceFontOpen refuses a misaligned font block and leaves the open count at zero");
+    s_flt_alloc_ret = FLT_FONT;
+    const uint32_t font = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(font == FLT_FONT && MEM_R32(FLT_ERR) == 0u, "a font opens at an aligned block");
+
+    /* Glyph images, drawn with the first of 'A' and U+3042 the served font has. Its bitmap size
+     * comes from sceFontGetCharInfo, so a buffer can end exactly one byte short of its last row. */
+    static const uint32_t glyph_candidates[2] = { 0x41u, 0x3042u };
+    uint32_t ch = 0u, glyph_w = 0u, glyph_h = 0u;
+    for (int i = 0; i < 2 && glyph_w == 0u; i++) {
+        ch = glyph_candidates[i];
+        if (flt_call(FLT_NID_CHAR, font, ch, FLT_INFO, 0u) != 0u) continue;
+        glyph_w = MEM_R32(FLT_INFO + 0x00u);
+        glyph_h = MEM_R32(FLT_INFO + 0x04u);
+    }
+    expect(glyph_w > 0u && glyph_w <= 16u && glyph_h > 0u && glyph_h <= 16u,
+           "the served font has a glyph whose bitmap fits a 16 x 16 buffer");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    for (uint32_t i = 0; i < 0x100u; i += 4u) MEM_W32(FLT_BITMAP + i, 0u);
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, FLT_BITMAP);
+    expect(flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u) == 0u &&
+               sr_hle_test_unmodelled_stops() == stops,
+           "sceFontGetCharGlyphImage draws into a complete glyph image and bitmap");
+    flt_write_glyph_image(FLT_GI, 2u, 100 * 64, 16u, 16u, 16u, FLT_BITMAP);
+    expect(flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u) == 0u &&
+               sr_hle_test_unmodelled_stops() == stops,
+           "a glyph wholly right of the buffer draws nothing and answers 0");
+
+    const uint32_t gi_tail = FLT_GUEST_TOP - 0x10u;
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, gi_tail, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "a 0x18-byte glyph image that ends past guest memory stops by name, not success");
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, 0xffffu, gi_tail, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "the glyph image is checked even for a character the font lacks");
+    /* Every row but the last fits; the last row's final byte is the first one past guest memory. */
+    const uint32_t bitmap_tail = FLT_GUEST_TOP + 1u - ((glyph_h - 1u) * 16u + glyph_w);
+    MEM_W8(bitmap_tail, 0x5au);
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, bitmap_tail);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u && MEM_R8(bitmap_tail) == 0x5au,
+           "a bitmap whose last row ends past guest memory stops by name and writes no row");
+    flt_write_glyph_image(FLT_GI, 5u, 0, 16u, 16u, 16u, FLT_BITMAP);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u, "pixel format 5 stops by name");
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, 0u);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "a NULL bitmap with a nonzero size stops by name");
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, FLT_BITMAP);
+
+    /* Close and reopen. A font opened twice is one handle; its second close frees it once. */
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == font && s_flt_alloc_calls == 0u,
+           "a second open of the same font answers the same handle");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 0u &&
+               flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 1u &&
+               s_flt_last_free == font && MEM_R32(lib + 0x14u) == 0u,
+           "the second close of a twice-opened font frees its block once");
+    s_flt_alloc_ret = FLT_FONT;
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == font && s_flt_alloc_calls == 1u &&
+               MEM_R32(FLT_ERR) == 0u && MEM_R32(lib + 0x14u) == 1u,
+           "a reopen the allocator places at the freed block is a new font with a fresh allocation");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 2u,
+           "that new font closes after one open: its open count did not carry over");
+    s_flt_alloc_ret = FLT_FONT_2;
+    const uint32_t font2 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(font2 == FLT_FONT_2 && MEM_R32(FLT_ERR) == 0u, "a reopen at another block answers that block");
+    expect(flt_call(FLT_NID_INFO, font, FLT_INFO, 0u, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_CHAR, font, ch, FLT_INFO, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG && s_flt_free_calls == 2u,
+           "the stale handle of the closed font is refused everywhere and frees nothing");
+    expect(flt_call(FLT_NID_INFO, font2, FLT_INFO, 0u, 0u) == 0u, "the reopened font serves");
+
+    /* Handles of the wrong kind. */
+    expect(flt_call(FLT_NID_CLOSE, lib, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_OPEN, font2, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB &&
+               flt_call(FLT_NID_DONELIB, font2, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB &&
+               s_flt_free_calls == 2u,
+           "a library handle is not a font and a font handle is not a library");
+
+    /* DoneLib with the font still open (test_font_error_ptr_and_done_lib covers its frees). */
+    expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u &&
+               flt_call(FLT_NID_GLYPH, font2, ch, FLT_GI, 0u) == FLT_ERR_INVALID_ARG,
+           "a font retired by sceFontDoneLib draws no glyph");
+}
+
 /* #1384: the error-code output of every Open call and of NewLib is a span-checked output (a
  * NULL one crashes the PSP, so it is an unmeasured stop, never a quiet write), and DoneLib with
  * a font still open retires the font as well. The PSP's result for that DoneLib is UNMEASURED:
@@ -42249,6 +42928,7 @@ static void test_flash0_font_device(void) {
         }
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_glyph_image_and_handles(served_index);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_measured_contract(served_index);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_error_ptr_and_done_lib(served_index);
         test_font_list_contract(&expected_sources);
@@ -44242,6 +44922,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
     test_ge_blocking_sync_waits_for_stalled_list();
+    test_ge_list_stops_for_a_stronger_thread();
     test_ge_sync_ids_match_psp();
     test_ge_break_continue();
     test_ge_completion_timing();
@@ -44292,6 +44973,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_audio_output2_release_refuses_while_queued();
     test_audio_resampler_quality_and_streaming();
     test_audio_src_matches_the_measured_contract();
+    test_vaudio_plays_through_the_src_slot();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
@@ -44499,6 +45181,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_real_module_start_lifecycle();
     test_prx_stop_entry_boundaries();
     test_late_prx_unload_reload_lifecycle();
+    test_module_without_entry_runs_no_code();
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_volatile_mem_unlock_states();
