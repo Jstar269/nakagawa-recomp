@@ -41,6 +41,10 @@ typedef struct SrGuestInterpFault {
  * resume to protect. */
 typedef struct SrGuestInterpCallBoundary {
     uint32_t resume_pc;
+    /* A linked call owes its caller the $sp it was called with, as a callable native body
+     * does (#1935); a live frame's continuation owes none. */
+    uint32_t entry_sp;
+    uint8_t owes_entry_sp;
 } SrGuestInterpCallBoundary;
 
 /* Execute from entry until an unlinked transfer reaches a registered AOT destination
