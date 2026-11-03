@@ -972,6 +972,12 @@ static inline uint32_t sr_null_page_checked(uint32_t address, const char *functi
     return address;
 }
 #define SR_DATA_ADDRESS(a) sr_null_page_checked((uint32_t)(a), __func__)
+/* A span a generated body touches in one native pass, such as a fill or copy standing in
+ * for a translated loop. An empty span touches nothing; any other stops at its lowest
+ * address before a byte moves. */
+static inline uint32_t sr_null_span_checked(uint32_t address, uint32_t size, const char *function) {
+    return size ? sr_null_page_checked(address, function) : address;
+}
 
 #ifdef SR_NULL_PAGE_GUARD
 #define MEM_R8(a)   sr_r8(SR_DATA_ADDRESS(a))
@@ -993,6 +999,28 @@ static inline uint32_t sr_null_page_checked(uint32_t address, const char *functi
 #define MEM_W8_PC(a,v,pc)  sr_w8_pc((a), (uint8_t)(v), (pc))
 #define MEM_W16_PC(a,v,pc) sr_w16_pc((a), (uint16_t)(v), (pc))
 #define MEM_W32_PC(a,v,pc) sr_w32_pc((a), (uint32_t)(v), (pc))
+#endif
+
+/* Generated bulk code forms a host pointer only through SR_HOST(SR_DATA_SPAN(a, n)), and the
+ * native memmove/memset stubs check both spans the same way, so a null base stops as it would
+ * in the translated loop it replaces. */
+#ifdef SR_NULL_PAGE_GUARD
+#define SR_DATA_SPAN(a, n) sr_null_span_checked((uint32_t)(a), (uint32_t)(n), __func__)
+static inline void sr_native_memmove_checked(uint32_t dest, uint32_t src, uint32_t size, uint32_t pc,
+                                             const char *function) {
+    sr_native_memmove(sr_null_span_checked(dest, size, function),
+                      sr_null_span_checked(src, size, function), size, pc);
+}
+static inline void sr_native_memset_checked(uint32_t dest, uint8_t val, uint32_t size, uint32_t pc,
+                                            const char *function) {
+    sr_native_memset(sr_null_span_checked(dest, size, function), val, size, pc);
+}
+#define sr_native_memmove(dest, src, size, pc) \
+    sr_native_memmove_checked((dest), (src), (size), (pc), __func__)
+#define sr_native_memset(dest, val, size, pc) \
+    sr_native_memset_checked((dest), (val), (size), (pc), __func__)
+#else
+#define SR_DATA_SPAN(a, n) ((uint32_t)(a))
 #endif
 
 void  sr_mem_init(void);

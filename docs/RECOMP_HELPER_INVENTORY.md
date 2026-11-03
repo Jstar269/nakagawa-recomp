@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **421** (declared in `recomp.h`: 356)
-- reach class: emitter-reached 75, production-runtime-only 312, selftest-only 18, address-only 7, none 9
-- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 393
+- helpers: **424** (declared in `recomp.h`: 359)
+- reach class: emitter-reached 76, production-runtime-only 313, selftest-only 17, address-only 7, none 11
+- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 396
 
 ## Helpers
 
@@ -367,7 +367,9 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_nan_trap_note_v` | `rt/debug.c` | yes | emitter-reached (via `SR_NAN_TRAP_V`, via `SR_NAN_TRAP_V2`) | `rt/debug.c`: project_authored_attested |
 | `sr_nan_trap_print_floats` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_native_memmove` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
+| `sr_native_memmove_checked` | `rt/recomp.h` | yes | none | `rt/recomp.h`: upstream_derived |
 | `sr_native_memset` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
+| `sr_native_memset_checked` | `rt/recomp.h` | yes | none | `rt/recomp.h`: upstream_derived |
 | `sr_newlib_free` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_newlib_malloc` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_newlib_memalign` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
@@ -375,8 +377,9 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_null_code_entry` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_null_code_pointer` | `rt/recomp.c` | yes | emitter-reached (via `SR_CODE_POINTER`) | `rt/recomp.c`: upstream_derived |
 | `sr_null_data_pointer` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
-| `sr_null_page_checked` | `rt/recomp.h` | yes | selftest-only | `rt/recomp.h`: upstream_derived |
+| `sr_null_page_checked` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_null_return_address` | `rt/recomp.c` | yes | emitter-reached (via `SR_AOT_RETURN_CAPTURE`) | `rt/recomp.c`: upstream_derived |
+| `sr_null_span_checked` | `rt/recomp.h` | yes | emitter-reached (via `SR_DATA_SPAN`) | `rt/recomp.h`: upstream_derived |
 | `sr_oor` | `rt/ge_replay.c`, `rt/ge_vram_cli.c`, `rt/recomp.c` | yes | emitter-reached (direct) | `rt/ge_replay.c`: project_authored_attested; `rt/ge_vram_cli.c`: upstream_derived; `rt/recomp.c`: upstream_derived |
 | `sr_parse_display_bounds` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_pick_display` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |

@@ -111,8 +111,10 @@ class CodegenOptions:
     # Null-page guard (#363). True when the primary image starts inside the range the PSP
     # leaves unmapped, so a null base plus a field offset would reach its first bytes
     # instead of faulting. The generated header then defines SR_NULL_PAGE_GUARD, and those
-    # accesses stop by name (src/rt/recomp.h). main() sets it from the image; any other
-    # image's generated C is byte-identical.
+    # accesses stop by name (src/rt/recomp.h): every scalar access form, and every bulk span
+    # a body hands to memset/memmove or the native stubs, which forms its host pointer
+    # through SR_HOST(SR_DATA_SPAN(a, n)). main() sets it from the image; any other image's
+    # generated C is byte-identical.
     null_page_guard: bool = False
 
     # Local guest-register promotion (#284). When True, runs of simple instructions
@@ -3300,7 +3302,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 "      if (_mf_cnt > 0x00100000u) fprintf(stderr, \"MEMSET_FASTPATH: large count=0x%x base=0x%x r16=0x%08x MEM[r16+0]=0x%08x MEM[r16+4]=0x%08x MEM[r16+8]=0x%08x ra=0x%08x\\n\", _mf_cnt, _mf_base, s->r[16], (s->r[16]<0x0c000000u?MEM_R32(s->r[16]):0xDEADu), (s->r[16]<0x0c000000u?MEM_R32(s->r[16]+4u):0xDEADu), (s->r[16]<0x0c000000u?MEM_R32(s->r[16]+8u):0xDEADu), s->r[31]);\n"
                 "      if (_mf_cnt > 0 && _mf_cnt < 0x04000000u && sr_guest_span_writable(_mf_base, _mf_cnt)) {\n"
                 "          if (g_sr_heap_watch) sr_heap_note_bulk_write(_mf_base, _mf_cnt, 0x0006ea1cu);\n"
-                "          memset(SR_HOST(_mf_base), 0, _mf_cnt);\n"
+                "          memset(SR_HOST(SR_DATA_SPAN(_mf_base, _mf_cnt)), 0, _mf_cnt);\n"
                 "      } else {\n"
                 "          if (_mf_cnt) sr_oor(_mf_base, 0u, 1);\n"
                 "      }\n"
@@ -3359,7 +3361,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 "          if (_as_dst_lo < _as_dst_hi && _as_src_base < 0x0c000000u && _as_dst_lo < 0x0c000000u &&\n"
                 "              (uint64_t)_as_src_base + _as_nbytes <= 0x0c000000u && (uint64_t)_as_dst_lo + _as_nbytes <= 0x0c000000u) {\n"
                 "              if (g_sr_heap_watch) sr_heap_note_bulk_write(_as_dst_lo, (uint32_t)_as_nbytes, 0x00108630u);\n"
-                "              memmove(SR_HOST(_as_dst_lo), SR_HOST(_as_src_base), (size_t)_as_nbytes);\n"
+                "              memmove(SR_HOST(SR_DATA_SPAN(_as_dst_lo, _as_nbytes)),\n"
+                "                      SR_HOST(SR_DATA_SPAN(_as_src_base, _as_nbytes)), (size_t)_as_nbytes);\n"
                 "          } else {\n"
                 "              for (uint32_t _as_i = 0; _as_i < _as_n; _as_i++) {\n"
                 "                  uint32_t _as_d = _as_dst_hi - 8u * (_as_i + 1u);\n"

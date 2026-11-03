@@ -2014,6 +2014,19 @@ static void test_null_code_pointer_is_not_the_offset0_function(const char *self_
           "(status=%d)", child_status);
     CHECK(boot_event_file_names(event_path, "boundary=null-data-pointer issue=363"),
           "null data pointer stop did not record its boot event naming #363");
+    /* A native fill or copy standing in for a translated loop: an empty span at a null base
+     * touches nothing and passes, and any other stops before a byte moves. */
+    CHECK(sr_null_span_checked(0u, 0u, __func__) == 0u,
+          "an empty span at a null base did not pass the null-page guard");
+    remove(event_path);
+    set_boot_event_file(event_path);
+    child_status = run_dispatch_child(self_path, "--null-data-span-child");
+    set_boot_event_file("");
+    CHECK(child_status == 1,
+          "generated-code null span check did not stop the run with status 1 "
+          "(status=%d)", child_status);
+    CHECK(boot_event_file_names(event_path, "boundary=null-data-pointer issue=363"),
+          "null span stop did not record its boot event naming #363");
 
     sr_exec_span_reset();
 }
@@ -2248,6 +2261,10 @@ int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--null-data-pointer-child") == 0) {
         (void)sr_null_page_checked(8u, "null_data_pointer_child");
         return 99; /* fail-open: a null base must never reach image bytes */
+    }
+    if (argc == 2 && strcmp(argv[1], "--null-data-span-child") == 0) {
+        (void)sr_null_span_checked(0u, 8u, "null_data_span_child");
+        return 99; /* fail-open: a bulk pass must never start at a null base */
     }
     if (argc == 2 && strcmp(argv[1], "--host-tail-return-child") == 0)
         return run_host_tail_return_child();

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import re
 import shutil
 import struct
 import subprocess
@@ -1182,6 +1183,70 @@ def _generated(vaddr: int) -> tuple[str, str]:
         return (tmp_path / "out_funcs.h").read_text(encoding="ascii"), chunks
 
 
+def _without_literals(text: str) -> str:
+    """`text` with every string and character literal emptied, so braces and names inside
+    a format string are not read as code."""
+    return re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', '""', text)
+
+
+def _balanced(text: str, start: int) -> int:
+    """The index just past the bracket that closes the one at `start`."""
+    pair = {"(": ")", "{": "}"}[text[start]]
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == text[start]:
+            depth += 1
+        elif text[i] == pair:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    raise AssertionError(f"unbalanced {text[start]!r} at {start}")
+
+
+def _inline_functions(header: str) -> dict[str, str]:
+    """Every inline function the preprocessed header defines, name -> body."""
+    found = {}
+    pos = 0
+    for match in re.finditer(r"[;{}]", header):
+        if match.start() < pos:
+            continue
+        if match.group() != "{":
+            pos = match.end()
+            continue
+        declarator = header[pos:match.start()]
+        end = _balanced(header, match.start())
+        names = [n for n in re.findall(r"([A-Za-z_]\w*)\s*\(", declarator)
+                 if not n.startswith("__")]
+        if re.search(r"\binline\b|__inline", declarator) and names:
+            found[names[0]] = header[match.start():end]
+        pos = end
+    return found
+
+
+def _arena_helpers(header: str) -> set[str]:
+    """The inline helpers that reach the arena, directly or through one another, less those
+    that check the null page themselves."""
+    functions = _inline_functions(header)
+    reach = {name for name, body in functions.items() if re.search(r"\bg_mem\b", body)}
+    while True:
+        more = {name for name, body in functions.items() if name not in reach
+                and any(re.search(rf"\b{h}\s*\(", body) for h in reach)}
+        if not more:
+            break
+        reach |= more
+    return {name for name in reach
+            if "sr_null_page_checked" not in functions[name]
+            and "sr_null_span_checked" not in functions[name]}
+
+
+def _calls(text: str, names: set[str]):
+    """(name, argument text) for each call in `text` to one of `names`."""
+    for match in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", text):
+        if match.group(1) in names:
+            open_at = match.end() - 1
+            yield match.group(1), text[open_at + 1:_balanced(text, open_at) - 1]
+
+
 class NullPageGuardTests(unittest.TestCase):
     """A zero-based image occupies the range the PSP leaves unmapped, so a null base plus a
     field offset reaches real image bytes instead of faulting (#363)."""
@@ -1234,6 +1299,40 @@ class NullPageGuardTests(unittest.TestCase):
                 self.assertIn("sr_null_page_checked", line)
         self.assertNotIn("sr_null_page_checked", "".join(expanded()),
                          "runtime code keeps the plain accessors")
+
+    def test_no_guarded_body_reaches_guest_memory_through_an_unchecked_address(self):
+        # Generic over emitters: every runtime helper that reaches the arena (g_mem), directly
+        # or through another helper, is found from the preprocessed header, and every call a
+        # guarded HST body makes to one must carry a checked address. A bulk shortcut that
+        # forms its own host pointer is caught the same way as a scalar access.
+        cc = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+        if cc is None:
+            self.skipTest("no C compiler")
+        bodies = _CodegenRun.functions("hst")
+        self.assertIn("ARRSHIFT_FASTPATH", "".join(bodies.values()))
+        marker = "int nk_guarded_bodies_start;"
+        source = ('#define SR_NULL_PAGE_GUARD 1\n#include "recomp.h"\n' + marker + "\n"
+                  + "\n".join(bodies.values()) + "\n")
+        rt = ROOT / "src" / "rt"
+        result = subprocess.run([cc, "-E", "-P", f"-I{rt}", "-x", "c", "-"],
+                                input=source, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        header, _, generated = _without_literals(result.stdout).partition(marker)
+        self.assertTrue(generated, "the generated bodies did not survive preprocessing")
+        self.assertNotIn("g_mem", generated, "a guarded body forms an arena pointer itself")
+
+        helpers = _arena_helpers(header)
+        self.assertIn("sr_host_address", helpers)
+        self.assertIn("sr_guest_fill", helpers)
+        unchecked = []
+        for name, args in _calls(generated, helpers):
+            if "sr_null_page_checked(" in args or "sr_null_span_checked(" in args:
+                continue
+            if re.fullmatch(r"[\s(]*0x[0-9a-fA-F]+u?[\s)]*", args.split(",")[0]):
+                continue  # a translation-time address: the body reading its own code
+            unchecked.append(f"{name}({' '.join(args.split())[:120]})")
+        self.assertEqual(sorted(set(unchecked)), [],
+                         "these guarded calls reach guest memory with no null-page check")
 
 
 class RetiredStubBodyTests(unittest.TestCase):
