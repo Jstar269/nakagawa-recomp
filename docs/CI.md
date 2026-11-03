@@ -316,7 +316,10 @@ device after a terminal failure; an exit 77 skip fails the gate. A separate step
 texture cache, per-draw state template, filtering and blend cases against the software GE, where
 an exit 77 skip also fails. Its scaled-upload case then runs alone at render scales 2 and 4, where
 every device pixel of an uploaded target must hold its guest pixel, and so does its mip-lod case,
-where the shader's per-fragment mip level must not change with the render scale. The job also runs
+where the shader's per-fragment mip level must not change with the render scale, and so does its
+readback-rows case, where guest memory must get the top-left device pixel of each cell while the
+rows it does not keep stay out of the staging buffer, then once more on the `SR_GPU_READBACK_FULL`
+reference path. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by

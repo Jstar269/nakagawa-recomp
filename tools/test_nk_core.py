@@ -19,6 +19,7 @@ import tempfile
 from contextlib import redirect_stdout
 from types import SimpleNamespace
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1091,7 +1092,8 @@ def _legacy_retail_manifest() -> dict:
     # carries its identity through kind/disc/game_name, not the public
     # synthetic surface.
     base.pop("profile_zero", None)
-    return base
+    returned: dict[str, Any] = base
+    return returned
 
 
 def _load_python_module_from_source(name: str, source: str, package: str = "nk_core"):
@@ -1407,6 +1409,9 @@ class GenericLauncherHostileTests(unittest.TestCase):
 
 class GenericLauncherParityTests(unittest.TestCase):
     """Native and Python planners must select the same outcome."""
+    _class_temp: Path
+    _harness: Any
+    gcc: str | None
 
     TITLE2 = "pspdev-phase5-v1"
     TITLE2_DISC = "TEST00005"
@@ -2097,7 +2102,9 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         size = re.search(r"#define NK_LIBRARY_MAX_BYTES \((\d+)L \* 1024L \* 1024L\)", library_h)
         self.assertIsNotNone(games)
         self.assertIsNotNone(size)
+        assert games is not None
         self.assertEqual(int(games.group(1)), MAX_LIBRARY_GAMES)
+        assert size is not None
         self.assertEqual(int(size.group(1)) * 1024 * 1024, MAX_LIBRARY_JSON_BYTES)
 
     def test_full_library_written_by_the_player_is_readable(self) -> None:

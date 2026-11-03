@@ -189,6 +189,9 @@ def presses_seen(reads: list[tuple[int, int]], mask: int) -> list[int]:
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class ScriptedInputDeliveryTests(unittest.TestCase):
+    exe: Path
+    tmp: Path
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.tmp = Path(tempfile.mkdtemp(prefix="scripted_input_"))

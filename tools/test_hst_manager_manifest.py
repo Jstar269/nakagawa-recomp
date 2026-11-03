@@ -31,12 +31,17 @@ HST_GAME_NAME = "hst"
 
 
 class HstManagerManifestTests(unittest.TestCase):
+    make: str
+    shell: str
+
     @classmethod
     def setUpClass(cls) -> None:
-        cls.shell = shutil.which("pwsh")
-        cls.make = shutil.which("mingw32-make") or shutil.which("make")
-        if cls.shell is None or cls.make is None:
+        shell = shutil.which("pwsh")
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if shell is None or make is None:
             raise unittest.SkipTest("PowerShell 7.4+ (pwsh) and GNU Make are required")
+        cls.shell = shell
+        cls.make = make
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-issue197-manager-")

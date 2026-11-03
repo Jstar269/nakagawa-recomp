@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -110,6 +111,9 @@ int main(void) {
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class GeStatWindowEmissionTests(unittest.TestCase):
     """The production ge_set_frame closes one window per VCOUNT boundary crossing."""
+    result: subprocess.CompletedProcess[str]
+    run_dir: Path
+    tmp: Path
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -132,7 +136,8 @@ class GeStatWindowEmissionTests(unittest.TestCase):
     def _windows(self) -> list[ge_stat_windows.GeStatWindow]:
         self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
         self.assertIn("DONE", self.result.stdout)
-        return ge_stat_windows.parse_windows(self.result.stderr)
+        returned: list[Any] = ge_stat_windows.parse_windows(self.result.stderr)
+        return returned
 
     def test_each_crossed_boundary_closes_exactly_one_window(self) -> None:
         # 59 -> 61 closes the first window at 61 (an exact-modulus test printed nothing),
