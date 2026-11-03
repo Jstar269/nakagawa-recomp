@@ -628,6 +628,73 @@ static int coherence_run_undrawn_rows(void) {
     return 1;
 }
 
+/* A title that never writes depth may leave zbp on its own colour buffer: a 16-bit depth surface
+ * at stride 512 covers the first 136 rows of a 32-bit one. Draws that do not write depth leave the
+ * depth surface as it was loaded, so it is not newer than guest VRAM, and a CPU access to those
+ * rows must not write it back over the colour pixels the GPU drew there. */
+static int coherence_run_depth_alias_no_zwrite(void) {
+    const char *name = "depth-alias-no-zwrite";
+    const uint32_t fba = 0x00100000u, base = 0x04000000u | fba, stride = 512u;
+    const uint32_t bytes = stride * FB_H * 4u, probe = (5u * stride + 20u) * 4u;
+    coherence_reset_targets();
+    g_sr_vram_read_pending = 0;
+    for (int i = 0; i < MAX_DEP; i++) {
+        if (s_deps[i].used) {
+            s_deps[i].guest_dirty = 0;
+            s_deps[i].cpu_dirty = 1;
+        }
+    }
+    coherence_fill_raw(SR_HOST(base), stride * FB_H, 4u, coherence_g0(3u));
+    uint8_t *expected = malloc(bytes);
+    if (!expected) return 0;
+
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = stride;
+    s_ge->fbfmt = 3u;
+    s_ge->zbp = base;                      /* depth aliases rows 0..135 of the colour buffer */
+    s_ge->zbw = stride;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535u;
+    GeVtx p0 = { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0x40, 0x50, 0x60, 0xff };
+    GeVtx p1 = p0;
+    p1.x = 480.0f;
+    p1.y = (float)FB_H;
+    int ok = hook_sprite(&p0, &p1, 0) && s_nbatch && submit_pending();
+    Target *t = target_find_by_fba(fba);
+    DepthEnt *d = t ? t->dep : NULL;
+    ok = ok && t && d && target_readback(t) && t->clean_gen == t->render_gen;
+    if (ok) memcpy(expected, SR_HOST(base), bytes);
+    uint32_t drawn = 0u;
+    if (ok) memcpy(&drawn, expected + probe, sizeof drawn);
+    if (!ok || drawn == coherence_g0(3u)) {
+        fprintf(stderr, "gpu coherence selftest [%s]: setup failed (target=%p depth=%p drawn=0x%08x)\n",
+                name, (void *)t, (void *)d, drawn);
+        free(expected);
+        coherence_reset_targets();
+        return 0;
+    }
+    const int depth_newer = d->guest_dirty;
+    const uint32_t loaded = MEM_R32(base + probe);
+    const int kept = memcmp(SR_HOST(base), expected, bytes) == 0;
+    uint32_t first_bad = UINT32_MAX;
+    for (uint32_t off = 0; !kept && off < bytes; off += 4u)
+        if (memcmp(SR_HOST(base + off), expected + off, 4u) != 0) { first_bad = off; break; }
+    free(expected);
+    if (depth_newer || loaded != drawn || !kept) {
+        fprintf(stderr, "gpu coherence selftest [%s]: a draw without depth writes marked depth newer "
+                        "(%d) and a CPU load returned 0x%08x, expected 0x%08x; first changed colour row %d\n",
+                name, depth_newer, loaded, drawn,
+                first_bad == UINT32_MAX ? -1 : (int)(first_bad / (stride * 4u)));
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n", name, stride, s_scale);
+    coherence_reset_targets();
+    return 1;
+}
+
 static int coherence_run_tflt_descriptor_capacity(void) {
     const uint32_t stride = FB_W;
     coherence_reset_targets();
@@ -4394,6 +4461,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
         if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
+        if (strcmp(only, "depth-alias-no-zwrite") == 0) return coherence_run_depth_alias_no_zwrite();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -4435,6 +4503,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_clut_format_list()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
     if (!coherence_run_undrawn_rows()) ok = 0;
+    if (!coherence_run_depth_alias_no_zwrite()) ok = 0;
     if (!coherence_run_scalar_vram_read(0x04080000u)) ok = 0;
     /* zbp 0x0a2000: bit 13 set, so the absolute XOR differs from the within-buffer form (0x0a6854 vs
      * 0x0a2854 for pixel 10,10). The 0x0ce000 placement used by the software selftest would overlap the
