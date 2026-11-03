@@ -632,8 +632,8 @@ def build_entry_catalog(analyzed, ranges, profile=None, elf=None):
                     f"OWNER DOES NOT COVER RESUME: declared owner "
                     f"0x{owner:08x} does not reach 0x{addr:08x}"
                 )
-            # Wiki doc 26 section 14: a shared tail reachable from owners with
-            # incompatible frame states cannot be given one host contract.
+            # A shared tail reachable from owners with incompatible frame states
+            # cannot be given one host contract.
             owners = entry_frame_balance.find_frame_owners(
                 elf, addr, ranges, callables
             )
