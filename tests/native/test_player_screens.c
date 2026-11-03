@@ -417,7 +417,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         /* The download stopped at the signature; nothing was fetched after it. */
         settings.update_step = PLAYER_UI_UPDATE_FAILED;
         settings.update_failed_step = PLAYER_UI_UPDATE_DOWNLOADING;
-        settings.update_error_title = "Signature Didn't Match";
+        settings.update_error_title = "Signature didn't match";
         settings.update_error_message =
             "The release's signature doesn't match its checksum file, so Nakagawa did not "
             "download the update. Nothing was installed. Try again later, or download it from "
@@ -426,7 +426,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     if (which == FLOW_SETTINGS_UPDATE_FAILED) {
         settings.update_step = PLAYER_UI_UPDATE_FAILED;
         settings.update_failed_step = PLAYER_UI_UPDATE_CHECKING;
-        settings.update_error_title = "Couldn't Reach GitHub";
+        settings.update_error_title = "Couldn't reach GitHub";
         settings.update_error_message =
             "Nakagawa couldn't reach GitHub. Check your internet connection and try again "
             "later. Nothing was changed.";
@@ -832,11 +832,11 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         PlayerUiErrorModel error;
         memset(&error, 0, sizeof(error));
         error.badge = which == FLOW_ERROR_STOP ? "Game stopped" : "Game closed";
-        error.title = which == FLOW_ERROR_STOP ? "Game Stopped Early"
-                                               : "Game Closed Unexpectedly";
+        error.title = which == FLOW_ERROR_STOP ? "Game stopped early"
+                                               : "Game closed unexpectedly";
         error.message = "The game needed ad hoc wireless play that this version can't run yet.";
         error.details = "Stopped at a synthetic boundary (not supported yet).";
-        error.recovery_label = "Return to Library";
+        error.recovery_label = "Back to library";
         error.retry_label = "Restart game";
         error.copy_available = true;
         error.report_available = true;
@@ -1993,7 +1993,7 @@ static void test_plain_cards(void) {
           "Copy details asks for the report on the clipboard");
     CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_RECOVER, FLOW_ERROR_STOP).kind ==
               PLAYER_UI_ACTION_ERROR_RECOVER,
-          "Return to Library still leaves the card");
+          "Back to library still leaves the card");
     CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_RETRY, FLOW_ERROR).kind ==
               PLAYER_UI_ACTION_NONE,
           "a card without a retry action draws no retry button");
@@ -2008,7 +2008,7 @@ static void test_plain_cards(void) {
     /* Report this game: a known cause says so and links its issue, and the
        report steps back to a small button; an unknown one leads with it. */
     CHECK(strstr(dump, "This is a known issue (#308).") != NULL &&
-              strstr(dump, "\"SEE ISSUE #308\"") != NULL &&
+              strstr(dump, "\"VIEW ON GITHUB\"") != NULL &&
               strstr(dump, "\"REPORT THIS GAME\"") != NULL &&
               strstr(dump, "\"SEE EXISTING REPORTS\"") != NULL,
           "a known stop names its issue next to Report this game and the existing reports");
@@ -2049,7 +2049,7 @@ static void test_plain_cards(void) {
           "a rejected file keeps its plain reason and next step visible in the wizard");
     CHECK(dump_flow_case(FLOW_WIZ_COPY_FAILED, dump, sizeof(dump)) &&
               strstr(dump, "Synthetic reason") != NULL &&
-              strstr(dump, "listed in the native title catalog") == NULL,
+              strstr(dump, "Nakagawa recognises this disc") == NULL,
           "a failed copy shows its reason in place of the catalog note");
     /* The fonts step says how to get the PSP's own fonts, in plain words, with its button. */
     CHECK(dump_flow_case(FLOW_WIZ_FONTS, dump, sizeof(dump)) &&
@@ -2766,7 +2766,7 @@ static void test_settings_pages(void) {
               strstr(dump, "\"DOWNLOAD\"") != NULL,
           "Updates shows this and the newest version, the notes, the link and the size");
     CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "Couldn't Reach GitHub") != NULL &&
+              strstr(dump, "Couldn't reach GitHub") != NULL &&
               strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
           "offline, Updates says it couldn't reach GitHub and offers only Check again");
     CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_FAILED, 960, 540, dump, sizeof(dump)) &&
@@ -2777,7 +2777,7 @@ static void test_settings_pages(void) {
               strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL && strstr(dump, "\"DOWNLOAD\"") == NULL,
           "a build without a signing key says so and offers only the release page");
     CHECK(flow_case_fits(FLOW_SETTINGS_UPDATE_REFUSED, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "Signature Didn't Match") != NULL &&
+              strstr(dump, "Signature didn't match") != NULL &&
               strstr(dump, "\"OPEN RELEASE PAGE\"") != NULL &&
               strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"INSTALL\"") == NULL,
           "a download refused at its signature offers the release page and Check again");
@@ -2906,7 +2906,7 @@ static void test_controller_and_developer_log_pages(void) {
           "mapping it edits, with no Save step");
     CHECK(dump_flow_case(FLOW_CONTROLLER_GAME, dump, sizeof(dump)) &&
               strstr(dump, "TEST00005 ONLY") != NULL &&
-              strstr(dump, "\"PRESS A BUTTON...\"") != NULL &&
+              strstr(dump, "\"PRESS A BUTTON…\"") != NULL &&
               strstr(dump, "Conflict: Y (Triangle)") != NULL &&
               strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
           "a game's own mapping is named, with the waiting control and the conflict");
@@ -3002,7 +3002,7 @@ static void test_controller_binding_glyphs(void) {
     CHECK(dump_flow_case(FLOW_CONTROLLER_KEYS, dump, sizeof(dump)) &&
               dump_has_element(dump, PLAYER_UI_ID_CONTROLLER_GLYPH(1u), "TEXT", "ENTER", NULL,
                                NULL) &&
-              strstr(dump, "\"PRESS A KEY...\"") != NULL,
+              strstr(dump, "\"PRESS A KEY…\"") != NULL,
           "the control waiting for a key keeps the glyph of the key it has");
 }
 
@@ -3057,7 +3057,7 @@ static void test_controller_keyboard_page(void) {
         }
         CHECK(strstr(dump, quoted) != NULL, "every PSP control shows its keyboard key");
     }
-    CHECK(strstr(dump, "\"PRESS A KEY...\"") != NULL &&
+    CHECK(strstr(dump, "\"PRESS A KEY…\"") != NULL &&
               strstr(dump, "\"KEYS \xC2\xB7 TEST00005 ONLY\"") != NULL,
           "the control waiting for a key says so, and the mapping being edited is named");
     CHECK(strstr(dump, "Esc or F1 pauses the game.") != NULL &&
@@ -3157,11 +3157,11 @@ static void test_error_details_fit_the_minimum_window(void) {
     set_test_viewport(ui, 960, 540);
     memset(&error, 0, sizeof(error));
     error.badge = "CLI_NOT_FOUND";
-    error.title = "Build Tools Not Found";
+    error.title = "Build tools not found";
     error.message = "Nakagawa Recomp's build tools were not found next to the app. Reinstall "
                     "Nakagawa Recomp and keep its folder together.";
     error.details = details;
-    error.recovery_label = "Return to Library";
+    error.recovery_label = "Back to library";
     error.logical_width = 960.0f;
     error.logical_height = 540.0f;
     for (int frame = 0; frame < 2; ++frame) {

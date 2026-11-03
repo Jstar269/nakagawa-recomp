@@ -1877,7 +1877,7 @@ class NativePlayerUiTests(unittest.TestCase):
         preparing = self.run_player("preparing", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
         self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", preparing["stdout"])
         self.assertEqual(self.screens(preparing)[-1][0], "library",
-                         "Return to Library leaves the preparation card")
+                         "Back to library leaves the preparation card")
 
     def test_settings_psp_fonts_imports_and_removes(self) -> None:
         """Walkthrough blocker: the PSP font import is reachable from Settings."""
@@ -3888,7 +3888,7 @@ class NativePlayerUiTests(unittest.TestCase):
     def test_build_failure_card_dismisses_and_cancel_stays_away(self) -> None:
         """#1277: a finished build's outcome is shown once per session.
 
-        The failure card was re-opened on every frame, so Return to Library
+        The failure card was re-opened on every frame, so Back to library
         could not dismiss it, and a cancelled build pulled every later view
         back to the Library."""
         failed = self.run_player(
@@ -4173,8 +4173,8 @@ class NativePlayerUiTests(unittest.TestCase):
         image[18 * sector:18 * sector + len(root)] = root
         image[19 * sector:19 * sector + 16] = b"synthetic text\n\n"
         cases = (
-            ("source-owned-compressed.cso", cso, "DISC_IMAGE_INDEX_INVALID", "Damaged_Disc_Image"),
-            ("source-owned-data-disc.iso", bytes(image), "DISC_NOT_PSP", "Not_a_PSP_Disc_Image"),
+            ("source-owned-compressed.cso", cso, "DISC_IMAGE_INDEX_INVALID", "Damaged_disc_image"),
+            ("source-owned-data-disc.iso", bytes(image), "DISC_NOT_PSP", "Not_a_PSP_disc_image"),
         )
         for name, payload, code, title in cases:
             with self.subTest(code=code):
@@ -4463,11 +4463,11 @@ class NativePlayerUiTests(unittest.TestCase):
 
         Failing-before: "Child Process Terminated Early" and "Child Process Error
         Exit" were developer text, the stop card's badge fell back to the raw code
-        for the two exit cards, and Return to Library was the only action."""
+        for the two exit cards, and Back to library was the only action."""
         expected = {
-            "RUNTIME_SEMANTIC_BOUNDARY": ("Game_Stopped_Early", "Game_stopped"),
-            "RUNTIME_PREMATURE_EXIT": ("Game_Couldn't_Start", "Game_didn't_start"),
-            "RUNTIME_ERROR_EXIT": ("Game_Closed_Unexpectedly", "Game_closed"),
+            "RUNTIME_SEMANTIC_BOUNDARY": ("Game_stopped_early", "Game_stopped"),
+            "RUNTIME_PREMATURE_EXIT": ("Game_couldn't_start", "Game_didn't_start"),
+            "RUNTIME_ERROR_EXIT": ("Game_closed_unexpectedly", "Game_closed"),
         }
         for code, (title, badge) in expected.items():
             with self.subTest(code=code):
@@ -4495,7 +4495,7 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIsNotNone(report, stdout)
         assert report is not None
         self.assertEqual(report.group(1), "1", "the report did not reach the clipboard")
-        for field in ("Nakagawa Recomp v", "Problem: Game Stopped Early",
+        for field in ("Nakagawa Recomp v", "Problem: Game stopped early",
                       "Code: RUNTIME_SEMANTIC_BOUNDARY",
                       "Reason: Stopped at unsupported-import-scenetadhocinit",
                       "tracked in issue 308", "Last boot events:",
@@ -4570,7 +4570,7 @@ class NativePlayerUiTests(unittest.TestCase):
         """#1282: Restart game runs the same launch PLAY does for that game.
 
         The synthetic library game has no package, so the launch answers with
-        its own Game Not Ready card: the restart reached the launch path.
+        its own Game not ready card: the restart reached the launch path.
 
         Restart game goes back to the library and starts the launch on the
         launch worker (#1298), so the script waits for that launch's card, not
@@ -4579,7 +4579,7 @@ class NativePlayerUiTests(unittest.TestCase):
         ended on the stopped game's card whenever a slow runner took longer
         than that to reach the package check."""
         run = self.run_player(
-            "library", ("WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN", "WAIT_VIEW=error,10000"),
+            "library", ("WAIT_MS=50", "KEY_TAB", "KEY_RETURN", "WAIT_VIEW=error,10000"),
             error_code="RUNTIME_ERROR_EXIT", ui_mode="next",
             env_extra={"NK_UI_TEST_SLOW_START_MS": "600"},
         )
@@ -4633,7 +4633,10 @@ class NativePlayerUiTests(unittest.TestCase):
         # The frame that took the press drew the title before the launch began;
         # every later one shows it starting.
         for frame in pending[1:]:
-            self.assertEqual(frame["next_primary_label"], "disabled:STARTING...")
+            # The label ends in an ellipsis, which the harness decodes with the
+            # console code page, so compare the words only.
+            self.assertTrue(frame["next_primary_label"].startswith("disabled:STARTING"),
+                            frame["next_primary_label"])
             self.assertEqual(frame["next_package"], self.PACKAGE_STARTING)
         first = frames.index(pending[0])
         last = frames.index(pending[-1])
@@ -5004,7 +5007,7 @@ class NativePlayerUiTests(unittest.TestCase):
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["view"], "error")
-        self.assertEqual(frames[0]["error_title"], "Build_Not_Started")
+        self.assertEqual(frames[0]["error_title"], "Build_not_started")
         self.assertEqual(frames[0]["error_badge"], "Build_not_started")
         self.assertEqual(frames[0]["error_retry"], "Try_again")
         # An unknown code still gets a plain badge.
@@ -5345,7 +5348,7 @@ class FirstRunRouteTests(unittest.TestCase):
         self.assertTrue(frames, completed.stdout)
         self.assertEqual(frames[0]["view"], "error")
         self.assertEqual(frames[0]["error"], "EXPERIMENTAL_LAUNCH_UNAVAILABLE")
-        self.assertIn("in the works.", completed.stderr)
+        self.assertIn("isn't supported yet.", completed.stderr)
         self.assertNotIn("(#308)", completed.stderr)
         self.assertEqual(library_disc_ids(scratch), [])
 

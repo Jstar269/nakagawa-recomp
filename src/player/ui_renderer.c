@@ -2585,10 +2585,10 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
             /* The add was rejected or never persisted. Saying nothing would
                show the title in the library until the next restart dropped
                it. */
-            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
                                  "The title could not be stored. The library may be full, or the "
                                  "user data directory is not writable.",
-                                 "Return to Library", VIEW_LIBRARY);
+                                 "Back to library", VIEW_LIBRARY);
         }
     }
     bool back_focused = (app->focus_index == 1);
@@ -2673,9 +2673,9 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
         if (player_app_add_game(app, &app->inspecting_game)) {
             player_app_set_view(app, VIEW_LIBRARY);
         } else {
-            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+            player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
                                  "The experimental title could not be stored. The library may be full, or the user data directory is not writable.",
-                                 "Return to Library", VIEW_LIBRARY);
+                                 "Back to library", VIEW_LIBRARY);
         }
     }
     bool back_focused = app->focus_index == 1;
@@ -2748,7 +2748,7 @@ static void render_preparing(SDL_Renderer *ren, PlayerApp *app, const UiInput *i
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
 
     draw_badge(ren, card_x + 32.0f, card_y + 32.0f, "PREPARATION UNAVAILABLE", COLOR_AMBER);
-    draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Preparation Unavailable", 2.2f, COLOR_TEXT_WHITE);
+    draw_text(ren, card_x + 32.0f, card_y + 76.0f, "Preparation unavailable", 2.2f, COLOR_TEXT_WHITE);
     /* This is intentionally an explanation screen, not a fake progress
      * surface. No native preparation pipeline is connected in this build. */
     draw_text_wrapped(ren, card_x + 32.0f, card_y + 120.0f, card_w - 64.0f,
@@ -4807,9 +4807,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                     if (player_app_add_game(app, &app->inspecting_game)) {
                         player_app_set_view(app, VIEW_LIBRARY);
                     } else {
-                        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                        player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could not save to library",
                                              "The experimental title could not be stored. The library may be full, or the user data directory is not writable.",
-                                             "Return to Library", VIEW_LIBRARY);
+                                             "Back to library", VIEW_LIBRARY);
                     }
                 }
                 bool diff_foc = (app->focus_index == focus++);

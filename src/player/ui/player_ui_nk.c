@@ -74,10 +74,10 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
        (#1297). */
     {"UCUS98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
-     "Known issues: a few late sound wakes while loading, and some movies show black."},
+     "Known issues: some sound effects can drop out while loading."},
     {"UCUS-98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
-     "Known issues: a few late sound wakes while loading, and some movies show black."},
+     "Known issues: some sound effects can drop out while loading."},
     {"PAC-MAN Championship Edition", "Partially works", PLAYER_UI_TIER_NONE,
      "Reaches the title screen and plays a stage. The rest of the game has not been tried yet.",
      ""}
@@ -873,7 +873,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         if (!item->installed) continue;
         snprintf(line, sizeof(player->settings_tools[0]), "%.64s %.32s \xC2\xB7 %.80s", item->name,
                  item->version,
-                 strcmp(item->license, "NOASSERTION") == 0 ? "licence review in the works"
+                 strcmp(item->license, "NOASSERTION") == 0 ? "licence not yet reviewed"
                                                             : item->license);
         model.tools[model.tool_count++] = line;
     }
@@ -1268,10 +1268,10 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         PlayerUiErrorModel model;
         memset(&model, 0, sizeof(model));
         model.badge = "Not available";
-        model.title = "Preparation Unavailable";
+        model.title = "Preparation unavailable";
         model.message = "No preparation pipeline is connected in this build, so no "
                         "preparation work is running.";
-        model.recovery_label = "Return to Library";
+        model.recovery_label = "Back to library";
         model.logical_width = scale.logical_w;
         model.logical_height = scale.logical_h;
         return player_ui_screen_error(player->ui, &model);
@@ -2049,14 +2049,14 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
     if (app->launch_pending) {
         /* The launch worker hands back STOP GAME or an error card. */
-        out->primary_action_label = "STARTING...";
+        out->primary_action_label = "STARTING…";
     } else if (app->is_game_running) {
         out->primary_action_label = "STOP GAME";
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_STOP_GAME;
     } else if (older && rebuild.rebuilding) {
         /* Its package is about to be replaced; the package card says so. */
-        out->primary_action_label = "REBUILDING...";
+        out->primary_action_label = "REBUILDING…";
     } else if (player_app_title_60hz_blocked(app, index)) {
         /* 60 FPS game logic is on but its package is gone: neither variant
            builds or plays until the user turns it off or brings it back. */

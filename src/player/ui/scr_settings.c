@@ -285,10 +285,10 @@ static void settings_problem_report(NkUi *ui, const PlayerUiSettingsModel *model
     nk_ui_text_role(ui, FLOW_ID_TITLE, "Problem report", NK_UI_TYPE_TITLE, theme->paper);
     switch (step) {
         case PLAYER_UI_REPORT_PREVIEWING:
-            lead = "Listing what the report would hold...";
+            lead = "Listing what the report would hold…";
             break;
         case PLAYER_UI_REPORT_CREATING:
-            lead = "Writing the report. Checking the build tools can take a minute...";
+            lead = "Writing the report. Checking the build tools can take a minute…";
             break;
         case PLAYER_UI_REPORT_DONE:
             lead = "The report is written. Open the ZIP and look through it before you attach "
@@ -399,7 +399,7 @@ static void settings_shorten_words(const char *in, char *out, size_t cap, size_t
             size_t head = 12u;
             size_t tail = max_word - head - 3u;
             while (tail > 0u && ((unsigned char)in[word - tail] & 0xC0u) == 0x80u) --tail;
-            (void)snprintf(out + used, cap - used, "%.*s...%.*s", (int)head, in, (int)tail,
+            (void)snprintf(out + used, cap - used, "%.*s…%.*s", (int)head, in, (int)tail,
                            in + word - tail);
         } else {
             (void)snprintf(out + used, cap - used, "%.*s", (int)word, in);
@@ -430,7 +430,7 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
     nk_ui_text_role(ui, FLOW_ID_TITLE, "Updates", NK_UI_TYPE_TITLE, theme->paper);
     switch (step) {
         case PLAYER_UI_UPDATE_CHECKING:
-            (void)snprintf(lead, sizeof(lead), "Asking GitHub for the newest version...");
+            (void)snprintf(lead, sizeof(lead), "Asking GitHub for the newest version…");
             break;
         case PLAYER_UI_UPDATE_CURRENT:
             (void)snprintf(lead, sizeof(lead), "You have the newest version.");
@@ -441,14 +441,14 @@ static void settings_updates(NkUi *ui, const PlayerUiSettingsModel *model, float
             lead_rgba = theme->ready;
             break;
         case PLAYER_UI_UPDATE_DOWNLOADING:
-            (void)snprintf(lead, sizeof(lead), "Downloading version %s...", version);
+            (void)snprintf(lead, sizeof(lead), "Downloading version %s…", version);
             break;
         case PLAYER_UI_UPDATE_DOWNLOADED:
             (void)snprintf(lead, sizeof(lead), "Version %s is downloaded and checked.", version);
             lead_rgba = theme->ready;
             break;
         case PLAYER_UI_UPDATE_INSTALLING:
-            (void)snprintf(lead, sizeof(lead), "Unpacking version %s...", version);
+            (void)snprintf(lead, sizeof(lead), "Unpacking version %s…", version);
             break;
         case PLAYER_UI_UPDATE_INSTALLED:
             (void)snprintf(lead, sizeof(lead), "Version %s is ready to start.", version);
