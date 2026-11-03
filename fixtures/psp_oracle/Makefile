@@ -300,6 +300,10 @@ CASE_ID = 124
 # WLAN state.
 else ifeq ($(CASE),kernel-semantics)
 CASE_ID = 127
+# 136: #1380's Memory Stick open-without-create, negative-seek and past-end write/read cells
+# (probe_kernel_semantics.c, its own probe-owned directory).
+else ifeq ($(CASE),io-seek-eof)
+CASE_ID = 136
 # 128: #1375 P1 plus non-invoking P2 registrations; 129/130 are separately guarded NULL invokes.
 else ifeq ($(CASE),null-code-registration)
 CASE_ID = 128
@@ -532,6 +536,9 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),kernel-semantics)
 TARGET = $(BUILD_DIR)/kernel_semantics
 OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),io-seek-eof)
+TARGET = $(BUILD_DIR)/io_seek_eof
+OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),null-code-registration)
 TARGET = $(BUILD_DIR)/null_code_registration
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
@@ -668,6 +675,13 @@ USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceCtrl=0x1F803938,0x3A622550,0x1F4011E6,0xDA6B76A1,0x6A2774F3,0x02BAAD91
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceSuspendForUser=0x3E0271D3,0xA14F40B2,0xA569E425
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceWlanDrv=0xD7763699,0x93440B11
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
+# io-seek-eof: file calls only (IoFileMgrForUser and the shared ThreadManForUser block); none
+# of kernel-semantics' interrupt, controller, suspend or WLAN imports, nothing from the bridge.
+ifeq ($(CASE),io-seek-eof)
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library sceCtrl
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceSuspendForUser --forbid-library sceWlanDrv
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
 endif
 # memory-edge: partition-memory, file and DMAC calls only; none of the interrupt, controller,

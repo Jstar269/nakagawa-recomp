@@ -829,6 +829,36 @@ One console is one data point; see §11. Nothing here closes issue #70
     read-write descriptors alike.
   - *WLAN (#1382).* `sceWlanGetSwitchState` and `sceWlanDevIsPowerOn` both answer 1 with the switch on.
 
+- **PSP-3000 single-case run of the `io-seek-eof` probe on commit `f484ef58` (2026-11-02)**: system software 6.61,
+  ARK-5.1.0 (owner); PSPLink `pspver` 6.6.1, PSPLink 3.2.1 through Nakagawa Link, operator-declared model
+  PSP-3000, boot 100. `f484ef58` is the commit that adds the case (case 136, the `KS_CASE_IO_EOF` section of
+  `fixtures/psp_oracle/probe_kernel_semantics.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 9 records and the done record, all PASS. The probe wrote only inside `ms0:/NKKSEM01`, which
+  it created and removed (`io-eof-cleanup`). The row cites only the records named in it, and not the gap words
+  of `io-eof-gap`, which hold old Memory Stick bytes. The raw envelope and host0 log stay in the private campaign
+  directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-11-02, `f484ef58`) |
+  | --- | --- | --- | --- |
+  | `PSP-IO-EOF-001` | `io-eof-mkdir`, `io-eof-missing`, `io-eof-create`, `io-eof-seek-negative`, `io-eof-seek-negative-rdonly`, `io-eof-write-past`, `io-eof-gap`, `io-eof-read-past`, `io-eof-cleanup`, `io-seek-eof-done` | The gap bytes' values, devices other than the Memory Stick, and UMD/ISO files | MEASURED (`io-seek-eof`) |
+
+  What the records establish, on this console:
+  - *Open without `PSP_O_CREAT`.* A missing file opened write-only, read-write, read-only or write-only with
+    `PSP_O_TRUNC` answers 0x80010002 each time, and `sceIoGetstat` of it afterwards answers 0x80010002: nothing
+    was created.
+  - *Seeks before the start.* On a read-write descriptor at position 8, `sceIoLseek` to -1 from `SEEK_SET`, -16
+    from `SEEK_CUR` and -32 from `SEEK_END` (a 16-byte file) each answer 0x80010016 (EINVAL) with 0xFFFFFFFF in
+    the high word, and `sceIoLseek32` to -1 answers 0x80010016; the position stays 8 after each. On a read-only
+    descriptor `SEEK_SET` -1 answers the same and the position stays 0. pspautotests `tests/io/file` records -1
+    here; the Memory Stick does not.
+  - *Write after a seek past the end.* On the 16-byte file a seek to 0x20 answers 0x20 and the size is still 16;
+    a 4-byte write there answers 4, the position becomes 0x24 and the size 0x24. A read of 0x30 bytes from the
+    start answers 0x24 with the 4 bytes at 0x20 as written. The 16 bytes between the old end and 0x20 are not
+    zero-filled: they read back as the stick's previous contents.
+  - *Read past the end.* A seek to 0x40 answers 0x40, a 4-byte read there answers 0, and the position stays 0x40.
+
 - **PSP-3000 single-case run of the `module-start` probe on commit `fd2a75fd` (2026-10-29)**: firmware 6.6.1,
   PSPLink 3.2.1, operator-declared model PSP-3000. `fd2a75fd` is the commit that adds the probe (case 124,
   `fixtures/psp_oracle/probe_module_start.c`). The case was one runner invocation after the `transport-write`
@@ -3014,6 +3044,7 @@ not expected PSP values.
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
 | `module-start` | `PSP-MODULE-START-001` | `MEASURED` (2026-10-29, `fd2a75fd`; single launch, not in the campaign queue) | Module lifecycle: a module with its own `module_start` records that thread's status, the free memory before and after it returns, whether its UID still answers, and the thread list |
 | `kernel-semantics` | `PSP-KERNEL-SEM-001` | `MEASURED` (2026-10-31, `0c3cf0da`, boot 84; single launch, not in the campaign queue) | #1287, #1390, #1383, #1380, #1382: VBLANK sub-interrupt delivery order, controller read consumption, peek counts, analog by sampling mode and cycle spacing, volatile-lock types and partition-5 allocations, Memory Stick exclusive create and seeks past 4 GiB in a probe-owned directory, WLAN switch and power state; never the MAC or OpenPSID |
+| `io-seek-eof` | `PSP-IO-EOF-001` | `MEASURED` (2026-11-02, `f484ef58`, boot 100; single launch, not in the campaign queue) | #1380: Memory Stick opens of a missing file without `PSP_O_CREAT`, seeks before the start from each whence and through `sceIoLseek32`, a write after a seek past the end (sizes, position, tail) and a read past the end, in a probe-owned directory; the gap bytes stay private |
 | `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
 | `dma-timing` | `PSP-DMAC-002` | `MEASURED` (2026-10-29, `0e40e7d3`, `281a21a4` and `1310e632`; single launches, not in the campaign queue) | #303: `sceDmacMemcpy` / `sceDmacTryMemcpy` per-call duration by size (0x10 to 0x100000) and main-RAM/VRAM pair, relative-alignment cost, BUSY against the NULL and zero-size checks, what a refused Try copies, the order of queued callers, the busy window, and the sizes a pending transfer lets through. 202 result records in the last build. |
 | `ge-raster` | `PSP-GE-RASTER-001` | `MEASURED` (2026-10-29, `990748ec`; single launch, not in the campaign queue) | #343: the raw pixels of a 16x4 window after 189 project-written display lists: blend factors and equations, alpha, colour, stencil and depth tests, texture functions, formats, CLUT modes and row pitch, wrap and clamp, triangle, line and point coverage, 16-bit framebuffers, dithering, pixel masks, logic operations, clear mode, and transform-mode triangles, sprites and fog. 945 result records. |

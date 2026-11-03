@@ -2235,6 +2235,63 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-IO-EOF-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "io-eof-mkdir",
+          "io-eof-missing",
+          "io-eof-create",
+          "io-eof-seek-negative",
+          "io-eof-seek-negative-rdonly",
+          "io-eof-write-past",
+          "io-eof-gap",
+          "io-eof-read-past",
+          "io-eof-cleanup",
+          "io-seek-eof-done"
+        ],
+        "measurement_note": "Measured by the 2026-11-02 PSP-3000 single-case run (firmware 6.6.1, ARK-5.1.0, PSPLink through Nakagawa Link, boot 100) of commit f484ef58, case io-seek-eof after the transport-write preflight: 9 records and the done record (out0 9), all PASS, acceptance-eligible with 0 blockers. Cited: every record's raw words except the io-eof-gap gap words, which hold old Memory Stick bytes and stay private. PASS means the call results were recorded, and the parser compares no value; the raw stream stays in the private campaign directory.",
+        "group": "kernel",
+        "source": "fixtures/psp_oracle/probe_kernel_semantics.c",
+        "prx": "io_seek_eof.prx",
+        "apis": [
+          "sceIoDopen",
+          "sceIoDclose",
+          "sceIoMkdir",
+          "sceIoOpen",
+          "sceIoClose",
+          "sceIoWrite",
+          "sceIoRead",
+          "sceIoLseek",
+          "sceIoLseek32",
+          "sceIoGetstat",
+          "sceIoRemove",
+          "sceIoRmdir"
+        ],
+        "diagnostic_case_ids": [
+          "io-seek-eof"
+        ],
+        "case_ids": [
+          "io-eof-mkdir",
+          "io-eof-missing",
+          "io-eof-create",
+          "io-eof-seek-negative",
+          "io-eof-seek-negative-rdonly",
+          "io-eof-write-past",
+          "io-eof-gap",
+          "io-eof-read-past",
+          "io-eof-cleanup",
+          "io-seek-eof-done"
+        ],
+        "invariant": "Raw results of #1380's Memory Stick file cells in a probe-owned directory: sceIoOpen of a missing file without PSP_O_CREAT (write-only, read-write, read-only, write-only with PSP_O_TRUNC) and sceIoGetstat of it afterwards; sceIoLseek to a destination before the start from SEEK_SET, SEEK_CUR and SEEK_END and sceIoLseek32 to -1 on a read-write descriptor, and SEEK_SET -1 on a read-only one, each with the position after it; a seek past the end of a 16-byte file, the size before and after a 4-byte write there, the position after it, and a read of the whole file (count, tail, position); a seek past the end and a read there. No value is interpreted.",
+        "issues": [
+          1380
+        ],
+        "risk": "low; one 16-byte Memory Stick file grown to 0x24 bytes in a probe-owned directory the probe creates only when absent and removes; the MAC address and OpenPSID are never read (import gate)",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-MEMEDGE-001",
         "status": "implemented",
         "hardware_evidence": "CAPTURED",
