@@ -1851,6 +1851,247 @@ def _executable_view(path: Path) -> tuple[dict[int, int], dict[int, int], list[i
     return words, imports, sorted(elf.func_symbols() or ()), hashlib.sha256(data).hexdigest()
 
 
+VBLANK_HZ = 60000.0 / 1001.0
+RATE_EVENT_KINDS = ("count", "change", "lcg")
+RATE_MIN_EVENTS = 20
+RATE_Z = 2.576  # two-sided 99 %
+RATE_SLOWED_BELOW = 57.0  # the runtime's ENHANCEMENT_LOGIC_SLOWED threshold (section 9.5, item 4)
+
+
+def parse_rate_event(spec: str) -> dict[str, Any]:
+    """Parse ``KIND:COLUMN[:A:C[:BITS]][=RATIO]`` for --event.
+
+    ``count`` sums the increases of a counter column, ``change`` counts the samples whose value
+    differs from the previous one, and ``lcg`` counts the steps a linear congruential generator
+    ``x' = (A*x + C) mod 2**BITS`` (BITS 32 unless given) took between two samples. ``RATIO`` is
+    the expected enhanced/stock rate per game second (1 unless given).
+    """
+    body, _, ratio_text = spec.partition("=")
+    parts = body.split(":")
+    if parts[0] not in RATE_EVENT_KINDS or len(parts) < 2 or not parts[1]:
+        raise EnhancementPackageError(
+            f"--event {spec!r}: expected KIND:COLUMN with KIND one of {', '.join(RATE_EVENT_KINDS)}")
+    event: dict[str, Any] = {"kind": parts[0], "column": parts[1], "spec": spec}
+    try:
+        event["ratio"] = float(ratio_text) if ratio_text else 1.0
+        if parts[0] == "lcg":
+            if len(parts) not in (4, 5):
+                raise ValueError
+            event["a"], event["c"] = int(parts[2], 0), int(parts[3], 0)
+            event["bits"] = int(parts[4], 0) if len(parts) == 5 else 32
+            if not 1 <= event["bits"] <= 64:
+                raise ValueError
+        elif len(parts) != 2:
+            raise ValueError
+    except ValueError:
+        raise EnhancementPackageError(
+            f"--event {spec!r}: lcg takes lcg:COLUMN:A:C[:BITS]; count and change take KIND:COLUMN; "
+            "RATIO is a number") from None
+    if not math.isfinite(event["ratio"]) or event["ratio"] <= 0:
+        raise EnhancementPackageError(f"--event {spec!r}: the expected ratio must be a positive number")
+    return event
+
+
+def load_sample_rows(path: Path | str, columns: Sequence[str]) -> list[dict[str, str]]:
+    """Read an ``SR_SAMPLE_OUT`` CSV (``vblank,<label>...``) and check that it names ``columns``."""
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    if not lines:
+        raise EnhancementPackageError(f"{path}: empty sample file")
+    header = lines[0].split(",")
+    if header[0] != "vblank":
+        raise EnhancementPackageError(f"{path}: the first column must be vblank (an SR_SAMPLE_OUT file)")
+    missing = [c for c in columns if c not in header]
+    if missing:
+        raise EnhancementPackageError(f"{path}: no column {', '.join(missing)} (columns: {', '.join(header[1:])})")
+    rows = []
+    for n, line in enumerate(lines[1:], start=2):
+        cells = line.split(",")
+        if len(cells) != len(header):
+            raise EnhancementPackageError(f"{path}:{n}: {len(cells)} cells, the header has {len(header)}")
+        rows.append(dict(zip(header, cells, strict=True)))
+    return rows
+
+
+def _lcg_steps(a: int, c: int, bits: int, start: int, end: int, limit: int) -> int | None:
+    mask = (1 << bits) - 1
+    x = start & mask
+    end &= mask
+    for steps in range(limit + 1):
+        if x == end:
+            return steps
+        x = (a * x + c) & mask
+    return None
+
+
+def measure_rates(rows: Sequence[Mapping[str, str]], *, updates: str, nominal_hz: float,
+                  phase: str | None = None, events: Sequence[Mapping[str, Any]] = (),
+                  lcg_limit: int = 4096) -> dict[str, Any]:
+    """Count logic updates, vblanks and events per phase of one sampled run.
+
+    A step from one sample to the next belongs to the phase of the earlier sample. A step with an
+    empty cell in a column it needs counts nothing for that column. The updates counter is read as
+    an unsigned 32-bit count, so it may wrap.
+    """
+    phases: dict[str, dict[str, Any]] = {}
+
+    def bucket(name: str) -> dict[str, Any]:
+        if name not in phases:
+            phases[name] = {"vblanks": 0, "updates": 0,
+                            "events": {e["spec"]: 0 for e in events}, "unresolved": {e["spec"]: 0 for e in events}}
+        return phases[name]
+
+    per_second: dict[int, int] = {}
+    for prev, cur in zip(rows, rows[1:], strict=False):
+        try:
+            dv = int(cur["vblank"]) - int(prev["vblank"])
+        except ValueError:
+            continue
+        if dv <= 0:
+            continue
+        b = bucket(prev[phase] if phase else "all")
+        b["vblanks"] += dv
+        if prev[updates] and cur[updates]:
+            du = (int(cur[updates]) - int(prev[updates])) & 0xFFFFFFFF
+            b["updates"] += du
+            second = int(int(cur["vblank"]) / VBLANK_HZ)
+            per_second[second] = per_second.get(second, 0) + du
+        for e in events:
+            x, y = prev[e["column"]], cur[e["column"]]
+            if not x or not y:
+                continue
+            if e["kind"] == "change":
+                b["events"][e["spec"]] += x != y
+            elif e["kind"] == "count":
+                b["events"][e["spec"]] += max(0, int(y) - int(x))
+            else:
+                steps = _lcg_steps(e["a"], e["c"], e["bits"], int(x), int(y), lcg_limit)
+                if steps is None:
+                    b["unresolved"][e["spec"]] += 1
+                else:
+                    b["events"][e["spec"]] += steps
+    for b in phases.values():
+        b["seconds"] = b["vblanks"] / VBLANK_HZ
+        b["game_seconds"] = b["updates"] / nominal_hz
+        b["updates_per_second"] = b["updates"] / b["seconds"] if b["seconds"] else 0.0
+    return {"nominal_hz": nominal_hz, "phases": phases,
+            "per_second": [per_second[s] for s in sorted(per_second)]}
+
+
+def compare_event_rate(n_stock: int, t_stock: float, n_enh: int, t_enh: float, ratio: float) -> dict[str, Any]:
+    """Compare two event counts over game time against an expected rate ratio.
+
+    Given both counts, the enhanced share of the events is binomial with p = R*t2 / (t1 + R*t2) for
+    the true ratio R; the 99 % Wilson interval of that share gives an interval for R. The verdict is
+    PASS when the expected ratio lies inside it, FAIL when it does not, and NOT_JUDGED with fewer
+    than RATE_MIN_EVENTS events or no game time on one side: a rare event is not a pass.
+    """
+    total = n_stock + n_enh
+    result: dict[str, Any] = {"stock": n_stock, "enhanced": n_enh, "expected_ratio": ratio}
+    if total < RATE_MIN_EVENTS or t_stock <= 0 or t_enh <= 0:
+        result.update(verdict="NOT_JUDGED", ratio=None, low=None, high=None)
+        return result
+    p = n_enh / total
+    z2 = RATE_Z * RATE_Z
+    centre = (p + z2 / (2 * total)) / (1 + z2 / total)
+    half = RATE_Z * math.sqrt(p * (1 - p) / total + z2 / (4 * total * total)) / (1 + z2 / total)
+    scale = t_stock / t_enh
+
+    def to_ratio(share: float) -> float:
+        return math.inf if share >= 1.0 else share / (1.0 - share) * scale
+
+    low, high = to_ratio(max(0.0, centre - half)), to_ratio(min(1.0, centre + half))
+    measured = (n_enh / t_enh) / (n_stock / t_stock) if n_stock else math.inf
+    result.update(ratio=measured, low=low, high=high, verdict="PASS" if low <= ratio <= high else "FAIL")
+    return result
+
+
+def compare_rates(stock: Mapping[str, Any], enhanced: Mapping[str, Any],
+                  events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Side-by-side report of two measure_rates() results: per phase and over the whole run."""
+    def total(run: Mapping[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = {"vblanks": 0, "updates": 0, "seconds": 0.0, "game_seconds": 0.0,
+                               "events": {e["spec"]: 0 for e in events}, "unresolved": {e["spec"]: 0 for e in events}}
+        for b in run["phases"].values():
+            for k in ("vblanks", "updates", "seconds", "game_seconds"):
+                out[k] += b[k]
+            for spec in out["events"]:
+                out["events"][spec] += b["events"][spec]
+                out["unresolved"][spec] += b["unresolved"][spec]
+        out["updates_per_second"] = out["updates"] / out["seconds"] if out["seconds"] else 0.0
+        return out
+
+    names = sorted(set(stock["phases"]) | set(enhanced["phases"]), key=lambda n: (len(n), n))
+    rows = [("all", total(stock), total(enhanced))]
+    rows += [(n, stock["phases"].get(n), enhanced["phases"].get(n)) for n in names]
+    report: dict[str, Any] = {"phases": [], "failures": 0, "unresolved": 0}
+    for name, s, e in rows:
+        entry: dict[str, Any] = {"phase": name, "stock": None, "enhanced": None, "logic": "ABSENT", "events": []}
+        for side, b in (("stock", s), ("enhanced", e)):
+            if b is not None:
+                entry[side] = {k: b[k] for k in ("vblanks", "updates", "seconds", "game_seconds",
+                                                  "updates_per_second")}
+        if e is not None and e["updates"]:
+            entry["logic"] = "SLOWED" if e["updates_per_second"] < RATE_SLOWED_BELOW else "OK"
+        for ev in events:
+            spec = ev["spec"]
+            cmp = compare_event_rate(s["events"][spec] if s else 0, s["game_seconds"] if s else 0.0,
+                                     e["events"][spec] if e else 0, e["game_seconds"] if e else 0.0, ev["ratio"])
+            cmp["event"] = spec
+            cmp["unresolved"] = (s["unresolved"][spec] if s else 0) + (e["unresolved"][spec] if e else 0)
+            entry["events"].append(cmp)
+            if name == "all":
+                report["failures"] += cmp["verdict"] == "FAIL"
+                report["unresolved"] += cmp["unresolved"]
+        report["phases"].append(entry)
+    return report
+
+
+def _fmt(value: float | None, digits: int = 2) -> str:
+    if value is None:
+        return "-"
+    return "inf" if math.isinf(value) else f"{value:.{digits}f}"
+
+
+def _rates_main(args: argparse.Namespace) -> int:
+    events = [parse_rate_event(spec) for spec in args.event]
+    needed = [args.updates] + ([args.phase] if args.phase else []) + [e["column"] for e in events]
+    stock = measure_rates(load_sample_rows(args.compare_rates[0], needed), updates=args.updates,
+                          nominal_hz=args.stock_hz, phase=args.phase, events=events, lcg_limit=args.lcg_limit)
+    enhanced = measure_rates(load_sample_rows(args.compare_rates[1], needed), updates=args.updates,
+                             nominal_hz=args.enhanced_hz, phase=args.phase, events=events,
+                             lcg_limit=args.lcg_limit)
+    report = compare_rates(stock, enhanced, events)
+    print(f"{'phase':<10} {'stock s':>8} {'upd/s':>6} {'enh s':>8} {'upd/s':>6}  logic")
+    for p in report["phases"]:
+        s, e = p["stock"] or {}, p["enhanced"] or {}
+        print(f"{p['phase']:<10} {_fmt(s.get('seconds'), 1):>8} {_fmt(s.get('updates_per_second'), 1):>6} "
+              f"{_fmt(e.get('seconds'), 1):>8} {_fmt(e.get('updates_per_second'), 1):>6}  {p['logic']}")
+        for c in p["events"]:
+            print(f"  {c['event']}: {c['stock']} stock, {c['enhanced']} enhanced; enhanced/stock per game second "
+                  f"{_fmt(c['ratio'])} (99 % {_fmt(c['low'])}..{_fmt(c['high'])}, expected {c['expected_ratio']:g})"
+                  f" {c['verdict']}" + (f", {c['unresolved']} lcg step(s) unresolved" if c["unresolved"] else ""))
+    for label, run in (("stock", stock), ("enhanced", enhanced)):
+        print(f"{label} updates per second: " + " ".join(str(v) for v in run["per_second"]))
+    if args.json is not None:
+        Path(args.json).write_text(json.dumps({"stock": stock, "enhanced": enhanced, "report": report},
+                                              indent=2) + "\n", encoding="utf-8")
+    whole = report["phases"][0]
+    unjudged = sum(c["verdict"] == "NOT_JUDGED" for c in whole["events"])
+    slowed = [p["phase"] for p in report["phases"][1:] if p["logic"] == "SLOWED"]
+    if whole["logic"] == "SLOWED" and not slowed:
+        slowed = ["all"]
+    if report["failures"] or report["unresolved"]:
+        verdict = "FAIL"
+    elif unjudged or not events or slowed:
+        verdict = "INCOMPLETE"
+    else:
+        verdict = "PASS"
+    print(f"rates: {verdict} ({len(events)} event(s): {report['failures']} differ, {unjudged} not judged, "
+          f"{report['unresolved']} lcg step(s) unresolved; logic below {RATE_SLOWED_BELOW:g} updates/s in "
+          f"{', '.join(slowed) if slowed else 'no phase'})")
+    return {"PASS": 0, "FAIL": 1, "INCOMPLETE": 2}[verdict]
+
+
 def _draft_main(args: argparse.Namespace) -> int:
     words, imports, starts, sha = _executable_view(args.draft)
     draft = draft_timing_package(words, imports, function_starts=starts)
@@ -1890,13 +2131,30 @@ def main(argv: list[str] | None = None) -> int:
     draft.add_argument("--id", default="draft-60hz", help="Package id (default draft-60hz).")
     draft.add_argument("--game-version", default="1.00", help="Game version (default 1.00).")
     draft.add_argument("--out", type=Path, help="Where to write the draft package JSON.")
+    rates = parser.add_argument_group("compare a stock and an enhanced run side by side (section 9.7)")
+    rates.add_argument("--compare-rates", nargs=2, type=Path, metavar=("STOCK_CSV", "ENHANCED_CSV"),
+                       help="Two SR_SAMPLE_OUT files of the same route: the authentic run, then the enhanced run.")
+    rates.add_argument("--updates", default="updates", help="Column of the logic-update counter (default updates).")
+    rates.add_argument("--phase", help="Column whose value names the phase (for example a game-mode word).")
+    rates.add_argument("--event", action="append", default=[], metavar="KIND:COLUMN[=RATIO]",
+                       help="count:COL, change:COL or lcg:COL:A:C[:BITS], with an optional expected ratio.")
+    rates.add_argument("--stock-hz", type=float, default=30.0, help="Logic updates per game second, stock (30).")
+    rates.add_argument("--enhanced-hz", type=float, default=60.0, help="Logic updates per game second, enhanced (60).")
+    rates.add_argument("--lcg-limit", type=int, default=4096, help="Most LCG steps searched between two samples.")
+    rates.add_argument("--json", type=Path, help="Also write the measurements and the report as JSON.")
     args = parser.parse_args(argv)
+    if args.compare_rates is not None:
+        try:
+            return _rates_main(args)
+        except EnhancementPackageError as exc:
+            print(f"rates: FAIL: {exc}", file=sys.stderr)
+            return 1
     if args.draft is not None:
         if not args.title_id or args.out is None:
             parser.error("--draft needs --title-id and --out")
         return _draft_main(args)
     if not args.packages:
-        parser.error("name package files to validate, or --draft an executable")
+        parser.error("name package files to validate, --draft an executable, or --compare-rates two runs")
 
     failures = 0
     for pkg_path in args.packages:

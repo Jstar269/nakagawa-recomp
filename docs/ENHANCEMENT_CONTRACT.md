@@ -235,6 +235,22 @@ Some frame-counted values are data, not instructions: tables in the executable's
 
 Both are covered by the package digest, so a change to either is a different enhanced build.
 
+### 9.7. Side-by-Side Timing Check
+
+A package is right when the enhanced game does in each second what the authentic game does in that second. The check compares two runs of the same input route, sampled with `SR_SAMPLE_SPEC` ([sampling guest state per vblank](DEBUGGING.md#sampling-guest-state-per-vblank)): one of the authentic build, one of the enhanced build with `SR_EXPERIMENTAL_60HZ=1`. The spec must sample the title's logic-update counter; it may also sample a word that names the game phase (a mode or screen) and the values whose changes are the events to compare.
+
+```text
+python tools/enhancement_package.py --compare-rates stock/samples.csv enhanced/samples.csv \
+    --phase mode --event count:points --event change:ai_choice --event lcg:seed:<A>:<C>=2 --json report.json
+```
+
+1. **Game time, not host time.** Each run's game time is its logic updates divided by its nominal rate (`--stock-hz 30`, `--enhanced-hz 60`). An enhanced run that falls below 60 updates per second still plays every update in half the game time, so its event rates stay comparable on a loaded host. The wall-clock rate is reported per phase as well, and a phase under 57 updates per second is marked `SLOWED` (the threshold of §9.5, item 4).
+2. **Events.** `count:COL` sums the increases of a counter; `change:COL` counts the samples whose value differs from the one before; `lcg:COL:A:C[:BITS]` counts the steps a linear congruential generator $x' = (Ax + C) \bmod 2^{\text{BITS}}$ took between two samples, searching at most `--lcg-limit` steps (4096) and reporting a pair it cannot join as unresolved. `=RATIO` gives the expected enhanced/stock rate per game second, 1 unless given: under `rescale_probability` (§9.3) a generator rolled once per update advances twice as often, so its expected ratio is 2, while the events its rolls decide keep the ratio 1.
+3. **A verdict from the counts.** For each event, the enhanced share of the two runs' events is binomial for a given true ratio; the 99 % Wilson interval of that share gives an interval for the ratio. `PASS` means the expected ratio lies inside it, `FAIL` that it does not. With fewer than 20 events in the two runs together the event is `NOT_JUDGED`: a rare event is not a pass.
+4. **Exit status.** 0 when every event passes over the whole run and no phase is `SLOWED`; 1 when an event fails or an LCG step is unresolved; 2 (`INCOMPLETE`) otherwise. Each phase's events are also printed for diagnosis, and `--json` writes the measurements and the report.
+
+Sample specs and routes name guest addresses, so they stay private with the package; the check itself is generic.
+
 ## 10. Ace Mode: the Project-Authored, Library-Wide Mode
 
 Ace Mode is one launcher switch that turns on presentation features for every game, with a per-title choice on the
