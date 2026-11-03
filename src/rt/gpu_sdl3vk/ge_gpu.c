@@ -3054,6 +3054,23 @@ static int blend_needs_shader(uint32_t sfp, uint32_t dfp, uint32_t eq, uint32_t 
            blend_dual_fix(sfp, dfp, fixa, fixb);
 }
 
+/* Find the target that holds VRAM offset `a` (gpu_valid not required). The GE has no buffer height
+ * register, so a target's span below is its widest case, 272 rows: a title that stacks short
+ * targets puts the next target's base inside that span. The nearest base at or below `a` owns the
+ * address. */
+static Target *target_containing(uint32_t a) {
+    Target *best = NULL;
+    for (int i = 0; i < MAX_TGT; i++) {
+        Target *t = &s_tgts[i];
+        if (!t->used) continue;
+        uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
+        if (a < t->fba || a >= t->fba + t->stride * FB_H * bpp_t) continue;
+        if (!best || t->fba > best->fba || (t->fba == best->fba && t->gpu_valid && !best->gpu_valid))
+            best = t;
+    }
+    return best;
+}
+
 /* Build pipeline key + push constants for the current GE state. Always succeeds. */
 static void build_state(int persp, int sprite, Batch *b) {
     uint64_t key_started = cpu_profile_now();
@@ -3239,17 +3256,8 @@ static void build_state(int persp, int sprite, Batch *b) {
     b->dset = s_white_set;
     if (textured) {
         uint64_t lookup_started = cpu_profile_now();
-        Target *src = NULL;
-        if (is_vram(g->tex_addr)) {
-            uint32_t ta = vram_off(g->tex_addr);
-            for (int i = 0; i < MAX_TGT; i++) {
-                Target *ti = &s_tgts[i];
-                if (!ti->used || !ti->gpu_valid) continue;
-                uint32_t bpp_t = ti->fmt == 3 ? 4 : 2;
-                uint32_t flen = ti->stride * FB_H * bpp_t;
-                if (ta >= ti->fba && ta < ti->fba + flen) { src = ti; break; }
-            }
-        }
+        Target *src = is_vram(g->tex_addr) ? target_containing(vram_off(g->tex_addr)) : NULL;
+        if (src && !src->gpu_valid) src = NULL;
         cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, lookup_started);
         if (src) {
             static int nortt = -1;
@@ -3922,17 +3930,6 @@ static int hook_vram_pending(void) {
 }
 
 /* ---- GE block transfer: GPU-side image blit ------------------------------------------------ */
-
-/* Find the target whose address range contains VRAM offset `a` (gpu_valid not required). */
-static Target *target_containing(uint32_t a) {
-    for (int i = 0; i < MAX_TGT; i++) {
-        Target *t = &s_tgts[i];
-        if (!t->used) continue;
-        uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
-        if (a >= t->fba && a < t->fba + t->stride * FB_H * bpp_t) return t;
-    }
-    return NULL;
-}
 
 /* Perform the block transfer as a vkCmdCopyImage between two framebuffer targets. Returns 1
  * on success (guest VRAM left stale for the destination, like any rendered-to target); 0
