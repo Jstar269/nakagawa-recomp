@@ -449,10 +449,6 @@ def binding_sites(bindings: dict[str, Any]) -> list[dict[str, Any]]:
     for index, alias in enumerate(bindings.get("dispatch_aliases", ())):
         sites.append({"name": f"dispatch_aliases[{index}].from", "address": alias["from"]})
         sites.append({"name": f"dispatch_aliases[{index}].to", "address": alias["to"]})
-    for index, terminator in enumerate(bindings.get("callback_terminators", ())):
-        for field in ("pc", "ra"):
-            if field in terminator:
-                sites.append({"name": f"callback_terminators[{index}].{field}", "address": terminator[field]})
     return sites
 
 
@@ -500,18 +496,6 @@ def propose_block(bindings: dict[str, Any], rows: list[dict[str, Any]], accept_f
             aliases.append({"from": pair[0], "to": pair[1]})
     if aliases:
         block["dispatch_aliases"] = aliases
-    terminators = []
-    for index, terminator in enumerate(bindings.get("callback_terminators", ())):
-        fields = [f for f in ("pc", "ra") if f in terminator]
-        if any(f"callback_terminators[{index}].{f}" not in carried for f in fields):
-            notes.append(f"callback_terminators[{index}]: dropped, an entry with fewer constraints would fire "
-                         "at other sites")
-            continue
-        entry = {"sentinel": terminator["sentinel"]}
-        entry.update({f: carried[f"callback_terminators[{index}].{f}"] for f in fields})
-        terminators.append(entry)
-    if terminators:
-        block["callback_terminators"] = terminators
     for name in title_manifest.RUNTIME_BINDING_COUNTS:
         if name in bindings:
             notes.append(f"{name}: not an address, so not carried; set it for the new revision by hand")

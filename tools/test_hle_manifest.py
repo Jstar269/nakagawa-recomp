@@ -1324,8 +1324,8 @@ static uint32_t h_SynthReal(CpuState *s) {
             fake,
             {
                 # sceKernelVolatileMemUnlock left this list once its PSP-measured states were
-                # implemented (#1135); sceUtilityOskUpdate stays for its unmeasured VISIBLE state.
-                "0x4b85c861": "sceUtilityOskUpdate",
+                # implemented (#1135), and sceUtilityOskUpdate once its #363-measured states
+                # were checked under the dialog lock (#1386).
                 "0xb3b5d042": "sceAtracGetOutputChannel",
                 # Profiler refers return NULL because no profiler is modeled, which is what
                 # firmware with profiling off reports. The body is a bare `return 0`, so the
@@ -1378,7 +1378,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xf9275d98": ("sceKernelLoadModuleBufferUsbWlan", "0x80020002"),
                 "0x70a703f8": ("sceAudiocodecDecode", "0x80010086"),
                 "0x72189c48": ("sceImposeSetUMDPopup", "0x80010086"),
-                "0x77ed8b3a": ("sceDisplayWaitVblankStartMultiCB", "0x80020002"),
                 "0x7ed59bc4": ("sceDisplaySetHoldMode", "0x80020002"),
                 "0x8c943191": ("sceImposeGetBatteryIconStatus", "0x80010086"),
                 "0xab1abe07": ("sceHttpInit", "0x80010086"),

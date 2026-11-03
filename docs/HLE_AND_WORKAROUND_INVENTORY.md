@@ -46,13 +46,13 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **681** (dedicated **573**, fake_success **5**, controlled_unsupported **103**).
-Semantic handler census: **551** handlers across **26** API families, covering **580** handler-associated NID registrations.
+Registered NIDs: **684** (dedicated **578**, fake_success **4**, controlled_unsupported **102**).
+Semantic handler census: **556** handlers across **27** API families, covering **585** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 251 | 259 |
+| `partial` | 256 | 264 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 3 | 7 |
 | `unreviewed` | 282 | 290 |
@@ -64,7 +64,7 @@ Semantic handler census: **551** handlers across **26** API families, covering *
 | `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 10 | 0 | 0 | 2 | 12 | 12 |
-| `sceDisplay` | 1 | 6 | 0 | 0 | 8 | 15 | 15 |
+| `sceDisplay` | 1 | 7 | 0 | 0 | 8 | 16 | 16 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 7 | 0 | 0 | 11 | 18 | 18 |
 | `sceGe` | 2 | 10 | 0 | 0 | 2 | 14 | 14 |
@@ -83,9 +83,10 @@ Semantic handler census: **551** handlers across **26** API families, covering *
 | `sceRtc` | 5 | 12 | 0 | 0 | 1 | 18 | 18 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 6 | 1 | 0 | 7 | 14 | 14 |
-| `sceUtility` | 0 | 9 | 0 | 0 | 27 | 36 | 36 |
+| `sceUtility` | 0 | 10 | 0 | 0 | 27 | 37 | 37 |
+| `sceVaudio` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **251** | **1** | **3** | **282** | **551** | **580** |
+| **Total** | **14** | **256** | **1** | **3** | **282** | **556** | **585** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -271,6 +272,9 @@ Semantic handler census: **551** handlers across **26** API families, covering *
   - Evidence: tools/test_sched_invariants.py:test_the_two_display_nids_have_separate_handlers
 - **`h_DisplayWaitVblankStartMulti`** (`sceDisplay`): `sceDisplayWaitVblankStartMulti` (0x40f1469c)
   - Limitation: waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured
+- **`h_DisplayWaitVblankStartMultiCB`** (`sceDisplay`): `sceDisplayWaitVblankStartMultiCB` (0x77ed8b3a)
+  - Limitation: the requested positive count of scheduler VBLANK periods, servicing the caller's callbacks in each; the zero-count and wait-context refusals follow the non-CB form; hardware timing is not measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_display_multi_cb_wait
 - **`h_DmacMemcpy`** (`sceDmac`): `sceDmacMemcpy` (0x617f3fe6)
   - Limitation: active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
@@ -1031,6 +1035,11 @@ Semantic handler census: **551** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_sequence
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_without_update
   - Evidence: PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown
+- **`h_OskUpdate`** (`sceUtility`): `sceUtilityOskUpdate` (0x4b85c861)
+  - Limitation: the return codes follow the measured states, and INIT ends on the vblank after InitStart (#1386); Update does not drive the keyboard, whose text is collected from GetStatus (#281), and Update in FINISHED returns 0, which is not measured (#341)
+  - Evidence: #363 (PSP-3000 measurements, comments 6330742629 and 6331070692): WRONG_TYPE 0x80110005 before a keyboard starts; 0 in VISIBLE for speed 0 and 1; INVALID_STATUS 0x80110001 in INIT, QUIT and NONE after use
+  - Evidence: tests/native/hle_thread_selftest.c:test_osk_update_and_shutdown_init_states
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_dialog_frame_driven_status
 - **`h_ScreenshotStatus`** (`sceUtility`): `sceUtilityScreenshotGetStatus` (0xd81957b7)
   - Limitation: always WRONG_TYPE: the runtime has no screenshot dialog, and its InitStart import is not registered
   - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
@@ -1051,6 +1060,15 @@ Semantic handler census: **551** handlers across **26** API families, covering *
   - Limitation: maps net-module numbers 1..7 onto utility IDs 0x100..0x106; the status codes for a bad number or a module that is not loaded are the generic module ones, unmeasured on a PSP
   - Evidence: tests/native/hle_thread_selftest.c:test_utility_av_module_state
   - Evidence: tests/native/hle_thread_selftest.c:test_utility_module_table
+- **`h_VaudioChRelease`** (`sceVaudio`): `sceVaudioChRelease` (0x67585dfd)
+  - Limitation: releases only a Vaudio reservation (0x80260008 otherwise, so an SRC reservation stays); whether a release waits for queued samples, and whether it frees an SRC reservation as the public reference does, are unmeasured
+  - Evidence: tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot
+- **`h_VaudioChReserve`** (`sceVaudio`): `sceVaudioChReserve` (0x03b6807d)
+  - Limitation: reserves the SRC slot with the SRC reserve's exclusion (0x80268002) and rates (44100 and 48000 Hz; a rate of 0 is taken as 44100 Hz); the sample counts 256, 576, 1024, 1152 and 2048 (others 0x80000104), stereo format 2 only (others 0x80000108) and the second-reserve word 0x80000021 follow the public reference and are unmeasured on a PSP
+  - Evidence: tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot
+- **`h_VaudioOutputBlocking`** (`sceVaudio`): `sceVaudioOutputBlocking` (0x8986295e)
+  - Limitation: the SRC blocking output for a Vaudio reservation: returns the reserved sample count, 0x80260008 with no Vaudio reservation, and 0x8026000b above volume 0x8000 (the Output2 bound, reused); unmeasured on a PSP
+  - Evidence: tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot
 
 #### Compatibility Handlers (Named Limitations)
 
@@ -1083,7 +1101,6 @@ Dispatch Hooks & Walkers (src/rt/recomp.c):
 Title Configuration Overrides (src/rt/title_config.c):
   - Hardcoded Entry Points & Addresses:              0 (generated header/manifest bindings)
   - Dispatch Aliases:                                generated X-macro list (0 in generic build)
-  - Callback Terminators:                            generated X-macro list (0 in generic build)
   - Runtime Sync Wrappers:                           generated X-macro list (0 in generic build)
 ================================================================================
 ```
@@ -1165,7 +1182,7 @@ caller PC are preserved and the request is rejected (which the public
 `tests/native/dispatch_isolation_selftest.c` carries the source-owned hostile matrix
 (one target from each former range, every retained magic value, null,
 unresolved PLT, module-table and data-looking shapes, plus legitimate
-configured-alias and terminator controls) and is built for the generic and both
+configured-alias controls) and is built for the generic and both
 public fixture configurations, so a title cannot inherit any of these shapes and
 a broad pattern reintroduced into `recomp.c` fails the build immediately.
 

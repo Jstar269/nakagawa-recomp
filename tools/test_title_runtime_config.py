@@ -51,13 +51,14 @@ RETIRED_RUNTIME_ADDRESSES = {
 }
 
 #: Guest addresses that generic DISPATCH hardcoded before the typed collections existed.
-#: Migrated 2026-08-21 into runtime_bindings.dispatch_aliases / .callback_terminators.
+#: Migrated 2026-08-21 into runtime_bindings.dispatch_aliases and a forced-completion
+#: collection that #363 has since retired; the retired sites stay policed.
 RETIRED_DISPATCH_ADDRESSES = {
     "dispatch alias source": ("0x00030950", "0x30950"),
     "dispatch alias target": ("0x00030948", "0x30948"),
-    "null callback terminator ra": ("0x0003e06c", "0x3e06c"),
-    "minus-one terminator pc": ("0x00292fa0", "0x292fa0"),
-    "minus-one terminator ra": ("0x00047a0c", "0x47a0c"),
+    "null forced-completion ra": ("0x0003e06c", "0x3e06c"),
+    "minus-one forced-completion pc": ("0x00292fa0", "0x292fa0"),
+    "minus-one forced-completion ra": ("0x00047a0c", "0x47a0c"),
 }
 
 #: Generic runtime sources that must no longer name any of the addresses above.
@@ -107,7 +108,7 @@ class RuntimeBindingValidation(unittest.TestCase):
     def test_public_fixtures_use_no_retired_address(self) -> None:
         """A public fixture that reused a retired address would make every isolation
         assertion ambiguous: a match could mean "configured correctly" or "the old
-        hardcoded value survived". Covers the scalar fields AND both collections."""
+        hardcoded value survived". Covers the scalar fields AND the alias collection."""
         retired = {int(spellings[0], 16)
                    for spellings in (*RETIRED_RUNTIME_ADDRESSES.values(),
                                      *RETIRED_DISPATCH_ADDRESSES.values())}
@@ -118,10 +119,6 @@ class RuntimeBindingValidation(unittest.TestCase):
             used = {value for value in bindings.values() if isinstance(value, int)}
             for alias in bindings.get("dispatch_aliases", []):
                 used |= {alias["from"], alias["to"]}
-            for entry in bindings.get("callback_terminators", []):
-                # The SENTINEL is deliberately excluded: 0 and 0xFFFFFFFF are generic
-                # guest vocabulary that every title shares. Only the site is an address.
-                used |= {entry[field] for field in ("pc", "ra") if field in entry}
             overlap = used & retired
             self.assertEqual(
                 overlap, set(),
@@ -223,7 +220,6 @@ class RuntimeBindingValidation(unittest.TestCase):
         block = schema["$defs"]["runtimeBindings"]["properties"]
         for field, ceiling in (
             ("dispatch_aliases", title_manifest.MAX_DISPATCH_ALIASES),
-            ("callback_terminators", title_manifest.MAX_CALLBACK_TERMINATORS),
         ):
             with self.subTest(field=field):
                 published = block[field]
@@ -236,24 +232,8 @@ class RuntimeBindingValidation(unittest.TestCase):
         alias = defs["dispatchAlias"]
         self.assertFalse(alias["additionalProperties"])
         self.assertEqual(set(alias["required"]), {"from", "to"})
-        terminator = defs["callbackTerminator"]
-        self.assertFalse(terminator["additionalProperties"])
-        self.assertEqual(terminator["required"], ["sentinel"])
-        # A sentinel is a raw target value (0xFFFFFFFF is the real one), so it must NOT be
-        # published as a guestAddress, which demands alignment. It is never 0: a transfer to
-        # 0 is a null code pointer, which the validator refuses as a sentinel (#1375).
-        sentinel_range = terminator["properties"]["sentinel"]["allOf"][0]
-        self.assertEqual(sentinel_range["minimum"], 1)
-        self.assertEqual(sentinel_range["maximum"], 0xFFFFFFFF)
-        self.assertNotIn("$ref", json.dumps(sentinel_range),
-                         "a sentinel must not be published as a guestAddress")
-        # At least one context constraint, or the sentinel would terminate everywhere.
-        self.assertEqual(
-            terminator["anyOf"], [{"required": ["pc"]}, {"required": ["ra"]}],
-            "the schema must publish the at-least-one-of-pc/ra rule",
-        )
         # The core dispatch reservation, published with the same bounds the validator
-        # enforces, and applied to exactly the two fields compared against a target.
+        # enforces, and applied to the one field compared against a target.
         reserved = defs["coreReservedDispatchTarget"]
         self.assertEqual(reserved["minimum"], title_manifest.SR_DISPATCH_VFPU_TAG)
         self.assertEqual(
@@ -264,8 +244,6 @@ class RuntimeBindingValidation(unittest.TestCase):
         excluded = {"not": {"$ref": "#/$defs/coreReservedDispatchTarget"}}
         self.assertIn(excluded, alias["properties"]["from"]["allOf"],
                       "an alias source must publish the core reservation")
-        self.assertIn(excluded, terminator["properties"]["sentinel"]["allOf"],
-                      "a sentinel must publish the core reservation")
         self.assertNotIn("allOf", alias["properties"]["to"],
                          "an alias destination is not a dispatch target and must stay free")
 
@@ -389,118 +367,6 @@ class DispatchAliasValidation(unittest.TestCase):
             normalized["dispatch_aliases"],
             [{"from": 0x08808000, "to": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000}],
         )
-
-
-class CallbackTerminatorValidation(unittest.TestCase):
-    """The terminator collection fails closed, and can never become address-global."""
-
-    def assert_rejected(self, terminators: list, fragment: str) -> None:
-        manifest = base_manifest(worker_thread_entry=0x08804200)
-        manifest["runtime_bindings"]["callback_terminators"] = terminators
-        with self.assertRaises(title_manifest.TitleManifestError) as caught:
-            title_manifest.validate_manifest(manifest)
-        self.assertIn(fragment, str(caught.exception))
-
-    def test_the_real_sentinel_value_is_accepted(self) -> None:
-        """0xFFFFFFFF is the sentinel guests actually use. It is not a guest address (it
-        is not 4-byte aligned), so this asserts the sentinel is validated as a raw target
-        value instead."""
-        manifest = base_manifest(worker_thread_entry=0x08804200)
-        manifest["runtime_bindings"]["callback_terminators"] = [
-            {"sentinel": 0xFFFFFFFF, "pc": 0x08808100, "ra": 0x08808200},
-        ]
-        normalized = title_manifest.validate_manifest(manifest)["runtime_bindings"]
-        self.assertEqual(
-            normalized["callback_terminators"],
-            [{"sentinel": 0xFFFFFFFF, "pc": 0x08808100, "ra": 0x08808200}],
-        )
-
-    def test_a_null_sentinel_is_rejected(self) -> None:
-        """A transfer to 0 is a null code pointer that stops by name (#1375), so no
-        configuration may report it as a completed callback walk."""
-        for entry in ({"sentinel": 0, "ra": 0x08808000},
-                      {"sentinel": 0, "pc": 0x08808100, "ra": 0x08808200}):
-            with self.subTest(entry=entry):
-                self.assert_rejected([entry], "must not be 0: a transfer to 0 is a null code "
-                                              "pointer")
-
-    def test_an_unconstrained_terminator_is_rejected(self) -> None:
-        """This is the load-bearing rule: without a pc or an ra, the sentinel would
-        terminate at every call site in the program."""
-        self.assert_rejected([{"sentinel": 0xFFFFFFFF}], "must constrain at least one of pc/ra")
-
-    def test_empty_collection_is_rejected(self) -> None:
-        self.assert_rejected([], "must not be empty; omit the field instead")
-
-    def test_duplicate_terminator_is_rejected(self) -> None:
-        self.assert_rejected(
-            [{"sentinel": 0xFFFFFFFF, "ra": 0x08808000}, {"sentinel": 0xFFFFFFFF, "ra": 0x08808000}],
-            "duplicates the terminator already declared",
-        )
-
-    def test_a_terminator_subsumed_by_a_broader_one_is_rejected(self) -> None:
-        """A narrower entry behind a broader one can never decide anything; that is an
-        authoring error, not a preference, so it fails rather than being ignored."""
-        self.assert_rejected(
-            [{"sentinel": 0xFFFFFFFF, "ra": 0x08808000},
-             {"sentinel": 0xFFFFFFFF, "pc": 0x08808100, "ra": 0x08808000}],
-            "is unreachable behind the broader terminator",
-        )
-
-    def test_distinct_sites_for_one_sentinel_are_accepted(self) -> None:
-        """The same sentinel at genuinely different sites is normal, not a conflict."""
-        manifest = base_manifest(worker_thread_entry=0x08804200)
-        manifest["runtime_bindings"]["callback_terminators"] = [
-            {"sentinel": 0xFFFFFFFF, "ra": 0x08808000},
-            {"sentinel": 0xFFFFFFFF, "ra": 0x08808004},
-        ]
-        normalized = title_manifest.validate_manifest(manifest)["runtime_bindings"]
-        self.assertEqual(len(normalized["callback_terminators"]), 2)
-
-    def test_malformed_terminator_fields_are_rejected(self) -> None:
-        for entry, fragment in (
-            ({"sentinel": 0x1_0000_0000, "ra": 0x08808000}, "must be in range"),
-            ({"sentinel": -1, "ra": 0x08808000}, "must be in range"),
-            ({"sentinel": "0", "ra": 0x08808000}, "must be an integer"),
-            ({"sentinel": 0xFFFFFFFF, "ra": 0}, "must not be zero"),
-            ({"sentinel": 0xFFFFFFFF, "pc": 0x08808001}, "must be 4-byte aligned"),
-            ({"ra": 0x08808000}, "missing required field(s): sentinel"),
-            ({"sentinel": 0xFFFFFFFF, "ra": 0x08808000, "uid": 1}, "unknown field(s): uid"),
-        ):
-            with self.subTest(entry=entry):
-                self.assert_rejected([entry], fragment)
-
-    def test_a_sentinel_inside_the_core_dispatch_reservation_is_rejected(self) -> None:
-        """Same reservation as the alias source, and for the same reason: the sentinel
-        is compared against a dispatch target, and dispatch() has already claimed that
-        encoding for the per-instruction VFPU fallback."""
-        for sentinel in (title_manifest.SR_DISPATCH_VFPU_TAG,
-                         title_manifest.SR_DISPATCH_VFPU_TAG + 0x2000,
-                         0x43FFFFFF):
-            with self.subTest(sentinel=sentinel):
-                self.assert_rejected(
-                    [{"sentinel": sentinel, "ra": 0x08808000}],
-                    "core VFPU dispatch-target range",
-                )
-
-    def test_a_context_field_inside_the_reservation_is_accepted(self) -> None:
-        """`pc` and `ra` are compared against CpuState fields at the call site, never
-        against a dispatch target, so the reservation must not reach them."""
-        manifest = base_manifest(worker_thread_entry=0x08804200)
-        manifest["runtime_bindings"]["callback_terminators"] = [
-            {"sentinel": 0xFFFFFFFF, "pc": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000,
-             "ra": title_manifest.SR_DISPATCH_VFPU_TAG + 0x2000}]
-        normalized = title_manifest.validate_manifest(manifest)["runtime_bindings"]
-        self.assertEqual(
-            normalized["callback_terminators"],
-            [{"sentinel": 0xFFFFFFFF, "pc": title_manifest.SR_DISPATCH_VFPU_TAG + 0x1000,
-              "ra": title_manifest.SR_DISPATCH_VFPU_TAG + 0x2000}],
-        )
-
-    def test_the_ceiling_is_enforced(self) -> None:
-        over = [{"sentinel": 0xFFFFFFFF, "ra": 0x08808000 + 4 * i}
-                for i in range(title_manifest.MAX_CALLBACK_TERMINATORS + 1)]
-        self.assert_rejected(over, "maximum is 32")
 
 
 class GeneratedConfiguration(unittest.TestCase):
@@ -643,12 +509,11 @@ class GeneratedConfiguration(unittest.TestCase):
             )
 
     def test_a_generated_list_shorter_than_its_count_fails_the_build(self) -> None:
-        """The count is the runtime's authority for both collections, so a generated
-        artifact whose count exceeds its list would zero-pad the arrays -- and a
-        zero-filled TERMINATOR entry reads as {sentinel 0, no pc, no ra}, exactly the
-        program-wide match the manifest validator refuses to accept.
+        """The count is the runtime's authority for the alias collection, so a generated
+        artifact whose count exceeds its list would zero-pad the array -- and a
+        zero-filled alias entry is a live entry the lookup would compare against.
 
-        title_config.c sizes both arrays from the list, so _Static_assert turns that
+        title_config.c sizes the array from the list, so _Static_assert turns that
         disagreement into a compile error. This asserts the honest build compiles AND
         that the mutated one does not -- a green result here has to be earned."""
         good = title_runtime_config.render_header(
@@ -657,8 +522,7 @@ class GeneratedConfiguration(unittest.TestCase):
         self.assertEqual(ok.returncode, 0,
                          "the generic generated artifact must compile: " + ok.stderr)
 
-        for macro in ("SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT",
-                      "SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT"):
+        for macro in ("SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT",):
             with self.subTest(macro=macro):
                 mutated = good.replace(f"#define {macro} 0", f"#define {macro} 1")
                 self.assertNotEqual(mutated, good, "the count macro moved")
@@ -705,14 +569,11 @@ class GeneratedCollections(unittest.TestCase):
     def test_generic_configuration_emits_empty_collections(self) -> None:
         header = title_runtime_config.render_header(self.config(None))
         self.assertIn("#define SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT 0", header)
-        self.assertIn("#define SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT 0", header)
         # An empty list macro must expand to nothing at all, not to a zero entry that
         # the runtime would then have to recognize as a non-entry.
-        for macro in ("SR_TITLE_CONFIG_DISPATCH_ALIAS_LIST",
-                      "SR_TITLE_CONFIG_CALLBACK_TERMINATOR_LIST"):
+        for macro in ("SR_TITLE_CONFIG_DISPATCH_ALIAS_LIST",):
             self.assertIn(f"#define {macro}\n", header)
         self.assertNotIn("SR_TITLE_CFG_ALIAS(", header)
-        self.assertNotIn("SR_TITLE_CFG_TERMINATOR(", header)
         self.assertIn("#define SR_TITLE_CONFIG_VALID (0u)", header)
 
     def test_every_collection_has_a_validity_bit(self) -> None:
@@ -736,22 +597,12 @@ class GeneratedCollections(unittest.TestCase):
                 config = self.config(path)
                 header = title_runtime_config.render_header(config)
                 aliases = config["bindings"]["dispatch_aliases"]
-                terminators = config["bindings"]["callback_terminators"]
                 self.assertIn(
                     f"#define SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT {len(aliases)}", header)
-                self.assertIn(
-                    "#define SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT "
-                    f"{len(terminators)}", header)
                 for alias in aliases:
                     self.assertIn(
                         f"SR_TITLE_CFG_ALIAS(0x{alias['from']:08x}u, "
                         f"0x{alias['to']:08x}u)", header)
-                for entry in terminators:
-                    self.assertIn(
-                        f"SR_TITLE_CFG_TERMINATOR(0x{entry['sentinel']:08x}u, "
-                        f"{1 if 'pc' in entry else 0}u, 0x{entry.get('pc', 0):08x}u, "
-                        f"{1 if 'ra' in entry else 0}u, 0x{entry.get('ra', 0):08x}u)",
-                        header)
                 for bit in title_runtime_config.COLLECTION_BITS.values():
                     self.assertIn(bit, header, "a non-empty collection must set its bit")
 
@@ -762,8 +613,6 @@ class GeneratedCollections(unittest.TestCase):
             used: set[int] = set()
             for alias in bindings["dispatch_aliases"]:
                 used |= {alias["from"], alias["to"]}
-            for entry in bindings["callback_terminators"]:
-                used |= {entry[f] for f in ("pc", "ra") if f in entry}
             return used
 
         a, b = sites(FIXTURE_A), sites(FIXTURE_B)
@@ -771,17 +620,6 @@ class GeneratedCollections(unittest.TestCase):
         self.assertEqual(a & b, set(),
                          f"the fixtures share collection address(es): "
                          f"{sorted(hex(x) for x in a & b)}")
-
-    def test_the_two_fixtures_share_their_sentinel_values(self) -> None:
-        """Deliberate: a sentinel is generic guest vocabulary, so both fixtures use the
-        SAME values at DIFFERENT sites. That is what makes 'the same sentinel elsewhere
-        follows generic behavior' an assertion the matrix can actually fail. Sentinel 0 is
-        refused (#1375), so -1 is the one they share."""
-        def sentinels(path: Path) -> set[int]:
-            return {t["sentinel"]
-                    for t in self.config(path)["bindings"]["callback_terminators"]}
-        self.assertEqual(sentinels(FIXTURE_A), sentinels(FIXTURE_B))
-        self.assertEqual(sentinels(FIXTURE_A), {0xFFFFFFFF})
 
     def test_a_changed_collection_changes_the_digest(self) -> None:
         """The build binds this digest into RUNTIME_PROFILE_HASH, so a changed binding
@@ -795,19 +633,12 @@ class GeneratedCollections(unittest.TestCase):
             title_runtime_config.bindings_from_manifest(manifest))
         self.assertNotEqual(before, after, "an alias change left the digest unchanged")
 
-        manifest = json.loads(FIXTURE_A.read_text(encoding="utf-8"))
-        manifest["runtime_bindings"]["callback_terminators"][0]["ra"] += 4
-        moved = title_runtime_config.config_digest(
-            title_runtime_config.bindings_from_manifest(manifest))
-        self.assertNotEqual(before, moved, "a terminator move left the digest unchanged")
-
     def test_the_digest_is_order_independent(self) -> None:
         """Normalization is canonical, so reordering a collection is not a new build."""
         manifest = json.loads(FIXTURE_B.read_text(encoding="utf-8"))
         straight = title_runtime_config.config_digest(
             title_runtime_config.bindings_from_manifest(manifest))
         manifest["runtime_bindings"]["dispatch_aliases"].reverse()
-        manifest["runtime_bindings"]["callback_terminators"].reverse()
         reversed_digest = title_runtime_config.config_digest(
             title_runtime_config.bindings_from_manifest(manifest))
         self.assertEqual(straight, reversed_digest)
@@ -850,9 +681,9 @@ class DispatchAddressCensus(unittest.TestCase):
         samples = {
             "dispatch alias source":
                 "    { 0x00030950u, 0xFFFFFFFFu, \"TC30950\", hook_call_0x30948 },",
-            "null callback terminator ra":
+            "null forced-completion ra":
                 "    if (target == 0u && s->r[31] == 0x0003e06cu) { s->r[2] = 1u; }",
-            "minus-one terminator pc":
+            "minus-one forced-completion pc":
                 "    if (target == UINT32_MAX && s->pc == 0x00292fa0u) { s->r[2] = 1u; }",
         }
         for label, sample in samples.items():
@@ -906,7 +737,6 @@ class DispatchAddressCensus(unittest.TestCase):
         accessor must actually be called from dispatch()."""
         accessors = {
             "dispatch_aliases": "sr_title_config_dispatch_alias",
-            "callback_terminators": "sr_title_config_is_callback_terminator",
         }
         self.assertEqual(set(accessors), set(title_manifest.RUNTIME_BINDING_COLLECTIONS),
                          "a runtime-binding collection has no accessor mapping here, so "
@@ -930,8 +760,7 @@ class DispatchAddressCensus(unittest.TestCase):
 
     def test_dispatch_reads_the_collections_only_through_the_generic_accessors(self) -> None:
         recomp = (ROOT / "src" / "rt" / "recomp.c").read_text(encoding="utf-8")
-        for accessor in ("sr_title_config_dispatch_alias",
-                         "sr_title_config_is_callback_terminator"):
+        for accessor in ("sr_title_config_dispatch_alias",):
             self.assertIn(accessor, recomp,
                           f"recomp.c must consume {accessor} rather than a literal")
         self.assertNotIn(
@@ -1041,7 +870,6 @@ class DispatchAddressCensus(unittest.TestCase):
         and the assertion above knows nothing about them -- so #97 updated the Makefile
         target, CI kept its stale copy, and the hosted run failed to link:
 
-            undefined reference to `sr_title_config_is_callback_terminator'
             undefined reference to `sr_title_config_dispatch_alias'
 
         The invariant is the same wherever it is written down: a compile command whose

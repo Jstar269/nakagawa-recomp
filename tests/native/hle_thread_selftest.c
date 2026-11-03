@@ -331,6 +331,7 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_KERNEL_LOAD_EXEC 0xbd2f1094u
 #define NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE 0xd675ebb8u
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
+#define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB 0x77ed8b3au
 #define NID_SCE_REG_CLOSE_CATEGORY 0x0cae832bu
 #define NID_SCE_REG_OPEN_CATEGORY 0x1d8a762eu
 #define NID_SCE_REG_OPEN_REGISTRY 0x92e41280u
@@ -382,6 +383,9 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_AUDIO_SRC_CH_RESERVE 0x38553111u
 #define NID_SCE_AUDIO_SRC_CH_RELEASE 0x5c37c0aeu
 #define NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING 0xe0727056u
+#define NID_SCE_VAUDIO_CH_RESERVE 0x03b6807du
+#define NID_SCE_VAUDIO_CH_RELEASE 0x67585dfdu
+#define NID_SCE_VAUDIO_OUTPUT_BLOCKING 0x8986295eu
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
@@ -7090,7 +7094,6 @@ static void test_unregistered_batch_refusals(void) {
         const char *name;
     } refused[] = {
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
-        {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
         {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
         {0x8c943191u, 0x80010086u, "sceImposeGetBatteryIconStatus"},
         {0x0bf0a3aeu, 0x80010086u, "sceNetGetLocalEtherAddr"},
@@ -7421,9 +7424,18 @@ static int osk_guest_out_is(int field, const uint16_t *units, int count) {
     return MEM_R16(out + (uint32_t)count * 2u) == 0;
 }
 
+/* One frame of a polling title: GetStatus, then the frame's vblank. A dialog's start-up and
+ * shutdown complete on the vblank after they begin (#1386), never on a GetStatus call, so a
+ * title that polls once per frame sees every state. */
+static void utility_end_frame(void) {
+    sr_display_advance_vcount(1u);
+}
+
 static uint32_t osk_poll(CpuState *cpu) {
     memset(cpu, 0, sizeof(*cpu));
-    return sr_syscall(cpu, NID_OSK_STATUS);
+    const uint32_t status = sr_syscall(cpu, NID_OSK_STATUS);
+    utility_end_frame();
+    return status;
 }
 
 /* Poll as a title does once per frame until the keyboard leaves VISIBLE (bounded). */
@@ -7570,7 +7582,7 @@ static void test_osk_scripted_answer(void) {
     cpu.r[4] = OSK_PARAM_ADDR;
     expect(sr_syscall(&cpu, k_init) == 0u, "sceUtilityOskInitStart accepts an OSK parameter block");
     expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u,
-           "GetStatus reports INIT then VISIBLE, one step per poll");
+           "GetStatus polled once per frame reports INIT then VISIBLE");
     expect(osk_poll_past_visible(&cpu) == 3u && osk_poll(&cpu) == 3u,
            "GetStatus reports QUIT once every field has its answer, and QUIT stands until the "
            "game calls ShutdownStart, as the SDK's OSK sample expects");
@@ -8047,6 +8059,13 @@ static uint32_t utility_call(CpuState *cpu, uint32_t nid, uint32_t a0) {
     return sr_syscall(cpu, nid);
 }
 
+/* A dialog's GetStatus as a title polls it, once per frame (utility_end_frame). */
+static uint32_t utility_status(CpuState *cpu, uint32_t nid) {
+    const uint32_t status = utility_call(cpu, nid, 0u);
+    utility_end_frame();
+    return status;
+}
+
 /* A zeroed parameter block whose common result field (+0x1c) holds a sentinel: an InitStart
  * that takes the block writes 0 there, so a refused one is visible by the sentinel staying. */
 static void utility_param_block(uint32_t addr, uint32_t size) {
@@ -8139,7 +8158,7 @@ static void test_utility_dialog_single_slot(void) {
         snprintf(what, sizeof(what), "%sUpdate, GetStatus and ShutdownStart with no dialog ever "
                  "opened return WRONG_TYPE", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].update, 0u) == 0x80110005u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u &&
+                   utility_status(&cpu, dialogs[i].status) == 0x80110005u &&
                    utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110005u,
                what);
     }
@@ -8149,7 +8168,7 @@ static void test_utility_dialog_single_slot(void) {
     expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
                MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
            "a message InitStart takes the free slot and clears its result");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u, "the message dialog reports INIT");
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 1u, "the message dialog reports INIT");
 
     /* Repeated init: a second message InitStart neither restarts the running dialog nor takes
      * its own parameter block. */
@@ -8158,7 +8177,7 @@ static void test_utility_dialog_single_slot(void) {
                MEM_R32(UTILITY_MSG2_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
            "a second message InitStart while one is active returns INVALID_STATUS and leaves "
            "its parameter block alone");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 2u,
            "the running message dialog was not restarted: it moves on from INIT to RUNNING");
 
     /* Overlapping types: every other dialog's InitStart is refused while the message dialog is
@@ -8176,16 +8195,16 @@ static void test_utility_dialog_single_slot(void) {
                what);
         snprintf(what, sizeof(what), "%sGetStatus while the message dialog holds the slot "
                  "returns WRONG_TYPE", dialogs[i].name);
-        expect(utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u, what);
+        expect(utility_status(&cpu, dialogs[i].status) == 0x80110005u, what);
     }
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 2u,
            "the refused InitStarts left the message dialog RUNNING");
 
     /* The holder finishes; until its GetStatus reports NONE it still holds the active slot. */
     expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
                utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
                utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 3u &&
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 3u &&
                MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
            "the message dialog finishes with its own result");
     expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
@@ -8201,9 +8220,9 @@ static void test_utility_dialog_single_slot(void) {
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
                MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
            "a savedata InitStart before the shut-down message dialog reports NONE is refused");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 4u &&
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 0u &&
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 0u,
            "the message dialog winds down to NONE and keeps the slot there after use");
 
     /* With the holder at NONE the next type takes the slot, and the old holder's calls become
@@ -8211,20 +8230,21 @@ static void test_utility_dialog_single_slot(void) {
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
                MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
            "with the message dialog at NONE a savedata InitStart takes the slot");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0x80110005u &&
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 0x80110005u &&
                utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110005u &&
                utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0x80110005u,
            "the message dialog that gave up the slot answers WRONG_TYPE");
-    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+    expect(utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 2u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0x80110001u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
-           "the savedata dialog reports INIT, then winds down to NONE after ShutdownStart");
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 4u &&
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 0u,
+           "the savedata dialog, started a frame ago, is RUNNING, then winds down to NONE after "
+           "ShutdownStart");
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0x80110001u,
            "savedata ShutdownStart at NONE returns INVALID_STATUS");
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_UPDATE, 0u) == 0x80110001u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 0u,
            "savedata Update at NONE returns INVALID_STATUS without re-arming");
 
     /* Each remaining type takes the free slot in turn and gives it back at NONE. */
@@ -8237,11 +8257,11 @@ static void test_utility_dialog_single_slot(void) {
                  "then winds down to NONE after ShutdownStart", dialogs[i].name);
         expect(utility_call(&cpu, init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
                    MEM_R32(UTILITY_OTHER_PARAM_ADDR + 0x1cu) == 0u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
-                   utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0x80110005u &&
+                   utility_status(&cpu, dialogs[i].status) == 1u &&
+                   utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 0x80110005u &&
                    utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+                   utility_status(&cpu, dialogs[i].status) == 4u &&
+                   utility_status(&cpu, dialogs[i].status) == 0u,
                what);
     }
     sr_hle_test_osk_slot_reset();
@@ -8275,7 +8295,7 @@ static void utility_savedata_block(void) {
  * reports FINISHED. Eight frames bound the test, not the dialog. */
 static int utility_poll_to_finished(CpuState *cpu, uint32_t update, uint32_t status) {
     for (int frame = 0; frame < 8; frame++) {
-        const uint32_t st = utility_call(cpu, status, 0u);
+        const uint32_t st = utility_status(cpu, status);
         if (st == 3u) return 1;
         if (st == 2u) (void)utility_call(cpu, update, 0u);
         else if (st != 1u) return 0;
@@ -8298,7 +8318,7 @@ static void utility_update_first_frames(CpuState *cpu, uint32_t update, uint32_t
     *refused = 0;
     for (int frame = 0; frame < 8; frame++) {
         if (utility_call(cpu, update, 0u) == 0x80110001u) (*refused)++;
-        const uint32_t st = utility_call(cpu, status, 0u);
+        const uint32_t st = utility_status(cpu, status);
         seen[n++] = st <= 4u ? (char)('0' + st) : '?';
         if (st == 3u || st > 4u) break;
     }
@@ -8315,7 +8335,7 @@ static int msg_dialog_run_to_finished(CpuState *cpu, uint32_t param) {
     if (!utility_poll_to_finished(cpu, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS)) return 0;
     if (utility_call(cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) != 0u) return 0;
     for (int frame = 0; frame < 4; frame++)
-        if (utility_call(cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u) return 1;
+        if (utility_status(cpu, NID_MSG_DIALOG_STATUS) == 0u) return 1;
     return 0;
 }
 
@@ -8331,15 +8351,15 @@ static void test_msg_dialog_abort_sequence(void) {
     utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
     expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "InitStart: 0");
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "During init: 80110001");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 1u &&
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 2u,
            "the dialog becomes visible (status 2)");
     expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 1u) == 0u, "an Update while visible");
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0u, "Abort: 0");
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0u, "Twice: 0");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u, "GetStatus after Abort: 2");
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 2u, "GetStatus after Abort: 2");
     expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 1u) == 0u, "Update after Abort: 0");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 3u, "GetStatus after that Update: 3");
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 3u, "GetStatus after that Update: 3");
     expect(MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 2u,
            "the aborted dialog finishes with result 2 (the PPSSPP reference value)");
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "Third abort: 80110001");
@@ -8347,7 +8367,7 @@ static void test_msg_dialog_abort_sequence(void) {
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "During shutdown: 80110001");
     int none = 0;
     for (int frame = 0; frame < 4 && !none; frame++)
-        none = utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u;
+        none = utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 0u;
     expect(none, "the dialog returns to NONE");
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0u) == 0x80110001u, "After reset: 80110001");
 }
@@ -8361,17 +8381,17 @@ static void test_msg_dialog_abort_without_update(void) {
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110005u, "abort before init: wrong type");
     expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "abort test init");
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u, "abort during init refused");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 1u, "abort test enters running");
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 1u, "abort test enters running");
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0u && utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0u,
            "repeated abort accepted while running");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 2u &&
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 2u &&
            utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0) == 0u &&
-           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 3u, "update completes aborted dialog");
+           utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 3u, "update completes aborted dialog");
     expect(utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u, "abort after finish refused");
     expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0) == 0u &&
            utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u &&
-           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 4u &&
-           utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0) == 0u &&
+           utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 4u &&
+           utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 0u &&
            utility_call(&cpu, NID_MSG_DIALOG_ABORT, 0) == 0x80110001u, "abort during and after shutdown refused");
     sr_hle_test_osk_slot_reset();
 }
@@ -8408,22 +8428,22 @@ static void test_utility_dialog_cancel_cleanup(void) {
         else utility_param_block(block, utility_fixture_size(dialogs[i].init));
         snprintf(what, sizeof(what), "%s reaches RUNNING before it is cancelled", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 2u,
+                   utility_status(&cpu, dialogs[i].status) == 1u &&
+                   utility_status(&cpu, dialogs[i].status) == 2u,
                what);
         if (works) (void)utility_call(&cpu, dialogs[i].update, 0u); /* its work has started */
         snprintf(what, sizeof(what), "%s accepts ShutdownStart while RUNNING", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u, what);
         int none = 0;
         for (int frame = 0; frame < 4 && !none; frame++)
-            none = utility_call(&cpu, dialogs[i].status, 0u) == 0u;
+            none = utility_status(&cpu, dialogs[i].status) == 0u;
         snprintf(what, sizeof(what), "%s winds down to NONE after a cancel", dialogs[i].name);
         expect(none, what);
         /* Nothing may write into the abandoned block from here on. */
         MEM_W32(block + 0x1cu, UTILITY_RESULT_UNTOUCHED);
         for (int k = 0; k < 4; k++) {
             (void)utility_call(&cpu, dialogs[i].update, 0u);
-            (void)utility_call(&cpu, dialogs[i].status, 0u);
+            (void)utility_status(&cpu, dialogs[i].status);
         }
         snprintf(what, sizeof(what), "%s writes no result into its cancelled block", dialogs[i].name);
         expect(MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED, what);
@@ -8440,7 +8460,7 @@ static void test_utility_dialog_cancel_cleanup(void) {
         snprintf(what, sizeof(what), "%s starts again from INIT after a cancel", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
                    MEM_R32(block + 0x1cu) == 0u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 1u,
+                   utility_status(&cpu, dialogs[i].status) == 1u,
                what);
         sr_hle_test_osk_slot_reset();
     }
@@ -8547,14 +8567,14 @@ static void test_utility_dialog_status_sequence(void) {
                  "still reports INIT, then RUNNING", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
                    utility_call(&cpu, dialogs[i].update, 0u) == 0x80110001u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 2u,
+                   utility_status(&cpu, dialogs[i].status) == 1u &&
+                   utility_status(&cpu, dialogs[i].status) == 2u,
                what);
         sr_hle_test_osk_slot_reset();
     }
 
-    /* A caller that updates before it polls sees every state: INIT, RUNNING while the work and
-     * the two further Updates run, then FINISHED. */
+    /* A caller that updates before it polls sees every state: INIT, RUNNING on the frame whose
+     * Update does the work, then FINISHED on the next Update, the first after the work. */
     for (size_t i = 0; i < 3; i++) {
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
@@ -8562,15 +8582,15 @@ static void test_utility_dialog_status_sequence(void) {
         else utility_param_block(block, utility_fixture_size(dialogs[i].init));
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u, "the dialog starts");
         utility_update_first_frames(&cpu, dialogs[i].update, dialogs[i].status, seen, &refused);
-        snprintf(what, sizeof(what), "%s, Update then GetStatus each frame: INIT, RUNNING x2, "
+        snprintf(what, sizeof(what), "%s, Update then GetStatus each frame: INIT, RUNNING, "
                  "FINISHED, one Update refused (saw %s, %u refused)", dialogs[i].name, seen,
                  refused);
-        expect(strcmp(seen, "1223") == 0 && refused == 1u, what);
+        expect(strcmp(seen, "123") == 0 && refused == 1u, what);
         snprintf(what, sizeof(what), "%s: ShutdownStart at FINISHED, then SHUTDOWN and NONE",
                  dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
-                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+                   utility_status(&cpu, dialogs[i].status) == 4u &&
+                   utility_status(&cpu, dialogs[i].status) == 0u,
                what);
         sr_hle_test_osk_slot_reset();
     }
@@ -8585,15 +8605,15 @@ static void test_utility_dialog_status_sequence(void) {
     utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
                utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110001u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 4u &&
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 0u,
            "a caller at 0x20 sees SHUTDOWN after a savedata ShutdownStart, cannot start another "
            "dialog yet, then sees NONE");
 
     expect(utility_change_priority(&cpu, 0x21u) == 0u && utility_savedata_start_to_finished(&cpu),
            "savedata reaches FINISHED for a caller at 0x21");
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 0u,
            "a caller at 0x21 sees NONE straight after a savedata ShutdownStart, never SHUTDOWN");
 
     expect(utility_change_priority(&cpu, 0x6fu) == 0u && utility_savedata_start_to_finished(&cpu),
@@ -8601,27 +8621,27 @@ static void test_utility_dialog_status_sequence(void) {
     utility_savedata_block();
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u,
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 1u,
            "a caller at 0x6F starts the next savedata dialog straight after ShutdownStart");
     expect(utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 0u,
            "the next savedata dialog runs to NONE");
 
     /* The edges: a cancel from RUNNING, and a caller better than 0x20, are unmeasured and keep
      * the reported SHUTDOWN. */
     utility_savedata_block();
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 1u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 4u &&
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 0u,
            "a savedata ShutdownStart during RUNNING still reports SHUTDOWN to a caller at 0x6F");
     expect(utility_change_priority(&cpu, 0x10u) == 0u && utility_savedata_start_to_finished(&cpu),
            "savedata reaches FINISHED for a caller at 0x10");
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 4u &&
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 0u,
            "a caller at 0x10 sees SHUTDOWN, then NONE");
 
     /* The message dialog's shutdown has no such threshold: a caller at 0x6F sees SHUTDOWN and
@@ -8634,11 +8654,245 @@ static void test_utility_dialog_status_sequence(void) {
                utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) ==
                    0x80110001u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 4u &&
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 0u,
            "a message dialog shows SHUTDOWN to a caller at 0x6F and refuses a savedata InitStart "
            "until NONE");
 
+    s_cur = -1;
+    sr_hle_test_osk_slot_reset();
+}
+
+/* #1386: each status step follows the event that completes it, never a count of calls. Start-up
+ * and shutdown complete on the first vblank delivered after InitStart and ShutdownStart: GetStatus
+ * polled again and again within one frame keeps reporting INIT (or SHUTDOWN), and once a vblank
+ * has passed the dialog has moved on whether or not anything polled it, so an Update is accepted
+ * and the slot is free for the next dialog. FINISHED follows the work's completion: the Update
+ * after the one that did the work. The OSK's INIT -> VISIBLE and FINISHED -> NONE follow the same
+ * frames. Before this, GetStatus itself moved INIT -> RUNNING and SHUTDOWN -> NONE, an Update
+ * after a vblank was still refused in INIT, a shut-down dialog held the slot until polled, and
+ * FINISHED waited for two Updates after the work. */
+static void test_utility_dialog_frame_driven_status(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityMsgDialog", NID_MSG_DIALOG_INIT, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS,
+          NID_MSG_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+    };
+    const size_t count = sizeof(dialogs) / sizeof(dialogs[0]);
+    char what[256];
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+
+    /* Start-up: INIT for every poll in the InitStart's frame, RUNNING after its vblank with no
+     * poll in between, so the next Update is accepted. (The gamedata and sharing Updates are not
+     * made: their work would create memory-stick directories.) */
+    for (size_t i = 0; i < count; i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
+        snprintf(what, sizeof(what), "%s: GetStatus polled three times in the InitStart's frame "
+                 "reports INIT each time", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u,
+               what);
+        utility_end_frame();
+        snprintf(what, sizeof(what), "%s: after a vblank with no poll the dialog is RUNNING",
+                 dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].status, 0u) == 2u, what);
+        sr_hle_test_osk_slot_reset();
+
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u, "the dialog starts again");
+        utility_end_frame();
+        if (dialogs[i].init != NID_GAMEDATA_DIALOG_INIT && dialogs[i].init != NID_SHARING_DIALOG_INIT) {
+            snprintf(what, sizeof(what), "%s: an Update after the InitStart's vblank is accepted, "
+                     "though no GetStatus saw the start-up", dialogs[i].name);
+            expect(utility_call(&cpu, dialogs[i].update, 0u) == 0u, what);
+        }
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* Work completion: the Update that does the work leaves the dialog RUNNING, and the next
+     * Update, the first after the work, finishes it. */
+    for (size_t i = 0; i < 3; i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0u, "the dialog starts");
+        utility_end_frame();
+        snprintf(what, sizeof(what), "%s: RUNNING after the working Update, FINISHED after the "
+                 "next one", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].update, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 2u &&
+                   utility_call(&cpu, dialogs[i].update, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 3u,
+               what);
+        sr_hle_test_osk_slot_reset();
+    }
+
+    /* Shutdown: SHUTDOWN for every poll in the ShutdownStart's frame, and the slot stays held
+     * there; after its vblank the slot is free with no poll in between. A caller at 0x20 keeps
+     * the savedata shutdown's SHUTDOWN (h_DlgShutdown). */
+    TCB *self = fixture_thread(0x5c0u, TH_RUNNING, 0x20);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+    for (size_t i = 0; i < 3; i++) {
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        const int msg = dialogs[i].init == NID_MSG_DIALOG_INIT;
+        if (savedata) utility_savedata_block();
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
+        expect(utility_change_priority(&cpu, 0x20u) == 0u &&
+                   utility_call(&cpu, dialogs[i].init, block) == 0u &&
+                   utility_poll_to_finished(&cpu, dialogs[i].update, dialogs[i].status) &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u,
+               "the dialog finishes and accepts ShutdownStart");
+        const uint32_t next_init = msg ? NID_NETCONF_DIALOG_INIT : NID_MSG_DIALOG_INIT;
+        const uint32_t next_block = msg ? UTILITY_OTHER_PARAM_ADDR : UTILITY_MSG_PARAM_ADDR;
+        utility_param_block(next_block, utility_fixture_size(next_init));
+        snprintf(what, sizeof(what), "%s: GetStatus polled twice in the ShutdownStart's frame "
+                 "reports SHUTDOWN, and another dialog's InitStart is still refused",
+                 dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, next_init, next_block) == 0x80110001u,
+               what);
+        utility_end_frame();
+        snprintf(what, sizeof(what), "%s: after the ShutdownStart's vblank, with no poll, another "
+                 "dialog's InitStart takes the slot", dialogs[i].name);
+        expect(utility_call(&cpu, next_init, next_block) == 0u, what);
+        sr_hle_test_osk_slot_reset();
+    }
+    s_cur = -1;
+    /* Nothing polls the shut-down message dialog: its vblank alone frees the slot. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    utility_savedata_block();
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
+               utility_poll_to_finished(&cpu, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS) &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
+           "the message dialog finishes and accepts ShutdownStart");
+    utility_end_frame();
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u,
+           "a savedata InitStart takes the slot once the message ShutdownStart's vblank has "
+           "passed, though no GetStatus saw the shutdown");
+    sr_hle_test_osk_slot_reset();
+
+    /* The OSK: INIT for every poll in its InitStart's frame and VISIBLE after its vblank (an
+     * Update is then accepted); FINISHED for every poll in its ShutdownStart's frame, with the
+     * slot held, and free after its vblank. */
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", "ABC");
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u &&
+               utility_call(&cpu, NID_OSK_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_OSK_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_OSK_UPDATE, 0u) == 0x80110001u,
+           "the OSK reports INIT for every poll in its InitStart's frame and refuses Update there");
+    utility_end_frame();
+    expect(utility_call(&cpu, NID_OSK_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_OSK_STATUS, 0u) == 2u,
+           "after a vblank with no poll the OSK is VISIBLE and accepts Update");
+    expect(utility_call(&cpu, NID_OSK_STATUS, 0u) == 3u &&
+               utility_call(&cpu, NID_OSK_SHUTDOWN, 0u) == 0u,
+           "the scripted OSK reaches QUIT and accepts ShutdownStart");
+    utility_end_frame();
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u,
+           "after the OSK ShutdownStart's vblank, with no poll, a message InitStart takes the slot");
+    sr_hle_test_osk_slot_reset();
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a second OSK starts");
+    utility_end_frame();
+    expect(utility_call(&cpu, NID_OSK_STATUS, 0u) == 2u &&
+               utility_call(&cpu, NID_OSK_STATUS, 0u) == 3u &&
+               utility_call(&cpu, NID_OSK_SHUTDOWN, 0u) == 0u,
+           "the second OSK reaches QUIT and accepts ShutdownStart");
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_OSK_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_OSK_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110001u,
+           "the OSK reports FINISHED for every poll in its ShutdownStart's frame and keeps the slot");
+    utility_end_frame();
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u,
+           "after the polled OSK ShutdownStart's vblank a message InitStart takes the slot");
+    osk_env("SR_OSK_TEXT", NULL);
+    sr_hle_test_osk_slot_reset();
+}
+
+/* #1386: a guest that spins on GetStatus without waiting for vblank still sees its dialog start
+ * up. Its loop's back-edge SR_YIELD reaches sr_yield at the end of each timeslice, which latches
+ * the elapsed display periods (scheduler_progress_time -> scheduler_latch_due_events ->
+ * sr_display_advance_vcount) whether or not another thread can run, so start-up completes on
+ * the first vblank the spin crosses. Here the only guest thread spins, the scheduler's
+ * deterministic quantum stands in for host time, and nothing advances VCOUNT by hand. */
+static uint32_t s_spin_first_status, s_spin_status, s_spin_yields, s_spin_vcount_start;
+
+static void utility_spin_coro_body(void *arg) {
+    (void)arg;
+    CpuState ctl;
+    s_spin_first_status = utility_call(&ctl, NID_MSG_DIALOG_STATUS, 0u);
+    s_spin_status = s_spin_first_status;
+    /* Sixteen yields bound the test, not the dialog: the 10 ms quantum crosses a vblank on
+     * the second. */
+    for (s_spin_yields = 0; s_spin_yields < 16u && s_spin_status == 1u; s_spin_yields++) {
+        memset(&ctl, 0, sizeof(ctl));
+        sr_yield(&ctl);
+        s_spin_status = utility_call(&ctl, NID_MSG_DIALOG_STATUS, 0u);
+    }
+}
+
+static void test_utility_dialog_start_up_during_status_spin(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    s_pace_on = 0;   /* deterministic: the scheduler quantum, not the host clock */
+    TCB *self = fixture_thread(0x5d0u, TH_RUNNING, 0x20);
+    s_cur = (int)(self - s_tcb);
+    self->started = 1;
+    s_vtime_us = 5000u;
+    s_vbl_next_us = s_vtime_us + 16683u;
+    s_vbl_event_period_rem = 0;
+    expect(sched_interrupts_enabled(), "spin fixture: CPU interrupts are enabled");
+
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u,
+           "spin fixture: the message dialog starts");
+    s_spin_vcount_start = sr_display_vcount();
+    s_spin_first_status = s_spin_status = 0xffffffffu;
+    s_spin_yields = 0;
+    self->coro = sr_coro_create(utility_spin_coro_body, NULL, (size_t)1 << 20);
+    expect(self->coro != NULL, "spin fixture: the guest coroutine is created");
+    if (self->coro) {
+        sr_coro_switch(self->coro);
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+    expect(s_spin_first_status == 1u,
+           "a GetStatus spin reports INIT before its first scheduler boundary");
+    expect(s_spin_status == 2u && s_spin_yields >= 1u && s_spin_yields < 16u &&
+               sr_display_vcount() != s_spin_vcount_start,
+           "a GetStatus spin that never waits for vblank sees RUNNING once the scheduler "
+           "boundaries in its loop have latched a vblank");
     s_cur = -1;
     sr_hle_test_osk_slot_reset();
 }
@@ -9728,7 +9982,7 @@ static void test_utility_dialog_measured_states(void) {
         utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
         MEM_W32(UTILITY_MSG_PARAM_ADDR, bad[i]);
         expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0x80110004u &&
-                   utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0x80110005u,
+                   utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 0x80110005u,
                "a message InitStart with an unlisted size is INVALID_PARAM_SIZE and takes no slot");
     }
     static const uint32_t good[] = { 0x23cu, 0x244u, 0x2c4u };
@@ -9757,15 +10011,15 @@ static void test_utility_dialog_measured_states(void) {
     expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u, "msg InitStart: NONE");
     expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110001u,
            "msg ShutdownStart during INIT: INVALID_STATUS");
-    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u, "msg status: RUNNING");
+    expect(utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 1u &&
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 2u, "msg status: RUNNING");
     expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110001u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 2u,
            "msg ShutdownStart while RUNNING: INVALID_STATUS, still RUNNING");
     expect(utility_poll_to_finished(&cpu, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS) &&
                utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
-               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 4u &&
+               utility_status(&cpu, NID_MSG_DIALOG_STATUS) == 0u,
            "msg finished: ok, then SHUTDOWN and NONE");
     expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0x80110001u,
            "msg Update after done: INVALID_STATUS");
@@ -10538,6 +10792,91 @@ static void test_audio_src_matches_the_measured_contract(void) {
            "an unmodelled rate is refused, and nothing is reserved");
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
            "the refused reserve left the slot free");
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+}
+
+/* sceVaudioChReserve / sceVaudioOutputBlocking / sceVaudioChRelease (#286). A title's own PSMF
+ * player route reserved Vaudio with (1152, 44100, 2) and stopped there while the NIDs had no
+ * handler. Vaudio plays through the SRC slot; the sample-count set, the format and the second-
+ * reserve word follow the public behaviour reference named at h_VaudioChReserve and are
+ * unmeasured. */
+static void test_vaudio_plays_through_the_src_slot(void) {
+    enum { VA_BUF = 0x08a00000u };   /* 1152 stereo frames: 4608 bytes inside the arena */
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    expect(sr_hle_test_is_registered(NID_SCE_VAUDIO_CH_RESERVE) &&
+           sr_hle_test_is_registered(NID_SCE_VAUDIO_CH_RELEASE) &&
+           sr_hle_test_is_registered(NID_SCE_VAUDIO_OUTPUT_BLOCKING),
+           "the three Vaudio NIDs have production registrations");
+
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "Vaudio release with nothing reserved returns 0x80260008");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) ==
+               0x80260008u,
+           "Vaudio output with nothing reserved returns 0x80260008");
+
+    /* The title's reservation, a blocking output, and the release. */
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1152u, 44100u, 2u) == 0u,
+           "Vaudio reserves 1152 samples at 44100 Hz, format 2");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1152u, 44100u, 2u) == 0x80000021u,
+           "a second Vaudio reserve returns 0x80000021");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0x80268002u,
+           "SRC reserve while Vaudio holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 512u, 0u, 0u) == 0x80268002u,
+           "Output2 reserve while Vaudio holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u &&
+               audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) ==
+                   0x80260008u,
+           "the SRC release and output do not act on a Vaudio reservation");
+    expect(s_audio_push_calls == 0u, "nothing reached the mixer through the other API");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8001u, VA_BUF, 0u) ==
+               0x8026000bu,
+           "a Vaudio volume above 0x8000 returns 0x8026000b");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) == 1152u,
+           "Vaudio output returns the reserved sample count");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames == 1152,
+           "the 44100 Hz block reaches the mixer once, with all 1152 frames");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "Vaudio release after the output returns 0");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "a second Vaudio release returns 0x80260008");
+
+    /* A Vaudio release does not free an SRC reservation, and Vaudio cannot reserve over it. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0u,
+           "SRC reserves for the cross-API check");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1024u, 44100u, 2u) == 0x80268002u,
+           "Vaudio reserve while SRC holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "a Vaudio release does not free an SRC reservation");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "the SRC reservation survived and now releases");
+
+    /* The reserve shapes, each released at once when accepted. */
+    static const struct {
+        uint32_t samples, freq, format, want;
+    } shapes[] = {
+        {256u,  44100u, 2u, 0u},
+        {576u,  44100u, 2u, 0u},
+        {1024u, 48000u, 2u, 0u},            /* the SRC converter's other rate */
+        {2048u, 0u,     2u, 0u},            /* rate 0: taken as 44100 Hz */
+        {1000u, 44100u, 2u, 0x80000104u},   /* not one of the five sample counts */
+        {0u,    44100u, 2u, 0x80000104u},
+        {1152u, 44100u, 0u, 0x80000108u},   /* format 0 */
+        {1152u, 44100u, 1u, 0x80000108u},   /* format 1 */
+        {1152u, 22050u, 2u, 0x80000003u},   /* a rate the SRC converter does not model */
+    };
+    for (unsigned i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) {
+        const uint32_t got = audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, shapes[i].samples,
+                                            shapes[i].freq, shapes[i].format);
+        expect(got == shapes[i].want, "Vaudio reserve shape returns the modelled word");
+        expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) ==
+                   (got == 0u ? 0u : 0x80260008u),
+               "an accepted shape releases at once, and a refused one reserved nothing");
+    }
     sr_hle_test_audio_reset();
     audio_fixture_reset();
 }
@@ -20810,7 +21149,7 @@ static void test_quit_stop_decision(void) {
            "quit stop: the dialog still holds the stop just inside the window");
     expect(utility_poll_to_finished(&cpu, NID_SAVEDATA_DIALOG_UPDATE, NID_SAVEDATA_DIALOG_STATUS) &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
-               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u &&
+               utility_status(&cpu, NID_SAVEDATA_DIALOG_STATUS) == 0u &&
                !sr_savedata_pause_busy(),
            "quit stop: the guest finishes and shuts down its savedata dialog");
     expect(sr_exit_request_stop_due() == 1,
@@ -21453,7 +21792,11 @@ static void test_ctrl_read_buffer_contract(void) {
      * Two frames pressed, two released. A guest polling every vblank therefore
      * reads exactly four of each in eight vblanks and at least one rising edge
      * whatever the starting phase.  A flat "current state" fill cannot produce
-     * that, which is the distinction this case exists to make. */
+     * that, which is the distinction this case exists to make. The case starts on a period
+     * boundary so it does not depend on the VCOUNT earlier cases left behind: a pulse armed one
+     * sample into its window still presses for the full width (auto_pulse_keys), five samples
+     * in eight. */
+    while ((sr_display_vcount() + 1u) % 4u != 0u) ctrl_tick(1u);
     ctrl_env("", "0008", "4", "2");
     ctrl_drain(&cpu);
     {
@@ -35113,7 +35456,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
         extern int s_ctrlc_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
+        int expected_parks = 1 /* MultiCB waiter */ + 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -38201,6 +38544,52 @@ static int write_lifecycle_prx(const char *path, uint32_t payload) {
     return written == sizeof(image) && close_result == 0;
 }
 
+uint32_t sr_hle_test_prx_start_entry(const char *host_path, uint32_t base);
+uint32_t sr_hle_test_populated_start_entry(const char *file, uint32_t base);
+int sr_hle_test_set_fixed_module_image(uint32_t uid, uint32_t base, uint32_t end);
+
+/* A library module can declare no start routine: no module_start export and an ELF entry of
+ * 0xFFFFFFFF. A retail libfont is one, and running its first function as module_start read
+ * and wrote through a null argument pointer (#363). */
+static void test_module_without_entry_runs_no_code(void) {
+    enum { BASE = 0x09ebfc00u, E_ENTRY_OFF = 24 };
+    const char *path = HLE_BUILD_ROOT "/hle_no_entry.prx";
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    expect(write_lifecycle_prx(path, 0x11111111u), "no-entry module: fixture written");
+    expect(sr_hle_test_prx_start_entry(path, BASE) == BASE,
+           "an ELF entry of 0 is a start routine at the module's first address");
+    FILE *image = fopen(path, "r+b");
+    expect(image != NULL, "no-entry module: fixture reopened");
+    if (image) {
+        static const uint8_t none[4] = {0xff, 0xff, 0xff, 0xff};
+        fseek(image, E_ENTRY_OFF, SEEK_SET);
+        fwrite(none, 1, sizeof(none), image);
+        fclose(image);
+    }
+    expect(sr_hle_test_prx_start_entry(path, BASE) == 0u,
+           "an ELF entry of 0xFFFFFFFF declares no start routine");
+    remove(path);
+    expect(sr_hle_test_populated_start_entry("absent_no_entry.prx", BASE) == 0u,
+           "a manifest module with no image does not start at its base");
+
+    /* The start itself: exports become linkable, nothing runs, and the run does not stop. */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t stops_before = sr_hle_test_libfont_startup_stops();
+    uint32_t starts_before = s_synth_libfont_start_calls;
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
+    sr_hle_test_module_reset();
+    uint32_t uid = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/module/libfont.prx", 0u, 0u);
+    expect(uid != 0u && sr_hle_test_set_fixed_module_image(uid, BASE, BASE + 0x8000u),
+           "no-entry module: fixed-address record registered");
+    expect(libfont_start_call(&cpu, uid) == 0u,
+           "a fixed-address module with no start routine starts");
+    expect(s_synth_libfont_start_calls == starts_before &&
+               sr_hle_test_libfont_startup_stops() == stops_before,
+           "starting it runs no guest code and takes no libfont stop");
+    sr_hle_test_module_reset();
+}
+
 static void test_late_prx_unload_reload_lifecycle(void) {
     const char *path_a = HLE_BUILD_ROOT "/hle_lifecycle_a.prx";
     const char *path_b = HLE_BUILD_ROOT "/hle_lifecycle_b.prx";
@@ -38346,9 +38735,65 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     cpu.r[4] = uid_a;
     expect(sr_syscall(&cpu, 0x2e0911aau) == 0x80020002u,
            "lifecycle: unload refuses while a module thread is ready to execute its image");
+    /* A thread inside a call goes on at $ra; its pc still shows its last slice's end, and that
+     * can be the image it has left, as for a title that deletes its player and unloads the
+     * module from its own code (#286). A thread that left at a yield resumes at its pc. */
+    uint32_t in_a = LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1;
+    active_module_thread->pc_stale = 1;
+    active_module_thread->saved.r[31] = 0x08900000u;
+    expect(!sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a ready thread parked in a call is not held to its stale pc");
+    active_module_thread->saved.r[31] = in_a;
+    expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a ready thread parked in a call still returns into the image at $ra");
     active_module_thread->state = TH_DORMANT;
     active_module_thread->deleted = 1;
     active_module_thread->entry = 0u;
+
+    TCB *unloader = fixture_thread(0x6f1u, TH_RUNNING, 20);
+    unloader->started = 1;
+    int cur_before_unloader = s_cur;
+    s_cur = (int)(unloader - s_tcb);
+    CpuState cpu_before_unloader = *s_cpu;
+    s_cpu->pc = in_a;
+    s_cpu->r[31] = 0x08900000u;
+    expect(!sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: the unload's own caller is not held to its stale pc");
+    s_cpu->r[31] = in_a;
+    expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a caller inside the image is still a continuation");
+    *s_cpu = cpu_before_unloader;
+
+    /* A thread that exited from inside a call keeps that mark while dormant. Started again
+     * through sceKernelStartThread, it re-enters at its entry, and an entry inside the image is
+     * a continuation into it: the restart must not leave the old mark hiding that pc. */
+    uint32_t restart_uid = sched_create_thread(in_a, 30, 0x2000u);
+    TCB *restarted = tcb_by_uid(restart_uid);
+    expect(restart_uid != 0u && restarted != NULL,
+           "lifecycle: a thread whose entry is in the image is created");
+    if (restarted) {
+        restarted->started = 1;   /* as the scheduler leaves a thread that ran and exited */
+        restarted->state = TH_DORMANT;
+        restarted->pc_stale = 1;
+        s_cpu->r[4] = restart_uid;
+        s_cpu->r[5] = 0u;
+        s_cpu->r[6] = 0u;
+        expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0u,
+               "lifecycle: sceKernelStartThread restarts the exited thread");
+        *s_cpu = cpu_before_unloader;
+        expect(restarted->state == TH_READY && restarted->saved.pc == in_a &&
+                   restarted->saved.r[31] == 0u,
+               "lifecycle: the restarted thread is ready at its entry with no return address");
+        expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+               "lifecycle: a restarted thread whose entry is in the image keeps unload refused");
+        restarted->state = TH_DORMANT;
+        restarted->deleted = 1;
+        restarted->entry = 0u;
+    }
+    s_cur = cur_before_unloader;
+    unloader->state = TH_DORMANT;
+    unloader->deleted = 1;
+    unloader->entry = 0u;
 
     /* ---- unload A: retire exactly its own state ---- */
     unsigned images_before = sr_hle_test_image_count();
@@ -40987,6 +41432,73 @@ static void test_issue339_callback_wait_dispatch(void) {
     s_oracle_mode = saved_oracle_mode;
 }
 
+/* The CB form of the multi-period wait (#286): a title's own PSMF player route calls it once a
+ * frame, and a refusal returned at once left that thread spinning with no display wait at all.
+ * It refuses as the plain form does, services the caller's callbacks, and returns after the
+ * requested periods.
+ *
+ * MUTANT: register the NID as a refusal again -- every check here fails.
+ * MUTANT: stop after one period -- the waiter does not block for the second. */
+static void test_display_multi_cb_wait(void) {
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+
+    reset_fixture();
+    sr_hle_init();
+    s_cur = -1;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB) == 0x800001feu,
+           "sceDisplayWaitVblankStartMultiCB rejects a zero period with INVALID_VALUE");
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB) == CNW_ERR,
+           "sceDisplayWaitVblankStartMultiCB refuses to report success without a current thread");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x77e0u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x77e1u, TH_READY, 40);
+    waiter->started = 1;
+    SelftestVblankWaitCtx wait;
+    memset(&wait, 0, sizeof(wait));
+    wait.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB;
+    wait.arg0 = 2u;
+    waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &wait, (size_t)4 << 20);
+    s_cur = (int)(waiter - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(callback_uid != 0 && s_oracle_callback_calls == 1 && !wait.returned &&
+               waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+               waiter->is_cb_wait,
+           "MultiCB services a callback then blocks on the first VBLANK period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(!wait.returned && waiter->state == TH_WAIT_OBJ &&
+               waiter->wait_obj == VBLANK_WAIT_OBJ && s_vbl_count == 1u,
+           "MultiCB waits again for its remaining period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(wait.returned && wait.ret == 0u && s_vbl_count == 2u,
+           "MultiCB returns success after both periods");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "MultiCB callback unregisters cleanly");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
+    s_oracle_mode = saved_oracle_mode;
+}
+
 static void test_issue339_vblank_cb_wait_requires_a_current_thread(void) {
     reset_fixture();
     s_cur = -1;
@@ -41012,6 +41524,7 @@ static void test_issue339_wait_nids_production_dispatch(void) {
     test_issue339_terminate_waiting_thread();
     test_issue339_sysclock_delay_dispatch();
     test_issue339_callback_wait_dispatch();
+    test_display_multi_cb_wait();
     test_issue339_vblank_cb_wait_requires_a_current_thread();
 }
 
@@ -41805,6 +42318,145 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
     expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
 }
 
+/* #1384: glyph-image spans, allocator alignment and the handle lifecycle, through production
+ * dispatch. A GlyphImage (0x18 bytes: u32 pixel format, s32 x and y in 1/64 pixel, u16 buffer
+ * width, height and bytes per line, u16 pad, u32 buffer) that the draw cannot place stops the run
+ * by name: the PSP's libfont stores through it unchecked, so its behaviour is UNMEASURED. A glyph
+ * wholly outside the buffer draws nothing and answers 0. The handle results after close and
+ * DoneLib are host policy (the PSP result is UNMEASURED): a handle that is not live is refused
+ * and freeFunc never sees a block twice. */
+#define FLT_NID_GLYPH  0x980f4895u
+#define FLT_GI         0x09050400u
+#define FLT_BITMAP     0x09050800u
+#define FLT_FONT_2     0x09070100u
+static void flt_write_glyph_image(uint32_t at, uint32_t format, int32_t x64, uint16_t w,
+                                  uint16_t h, uint16_t bpl, uint32_t buffer) {
+    MEM_W32(at + 0x00u, format);
+    MEM_W32(at + 0x04u, (uint32_t)x64);
+    MEM_W32(at + 0x08u, 0u);
+    MEM_W16(at + 0x0cu, w);
+    MEM_W16(at + 0x0eu, h);
+    MEM_W16(at + 0x10u, bpl);
+    MEM_W16(at + 0x12u, 0u);
+    MEM_W32(at + 0x14u, buffer);
+}
+static void test_font_glyph_image_and_handles(uint32_t served_index) {
+    if (!sr_hle_test_is_registered(FLT_NID_NEWLIB)) sr_hle_init();
+    expect(sr_hle_test_is_registered(FLT_NID_GLYPH), "sceFontGetCharGlyphImage is registered");
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    flt_write_params(FLT_PARAMS, 4u);
+
+    /* An allocator block that is not word-aligned is refused before anything is written to it. */
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+    MEM_W32(FLT_LIB_A, 0x5a5a5a5au);
+    MEM_W32(FLT_LIB_A + 4u, 0x5a5a5a5au);
+    expect(flt_new_lib(FLT_PARAMS, FLT_LIB_A + 2u) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_OOM &&
+               s_flt_alloc_calls == 1u && MEM_R32(FLT_LIB_A + 4u) == 0x5a5a5a5au &&
+               flt_call(FLT_NID_DONELIB, FLT_LIB_A + 2u, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB &&
+               s_flt_free_calls == 0u,
+           "sceFontNewLib refuses a misaligned allocator block, writes nothing and publishes no library");
+    const uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+    expect(lib == FLT_LIB_A && MEM_R32(FLT_ERR) == 0u, "a library opens at an aligned block");
+    s_flt_alloc_ret = FLT_FONT + 2u;
+    MEM_W32(FLT_FONT + 4u, 0x5a5a5a5au);
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_OOM && MEM_R32(lib + 0x14u) == 0u &&
+               MEM_R32(FLT_FONT + 4u) == 0x5a5a5a5au && s_flt_free_calls == 0u,
+           "sceFontOpen refuses a misaligned font block and leaves the open count at zero");
+    s_flt_alloc_ret = FLT_FONT;
+    const uint32_t font = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(font == FLT_FONT && MEM_R32(FLT_ERR) == 0u, "a font opens at an aligned block");
+
+    /* Glyph images, drawn with the first of 'A' and U+3042 the served font has. Its bitmap size
+     * comes from sceFontGetCharInfo, so a buffer can end exactly one byte short of its last row. */
+    static const uint32_t glyph_candidates[2] = { 0x41u, 0x3042u };
+    uint32_t ch = 0u, glyph_w = 0u, glyph_h = 0u;
+    for (int i = 0; i < 2 && glyph_w == 0u; i++) {
+        ch = glyph_candidates[i];
+        if (flt_call(FLT_NID_CHAR, font, ch, FLT_INFO, 0u) != 0u) continue;
+        glyph_w = MEM_R32(FLT_INFO + 0x00u);
+        glyph_h = MEM_R32(FLT_INFO + 0x04u);
+    }
+    expect(glyph_w > 0u && glyph_w <= 16u && glyph_h > 0u && glyph_h <= 16u,
+           "the served font has a glyph whose bitmap fits a 16 x 16 buffer");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    for (uint32_t i = 0; i < 0x100u; i += 4u) MEM_W32(FLT_BITMAP + i, 0u);
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, FLT_BITMAP);
+    expect(flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u) == 0u &&
+               sr_hle_test_unmodelled_stops() == stops,
+           "sceFontGetCharGlyphImage draws into a complete glyph image and bitmap");
+    flt_write_glyph_image(FLT_GI, 2u, 100 * 64, 16u, 16u, 16u, FLT_BITMAP);
+    expect(flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u) == 0u &&
+               sr_hle_test_unmodelled_stops() == stops,
+           "a glyph wholly right of the buffer draws nothing and answers 0");
+
+    const uint32_t gi_tail = FLT_GUEST_TOP - 0x10u;
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, gi_tail, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "a 0x18-byte glyph image that ends past guest memory stops by name, not success");
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, 0xffffu, gi_tail, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "the glyph image is checked even for a character the font lacks");
+    /* Every row but the last fits; the last row's final byte is the first one past guest memory. */
+    const uint32_t bitmap_tail = FLT_GUEST_TOP + 1u - ((glyph_h - 1u) * 16u + glyph_w);
+    MEM_W8(bitmap_tail, 0x5au);
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, bitmap_tail);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u && MEM_R8(bitmap_tail) == 0x5au,
+           "a bitmap whose last row ends past guest memory stops by name and writes no row");
+    flt_write_glyph_image(FLT_GI, 5u, 0, 16u, 16u, 16u, FLT_BITMAP);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u, "pixel format 5 stops by name");
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, 0u);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "a NULL bitmap with a nonzero size stops by name");
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, FLT_BITMAP);
+
+    /* Close and reopen. A font opened twice is one handle; its second close frees it once. */
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == font && s_flt_alloc_calls == 0u,
+           "a second open of the same font answers the same handle");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 0u &&
+               flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 1u &&
+               s_flt_last_free == font && MEM_R32(lib + 0x14u) == 0u,
+           "the second close of a twice-opened font frees its block once");
+    s_flt_alloc_ret = FLT_FONT;
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == font && s_flt_alloc_calls == 1u &&
+               MEM_R32(FLT_ERR) == 0u && MEM_R32(lib + 0x14u) == 1u,
+           "a reopen the allocator places at the freed block is a new font with a fresh allocation");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 2u,
+           "that new font closes after one open: its open count did not carry over");
+    s_flt_alloc_ret = FLT_FONT_2;
+    const uint32_t font2 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(font2 == FLT_FONT_2 && MEM_R32(FLT_ERR) == 0u, "a reopen at another block answers that block");
+    expect(flt_call(FLT_NID_INFO, font, FLT_INFO, 0u, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_CHAR, font, ch, FLT_INFO, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG && s_flt_free_calls == 2u,
+           "the stale handle of the closed font is refused everywhere and frees nothing");
+    expect(flt_call(FLT_NID_INFO, font2, FLT_INFO, 0u, 0u) == 0u, "the reopened font serves");
+
+    /* Handles of the wrong kind. */
+    expect(flt_call(FLT_NID_CLOSE, lib, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_OPEN, font2, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB &&
+               flt_call(FLT_NID_DONELIB, font2, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB &&
+               s_flt_free_calls == 2u,
+           "a library handle is not a font and a font handle is not a library");
+
+    /* DoneLib with the font still open (test_font_error_ptr_and_done_lib covers its frees). */
+    expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u &&
+               flt_call(FLT_NID_GLYPH, font2, ch, FLT_GI, 0u) == FLT_ERR_INVALID_ARG,
+           "a font retired by sceFontDoneLib draws no glyph");
+}
+
 /* #1384: the error-code output of every Open call and of NewLib is a span-checked output (a
  * NULL one crashes the PSP, so it is an unmeasured stop, never a quiet write), and DoneLib with
  * a font still open retires the font as well. The PSP's result for that DoneLib is UNMEASURED:
@@ -42531,6 +43183,7 @@ static void test_flash0_font_device(void) {
         }
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_glyph_image_and_handles(served_index);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_measured_contract(served_index);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_error_ptr_and_done_lib(served_index);
         test_font_list_contract(&expected_sources);
@@ -44543,6 +45196,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_utility_dialog_single_slot();
     test_utility_dialog_cancel_cleanup();
     test_utility_dialog_status_sequence();
+    test_utility_dialog_frame_driven_status();
+    test_utility_dialog_start_up_during_status_spin();
     test_savedata_older_parameter_versions();
     test_msg_dialog_answer_field();
     test_msg_dialog_abort_sequence();
@@ -44575,6 +45230,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_audio_output2_release_refuses_while_queued();
     test_audio_resampler_quality_and_streaming();
     test_audio_src_matches_the_measured_contract();
+    test_vaudio_plays_through_the_src_slot();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
@@ -44782,6 +45438,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_real_module_start_lifecycle();
     test_prx_stop_entry_boundaries();
     test_late_prx_unload_reload_lifecycle();
+    test_module_without_entry_runs_no_code();
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_volatile_mem_unlock_states();
