@@ -70,7 +70,7 @@ belongs to without the census's own grouping.
 | `0x04b7766e` | `scePowerRegisterCallback` | power | `synthetic` | HLE selftest dispatch |
 | `0x05572a5f` | `sceKernelExitGame` | kernel_module | `hardware-measured` | PSP oracle PSP-SMOKE-001 |
 | `0x0558b075` | `sceMpegAvcCopyYCbCr` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0x05db22ce` | `sceGeUnsetCallback` | ge | `synthetic` | HLE selftest dispatch |
+| `0x05db22ce` | `sceGeUnsetCallback` | ge | `synthetic` | HLE selftest dispatch; note |
 | `0x06a70004` | `sceIoMkdir` | io | `unverified` | no recorded evidence |
 | `0x07ec321a` | `sceMp3ReserveMp3Handle` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x07f58c24` | `__sceSasGetAllEnvelopeHeights` | audio | `unverified` | no recorded evidence |
@@ -384,7 +384,7 @@ belongs to without the census's own grouping.
 | `0x7a20e7af` | `sceAtracSetDataAndGetID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x7c0dc2a0` | `sceKernelCreateMsgPipe` | kernel_sync | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x7c41f2c2` | `sceKernelSendMsgPipeCB` | kernel_sync | `synthetic` | HLE selftest dispatch |
-| `0x7cff8cf3` | `_sceKernelLockLwMutex` | kernel_sync | `unverified` | no recorded evidence |
+| `0x7cff8cf3` | `_sceKernelLockLwMutex` | kernel_sync | `unverified` | no recorded evidence; note |
 | `0x7db31251` | `sceAtracAddStreamData` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x7de6711b` | `sceRtcFormatRFC2822LocalTime` | rtc | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x7e65b999` | `sceKernelCancelAlarm` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-TIMER-ORDER-001 |
@@ -487,11 +487,11 @@ belongs to without the census's own grouping.
 | `0xa1336091` | `sceNpDrmSetLicenseeKey` | npdrm | `ppsspp-derived` | registry notes name PPSSPP |
 | `0xa14f40b2` | `sceKernelVolatileMemTryLock` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0xa232cbe6` | `__sceSasSetTrianglarWave` | audio | `unverified` | no recorded evidence |
-| `0xa291f107` | `sceKernelMaxFreeMemSize` | kernel_memory | `synthetic` | HLE selftest dispatch |
+| `0xa291f107` | `sceKernelMaxFreeMemSize` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0xa2bba8be` | `sceAtracGetSoundSample` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xa3589d81` | `__sceSasCore` | audio | `synthetic` | HLE selftest dispatch |
 | `0xa3d81169` | `scePsmfPlayerChangePlayMode` | mpeg | `ppsspp-derived` | handler comment names PPSSPP |
-| `0xa4fc06a4` | `sceGeSetCallback` | ge | `synthetic` | HLE selftest dispatch |
+| `0xa4fc06a4` | `sceGeSetCallback` | ge | `synthetic` | HLE selftest dispatch; note |
 | `0xa554a158` | `sceAtracGetBitrate` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xa569e425` | `sceKernelVolatileMemUnlock` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0xa5c055ce` | `sceNetAdhocctlCreateEnterGameMode` | network | `unverified` | no recorded evidence |
@@ -555,7 +555,7 @@ belongs to without the census's own grouping.
 | `0xbd2bde07` | `sceUmdUnRegisterUMDCallBack` | umd | `synthetic` | HLE selftest dispatch |
 | `0xbd2f1094` | `sceKernelLoadExec` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0xbd681969` | `scePowerGetBusClockFrequencyInt` | power | `hardware-measured` | PSP oracle PSP-HLE-POWER-001 |
-| `0xbea46419` | `sceKernelLockLwMutex` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch |
+| `0xbea46419` | `sceKernelLockLwMutex` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch; note |
 | `0xbed27435` | `sceKernelAllocateVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0xbeed3a47` | `_sceKernelUnlockLwMutex` | kernel_sync | `unverified` | no recorded evidence; note |
 | `0xbfa98062` | `sceKernelDcacheInvalidateRange` | cache_dma | `hardware-measured` | PSP oracle PSP-VRAM-MIRROR-001 |

@@ -52,10 +52,10 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 244 | 249 |
+| `partial` | 248 | 254 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 288 | 297 |
+| `unreviewed` | 284 | 292 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -67,11 +67,11 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 | `sceDisplay` | 1 | 6 | 0 | 0 | 8 | 15 | 15 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 7 | 0 | 0 | 11 | 18 | 18 |
-| `sceGe` | 2 | 8 | 0 | 0 | 4 | 14 | 14 |
+| `sceGe` | 2 | 10 | 0 | 0 | 2 | 14 | 14 |
 | `sceHprm` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 102 | 0 | 0 | 85 | 190 | 208 |
+| `sceKernel` | 3 | 104 | 0 | 0 | 83 | 190 | 208 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 11 | 0 | 1 | 25 | 37 | 37 |
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
@@ -85,7 +85,7 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 | `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
 | `sceUtility` | 0 | 9 | 0 | 0 | 27 | 36 | 36 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **244** | **1** | **2** | **288** | **549** | **576** |
+| **Total** | **14** | **248** | **1** | **2** | **284** | **549** | **576** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -340,6 +340,14 @@ Semantic handler census: **549** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_ge_break_continue
   - Evidence: tests/native/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
   - Evidence: tests/native/hle_thread_selftest.c:test_ge_sync_ids_match_psp
+- **`h_GeSetCallback`** (`sceGe`): `sceGeSetCallback` (0xa4fc06a4)
+  - Limitation: registration with null handlers returning an ID is captured on the PSP-3000 (the P1/P2 envelope is CAPTURED, not acceptance-eligible); the PSP returned 1 for the first registration it saw while this runtime hands out the lowest free ID from 0, the table size (16 here) and the full-table result are not measured, and a struct that is not readable returns the illegal-address code unmeasured (#341)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: sceGeSetCallback with a {NULL, NULL} struct returned ID 1 and queued no handler)
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_guest_sentinel
+- **`h_GeUnsetCallback`** (`sceGe`): `sceGeUnsetCallback` (0x05db22ce)
+  - Limitation: unsetting a registered ID returning 0 is captured on the PSP-3000 (CAPTURED, not acceptance-eligible); this runtime also returns 0 for an unregistered or out-of-range ID, which no PSP cell records (#341)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: sceGeUnsetCallback of the ID that sceGeSetCallback returned gave 0)
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_guest_sentinel
 - **`h_HprmIsHeadphoneExist`** (`sceHprm`): `sceHprmIsHeadphoneExist` (0x7e69eda4)
   - Limitation: reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the conditions under which firmware reports 1 are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-headphone-first, hprm-headphone-second)
@@ -627,9 +635,20 @@ Semantic handler census: **549** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_kernel_devkit_version_measured
   - Evidence: src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION
   - Evidence: hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)
+- **`h_LockLwMutex`** (`sceKernel`): `_sceKernelLockLwMutex` (0x7cff8cf3), `sceKernelLockLwMutex` (0xbea46419)
+  - Limitation: uncontended and recursive acquisition, blocking until the owner's hand-off, the self-held non-recursive refusal and the timeout code follow the recorded cells; invalid workareas, a count of 0 or below, an unwritable timeout pointer, callback delivery during the wait, interrupt context and several-waiter ordering are not measured (#341)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells: an owner's unlock hands ownership directly to the waiter; a self-held non-recursive timed Lock fails immediately with 0x800201CF)
+  - Evidence: tests/native/hle_thread_selftest.c:test_lwmutex_hardware_codes
+  - Evidence: tests/native/hle_thread_selftest.c:test_b23_second_round
 - **`h_LockMutex`** (`sceKernel`): `sceKernelLockMutex` (0xb011b11f)
   - Limitation: measured cases cover finite timeout, priority inheritance, and the listed interrupt-context refusals; full attribute/recursion ranges, negative counts, multi-waiter priority ordering, and invalid timeout-pointer precedence are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-timeout-quanta, mutex-priority-inheritance, and accepted interrupt-context cell)
+- **`h_MaxFreeMemSize`** (`sceKernel`): `sceKernelMaxFreeMemSize` (0xa291f107)
+  - Limitation: the result is the larger of the span below the lowest live thread stack and the biggest freed block; only the unchanged-after-stack-free case is measured, so the absolute value at boot, the kernel's block-header and alignment accounting, and the value with several free blocks are not measured (#341)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MODULE-START-001: after the module_start thread's 0x40000-byte stack is freed, sceKernelMaxFreeMemSize does not change, because the stack of the thread module_start created sits directly below the freed range)
+  - Evidence: tests/native/hle_thread_selftest.c:test_partition_ends_at_lowest_live_stack
+  - Evidence: tests/native/hle_thread_selftest.c:test_max_free_unchanged_after_top_stack_deleted
+  - Evidence: tests/native/hle_thread_selftest.c:test_partition_spans_the_whole_user_partition
 - **`h_Memcpy`** (`sceKernel`): `sceKernelMemcpy` (0x1839852a)
   - Limitation: copies with memmove semantics for overlapping spans, which the PSP's memcpy does not promise and whose overlap behaviour is unmeasured; bad guest spans are refused through the runtime's out-of-range path, not a PSP error code
 - **`h_NotifyCallback`** (`sceKernel`): `sceKernelNotifyCallback` (0xc11ba8c4)

@@ -78,7 +78,7 @@
     "classification": "dedicated",
     "handler": "h_GeUnsetCallback",
     "name": "sceGeUnsetCallback",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x06a70004": {
     "classification": "dedicated",
@@ -2067,7 +2067,7 @@
     "classification": "dedicated",
     "handler": "h_LockLwMutex",
     "name": "_sceKernelLockLwMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x7db31251": {
     "classification": "dedicated",
@@ -2704,7 +2704,7 @@
     "classification": "dedicated",
     "handler": "h_MaxFreeMemSize",
     "name": "sceKernelMaxFreeMemSize",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xa2bba8be": {
     "classification": "dedicated",
@@ -2728,7 +2728,7 @@
     "classification": "dedicated",
     "handler": "h_GeSetCallback",
     "name": "sceGeSetCallback",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xa554a158": {
     "classification": "dedicated",
@@ -3131,7 +3131,7 @@
     "classification": "dedicated",
     "handler": "h_LockLwMutex",
     "name": "sceKernelLockLwMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xbed27435": {
     "classification": "dedicated",

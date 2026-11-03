@@ -1919,6 +1919,41 @@ HANDLER_METADATA = {
         ],
         "limitation": "a live block is freed once and coalesced, and a freed, zero or unknown UID returns 0x800200CB as recorded; freeing during a reschedule and the kernel's per-block header accounting are not modeled",
     },
+    "h_MaxFreeMemSize": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MODULE-START-001: after the module_start thread's 0x40000-byte stack is freed, sceKernelMaxFreeMemSize does not change, because the stack of the thread module_start created sits directly below the freed range)",
+            "tests/native/hle_thread_selftest.c:test_partition_ends_at_lowest_live_stack",
+            "tests/native/hle_thread_selftest.c:test_max_free_unchanged_after_top_stack_deleted",
+            "tests/native/hle_thread_selftest.c:test_partition_spans_the_whole_user_partition",
+        ],
+        "limitation": "the result is the larger of the span below the lowest live thread stack and the biggest freed block; only the unchanged-after-stack-free case is measured, so the absolute value at boot, the kernel's block-header and alignment accounting, and the value with several free blocks are not measured (#341)",
+    },
+    "h_GeSetCallback": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: sceGeSetCallback with a {NULL, NULL} struct returned ID 1 and queued no handler)",
+            "tests/native/hle_thread_selftest.c:test_ge_guest_sentinel",
+        ],
+        "limitation": "registration with null handlers returning an ID is captured on the PSP-3000 (the P1/P2 envelope is CAPTURED, not acceptance-eligible); the PSP returned 1 for the first registration it saw while this runtime hands out the lowest free ID from 0, the table size (16 here) and the full-table result are not measured, and a struct that is not readable returns the illegal-address code unmeasured (#341)",
+    },
+    "h_GeUnsetCallback": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: sceGeUnsetCallback of the ID that sceGeSetCallback returned gave 0)",
+            "tests/native/hle_thread_selftest.c:test_ge_guest_sentinel",
+        ],
+        "limitation": "unsetting a registered ID returning 0 is captured on the PSP-3000 (CAPTURED, not acceptance-eligible); this runtime also returns 0 for an unregistered or out-of-range ID, which no PSP cell records (#341)",
+    },
+    "h_LockLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells: an owner's unlock hands ownership directly to the waiter; a self-held non-recursive timed Lock fails immediately with 0x800201CF)",
+            "tests/native/hle_thread_selftest.c:test_lwmutex_hardware_codes",
+            "tests/native/hle_thread_selftest.c:test_b23_second_round",
+        ],
+        "limitation": "uncontended and recursive acquisition, blocking until the owner's hand-off, the self-held non-recursive refusal and the timeout code follow the recorded cells; invalid workareas, a count of 0 or below, an unwritable timeout pointer, callback delivery during the wait, interrupt context and several-waiter ordering are not measured (#341)",
+    },
     "h_CpuSuspendIntr": {
         "status": "partial",
         "evidence": [
@@ -2269,17 +2304,13 @@ WAIVERS = ()
 # Never add an entry to make that gate pass: review the handler instead.
 PROFILE_ZERO_ISSUE = "https://github.com/Jstar269/nakagawa-recomp/issues/341"
 PROFILE_ZERO_UNREVIEWED_IMPORTS = {
-    0x05DB22CE: {"name": "sceGeUnsetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeUnsetCallback
     0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
     0x13F592BC: {"name": "sceAudioOutputPannedBlocking", "issue": PROFILE_ZERO_ISSUE},  # h_AudioOutputPannedBlocking
     0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
     0x293B45B8: {"name": "sceKernelGetThreadId", "issue": PROFILE_ZERO_ISSUE},  # h_GetThreadIdSched
     0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
-    0xA291F107: {"name": "sceKernelMaxFreeMemSize", "issue": PROFILE_ZERO_ISSUE},  # h_MaxFreeMemSize
-    0xA4FC06A4: {"name": "sceGeSetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeSetCallback
     0xA6BAB2E9: {"name": "sceKernelStdout", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
     0xACE946E8: {"name": "sceIoGetstat", "issue": PROFILE_ZERO_ISSUE},  # h_IoGetstat
-    0xBEA46419: {"name": "sceKernelLockLwMutex", "issue": PROFILE_ZERO_ISSUE},  # h_LockLwMutex
     0xD675EBB8: {"name": "sceKernelSelfStopUnloadModule", "issue": PROFILE_ZERO_ISSUE},  # h_SelfStopUnloadModule
     0xE0D68148: {"name": "sceGeListUpdateStallAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GeListUpdateStallAddr
     0xE3EB004C: {"name": "sceIoDread", "issue": PROFILE_ZERO_ISSUE},  # h_IoDread
