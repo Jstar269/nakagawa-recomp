@@ -1970,7 +1970,7 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
             )
             self.assertNotIn("github.event_name", "\n".join(cast(list[str], _ci_step(native_tools, single))))
         # The Makefile target is bounded by one variable and reports the failing iteration.
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        makefile = read_makefile(ROOT)
         self.assertIn("SELFTEST_REPEAT ?= 20", makefile)
         start = makefile.index("\nselftest-repeat:")
         exes = makefile[makefile.index("SELFTEST_REPEAT_EXES ="):start]
