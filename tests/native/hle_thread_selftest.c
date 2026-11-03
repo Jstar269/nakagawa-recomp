@@ -3320,6 +3320,21 @@ static void test_io_enhancement_data_file(void) {
     cpu.r[4] = fd;
     (void)sr_hle_test_io_close(&cpu);
 
+    /* A title that reads a registered file some other way (raw UMD sectors, its own archive
+     * reader) never opens its path, so the end-of-run report names it. This binary reaches
+     * sr_compat_report nowhere else, and it prints once per process. */
+    static const uint8_t unused[] = "c,4\n";
+    expect(sr_enhancement_file_register("NKENH/Unused.csv", digest, unused,
+                                        (uint32_t)(sizeof(unused) - 1u)) == 1,
+           "enhancement data file: a second disc path registers");
+    rt_capture_begin();
+    sr_compat_report();
+    const char *report = rt_capture_end();
+    expect(strstr(report, "ENHANCEMENT_DATA_NOT_SERVED: nkenh/unused.csv was never opened by path") != NULL &&
+           strstr(report, "nkenh/timing.csv was never") == NULL &&
+           strstr(report, "ENHANCEMENT_DATA_REPORT: served=1/2") != NULL,
+           "enhancement data file: the end-of-run report names a file that was never served");
+
     sr_hle_test_enhancement_files_reset();
     expect(sr_enhancement_file_register("NKENH/TIMING.CSV", wrong, rewritten,
                                         (uint32_t)(sizeof(rewritten) - 1u)) == 1,

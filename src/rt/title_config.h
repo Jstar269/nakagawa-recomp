@@ -132,4 +132,9 @@ int sr_compat_fired_at(unsigned index, char *id, unsigned id_size, unsigned long
  * per process however many exit paths reach it. */
 void sr_compat_report(void);
 
+/* Adds a report that sr_compat_report prints after its own, so a part of the runtime that is
+ * not linked into every binary can report at every exit without this file calling it. Adding
+ * the same function again does nothing. */
+void sr_compat_report_also(void (*report)(void));
+
 #endif /* SR_TITLE_CONFIG_H */
