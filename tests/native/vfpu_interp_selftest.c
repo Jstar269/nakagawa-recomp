@@ -2689,6 +2689,37 @@ static int check_vf_nan_rule(void) {
     return bad;
 }
 
+/* vlog2's interpolation knots (src/rt/recomp.c sr_log2_approx, issue #326). sr_vfpu_log2's
+ * upper knot (i+64)&~63 reaches the end point 0x800000 for mantissas from 0x7FFFC0 up, FLT_MAX
+ * among them, where the old code also read the entry after the 129-entry table and the entry
+ * after the 128-entry quadratic one. Both carry zero weight there, so only the ASan/UBSan build
+ * (and the alias-edge sweep's FLT_MAX lanes in it) saw the fault; this pins the knot value. */
+static int check_log2_top_knot(void) {
+    int bad = 0;
+    for (uint32_t k = 0; k <= 128u; k++)
+        if (sr_log2_approx(k << 16) != sr_log2_lut65536[k]) {
+            fprintf(stderr, "FAIL: sr_log2_approx(0x%06x) != knot entry %u\n", k << 16, k);
+            bad = 1;
+        }
+    for (uint32_t e = 0x3f800000u; e <= 0x7f000000u; e += 0x3f800000u) {
+        float prev = -INFINITY;
+        for (uint32_t m = 0x7fff80u; m <= 0x7fffffu; m++) {
+            const uint32_t bits = e | m;
+            float x, r;
+            memcpy(&x, &bits, 4);
+            r = sr_vfpu_log2(x);
+            const float hi = (float)((int32_t)(e >> 23) - 126);
+            if (!(r >= prev && r <= hi)) {
+                fprintf(stderr, "FAIL: vlog2(0x%08x) = %a, not in [%a, %a]\n", bits, r, prev, hi);
+                bad = 1;
+            }
+            prev = r;
+        }
+    }
+    CHECK(!bad, "vlog2 knots: the end point 0x800000 is the last table entry; vlog2 rises to the next binade");
+    return bad;
+}
+
 /* One sweep state through one AOT body (the production one, or the mutant) and the
  * interpreter. Returns 1 and fills where[] when the two lanes disagree. */
 static int sweep_one(int c, int mutant, CpuState *s0, char *where, size_t n) {
@@ -2790,6 +2821,7 @@ int main(void) {
     bad |= check_vhdp_signed_zero_corpus();
     bad |= check_vf2i_conversions();
     bad |= check_vf_nan_rule();
+    bad |= check_log2_top_knot();
     bad |= check_alias_edge_sweep();
     bad |= g_failures != 0;
     if (bad == 0) {
