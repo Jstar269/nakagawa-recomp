@@ -42,6 +42,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 import prx_reloc_model
+import analyze as analyzer
 from analyze import Elf, analyze, exec_ranges, in_ranges
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -526,8 +527,137 @@ class RuntimeModuleBoundaries(unittest.TestCase):
         self.assertNotIn(leaf, plain)
         self.assertEqual(hinted - plain, {leaf})
 
+    def test_fixed_overlay_elf_is_identified_by_its_translated_code(self):
+        # An ELF type 0xFFA8 overlay is one segment of mixed code and data. It translates
+        # at its link address, and its identity is the translated words of the functions
+        # that open a stack frame, so a change to its data keeps the identity and a
+        # change to its code does not.
+        data, first, second, data_word = basic_fixed_overlay()
+        path = self.root / "OVL_STAGE.ELF"
+        path.write_bytes(data)
+        with contextlib.redirect_stderr(io.StringIO()):
+            module = codegen.translate_runtime_module(0, str(path))
+        self.assertIsNone(module.unsupported_reason)
+        self.assertEqual((module.link_low, module.link_high, module.relocatable),
+                         (OVERLAY_LINK, OVERLAY_LINK + len(FIXED_OVERLAY_SEGMENT), False))
+        counts = dict(module.functions)
+        self.assertLessEqual({first, second}, set(counts))
+        self.assertEqual(module.overlay_check_spans,
+                         ((first, first + 4 * counts[first]),
+                          (second, second + 4 * counts[second])))
+        self.assertTrue(all(lo >= second or hi <= data_word
+                            for lo, hi in module.overlay_check_spans))
+        segment = FIXED_OVERLAY_SEGMENT
+        words = b"".join(segment[lo - OVERLAY_LINK:hi - OVERLAY_LINK]
+                         for lo, hi in module.overlay_check_spans)
+        self.assertEqual(module.overlay_check_len, len(words))
+        self.assertEqual(module.overlay_check_fnv1a64, codegen.fnv1a64(words))
+        descriptor = "\n".join(codegen.runtime_module_descriptor_lines(module))
+        self.assertIn(f"0x{module.overlay_check_len:08x}u, "
+                      f"0x{module.overlay_check_fnv1a64:016x}ull,", descriptor)
+        self.assertIn(f"    {{ 0x{second:08x}u, 0x{second + 4 * counts[second]:08x}u }},",
+                      descriptor)
+        self.assertIn("NULL, 0u, sr_m0_check_spans, 2u\n};", descriptor)
+
+        def identity(edit_at, word):
+            changed = bytearray(data)
+            struct.pack_into("<I", changed, 0x54 + edit_at - OVERLAY_LINK, word)
+            path.write_bytes(changed)
+            with contextlib.redirect_stderr(io.StringIO()):
+                other = codegen.translate_runtime_module(0, str(path))
+            return other.overlay_check_len, other.overlay_check_fnv1a64
+
+        own = (module.overlay_check_len, module.overlay_check_fnv1a64)
+        self.assertEqual(identity(data_word, 0x13572468), own, "data is not identity")
+        self.assertNotEqual(identity(second + 4, 0x2402000B), own, "code is identity")
+
+    def test_an_mwo3_overlay_descriptor_has_no_function_check(self):
+        data, _entry, _ctor, _memsz = basic_code_overlay()
+        path = self.root / "Title.ovl"
+        path.write_bytes(data)
+        with contextlib.redirect_stderr(io.StringIO()):
+            module = codegen.translate_runtime_module(0, str(path))
+        self.assertEqual(module.overlay_check_spans, ())
+        self.assertTrue("\n".join(codegen.runtime_module_descriptor_lines(module))
+                        .endswith("    NULL, 0u, NULL, 0u\n};\n"))
+
+    def test_fixed_overlay_header_rules_refuse_every_other_shape(self):
+        # Only one non-empty PT_LOAD, word aligned and inside the file and the 32-bit address
+        # space, of a MIPS image with no entry point, is a fixed-address ELF overlay.
+        data, _first, _second, _data_word = basic_fixed_overlay()
+        self.assertEqual(analyzer.fixed_overlay_segment(data),
+                         (OVERLAY_LINK, 0x54, len(FIXED_OVERLAY_SEGMENT), len(FIXED_OVERLAY_SEGMENT)))
+        self.assertTrue(analyzer.is_code_overlay(data[:18]))
+        self.assertFalse(analyzer.is_fixed_overlay(data[:17]), "a header too short to hold the type")
+        self.assertFalse(analyzer.is_fixed_overlay(data[:16] + struct.pack("<H", 0xFFA0)))
+
+        def patched(fmt, offset, value):
+            out = bytearray(data)
+            struct.pack_into(fmt, out, offset, value)
+            return bytes(out)
+
+        refused = {
+            "not MIPS": patched("<H", 18, 3),
+            "names an entry point": patched("<I", 24, OVERLAY_LINK),
+            "exactly one program header": patched("<H", 44, 2),
+            "entry size": patched("<H", 42, 40),
+            "not PT_LOAD": patched("<I", 52, 4),
+            "empty": patched("<I", 52 + 16, 0),
+            "memsz below filesz": patched("<I", 52 + 20, 4),
+            "unaligned": patched("<I", 52 + 8, OVERLAY_LINK + 2),
+            "past the file": patched("<I", 52 + 4, len(data)),
+            "past 4 GiB": patched("<I", 52 + 8, 0xFFFFFFF0),
+            "truncated header": data[:40],
+        }
+        for case, image in refused.items():
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                analyzer.check_code_overlay(image)
+
+    def test_a_malformed_fixed_overlay_elf_gets_a_named_descriptor(self):
+        data, _first, _second, _data_word = basic_fixed_overlay()
+        path = self.root / "OVL_BAD.ELF"
+        path.write_bytes(data[:24] + struct.pack("<I", OVERLAY_LINK) + data[28:])
+        out = self.root / "out" / "g_recomp.c"
+        out.parent.mkdir()
+        status, _out, err = run_codegen([
+            str(self.main), str(out), "--base=0x08940000", f"--extra-elf={path}@runtime"])
+        self.assertEqual(status, 0, err)
+        self.assertRegex(out.read_text(encoding="ascii"),
+                         r'"code overlay cannot be translated: ELF overlay is not MIPS, '
+                         r'or names an entry point"')
+
 
 OVERLAY_LINK = 0x08C00000
+
+# One segment holding a function, two data words, then a second function: the layout of
+# an ELF type 0xFFA8 overlay, whose single section mixes code and data.
+FIXED_OVERLAY_SEGMENT = b"".join(struct.pack("<I", w) for w in [
+    0x27BDFFF0, 0x03E00008, 0x27BD0010, 0x00000000,   # addiu sp,-16; jr ra; addiu sp,16
+    0x41544144, 0x08C00000,                           # data: "DATA", a pointer
+    0x27BDFFF0, 0x24020009, 0x03E00008, 0x27BD0010,   # addiu sp,-16; li v0,9; jr ra; addiu sp,16
+])
+
+
+def basic_fixed_overlay():
+    """An ELF type 0xFFA8 overlay of FIXED_OVERLAY_SEGMENT at OVERLAY_LINK, its one section
+    named for the overlay. Returns (bytes, first function, second function, data word)."""
+    segment = FIXED_OVERLAY_SEGMENT
+    names = b"\0.ovl_stage\0.shstrtab\0"
+    seg_off = 0x54
+    names_off = seg_off + len(segment)
+    shoff = (names_off + len(names) + 3) & ~3
+    out = bytearray(shoff + 40 * 3)
+    out[:16] = b"\x7fELF\x01\x01\x01" + bytes(9)
+    struct.pack_into("<HHIIIIIHHHHHH", out, 16, 0xFFA8, 8, 1, 0, 52, shoff, 0x10A23001,
+                     52, 32, 1, 40, 3, 2)
+    struct.pack_into("<8I", out, 52, 1, seg_off, OVERLAY_LINK, OVERLAY_LINK,
+                     len(segment), len(segment), 7, 4)
+    out[seg_off:names_off] = segment
+    out[names_off:names_off + len(names)] = names
+    struct.pack_into("<10I", out, shoff + 40, 1, 1, 7, OVERLAY_LINK, seg_off, len(segment),
+                     0, 0, 4, 0)
+    struct.pack_into("<10I", out, shoff + 80, 12, 3, 0, 0, names_off, len(names), 0, 0, 1, 0)
+    return bytes(out), OVERLAY_LINK, OVERLAY_LINK + 0x18, OVERLAY_LINK + 0x10
 
 
 def basic_code_overlay():

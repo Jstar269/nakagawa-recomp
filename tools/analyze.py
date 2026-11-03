@@ -281,13 +281,61 @@ def data_section_words(elf):
     return words
 
 
+# Fixed-address ELF overlays: ELF type 0xFFA8, a single PT_LOAD at its link address, no
+# entry point and no module information. The game copies the segment into place itself
+# and calls into it through pointers the executable holds; the kernel never loads it. One
+# section covers the whole segment, so its code and its data are not told apart by the
+# file: the analysis finds the code by control flow from the executable's pointers.
+FIXED_OVERLAY_ELF_TYPE = 0xFFA8
+FIXED_OVERLAY_HEADER_BYTES = 52
+
+
+def is_fixed_overlay(data):
+    """Whether a file's header (at least its first 18 bytes) names a fixed-address ELF overlay."""
+    head = bytes(data[:18])
+    return (len(head) == 18 and head[:6] == b"\x7fELF\x01\x01"
+            and struct.unpack_from("<H", head, 16)[0] == FIXED_OVERLAY_ELF_TYPE)
+
+
+def fixed_overlay_segment(data):
+    """Validate a fixed-address ELF overlay; return (load, file offset, filesz, memsz).
+
+    ValueError if malformed."""
+    if not is_fixed_overlay(data):
+        raise ValueError("not an ELF type 0xFFA8 overlay")
+    if len(data) < FIXED_OVERLAY_HEADER_BYTES:
+        raise ValueError("ELF overlay is shorter than its header")
+    machine, _version, entry, phoff = struct.unpack_from("<HIII", data, 18)
+    phentsize, phnum = struct.unpack_from("<HH", data, 42)
+    if machine != 8 or entry != 0:
+        raise ValueError("ELF overlay is not MIPS, or names an entry point")
+    if phentsize != 32 or phnum != 1 or phoff + 32 > len(data):
+        raise ValueError("ELF overlay does not have exactly one program header")
+    p_type, offset, load, _paddr, filesz, memsz = struct.unpack_from("<6I", data, phoff)
+    if p_type != 1 or filesz == 0 or memsz < filesz:
+        raise ValueError("ELF overlay's program header is not one non-empty PT_LOAD")
+    if load & 3 or offset + filesz > len(data) or load + memsz > 0x100000000:
+        raise ValueError("ELF overlay's segment is unaligned or lies outside the file "
+                         "or the 32-bit address space")
+    return load, offset, filesz, memsz
+
+
 def is_code_overlay(data):
-    return bytes(data[:4]) == CODE_OVERLAY_MAGIC
+    """Whether a file is a code overlay of either form (MWo3, or ELF type 0xFFA8)."""
+    return bytes(data[:4]) == CODE_OVERLAY_MAGIC or is_fixed_overlay(data)
+
+
+def check_code_overlay(data):
+    """Validate a code overlay of either form; ValueError if malformed."""
+    if is_fixed_overlay(data):
+        fixed_overlay_segment(data)
+    else:
+        code_overlay_layout(data)
 
 
 def code_overlay_layout(data):
     """Validate an MWo3 code overlay and return its CodeOverlayLayout; ValueError if malformed."""
-    if not is_code_overlay(data):
+    if bytes(data[:4]) != CODE_OVERLAY_MAGIC:
         raise ValueError("not an MWo3 code overlay")
     if len(data) < CODE_OVERLAY_HEADER_BYTES:
         raise ValueError("MWo3 overlay is shorter than its header")
@@ -310,36 +358,57 @@ def code_overlay_elf(data):
     One PT_LOAD maps the whole file at its load address (bss included), and the sections
     name the text, data, init array and bss, so the analysis treats the overlay exactly as
     it treats a fixed-address module: the text is the only code, and the init array and
-    data pointer tables seed functions. Nothing is relocated."""
+    data pointer tables seed functions. Nothing is relocated.
+
+    A fixed-address ELF overlay (ELF type 0xFFA8) becomes the same kind of image, with its
+    one segment named .text: nothing in the file separates its code from its data, so the
+    analysis finds the code by control flow from the pointers the executable holds."""
+    if is_fixed_overlay(data):
+        load, offset, filesz, memsz = fixed_overlay_segment(data)
+        segment = bytes(data[offset:offset + filesz])
+        sections = [(b".text", 1, 0x6, load, 0, filesz)]
+        if memsz > filesz:
+            sections.append((b".bss", 8, 0x3, load + filesz, None, memsz - filesz))
+        return _fixed_address_elf(load, segment, memsz, sections)
     layout = code_overlay_layout(data)
+    sections = [(b".text", 1, 0x6, layout.text_lo, CODE_OVERLAY_HEADER_BYTES, layout.text_size)]
+    if layout.data_size:
+        sections.append((b".data", 1, 0x3, layout.data_lo, layout.data_lo - layout.load,
+                         layout.data_size))
+    if layout.init_hi > layout.init_lo:
+        sections.append((b".init_array", 14, 0x3, layout.init_lo, layout.init_lo - layout.load,
+                         layout.init_hi - layout.init_lo))
+    if layout.bss_size:
+        sections.append((b".bss", 8, 0x3, layout.file_end, None, layout.bss_size))
+    return _fixed_address_elf(layout.load, data, len(data) + layout.bss_size, sections)
+
+
+def _fixed_address_elf(load, image, memsz, sections):
+    """An ELF32 executable that maps ``image`` at ``load`` (one PT_LOAD of ``memsz`` bytes).
+
+    ``sections`` are (name, type, flags, address, offset in ``image`` or None, size); the
+    names are among .text, .data, .init_array and .bss."""
     names = b"\0.text\0.data\0.init_array\0.bss\0.shstrtab\0"
     image_off = 0x60                                    # header (52) + one phdr (32), aligned
-    names_off = image_off + len(data)
+    names_off = image_off + len(image)
     shoff = (names_off + len(names) + 3) & ~3
 
     def name_at(text):
         return names.index(text + b"\0")
 
-    sections = [(0, 0, 0, 0, 0, 0)]
-    sections.append((name_at(b".text"), 1, 0x6, layout.text_lo,
-                     image_off + CODE_OVERLAY_HEADER_BYTES, layout.text_size))
-    if layout.data_size:
-        sections.append((name_at(b".data"), 1, 0x3, layout.data_lo,
-                         image_off + layout.data_lo - layout.load, layout.data_size))
-    if layout.init_hi > layout.init_lo:
-        sections.append((name_at(b".init_array"), 14, 0x3, layout.init_lo,
-                         image_off + layout.init_lo - layout.load, layout.init_hi - layout.init_lo))
-    if layout.bss_size:
-        sections.append((name_at(b".bss"), 8, 0x3, layout.file_end, names_off, layout.bss_size))
-    sections.append((name_at(b".shstrtab"), 3, 0, 0, names_off, len(names)))
+    table = [(0, 0, 0, 0, 0, 0)]
+    for name, typ, flags, addr, offset, size in sections:
+        table.append((name_at(name), typ, flags, addr,
+                      names_off if offset is None else image_off + offset, size))
+    table.append((name_at(b".shstrtab"), 3, 0, 0, names_off, len(names)))
+    sections = table
 
     out = bytearray(shoff + 40 * len(sections))
     out[:16] = b"\x7fELF\x01\x01\x01" + bytes(9)
     struct.pack_into("<HHIIIIIHHHHHH", out, 16, 2, 8, 1, 0, 52, shoff, 0,
                      52, 32, 1, 40, len(sections), len(sections) - 1)
-    struct.pack_into("<8I", out, 52, 1, image_off, layout.load, 0, len(data),
-                     len(data) + layout.bss_size, 7, 4)
-    out[image_off:image_off + len(data)] = data
+    struct.pack_into("<8I", out, 52, 1, image_off, load, 0, len(image), memsz, 7, 4)
+    out[image_off:image_off + len(image)] = image
     out[names_off:names_off + len(names)] = names
     for index, (name, typ, flags, addr, off, size) in enumerate(sections):
         struct.pack_into("<10I", out, shoff + 40 * index, name, typ, flags, addr, off, size,
@@ -2289,11 +2358,30 @@ def _owned_spans(d):
     return merged_ranges
 
 
+def _keep_prologue_seeds(d):
+    """Drop every weak seed but a stack-frame prologue (`addiu sp, sp, -n`).
+
+    In an image whose code section also holds its data (a fixed-address ELF overlay), the
+    word after a return or a jump is as likely data as a function, and a trace started
+    there runs through the data and can swallow the next real function's prologue. A
+    prologue word is rare in data, so it stays a seed; code no seed reaches is still
+    inside the executable span and runs under the interpreter."""
+    def is_prologue(address):
+        word = d.elf.read_at_vaddr(address, 4)
+        return (word is not None and len(word) == 4
+                and (int.from_bytes(word, "little") >> 16) == 0x27BD
+                and int.from_bytes(word, "little") & 0x8000)
+    d.noisy = {a for a in d.noisy if is_prologue(a)}
+    d.jtails = {a for a in d.jtails if is_prologue(a)}
+
+
 def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
-            entry_hints=None):
+            entry_hints=None, mixed_code_data=False):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
     # `entry_hints` are code pointers another image holds into this one (data_section_words).
+    # `mixed_code_data` names an image whose code section also holds its data
+    # (_keep_prologue_seeds).
     # `report`, when a dict, receives the discovery state the import-stub census reads:
     # covered (every traced instruction address), calls (every direct-call target seen),
     # and hc (the high-confidence seeds). The return value is unchanged.
@@ -2304,6 +2392,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     _seed_import_stubs(d)
     _seed_function_pointer_tables(d, entry_hints)
     _seed_address_materializations(d)
+    if mixed_code_data:
+        _keep_prologue_seeds(d)
 
     # Trace each function's extent from the high-confidence seeds, following discovered calls.
     d.functions = set(d.hc)

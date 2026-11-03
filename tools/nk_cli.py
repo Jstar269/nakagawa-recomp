@@ -98,7 +98,7 @@ from nk_core.iso_inspect import (  # noqa: E402
 )
 import title_manifest  # noqa: E402
 from psp_import_table import MODULE_ATTR_KERNEL as PSP_MODULE_ATTR_KERNEL  # noqa: E402
-from analyze import code_overlay_layout, is_code_overlay  # noqa: E402
+from analyze import check_code_overlay, is_code_overlay  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -538,24 +538,13 @@ def _source_media_identity(iso_path: Path, selected: str,
     }
 
 
-#: ELF type of a fixed-address overlay image: one loadable segment at its link address,
-#: no entry point and no module information. The game copies it into place itself.
-ELF_TYPE_FIXED_OVERLAY = 0xFFA8
-
-
 def _unusable_elf_module_reason(stream, file_size: int, entry: IsoDirectoryEntry) -> str:
-    """Name the shared PSP layout rule an ELF32/MIPS module candidate breaks."""
+    """Name the shared PSP layout rule an ELF32/MIPS module candidate breaks.
+
+    (An ELF type 0xFFA8 overlay never gets here: discovery takes it as a code overlay.)"""
     rule = _elf32_mips_iso_violation(
         stream, file_size, entry.lba, entry.size, module=True
     )
-    if rule == "header-fields":
-        header = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 52)
-        if struct.unpack_from("<H", header, 16)[0] == ELF_TYPE_FIXED_OVERLAY:
-            return (
-                "its ELF type 0xFFA8 is a fixed-address overlay image (one segment at its "
-                "link address, no entry point, no module information) that the game copies "
-                "into place itself; the import does not translate that overlay form yet"
-            )
     return f"its ELF32/MIPS image breaks the PSP layout rule {rule or 'unknown'}"
 
 
@@ -590,14 +579,16 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     host_names = disc_module_host_names(walked)
     for directory, entry in walked:
         host_name = host_names[directory + (entry.name,)]
+        # A code overlay is found by its header whatever its name: the MWo3 magic, or an
+        # ELF type 0xFFA8 image (analyze.check_code_overlay). Any other file that is not a
+        # .prx or .elf is no candidate.
+        overlay = _iso_code_overlay_candidate(
+            iso_path, file_size, directory, entry, host_name
+        )
+        if overlay is not None:
+            candidates.append(overlay)
+            continue
         if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
-            # Any other file is a candidate only when it is a code overlay, found by
-            # its magic whatever its name (analyze.code_overlay_layout).
-            overlay = _iso_code_overlay_candidate(
-                iso_path, file_size, directory, entry, host_name
-            )
-            if overlay is not None:
-                candidates.append(overlay)
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
@@ -718,7 +709,8 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
     if entry.multi_extent or entry.size < 4 or entry.size > MAX_GUEST_MODULE_BYTES:
         return None
     with iso_path.open("rb") as stream:
-        if not is_code_overlay(_read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 4)):
+        head = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, min(entry.size, 18))
+        if not is_code_overlay(head):
             return None
         data = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, entry.size)
     name = host_name or entry.name
@@ -730,7 +722,7 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
                         "has no manifest spelling")
     else:
         try:
-            code_overlay_layout(data)
+            check_code_overlay(data)
         except ValueError as exc:
             kind, reason = "unsupported", f"its code-overlay header is malformed ({exc})"
     return {"name": name, "directory": directory, "entry": entry,
@@ -1233,7 +1225,7 @@ def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) ->
     data = path.read_bytes()
     if is_code_overlay(data):
         try:
-            code_overlay_layout(data)
+            check_code_overlay(data)
             return
         except ValueError:
             pass

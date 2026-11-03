@@ -401,22 +401,43 @@ RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image) {
     return lo < code->nfuncs && code->funcs[lo].offset == link_pc ? code->funcs[lo].fn : NULL;
 }
 
-/* Whether guest memory holds a code overlay's identifying bytes at its link address. The
- * length is whole words (a header of 0x40 bytes plus word-aligned text). */
-static int overlay_resident(const SrModuleCode *code) {
-    uint64_t end = (uint64_t)code->link_low + code->overlay_check_len;
-    if ((code->overlay_check_len & 3u) != 0u || end > code->link_high ||
-        !sr_guest_span_readable_current(code->link_low, code->overlay_check_len))
-        return 0;
-    uint64_t h = 0xcbf29ce484222325ull;
-    for (uint32_t off = 0; off < code->overlay_check_len; off += 4u) {
-        uint32_t word = sr_r32(code->link_low + off);
+static uint64_t overlay_hash_words(uint64_t h, uint32_t address, uint32_t nwords) {
+    for (uint32_t i = 0; i < nwords; i++) {
+        uint32_t word = sr_r32(address + 4u * i);
         for (unsigned b = 0; b < 4u; b++) {
             h ^= (word >> (8u * b)) & 0xffu;
             h *= 0x100000001b3ull;
         }
     }
-    return h == code->overlay_check_fnv1a64;
+    return h;
+}
+
+/* Whether guest memory holds the words of a code overlay's check ranges
+ * (overlay_check_spans), which add up to overlay_check_len bytes. */
+static int overlay_spans_resident(const SrModuleCode *code) {
+    uint64_t total = 0, h = 0xcbf29ce484222325ull;
+    for (uint32_t i = 0; i < code->noverlay_check_spans; i++) {
+        const SrModuleSpan *span = &code->overlay_check_spans[i];
+        if (span->end <= span->start || ((span->start | span->end) & 3u) != 0u ||
+            span->start < code->link_low || span->end > code->link_high ||
+            !sr_guest_span_readable_current(span->start, span->end - span->start))
+            return 0;
+        h = overlay_hash_words(h, span->start, (span->end - span->start) / 4u);
+        total += span->end - span->start;
+    }
+    return total != 0u && total == code->overlay_check_len && h == code->overlay_check_fnv1a64;
+}
+
+/* Whether guest memory holds a code overlay's identifying bytes at its link address. The
+ * length is whole words (a header of 0x40 bytes plus word-aligned text). */
+static int overlay_resident(const SrModuleCode *code) {
+    if (code->overlay_check_spans) return overlay_spans_resident(code);
+    uint64_t end = (uint64_t)code->link_low + code->overlay_check_len;
+    if ((code->overlay_check_len & 3u) != 0u || end > code->link_high ||
+        !sr_guest_span_readable_current(code->link_low, code->overlay_check_len))
+        return 0;
+    return overlay_hash_words(0xcbf29ce484222325ull, code->link_low,
+                              code->overlay_check_len / 4u) == code->overlay_check_fnv1a64;
 }
 
 uint32_t sr_module_code_sync_overlays(uint32_t lo, uint32_t hi) {

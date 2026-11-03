@@ -1273,8 +1273,8 @@ typedef struct SrModuleCode {
     uint32_t nfuncs;
     const SrModuleSpan *spans;
     uint32_t nspans;
-    /* Non-zero: a code overlay the game copies into memory itself (tools/analyze.py,
-     * MWo3). It is bound, at its link address, when the guest invalidates the instruction
+    /* Non-zero: a code overlay the game copies into memory itself (tools/analyze.py: MWo3,
+     * or ELF type 0xFFA8). It is bound, at its link address, when the guest invalidates the instruction
      * cache over it and these leading bytes of the file (header and text) are in memory,
      * and unbound when they no longer are. sceKernelLoadModule never binds it. */
     uint32_t overlay_check_len;
@@ -1282,6 +1282,12 @@ typedef struct SrModuleCode {
     /* The variables the module imports, linked when it loads and its exporter is loaded. */
     const SrVarImport *var_imports;
     uint32_t nvar_imports;
+    /* Non-NULL: the overlay check covers these link ranges, in order (overlay_check_len
+     * bytes in all), instead of the leading bytes. A fixed-address ELF overlay (ELF type
+     * 0xFFA8) mixes code and data in one segment, so only its translated code identifies
+     * it (tools/codegen.py fixed_overlay_check_spans). */
+    const SrModuleSpan *overlay_check_spans;
+    uint32_t noverlay_check_spans;
 } SrModuleCode;
 
 typedef enum SrModuleBindResult {
