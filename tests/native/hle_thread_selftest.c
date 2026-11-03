@@ -3893,6 +3893,56 @@ static void test_fd_namespace(void) {
                    fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
                "TRUNC without PSP_O_CREAT truncates the existing file");
         remove(flags_host);
+
+        /* PSP_O_TRUNC, measured on a PSP-3000 (#1892): the file is empty from the open on, but
+         * a write past the end brings back the old bytes below it, which is how a game installs
+         * a file in chunks, and the file ends at that write. */
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0602u;
+        uint32_t chunk_fd = sr_hle_test_io_open(&cpu);
+        fd_guest_copy(payload_addr, "abcdefgh", 8u);
+        fd_set_write(&cpu, chunk_fd, payload_addr, 8u);
+        expect(sr_hle_test_io_write(&cpu) == 8u, "TRUNC fixture writes its first chunk");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        (void)sr_hle_test_io_close(&cpu);
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0603u; /* RDWR | CREAT | TRUNC */
+        chunk_fd = sr_hle_test_io_open(&cpu);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        cpu.r[5] = 0u;
+        cpu.r[6] = 2u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 0u, "a TRUNC descriptor sees an empty file");
+        expect(fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
+               "a TRUNC open leaves the host file empty, whatever happens before close");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        cpu.r[5] = 4u;
+        cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 4u, "TRUNC fixture seeks to its second chunk");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        cpu.r[5] = payload_addr;
+        cpu.r[6] = 2u;
+        expect(sr_hle_test_io_read(&cpu) == 0u, "a read past the TRUNC end returns nothing");
+        fd_guest_copy(payload_addr, "WX", 2u);
+        fd_set_write(&cpu, chunk_fd, payload_addr, 2u);
+        expect(sr_hle_test_io_write(&cpu) == 2u, "TRUNC fixture writes its second chunk");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"abcdWX", 6u),
+               "a write past the TRUNC end brings back the bytes below it and ends the file");
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0602u;
+        chunk_fd = sr_hle_test_io_open(&cpu);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
+               "TRUNC with no write ends at an empty file");
+        remove(flags_host);
     }
 
     /* DOS device names (join rule): create-open is not-found, matching the POSIX open
