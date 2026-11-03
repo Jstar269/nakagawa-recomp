@@ -221,6 +221,15 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
                 "retention": f"sqrtf(s->f[{r}])"}[rw["map"]]
         enh = (f"{stock_line.strip()} if (s->f[{r}] > 0.0f && s->f[{r}] < 1.0f) "
                f"{{ s->f[{r}] = {expr}; }}")
+    elif kind == "scale_v_reg":
+        v = vreg_indices(rw["vreg"], 1)[0]
+        enh = f"{stock_line.strip()} s->v[{v}] *= {rw['factor']!r}f;"
+    elif kind == "map_v_reg":
+        v = vreg_indices(rw["vreg"], 1)[0]
+        expr = {"decay": f"(float)(1.0 - sqrt(1.0 - (double)s->v[{v}]))",
+                "retention": f"sqrtf(s->v[{v}])"}[rw["map"]]
+        enh = (f"{stock_line.strip()} if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
+               f"{{ s->v[{v}] = {expr}; }}")
     elif kind == "scale_f_store":
         enh = _scaled_store_line(rw, stock_line)
     elif kind == "scale_f_addend":

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 from io import StringIO
 import json
 import math
@@ -1100,6 +1101,12 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                          {"kind": "map_f_reg", "reg": 3, "map": "decay"})
         self.assertEqual(plan("retention_m_to_sqrt(m)", 0xC4430010),
                          {"kind": "map_f_reg", "reg": 3, "map": "retention"})
+        self.assertEqual(plan("count_x2", 0xC8404F84),  # lv.s S000.s, 0x4f84(v0)
+                         {"kind": "scale_v_reg", "vreg": 0, "factor": 2.0})
+        self.assertEqual(plan("step_x0.5", 0xC8470011),  # lv.s S131.s (vt 7 | 1 << 5)
+                         {"kind": "scale_v_reg", "vreg": 39, "factor": 0.5})
+        self.assertEqual(plan("decay_k_to_1-sqrt(1-k)", 0xC844C410),  # lv.s S100.s, -0x3bf0(v0)
+                         {"kind": "map_v_reg", "vreg": 4, "map": "decay"})
         self.assertEqual(plan("gate_30hz", 0x0C000480), {"kind": "gate"})  # jal
         self.assertEqual(plan("count_x2", 0xC4430010), {"kind": "scale_f_reg", "reg": 3, "factor": 2.0})
         self.assertEqual(
@@ -1262,6 +1269,27 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             codegen.ENHANCEMENT_SITES = saved
             codegen.ENHANCEMENT_APPLIED.clear()
 
+    def test_vfpu_single_load_is_scaled_or_mapped_after_the_load(self) -> None:
+        """lv.s loads the VFPU register first; the rewrite then scales or maps that register."""
+        lvs = 0xC8470011  # lv.s S131.s, 0x10($v0): vt 7 | 1 << 5
+        v = codegen.vreg_indices(39, 1)[0]
+        saved = codegen.ENHANCEMENT_SITES
+        try:
+            for rewrite, expr in (({"kind": "scale_v_reg", "vreg": 39, "factor": 2.0}, f"s->v[{v}] *= 2.0f;"),
+                                  ({"kind": "map_v_reg", "vreg": 39, "map": "decay"},
+                                   f"if (s->v[{v}] > 0.0f && s->v[{v}] < 1.0f) "
+                                   f"{{ s->v[{v}] = (float)(1.0 - sqrt(1.0 - (double)s->v[{v}])); }}")):
+                with self.subTest(kind=rewrite["kind"]):
+                    codegen.ENHANCEMENT_SITES = {0x1300: {"rewrite": rewrite}}
+                    codegen.ENHANCEMENT_APPLIED.clear()
+                    enhanced, stock = codegen.normal_line(0x1300, lvs, lle_cpu=False).split("else", 1)
+                    self.assertIn(expr, enhanced)
+                    self.assertLess(enhanced.index(f"s->vi[{v}] = MEM_R32("), enhanced.index(expr))
+                    self.assertNotIn(f"s->v[{v}]", stock)
+        finally:
+            codegen.ENHANCEMENT_SITES = saved
+            codegen.ENHANCEMENT_APPLIED.clear()
+
     @unittest.skipUnless(GCC, "needs a host C compiler")
     def test_mapped_factor_values_match_the_lui_path(self) -> None:
         """Compile the emitted map and run it: each result is the f32 that the lui path's double
@@ -1271,16 +1299,19 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         ks = [2.0 ** -25, 1e-7, 1e-4, 0.2, 0.5, 0.75, 0.999, struct.unpack("<f", bytes.fromhex("ffff7f3f"))[0]]
         ks += [rng.random() for _ in range(2000)]
         ks = [struct.unpack("<f", struct.pack("<f", k))[0] for k in ks]
+        lvs = 0xC844C410  # lv.s S100.s, -0x3bf0($v0)
+        v4 = codegen.vreg_indices(4, 1)[0]
+        forms = (("map_f_reg", {"reg": 3}, lwc1, "s->f[3]"), ("map_v_reg", {"vreg": 4}, lvs, f"s->v[{v4}]"))
         saved = codegen.ENHANCEMENT_SITES
         try:
-            for kind in ("decay", "retention"):
-                with self.subTest(map=kind):
+            for (rkind, operand, word, cell), kind in itertools.product(forms, ("decay", "retention")):
+                with self.subTest(rewrite=rkind, map=kind):
                     codegen.ENHANCEMENT_SITES = {
-                        0x1300: {"rewrite": {"kind": "map_f_reg", "reg": 3, "map": kind}}
+                        0x1300: {"rewrite": {"kind": rkind, **operand, "map": kind}}
                     }
                     codegen.ENHANCEMENT_APPLIED.clear()
-                    enhanced = codegen.normal_line(0x1300, lwc1, lle_cpu=False).split("else", 1)[0]
-                    mapped = enhanced[enhanced.index("if (s->f[3] >"):].rsplit("}", 1)[0]
+                    enhanced = codegen.normal_line(0x1300, word, lle_cpu=False).split("else", 1)[0]
+                    mapped = enhanced[enhanced.index(f"if ({cell} >"):].rsplit("}", 1)[0]
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         tmp = Path(tmp_dir)
                         (tmp / "k.txt").write_text("\n".join(struct.pack("<f", k).hex() for k in ks),
@@ -1288,16 +1319,16 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                         harness = tmp / "map.c"
                         harness.write_text(
                             "#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n"
-                            "typedef struct { float f[32]; } S;\n"
+                            "typedef struct { float f[32]; float v[128]; } S;\n"
                             "int main(int argc, char **argv) {\n"
                             "    FILE *in = fopen(argv[1], \"r\"); char hex[16]; S st, *s = &st;\n"
                             "    if (!in) return 1;\n"
                             "    while (fscanf(in, \"%15s\", hex) == 1) {\n"
                             "        uint8_t b[4]; uint32_t bits;\n"
                             "        for (int i = 0; i < 4; i++) sscanf(hex + 2 * i, \"%2hhx\", &b[i]);\n"
-                            "        memcpy(&s->f[3], b, 4);\n"
+                            f"        memcpy(&{cell}, b, 4);\n"
                             f"        {mapped}\n"
-                            "        memcpy(&bits, &s->f[3], 4); printf(\"%08x\\n\", (unsigned)bits);\n"
+                            f"        memcpy(&bits, &{cell}, 4); printf(\"%08x\\n\", (unsigned)bits);\n"
                             "    }\n"
                             "    fclose(in); return 0;\n"
                             "}\n",
@@ -1305,7 +1336,7 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                         )
                         exe = tmp / "map.exe"
                         subprocess.run([GCC, "-std=c11", "-O2", "-Wall", "-Werror", "-o", str(exe), str(harness),
-                                        "-lm"], check=True, capture_output=True)
+                                        "-lm"], check=True, capture_output=True, text=True)
                         out = subprocess.run([str(exe), str(tmp / "k.txt")], check=True, capture_output=True,
                                              text=True).stdout.split()
                     for k, got in zip(ks, out, strict=True):
