@@ -1931,6 +1931,56 @@ static void wrap_state(uint32_t base, uint32_t stride) {
     s_ge->maxz = 65535;
 }
 
+/* The GE has no buffer height, so a title can stack short targets of one stride: the second base
+ * lies inside the 272 rows a target could span. A texture at that base is the second target, not
+ * rows of the first, whichever slot each took. */
+static int coherence_run_stacked_targets(void) {
+    const char *name = "stacked-targets";
+    const uint32_t stride = 256u, row = stride * 4u, rgb = 0x00FFFFFFu;
+    const uint32_t base_a = 0x04100000u, base_b = base_a + 100u * row, base_dst = 0x04000000u;
+    const uint32_t pixel = coherence_gbatch(3u) & rgb, dst_stride = 512u;
+    uint32_t *dst = (uint32_t *)SR_HOST(base_dst);
+    coherence_reset_targets();
+    memset(SR_HOST(base_a), 0, 372u * row);
+    memset(dst, 0, dst_stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base_a, 372u * row);
+    sr_gpu_vram_dirty(base_dst, dst_stride * FB_H * 4u);
+
+    /* Rows 10 to 19 of each: `a` is bound first, so it takes the lower slot. */
+    int ok = coherence_queue_g1_batch(base_a, stride, 3u);
+    ok = submit_pending() && ok;
+    ok = ok && coherence_queue_g1_batch(base_b, stride, 3u);
+    ok = submit_pending() && ok;
+    const Target *a = target_find_by_fba(base_a & 0x00FFFFFFu);
+    const Target *b = target_find_by_fba(base_b & 0x00FFFFFFu);
+    ok = ok && a && b && a < b;
+
+    wrap_state(base_dst, dst_stride);
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = base_b;
+    s_ge->tex_bufw = stride;
+    s_ge->tex_fmt = 3;
+    s_ge->tex_w = 256;
+    s_ge->tex_h = 256;
+    s_ge->tex_func = 3;      /* REPLACE: the framebuffer shows the texel */
+    s_ge->tex_filter = 0;    /* NEAREST */
+    ge_set_gpu_hooks(&k_hooks);
+    GeVtx p0, p1;
+    wrap_vtx(&p0, 10.0f, 10.0f, 0xFFFFFFFFu); p0.u = 10.0f; p0.v = 10.0f;
+    wrap_vtx(&p1, 20.0f, 20.0f, 0xFFFFFFFFu); p1.u = 20.0f; p1.v = 20.0f;
+    ok = ok && hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
+    const uint32_t got = dst[14u * dst_stride + 14u] & rgb;
+    if (!ok || got != pixel) {
+        fprintf(stderr, "gpu coherence selftest [%s]: sampled 0x%06x, want 0x%06x from the second "
+                        "target (ok=%d)\n", name, got, pixel, ok);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n", name, stride, s_scale);
+    coherence_reset_targets();
+    return 1;
+}
+
 /* Many one-pixel sprites per pass over the whole frame. Each pass rewrites every pixel,
  * so the final frame is the last pass, and every submit slot is reused many times. */
 static int coherence_run_ring_wrap(void) {
@@ -4403,6 +4453,7 @@ int gegpu_coherence_selftest(void) {
     /* Last: it rewrites ge.c's depth surface. */
     if (!coherence_run_scaled_upload()) ok = 0;
     if (!coherence_run_readback_rows()) ok = 0;
+    if (!coherence_run_stacked_targets()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
