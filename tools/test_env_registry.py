@@ -19,6 +19,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RT = ROOT / "src" / "rt"
+NATIVE_TESTS = ROOT / "tests" / "native"
 REGISTRY = RT / "env_registry.h"
 
 KINDS = {"flag-presence", "flag-nonzero", "number", "path", "string", "list", "system"}
@@ -53,6 +54,8 @@ def source_files():
         if path.suffix in SOURCE_SUFFIXES and not any(part in VENDORED for part in path.parts):
             if path != REGISTRY:
                 yield path
+    # The native self-tests moved out of src/rt (#1531) but are still runtime readers.
+    yield from sorted(NATIVE_TESTS.glob("*_selftest.c"))
 
 
 def covered(name, names, families):
@@ -71,7 +74,7 @@ class EnvRegistryTests(unittest.TestCase):
         cls.used = {}
         for path in source_files():
             text = path.read_text(encoding="utf-8", errors="replace")
-            rel = path.relative_to(RT).as_posix()
+            rel = path.relative_to(NATIVE_TESTS if NATIVE_TESTS in path.parents else RT).as_posix()
             for regex in (GETENV_RE, SR_LITERAL_RE):
                 for match in regex.finditer(text):
                     cls.used.setdefault(match.group(1), set()).add(rel)
@@ -127,7 +130,10 @@ class EnvRegistryTests(unittest.TestCase):
     def test_reading_files_exist(self):
         for entry in self.entries:
             for rel in entry["readers"].split(","):
-                self.assertTrue((RT / rel).is_file(), f"{entry['name']}: reader {rel} does not exist")
+                self.assertTrue(
+                    (RT / rel).is_file() or (NATIVE_TESTS / rel).is_file(),
+                    f"{entry['name']}: reader {rel} does not exist",
+                )
 
 
 if __name__ == "__main__":
