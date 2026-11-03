@@ -1562,9 +1562,9 @@ int main(int argc, char **argv) {{
              0x08804004, None),
             ("module-start-over-bootstart", build_module_start_elf(entry=0, exports=(
                 (MODULE_BOOTSTART_NID, 0x8), (MODULE_START_NID, 0x4))), 0x08804004, None),
-            # A table that lists module_start twice (a retail executable lists a game
-            # routine first and its crt0 entry last): the module manager stores every
-            # match, so the last one is entered.
+            # A table that lists module_start twice (The BIGS and The BIGS 2 list a game
+            # routine first and their crt0 entry last): uofw's module manager assigns every
+            # match, so the last one is entered (sr_prx_start_entry names the revision).
             ("module-start-listed-twice", build_module_start_elf(entry=0x08804008, exports=(
                 (MODULE_START_NID, 0x4), (MODULE_START_NID, 0x8))), 0x08804008, None),
             ("bootstart-listed-twice", build_module_start_elf(entry=0, exports=(

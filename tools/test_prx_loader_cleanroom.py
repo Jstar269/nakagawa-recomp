@@ -1191,8 +1191,8 @@ class TestExports(PrxTestBase):
         self.assertEqual(info["entry"], BASE + 0x10)
 
     def test_module_start_listed_twice_enters_the_last(self):
-        # The module manager stores every module_start entry it walks past, so the
-        # last one listed is the one it enters (sr_prx_start_entry, prx_loader.h).
+        # uofw's module manager assigns every module_start entry it walks past, so
+        # the last one listed is the one it enters (sr_prx_start_entry, prx_loader.h).
         m = Module(e_entry=0x10)
         m.add_seg(0x1000, build_export_fixture(start_twice=True), 256)
         info = self.run_load(m.build())

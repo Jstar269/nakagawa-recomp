@@ -1414,9 +1414,9 @@ static int do_load(const unsigned char *data, size_t size, uint32_t base,
     out->entry = c.is_reloc ? (e_entry + base) : e_entry;
     out->has_mod_start = 0;
     out->mod_start = 0;
-    /* The module manager stores every module_start entry it walks past, so a table
+    /* uofw's module manager assigns every module_start entry it walks past, so a table
      * that lists the NID more than once enters the last one (sr_prx_start_entry in
-     * prx_loader.h). */
+     * prx_loader.h names the revision; unmeasured on a PSP). */
     for (s = 0; s < nexp; s++) {
         if (exps[s].lib[0] == '\0' && exps[s].nid == 0xD632ACDBu) {
             out->has_mod_start = 1;

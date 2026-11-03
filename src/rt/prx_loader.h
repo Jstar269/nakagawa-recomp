@@ -81,10 +81,11 @@ int sr_prx_guest_write(uint32_t guest_addr, const void *src, uint32_t n);
  * record sits at the file offset the first PT_LOAD's p_paddr names (masked with
  * 0x1FFFFFFF) when p_paddr differs from p_vaddr, and its export table lists, per library,
  * the function NIDs, then the variable NIDs, then the addresses in the same order.
- * _ProcessModuleExportEnt stores the address of every matching NID as it walks the
- * table, so when a table lists module_start (or module_bootstart) more than once the
- * last entry is the one the module manager enters. Retail executables do this: one
- * lists module_start twice, a game routine first and its crt0 entry (e_entry) last.
+ * In uofw 28306bb5bd4f, _ProcessModuleExportEnt assigns the address of every matching NID
+ * as it walks the table, so when a table lists module_start (or module_bootstart) more
+ * than once, the last entry is the one the module manager enters. This rule comes from
+ * that source and is unmeasured on a PSP. Retail executables list the NID twice: The
+ * BIGS and The BIGS 2 list a game routine first and their crt0 entry (e_entry) last.
  *
  * Static inline so the inspector (src/core/nk_iso.c), the staged-ELF launch check
  * (src/core/nk_launch.c) and the runtime's ELF mode (driver.c) read one definition. The
