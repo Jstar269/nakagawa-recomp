@@ -213,7 +213,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
                FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE, FLOW_SETTINGS_ACE_OFF,
-               FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON,
+               FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON, FLOW_SETTINGS_REFRESH,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -363,6 +363,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.pacing = "PSP timing";
     settings.scaling = "Sharp";
     settings.vsync = true;
+    /* The refresh-rate advisory case runs on a 144 Hz display; the rest on 60 Hz. */
+    settings.display_refresh_hz = which == FLOW_SETTINGS_REFRESH ? 144.0 : 60.0;
     settings.volume = 80;
     settings.controller_line = "keyboard and mouse";
     settings.saves_folder = "C:/synthetic/Nakagawa/saves";
@@ -2673,6 +2675,14 @@ static void test_settings_pages(void) {
     CHECK(activate_flow_button(PLAYER_UI_ID_TAB_LIBRARY, FLOW_SETTINGS).kind ==
               PLAYER_UI_ACTION_OPEN_LIBRARY,
           "the LIBRARY tab on Settings opens the library");
+    CHECK(flow_case_fits(FLOW_SETTINGS_REFRESH, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Your display runs at 144 Hz") != NULL &&
+              strstr(dump, "set it to 60, 120 or 180 Hz") != NULL &&
+              strstr(dump, "\"DONE\"") != NULL,
+          "Settings on a 144 Hz display shows the refresh-rate advisory and still fits");
+    CHECK(dump_flow_case(FLOW_SETTINGS, dump, sizeof(dump)) &&
+              strstr(dump, "Your display runs at") == NULL,
+          "Settings on a 60 Hz display shows no refresh-rate advisory");
     CHECK(activate_flow_button(PLAYER_UI_ID_TAB_ABOUT, FLOW_SETTINGS).kind ==
               PLAYER_UI_ACTION_OPEN_ABOUT,
           "the ABOUT tab on Settings opens About");
@@ -3129,6 +3139,33 @@ static void test_every_screen_fits_the_window(void) {
         }
     }
     g_flow_text_size_pct = 100;
+}
+
+static void test_refresh_advice_classifier(void) {
+    static const double silent[] = {60.0, 120.0, 180.0, 240.0, 59.94, 119.88, 179.82,
+                                    60000.0 / 1001.0, 59.9401, 0.0, -1.0};
+    static const double advised[] = {75.0, 144.0, 165.0, 90.0, 100.0, 30.0, 200.0, 59.0, 61.0,
+                                     143.98};
+    char text[192];
+    for (size_t i = 0u; i < sizeof(silent) / sizeof(silent[0]); ++i) {
+        CHECK(player_ui_refresh_advice(silent[i]) == PLAYER_UI_REFRESH_SILENT,
+              "60, 120, 180, 59.94 Hz and an unknown rate give no advisory");
+    }
+    CHECK(player_ui_refresh_advice(0.0 / 0.0) == PLAYER_UI_REFRESH_SILENT &&
+              player_ui_refresh_advice(1.0 / 0.0) == PLAYER_UI_REFRESH_SILENT,
+          "a NaN or infinite rate gives no advisory");
+    for (size_t i = 0u; i < sizeof(advised) / sizeof(advised[0]); ++i) {
+        CHECK(player_ui_refresh_advice(advised[i]) == PLAYER_UI_REFRESH_ADVISORY,
+              "75, 144 and 165 Hz (and other non-multiples of 60) get the advisory");
+    }
+    player_ui_refresh_advisory_text(75.0, text, sizeof(text));
+    CHECK(strstr(text, "Your display runs at 75 Hz") != NULL, "the advisory names a whole rate");
+    player_ui_refresh_advisory_text(143.98, text, sizeof(text));
+    CHECK(strstr(text, "143.98 Hz") != NULL, "the advisory keeps a fractional rate's decimals");
+    player_ui_refresh_advisory_text(60.0, text, sizeof(text));
+    CHECK(text[0] == '\0', "a silent rate gives an empty advisory");
+    player_ui_refresh_advisory_text(144.0, text, 16u);
+    CHECK(strlen(text) < 16u, "a short buffer is cut, not overrun");
 }
 
 static void test_error_details_fit_the_minimum_window(void) {
@@ -5073,6 +5110,7 @@ int main(int argc, char **argv) {
     title[0] = '\0';
     test_router();
     test_screen_actions();
+    test_refresh_advice_classifier();
     test_error_details_fit_the_minimum_window();
     test_every_screen_fits_the_window();
     test_psp_fonts_page();
