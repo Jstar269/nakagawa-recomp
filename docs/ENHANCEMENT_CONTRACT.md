@@ -243,8 +243,8 @@ loader, no AOT change, no guest hook. The runtime part is `src/rt/ace.h`; the in
 ### 10.1. The Launch Line
 
 The launcher always exports `SR_ACE`, so an inherited value cannot opt a launch in: `off`, or
-`v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=off`. Every key is required, in any order, each once; a key
-for a feature this build does not carry (`wide`, `smooth`) must be `off`. Anything else refuses the whole line: Ace
+`v1;af=16;text=on;readout=off;notice=on;wide=off;smooth=x2`. Every key is required, in any order, each once; a value
+for a feature this build does not carry (`wide=fill`, `smooth=match`) refuses the line. So does anything else: Ace
 is off for the run and one `ACE_MODE: refused (<reason>)` line says why. Unset is off. With Ace on the launcher also
 exports `SR_ACE_REPORT`, the per-run report under `<user data>/ace/`.
 
@@ -264,7 +264,8 @@ the samplers and the pool; `display-smoke` keeps its image hash.
 - **Pixels:** texture filtering (anisotropic, for transformed draws with linear minification) changes framebuffer
   pixels, and every present commits the frame to guest VRAM, so a game that copies its screen (a save picture) keeps
   the filtered picture: the same class as a render scale above 1x, and the launcher says so. The launch notice, the
-  speed readout and the crisp keyboard draw only on the swapchain image, never on the frame a capture reads.
+  speed readout and the crisp keyboard draw only on the swapchain image, never on the frame a capture reads, and so
+  do Smooth motion's in-between frames (section 10.6).
 
 ### 10.4. Stamps and Evidence
 
@@ -279,5 +280,30 @@ Ace run's log, the acceptance checkpoint refuses an Ace run (`reason=ace_mode`),
 everything off, its 60 FPS game logic included; its `ace` turns Ace on whatever the library says; otherwise the
 library's switch decides. A feature takes the title's value where it has one, else the library's.
 
-Ultrawide (a host-only wide mirror of the GE's draws) and Smooth motion (in-between frames, which needs GE's Vulkan
-transform path, #318) are designed and tracked in #1272; they are not part of this build.
+A title that launches its 60 FPS game logic gets `smooth=off` on its line, whatever the settings say: logic and
+interpolation are refused together, not stacked (#1272).
+
+Ultrawide (a host-only wide mirror of the GE's draws) is designed and tracked in #1272; it is not part of this build.
+
+### 10.6. Smooth Motion
+
+With `smooth=x2`, a title the 30 Hz detector holds steady at 30 presents at the VBLANK rate. The code is
+`src/rt/gpu_sdl3vk/ace_smooth.c`, its shaders and the pure pacing rule in `src/rt/ace.c`.
+
+- **How a frame is made.** Block-matched motion between two private copies of consecutive presented frames, in a
+  compute pass on the present's command buffer. It reads nothing of the GE, so it does not need #318, and it treats
+  a GPU target and a CPU frame (a movie) alike.
+- **When.** The flip of frame B shows the in-between of A and B; the next VBLANK shows B. Nothing is shown before the
+  guest made it, so a frame is never predicted. The cost is one VBLANK of added delay (about 17 ms), reported in the
+  run's report as `added_delay_ms`. A flip that arrives first replaces the held frame.
+- **Only at 30.** Every other detector class, a pause and a static picture show each frame as it comes, as without
+  the feature. The detector enters 30 Hz after a second of agreement and leaves after half a second of disagreement.
+- **UI.** A pixel that did not change between the two frames is copied, so a HUD stays exact while the scene moves
+  behind it.
+- **Cuts.** When a third of the blocks fit nothing or disagree with their neighbours, the two frames are different
+  pictures: the in-between is the old frame, and the new one follows on its VBLANK.
+- **What it never touches.** The in-between and the held frame are private images blitted to the swapchain. The
+  flip's own present still commits the real frame to guest VRAM and gives any capture the real frame. The VBLANK's
+  present latches no input and serves no capture.
+- **Stamps.** The report adds `presents` (real, between, held, superseded) and `present_interval_ms`. Section 10.4
+  applies: the run is refused as evidence.

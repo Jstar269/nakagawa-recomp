@@ -931,6 +931,7 @@ void sr_vblank_tick(void) {
         psmf_av_video_presented(s_display_active.addr, s_display_active.stride, s_display_active.fmt);
         display_present_active();
     }
+    if (g_ace_on) gui_ace_vblank(s_vcount);
     /* Periodic VCOUNT cadences are boundary crossings, not an exact modulus: a serviced
      * tick can step over a multiple or repeat one (see sr_vcount_window_crossed). */
     static uint32_t tick_log_window = 0;
@@ -1096,6 +1097,8 @@ void sr_vblank_tick(void) {
             sr_compat_report();
             sr_perf_shutdown();
             hle_state_sample_close();
+            /* Ace Mode's exit stamp and report are an atexit hook too (a no-op when off). */
+            ace_finish();
             _Exit(0);
         }
     }

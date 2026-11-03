@@ -39,6 +39,7 @@
 #include "nk_ui_theme.h"         /* the pause overlay's scrim token */
 #include "overlay/overlay_host.h" /* the pause overlay's pages (C9c) */
 #include "gpu_sdl3vk/ace_ui.h"   /* Ace Mode's in-game UI: notice, readout, crisp keyboard */
+#include "gpu_sdl3vk/ace_smooth.h" /* Ace Mode's in-between frames */
 #include "nk_platform.h"         /* the system's Reduce motion, for the Ace UI */
 #include "ge_shared.h"           /* the developer VRAM viewer's decoders (#314) */
 #include <SDL3/SDL_events.h>
@@ -470,6 +471,63 @@ static void gui_ace_ui_init(void) {
     ace_confirm(ACE_FEATURE_NOTICE);
 }
 
+/* ---- Ace Mode's smooth motion (ace.h, gpu_sdl3vk/ace_smooth.h) ----------------------------------
+ * Made once at start in an Ace run that asks for it, and only then is the show pass registered,
+ * so any other present records what it did before. Without compute the feature is off for the
+ * run, said once. */
+static AceBetween *s_ace_smooth;
+static AcePresentKind s_ace_present_kind;
+
+static void *gui_ace_show_pass(void *cmd, void *src, int *w, int *h) {
+    VkCommandBuffer vk_cmd = (VkCommandBuffer)cmd;
+    s_ace_present_kind = ACE_PRESENT_REAL;
+    if (!src) {
+        VkImage held = ace_smooth_held(s_ace_smooth, vk_cmd);
+        if (!held) return NULL;
+        ace_smooth_size(s_ace_smooth, w, h);
+        s_ace_present_kind = ACE_PRESENT_HELD;
+        return (void *)held;
+    }
+    AceShow show = ace_smooth_take();
+    if (show == ACE_SHOW_REAL) return NULL;
+    VkImage between = ace_smooth_record(s_ace_smooth, vk_cmd, (VkImage)src, *w, *h,
+                                        show == ACE_SHOW_BETWEEN);
+    if (!between) return NULL;
+    ace_smooth_shown_between(SDL_GetTicksNS());
+    s_ace_present_kind = ACE_PRESENT_BETWEEN;
+    return (void *)between;
+}
+
+static void gui_ace_smooth_init(void) {
+    char error[160] = "";
+    Sdl3VkInfo vi;
+    if (!g_ace_on || !ace_effective()->smooth) return;
+    memset(&vi, 0, sizeof(vi));
+    if (sdl3vk_get_vk(&vi) && vi.get_instance_proc_addr) {
+        AceSmoothInit init;
+        memset(&init, 0, sizeof(init));
+        init.get_instance_proc_addr = (PFN_vkGetInstanceProcAddr)vi.get_instance_proc_addr;
+        init.instance = (VkInstance)vi.instance;
+        init.physical_device = (VkPhysicalDevice)vi.physical;
+        init.device = (VkDevice)vi.device;
+        init.queue = (VkQueue)vi.queue;
+        init.queue_family = vi.queue_family;
+        s_ace_smooth = ace_smooth_create(&init, error, sizeof(error));
+    }
+    if (!s_ace_smooth) {
+        ace_feature_unavailable(ACE_FEATURE_SMOOTH, error[0] ? error : "no Vulkan device");
+        return;
+    }
+    sdl3vk_set_show_pass(gui_ace_show_pass);
+    ace_confirm(ACE_FEATURE_SMOOTH);
+}
+
+static void gui_ace_smooth_release(void) {
+    if (s_ace_smooth) sdl3vk_set_show_pass(NULL);
+    ace_smooth_destroy(s_ace_smooth);
+    s_ace_smooth = NULL;
+}
+
 static void gui_ace_ui_release(void) {
     if (s_ace_ui_ready) sdl3vk_set_ui_pass(NULL);
     s_ace_ui_ready = 0;
@@ -578,6 +636,7 @@ void gui_init(const char *title) {
                 sr_osk_overlay_set_host(osk_overlay_paint_available());
 #ifndef SR_GUI_PRESENT_SELFTEST
                 gui_ace_ui_init();
+                gui_ace_smooth_init();
 #endif
                 sync_sdl_input();
                 /* Phase 1 GPU rasterizer (opt-in): captures GE triangles/sprites and
@@ -870,6 +929,20 @@ static int display_cpu_source_current(uint32_t fbaddr, int fmt, uint32_t stride)
     return sr_guest_span_readable_current(fbaddr, total_bytes);
 }
 
+/* The VBLANK after an in-between: its held frame goes to the screen. Nothing of the guest runs:
+ * no input is latched and no capture can be armed here, and the VBLANK's timing is the host's
+ * present cost, like any other. Off, ace_smooth_vblank says no. */
+void gui_ace_vblank(uint32_t vcount) {
+#if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
+    if (!ace_smooth_vblank(vcount)) return;
+    if (!s_ace_smooth || s_quit_requested || !s_on || !s_sdl3 || s_offscreen ||
+        sr_capture_is_armed()) return;
+    if (sdl3vk_present_held() == 1) ace_smooth_note_present(ACE_PRESENT_HELD, SDL_GetTicksNS());
+#else
+    (void)vcount;
+#endif
+}
+
 int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!s_on) return 0;
     if (stride == 0) stride = 512;
@@ -1037,6 +1110,10 @@ pace:
 #endif
 #if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
     if (accepted && s_ace_ui_ready && !s_ace_first_frame_ns) s_ace_first_frame_ns = SDL_GetTicksNS();
+    /* Every Ace run times its presents, so a run without smooth motion is the baseline. */
+    if (accepted && g_ace_on) {
+        ace_smooth_note_present(s_ace_smooth ? s_ace_present_kind : ACE_PRESENT_REAL, SDL_GetTicksNS());
+    }
 #endif
     if (accepted) {
         s_shown_fb.addr = fbaddr;
@@ -1601,6 +1678,7 @@ static void gui_release_presenter(void) {
         free(s_pause_vram_px);
         s_pause_vram_px = NULL;
 #ifndef SR_GUI_PRESENT_SELFTEST
+        gui_ace_smooth_release();
         gui_ace_ui_release();
 #endif
         gegpu_shutdown();

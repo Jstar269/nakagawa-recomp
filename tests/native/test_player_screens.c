@@ -89,44 +89,44 @@ static const PlayerUiTitle k_titles[] = {
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PLAYABLE, false, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0xC29AF4FFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0xC29AF4FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_WONT_BOOT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL}
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
 };
 
 /* A library with the demos that come with Nakagawa among the user's games, in
@@ -137,25 +137,25 @@ static const PlayerUiTitle k_demo_titles[] = {
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PERFECT, true, false, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL}
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
 };
 
 /* The demos alone: a first start with nothing added yet. */
@@ -165,13 +165,13 @@ static const PlayerUiTitle k_demo_only_titles[] = {
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL},
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL},
     {"Synthetic Scene Demo", "TEST00007", "Ready", "",
      "Shows a synthetic cube with sound.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false, true, false, false, false, false, false, "",
-     false, NULL, false, false, NULL, NULL, false, NULL}
+     false, NULL, false, false, NULL, NULL, false, false, NULL, false, false, NULL}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -2709,6 +2709,8 @@ static void test_settings_pages(void) {
               strstr(dump, "\"CRISP SYSTEM TEXT: ON\"") != NULL &&
               strstr(dump, "\"SPEED READOUT: OFF\"") != NULL &&
               strstr(dump, "\"GAME BADGE: ON\"") != NULL &&
+              strstr(dump, "\"SMOOTH MOTION: ") != NULL &&
+              strstr(dump, "about 17 ms of delay.\"") != NULL &&
               strstr(dump, "keep the filtering.\"") != NULL &&
               strstr(dump, "Boost") == NULL &&
               strstr(dump, "\xE2\x80\xA6\"") == NULL,

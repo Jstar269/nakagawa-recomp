@@ -129,6 +129,7 @@ typedef enum {
     PLAYER_UI_ACTION_CHECK_INPUT_AGAIN, /* the title page checks its files again (#308) */
     PLAYER_UI_ACTION_TOGGLE_60FPS,     /* the title page's 60 FPS game logic switch */
     PLAYER_UI_ACTION_CYCLE_ACE,        /* the title page's Ace Mode: library, on, authentic */
+    PLAYER_UI_ACTION_CYCLE_SMOOTH,     /* the title page's smooth motion: library, on, off */
     PLAYER_UI_ACTION_CYCLE_SORT,        /* the library's next sort */
     PLAYER_UI_ACTION_FIND_OPEN,         /* open the library's find box */
     PLAYER_UI_ACTION_FIND_KEY,          /* an on-screen key: title_index is a codepoint, or
@@ -259,6 +260,14 @@ typedef struct {
     const char *ace_line;
     const char *ace_last_session;
     bool ace_badge;             /* the library card's ACE badge */
+    /* Smooth motion (#1272) beside the Ace Mode button: shown while Ace is in effect for the
+       title; the button's words ("Smooth motion: On (library default)"); lit when on; and
+       whether it can change now. It is disabled, and says so, while the title's 60 FPS game
+       logic is on: the two are refused together. */
+    bool smooth_shown;
+    const char *smooth_label;
+    bool smooth_on;
+    bool smooth_enabled;
     /* Disc verification: one sentence about how the image compares with the
        user's disc list, under the title page's tags; NULL when not checked. The
        card's badge carries the short word. */
@@ -535,6 +544,7 @@ typedef enum {
     PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT,
     PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT,
     PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE,
+    PLAYER_UI_SETTINGS_TOGGLE_ACE_SMOOTH,    /* smooth motion: Off, On (x2) */
     PLAYER_UI_SETTINGS_OPEN_PROBLEM_REPORT,  /* Settings > Problem report: lists the files */
     PLAYER_UI_SETTINGS_CREATE_REPORT,        /* write the bundle on this PC */
     PLAYER_UI_SETTINGS_OPEN_REPORT_FOLDER
@@ -599,6 +609,7 @@ typedef struct {
     bool ace_text;
     bool ace_readout;
     bool ace_notice;
+    bool ace_smooth;                /* smooth motion (x2) */
     const char *controller_line;    /* "Keyboard ready" or the pad's name */
     const char *saves_folder;
     const char *notice;             /* a settings notice (a failed save), or NULL */
@@ -881,6 +892,7 @@ enum {
     PLAYER_UI_ID_TITLE_REPORT = 0x2020u,
     PLAYER_UI_ID_TITLE_60FPS = 0x2009u,
     PLAYER_UI_ID_TITLE_ACE = 0x200Au,                /* the ENHANCEMENTS card's Ace Mode */
+    PLAYER_UI_ID_TITLE_SMOOTH = 0x200Bu,             /* the ENHANCEMENTS card's smooth motion */
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
@@ -951,6 +963,7 @@ enum {
     PLAYER_UI_ID_SETTINGS_ACE_TEXT = 0x4544u,
     PLAYER_UI_ID_SETTINGS_ACE_READOUT = 0x4545u,
     PLAYER_UI_ID_SETTINGS_ACE_NOTICE = 0x4546u,
+    PLAYER_UI_ID_SETTINGS_ACE_SMOOTH = 0x4547u,
     PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT = 0x4550u,   /* Settings: opens the Problem report page */
     PLAYER_UI_ID_REPORT_CREATE = 0x4551u,
     PLAYER_UI_ID_REPORT_FOLDER = 0x4552u,

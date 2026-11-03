@@ -927,6 +927,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
               src/rt/gpu_sdl3vk/ge_gpu.c \
               src/rt/gpu_sdl3vk/ace_ui.c \
+              src/rt/gpu_sdl3vk/ace_smooth.c \
               src/core/nk_input_profile.c \
               src/core/nk_font.c \
               src/core/nk_json.c \
@@ -1171,6 +1172,7 @@ PUBLIC_TARGETS := \
 	osk-text-entry-selftest \
 	osk-overlay-selftest \
 	ace-selftest \
+	ace-smooth-selftest \
 	ace-ui-selftest \
 	osk-overlay-paint-selftest \
 	psmf-producer-selftest \
@@ -1323,6 +1325,7 @@ HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selft
 HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
 HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
 HELP_DESCRIPTION_ace-selftest := run Ace Mode's CPU-only selftest (launch line, 30 Hz detector, readout, report; pure C)
+HELP_DESCRIPTION_ace-smooth-selftest := run Ace Mode's in-between frames selftest on a headless Vulkan device (SKIPs without one)
 HELP_DESCRIPTION_ace-ui-selftest := run Ace Mode's in-game UI selftest (layout, then a headless Vulkan render; SKIPs the GPU leg without Vulkan)
 HELP_DESCRIPTION_osk-overlay-paint-selftest := run the in-window keyboard painter's exact-pixel selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
@@ -3742,6 +3745,28 @@ nk-ui-vk-selftest:
 		echo "FAIL nk-ui-vk-selftest (exit 77, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
 	elif [ $$rc -eq 77 ]; then echo "SKIP nk-ui-vk-selftest (exit 77; the reason is printed above)"; \
 	elif [ $$rc -ne 0 ]; then echo "FAIL nk-ui-vk-selftest (exit $$rc)"; exit $$rc; fi
+
+# ace-smooth-selftest - Ace Mode's in-between frames (src/rt/gpu_sdl3vk/ace_smooth.c) on a headless
+# Vulkan device: a moving shape lands halfway, a HUD over motion keeps every pixel, a cut holds the
+# old frame and the held frame is the new one, byte for byte. Linked from the pass and the C
+# library alone (invariant S1). No Vulkan headers, loader or device: SKIP (exit 77), visible in
+# the log; NK_UI_VK_REQUIRE=1 makes a skip fail.
+native-core-tests: ace-smooth-selftest
+.PHONY: ace-smooth-selftest
+ace-smooth-selftest: shader-verify
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@if ! printf '%s\n' '#include <vulkan/vulkan.h>' | $(CC) -E -x c $(VULKAN_INC_FLAGS) - >/dev/null 2>&1; then \
+		echo "SKIP ace-smooth-selftest (the Vulkan headers were not found)"; \
+		if [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then exit 1; fi; exit 0; \
+	fi; \
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -Isrc/rt/gpu_sdl3vk $(VULKAN_INC_FLAGS) \
+		src/rt/gpu_sdl3vk/ace_smooth.c src/rt/gpu_sdl3vk/ace_smooth_selftest.c \
+		$(NK_UI_VK_SELFTEST_LIBS) -o $(BUILD_ROOT)/ace_smooth_selftest$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_ROOT_RUN)/ace_smooth_selftest$(EXE_EXT) $(BUILD_ROOT) || rc=$$?; \
+	if [ $$rc -eq 77 ] && [ "$(NK_UI_VK_REQUIRE)" = 1 ]; then \
+		echo "FAIL ace-smooth-selftest (skipped, but NK_UI_VK_REQUIRE=1 requires a Vulkan device)"; exit 1; \
+	elif [ $$rc -eq 77 ]; then echo "SKIP ace-smooth-selftest (exit 77)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL ace-smooth-selftest (exit $$rc)"; exit $$rc; fi
 
 # ace-ui-selftest - Ace Mode's in-game UI (src/rt/gpu_sdl3vk/ace_ui.c): the readout, the launch
 # notice and the crisp keyboard laid out at the overlay's sizes and two ultrawide windows (inside

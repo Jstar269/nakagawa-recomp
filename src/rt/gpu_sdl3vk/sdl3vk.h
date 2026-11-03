@@ -122,6 +122,18 @@ typedef struct {
 } Sdl3VkUiPass;
 void sdl3vk_set_ui_pass(void (*pass)(const Sdl3VkUiPass *frame));
 
+/* Ace Mode's smooth motion (src/rt/gpu_sdl3vk/ace_smooth.h). Called on every present, before the
+ * frame blit, with `src` in TRANSFER_SRC_OPTIMAL, or VK_NULL_HANDLE when the present is
+ * sdl3vk_present_held's. It may record into the command buffer, and returns the image to blit
+ * to the swapchain instead (in TRANSFER_SRC_OPTIMAL, *w x *h) or NULL for `src`. A capture always
+ * reads `src`, so what it returns is never captured. Registered only in an Ace run with smooth
+ * motion; NULL removes it. */
+typedef void *(*Sdl3VkShowPass)(void *cmd, void *src, int *w, int *h);
+void sdl3vk_set_show_pass(Sdl3VkShowPass pass);
+/* Presents what the show pass returns for no source: no capture, no input latch. Returns as the
+ * other presents do, and 0 with nothing to show or no pass. */
+int sdl3vk_present_held(void);
+
 /* Pumps the SDL event loop without presenting a frame. Returns 0 on quit, 1 otherwise. */
 int  sdl3vk_poll(void);
 

@@ -1,0 +1,68 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 the Nakagawa Recomp authors */
+/* ace_compose.comp - Ace Mode's in-between frame (gpu_sdl3vk/ace_smooth.c). A pixel that did not
+ * change between the two frames is copied, so a HUD stays exact whatever moves behind it. Any
+ * other pixel takes, from its block and the blocks around it, the vector that fits best here and
+ * blends the two frames along it; where nothing fits (something appeared or was uncovered) it
+ * keeps the old frame's side, because a sharp wrong pixel for 17 ms shows less than a ghost. When
+ * too many blocks fit nothing, or disagree with their neighbours, the two frames are different
+ * pictures: a cut. The in-between is then the old frame, and the new one follows on its VBLANK. */
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D old_frame;
+layout(set = 0, binding = 1) uniform sampler2D new_frame;
+layout(set = 0, binding = 2) uniform sampler2D field;
+layout(set = 0, binding = 4, rgba8) uniform writeonly image2D out_frame;
+layout(set = 0, binding = 5, std430) readonly buffer Stats { uint bad_blocks; } stats;
+
+layout(push_constant) uniform Compose {
+    ivec2 size;
+    uint cut_blocks;   /* this many bad blocks make the pair a cut */
+} pc;
+
+const float SAME = 0.008;      /* about 2/255: the same pixel */
+const float FITS = 0.30;       /* the summed channel difference of a good fit */
+
+float misfit(vec2 uv, vec2 d, vec2 px) {
+    float e = 0.0;
+    const vec2 taps[3] = vec2[3](vec2(0.0), vec2(-1.0, -1.0), vec2(1.0, 1.0));
+    for (int i = 0; i < 3; i++) {
+        vec3 a = textureLod(old_frame, uv + taps[i] * px - d, 0.0).rgb;
+        vec3 b = textureLod(new_frame, uv + taps[i] * px + d, 0.0).rgb;
+        vec3 diff = abs(a - b);
+        e += diff.r + diff.g + diff.b;
+    }
+    return e / 3.0;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.size.x || p.y >= pc.size.y) return;
+    vec2 px = 1.0 / vec2(pc.size);
+    vec2 uv = (vec2(p) + 0.5) * px;
+    vec4 a0 = textureLod(old_frame, uv, 0.0);
+    if (stats.bad_blocks >= pc.cut_blocks) {
+        imageStore(out_frame, p, vec4(a0.rgb, 1.0));
+        return;
+    }
+    vec4 b0 = textureLod(new_frame, uv, 0.0);
+    vec3 still = abs(a0.rgb - b0.rgb);
+    if (max(still.r, max(still.g, still.b)) < SAME) {
+        imageStore(out_frame, p, vec4(a0.rgb, 1.0));
+        return;
+    }
+    ivec2 cells = textureSize(field, 0);
+    ivec2 cell = ivec2(uv * vec2(cells));
+    const ivec2 around[5] = ivec2[5](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+    vec2 best = vec2(0.0);
+    float best_e = misfit(uv, best, px);
+    for (int i = 0; i < 5; i++) {
+        vec2 d = texelFetch(field, clamp(cell + around[i], ivec2(0), cells - 1), 0).xy;
+        float e = misfit(uv, d, px);
+        if (e < best_e) { best_e = e; best = d; }
+    }
+    vec3 a = textureLod(old_frame, uv - best, 0.0).rgb;
+    vec3 b = textureLod(new_frame, uv + best, 0.0).rgb;
+    imageStore(out_frame, p, vec4(best_e < FITS ? (a + b) * 0.5 : a, 1.0));
+}

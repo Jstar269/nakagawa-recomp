@@ -729,8 +729,8 @@ static void settings_accessibility(NkUi *ui, const PlayerUiSettingsModel *model,
 
 /* Settings > Ace Mode (src/rt/ace.h): the library's switch and each feature, a sentence beside
    each that says what it does and what it costs. While the switch is off the feature rows are
-   dim and cannot be focused; their values are kept. Features this build does not carry
-   (ultrawide, smooth motion) have no row. */
+   dim and cannot be focused; their values are kept. Ultrawide, which this build does not
+   carry, has no row. */
 static void settings_ace(NkUi *ui, const PlayerUiSettingsModel *model, float inner,
                          PlayerUiAction *result) {
     const NkUiTheme *theme = nk_ui_theme(ui);
@@ -753,7 +753,9 @@ static void settings_ace(NkUi *ui, const PlayerUiSettingsModel *model, float inn
             {"Speed readout", settings_on_off(model->ace_readout),
              "Shows the game's speed and frame rate in a corner, over the game's own HUD."},
             {"Game badge", settings_on_off(model->ace_notice),
-             "Says Ace Mode is on for a few seconds when a game starts."}
+             "Says Ace Mode is on for a few seconds when a game starts."},
+            {"Smooth motion", settings_on_off(model->ace_smooth),
+             "Shows 30 FPS games at 60 with frames drawn between. Adds about 17 ms of delay."}
         };
         WizardColumn column = scr_wizard_column(ui, rows, sizeof(rows) / sizeof(rows[0]), inner - 32.0f);
         if (scr_wizard_value(ui, PLAYER_UI_ID_SETTINGS_ACE_MODE, SET_ID_TEXT + 0x400u, rows[0].name,
@@ -780,6 +782,11 @@ static void settings_ace(NkUi *ui, const PlayerUiSettingsModel *model, float inn
                                rows[4].name, rows[4].value, rows[4].sentence, model->ace_notice,
                                off, inner - 32.0f, &column)) {
             *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE);
+        }
+        if (scr_wizard_value_state(ui, PLAYER_UI_ID_SETTINGS_ACE_SMOOTH, SET_ID_TEXT + 0x414u,
+                               rows[5].name, rows[5].value, rows[5].sentence, model->ace_smooth,
+                               off, inner - 32.0f, &column)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ACE_SMOOTH);
         }
         nk_ui_end_container(ui);
     }
