@@ -90,12 +90,9 @@ class CaptureImage:
 
 
 def fnv1a64(data):
-    """FNV-1a, 64-bit; the digest the runtime names a capture by (and codegen.fnv1a64)."""
-    h = 0xCBF29CE484222325
-    for byte in data:
-        h ^= byte
-        h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
-    return h
+    """FNV-1a, 64-bit: codegen.fnv1a64, which sr_module_code_fnv1a64 mirrors at run time."""
+    import codegen   # here, not at the top: codegen imports this module
+    return codegen.fnv1a64(data)
 
 
 def parse_capture(blob, source="<capture>"):
