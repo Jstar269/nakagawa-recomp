@@ -37,6 +37,9 @@ typedef enum NkFontSlot {
 #define NK_FONT_SLOT_JAPANESE_FILE "nkjpn.pgf"
 #define NK_FONT_SLOT_LATIN_FILE "nkltn.pgf"
 #define NK_FONT_SLOT_KOREAN_FILE "nkkr.pgf"
+/* The project's Latin font comes in the console's two nominal sizes: NK_FONT_SLOT_LATIN_FILE for the
+ * first size group and this file for the second. A project folder without it serves the first. */
+#define NK_FONT_PROJECT_LATIN_SMALL_FILE "nkltns.pgf"
 
 /* Firmware exposes sixteen separately named Latin PGFs. The first and second groups each
  * contain the same eight family/style combinations at a different nominal size. */

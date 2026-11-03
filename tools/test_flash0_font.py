@@ -236,7 +236,9 @@ def write_latin_index_fixture(root: Path) -> dict[str, bytes]:
     bold = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Latin Bold", 15 * 64)
     ninth = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Latin Large", 17 * 64)
     project_latin = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Project Latin", 5 * 64)
+    project_small = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Project Latin Second", 3 * 64)
     (project / "nkltn.pgf").write_bytes(project_latin)
+    (project / "nkltns.pgf").write_bytes(project_small)
     payloads = {"nkltn.pgf": legacy, "ltn0.pgf": first, "ltn4.pgf": bold, "ltn8.pgf": ninth}
     for name, data in payloads.items():
         (cache / name).write_bytes(data)
@@ -949,14 +951,21 @@ class Flash0FontDeviceTests(unittest.TestCase):
             # import in its size group, index 7 by the legacy single import, and index 16 by the
             # project font: each says it is a substitute and which fallback chose its file.
             project_latin = header_string("NK_FONT_SLOT_LATIN_FILE")
+            project_small = header_string("NK_FONT_PROJECT_LATIN_SMALL_FILE")
             self.assertEqual(request_lines(run.stderr), [
                 latin_request_line(0, "ltn0.pgf", "user-imported"),
                 latin_request_line(8, "ltn8.pgf", "user-imported"),
                 latin_request_line(4, "ltn4.pgf", "user-imported"),
                 latin_request_line(2, "ltn0.pgf", "user-imported", "same-size"),
                 latin_request_line(6, project_latin, "user-imported", "legacy"),
-                latin_request_line(15, project_latin, "project", "project"),
+                latin_request_line(15, project_small, "project", "project"),
+                latin_request_line(1, project_latin, "project", "project"),
+                latin_request_line(9, project_small, "project", "project"),
+                latin_request_line(14, project_small, "project", "project"),
             ])
+            # The registry lines cover every font the game could ask for; this one, what it opened.
+            self.assertEqual(run.stderr.count("flash0: game opened "), 1, run.stderr[-2000:])
+            self.assertIn(f"flash0: game opened ltn14.pgf backing={project_small} source=project", run.stderr)
 
 
 if __name__ == "__main__":
