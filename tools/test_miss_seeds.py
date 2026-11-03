@@ -306,6 +306,27 @@ MIXED_UNKNOWN_WORDS = {
     TARGET + 20: 0x03E00008,     # jr ra
     TARGET + 24: 0x00000000,     # nop (delay slot)
 }
+# A branch-likely whose slot moves $sp from fp: the slot runs only on the taken path, so the
+# not-taken path, which releases a frame, is still exact. Once as `beql`, once as a linked call.
+LIKELY_LEAF = ENTRY + 32
+LIKELY_UNKNOWN_WORDS = {
+    **_HEAD,
+    TARGET: 0x50A00003,          # beql a1, zero, TARGET+16
+    TARGET + 4: 0x03C0E821,      # addu sp, fp, zero (delay slot, taken path only)
+    TARGET + 8: 0x03E00008,      # jr ra
+    TARGET + 12: 0x27BD0010,     # addiu sp, sp, 16 (delay slot)
+    TARGET + 16: 0x03E00008,     # jr ra
+    TARGET + 20: 0x00000000,     # nop (delay slot)
+}
+LINKED_LIKELY_UNKNOWN_WORDS = {
+    **_HEAD,
+    LIKELY_LEAF: 0x03E00008,     # jr ra
+    LIKELY_LEAF + 4: 0x00000000,  # nop (delay slot)
+    TARGET: 0x04B30000 | (LIKELY_LEAF - TARGET - 4) >> 2 & 0xFFFF,   # bgezall a1, LIKELY_LEAF
+    TARGET + 4: 0x03C0E821,      # addu sp, fp, zero (delay slot, taken path only)
+    TARGET + 8: 0x03E00008,      # jr ra
+    TARGET + 12: 0x27BD0010,     # addiu sp, sp, 16 (delay slot)
+}
 UNKNOWN_SP_WORDS = {
     **_HEAD,
     TARGET: 0x03C0E821,          # addu sp, fp, zero: the walk cannot follow $sp from here
@@ -717,7 +738,10 @@ class AnalysisSeedTests(_Fixture):
         for name, words, why in (
                 ("tail", TAIL_RELEASE_WORDS, "continuation: $sp net +16 at a computed jump"),
                 ("mixed", MIXED_RETURN_WORDS, "continuation: $sp net +16 at a return"),
-                ("mixed_unknown", MIXED_UNKNOWN_WORDS, "continuation: $sp net +16 at a return")):
+                ("mixed_unknown", MIXED_UNKNOWN_WORDS, "continuation: $sp net +16 at a return"),
+                ("likely_unknown", LIKELY_UNKNOWN_WORDS, "continuation: $sp net +16 at a return"),
+                ("linked_likely_unknown", LINKED_LIKELY_UNKNOWN_WORDS,
+                 "continuation: $sp net +16 at a return")):
             with self.subTest(name):
                 elf = self.work / f"{name}_release.elf"
                 elf.write_bytes(_text_ends_at(_synthetic_elf(words, ENTRY), TARGET))
