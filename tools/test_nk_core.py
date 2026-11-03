@@ -227,10 +227,12 @@ class NkCoreTests(unittest.TestCase):
         # running game that hit the launch limit read as an unexplained failure, and the
         # decryption message said Nakagawa does not decrypt games (the player does).
         def summary(failure_class: str, **extra: object) -> str:
-            report = {"preflight_checks": [], "failure_class": failure_class,
-                      "issue_numbers": [308], "reached_stage": "inspect"}
+            report: dict[str, Any] = {
+                "preflight_checks": [], "failure_class": failure_class,
+                "issue_numbers": [308], "reached_stage": "inspect"}
             report.update(extra)
-            return nk_cli._bringup_human_summary(report)
+            text: str = nk_cli._bringup_human_summary(report)
+            return text
 
         self.assertIn("--user-data-root", summary("EXECUTABLE_UNSUPPORTED"))
         decrypt = summary("GUEST_MODULE_DECRYPTION_REQUIRED")
