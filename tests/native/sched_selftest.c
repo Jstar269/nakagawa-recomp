@@ -1101,6 +1101,75 @@ static unsigned preempt_timer_run(int waiter_priority) {
     return g_pt_waiter_ran_at;
 }
 
+/* The same deadline during a long HLE call, which has no SR_YIELD: the timer sets sr_preempt_due
+ * as well, the call polls it, and sched_preempt_point is the switch.
+ *
+ * MUTANT: drop the sr_preempt_due store in sched_preempt_timer_check -- the first cell's flag
+ *   stays clear. MUTANT: drop scheduler_progress_time() in sched_preempt_point -- the expired wait
+ *   is not promoted and the stronger thread runs after the call. MUTANT: drop the gate in
+ *   sched_preempt_point -- the suspended cell re-publishes the spent deadline. MUTANT: drop the
+ *   sched_preempt_timer_arm() call there -- the early-fire cell publishes nothing. */
+enum { PP_CALL_START = 1u, PP_CALL_END = 2u };
+static int g_pp_due_flag, g_pp_suspend, g_pp_early;
+static uint64_t g_pp_republished_ns;
+
+static void preempt_point_body(CpuState *s) {
+    (void)s;
+    if (s_tcb[s_cur].entry == PT_WAITER_ENTRY) {
+        sched_delay_current(PT_DELAY_US);
+        g_pt_waiter_ran_at = g_pt_yield;
+        return;
+    }
+    uint32_t waiter = sched_create_thread(PT_WAITER_ENTRY, g_pt_waiter_priority, 0);
+    sched_start_thread(waiter, 0, 0);
+    sched_yield_current_behind_peers();
+    uint32_t state = 0u;
+    if (g_pp_suspend) state = sched_suspend_interrupts();
+    g_pt_yield = PP_CALL_START;
+    if (g_pp_early) {
+        /* The timer ran out a moment before the guest clock reaches the deadline. */
+        set_host_us(PT_START_US + PT_DELAY_US - 1u);
+        s_preempt_timer_at_ns = UINT64_MAX;
+    } else {
+        set_host_us(PT_START_US + PT_DELAY_US + 1u);
+        sched_preempt_timer_check(host_now_ns());
+    }
+    g_pp_due_flag = (int)atomic_load_explicit(&sr_preempt_due, memory_order_relaxed);
+    sched_preempt_point();
+    g_pp_republished_ns = s_preempt_timer_at_ns;
+    g_pt_yield = PP_CALL_END;
+    if (g_pp_suspend) sched_resume_interrupts(state);
+    if (g_pp_early) set_host_us(PT_START_US + PT_DELAY_US + 1u);
+    sched_delay_current(PT_DELAY_US * 2u);   /* the waiter gets its turn at the latest here */
+    g_pt_done = 1;
+}
+
+static unsigned preempt_point_run(int waiter_priority, int suspend, int early) {
+    reset_sched();
+    begin_clock_fixture(1, PT_START_US);
+    s_preempt_timer_mode = SCHED_PREEMPT_TIMER_MANUAL;
+    s_preempt_timer_at_ns = UINT64_MAX;
+    s_preempt_timer_published = UINT64_MAX;
+    atomic_store_explicit(&sr_preempt_due, 0, memory_order_relaxed);
+    g_pt_waiter_priority = waiter_priority;
+    g_pp_suspend = suspend;
+    g_pp_early = early;
+    g_pp_due_flag = 0;
+    g_pp_republished_ns = 0u;
+    g_pt_yield = 0;
+    g_pt_waiter_ran_at = UINT32_MAX;
+    g_pt_done = 0;
+    g_test_body = preempt_point_body;
+    sr_sched_stop_requested = preempt_timer_stop;
+    sched_run(PT_WEAK_ENTRY, 0u, 0u);
+    sr_sched_stop_requested = NULL;
+    s_preempt_timer_mode = SCHED_PREEMPT_TIMER_OFF;
+    s_preempt_timer_at_ns = UINT64_MAX;
+    s_preempt_timer_published = UINT64_MAX;
+    s_host_ns_fn = NULL;
+    return g_pt_waiter_ran_at;
+}
+
 /* A stalled guest must not stall the host window. The only thread polls in 50 us delays,
  * as a title's GE-lock wait does, for two host seconds: it blocks before its slice ends, so
  * sr_yield never runs. The scheduler loop still pumps the window at least once per display
@@ -1339,6 +1408,27 @@ static void test_preempt_timer_hands_cpu_to_stronger_due_thread(void) {
     const unsigned equal = preempt_timer_run(32);
     expect(equal != UINT32_MAX && equal > PT_DUE_AT_YIELD,
            "an equal-priority waiter whose delay ran out does not take the CPU early");
+}
+
+static void test_preempt_point_hands_cpu_over_inside_an_hle_call(void) {
+    expect(preempt_point_run(16, 0, 0) == PP_CALL_START,
+           "a stronger thread whose delay ran out runs inside the long HLE call");
+    expect(g_pp_due_flag == 1 && atomic_load_explicit(&sr_preempt_due, memory_order_relaxed) == 0,
+           "the timer's edge sets sr_preempt_due and the point consumes it");
+
+    expect(preempt_point_run(32, 0, 0) == PP_CALL_END && g_pp_due_flag == 0,
+           "an equal-priority waiter sets nothing and stays behind the call");
+
+    expect(preempt_point_run(16, 1, 0) == PP_CALL_END,
+           "with interrupts suspended the switch waits for the resume");
+    expect(g_pp_republished_ns == UINT64_MAX,
+           "with interrupts suspended the spent deadline is not published again, or the timer "
+           "would fire once per command of the call");
+
+    expect(preempt_point_run(16, 0, 1) == PP_CALL_END,
+           "a waiter whose deadline the guest clock has not reached keeps waiting");
+    expect(g_pp_republished_ns != UINT64_MAX,
+           "the point publishes the deadline it did not meet");
 }
 
 /* ---- lifecycle tests (real coroutines) --------------------------------------------- */
@@ -5560,6 +5650,7 @@ int main(int argc, char **argv) {
     test_timed_wait_promotion();
     test_determinism();
     test_preempt_timer_hands_cpu_to_stronger_due_thread();
+    test_preempt_point_hands_cpu_over_inside_an_hle_call();
     test_entry_return_is_thread_exit();
     test_negative_entry_return_normalizes_to_illegal_argument();
     test_wait_timeout_entry_return_normalizes_to_illegal_argument();
