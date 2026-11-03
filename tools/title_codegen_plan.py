@@ -715,7 +715,8 @@ def _resolve_codegen_profile(
                 "codegen profile conflicts with the manifest "
                 f"(requested {requested!r}, manifest {declared!r})"
             )
-        return declared
+        returned: str = declared
+        return returned
     if requested is None:
         raise TitleCodegenPlanError(
             "codegen_profile is absent from the manifest; an explicit profile is required"
@@ -1220,12 +1221,33 @@ def _analysis_base(module: dict[str, Any], path: Path) -> int | None:
     runtime-placed module its link space -- base 0 for a relocatable PSP module, its
     absolute link addresses for a fixed-address image -- exactly as codegen translates it."""
     if module.get("placement") != "runtime":
-        return module["load_address"]
+        returned: int | None = module["load_address"]
+        return returned
     with path.open("rb") as stream:
         header = stream.read(18)
     if len(header) == 18 and header[:4] == b"\x7fELF" and int.from_bytes(header[16:18], "little") == 0xFFA0:
         return 0
     return None
+
+
+def _imports_no_source_exports(rows: list[dict[str, Any]],
+                               sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The import rows no input of this build exports.
+
+    A game splits its code across modules that import each other's libraries by NID. Such
+    an import names the game's own code, not a function the runtime has to serve, and a
+    game of many modules has thousands of them."""
+    import psp_import_table
+
+    exported: set[tuple[str, str]] = set()
+    for source in sources:
+        try:
+            table = psp_import_table.parse_export_table(source["path"].read_bytes())
+        except psp_import_table.ImportTableError:
+            continue  # code generation names this module's table
+        for library in table.user_callable_libraries() if table else ():
+            exported.update((library.name, f"0x{nid:08x}") for nid in library.function_nids)
+    return [row for row in rows if (row["library"], row["nid"]) not in exported]
 
 
 def _make_input_images(
@@ -1304,7 +1326,7 @@ def _make_input_images(
 
             try:
                 with source["path"].open("rb") as stream:
-                    overlay = analyze.is_code_overlay(stream.read(4))
+                    overlay = analyze.is_code_overlay(stream.read(18))
                 # A code overlay has no import table: it calls the executable's stubs.
                 stubs, findings = ({}, []) if overlay else _import_model(elf)
             except ImportTableError as exc:
@@ -1337,6 +1359,7 @@ def _make_input_images(
                         "status": "in the works",
                         "tracking_issue": 308,
                     })
+        unsupported_imports = _imports_no_source_exports(unsupported_imports, sources)
         unsupported_imports.sort(
             key=lambda row: (row["module"], row["library"], row["nid"])
         )

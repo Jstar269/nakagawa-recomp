@@ -42,6 +42,7 @@ class ManagerHelpTests(unittest.TestCase):
         self.source = MANAGER.read_text(encoding="utf-8-sig")
         match = re.search(r'\[ValidateSet\(([^)]+)\)\]\s*\[string\]\$Action', self.source)
         self.assertIsNotNone(match)
+        assert match is not None
         self.actions = re.findall(r'"([^"]+)"', match.group(1))
 
     def test_help_actions_match_validateset(self) -> None:

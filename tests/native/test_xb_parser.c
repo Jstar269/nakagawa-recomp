@@ -1295,6 +1295,34 @@ static void test_archive_vfs_mount_scaling(void) {
     }
 }
 
+/* A member whose name has no archive key (here it ends in a Shift-JIS character whose
+ * trail byte is 0x5c, which the key rule reads as a trailing separator) makes the mount
+ * fail as an invalid archive, with nothing indexed; it is not an allocation failure. */
+static void test_archive_vfs_keyless_member_is_invalid(void) {
+    static const uint8_t first_data[] = "first";
+    static const uint8_t keyless_data[] = "keyless";
+    const FixtureEntry entries[2] = {
+        { "data/first.bin", first_data, sizeof(first_data) - 1u, NK_XB_COMPRESSION_NONE },
+        { "data/\x83\x5c", keyless_data, sizeof(keyless_data) - 1u, NK_XB_COMPRESSION_NONE }
+    };
+    ByteBuffer archive = make_archive(entries, 2u, false);
+    NkXbArchive parsed;
+    char error[256];
+    assert(nk_xb_open_memory(archive.data, archive.size, "keyless.xb", false, NULL,
+                             &parsed, error, sizeof(error)) == NK_OK);
+    nk_xb_close(&parsed);
+
+    SrArchiveVfs vfs;
+    sr_archive_vfs_init(&vfs);
+    assert(sr_archive_vfs_mount_memory(&vfs, archive.data, archive.size, "keyless.xb",
+                                       false, -1, NULL) == NK_ERROR_INVALID_XB);
+    assert(sr_archive_vfs_mount_count(&vfs) == 0u);
+    assert(sr_archive_vfs_entry_count(&vfs) == 0u);
+    sr_archive_vfs_destroy(&vfs);
+    free(archive.data);
+    printf("[XB_TEST] archive VFS keyless member refusal PASSED\n");
+}
+
 static void test_archive_vfs_precedence(void) {
     static const uint8_t unqualified_data[] = "unqualified";
     static const uint8_t variant_two_data[] = "variant-two-first";
@@ -1961,6 +1989,7 @@ int main(void) {
     test_duplicate_canonical_path();
     test_deterministic_mutation_fuzz();
     test_archive_vfs_precedence();
+    test_archive_vfs_keyless_member_is_invalid();
     test_archive_vfs_provider();
     test_archive_vfs_many_members();
     test_archive_vfs_mount_scaling();

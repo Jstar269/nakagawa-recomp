@@ -44,10 +44,12 @@ typedef struct {
  * the same nominal-size group, a legacy file when it is the cache's only Latin import, the
  * project PGF, or a legacy file as a last fallback when the project PGF is absent. served_index
  * is 0..15 for an indexed cache file, -1 for the project PGF, -2 for the legacy unindexed cache
- * entry, and -3 when no source exists. */
+ * entry, and -3 when no source exists. project_file names the served file for the project PGF, and
+ * is NULL otherwise. */
 typedef struct {
     NkFontSource source;
     int served_index;
+    const char *project_file;
 } NkFontLatinResolution;
 
 typedef struct {

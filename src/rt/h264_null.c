@@ -363,7 +363,7 @@ int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
     if (psConsumed) {
         *psConsumed = instance->au_metadata_count ?
             instance->au_metadata[instance->au_metadata_head].ps_offset :
-            sr_psmf_producer_stream_bytes(instance->ps_demux);
+            sr_psmf_producer_unit_offset(instance->ps_demux, SR_PSMF_AU_VIDEO);
     }
     if (pts) *pts = current.has_pts ? current.pts : -1;
     return 1;

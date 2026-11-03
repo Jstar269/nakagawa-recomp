@@ -160,8 +160,28 @@ RT_SRCS    := src/rt/recomp.c \
               $(RT_NK_UI_SRCS) \
               $(PLAYER_PLATFORM_SRC)
 
+# Verify build (#1843): `make VERIFY=1 ...` compiles the sampled in-play checker (src/rt/verify.c)
+# and its hooks into the runtime and the generated code, and links the reference interpreter
+# (src/ref) beside it. It is off by default and the default objects do not change. Run the
+# resulting player with SR_VERIFY=k and SR_VERIFY_REPORT=file (src/rt/verify.h lists the
+# settings). The reference's sr_bitrev is renamed in its own object, as for snapshot-selftest.
+VERIFY ?= 0
+ifeq ($(VERIFY),1)
+override CFLAGS += -DSR_VERIFY
+RT_SRCS += src/rt/verify.c src/rt/nksnap.c
+override LIBS += -lstdc++
+VERIFY_REF_OBJS := $(BUILD_DIR)/verify_ref_interp.o $(BUILD_DIR)/verify_ref.o
+$(BUILD_DIR)/verify_ref_interp.o: src/ref/interp.cpp
+	$(CXX) -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev -c $< -o $@
+$(BUILD_DIR)/verify_ref.o: src/ref/snapshot_ref.cpp src/ref/snapshot_ref.h
+	$(CXX) -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev -c $< -o $@
+endif
+
 RT_OBJS   := $(addprefix $(BUILD_DIR)/,$(notdir $(RT_SRCS:.c=.o)))
 RT_OBJS    += $(H264_SUB_OBJS)
+ifeq ($(VERIFY),1)
+RT_OBJS    += $(VERIFY_REF_OBJS)
+endif
 
 # Everything needed to COMPILE the HLE sources ($(HLE_SRCS)), in one place. They reach into
 # the ATRAC decode bridges, so every target that compiles them needs these

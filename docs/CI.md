@@ -212,6 +212,11 @@ gate runs in exactly one part with the command it had in the serial job:
 - `translation`: the HLE, scheduler and dispatch selftests, cosimulation and its mutation
   corpus, the GPU selftests on lavapipe, the interpreter, VFPU, strbuf and ATRAC3+
   selftests, and the microtest codegen gates.
+  On the nightly schedule only, `translation` also runs `make CC=gcc selftest-repeat` after
+  the single scheduler and HLE thread runs: it reruns the three `sched_selftest_*` binaries
+  and `hle_thread_selftest` they built `SELFTEST_REPEAT` times (default 20), stops at the
+  first failure and prints the iteration and binary that failed (#1846). Pull requests, pushes,
+  merge groups and manual runs skip it, so their time is unchanged.
 - `player`: present pacing, the player UI tests and regressions, the CMake player, the
   showcase and the two player smokes that stage its ISO.
 
@@ -281,6 +286,17 @@ for every case, a named refusal for every malformed snapshot file, and `MISMATCH
 runner built with one immediate changed in the generated C. The verdicts are described in
 [`docs/DEBUGGING.md`](DEBUGGING.md#snapshot-execution).
 
+Both hosts run `verify-selftest` (#1843) in the same two jobs and parts. It builds the verify
+harness (`src/rt/verify_harness.c`, `src/rt/verify.c`, `-DSR_VERIFY`) against a source-owned
+synthetic module (`fixtures/verify/`), drives the samplers, the rate budget, the range filter
+and the skip classes, and requires a report with the expected counts for each. It then builds a
+harness and a snapshot runner whose generated C has one changed immediate and requires the
+`MISMATCH`, a capture, and the same first difference from the replay. It also requires that
+`make VERIFY=1` keeps the generated-code compile flags, that every runtime `_Exit` and `_exit` writes the
+verify report first, and that the default `recomp.c` and `hle.c`, the two hooked units, carry
+no verify hook once preprocessed. See
+[`docs/DEBUGGING.md`](DEBUGGING.md#sampled-in-play-checking).
+
 Both hosts run `hle-thread-selftest`, the executable production-HLE suite that links
 the runtime HLE sources (`src/rt/hle.c` and its subsystem files, #306, #307): the Windows job in its
 `selftests` part, and the Linux `native_tools` job after the pinned SDL3 install, because the suite
@@ -294,7 +310,6 @@ fixture title configurations.
 
 Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
 translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
-archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). The job
 archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). It builds
 SDL3 from its pinned 3.4.18 release commit with X11 and Vulkan enabled, and SDL3_ttf 3.2.2 from upstream commit
 `a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b`, with vendored FreeType and HarfBuzz enabled.
@@ -312,7 +327,10 @@ device after a terminal failure; an exit 77 skip fails the gate. A separate step
 texture cache, per-draw state template, filtering and blend cases against the software GE, where
 an exit 77 skip also fails. Its scaled-upload case then runs alone at render scales 2 and 4, where
 every device pixel of an uploaded target must hold its guest pixel, and so does its mip-lod case,
-where the shader's per-fragment mip level must not change with the render scale. The job also runs
+where the shader's per-fragment mip level must not change with the render scale, and so does its
+readback-rows case, where guest memory must get the top-left device pixel of each cell while the
+rows it does not keep stay out of the staging buffer, then once more on the `SR_GPU_READBACK_FULL`
+reference path. The job also runs
 `make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
 builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
 --help` usage marker. It downloads the PSPDEV archive identified by

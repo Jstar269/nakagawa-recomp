@@ -1177,6 +1177,8 @@ class PackageCacheTests(unittest.TestCase):
                 package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:analyzer_sha256")
         refused(stage, self.key(generated_code_abi_epoch=package_cache.GENERATED_CODE_ABI_EPOCH + 1),
                 package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:generated_code_abi_epoch")
+        refused(stage, self.key(generated_code_abi_epoch=package_cache.GENERATED_CODE_ABI_EPOCH - 1),
+                package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:generated_code_abi_epoch")
         refused(stage, self.key(codegen_options={"profile": "none", "funcs_per_chunk": 1000}),
                 package_cache.AOT_STAGE_OPTIONS_CHANGED, "aot:codegen_options_sha256")
         refused(
@@ -1675,7 +1677,8 @@ class BoundedJsonArtifactTests(unittest.TestCase):
                 # Simulate the file growing past the ceiling while the handle
                 # is open, after fstat saw the small size: the kernel returns
                 # more data than fstat accounted for.
-                return b"x" * (limit + 1)
+                returned: bytes = b"x" * (limit + 1)
+                return returned
 
             with mock.patch.object(package_cache.os, "read", side_effect=growing_read):
                 with self.assertRaisesRegex(package_cache.BoundedJsonError, "grew past"):
@@ -1862,7 +1865,8 @@ class BoundedJsonArtifactTests(unittest.TestCase):
             real_read = os.read
 
             def overlong_read(fd: int, n: int) -> bytes:
-                return real_read(fd, n) + b"A" * (package_cache.MAX_CACHE_JSON_BYTES + 1)
+                returned: bytes = real_read(fd, n) + b"A" * (package_cache.MAX_CACHE_JSON_BYTES + 1)
+                return returned
 
             with mock.patch.object(package_cache.os, "read", side_effect=overlong_read):
                 with self.assertRaises(package_cache.BoundedJsonError) as caught:

@@ -45,6 +45,8 @@
 #include "setup_staging.h"
 #include "player_ui_test.h"
 #include "nk_platform.h"
+#include "nk_portable.h"
+#include "nk_json.h"
 #include "player_host.h"
 
 static const char k_invalid_disc_message[] = "This file isn't a PSP disc image.";
@@ -682,6 +684,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
                        app->active_view == VIEW_ONLINE_SETTINGS ||
                        app->active_view == VIEW_ACCESSIBILITY_SETTINGS ||
+                       app->active_view == VIEW_PROBLEM_REPORT ||
                        app->active_view == VIEW_ACE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -852,6 +855,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_CONFIRM_FACTORY_RESET ||
                        app->active_view == VIEW_ONLINE_SETTINGS ||
                        app->active_view == VIEW_ACCESSIBILITY_SETTINGS ||
+                       app->active_view == VIEW_PROBLEM_REPORT ||
                        app->active_view == VIEW_ACE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -1363,6 +1367,262 @@ static void player_update_open_release_page(const PlayerApp *app) {
     player_open_link(NULL, "The release page", url);
 }
 
+/* ---- Problem report (#1849) -----------------------------------------------------------
+   `python tools/nk_cli.py report --json` does the work: it redacts, leaves out game data
+   and writes a ZIP on this PC. The preview (no ZIP, no toolchain check) runs when the page
+   opens; Create runs the toolchain check, up to 90 s, so both run on a worker thread. */
+
+typedef struct {
+    SDL_Thread *thread;
+    SDL_AtomicInt done;
+    bool create;
+    bool skip_doctor;
+    char install_root[NK_MAX_PATH];
+    char data_root[NK_MAX_PATH];
+    char logs_dir[NK_MAX_PATH];
+    char config_dir[NK_MAX_PATH];
+    char output_path[NK_MAX_PATH];
+    char title_id[64];
+    char title_name[128];
+    PlayerReportState result;
+} PlayerReportJob;
+
+static PlayerReportJob *s_report_job;
+
+static void player_report_command(const char *title_id, char *out, size_t size) {
+    if (title_id[0] != '\0') {
+        snprintf(out, size, "python tools/nk_cli.py report --title %s", title_id);
+    } else {
+        snprintf(out, size, "python tools/nk_cli.py report");
+    }
+}
+
+/* Reads the --json answer. The child's stderr shares the file, so parsing starts
+   at the first '{'. */
+static bool player_report_read_answer(const char *path, PlayerReportState *out) {
+    FILE *file = fopen(path, "rb");
+    char *text;
+    char *start;
+    long size;
+    NkJsonNode *root;
+    NkJsonNode *files;
+    NkJsonNode *written;
+    if (!file) return false;
+    if (fseek(file, 0, SEEK_END) != 0 || (size = ftell(file)) <= 0 || size > (1 << 20) ||
+        fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return false;
+    }
+    text = (char *)calloc((size_t)size + 1u, 1u);
+    if (!text) {
+        fclose(file);
+        return false;
+    }
+    if (fread(text, 1u, (size_t)size, file) != (size_t)size) {
+        free(text);
+        fclose(file);
+        return false;
+    }
+    fclose(file);
+    start = strchr(text, '{');
+    root = start ? nk_json_parse(start, strlen(start), NULL, 0u) : NULL;
+    free(text);
+    if (!root) return false;
+    written = nk_json_obj_get(root, "path");
+    if (written && nk_json_is_string(written)) {
+        snprintf(out->path, sizeof(out->path), "%s", nk_json_get_string(written));
+    }
+    files = nk_json_obj_get(root, "files");
+    if (files && nk_json_is_array(files)) {
+        size_t count = nk_json_array_count(files);
+        for (size_t i = 0u; i < count && out->file_count < PLAYER_REPORT_MAX_FILES; ++i) {
+            NkJsonNode *item = nk_json_array_get(files, i);
+            NkJsonNode *name = item ? nk_json_obj_get(item, "name") : NULL;
+            NkJsonNode *bytes = item ? nk_json_obj_get(item, "bytes") : NULL;
+            double value = 0.0;
+            if (!name || !nk_json_is_string(name)) continue;
+            snprintf(out->file_names[out->file_count], PLAYER_REPORT_FILE_NAME, "%s",
+                     nk_json_get_string(name));
+            if (bytes && nk_json_get_number(bytes, &value) && value > 0.0) {
+                out->file_bytes[out->file_count] = (unsigned long long)value;
+            }
+            ++out->file_count;
+        }
+    }
+    nk_json_free(root);
+    return out->file_count > 0;
+}
+
+/* The tool's own refusal ("Report error: ..."), when it printed one. */
+static void player_report_error_line(const char *path, char *out, size_t size) {
+    static const char prefix[] = "Report error: ";
+    char text[1024];
+    char *line;
+    FILE *file = fopen(path, "rb");
+    size_t used;
+    if (size > 0u) out[0] = '\0';
+    if (!file) return;
+    used = fread(text, 1u, sizeof(text) - 1u, file);
+    fclose(file);
+    text[used] = '\0';
+    line = strstr(text, prefix);
+    if (!line) return;
+    line[strcspn(line, "\r\n")] = '\0';
+    snprintf(out, size, "%s", line + strlen(prefix));
+}
+
+static int SDLCALL player_report_thread_main(void *userdata) {
+    PlayerReportJob *job = (PlayerReportJob *)userdata;
+    PlayerReportState *out = &job->result;
+    char python_path[NK_MAX_PATH];
+    char cli_path[NK_MAX_PATH];
+    const char *argv[24];
+    int argc = 0;
+    NkProcessHandle process;
+    int exit_code;
+    memset(&process, 0, sizeof(process));
+    player_report_command(job->title_id, out->command, sizeof(out->command));
+    if (!package_builder_find_python_in_root(job->data_root, python_path, sizeof(python_path))) {
+        out->phase = PLAYER_REPORT_NO_PYTHON;
+        goto finished;
+    }
+    if (!package_builder_find_cli(job->install_root, cli_path, sizeof(cli_path))) {
+        out->phase = PLAYER_REPORT_FAILED;
+        snprintf(out->message, sizeof(out->message),
+                 "tools/nk_cli.py was not found next to the player, so the report can't be "
+                 "made from here. Run the command from a Nakagawa Recomp source folder.");
+        goto finished;
+    }
+    argv[argc++] = python_path;
+    argv[argc++] = cli_path;
+    argv[argc++] = "report";
+    argv[argc++] = "--json";
+    if (!job->create) argv[argc++] = "--preview";
+    if (!job->create || job->skip_doctor) argv[argc++] = "--no-doctor";
+    if (job->title_id[0] != '\0') {
+        argv[argc++] = "--title";
+        argv[argc++] = job->title_id;
+        if (job->title_name[0] != '\0') {
+            argv[argc++] = "--title-name";
+            argv[argc++] = job->title_name;
+        }
+    }
+    argv[argc++] = "--user-data-root";
+    argv[argc++] = job->data_root;
+    argv[argc++] = "--logs-dir";
+    argv[argc++] = job->logs_dir;
+    argv[argc++] = "--config-dir";
+    argv[argc++] = job->config_dir;
+    argv[argc] = NULL;
+    (void)remove(job->output_path);   /* the spawn appends */
+    if (!nk_platform_spawn_process(python_path, argv, NULL, NULL, job->output_path, &process)) {
+        out->phase = PLAYER_REPORT_FAILED;
+        snprintf(out->message, sizeof(out->message), "Python could not be started.");
+        goto finished;
+    }
+    exit_code = nk_platform_wait_process(&process, job->create ? 150000 : 60000);
+    if (exit_code != 0) {
+        nk_platform_terminate_process(&process);
+    }
+    nk_platform_close_process(&process);
+    if (exit_code != 0 || !player_report_read_answer(job->output_path, out) ||
+        (job->create && out->path[0] == '\0')) {
+        char why[200];
+        player_report_error_line(job->output_path, why, sizeof(why));
+        out->phase = PLAYER_REPORT_FAILED;
+        out->file_count = 0;
+        out->path[0] = '\0';
+        snprintf(out->message, sizeof(out->message), "%s%sRun this in a terminal to see more: %s",
+                 why, why[0] != '\0' ? " " : "", out->command);
+        goto finished;
+    }
+    out->phase = job->create ? PLAYER_REPORT_DONE : PLAYER_REPORT_PREVIEWED;
+finished:
+    (void)remove(job->output_path);
+    SDL_SetAtomicInt(&job->done, 1);
+    return 0;
+}
+
+static void player_report_start(PlayerApp *app, bool create) {
+    PlayerReportJob *job;
+    if (s_report_job != NULL) return;   /* one at a time */
+    job = (PlayerReportJob *)calloc(1, sizeof(*job));
+    if (!job) return;
+    job->create = create;
+    snprintf(job->install_root, sizeof(job->install_root), "%s", app->install_root);
+    if (player_ui_test_report_data_root() != NULL) {
+        job->skip_doctor = true;
+        snprintf(job->data_root, sizeof(job->data_root), "%s", player_ui_test_report_data_root());
+    } else if (app->runtime_root[0]) {
+        snprintf(job->data_root, sizeof(job->data_root), "%s", app->runtime_root);
+    } else if (!nk_platform_get_app_data_dir(job->data_root, sizeof(job->data_root))) {
+        job->data_root[0] = '\0';
+    }
+    if (!nk_platform_get_path(NK_PATH_LOGS, job->logs_dir, sizeof(job->logs_dir))) {
+        job->logs_dir[0] = '\0';
+    }
+    if (!nk_platform_get_path(NK_PATH_CONFIG, job->config_dir, sizeof(job->config_dir))) {
+        job->config_dir[0] = '\0';
+    }
+    if (app->selected_game_index >= 0 && app->selected_game_index < app->game_count) {
+        const GameRecord *game = &app->games[app->selected_game_index];
+        snprintf(job->title_id, sizeof(job->title_id), "%s", game->disc_id);
+        snprintf(job->title_name, sizeof(job->title_name), "%s", game->title_name);
+    }
+    if (job->data_root[0] == '\0' || job->logs_dir[0] == '\0' || job->config_dir[0] == '\0' ||
+        snprintf(job->output_path, sizeof(job->output_path), "%s%creport-output.json",
+                 job->data_root, nk_platform_path_separator()) >= (int)sizeof(job->output_path)) {
+        memset(&app->report, 0, sizeof(app->report));
+        player_report_command(job->title_id, app->report.command, sizeof(app->report.command));
+        app->report.phase = PLAYER_REPORT_FAILED;
+        snprintf(app->report.message, sizeof(app->report.message),
+                 "Nakagawa's folders are not available. Run this in a terminal: %s",
+                 app->report.command);
+        free(job);
+        return;
+    }
+    job->thread = player_ui_test_fail_report_thread_create()
+        ? NULL : SDL_CreateThread(player_report_thread_main, "nakagawa-report", job);
+    if (!job->thread) {
+        memset(&app->report, 0, sizeof(app->report));
+        player_report_command(job->title_id, app->report.command, sizeof(app->report.command));
+        app->report.phase = PLAYER_REPORT_FAILED;
+        snprintf(app->report.message, sizeof(app->report.message),
+                 "The report could not be started. Run this in a terminal: %s",
+                 app->report.command);
+        free(job);
+        return;
+    }
+    s_report_job = job;
+    if (!create) memset(&app->report, 0, sizeof(app->report));
+    else app->report.message[0] = '\0';
+    app->report.phase = create ? PLAYER_REPORT_CREATING : PLAYER_REPORT_PREVIEWING;
+    player_report_command(job->title_id, app->report.command, sizeof(app->report.command));
+    player_dev_log_add(app, "report", "problem report %s started", create ? "create" : "preview");
+}
+
+static void player_report_poll(PlayerApp *app) {
+    PlayerReportJob *job = s_report_job;
+    if (!job || !SDL_GetAtomicInt(&job->done)) return;
+    SDL_WaitThread(job->thread, NULL);
+    s_report_job = NULL;
+    app->report = job->result;
+    player_dev_log_add(app, "report", "problem report finished (state %d, %d files)",
+                       (int)app->report.phase, app->report.file_count);
+    free(job);
+}
+
+static void player_report_shutdown(void) {
+    if (!s_report_job) return;
+    if (SDL_GetAtomicInt(&s_report_job->done)) {
+        SDL_WaitThread(s_report_job->thread, NULL);
+        free(s_report_job);
+    } else {
+        SDL_DetachThread(s_report_job->thread);
+    }
+    s_report_job = NULL;
+}
+
 /* The Settings controls: the same handlers the existing renderer's Settings
    buttons call. Each change is saved as it is made. */
 static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
@@ -1372,6 +1632,27 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             app->update.from_start = false;
             player_update_start(app, PLAYER_UPDATE_JOB_CHECK);
             break;
+        case PLAYER_UI_SETTINGS_OPEN_PROBLEM_REPORT:
+            player_app_set_view(app, VIEW_PROBLEM_REPORT);
+            if (s_report_job == NULL) player_report_start(app, false);
+            break;
+        case PLAYER_UI_SETTINGS_CREATE_REPORT:
+            if (app->report.phase != PLAYER_REPORT_PREVIEWING &&
+                app->report.phase != PLAYER_REPORT_CREATING) {
+                player_report_start(app, true);
+            }
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_REPORT_FOLDER: {
+            char folder[NK_MAX_PATH];
+            size_t cut = strlen(app->report.path);
+            snprintf(folder, sizeof(folder), "%s", app->report.path);
+            while (cut > 0u && folder[cut - 1u] != '/' && folder[cut - 1u] != '\\') --cut;
+            if (cut > 1u) {
+                folder[cut - 1u] = '\0';
+                (void)player_app_request_open_folder(app, folder);
+            }
+            break;
+        }
         case PLAYER_UI_SETTINGS_OPEN_UPDATES:
             app->update.notice = false;
             player_app_set_view(app, VIEW_UPDATES);
@@ -3216,6 +3497,25 @@ static int player_run_command_line_launch(PlayerApp *app, int game_index,
  * override). It must apply before anything resolves a per-user folder. */
 static bool player_apply_user_data_root(int argc, char *argv[]) {
     static const char prefix[] = "--user-data-root=";
+    bool explicit_root = false;
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], prefix, sizeof(prefix) - 1u) == 0) explicit_root = true;
+    }
+    /* Portable mode (#1850): a portable.txt beside the executable moves the root to
+       <executable folder>/data. An explicit --user-data-root is the more specific
+       request and wins; a marker whose folder cannot be written is refused, never
+       answered with the default root. */
+    if (!explicit_root) {
+        NkPortableResolution portable;
+        if (nk_portable_apply(&portable) == NK_PORTABLE_REFUSED) {
+            fprintf(stderr, "[PLAYER] %s\n", portable.message);
+            /* A double-clicked player has no console to print to. */
+            (void)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                                           "Nakagawa Recomp can't start portable",
+                                           portable.message, NULL);
+            return false;
+        }
+    }
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], prefix, sizeof(prefix) - 1u) != 0) continue;
         const char *requested = argv[i] + sizeof(prefix) - 1u;
@@ -3813,9 +4113,16 @@ static int player_load_library(PlayerRun *run) {
              * build; the entry keeps the inspection-reported status. */
 
             if (run->stage_only && !res.is_supported) {
+                /* The inspection above has already written the disc's experimental
+                   profile and decrypted its program into the data folder, so say
+                   what is there and where the game is added instead. */
                 fprintf(stderr, "[PLAYER] Disc %s is not in Nakagawa's title list yet, so "
-                        "its files cannot be set up. Nothing was changed.\n",
+                        "--stage-only cannot set up its files. Its experimental profile is "
+                        "recorded in Nakagawa's data folder and its program was checked there; "
+                        "add the disc from the player's library and build it from there.\n",
                         app->inspecting_game.disc_id);
+                printf("[PLAYER] STAGING_RESULT status=FAIL disc_id=%s\n",
+                       app->inspecting_game.disc_id);
                 return 3;
             }
 
@@ -4167,6 +4474,9 @@ static void player_apply_test_view(PlayerApp *app, const char *test_view) {
             player_app_set_view(app, VIEW_ACE_SETTINGS);
         } else if (strcmp(test_view, "build-cache") == 0) {
             player_app_set_view(app, VIEW_BUILD_CACHE);
+        } else if (strcmp(test_view, "problem-report") == 0) {
+            player_app_set_view(app, VIEW_PROBLEM_REPORT);
+            player_report_start(app, false);
         } else if (strcmp(test_view, "updates") == 0) {
             player_app_set_view(app, VIEW_UPDATES);
         } else if (strcmp(test_view, "factory-reset") == 0) {
@@ -4596,6 +4906,7 @@ static void player_loop_start(PlayerRun *run) {
 static void player_frame_begin(PlayerRun *run) {
     PlayerApp *app = &run->app;
     player_update_poll(app);
+    player_report_poll(app);
     player_ui_test_report_update_phase(&run->ui_test, app);
     /* A worker that could not queue its own completion has no other way
        to report it; apply its result before anything reads the pending
@@ -5115,6 +5426,7 @@ static int player_shutdown(PlayerRun *run) {
     }
 
     player_update_shutdown();
+    player_report_shutdown();
     destroy_staging_job(&run->staging_job);
     destroy_psn_job(&run->psn_job);
     destroy_disc_check_job(&run->disc_check_job);

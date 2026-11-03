@@ -347,10 +347,13 @@ class FixtureLayoutTests(unittest.TestCase):
 
           jrtail    ends in `jr $rs` and relinquishes control through its
                     callee's `jr $ra`;
-          xtail     the same, into the omitted middle of a cross-tier chain;
+          xtail, xsibtail
+                    the same, into the omitted middle of a cross-tier chain;
           xtailmid  ends in a `j` tail, which is the whole point -- it must NOT
                     return, so that the cross-tier tail control isolates guest
-                    memory commitment from frame re-entry.
+                    memory commitment from frame re-entry;
+          xsibmid   ends in a `j` sibcall (#1935) that hands its live frame
+                    to the native `xsibpiece`.
           xing_fall_a, xing_fall_b
                     end by falling into the next cell, another entry: the
                     entry crossing is what they test (FALL_INTO_CELLS).
@@ -358,8 +361,8 @@ class FixtureLayoutTests(unittest.TestCase):
         Anything else without a defined exit has no synchronization point in
         either lane.
         """
-        register_tail = {"jrtail", "xtail"}
-        jump_tail = {"xtailmid", "jthunk"}
+        register_tail = {"jrtail", "xtail", "xsibtail"}
+        jump_tail = {"xtailmid", "jthunk", "xsibmid"}
         for name, (_offset, words) in self.layout.items():
             if name in cosim.NON_PROGRAM_CELLS or name in cosim.AOT_ORACLE_ONLY_CELLS:
                 continue

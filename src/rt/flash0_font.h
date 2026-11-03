@@ -151,6 +151,8 @@ const char *sr_flash0_font_registry_status_text(SrFontRegistryStatus status);
 /* Test seam: marks a slot measured (non-zero) or pending (zero). Compiled only into the HLE
  * selftest, which stands in for the console measurement. */
 void sr_flash0_font_selftest_set_measured(NkFontSlot slot, int measured);
+/* Test seam: the fonts a guest open has named so far, one bit per Latin index, then one per slot. */
+uint32_t sr_flash0_font_test_opens_logged(void);
 #endif
 
 #endif /* SR_FLASH0_FONT_H */

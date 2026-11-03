@@ -419,18 +419,10 @@ TITLE_CONFIGURED_DISPATCH = [
                 "dispatch miss. Retire by registering the mid-function entry point in "
                 "codegen, which removes the need for any alias.",
          test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)"),
-    dict(address=0x00292fa0, category="temporary_compatibility_patch",
-         name="callback-list walker terminal miss",
-         source="src/rt/recomp.c:dispatch (runtime_bindings.callback_terminators)",
-         reason="a circular callback-list walker's -1 terminal target, reported as complete "
-                 "for this exact inner call site (pc plus ra) only, instead of as a permissive "
-                 "miss the walker would read as \"continue\". Its null-target sibling was "
-                 "retired by #1375: a transfer to 0 is now a null code pointer that stops by "
-                 "name.",
-         test="make dispatch-isolation-selftest (generic/fixture-a/fixture-b matrix)",
-         owner_issue="#363",
-         retirement="model the guest's circular callback-list end faithfully so the walk "
-                    "ends on its own instead of being reported complete here"),
+    # 0x00292fa0 (callback-list walker terminal miss): retired under #363 (2026-11-02). It
+    # named a virtual call in the frame loop, not a list walker, and its pc was whatever
+    # the previous return left behind. It never fired on the gate route, so the title's
+    # binding is gone and -1 at that site is an ordinary dispatch miss.
 ]
 
 OVERRIDES = (

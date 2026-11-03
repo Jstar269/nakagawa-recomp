@@ -27,9 +27,10 @@ PROJECT_FONT_GENERATED_DIR_PY := $(subst \,/,$(PROJECT_FONT_GENERATED_DIR))
 # Keep every internal target visible to the static target inventory.
 project-japanese-font:
 project-latin-font:
+project-latin-small-font:
 project-korean-font:
 
-# All three project slots use this rule family. Each source pin, repertoire, and
+# The project fonts use this rule family. Each source pin, repertoire, and
 # project-owned PGF name is data; output staging is handled once by tools/copy_build_assets.ps1.
 define PROJECT_FONT_RULE
 project-$(1)-font: $(PROJECT_FONT_GENERATED_DIR)/$(2)
@@ -40,8 +41,15 @@ $(PROJECT_FONT_GENERATED_DIR)/$(2): $(3) $(4) $(5) tools/ttf2pgf.py tools/pgf_wr
 	"$(PYTHON)" -c "import shutil; shutil.copyfile('$(5)', '$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2))-OFL.txt')"
 endef
 
+# The console's two Latin sizes, 10.125 and 7 points at 128 dpi. Each strike is sized and weighted so
+# that its ink meets the console font of that size: x-height, cap height, stem width and spacing
+# (font/README.md). The header ascender and descender are the console fonts' design values.
+PROJECT_LATIN_FONT_ARGS := --ppem 19 --embolden-x 7 --embolden-advance 8 --nominal-size 648 --resolution 8192 --header-ascender 863 --header-descender -196 --baseline-ellipsis
+PROJECT_LATIN_SMALL_FONT_ARGS := --ppem 13 --embolden-x 3 --embolden-y 2 --embolden-advance 5 --nominal-size 448 --resolution 8192 --header-ascender 576 --header-descender -131 --baseline-ellipsis
+
 $(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese,--ppem 12))
-$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,--ppem 13 --embolden-x 6 --embolden-y 4 --embolden-advance 3))
+$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,$(PROJECT_LATIN_FONT_ARGS)))
+$(eval $(call PROJECT_FONT_RULE,latin-small,nkltns.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,$(PROJECT_LATIN_SMALL_FONT_ARGS)))
 $(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean,--ppem 12))
 
 project-fonts: $(PROJECT_FONT_SLOT_TARGETS)

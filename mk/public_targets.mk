@@ -75,6 +75,8 @@ PUBLIC_TARGETS := \
 	cosim-mutants-llvm \
 	snapshot-selftest \
 	snapshot-selftest-run \
+	verify-selftest \
+	verify-selftest-run \
 	clean \
 	clean-fixtures \
 	tidy \
@@ -86,6 +88,7 @@ PUBLIC_TARGETS := \
 	strbuf-selftest \
 	sched-selftest \
 	sched-selftest-one \
+	selftest-repeat \
 	heap-selftest \
 	profiler-selftest \
 	gui-present-selftest \
@@ -118,6 +121,7 @@ PUBLIC_TARGETS := \
 	fp-convert-selftest \
 	ge-float24-selftest \
 	ge-cpu-profile-validate-selftest \
+	ge-flight-overhead \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
 	ge-raster-ref-selftest \
@@ -156,10 +160,14 @@ PUBLIC_TARGETS := \
 	psp-oracle-nakagawa-smoke-build \
 	psp-oracle-nakagawa-smoke-generate \
 	gpu-capture-selftest \
-	gpu-selftest-status
+	gpu-selftest-status \
+	form-sweep-build \
+	form-sweep-link \
+	form-sweep-selftest \
+	form-sweep-deep
 
-PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
-INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-latin-small-font project-korean-font
+INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -225,6 +233,12 @@ HELP_DESCRIPTION_cosim-selftest-llvm := run the cosimulation with the opt-in LLV
 HELP_DESCRIPTION_cosim-mutants-llvm := run the LLVM IR backend's cosimulation mutation campaign (#330)
 HELP_DESCRIPTION_snapshot-selftest := run snapshot execution against the reference interpreter (#1842)
 HELP_DESCRIPTION_snapshot-selftest-run := build and run the snapshot runner and its generated-C mutant
+HELP_DESCRIPTION_verify-selftest := run sampled in-play differential checking on a synthetic module (#1843)
+HELP_DESCRIPTION_verify-selftest-run := build and run the verify harness, its generated-C mutant and the capture replay
+HELP_DESCRIPTION_form-sweep-build := generate, translate, build and run one form sweep (#1844)
+HELP_DESCRIPTION_form-sweep-link := build and run the form-sweep harness over an already translated module
+HELP_DESCRIPTION_form-sweep-selftest := sweep every scalar instruction form codegen emits against the reference interpreter, with a generated mutant (#1844)
+HELP_DESCRIPTION_form-sweep-deep := the form sweep with every instance and 2048 states per instance (#1844)
 HELP_DESCRIPTION_clean := remove current-title build outputs
 HELP_DESCRIPTION_clean-fixtures := remove smoke, cosimulation, and oracle artifacts
 HELP_DESCRIPTION_tidy := remove intermediates while preserving linked binaries
@@ -236,6 +250,7 @@ HELP_DESCRIPTION_selftest := run the runtime selftest
 HELP_DESCRIPTION_strbuf-selftest := run the checked-formatting selftest
 HELP_DESCRIPTION_sched-selftest := run the scheduler selftest suite
 HELP_DESCRIPTION_sched-selftest-one := run one scheduler selftest build
+HELP_DESCRIPTION_selftest-repeat := rerun the built scheduler and HLE thread selftests until one fails
 HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
@@ -268,6 +283,7 @@ HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
 HELP_DESCRIPTION_ge-cpu-profile-validate-selftest := run the GE CPU-profile validator selftest on the production GE object
+HELP_DESCRIPTION_ge-flight-overhead := measure the disarmed flight recorder cost on the GE draw path (recorder linked vs absent; no game data)
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
 HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest

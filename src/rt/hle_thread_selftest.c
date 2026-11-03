@@ -4052,8 +4052,10 @@ static void test_fd_namespace(void) {
      * file size again. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = fd; cpu.r[5] = 0xfffffff6u; cpu.r[6] = 0u;
-    expect(sr_hle_test_io_lseek32(&cpu) == 0xffffffffu,
-           "a seek before the start returns -1");
+    /* On the Memory Stick a seek before the start answers EINVAL, not pspautotests' -1
+     * (PSP-IO-EOF-001 io-eof-seek-negative, measured on a PSP-3000 6.61). */
+    expect(sr_hle_test_io_lseek32(&cpu) == 0x80010016u,
+           "a Memory Stick seek before the start answers EINVAL");
     cpu.r[4] = fd; cpu.r[5] = 200u; cpu.r[6] = 0u;
     expect(sr_hle_test_io_lseek32(&cpu) == 200u,
            "a seek past the end of the file succeeds");
@@ -4102,6 +4104,33 @@ static void test_fd_namespace(void) {
     expect(sr_hle_test_io_lseek32(&cpu) == sizeof(payload) - 1u,
            "the refused write did not change the file size");
 
+    /* A Memory Stick seek before the start answers EINVAL with the error high word, from
+     * SEEK_SET, SEEK_CUR and SEEK_END alike, and leaves the position unchanged
+     * (PSP-IO-EOF-001 io-eof-seek-negative). */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd; cpu.r[5] = 8u; cpu.r[6] = 0u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 8u, "lseek32 places the descriptor at 8");
+    {
+        static const struct { uint32_t low, whence; } before_start[] = {
+            {0xffffffffu, 0u}, {0xfffffff0u, 1u}, {0xffffffe0u, 2u},
+        };
+        for (size_t i = 0; i < sizeof(before_start) / sizeof(before_start[0]); i++) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd; cpu.r[6] = before_start[i].low; cpu.r[7] = 0xffffffffu;
+            cpu.r[8] = before_start[i].whence;
+            expect(sr_hle_test_io_lseek(&cpu) == 0x80010016u && cpu.r[3] == 0xffffffffu,
+                   "a Memory Stick lseek before the start answers EINVAL with the error high word");
+        }
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = 0xffffffffu; cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 0x80010016u,
+               "a Memory Stick lseek32 to -1 answers EINVAL");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 1u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 8u,
+               "the refused seeks before the start left the position at 8");
+    }
+
     /* Negative and unrepresentable destinations leave the position unchanged. */
     {
         const uint32_t file_size = (uint32_t)(sizeof(payload) - 1u);
@@ -4141,9 +4170,9 @@ static void test_fd_namespace(void) {
                 rc = sr_hle_test_io_lseek(&cpu);
                 expect(cpu.r[3] == 0xffffffffu, "a refused lseek reports an error high word");
             }
-            /* Past 32 bits a Memory Stick seek answers EINVAL (PSP-KERNEL-SEM-001 io-seek64). */
-            int negative = i < sizeof(bad32) / sizeof(bad32[0]) || i == 3u || i == 5u;
-            expect(rc == (negative ? 0xffffffffu : 0x80010016u),
+            /* Before the start or past 32 bits a Memory Stick seek answers EINVAL
+             * (PSP-IO-EOF-001 io-eof-seek-negative, PSP-KERNEL-SEM-001 io-seek64). */
+            expect(rc == 0x80010016u,
                    "a negative or too large seek is refused, not clamped");
             memset(&cpu, 0, sizeof(cpu));
             cpu.r[4] = fd;
@@ -4152,6 +4181,35 @@ static void test_fd_namespace(void) {
             expect(sr_hle_test_io_lseek32(&cpu) == 5u,
                    "a refused seek leaves the descriptor position unchanged");
         }
+    }
+
+    /* A write after a seek past the end extends the file to the end of the write, and the
+     * position follows it (PSP-IO-EOF-001 io-eof-write-past and io-eof-gap, measured on a
+     * PSP-3000 6.61: a 4-byte write at 0x20 into a 16-byte file leaves it 0x24 bytes long with
+     * the tail readable at 0x20). The PSP leaves the gap's old Memory Stick bytes in place, so
+     * no gap content is asserted. */
+    {
+        const uint32_t file_size = (uint32_t)(sizeof(payload) - 1u);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = file_size + 16u; cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size + 16u,
+               "a seek 16 bytes past the end succeeds");
+        fd_set_write(&cpu, fd, payload_addr, 4u);
+        expect(sr_hle_test_io_write(&cpu) == 4u, "a write past the end writes its 4 bytes");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 1u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size + 20u,
+               "the position follows the write past the end");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = 0u; cpu.r[6] = 2u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size + 20u,
+               "the write past the end extends the file to its end");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = file_size + 16u; cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size + 16u, "a seek back to the tail succeeds");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd; cpu.r[5] = payload_addr; cpu.r[6] = 8u;
+        expect(sr_hle_test_io_read(&cpu) == 4u, "the tail reads back and the read stops at the end");
     }
 
     /* Closed descriptor behavior */
@@ -25563,6 +25621,26 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
      * never happened. */
     expect(s_gpu_dirty_calls == 0u,
            "no rejected DMA request issues a GPU dirty notification");
+
+    /* PSP-MEMEDGE-001: the last 256 bytes of VRAM as a source with the request running 4
+     * bytes (and 0x1000) past the end into the 0x04200000 mirror returned 0 and copied the
+     * whole request on a PSP-3000, for both APIs. The first 256 bytes are the VRAM bytes. */
+    {
+        static const uint32_t over[] = {4u, 0x1000u};
+        for (size_t i = 0; i < sizeof(over) / sizeof(over[0]); i++) {
+            dmac_fill(0x041fff00u, 256u);
+            dmac_clear(dst, 0x1200u, 0xa5u);
+            expect(bulk_call(nid, dst, 0x041fff00u, 256u + over[i]) == 0u,
+                   "PSP: a VRAM source running past the end of VRAM returns success");
+            expect(dmac_span_matches(dst, 256u, 0u),
+                   "PSP: a VRAM source running past the end of VRAM copies its VRAM bytes");
+            expect(!dmac_span_is(dst + 256u, 4u, 0xa5u),
+                   "PSP: a VRAM source running past the end of VRAM copies the bytes past it");
+            expect(dmac_span_is(dst + 256u + over[i], 4u, 0xa5u),
+                   "PSP: a VRAM source running past the end copies no more than requested");
+        }
+        gpu_dirty_reset();
+    }
 
     /* Exactly-to-the-end must still be accepted: the bound is the real arena
      * end, not a conservative margin that would reject legal transfers. */

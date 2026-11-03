@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -167,6 +168,19 @@ class TitleManifestTests(unittest.TestCase):
                     with self.assertRaises(title_manifest.TitleManifestError) as caught:
                         title_manifest.validate_manifest(value)
                     self.assertIn(message, str(caught.exception))
+
+    def test_retired_callback_terminators_collection_has_a_named_migration_error(self) -> None:
+        """The runtime no longer reports a dispatch target as a completed walk, so a
+        manifest that still names the collection fails by name instead of as an unknown
+        field."""
+        self.assertIn("callback_terminators", title_manifest.RETIRED_RUNTIME_BINDING_FIELDS)
+        self.assertTrue(title_manifest.CALLBACK_TERMINATOR_RETIRED_MESSAGE
+                        .startswith("CALLBACK_TERMINATOR_RETIRED: "))
+        configured = copy.deepcopy(self.fixture)
+        configured["runtime_bindings"]["callback_terminators"] = [
+            {"sentinel": 0xFFFFFFFF, "pc": 0x08900100, "ra": 0x08900200}]
+        with self.assertRaisesRegex(ValueError, "CALLBACK_TERMINATOR_RETIRED: "):
+            title_manifest.validate_manifest(configured)
 
     def test_duplicate_json_key_is_rejected(self) -> None:
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "duplicate JSON object key"):
@@ -480,6 +494,7 @@ class TitleManifestTests(unittest.TestCase):
             re.DOTALL,
         )
         self.assertIsNotNone(section)
+        assert section is not None
         roots = json.loads("{" + section.group(1) + "}")["loose_content_roots"]
         self.assertEqual(roots, [{
             "root": ".", "mount": "", "precedence": 0,
@@ -744,7 +759,8 @@ class NativeTitleIdentityTests(unittest.TestCase):
         value["disc"] = {"id": "TEST12345", "region": "NA",
                          "revision_policy": "explicit-compatible-revisions",
                          "compatible_revisions": ["TEST12346"]}
-        return value
+        returned: dict[str, Any] = value
+        return returned
 
     def test_native_strings_and_identity_lookups_preserve_the_manifest(self) -> None:
         value = self.retail()

@@ -186,6 +186,7 @@ class TestProjectFontAssetCopy(unittest.TestCase):
     OUTPUTS = (
         "nkjpn.pgf", "nkjpn.json", "nkjpn-OFL.txt",
         "nkltn.pgf", "nkltn.json", "nkltn-OFL.txt",
+        "nkltns.pgf", "nkltns.json", "nkltns-OFL.txt",
         "nkkr.pgf", "nkkr.json", "nkkr-OFL.txt",
     )
 

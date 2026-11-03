@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,7 +65,8 @@ PSPDEV_REQUIRED_TOOLS = ("psp-config", "psp-gcc", "psp-prxgen", "pack-pbp")
 
 
 def _manifest(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    returned: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return returned
 
 
 def _wsl_executable() -> str | None:

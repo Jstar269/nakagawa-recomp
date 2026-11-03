@@ -168,28 +168,27 @@ class VariableExport:
     address: int
 
 
-def variable_exports(elf):
-    """Every variable a named library of the image exports, in .lib.ent order.
+def _named_library_exports(elf):
+    """Yield (library, function count, variable count, entry table) per named library.
 
     An export record is a 16-byte head (library name, version, attributes, length in words,
     variable count, function count, entry table); its entry table holds the function NIDs,
     the variable NIDs, then their addresses in the same order. The nameless module-lifecycle
-    entry exports no linkable variable. An image with no .lib.ent exports none.
+    entry is skipped: nothing links to it by name. An image with no .lib.ent has none.
     """
     libent = elf.sec(".lib.ent")
     if not libent or not libent.get("size"):
-        return ()
+        return
     blob = elf.read_at_vaddr(libent["addr"], libent["size"])
     if blob is None or len(blob) != libent["size"]:
         raise ImportTableError("ANALYZER_IMPORT_TABLE_INVALID", ".lib.ent leaves mapped input")
-    found = []
     pos = 0
     while pos + 16 <= len(blob):
         name_ptr, _version, _attributes, size, num_vars, num_funcs, table = struct.unpack_from(
             "<IHHBBHI", blob, pos)
         if size < 4:
             break  # a record shorter than its own head ends the table, as the analyzer reads it
-        if num_vars and name_ptr:
+        if (num_vars or num_funcs) and name_ptr:
             library = _read_guest_cstr(elf, name_ptr)
             count = num_funcs + num_vars
             words = elf.read_at_vaddr(table, 8 * count) if table else None
@@ -197,12 +196,43 @@ def variable_exports(elf):
                 raise ImportTableError(
                     "ANALYZER_IMPORT_TABLE_INVALID",
                     f"{library} export table at 0x{table:08x} leaves mapped input")
-            values = struct.unpack(f"<{2 * count}I", words)
-            for j in range(num_vars):
-                found.append(VariableExport(library, values[num_funcs + j],
-                                            values[count + num_funcs + j]))
+            yield library, num_funcs, num_vars, struct.unpack(f"<{2 * count}I", words)
         pos += size * 4
+
+
+def variable_exports(elf):
+    """Every variable a named library of the image exports, in .lib.ent order."""
+    found = []
+    for library, num_funcs, num_vars, values in _named_library_exports(elf):
+        count = num_funcs + num_vars
+        for j in range(num_vars):
+            found.append(VariableExport(library, values[num_funcs + j],
+                                        values[count + num_funcs + j]))
     return tuple(found)
+
+
+def function_exports(elf, stubs):
+    """(nid, address) of the functions named libraries export, sorted by NID.
+
+    A module's call into another module reaches the runtime by NID alone, so a NID two
+    libraries of the image export at different addresses has no single meaning and is refused.
+    A game may re-export the import stubs of its own executable. `stubs` is parse_imports'
+    map: such an export is left out when the stub imports the same NID, because that NID
+    already reaches the system function, and linking it would make the stub call itself.
+    """
+    found = {}
+    for library, num_funcs, num_vars, values in _named_library_exports(elf):
+        count = num_funcs + num_vars
+        for j in range(num_funcs):
+            nid, address = values[j], values[count + j]
+            if address in stubs and stubs[address][1] == nid:
+                continue
+            if found.setdefault(nid, address) != address:
+                raise ImportTableError(
+                    "ANALYZER_IMPORT_TABLE_INVALID",
+                    f"{library} exports 0x{nid:08x} at 0x{address:08x}, "
+                    f"and another library at 0x{found[nid]:08x}")
+    return tuple(sorted(found.items()))
 
 
 def variable_imports(elf):
@@ -363,7 +393,8 @@ def function_import_model(
 ) -> "tuple[dict[int, tuple[str, int]], list[str], tuple[VariableImportTable, ...]]":
     """Return (stubs, findings, variable_tables): parse_imports plus the windows that
     declare variables (variable_imports models those)."""
-    return _function_import_model(elf)
+    returned: tuple[dict[int, tuple[str, int]], list[str], tuple[VariableImportTable, ...]] = _function_import_model(elf)
+    return returned
 
 
 def function_import_windows(

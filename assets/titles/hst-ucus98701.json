@@ -64,9 +64,6 @@
     "launcher_thread_entry": 2728308,
     "dispatch_aliases": [
       {"from": 198992, "to": 198984}
-    ],
-    "callback_terminators": [
-      {"sentinel": 4294967295, "pc": 2699168, "ra": 293388}
     ]
   },
   "notes": "Hot Shots Tennis (UCUS98701) title configuration: disc identity, guest module names and load addresses, and runtime bindings, all given as addresses. Contains no retail bytes, hashes, keys, recovered source, or private evidence. The executable, module_dir and psp_header entries name the repository's standard place_game_here/ input layout for the HST manager, which uses this manifest when -TitleManifest names it; the player uses it to recognize the disc as the built-in hst title."

@@ -1,6 +1,6 @@
 # `tools/` — Host-side recompiler scripts
 
-These scripts require Python 3.15.x. PowerShell entrypoints require PowerShell 7.4+ (`pwsh`); they
+These scripts require Python 3.15.x (3.14.x is also accepted). PowerShell entrypoints require PowerShell 7.4+ (`pwsh`); they
 run on the development host and are never executed by `hst.exe` at runtime. For HST, use the canonical `nk_manager.ps1` with `-GameName hst` and `-TitleManifest`; it supplies the required zero base/entry values and drives the Makefile's two-phase build.
 
 ## Pipeline (in order)
@@ -142,6 +142,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `analyze.py` | Discover function boundaries, executable spans and tail calls in a guest ELF. |
 | `analyze_cfg.py` | The canonical CFG report, its gate and the static coverage census, with the branch decode they use. `analyze.py` imports every name back. |
 | `analysis_ir.py` | Advisory analysis IR from a `codegen.py --cfg-report` file: blocks, functions, call graph, xrefs, register use; parity check, annotation comparison and `explain`. |
+| `binding_carry.py` | Proposes a title manifest's `runtime_bindings` for another revision by matching functions on masked code (exact, neighbour tie-break, fuzzy, via callers); refuses ambiguous matches (#1847). |
 | `imports.py` | Walk guest import tables and resolve MIPS NIDs to HLE handler names. |
 | `codegen.py` | Translate guest MIPS to C and split the output into `<g>_recomp_<n>.c` chunks. |
 | `codegen_llvm.py` | The opt-in LLVM IR backend (`--backend=llvm`, #330): lower supported functions to `<g>_recomp_<n>.ll`. |
@@ -152,6 +153,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `codegen_hst_stubs.py` | The hand-written C bodies the generator emits for specific HST guest addresses (`--profile=hst`), as data keyed by address. |
 | `compat_overrides.py` | Semantic-debt manifest of every game-address-specific override in the runtime. |
 | `entry_frame_balance.py` | Stack-symbolic entry classification: callable boundary versus resume PC. |
+| `miss_seeds.py` | Merge the dispatch-miss files a run writes (`SR_MISS_SEEDS`) into a per-title seed list that `analyze.py` and `codegen.py` take as `--miss-seeds` (#1848). |
 | `elf_bounds.py` | Shared, fail-closed ELF32 envelope checks for the offline PSP tools. |
 | `hle_manifest.py` | Generate the authoritative HLE registration manifest from the runtime HLE table, plus the semantic-status census artifact (`--census-json` / `--census-markdown`). |
 | `hle_registry_meta.py` | Curated classification metadata for the HLE registration manifest. |
@@ -176,12 +178,14 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `verify_gates.py` | Run the optional differential verification gates without shell-specific syntax. |
 | `tracediff.py` | Diff two runtime traces in the format documented in `TRACE_FORMAT.md`. |
 | `nksnap.py` | Read and write `nksnap` v1 snapshots and parse the snapshot runner's verdict lines (#1842). |
+| `form_sweep.py` | Census-driven sweep of every scalar ALU/FPU instruction form `codegen.py` emits: builds one synthetic function per register-aliasing and edge-value instance and reports MATCH, MISMATCH, NOT_CHECKED or MISSING against the reference interpreter (#1844). |
 | `import_audit.py` | Classify a PSP ELF's imports against the HLE registration manifest. |
 | `import_audit_gate.py` | Public CI gate for import coverage and fake-success regressions. |
 | `import_fixtures.py` | Synthetic PSP ELF fixtures for the import-coverage audit gate. |
 | `import_stub_census.py` | Import-stub census: every import-table stub of an image is owned, bodied and reaches the HLE (or a named refusal). |
 | `psp_import_table.py` | Defensive PSP ELF import-table parser for the import-coverage gate. |
 | `flight_diff.py` | Compare two source-safe flight-recorder bundles. |
+| `ge_flight_overhead.py` | Compare the GE draw path with the flight recorder linked and disarmed against compiled out (`ge-flight-overhead`). |
 | `ge_transition_diff.py` | Offline diff for the narrow GE transition trace. |
 | `ge_replay_metrics.py` | Strict parsers for aggregate GE replay CPU-profile summaries. |
 | `ge_stat_windows.py` | Read the runtime's `SR_GESTAT` windows by the vblank that closed them, for gates such as the showcase smoke. |
@@ -339,6 +343,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | Module | Purpose |
 | --- | --- |
 | `test_analysis_ir.py` | Analysis IR parity with codegen's CFG report, JSON round trip, annotation comparison and `explain` (#305). |
+| `test_binding_carry.py` | Binding carry over two synthetic revisions: exact, neighbour, fuzzy, caller, ambiguous decoy, unmatched and NID-matched stubs (#1847). |
 | `test_analyze_tailcall.py` | Regression tests for the analyzer's tail-call promotion. |
 | `test_analyze_import_stub_entries.py` | Import-table stubs outside the named code sections are owned function entries, with codegen bodies. |
 | `test_analyze_toml_emit.py` | Locks the analyzer TOML emitter's fail-closed string contract. |
@@ -364,6 +369,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_codegen_vfpu_fallback.py` | VFPU fallback emission, including unsupported forms failing closed. |
 | `test_cosim_fixture.py` | Structural gates for the AOT/interpreter cosimulation fixture. |
 | `test_snapshot_format.py` | Pins the `nksnap` v1 format, every loader refusal and the snapshot runner's verdict grammar. |
+| `test_form_sweep.py` | Pins the form census, operand roles, alias patterns, immediate buckets, determinism, the report grammar and the aliasing mutant's expected set. |
 | `test_compat_manifest.py` | Every custom codegen stub and dispatch hook must be in the manifest. |
 | `test_cosim_mutation_gate_outcome.py` | Cosim mutation driver verdicts bound to process status, the timeout verdict and child-tree reaping. |
 | `test_cpu_lle.py` | Low-level emulation CPU gates: COP0, exceptions, eret, interpreter support. |
@@ -372,6 +378,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_dispatch_fatal_policy.py` | Tests for fail-closed dispatch and unknown NID handling. |
 | `test_direct_j_omission_mutation.py` | Compiled mutation proof for omitted direct-j execution boundaries. |
 | `test_entry_frame_balance.py` | Structural entry-role classification regressions. |
+| `test_miss_seeds.py` | Dispatch-miss seeds: the seed file, the analysis entries, and the run-to-rebuild loop on a synthetic module. |
 | `test_fp_scalar_mutations.py` | Committed mutation regressions for the scalar FPU control-register slice. |
 | `test_guest_span_routing.py` | Source-shape gates for the native bulk and parser slice. |
 | `test_guest_printf.py` | Behavioral regression checks for the guest formatted-output bridge. |
@@ -497,6 +504,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_extract_xb_security.py` | Synthetic, retail-free coverage for extraction containment and limits. |
 | `test_flight_build_identity.py` | Reproducible build identity of the flight recorder's build block. |
 | `test_flight_diff.py` | Flight-recorder bundle schema, comparability refusal and cross-run diffing. |
+| `test_ge_flight_overhead.py` | Bench-output parsing, bootstrap interval and verdicts of the GE flight-recorder overhead driver. |
 | `test_funcdiff_cmp.py` | Fail-closed oracle trace comparison: divergence, empty and truncated traces fail. |
 | `test_gate_exit_resolution.py` | Shared exit-stub discovery and trace helpers used by the correctness gates. |
 | `test_ge_capture.py` | GE capture route regressions. |

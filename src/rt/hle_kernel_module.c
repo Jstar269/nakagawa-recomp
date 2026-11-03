@@ -190,6 +190,25 @@ static int module_path_is(const char *path, const char *name) {
     return 0;
 }
 
+/* A path on device, which is lower case and ends in ':'. Device names are
+ * case-insensitive. */
+static int module_path_on_device(const char *path, const char *device) {
+    for (size_t i = 0; device[i]; i++) {
+        char c = path ? path[i] : '\0';
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != device[i]) return 0;
+    }
+    return 1;
+}
+
+/* The running program came from the disc: the program the last sceKernelLoadExec booted, or
+ * before any LoadExec the boot path the driver seeds, names disc0: or umd0:. */
+static int module_program_from_disc(void) {
+    const char *program = s_loadexec_program_path[0] ? s_loadexec_program_path
+                                                     : getenv("SR_BOOT_PATH");
+    return module_path_on_device(program, "disc0:") || module_path_on_device(program, "umd0:");
+}
+
 /* Text/data/bss sizes of a PRX image as the kernel's loader sums them (uOFW
  * src/kd/loadcore/loadelf.c): with a section table, CheckElfSectionPRX -- PROGBITS sections
  * flagged exactly ALLOC|EXECINSTR or ALLOC are text, WRITE|ALLOC data, NOBITS WRITE|ALLOC
@@ -250,14 +269,51 @@ static uint32_t module_entry_call(CpuState *s, const LoadedModule *mod, uint32_t
     return ge_call_guest_rv(s, entry, arglen, argp, 0);
 }
 
-/* module_stop is a module-manager entry, so execute it in its own guest thread.
- * Thread creation uses the runtime's existing synthetic defaults (priority 32,
- * default stack); callers that need a physical PSP's module-thread option rules
- * remain behind this explicitly labelled boundary. The scheduler copies argp to
- * the stop thread's stack before starting it, then this caller joins and deletes
- * the temporary thread. */
+/* The thread a module's stop entry runs on: the module-init priority and the default stack
+ * unless the caller's SceKernelSMOption says otherwise. */
+typedef struct ModuleStopThread {
+    int priority;
+    uint32_t stack_size;
+    uint32_t attr;
+} ModuleStopThread;
+#define MODULE_STOP_THREAD_DEFAULT ((ModuleStopThread){SCE_KERNEL_MODULE_INIT_PRIORITY, 0u, 0u})
+
+/* The attributes a SceKernelSMOption may ask for: NO_FILLSTACK, CLEAR_STACK, LOW_STACK, the
+ * unnamed 0x00800000, USE_VFPU and NEVERUSE_FPU (uOFW THREAD_SM_LEGAL_ATTR). */
+#define MODULE_SM_LEGAL_ATTR 0x00f06000u
+#define MODULE_SM_OPTION_SIZE 20u
+#define GUEST_MODULE_PARTITION_USER 2u
+
+/* Apply a SceKernelSMOption {size, mpIdStack, stackSize, priority, attribute}, as the module
+ * manager reads it (uOFW src/kd/modulemgr/loadModuleChecks_inline.h, _checkSMOptionConditions,
+ * and modulemgr.c, _StopModule): a size from SDK 2.08 on, legal attributes, and a zero
+ * priority or stack size leaving the default in place. Only the user partition is modelled
+ * for the stack, so another one is refused by name. */
+static uint32_t read_module_stop_option(uint32_t option, ModuleStopThread *thread) {
+    if (!option) return 0u;
+    if (!sr_guest_span_readable(option, MODULE_SM_OPTION_SIZE)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if ((sr_sdkver_get(&g_sdk_version) & 0xffff0000u) >= 0x02080000u &&
+        MEM_R32(option) != MODULE_SM_OPTION_SIZE)
+        return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+    const uint32_t mpid = MEM_R32(option + 4u), stack_size = MEM_R32(option + 8u);
+    const uint32_t priority = MEM_R32(option + 12u), attr = MEM_R32(option + 16u);
+    if (attr & ~MODULE_SM_LEGAL_ATTR) return 0x80020001u; /* SCE_KERNEL_ERROR_ERROR */
+    if (mpid != 0u && mpid != GUEST_MODULE_PARTITION_USER) {
+        fprintf(stderr, "SEMANTIC_BOUNDARY: MODULE_STOP_PARTITION_UNSUPPORTED: stop thread stack "
+                        "in partition %u; only the user partition is modelled; refusing\n", (unsigned)mpid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (priority != 0u) thread->priority = (int)priority;
+    if (stack_size != 0u) thread->stack_size = stack_size;
+    thread->attr = attr;
+    return 0u;
+}
+
+/* module_stop is a module-manager entry, so execute it in its own guest thread. The
+ * scheduler copies argp to the stop thread's stack before starting it, then this caller
+ * joins and deletes the temporary thread. */
 static uint32_t module_stop_thread_invoke(CpuState *caller, const LoadedModule *mod,
-                                          uint32_t arglen, uint32_t argp,
+                                          ModuleStopThread thread, uint32_t arglen, uint32_t argp,
                                           uint32_t *status_out) {
     if (!caller || !mod || !mod->module_stop || sched_current_uid() == 0u) {
         fprintf(stderr, "PRX_MODULE_STOP_THREAD_UNAVAILABLE_SYNTHETIC: no running guest "
@@ -267,8 +323,8 @@ static uint32_t module_stop_thread_invoke(CpuState *caller, const LoadedModule *
     if (arglen != 0u && (!argp || !sr_guest_span_readable(argp, arglen)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
 
-    uint32_t thread_uid = sched_create_thread_ex(mod->module_stop, 32, 0u, 0u,
-                                                 "module_stop");
+    uint32_t thread_uid = sched_create_thread_ex(mod->module_stop, thread.priority,
+                                                 thread.stack_size, thread.attr, "module_stop");
     if (!thread_uid) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
     uint32_t gp = mod->runtime_placed ? mod->gp : caller->r[28];
     if (sched_thread_set_gp(thread_uid, gp) != 0) {
@@ -377,7 +433,10 @@ unsigned register_prx_exports(const char *host_path, uint32_t base) {
     memcpy(&phoff, eh + 28, 4); memcpy(&phentsz, eh + 42, 2); memcpy(&phnum, eh + 44, 2);
     uint32_t e_entry = 0;
     memcpy(&e_entry, eh + 24, 4);
-    if (e_entry != 0 && e_entry <= UINT32_MAX - base) {
+    /* An entry of 0 is the module's first address. 0xFFFFFFFF declares no entry at all: a
+     * library module such as a retail libfont has no start routine, and its first function
+     * is not one (#363). */
+    if (e_entry != 0xFFFFFFFFu && e_entry <= UINT32_MAX - base) {
         s_last_prx_entry = base + e_entry;
     }
     uint64_t ph_bytes = (uint64_t)phentsz * phnum;
@@ -857,7 +916,6 @@ static int populate_guest_module(const char *file, uint32_t base, int required) 
         if (!load_prx_image(image_path, base, file)) return 0;
     }
     (void)register_known_module(guest_module_root(), file, base);
-    if (!s_last_prx_entry) s_last_prx_entry = base;
     return 1;
 }
 
@@ -878,7 +936,6 @@ static int populate_guest_module(const char *file, uint32_t base, int required) 
 /* SceKernelLMOption, from the public PSPSDK pspmodulemgr.h: size, mpidtext, mpiddata,
  * flags, position, access, reserved[2]. Fields past `size` are absent and default. */
 #define GUEST_MODULE_OPTION_BYTES 20u
-#define GUEST_MODULE_PARTITION_USER 2u
 #define GUEST_MODULE_POSITION_LOW 0u
 #define GUEST_MODULE_POSITION_HIGH 1u
 /* The user partition hands out 256-byte slots (alloc_block). */
@@ -933,6 +990,7 @@ static uint32_t hle_libfont_startup_stop(const char *reason) {
         sr_trace_close();
         sr_compat_report();
         sr_perf_shutdown();
+        SR_VERIFY_REPORT_NOW();
         fflush(stderr);
         _Exit(HLE_LIBFONT_STARTUP_STOP_EXIT);
     }
@@ -976,6 +1034,25 @@ static unsigned char *read_guest_module_file(const char *path, size_t *size_out,
     return bytes;
 }
 
+void sr_module_code_sha256(const void *bytes, size_t size, char out[65]) {
+    static const char hex[] = "0123456789abcdef";
+    uint8_t digest[32];
+    sr_vfpu_sha256((const uint8_t *)bytes, size, digest);
+    for (size_t i = 0u; i < sizeof(digest); i++) {
+        out[i * 2u] = hex[digest[i] >> 4];
+        out[i * 2u + 1u] = hex[digest[i] & 15u];
+    }
+    out[64] = '\0';
+}
+
+/* Whether these are the exact bytes the build translated. digest is filled either way. */
+static int module_file_is_translated(const SrModuleCode *code, const void *bytes, size_t size,
+                                     char digest[65]) {
+    sr_module_code_sha256(bytes, size, digest);
+    return (uint64_t)size == code->file_size && code->file_sha256 &&
+           strcmp(digest, code->file_sha256) == 0;
+}
+
 int loadexec_module_file_matches_translation(const char *file) {
     if (!file || !file[0]) return 0;
     const SrModuleCode *code = sr_module_code_find(file);
@@ -987,9 +1064,10 @@ int loadexec_module_file_matches_translation(const char *file) {
     int unreadable = 0;
     unsigned char *bytes = read_guest_module_file(path, &size, &unreadable);
     if (!bytes) return 0;
-    uint64_t digest = sr_module_code_fnv1a64(bytes, size);
+    char digest[65];
+    int matches = module_file_is_translated(code, bytes, size, digest);
     free(bytes);
-    return size == code->file_size && digest == code->file_fnv1a64;
+    return matches;
 }
 
 /* Libraries a title ships as its own module, for which host HLE only stands in. When the
@@ -1059,13 +1137,13 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
         return guest_module_boundary("guest-module-untranslated", file,
                                      "the build did not translate this module");
     }
-    uint64_t digest = sr_module_code_fnv1a64(bytes, size);
-    if ((uint64_t)size != code->file_size || digest != code->file_fnv1a64) {
+    char digest[65];
+    if (!module_file_is_translated(code, bytes, size, digest)) {
         free(bytes);
-        snprintf(detail, sizeof(detail), "the staged file (0x%x bytes, FNV-1a 0x%016llx) is "
-                 "not the file the build translated (0x%x bytes, FNV-1a 0x%016llx)",
-                 (unsigned)size, (unsigned long long)digest,
-                 code->file_size, (unsigned long long)code->file_fnv1a64);
+        snprintf(detail, sizeof(detail), "the staged file (0x%x bytes, SHA-256 %.16s) is "
+                 "not the file the build translated (0x%x bytes, SHA-256 %.16s)",
+                 (unsigned)size, digest, code->file_size,
+                 code->file_sha256 ? code->file_sha256 : "none");
         return guest_module_boundary("guest-module-identity-mismatch", file, detail);
     }
     if (code->unsupported_reason) {
@@ -1265,6 +1343,9 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
  * declares (by guest_path) were translated; any other path gets a record whose start
  * the host bypass serves. */
 uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
+    /* A title may spell a raw sector extent several ways; the manifest declares one. */
+    char extent[64];
+    if (iso_sector_extent_path(path, extent, sizeof(extent))) path = extent;
     const char *file = NULL;
     uint32_t base = 0;
     int required = 0;
@@ -1337,6 +1418,33 @@ static uint32_t reject_module_transition(const char *operation, uint32_t uid,
 
 /* Host path helpers defined with the rest of the host-path layer below. */
 static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out);
+
+/* LoadExecForUser_362A956B(): reads the registered exit callback's common argument as a block
+ * { int mode; ExitParams *params; int common; }, its address being the argument + 8, and on
+ * success clears params->unk1 and sets params->unk2 to -1 (the first word, a size, is kept).
+ * pspautotests threads/callbacks/exit.expected (rev 1a9e6c31, recorded on a PSP, compiled SDK
+ * 3.95): no live exit callback is 0x800201a1; a callback whose argument is NULL is 0x800200d3;
+ * mode 0..3 with a params size of 12 or more (including a negative one, read as unsigned) is 0
+ * and writes (0, -1); mode 4 or above (including -1) is 0x800200d2; a size below 12 is
+ * 0x800201bc with the block untouched.  A params pointer or block the guest cannot read or write
+ * is not measured and stops by name.  Also unmeasured: which of the mode and size checks comes
+ * first when both fail (the mode is checked first here), and the result under a compiled SDK
+ * version other than 3.95's (the same here). */
+static uint32_t h_LoadExecForUser_362A956B(CpuState *s) {
+    (void)s;
+    int idx = s_exit_cb_uid ? sr_callback_find_in_table(s_exit_cb_uid) : -1;
+    if (idx < 0) return 0x800201a1u;                      /* UNKNOWN_CBID */
+    const uint32_t arg = s_callbacks[idx].arg;
+    if (arg < 8u || !sr_guest_span_readable(arg - 8u, 8u)) return 0x800200d3u; /* ILLEGAL_ADDR */
+    const uint32_t mode = MEM_R32(arg - 8u), params = MEM_R32(arg - 4u);
+    if (mode >= 4u) return 0x800200d2u;                   /* ILLEGAL_ARGUMENT */
+    if (!params || !sr_guest_span_readable(params, 12u) || !sr_guest_span_writable(params + 4u, 8u))
+        return hle_unmodelled_stop("LoadExecForUser_362A956B", "with an unusable parameter block 0x%08x is not measured", params);
+    if (MEM_R32(params) < 12u) return 0x800201bcu;        /* ILLEGAL_SIZE */
+    MEM_W32(params + 4u, 0u);
+    MEM_W32(params + 8u, 0xffffffffu);
+    return 0;
+}
 
 /* sceKernelExitGame terminates the guest process in thread and interrupt contexts. */
 static uint32_t h_ExitGame(CpuState *s) {
@@ -1455,6 +1563,42 @@ static uint32_t h_GetModuleIdByAddress(CpuState *s) {
 static uint32_t h_GetModuleId(CpuState *s) {
     uint32_t uid = module_uid_at(s->r[31]);
     return uid ? uid : SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+}
+
+/* sceKernelGetModuleIdList(SceUID *ids, SceSize size, int *count): size is in bytes, whole entries
+ * are written (ceil(size / 4), never more than there are modules, so a size of 5 writes two) and
+ * count receives the number of modules, not the number written.  pspautotests
+ * modules/idlist/idlist.expected (rev 1a9e6c31, recorded on a PSP): a size of 0 writes nothing
+ * and returns 0; sizes 1..8 return 0; a negative size, or a NULL buffer even with size 0, returns
+ * 0x800200d3 and leaves count untouched; the caller's own module is in the list.  A PSP lists its
+ * firmware modules too; the runtime lists the ones it holds: the main module first, then the
+ * loaded ones in load order.  The order is not measured.  A NULL or unwritable count, and an
+ * unwritable buffer, are not measured and stop the run by name. */
+static uint32_t h_GetModuleIdList(CpuState *s) {
+    const uint32_t ids = A0, count_ptr = A2;
+    const int32_t size = (int32_t)A1;
+    if (!ids || size < 0) return 0x800200d3u;             /* ILLEGAL_ADDR (module manager's) */
+    if (!count_ptr || !sr_guest_span_writable(count_ptr, 4u))
+        return hle_unmodelled_stop("sceKernelGetModuleIdList", "with an unwritable count 0x%08x is not measured", count_ptr);
+    uint32_t list[sizeof(s_loaded_modules) / sizeof(s_loaded_modules[0]) + 1u];
+    uint32_t total = 0u;
+    if (sr_loaded_base() < sr_loaded_end()) {
+        if (!s_main_module_uid) s_main_module_uid = sr_alloc_uid();
+        list[total++] = s_main_module_uid;
+    }
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        const LoadedModule *mod = &s_loaded_modules[i];
+        if (!mod->in_use || mod->state == MODULE_STATE_UNUSED || mod->state == MODULE_STATE_UNLOADED)
+            continue;
+        list[total++] = mod->uid;
+    }
+    uint32_t n = (uint32_t)(((uint64_t)(uint32_t)size + 3u) / 4u);
+    if (n > total) n = total;
+    if (n && !sr_guest_span_writable(ids, n * 4u))
+        return hle_unmodelled_stop("sceKernelGetModuleIdList", "with an unwritable buffer 0x%08x is not measured", ids);
+    for (uint32_t i = 0; i < n; i++) MEM_W32(ids + 4u * i, list[i]);
+    MEM_W32(count_ptr, total);
+    return 0;
 }
 
 /* The main module's kernel record, registered by the generated sr_register_all() when the
@@ -1586,11 +1730,9 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
         return SCE_ERROR_MODULE_BAD_ID;
     }
 
-    if (stack_arg(s, 0) != 0u) {
-        fprintf(stderr, "PRX_MODULE_STOP_OPTION_SYNTHETIC: nonzero SceKernelSMOption is "
-                        "unmeasured; refusing instead of guessing thread parameters\n");
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
-    }
+    ModuleStopThread stop_thread = MODULE_STOP_THREAD_DEFAULT;
+    uint32_t option_error = read_module_stop_option(stack_arg(s, 0), &stop_thread);
+    if (option_error != 0u) return option_error;
 
     if (!mod->start_entry_ran) {
         fprintf(stderr, "PRX_MODULE_HOST_SKIPPED_STOP: sceKernelStopModule uid=0x%x "
@@ -1616,11 +1758,8 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
         return SCE_KERNEL_ERROR_CAN_NOT_STOP;
     }
     mod->state = MODULE_STATE_STOPPING;
-    fprintf(stderr, "PRX_MODULE_STOP_THREAD_SYNTHETIC: uid=0x%x stop=0x%08x "
-                    "uses scheduler default priority/stack; module option rules remain unmeasured\n",
-            modid, mod->module_stop);
     uint32_t rv = 0u;
-    uint32_t call_rc = module_stop_thread_invoke(s, mod, arglen, argp, &rv);
+    uint32_t call_rc = module_stop_thread_invoke(s, mod, stop_thread, arglen, argp, &rv);
     if (call_rc != 0u) {
         mod->state = MODULE_STATE_STARTED;
         return call_rc;
@@ -1735,7 +1874,8 @@ static uint32_t h_SelfStopUnloadModule(CpuState *s) {
         if (sr_lookup(mod->module_stop) == NULL)
             return SCE_KERNEL_ERROR_CAN_NOT_STOP;
         mod->state = MODULE_STATE_STOPPING;
-        uint32_t rc = module_stop_thread_invoke(s, mod, arglen, argp, &stop_status);
+        uint32_t rc = module_stop_thread_invoke(s, mod, MODULE_STOP_THREAD_DEFAULT, arglen, argp,
+                                                &stop_status);
         if (rc != 0u) {
             mod->state = MODULE_STATE_STARTED;
             return rc;
@@ -1839,7 +1979,8 @@ static uint32_t h_LoadExec(CpuState *s) {
                 return SCE_KERNEL_ERROR_CAN_NOT_STOP;
             uint32_t stop_status = 0u;
             current_module->state = MODULE_STATE_STOPPING;
-            uint32_t stop_rc = module_stop_thread_invoke(s, current_module, 0u, 0u,
+            uint32_t stop_rc = module_stop_thread_invoke(s, current_module,
+                                                         MODULE_STOP_THREAD_DEFAULT, 0u, 0u,
                                                          &stop_status);
             if (stop_rc != 0u) {
                 current_module->state = MODULE_STATE_STARTED;
@@ -1926,6 +2067,7 @@ static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out) {
 }
 static int hle_loadexec_dialog_busy(void) {
     dialog_lock();
+    utility_slot_settle_locked();
     int busy = s_dlg_status != 0 || s_utility_slot == UTILITY_SLOT_OSK;
     dialog_unlock();
     return busy || s_osk_status != OSK_NONE;
@@ -1943,6 +2085,31 @@ static uint32_t h_LoadModule(CpuState *s) {
     /* An unreadable path string is the module manager's illegal address, not an I/O error. */
     if (rc == 0x80010016u) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (rc != 0u) return rc;
+    /* The module manager opens the file, then asks the device whether it may load a
+     * module from it, before it reads a byte (uofw modulemgr, src/kd/modulemgr/loadModule.c,
+     * sceKernelLoadModule). A path that opens nothing fails with the open's error. When the
+     * running program came from the disc, the Memory Stick refuses to serve a module: the
+     * device's check fails and the load fails with PROHIBIT_LOADMODULE_DEVICE. A program a
+     * LoadExec booted from ms0: may load from it. Tekken 6 (ULUS10466) loads files on ms0:
+     * and reads a load that succeeds, or fails on the file's format, as a copy running from
+     * the Memory Stick. The refusal is the result the title's own check expects; it is
+     * unmeasured on this project's PSP.
+     * A module the manifest declares was staged by the build, and flash0: holds firmware
+     * modules the runtime carries no file for, so neither is checked here. */
+    if (!sr_title_config_guest_module(resolved, NULL, NULL, NULL, NULL) &&
+        !module_path_on_device(resolved, "flash0:")) {
+        rc = hle_io_probe_open(resolved);
+        if (rc == 0u && module_program_from_disc() &&
+            (module_path_on_device(resolved, "ms0:") || module_path_on_device(resolved, "fatms0:")))
+            rc = SCE_KERNEL_ERROR_PROHIBIT_LOADMODULE_DEVICE;
+        if (rc != 0u) {
+            fprintf(stderr, "sceKernelLoadModule(\"%s\") -> 0x%08x (%s)\n", resolved, rc,
+                    rc == SCE_KERNEL_ERROR_PROHIBIT_LOADMODULE_DEVICE
+                        ? "a disc title may not load from the Memory Stick"
+                        : "the file does not open");
+            return rc;
+        }
+    }
     return load_module_by_guest_path(resolved, A2);
 }
 
@@ -1964,6 +2131,25 @@ static uint32_t h_LoadModuleByID(CpuState *s) {
                     "refusing before any load\n", A0);
     return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;  /* named refusal; the PSP return is unmeasured */
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* The start routine the fixed-address path records for an image, and for a manifest module. */
+uint32_t sr_hle_test_prx_start_entry(const char *host_path, uint32_t base) {
+    s_last_prx_entry = 0;
+    (void)register_prx_exports(host_path, base);
+    return s_last_prx_entry;
+}
+uint32_t sr_hle_test_populated_start_entry(const char *file, uint32_t base) {
+    return populate_guest_module(file, base, 0) ? s_last_prx_entry : UINT32_MAX;
+}
+int sr_hle_test_set_fixed_module_image(uint32_t uid, uint32_t base, uint32_t end) {
+    LoadedModule *mod = find_loaded_module(uid);
+    if (!mod || base >= end) return 0;
+    mod->image_base = base;
+    mod->image_end = end;
+    return 1;
+}
+#endif
 
 static uint32_t h_StartModule(CpuState *s) {
     uint32_t uid = A0;
@@ -2044,9 +2230,11 @@ static uint32_t h_StartModule(CpuState *s) {
         return 0;
     }
 
-    if (allow_entry && mod->runtime_placed && mod->code && mod->module_start == 0) {
-        /* A guest-placed module that declares no start routine starts by making its
-         * exports linkable; no guest code runs. Its stop entry, if any, runs at stop. */
+    if (allow_entry && mod->module_start == 0 &&
+        (mod->runtime_placed ? mod->code != NULL : mod->image_base != 0u)) {
+        /* A module whose image is in place and that declares no start routine starts by
+         * making its exports linkable; no guest code runs. Its stop entry, if any, runs at
+         * stop. */
         fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> module declares no "
                         "start routine; exports linked\n", uid, mod->path);
         mark_module_started(mod->image_base);
@@ -2114,6 +2302,11 @@ uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
 uint32_t sr_hle_test_load_module_by_id(CpuState *s) { return h_LoadModuleByID(s); }
 uint32_t sr_hle_test_start_module(CpuState *s) { return h_StartModule(s); }
 uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
+/* Forget the program a test LoadExec booted, so the boot path decides again. */
+void sr_hle_test_loadexec_program_reset(void) {
+    s_loadexec_program_path[0] = '\0';
+    s_loadexec_boot_uid = 0u;
+}
 #endif
 static const char *hle_fd_guest_path(uint32_t fd) {
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used ||
@@ -2149,6 +2342,7 @@ void hle_register_module_lifecycle_handlers(void) {
     sr_hle_register(0xb7f46618, "sceKernelLoadModuleByID", h_LoadModuleByID);
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
     sr_hle_register(0xf0a26395, "sceKernelGetModuleId", h_GetModuleId);
+    sr_hle_register(0x644395e2, "sceKernelGetModuleIdList", h_GetModuleIdList);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleIdByAddress);
     sr_hle_register(0x748cbed9, "sceKernelQueryModuleInfo", h_QueryModuleInfo);
     sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
@@ -2160,4 +2354,5 @@ void hle_register_module_lifecycle_handlers(void) {
 /* From hle_register_selftest_oracle_handlers(). */
 void hle_register_selftest_oracle_kernel_module(void) {
     sr_hle_register(0x4ac57943, "sceKernelRegisterExitCallback", h_RegisterExitCallback);
+    sr_hle_register(0x362a956b, "LoadExecForUser_362A956B", h_LoadExecForUser_362A956B);
 }

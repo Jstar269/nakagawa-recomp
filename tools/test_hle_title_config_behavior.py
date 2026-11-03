@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -54,7 +55,8 @@ RETIRED_ASSIST_VALUES = {
 def synthetic_manifest() -> dict:
     manifest = json.loads(FIXTURE.read_text(encoding="utf-8"))
     manifest["runtime_bindings"].update({"expected_data_file_count": 12345})
-    return manifest
+    returned: dict[str, Any] = manifest
+    return returned
 
 
 def libfont_selftest_manifest(tmp_path: Path) -> Path:

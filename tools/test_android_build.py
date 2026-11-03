@@ -112,6 +112,7 @@ class AndroidAppContractTests(unittest.TestCase):
             android_pin = re.search(r"set\(" + cmake_name + r" ([0-9a-f]{40})\)", deps)
             self.assertIsNotNone(ci_pin, ci_name)
             self.assertIsNotNone(android_pin, cmake_name)
+            assert android_pin is not None
             self.assertEqual(android_pin.group(1), ci_pin.group(1), cmake_name)
 
     def test_manifest_requests_no_permissions(self) -> None:
@@ -123,9 +124,12 @@ class AndroidAppContractTests(unittest.TestCase):
         text = (ANDROID / "app" / "src" / "main" / "AndroidManifest.xml").read_text(encoding="utf-8")
         block = re.search(r'<activity\s+android:name="\.TitleActivity"(.*?)/>', text, re.S)
         self.assertIsNotNone(block)
+        assert block is not None
         self.assertIn('android:process=":title"', block.group(1))
+        assert block is not None
         self.assertIn('android:exported="false"', block.group(1))
         # One runtime per process: a second start must not run main() again in it.
+        assert block is not None
         self.assertIn('android:launchMode="singleTask"', block.group(1))
 
     def test_native_and_java_names_agree(self) -> None:

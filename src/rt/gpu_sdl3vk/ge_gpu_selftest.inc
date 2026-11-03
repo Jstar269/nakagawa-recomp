@@ -50,6 +50,13 @@ static uint32_t coherence_gbatch(uint32_t fmt) {
     return value[fmt & 3];
 }
 
+/* The fixture's image is newer than guest VRAM in every row, as if the GPU had drawn them all. */
+static void coherence_image_newer(Target *t) {
+    t->clean_gen = 0;
+    t->draw_y0 = 0;
+    t->draw_y1 = FB_H;
+}
+
 static int coherence_queue_g1_batch(uint32_t base, uint32_t stride, uint32_t fmt) {
     memset(s_ge, 0, sizeof(*s_ge));
     s_ge->fbp = base;
@@ -283,7 +290,7 @@ static int coherence_run_case(const CoherenceCase *tc) {
         free(expected); free(payload); return 0;
     }
     coherence_fill_raw(guest, pixels, bpp, coherence_g0(tc->fmt));
-    t->clean_gen = 0;
+    coherence_image_newer(t);
 
     if (tc->pending_batch) {
         if (!coherence_queue_g1_batch(base, tc->stride, tc->fmt)) {
@@ -436,7 +443,7 @@ static int coherence_run_cpu_write_coalesce(void) {
     if (!t || !t->gpu_valid) { free(expected); return 0; }
     memcpy(expected, guest, target_bytes);              /* the image: G1 */
     coherence_fill_raw(guest, pixels, bpp, coherence_g0(fmt));
-    t->clean_gen = 0;                                   /* the image is newer than VRAM */
+    coherence_image_newer(t);
 
     const unsigned long long notes0 = s_replay_stats.cpu_write_notes;
     const unsigned long long syncs0 = s_replay_stats.cpu_write_syncs;
@@ -496,7 +503,7 @@ static int coherence_run_full_cover_case(void) {
     Target *t = target_color_acquire(fba, stride, fmt, 1);
     if (!t || !t->gpu_valid) { free(expected); return 0; }
 
-    t->clean_gen = 0;
+    coherence_image_newer(t);
 
     for (uint32_t i = 0; i < target_bytes; i++) {
         guest[i] = (uint8_t)(0x77u + i * 13u);
@@ -540,7 +547,8 @@ static int coherence_run_overlap_case(void) {
     coherence_fill_raw(ga, (bytes + (fba_b - fba_a)) / bpp, bpp, g0);
     coherence_fill_raw(ea, stride * FB_H, bpp, g1a);
     coherence_fill_raw(eb, stride * FB_H, bpp, g1b);
-    a->clean_gen = b->clean_gen = 0;
+    coherence_image_newer(a);
+    coherence_image_newer(b);
     memcpy(SR_HOST(dirty_addr), payload, sizeof(payload));
     memcpy(ea + (dirty_addr - base_a), payload, sizeof(payload));
     memcpy(eb + (dirty_addr - base_b), payload, sizeof(payload));
@@ -554,6 +562,70 @@ static int coherence_run_overlap_case(void) {
                 "overlapping-targets", stride, s_scale);
     free(ea); free(eb);
     return ok;
+}
+
+/* The GE has no buffer height, and titles keep data in VRAM below a small render target: vertices
+ * read a word at a time, or another target. Only the rows the GPU drew are the GPU's. A read of any
+ * other row leaves the queued batches queued and needs no readback, and a readback leaves every
+ * other row of VRAM alone. */
+static int coherence_run_undrawn_rows(void) {
+    const char *name = "undrawn-rows";
+    const uint32_t stride = 256u, row = stride * 4u, fmt = 3u;
+    const uint32_t fba_a = 0x00100000u, base_a = 0x04000000u | fba_a;
+    const uint32_t fba_b = fba_a + 100u * row, base_b = 0x04000000u | fba_b;
+    const uint32_t data = base_a + 200u * row + 16u, data_word = 0x12345678u;
+    const uint32_t pixel = coherence_gbatch(fmt), offset = 15u * row + 15u * 4u;
+    coherence_reset_targets();
+    memset(SR_HOST(base_a), 0, 372u * row);
+    memcpy(SR_HOST(data), &data_word, sizeof data_word);
+    g_sr_vram_read_pending = 0;
+
+    /* Rows 10 to 19 of `a` drawn: a read of what lies below them is plain VRAM. */
+    int ok = coherence_queue_g1_batch(base_a, stride, fmt);
+    ok = submit_pending() && ok;
+    Target *a = target_find_by_fba(fba_a);
+    const unsigned long readbacks = s_cnt_readback;
+    ok = ok && a && a->clean_gen != a->render_gen && a->draw_y0 <= 10 && a->draw_y1 >= 20 &&
+         a->draw_y1 < 100;
+    uint32_t value = MEM_R32(data);
+    if (!ok || value != data_word || s_cnt_readback != readbacks || a->clean_gen == a->render_gen) {
+        fprintf(stderr, "gpu coherence selftest [%s]: read below the drawn rows read back the "
+                        "target (value=0x%08x readbacks=%lu rows=%d..%d gen=%llu clean=%llu)\n", name, value,
+                s_cnt_readback - readbacks, a ? a->draw_y0 : -1, a ? a->draw_y1 : -1,
+                a ? (unsigned long long)a->render_gen : 0ull, a ? (unsigned long long)a->clean_gen : 0ull);
+        coherence_reset_targets();
+        return 0;
+    }
+    /* Queued rows count too, and only they do. */
+    ok = coherence_queue_g1_batch(base_a, stride, fmt);
+    value = MEM_R32(data);
+    const int kept_queued = s_nbatch != 0;
+    uint32_t drawn = MEM_R32(base_a + offset);
+    if (!ok || value != data_word || !kept_queued || s_nbatch != 0 || drawn != pixel) {
+        fprintf(stderr, "gpu coherence selftest [%s]: queued rows: kept=%d pending=%u drawn=0x%08x\n",
+                name, kept_queued, (unsigned)s_nbatch, drawn);
+        coherence_reset_targets();
+        return 0;
+    }
+    /* `b` lies in rows of `a` the GPU never drew there: a readback of `a` keeps `b`'s pixels. */
+    ok = coherence_queue_g1_batch(base_b, stride, fmt);
+    ok = submit_pending() && ok;
+    ok = ok && MEM_R32(base_b + offset) == pixel;
+    ok = ok && coherence_queue_g1_batch(base_a, stride, fmt);
+    ok = submit_pending() && ok;
+    ok = ok && MEM_R32(base_a + offset) == pixel;
+    uint32_t kept = 0u;
+    memcpy(&kept, SR_HOST(base_b + offset), sizeof kept);
+    if (!ok || kept != pixel) {
+        fprintf(stderr, "gpu coherence selftest [%s]: the readback of a target overwrote the "
+                        "target below it (0x%08x, expected 0x%08x)\n", name, kept, pixel);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s fmt=%u stride=%u scale=%d\n",
+           name, fmt, stride, s_scale);
+    coherence_reset_targets();
+    return 1;
 }
 
 static int coherence_run_tflt_descriptor_capacity(void) {
@@ -1857,6 +1929,56 @@ static void wrap_state(uint32_t base, uint32_t stride) {
     s_ge->scis_x2 = (int)FB_W - 1;
     s_ge->scis_y2 = (int)FB_H - 1;
     s_ge->maxz = 65535;
+}
+
+/* The GE has no buffer height, so a title can stack short targets of one stride: the second base
+ * lies inside the 272 rows a target could span. A texture at that base is the second target, not
+ * rows of the first, whichever slot each took. */
+static int coherence_run_stacked_targets(void) {
+    const char *name = "stacked-targets";
+    const uint32_t stride = 256u, row = stride * 4u, rgb = 0x00FFFFFFu;
+    const uint32_t base_a = 0x04100000u, base_b = base_a + 100u * row, base_dst = 0x04000000u;
+    const uint32_t pixel = coherence_gbatch(3u) & rgb, dst_stride = 512u;
+    uint32_t *dst = (uint32_t *)SR_HOST(base_dst);
+    coherence_reset_targets();
+    memset(SR_HOST(base_a), 0, 372u * row);
+    memset(dst, 0, dst_stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base_a, 372u * row);
+    sr_gpu_vram_dirty(base_dst, dst_stride * FB_H * 4u);
+
+    /* Rows 10 to 19 of each: `a` is bound first, so it takes the lower slot. */
+    int ok = coherence_queue_g1_batch(base_a, stride, 3u);
+    ok = submit_pending() && ok;
+    ok = ok && coherence_queue_g1_batch(base_b, stride, 3u);
+    ok = submit_pending() && ok;
+    const Target *a = target_find_by_fba(base_a & 0x00FFFFFFu);
+    const Target *b = target_find_by_fba(base_b & 0x00FFFFFFu);
+    ok = ok && a && b && a < b;
+
+    wrap_state(base_dst, dst_stride);
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = base_b;
+    s_ge->tex_bufw = stride;
+    s_ge->tex_fmt = 3;
+    s_ge->tex_w = 256;
+    s_ge->tex_h = 256;
+    s_ge->tex_func = 3;      /* REPLACE: the framebuffer shows the texel */
+    s_ge->tex_filter = 0;    /* NEAREST */
+    ge_set_gpu_hooks(&k_hooks);
+    GeVtx p0, p1;
+    wrap_vtx(&p0, 10.0f, 10.0f, 0xFFFFFFFFu); p0.u = 10.0f; p0.v = 10.0f;
+    wrap_vtx(&p1, 20.0f, 20.0f, 0xFFFFFFFFu); p1.u = 20.0f; p1.v = 20.0f;
+    ok = ok && hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
+    const uint32_t got = dst[14u * dst_stride + 14u] & rgb;
+    if (!ok || got != pixel) {
+        fprintf(stderr, "gpu coherence selftest [%s]: sampled 0x%06x, want 0x%06x from the second "
+                        "target (ok=%d)\n", name, got, pixel, ok);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n", name, stride, s_scale);
+    coherence_reset_targets();
+    return 1;
 }
 
 /* Many one-pixel sprites per pass over the whole frame. Each pass rewrites every pixel,
@@ -4107,6 +4229,161 @@ static int coherence_run_scaled_upload(void) {
     return ok;
 }
 
+/* Fill a whole device-size image from `src`; every device pixel can differ, which an upload from
+ * guest memory cannot do. The image is left in `after`. */
+static int coherence_write_device(VkImage img, VkImageAspectFlags aspect, VkImageLayout *layout,
+                                  VkImageLayout after, uint32_t bpp, const void *src) {
+    if (s_nbatch && !submit_pending()) return 0;
+    memcpy(s_xfer_map, src, (size_t)SCL_W * SCL_H * bpp);
+    if (!cmd_begin()) return 0;
+    to_layout(s_cmd, img, aspect, layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy c = {0};
+    c.imageSubresource.aspectMask = aspect;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(s_cmd, s_xfer, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    to_layout(s_cmd, img, aspect, layout, after);
+    return cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION);
+}
+
+/* The staging bytes past the rows a readback keeps still hold `poison`. */
+static int coherence_xfer_tail_is(uint8_t poison, uint32_t bpp) {
+    const uint8_t *map = (const uint8_t *)s_xfer_map;
+    for (size_t i = (size_t)SCL_W * FB_H * bpp; i < (size_t)SCL_W * SCL_H * bpp; i++)
+        if (map[i] != poison) return 0;
+    return 1;
+}
+
+static int coherence_check_guest_fb(const char *step, const uint32_t *dev, uint32_t base,
+                                    uint32_t stride, uint32_t fmt) {
+    const uint32_t bpp = fmt == 3u ? 4u : 2u, width = stride < FB_W ? stride : FB_W;
+    const uint8_t *guest = (const uint8_t *)SR_HOST(base);
+    for (uint32_t y = 0; y < FB_H; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            const uint32_t px = dev[y * (uint32_t)s_scale * SCL_W + x * (uint32_t)s_scale];
+            const uint32_t want = fb_pack(px, fmt);
+            uint32_t got = 0;
+            memcpy(&got, guest + (y * stride + x) * bpp, bpp);
+            if (got != want) {
+                fprintf(stderr, "gpu coherence selftest [readback-rows]: %s fmt=%u stride=%u scale=%d: "
+                        "guest pixel (%u,%u) = 0x%08x, want 0x%08x\n", step, fmt, stride, s_scale,
+                        x, y, got, want);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* Every device pixel differs, and guest memory gets the top-left one of each scale x scale cell
+ * through all four readbacks: target_readback, the deferred presentation copy, and both depth
+ * paths. Past the kept rows the staging buffer stays as it was, so the rows a readback does not
+ * need are not copied (#323), unless SR_GPU_READBACK_FULL selects the reference path. */
+static int coherence_run_readback_rows(void) {
+    static const struct { uint32_t fmt, stride; } cells[] = {
+        { 3u, 512u }, { 0u, 512u }, { 1u, 480u }, { 2u, 448u },
+    };
+    const uint32_t fba = 0x00100000u, base = 0x04000000u | fba;
+    const char *full_env = getenv("SR_GPU_READBACK_FULL");
+    const int rows_only = s_scale > 1 && !(full_env && full_env[0] && strcmp(full_env, "0") != 0);
+    const uint8_t poison = 0xa5u;
+    uint32_t *dev = (uint32_t *)malloc((size_t)SCL_W * SCL_H * 4u);
+    if (!dev) return 0;
+    int ok = 1;
+    for (uint32_t c = 0; ok && c < sizeof(cells) / sizeof(cells[0]); c++) {
+        const uint32_t fmt = cells[c].fmt, stride = cells[c].stride, bpp = fmt == 3u ? 4u : 2u;
+        coherence_reset_targets();
+        memset(SR_HOST(base), 0, (size_t)stride * FB_H * bpp);
+        Target *t = target_color_acquire(fba, stride, fmt, 1);
+        ok = t != NULL;
+        for (uint32_t pass = 0; ok && pass < 2; pass++) {
+            for (uint32_t i = 0; i < SCL_W * SCL_H; i++)
+                dev[i] = ((i + 1u + pass) * 0x9e3779b1u) | 0xff000000u;
+            ok = coherence_write_device(t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+                                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 4u, dev);
+            if (!ok) break;
+            t->gpu_valid = 1;
+            t->render_gen++;
+            coherence_image_newer(t);
+            memset(SR_HOST(base), 0, (size_t)stride * FB_H * bpp);
+            if (pass == 0) {
+                memset(s_xfer_map, poison, (size_t)SCL_W * SCL_H * 4u);
+                ok = target_readback(t);
+                if (ok && rows_only && !coherence_xfer_tail_is(poison, 4u)) {
+                    fprintf(stderr, "gpu coherence selftest [readback-rows]: fmt=%u scale=%d: "
+                            "target_readback copied rows it does not keep\n", fmt, s_scale);
+                    ok = 0;
+                }
+            } else {
+                ok = target_prepare_present(t) && readback_wait_target(t, 1);
+            }
+            ok = ok && t->clean_gen == t->render_gen &&
+                 coherence_check_guest_fb(pass ? "deferred copy" : "target_readback", dev, base,
+                                          stride, fmt);
+        }
+    }
+    if (ok) {
+        coherence_reset_targets();
+        memset(s_ge, 0, sizeof(*s_ge));
+        s_ge->fbp = base; s_ge->fbw = 512u;
+        s_ge->zbp = 0x04080000u; s_ge->zbw = 512u;
+        uint16_t *dev16 = (uint16_t *)dev;
+        ok = ge_zbuf_prepare_current() && (s_zbuf = ge_zbuf_ptr()) != NULL;
+        DepthEnt *d = ok ? depth_acquire(0x00080000u, 512u) : NULL;
+        ok = d != NULL;
+        for (uint32_t i = 0; ok && i < SCL_W * SCL_H; i++) dev16[i] = (uint16_t)((i + 7u) * 40503u);
+        ok = ok && coherence_write_device(d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
+                                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 2u, dev16);
+        if (ok) {
+            memset(s_xfer_map, poison, (size_t)SCL_W * SCL_H * 2u);
+            d->guest_dirty = 1;
+            ok = depth_readback_to_guest(d);
+            if (ok && rows_only && !coherence_xfer_tail_is(poison, 2u)) {
+                fprintf(stderr, "gpu coherence selftest [readback-rows]: depth readback copied rows "
+                        "it does not keep at scale %d\n", s_scale);
+                ok = 0;
+            }
+        }
+        for (uint32_t y = 0; ok && y < FB_H; y++) {
+            for (uint32_t x = 0; x < FB_W; x++) {
+                const uint32_t addr = 0x04000000u + ((0x00080000u + (y * 512u + x) * 2u) ^ 0x2040u);
+                const uint16_t want = dev16[y * (uint32_t)s_scale * SCL_W + x * (uint32_t)s_scale];
+                uint16_t got;
+                memcpy(&got, SR_HOST_LINEAR(addr), sizeof got);
+                if (got != want) {
+                    fprintf(stderr, "gpu coherence selftest [readback-rows]: depth readback (%u,%u) "
+                            "= 0x%04x, want 0x%04x\n", x, y, got, want);
+                    ok = 0;
+                    break;
+                }
+            }
+        }
+        if (ok) {
+            d->cpu_dirty = 0;
+            memset(s_xfer_map, poison, (size_t)SCL_W * SCL_H * 2u);
+            ok = depth_to_cpu(d) && (!rows_only || coherence_xfer_tail_is(poison, 2u));
+            if (!ok) fprintf(stderr, "gpu coherence selftest [readback-rows]: depth_to_cpu copy\n");
+        }
+        for (uint32_t y = 0; ok && y < FB_H; y++) {
+            for (uint32_t x = 0; x < FB_W; x++) {
+                const uint16_t want = dev16[y * (uint32_t)s_scale * SCL_W + x * (uint32_t)s_scale];
+                if (s_zbuf[y * 512u + x] != want) {
+                    fprintf(stderr, "gpu coherence selftest [readback-rows]: depth_to_cpu (%u,%u) "
+                            "= 0x%04x, want 0x%04x\n", x, y, s_zbuf[y * 512u + x], want);
+                    ok = 0;
+                    break;
+                }
+            }
+        }
+    }
+    free(dev);
+    coherence_reset_targets();
+    if (ok)
+        printf("gpu coherence selftest: PASS %-22s cells=%u scale=%d rows_only=%d\n", "readback-rows",
+               (unsigned)(sizeof(cells) / sizeof(cells[0])), s_scale, rows_only);
+    return ok;
+}
+
 int gegpu_coherence_selftest(void) {
     /* SR_GPU_COHERENCE_CASE=scaled-upload (the harness's --case) runs that case alone, as the
      * recipe does at render scales 2 and 4: the other fixtures expect 1x pixels (a filtered sample
@@ -4115,6 +4392,8 @@ int gegpu_coherence_selftest(void) {
     if (only && *only) {
         if (strcmp(only, "scaled-upload") == 0) return coherence_run_scaled_upload();
         if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
+        if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
+        if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -4155,6 +4434,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_clut_format_same_palette()) ok = 0;
     if (!coherence_run_clut_format_list()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
+    if (!coherence_run_undrawn_rows()) ok = 0;
     if (!coherence_run_scalar_vram_read(0x04080000u)) ok = 0;
     /* zbp 0x0a2000: bit 13 set, so the absolute XOR differs from the within-buffer form (0x0a6854 vs
      * 0x0a2854 for pixel 10,10). The 0x0ce000 placement used by the software selftest would overlap the
@@ -4172,6 +4452,8 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_tnl_parity()) ok = 0;
     /* Last: it rewrites ge.c's depth surface. */
     if (!coherence_run_scaled_upload()) ok = 0;
+    if (!coherence_run_readback_rows()) ok = 0;
+    if (!coherence_run_stacked_targets()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
@@ -4246,7 +4528,7 @@ int gegpu_snapshot_sync_selftest(void) {
 
     /* The image remains GPU G1, but guest VRAM is deliberately restored to stale G0. */
     coherence_fill_raw(guest, stride * FB_H, 4u, coherence_g0(fmt));
-    t->clean_gen = 0;
+    coherence_image_newer(t);
     if (!target_prepare_present(t)) {
         fprintf(stderr, "gpu snapshot sync selftest: present readback setup failed\n");
         coherence_reset_targets();
@@ -4387,7 +4669,8 @@ int gegpu_snapshot_sync_selftest(void) {
     }
     printf("gpu snapshot sync selftest: present_target_failure_reports_target_failed\n");
     if (gegpu_sync_guest_fb(&d) != GEGPU_SYNC_OK || t->clean_gen != t->render_gen ||
-        memcmp(guest, &(uint32_t){ coherence_g1(fmt) }, sizeof(uint32_t)) != 0) {
+        memcmp((const uint8_t *)guest + (15u * stride + 15u) * 4u, &(uint32_t){ coherence_gbatch(fmt) },
+               sizeof(uint32_t)) != 0) {
         fprintf(stderr, "gpu snapshot sync selftest: guest VRAM was not current after a target failure\n");
         coherence_reset_targets();
         return 0;

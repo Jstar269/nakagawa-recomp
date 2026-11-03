@@ -21,6 +21,7 @@ import nk_doctor_checks
 import record_toolchain
 import verify_sbom
 import vulkan_sdk
+from typing import Any
 
 
 class TestSBOMTooling(unittest.TestCase):
@@ -249,14 +250,16 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
     OLD_RUFF_HASH = "7f9c8f2b3c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f"
 
     def _metadata(self) -> dict:
-        return json.loads(self.METADATA_PATH.read_text(encoding="utf-8"))
+        returned: dict[str, Any] = json.loads(self.METADATA_PATH.read_text(encoding="utf-8"))
+        return returned
 
     def _parse(self, text: str) -> list[dict]:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tmp:
             tmp.write(text)
             tmp_path = Path(tmp.name)
         try:
-            return generate_sbom.parse_python_lockfile(tmp_path)
+            returned: list[dict[str, Any]] = generate_sbom.parse_python_lockfile(tmp_path)
+            return returned
         finally:
             tmp_path.unlink(missing_ok=True)
 

@@ -5,7 +5,7 @@
 # Modified by Nakagawa Recomp contributors since 2026-07-19.
 # See NOTICE.md for upstream lineage and modification provenance.
 
-# Split out of the root Makefile (#1531), text unchanged: the AOT/interpreter cosimulation and snapshot execution gates.
+# Split out of the root Makefile (#1531), text unchanged: the AOT/interpreter cosimulation, snapshot execution, form sweep and verify gates.
 # The root Makefile includes it where the text used to be, so evaluation order is unchanged.
 
 # ---- AOT <-> interpreter cosimulation gate ---------------------------------------
@@ -188,3 +188,156 @@ snapshot-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OB
 		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(SNAPSHOT_FIXTURE)/cases.json \
 		--work $(SNAPSHOT_MUTANT_DIR)
 	@echo "snapshot-selftest: PASS"
+
+# ---- Form sweep (#1844) ---------------------------------------------------------------
+#
+# tools/form_sweep.py asks tools/codegen.py which scalar instruction forms it translates,
+# expands each form into encodings (every aliasing pattern x immediate bucket, sampled to
+# FORM_SWEEP_CAP per form) and writes a synthetic module with one tiny guest function per
+# encoding. The ordinary pipeline translates it; src/rt/form_sweep.c then runs every
+# function on the translated body and on the reference interpreter (src/ref) from the same
+# seeded states and compares the architectural results. A form the reference cannot run is
+# NOT_CHECKED and named in the report, never a pass.
+#
+# form-sweep-selftest builds the sweep twice. The first build is the public sweep and must
+# report zero mismatches. The second uses a generated mutant of the code generator (a
+# wrapper that emits one wrong statement for addu: it reads rs after writing rd) over only
+# that form, and the check requires a MISMATCH on exactly the instances where rd is rs and
+# rs differs from rt. FORM_SWEEP_STATES and FORM_SWEEP_CAP size a deeper run
+# (`form-sweep-deep`); the pull request defaults are small and the seed is fixed.
+FORM_SWEEP_SEED   ?= 1844
+FORM_SWEEP_CAP    ?= 40
+FORM_SWEEP_STATES ?= 64
+FORM_SWEEP_CHUNK  ?= 400
+FORM_SWEEP_CODEGEN_ARGS ?=
+FORM_SWEEP_ROOT   := $(BUILD_ROOT)/form-sweep
+FORM_SWEEP_BASE_ADDR := 0x08C00000
+FORM_SWEEP_TOOL   := tools/form_sweep.py
+FORM_SWEEP_REF_FLAGS := -std=c++17 -O1 -Isrc/ref -Isrc/rt -fno-exceptions -Dsr_bitrev=sr_ref_bitrev
+FORM_SWEEP_SRCS   := src/rt/form_sweep.c src/rt/nksnap.c src/rt/guest_interp.c \
+	src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c \
+	src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/vfpu_interp.c \
+	src/rt/perf.c src/rt/nested_frames.c
+# One sweep: FORM_SWEEP_DIR holds fixture/ (the module and plan) and the build tree.
+FORM_SWEEP_DIR    ?= $(FORM_SWEEP_ROOT)/public
+FORM_SWEEP_ONLY   ?=
+FORM_SWEEP_CODEGEN ?= tools/codegen.py
+FORM_SWEEP_GAME_VARS = GAME_NAME=formsweep GAME_ELF=$(FORM_SWEEP_DIR)/fixture/guest.prx \
+	GAME_BASE=$(FORM_SWEEP_BASE_ADDR) GAME_ENTRY=$(FORM_SWEEP_BASE_ADDR) \
+	GAME_PSP_HEADER=$(FORM_SWEEP_DIR)/fixture/guest.psp GAME_EXTRA_ELFS= TITLE_MANIFEST= \
+	BUILD_DIR=$(FORM_SWEEP_DIR) FUNCS_PER_CHUNK=$(FORM_SWEEP_CHUNK) PUBLIC_SAFE=1 \
+	CODEGEN_USER_ARGS="$(FORM_SWEEP_CODEGEN_ARGS)"
+
+form-sweep-build:
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) generate --out-dir $(FORM_SWEEP_DIR)/fixture \
+		--seed $(FORM_SWEEP_SEED) --cap $(FORM_SWEEP_CAP) --states $(FORM_SWEEP_STATES) \
+		$(foreach k,$(FORM_SWEEP_ONLY),--only $(k))
+	$(MAKE) $(FORM_SWEEP_DIR)/formsweep_image.bin $(FORM_SWEEP_DIR)/formsweep_recomp.c \
+		$(FORM_SWEEP_GAME_VARS) CODEGEN_TOOL=$(FORM_SWEEP_CODEGEN)
+	$(MAKE) form-sweep-link $(FORM_SWEEP_GAME_VARS) CODEGEN_TOOL=$(FORM_SWEEP_CODEGEN)
+
+# Second phase: the chunk objects exist only after codegen ran.
+form-sweep-link: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	$(CXX) $(FORM_SWEEP_REF_FLAGS) -c src/ref/interp.cpp -o $(BUILD_DIR)/sweep_ref_interp.o
+	$(CXX) $(FORM_SWEEP_REF_FLAGS) -c src/ref/snapshot_ref.cpp -o $(BUILD_DIR)/sweep_ref.o
+	$(CC) $(CFLAGS) -DSR_GATE_BUILD -DSDL_GetTicksNS=snapshot_runner_ticks_ns \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-c src/rt/recomp.c -o $(BUILD_DIR)/sweep_rt_recomp.o
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/form_sweep.exe $(FORM_SWEEP_SRCS) $(CHUNK_OBJS) \
+		$(BUILD_DIR)/sweep_rt_recomp.o $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
+		$(BUILD_DIR)/sweep_ref_interp.o $(BUILD_DIR)/sweep_ref.o -lstdc++ -lm
+	-$(BUILD_DIR)/form_sweep.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin $(FORM_SWEEP_BASE_ADDR) \
+		$(BUILD_DIR)/fixture/plan.txt > $(BUILD_DIR)/results.txt
+
+form-sweep-selftest:
+	$(MAKE) form-sweep-build FORM_SWEEP_DIR=$(FORM_SWEEP_ROOT)/public
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) report --manifest $(FORM_SWEEP_ROOT)/public/fixture/manifest.json \
+		--results $(FORM_SWEEP_ROOT)/public/results.txt
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) write-mutant --out $(FORM_SWEEP_ROOT)/mutant/mutant_codegen.py
+	$(MAKE) form-sweep-build FORM_SWEEP_DIR=$(FORM_SWEEP_ROOT)/mutant FORM_SWEEP_ONLY=00.21 \
+		FORM_SWEEP_CODEGEN=$(FORM_SWEEP_ROOT)/mutant/mutant_codegen.py
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) check-mutant --manifest $(FORM_SWEEP_ROOT)/mutant/fixture/manifest.json \
+		--results $(FORM_SWEEP_ROOT)/mutant/results.txt
+	@echo "form-sweep-selftest: PASS"
+
+form-sweep-deep:
+	$(MAKE) form-sweep-build FORM_SWEEP_DIR=$(FORM_SWEEP_ROOT)/deep FORM_SWEEP_CAP=0 FORM_SWEEP_STATES=2048
+	"$(PYTHON)" $(FORM_SWEEP_TOOL) report --manifest $(FORM_SWEEP_ROOT)/deep/fixture/manifest.json \
+		--results $(FORM_SWEEP_ROOT)/deep/results.txt
+
+
+# ---- Sampled in-play differential checking (#1843) ------------------------------------
+#
+# src/rt/verify.c is compiled only into a verify build (-DSR_VERIFY, off by default): at
+# sampled call entries it runs the reference interpreter (src/ref) over a copy of guest RAM,
+# lets the real translated call run and compares the two end states. This gate builds
+# src/rt/verify_harness.c against a synthetic module (fixtures/verify/generate.py: the
+# snapshot module plus a counted-loop caller and a yielding loop), drives it through the
+# sampler, rate, range, skip and mismatch cases (fixtures/verify/selftest.py), then builds a
+# harness and a snapshot runner whose generated C has one changed immediate, requires the
+# MISMATCH and replays its capture to the same verdict. Last it preprocesses the default
+# runtime sources and requires that no verify hook is present in them.
+#
+# The hooks are the same C the default build compiles, behind SR_VERIFY: recomp.c's
+# preprocessed text without the flag must contain no sr_verify token, so the default
+# build's runtime objects cannot differ. Everything here links the same isolated runtime
+# as the snapshot gate (see above for SR_GATE_BUILD, sr_bitrev and SDL_GetTicksNS).
+VERIFY_DIR       := $(BUILD_ROOT)/verify
+VERIFY_FIXTURE   := $(VERIFY_DIR)/fixture
+VERIFY_GENERATOR := fixtures/verify/generate.py
+VERIFY_DRIVER    := fixtures/verify/selftest.py
+VERIFY_CORE_SRCS := $(filter-out src/rt/snapshot_runner.c,$(SNAPSHOT_RUNNER_SRCS)) src/rt/verify.c
+# Preprocess one hooked runtime unit as the default build compiles it: no -DSR_VERIFY.
+VERIFY_PREPROCESS = $(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) $(HLE_INCLUDES) -E -P src/rt/$(1).c -o $(BUILD_DIR)/default_$(1).i
+VERIFY_GAME_VARS = GAME_NAME=verify GAME_ELF=$(VERIFY_FIXTURE)/guest.prx \
+	GAME_BASE=$(SNAPSHOT_BASE_ADDR) GAME_ENTRY=$(SNAPSHOT_BASE_ADDR) \
+	GAME_PSP_HEADER=$(VERIFY_FIXTURE)/guest.psp GAME_EXTRA_ELFS= TITLE_MANIFEST= \
+	BUILD_DIR=$(VERIFY_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
+
+verify-selftest:
+	"$(PYTHON)" $(VERIFY_GENERATOR) generate --out-dir $(VERIFY_FIXTURE)
+	"$(PYTHON)" $(VERIFY_DRIVER) recomp-flags --make "$(MAKE)" --build-dir $(VERIFY_DIR)/flags
+	$(MAKE) $(VERIFY_DIR)/verify_image.bin $(VERIFY_DIR)/verify_recomp.c \
+		$(VERIFY_GAME_VARS) CODEGEN_TOOL=$(CODEGEN_TOOL)
+	$(MAKE) verify-selftest-run $(VERIFY_GAME_VARS) RECOMP_FLAGS="$(RECOMP_FLAGS) -DSR_VERIFY"
+
+VERIFY_MUTANT_CHUNK = $(shell "$(PYTHON)" $(VERIFY_DRIVER) find-chunk --build-dir $(BUILD_DIR) --game $(GAME_NAME) --cases $(VERIFY_FIXTURE)/cases.json)
+VERIFY_MUTANT_DIR = $(BUILD_DIR)/mutant
+VERIFY_LINK_OBJS = $(BUILD_DIR)/verify_rt_recomp.o $(LIBRARY_OBJS) \
+	$(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/verify_ref_interp.o \
+	$(BUILD_DIR)/verify_ref.o -lstdc++ -lm
+
+verify-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/interp.cpp -o $(BUILD_DIR)/verify_ref_interp.o
+	$(CXX) $(SNAPSHOT_REF_FLAGS) -c src/ref/snapshot_ref.cpp -o $(BUILD_DIR)/verify_ref.o
+	$(CC) $(CFLAGS) -DSR_VERIFY -DSR_GATE_BUILD -DSDL_GetTicksNS=snapshot_runner_ticks_ns \
+		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-c src/rt/recomp.c -o $(BUILD_DIR)/verify_rt_recomp.o
+	$(CC) $(CFLAGS) -DSR_VERIFY -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/verify_harness.exe src/rt/verify_harness.c $(VERIFY_CORE_SRCS) \
+		$(CHUNK_OBJS) $(VERIFY_LINK_OBJS)
+	"$(PYTHON)" $(VERIFY_DRIVER) run --harness $(BUILD_DIR)/verify_harness.exe \
+		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(VERIFY_FIXTURE)/cases.json \
+		--work $(BUILD_DIR)/cases
+	"$(PYTHON)" $(SNAPSHOT_DRIVER) mutate --chunk $(VERIFY_MUTANT_CHUNK) \
+		--cases $(VERIFY_FIXTURE)/cases.json --out $(VERIFY_MUTANT_DIR)/$(notdir $(VERIFY_MUTANT_CHUNK))
+	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK \
+		-c $(VERIFY_MUTANT_DIR)/$(notdir $(VERIFY_MUTANT_CHUNK)) -o $(VERIFY_MUTANT_DIR)/mutant_chunk.o
+	$(CC) $(CFLAGS) -DSR_VERIFY -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/verify_harness_mutant.exe src/rt/verify_harness.c $(VERIFY_CORE_SRCS) \
+		$(filter-out $(VERIFY_MUTANT_CHUNK:.c=.o),$(CHUNK_OBJS)) $(VERIFY_MUTANT_DIR)/mutant_chunk.o \
+		$(VERIFY_LINK_OBJS)
+	$(CC) $(CFLAGS) -DSR_VERIFY -I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) \
+		-o $(BUILD_DIR)/verify_replay_mutant.exe src/rt/snapshot_runner.c $(VERIFY_CORE_SRCS) \
+		$(filter-out $(VERIFY_MUTANT_CHUNK:.c=.o),$(CHUNK_OBJS)) $(VERIFY_MUTANT_DIR)/mutant_chunk.o \
+		$(VERIFY_LINK_OBJS)
+	"$(PYTHON)" $(VERIFY_DRIVER) mutant --harness $(BUILD_DIR)/verify_harness_mutant.exe \
+		--replay $(BUILD_DIR)/verify_replay_mutant.exe \
+		--image $(BUILD_DIR)/$(GAME_NAME)_image.bin --cases $(VERIFY_FIXTURE)/cases.json \
+		--work $(VERIFY_MUTANT_DIR)
+	$(call VERIFY_PREPROCESS,recomp)
+	$(call VERIFY_PREPROCESS,hle)
+	"$(PYTHON)" $(VERIFY_DRIVER) default-unchanged $(BUILD_DIR)/default_recomp.i $(BUILD_DIR)/default_hle.i
+	"$(PYTHON)" $(VERIFY_DRIVER) exit-paths
+	@echo "verify-selftest: PASS"

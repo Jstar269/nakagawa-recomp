@@ -555,6 +555,7 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run AOT/interpreter cosimulation gate": "VULKAN_SDK=/ucrt64 cosim-selftest",
     "Prove the cosimulation comparator is load-bearing": "VULKAN_SDK=/ucrt64 cosim-mutants",
     "Build and run snapshot execution selftest": "VULKAN_SDK=/ucrt64 snapshot-selftest",
+    "Build and run verify selftest": "VULKAN_SDK=/ucrt64 verify-selftest",
     "Build and run scheduler selftest": "CC=gcc VULKAN_SDK=/ucrt64 sched-selftest",
     "Build and run dispatch isolation selftest matrix": "CC=gcc VULKAN_SDK=/ucrt64 dispatch-isolation-selftest",
     "Build and run portable FPU/VFPU conversion selftest": "CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest",
@@ -620,7 +621,10 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         if not conditions:
             return None
         self.assertEqual(len(conditions), 1, name)
-        match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'", conditions[0])
+        match = re.fullmatch(
+            r"if: matrix\.part == '([A-Za-z0-9_-]+)'(?: && github\.event_name == 'schedule')?",
+            conditions[0],
+        )
         self.assertIsNotNone(match, f"{name}: a part condition must name exactly one part")
         return _matched(match).group(1)
 
@@ -714,6 +718,11 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
 # Every gate the serial native_tools job ran before it was split into parallel parts,
 # with the command that makes it that gate. As for windows_runtime, the split may move
 # a gate between parts; it may never drop one, run one twice, or change its command.
+# The one native step that runs only on the nightly schedule (#1846): repeat the scheduler
+# and HLE thread selftests until one fails. It reruns the binaries the translation part built.
+_NIGHTLY_REPEAT_STEP = "Repeat the scheduler and HLE thread selftests until one fails (nightly)"
+_NIGHTLY_ONLY_SUFFIX = " && github.event_name == 'schedule'"
+
 _NATIVE_SERIAL_GATES = {
     "Build and run the vendored FFmpeg H.264 media selftest":
         'make CC=gcc H264_FFMPEG=1 BUILD_ROOT="$RUNNER_TEMP/ffmpeg-h264-build" psmf-media-selftest',
@@ -735,9 +744,11 @@ _NATIVE_SERIAL_GATES = {
     "Run Linux AOT return-boundary selftest":
         'make --no-print-directory CC=gcc BUILD_DIR="$build_dir" aot-return-boundary-thread-selftest',
     "Run Linux scheduler selftest matrix": "run: make CC=gcc -j4 sched-selftest",
+    _NIGHTLY_REPEAT_STEP: "run: make CC=gcc selftest-repeat",
     "Run Linux dispatch isolation selftest matrix": "run: make CC=gcc -j4 dispatch-isolation-selftest",
     "Run Linux AOT/interpreter cosimulation": "run: make CC=gcc -j4 cosim-selftest",
     "Run Linux snapshot execution selftest": "run: make CC=gcc snapshot-selftest",
+    "Run Linux verify selftest": "run: make CC=gcc verify-selftest",
     "Run Linux cosimulation mutation corpus":
         "run: python3 fixtures/cosim/mutate.py --build-dir build/cosim --jobs 4",
     "Run Linux GPU snapshot sync selftest":
@@ -857,7 +868,9 @@ class NativeToolsPartitionTests(unittest.TestCase):
         if not conditions:
             return None
         self.assertEqual(len(conditions), 1, name)
-        match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'", conditions[0])
+        # The nightly repeat step alone may add the schedule-event suffix (#1846).
+        suffix = re.escape(_NIGHTLY_ONLY_SUFFIX) if name == _NIGHTLY_REPEAT_STEP else ""
+        match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'" + suffix, conditions[0])
         self.assertIsNotNone(match, f"{name}: a part condition must name exactly one part")
         return _matched(match).group(1)
 
@@ -1930,10 +1943,41 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
         self.assertIn("NK_TEST_TIER:", python_tools)
         self.assertIn("github.event_name == 'schedule'", python_tools)
         self.assertIn("github.event_name == 'workflow_dispatch'", python_tools)
-        for job in ("classify", "hygiene", "markdown", "native_tools", "windows_runtime",
-                    "main_smoke", "ci_required"):
+        for job in ("classify", "hygiene", "markdown", "windows_runtime", "main_smoke", "ci_required"):
             with self.subTest(job=job):
                 self.assertNotIn("github.event_name", "\n".join(blocks[job]))
+        # native_tools names the event in exactly one place: the nightly repeat step (#1846).
+        self.assertEqual("\n".join(blocks["native_tools"]).count("github.event_name"), 1)
+
+    def test_selftest_repeat_runs_in_the_nightly_only(self) -> None:
+        """#1846: the repeat-until-failure step is on the schedule event alone, so pull requests,
+        pushes, merge groups and manual runs keep the single run and their time is unchanged."""
+        native_tools = _ci_job_blocks()["native_tools"]
+        step = _ci_step(native_tools, _NIGHTLY_REPEAT_STEP)
+        self.assertIsNotNone(step, "the nightly selftest repeat step was dropped")
+        assert step is not None
+        self.assertEqual(
+            [line.strip() for line in step if line.strip().startswith("if:")],
+            ["if: matrix.part == 'translation'" + _NIGHTLY_ONLY_SUFFIX],
+        )
+        self.assertNotIn("continue-on-error", "\n".join(step))
+        # It reruns the binaries the single runs built, so it must follow both of them, and
+        # those single runs stay unconditional on the event.
+        singles = ("Build and run HLE thread selftest (links SDL3)", "Run Linux scheduler selftest matrix")
+        for single in singles:
+            self.assertLess(
+                _ci_step_index(native_tools, single), _ci_step_index(native_tools, _NIGHTLY_REPEAT_STEP)
+            )
+            self.assertNotIn("github.event_name", "\n".join(cast(list[str], _ci_step(native_tools, single))))
+        # The Makefile target is bounded by one variable and reports the failing iteration.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("SELFTEST_REPEAT ?= 20", makefile)
+        start = makefile.index("\nselftest-repeat:")
+        exes = makefile[makefile.index("SELFTEST_REPEAT_EXES ="):start]
+        self.assertIn("sched_selftest_", exes)
+        self.assertIn("hle_thread_selftest.exe", exes)
+        recipe = makefile[start:makefile.index("\n\n", start)]
+        self.assertIn("FAILED on iteration $$i of $(SELFTEST_REPEAT)", recipe)
 
     def test_scheduled_and_manual_events_force_full_matrix_and_full_python_tier(self) -> None:
         for event_name in ("schedule", "workflow_dispatch"):

@@ -304,8 +304,38 @@ static int dmac_caller_can_wait(void) {
     return sched_guest_thread_running() && sched_wait_permitted();
 }
 
+/* PSP-MEMEDGE-001 (PSP-3000, 6.61): a source that starts in VRAM and runs past its end
+ * into the 0x04200000 mirror returns 0 and copies the whole request. A host pointer cannot
+ * span that swizzle boundary, so such a source is copied in pieces through a bounce buffer
+ * (sr_guest_copy_in / sr_guest_copy_out walk the pieces and translate each one). Only the
+ * source side was measured; a destination across the boundary stays refused, as does an
+ * overlapping pair, which the piecewise copy could not keep memmove-correct. */
+static int dmac_src_crosses_vram_mirror(uint32_t dst, uint32_t src, uint32_t n) {
+    if (n == 0u || !sr_inrange_n(src, n) || !sr_inrange_n(dst, n)) return 0;
+    if (!sr_guest_span_hits_swizzled_vram_mirror(src, n)) return 0;
+    if ((uint64_t)dst < (uint64_t)src + n && (uint64_t)src < (uint64_t)dst + n) return 0;
+    return 1;
+}
+
+static void dmac_copy_through_bounce(uint32_t dst, uint32_t src, uint32_t n) {
+    uint8_t bounce[4096];
+    for (uint32_t done = 0u; done < n;) {
+        uint32_t piece = n - done;
+        if (piece > sizeof(bounce)) piece = (uint32_t)sizeof(bounce);
+        if (!sr_guest_copy_in(bounce, src + done, piece) ||
+            !sr_guest_copy_out(dst + done, bounce, piece))
+            return;
+        done += piece;
+    }
+    if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
+}
+
 static void dmac_copy(uint32_t dst, uint32_t src, uint32_t n) {
     if (n == 0u) return;
+    if (dmac_src_crosses_vram_mirror(dst, src, n)) {
+        dmac_copy_through_bounce(dst, src, n);
+        return;
+    }
     sr_guest_vram_write_prepare_bytes(dst, n);
     memmove(SR_HOST(dst), SR_HOST(src), n);
     sr_guest_vram_write_commit_bytes(dst, n);
@@ -336,7 +366,8 @@ static uint32_t dmac_transfer(CpuState *s, int try_only) {
         if (src_prefix != n) sr_oor(src, 0u, 0);
         return SCE_DMAC_ERROR_ILLEGAL_ADDR;
     }
-    if (!sr_guest_span_readable_current(src, effective) ||
+    if (!(dmac_src_crosses_vram_mirror(dst, src, effective) ||
+          sr_guest_span_readable_current(src, effective)) ||
         !sr_guest_span_writable(dst, effective)) {
         if (!sr_guest_span_writable(dst, effective)) sr_oor(dst, 0u, 1);
         if (!sr_guest_span_readable(src, effective)) sr_oor(src, 0u, 0);

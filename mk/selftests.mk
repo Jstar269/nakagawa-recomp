@@ -21,6 +21,33 @@ sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_f
 		tests/native/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/title_config.c src/rt/ace.c $(LIBS)
 	$(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe
 
+# selftest-repeat — rerun the already built scheduler and HLE thread selftests until one fails
+# (#1846). A rare ordering bug in the cooperative scheduler or the thread HLE can pass the single
+# run each CI leg makes for weeks; the nightly matrix repeats them SELFTEST_REPEAT times and
+# names the iteration and binary that failed. It builds nothing: run sched-selftest and
+# hle-thread-selftest first, with the same GAME_NAME/BUILD_DIR. Output of a passing run is
+# discarded; a failing run's output is printed. POSIX shell recipe (Linux nightly leg).
+SELFTEST_REPEAT ?= 20
+SELFTEST_REPEAT_EXES = $(foreach cfg,$(SCHED_SELFTEST_CONFIGS),$(BUILD_DIR)/sched_selftest_$(cfg).exe) $(BUILD_DIR)/hle_thread_selftest.exe
+
+selftest-repeat:
+	@case "$(SELFTEST_REPEAT)" in ''|*[!0-9]*|0) echo "selftest-repeat: SELFTEST_REPEAT must be a positive integer, got '$(SELFTEST_REPEAT)'" >&2; exit 2;; esac
+	@for exe in $(SELFTEST_REPEAT_EXES); do \
+		[ -x "$$exe" ] || { echo "selftest-repeat: $$exe is missing; run sched-selftest and hle-thread-selftest first" >&2; exit 2; }; \
+	done
+	@log="$(BUILD_DIR)/selftest-repeat.log"; i=1; \
+	while [ "$$i" -le "$(SELFTEST_REPEAT)" ]; do \
+		for exe in $(SELFTEST_REPEAT_EXES); do \
+			if ! "$$exe" >"$$log" 2>&1; then \
+				cat "$$log"; \
+				echo "selftest-repeat: FAILED on iteration $$i of $(SELFTEST_REPEAT): $$exe" >&2; \
+				exit 1; \
+			fi; \
+		done; \
+		echo "selftest-repeat: iteration $$i of $(SELFTEST_REPEAT) passed"; \
+		i=$$((i + 1)); \
+	done
+
 # heap-selftest — white-box unit tests for the guest heap allocator's boundary-tag
 # coalescing (tests/native/heap_selftest.c). No game inputs needed; #includes recomp.c for
 # direct access to the allocator statics and sr_heap_stats(), and drives the same
@@ -240,6 +267,24 @@ ge-cpu-profile-validate-selftest: $(RT_GE_O)
 	$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled
 
 native-core-tests: ge-cpu-profile-validate-selftest
+
+# ge-flight-overhead -- cost of the disarmed flight recorder on the GE paths (#320): the
+# ge-cpu-profile-validate-selftest harness's --bench mode on the production ge.c, built once
+# with the recorder linked (SR_FLIGHT unset) and once with -USR_FLIGHT_RECORDER_LINKED, run
+# in alternating pairs.  Not part of native-core-tests: it measures, it does not gate.
+# GE_FLIGHT_ROUNDS is the samples per workload and pair; GE_FLIGHT_PAIRS the pair count.
+GE_FLIGHT_DIR := $(BUILD_DIR)/ge-flight-overhead
+GE_FLIGHT_ROUNDS ?= 30
+GE_FLIGHT_PAIRS ?= 5
+GE_FLIGHT_SRCS := tests/native/ge_cpu_profile_validate_selftest.c src/rt/ge_capture.c src/rt/flight_recorder.c src/rt/perf.c
+
+ge-flight-overhead:
+	"$(PYTHON)" -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" $(GE_FLIGHT_DIR)/linked $(GE_FLIGHT_DIR)/absent
+	$(CC) $(GE_CFLAGS) -c src/rt/ge.c -o $(GE_FLIGHT_DIR)/linked/ge.o
+	$(CC) $(GE_CFLAGS) -USR_FLIGHT_RECORDER_LINKED -c src/rt/ge.c -o $(GE_FLIGHT_DIR)/absent/ge.o
+	$(CC) $(CFLAGS) -O2 $(LDFLAGS) -o $(GE_FLIGHT_DIR)/linked/bench$(EXE_EXT) $(GE_FLIGHT_SRCS) $(GE_FLIGHT_DIR)/linked/ge.o -lm
+	$(CC) $(CFLAGS) -O2 -USR_FLIGHT_RECORDER_LINKED $(LDFLAGS) -o $(GE_FLIGHT_DIR)/absent/bench$(EXE_EXT) $(GE_FLIGHT_SRCS) $(GE_FLIGHT_DIR)/absent/ge.o -lm
+	"$(PYTHON)" tools/ge_flight_overhead.py --dir "$(GE_FLIGHT_DIR)" --rounds $(GE_FLIGHT_ROUNDS) --pairs $(GE_FLIGHT_PAIRS)
 
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
@@ -540,9 +585,9 @@ domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		tests/native/domain_mode_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/domain_mode_selftest.exe
 
-# dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
-# title configuration owns (dispatch aliases, callback terminators) act only where that
-# configuration names them. No game inputs needed; tests/native/dispatch_isolation_selftest.c
+# dispatch-isolation-selftest — executable proof that the TYPED dispatch binding a
+# title configuration owns (dispatch aliases) acts only where that configuration names
+# it. No game inputs needed; tests/native/dispatch_isolation_selftest.c
 # #includes recomp.c and drives the real dispatch() entry point, asserting its observable
 # effect on CpuState.
 #
@@ -575,10 +620,15 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 
 # memory-watch-selftest — exercise the opt-in shared AOT/interpreter store hook
-# against the source-owned synthetic guest in dispatch_isolation_selftest.c.
+# against the source-owned synthetic guest in dispatch_isolation_selftest.c: once with the
+# watch on the interpreter's data word, once on a main-RAM word, where a store with nothing
+# armed takes the accessors' inline path (every width there must still be reported).
 memory-watch-selftest: export SR_WATCH = 0x00601000:4
 memory-watch-selftest: DISPATCH_ISO_CONFIG = generic
 memory-watch-selftest: dispatch-isolation-selftest-one
+	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe --watch 0x08801000:4
+
+native-core-tests: memory-watch-selftest
 
 # asset-index-selftest — host-neutral dynamic extracted-data index regression (issue #223).
 # The production Windows HLE supplies the path enumeration and wide I/O; this target proves the
@@ -591,7 +641,8 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-# The scaled-upload case (#1296) and the per-fragment mip level case (#1373) run again alone
+# The scaled-upload case (#1296), the per-fragment mip level case (#1373) and the readback-rows
+# case (#323, also on its SR_GPU_READBACK_FULL reference path) run again alone
 # at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
 # cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
@@ -608,6 +659,12 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 4 --case scaled-upload
 	$(GPU_COHERENCE_BIN) --scale 2 --case mip-lod
 	$(GPU_COHERENCE_BIN) --scale 4 --case mip-lod
+	$(GPU_COHERENCE_BIN) --scale 2 --case readback-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case readback-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case readback-rows --readback-full 1
+	$(GPU_COHERENCE_BIN) --scale 2 --case undrawn-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows --readback-full 1
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
