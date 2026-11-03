@@ -53,6 +53,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 
 #include "ge_shared.h"
 #include "gpu_sdl3vk/ge_gpu.h"   /* GeGpuFbDescriptor: header-only, no Vulkan */
+#include "sce_kernel_errors.h"
 #include "sched.c" /* white-box fixture setup and observable TCB state */
 #include "flight_recorder.h"
 #include "fbcap.h"            /* capture API this harness stubs (stub presenter) */
@@ -306,7 +307,6 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_KERNEL_SEND_MSG_PIPE_CB 0x7c41f2c2u
 #define NID_SCE_KERNEL_RECEIVE_MSG_PIPE 0x74829b76u
 #define NID_SCE_KERNEL_RECEIVE_MSG_PIPE_CB 0xfbfa697du
-#define SCE_KERNEL_ERROR_ILLEGAL_ADDR 0x80000103u
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_LOW 0x369ed59du
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME_WIDE 0x82bc5777u
 #define NID_SCE_KERNEL_GET_SYSTEM_TIME 0xdb738f35u
@@ -413,10 +413,6 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_POWER_GET_BUS_INT 0x478fe6f5u
 #define NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD 0x3ad58b8cu
 #define NID_SCE_KERNEL_RESUME_DISPATCH_THREAD  0x27e22ec2u
-#define SCE_KERNEL_ERROR_MPP_FULL     0x800201b3u
-#define SCE_KERNEL_ERROR_MPP_EMPTY    0x800201b4u
-#define SCE_KERNEL_ERROR_ILLEGAL_SIZE 0x800201bcu
-#define SCE_KERNEL_ERROR_UNKNOWN_MPPID 0x8002019eu
 #define NID_SCE_ATRAC_RELEASE_ID 0x61eb33f5u
 #define NID_SCE_ATRAC_SET_DATA 0x0e2a73abu
 #define NID_SCE_ATRAC_SET_DATA_AND_GET_ID 0x7a20e7afu
@@ -451,10 +447,6 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define SCE_ERROR_MODULE_ALREADY_LOADED 0x80111102u
 #define SCE_ERROR_MODULE_NOT_LOADED 0x80111103u
 #define SCE_KERNEL_ERROR_NOT_IMPLEMENTED 0x80020002u
-#define SCE_KERNEL_ERROR_ALREADY_STARTED 0x80020133u
-#define SCE_KERNEL_ERROR_NOT_STARTED 0x80020134u
-#define SCE_KERNEL_ERROR_ALREADY_STOPPED 0x80020135u
-#define SCE_KERNEL_ERROR_CAN_NOT_STOP 0x80020136u
 #define SCE_ERROR_AV_MODULE_BAD_ID 0x80110f01u
 #define SCE_ERROR_AV_MODULE_ALREADY_LOADED 0x80110f02u
 #define SCE_ERROR_AV_MODULE_NOT_LOADED 0x80110f03u
@@ -10132,6 +10124,149 @@ static void test_savedata_nested_outputs(void) {
 /* #1386 against PSPAutotests tests/utility/dialog/{status,sizes}.expected (hrydgard/pspautotests
  * master, recorded on a PSP): message dialog sizes and wrong-state results, a busy slot reported
  * before a bad size, and the message dialog's default button. */
+/* #1386: the keyboard's nested ranges. InitStart proves only the 0x40/0x44-byte block; the field
+ * array, each field's strings and each outtext buffer are the guest's. A range that is not whole
+ * guest memory is never partly read or written, and the keyboard ends CANCELLED rather than
+ * CHANGED. What a PSP does with such a block is not captured, so the CANCELLED answer is the
+ * fail-closed choice, not a measurement. */
+#define OSK_RAM_END         0x0c000000u
+#define OSK_CANARY          0xdeadbeefu
+static void osk_run_malformed(CpuState *cpu, const char *what) {
+    char msg[256];
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = OSK_PARAM_ADDR;
+    snprintf(msg, sizeof(msg), "%s: InitStart accepts the block, whose own size is whole", what);
+    expect(sr_syscall(cpu, NID_OSK_INIT) == 0u, msg);
+    snprintf(msg, sizeof(msg), "%s: the keyboard still reaches QUIT", what);
+    expect(osk_poll(cpu) == 1u && osk_poll(cpu) == 2u && osk_poll_past_visible(cpu) == 3u, msg);
+}
+
+static void osk_finish_malformed(CpuState *cpu, const char *what) {
+    char msg[256];
+    memset(cpu, 0, sizeof(*cpu));
+    snprintf(msg, sizeof(msg), "%s: ShutdownStart cancels the keyboard down to NONE", what);
+    expect(sr_syscall(cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(cpu) == 4u && osk_poll(cpu) == 0u,
+           msg);
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    snprintf(msg, sizeof(msg), "%s: the slot is free for a message dialog afterwards", what);
+    expect(msg_dialog_run_to_finished(cpu, UTILITY_MSG_PARAM_ADDR), msg);
+    sr_hle_test_osk_slot_reset();
+}
+
+static void test_osk_nested_ranges(void) {
+    CpuState cpu;
+    static const uint32_t field_arrays[] = {
+        OSK_RAM_END - 0x100u,   /* eight 0x34-byte fields run past the end of guest memory */
+        OSK_RAM_END,            /* wholly outside */
+        0xfffffff0u,            /* the span's end wraps the address space */
+    };
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", "NAME");
+
+    for (unsigned i = 0; i < sizeof(field_arrays) / sizeof(field_arrays[0]); i++) {
+        const char *what = "an OSK field array that is not a complete guest span";
+        osk_guest_build(1, 16u, 0u);
+        MEM_W32(OSK_PARAM_ADDR + 0x30u, 8u);
+        MEM_W32(OSK_PARAM_ADDR + 0x34u, field_arrays[i]);
+        MEM_W32(OSK_PARAM_ADDR + 0x1cu, OSK_CANARY);
+        MEM_W32(OSK_RAM_END - 0x100u + 0x2cu, OSK_CANARY);   /* where field 0's result would go */
+        MEM_W32(OSK_FIELDS_ADDR + 0x2cu, OSK_CANARY);
+        osk_run_malformed(&cpu, what);
+        expect(MEM_R32(OSK_PARAM_ADDR + 0x1cu) == 1u,
+               "an OSK field array that is not a complete guest span ends the keyboard CANCELLED");
+        expect(MEM_R32(OSK_RAM_END - 0x100u + 0x2cu) == OSK_CANARY &&
+                   MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == OSK_CANARY,
+               "an OSK field array that is not a complete guest span is read and written nowhere");
+        osk_finish_malformed(&cpu, what);
+    }
+
+    /* The outtext buffer: three UTF-16 units and a terminator do not fit in the last two bytes
+     * of guest memory, so none of them may land. */
+    {
+        const char *what = "an OSK outtext buffer that runs past the end of guest memory";
+        osk_guest_build(1, 16u, 0u);
+        MEM_W32(OSK_FIELDS_ADDR + 0x28u, OSK_RAM_END - 2u);
+        MEM_W16(OSK_RAM_END - 2u, 0xbeefu);
+        MEM_W32(OSK_PARAM_ADDR + 0x1cu, OSK_CANARY);
+        osk_run_malformed(&cpu, what);
+        expect(MEM_R16(OSK_RAM_END - 2u) == 0xbeefu,
+               "an OSK outtext buffer that runs past the end of guest memory gets no partial answer");
+        expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 1u,
+               "an OSK outtext buffer that runs past the end of guest memory reports CANCELLED");
+        osk_finish_malformed(&cpu, what);
+    }
+
+    /* The description and the initial text are read: a string that leaves guest memory is not
+     * read past its end, and the field is not answered. */
+    for (unsigned offset = 0x1cu; offset <= 0x20u; offset += 4u) {
+        const char *what = offset == 0x1cu ? "an OSK description outside guest memory"
+                                           : "an OSK initial text outside guest memory";
+        osk_guest_build(1, 16u, 0u);
+        MEM_W32(OSK_FIELDS_ADDR + offset, OSK_RAM_END);
+        osk_run_malformed(&cpu, what);
+        expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 1u && MEM_R16(osk_out_addr(0)) == 0u,
+               "an OSK string outside guest memory reports CANCELLED and writes no answer");
+        osk_finish_malformed(&cpu, what);
+    }
+
+    /* A whole block still gets its answer, so the checks refuse only what is malformed. */
+    osk_guest_build(1, 16u, 0u);
+    osk_run_malformed(&cpu, "a well-formed OSK block");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u &&
+               MEM_R16(osk_out_addr(0)) == (uint16_t)'N',
+           "a well-formed OSK block is still answered CHANGED");
+    osk_finish_malformed(&cpu, "a well-formed OSK block");
+    osk_env("SR_OSK_TEXT", NULL);
+    osk_person_reset();
+}
+
+/* #1386: wrong-state results for the dialogs the OSK measurements do not cover. Netconf, gamedata
+ * and sharing have no capture of their own (PSPAutotests utility/dialog measures message and
+ * savedata, #363 the OSK); each refuses Update and ShutdownStart at NONE and a repeated
+ * ShutdownStart, as every measured type does. Their results from INIT, RUNNING and FINISHED are
+ * unmeasured and not asserted here. */
+static void test_utility_dialog_wrong_states_unmeasured_types(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+    };
+    char what[256];
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    for (size_t i = 0; i < sizeof(dialogs) / sizeof(dialogs[0]); i++) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, utility_fixture_size(dialogs[i].init));
+        snprintf(what, sizeof(what), "%s runs to FINISHED", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
+                   utility_poll_to_finished(&cpu, dialogs[i].update, dialogs[i].status),
+               what);
+        snprintf(what, sizeof(what), "%s ShutdownStart from FINISHED is accepted", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u, what);
+        snprintf(what, sizeof(what), "%s ShutdownStart again during SHUTDOWN is INVALID_STATUS",
+                 dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110001u, what);
+        snprintf(what, sizeof(what), "%s reports SHUTDOWN, then NONE", dialogs[i].name);
+        expect(utility_status(&cpu, dialogs[i].status) == 4u &&
+                   utility_status(&cpu, dialogs[i].status) == 0u,
+               what);
+        snprintf(what, sizeof(what), "%s Update at NONE is INVALID_STATUS", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].update, 0u) == 0x80110001u, what);
+        snprintf(what, sizeof(what), "%s ShutdownStart at NONE is INVALID_STATUS", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110001u, what);
+        snprintf(what, sizeof(what), "%s stays NONE after its refused calls", dialogs[i].name);
+        expect(utility_status(&cpu, dialogs[i].status) == 0u, what);
+        sr_hle_test_osk_slot_reset();
+    }
+}
+
 static void test_utility_dialog_measured_states(void) {
     CpuState cpu;
     sr_hle_init();
@@ -24281,7 +24416,7 @@ struct gm_cell {
     float slope, u, v, w0, w1;
 };
 
-#define GM_CELL_COUNT 57u
+#define GM_CELL_COUNT 66u
 static const struct gm_cell gm_cells[GM_CELL_COUNT] = {
     {"c-b0", GM_K_SPRITE, 1u, 7u, 0x00, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
     {"c-b1", GM_K_SPRITE, 1u, 7u, 0x10, 0x004u, 0.0f, 16.0f, 4.0f, 0.0f, 0.0f},
@@ -24340,6 +24475,18 @@ static const struct gm_cell gm_cells[GM_CELL_COUNT] = {
     {"sn-s1-w3", GM_K_QUAD, 2u, 7u, 0x00, 0x004u, 1.0f, 16.0f, 4.0f, 3.0f, 3.0f},
     {"s-s1-w1to8", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 1.0f, 8.0f},
     {"s-spr-s4", GM_K_SPRITE, 2u, 7u, 0x00, 0x006u, 4.0f, 16.0f, 4.0f, 0.0f, 0.0f},
+    /* Varying-w confirmation cells (#1373, 2026-11-03): the span rule's rho term (largest
+       gradient component or u-along-x and v-along-y only), mirrored ramps, a non-power-of-two
+       footprint, nearest-level rounding, a bias after the two logarithms and the slope mode. */
+    {"a-quad-v16-w1to8", GM_K_QUAD, 0u, 7u, 0x00, 0x006u, 0.0f, 16.0f, 16.0f, 1.0f, 8.0f},
+    {"a-quad-v16-w8to1", GM_K_QUAD, 0u, 7u, 0x00, 0x006u, 0.0f, 16.0f, 16.0f, 8.0f, 1.0f},
+    {"a-quad-v8-w1to8", GM_K_QUAD, 0u, 7u, 0x00, 0x006u, 0.0f, 8.0f, 8.0f, 1.0f, 8.0f},
+    {"a-quad-u48-w1to4", GM_K_QUAD, 0u, 7u, 0x00, 0x006u, 0.0f, 48.0f, 12.0f, 1.0f, 4.0f},
+    {"a-quad-w4to1", GM_K_QUAD, 0u, 7u, 0x00, 0x006u, 0.0f, 32.0f, 8.0f, 4.0f, 1.0f},
+    {"an-quad-w1to4", GM_K_QUAD, 0u, 7u, 0x00, 0x004u, 0.0f, 32.0f, 8.0f, 1.0f, 4.0f},
+    {"a-quad-w1to4-bm1f8", GM_K_QUAD, 0u, 7u, -24, 0x006u, 0.0f, 32.0f, 8.0f, 1.0f, 4.0f},
+    {"s-s1-w8to1", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 1.0f, 16.0f, 4.0f, 8.0f, 1.0f},
+    {"s-s3-w1to8", GM_K_QUAD, 2u, 7u, 0x00, 0x006u, 3.0f, 16.0f, 4.0f, 1.0f, 8.0f},
 };
 
 /* Level `level`'s side in texels, its buffer width (whole 16-byte rows: at least 4 texels)
@@ -24623,11 +24770,10 @@ static void test_ge_mip_cells_software_contract(void) {
     sr_hle_test_ge_lists_reset();
 }
 
-/* PSP-GE-MIP-001 (#1373): the window digest each cell left on a PSP-3000 (system software 6.61,
- * ARK-5.1.0; pspver 6.6.0; probe case ge-mip at 66940d76, docs/HARDWARE_ORACLE.md). Index k is gm_cells[k]. `modelled` is 0
- * for the two cells whose w varies across the window: there the PSP holds one level of detail
- * per 4-pixel span of a row at a triangle-dependent point (ge.c tex_detail16), which the
- * software GE does not model, so their digests are recorded but not required. */
+/* PSP-GE-MIP-001 (#1373): the window digest each of the 66 cells left on a PSP-3000 (pspver
+ * 6.6.0; probe case ge-mip, the 2026-11-03 run at 99a384bb on boot 111, docs/HARDWARE_ORACLE.md;
+ * the first 57 windows are bit-identical to the earlier run at 66940d76). Index k is gm_cells[k].
+ * Every cell is required, the varying-w ones included (ge.c raster_tri_lod_span). */
 static const struct {
     const char *name;
     uint64_t psp;
@@ -24689,14 +24835,19 @@ static const struct {
     {"sn-s1-w3", 0x9dc00e67ab07b725ull},
     {"s-s1-w1to8", 0xc96687bd2bfe7501ull},
     {"s-spr-s4", 0x9dc00e67ab07b725ull},
+    {"a-quad-v16-w1to8", 0x83874c0f11083431ull},
+    {"a-quad-v16-w8to1", 0x3310acc574ce1449ull},
+    {"a-quad-v8-w1to8", 0xa62327ab488981bdull},
+    {"a-quad-u48-w1to4", 0xd40bef19621a2b65ull},
+    {"a-quad-w4to1", 0x0d9488367ddac995ull},
+    {"an-quad-w1to4", 0xcfdef10ef7c147d5ull},
+    {"a-quad-w1to4-bm1f8", 0xc0a0b4c6c4a601a1ull},
+    {"s-s1-w8to1", 0xd859e68db495cbd9ull},
+    {"s-s3-w1to8", 0x3637655ff7f299f1ull},
 };
 
-static int gm_cell_modelled(const char *name) {
-    return strcmp(name, "a-quad-w1to4") != 0 && strcmp(name, "s-s1-w1to8") != 0;
-}
-
 /* Every PSP-GE-MIP-001 cell through production dispatch and the software GE, with the probe's
- * own list, vertices and texture; each modelled cell's window must match the PSP's digest. A
+ * own list, vertices and texture; each cell's window must match the PSP's digest. A
  * diverging cell prints its software window for comparison with the raw hardware rows. */
 static void test_ge_mip_cells_match_psp(void) {
     CpuState cpu;
@@ -24723,7 +24874,6 @@ static void test_ge_mip_cells_match_psp(void) {
         for (uint32_t i = 0; i < GM_N; i++)
             px[i] = MEM_R32(fb + ((GM_WY + i / GM_WW) * GM_STRIDE + GM_WX + i % GM_WW) * 4u);
         if (strcmp(s_gm_psp[k].name, c->name) != 0) names_ok = 0;
-        if (!gm_cell_modelled(c->name)) continue;
         modelled++;
         const uint64_t digest = gm_digest(px);
         if (digest != s_gm_psp[k].psp) {
@@ -24737,8 +24887,8 @@ static void test_ge_mip_cells_match_psp(void) {
     }
     expect(names_ok, "PSP-GE-MIP-001 digest table rows name the cells in table order");
     expect(synced, "every PSP-GE-MIP-001 list is accepted and completes");
-    expect(modelled == GM_CELL_COUNT - 2u, "PSP-GE-MIP-001 leaves only the two varying-w cells unmodelled");
-    expect(diverged == 0, "every modelled PSP-GE-MIP-001 cell matches the PSP window digest");
+    expect(modelled == GM_CELL_COUNT, "every PSP-GE-MIP-001 cell is checked, the varying-w ones included");
+    expect(diverged == 0, "every PSP-GE-MIP-001 cell matches the PSP window digest");
     sr_hle_test_ge_lists_reset();
 }
 
@@ -27488,6 +27638,18 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
            "PSP: a zero-size request modifies no destination byte");
     expect(s_gpu_dirty_calls == 0u,
            "a zero-size request issues no GPU dirty notification");
+
+    /* Hardware: size 0 with a NULL destination, a NULL source or destination
+     * 0xFFFFFFFF -> 0x80000104 too, for both APIs, nothing written (PSP-DMAC-001
+     * invalid-tail-s0-a/b/d, 2026-11-03): the size check precedes the pointer checks. */
+    expect(bulk_call(nid, 0u, src, 0u) == SCE_DMAC_ILLEGAL_SIZE,
+           "PSP: size 0 with a NULL destination returns the illegal-size error");
+    expect(bulk_call(nid, dst, 0u, 0u) == SCE_DMAC_ILLEGAL_SIZE,
+           "PSP: size 0 with a NULL source returns the illegal-size error");
+    expect(bulk_call(nid, 0xffffffffu, src, 0u) == SCE_DMAC_ILLEGAL_SIZE,
+           "PSP: size 0 with destination 0xFFFFFFFF returns the illegal-size error");
+    expect(dmac_span_is(dst, 256u, 0xa5u) && s_gpu_dirty_calls == 0u,
+           "PSP: a zero-size request with a bad pointer writes nothing");
 
     /* Hardware: NULL dst or NULL src with size 64 -> 0x80000103 (v4 and v6).
      * Guest address 0 is inside this runtime's flat arena, so without an
@@ -38379,6 +38541,175 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
     sr_route_reset();
 }
 
+/* STICK <lx> <ly>: a route step can hold the left analog stick, so a headless route can walk a
+ * player and not only press buttons. Sticks used to be centred in every scripted run, because
+ * sr_ctrl_sample took them only from the window's pad. The stick reaches the guest the way a
+ * live pad's does: the route's segment holds it, sr_ctrl_sample latches it into the controller
+ * ring with the buttons, and sceCtrlReadBufferPositive hands it over in SceCtrlData's Lx/Ly
+ * bytes. Driven, like the case above, through the real vblank episode service and the real
+ * dispatch, with the guest reading once per vblank. */
+typedef struct { uint32_t buttons; uint8_t lx, ly; } RouteStickRead;
+
+static RouteStickRead route_stick_read(CpuState *cpu) {
+    MEM_W32(CTRL_OK_BUF + 4u, 0xa5a5a5a5u);
+    MEM_W8(CTRL_OK_BUF + 8u, 0xa5u);
+    MEM_W8(CTRL_OK_BUF + 9u, 0xa5u);
+    expect(ctrl_dispatch(cpu, CTRL_OK_BUF, 1u) == 1u, "the stick route's guest read returns one sample");
+    RouteStickRead r = { MEM_R32(CTRL_OK_BUF + 4u), MEM_R8(CTRL_OK_BUF + 8u), MEM_R8(CTRL_OK_BUF + 9u) };
+    return r;
+}
+
+static void route_stick_mode(CpuState *cpu, uint32_t mode) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = mode;
+    (void)sr_syscall(cpu, NID_SCE_CTRL_SET_SAMPLING_MODE);
+}
+
+static int route_stick_is(RouteStickRead r, uint32_t buttons, uint8_t lx, uint8_t ly) {
+    return r.buttons == buttons && r.lx == lx && r.ly == ly;
+}
+
+static void test_route_stick_reaches_the_guest_through_the_controller_sample(void) {
+    extern void sr_hle_test_ctrl_stick(uint8_t lx, uint8_t ly);
+    CpuState cpu;
+    RouteStickRead r[12];
+    const uint32_t open_nid = sr_route_test_nid("sceIoOpen");
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();
+    ctrl_env("1", "", "", "");
+    sr_ctrl_test_reset_live_input();
+    sr_hle_test_ctrl_sampling_reset();
+    starve_reset();
+    route_stick_mode(&cpu, 1u);   /* analog: the mode in which a PSP reports the stick at all */
+    ctrl_drain(&cpu);
+
+    /* --- a route without a STICK step reads the stick centred ------------------- */
+    rt_write("PRESS CROSS 2\nDELAY 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_RUNNING, "a route without STICK loads");
+    int centred = 1, crossed = 0;
+    for (int i = 0; i < 8; i++) {
+        starve_batch(1u);
+        r[0] = route_stick_read(&cpu);
+        if (r[0].lx != 128u || r[0].ly != 128u) centred = 0;
+        if (r[0].buttons & NK_PSP_BTN_CROSS_BIT) crossed = 1;
+    }
+    expect(crossed && sr_route_status() == RT_DONE, "the route's press reaches the guest and completes");
+    expect(centred, "a route without a STICK step reads Lx/Ly 128/128 in analog mode");
+    remove(RT_PATH);
+
+    /* --- STICK holds the stick for its press, and the next step centres it ------ */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    rt_write("STICK 255 0 PRESS 0 3\nDELAY 2\nSTICK 40 200 PRESS CROSS 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_RUNNING, "a route with STICK steps loads");
+    for (int i = 0; i < 9; i++) { starve_batch(1u); r[i] = route_stick_read(&cpu); }
+    expect(route_stick_is(r[0], 0u, 255u, 0u) && route_stick_is(r[1], 0u, 255u, 0u) &&
+               route_stick_is(r[2], 0u, 255u, 0u),
+           "a stick-only PRESS holds Lx/Ly at the scripted position for its width, with no button");
+    expect(route_stick_is(r[3], 0u, 128u, 128u) && route_stick_is(r[4], 0u, 128u, 128u),
+           "the DELAY after it centres the stick, as it releases the buttons");
+    expect(route_stick_is(r[5], NK_PSP_BTN_CROSS_BIT, 40u, 200u) &&
+               route_stick_is(r[6], NK_PSP_BTN_CROSS_BIT, 40u, 200u),
+           "a STICK on a button press holds the stick and the button together");
+    expect(route_stick_is(r[7], 0u, 128u, 128u) && route_stick_is(r[8], 0u, 128u, 128u) &&
+               sr_route_status() == RT_DONE,
+           "a finished route leaves the stick centred");
+    remove(RT_PATH);
+
+    /* --- the live stick stands until a step holds the stick, and is back after --- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    sr_hle_test_ctrl_stick(0x75u, 0x7cu);   /* a pad at rest, as a PSP-3000 read it */
+    rt_write("DELAY 1\nSTICK 200 60 PRESS 0 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a route that holds the stick after a DELAY loads");
+    for (int i = 0; i < 5; i++) { starve_batch(1u); r[i] = route_stick_read(&cpu); }
+    expect(route_stick_is(r[0], 0u, 0x75u, 0x7cu),
+           "before a step holds the stick the guest reads the live stick, not a forced centre");
+    expect(route_stick_is(r[1], 0u, 200u, 60u) && route_stick_is(r[2], 0u, 200u, 60u),
+           "a step that holds the stick replaces the live stick outright for its samples");
+    expect(route_stick_is(r[3], 0u, 0x75u, 0x7cu) && route_stick_is(r[4], 0u, 0x75u, 0x7cu),
+           "and the live stick is back once the step is done");
+    sr_hle_test_ctrl_stick(0x80u, 0x80u);
+    remove(RT_PATH);
+
+    /* --- digital mode reads the stick centred whatever the route holds ---------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    route_stick_mode(&cpu, 0u);
+    rt_write("STICK 255 255 PRESS CROSS 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a STICK press for a digital-mode guest loads");
+    for (int i = 0; i < 4; i++) { starve_batch(1u); r[i] = route_stick_read(&cpu); }
+    expect(route_stick_is(r[0], NK_PSP_BTN_CROSS_BIT, 128u, 128u) &&
+               route_stick_is(r[1], NK_PSP_BTN_CROSS_BIT, 128u, 128u),
+           "in digital mode the guest reads the press with the stick centred, as a PSP reports it");
+    expect(sr_route_status() == RT_DONE, "and the press is still delivered by the guest's reads");
+    route_stick_mode(&cpu, 1u);
+    remove(RT_PATH);
+
+    /* --- a repeated stick-only press releases between its pulses ---------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    rt_write("STICK 0 128 PRESS_UNTIL_NID sceIoOpen 0 2 4 400\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a stick-only PRESS_UNTIL_NID loads");
+    for (int i = 0; i < 6; i++) { starve_batch(1u); r[i] = route_stick_read(&cpu); }
+    expect(route_stick_is(r[0], 0u, 0u, 128u) && route_stick_is(r[1], 0u, 0u, 128u) &&
+               route_stick_is(r[2], 0u, 128u, 128u) && route_stick_is(r[3], 0u, 128u, 128u) &&
+               route_stick_is(r[4], 0u, 0u, 128u) && route_stick_is(r[5], 0u, 0u, 128u),
+           "a pulse that holds only the stick is pressed for its width and centred for the rest "
+           "of its period, so the guest sees each push as a push");
+    sr_route_test_import(open_nid);
+    starve_batch(1u);
+    (void)route_stick_read(&cpu);
+    expect(sr_route_status() == RT_DONE, "the import completes the stick pulse");
+    remove(RT_PATH);
+
+    /* --- a stick press the guest never reads fails the run by name -------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "30");
+    rt_write("STICK 128 0 PRESS 0 4\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a stick-only press with a 30-vblank read budget loads");
+    starve_batch(1u);
+    starve_batch(28u);
+    expect(sr_route_status() == RT_RUNNING, "an unread stick press is held inside its read budget");
+    starve_batch(2u);
+    expect(sr_route_status() == RT_FAILED,
+           "a stick press the guest never reads fails the route, as an unread button press does");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
+    remove(RT_PATH);
+
+    /* --- what STICK cannot mean is refused at load ------------------------------ */
+    static const char *const refused[] = {
+        "STICK 256 128 PRESS CROSS 2\nEND\n",        /* past the axis */
+        "STICK -1 128 PRESS CROSS 2\nEND\n",         /* negative */
+        "STICK 0x80 128 PRESS CROSS 2\nEND\n",       /* not decimal */
+        "STICK 12a 128 PRESS CROSS 2\nEND\n",        /* a stray character */
+        "STICK 128 PRESS CROSS 2\nEND\n",            /* one axis */
+        "STICK 128 128\nEND\n",                      /* no step */
+        "STICK 128 128 # walk\nEND\n",               /* a comment is not a step */
+        "STICK 128 128 DELAY 4\nEND\n",              /* a step that presses nothing */
+        "STICK 128 128 END\n",
+        "READS STICK 128 128 PRESS CROSS 2\nEND\n",  /* STICK comes first */
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        sr_route_reset();
+        rt_write(refused[i]);
+        expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
+               "a STICK line that cannot mean a held stick is refused at load");
+    }
+    sr_route_reset();
+    rt_write("STICK 128 0 READS PRESS CROSS 2\nSTICK 0 255 VBLANKS PRESS_UNTIL_NID sceIoOpen 0 2 4 400\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "STICK combines with a READS or VBLANKS unit after it");
+    remove(RT_PATH);
+
+    sr_route_reset();
+    sr_hle_test_ctrl_sampling_reset();
+    ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+}
+
 /* sceKernelExitGame is `void sceKernelExitGame(void)`:
  *   - PSPSDK psp/sdk/include/psploadexec.h declares it with no parameter, and
  *     every psp/sdk/samples call site invokes it with no argument.
@@ -45741,6 +46072,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_savedata_commit_faults();
     test_savedata_nested_outputs();
     test_utility_dialog_measured_states();
+    test_osk_nested_ranges();
+    test_utility_dialog_wrong_states_unmeasured_types();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
     test_explicit_exit_status_exact((int32_t)0x800201acu, 0x800200d2u);
@@ -46022,6 +46355,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_route_samples_by_elapsed_vcount_cadence();
     test_scripted_input_reaches_a_starved_guest();
     test_route_read_widths_hold_for_their_reads_on_a_starved_host();
+    test_route_stick_reaches_the_guest_through_the_controller_sample();
 
     check_coroutine_lifecycle();
 

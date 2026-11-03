@@ -322,7 +322,14 @@ static int utility_slot_busy(void) {
     return busy;
 }
 /* The block's first word is its size, one of `count` versioned sizes; the whole block must be
- * readable and writable (PSPAutotests tests/utility/dialog/sizes.expected). */
+ * readable and writable (PSPAutotests tests/utility/dialog/sizes.expected).
+ *
+ * Nested ranges, per dialog (#1386): the common result word (+0x1c) and the message dialog's
+ * buttonPressed (+0x240, only from the 0x244 version on) lie inside the block this proves, and
+ * they are the only guest words the message, netconf, gamedata-install and game-sharing handlers
+ * write; none of them follows a pointer out of the block. The savedata operation does follow
+ * pointers (its buffers, lists and size info) and checks each as a complete span before it writes
+ * (src/rt/savedata.c). The OSK's field array and strings are checked in osk_collect. */
 static int utility_param_size_ok(uint32_t param, const uint32_t *sizes, size_t count) {
     if (!param || !sr_guest_span_readable(param, 4u)) return 0;
     const uint32_t size = MEM_R32(param);
@@ -454,6 +461,9 @@ static uint32_t h_DlgShutdown(CpuState *s) {
 }
 /* The common-block result an aborted dialog finishes with (see utility_dialog_abort). */
 #define UTILITY_DIALOG_RESULT_ABORT 2u
+/* The common-block result of a dialog that ended without an answer (PSPSDK
+ * PSP_UTILITY_DIALOG_RESULT_CANCEL). */
+#define UTILITY_DIALOG_RESULT_CANCEL 1u
 enum {  /* a dialog's kind is the slot type it claims */
     UTILITY_MSG = UTILITY_SLOT_MSG, UTILITY_NETCONF = UTILITY_SLOT_NETCONF,
     UTILITY_GAMEDATA = UTILITY_SLOT_GAMEDATA, UTILITY_GAMESHARING = UTILITY_SLOT_GAMESHARING
@@ -505,11 +515,13 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
     utility_slot_settle_locked();
-    /* Still starting up: Update does not move INIT (#1386). A message dialog also refuses
-     * Update once it is back at NONE ("msg Update after done: INVALID_STATUS", PSPAutotests
-     * tests/utility/dialog/status.expected); netconf, gamedata and sharing are unmeasured there
-     * and keep accepting it. */
-    if (d->status == 1 || (d->status == 0 && d->kind == UTILITY_MSG)) {
+    /* Still starting up: Update does not move INIT (#1386). Back at NONE, the message dialog and
+     * savedata refuse Update ("msg Update after done: INVALID_STATUS", "savedata Update after
+     * done: INVALID_STATUS", PSPAutotests tests/utility/dialog/status.expected) and so does the
+     * OSK (#363). Netconf, gamedata and sharing have no capture of their own; they follow every
+     * measured type and refuse it too, rather than answer 0 to a call with nothing to update
+     * (unmeasured for those three). */
+    if (d->status == 1 || d->status == 0) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
@@ -569,16 +581,18 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
     }
     utility_slot_settle_locked();
     /* A message dialog shuts down only from FINISHED: ShutdownStart during INIT, while RUNNING and
-     * again after it are INVALID_STATUS (PSPAutotests tests/utility/dialog/status.expected). The
-     * other types are unmeasured and keep the old rule. */
-    if (d->kind == UTILITY_MSG ? d->status != 3 : !d->status) {
+     * again after it are INVALID_STATUS (PSPAutotests tests/utility/dialog/status.expected).
+     * Savedata (h_DlgShutdown) and the OSK (#363) refuse it at NONE, and savedata again once the
+     * shutdown has begun ("savedata ShutdownStart again: INVALID_STATUS"). Netconf, gamedata and
+     * sharing are unmeasured: they take the same two refusals, at NONE and during SHUTDOWN, and
+     * keep accepting ShutdownStart from INIT, RUNNING and FINISHED as savedata does (unmeasured
+     * for those three). */
+    if (d->kind == UTILITY_MSG ? d->status != 3 : (d->status == 0 || d->status == 4)) {
         dialog_unlock();
-        return d->kind == UTILITY_MSG ? SCE_ERROR_UTILITY_INVALID_STATUS : 0u;
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
-    if (d->status != 4) {                /* NONE on the next vblank (utility_slot_settle_locked) */
-        d->status = 4;
-        s_utility_step_vcount = sr_display_vcount();
-    }
+    d->status = 4;                       /* NONE on the next vblank (utility_slot_settle_locked) */
+    s_utility_step_vcount = sr_display_vcount();
     dialog_unlock();
     return 0;
 }
@@ -794,15 +808,31 @@ static int osk_script_configured(void) {
     return (path && *path) || s_osk_repeat;
 }
 
-static void osk_read_utf16(uint32_t addr, wchar_t *out, int max) {
+/* Read a NUL-terminated UTF-16 string of at most max - 1 units. Returns 0 when a unit lies outside
+ * guest memory: the units read so far stay in `out`, terminated, and the caller decides what the
+ * field then means. A null address is an empty string. */
+static int osk_read_utf16(uint32_t addr, wchar_t *out, int max) {
     int i = 0;
+    int ok = 1;
     if (addr) for (; i < max - 1; i++) {
-        uint16_t c = MEM_R16(addr + (uint32_t)i * 2);
+        const uint32_t unit = addr + (uint32_t)i * 2u;
+        if (unit < addr || !sr_guest_span_readable(unit, 2u)) { ok = 0; break; }
+        uint16_t c = MEM_R16(unit);
         if (!c) break;
         out[i] = (wchar_t)c;
     }
     out[i] = 0;
+    return ok;
 }
+
+/* Nested ranges of the OSK parameter block. Only the block itself is proven by InitStart
+ * (utility_param_size_ok); the field array it points to, each field's strings and each outtext
+ * buffer are the guest's, and are proven here as complete spans before the first byte of that
+ * range is read or written. A range that is not whole guest memory is never partly used. What a
+ * PSP does with such a block is not captured (#363 measured states and return codes only), so
+ * the answer here is the fail-closed one: the dialog ends CANCELLED, never CHANGED, the cause is
+ * named on stderr, and nothing outside guest memory is touched. */
+#define OSK_DATA_BYTES 0x34u
 
 /* Close a person's request the keyboard no longer wants (the title shut the keyboard down,
  * or started a new one, before it was answered); a late answer is discarded. */
@@ -820,16 +850,31 @@ static int osk_collect(void) {
     int nf = (int)MEM_R32(p + 0x30);                       /* datacount */
     uint32_t fields = MEM_R32(p + 0x34);                   /* SceUtilityOskData[] */
     if (nf < 1 || nf > 8 || !fields) return 1;
+    uint32_t array_bytes;
+    if (!sr_size_mul_ok((uint32_t)nf, OSK_DATA_BYTES, &array_bytes) ||
+        !sr_guest_span_readable(fields, array_bytes) || !sr_guest_span_writable(fields, array_bytes)) {
+        fprintf(stderr, "osk: the %d-field array at 0x%08" PRIx32 " is not a complete guest span; "
+                "no field is read or written and the keyboard ends CANCELLED (unmeasured)\n",
+                nf, fields);
+        MEM_W32(p + 0x1c, UTILITY_DIALOG_RESULT_CANCEL);
+        return 1;
+    }
     int scripted = osk_script_configured();
     for (; s_osk_field < nf; s_osk_field++) {
         int i = s_osk_field;
-        uint32_t f = fields + (uint32_t)i * 0x34;
+        uint32_t f = fields + (uint32_t)i * OSK_DATA_BYTES;
         uint32_t descA = MEM_R32(f + 0x1c), inA = MEM_R32(f + 0x20);
         uint32_t outLen = MEM_R32(f + 0x24), outA = MEM_R32(f + 0x28);
         uint32_t outLimit = MEM_R32(f + 0x30);
         wchar_t desc[128], intext[256], out[256];
-        osk_read_utf16(descA, desc, 128);
-        osk_read_utf16(inA, intext, 256);
+        if (!osk_read_utf16(descA, desc, 128) || !osk_read_utf16(inA, intext, 256) ||
+            (outA && !sr_guest_span_writable(outA, 2u))) {
+            fprintf(stderr, "osk: field %d has a description, initial text or outtext buffer "
+                    "outside guest memory; nothing is written to it and it ends CANCELLED "
+                    "(unmeasured)\n", i);
+            MEM_W32(f + 0x2c, 1u);                         /* result: CANCELLED */
+            continue;
+        }
         int cap = outLen ? (int)outLen : 256;              /* u16 units incl. terminator */
         if (outLimit && (int)outLimit + 1 < cap) cap = (int)outLimit + 1;
         if (cap > 256) cap = 256;
@@ -856,8 +901,18 @@ static int osk_collect(void) {
         if (outA) {
             const wchar_t *w = ok ? out : intext;
             int j = 0;
-            for (; w[j] && j < cap - 1; j++) MEM_W16(outA + (uint32_t)j * 2, (uint16_t)w[j]);
-            MEM_W16(outA + (uint32_t)j * 2, 0);
+            while (w[j] && j < cap - 1) j++;
+            uint32_t out_bytes;
+            if (!sr_size_mul_ok((uint32_t)j + 1u, 2u, &out_bytes) ||
+                !sr_guest_span_writable(outA, out_bytes)) {
+                fprintf(stderr, "osk: field %d answer (%d units) does not fit guest memory at "
+                        "0x%08" PRIx32 "; nothing is written and it ends CANCELLED "
+                        "(unmeasured)\n", i, j, outA);
+                ok = 0;
+            } else {
+                for (int u = 0; u < j; u++) MEM_W16(outA + (uint32_t)u * 2u, (uint16_t)w[u]);
+                MEM_W16(outA + (uint32_t)j * 2u, 0);
+            }
         }
         MEM_W32(f + 0x2c, ok ? 2u : 1u);                   /* result: CHANGED / CANCELLED */
         if (getenv("SR_DLGLOG"))
