@@ -756,6 +756,69 @@ class RuntimeModuleBoundaries(unittest.TestCase):
                 [0x3C0408C0, 0x24840000 | (cb & 0xFFFF), 0x00000000], "OVL_TABLE_PAD.ELF", cb,
                 trailer=[OVERLAY_LINK + 0x10])        # data word naming that nop
 
+    def test_fixed_overlay_call_target_pair_holds_against_code_traced_later(self):
+        # T1's pair passes when it is checked first, but T2, found by the same pass, branches
+        # to T1's `addiu`: against the final traced code another path enters between the
+        # `lui` and the `jalr`, so T1 is withdrawn and named as a candidate. T2 holds. When
+        # T1 itself jumps to a T3 it forms, T3 was traced only through T1 and goes with it.
+        t1 = OVERLAY_LINK + 0x34
+
+        def caller(t2):
+            return [0x27BDFFF0, 0xAFBF0000,               # addiu sp,-16; sw ra,0(sp)
+                    0x3C0408C0, 0x24840034, 0x0080F809, 0,                # T1: jalr a0
+                    0x3C0408C0, 0x24840000 | (t2 & 0xFFFF), 0x0080F809, 0,  # T2: jalr a0
+                    0x8FBF0000, 0x03E00008, 0x27BD0010]   # lw ra,0(sp); jr ra; addiu sp,16
+
+        def branch_to_t1_addiu(source):                   # b 0x0c; nop
+            return [0x10000000 | ((OVERLAY_LINK + 0x0C - source - 4) >> 2 & 0xFFFF), 0]
+
+        t3 = OVERLAY_LINK + 0x4C
+        cases = {
+            "callback": (OVERLAY_LINK + 0x40, None, [
+                0x8CA20000, 0x03E00008, 0,                # T1: lw v0,0(a1); jr ra; nop
+                *branch_to_t1_addiu(OVERLAY_LINK + 0x40)]),
+            "chain": (OVERLAY_LINK + 0x44, t3, [
+                0x3C0408C0, 0x24840000 | (t3 & 0xFFFF),   # T1: lui a0; addiu a0,T3
+                0x00800008, 0,                            # jr a0; nop
+                *branch_to_t1_addiu(OVERLAY_LINK + 0x44),
+                0x8CA20000, 0x03E00008, 0]),              # T3: lw v0,0(a1); jr ra; nop
+        }
+        for case, (t2, chained, tail) in cases.items():
+            with self.subTest(case=case):
+                segment = b"".join(struct.pack("<I", w) for w in caller(t2) + tail)
+                module, err = self.fixed_overlay_module(segment, f"OVL_LATE_{case}.ELF")
+                self.assertIsNone(module.unsupported_reason)
+                self.assertEqual([a for a, _n in module.functions], [OVERLAY_LINK, t2])
+                self.assertFalse(in_ranges(t1, module.spans))
+                if chained is not None:
+                    self.assertFalse(in_ranges(chained, module.spans))
+                self.assertEqual(module.code_candidates, (t1,))
+                self.assertIn(f"0x{t1:08x}: materialized address with no evidence it is code",
+                              err)
+
+    def test_fixed_overlay_call_target_pass_is_linear_in_its_targets(self):
+        # One caller forms and calls 1000 callbacks (`lw v0,0(a1); jr ra; nop`, not
+        # entry-shaped), 7005 words in all. Each call site is checked once, its block
+        # walked once, and the targets are traced in one batch.
+        count = 1000
+        head = 2 + 4 * count + 3
+        words = [0x27BDFFF0, 0xAFBF0000]
+        callbacks = [OVERLAY_LINK + 4 * head + 12 * i for i in range(count)]
+        for cb in callbacks:
+            words += [0x3C040000 | (cb >> 16), 0x24840000 | (cb & 0xFFFF), 0x0080F809, 0]
+        words += [0x8FBF0000, 0x03E00008, 0x27BD0010]
+        words += [0x8CA20000, 0x03E00008, 0] * count
+        self.assertLess(callbacks[-1] & 0xFFFF, 0x8000)  # every addiu low half is positive
+        data = basic_fixed_overlay(b"".join(struct.pack("<I", w) for w in words))[0]
+        report = {}
+        with contextlib.redirect_stderr(io.StringIO()):
+            functions, _ = analyze(Elf(data), mixed_code_data=True, report=report)
+        self.assertEqual(sorted(functions), [OVERLAY_LINK, *callbacks])
+        self.assertEqual(report["code_candidates"], frozenset())
+        work = report["materialized_code_work"]
+        self.assertEqual((work["attempts"], work["traces"]), (1, 1))
+        self.assertLessEqual(work["site_checks"], count)
+        self.assertLessEqual(work["block_words"], 3 * count + 2)
 
     def test_fixed_overlay_identity_covers_a_leaf_it_calls(self):
         # A leaf reached only by `jal` opens no stack frame, but its translation runs from

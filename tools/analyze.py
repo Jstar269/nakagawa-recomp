@@ -2396,7 +2396,8 @@ def _in_traced_delay_slot(d, addr):
 
 
 class _BlockLeaderCensus:
-    """The basic-block leaders of an image's traced code (_seed_materialized_code).
+    """The basic-block leaders of an image's traced code (_seed_materialized_code), as a
+    container: ``addr in census``.
 
     A leader is an address another path can enter at: a function start or call target,
     every seed and materialized address (callbacks and exception entries the code names),
@@ -2404,35 +2405,80 @@ class _BlockLeaderCensus:
     table, or a pad an in-image word names: in a mixed image the code section holds the
     tables), the target of a traced direct branch or jump, and the word after each traced
     control transfer's delay slot (and after an `eret`). The image's words and its branch
-    and jump edges are read once; the parts that depend on the traced code are read
-    again each time it grows."""
+    and jump edges are read once. The leaders the traced code makes are a set that only
+    grows: trace() adds those of the words newly traced, so no traced word is read twice.
+    The function starts, call targets and seeds are the discovery's own sets, read live."""
 
     def __init__(self, d, entry_hints=()):
         self.d = d
         image_words = {word for _addr, word in _iter_code_words(d.elf, d.ranges)}
         self.fixed = frozenset(image_words | data_section_words(d.elf)
                                | set(entry_hints or ()) | {d.elf.entry})
-        self.edges = []
+        self.edge_targets = {}  # source -> the targets of its direct branch or jump
         for edges in (direct_branch_edges(d.elf, d.ranges), direct_j_edges(d.elf, d.ranges)):
             for target, sources in edges.items():
-                self.edges.append(
-                    (target, tuple(s[0] if isinstance(s, tuple) else s for s in sources)))
+                for source in sources:
+                    source = source[0] if isinstance(source, tuple) else source
+                    self.edge_targets.setdefault(source, []).append(target)
+        self.traced = set()
 
-    def leaders(self):
+    def __contains__(self, addr):
         d = self.d
-        leaders = set(self.fixed)
-        leaders.update(d.functions, d.calls, d.hc, d.noisy, d.jtails, d.materialized)
-        leaders.update(target for target, sources in self.edges
-                       if any(s in d.covered for s in sources))
-        for addr in d.covered:
+        return (addr in self.traced or addr in self.fixed or addr in d.functions
+                or addr in d.calls or addr in d.hc or addr in d.noisy or addr in d.jtails
+                or addr in d.materialized)
+
+    def restart(self):
+        """Forget the traced code's leaders and take those of the traced code as it is now."""
+        self.traced = set()
+        self.trace(self.d.covered)
+
+    def trace(self, addrs):
+        """Add the leaders the newly traced words ``addrs`` make; return the new ones."""
+        d, traced, new = self.d, self.traced, []
+        for addr in addrs:
+            found = list(self.edge_targets.get(addr, ()))
             word = _traced_word(d, addr)
-            if word is None:
-                continue
-            if _cfg_control_transfer(word):
-                leaders.add(addr + 8)
-            elif _cfg_is_eret(word):
-                leaders.add(addr + 4)
-        return leaders
+            if word is not None:
+                if _cfg_control_transfer(word):
+                    found.append(addr + 8)
+                elif _cfg_is_eret(word):
+                    found.append(addr + 4)
+            for leader in found:
+                if leader not in traced:
+                    traced.add(leader)
+                    new.append(leader)
+        return new
+
+
+def _register_jump(d, site):
+    """The register a traced `jr`/`jalr` at ``site`` jumps through, or ``None`` (not traced,
+    not such a jump, or `$zero`/`$ra`)."""
+    word = _traced_word(d, site)
+    if word is None or word >> 26 != 0 or (word & 0x3F) not in (0x08, 0x09):
+        return None
+    reg = (word >> 21) & 0x1F
+    return None if reg in (0, 31) else reg
+
+
+def _discovery_state(d):
+    """A copy of what d.discover() changes, for _restore_discovery."""
+    walked = d.walked_by_ranges
+    return (set(d.covered), set(d.calls), set(d.hc), set(d.functions), list(d.proven_spans),
+            None if walked is None else {key: set(words) for key, words in walked.items()})
+
+
+def _restore_discovery(d, state):
+    """Return the discovery, in place, to a _discovery_state copy."""
+    covered, calls, hc, functions, proven_spans, walked = state
+    for live, saved in ((d.covered, covered), (d.calls, calls), (d.hc, hc),
+                        (d.functions, functions)):
+        live.clear()
+        live.update(saved)
+    d.proven_spans[:] = proven_spans
+    if walked is not None:
+        d.walked_by_ranges.clear()
+        d.walked_by_ranges.update({key: set(words) for key, words in walked.items()})
 
 
 def _traced_block_start(d, site, leaders):
@@ -2447,9 +2493,10 @@ def _traced_block_start(d, site, leaders):
     return start
 
 
-def _traced_call_target(d, site, reg, leaders):
+def _traced_call_target(d, site, reg, leaders, start=None):
     """The address a `lui reg` / `addiu reg, reg` (or `ori`) pair builds in ``reg`` for the
-    `jr`/`jalr` at ``site``, or ``None``.
+    `jr`/`jalr` at ``site``, or ``None``. ``start``, when given, is the block's first word
+    (_traced_block_start of the same leaders).
 
     The rule, in basic-block terms: the `lui`, the low half and the jump lie in one basic
     block of traced code (no leader after the block's first word, so no other path enters
@@ -2458,7 +2505,8 @@ def _traced_call_target(d, site, reg, leaders):
     before the jump and the `lui` the last write before the low half. Any other definition
     (a load, an `addu`, an incoming argument, an encoding _gpr_writes does not classify)
     gives ``None``."""
-    start = _traced_block_start(d, site, leaders)
+    if start is None:
+        start = _traced_block_start(d, site, leaders)
     low = _defining_word(d.elf, start, site, reg)
     if low is None:
         return None
@@ -2483,7 +2531,7 @@ def _traced_call_target(d, site, reg, leaders):
     return target
 
 
-def _seed_materialized_code(d, entry_hints=()):
+def _seed_materialized_code(d, entry_hints=(), work=None):
     """Make functions of the addresses traced code materializes and then calls or jumps to.
 
     In an image whose code section also holds its data, a materialized address that is
@@ -2493,35 +2541,83 @@ def _seed_materialized_code(d, entry_hints=()):
     does, so neither the pair nor the bytes say which is code. The evidence is the flow:
     the address becomes a function when traced code builds it with a `lui`/`addiu` (or
     `ori`) pair in one register and that register is the target of a traced `jr`/`jalr`
-    (_traced_call_target), all three in one basic block (_BlockLeaderCensus). Repeats until
-    nothing new is found: each new function may call further addresses.
+    (_traced_call_target), all three in one basic block (_BlockLeaderCensus).
 
-    Returns the materialized addresses with no such evidence whose `la` low half is traced:
-    they stay outside the spans, with no executable authority, for the caller to name."""
+    The evidence must hold against the final traced code, not the code traced when a
+    target was accepted: a function found later can branch into the block of a pair
+    accepted before it (to its `addiu`), and then the pair is no evidence. So the pass
+    runs to a fixpoint. Each round checks the call sites whose block the last round
+    changed (a new leader or newly traced word in it, or just before it), accepts the
+    targets they name and traces them all at once; each new function may call further
+    addresses. Once a round accepts nothing, every accepted target is checked against the
+    final leaders. A target no traced site names any more is withdrawn and refused from
+    then on: the discovery returns to its state before the pass, which drops the code
+    traced only through that target, and the pass runs again. Each withdrawal refuses one
+    more target for good, so the pass ends. A round costs one trace of the new targets
+    and one check of each changed site: the leaders the traced code makes are added as it
+    is traced (_BlockLeaderCensus.trace), never recounted.
+
+    Returns the materialized addresses with no such evidence whose `la` low half is
+    traced, and the withdrawn targets: they stay outside the spans, with no executable
+    authority, for the caller to name. ``work``, when a dict, receives the pass's
+    operation counts: attempts (runs from the pre-pass state), rounds, traces (calls to
+    d.discover), site_checks (call sites checked) and block_words (words their block
+    walks read)."""
     census = _BlockLeaderCensus(d, entry_hints)
-    changed = True
-    while changed:
-        changed = False
-        leaders = census.leaders()
-        for site in sorted(d.covered):
-            raw = d.elf.read_at_vaddr(site, 4)
-            if raw is None or len(raw) < 4:
-                continue
-            word = int.from_bytes(raw, "little")
-            reg = (word >> 21) & 0x1F
-            if word >> 26 != 0 or (word & 0x3F) not in (0x08, 0x09) or reg in (0, 31):
-                continue
-            target = _traced_call_target(d, site, reg, leaders)
-            if target is None or target in d.functions or target in d.covered:
-                continue
-            d.functions.add(target)
-            d.discover([target])
-            leaders = census.leaders()
-            changed = True
+    counts = {"attempts": 0, "rounds": 0, "traces": 0, "site_checks": 0, "block_words": 0}
+    before = _discovery_state(d)
+    withdrawn = set()
+    while True:
+        counts["attempts"] += 1
+        census.restart()
+        named, starts = {}, {}  # call site -> the target it names now / its block's start
+        sites = [a for a in sorted(d.covered) if _register_jump(d, a) is not None]
+        pending, accepted = sites, set()
+        while pending:
+            counts["rounds"] += 1
+            batch = set()
+            for site in pending:
+                start = _traced_block_start(d, site, census)
+                target = _traced_call_target(d, site, _register_jump(d, site), census, start)
+                counts["site_checks"] += 1
+                counts["block_words"] += (site - start) // 4 + 1
+                named[site], starts[site] = target, start
+                if (target is not None and target not in withdrawn
+                        and target not in d.functions and target not in d.covered):
+                    batch.add(target)
+            if not batch:
+                break
+            accepted |= batch
+            covered, functions, calls, hc = (
+                set(d.covered), set(d.functions), set(d.calls), set(d.hc))
+            d.functions.update(batch)
+            d.discover(sorted(batch))
+            counts["traces"] += 1
+            traced = d.covered - covered
+            new_sites = {a for a in traced if _register_jump(d, a) is not None}
+            if new_sites:
+                sites = sorted(set(sites) | new_sites)
+            # A site's result reads its block and the word before it, so only an event in
+            # [start - 4, site] can change it: blocks end at their jump, so the first site
+            # at or after an event is the only one whose block can hold it.
+            pending = set(new_sites)
+            for addr in (traced.union(census.trace(traced), d.functions - functions,
+                                      d.calls - calls, d.hc - hc)):
+                i = bisect.bisect_left(sites, addr)
+                if i < len(sites) and sites[i] in starts and addr >= starts[sites[i]] - 4:
+                    pending.add(sites[i])
+            pending = sorted(pending)
+        lost = accepted - set(named.values())
+        if not lost:
+            break
+        withdrawn |= lost
+        _restore_discovery(d, before)
+    if work is not None:
+        work.update(counts)
     return frozenset(
         target for target, sites in d.materialized.items()
         if target not in d.functions and target not in d.covered
-        and any(site in d.covered for site in sites))
+        and any(site in d.covered for site in sites)) | (withdrawn - d.functions - d.covered)
 
 
 def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
@@ -2535,8 +2631,9 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     # `report`, when a dict, receives the discovery state the import-stub census reads:
     # covered (every traced instruction address), calls (every direct-call target seen),
     # and hc (the high-confidence seeds), and code_candidates: the materialized addresses
-    # of a mixed image left outside its code for want of evidence. The return value is
-    # unchanged.
+    # of a mixed image left outside its code for want of evidence, with
+    # materialized_code_work, the operation counts of that pass (empty for other images).
+    # The return value is unchanged.
     d = _Discovery(elf, extra_spans, cfg_gate, trace_memo)
     _seed_entry_point(d)
     _seed_prologues_and_terminators(d)
@@ -2553,8 +2650,9 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     pending_tail_calls = _promote_tail_calls(d)
     _fill_gaps(d, pending_tail_calls)
     code_candidates = frozenset()
+    materialized_code_work = {}
     if mixed_code_data:
-        code_candidates = _seed_materialized_code(d, entry_hints)
+        code_candidates = _seed_materialized_code(d, entry_hints, materialized_code_work)
 
     # The late passes can reach start-up code that calls a pointer array (a function
     # entered only through a pointer or the gap fill); seed those arrays too.
@@ -2563,7 +2661,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     merged_ranges = _owned_spans(d)
     if report is not None:
         report.update(covered=d.covered, calls=d.calls, hc=d.hc,
-                      code_candidates=code_candidates - d.covered - d.functions)
+                      code_candidates=code_candidates - d.covered - d.functions,
+                      materialized_code_work=materialized_code_work)
     return d.functions, merged_ranges
 
 
