@@ -355,7 +355,7 @@ class NewProbeResultParserTests(unittest.TestCase):
                                 post_guard: int = 0, overflow_band: int = 0,
                                 source_intact: int = 1,
                                 payload_mutations: int = 0,
-                                setup_mask: int = 0xF,
+                                setup_mask: int = 0x7,
                                 source_addr: int = 0x08811000,
                                 destination_addr: int = 0x08822000) -> str:
         rc = 0
@@ -517,7 +517,8 @@ class NewProbeResultParserTests(unittest.TestCase):
             probe,
             r"\*block_uid\s*=\s*sceKernelAllocPartitionMemory\(\s*"
             r"DMAC_INVALID_PARTITION,\s*\"oracle-dmac-scratch\",\s*"
-            r"PSP_SMEM_High,\s*DMAC_INVALID_SCRATCH_BYTES,\s*NULL\);",
+            r"DMAC_INVALID_SMEM_HIGH_ALIGNED,\s*DMAC_INVALID_SCRATCH_BYTES,\s*"
+            r"\(void \*\)\(uintptr_t\)DMAC_INVALID_NEIGHBOR_BYTES\);",
         )
         self.assertIn(
             "*block_head = (uint8_t *)sceKernelGetBlockHeadAddr(*block_uid);",
@@ -706,7 +707,7 @@ class NewProbeResultParserTests(unittest.TestCase):
         rows = [
             self._invalid_tail_named_row(
                 f"invalid-tail-s0-{cell}-{api}", api=api, endpoint=endpoint,
-                tier="S", status="SKIP", executed=0, setup_mask=0x7,
+                tier="S", status="SKIP", executed=0, setup_mask=0x3,
                 source_intact=0,
                 source_addr=0, destination_addr=0,
             )
@@ -726,6 +727,36 @@ class NewProbeResultParserTests(unittest.TestCase):
         )
         with self.assertRaises(ProtocolError):
             parse_dmac_invalid_tail_output(claimed_intact, campaign_case)
+
+    def test_invalid_tail_ownership_proof_is_the_end_boundary_only(self) -> None:
+        """setup_mask 0x7 (block, geometry, refused end page) is the whole proof."""
+        campaign_case = "dma-invalid-tail-s0"
+        cells = [(api, cell, endpoint) for api in ("memcpy", "try")
+                 for cell, endpoint in (("a", "dst"), ("b", "src"),
+                                        ("c", "both"), ("d", "dst"))]
+        pointers = {"a": (0x08811000, 0), "b": (0, 0x08822000),
+                    "c": (0x08811000, 0x08822000), "d": (0x08811000, 0xFFFFFFFF)}
+
+        def stream(mask: int, status: str = "PASS") -> str:
+            return self._stream([
+                self._invalid_tail_named_row(
+                    f"invalid-tail-s0-{cell}-{api}", api=api, endpoint=endpoint,
+                    tier="S", status=status, setup_mask=mask,
+                    executed=1 if status == "PASS" else 0,
+                    source_intact=1 if status == "PASS" else 0,
+                    source_addr=pointers[cell][0] if status == "PASS" else 0,
+                    destination_addr=pointers[cell][1] if status == "PASS" else 0,
+                )
+                for api, cell, endpoint in cells
+            ])
+
+        self.assertEqual(
+            len(parse_dmac_invalid_tail_output(stream(0x7), campaign_case).results), 8
+        )
+        with self.assertRaises(ProtocolError):
+            parse_dmac_invalid_tail_output(stream(0xF), campaign_case)
+        with self.assertRaises(ProtocolError):
+            parse_dmac_invalid_tail_output(stream(0x7, "SKIP"), campaign_case)
 
 
     def test_campaign_probe_parsers_accept_complete_synthetic_records(self) -> None:
@@ -2831,7 +2862,8 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn("PSP_SMEM_Addr", self.probe)
         self.assertIn('"oracle-dmac-scratch"', self.probe)
         self.assertIn("DMAC_INVALID_SETUP_END_NEIGHBOR", self.probe)
-        self.assertIn("DMAC_INVALID_SETUP_BEGIN_NEIGHBOR", self.probe)
+        self.assertNotIn("DMAC_INVALID_SETUP_BEGIN_NEIGHBOR", self.probe)
+        self.assertIn("#define DMAC_INVALID_SETUP_MASK 0x07u", self.probe)
         self.assertIn("0xffffffff", self.probe.lower())
         self.assertIn("dst = (void *)(uintptr_t)UINT32_MAX", self.probe)
         self.assertIn("DMAC_INVALID_PAYLOAD_BYTES + DMAC_INVALID_MAX_DELTA <=", self.probe)
