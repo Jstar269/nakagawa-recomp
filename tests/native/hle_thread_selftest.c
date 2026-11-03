@@ -745,8 +745,24 @@ static uint32_t s_psmf_synthetic_size;
 static int s_psmf_synthetic_enabled;
 static int s_umd_io_synthetic_enabled;
 static const char *const s_psmf_synthetic_path = "disc0:/media/synthetic.psmf";
+/* Disc files the module-identity test loads by path, present only while it asks: the
+ * module manager opens a file before it loads it, so a missing one would never load. */
+static const char *const s_identity_disc_files[] = {
+    "disc0:/PSP_GAME/USRDIR/notpsmf.prx",
+    "disc0:/PSP_GAME/USRDIR/libpsmfplayer.prx.bak",
+};
+static int s_identity_disc_files_enabled;
 
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
+    if (s_identity_disc_files_enabled && guest_path) {
+        for (uint32_t i = 0; i < sizeof(s_identity_disc_files) / sizeof(s_identity_disc_files[0]); i++) {
+            if (strcmp(guest_path, s_identity_disc_files[i]) == 0) {
+                if (out_lba) *out_lba = 0x2000u + i;
+                if (out_size) *out_size = 2048u;
+                return 0;
+            }
+        }
+    }
     if (s_umd_io_synthetic_enabled && guest_path) {
         static const char *const paths[] = {
             "disc0:/PSP_GAME",
@@ -2542,7 +2558,61 @@ static void test_runtime_placed_modules(void) {
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = fd;
         (void)sr_hle_test_io_close(&cpu);
+
+        /* sceKernelLoadModule opens its file, then asks the device whether it may load
+         * from it: an undeclared path that opens loads as the descriptor's does, and one
+         * that opens nothing fails with the open's error and leaves no record. A title
+         * booted from the disc may not load from the Memory Stick. Tekken 6 (ULUS10466)
+         * reads a load of its files on ms0: that succeeds as a copy that does not run
+         * from its disc. */
+        uid = rt_load(undeclared_guest, 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u && sr_hle_test_module_count() == 1u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+               "runtime placement: LoadModule of an undeclared path that opens records the module");
+        hle_test_setenv("SR_BOOT_PATH", "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN");
+        uid = rt_load(undeclared_guest, 0u);
+        expect(uid == 0x80020146u /* PROHIBIT_LOADMODULE_DEVICE */ &&
+                   sr_hle_test_module_count() == 0u,
+               "runtime placement: a disc title's LoadModule from ms0: is refused by the device");
+        /* The program a LoadExec boots decides from then on: the disc title replaced by
+         * its ms0: program (the manifest's required runtime module) may load from ms0:. */
+        {
+            extern void sr_hle_test_loadexec_program_reset(void);
+            extern uint32_t s_loadexec_boot_uid;
+            uint32_t exec_entry = 0u, exec_gp = 0u;
+            int booted = sr_hle_loadexec_boot_module(alpha_guest, &exec_entry, &exec_gp);
+            uint32_t exec_uid = s_loadexec_boot_uid;
+            uid = rt_load(undeclared_guest, 0u);
+            expect(booted && exec_entry != 0u && uid != 0u && (uid & 0x80000000u) == 0u &&
+                       rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+                   "runtime placement: after a LoadExec to an ms0: program, LoadModule from ms0: records the module");
+            expect(rt_lifecycle(sr_hle_test_stop_module, exec_uid, 0u, 0u, 0u) == 0u &&
+                       rt_lifecycle(sr_hle_test_unload_module, exec_uid, 0u, 0u, 0u) == 0u,
+                   "runtime placement: the LoadExec program unloads");
+            sr_hle_test_loadexec_program_reset();
+            uid = rt_load(undeclared_guest, 0u);
+            expect(uid == 0x80020146u && sr_hle_test_module_count() == 0u,
+                   "runtime placement: with the disc program running again, LoadModule from ms0: is refused");
+        }
+        hle_test_setenv("SR_BOOT_PATH", "ms0:/PSP/GAME/NKRT/EBOOT.PBP");
+        uid = rt_load(undeclared_guest, 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+               "runtime placement: a Memory Stick title's LoadModule from ms0: records the module");
+        hle_test_setenv("SR_BOOT_PATH", "disc0:/PSP_GAME/SYSDIR/EBOOT.BIN");
         remove(host);
+        uid = rt_load(undeclared_guest, 0u);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = RT_PATH_ADDR;
+        cpu.r[5] = 1u;
+        expect(uid == 0x80010002u && sr_hle_test_module_count() == 0u &&
+                   sr_hle_test_io_open(&cpu) == 0x80010002u,
+               "runtime placement: LoadModule of a missing file returns sceIoOpen's error");
+        uid = rt_load("flash0:/kd/nk_absent.prx", 0u);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+               "runtime placement: a flash0: module path keeps its host-served record");
+        hle_test_setenv("SR_BOOT_PATH", NULL);
 
         /* sceKernelLoadModule opens its path through the file manager in the caller's
          * context, so a relative path resolves against the calling thread's current
@@ -2958,11 +3028,9 @@ static void test_module_identity_is_its_export_table(void) {
     sr_hle_test_unregister_late_imports(base, base + 0x100u);
     remove(path);
 
-    static const char *const lookalikes[] = {
-        "disc0:/PSP_GAME/USRDIR/notpsmf.prx",
-        "disc0:/PSP_GAME/USRDIR/libpsmfplayer.prx.bak",
-    };
-    for (size_t i = 0; i < sizeof(lookalikes) / sizeof(lookalikes[0]); i++) {
+    const char *const *lookalikes = s_identity_disc_files;
+    s_identity_disc_files_enabled = 1;
+    for (size_t i = 0; i < sizeof(s_identity_disc_files) / sizeof(s_identity_disc_files[0]); i++) {
         CpuState cpu;
         char what[160];
         title_hle_write_cstr(0x08906000u, lookalikes[i]);
@@ -2978,6 +3046,7 @@ static void test_module_identity_is_its_export_table(void) {
         snprintf(what, sizeof(what), "module identity: starting %s runs no entry", lookalikes[i]);
         expect(sr_hle_test_start_module(&cpu) == 0u, what);
     }
+    s_identity_disc_files_enabled = 0;
     sr_hle_test_module_reset();
 }
 
