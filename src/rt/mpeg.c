@@ -168,6 +168,9 @@ typedef struct {
     int esBuffers[2];           /* MPEG_DATA_ES_BUFFERS: allocated-flag per ES buffer */
     /* stream map: small fixed table sid -> (type,num,needsReset,auMode) */
     struct { int used, type, num, needsReset, auMode; uint32_t sid; } streams[8];
+    /* The last ids this context unregistered (0 = empty), oldest overwritten first. */
+    uint32_t retiredSids[8];
+    uint32_t retiredNext;
     /* ATRAC3+ access units: an audio-only demux of the fed ring bytes, its frames waiting in a
      * FIFO, the frame GetAtracAu holds for the next AtracDecode, and the decoder. */
     int audioStreamNum;          /* the registered ATRAC stream (its PS1 sub-stream id) */
@@ -717,6 +720,8 @@ uint32_t mpeg_unregist_stream(uint32_t mpegAddr, uint32_t sid) {
     if (ctx) for (int i = 0; i < 8; i++) if (ctx->streams[i].used && ctx->streams[i].sid == sid) {
         if (ctx->streams[i].type == MPEG_ATRAC_STREAM || ctx->streams[i].type == MPEG_AUDIO_STREAM)
             mpeg_audio_close(ctx);
+        ctx->retiredSids[ctx->retiredNext] = sid;
+        ctx->retiredNext = (ctx->retiredNext + 1u) % 8u;
         ctx->streams[i].used = 0;
         ctx->streams[i].auMode = MPEG_AU_MODE_DECODE;
     }
@@ -1757,16 +1762,30 @@ uint32_t mpeg_get_userdata_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, 
     return mpeg_contract_error("sceMpegGetUserdataAu", "userdata demux is not implemented", SCE_MPEG_ERROR_NO_DATA);
 }
 
-/* sceMpegChangeGetAuMode(mpeg, stream, mode): decode mode is retained; skip mode has no measured
- * queue/timestamp contract and therefore fails closed. */
+/* An id this context registered and has since unregistered (one of its last 8). */
+static int mpeg_stream_retired(const Mpeg *ctx, uint32_t sid) {
+    if (!sid) return 0;
+    for (int i = 0; i < 8; i++) if (ctx->retiredSids[i] == sid) return 1;
+    return 0;
+}
+
+/* sceMpegChangeGetAuMode(mpeg, stream, mode): the mode applies to a registered stream.  A stream
+ * this context registered and has since unregistered takes the call and nothing changes, as
+ * PPSSPP's unregister keeps the id in that context's stream map: a guest PSMF player keeps its
+ * stream ids across a movie change and resets them all, and it treats a refusal here as a failed
+ * reset.  Any other id stays refused: one another context registered, one this context was given
+ * with every stream slot full, one never issued.  The context remembers its last 8 unregistered
+ * ids; an older one is refused.  Unmeasured on this project's PSP. */
 uint32_t mpeg_change_get_au_mode(uint32_t mpegAddr, uint32_t sid, uint32_t mode) {
     Mpeg *ctx = mpeg_find(mpegAddr);
     if (!ctx) return (uint32_t)-1;
     if (mode != MPEG_AU_MODE_DECODE && mode != MPEG_AU_MODE_SKIP)
         return mpeg_contract_error("sceMpegChangeGetAuMode", "unsupported AU mode", SCE_MPEG_ERROR_INVALID_VALUE);
     int index = mpeg_stream_index(ctx, sid);
-    if (index < 0)
+    if (index < 0) {
+        if (mpeg_stream_retired(ctx, sid)) return 0;
         return mpeg_contract_error("sceMpegChangeGetAuMode", "unknown stream", SCE_MPEG_ERROR_INVALID_VALUE);
+    }
     ctx->streams[index].auMode = (int)mode;
     return 0;
 }
