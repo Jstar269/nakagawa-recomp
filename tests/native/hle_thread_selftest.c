@@ -4369,6 +4369,34 @@ static void test_fd_namespace(void) {
            "sceIoRename replaced destination contains new payload");
     nk_remove_utf8(rename_dst_host);
 
+    /* A write longer than the host copy buffer (4096 bytes) reaches the file whole. It used to
+     * stop after the first buffer and report 4096, and a game takes that short count for a
+     * failed save. */
+    {
+        enum { LONG_WRITE_SIZE = 2 * 4096 + 17 };
+        static const char long_guest[] = "ms0:/LONG_WRITE.BIN";
+        static uint8_t long_payload[LONG_WRITE_SIZE], long_back[LONG_WRITE_SIZE + 1];
+        char long_host[256];
+        for (size_t i = 0; i < sizeof(long_payload); i++) long_payload[i] = (uint8_t)(i * 31u + 7u);
+        fd_host_path(long_host, sizeof(long_host), long_guest);
+        fd_set_path(&cpu, path_addr, long_guest);
+        uint32_t long_fd = sr_hle_test_io_open(&cpu);
+        fd_guest_copy(payload_addr, long_payload, sizeof(long_payload));
+        fd_set_write(&cpu, long_fd, payload_addr, (uint32_t)sizeof(long_payload));
+        expect(sr_hle_test_io_write(&cpu) == sizeof(long_payload),
+               "a write longer than the host copy buffer reports its full count");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = long_fd;
+        (void)sr_hle_test_io_close(&cpu);
+        FILE *long_file = fopen(long_host, "rb");
+        size_t long_got = long_file ? fread(long_back, 1, sizeof(long_back), long_file) : 0u;
+        if (long_file) fclose(long_file);
+        expect(long_got == sizeof(long_payload) &&
+                   memcmp(long_back, long_payload, sizeof(long_payload)) == 0,
+               "a write longer than the host copy buffer persists every byte");
+        nk_remove_utf8(long_host);
+    }
+
     nk_remove_utf8(result_host);
     rmdir(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
     hle_test_setenv("SR_MEMSTICK", old_root);
