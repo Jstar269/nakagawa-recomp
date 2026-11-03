@@ -28,6 +28,7 @@
 
 #include "hle_internal.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -146,6 +147,20 @@ int audio_stat_on(void) { return 0; }
 uint32_t g_sdk_version;   /* hle.c: no compiled SDK version is set; 0 is "unknown" */
 
 /* ---- everything else fails loudly ---- */
+
+/* hle.c: a handler that meets an argument shape the runtime does not model stops the run by
+ * name. The full build exits 7 (or counts the stop in a thread selftest); no focused test
+ * exercises a stop, so one that reaches it prints the same line and aborts. It never returns. */
+uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...) {
+    char detail[192];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(detail, sizeof(detail), fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "UNSUPPORTED_IMPORT: %s %s; the run stops here (#308)\n", import_name, detail);
+    focus_fail("hle_unmodelled_stop", "hle.c");
+    return 0;   /* not reached: focus_fail aborts */
+}
 
 uint32_t sr_hle_resolve_late_import(uint32_t nid) {
     (void)nid; focus_fail("sr_hle_resolve_late_import", "hle.c late imports"); return 0;
