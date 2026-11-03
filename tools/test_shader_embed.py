@@ -136,7 +136,8 @@ def _pow_tables(text: str) -> dict[str, list[int]]:
 
 
 def _f32(bits: int) -> float:
-    return struct.unpack("<f", struct.pack("<I", bits))[0]
+    value: float = struct.unpack("<f", struct.pack("<I", bits))[0]
+    return value
 
 
 def _f32_bits_nearest(value: Fraction) -> int:
