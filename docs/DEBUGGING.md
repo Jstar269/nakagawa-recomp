@@ -363,14 +363,15 @@ image and runs the emitter over every entry both ways before it writes anything,
 build without the option. A seed that is already an entry without seeds is `known`, and it adds nothing. A
 seed that is unaligned, outside the executable ranges or on an all-zero or all-ones word is ignored. So is
 a seed the frame walk (`tools/entry_frame_balance.py`) shows releasing a frame it never allocated, and, inside
-the spans the build owns without seeds, a seed the walk does not prove a function entry
+the spans the build would own without that seed, a seed the walk does not prove a function entry
 (`not-callable: <role>`). A callable body restores the `$sp` it was entered with, and the interpreter floor
 hands off to any address with a body, so a body inside a live frame would undo its own epilogue and stop a
 run the floor finishes. Inside an owned span a seed needs at least one `jr $ra`, each with `$sp` back where it
 started; one that only loops, only leaves through a computed jump or writes `$sp` from a register is unproven,
 and stays on the floor. So does one with a computed jump and no frame of its own: at net 0 that jump says nothing
-about the frame the seed may be inside. Outside every owned span no floor runs the address, so a seed the walk
-cannot prove still gets its body: without it the run stops there.
+about the frame the seed may be inside. Those spans include what the list's other seeds own: a body from one
+round makes the floor run more words, and the next round's list can name them. Outside every owned span no
+floor runs the address, so a seed the walk cannot prove still gets its body: without it the run stops there.
 Also ignored is any seed that makes the emitter write a stub it does not write without seeds, on the seed's own entry
 (`untranslatable: <why>`) or on one the seed brought in (`untranslatable: brings 0x...: <why>`): a stub
 would turn a miss the interpreter floor finishes into an abort, even for a reserved word a run never

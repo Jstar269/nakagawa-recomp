@@ -218,6 +218,106 @@ LONGJMP_WORDS = {
     LONGJMP + 8: 0x03E00008,     # jr ra
     LONGJMP + 12: 0x24020001,    # addiu v0, zero, 1 (delay slot)
 }
+# The second round of the loop, in words outside `.text`: the seed F has a body, and C, the word
+# after its setjmp call, is owned by F's trace, so the floor runs C. The list then names both.
+# `move sp, fp` in the epilogue leaves both unproven, and neither is on the floor without seeds.
+ROUND_F = TARGET
+ROUND_C = ROUND_F + 24
+ROUND_DONE = ROUND_C + 16
+_ROUND_HEAD = {
+    **{a: w for a, w in WORDS.items() if a < ENTRY + 32},
+    ROUND_F: 0x27BDFFF0,         # addiu sp, sp, -16
+    ROUND_F + 4: 0xAFBF0000,     # sw ra, 0(sp)
+    ROUND_F + 8: 0xAFBE0004,     # sw fp, 4(sp)
+    ROUND_F + 12: 0x03A0F021,    # addu fp, sp, zero
+    ROUND_C: 0x14400003,         # bne v0, zero, ROUND_DONE (taken on the return from longjmp)
+    ROUND_C + 4: 0x00000000,     # nop (delay slot)
+    ROUND_C + 12: 0x00000000,    # nop (delay slot)
+    ROUND_F + 20: 0x00000000,    # nop (delay slot)
+    ROUND_DONE: ADDU,
+}
+
+
+def _round_words(tail):
+    """The second-round image with `tail` after ROUND_DONE, then setjmp and longjmp."""
+    setjmp = ROUND_DONE + 4 + 4 * len(tail)
+    longjmp = setjmp + 16
+    words = {
+        **_ROUND_HEAD,
+        ROUND_F + 16: 0x0C000000 | setjmp >> 2,    # jal setjmp
+        ROUND_C + 8: 0x0C000000 | longjmp >> 2,    # jal longjmp
+        setjmp: 0xAC9F0000,          # sw ra, 0(a0)
+        setjmp + 4: 0xAC9D0004,      # sw sp, 4(a0)
+        setjmp + 8: 0x03E00008,      # jr ra
+        setjmp + 12: 0x00001021,     # addu v0, zero, zero (delay slot)
+        longjmp: 0x8C9F0000,         # lw ra, 0(a0)
+        longjmp + 4: 0x8C9D0004,     # lw sp, 4(a0)
+        longjmp + 8: 0x03E00008,     # jr ra
+        longjmp + 12: 0x24020001,    # addiu v0, zero, 1 (delay slot)
+    }
+    for index, word in enumerate(tail):
+        words[ROUND_DONE + 4 + 4 * index] = word
+    return words
+
+
+ROUND_WORDS = _round_words((
+    0x03C0E821,                  # addu sp, fp, zero
+    0x8FBF0000,                  # lw ra, 0(sp)
+    0x8FBE0004,                  # lw fp, 4(sp)
+    0x03E00008,                  # jr ra
+    0x27BD0010,                  # addiu sp, sp, 16 (delay slot)
+))
+# The same frame left by a tail call to a leaf: the only exit from C releases F's frame at a
+# computed jump, and no `jr ra` is on the walk.
+ROUND_LEAF = ENTRY + 32
+ROUND_TAIL_WORDS = {
+    **_round_words((
+        0x8FBF0000,              # lw ra, 0(sp)
+        0x8FBE0004,              # lw fp, 4(sp)
+        0x3C190001,              # lui t9, 1
+        0x37390000 | ROUND_LEAF & 0xFFFF,   # ori t9, t9, ...
+        0x03200008,              # jr t9
+        0x27BD0010,              # addiu sp, sp, 16 (delay slot)
+    )),
+    ROUND_LEAF: 0x03E00008,      # jr ra
+    ROUND_LEAF + 4: 0x00000000,  # nop (delay slot)
+}
+# Shapes the walk reads outside the owned spans, each at TARGET.
+_HEAD = {a: w for a, w in WORDS.items() if a < TARGET}
+TAIL_RELEASE_WORDS = {
+    **_HEAD,
+    TARGET: ADDU,
+    TARGET + 4: 0x03200008,      # jr t9
+    TARGET + 8: 0x27BD0010,      # addiu sp, sp, 16 (delay slot)
+}
+MIXED_RETURN_WORDS = {
+    **_HEAD,
+    TARGET: 0x10A00003,          # beq a1, zero, TARGET+16
+    TARGET + 4: 0x00000000,      # nop (delay slot)
+    TARGET + 8: 0x03E00008,      # jr ra
+    TARGET + 12: 0x27BD0010,     # addiu sp, sp, 16 (delay slot)
+    TARGET + 16: 0x03E00008,     # jr ra
+    TARGET + 20: 0x00000000,     # nop (delay slot)
+}
+UNKNOWN_SP_WORDS = {
+    **_HEAD,
+    TARGET: 0x03C0E821,          # addu sp, fp, zero: the walk cannot follow $sp from here
+    TARGET + 4: 0x03E00008,      # jr ra
+    TARGET + 8: 0x27BD0010,      # addiu sp, sp, 16 (delay slot)
+}
+# Two seeds, neither proven, each reached by the other's trace: a body for either puts the other
+# on the floor.
+LOOP_HEAD = TARGET
+LOOP_BRANCH = LOOP_HEAD + 8
+LOOP_WORDS = {
+    **_HEAD,
+    LOOP_HEAD: ADDU,
+    LOOP_HEAD + 4: ADDU,
+    LOOP_BRANCH: 0x10A0FFFD,     # beq a1, zero, LOOP_HEAD
+    LOOP_BRANCH + 4: 0x00000000,  # nop (delay slot)
+    LOOP_BRANCH + 8: 0x01000008,  # jr t0
+    LOOP_BRANCH + 12: 0x00000000,  # nop (delay slot)
+}
 # Runs main with the image's variable-import sites replaced: no fixture builds an import table.
 WITH_IMPORT_SITE = """
 import sys
@@ -606,6 +706,50 @@ class AnalysisSeedTests(_Fixture):
             MID_FRAME: f"{analyze.SEED_NOT_CALLABLE}: continuation: $sp net +16 at a return"})
         self.assertNotIn(MID_FRAME, starts)
 
+    def test_a_frame_release_the_walk_sees_is_refused_with_no_return_or_with_a_mixed_one(self):
+        for name, words, why in (
+                ("tail", TAIL_RELEASE_WORDS, "continuation: $sp net +16 at a computed jump"),
+                ("mixed", MIXED_RETURN_WORDS, "continuation: $sp net +16 at a return")):
+            with self.subTest(name):
+                elf = self.work / f"{name}_release.elf"
+                elf.write_bytes(_text_ends_at(_synthetic_elf(words, ENTRY), TARGET))
+                report: dict = {}
+                starts = _functions(elf, seeds={TARGET}, report=report)
+                self.assertEqual(report["miss_seeds"],
+                                 {TARGET: f"{analyze.SEED_NOT_CALLABLE}: {why}"})
+                self.assertNotIn(TARGET, starts)
+
+    def test_a_delta_read_past_an_unmodelled_sp_write_proves_no_release(self):
+        elf = self.work / "unknown_sp.elf"
+        elf.write_bytes(_text_ends_at(_synthetic_elf(UNKNOWN_SP_WORDS, ENTRY), TARGET))
+        report: dict = {}
+        _functions(elf, seeds={TARGET}, report=report)
+        self.assertEqual(report["miss_seeds"], {TARGET: analyze.SEED_APPLIED})
+
+    def test_an_unproven_seed_another_seeds_trace_owns_stays_on_the_floor(self):
+        elf = self.work / "round_two.elf"
+        elf.write_bytes(_text_ends_at(_synthetic_elf(ROUND_WORDS, ENTRY), TARGET))
+        alone: dict = {}
+        self.assertIn(ROUND_C, _functions(elf, seeds={ROUND_C}, report=alone))
+        self.assertEqual(alone["miss_seeds"], {ROUND_C: analyze.SEED_APPLIED})
+        report: dict = {}
+        starts = _functions(elf, seeds={ROUND_F, ROUND_C}, report=report)
+        self.assertEqual(report["miss_seeds"], {
+            ROUND_F: analyze.SEED_APPLIED,
+            ROUND_C: f"{analyze.SEED_NOT_CALLABLE}: indeterminate",
+        })
+        self.assertNotIn(ROUND_C, starts)
+
+    def test_of_two_unproven_seeds_that_own_each_other_one_keeps_its_entry(self):
+        elf = self.work / "loop.elf"
+        elf.write_bytes(_text_ends_at(_synthetic_elf(LOOP_WORDS, ENTRY), TARGET))
+        report: dict = {}
+        _functions(elf, seeds={LOOP_HEAD, LOOP_BRANCH}, report=report)
+        self.assertEqual(report["miss_seeds"], {
+            LOOP_HEAD: f"{analyze.SEED_NOT_CALLABLE}: indeterminate",
+            LOOP_BRANCH: analyze.SEED_APPLIED,
+        })
+
     def test_a_word_inside_a_body_with_no_frame_live_is_still_a_seed(self):
         report: dict = {}
         starts = _functions(self.elf_path, seeds={TARGET + 4}, report=report)
@@ -990,6 +1134,35 @@ class EndToEndTests(_Fixture):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("RESULT v0=42", run.stdout)
         self.assertNotIn(TARGET, miss_seeds.read_seed_file(miss_file).seeds)
+
+    def test_a_second_round_seed_the_floor_ran_leaves_the_run_unchanged(self):
+        # Round one seeds F, whose trace owns C, so the floor runs C and the run's file lists it.
+        first_list = self.write_seeds("round_1.txt", f"# nakagawa-miss-seeds-v1\n0x{ROUND_F:08x}\n")
+        first, _fields, first_miss, _gen = self.build_and_run(
+            "round_1", f"--miss-seeds={first_list}", words=ROUND_WORDS, text_end=TARGET)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(set(miss_seeds.read_seed_file(first_miss).seeds), {ROUND_C})
+        # Round two names both. C stays on the floor, and the run ends as round one did.
+        second_list = self.write_seeds(
+            "round_2.txt", f"# nakagawa-miss-seeds-v1\n0x{ROUND_F:08x}\n0x{ROUND_C:08x}\n")
+        second, _fields, _miss, generated = self.build_and_run(
+            "round_2", f"--miss-seeds={second_list}", words=ROUND_WORDS, text_end=TARGET)
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=2 applied=1 known=0 ignored=1", generated.stdout)
+        self.assertIn(f"ignored 0x{ROUND_C:08x}: not-callable: indeterminate", generated.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("RESULT v0=42", second.stdout)
+        self.assertNotIn("SEMANTIC_BOUNDARY", second.stderr)
+
+    def test_a_frame_released_at_a_tail_call_leaves_the_run_unchanged(self):
+        seeds = self.write_seeds(
+            "round_tail.txt", f"# nakagawa-miss-seeds-v1\n0x{ROUND_F:08x}\n0x{ROUND_C:08x}\n")
+        run, _fields, _miss, generated = self.build_and_run(
+            "round_tail", f"--miss-seeds={seeds}", words=ROUND_TAIL_WORDS, text_end=TARGET)
+        self.assertIn(f"ignored 0x{ROUND_C:08x}: not-callable: continuation: $sp net +16 at a "
+                      "computed jump", generated.stderr)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("RESULT v0=42", run.stdout)
+        self.assertNotIn("INTERP_REJECT", run.stderr)
 
     def test_the_loop_leaves_a_longjmp_continuation_on_the_floor(self):
         # The floor runs the continuation by design: nothing misses, yet the run's file lists it
