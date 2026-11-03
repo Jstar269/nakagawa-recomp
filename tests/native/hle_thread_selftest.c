@@ -38054,6 +38054,175 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
     sr_route_reset();
 }
 
+/* STICK <lx> <ly>: a route step can hold the left analog stick, so a headless route can walk a
+ * player and not only press buttons. Sticks used to be centred in every scripted run, because
+ * sr_ctrl_sample took them only from the window's pad. The stick reaches the guest the way a
+ * live pad's does: the route's segment holds it, sr_ctrl_sample latches it into the controller
+ * ring with the buttons, and sceCtrlReadBufferPositive hands it over in SceCtrlData's Lx/Ly
+ * bytes. Driven, like the case above, through the real vblank episode service and the real
+ * dispatch, with the guest reading once per vblank. */
+typedef struct { uint32_t buttons; uint8_t lx, ly; } RouteStickRead;
+
+static RouteStickRead route_stick_read(CpuState *cpu) {
+    MEM_W32(CTRL_OK_BUF + 4u, 0xa5a5a5a5u);
+    MEM_W8(CTRL_OK_BUF + 8u, 0xa5u);
+    MEM_W8(CTRL_OK_BUF + 9u, 0xa5u);
+    expect(ctrl_dispatch(cpu, CTRL_OK_BUF, 1u) == 1u, "the stick route's guest read returns one sample");
+    RouteStickRead r = { MEM_R32(CTRL_OK_BUF + 4u), MEM_R8(CTRL_OK_BUF + 8u), MEM_R8(CTRL_OK_BUF + 9u) };
+    return r;
+}
+
+static void route_stick_mode(CpuState *cpu, uint32_t mode) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = mode;
+    (void)sr_syscall(cpu, NID_SCE_CTRL_SET_SAMPLING_MODE);
+}
+
+static int route_stick_is(RouteStickRead r, uint32_t buttons, uint8_t lx, uint8_t ly) {
+    return r.buttons == buttons && r.lx == lx && r.ly == ly;
+}
+
+static void test_route_stick_reaches_the_guest_through_the_controller_sample(void) {
+    extern void sr_hle_test_ctrl_stick(uint8_t lx, uint8_t ly);
+    CpuState cpu;
+    RouteStickRead r[12];
+    const uint32_t open_nid = sr_route_test_nid("sceIoOpen");
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();
+    ctrl_env("1", "", "", "");
+    sr_ctrl_test_reset_live_input();
+    sr_hle_test_ctrl_sampling_reset();
+    starve_reset();
+    route_stick_mode(&cpu, 1u);   /* analog: the mode in which a PSP reports the stick at all */
+    ctrl_drain(&cpu);
+
+    /* --- a route without a STICK step reads the stick centred ------------------- */
+    rt_write("PRESS CROSS 2\nDELAY 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_RUNNING, "a route without STICK loads");
+    int centred = 1, crossed = 0;
+    for (int i = 0; i < 8; i++) {
+        starve_batch(1u);
+        r[0] = route_stick_read(&cpu);
+        if (r[0].lx != 128u || r[0].ly != 128u) centred = 0;
+        if (r[0].buttons & NK_PSP_BTN_CROSS_BIT) crossed = 1;
+    }
+    expect(crossed && sr_route_status() == RT_DONE, "the route's press reaches the guest and completes");
+    expect(centred, "a route without a STICK step reads Lx/Ly 128/128 in analog mode");
+    remove(RT_PATH);
+
+    /* --- STICK holds the stick for its press, and the next step centres it ------ */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    rt_write("STICK 255 0 PRESS 0 3\nDELAY 2\nSTICK 40 200 PRESS CROSS 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_RUNNING, "a route with STICK steps loads");
+    for (int i = 0; i < 9; i++) { starve_batch(1u); r[i] = route_stick_read(&cpu); }
+    expect(route_stick_is(r[0], 0u, 255u, 0u) && route_stick_is(r[1], 0u, 255u, 0u) &&
+               route_stick_is(r[2], 0u, 255u, 0u),
+           "a stick-only PRESS holds Lx/Ly at the scripted position for its width, with no button");
+    expect(route_stick_is(r[3], 0u, 128u, 128u) && route_stick_is(r[4], 0u, 128u, 128u),
+           "the DELAY after it centres the stick, as it releases the buttons");
+    expect(route_stick_is(r[5], NK_PSP_BTN_CROSS_BIT, 40u, 200u) &&
+               route_stick_is(r[6], NK_PSP_BTN_CROSS_BIT, 40u, 200u),
+           "a STICK on a button press holds the stick and the button together");
+    expect(route_stick_is(r[7], 0u, 128u, 128u) && route_stick_is(r[8], 0u, 128u, 128u) &&
+               sr_route_status() == RT_DONE,
+           "a finished route leaves the stick centred");
+    remove(RT_PATH);
+
+    /* --- the live stick stands until a step holds the stick, and is back after --- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    sr_hle_test_ctrl_stick(0x75u, 0x7cu);   /* a pad at rest, as a PSP-3000 read it */
+    rt_write("DELAY 1\nSTICK 200 60 PRESS 0 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a route that holds the stick after a DELAY loads");
+    for (int i = 0; i < 5; i++) { starve_batch(1u); r[i] = route_stick_read(&cpu); }
+    expect(route_stick_is(r[0], 0u, 0x75u, 0x7cu),
+           "before a step holds the stick the guest reads the live stick, not a forced centre");
+    expect(route_stick_is(r[1], 0u, 200u, 60u) && route_stick_is(r[2], 0u, 200u, 60u),
+           "a step that holds the stick replaces the live stick outright for its samples");
+    expect(route_stick_is(r[3], 0u, 0x75u, 0x7cu) && route_stick_is(r[4], 0u, 0x75u, 0x7cu),
+           "and the live stick is back once the step is done");
+    sr_hle_test_ctrl_stick(0x80u, 0x80u);
+    remove(RT_PATH);
+
+    /* --- digital mode reads the stick centred whatever the route holds ---------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    route_stick_mode(&cpu, 0u);
+    rt_write("STICK 255 255 PRESS CROSS 2\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a STICK press for a digital-mode guest loads");
+    for (int i = 0; i < 4; i++) { starve_batch(1u); r[i] = route_stick_read(&cpu); }
+    expect(route_stick_is(r[0], NK_PSP_BTN_CROSS_BIT, 128u, 128u) &&
+               route_stick_is(r[1], NK_PSP_BTN_CROSS_BIT, 128u, 128u),
+           "in digital mode the guest reads the press with the stick centred, as a PSP reports it");
+    expect(sr_route_status() == RT_DONE, "and the press is still delivered by the guest's reads");
+    route_stick_mode(&cpu, 1u);
+    remove(RT_PATH);
+
+    /* --- a repeated stick-only press releases between its pulses ---------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    rt_write("STICK 0 128 PRESS_UNTIL_NID sceIoOpen 0 2 4 400\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a stick-only PRESS_UNTIL_NID loads");
+    for (int i = 0; i < 6; i++) { starve_batch(1u); r[i] = route_stick_read(&cpu); }
+    expect(route_stick_is(r[0], 0u, 0u, 128u) && route_stick_is(r[1], 0u, 0u, 128u) &&
+               route_stick_is(r[2], 0u, 128u, 128u) && route_stick_is(r[3], 0u, 128u, 128u) &&
+               route_stick_is(r[4], 0u, 0u, 128u) && route_stick_is(r[5], 0u, 0u, 128u),
+           "a pulse that holds only the stick is pressed for its width and centred for the rest "
+           "of its period, so the guest sees each push as a push");
+    sr_route_test_import(open_nid);
+    starve_batch(1u);
+    (void)route_stick_read(&cpu);
+    expect(sr_route_status() == RT_DONE, "the import completes the stick pulse");
+    remove(RT_PATH);
+
+    /* --- a stick press the guest never reads fails the run by name -------------- */
+    sr_route_reset();
+    ctrl_drain(&cpu);
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", "30");
+    rt_write("STICK 128 0 PRESS 0 4\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a stick-only press with a 30-vblank read budget loads");
+    starve_batch(1u);
+    starve_batch(28u);
+    expect(sr_route_status() == RT_RUNNING, "an unread stick press is held inside its read budget");
+    starve_batch(2u);
+    expect(sr_route_status() == RT_FAILED,
+           "a stick press the guest never reads fails the route, as an unread button press does");
+    hle_test_setenv("SR_PADSCRIPT_READ_BUDGET", NULL);
+    remove(RT_PATH);
+
+    /* --- what STICK cannot mean is refused at load ------------------------------ */
+    static const char *const refused[] = {
+        "STICK 256 128 PRESS CROSS 2\nEND\n",        /* past the axis */
+        "STICK -1 128 PRESS CROSS 2\nEND\n",         /* negative */
+        "STICK 0x80 128 PRESS CROSS 2\nEND\n",       /* not decimal */
+        "STICK 12a 128 PRESS CROSS 2\nEND\n",        /* a stray character */
+        "STICK 128 PRESS CROSS 2\nEND\n",            /* one axis */
+        "STICK 128 128\nEND\n",                      /* no step */
+        "STICK 128 128 # walk\nEND\n",               /* a comment is not a step */
+        "STICK 128 128 DELAY 4\nEND\n",              /* a step that presses nothing */
+        "STICK 128 128 END\n",
+        "READS STICK 128 128 PRESS CROSS 2\nEND\n",  /* STICK comes first */
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        sr_route_reset();
+        rt_write(refused[i]);
+        expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
+               "a STICK line that cannot mean a held stick is refused at load");
+    }
+    sr_route_reset();
+    rt_write("STICK 128 0 READS PRESS CROSS 2\nSTICK 0 255 VBLANKS PRESS_UNTIL_NID sceIoOpen 0 2 4 400\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "STICK combines with a READS or VBLANKS unit after it");
+    remove(RT_PATH);
+
+    sr_route_reset();
+    sr_hle_test_ctrl_sampling_reset();
+    ctrl_env("1", "", "", "");
+    ctrl_drain(&cpu);
+}
+
 /* sceKernelExitGame is `void sceKernelExitGame(void)`:
  *   - PSPSDK psp/sdk/include/psploadexec.h declares it with no parameter, and
  *     every psp/sdk/samples call site invokes it with no argument.
@@ -45693,6 +45862,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_route_samples_by_elapsed_vcount_cadence();
     test_scripted_input_reaches_a_starved_guest();
     test_route_read_widths_hold_for_their_reads_on_a_starved_host();
+    test_route_stick_reaches_the_guest_through_the_controller_sample();
 
     check_coroutine_lifecycle();
 
