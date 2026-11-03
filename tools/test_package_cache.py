@@ -108,19 +108,42 @@ class PackageCacheTests(unittest.TestCase):
         self.assertEqual(package_cache.title_input_identity_changes(self.identity, identity), ())
         self.assertIn("format_warnings", container, "the caller's metadata is not modified")
 
-    def test_identity_container_still_refuses_unknown_keys(self) -> None:
-        for extra in ({"format_warnings": ["note"]}, {"label": "x"}):
+    def test_identity_ignores_source_format_of_a_compressed_disc(self) -> None:
+        """inspect_iso adds source_format (cso, zso, chd) to the container metadata of an
+        expanded image; it names the wrapper, not the disc, and stays out of the identity."""
+        container = {**self.identity["container"], "source_format": "cso"}
+        identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[],
+            disc_id="TEST00001",
+            region="TEST",
+            disc_version="1.00",
+            param_sfo={"DISC_ID": "TEST00001", "DISC_VERSION": "1.00"},
+            container=container,
+        )
+        self.assertEqual(identity, self.identity)
+        self.assertEqual(identity["container"], self.identity["container"])
+
+    def test_identity_container_schema_stays_exact(self) -> None:
+        # A stored record is validated against exactly the identity keys.
+        for extra in ({"format_warnings": ["note"]}, {"source_format": "cso"}, {"label": "x"}):
             invalid = dict(self.identity)
             invalid["container"] = {**self.identity["container"], **extra}
             with self.assertRaisesRegex(package_cache.PackageCacheError, "container metadata"):
                 package_cache.validate_title_input_identity(invalid)
+        # The builder keeps only the identity keys, so a missing one is still refused.
+        incomplete = {
+            key: value for key, value in self.identity["container"].items() if key != "volume_id"
+        }
         with self.assertRaisesRegex(package_cache.PackageCacheError, "container metadata"):
             package_cache.build_title_input_identity(
                 manifest={"id": "synthetic-cache-test", "schema_version": 1},
                 executable_name="EBOOT.BIN",
                 executable_sha256="2" * 64,
                 modules=[],
-                container={**self.identity["container"], "label": "x"},
+                container={**incomplete, "source_format": "cso"},
             )
 
     def test_native_build_report_byte_ceiling_matches_python(self) -> None:
