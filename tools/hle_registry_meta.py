@@ -1027,7 +1027,7 @@ HANDLER_METADATA = {
     },
     "h_VaudioOutputBlocking": {
         "status": "partial",
-        "limitation": "the SRC blocking output for a Vaudio reservation: returns the reserved sample count, 0x80260008 with no Vaudio reservation, and 0x8026000b above volume 0xFFFFF (the Output2 and SRC bound, from PPSSPP caa91b54b535 Core/HLE/sceAudio.cpp); unmeasured on a PSP",
+        "limitation": "the SRC blocking output for a Vaudio reservation: returns the reserved sample count, 0x80260008 with no Vaudio reservation, and 0x8026000b above volume 0xFFFFF, a project choice by analogy with the Output2 and SRC bound because this model plays Vaudio through the SRC output (the public reference checks no Vaudio volume); unmeasured on a PSP (#1986)",
         "evidence": ["tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot"],
     },
     # Route-A graduation batch 1 (#341, 2026-10-19). Each status is bounded to

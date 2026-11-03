@@ -374,8 +374,9 @@ static float sr_audio_master_gain(int percent) {
 /* One sample at a channel volume, where 0x8000 is unity gain, clamped to 16 bits. The
  * product is 64-bit: the Output2/SRC channel accepts volumes up to 0xFFFFF (hle_audio.c,
  * SCE_AUDIO_OUTPUT2_VOLUME_MAX), and a full-scale sample times that overflows 32 bits.
- * PPSSPP's mixer does the same (hrydgard/ppsspp caa91b54b535, Core/HLE/__sceAudio.cpp,
- * ApplyChannelVolume). */
+ * PPSSPP's mixer also widens the product to 64 bits (hrydgard/ppsspp caa91b54b535,
+ * Core/HLE/__sceAudio.cpp, ApplyChannelVolume), but clamps once after summing the channels;
+ * this mixer hands each channel to its own stream, so it clamps per sample. */
 static int16_t sr_audio_scale_sample(int16_t sample, int volume) {
     int64_t scaled = ((int64_t)sample * volume) >> 15;
     return (int16_t)(scaled < -32768 ? -32768 : (scaled > 32767 ? 32767 : scaled));
@@ -1545,8 +1546,8 @@ static void test_pause_master_gain_applied_once(void) {
 
 /* The Output2/SRC channel accepts volumes up to 0xFFFFF (hle_audio.c,
  * SCE_AUDIO_OUTPUT2_VOLUME_MAX). A full-scale sample at that volume amplifies past 16 bits
- * and is clamped. A 32-bit product overflows instead: 32767 * 0xFFFFF wraps to -98303, so
- * the mixer submitted -3 where the clamp gives 32767, and -32768 * 0xFFFFF wraps to 32768,
+ * and is clamped. A 32-bit product overflows instead: 32767 * 0xFFFFF wraps to -1081343, so
+ * the mixer submitted -33 where the clamp gives 32767, and -32768 * 0xFFFFF wraps to 32768,
  * giving 1 where the clamp gives -32768. */
 static void test_volume_above_16_bits_is_clamped(void) {
     test_reset();

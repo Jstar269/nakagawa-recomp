@@ -24,9 +24,9 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 16 |
-| `ppsspp-derived` | 119 | 90 |
+| `ppsspp-derived` | 118 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 343 | 226 |
+| `synthetic` | 344 | 226 |
 | `unverified` | 158 | 31 |
 | total | 684 | 363 |
 
@@ -435,7 +435,7 @@ belongs to without the census's own grouping.
 | `0x8874dbe0` | `sceUtilitySavedataGetStatus` | utility | `synthetic` | HLE selftest dispatch |
 | `0x8916c003` | `sceNetAdhocctlGetNameByAddr` | network | `unverified` | no recorded evidence |
 | `0x89360950` | `sceNetEtherNtostr` | network | `ppsspp-derived` | registry notes name PPSSPP |
-| `0x8986295e` | `sceVaudioOutputBlocking` | audio | `ppsspp-derived` | registry notes name PPSSPP |
+| `0x8986295e` | `sceVaudioOutputBlocking` | audio | `synthetic` | HLE selftest dispatch |
 | `0x89aa9906` | `sceIoOpenAsync` | io | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x89b3d48c` | `sceKernelDeleteVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0x8a389411` | `sceKernelDisableSubIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |

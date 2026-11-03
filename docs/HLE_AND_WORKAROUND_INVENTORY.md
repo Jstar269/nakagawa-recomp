@@ -1067,7 +1067,7 @@ Semantic handler census: **556** handlers across **27** API families, covering *
   - Limitation: reserves the SRC slot with the SRC reserve's exclusion (0x80268002) and rates (44100 and 48000 Hz; a rate of 0 is taken as 44100 Hz); the sample counts 256, 576, 1024, 1152 and 2048 (others 0x80000104), stereo format 2 only (others 0x80000108) and the second-reserve word 0x80000021 follow the public reference and are unmeasured on a PSP
   - Evidence: tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot
 - **`h_VaudioOutputBlocking`** (`sceVaudio`): `sceVaudioOutputBlocking` (0x8986295e)
-  - Limitation: the SRC blocking output for a Vaudio reservation: returns the reserved sample count, 0x80260008 with no Vaudio reservation, and 0x8026000b above volume 0xFFFFF (the Output2 and SRC bound, from PPSSPP caa91b54b535 Core/HLE/sceAudio.cpp); unmeasured on a PSP
+  - Limitation: the SRC blocking output for a Vaudio reservation: returns the reserved sample count, 0x80260008 with no Vaudio reservation, and 0x8026000b above volume 0xFFFFF, a project choice by analogy with the Output2 and SRC bound because this model plays Vaudio through the SRC output (the public reference checks no Vaudio volume); unmeasured on a PSP (#1986)
   - Evidence: tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot
 
 #### Compatibility Handlers (Named Limitations)

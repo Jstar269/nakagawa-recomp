@@ -125,11 +125,13 @@ static SrAudioResampler s_audio_src_resampler;
 #define SCE_AUDIO_ERROR_NOT_RESERVED    0x80260008u
 #define SCE_AUDIO_ERROR_INVALID_VOL     0x8026000bu
 /* The largest volume the Output2/SRC channel's blocking output accepts. PPSSPP-derived and
- * UNMEASURED on a PSP: hrydgard/ppsspp caa91b54b535, Core/HLE/sceAudio.cpp,
+ * UNMEASURED on a PSP (#1986): hrydgard/ppsspp caa91b54b535, Core/HLE/sceAudio.cpp,
  * sceAudioOutput2OutputBlocking and sceAudioSRCOutputBlocking refuse only above 0xFFFFF
  * ("0xFFFFF, not 0xFFFF!"). The PSP probes PSP-AUDIO-001 and PSP-HLE-AUDIO-SRC-001 used
  * only volume 0x8000, the unity gain (PSPSDK PSP_AUDIO_VOLUME_MAX), which the runtime had
- * taken as the bound. A larger value amplifies, and the mixer clamps the result. */
+ * taken as the bound. A larger value amplifies, and the mixer clamps the result.
+ * sceVaudioOutputBlocking shares the bound through audio_src_output by analogy only: PPSSPP's
+ * Core/HLE/sceVaudio.cpp checks no Vaudio volume. */
 #define SCE_AUDIO_OUTPUT2_VOLUME_MAX    0x000fffffu
 /* Output2 release while samples are still queued. Measured on PSP-3001, firmware 6.6.1
  * (2026-10-01, issue #311); the raw records stay private. */
@@ -601,7 +603,9 @@ static uint32_t h_AudioSRCOutputBlocking(CpuState *s) {
  * taken from that reference: the sample counts 256, 576, 1024, 1152 and 2048 (others return
  * 0x80000104), stereo format 2 only (others 0x80000108) and a second reserve returning
  * 0x80000021. A rate of 0, which that reference leaves at the converter's current rate, is taken
- * as 44100 Hz here (an assumption, also unmeasured). That reference marks a reservation
+ * as 44100 Hz here (an assumption, also unmeasured). That reference checks no output volume;
+ * this model refuses one above SCE_AUDIO_OUTPUT2_VOLUME_MAX, by analogy with the SRC output it
+ * shares (also unmeasured). That reference marks a reservation
  * before its later checks and releases any SRC reservation; here a refused reserve marks
  * nothing and each API releases only its own (audio_src_release). */
 #define SCE_KERNEL_ERROR_INVALID_FORMAT 0x80000108u
