@@ -38289,6 +38289,52 @@ static int write_lifecycle_prx(const char *path, uint32_t payload) {
     return written == sizeof(image) && close_result == 0;
 }
 
+uint32_t sr_hle_test_prx_start_entry(const char *host_path, uint32_t base);
+uint32_t sr_hle_test_populated_start_entry(const char *file, uint32_t base);
+int sr_hle_test_set_fixed_module_image(uint32_t uid, uint32_t base, uint32_t end);
+
+/* A library module can declare no start routine: no module_start export and an ELF entry of
+ * 0xFFFFFFFF. A retail libfont is one, and running its first function as module_start read
+ * and wrote through a null argument pointer (#363). */
+static void test_module_without_entry_runs_no_code(void) {
+    enum { BASE = 0x09ebfc00u, E_ENTRY_OFF = 24 };
+    const char *path = HLE_BUILD_ROOT "/hle_no_entry.prx";
+    nk_platform_mkdir_p(HLE_BUILD_ROOT);
+    expect(write_lifecycle_prx(path, 0x11111111u), "no-entry module: fixture written");
+    expect(sr_hle_test_prx_start_entry(path, BASE) == BASE,
+           "an ELF entry of 0 is a start routine at the module's first address");
+    FILE *image = fopen(path, "r+b");
+    expect(image != NULL, "no-entry module: fixture reopened");
+    if (image) {
+        static const uint8_t none[4] = {0xff, 0xff, 0xff, 0xff};
+        fseek(image, E_ENTRY_OFF, SEEK_SET);
+        fwrite(none, 1, sizeof(none), image);
+        fclose(image);
+    }
+    expect(sr_hle_test_prx_start_entry(path, BASE) == 0u,
+           "an ELF entry of 0xFFFFFFFF declares no start routine");
+    remove(path);
+    expect(sr_hle_test_populated_start_entry("absent_no_entry.prx", BASE) == 0u,
+           "a manifest module with no image does not start at its base");
+
+    /* The start itself: exports become linkable, nothing runs, and the run does not stop. */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t stops_before = sr_hle_test_libfont_startup_stops();
+    uint32_t starts_before = s_synth_libfont_start_calls;
+    hle_test_setenv("SR_REAL_MODULE_START", NULL);
+    sr_hle_test_module_reset();
+    uint32_t uid = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/module/libfont.prx", 0u, 0u);
+    expect(uid != 0u && sr_hle_test_set_fixed_module_image(uid, BASE, BASE + 0x8000u),
+           "no-entry module: fixed-address record registered");
+    expect(libfont_start_call(&cpu, uid) == 0u,
+           "a fixed-address module with no start routine starts");
+    expect(s_synth_libfont_start_calls == starts_before &&
+               sr_hle_test_libfont_startup_stops() == stops_before,
+           "starting it runs no guest code and takes no libfont stop");
+    sr_hle_test_module_reset();
+}
+
 static void test_late_prx_unload_reload_lifecycle(void) {
     const char *path_a = HLE_BUILD_ROOT "/hle_lifecycle_a.prx";
     const char *path_b = HLE_BUILD_ROOT "/hle_lifecycle_b.prx";
@@ -45135,6 +45181,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_real_module_start_lifecycle();
     test_prx_stop_entry_boundaries();
     test_late_prx_unload_reload_lifecycle();
+    test_module_without_entry_runs_no_code();
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_volatile_mem_unlock_states();

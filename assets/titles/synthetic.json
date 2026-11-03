@@ -35,9 +35,6 @@
     "dispatch_aliases": [
       {"from": 142631168, "to": 142631424},
       {"from": 142631172, "to": 142631428}
-    ],
-    "callback_terminators": [
-      {"sentinel": 4294967295, "pc": 142631936, "ra": 142632192}
     ]
   },
   "runtime_contract": {

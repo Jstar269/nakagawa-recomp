@@ -30,7 +30,7 @@
 /* Collection bits. Set only when the configuration supplied a NON-EMPTY collection;
  * the manifest validator rejects an empty one, so a set bit always means >= 1 entry. */
 #define SR_TITLE_CFG_DISPATCH_ALIASES      0x10u
-#define SR_TITLE_CFG_CALLBACK_TERMINATORS  0x20u
+/* 0x20u retired (#363): forced-completion collection removed */
 /* 0x40u, 0x80u and 0x200u retired (#363): display bring-up, runtime sync and frame latch
  * bindings removed */
 #define SR_TITLE_CFG_EXPECTED_DATA_FILE_COUNT 0x400u
@@ -44,22 +44,6 @@ typedef struct SrTitleDispatchAlias {
     uint32_t to;
 } SrTitleDispatchAlias;
 
-/* One callback terminator: at this exact call site, `sentinel` as a dispatch target
- * means the guest's callback walk is COMPLETE. Without it the sentinel is an ordinary
- * permissive miss, which returns "continue" and loops a circular walker forever.
- *
- * `has_pc`/`has_ra` distinguish "constrain this to a value" from "do not constrain it".
- * The validator requires at least one constraint, so a terminator can never match a
- * sentinel program-wide. An absent constraint is never compared against a placeholder. */
-typedef struct SrTitleCallbackTerminator {
-    uint32_t sentinel;
-    unsigned has_pc;
-    uint32_t pc;
-    unsigned has_ra;
-    uint32_t ra;
-} SrTitleCallbackTerminator;
-
-
 typedef struct SrTitleRuntimeConfig {
     unsigned    valid;                        /* OR of the SR_TITLE_CFG_* bits above */
     uint32_t    fallback_entry;               /* module-start fallback when the image entry is uncompiled */
@@ -68,12 +52,10 @@ typedef struct SrTitleRuntimeConfig {
     uint32_t    expected_data_file_count;     /* 0 = no census; else exact file count under data_root */
     const char *source_id;                    /* validated title id, or "none" */
 
-    /* Typed collections. Both are empty (count 0) in a generic build. The pointers are
-     * never NULL so a caller cannot dereference one by mistake; count is the authority. */
+    /* Typed collection. Empty (count 0) in a generic build. The pointer is never NULL
+     * so a caller cannot dereference it by mistake; count is the authority. */
     const SrTitleDispatchAlias       *dispatch_aliases;
     unsigned                          dispatch_alias_count;
-    const SrTitleCallbackTerminator  *callback_terminators;
-    unsigned                          callback_terminator_count;
 } SrTitleRuntimeConfig;
 
 /* The build's configuration. Never NULL; a generic build reports valid == 0. */
@@ -101,12 +83,6 @@ int sr_title_config_is_launcher_entry(uint32_t entry);
  * redirect at all -- an address that a previous release happened to redirect included.
  * Matching is exact: a neighbouring address is not an alias of anything. */
 int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr);
-
-/* Callback-terminator match. Returns 1 only when some configured terminator names this
- * sentinel AND every constraint it declares (pc, ra, or both) holds at this call site.
- * An unconfigured build answers 0 for every triple, so the same sentinel at the same
- * site follows ordinary generic dispatch behavior instead. */
-int sr_title_config_is_callback_terminator(uint32_t sentinel, uint32_t pc, uint32_t ra);
 
 
 /* How a guest PRX module declared by the title manifest is placed in guest memory. */
