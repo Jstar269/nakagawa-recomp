@@ -10752,6 +10752,17 @@
       }
     },
     {
+      "path": "tests/native/hle_focus_media_stubs.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-focus-selftests-307",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tests/native/hle_thread_selftest.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -13371,6 +13382,17 @@
       }
     },
     {
+      "path": "tools/hle_focus_check.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-focus-selftests-307",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/hle_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -15594,6 +15616,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "history-audit-tests",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_hle_focus_check.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "hle-focus-selftests-307",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null
