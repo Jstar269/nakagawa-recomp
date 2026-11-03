@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 16 |
 | `ppsspp-derived` | 117 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 342 | 226 |
-| `unverified` | 161 | 31 |
+| `synthetic` | 343 | 226 |
+| `unverified` | 160 | 31 |
 | total | 684 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -468,7 +468,7 @@ belongs to without the census's own grouping.
 | `0x95fd0c2d` | `sceAudioChangeChannelConfig` | audio | `synthetic` | HLE selftest dispatch |
 | `0x977de386` | `sceKernelLoadModule` | kernel_module | `unverified` | no recorded evidence |
 | `0x9790b33c` | `sceUtilitySavedataShutdownStart` | utility | `synthetic` | HLE selftest dispatch |
-| `0x980f4895` | `sceFontGetCharGlyphImage` | font | `unverified` | no recorded evidence |
+| `0x980f4895` | `sceFontGetCharGlyphImage` | font | `synthetic` | HLE selftest dispatch |
 | `0x984c27e7` | `sceDisplayWaitVblankStart` | display | `synthetic` | conformance cells and HLE selftest dispatch |
 | `0x98c204c8` | `sceNetAdhocGameModeUpdateMaster` | network | `unverified` | no recorded evidence |
 | `0x9944f31f` | `sceKernelSuspendThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
