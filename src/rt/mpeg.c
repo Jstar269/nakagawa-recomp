@@ -1848,6 +1848,28 @@ uint32_t mpeg_flush_all_stream(uint32_t mpegAddr) {
     return 0;
 }
 
+/* sceMpegFlushStream(mpeg, stream): discard what one registered stream holds so far.  The ring is
+ * shared by every stream of the multiplexed file, so its counters stay (sceMpegFlushAllStream
+ * clears them).  The stream is marked for reset; an ATRAC stream also drops its queued and held
+ * frames and starts its demux over, so the packets the game refills next decode as a first frame.
+ * PPSSPP (Core/HLE/sceMpeg.cpp, sceMpegFlushStream, NID 0x500f0429) validates the context and the
+ * stream and returns 0 without further effect; the stream-level reset is this port's reading of
+ * "flush", not measured on a PSP.  A stream this context registered and has since unregistered
+ * takes the call, as in sceMpegChangeGetAuMode; any other id is refused. */
+uint32_t mpeg_flush_stream(uint32_t mpegAddr, uint32_t sid) {
+    Mpeg *ctx = mpeg_find(mpegAddr);
+    if (!ctx) return (uint32_t)-1;
+    int index = mpeg_stream_index(ctx, sid);
+    if (index < 0) {
+        if (mpeg_stream_retired(ctx, sid)) return 0;
+        return mpeg_contract_error("sceMpegFlushStream", "unknown stream", SCE_MPEG_ERROR_INVALID_VALUE);
+    }
+    ctx->streams[index].needsReset = 1;
+    if (ctx->streams[index].type == (int)MPEG_ATRAC_STREAM || ctx->streams[index].type == (int)MPEG_AUDIO_STREAM)
+        mpeg_audio_restart(ctx);
+    return 0;
+}
+
 /* sceMpegAvcDecodeFlush(mpeg): clear queued video decoding state and reset
  * the video timestamp to stream start. Public behaviour reference: PSPSDK
  * pspmpeg.h and PPSSPP Core/HLE/sceMpeg.cpp. */
