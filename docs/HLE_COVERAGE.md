@@ -26,9 +26,9 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 16 |
 | `ppsspp-derived` | 111 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 342 | 226 |
+| `synthetic` | 345 | 226 |
 | `unverified` | 162 | 31 |
-| total | 679 | 363 |
+| total | 682 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -66,6 +66,7 @@ belongs to without the census's own grouping.
 | `0x02baad91` | `sceCtrlGetSamplingCycle` | input | `synthetic` | HLE selftest dispatch |
 | `0x03444eb4` | `sceGeListSync` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001 |
 | `0x034a921f` | `sceKernelGetVTimerTime` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002, PSP-HLE-VTIMER-003 |
+| `0x03b6807d` | `sceVaudioChReserve` | audio | `synthetic` | HLE selftest dispatch |
 | `0x03d9526f` | `sceHttpSetResolveRetry` | network | `unverified` | no recorded evidence |
 | `0x04b7766e` | `scePowerRegisterCallback` | power | `synthetic` | HLE selftest dispatch |
 | `0x05572a5f` | `sceKernelExitGame` | kernel_module | `hardware-measured` | PSP oracle PSP-SMOKE-001 |
@@ -342,6 +343,7 @@ belongs to without the census's own grouping.
 | `0x64d50c56` | `sceUtilityUnloadNetModule` | utility | `synthetic` | HLE selftest dispatch |
 | `0x6652b8ca` | `sceKernelSetAlarm` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-TIMER-ORDER-001 |
 | `0x67179b1b` | `sceMpegAvcInitYCbCr` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
+| `0x67585dfd` | `sceVaudioChRelease` | audio | `synthetic` | HLE selftest dispatch |
 | `0x67af3428` | `sceUtilityMsgDialogShutdownStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x67f17ed7` | `sceFontNewLib` | font | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x682a619b` | `sceMpegInit` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
@@ -432,6 +434,7 @@ belongs to without the census's own grouping.
 | `0x8874dbe0` | `sceUtilitySavedataGetStatus` | utility | `synthetic` | HLE selftest dispatch |
 | `0x8916c003` | `sceNetAdhocctlGetNameByAddr` | network | `unverified` | no recorded evidence |
 | `0x89360950` | `sceNetEtherNtostr` | network | `ppsspp-derived` | registry notes name PPSSPP |
+| `0x8986295e` | `sceVaudioOutputBlocking` | audio | `synthetic` | HLE selftest dispatch |
 | `0x89aa9906` | `sceIoOpenAsync` | io | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x89b3d48c` | `sceKernelDeleteVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0x8a389411` | `sceKernelDisableSubIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |

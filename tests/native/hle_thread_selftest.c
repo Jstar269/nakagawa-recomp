@@ -383,6 +383,9 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_AUDIO_SRC_CH_RESERVE 0x38553111u
 #define NID_SCE_AUDIO_SRC_CH_RELEASE 0x5c37c0aeu
 #define NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING 0xe0727056u
+#define NID_SCE_VAUDIO_CH_RESERVE 0x03b6807du
+#define NID_SCE_VAUDIO_CH_RELEASE 0x67585dfdu
+#define NID_SCE_VAUDIO_OUTPUT_BLOCKING 0x8986295eu
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
@@ -10283,6 +10286,91 @@ static void test_audio_src_matches_the_measured_contract(void) {
            "an unmodelled rate is refused, and nothing is reserved");
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
            "the refused reserve left the slot free");
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+}
+
+/* sceVaudioChReserve / sceVaudioOutputBlocking / sceVaudioChRelease (#286). A title's own PSMF
+ * player route reserved Vaudio with (1152, 44100, 2) and stopped there while the NIDs had no
+ * handler. Vaudio plays through the SRC slot; the sample-count set, the format and the second-
+ * reserve word follow the public behaviour reference named at h_VaudioChReserve and are
+ * unmeasured. */
+static void test_vaudio_plays_through_the_src_slot(void) {
+    enum { VA_BUF = 0x08a00000u };   /* 1152 stereo frames: 4608 bytes inside the arena */
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    expect(sr_hle_test_is_registered(NID_SCE_VAUDIO_CH_RESERVE) &&
+           sr_hle_test_is_registered(NID_SCE_VAUDIO_CH_RELEASE) &&
+           sr_hle_test_is_registered(NID_SCE_VAUDIO_OUTPUT_BLOCKING),
+           "the three Vaudio NIDs have production registrations");
+
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "Vaudio release with nothing reserved returns 0x80260008");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) ==
+               0x80260008u,
+           "Vaudio output with nothing reserved returns 0x80260008");
+
+    /* The title's reservation, a blocking output, and the release. */
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1152u, 44100u, 2u) == 0u,
+           "Vaudio reserves 1152 samples at 44100 Hz, format 2");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1152u, 44100u, 2u) == 0x80000021u,
+           "a second Vaudio reserve returns 0x80000021");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0x80268002u,
+           "SRC reserve while Vaudio holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 512u, 0u, 0u) == 0x80268002u,
+           "Output2 reserve while Vaudio holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u &&
+               audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) ==
+                   0x80260008u,
+           "the SRC release and output do not act on a Vaudio reservation");
+    expect(s_audio_push_calls == 0u, "nothing reached the mixer through the other API");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8001u, VA_BUF, 0u) ==
+               0x8026000bu,
+           "a Vaudio volume above 0x8000 returns 0x8026000b");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) == 1152u,
+           "Vaudio output returns the reserved sample count");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames == 1152,
+           "the 44100 Hz block reaches the mixer once, with all 1152 frames");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "Vaudio release after the output returns 0");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "a second Vaudio release returns 0x80260008");
+
+    /* A Vaudio release does not free an SRC reservation, and Vaudio cannot reserve over it. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0u,
+           "SRC reserves for the cross-API check");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1024u, 44100u, 2u) == 0x80268002u,
+           "Vaudio reserve while SRC holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "a Vaudio release does not free an SRC reservation");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "the SRC reservation survived and now releases");
+
+    /* The reserve shapes, each released at once when accepted. */
+    static const struct {
+        uint32_t samples, freq, format, want;
+    } shapes[] = {
+        {256u,  44100u, 2u, 0u},
+        {576u,  44100u, 2u, 0u},
+        {1024u, 48000u, 2u, 0u},            /* the SRC converter's other rate */
+        {2048u, 0u,     2u, 0u},            /* rate 0: taken as 44100 Hz */
+        {1000u, 44100u, 2u, 0x80000104u},   /* not one of the five sample counts */
+        {0u,    44100u, 2u, 0x80000104u},
+        {1152u, 44100u, 0u, 0x80000108u},   /* format 0 */
+        {1152u, 44100u, 1u, 0x80000108u},   /* format 1 */
+        {1152u, 22050u, 2u, 0x80000003u},   /* a rate the SRC converter does not model */
+    };
+    for (unsigned i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) {
+        const uint32_t got = audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, shapes[i].samples,
+                                            shapes[i].freq, shapes[i].format);
+        expect(got == shapes[i].want, "Vaudio reserve shape returns the modelled word");
+        expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) ==
+                   (got == 0u ? 0u : 0x80260008u),
+               "an accepted shape releases at once, and a refused one reserved nothing");
+    }
     sr_hle_test_audio_reset();
     audio_fixture_reset();
 }
@@ -43932,6 +44020,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_audio_output2_release_refuses_while_queued();
     test_audio_resampler_quality_and_streaming();
     test_audio_src_matches_the_measured_contract();
+    test_vaudio_plays_through_the_src_slot();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
