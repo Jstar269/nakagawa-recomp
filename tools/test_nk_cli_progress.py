@@ -44,6 +44,19 @@ class NkCliProgressTests(unittest.TestCase):
         for name in ("stage_runtime_dlls", "package_notices", "title_codegen_plan"):
             self.assertNotIn(name, loaded)
 
+    def test_inspect_takes_user_data_root_like_every_other_subcommand(self) -> None:
+        # A new user who gives prepare, launch and build-package a --user-data-root will
+        # type it for inspect too. The old spelling --root keeps working.
+        with tempfile.TemporaryDirectory() as tmp:
+            for flag in ("--user-data-root", "--root"):
+                proc = subprocess.run(
+                    [sys.executable, "-I", str(CLI_PATH), "inspect", flag,
+                     str(Path(tmp) / "data"), str(Path(tmp) / "missing.iso")],
+                    cwd=ROOT, capture_output=True, text=True,
+                )
+                self.assertNotIn("unrecognized arguments", proc.stderr, flag)
+                self.assertNotIn("invalid choice", proc.stderr, flag)
+
     @unittest.skipUnless(os.name == "nt", "the working-directory executable search is Windows behaviour")
     def test_cli_never_resolves_build_tools_from_the_working_directory(self) -> None:
         # The player starts the CLI in the player's own working directory. A file there

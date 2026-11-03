@@ -2619,7 +2619,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             app->selected_game_index = (int)action.title_index;
             nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
             (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_TITLE);
-            player->title_primary_refocus = false;
+            /* A page opened while PLAY is still off (its package check has not ended)
+               puts focus on the next button; arm the refocus so PLAY takes it back
+               when it turns on, unless the user moves first. */
+            player->title_primary_refocus = true;
+            player->title_primary_fallback = 0u;
             action.kind = PLAYER_UI_ACTION_NONE;
         } else if (action.kind == PLAYER_UI_ACTION_PAGE_PREVIOUS) {
             if (player->library_page > 0u) --player->library_page;
@@ -2702,7 +2706,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                         player->title_primary_fallback = 0u;
                     } else if (player->title_primary_refocus &&
                                player->title_primary_fallback == 0u) {
-                        player->title_primary_fallback = focused;
+                        /* A page just opened still shows the library's focus for a
+                           frame or two; the fallback is the page's own button. */
+                        if (focused >= 0x2000u && focused < 0x3000u) {
+                            player->title_primary_fallback = focused;
+                        }
                     } else if (player->title_primary_refocus &&
                                focused != player->title_primary_fallback) {
                         player->title_primary_refocus = false;
