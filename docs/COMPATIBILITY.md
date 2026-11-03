@@ -218,8 +218,11 @@ player's remove refuses to guess which of the two to take out.
 
 `tools/library_regress.py` turns library runs into a regression net. `record <library-build.json> --store <folder>`
 keeps a snapshot of the run: for each title, its commit and its place on a short ladder (build failed, built, first
-frame presented, at least 60 frames presented) and how the first launch ended (still running at the launch timeout,
-exited, stopped with the named missing piece, crashed, or hung with no frame). `compare <old> <new>` takes two
+frame presented, at least 60 frames presented) and how the first launch ended. A title is alive when it was still
+presenting at the launch timeout, or exited by itself, after at least 60 frames. Otherwise it stopped: with the named
+missing piece, a crash, a hang with no frame, a stall short of 60 frames, or a guest exit before 60 frames. The
+manifest does not record whether a frame was blank, so a blank present (a null framebuffer) still counts as a frame,
+and it does not carry the runtime's stall watchdog, so a title that presents slowly counts as stalled. `compare <old> <new>` takes two
 snapshots or two manifests, lists every title that went down or up with both commits (`--repo <checkout>` lists the
 first-parent commits between them) and exits 1 when any title went down: a lower rung, or a title that was still
 running at a rung and now stops there. A title that stops at the same rung in another way (another missing piece, or

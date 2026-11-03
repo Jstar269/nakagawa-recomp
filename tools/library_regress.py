@@ -16,10 +16,16 @@ already records for its bring-up and first hidden launch:
 
 ``first_frame`` is the launch's presentation evidence (``FRAME_SUBMITTED``); ``frames`` is at
 least ``--frames`` frame submissions (60 by default). The runtime prints one line per submitted
-frame and no content hash, so "frames" counts submissions, not visually different pictures.
+frame and no content hash, so "frames" counts submissions, not visually different pictures. The
+manifest does not record whether a submitted frame was blank (a null framebuffer, or no lit
+pixel), so a blank present still counts as a frame.
 
-How the launch ended is recorded beside the rung: ``running``, ``exited``, ``named_stop``,
-``crash`` or ``hang``. The first two are alive and rank above the three that stopped.
+How the launch ended is recorded beside the rung. Alive, ranked above the rest: ``running``
+(still presenting at the launch timeout, or when the run budget ended it, with at least N
+frames) and ``exited`` (the guest exited after at least N frames). Stopped: ``named_stop``,
+``crash``, ``hang`` (no frame at all by the timeout), ``stalled`` (fewer than N frames by the
+timeout: the manifest does not carry the runtime's stall watchdog, so a title that presents
+slowly counts as stalled too) and ``guest_exit`` (the guest exited before N frames).
 ``named_stop`` keeps the name the runtime or the bring-up gave the missing piece (the failure
 class and its runtime boundary or first runtime import, for example
 ``UNSUPPORTED_IMPORT:sceFoo:sceFooBar``). ``running`` is a title still presenting frames when
@@ -78,7 +84,7 @@ SNAPSHOT_SCHEMA_VERSION = 1
 MANIFEST_FORMAT = "nakagawa-library-build"
 RUNGS = ("build_failed", "built", "first_frame", "frames")
 # Alive (1) ranks above stopped (0); the kinds of stop are told apart, never ranked.
-END_RANK = {"crash": 0, "hang": 0, "named_stop": 0, "exited": 1, "running": 1}
+END_RANK = {"crash": 0, "hang": 0, "stalled": 0, "guest_exit": 0, "named_stop": 0, "exited": 1, "running": 1}
 DEFAULT_FRAMES = 60
 DEFAULT_BUDGET_MINUTES = 60
 DEFAULT_TITLE_COST_SECONDS = 1800
@@ -135,6 +141,13 @@ def _first_runtime_import(launch: dict[str, Any]) -> str | None:
 
 # -- the ladder ------------------------------------------------------------------------------
 
+def _live_end(presented: bool, frames: int, frames_threshold: int) -> str:
+    """A guest the launch timeout or the run budget ended: alive only past N frames."""
+    if not presented:
+        return "hang"
+    return "running" if frames >= frames_threshold else "stalled"
+
+
 def classify(record: dict[str, Any], frames_threshold: int = DEFAULT_FRAMES) -> dict[str, Any] | None:
     """One manifest record's place on the ladder, or None for a title this run did not end."""
     outcome = record.get("outcome")
@@ -173,9 +186,14 @@ def classify(record: dict[str, Any], frames_threshold: int = DEFAULT_FRAMES) -> 
         end = "environment"
         stop = _stop_name(failure or "LAUNCH_NOT_RUN")
     elif failure in (None, "NONE"):
-        end = "exited"
+        if launch.get("exit_classification") == "RUN_BUDGET_ENDED":
+            end = _live_end(presented, frames, frames_threshold)
+        elif presented and frames >= frames_threshold:
+            end = "exited"
+        else:
+            end, stop = "guest_exit", "GUEST_EXIT"
     elif failure == "LAUNCH_TIMEOUT":
-        end = "running" if presented else "hang"
+        end = _live_end(presented, frames, frames_threshold)
     elif failure in CRASH_CLASSES:
         end = "crash"
         stop = _stop_name(failure, launch.get("process_exit_code"))

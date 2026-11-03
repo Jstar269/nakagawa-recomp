@@ -59,9 +59,9 @@ class LadderTests(unittest.TestCase):
     def test_every_launch_ending_gets_its_rung_and_end(self) -> None:
         cases = [
             (built(400), ("frames", "running", None)),
-            (built(5), ("first_frame", "running", None)),
+            (built(5), ("first_frame", "stalled", None)),
             (built(0), ("built", "hang", None)),
-            (built(0, "NONE", status="PASS"), ("built", "exited", None)),
+            (built(0, "NONE", status="PASS"), ("built", "guest_exit", "GUEST_EXIT")),
             (built(900, "NONE", status="PASS"), ("frames", "exited", None)),
             (built(3, "UNRESOLVED_DISPATCH_TARGET", boundary="target-not-executable"),
              ("first_frame", "named_stop", "UNRESOLVED_DISPATCH_TARGET:target-not-executable")),
@@ -85,6 +85,28 @@ class LadderTests(unittest.TestCase):
                 assert place is not None
                 self.assertEqual((place["rung"], place["end"], place["stop"]), expected)
 
+    def test_a_guest_exit_before_n_frames_is_a_stop(self) -> None:
+        early = built(2, "NONE", status="PASS")
+        early["launch"]["exit_classification"] = "EXITED_ZERO"
+        place = self.place(early)
+        assert place is not None
+        self.assertEqual((place["rung"], place["end"], place["stop"]), ("first_frame", "guest_exit", "GUEST_EXIT"))
+        self.assertEqual(library_regress.END_RANK["guest_exit"], library_regress.END_RANK["named_stop"])
+        late = built(900, "NONE", status="PASS")
+        late["launch"]["exit_classification"] = "EXITED_ZERO"
+        self.assertEqual(self.place(late)["end"], "exited")  # type: ignore[index]
+        # The run budget ending a live guest is not an exit.
+        budget = built(900, "NONE", status="PASS")
+        budget["launch"]["exit_classification"] = "RUN_BUDGET_ENDED"
+        self.assertEqual(self.place(budget)["end"], "running")  # type: ignore[index]
+
+    def test_a_title_short_of_n_frames_at_the_timeout_has_stalled(self) -> None:
+        for frames, end in ((1, "stalled"), (59, "stalled"), (60, "running"), (0, "hang")):
+            with self.subTest(frames=frames):
+                self.assertEqual(self.place(built(frames))["end"], end)  # type: ignore[index]
+        self.assertEqual(library_regress.END_RANK["stalled"], library_regress.END_RANK["hang"])
+        self.assertEqual(self.place(built(5), frames=3)["end"], "running")  # type: ignore[index]
+
     def test_a_frame_count_without_presentation_evidence_is_no_frame(self) -> None:
         place = self.place(built(80, presentation="NO_FRAME_SUBMISSIONS"))
         assert place is not None
@@ -104,7 +126,7 @@ class LadderTests(unittest.TestCase):
 
     def test_a_failed_launch_without_a_failure_class_is_a_stop(self) -> None:
         failed = built(0, None, status="FAIL")
-        timed_out = built(5, None, status="FAIL")
+        timed_out = built(400, None, status="FAIL")
         timed_out["launch"]["exit_classification"] = "TIMED_OUT"
         place = self.place(failed)
         assert place is not None
@@ -172,7 +194,7 @@ class CompareTests(unittest.TestCase):
         self.assertEqual((down["old"]["commit"], down["new"]["commit"]), (OLD, NEW))
         self.assertEqual((down["old"]["rung"], down["new"]["rung"]), ("frames", "first_frame"))
         text = library_regress.render_comparison(result)
-        self.assertIn(f"DOWN    TEST00000  Title 0: frames/running -> first_frame/running [{OLD[:12]}..{NEW[:12]}]",
+        self.assertIn(f"DOWN    TEST00000  Title 0: frames/running -> first_frame/stalled [{OLD[:12]}..{NEW[:12]}]",
                       text)
 
     def test_a_different_way_of_stopping_at_the_same_rung_is_changed_not_down(self) -> None:
@@ -181,11 +203,15 @@ class CompareTests(unittest.TestCase):
         old, new = self.snapshots(
             {"hang.iso": built(0, "UNSUPPORTED_IMPORT", imports=["scePower:f"]),
              "crash.iso": built(0, "UNSUPPORTED_IMPORT", imports=["sceRtc:g"]),
-             "stopped.iso": built(5)},
+             "stopped.iso": built(400), "stalled.iso": built(1, "UNSUPPORTED_IMPORT", imports=["sceNp:h"]),
+             "exit.iso": built(2, "NONE", status="PASS")},
             {"hang.iso": built(0), "crash.iso": built(0, "NATIVE_RUNTIME_CRASH"),
-             "stopped.iso": built(5, "RUNTIME_SEMANTIC_BOUNDARY", boundary="null-code-pointer")})
+             "stopped.iso": built(400, "RUNTIME_SEMANTIC_BOUNDARY", boundary="null-code-pointer"),
+             "stalled.iso": built(1), "exit.iso": built(15, "RUNTIME_SEMANTIC_BOUNDARY", boundary="null-code-pointer")})
         result = library_regress.compare(old, new)
-        self.assertEqual([row["source_key"] for row in result["changed"]], ["crash.iso", "hang.iso"])
+        # A guest exit after 2 frames and a 1-frame stall are stops: another stop at that rung is changed.
+        self.assertEqual([row["source_key"] for row in result["changed"]],
+                         ["crash.iso", "exit.iso", "hang.iso", "stalled.iso"])
         self.assertEqual([row["source_key"] for row in result["down"]], ["stopped.iso"])
 
     def test_an_older_manifests_coarser_stop_name_is_the_same_stop(self) -> None:
@@ -227,7 +253,7 @@ class CompareTests(unittest.TestCase):
 
     def test_a_fast_run_is_compared_up_to_the_first_frame(self) -> None:
         old, new = self.snapshots({"a.iso": built(400), "b.iso": built(400)},
-                                  {"a.iso": built(3), "b.iso": built(0)}, mode="fast")
+                                  {"a.iso": built(70), "b.iso": built(0)}, mode="fast")
         result = library_regress.compare(old, new)
         self.assertEqual(result["compared_up_to"], "first_frame")
         self.assertEqual([row["source_key"] for row in result["down"]], ["b.iso"])
@@ -457,7 +483,7 @@ class FastRunTests(unittest.TestCase):
     def test_a_selected_title_the_fast_run_did_not_end_is_no_verdict(self) -> None:
         for options in ({"drop": 1}, {"pending": 1}):
             with self.subTest(**options):
-                _calls, run = self.fake_library_build(frames=5, **options)
+                _calls, run = self.fake_library_build(frames=400, **options)
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
                     code = library_regress.run_fast(self.args(cursor=0), run=run, log=lambda _text: None)
@@ -467,7 +493,7 @@ class FastRunTests(unittest.TestCase):
                     run_dir.rename(run_dir.with_name(f"done-{len(options)}-{next(iter(options))}-" + run_dir.name))
 
     def test_the_next_fast_run_continues_the_rotation(self) -> None:
-        _calls, run = self.fake_library_build(frames=5)
+        _calls, run = self.fake_library_build(frames=400)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(library_regress.run_fast(self.args(), run=run, log=lambda _text: None), 0)
         first = sorted(self.store.glob("runs/*/only.txt"))[0].read_text(encoding="utf-8").split()
