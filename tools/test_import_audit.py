@@ -417,7 +417,8 @@ class ClassifierTests(unittest.TestCase):
         def one() -> str:
             table = parse_import_table(build_import_elf(MIXED_FIXTURE_LIBS))
             report = import_audit.classify_imports(table.funcs, SYNTH_MANIFEST)
-            return json.dumps(report, indent=2, sort_keys=True) + import_audit.render_text(report)
+            returned: str = json.dumps(report, indent=2, sort_keys=True) + import_audit.render_text(report)
+            return returned
 
         self.assertEqual(one(), one())
 

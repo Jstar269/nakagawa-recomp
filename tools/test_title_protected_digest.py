@@ -35,7 +35,8 @@ PUBLIC_MANIFESTS = ("synthetic.json", "pspdev-phase5.json")
 
 
 def digest(manifest: dict) -> str:
-    return title_codegen_plan.compute_protected_digest(manifest)
+    returned: str = title_codegen_plan.compute_protected_digest(manifest)
+    return returned
 
 
 class ProtectedDigestCanonicalizationTests(unittest.TestCase):

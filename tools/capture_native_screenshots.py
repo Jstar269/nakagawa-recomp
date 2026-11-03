@@ -124,7 +124,8 @@ def main() -> int:
         help="path to the player binary (default: build/nakagawa_player[.exe] for this host)",
     )
     args = parser.parse_args()
-    return capture_matrix(args.player)
+    returned: int = capture_matrix(args.player)
+    return returned
 
 
 if __name__ == "__main__":

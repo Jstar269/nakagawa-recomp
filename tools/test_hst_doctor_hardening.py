@@ -595,6 +595,7 @@ class AgentIdentityChecks(unittest.TestCase):
             self.assertIn("local:user.name=localguy", summary)
             commands = re.search(r"clear it with '(.+)'\.$", summary)
             self.assertIsNotNone(commands, "the warning must carry a remediation")
+            assert commands is not None
             for command in commands.group(1).split(" && "):
                 self.assertTrue(command.startswith("git config "), command)
                 proc = run_git(command.split()[1:], cwd=root, capture_output=True, text=True)
@@ -618,7 +619,9 @@ class AgentIdentityChecks(unittest.TestCase):
             self.assertIn("(2 values)", result.summary)
             commands = re.search(r"clear it with '(.+?)'\.", result.summary)
             self.assertIsNotNone(commands)
+            assert commands is not None
             self.assertIn("--unset-all", commands.group(1))
+            assert commands is not None
             for command in commands.group(1).split(" && "):
                 proc = run_git(command.split()[1:], cwd=root, capture_output=True, text=True)
                 self.assertEqual(proc.returncode, 0, f"{command}: {proc.stderr}")

@@ -73,7 +73,8 @@ REPRODUCED_ARGUMENTS = (
 
 
 def as_float(word: int) -> float:
-    return struct.unpack("<f", struct.pack("<I", word))[0]
+    returned: float = struct.unpack("<f", struct.pack("<I", word))[0]
+    return returned
 
 
 class ReproducedCorpusTests(unittest.TestCase):

@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import history_audit
 from nk_core.git_isolation import run_git
 from ci_test_shards import nightly_tier
+from typing import Any
 
 
 class TestHistoryAudit(unittest.TestCase):
@@ -57,7 +58,8 @@ class TestHistoryAudit(unittest.TestCase):
             (root / "note.md").write_text(content, encoding="utf-8")
             run_git(["add", "note.md"], cwd=root, check=True)
             run_git(["commit", "-qm", "fixture"], cwd=root, check=True)
-            return history_audit.audit_history_blob_contents(root)
+            returned: list[Any] = history_audit.audit_history_blob_contents(root)
+            return returned
 
     def test_quoted_armour_delimiter_without_a_body_is_not_a_secret(self):
         """Prose naming the PEM format is not a key.

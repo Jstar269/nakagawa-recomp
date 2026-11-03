@@ -713,6 +713,13 @@ def iter_synthetic_corpus_raw() -> Iterator[int]:
 # every generated effective address onto its aligned scratch page; unaligned
 # left/right behavior remains outside this independent differential corpus.
 
+# Low 26 bits (rs, vt, offset/register-high bits) of the census-gap lv.s/sv.s and lv.q/sv.q
+# words; the high six bits are the opcode. The fuzz harness needs a nonzero base register,
+# so rs is r4 here; census rows that were only visited with rs = r0 stay unverified.
+_CENSUS_GAP_SCALAR_MEMORY: tuple[int, ...] = (0x0A1800F, 0x0A5000F)
+_CENSUS_GAP_QUAD_MEMORY: tuple[int, ...] = (0x0A1800F,)
+
+
 def _iter_vfpu_memory_cop2() -> Iterator[int]:
     seen: set[int] = set()
     # lv.s / sv.s: base r4-r7, 6-bit vt, offsets {0, 4, -4, 16} (post-mask).
@@ -740,6 +747,21 @@ def _iter_vfpu_memory_cop2() -> Iterator[int]:
                     if w not in seen:
                         seen.add(w)
                         yield w
+    # Census-gap memory forms (issue #326): one word per supported census row of
+    # tools/vfpu_coverage_report.py that the register-aligned loops above never reach
+    # (vt/offset bit patterns the loops above do not combine).
+    for op in (0x32, 0x3A):
+        for low in _CENSUS_GAP_SCALAR_MEMORY:
+            w = (op << 26) | low
+            if w not in seen:
+                seen.add(w)
+                yield w
+    for op in (0x36, 0x3E):
+        for low in _CENSUS_GAP_QUAD_MEMORY:
+            w = (op << 26) | low
+            if w not in seen:
+                seen.add(w)
+                yield w
     # COP2 transfers: mfv/mfvc (sub 3) and mtv/mtvc (sub 7).
     # imm 0..127 = v[imm], 128..143 = vfpuCtrl[imm-128]; rt spans r1-r6 so
     # register identity is exercised, never r0 (writes to r0 are architecturally
