@@ -608,9 +608,6 @@ static void test_fuzz_elf_classifier(unsigned iters) {
             assert(strcmp(report.selected_path, "EBOOT.BIN") == 0);
             selected++;
         } else if (report.selected == NK_ISO_EXEC_SELECTION_BOOT) {
-            /* BOOT.BIN is chosen beside an encrypted EBOOT.BIN or a zero-filled
-             * placeholder one (nk_iso_classify_executables); a mutation that cuts the
-             * EBOOT.BIN extent to nothing produces the second. */
             assert(report.eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED ||
                    report.eboot.kind == NK_ISO_EXEC_EMPTY_OR_ZERO);
             assert(report.boot.kind == NK_ISO_EXEC_MIPS_ELF32 && report.boot_fallback);
