@@ -1335,8 +1335,8 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                             encoding="utf-8",
                         )
                         exe = tmp / "map.exe"
-                        subprocess.run([GCC, "-std=c11", "-O2", "-Wall", "-Werror", "-o", str(exe), str(harness),
-                                        "-lm"], check=True, capture_output=True, text=True)
+                        subprocess.run([str(GCC), "-std=c11", "-O2", "-Wall", "-Werror", "-o", str(exe),
+                                        str(harness), "-lm"], check=True, capture_output=True, text=True)
                         out = subprocess.run([str(exe), str(tmp / "k.txt")], check=True, capture_output=True,
                                              text=True).stdout.split()
                     for k, got in zip(ks, out, strict=True):
