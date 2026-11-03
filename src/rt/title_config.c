@@ -21,13 +21,13 @@
  * failure rather than a silent fallback to some other title's behavior. */
 #include "sr_title_config.h"
 
-#if SR_TITLE_CONFIG_SCHEMA_VERSION != 11
+#if SR_TITLE_CONFIG_SCHEMA_VERSION != 12
 #error "generated title runtime configuration uses an unsupported schema version"
 #endif
 
 /* The generated artifact states the collections as X-macro lists; this file owns the C
- * types they expand into. A generic build expands both lists to nothing, so the arrays
- * below hold only their unused placeholder element and both counts are 0. */
+ * types they expand into. A generic build expands the list to nothing, so the array
+ * below holds only its unused placeholder element and the count is 0. */
 #define SR_TITLE_CFG_ALIAS(from_addr, to_addr) { (from_addr), (to_addr) },
 /* Deliberately UNSIZED: the size then comes from the list itself, which is what makes
  * the assertion below a proof rather than a restatement. Sizing the array by the count
@@ -41,20 +41,6 @@ static const SrTitleDispatchAlias s_dispatch_aliases[] = {
 _Static_assert(sizeof s_dispatch_aliases / sizeof s_dispatch_aliases[0]
                    == SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT + 1u,
                "generated dispatch-alias list does not match its declared count");
-
-#define SR_TITLE_CFG_TERMINATOR(s, hp, p, hr, r) { (s), (hp), (p), (hr), (r) },
-/* Unsized for the same reason, and here the stakes are higher: a zero-filled terminator
- * entry reads as {sentinel 0, no pc constraint, no ra constraint}, which is precisely
- * the program-wide match the manifest validator refuses to accept. The assertion makes a
- * count/list disagreement a compile error, so that entry can never become reachable. */
-static const SrTitleCallbackTerminator s_callback_terminators[] = {
-    SR_TITLE_CONFIG_CALLBACK_TERMINATOR_LIST
-    { 0u, 0u, 0u, 0u, 0u }  /* placeholder: never read; the count is the authority */
-};
-#undef SR_TITLE_CFG_TERMINATOR
-_Static_assert(sizeof s_callback_terminators / sizeof s_callback_terminators[0]
-                   == SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT + 1u,
-               "generated callback-terminator list does not match its declared count");
 
 /* Guest PRX modules: the same manifest list the recompiler used for GAME_EXTRA_ELFS, so code
  * and data agree on one placement per module -- one address for a fixed module, the guest
@@ -133,8 +119,6 @@ static const SrTitleRuntimeConfig s_config = {
     SR_TITLE_CONFIG_SOURCE_ID,
     s_dispatch_aliases,
     (unsigned)SR_TITLE_CONFIG_DISPATCH_ALIAS_COUNT,
-    s_callback_terminators,
-    (unsigned)SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT,
 };
 
 const SrTitleRuntimeConfig *sr_title_config(void) { return &s_config; }
@@ -176,24 +160,6 @@ int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
          * collection, so the first hit is the only hit. */
         if (s_config.dispatch_aliases[i].from != from) continue;
         if (to_addr) *to_addr = s_config.dispatch_aliases[i].to;
-        return 1;
-    }
-    return 0;
-}
-
-int sr_title_config_is_callback_terminator(uint32_t sentinel, uint32_t pc, uint32_t ra) {
-    if (!(s_config.valid & SR_TITLE_CFG_CALLBACK_TERMINATORS)) return 0;
-    for (unsigned i = 0; i < s_config.callback_terminator_count; i++) {
-        const SrTitleCallbackTerminator *t = &s_config.callback_terminators[i];
-        if (t->sentinel != sentinel) continue;
-        /* A constraint that was not configured is not compared -- never compared
-         * against 0, which would silently narrow the site the title actually named. */
-        if (t->has_pc && t->pc != pc) continue;
-        if (t->has_ra && t->ra != ra) continue;
-        /* A match is the firing: dispatch reports completion on every 1 returned here.
-         * The census anchors a terminator on its pc constraint, else its ra. */
-        sr_compat_fired("TITLE_CONFIGURED_DISPATCH", t->has_pc ? t->pc : t->ra,
-                        "callback-list walker terminal miss");
         return 1;
     }
     return 0;

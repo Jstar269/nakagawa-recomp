@@ -1897,6 +1897,22 @@ void sr_null_code_pointer(CpuState *s, uint32_t transfer_pc) {
     exit(1);
 }
 
+/* SR_NULL_PAGE_GUARD (recomp.h). `function` is the translated body that made the access:
+ * a load carries no guest pc, and s->pc is only as fresh as the last return. */
+void sr_null_data_pointer(uint32_t address, const char *function) {
+    fprintf(stderr,
+            "NULL_DATA_POINTER: %s accessed guest 0x%08" PRIx32 ", below the PSP's first mapped "
+            "address ra=0x%08" PRIx32 " sp=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
+            function, address, s_cpu ? s_cpu->r[31] : 0u, s_cpu ? s_cpu->r[29] : 0u,
+            sched_current_uid());
+    fprintf(stderr, "  SEMANTIC_BOUNDARY: null-data-pointer; see #363\n");
+    dispatch_record_semantic_stop_issue("null-data-pointer", 363u);
+    dump_dispatch_trace();
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0u, address, 0u);
+    fflush(stderr);
+    exit(1);
+}
+
 void sr_null_return_address(CpuState *s) {
     fprintf(stderr,
             "NULL_CODE_POINTER: jr $ra returns to 0x00000000 sp=0x%08" PRIx32 " uid=0x%" PRIx32
@@ -2432,26 +2448,6 @@ static int dispatch_try_with_boundary(
             sr_unimplemented(pc,"VFPU runtime interpreter returned SR_VFPU_OTHER");
         }
         s->pc=pc+4;
-        return SR_GUEST_INTERP_AOT_HANDOFF;
-    }
-    /* Configured callback terminators.
-     *
-     * A guest that walks a circular callback list reaches its terminal entry with a
-     * sentinel target (-1 is the shape seen in practice). The permissive miss
-     * path answers 0, which such a walker reads as "continue", so it loops forever.
-     * Where a title's configuration names the exact call site, report COMPLETION to the
-     * caller instead: v0 = 1, return to $ra.
-     *
-     * The semantic is generic and lives here; only the call-site identity is configured,
-     * and it must be configured -- an unconfigured build matches nothing and the same
-     * sentinel at the same site follows ordinary dispatch behavior below. This sits
-     * AFTER the VFPU tag check on purpose: the VFPU encoding is core dispatch vocabulary
-     * that a title configuration must never be able to shadow. A sentinel of 0 is
-     * refused by the manifest validator (#1375): a target of 0 is a null code pointer,
-     * which stops by name below, never a completed walk. */
-    if (sr_title_config_is_callback_terminator(target, s->pc, s->r[31])) {
-        s->r[2] = 1u;
-        s->pc = s->r[31];
         return SR_GUEST_INTERP_AOT_HANDOFF;
     }
     /* Guest address 0 (#1375). Dispatch is keyed on `target` alone. s->pc is not lost-state

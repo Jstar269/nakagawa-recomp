@@ -958,6 +958,38 @@ static inline void sr_native_memset(uint32_t dest, uint8_t val, uint32_t size, u
     }
 }
 
+/* The PSP maps nothing below the scratchpad at 0x00010000, so a null base plus a field
+ * offset faults there. A zero-based image occupies that range in this arena, where the same
+ * access would read the image's first bytes and run on. Generated code for such an image
+ * defines SR_NULL_PAGE_GUARD (tools/codegen.py), and its data accesses stop by name instead
+ * (#363). Runtime code keeps the plain accessors: it reads the image for its own reasons and
+ * reports the bad guest pointers it is handed. */
+#define SR_PSP_UNMAPPED_END 0x00010000u
+__attribute__((noreturn, cold)) void sr_null_data_pointer(uint32_t address, const char *function);
+static inline uint32_t sr_null_page_checked(uint32_t address, const char *function) {
+    if (__builtin_expect(SR_PHYS(address) < SR_PSP_UNMAPPED_END, 0))
+        sr_null_data_pointer(address, function);
+    return address;
+}
+#define SR_DATA_ADDRESS(a) sr_null_page_checked((uint32_t)(a), __func__)
+/* A span a generated body touches in one native pass, such as a fill or copy standing in
+ * for a translated loop. An empty span touches nothing; any other stops at its lowest
+ * address before a byte moves. */
+static inline uint32_t sr_null_span_checked(uint32_t address, uint32_t size, const char *function) {
+    return size ? sr_null_page_checked(address, function) : address;
+}
+
+#ifdef SR_NULL_PAGE_GUARD
+#define MEM_R8(a)   sr_r8(SR_DATA_ADDRESS(a))
+#define MEM_R16(a)  sr_r16(SR_DATA_ADDRESS(a))
+#define MEM_R32(a)  sr_r32(SR_DATA_ADDRESS(a))
+#define MEM_W8(a,v)  sr_w8(SR_DATA_ADDRESS(a), (uint8_t)(v))
+#define MEM_W16(a,v) sr_w16(SR_DATA_ADDRESS(a), (uint16_t)(v))
+#define MEM_W32(a,v) sr_w32(SR_DATA_ADDRESS(a), (uint32_t)(v))
+#define MEM_W8_PC(a,v,pc)  sr_w8_pc(SR_DATA_ADDRESS(a), (uint8_t)(v), (pc))
+#define MEM_W16_PC(a,v,pc) sr_w16_pc(SR_DATA_ADDRESS(a), (uint16_t)(v), (pc))
+#define MEM_W32_PC(a,v,pc) sr_w32_pc(SR_DATA_ADDRESS(a), (uint32_t)(v), (pc))
+#else
 #define MEM_R8(a)   sr_r8(a)
 #define MEM_R16(a)  sr_r16(a)
 #define MEM_R32(a)  sr_r32(a)
@@ -967,6 +999,29 @@ static inline void sr_native_memset(uint32_t dest, uint8_t val, uint32_t size, u
 #define MEM_W8_PC(a,v,pc)  sr_w8_pc((a), (uint8_t)(v), (pc))
 #define MEM_W16_PC(a,v,pc) sr_w16_pc((a), (uint16_t)(v), (pc))
 #define MEM_W32_PC(a,v,pc) sr_w32_pc((a), (uint32_t)(v), (pc))
+#endif
+
+/* Generated bulk code forms a host pointer only through SR_HOST(SR_DATA_SPAN(a, n)), and the
+ * native memmove/memset stubs check both spans the same way, so a null base stops as it would
+ * in the translated loop it replaces. */
+#ifdef SR_NULL_PAGE_GUARD
+#define SR_DATA_SPAN(a, n) sr_null_span_checked((uint32_t)(a), (uint32_t)(n), __func__)
+static inline void sr_native_memmove_checked(uint32_t dest, uint32_t src, uint32_t size, uint32_t pc,
+                                             const char *function) {
+    sr_native_memmove(sr_null_span_checked(dest, size, function),
+                      sr_null_span_checked(src, size, function), size, pc);
+}
+static inline void sr_native_memset_checked(uint32_t dest, uint8_t val, uint32_t size, uint32_t pc,
+                                            const char *function) {
+    sr_native_memset(sr_null_span_checked(dest, size, function), val, size, pc);
+}
+#define sr_native_memmove(dest, src, size, pc) \
+    sr_native_memmove_checked((dest), (src), (size), (pc), __func__)
+#define sr_native_memset(dest, val, size, pc) \
+    sr_native_memset_checked((dest), (val), (size), (pc), __func__)
+#else
+#define SR_DATA_SPAN(a, n) ((uint32_t)(a))
+#endif
 
 void  sr_mem_init(void);
 void  sr_mem_reset(void);              /* LoadExec: zero guest RAM and retire executable spans */
@@ -992,6 +1047,12 @@ void     sr_swl(uint32_t addr, uint32_t rtv);
 void     sr_swr(uint32_t addr, uint32_t rtv);
 void     sr_swl_pc(uint32_t addr, uint32_t rtv, uint32_t pc);
 void     sr_swr_pc(uint32_t addr, uint32_t rtv, uint32_t pc);
+#ifdef SR_NULL_PAGE_GUARD
+#define sr_lwl(rtv, a) sr_lwl((rtv), SR_DATA_ADDRESS(a))
+#define sr_lwr(rtv, a) sr_lwr((rtv), SR_DATA_ADDRESS(a))
+#define sr_swl_pc(a, rtv, pc) sr_swl_pc(SR_DATA_ADDRESS(a), (rtv), (pc))
+#define sr_swr_pc(a, rtv, pc) sr_swr_pc(SR_DATA_ADDRESS(a), (rtv), (pc))
+#endif
 void     sr_break(CpuState *s, uint32_t code, uint32_t pc);
 void     sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 uint32_t sr_bitrev(uint32_t x);

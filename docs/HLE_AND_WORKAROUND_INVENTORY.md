@@ -1096,7 +1096,6 @@ Dispatch Hooks & Walkers (src/rt/recomp.c):
 Title Configuration Overrides (src/rt/title_config.c):
   - Hardcoded Entry Points & Addresses:              0 (generated header/manifest bindings)
   - Dispatch Aliases:                                generated X-macro list (0 in generic build)
-  - Callback Terminators:                            generated X-macro list (0 in generic build)
   - Runtime Sync Wrappers:                           generated X-macro list (0 in generic build)
 ================================================================================
 ```
@@ -1178,7 +1177,7 @@ caller PC are preserved and the request is rejected (which the public
 `tests/native/dispatch_isolation_selftest.c` carries the source-owned hostile matrix
 (one target from each former range, every retained magic value, null,
 unresolved PLT, module-table and data-looking shapes, plus legitimate
-configured-alias and terminator controls) and is built for the generic and both
+configured-alias controls) and is built for the generic and both
 public fixture configurations, so a title cannot inherit any of these shapes and
 a broad pattern reintroduced into `recomp.c` fails the build immediately.
 
