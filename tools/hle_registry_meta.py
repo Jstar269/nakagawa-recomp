@@ -689,9 +689,10 @@ HANDLER_METADATA = {
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
             "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-seek64, io-seek64-rdwr)",
+            "docs/HARDWARE_ORACLE.md (PSP-IO-EOF-001: io-eof-seek-negative, io-eof-seek-negative-rdonly, io-eof-write-past, io-eof-read-past)",
             "tests/native/hle_thread_selftest.c:test_umd_block_device_sectors",
         ],
-        "limitation": "PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; pspautotests revision f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 before zero and permits past-EOF seeks; PSP-KERNEL-SEM-001 measures a Memory Stick position as 32 bits wide (0xFFFFFFFF accepted, beyond it EINVAL with the position unchanged); other devices keep IO_LSEEK_OUT_OF_RANGE there (#1380); invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred",
+        "limitation": "PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; PSP-IO-EOF-001 measures a Memory Stick seek before the start as EINVAL with the position unchanged (pspautotests revision f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 there, kept for other devices), a seek and write past the end extending the file, and a read past the end returning 0; PSP-KERNEL-SEM-001 measures a Memory Stick position as 32 bits wide (0xFFFFFFFF accepted, beyond it EINVAL with the position unchanged); other devices keep IO_LSEEK_OUT_OF_RANGE there (#1380); invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred",
     },
     "h_IoMkdir": {
         "status": "complete",
@@ -706,9 +707,10 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)",
             "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
             "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-missing-parent, io-excl-new, io-excl-existing)",
+            "docs/HARDWARE_ORACLE.md (PSP-IO-EOF-001: io-eof-missing)",
             "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
         ],
-        "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path, PSP-UMDIO-001's fixed open paths and flags, and PSP-KERNEL-SEM-001's Memory Stick exclusive create; an open without PSP_O_CREAT never creates a file, a create under a missing directory is 0x80010002, and PSP_O_CREAT|PSP_O_EXCL on an existing file is EEXIST with the file unchanged (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek",
+        "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path, PSP-UMDIO-001's fixed open paths and flags, PSP-KERNEL-SEM-001's Memory Stick exclusive create and PSP-IO-EOF-001's missing-file opens; an open without PSP_O_CREAT never creates a file (write-only, read-write, read-only and write-only with PSP_O_TRUNC each answer 0x80010002), a create under a missing directory is 0x80010002, and PSP_O_CREAT|PSP_O_EXCL on an existing file is EEXIST with the file unchanged (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek",
     },
     "h_IoRead": {
         "status": "partial",
