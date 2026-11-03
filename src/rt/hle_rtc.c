@@ -226,6 +226,7 @@ static void hle_guest_fault(CpuState *s, const char *name, uint32_t addr, int st
         sr_trace_close();
         sr_compat_report();
         sr_perf_shutdown();
+        SR_VERIFY_REPORT_NOW();
         fflush(stderr);
         _Exit(HLE_GUEST_FAULT_EXIT);
     }

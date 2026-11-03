@@ -1474,6 +1474,24 @@ typedef struct {
     size_t previous_floor;
 } SrAotReturnBoundaryScope;
 
+#ifdef SR_VERIFY
+/* Sampled in-play differential checking (src/rt/verify.c, issue #1843). Verify builds only. */
+#define SR_VERIFY_STOP_SYSCALL 1
+#define SR_VERIFY_STOP_IMPORT  2
+extern int sr_verify_suppress_direct;
+void sr_verify_begin(CpuState *s, uint32_t target, uint32_t call_pc, uint32_t resume_pc);
+void sr_verify_note_entry(uint32_t target);
+void sr_verify_end(CpuState *s, const SrAotReturnBoundary *boundary);
+void sr_verify_at_stop(CpuState *s, int kind, uint32_t code, uint32_t pc);
+void sr_verify_note_preempt(const char *why);
+void sr_verify_abandon(const char *why);
+/* Write SR_VERIFY_REPORT now, once. The runtime's _Exit paths skip atexit and call this. */
+void sr_verify_report_now(void);
+#define SR_VERIFY_REPORT_NOW() sr_verify_report_now()
+#else
+#define SR_VERIFY_REPORT_NOW() ((void)0)
+#endif
+
 extern SrAotReturnBoundary *sr_aot_return_boundary_top;
 int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
                                  uint32_t call_pc, uint32_t has_resume_pc);
@@ -2021,6 +2039,12 @@ void sr_profile_test_reset(void);
 uint64_t sr_profile_test_block_count(uint32_t pc);
 uint64_t sr_profile_test_lookup_drops(void);
 
+#ifdef SR_VERIFY
+#define SR_VERIFY_NOTE_YIELD() sr_verify_note_preempt("yield")
+#else
+#define SR_VERIFY_NOTE_YIELD() ((void)0)
+#endif
+
 #define SR_YIELD(s, target_pc) do { \
     if (__builtin_expect(g_prof_enabled, 0)) { \
         sr_profile_block(target_pc); \
@@ -2028,6 +2052,7 @@ uint64_t sr_profile_test_lookup_drops(void);
     if (__builtin_expect(sr_sched_on, 1)) { \
         if (atomic_fetch_sub_explicit(&sr_timeslice, 1, memory_order_relaxed) <= 1) { \
             (s)->pc = (target_pc); \
+            SR_VERIFY_NOTE_YIELD(); \
             sr_yield(s); \
         } \
     } \
