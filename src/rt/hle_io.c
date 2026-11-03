@@ -946,10 +946,12 @@ static uint32_t h_IoDread(CpuState *s) {
     DirFd *d = &s_dirfds[fd];
     if (!de) return 0x80010009u; /* preserve baseline behavior for null pointer */
     IsoDirEntry e;
-    /* The ISO listing keeps its 0x124 permission bits; the Memory Stick listing reports the FAT shape
-     * PSPAutotests tests/io/stat/stat.expected records on a PSP ("dread vs getstat": mode 0x21ff
-     * attr 0x0020 for a file, 0x11ff attr 0x0010 for a directory, equal to sceIoGetstat's). */
-    const int ms_shape = d->backend != 0;
+    /* A Memory Stick directory reports the FAT shape PSPAutotests tests/io/stat/stat.expected records
+     * on a PSP ("dread vs getstat": mode 0x21ff attr 0x0020 for a file, 0x11ff attr 0x0010 for a
+     * directory, equal to sceIoGetstat's). Every other device (disc0, flash0) keeps its 0x124 bits: no
+     * cell measures them. The device is the one the directory was opened on, not `backend`, which is 1
+     * for every merged-namespace listing. */
+    const int ms_shape = d->path && sr_vfs_strnicmp(d->path, "ms0:", 4u) == 0;
     if (d->backend == 0) {
         int r = iso_list(d->path, d->index, &e);
         if (r <= 0) return r < 0 ? 0x80010005u : 0;

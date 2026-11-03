@@ -2758,8 +2758,10 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
      * exposed exactly that lifetime bug: its four-byte resource-manager argument
      * had become a text/code address before the loader thread dereferenced it.
      *
-     * Keep the copy below the thread's normal initial SP and start the entry below
-     * the copy, so an ordinary downward-growing prologue cannot overwrite it.
+     * The copy sits directly under the k0 block, where a PSP puts it (start.expected:
+     * argv = stack + size - 0x100 - round16(len)), and the entry's sp is the copy's
+     * address, so an ordinary downward-growing prologue cannot overwrite it. Without
+     * an argument the sp is the thread's initial sp, 0x10 under k0 (unmeasured).
      * Sixteen-byte rounding preserves the PSP ABI stack alignment. */
     t->arglen = arglen;
     t->argp = 0;

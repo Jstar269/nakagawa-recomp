@@ -778,7 +778,7 @@ HANDLER_METADATA = {
             "tests/native/hle_thread_selftest.c:test_fd_namespace",
             "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
         ],
-        "limitation": "the PSP lists '.' and '..' (with a 4096-byte '..'), upper-cases 8.3 names and fills times; the runtime's listing order, size of directory entries, names' case and timestamps are not compared, and the ISO listing keeps its own 0x124 mode shape (#341)",
+        "limitation": "the PSP lists '.' and '..' (with a 4096-byte '..'), upper-cases 8.3 names and fills times; the runtime's listing order, size of directory entries, names' case and timestamps are not compared, and only ms0: listings take the FAT mode/attr: disc0 and flash0 listings keep their 0x124 mode bits, which no cell measures (#341)",
     },
     "h_GetThreadIdSched": {
         "status": "partial",

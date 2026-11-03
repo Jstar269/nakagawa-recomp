@@ -14829,6 +14829,8 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
                MEM_R32(dirent_addr + 8u) == 6u &&
                MEM_R8(dirent_addr + 0x58u) == 'c',
            "full disc0 directory enumeration returns the indexed child");
+    expect(MEM_R32(dirent_addr) == 0x2124u && MEM_R32(dirent_addr + 4u) == 0x20u,
+           "a disc0 listing keeps its 0x124 mode bits; only Memory Stick listings take the FAT 0x21ff");
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = dir_fd;
     cpu.r[5] = dirent_addr;

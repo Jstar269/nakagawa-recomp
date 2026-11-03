@@ -402,7 +402,7 @@ Semantic handler census: **556** handlers across **27** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_umd_io_console_model
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)
 - **`h_IoDread`** (`sceIo`): `sceIoDread` (0xe3eb004c)
-  - Limitation: the PSP lists '.' and '..' (with a 4096-byte '..'), upper-cases 8.3 names and fills times; the runtime's listing order, size of directory entries, names' case and timestamps are not compared, and the ISO listing keeps its own 0x124 mode shape (#341)
+  - Limitation: the PSP lists '.' and '..' (with a 4096-byte '..'), upper-cases 8.3 names and fills times; the runtime's listing order, size of directory entries, names' case and timestamps are not compared, and only ms0: listings take the FAT mode/attr: disc0 and flash0 listings keep their 0x124 mode bits, which no cell measures (#341)
   - Evidence: PSPAutotests tests/io/directory/directory.expected (recorded on a PSP): a bad descriptor returns 0x80020323; tests/io/stat/stat.expected: the listing reports the same mode and attr as sceIoGetstat
   - Evidence: tests/native/hle_thread_selftest.c:test_fd_namespace
   - Evidence: tests/native/hle_thread_selftest.c:test_ms0_unified_namespace
