@@ -1,6 +1,5 @@
 name: Feature request
 description: Propose a focused improvement
-title: "Area: "
 labels:
   - enhancement
 body:

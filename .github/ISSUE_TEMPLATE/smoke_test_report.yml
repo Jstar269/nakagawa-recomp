@@ -1,8 +1,6 @@
 name: Smoke test report
 description: Post results from running the release smoke test (docs/SMOKE_TEST.md)
 title: "Smoke test: "
-labels:
-  - bug
 body:
   - type: markdown
     attributes:
