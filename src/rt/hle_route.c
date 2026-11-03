@@ -16,7 +16,11 @@
 #define ROUTE_MAX_CP     32
 #define ROUTE_MAX_ALT    4
 #define ROUTE_MIN_ACTIVE_BYTES 12
-#define ROUTE_MAX_STEPS  256
+/* A route program is refused at load, with its line, once it has more steps than this, never cut
+ * short. 256 held a hand-written menu route but not a walked level: a level route repeats short
+ * move-and-jump blocks, and the first LittleBigPlanet level ran past 256 before its first
+ * obstacle. A recorded session uses the table form (ROUTE_MAX_LEGACY). */
+#define ROUTE_MAX_STEPS  4096
 /* A bare pad script is one line per press, so a timed sweep script runs to hundreds of lines
  * (the v0.0.1 sweep's has 453); past this many the file is refused, never cut short. */
 #define ROUTE_MAX_LEGACY 4096
@@ -77,7 +81,7 @@ static int      s_route_stick_digital_noted;
  * route always gets its first pending observation immediately. */
 static uint32_t s_route_last_attempt;
 static int      s_route_have_attempt;
-static struct { uint32_t f, mask, w; } s_route_legacy[ROUTE_MAX_LEGACY];
+static struct { uint32_t f, mask, w, stick; } s_route_legacy[ROUTE_MAX_LEGACY];
 static int      s_route_nlegacy;
 static int      s_route_loaded;
 /* WIDTHS VBLANKS|READS: the unit the widths of a route program's PRESS, DELAY, PRESS_UNTIL and
@@ -361,6 +365,26 @@ static void route_describe_mask(uint32_t mask, char *out, size_t n) {
     if (used == 0 && n > 8) snprintf(out, n, "0x%04x", mask);
 }
 
+/* What a press holds, in words: its buttons, then the left stick when it holds one, so an
+ * unread stick-only press names the position the guest never saw. */
+static void route_describe_press(uint32_t mask, uint32_t stick, char *out, size_t n) {
+    char buttons[64];
+    route_describe_mask(mask, buttons, sizeof buttons);
+    if (!stick) { snprintf(out, n, "%s", buttons); return; }
+    if (mask) snprintf(out, n, "%s with the left stick at %u,%u", buttons,
+                       (stick >> 8) & 0xffu, stick & 0xffu);
+    else snprintf(out, n, "the left stick at %u,%u", (stick >> 8) & 0xffu, stick & 0xffu);
+}
+
+/* One stick axis: decimal 0-255 and nothing else (128 is centred). */
+static int route_parse_axis(const char *t, uint32_t *out) {
+    char *end = NULL;
+    unsigned long v = t && t[0] >= '0' && t[0] <= '9' ? strtoul(t, &end, 10) : 256ul;
+    if (!end || *end || v > 255ul) return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
+
 /* The names a mask argument may use, for the refusal that has to teach the fix. */
 static const char *route_button_names(void) {
     return "SELECT START UP RIGHT DOWN LEFT L R TRIANGLE CIRCLE CROSS SQUARE HOME HOLD, "
@@ -502,8 +526,27 @@ static int route_parse_line(char *line, int lineno, const char *path) {
         char *m = strtok(NULL, " \t\r\n");
         char *w = strtok(NULL, " \t\r\n");
         if (!m || !w) {
-            fprintf(stderr, "ROUTE_PARSE: %s:%d: expected '<frame> <hexmask> <width>'\n", path, lineno);
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: expected '<frame> <hexmask> <width> [<lx> <ly>]'\n",
+                    path, lineno);
             return -1;
+        }
+        /* An optional left stick after the width, as padscript_from_log records it: the row
+         * holds the stick there for its width. A row without one leaves the stick centred, so
+         * a three-column table reads exactly as before. */
+        uint32_t row_stick = 0u;
+        char *xs = strtok(NULL, " \t\r\n");
+        if (xs && xs[0] >= '0' && xs[0] <= '9') {
+            char *ys = strtok(NULL, " \t\r\n");
+            char *rest = strtok(NULL, " \t\r\n");
+            uint32_t lx = 0u, ly = 0u;
+            if (route_parse_axis(xs, &lx) != 0 || route_parse_axis(ys, &ly) != 0 ||
+                (rest && rest[0] != '#')) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: a pad-script row's stick is '<lx> <ly>' after the "
+                                "width (decimal 0-255, 128 centred), then nothing but a comment\n",
+                        path, lineno);
+                return -1;
+            }
+            row_stick = SR_INPUT_STICK(lx, ly);
         }
         uint32_t lmask = 0;
         if (route_parse_mask(m, &lmask) != 0) {
@@ -514,6 +557,7 @@ static int route_parse_line(char *line, int lineno, const char *path) {
         s_route_legacy[s_route_nlegacy].f    = (uint32_t)strtoul(tok, NULL, 10);
         s_route_legacy[s_route_nlegacy].mask = lmask;
         s_route_legacy[s_route_nlegacy].w    = (uint32_t)strtoul(w, NULL, 10);
+        s_route_legacy[s_route_nlegacy].stick = row_stick;
         s_route_nlegacy++;
         return 0;
     }
@@ -557,14 +601,14 @@ static int route_parse_line(char *line, int lineno, const char *path) {
         const char *given[2] = { xs, ys };
         for (int i = 0; i < 2; i++) {
             const char *t = given[i];
-            char *end = NULL;
-            axis[i] = t && t[0] >= '0' && t[0] <= '9' ? strtoul(t, &end, 10) : 256ul;
-            if (!end || *end || axis[i] > 255ul) {
+            uint32_t v = 0u;
+            if (route_parse_axis(t, &v) != 0) {
                 fprintf(stderr, "ROUTE_PARSE: %s:%d: STICK <lx> <ly> <step>: '%s' is not a stick "
                                 "position (decimal 0-255, 128 centred)\n",
                         path, lineno, t ? t : "");
                 return -1;
             }
+            axis[i] = v;
         }
         tok = strtok(NULL, " \t\r\n");
         if (!tok || tok[0] == '#') {
@@ -938,14 +982,17 @@ int sr_route_load(const char *path) {
         return 1;
     }
     if (s_route_nlegacy > 0) {
-        uint32_t rf[ROUTE_MAX_LEGACY], rm[ROUTE_MAX_LEGACY], rw[ROUTE_MAX_LEGACY];
+        uint32_t rf[ROUTE_MAX_LEGACY], rm[ROUTE_MAX_LEGACY], rw[ROUTE_MAX_LEGACY], rs[ROUTE_MAX_LEGACY];
+        int stick_rows = 0;
         for (int i = 0; i < s_route_nlegacy; i++) {
             rf[i] = s_route_legacy[i].f;
             rm[i] = s_route_legacy[i].mask;
             rw[i] = s_route_legacy[i].w;
+            rs[i] = s_route_legacy[i].stick;
+            stick_rows += rs[i] != 0u;
         }
         s_route_legacy_nseg = sr_input_from_rows(
-            rf, rm, rw, s_route_nlegacy, s_input_budget, s_route_legacy_seg,
+            rf, rm, rw, rs, s_route_nlegacy, s_input_budget, s_route_legacy_seg,
             (int)(sizeof s_route_legacy_seg / sizeof s_route_legacy_seg[0]));
         if (s_route_legacy_nseg < 0) {
             s_route_legacy_nseg = 0;
@@ -957,6 +1004,8 @@ int sr_route_load(const char *path) {
         fprintf(stderr, "ROUTE: pad script loaded from %s (%d rows as %d segments, delivered in "
                         "guest time; a press may wait %u vblanks for the guest to read it)\n",
                 path, s_route_nlegacy, s_route_legacy_nseg, s_input_budget);
+        if (stick_rows)
+            fprintf(stderr, "ROUTE: %d of its rows hold the left stick\n", stick_rows);
         return 1;
     }
     if (s_route_ncp > 0) {
@@ -972,8 +1021,8 @@ int sr_route_load(const char *path) {
  * on schedule and the run carried on as if it had been made; now the run fails here, naming
  * the buttons, how long they were held and what the step was. */
 static void route_input_overdue(const char *what_step, uint32_t v) {
-    char what[64];
-    route_describe_mask(s_input.seg.mask, what, sizeof what);
+    char what[96];
+    route_describe_press(s_input.seg.mask, s_input.seg.stick, what, sizeof what);
     if (s_input.seg.reads) {
         route_fail("%s: the guest read the controller only %u of the %u reads %s was held for, "
                    "within its budget (from vblank %u to %u); a read-width press is held until the "
@@ -1435,12 +1484,18 @@ void sr_ctrl_sample(void) {
      * project choice, not yet measured on hardware. */
     keyboard_took_sample = keyboard_took_sample || sr_osk_overlay_active();
     if (keyboard_took_sample) buttons = 0u;
+    /* A line per change of what the guest is handed, the stick included: padscript_from_log
+     * rebuilds a replay from these lines, so a stick that moved with no button change has to
+     * appear here, or the replay would hold the stick where the last button left it. */
     if (hle_inlog_on()) {
         static uint32_t previous;
-        if (buttons != previous) {
+        static uint8_t previous_lx = 128u, previous_ly = 128u;
+        if (buttons != previous || lx != previous_lx || ly != previous_ly) {
             fprintf(stderr, "ctrl_latch: vcount=%u buttons 0x%04x -> 0x%04x lx=%u ly=%u\n",
                     s_vcount_fwd, previous, buttons, lx, ly);
             previous = buttons;
+            previous_lx = lx;
+            previous_ly = ly;
         }
     }
     uint32_t input_id = sr_input_latch(&s_input);

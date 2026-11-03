@@ -95,6 +95,77 @@ class TestPadscriptFromLog(unittest.TestCase):
             [padscript.Pulse(5, 0x8, 8)],
         )
 
+    def test_stick_only_move_becomes_a_row_with_stick_columns(self):
+        transitions = padscript.parse_transitions(
+            [
+                "ctrl_latch: vcount=10 buttons 0x0000 -> 0x0000 lx=255 ly=128\n",
+                "ctrl_latch: vcount=30 buttons 0x0000 -> 0x0000 lx=128 ly=128\n",
+            ]
+        )
+        pulses = padscript.pulses_from_transitions(transitions)
+        self.assertEqual(pulses, [padscript.Pulse(10, 0, 20, 255, 128)])
+        self.assertEqual(padscript.render_padscript(pulses), "10 0x0000 20 255 128\n")
+
+    def test_centred_stick_keeps_the_three_column_rows(self):
+        transitions = padscript.parse_transitions(
+            [
+                "ctrl_latch: vcount=10 buttons 0x0000 -> 0x4000 lx=128 ly=128\n",
+                "ctrl_latch: vcount=30 buttons 0x4000 -> 0x0000 lx=128 ly=128\n",
+            ]
+        )
+        self.assertEqual(
+            padscript.render_padscript(padscript.pulses_from_transitions(transitions)),
+            "10 0x4000 20\n",
+        )
+
+    def test_stick_move_during_a_press_splits_it_without_lengthening_it(self):
+        transitions = [
+            padscript.Transition(10, 0, 0x4000),
+            padscript.Transition(15, 0x4000, 0x4000, 0, 128),
+            padscript.Transition(17, 0x4000, 0),
+        ]
+        pulses = padscript.pulses_from_transitions(transitions, minimum_width=8)
+        self.assertEqual(
+            pulses,
+            [padscript.Pulse(10, 0x4000, 5), padscript.Pulse(15, 0x4000, 3, 0, 128)],
+        )
+        # The press as a whole lasts the minimum width, as an unsplit press would.
+        self.assertEqual(max(p.frame + p.width for p in pulses), 18)
+
+    def test_stick_sweep_keeps_the_positions_the_stick_stayed_at(self):
+        lines = [
+            f"ctrl_latch: vcount={10 + i} buttons 0x0000 -> 0x0000 lx={130 + i} ly=128\n"
+            for i in range(6)
+        ]
+        lines.append("ctrl_latch: vcount=40 buttons 0x0000 -> 0x0000 lx=128 ly=128\n")
+        pulses = padscript.pulses_from_transitions(padscript.parse_transitions(lines))
+        self.assertEqual(
+            pulses,
+            [padscript.Pulse(10, 0, 4, 133, 128), padscript.Pulse(14, 0, 26, 135, 128)],
+        )
+        exact = padscript.pulses_from_transitions(
+            padscript.parse_transitions(lines), stick_min_width=1
+        )
+        self.assertEqual(len(exact), 6)
+
+    def test_stick_jitter_back_to_the_same_position_is_dropped(self):
+        transitions = [
+            padscript.Transition(10, 0, 0, 200, 128),
+            padscript.Transition(20, 0, 0, 201, 128),
+            padscript.Transition(21, 0, 0, 200, 128),
+            padscript.Transition(40, 0, 0),
+        ]
+        self.assertEqual(
+            padscript.pulses_from_transitions(transitions),
+            [padscript.Pulse(10, 0, 30, 200, 128)],
+        )
+
+    def test_out_of_range_stick_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "stick position out of range"):
+            padscript.parse_transitions(
+                ["ctrl_latch: vcount=10 buttons 0x0000 -> 0x0000 lx=256 ly=128\n"]
+            )
+
     def test_out_of_range_mask_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "out of range"):
             padscript.parse_transitions(

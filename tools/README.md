@@ -308,7 +308,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ppm2png.py` | Convert framebuffer snapshots written by the runtime into PNG. |
 | `pngcmp.py` | Compare two framebuffer PNGs written by `ppm2png.py`. |
 | `frame_capture_check.py` | Temporal acceptance check for present-truthful frame captures: frame accounting, black/stale-frame and frame-gap detection, and watchdog/present-gap classification. |
-| `padscript_from_log.py` | Convert recorded controller transitions into a replay pad script. |
+| `padscript_from_log.py` | Convert recorded controller transitions, buttons and left stick, into a replay pad script. |
 | `mem_debug.py` | Interactive memory and CPU-state query and mutation tool for bring-up. |
 
 #### Comparing host compilers (issue #317)
@@ -521,7 +521,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_matrix_disposition.py` | Guard the evidence-matrix disposition field against becoming uninformative. |
 | `test_matrix_report.py` | Generate a conservative, machine-readable unittest evidence matrix. |
 | `test_parse_fuzz.py` | Seeded, deterministic mutation fuzzing over the public offline parsers. |
-| `test_padscript_from_log.py` | Controller log to pad script conversion: press widths and mask-change spans. |
+| `test_padscript_from_log.py` | Controller log to pad script conversion: press widths, mask-change spans and stick columns. |
 | `test_perf_summary_diff.py` | Performance summary comparison within a tolerance. |
 | `test_perf_attribution.py` | Synthetic regressions for the present-cadence and cost attribution report, including source pins on the emitter formats. |
 | `test_pgf_writer.py` | PGF writer determinism and public-reader round trip over generated glyph sets. |

@@ -646,12 +646,12 @@ The diagnostic does not skip guest work or change GE execution.
 
 | Variable | Description |
 | ---------- | ------------- |
-| `SR_INLOG=1` | Log input state changes |
+| `SR_INLOG=1` | Log each change of the pad state the guest is handed, buttons and left stick (`ctrl_latch:` lines, the input of `tools/padscript_from_log.py`) |
 | `SR_PAD=HEX` | Override pad state (hex buttons) |
 | `SR_PADPERIOD=N` | Automatic pad-pulse period in vblanks (default 240) |
 | `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4); each pulse is held until the guest has read it (see [Scripted input is delivered in guest time](#scripted-input-is-delivered-in-guest-time)) |
 | `SR_PADSTART=N` | Pad override start frame |
-| `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width` table |
+| `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width [lx ly]` table |
 | `SR_PADSCRIPT_READ_BUDGET=N` | Vblanks a scripted press may wait for the guest to read it before the run fails (default 1800; a press whose width is in guest reads may wait for all of them); not a whole number >= 1 refuses the script |
 | `SR_OSK_SCRIPT=FILE` | Scripted on-screen-keyboard answers, one per input field in order (`CANCEL` answers that field as cancelled) |
 | `SR_OSK_TEXT=TEXT` | Answer every on-screen-keyboard field with the same text |
@@ -679,6 +679,18 @@ The converter expands shorter presses so a replay holds each press for as many
 vblanks as a person would. A one-vblank pulse can no longer fall between the
 game's controller reads, because scripted input waits for a read (below). Use
 `--minimum-width 1` only when an exact-width replay is required.
+
+The left stick is recorded with the buttons. Each `ctrl_latch:` line carries the
+stick the guest was handed (`lx=`, `ly=`; a title in digital mode reads 128, 128),
+and a row whose stick is off centre gets two more columns, `<frame> <hexmask>
+<width> <lx> <ly>`, which the replay holds for that row's width. Where rows
+overlap, the stick of the row that started last holds. A sweep of the stick passes
+through a new position every vblank; positions held for fewer than
+`--stick-min-width` vblanks (default 4) are folded into the next position, so the
+table keeps the positions the stick stayed at. Use `--stick-min-width 1` to keep
+every recorded position. A table is refused at load past 4096 rows; a long
+analog session that passes it needs a larger `--stick-min-width`, or to be
+recorded in parts.
 
 ### Scripted input is delivered in guest time
 
@@ -959,6 +971,10 @@ END
   live input, but a stick cannot be, because a pad at rest does not sit at exactly 128, 128.
 - `STICK` applies to the four pressing steps only, comes first on the line, and is refused at
   load with anything else, including a value outside 0-255 or one that is not a plain decimal.
+- A press the guest never reads fails the run naming the stick position it held, as it names
+  the buttons.
+- A route program has at most 4096 steps; a longer one is refused at load with the line that
+  passed the limit, never cut short.
   No existing route starts a line with the word, so existing routes parse and replay exactly as
   they did. The legacy `frame hexmask width` table has no stick column; write a route program to
   hold the stick.
