@@ -88,6 +88,7 @@ void sched_liveness_set_starvation_limit(unsigned limit);
 
 int     sr_sched_on = 0;
 atomic_int_least32_t sr_timeslice = 0;
+atomic_int_least32_t sr_preempt_due = 0;
 
 #define TIMESLICE 1000           /* yields per thread run before preemption (smaller = more frequent vblank delivery, fixes UMD-init spin) */
 #define MAXTHREADS 128
@@ -2210,7 +2211,9 @@ static void scheduler_vtimer_service(void) {
  * of this decision shipped with no executable coverage at all. */
 typedef struct {
     uint64_t soonest;        /* earliest finite wake deadline, else SCHED_WAIT_FOREVER */
-    int waiting_on_vblank;   /* a live thread is parked on VBLANK_WAIT_OBJ */
+    int waiting_on_vblank;   /* a live thread waits for the next VBLANK: parked on
+                              * VBLANK_WAIT_OBJ, or on CTRL_WAIT_OBJ, which the sample
+                              * taken at each VBLANK wakes (sr_ctrl_sample) */
     int vblank_can_wake;     /* ...and the source can still fire AND be serviced */
     int unwakeable;          /* nothing the runtime can do will ready anyone */
 } SchedIdleState;
@@ -2225,7 +2228,7 @@ static SchedIdleState sched_classify_idle(void) {
         any_waiting = 1;
         if (s_tcb[i].wake < st.soonest) st.soonest = s_tcb[i].wake;
         if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ &&
-            s_tcb[i].wait_obj == VBLANK_WAIT_OBJ)
+            (s_tcb[i].wait_obj == VBLANK_WAIT_OBJ || s_tcb[i].wait_obj == CTRL_WAIT_OBJ))
             st.waiting_on_vblank = 1;
     }
     /* A pending alarm is a guest timer like any other deadline, but only while somebody is
@@ -3188,6 +3191,7 @@ static void sched_preempt_timer_check(uint64_t now_ns) {
     if (s_preempt_timer_at_ns == UINT64_MAX || now_ns < s_preempt_timer_at_ns) return;
     s_preempt_timer_at_ns = UINT64_MAX;
     atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
+    atomic_store_explicit(&sr_preempt_due, 1, memory_order_relaxed);
 }
 
 /* Publish the deadline for the thread that is running now. Called on the guest's host
@@ -3269,6 +3273,7 @@ void sr_yield(CpuState *s) {
     /* The slice ended, by its count or by the preemption timer: whatever the timer
      * held is spent, so the next arm publishes afresh. */
     s_preempt_timer_published = UINT64_MAX;
+    atomic_store_explicit(&sr_preempt_due, 0, memory_order_relaxed);
     if (s->r[28] != 0u) {
         s_gp = s->r[28];
     }
@@ -3538,6 +3543,26 @@ void sched_preempt(void) {
         SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PREEMPT, s_cur, 0u);
     }
 #endif
+}
+
+/* The timer's interrupt edge inside a long HLE call (#1296). Guest code reaches sr_yield at its
+ * SR_YIELD points, but a call into the runtime has none, so the deadline the timer met would wait
+ * for the call to return: a GE list ran its priority-40 caller for up to 120 ms with the
+ * priority-16 sound thread due. The call polls sr_preempt_due between units of work and comes
+ * here, and the stronger thread runs under the strict-priority rule. The caller keeps its host
+ * stack, as in any HLE wait, so it only has to leave what it owns as another thread may find it.
+ * Interrupts stay latched until a scheduler boundary, as they do during the call.
+ *
+ * With interrupts or dispatch disabled, or no thread running, the switch stays deferred like any
+ * other. The deadline is then left spent, not re-published: it would fire again at once, on every
+ * command of the call, and the next boundary publishes it anyway. */
+void sched_preempt_point(void) {
+    atomic_store_explicit(&sr_preempt_due, 0, memory_order_relaxed);
+    if (s_cur < 0 || !s_interrupts_enabled || !s_dispatch_enabled) return;
+    s_preempt_timer_published = UINT64_MAX;
+    scheduler_progress_time();
+    sched_preempt();
+    sched_preempt_timer_arm();
 }
 
 /* Diagnostic switches read on every block, delay or scheduler pass. The environment is

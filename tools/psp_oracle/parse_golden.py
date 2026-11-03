@@ -1555,9 +1555,10 @@ _register_campaign_probe(
 # HLE measurement families (probe_hle_measure.c; H-oracle-hle-measure-1009).
 # Every cell is emitted, as PASS, FAIL or SKIP, so each stream has a fixed shape
 # and order. The contracts check shape and order only: no PSP return value is
-# asserted, because these probes exist to measure what the console returns. The one
-# exception is validate_hle_edram_restore, which checks the GE probe's own restore
-# of the state it changed, not a console semantic.
+# asserted, because these probes exist to measure what the console returns. The
+# exceptions are validate_hle_edram_restore, which checks the GE probe's own restore
+# of the state it changed, and validate_hle_savedata_getsize_absent, which checks the
+# precondition that probe measures under; neither is a console semantic.
 _register_campaign_probe(
     "hle-kernel-status", "PSP-HLE-KERNEL-STATUS-001",
     ("sys-status-size-0x1c", "sys-status-size-0x20", "sys-status-size-0x08",
@@ -1724,6 +1725,31 @@ _register_campaign_probe(
         "src-final-cleanup": 0, "out2-final-cleanup": 0,
     },
 )
+# hle-savedata-getsize (#308): each dialog cell carries InitStart's return as its result and 24
+# words (eight driver words, the bind word and the 15 sizeInfo words); each save-absent cell
+# carries sceIoGetstat's return and st_mode; volatile-lock-before carries TryLock's return, the
+# Unlock return and the size. Every word is an observation, except that each save-absent
+# result must say the save is absent (validate_hle_savedata_getsize_absent).
+_HLE_SAVEDATA_GETSIZE_DIALOG_CASES = (
+    "getsize-missing-secure", "getsize-missing-empty", "getsize-missing-shortfall",
+    "getsize-missing-null",
+)
+_HLE_SAVEDATA_GETSIZE_ABSENT_CASES = (
+    "save-absent-before", "save-absent-after-secure", "save-absent-after-empty",
+    "save-absent-after-shortfall", "save-absent-after-null",
+)
+_register_campaign_probe(
+    "hle-savedata-getsize", "PSP-HLE-SAVEDATA-GETSIZE-001",
+    ("save-absent-before", "volatile-lock-before", "getsize-missing-secure",
+     "save-absent-after-secure", "getsize-missing-empty", "save-absent-after-empty",
+     "getsize-missing-shortfall", "save-absent-after-shortfall",
+     "getsize-missing-null", "save-absent-after-null"),
+    {
+        **{case_id: 24 for case_id in _HLE_SAVEDATA_GETSIZE_DIALOG_CASES},
+        **{case_id: 1 for case_id in _HLE_SAVEDATA_GETSIZE_ABSENT_CASES},
+        "volatile-lock-before": 2,
+    },
+)
 _HLE_TIMER_ORDER_CASES = (
     "alarm-same-delay-set", "alarm-same-delay-a", "alarm-same-delay-b",
     "alarm-long-then-short-set", "alarm-long-event", "alarm-short-event",
@@ -1877,6 +1903,21 @@ KERNEL_SEM_ROWS = {
 }
 _register_campaign_probe(
     "kernel-semantics", "PSP-KERNEL-SEM-001", tuple(KERNEL_SEM_ROWS), dict(KERNEL_SEM_ROWS),
+)
+
+# io-seek-eof (136, probe_kernel_semantics.c): #1380 in the probe-owned ms0:/NKKSEM01: opens
+# of a missing file without PSP_O_CREAT, negative seeks on read-write and read-only
+# descriptors, a write after a seek past the end (size, gap bytes, tail) and a read past it.
+# Every row is emitted on every run with a fixed word count (SKIP rows keep the shape).
+IO_SEEK_EOF_ROWS = (
+    ("io-eof-mkdir", 1), ("io-eof-missing", 5), ("io-eof-create", 3),
+    ("io-eof-seek-negative", 16), ("io-eof-seek-negative-rdonly", 5),
+    ("io-eof-write-past", 8), ("io-eof-gap", 8), ("io-eof-read-past", 5),
+    ("io-eof-cleanup", 3),
+)
+_register_campaign_probe(
+    "io-seek-eof", "PSP-IO-EOF-001", tuple(row for row, _ in IO_SEEK_EOF_ROWS),
+    dict(IO_SEEK_EOF_ROWS),
 )
 
 # memory-edge (138, probe_memory_edge.c, fixture mem_edge.h): the #303 invalid-tail and
@@ -2351,6 +2392,30 @@ _register_campaign_probe(
 HLE_EDRAM_WIDTHS = (512, 1024, 2048, 4096)
 
 
+HLE_SAVEDATA_GETSIZE_ABSENT_RESULT = 0x80010002
+
+
+def validate_hle_savedata_getsize_absent(text: str) -> None:
+    """Fail closed unless the save stayed absent around every hle-savedata-getsize dialog.
+
+    Every cell of that probe measures a save that does not exist, so a stick that holds
+    the probe's save directory, or a dialog that creates it, voids the run. This is the
+    precondition of the measurement, not a console semantic: sceIoGetstat's 0x80010002 is
+    the only proof the probe has that the directory is absent.
+    """
+
+    results = {record.case_id: record for record in parse_output(text).results}
+    for case_id in _HLE_SAVEDATA_GETSIZE_ABSENT_CASES:
+        if case_id not in results:
+            raise ProtocolError(f"PSP-HLE-SAVEDATA-GETSIZE-001: missing record {case_id!r}")
+        result = int(dict(results[case_id].values)["result"], 0)
+        if result != HLE_SAVEDATA_GETSIZE_ABSENT_RESULT:
+            raise ProtocolError(
+                f"PSP-HLE-SAVEDATA-GETSIZE-001: {case_id} returned {result:#010x}, so the save "
+                "directory was not absent and the run measured nothing"
+            )
+
+
 def validate_hle_edram_restore(text: str) -> None:
     """Fail closed unless the GE translation width was restored to its original value.
 
@@ -2414,7 +2479,7 @@ def validate_hle_edram_restore(text: str) -> None:
 #: completed and SKIP when the object it needs was not obtained, and never FAIL.
 HLE_MACHINERY_STATUS_CASES = frozenset({
     "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-pool-bounds", "hle-power-float-v0",
-    "hle-null-out-pointers", "hle-audio-src", "hle-timer-order",
+    "hle-null-out-pointers", "hle-audio-src", "hle-timer-order", "hle-savedata-getsize",
 })
 VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
 #: Cases whose every cell is an unconditional observation: each record is PASS.

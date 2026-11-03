@@ -180,6 +180,26 @@ def _plan_and_c(words, start=0x1000, known=None):
     return plan, c_text
 
 
+class EntrySpTests(unittest.TestCase):
+    BIND_FP = 29 << 21 | 30 << 11 | 0x21
+    LOWER_SP = 0x09 << 26 | 29 << 21 | 29 << 16 | 0xFFE0
+    SW_SP_FP = 0x2B << 26 | 30 << 21 | 29 << 16 | 0x10
+    LW_SP_FP = 0x23 << 26 | 30 << 21 | 29 << 16 | 0x10
+    LW_SP_A0 = 0x23 << 26 | 4 << 21 | 29 << 16
+
+    def test_a_body_that_frees_an_alloca_is_lowered_and_restores_its_entry_sp(self):
+        plan, c_text = _plan_and_c({0x1000: self.BIND_FP, 0x1004: self.SW_SP_FP,
+                                    0x1008: self.LOWER_SP, 0x100C: self.LW_SP_FP,
+                                    0x1010: JR_RA, 0x1014: NOP})
+        self.assertIsNotNone(plan)
+        self.assertIn("s->r[29] = _sp_entry; return;", c_text)
+
+    def test_a_body_that_loads_foreign_memory_stays_in_c(self):
+        words = {0x1000: self.LW_SP_A0, 0x1004: JR_RA, 0x1008: NOP}
+        with self.assertRaisesRegex(P.Unsupported, r"loads \$sp"):
+            P.plan_function(codegen, FakeElf(words), 0x1000, [(0x1000, 0x1100)], {0x1000})
+
+
 class TransferRuleTests(unittest.TestCase):
     def test_self_jump_inner_jump_and_branch_out_match_the_c_emitter(self):
         j = lambda target: 0x02 << 26 | (target >> 2)            # noqa: E731

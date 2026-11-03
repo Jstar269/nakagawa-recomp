@@ -43,7 +43,7 @@
     X("SR_AUDIO_DISABLED", "string", "unset (audio enabled)", "audio_unavailable.c", "When set to exactly 1, host audio output is disabled and the null audio backend is used.") \
     X("SR_BLOCKLOG", "flag-presence", "off", "debug.h,sched.c", "Logs each time the scheduler parks a thread in a delay or object wait; read once per process.") \
     X("SR_BOOT_EVENT_FILE", "path", "unset (no event file)", "driver.c,gui.c,hle.c,hle_kernel_module.c,recomp.c", "File to which boot progress events are appended in addition to stderr.") \
-    X("SR_BOOT_PATH", "path", "unset (no boot argument seeded)", "driver.c", "Guest boot path (under 4096 bytes) placed in the entry's argument block.") \
+    X("SR_BOOT_PATH", "path", "unset (no boot argument seeded)", "driver.c,hle_kernel_module.c", "Guest boot path (under 4096 bytes) placed in the entry's argument block; a disc0: or umd0: path marks a title booted from the disc.") \
     X("SR_BREAKLOG", "flag-presence", "off", "debug.h", "Legacy switch that turns on the memory debug log class, like SR_OORLOG.") \
     X("SR_BREAK_FATAL", "flag-nonzero", "off: BREAK is logged and execution continues", "recomp.c", "Makes a guest BREAK instruction record a fatal event and abort the process.") \
     X("SR_CALLCOUNT", "flag-presence", "off", "hle.c", "When set, enables per-call counting of HLE function invocations.") \

@@ -1262,7 +1262,7 @@ typedef struct SrVarImport {
 typedef struct SrModuleCode {
     const char *name;                 /* module file name, as the title manifest names it */
     uint32_t file_size;               /* identity of the exact bytes that were translated */
-    uint64_t file_fnv1a64;
+    const char *file_sha256;          /* lowercase hex SHA-256 of those bytes */
     uint32_t link_low;                /* image extent in link space: [link_low, link_high) */
     uint32_t link_high;
     uint32_t alignment;               /* largest PT_LOAD alignment */
@@ -1349,7 +1349,11 @@ void sr_fixed_var_imports_register(const char *module, const SrVarImport *import
 const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
 unsigned sr_module_code_count(void);
 const SrModuleCode *sr_module_code_at(unsigned index);
-/* Identity digest of a module file (FNV-1a, 64-bit), as tools/codegen.py records it. */
+/* Identity digest of a module file: lowercase hex SHA-256, as tools/codegen.py records it. */
+void sr_module_code_sha256(const void *bytes, size_t size, char out[65]);
+/* FNV-1a, 64-bit: the digest of an overlay's leading bytes in guest memory, which is checked
+ * on every instruction-cache invalidate that reaches it. It says whether the overlay is
+ * present, not whose file it is. */
 uint64_t sr_module_code_fnv1a64(const void *bytes, size_t size);
 const char *sr_module_bind_result_name(SrModuleBindResult result);
 /* Bind `code` with its image already laid out in guest memory at `base`. */
@@ -1632,6 +1636,10 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* ge_run_list that also stops at a command boundary once *stop is set, after at least one
+ * command, exactly as it stops at a stall address: it returns the next command's address, with
+ * *stopped set, and resuming there continues the list. */
+uint32_t ge_run_list_until(uint32_t addr, int resume, atomic_int_least32_t *stop, int *stopped);
 /* The 16-bit argument of the FINISH command the last ge_run_list call executed. */
 uint32_t ge_last_finish_id(void);
 /* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
@@ -2117,6 +2125,11 @@ void     sched_raise_interrupt(uint32_t source);     /* latch source; delivery o
 uint32_t sched_pending_interrupts(void);             /* source bits not yet serviced */
 void     sched_delay_current(uint64_t usec);        /* block current thread for usec */
 void     sched_preempt(void);                       /* yield now if a higher-priority thread is ready */
+/* Set by the preemption timer when a stronger thread's deadline comes. A long HLE call polls it
+ * between units of work and, holding nothing another guest thread could trip on, calls
+ * sched_preempt_point(): that thread then runs inside the call, as it would on the PSP (#1296). */
+extern atomic_int_least32_t sr_preempt_due;
+void     sched_preempt_point(void);
 void     sched_block_on(uint32_t obj);              /* block current thread until sched_wake(obj) */
 void     sched_wait_vblank_start(void);             /* sceDisplayWaitVblankStart: always block to the next vblank start edge */
 int      sched_wait_vblank(void);                   /* sceDisplayWaitVblank: 1 if already inside the vblank interval (no block), else blocks and returns 0 */
