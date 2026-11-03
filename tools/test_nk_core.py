@@ -222,6 +222,32 @@ class NkCoreTests(unittest.TestCase):
         )
         self.assertNotRegex(summary, _ISSUE_REFERENCE_RE)
 
+    def test_bringup_summaries_tell_the_user_what_to_do_next(self) -> None:
+        # Failing before: an encrypted program stopped bring-up with a bare failure code, a
+        # running game that hit the launch limit read as an unexplained failure, and the
+        # decryption message said Nakagawa does not decrypt games (the player does).
+        def summary(failure_class: str, **extra: object) -> str:
+            report: dict[str, Any] = {
+                "preflight_checks": [], "failure_class": failure_class,
+                "issue_numbers": [308], "reached_stage": "inspect"}
+            report.update(extra)
+            text: str = nk_cli._bringup_human_summary(report)
+            return text
+
+        self.assertIn("--user-data-root", summary("EXECUTABLE_UNSUPPORTED"))
+        decrypt = summary("GUEST_MODULE_DECRYPTION_REQUIRED")
+        self.assertNotIn("does not decrypt", decrypt)
+        self.assertIn("--user-data-root", decrypt)
+        running = summary("LAUNCH_TIMEOUT", reached_stage="launch",
+                          presentation={"frame_submissions": 310})
+        self.assertIn("still running", running)
+        self.assertIn("310 frame(s)", running)
+        silent = summary("LAUNCH_TIMEOUT", reached_stage="launch",
+                         presentation={"frame_submissions": 0})
+        self.assertIn("without presenting a frame", silent)
+        for text in (running, silent, decrypt):
+            self.assertNotRegex(text, _ISSUE_REFERENCE_RE)
+
     def test_title_registry_matching_and_normalization(self) -> None:
         reg = TitleRegistry(include_defaults=True)
         # Check standard synthetic title matches with or without hyphens

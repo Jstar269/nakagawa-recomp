@@ -2058,6 +2058,8 @@ uint32_t s_deferred_self_stop_uid;
 uint32_t s_deferred_self_stop_thread_uid;
 static void hle_module_thread_exit(uint32_t uid);
 uint32_t s_loadexec_boot_uid;
+/* The guest path of the program the last LoadExec booted; empty while the boot program runs. */
+char s_loadexec_program_path[256];
 
 LoadedModule *find_loaded_module(uint32_t uid) {
     for (int i = 0; i < s_nloaded_modules; i++) {
@@ -4020,10 +4022,6 @@ static void hle_register_launch_sweep_blocker_handlers(void) {
 static void hle_register_unregistered_import_batch(void) {
     hle_register_unregistered_import_kernel_time_1();
     hle_register_unregistered_import_kernel_thread_1();
-    /* scePower_469989ad (0x469989ad) has no public name in the sources this project may consult, so
-     * it is refused under its synthetic name rather than given a guessed one. Its contract needs a
-     * named source and a probe before it can be modelled. */
-    hle_register_unregistered_import_power();
     /* sceKernelReferSystemStatus: measured for the bytes written and the size field; see h_ReferSystemStatus. */
     hle_register_unregistered_import_kernel_thread_2();
     /* VTimer lifecycle and query surface (measured; see the VTimer block above). */
@@ -4124,6 +4122,7 @@ void sr_hle_init(void) {
 #ifdef SR_MPEG_MEDIA_SELFTEST
     hle_register_mpeg_ycbcr_handlers();
     hle_register_mpeg_avc_decode_handler();
+    hle_register_mpeg_userdata_handlers();
     /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
      * so the guest getter and the A/V presentation boundaries are reachable from a
      * production-path test (issue #279). */
@@ -4134,6 +4133,9 @@ void sr_hle_init(void) {
     hle_register_display_setframebuf_handler();
     hle_register_regular_audio_handlers();
     hle_register_output2_audio_handlers();
+    /* The sceAtrac family, so the fixture's RIFF-header mutation stage reaches the
+     * production track parser and stream calls (#969). */
+    hle_register_atrac_handlers();
 #else
     hle_fd_init();
     g_callcount = getenv("SR_CALLCOUNT") ? 1 : 0;
@@ -4223,7 +4225,6 @@ void sr_hle_init(void) {
     hle_register_psmf_player_handlers();
     /* sceLibFont: synchronized handles backed by parsed firmware/user PGFs. */
     hle_register_font_handlers();
-    hle_register_init_umd();
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
     hle_register_kernel_module_handlers();
     /* IoFileMgrForUser: file IO from the ISO. */
@@ -4537,6 +4538,7 @@ int sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
     mod->start_entry_ran = 1;
     mark_module_started(mod->module_start);
     s_loadexec_boot_uid = uid;
+    snprintf(s_loadexec_program_path, sizeof(s_loadexec_program_path), "%s", guest_path);
     *entry_out = mod->module_start;
     *gp_out = mod->gp;
     return 1;

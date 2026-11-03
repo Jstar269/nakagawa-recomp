@@ -14,6 +14,8 @@
 #include "nk_input_profile.h"
 #include "nk_platform.h"
 #include "prx_loader.h"
+#include "pgf_api.h"
+#include "archive_vfs.h"
 #include "nk_psp_aes.h"
 #include "nk_psp_container.h"
 #include "nk_psp_ec.h"
@@ -31,7 +33,9 @@
 #endif
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,6 +92,10 @@ static inline uint64_t fuzz_rand64(void) {
 
 static inline uint32_t fuzz_rand32(void) {
     return (uint32_t)fuzz_rand64();
+}
+
+static uint32_t fuzz_pick(uint32_t low, uint32_t high) {
+    return low + fuzz_rand32() % (high - low + 1u);
 }
 
 static void write_file_bytes(const char *path, const void *data, size_t size) {
@@ -1341,6 +1349,222 @@ static void fuzz_sha_file(const char *path, char out[65]) {
     fuzz_sha_finish(&ctx, out);
 }
 
+/* JSON-aware mutation for the package stage (#969). Byte mutation of these documents
+ * almost never survives the parser and the completion manifest's artifact digests, so
+ * the stage edits the parsed shape instead: it replaces, removes, duplicates or swaps
+ * a member or value, or inserts whitespace, on a document that stays well formed, and
+ * then re-records the artifact digests, so each input reaches the field checks. */
+#define FUZZ_JSON_MAX_SPANS 512u
+
+typedef struct {
+    size_t start;        /* first byte of the value */
+    size_t end;          /* one past its last byte */
+    size_t member_start; /* the key's opening quote, or SIZE_MAX outside an object */
+} FuzzJsonSpan;
+
+typedef struct {
+    const char *text;
+    size_t size;
+    size_t pos;
+    FuzzJsonSpan spans[FUZZ_JSON_MAX_SPANS];
+    size_t count;
+} FuzzJsonScan;
+
+static void fuzz_json_ws(FuzzJsonScan *s) {
+    while (s->pos < s->size && (s->text[s->pos] == ' ' || s->text[s->pos] == '\t' ||
+                                s->text[s->pos] == '\r' || s->text[s->pos] == '\n')) {
+        s->pos++;
+    }
+}
+
+static bool fuzz_json_string(FuzzJsonScan *s) {
+    if (s->pos >= s->size || s->text[s->pos] != '"') return false;
+    s->pos++;
+    while (s->pos < s->size && s->text[s->pos] != '"') {
+        if (s->text[s->pos] == '\\') s->pos++;
+        s->pos++;
+    }
+    if (s->pos >= s->size) return false;
+    s->pos++;
+    return true;
+}
+
+static bool fuzz_json_value(FuzzJsonScan *s, size_t member_start, unsigned depth) {
+    fuzz_json_ws(s);
+    if (s->pos >= s->size || depth > 32u) return false;
+    size_t start = s->pos;
+    char c = s->text[s->pos];
+    if (c == '{' || c == '[') {
+        char close = c == '{' ? '}' : ']';
+        s->pos++;
+        fuzz_json_ws(s);
+        if (s->pos < s->size && s->text[s->pos] == close) {
+            s->pos++;
+        } else {
+            for (;;) {
+                size_t key = SIZE_MAX;
+                if (c == '{') {
+                    fuzz_json_ws(s);
+                    key = s->pos;
+                    if (!fuzz_json_string(s)) return false;
+                    fuzz_json_ws(s);
+                    if (s->pos >= s->size || s->text[s->pos] != ':') return false;
+                    s->pos++;
+                }
+                if (!fuzz_json_value(s, key, depth + 1u)) return false;
+                fuzz_json_ws(s);
+                if (s->pos >= s->size) return false;
+                if (s->text[s->pos] == ',') { s->pos++; continue; }
+                if (s->text[s->pos] == close) { s->pos++; break; }
+                return false;
+            }
+        }
+    } else if (c == '"') {
+        if (!fuzz_json_string(s)) return false;
+    } else {
+        while (s->pos < s->size && strchr(",]} \t\r\n", s->text[s->pos]) == NULL &&
+               s->text[s->pos] != '\0') {
+            s->pos++;
+        }
+        if (s->pos == start) return false;
+    }
+    if (s->count < FUZZ_JSON_MAX_SPANS) {
+        FuzzJsonSpan *span = &s->spans[s->count++];
+        span->start = start;
+        span->end = s->pos;
+        span->member_start = member_start;
+    }
+    return true;
+}
+
+/* Replace text[at, at + removed) with insert; false when the result would not fit. */
+static bool fuzz_json_splice(char *text, size_t *size, size_t cap, size_t at, size_t removed,
+                             const char *insert, size_t inserted) {
+    if (at > *size || removed > *size - at || *size - removed > cap - inserted) return false;
+    memmove(text + at + inserted, text + at + removed, *size - at - removed);
+    memcpy(text + at, insert, inserted);
+    *size = *size - removed + inserted;
+    return true;
+}
+
+static void mutate_fuzz_json(char *text, size_t *size, size_t cap) {
+    static FuzzJsonScan scan;
+    static const char *const values[] = {
+        "null", "true", "false", "0", "-1", "1", "2", "3", "4294967296", "1e999", "-0",
+        "0.5", "\"\"", "\"..\"", "\"../package.json\"", "\"/absolute\"", "\"C:\\\\x\"",
+        "\"0x00000000\"", "\"0xFFFFFFFF\"", "\"0x1\"", "\"\\u0000\"", "\"\\ud800\"",
+        "\"a/b\"", "\"a\\\\b\"", "{}", "[]", "[{}]", "[null]", "{\"\":0}",
+        "\"0000000000000000000000000000000000000000000000000000000000000000\"",
+        "\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"",
+        "\"synthetic-allegrex-v1\"", "\"EBOOT.BIN\"", "\"build-report.json\""
+    };
+    if (fuzz_rand32() % 8u == 0u) {
+        mutate_buffer((uint8_t *)text, size, cap);
+        return;
+    }
+    memset(&scan, 0, sizeof(scan));
+    scan.text = text;
+    scan.size = *size;
+    if (!fuzz_json_value(&scan, SIZE_MAX, 0u) || scan.count == 0u) {
+        mutate_buffer((uint8_t *)text, size, cap);
+        return;
+    }
+    /* The last span recorded is the root; mutate below it. */
+    size_t inner = scan.count > 1u ? scan.count - 1u : scan.count;
+    const FuzzJsonSpan span = scan.spans[fuzz_rand32() % inner];
+    char copy[1024];
+    switch (fuzz_rand32() % 6u) {
+    case 0: { /* replace a value */
+        const char *value = values[fuzz_rand32() % (sizeof(values) / sizeof(values[0]))];
+        (void)fuzz_json_splice(text, size, cap, span.start, span.end - span.start,
+                               value, strlen(value));
+        break;
+    }
+    case 1: { /* remove a member, with the comma that separated it */
+        if (span.member_start == SIZE_MAX) break;
+        size_t from = span.member_start, to = span.end;
+        size_t after = to;
+        while (after < *size && strchr(" \t\r\n", text[after]) && text[after]) after++;
+        if (after < *size && text[after] == ',') {
+            to = after + 1u;
+        } else {
+            size_t before = from;
+            while (before > 0u && strchr(" \t\r\n", text[before - 1u]) && text[before - 1u]) before--;
+            if (before > 0u && text[before - 1u] == ',') from = before - 1u;
+        }
+        (void)fuzz_json_splice(text, size, cap, from, to - from, "", 0u);
+        break;
+    }
+    case 2: { /* duplicate a member (the later copy is the one a last-wins parser keeps) */
+        if (span.member_start == SIZE_MAX) break;
+        size_t length = span.end - span.member_start;
+        if (length + 1u > sizeof(copy)) break;
+        memcpy(copy, text + span.member_start, length);
+        copy[length] = ',';
+        (void)fuzz_json_splice(text, size, cap, span.member_start, 0u, copy, length + 1u);
+        break;
+    }
+    case 3: { /* put another value of the document in this one's place */
+        const FuzzJsonSpan other = scan.spans[fuzz_rand32() % inner];
+        size_t length = other.end - other.start;
+        if (length > sizeof(copy)) break;
+        memcpy(copy, text + other.start, length);
+        (void)fuzz_json_splice(text, size, cap, span.start, span.end - span.start, copy, length);
+        break;
+    }
+    case 4: { /* whitespace before a value: the document means the same */
+        static const char *const spaces[] = { " ", "\n", "\t", "  \r\n" };
+        const char *ws = spaces[fuzz_rand32() % 4u];
+        (void)fuzz_json_splice(text, size, cap, span.start, 0u, ws, strlen(ws));
+        break;
+    }
+    default: { /* change one character inside a string or number value */
+        if (span.end - span.start < 3u) break;
+        size_t at = span.start + 1u + fuzz_rand32() % (span.end - span.start - 2u);
+        static const char swaps[] = "0129afAF./\\-_ x";
+        text[at] = swaps[fuzz_rand32() % (sizeof(swaps) - 1u)];
+        break;
+    }
+    }
+}
+
+/* Distinct refusal reasons seen, to show how far into validation the inputs reach. */
+#define FUZZ_REASON_SLOTS 256u
+typedef struct {
+    char reasons[FUZZ_REASON_SLOTS][72];
+    unsigned count;
+} FuzzReasonSet;
+
+static void fuzz_reason_note(FuzzReasonSet *set, const char *reason) {
+    char key[72];
+    snprintf(key, sizeof(key), "%s", reason);
+    for (unsigned i = 0; i < set->count; i++) {
+        if (strcmp(set->reasons[i], key) == 0) return;
+    }
+    if (set->count < FUZZ_REASON_SLOTS) snprintf(set->reasons[set->count++], 72, "%s", key);
+}
+
+/* The completion manifest for the package and report on disk now, with their digests. */
+static int fuzz_package_completion(char *out, size_t cap, const char *package_path,
+                                   const char *report_path, const char *cache_key_json,
+                                   const char *identity_json, const char *executable_name,
+                                   const char *fixture_sha) {
+    char package_hash[65], report_hash[65];
+    fuzz_sha_file(package_path, package_hash);
+    fuzz_sha_file(report_path, report_hash);
+    int length = snprintf(out, cap,
+        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":2,"
+        "\"status\":\"complete\",\"cache_key\":%s,\"title_input_identity\":%s,\"artifacts\":["
+        "{\"path\":\"package.json\",\"sha256\":\"%s\"},"
+        "{\"path\":\"build-report.json\",\"sha256\":\"%s\"},"
+        "{\"path\":\"%s\",\"sha256\":\"%s\"},"
+        "{\"path\":\"synthetic-allegrex-v1_image.bin\",\"sha256\":\"%s\"}]}\n",
+        cache_key_json, identity_json, package_hash, report_hash, executable_name,
+        fixture_sha, fixture_sha);
+    assert(length > 0 && (size_t)length < cap);
+    return length;
+}
+
 static void test_fuzz_package(unsigned iters) {
     static const char fixture_sha[] =
         "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
@@ -1478,21 +1702,11 @@ static void test_fuzz_package(unsigned iters) {
     assert(package_length > 0 && (size_t)package_length < sizeof(package_json));
     write_file_bytes(package_path, package_json, (size_t)package_length);
     write_file_bytes(report_path, report_json, (size_t)report_length);
-    char package_hash[65], report_hash[65];
-    fuzz_sha_file(package_path, package_hash);
-    fuzz_sha_file(report_path, report_hash);
     snprintf(completion_path, sizeof(completion_path), "%s%ccompletion-manifest.json",
              package_dir, nk_platform_path_separator());
-    int completion_length = snprintf(completion_json, sizeof(completion_json),
-        "{\"format\":\"nakagawa-aot-cache-completion\",\"schema_version\":2,"
-        "\"status\":\"complete\",\"cache_key\":%s,\"title_input_identity\":%s,\"artifacts\":["
-        "{\"path\":\"package.json\",\"sha256\":\"%s\"},"
-        "{\"path\":\"build-report.json\",\"sha256\":\"%s\"},"
-        "{\"path\":\"%s\",\"sha256\":\"%s\"},"
-        "{\"path\":\"synthetic-allegrex-v1_image.bin\",\"sha256\":\"%s\"}]}\n",
-        cache_key_json, identity_json, package_hash, report_hash, executable_name,
-        fixture_sha, fixture_sha);
-    assert(completion_length > 0 && (size_t)completion_length < sizeof(completion_json));
+    int completion_length = fuzz_package_completion(
+        completion_json, sizeof(completion_json), package_path, report_path, cache_key_json,
+        identity_json, executable_name, fixture_sha);
     write_file_bytes(completion_path, completion_json, (size_t)completion_length);
 
     NkRuntimePackageInfo info;
@@ -1506,22 +1720,37 @@ static void test_fuzz_package(unsigned iters) {
     assert(initial_status == NK_RUNTIME_PACKAGE_OK);
     assert(info.package_root[0] != '\0');
 
-    uint8_t mutated[4096];
+    /* Each input changes the package, the build report or the completion manifest; the
+     * other two stay valid, and the manifest's artifact digests are re-recorded for the
+     * changed file, so an input is judged on its fields. */
+    static char mutated[12288];
+    static FuzzReasonSet reasons;
+    memset(&reasons, 0, sizeof(reasons));
     unsigned accepted = 0;
     for (unsigned i = 0; i < iters; i++) {
-        bool mutate_package = (i & 1u) == 0;
-        const char *seed = mutate_package ? package_json : report_json;
-        size_t seed_size = mutate_package ? (size_t)package_length : (size_t)report_length;
-        const char *path = mutate_package ? package_path : report_path;
-        const char *valid_json = mutate_package ? report_json : package_json;
-        const char *valid_path = mutate_package ? report_path : package_path;
-        size_t valid_size = mutate_package ? (size_t)report_length : (size_t)package_length;
-
-        memcpy(mutated, seed, seed_size);
-        size_t cur_size = seed_size;
-        mutate_buffer(mutated, &cur_size, sizeof(mutated));
-        write_file_bytes(path, mutated, cur_size);
-        write_file_bytes(valid_path, valid_json, valid_size);
+        unsigned target = i % 8u == 7u ? 2u : (i & 1u);
+        write_file_bytes(package_path, package_json, (size_t)package_length);
+        write_file_bytes(report_path, report_json, (size_t)report_length);
+        if (target < 2u) {
+            const char *seed = target == 0u ? package_json : report_json;
+            size_t cur_size = target == 0u ? (size_t)package_length : (size_t)report_length;
+            memcpy(mutated, seed, cur_size);
+            for (unsigned c = fuzz_pick(1u, 2u); c > 0u; c--) {
+                mutate_fuzz_json(mutated, &cur_size, sizeof(mutated));
+            }
+            write_file_bytes(target == 0u ? package_path : report_path, mutated, cur_size);
+        }
+        completion_length = fuzz_package_completion(
+            completion_json, sizeof(completion_json), package_path, report_path, cache_key_json,
+            identity_json, executable_name, fixture_sha);
+        if (target == 2u) {
+            size_t cur_size = (size_t)completion_length;
+            memcpy(mutated, completion_json, cur_size);
+            mutate_fuzz_json(mutated, &cur_size, sizeof(mutated));
+            write_file_bytes(completion_path, mutated, cur_size);
+        } else {
+            write_file_bytes(completion_path, completion_json, (size_t)completion_length);
+        }
 
         memset(&info, 0xA5, sizeof(info));
         NkRuntimePackageStatus status = nk_title_manifest_validate_aot_package(
@@ -1534,6 +1763,10 @@ static void test_fuzz_package(unsigned iters) {
             assert(info.package_root[0] == '\0');
             assert(info.executable_path[0] == '\0');
             assert(info.image_path[0] == '\0');
+            fuzz_reason_note(&reasons, reason);
+            if (getenv("FUZZ_PACKAGE_REASONS")) {
+                fprintf(stderr, "[FUZZ] package refusal: %s\n", reason);
+            }
         }
     }
 
@@ -1542,7 +1775,8 @@ static void test_fuzz_package(unsigned iters) {
     remove(completion_path);
     remove(executable_path);
     remove(image_path);
-    printf("[FUZZ] Package v2 JSON completed: %u/%u accepted, 0 crashes\n", accepted, iters);
+    printf("[FUZZ] Package v2 JSON completed: %u/%u accepted, %u distinct refusal reasons, "
+           "0 crashes\n", accepted, iters, reasons.count);
     fflush(stdout);
 }
 
@@ -3002,6 +3236,797 @@ static void test_fuzz_npumdimg(unsigned iters) {
     fflush(stdout);
 }
 
+/* -----------------------------------------------------------------------------
+ * Guest arena for the stages whose parsers write guest memory (#969)
+ *
+ * sr_inrange_n() accepts guest physical [0, 0x0c000000), so the arena covers all of
+ * it, exactly as the runtime allocates it: any span a reader validates stays inside
+ * the allocation, and a write outside the span it validated is caught by the guard
+ * bytes the stage checks, not by luck.
+ * -------------------------------------------------------------------------- */
+extern uint8_t *g_mem; /* nk_pgf_host.c: NULL unless a stage installs the arena */
+
+#define FUZZ_GUEST_PHYS_BYTES 0x0c000000u
+static uint8_t *s_fuzz_guest_arena;
+
+static void fuzz_guest_install(void) {
+    s_fuzz_guest_arena = (uint8_t *)calloc(1u, FUZZ_GUEST_PHYS_BYTES);
+    assert(s_fuzz_guest_arena);
+    g_mem = s_fuzz_guest_arena + 0x08000000u;
+}
+
+static void fuzz_guest_remove(void) {
+    g_mem = NULL;
+    free(s_fuzz_guest_arena);
+    s_fuzz_guest_arena = NULL;
+}
+
+/* Host byte of a guest address outside the VRAM aperture (RAM and its aliases). */
+static uint8_t *fuzz_guest(uint32_t address) {
+    return s_fuzz_guest_arena + (address & 0x1FFFFFFFu);
+}
+
+/* -----------------------------------------------------------------------------
+ * PGF font images (#969)
+ *
+ * The builder emits a font the reader accepts, with a random shape: revision and
+ * header size, a sparse code span, metric tables, indexed and inline metric groups,
+ * shadows, a composite glyph and random bitmap nibbles. Each mutation then changes one
+ * structural field (a count, a bit width, a record field, a pointer, a section edge),
+ * so the reader is driven past its header checks into the glyph walk, and accepted
+ * fonts are drawn into guarded guest buffers.
+ * -------------------------------------------------------------------------- */
+#define FUZZ_PGF_CAP 16384u
+#define FUZZ_PGF_MAX_GLYPHS 6u
+#define FUZZ_PGF_MAX_SPAN (FUZZ_PGF_MAX_GLYPHS + 4u)
+
+typedef struct {
+    uint32_t first_code;
+    uint32_t code_span;
+    uint32_t glyph_count;
+    uint32_t char_map_bits;
+    uint32_t char_pointer_bits;
+    size_t char_map_offset;
+    size_t char_pointer_offset;
+    size_t glyph_data_offset;
+    size_t record_offset[FUZZ_PGF_MAX_GLYPHS];
+    uint32_t glyph_code[FUZZ_PGF_MAX_GLYPHS];
+    size_t section_end[8];
+    unsigned section_count;
+} FuzzPgfLayout;
+
+static void fuzz_pgf_bits(uint8_t *bytes, size_t byte_count, uint64_t bit_offset,
+                          uint32_t bits, uint32_t value) {
+    for (uint32_t bit = 0; bit < bits; bit++) {
+        uint64_t pos = bit_offset + bit;
+        size_t byte = (size_t)(pos / 8u);
+        uint8_t mask = (uint8_t)(1u << (pos % 8u));
+        if (byte >= byte_count) return;
+        if (bit < 32u && ((value >> bit) & 1u) != 0u) bytes[byte] |= mask;
+        else bytes[byte] &= (uint8_t)~mask;
+    }
+}
+
+static size_t fuzz_pgf_packed(uint32_t count, uint32_t bits) {
+    return (size_t)((((uint64_t)count * bits) + 31u) / 32u * 4u);
+}
+
+/* A metric-table index for a group: an entry of the table, or 255 ("no entry"). */
+static uint8_t fuzz_pgf_index(uint8_t count) {
+    if (count == 0u || fuzz_rand32() % 8u == 0u) return 0xFFu;
+    return (uint8_t)(fuzz_rand32() % count);
+}
+
+static size_t build_fuzz_pgf(uint8_t *out, size_t cap, FuzzPgfLayout *layout) {
+    assert(cap >= FUZZ_PGF_CAP);
+    memset(out, 0, FUZZ_PGF_CAP);
+    memset(layout, 0, sizeof(*layout));
+
+    unsigned revision_pick = fuzz_rand32() % 8u;
+    uint32_t revision = revision_pick < 5u ? 2u : revision_pick == 5u ? 3u :
+                        revision_pick == 6u ? 0u : 1u;
+    bool long_header = revision == 3u && (fuzz_rand32() & 1u) != 0u;
+    uint32_t header_size = long_header ? 412u : 392u;
+    uint32_t glyphs = fuzz_pick(1u, FUZZ_PGF_MAX_GLYPHS);
+    uint32_t span = glyphs + fuzz_pick(0u, FUZZ_PGF_MAX_SPAN - glyphs);
+    /* A third of the fonts start at or just below 'A' so the Latin probe sees them. */
+    uint32_t first = fuzz_rand32() % 3u == 0u ? 0x41u - fuzz_pick(0u, 2u) : fuzz_pick(0x20u, 0x3000u);
+    uint32_t map_bits = 1u;
+    while (((1u << map_bits) - 1u) < glyphs) map_bits++;
+    map_bits += fuzz_pick(0u, 3u);
+    uint32_t sentinel = (1u << map_bits) - 1u;
+    uint32_t pointer_bits = fuzz_pick(13u, 20u);
+    uint8_t metric_counts[4];
+    for (unsigned t = 0; t < 4u; t++) metric_counts[t] = (uint8_t)fuzz_pick(0u, 4u);
+    uint32_t shadow_count = fuzz_pick(0u, 3u);
+    uint32_t rev3_counts[2] = { 0u, 0u };
+    if (long_header) {
+        rev3_counts[0] = fuzz_rand32() & 1u;
+        rev3_counts[1] = fuzz_pick(0u, 2u);
+    }
+
+    /* Glyph ids land on random code indices; the rest of the span misses (the all-ones
+     * sentinel, or a value at or above the glyph count). */
+    uint32_t map_values[FUZZ_PGF_MAX_SPAN];
+    uint32_t code_of_glyph[FUZZ_PGF_MAX_GLYPHS];
+    uint32_t order[FUZZ_PGF_MAX_SPAN];
+    for (uint32_t i = 0; i < span; i++) order[i] = i;
+    for (uint32_t i = span; i > 1u; i--) {
+        uint32_t j = fuzz_rand32() % i;
+        uint32_t t = order[i - 1u];
+        order[i - 1u] = order[j];
+        order[j] = t;
+    }
+    for (uint32_t i = 0; i < span; i++) {
+        map_values[order[i]] = i < glyphs ? i :
+            (sentinel > glyphs && (fuzz_rand32() & 1u)) ? fuzz_pick(glyphs, sentinel - 1u) : sentinel;
+        if (i < glyphs) code_of_glyph[i] = first + order[i];
+    }
+
+    uint8_t *h = out;
+    put16le(h + 2u, (uint16_t)header_size);
+    memcpy(h + 4u, "PGF0", 4u);
+    put32le(h + 8u, revision);
+    put32le(h + 0x10u, span);
+    put32le(h + 0x14u, glyphs);
+    put32le(h + 0x18u, map_bits);
+    put32le(h + 0x1cu, pointer_bits);
+    h[0x22u] = 4u;
+    put32le(h + 0x24u, 640u);
+    put32le(h + 0x28u, 1280u);
+    put32le(h + 0x2cu, 1920u);
+    put32le(h + 0x30u, 3840u);
+    memcpy(h + 0x35u, "Fuzz PGF", 8u);
+    put16le(h + 0xb6u, (uint16_t)first);
+    put16le(h + 0xb8u, (uint16_t)(first + span - 1u));
+    for (unsigned field = 0; field < 9u; field++) {
+        put32le(h + 0xd4u + field * 4u, fuzz_pick(0u, 1024u));
+    }
+    put16le(h + 0xfcu, 12u);
+    put16le(h + 0xfeu, 13u);
+    for (unsigned t = 0; t < 4u; t++) h[0x102u + t] = metric_counts[t];
+    put32le(h + 0x16cu, shadow_count);
+    put32le(h + 0x170u, shadow_count ? 16u : 0u);
+    if (long_header) {
+        put32le(h + 0x188u, 7u);
+        put16le(h + 0x18cu, (uint16_t)rev3_counts[0]);
+        put32le(h + 0x190u, 9u);
+        put16le(h + 0x194u, (uint16_t)rev3_counts[1]);
+    }
+
+    size_t cursor = header_size;
+    layout->section_end[layout->section_count++] = cursor;
+    for (unsigned t = 0; t < 4u; t++) {
+        for (unsigned e = 0; e < metric_counts[t]; e++) {
+            put32le(out + cursor, (uint32_t)((int32_t)fuzz_pick(0u, 2048u) - 1024));
+            put32le(out + cursor + 4u, (uint32_t)((int32_t)fuzz_pick(0u, 2048u) - 1024));
+            cursor += 8u;
+        }
+    }
+    layout->section_end[layout->section_count++] = cursor;
+    for (uint32_t s = 0; s < shadow_count; s++) {
+        uint32_t code = fuzz_rand32() % 3u == 0u ? 0u : code_of_glyph[fuzz_rand32() % glyphs];
+        put16le(out + cursor + (size_t)s * 2u, (uint16_t)code);
+    }
+    cursor += fuzz_pgf_packed(shadow_count, shadow_count ? 16u : 0u);
+    layout->section_end[layout->section_count++] = cursor;
+    if (long_header) {
+        size_t bytes = ((size_t)rev3_counts[0] + rev3_counts[1]) * 4u;
+        for (size_t b = 0; b < bytes; b++) out[cursor + b] = (uint8_t)fuzz_rand32();
+        if (rev3_counts[0] != 0u) {
+            /* One (start, length) subcharmap range covering the whole span. */
+            put16le(out + cursor, (uint16_t)first);
+            put16le(out + cursor + 2u, (uint16_t)span);
+        }
+        cursor += bytes;
+        layout->section_end[layout->section_count++] = cursor;
+    }
+    layout->char_map_offset = cursor;
+    size_t map_length = fuzz_pgf_packed(span, map_bits);
+    for (uint32_t i = 0; i < span; i++) {
+        fuzz_pgf_bits(out + cursor, map_length, (uint64_t)i * map_bits, map_bits, map_values[i]);
+    }
+    cursor += map_length;
+    layout->section_end[layout->section_count++] = cursor;
+    layout->char_pointer_offset = cursor;
+    size_t pointer_length = fuzz_pgf_packed(glyphs, pointer_bits);
+    cursor += pointer_length;
+    layout->section_end[layout->section_count++] = cursor;
+    layout->glyph_data_offset = cursor;
+
+    /* Glyph 0 is always a drawable raster, so a composite always has a leaf to name. */
+    bool composite_last = glyphs >= 2u && fuzz_rand32() % 3u == 0u;
+    for (uint32_t g = 0; g < glyphs; g++) {
+        while ((cursor & 3u) != 0u) cursor++;
+        size_t record = cursor;
+        layout->record_offset[g] = record;
+        bool composite = composite_last && g == glyphs - 1u;
+        uint32_t row_order = composite ? 3u : (g == 0u ? fuzz_pick(1u, 2u) : fuzz_pick(0u, 2u));
+        uint32_t width = fuzz_rand32() % 16u == 0u ? fuzz_pick(1u, 127u) : fuzz_pick(1u, 24u);
+        uint32_t height = fuzz_rand32() % 16u == 0u ? fuzz_pick(1u, 127u) : fuzz_pick(1u, 24u);
+        if (g != 0u && fuzz_rand32() % 8u == 0u) width = 0u;
+        uint32_t flags = fuzz_rand32() & 7u;
+        uint32_t shadow_id = shadow_count && (fuzz_rand32() & 1u) ? fuzz_pick(1u, shadow_count) : 0u;
+        size_t record_size = 9u;
+        for (unsigned group = 0; group < 3u; group++) {
+            record_size += (flags & (1u << group)) ? 1u : 8u;
+        }
+        size_t payload = composite ? 6u : fuzz_pick(0u, (width * height + 1u) / 2u + 8u);
+        if (record + record_size + payload + 8u > FUZZ_PGF_CAP) payload = 0u;
+        uint32_t shadow_offset = shadow_id ? (uint32_t)(record_size + payload) : 0u;
+        size_t bits_size = record_size;
+        fuzz_pgf_bits(out + record, bits_size, 0u, 14u, shadow_offset);
+        fuzz_pgf_bits(out + record, bits_size, 14u, 7u, width);
+        fuzz_pgf_bits(out + record, bits_size, 21u, 7u, height);
+        fuzz_pgf_bits(out + record, bits_size, 28u, 7u, fuzz_rand32() & 0x7fu);
+        fuzz_pgf_bits(out + record, bits_size, 35u, 7u, fuzz_rand32() & 0x7fu);
+        fuzz_pgf_bits(out + record, bits_size, 42u, 2u, row_order);
+        fuzz_pgf_bits(out + record, bits_size, 44u, 3u, flags);
+        fuzz_pgf_bits(out + record, bits_size, 47u, 1u, 1u);
+        fuzz_pgf_bits(out + record, bits_size, 55u, 9u, shadow_id);
+        size_t at = record + 8u;
+        for (unsigned group = 0; group < 3u; group++) {
+            if (flags & (1u << group)) {
+                out[at++] = fuzz_pgf_index(metric_counts[group]);
+            } else {
+                put32le(out + at, (uint32_t)((int32_t)fuzz_pick(0u, 8192u) - 4096));
+                put32le(out + at + 4u, (uint32_t)((int32_t)fuzz_pick(0u, 8192u) - 4096));
+                at += 8u;
+            }
+        }
+        out[at++] = fuzz_pgf_index(metric_counts[3]);
+        assert(at == record + record_size);
+        if (composite) {
+            unsigned named = fuzz_pick(0u, 2u);
+            for (unsigned part = 0; part < 3u; part++) {
+                bool name = part == named || (fuzz_rand32() & 1u);
+                put16le(out + at + part * 2u, (uint16_t)(name ? code_of_glyph[0] : 0u));
+            }
+        } else {
+            for (size_t b = 0; b < payload; b++) out[at + b] = (uint8_t)fuzz_rand32();
+        }
+        at += payload;
+        if (shadow_id) {
+            fuzz_pgf_bits(out + at, 6u, 42u, 2u, fuzz_pick(0u, 2u));
+            at += 6u;
+        }
+        cursor = at;
+        fuzz_pgf_bits(out + layout->char_pointer_offset, pointer_length,
+                      (uint64_t)g * pointer_bits, pointer_bits,
+                      (uint32_t)((record - layout->glyph_data_offset) / 4u));
+    }
+    layout->section_end[layout->section_count++] = cursor;
+    layout->first_code = first;
+    layout->code_span = span;
+    layout->glyph_count = glyphs;
+    layout->char_map_bits = map_bits;
+    layout->char_pointer_bits = pointer_bits;
+    memcpy(layout->glyph_code, code_of_glyph, sizeof(code_of_glyph[0]) * glyphs);
+    assert(cursor <= FUZZ_PGF_CAP);
+    return cursor;
+}
+
+/* One structural change: a header field, a glyph record field, a map or pointer entry,
+ * a cut at a section edge, or a generic byte mutation. */
+static void mutate_fuzz_pgf(uint8_t *font, size_t *size, size_t cap, const FuzzPgfLayout *layout) {
+    static const uint32_t values[] = {
+        0u, 1u, 2u, 3u, 4u, 7u, 8u, 15u, 16u, 17u, 31u, 32u, 33u, 127u, 128u, 255u, 256u,
+        392u, 412u, 0x7fffu, 0x8000u, 0xffffu, 0x10000u, 1048576u, 1048577u,
+        0x7fffffffu, 0x80000000u, 0xffffffffu
+    };
+    uint32_t value = values[fuzz_rand32() % (sizeof(values) / sizeof(values[0]))];
+    if (fuzz_rand32() & 1u) value = fuzz_rand32() % 64u;
+    switch (fuzz_rand32() % 6u) {
+    case 0: {
+        static const uint16_t u32_fields[] = { 0x08u, 0x0cu, 0x10u, 0x14u, 0x18u, 0x1cu,
+                                               0x16cu, 0x170u, 0x188u, 0x190u };
+        static const uint16_t u16_fields[] = { 0x00u, 0x02u, 0xb6u, 0xb8u, 0x18cu, 0x194u };
+        unsigned pick = fuzz_rand32() % 20u;
+        if (pick < 10u) put32le(font + u32_fields[pick], value);
+        else if (pick < 16u) put16le(font + u16_fields[pick - 10u], (uint16_t)value);
+        else font[0x102u + fuzz_rand32() % 4u] = (uint8_t)value;
+        break;
+    }
+    case 1: {
+        static const uint8_t field_at[] = { 0u, 14u, 21u, 28u, 35u, 42u, 44u, 55u };
+        static const uint8_t field_bits[] = { 14u, 7u, 7u, 7u, 7u, 2u, 4u, 9u };
+        uint32_t g = fuzz_rand32() % layout->glyph_count;
+        size_t record = layout->record_offset[g];
+        if (record + 16u > *size) break;
+        if (fuzz_rand32() % 3u == 0u) {
+            font[record + 8u + fuzz_rand32() % 8u] = (uint8_t)value;
+        } else {
+            unsigned f = fuzz_rand32() % 8u;
+            fuzz_pgf_bits(font + record, 8u, field_at[f], field_bits[f], value);
+        }
+        break;
+    }
+    case 2: {
+        if (fuzz_rand32() & 1u) {
+            size_t length = layout->glyph_data_offset - layout->char_pointer_offset;
+            fuzz_pgf_bits(font + layout->char_pointer_offset, length,
+                          (uint64_t)(fuzz_rand32() % layout->glyph_count) * layout->char_pointer_bits,
+                          layout->char_pointer_bits, value);
+        } else {
+            size_t length = layout->char_pointer_offset - layout->char_map_offset;
+            fuzz_pgf_bits(font + layout->char_map_offset, length,
+                          (uint64_t)(fuzz_rand32() % layout->code_span) * layout->char_map_bits,
+                          layout->char_map_bits, value);
+        }
+        break;
+    }
+    case 3: {
+        size_t edge = layout->section_end[fuzz_rand32() % layout->section_count];
+        size_t cut = edge + fuzz_pick(0u, 8u);
+        cut = cut > 4u ? cut - 4u : 0u;
+        if (cut < *size) *size = cut;
+        break;
+    }
+    case 4:
+        mutate_buffer(font, size, cap);
+        break;
+    default: {
+        /* A shadow-map code or a composite part code. */
+        size_t at = layout->glyph_data_offset > 2u ? fuzz_rand32() % (*size - 1u) : 0u;
+        put16le(font + at, (uint16_t)(fuzz_rand32() & 1u ? layout->first_code +
+                                      fuzz_rand32() % (layout->code_span + 2u) : value));
+        break;
+    }
+    }
+}
+
+#define FUZZ_PGF_INFO 0x08100000u
+#define FUZZ_PGF_IMAGE 0x08100200u
+#define FUZZ_PGF_TARGET 0x08200000u
+#define FUZZ_PGF_GUARD 256u
+
+static int fuzz_pgf_code(const FuzzPgfLayout *layout) {
+    switch (fuzz_rand32() % 6u) {
+    case 0: return -1;
+    case 1: return (int)(fuzz_rand32() & 0xffffu);
+    case 2: return (int)(fuzz_rand32() | 0x80000000u);
+    case 3:
+        return (int)(layout->first_code + fuzz_rand32() % (layout->code_span + 4u)) - 2;
+    default:
+        return (int)layout->glyph_code[fuzz_rand32() % layout->glyph_count];
+    }
+}
+
+/* Draw into a guarded RAM target and check that no byte outside the rows the image
+ * record describes changed; other targets (VRAM views, aliases, the end of the arena)
+ * only have to stay inside what the reader validated. */
+static int fuzz_pgf_draw(const PGF *p, const FuzzPgfLayout *layout) {
+    /* Most records are drawable (a known format, a line wide enough for the width);
+     * the rest take any field values. */
+    bool plausible = fuzz_rand32() % 4u != 0u;
+    uint32_t format = plausible ? fuzz_pick(0u, 4u) : fuzz_rand32() % 8u;
+    uint16_t width = (uint16_t)(plausible ? fuzz_pick(1u, 160u) : fuzz_rand32());
+    uint16_t height = (uint16_t)(plausible ? fuzz_pick(1u, 160u) : fuzz_rand32());
+    static const uint8_t line_units[5] = { 1u, 1u, 2u, 6u, 8u }; /* half-bytes per pixel */
+    uint16_t bpl = (uint16_t)(plausible
+        ? ((uint32_t)width * line_units[format] + 1u) / 2u + fuzz_pick(0u, 8u)
+        : fuzz_rand32());
+    /* Positions are 26.6 fixed point; plausible ones overlap the buffer. */
+    int32_t x = plausible ? ((int32_t)fuzz_pick(0u, width + 4u) - 4) * 64 + (int32_t)(fuzz_rand32() % 64u)
+                          : (int32_t)fuzz_pick(0u, 64u * 200u) - 64 * 20;
+    int32_t y = plausible ? ((int32_t)fuzz_pick(0u, height + 4u) - 4) * 64 + (int32_t)(fuzz_rand32() % 64u)
+                          : (int32_t)fuzz_pick(0u, 64u * 200u) - 64 * 20;
+    static const uint32_t targets[] = {
+        FUZZ_PGF_TARGET, 0x04000000u, 0x04200000u + 0x40u, 0x04600000u, 0x44000100u,
+        0x0bfff000u, 0x0bffff00u, 0x00000000u, 0x88200000u
+    };
+    unsigned target_pick = fuzz_rand32() % 4u == 0u ? 1u + fuzz_rand32() % 8u : 0u;
+    uint32_t buffer = targets[target_pick];
+    uint8_t *record = fuzz_guest(FUZZ_PGF_IMAGE);
+    put32le(record, format);
+    put32le(record + 4u, (uint32_t)x);
+    put32le(record + 8u, (uint32_t)y);
+    put16le(record + 0x0cu, width);
+    put16le(record + 0x0eu, height);
+    put16le(record + 0x10u, bpl);
+    put16le(record + 0x12u, 0u);
+    put32le(record + 0x14u, buffer);
+
+    uint64_t extent = (uint64_t)height * bpl;
+    /* A record larger than the guarded window is still drawn, unguarded: the arena
+     * covers every span the reader can validate. */
+    bool guarded = target_pick == 0u && extent <= 0x00800000u;
+    uint8_t *base = fuzz_guest(FUZZ_PGF_TARGET);
+    if (guarded) {
+        memset(base - FUZZ_PGF_GUARD, 0xA5, (size_t)extent + 2u * FUZZ_PGF_GUARD);
+    }
+    int drawn = fuzz_rand32() & 1u
+        ? pgf_draw_glyph(p, fuzz_pgf_code(layout), fuzz_pgf_code(layout), FUZZ_PGF_IMAGE)
+        : pgf_draw_glyph_by_id(p, (int)fuzz_pick(0u, layout->glyph_count + 2u) - 1, FUZZ_PGF_IMAGE);
+    if (guarded) {
+        for (size_t i = 0; i < FUZZ_PGF_GUARD; i++) {
+            assert(base[-(ptrdiff_t)FUZZ_PGF_GUARD + (ptrdiff_t)i] == 0xA5u);
+            assert(base[(size_t)extent + i] == 0xA5u);
+        }
+    }
+    return drawn;
+}
+
+static void test_fuzz_pgf(unsigned iters) {
+    printf("[FUZZ] Testing PGF font reader and glyph drawing (%u iterations)...\n", iters);
+    fflush(stdout);
+    fuzz_guest_install();
+
+    uint8_t *font = (uint8_t *)malloc(FUZZ_PGF_CAP);
+    assert(font);
+    unsigned accepted = 0, drawn = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        FuzzPgfLayout layout;
+        size_t size = build_fuzz_pgf(font, FUZZ_PGF_CAP, &layout);
+        PgfVerdict verdict;
+        if (!pgf_validate_memory(font, size, &verdict)) {
+            fprintf(stderr, "[FUZZ] PGF seed %u refused (rule %d)\n", i, (int)verdict.refusal);
+            assert(0);
+        }
+        /* One seed in four is drawn as built; the rest take one to three changes. */
+        if (i % 4u != 0u) {
+            unsigned changes = fuzz_pick(1u, 3u);
+            for (unsigned c = 0; c < changes && size > 8u; c++) {
+                mutate_fuzz_pgf(font, &size, FUZZ_PGF_CAP, &layout);
+            }
+        }
+        int valid = pgf_validate_memory(font, size, &verdict);
+        PGF *p = pgf_open_memory(font, size);
+        /* The open path and the validator apply the same rules in the same order. */
+        assert((p != NULL) == (valid != 0));
+        if (!p) {
+            assert(verdict.refusal != PGF_REFUSE_NONE);
+            continue;
+        }
+        accepted++;
+        assert(verdict.refusal == PGF_REFUSE_NONE && verdict.glyph_count > 0u &&
+               verdict.first_glyph <= verdict.last_glyph);
+        pgf_get_font_info(p, FUZZ_PGF_INFO);
+        for (unsigned k = 0; k < 6u; k++) {
+            (void)pgf_has_char(p, fuzz_pgf_code(&layout));
+            (void)pgf_get_char_info(p, fuzz_pgf_code(&layout), fuzz_pgf_code(&layout),
+                                    FUZZ_PGF_INFO + 0x110u);
+            if (fuzz_pgf_draw(p, &layout)) drawn++;
+        }
+        pgf_close(p);
+    }
+    free(font);
+    fuzz_guest_remove();
+    printf("[FUZZ] PGF font completed: %u/%u accepted, %u glyphs drawn, 0 crashes\n",
+           accepted, iters, drawn);
+    fflush(stdout);
+}
+
+/* -----------------------------------------------------------------------------
+ * Archive VFS over XB mounts (#969)
+ *
+ * Several archives with several members each (nested directories, mixed case and
+ * Shift-JIS names) are mounted with variants and a small cache, and every lookup is
+ * checked against a model: the chosen member's folded key equals the query's, its
+ * variant follows the precedence rule, and the bytes read at any offset are that
+ * member's. Mutated archives that still mount are walked for crashes only.
+ * -------------------------------------------------------------------------- */
+#define FUZZ_VFS_MOUNTS 4u
+#define FUZZ_VFS_MEMBERS 5u
+#define FUZZ_VFS_PATH 64u
+
+typedef struct {
+    char path[FUZZ_VFS_PATH];
+    uint8_t payload[96];
+    size_t payload_len;
+} FuzzVfsMember;
+
+typedef struct {
+    FuzzVfsMember members[FUZZ_VFS_MEMBERS];
+    size_t member_count;
+    int variant;
+    bool mounted;
+} FuzzVfsMount;
+
+static FuzzByteBuffer make_xb_members(const FuzzVfsMember *members, size_t count, bool be) {
+    FuzzByteBuffer names = { 0 };
+    for (size_t i = 0; i < count; i++) {
+        size_t path_len = strlen(members[i].path);
+        uint8_t len_byte = (uint8_t)path_len;
+        uint8_t hash_byte = sjis_hash_byte((const uint8_t *)members[i].path, path_len);
+        uint8_t zero = 0;
+        bb_append(&names, &len_byte, 1);
+        bb_append(&names, &hash_byte, 1);
+        bb_append(&names, members[i].path, path_len);
+        bb_append(&names, &zero, 1);
+    }
+    FuzzByteBuffer string_sec = { 0 };
+    bb_u32(&string_sec, (uint32_t)names.size, be);
+    bb_u32(&string_sec, 0, be);
+    bb_append(&string_sec, names.data, names.size);
+    bb_pad4(&string_sec);
+    free(names.data);
+
+    size_t data_start = 8u + count * 8u + string_sec.size;
+    FuzzByteBuffer fst = { 0 };
+    FuzzByteBuffer body = { 0 };
+    for (size_t i = 0; i < count; i++) {
+        size_t offset = data_start + body.size;
+        assert((offset & 3u) == 0u);
+        bb_u32(&fst, (uint32_t)members[i].payload_len, be);
+        bb_u32(&fst, ((uint32_t)NK_XB_COMPRESSION_NONE << 28) | (uint32_t)(offset / 4u), be);
+        bb_append(&body, members[i].payload, members[i].payload_len);
+        bb_pad4(&body);
+    }
+    FuzzByteBuffer out = { 0 };
+    static const uint8_t sig[4] = { 0x78, 0x65, 0x00, 0x01 };
+    bb_append(&out, sig, 4);
+    bb_u32(&out, (uint32_t)count, be);
+    bb_append(&out, fst.data, fst.size);
+    bb_append(&out, string_sec.data, string_sec.size);
+    bb_append(&out, body.data, body.size);
+    free(fst.data);
+    free(string_sec.data);
+    free(body.data);
+    return out;
+}
+
+/* The archive key rule as archive_vfs.h states it: separators '/' or '\\', runs of them
+ * collapsed and leading ones dropped, ASCII letters folded to lower case byte by byte;
+ * an empty, "." or ".." component or a trailing separator has no key. */
+static bool fuzz_vfs_fold(const char *path, char *out, size_t cap) {
+    const char *p = path;
+    size_t n = 0, component = 0;
+    while (*p == '/' || *p == '\\') p++;
+    while (*p) {
+        if (*p == '/' || *p == '\\') {
+            size_t len = n - component;
+            if (len == 0u || (len == 1u && out[component] == '.') ||
+                (len == 2u && out[component] == '.' && out[component + 1u] == '.')) return false;
+            if (n + 1u >= cap) return false;
+            out[n++] = '/';
+            component = n;
+            while (*p == '/' || *p == '\\') p++;
+            continue;
+        }
+        char c = *p++;
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        if (n + 1u >= cap) return false;
+        out[n++] = c;
+    }
+    size_t len = n - component;
+    if (len == 0u || (len == 1u && out[component] == '.') ||
+        (len == 2u && out[component] == '.' && out[component + 1u] == '.')) return false;
+    out[n] = '\0';
+    return true;
+}
+
+static void fuzz_vfs_member_path(char *path, size_t cap) {
+    static const char *const components[] = {
+        "data", "Data", "MENU", "text", "Se", "bgm", "a", "B", "x.bin", "Font.PGF",
+        "\x83\x41",             /* katakana, trail byte 'A' */
+        "\x83\x61",             /* katakana, trail byte 'a' */
+        "\x95\x5c\x8e\xa6",     /* two kanji, the first with trail byte 0x5c */
+        "\x83\x5c" "a",         /* trail byte 0x5c inside a component */
+        "\x82\x60" "Z",         /* full-width letter, trail byte 0x60 */
+        "\x83\x5c"              /* one katakana whose trail byte is 0x5c */
+    };
+    size_t n = sizeof(components) / sizeof(components[0]);
+    unsigned depth = fuzz_pick(1u, 3u);
+    path[0] = '\0';
+    for (unsigned d = 0; d < depth; d++) {
+        const char *c = components[fuzz_rand32() % n];
+        if (strlen(path) + strlen(c) + 2u >= cap) break;
+        if (d) strcat(path, "/");
+        strcat(path, c);
+    }
+}
+
+/* A query for a stored path: letters flipped in case, separators turned to '\\' or
+ * doubled, and a leading separator. Its fold equals the stored path's. */
+static void fuzz_vfs_query(const char *path, char *out, size_t cap) {
+    size_t n = 0;
+    if (fuzz_rand32() & 1u) out[n++] = fuzz_rand32() & 1u ? '/' : '\\';
+    for (const char *p = path; *p && n + 3u < cap; p++) {
+        char c = *p;
+        if (c == '/') {
+            out[n++] = fuzz_rand32() & 1u ? '/' : '\\';
+            if (fuzz_rand32() % 4u == 0u) out[n++] = '/';
+            continue;
+        }
+        if (fuzz_rand32() & 1u) {
+            if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+            else if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        }
+        out[n++] = c;
+    }
+    out[n] = '\0';
+}
+
+typedef struct {
+    size_t mount;
+    size_t entry;
+} FuzzVfsRef;
+
+/* Check one lookup against the model: the member found carries the query's key, its
+ * variant is the one asked for (or, unqualified, the unqualified mount if any holds the
+ * key, else the lowest variant), and its bytes read back at random offsets. */
+static void fuzz_vfs_check_lookup(SrArchiveVfs *vfs, const FuzzVfsMount *mounts,
+                                  const size_t *mount_slot, size_t mount_count,
+                                  const char *query, int wanted) {
+    char key[FUZZ_VFS_PATH * 2u];
+    bool has_key = fuzz_vfs_fold(query, key, sizeof(key));
+    int best_variant = INT_MAX;
+    bool any = false;
+    for (size_t m = 0; m < mount_count; m++) {
+        if (!mounts[m].mounted) continue;
+        for (size_t e = 0; e < mounts[m].member_count; e++) {
+            char member_key[FUZZ_VFS_PATH * 2u];
+            if (!has_key || !fuzz_vfs_fold(mounts[m].members[e].path, member_key,
+                                           sizeof(member_key)) ||
+                strcmp(member_key, key) != 0) continue;
+            int v = mounts[m].variant;
+            if (wanted >= 0 && v != wanted) continue;
+            any = true;
+            if (v < best_variant) best_variant = v;
+        }
+    }
+    SrArchiveFile file;
+    int found = sr_archive_vfs_lookup(vfs, query, wanted == -2 ? SR_ARCHIVE_VARIANT_AUTO : wanted,
+                                      &file);
+    assert(found == (int)any);
+    if (!found) return;
+    size_t m = SIZE_MAX;
+    for (size_t i = 0; i < mount_count; i++) {
+        if (mounts[i].mounted && mount_slot[i] == file.mount_index) m = i;
+    }
+    assert(m != SIZE_MAX && file.entry_index < mounts[m].member_count);
+    const FuzzVfsMember *member = &mounts[m].members[file.entry_index];
+    char member_key[FUZZ_VFS_PATH * 2u];
+    assert(fuzz_vfs_fold(member->path, member_key, sizeof(member_key)) &&
+           strcmp(member_key, key) == 0);
+    assert(file.variant == mounts[m].variant && file.variant == best_variant);
+    assert(file.size == member->payload_len);
+    for (unsigned r = 0; r < 3u; r++) {
+        uint8_t out[128];
+        uint64_t offset = fuzz_pick(0u, (uint32_t)member->payload_len + 2u);
+        size_t want = fuzz_pick(0u, sizeof(out));
+        size_t got = SIZE_MAX;
+        assert(sr_archive_vfs_read(vfs, &file, offset, out, want, &got) == NK_OK);
+        size_t expect = offset >= member->payload_len ? 0u :
+                        member->payload_len - (size_t)offset < want ?
+                        member->payload_len - (size_t)offset : want;
+        assert(got == expect);
+        assert(got == 0u || memcmp(out, member->payload + offset, got) == 0);
+    }
+}
+
+static void fuzz_vfs_walk(SrArchiveVfs *vfs, const char *dir, int wanted) {
+    SrVfsDirList list;
+    sr_vfs_dirlist_init(&list);
+    int rc = sr_archive_vfs_list_dir(vfs, dir, wanted, &list);
+    assert(rc == 1 || rc == -1);
+    for (size_t i = 0; i < list.count; i++) {
+        assert(list.entries[i].name[0] != '\0');
+        assert(strlen(list.entries[i].name) < SR_VFS_NAME_MAX);
+    }
+    sr_vfs_dirlist_destroy(&list);
+}
+
+static void test_fuzz_archive_vfs(unsigned iters) {
+    printf("[FUZZ] Testing archive VFS mounts, lookups and reads (%u iterations)...\n", iters);
+    fflush(stdout);
+
+    unsigned mounted_total = 0, mutated_mounted = 0, lookups = 0, refused_names = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        FuzzVfsMount mounts[FUZZ_VFS_MOUNTS];
+        FuzzByteBuffer images[FUZZ_VFS_MOUNTS];
+        size_t mount_slot[FUZZ_VFS_MOUNTS];
+        size_t mount_count = fuzz_pick(1u, FUZZ_VFS_MOUNTS);
+        bool mutate = i % 3u == 2u;
+        bool be = (fuzz_rand32() & 1u) != 0u;
+        memset(mounts, 0, sizeof(mounts));
+
+        SrArchiveVfs vfs;
+        sr_archive_vfs_init(&vfs);
+        if (fuzz_rand32() & 1u) {
+            assert(sr_archive_vfs_configure(&vfs, fuzz_pick(0u, 256u), fuzz_pick(0u, 4u)));
+        }
+        size_t slot = 0;
+        for (size_t m = 0; m < mount_count; m++) {
+            FuzzVfsMount *mount = &mounts[m];
+            mount->variant = (int)fuzz_pick(0u, 3u) - 1;
+            mount->member_count = fuzz_pick(1u, FUZZ_VFS_MEMBERS);
+            for (size_t e = 0; e < mount->member_count; e++) {
+                FuzzVfsMember *member = &mount->members[e];
+                bool duplicate;
+                do {
+                    fuzz_vfs_member_path(member->path, sizeof(member->path));
+                    duplicate = false;
+                    char a[FUZZ_VFS_PATH * 2u], b[FUZZ_VFS_PATH * 2u];
+                    for (size_t o = 0; o < e; o++) {
+                        if (strcmp(mount->members[o].path, member->path) == 0 ||
+                            (fuzz_vfs_fold(mount->members[o].path, a, sizeof(a)) &&
+                             fuzz_vfs_fold(member->path, b, sizeof(b)) && strcmp(a, b) == 0)) {
+                            duplicate = true;
+                        }
+                    }
+                } while (duplicate);
+                member->payload_len = fuzz_pick(1u, sizeof(member->payload));
+                for (size_t b = 0; b < member->payload_len; b++) {
+                    member->payload[b] = (uint8_t)fuzz_rand32();
+                }
+            }
+            images[m] = make_xb_members(mount->members, mount->member_count, be);
+            bool names_fold = true;
+            for (size_t e = 0; e < mount->member_count; e++) {
+                char key[FUZZ_VFS_PATH * 2u];
+                if (!fuzz_vfs_fold(mount->members[e].path, key, sizeof(key))) names_fold = false;
+            }
+            if (mutate) {
+                for (unsigned c = fuzz_pick(1u, 3u); c > 0u; c--) {
+                    mutate_buffer(images[m].data, &images[m].size, images[m].size);
+                }
+            }
+            NkResult result = images[m].size == 0u ? NK_ERROR_INVALID_XB :
+                sr_archive_vfs_mount_memory(&vfs, images[m].data, images[m].size,
+                                            "fuzz.xb", be, mount->variant, NULL);
+            if (!mutate) {
+                /* An archive that parses mounts unless a member name has no key; such an
+                 * archive is refused as invalid, never reported as out of memory. */
+                if (names_fold) {
+                    assert(result == NK_OK);
+                } else {
+                    assert(result == NK_ERROR_INVALID_XB);
+                    refused_names++;
+                }
+            }
+            if (result == NK_OK) {
+                mount->mounted = true;
+                mount_slot[m] = slot++;
+                mounted_total++;
+                if (mutate) mutated_mounted++;
+            }
+        }
+        assert(sr_archive_vfs_mount_count(&vfs) == slot);
+        assert(sr_archive_vfs_finalize(&vfs));
+
+        for (unsigned q = 0; q < 8u; q++) {
+            size_t m = fuzz_rand32() % mount_count;
+            const FuzzVfsMount *mount = &mounts[m];
+            const char *path = mount->members[fuzz_rand32() % mount->member_count].path;
+            char query[FUZZ_VFS_PATH * 3u];
+            fuzz_vfs_query(path, query, sizeof(query));
+            int wanted = fuzz_rand32() % 3u == 0u ? (int)fuzz_pick(0u, 2u) : -2;
+            if (!mutate) {
+                fuzz_vfs_check_lookup(&vfs, mounts, mount_slot, mount_count, query, wanted);
+                lookups++;
+            } else {
+                SrArchiveFile file;
+                if (sr_archive_vfs_lookup(&vfs, query, wanted == -2 ? SR_ARCHIVE_VARIANT_AUTO : wanted,
+                                          &file)) {
+                    uint8_t out[160];
+                    size_t got = 0;
+                    if (sr_archive_vfs_read(&vfs, &file, fuzz_pick(0u, 200u), out,
+                                            fuzz_pick(0u, sizeof(out)), &got) == NK_OK) {
+                        assert(got <= sizeof(out) && got <= file.size);
+                    }
+                }
+            }
+            /* Directories along the path, and the root. */
+            char dir[FUZZ_VFS_PATH * 3u];
+            snprintf(dir, sizeof(dir), "%s", query);
+            char *cut = strrchr(dir, fuzz_rand32() & 1u ? '/' : '\\');
+            if (cut) *cut = '\0';
+            else dir[0] = '\0';
+            fuzz_vfs_walk(&vfs, dir, wanted == -2 ? SR_ARCHIVE_VARIANT_AUTO : wanted);
+        }
+        fuzz_vfs_walk(&vfs, "", SR_ARCHIVE_VARIANT_AUTO);
+        assert(sr_archive_vfs_cache_bytes(&vfs) <= SR_ARCHIVE_VFS_DEFAULT_CACHE_BYTES);
+        sr_archive_vfs_destroy(&vfs);
+        for (size_t m = 0; m < mount_count; m++) free(images[m].data);
+    }
+    printf("[FUZZ] Archive VFS completed: %u archives mounted (%u of them mutated), "
+           "%u lookups checked against the model, %u archives refused for a keyless name, "
+           "0 crashes\n", mounted_total, mutated_mounted, lookups, refused_names);
+    fflush(stdout);
+}
+
 int main(int argc, char **argv) {
     unsigned iters = 100;
 
@@ -3030,6 +4055,8 @@ int main(int argc, char **argv) {
     test_fuzz_input_profile(iters);
     test_fuzz_package(iters > 1000 ? 1000 : iters);
     test_fuzz_library(iters > 500 ? 500 : iters);
+    test_fuzz_pgf(iters > 4000 ? 4000 : iters);
+    test_fuzz_archive_vfs(iters > 4000 ? 4000 : iters);
     test_fuzz_decrypt_boundary(iters > 4000 ? 4000 : iters);
     test_fuzz_keystore(iters > 1000 ? 1000 : iters);
     test_fuzz_inflate(iters > 2000 ? 2000 : iters);

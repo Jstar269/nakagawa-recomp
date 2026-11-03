@@ -2313,6 +2313,45 @@ static void test_mpeg_pcm_and_au_mode(void) {
     mpeg_finish();
 }
 
+/* Userdata imports, through the production NIDs: a title asks for the sizes when it sets a movie
+ * up and polls for an access unit while it plays. No userdata is demuxed, so the poll stays an
+ * explicit NO_DATA. */
+static void test_mpeg_userdata_imports(void) {
+    enum {
+        UD_DESC = 0x08130000u, UD_DATA = 0x08140000u, UD_OUT = 0x08150000u,
+        NID_QUERY = 0xc45c99ccu, NID_GET_AU = 0x01977054u
+    };
+    const uint32_t sentinel = 0xA5A5A5A5u;
+    MEM_W32(UD_DESC, 0u);
+    CHECK(mpeg_create(UD_DESC, UD_DATA, 0x10000u, 0, 64u, 0, 0) == 0, "MPEG userdata fixture creates a context");
+    CHECK(guest_mpeg_import(NID_QUERY, UD_DESC, UD_OUT, UD_OUT + 4u, 0u, 0u) == 0u &&
+              MEM_R32(UD_OUT) == 0xA0000u && MEM_R32(UD_OUT + 4u) == 0xA0000u,
+          "MPEG userdata size query returns 0xA0000 for the ES and the output");
+    MEM_W32(UD_OUT, sentinel);
+    MEM_W32(UD_OUT + 4u, sentinel);
+    CHECK(guest_mpeg_import(NID_QUERY, 0u, UD_OUT, UD_OUT + 4u, 0u, 0u) == UINT32_MAX &&
+              guest_mpeg_import(NID_QUERY, UD_DESC, UD_OUT + 1u, UD_OUT + 4u, 0u, 0u) == UINT32_MAX &&
+              guest_mpeg_import(NID_QUERY, UD_DESC, UD_OUT, 0u, 0u, 0u) == UINT32_MAX &&
+              MEM_R32(UD_OUT) == sentinel && MEM_R32(UD_OUT + 4u) == sentinel,
+          "MPEG userdata size query refuses a bad handle or pointer and writes nothing");
+    uint32_t sid = mpeg_regist_stream(UD_DESC, MPEG_DATA_STREAM, 0u);
+    MEM_W32(UD_OUT + 8u, sentinel);
+    MEM_W32(UD_OUT + 12u, sentinel);
+    MEM_W32(UD_OUT + 16u, sentinel);
+    MEM_W32(UD_OUT + 36u, sentinel);
+    CHECK(sid != 0u && guest_mpeg_import(NID_GET_AU, UD_DESC, sid, UD_OUT + 16u, UD_OUT + 8u, 0u) ==
+                           SCE_MPEG_ERROR_NO_DATA &&
+              MEM_R32(UD_OUT + 8u) == 0u && MEM_R32(UD_OUT + 12u) == 0u,
+          "MPEG userdata AU is an explicit no-data refusal that clears the two result words");
+    CHECK(MEM_R32(UD_OUT + 16u) == sentinel && MEM_R32(UD_OUT + 36u) == sentinel,
+          "MPEG userdata AU refusal leaves the access unit alone");
+    MEM_W32(UD_OUT + 8u, sentinel);
+    CHECK(guest_mpeg_import(NID_GET_AU, 0u, sid, UD_OUT + 16u, UD_OUT + 8u, 0u) == UINT32_MAX &&
+              MEM_R32(UD_OUT + 8u) == sentinel,
+          "MPEG userdata AU refuses a bad handle and writes nothing");
+    mpeg_finish();
+}
+
 /* ---- movie frame writers behind the swizzled VRAM mirrors (#1049) ------------------------
  * Hot Shots Tennis hands its movie buffers to sceMpegAvcCsc / sceMpegAvcDecode through the
  * 0x042 and 0x046 mirror views of VRAM. The bulk writers used to refuse such a span (and log
@@ -4374,6 +4413,393 @@ static void test_mpeg_av_audio_followed_by_content(void) {
     sr_hle_test_psmf_av_enable(0);
 }
 
+/* ---- ATRAC RIFF headers through the production sceAtrac calls (#969) -------------------
+ * Each input starts as a RIFF/WAVE track the parser accepts (an ATRAC3+ or plain ATRAC3 fmt
+ * chunk, fact, an optional smpl loop, unknown and odd-sized chunks, a data chunk) and then
+ * takes one to three structural changes: a chunk size, a fmt/fact/smpl field, the RIFF size,
+ * a cut fed prefix, or a byte mutation. The track goes through a Set* call, and an accepted
+ * context is driven through the stream, decode, loop and reset calls. Every output the guest
+ * owns is guarded: DecodeData writes at most one stereo frame of 16-bit samples, and nothing
+ * outside the words a call returns may change. */
+#define ATRAC_FUZZ_TRACK  (0x08000000u + 0x00600000u)
+#define ATRAC_FUZZ_CAP    0x00020000u                 /* track bytes plus ring room */
+#define ATRAC_FUZZ_OUT    (0x08000000u + 0x00700000u)
+#define ATRAC_FUZZ_WORDS  (0x08000000u + 0x00708000u)
+#define ATRAC_FUZZ_FRAME_BYTES (2048u * 2u * 2u)      /* one ATRAC3+ frame, stereo s16 */
+#define ATRAC_FUZZ_GUARD  256u
+#define NID_ATRAC_SET_DATA_AND_GET_ID 0x7a20e7afu
+#define NID_ATRAC_SET_HALFWAY_AND_GET_ID 0x0fae370eu
+#define NID_ATRAC_SET_MOUT_DATA_AND_GET_ID 0x472e3825u
+#define NID_ATRAC_GET_ATRAC_ID 0x780f88d1u
+#define NID_ATRAC_SET_DATA 0x0e2a73abu
+#define NID_ATRAC_SET_HALFWAY 0x3f6e26b5u
+#define NID_ATRAC_RELEASE_ID 0x61eb33f5u
+#define NID_ATRAC_DECODE_DATA 0x6a8c3cd5u
+#define NID_ATRAC_GET_REMAIN_FRAME 0x9ae849a7u
+#define NID_ATRAC_GET_STREAM_DATA_INFO 0x5d268707u
+#define NID_ATRAC_ADD_STREAM_DATA 0x7db31251u
+#define NID_ATRAC_GET_NEXT_DECODE_POSITION 0xe23e3a35u
+#define NID_ATRAC_GET_SOUND_SAMPLE 0xa2bba8beu
+#define NID_ATRAC_GET_LOOP_STATUS 0xfaa4f89bu
+#define NID_ATRAC_SET_LOOP_NUM 0x868120b5u
+#define NID_ATRAC_RESET_PLAY_POSITION 0x644e5607u
+#define NID_ATRAC_GET_BUFFER_INFO_FOR_RESETTING 0x2dd3e298u
+#define NID_ATRAC_GET_NEXT_SAMPLE 0x36faabfbu
+#define NID_ATRAC_GET_SECOND_BUFFER_INFO 0x83e85ea0u
+#define NID_ATRAC_SET_SECOND_BUFFER 0x83bf7afdu
+#define NID_ATRAC_GET_CHANNEL 0x31668baau
+#define NID_ATRAC_GET_BITRATE 0xa554a158u
+#define NID_ATRAC_GET_MAX_SAMPLE 0xd6a5f2f7u
+
+static uint64_t atrac_fuzz_state = 0x41545241435249FFULL;
+
+static uint32_t atrac_fuzz_rand(void) {
+    uint64_t z = (atrac_fuzz_state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return (uint32_t)((z ^ (z >> 31)) >> 32);
+}
+
+static uint32_t atrac_fuzz_pick(uint32_t low, uint32_t high) {
+    return low + atrac_fuzz_rand() % (high - low + 1u);
+}
+
+static void atrac_put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void atrac_put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+typedef struct {
+    uint32_t size;          /* bytes of the whole track */
+    uint32_t chunk_at[8];   /* offset of each chunk header, for structural changes */
+    uint32_t chunk_count;
+    uint32_t fmt_at, fact_at, smpl_at, data_at;
+    int at3;
+} AtracFuzzTrack;
+
+static uint32_t atrac_fuzz_chunk(uint8_t *t, uint32_t at, const char id[4], uint32_t size,
+                                 AtracFuzzTrack *track) {
+    memcpy(t + at, id, 4u);
+    atrac_put32(t + at + 4u, size);
+    if (track->chunk_count < 8u) track->chunk_at[track->chunk_count++] = at;
+    return at + 8u;
+}
+
+/* A track sceAtracSetDataAndGetID accepts: plain AT3 when `at3`, else ATRAC3+. */
+static void build_atrac_track(uint8_t *t, AtracFuzzTrack *track, int at3) {
+    memset(track, 0, sizeof(*track));
+    memset(t, 0, ATRAC_FUZZ_CAP);
+    track->at3 = at3;
+    uint32_t channels = at3 ? atrac_fuzz_pick(1u, 2u) : atrac_fuzz_pick(1u, 2u);
+    uint32_t align;
+    if (at3) {
+        static const uint32_t units[3] = { 96u, 152u, 192u };
+        align = units[atrac_fuzz_rand() % 3u] * channels;
+    } else {
+        static const uint32_t aligns[4] = { 0x118u, 0x178u, 0x230u, 0x2e8u };
+        align = aligns[atrac_fuzz_rand() % 4u];
+    }
+    uint32_t frames = atrac_fuzz_pick(1u, 24u);
+    uint32_t spf = at3 ? 1024u : 2048u;
+    uint32_t at = 12u;
+    memcpy(t, "RIFF", 4u);
+    memcpy(t + 8u, "WAVE", 4u);
+
+    uint32_t fmt_size = at3 ? 32u : 52u;
+    track->fmt_at = at;
+    uint32_t p = atrac_fuzz_chunk(t, at, "fmt ", fmt_size, track);
+    atrac_put16(t + p, at3 ? 0x0270u : 0xFFFEu);
+    atrac_put16(t + p + 2u, channels);
+    atrac_put32(t + p + 4u, 44100u);
+    atrac_put32(t + p + 8u, align * 44100u / spf);
+    atrac_put16(t + p + 12u, align);
+    atrac_put16(t + p + 14u, at3 ? 0u : 16u);
+    atrac_put16(t + p + 16u, at3 ? 14u : 34u);              /* cbSize */
+    if (at3) {
+        uint32_t joint = channels == 2u && (atrac_fuzz_rand() & 1u) ? 1u : 0u;
+        atrac_put16(t + p + 18u, 1u);
+        atrac_put32(t + p + 20u, 0x1000u);
+        atrac_put16(t + p + 24u, joint);
+        atrac_put16(t + p + 26u, joint);
+        atrac_put16(t + p + 28u, 1u);                    /* frame factor */
+    } else {
+        for (uint32_t i = 18u; i < fmt_size; i++) t[p + i] = (uint8_t)atrac_fuzz_rand();
+    }
+    at = p + fmt_size;
+
+    if (atrac_fuzz_rand() % 3u == 0u) {                  /* an unknown chunk of odd length */
+        uint32_t len = atrac_fuzz_pick(1u, 9u) | 1u;
+        p = atrac_fuzz_chunk(t, at, "LIST", len, track);
+        at = p + len + 1u;
+    }
+    uint32_t fact_size = at3 && (atrac_fuzz_rand() & 1u) ? 12u : 8u;
+    track->fact_at = at;
+    p = atrac_fuzz_chunk(t, at, "fact", fact_size, track);
+    atrac_put32(t + p, frames * spf - atrac_fuzz_pick(0u, spf - 1u));
+    atrac_put32(t + p + 4u, atrac_fuzz_pick(0u, at3 ? 1800u : 4096u));
+    at = p + fact_size;
+    if (atrac_fuzz_rand() & 1u) {
+        track->smpl_at = at;
+        p = atrac_fuzz_chunk(t, at, "smpl", 60u, track);
+        atrac_put32(t + p + 28u, 1u);
+        uint32_t start = atrac_fuzz_pick(0u, frames * spf / 2u);
+        atrac_put32(t + p + 44u, start);
+        atrac_put32(t + p + 48u, atrac_fuzz_pick(start, frames * spf));
+        at = p + 60u;
+    }
+    track->data_at = at;
+    p = atrac_fuzz_chunk(t, at, "data", frames * align, track);
+    for (uint32_t i = 0; i < frames * align; i++) t[p + i] = (uint8_t)atrac_fuzz_rand();
+    track->size = p + frames * align;
+    atrac_put32(t + 4u, track->size - 8u);
+}
+
+static void mutate_atrac_track(uint8_t *t, AtracFuzzTrack *track) {
+    static const uint32_t values[] = {
+        0u, 1u, 2u, 3u, 4u, 7u, 8u, 12u, 14u, 16u, 18u, 32u, 52u, 60u, 1854u, 1855u, 4096u,
+        0x10000u, 0x10001u, 0x7fffffffu, 0x80000000u, 0xfffffff0u, 0xfffffff8u, 0xffffffffu
+    };
+    uint32_t value = values[atrac_fuzz_rand() % (sizeof(values) / sizeof(values[0]))];
+    if (atrac_fuzz_rand() & 1u) value ^= track->size;
+    switch (atrac_fuzz_rand() % 7u) {
+    case 0: /* a chunk size */
+        if (track->chunk_count) atrac_put32(t + track->chunk_at[atrac_fuzz_rand() % track->chunk_count] + 4u, value);
+        break;
+    case 1: /* the RIFF size */
+        atrac_put32(t + 4u, value);
+        break;
+    case 2: { /* a fmt field: tag, channels, rate, align, cbSize, extradata */
+        static const uint8_t at[] = { 8u, 10u, 16u, 20u, 22u, 24u, 26u, 32u, 34u, 36u };
+        uint32_t off = track->fmt_at + at[atrac_fuzz_rand() % sizeof(at)];
+        if (atrac_fuzz_rand() & 1u) atrac_put16(t + off, value);
+        else atrac_put32(t + off, value);
+        break;
+    }
+    case 3: /* fact: sample count or delay */
+        atrac_put32(t + track->fact_at + 8u + (atrac_fuzz_rand() & 1u) * 4u, value);
+        break;
+    case 4: /* smpl: loop count, start or end */
+        if (track->smpl_at) {
+            static const uint8_t at[] = { 36u, 52u, 56u };
+            atrac_put32(t + track->smpl_at + at[atrac_fuzz_rand() % 3u], value);
+        }
+        break;
+    case 5: /* a cut track */
+        track->size = atrac_fuzz_pick(0u, track->size);
+        break;
+    default: { /* bytes anywhere in the header region */
+        uint32_t header = track->data_at + 8u;
+        for (unsigned n = atrac_fuzz_pick(1u, 4u); n > 0u; n--) {
+            t[atrac_fuzz_rand() % header] = (uint8_t)atrac_fuzz_rand();
+        }
+        break;
+    }
+    }
+}
+
+static uint32_t atrac_fuzz_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2,
+                                uint32_t a3, uint32_t t0) {
+    return guest_mpeg_import(nid, a0, a1, a2, a3, t0);
+}
+
+/* 1 when the guard bytes on both sides of [base, base + length) are untouched; otherwise
+ * names the first changed byte, relative to base. */
+static int atrac_guard_intact(uint32_t base, uint32_t length, int32_t *changed_at) {
+    const uint8_t *bytes = (const uint8_t *)SR_HOST(base);
+    for (uint32_t i = 0; i < ATRAC_FUZZ_GUARD; i++) {
+        if (bytes[-(ptrdiff_t)ATRAC_FUZZ_GUARD + (ptrdiff_t)i] != 0x5Au) {
+            *changed_at = (int32_t)i - (int32_t)ATRAC_FUZZ_GUARD;
+            return 0;
+        }
+    }
+    for (uint32_t i = 0; i < ATRAC_FUZZ_GUARD; i++) {
+        if (bytes[length + i] != 0x5Au) {
+            *changed_at = (int32_t)(length + i);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void atrac_guard_arm(uint32_t base, uint32_t length) {
+    memset((uint8_t *)SR_HOST(base) - ATRAC_FUZZ_GUARD, 0x5A, length + 2u * ATRAC_FUZZ_GUARD);
+}
+
+/* Drive an accepted context. Output words live at ATRAC_FUZZ_WORDS (eight words, guarded),
+ * decoded samples at ATRAC_FUZZ_OUT (one stereo frame, guarded). */
+static int atrac_fuzz_drive(uint32_t id, uint32_t track_size, uint32_t buffer_size) {
+    const uint32_t w = ATRAC_FUZZ_WORDS;
+    int intact = 1;
+    for (unsigned step = 0; step < 24u; step++) {
+        atrac_guard_arm(w, 32u);
+        atrac_guard_arm(ATRAC_FUZZ_OUT, ATRAC_FUZZ_FRAME_BYTES);
+        unsigned kind = atrac_fuzz_rand() % 12u;
+        switch (kind) {
+        case 0: case 1: case 2:
+            (void)atrac_fuzz_call(NID_ATRAC_DECODE_DATA, id, ATRAC_FUZZ_OUT, w, w + 4u, w + 8u);
+            break;
+        case 3: {
+            (void)atrac_fuzz_call(NID_ATRAC_GET_STREAM_DATA_INFO, id, w, w + 4u, w + 8u, 0u);
+            uint32_t writable = MEM_R32(w + 4u);
+            uint32_t n = atrac_fuzz_rand() % 4u == 0u ? atrac_fuzz_rand()
+                         : writable ? atrac_fuzz_pick(0u, writable) : 0u;
+            (void)atrac_fuzz_call(NID_ATRAC_ADD_STREAM_DATA, id, n, w + 12u, 0u, 0u);
+            break;
+        }
+        case 4:
+            (void)atrac_fuzz_call(NID_ATRAC_GET_REMAIN_FRAME, id, w, 0u, 0u, 0u);
+            (void)atrac_fuzz_call(NID_ATRAC_GET_NEXT_SAMPLE, id, w + 4u, 0u, 0u, 0u);
+            (void)atrac_fuzz_call(NID_ATRAC_GET_NEXT_DECODE_POSITION, id, w + 8u, 0u, 0u, 0u);
+            break;
+        case 5:
+            (void)atrac_fuzz_call(NID_ATRAC_GET_SOUND_SAMPLE, id, w, w + 4u, w + 8u, 0u);
+            (void)atrac_fuzz_call(NID_ATRAC_GET_LOOP_STATUS, id, w + 12u, w + 16u, 0u, 0u);
+            break;
+        case 6:
+            (void)atrac_fuzz_call(NID_ATRAC_SET_LOOP_NUM, id, atrac_fuzz_pick(0u, 3u) - 1u, 0u, 0u, 0u);
+            break;
+        case 7: {
+            uint32_t sample = atrac_fuzz_rand() % 2u ? atrac_fuzz_rand() : atrac_fuzz_pick(0u, 48u * 2048u);
+            uint32_t info = w;
+            atrac_guard_arm(info, 32u);
+            if (atrac_fuzz_call(NID_ATRAC_GET_BUFFER_INFO_FOR_RESETTING, id, sample, info, 0u, 0u) == 0u &&
+                (atrac_fuzz_rand() & 3u) != 0u) {
+                uint32_t first_min = MEM_R32(info + 8u), first_max = MEM_R32(info + 4u);
+                uint32_t second_min = MEM_R32(info + 24u), second_max = MEM_R32(info + 20u);
+                uint32_t first = first_max > first_min ? atrac_fuzz_pick(first_min, first_max) : first_min;
+                uint32_t second = second_max > second_min ? atrac_fuzz_pick(second_min, second_max) : second_min;
+                (void)atrac_fuzz_call(NID_ATRAC_RESET_PLAY_POSITION, id, sample, first, second, 0u);
+            } else {
+                (void)atrac_fuzz_call(NID_ATRAC_RESET_PLAY_POSITION, id, sample,
+                                      atrac_fuzz_rand() % 0x20000u, atrac_fuzz_rand() % 0x20000u, 0u);
+            }
+            break;
+        }
+        case 8:
+            (void)atrac_fuzz_call(NID_ATRAC_GET_SECOND_BUFFER_INFO, id, w, w + 4u, 0u, 0u);
+            break;
+        case 9: {
+            uint32_t second = ATRAC_FUZZ_TRACK + atrac_fuzz_pick(0u, track_size);
+            (void)atrac_fuzz_call(NID_ATRAC_SET_SECOND_BUFFER, id, atrac_fuzz_rand() & 1u ? second : 0u,
+                                  atrac_fuzz_pick(0u, buffer_size), 0u, 0u);
+            break;
+        }
+        case 10:
+            (void)atrac_fuzz_call(NID_ATRAC_GET_CHANNEL, id, w, 0u, 0u, 0u);
+            (void)atrac_fuzz_call(NID_ATRAC_GET_BITRATE, id, w + 4u, 0u, 0u, 0u);
+            (void)atrac_fuzz_call(NID_ATRAC_GET_MAX_SAMPLE, id, w + 8u, 0u, 0u, 0u);
+            break;
+        default:
+            /* Refill the fed track from the guest's side: the ring is guest memory. */
+            ((uint8_t *)SR_HOST(ATRAC_FUZZ_TRACK))[atrac_fuzz_rand() % buffer_size] = (uint8_t)atrac_fuzz_rand();
+            break;
+        }
+        int32_t changed_at = 0;
+        int words_intact = atrac_guard_intact(w, 32u, &changed_at);
+        if (!words_intact || !atrac_guard_intact(ATRAC_FUZZ_OUT, ATRAC_FUZZ_FRAME_BYTES, &changed_at)) {
+            fprintf(stderr, "atrac-fuzz: step %u (call group %u) changed the %s guard at offset %d\n",
+                    step, kind, words_intact ? "sample-buffer" : "output-word", (int)changed_at);
+            intact = 0;
+            break;
+        }
+    }
+    return intact;
+}
+
+/* sceAtracDecodeData fills a buffer sized for mono or stereo, so an ATRAC3+ track whose fmt
+ * chunk declares any other channel count is refused when it is set, as ATRAC UNKNOWN_FORMAT
+ * (the public reference's answer; UNMEASURED on a PSP). Before the fix a 3- to 8-channel
+ * track was accepted and each decode wrote that many channels of samples into the guest's
+ * stereo-sized buffer (#969). Plain AT3 already admits only 1 or 2 through its config check. */
+static void test_atrac_channel_count_refusal(void) {
+    uint8_t *t = (uint8_t *)SR_HOST(ATRAC_FUZZ_TRACK);
+    static const uint32_t counts[] = { 0u, 1u, 2u, 3u, 4u, 6u, 7u, 8u, 9u };
+    for (size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); c++) {
+        AtracFuzzTrack track;
+        atrac_fuzz_state = 0x434841u + c;
+        build_atrac_track(t, &track, 0);
+        atrac_put16(t + track.fmt_at + 10u, counts[c]);
+        uint32_t id = atrac_fuzz_call(NID_ATRAC_SET_DATA_AND_GET_ID, ATRAC_FUZZ_TRACK,
+                                      track.size, 0u, 0u, 0u);
+        if (counts[c] == 1u || counts[c] == 2u) {
+            CHECK(id < 8u, "atrac-channels: a mono or stereo ATRAC3+ track is accepted");
+            if (id < 8u) (void)atrac_fuzz_call(NID_ATRAC_RELEASE_ID, id, 0u, 0u, 0u, 0u);
+        } else {
+            CHECK(id == 0x80630006u,
+                  "atrac-channels: an ATRAC3+ track neither mono nor stereo is refused as UNKNOWN_FORMAT");
+            if (id < 8u) (void)atrac_fuzz_call(NID_ATRAC_RELEASE_ID, id, 0u, 0u, 0u, 0u);
+        }
+    }
+}
+
+static void test_atrac_riff_mutations(unsigned iterations) {
+    if (iterations > 20000u) iterations = 20000u;
+    atrac_fuzz_state = 0x41545241435249FFULL;
+    uint8_t *track_bytes = (uint8_t *)SR_HOST(ATRAC_FUZZ_TRACK);
+    unsigned seeds_accepted = 0, accepted = 0, driven_intact = 0;
+    for (unsigned i = 0; i < iterations; i++) {
+        AtracFuzzTrack track;
+        build_atrac_track(track_bytes, &track, (int)(atrac_fuzz_rand() & 1u));
+        uint32_t seed_id = atrac_fuzz_call(NID_ATRAC_SET_DATA_AND_GET_ID, ATRAC_FUZZ_TRACK, track.size, 0u, 0u, 0u);
+        if (seed_id < 8u) {
+            seeds_accepted++;
+            (void)atrac_fuzz_call(NID_ATRAC_RELEASE_ID, seed_id, 0u, 0u, 0u, 0u);
+        } else if (i < 4u) {
+            fprintf(stderr, "atrac-fuzz: seed %u (%s) refused with 0x%08x\n", i,
+                    track.at3 ? "AT3" : "ATRAC3+", seed_id);
+        }
+        if (i % 4u != 0u) {
+            for (unsigned c = atrac_fuzz_pick(1u, 3u); c > 0u; c--) mutate_atrac_track(track_bytes, &track);
+        }
+        uint32_t fed = atrac_fuzz_rand() % 4u == 0u ? atrac_fuzz_pick(0u, track.size) : track.size;
+        uint32_t buffer_size = atrac_fuzz_rand() % 3u == 0u
+            ? atrac_fuzz_pick(fed, ATRAC_FUZZ_CAP) : (atrac_fuzz_rand() & 1u ? fed : track.size);
+        if (buffer_size < fed) buffer_size = fed;
+        if (buffer_size == 0u) buffer_size = 1u;
+        uint32_t id;
+        switch (atrac_fuzz_rand() % 4u) {
+        case 0:
+            id = atrac_fuzz_call(NID_ATRAC_SET_DATA_AND_GET_ID, ATRAC_FUZZ_TRACK, fed, 0u, 0u, 0u);
+            break;
+        case 1:
+            id = atrac_fuzz_call(NID_ATRAC_SET_HALFWAY_AND_GET_ID, ATRAC_FUZZ_TRACK, fed, buffer_size, 0u, 0u);
+            break;
+        case 2:
+            id = atrac_fuzz_call(NID_ATRAC_SET_MOUT_DATA_AND_GET_ID, ATRAC_FUZZ_TRACK, fed, 0u, 0u, 0u);
+            break;
+        default:
+            id = atrac_fuzz_call(NID_ATRAC_GET_ATRAC_ID, track.at3 ? 0x1001u : 0x1000u, 0u, 0u, 0u, 0u);
+            if (id < 8u) {
+                uint32_t rc = atrac_fuzz_rand() & 1u
+                    ? atrac_fuzz_call(NID_ATRAC_SET_DATA, id, ATRAC_FUZZ_TRACK, fed, 0u, 0u)
+                    : atrac_fuzz_call(NID_ATRAC_SET_HALFWAY, id, ATRAC_FUZZ_TRACK, fed, buffer_size, 0u);
+                if (rc != 0u) {
+                    (void)atrac_fuzz_call(NID_ATRAC_RELEASE_ID, id, 0u, 0u, 0u, 0u);
+                    id = rc;
+                }
+            }
+            break;
+        }
+        if (id >= 8u) continue;
+        accepted++;
+        if (atrac_fuzz_drive(id, track.size, buffer_size)) {
+            driven_intact++;
+        } else {
+            const uint8_t *fmt = track_bytes + track.fmt_at;
+            fprintf(stderr, "atrac-fuzz: iteration %u, %s track, fmt tag 0x%04x, %u channels, "
+                    "block align %u, %u of %u bytes fed\n", i, track.at3 ? "AT3" : "ATRAC3+",
+                    (unsigned)(fmt[8] | fmt[9] << 8), (unsigned)(fmt[10] | fmt[11] << 8),
+                    (unsigned)(fmt[20] | fmt[21] << 8), fed, track.size);
+        }
+        CHECK(atrac_fuzz_call(NID_ATRAC_RELEASE_ID, id, 0u, 0u, 0u, 0u) == 0u,
+              "atrac-fuzz: an accepted context releases");
+    }
+    CHECK(seeds_accepted == iterations, "atrac-fuzz: every unmutated seed track is accepted");
+    CHECK(driven_intact == accepted, "atrac-fuzz: no call writes outside the guest words it returns");
+    printf("ATRAC RIFF mutation: %u iterations, %u/%u seeds accepted, %u tracks "
+           "accepted and driven, 0 crashes\n", iterations, seeds_accepted, iterations, accepted);
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     sr_flight_init();
@@ -4419,6 +4845,7 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_picture_time_by_bytes();
     test_mpeg_ycbcr_guest_decode();
     test_mpeg_pcm_and_au_mode();
+    test_mpeg_userdata_imports();
     test_mpeg_csc_swizzled_vram_mirrors();
     test_mpeg_avc_decode_clear_in_vram_mirrors();
     test_player_lifecycle_releases_what_it_acquired();
@@ -4442,6 +4869,8 @@ int main(int argc, char **argv) {
     test_mpeg_avc_decode_detail();
     test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
+    test_atrac_channel_count_refusal();
+    test_atrac_riff_mutations(fuzz_iterations ? fuzz_iterations : 100u);
 
     if (failures) {
         fprintf(stderr, "psmf_media_selftest: %d checks, %d FAILURES\n", checks, failures);

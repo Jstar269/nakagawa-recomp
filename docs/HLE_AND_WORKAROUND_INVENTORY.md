@@ -46,16 +46,16 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **679** (dedicated **570**, fake_success **5**, controlled_unsupported **104**).
-Semantic handler census: **549** handlers across **26** API families, covering **576** handler-associated NID registrations.
+Registered NIDs: **681** (dedicated **573**, fake_success **5**, controlled_unsupported **103**).
+Semantic handler census: **551** handlers across **26** API families, covering **580** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 248 | 254 |
+| `partial` | 251 | 259 |
 | `compatibility` | 1 | 1 |
-| `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 284 | 292 |
+| `controlled_unsupported` | 3 | 7 |
+| `unreviewed` | 282 | 290 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -73,19 +73,19 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
 | `sceKernel` | 3 | 104 | 0 | 0 | 83 | 190 | 208 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
-| `sceMpeg` | 0 | 11 | 0 | 1 | 25 | 37 | 37 |
+| `sceMpeg` | 0 | 12 | 0 | 2 | 25 | 39 | 39 |
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `scePower` | 0 | 10 | 0 | 0 | 9 | 19 | 21 |
+| `scePower` | 0 | 11 | 0 | 0 | 7 | 18 | 22 |
 | `scePsmf` | 0 | 4 | 0 | 0 | 14 | 18 | 18 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 5 | 12 | 0 | 0 | 1 | 18 | 18 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
-| `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
+| `sceUmd` | 0 | 6 | 1 | 0 | 7 | 14 | 14 |
 | `sceUtility` | 0 | 9 | 0 | 0 | 27 | 36 | 36 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **248** | **1** | **2** | **284** | **549** | **576** |
+| **Total** | **14** | **251** | **1** | **3** | **282** | **551** | **580** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -845,6 +845,9 @@ Semantic handler census: **549** handlers across **26** API families, covering *
   - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_atrac_au_decode
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
+- **`h_MpegQueryUserdataEsSize`** (`sceMpeg`): `sceMpegQueryUserdataEsSize` (0xc45c99cc)
+  - Limitation: writes the 0xA0000 ES and output sizes PPSSPP c9e2afb6 uses and refuses a bad handle or pointer with -1; neither is measured on a PSP (#302)
+  - Evidence: tests/native/psmf_media_selftest.c:test_mpeg_userdata_imports
 - **`h_NetEtherNtostr`** (`sceNet`): `sceNetEtherNtostr` (0x89360950)
   - Limitation: formats a readable six-byte MAC address into the bounded 18-byte lowercase text form without a network stack and returns the text address; the return value (PPSSPP treats the call as void), invalid pointer precedence and the complete text domain are not hardware measured
   - Evidence: tests/native/hle_thread_selftest.c:test_named_refusals
@@ -894,6 +897,11 @@ Semantic handler census: **549** handlers across **26** API families, covering *
   - Limitation: validates 1..111 against the measured range at PLL 222 and changes no clock, as measured; at any other retained PLL the range is not measured and the run stops by name
   - Evidence: tests/native/hle_thread_selftest.c:test_power_set_bus_clock_frequency_autotest
   - Evidence: PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded on a PSP): at PLL 222, 1..111 return 0 and -1, 0, 112 return 0x800001fe, and no request moves any clock
+- **`h_PowerSetClockFrequency`** (`scePower`): `scePowerSetClockFrequency630` (0x469989ad), `scePowerSetClockFrequency` (0x737486f2), `scePowerSetClockFrequency350` (0xebd177d6)
+  - Limitation: the PLL range is recorded for (n, n, n / 2) only; the independent CPU and bus limits are PPSSPP's and not measured; an accepted request is retained verbatim, while the recording shows the PSP stepping it (19 reads back as PLL 190, CPU 18, bus 95), and PPSSPP's delay on a PLL change is not modelled (#341)
+  - Evidence: tests/native/hle_thread_selftest.c:test_power_set_clock_frequency_range_checks
+  - Evidence: PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded on a PSP): (n, n, n / 2) returns 0 for 19..333 and 0x800001fe for -1..18 and 334
+  - Evidence: PPSSPP scePower.cpp (c9e2afb6): the ranges, and one function behind 0x737486f2, 0xebd177d6 and 0x469989ad
 - **`h_PowerSetCpuClockFrequency`** (`scePower`): `scePowerSetCpuClockFrequency` (0x843fbf43)
   - Limitation: accepts 1..retained PLL and refuses the rest with 0x800001fe, measured only at PLL 222; the clock the getters report after an accepted request is the retained request, not measured
   - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_cpu_clock_user_mode_20261024
@@ -988,6 +996,10 @@ Semantic handler census: **549** handlers across **26** API families, covering *
   - Limitation: the callback argument follows PPSSPP (0x22 when no compiled SDK version is set, 0x32 otherwise) and is host-selftested, not hardware measured; the activation result and argument checks are not hardware measured either
   - Evidence: tests/native/hle_thread_selftest.c:test_umd_unregister_callback
   - Evidence: PPSSPP sceUmd.cpp callback-status gate with the compiled SDK version
+- **`h_UmdCancelWaitDriveStat`** (`sceUmd`): `sceUmdCancelWaitDriveStat` (0x6af9b50a)
+  - Limitation: the results follow PPSSPP and are host-selftested, not hardware measured; a stronger waiter runs at once, as after sceKernelCancelSema, which PPSSPP does not do and no measurement settles (#341)
+  - Evidence: tests/native/hle_thread_selftest.c:test_umd_cancel_wait_drive_stat
+  - Evidence: PPSSPP sceUmd.cpp sceUmdCancelWaitDriveStat (c9e2afb6): every drive waiter resumes with SCE_KERNEL_ERROR_WAIT_CANCEL and the call returns 0
 - **`h_UmdCheckMedium`** (`sceUmd`): `sceUmdCheckMedium` (0x46ebb729)
   - Limitation: always reports a medium present (1), as measured with a disc inserted; the runtime serves one ISO, so the no-disc result and disc removal are not modeled
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: umd-state-before, umd-state-after)
@@ -1048,6 +1060,7 @@ Semantic handler census: **549** handlers across **26** API families, covering *
 #### Controlled Unsupported Dedicated Handlers
 
 - **`h_MpegGetPcmAu`** (`sceMpeg`): `sceMpegGetPcmAu` (0x8c1e027d)
+- **`h_MpegGetUserdataAu`** (`sceMpeg`): `sceMpegGetUserdataAu` (0x01977054)
 - **`h_SasUnsupportedVoice`** (`sceSas`): `__sceSasSetVoiceATRAC3` (0x4aa9ead6), `__sceSasConcatenateATRAC3` (0x7497ea85), `__sceSasSetTrianglarWave` (0xa232cbe6), `__sceSasSetSteepWave` (0xd5ebbbcd), `__sceSasUnsetATRAC3` (0xf6107f00)
 <!-- END GENERATED HLE STATUS CENSUS -->
 
