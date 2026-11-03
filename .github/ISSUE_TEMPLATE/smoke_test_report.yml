@@ -1,6 +1,8 @@
 name: Smoke test report
 description: Post results from running the release smoke test (docs/SMOKE_TEST.md)
-title: "[Smoke Test]: "
+title: "Smoke test: "
+labels:
+  - bug
 body:
   - type: markdown
     attributes:
@@ -23,9 +25,9 @@ body:
   - type: input
     id: commit
     attributes:
-      label: Commit revision
-      description: Exact commit SHA of the tested build (git rev-parse HEAD).
-      placeholder: e.g. 7a1b2c3 or release tag
+      label: Version
+      description: The release you tested (for example v0.0.1), or the commit SHA of a source build (`git rev-parse HEAD`).
+      placeholder: e.g. v0.0.1 or abc1234
     validations:
       required: true
 
@@ -41,7 +43,7 @@ body:
   - type: input
     id: gpu
     attributes:
-      label: GPU & Driver
+      label: GPU and driver
       description: Graphics card model and driver version.
       placeholder: e.g. NVIDIA GeForce RTX 3080, Driver 560.94 / AMD Radeon RX 6700 XT
     validations:
@@ -53,24 +55,24 @@ body:
       label: Smoke test steps (docs/SMOKE_TEST.md)
       description: Check every step that passed. Leave failing or skipped steps unchecked and explain in Notes below.
       options:
-        - label: Step 1 — Fresh isolated profile (empty user-data folder)
-        - label: Step 2 — Start the player (window opens at 1280x720, or larger with display scaling)
-        - label: Step 3 — Empty-library first run (Add your first game, START SETUP WIZARD)
-        - label: Step 4 — Settings persist across a restart
-        - label: Step 5 — Controller settings open (button mapping and calibration)
-        - label: Step 6 — Add a disc image (PARAM.SFO read in C)
-        - label: Step 7 — Encrypted executables are refused by name (or NOT RUN)
-        - label: Step 8 — BUILD PACKAGE and prerequisite consent, with a cancel
-        - label: Step 9 — Play the generated package
-        - label: Step 10 — Error card wording
-        - label: Step 11 — F3 overlay and pause in a running package
-        - label: Step 12 — Quit (clean exit with return code 0)
-        - label: Step 13 — Log and report locations to attach
+        - label: Step 1: Fresh isolated profile (empty user-data folder)
+        - label: Step 2: Start the player (window opens at 1280x720, or larger with display scaling)
+        - label: Step 3: Empty-library first run (Add your first game, START SETUP WIZARD)
+        - label: Step 4: Settings persist across a restart
+        - label: Step 5: Controller settings open (button mapping and calibration)
+        - label: Step 6: Add a disc image (PARAM.SFO read in C)
+        - label: Step 7: Encrypted executables are refused by name (or NOT RUN)
+        - label: Step 8: BUILD PACKAGE and prerequisite consent, with a cancel
+        - label: Step 9: Play the generated package
+        - label: Step 10: Error card wording
+        - label: Step 11: F3 overlay and pause in a running package
+        - label: Step 12: Quit (clean exit with return code 0)
+        - label: Step 13: Log and report locations to attach
 
   - type: textarea
     id: notes
     attributes:
-      label: Notes & Observations
+      label: Notes
       description: Describe any failed or skipped steps, console output, or performance observations.
       placeholder: |
         - Step 8 was skipped because...

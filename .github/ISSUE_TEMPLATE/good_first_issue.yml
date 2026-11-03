@@ -1,6 +1,6 @@
 name: Starter issue (maintainers)
 description: A small, self-contained task for a first-time contributor
-title: "[Starter]: "
+title: "Area: "
 labels:
   - good first issue
 body:
