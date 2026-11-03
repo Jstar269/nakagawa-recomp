@@ -8,11 +8,15 @@
 #ifndef PSP_RECOMP_ISO_H
 #define PSP_RECOMP_ISO_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 int iso_init(void);
 /* Resolve a guest path ("disc0:/PSP_GAME/...") to its extent. Returns 0 on success. */
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size);
+/* Write the one spelling of a raw sector extent ("disc0:/sce_lbn0x<LBN>_size0x<SIZE>", lower
+ * case, no leading zeros) that a disc path names. Returns 1, or 0 for any other path. */
+int iso_sector_extent_path(const char *guest_path, char *out, size_t out_size);
 /* Read bytes from (lba*2048 + offset). Returns bytes read. */
 int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes);
 

@@ -5233,7 +5233,7 @@ def _symbol_names(symbol_map_path, name_imports, symbols, import_nids, emitted, 
 
 def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resume_owners, dispatch_boundaries,
                         *, stack_census, module_translations, symbol_table, module_record, main_var_imports,
-                        main_var_exports, fixed_var_imports, exec_spans, stale_funcs):
+                        main_var_exports, main_func_exports, fixed_var_imports, exec_spans, stale_funcs):
     """The lines of the main generated file: the registration of every chunk, module and span."""
     # Main recomp.c
     main_out = [
@@ -5301,12 +5301,20 @@ def _registration_lines(elf, ranges, known, base_name, num_files, emitted, resum
         main_out.extend(f"    {{ {c_library_name(e.library)}, 0x{e.nid:08x}u, 0x{e.address:08x}u }},"
                         for e in main_var_exports)
         main_out.append("};")
+    if main_func_exports:
+        main_out.append("static const SrMainFuncExport sr_main_func_exports[] = {")
+        main_out.extend(f"    {{ 0x{nid:08x}u, 0x{address:08x}u }},"
+                        for nid, address in main_func_exports)
+        main_out.append("};")
     main_out.append("\nvoid sr_register_all(void) {")
     if module_record is not None:
         main_out.append("    sr_main_module_register(&sr_main_module_record);")
     if main_var_exports:
         main_out.append(f"    sr_main_var_exports_register(sr_main_var_exports, "
                         f"{len(main_var_exports)}u);")
+    if main_func_exports:
+        main_out.append(f"    sr_main_func_exports_register(sr_main_func_exports, "
+                        f"{len(main_func_exports)}u);")
     if main_var_imports:
         main_out.append(f"    sr_main_var_imports_register(sr_main_var_imports, "
                         f"{len(main_var_imports)}u);")
@@ -5707,11 +5715,12 @@ def _translate(argv):
     }]
 
     # Variable imports of modules translated at a fixed base, linked when each loads, and the
-    # variables the executable exports, registered at boot (src/rt/hle.c, #308).
+    # variables and functions the executable exports, registered at boot (src/rt/hle.c, #308).
     fixed_var_imports = []
     try:
-        from imports import variable_exports
+        from imports import function_exports, variable_exports
         main_var_exports = variable_exports(elf)
+        main_func_exports = function_exports(elf, impmap)
     except ImportTableError as e:
         sys.stderr.write(f"codegen: {format_boundary(e)}\n")
         return 1
@@ -5891,7 +5900,7 @@ def _translate(argv):
         elf, ranges, known, base_name, num_files, emitted, resume_owners, dispatch_boundaries,
         stack_census=stack_census, module_translations=module_translations, symbol_table=symbol_table,
         module_record=module_record, main_var_imports=main_var_imports, main_var_exports=main_var_exports,
-        fixed_var_imports=fixed_var_imports, exec_spans=exec_spans, stale_funcs=stale_funcs)
+        main_func_exports=main_func_exports, fixed_var_imports=fixed_var_imports, exec_spans=exec_spans, stale_funcs=stale_funcs)
 
     if llvm_lowered:
         # The IR addresses CpuState fields by byte offset; this build's compiler checks them.
