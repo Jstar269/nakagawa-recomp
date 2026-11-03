@@ -5483,6 +5483,38 @@ static void test_ms0_unified_namespace(void) {
     cpu.r[4] = ms_dir_fd;
     (void)sr_hle_test_io_dclose(&cpu);
 
+    /* The runtime treats ms0:, fatms0: and device-less paths as the same Memory Stick (sr_ms0_classify),
+     * so a listing opened on any of them reports sceIoGetstat's FAT shape; a directory entry gets
+     * 0x11ff / attr 0x0010 and a file 0x21ff / attr 0x0020. */
+    {
+        static const char ms_alias_dirs[3][16] = {"ms0:/", "fatms0:/TESTDIR", "TESTDIR"};
+        static const char ms_alias_names[3][16] = {"TESTDIR", "UNIFIED.TXT", "UNIFIED.TXT"};
+        for (int alias = 0; alias < 3; alias++) {
+            fd_guest_copy(0x09181000u, ms_alias_dirs[alias], 16u);
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = 0x09181000u;
+            uint32_t alias_fd = sr_hle_test_io_dopen(&cpu);
+            int alias_shape = 0;
+            for (int guard = 0; guard < 16; guard++) {
+                memset(&cpu, 0, sizeof cpu);
+                cpu.r[4] = alias_fd;
+                cpu.r[5] = 0x09180000u;
+                if (sr_hle_test_io_dread(&cpu) != 1u) break;
+                if (MEM_R8(0x09180000u + 0x58u) == (uint32_t)(unsigned char)ms_alias_names[alias][0]) {
+                    uint32_t want_mode = alias == 0 ? 0x11ffu : 0x21ffu;
+                    uint32_t want_attr = alias == 0 ? 0x10u : 0x20u;
+                    alias_shape = MEM_R32(0x09180000u) == want_mode && MEM_R32(0x09180000u + 4u) == want_attr;
+                }
+            }
+            expect(alias_shape, alias == 0 ? "an ms0:/ listing reports the FAT directory shape 0x11ff attr 0x10"
+                                           : alias == 1 ? "a fatms0: listing reports the FAT file shape 0x21ff attr 0x20"
+                                                        : "a device-less listing reports the FAT file shape 0x21ff attr 0x20");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = alias_fd;
+            (void)sr_hle_test_io_dclose(&cpu);
+        }
+    }
+
     fd_guest_copy(PATH2_ADDR, file_guest2, sizeof(file_guest2));
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = PATH_ADDR;

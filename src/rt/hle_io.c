@@ -951,7 +951,7 @@ static uint32_t h_IoDread(CpuState *s) {
      * directory, equal to sceIoGetstat's). Every other device (disc0, flash0) keeps its 0x124 bits: no
      * cell measures them. The device is the one the directory was opened on, not `backend`, which is 1
      * for every merged-namespace listing. */
-    const int ms_shape = d->path && sr_vfs_strnicmp(d->path, "ms0:", 4u) == 0;
+    const int ms_shape = d->path && sr_ms0_classify(d->path, NULL) == SR_MS0_OWNED;
     if (d->backend == 0) {
         int r = iso_list(d->path, d->index, &e);
         if (r <= 0) return r < 0 ? 0x80010005u : 0;

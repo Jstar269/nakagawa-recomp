@@ -24,7 +24,8 @@ static int sr_thread_dispatch_callbacks_once(uint32_t thread_uid);
  * 0x80020001; an attribute bit outside the user mask 0xf8f060ff returns ILLEGAL_ATTR; a priority
  * outside 8..0x77 returns ILLEGAL_PRIORITY; a stack size under 0x200 (zero included) returns
  * ILLEGAL_STACK_SIZE; an entry that is not guest memory returns 0x800200d3, while a NULL entry
- * creates. Which error wins when several arguments are wrong is not measured. */
+ * creates. Which error wins when several arguments are wrong is not measured. This HLE serves user
+ * code only, so the KERNEL attribute (0x1000) is refused, which PPSSPP allows for kernel callers. */
 #define HLE_KERNEL_ERROR_ERROR 0x80020001u          /* SCE_KERNEL_ERROR_ERROR */
 #define HLE_KERNEL_ERROR_ILLEGAL_STACK_SIZE 0x80020194u
 #define HLE_THREAD_USER_ATTR_MASK 0xf8f060ffu
