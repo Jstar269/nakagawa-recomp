@@ -663,7 +663,8 @@ class TestPlayerPackageRoute(unittest.TestCase):
         library_dir.mkdir(parents=True, exist_ok=True)
         library = library_dir / "library.json"
         library.write_bytes((self.user_root / "library.json").read_bytes())
-        return library
+        returned: Path = library
+        return returned
 
     # ---- prerequisites -------------------------------------------------------
 
@@ -1470,7 +1471,8 @@ class TestPlayerPackageRoute(unittest.TestCase):
             built = self.run_build_action(self.user_root)
             timings.append(time.perf_counter() - started)
             self.assertEqual(built.returncode, 0, built.stdout[-4000:] + built.stderr[-4000:])
-            return log_path.read_text(encoding="utf-8", errors="replace")
+            returned: str = log_path.read_text(encoding="utf-8", errors="replace")
+            return returned
 
         reused, planned, compiled = build()
         self.assertEqual(reused, 0)

@@ -1469,7 +1469,8 @@ def load_imports(path: Path | None) -> dict[int, dict[str, str]]:
 
 def is_dedicated_unreviewed(reg: dict) -> bool:
     """A manifest registration whose dedicated handler nobody has reviewed (#341)."""
-    return reg["classification"] == "dedicated" and reg["status"] == "unreviewed"
+    returned: bool = reg["classification"] == "dedicated" and reg["status"] == "unreviewed"
+    return returned
 
 
 def unreviewed_import_gate(

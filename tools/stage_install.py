@@ -98,7 +98,8 @@ def _platform_name() -> str:
 
 def app_icon() -> bytes:
     """The committed app icon, the one the player executable carries."""
-    return (ROOT / make_app_icon.OUTPUT).read_bytes()
+    returned: bytes = (ROOT / make_app_icon.OUTPUT).read_bytes()
+    return returned
 
 
 def _git(repo: Path, *arguments: str, binary: bool = False):
@@ -119,7 +120,8 @@ def export_source(repo: Path, destination: Path, revision: str = "HEAD") -> str:
         tar.extractall(destination, filter="data")
     if not (destination / "tools" / "nk_cli.py").is_file():
         raise InstallError("INSTALL_SOURCE_EXPORT_FAILED: the export has no tools/nk_cli.py")
-    return commit
+    returned: str = commit
+    return returned
 
 
 def _check_destination(dest: Path) -> None:

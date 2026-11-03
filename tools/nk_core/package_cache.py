@@ -1255,7 +1255,8 @@ def _input_sha(value: Any, label: str) -> str:
     digest = value["sha256"]
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise PackageCacheError(f"{label} input digest is invalid")
-    return digest
+    returned: str = digest
+    return returned
 
 
 def _canonical_load_address(value: Any) -> Any:
@@ -1403,9 +1404,11 @@ def _key_from_document(value: Mapping[str, Any] | None) -> Mapping[str, Any] | N
         return None
     cache = value.get("cache")
     if isinstance(cache, Mapping) and isinstance(cache.get("key"), Mapping):
-        return cache["key"]
+        returned: Mapping[str, Any] | None = cache["key"]
+        return returned
     if isinstance(value.get("key"), Mapping) and "aot" not in value:
-        return value["key"]
+        returned = value["key"]
+        return returned
     if "aot" in value and "native" in value:
         return value
     return None

@@ -342,7 +342,8 @@ class ExperimentalProfileBuildError(PackageBuildError):
 
 def default_user_data_root() -> Path:
     try:
-        return default_data_root()
+        returned: Path = default_data_root()
+        return returned
     except PrerequisiteFetchError as exc:
         raise PackageBuildError(str(exc)) from exc
 
@@ -738,7 +739,8 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
 
 def _encrypted_prx_header_supported(header: bytes) -> bool:
     """The ``~PSP`` shape the decryption step takes (iso_inspect, shared rule)."""
-    return _prx_container_header_supported(header)
+    returned: bool = _prx_container_header_supported(header)
+    return returned
 
 
 def _psp_container_kernel_mode(header: bytes) -> bool:
@@ -989,7 +991,8 @@ def _experimental_build_modules(
         if not isinstance(profile, dict):
             raise ValueError("the experimental profile is not an object")
         if not bindings:
-            return title_manifest.validate_manifest(profile["manifest"])
+            returned: dict[str, Any] = title_manifest.validate_manifest(profile["manifest"])
+            return returned
         return _write_experimental_module_bindings(profile_path, profile, bindings)
     except (OSError, KeyError, ValueError) as exc:
         raise ExperimentalProfileBuildError(
@@ -4248,7 +4251,8 @@ def _write_experimental_module_bindings(profile_path: Path, profile: dict,
         (json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
         .encode("utf-8"),
     )
-    return manifest
+    returned: dict[str, Any] = manifest
+    return returned
 
 
 def _public_import_rows(rows: list[dict]) -> list[dict]:
@@ -5684,7 +5688,8 @@ def main() -> int:
     p_vram.set_defaults(func=cmd_vram)
 
     args = parser.parse_args()
-    return args.func(args)
+    returned: int = args.func(args)
+    return returned
 
 
 if __name__ == "__main__":

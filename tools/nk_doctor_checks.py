@@ -166,7 +166,8 @@ def default_data_root() -> Path:
     """Resolve the user data root without importing package checks at module load."""
     from nk_core.prereq_fetcher import default_data_root as resolve_data_root
 
-    return resolve_data_root()
+    returned: Path = resolve_data_root()
+    return returned
 
 
 def check_data_directory(report: Report) -> None:
@@ -747,7 +748,8 @@ def _shader_provenance_errors(root: Path) -> list[str]:
     try:
         from shader_embed import verify as verify_shader_provenance
 
-        return verify_shader_provenance(shader_root, manifest)
+        returned: list[str] = verify_shader_provenance(shader_root, manifest)
+        return returned
     except (AttributeError, OSError, TypeError, UnicodeError, ValueError) as exc:
         return [f"shader verification error: {exc}"]
 
@@ -1449,7 +1451,8 @@ def _check_elf_file(report: Report, code: str, path: Path, description: str) -> 
         return None
     assert metadata is not None
     report.pass_(code, f"Validated {description}", path=path, metadata=metadata)
-    return metadata
+    returned: dict[str, int] | None = metadata
+    return returned
 
 
 def _resolve_disc_id(manifest: Path | str | dict[str, object] | None) -> str | None:
