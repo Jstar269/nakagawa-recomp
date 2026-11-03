@@ -150,7 +150,7 @@ Each bound address is reported as `exact`, `neighbour` (identical code told apar
 around it), `fuzzy` (changed code, 0.75 similarity or more and clearly ahead of the runner-up),
 `caller` (placed by exactly matched callers), `ambiguous` or `unmatched`. Only `exact` and
 `neighbour` results are written unless `--accept-fuzzy` is given, and the other two are marked
-`CHECK BY HAND`. A pair or terminator with an unresolved end is dropped whole, and the exit status
+`CHECK BY HAND`. An alias pair with an unresolved end is dropped whole, and the exit status
 is non-zero while anything is left out. The analysis inputs and the report come from a title: keep
 them private.
 
