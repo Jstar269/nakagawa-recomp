@@ -1337,6 +1337,8 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
 
 REPO = ci_paths_module.SELF_HOSTED_REPOSITORY
 OWNER = REPO.split("/", 1)[0]
+#: The repository's name as GitHub reports it since the rename (the constant is lower case).
+RENAMED_REPO = "Jstar269/Nakagawa-Recomp"
 HOSTED = json.dumps("ubuntu-24.04")
 SELF_HOSTED = json.dumps(["self-hosted", "linux", "x64", "nk-wsl"], separators=(",", ":"))
 NOW = 1_800_000_000
@@ -1380,6 +1382,32 @@ class CodeqlRunnerRoutingTests(unittest.TestCase):
         self.assertEqual(self.route("workflow_run", _wake("merge_group", "gh-readonly-queue/main/pr-7-abc")),
                          SELF_HOSTED)
         self.assertEqual(self.route("workflow_run", _wake("pull_request", "fix/thing")), SELF_HOSTED)
+
+    def test_the_renamed_repository_casing_uses_the_pool_for_trusted_targets(self) -> None:
+        self.assertEqual(self.route("push", repository=RENAMED_REPO), SELF_HOSTED)
+        for kind, branch in (("pull_request", "batch/desk-20261030T193657Z"),
+                             ("merge_group", "gh-readonly-queue/main/pr-7-abc")):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    self.route("workflow_run", _wake(kind, branch, head_repo=RENAMED_REPO),
+                               repository=RENAMED_REPO),
+                    SELF_HOSTED)
+
+    def test_the_renamed_casing_does_not_trust_forks_or_other_owners(self) -> None:
+        cases = {
+            "fork of the renamed repository": _wake("pull_request", "batch/desk-1",
+                                                    head_repo="evil/Nakagawa-Recomp", actor="evil"),
+            "fork pushed as the owner's name": _wake("pull_request", "batch/desk-1",
+                                                     head_repo="evil/Nakagawa-Recomp"),
+            "same-name repository of another owner": _wake("pull_request", "batch/desk-1",
+                                                           head_repo="Jstar269x/Nakagawa-Recomp"),
+            "merge group of a fork": _wake("merge_group", "gh-readonly-queue/main/pr-7-abc",
+                                           head_repo="evil/Nakagawa-Recomp"),
+        }
+        for label, event in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.route("workflow_run", event, repository=RENAMED_REPO), self.HOSTED)
+        self.assertEqual(self.route("push", repository="evil/Nakagawa-Recomp"), self.HOSTED)
 
     def test_outside_and_fork_pull_requests_stay_hosted(self) -> None:
         cases = {
@@ -1470,10 +1498,52 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
         with self.subTest("merge group of another branch"):
             self.assertEqual(self.route("merge_group", ref="refs/heads/gh-readonly-queue/dev/pr-1"), HOSTED)
         # A fork runs this workflow in its own repository, where the pool does not exist.
-        for repository in ("someone/nakagawa-recomp", "", "jstar269/nakagawa-recomp"):
+        for repository in ("someone/nakagawa-recomp", ""):
             with self.subTest(repository=repository):
                 self.assertEqual(self.route("push", ref="refs/heads/main", repository=repository), HOSTED)
                 self.assertEqual(self.route("pull_request", _pull_request(), repository=repository), HOSTED)
+
+    def test_the_renamed_repository_casing_is_still_this_repository(self) -> None:
+        """GitHub reports the name as ``Jstar269/Nakagawa-Recomp`` since the rename."""
+        for repository in (RENAMED_REPO, REPO, REPO.upper()):
+            with self.subTest(repository=repository):
+                self.assertEqual(self.route("push", ref="refs/heads/main", repository=repository), SELF_HOSTED)
+                self.assertEqual(
+                    self.route("merge_group", ref="refs/heads/gh-readonly-queue/main/pr-7-" + "a" * 40,
+                               repository=repository),
+                    SELF_HOSTED)
+                self.assertEqual(
+                    self.route("pull_request", _pull_request(head_repo=RENAMED_REPO, base_repo=RENAMED_REPO),
+                               repository=repository),
+                    SELF_HOSTED)
+        with self.subTest("payload in the old casing, environment in the new"):
+            self.assertEqual(self.route("pull_request", _pull_request(), repository=RENAMED_REPO), SELF_HOSTED)
+
+    def test_the_renamed_casing_does_not_trust_other_repositories_or_people(self) -> None:
+        cases = {
+            "fork of the renamed repository": _pull_request(head_repo="evil/Nakagawa-Recomp", fork=True,
+                                                            author="evil", base_repo=RENAMED_REPO),
+            "fork claiming the owner": _pull_request(head_repo="evil/Nakagawa-Recomp", fork=True,
+                                                     base_repo=RENAMED_REPO),
+            "same-name repository of another owner": _pull_request(head_repo="Jstar269x/Nakagawa-Recomp",
+                                                                   base_repo=RENAMED_REPO),
+            "other owner differing only by case": _pull_request(head_repo="JSTAR2690/Nakagawa-Recomp",
+                                                                base_repo=RENAMED_REPO),
+            "fork flag set": _pull_request(head_repo=RENAMED_REPO, base_repo=RENAMED_REPO, fork=True),
+            "carry branch": _pull_request("carry/pr-9", head_repo=RENAMED_REPO, base_repo=RENAMED_REPO),
+            "author login in another casing": _pull_request(head_repo=RENAMED_REPO, base_repo=RENAMED_REPO,
+                                                            author=OWNER.lower()),
+        }
+        for label, event in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.route("pull_request", event, repository=RENAMED_REPO), HOSTED)
+        for repository in ("evil/Nakagawa-Recomp", "Jstar269x/Nakagawa-Recomp", "Jstar269/Nakagawa-Recomp2",
+                           "Jstar269/Nakagawa Recomp"):
+            with self.subTest(repository=repository):
+                self.assertEqual(self.route("push", ref="refs/heads/main", repository=repository), HOSTED)
+                self.assertEqual(self.route("pull_request", _pull_request(), repository=repository), HOSTED)
+        with self.subTest("branch refs stay case-sensitive"):
+            self.assertEqual(self.route("push", ref="refs/heads/Main", repository=RENAMED_REPO), HOSTED)
 
     def test_the_off_switch_and_a_stale_heartbeat_send_trusted_runs_to_hosted(self) -> None:
         for switch in ("off", "", "true", "1", "native", "ON "):
