@@ -958,6 +958,38 @@ static inline void sr_native_memset(uint32_t dest, uint8_t val, uint32_t size, u
     }
 }
 
+/* The PSP maps nothing below the scratchpad at 0x00010000, so a null base plus a field
+ * offset faults there. A zero-based image occupies that range in this arena, where the same
+ * access would read the image's first bytes and run on. Generated code for such an image
+ * defines SR_NULL_PAGE_GUARD (tools/codegen.py), and its data accesses stop by name instead
+ * (#363). Runtime code keeps the plain accessors: it reads the image for its own reasons and
+ * reports the bad guest pointers it is handed. */
+#define SR_PSP_UNMAPPED_END 0x00010000u
+__attribute__((noreturn, cold)) void sr_null_data_pointer(uint32_t address, const char *function);
+static inline uint32_t sr_null_page_checked(uint32_t address, const char *function) {
+    if (__builtin_expect(SR_PHYS(address) < SR_PSP_UNMAPPED_END, 0))
+        sr_null_data_pointer(address, function);
+    return address;
+}
+#define SR_DATA_ADDRESS(a) sr_null_page_checked((uint32_t)(a), __func__)
+/* A span a generated body touches in one native pass, such as a fill or copy standing in
+ * for a translated loop. An empty span touches nothing; any other stops at its lowest
+ * address before a byte moves. */
+static inline uint32_t sr_null_span_checked(uint32_t address, uint32_t size, const char *function) {
+    return size ? sr_null_page_checked(address, function) : address;
+}
+
+#ifdef SR_NULL_PAGE_GUARD
+#define MEM_R8(a)   sr_r8(SR_DATA_ADDRESS(a))
+#define MEM_R16(a)  sr_r16(SR_DATA_ADDRESS(a))
+#define MEM_R32(a)  sr_r32(SR_DATA_ADDRESS(a))
+#define MEM_W8(a,v)  sr_w8(SR_DATA_ADDRESS(a), (uint8_t)(v))
+#define MEM_W16(a,v) sr_w16(SR_DATA_ADDRESS(a), (uint16_t)(v))
+#define MEM_W32(a,v) sr_w32(SR_DATA_ADDRESS(a), (uint32_t)(v))
+#define MEM_W8_PC(a,v,pc)  sr_w8_pc(SR_DATA_ADDRESS(a), (uint8_t)(v), (pc))
+#define MEM_W16_PC(a,v,pc) sr_w16_pc(SR_DATA_ADDRESS(a), (uint16_t)(v), (pc))
+#define MEM_W32_PC(a,v,pc) sr_w32_pc(SR_DATA_ADDRESS(a), (uint32_t)(v), (pc))
+#else
 #define MEM_R8(a)   sr_r8(a)
 #define MEM_R16(a)  sr_r16(a)
 #define MEM_R32(a)  sr_r32(a)
@@ -967,6 +999,29 @@ static inline void sr_native_memset(uint32_t dest, uint8_t val, uint32_t size, u
 #define MEM_W8_PC(a,v,pc)  sr_w8_pc((a), (uint8_t)(v), (pc))
 #define MEM_W16_PC(a,v,pc) sr_w16_pc((a), (uint16_t)(v), (pc))
 #define MEM_W32_PC(a,v,pc) sr_w32_pc((a), (uint32_t)(v), (pc))
+#endif
+
+/* Generated bulk code forms a host pointer only through SR_HOST(SR_DATA_SPAN(a, n)), and the
+ * native memmove/memset stubs check both spans the same way, so a null base stops as it would
+ * in the translated loop it replaces. */
+#ifdef SR_NULL_PAGE_GUARD
+#define SR_DATA_SPAN(a, n) sr_null_span_checked((uint32_t)(a), (uint32_t)(n), __func__)
+static inline void sr_native_memmove_checked(uint32_t dest, uint32_t src, uint32_t size, uint32_t pc,
+                                             const char *function) {
+    sr_native_memmove(sr_null_span_checked(dest, size, function),
+                      sr_null_span_checked(src, size, function), size, pc);
+}
+static inline void sr_native_memset_checked(uint32_t dest, uint8_t val, uint32_t size, uint32_t pc,
+                                            const char *function) {
+    sr_native_memset(sr_null_span_checked(dest, size, function), val, size, pc);
+}
+#define sr_native_memmove(dest, src, size, pc) \
+    sr_native_memmove_checked((dest), (src), (size), (pc), __func__)
+#define sr_native_memset(dest, val, size, pc) \
+    sr_native_memset_checked((dest), (val), (size), (pc), __func__)
+#else
+#define SR_DATA_SPAN(a, n) ((uint32_t)(a))
+#endif
 
 void  sr_mem_init(void);
 void  sr_mem_reset(void);              /* LoadExec: zero guest RAM and retire executable spans */
@@ -992,6 +1047,12 @@ void     sr_swl(uint32_t addr, uint32_t rtv);
 void     sr_swr(uint32_t addr, uint32_t rtv);
 void     sr_swl_pc(uint32_t addr, uint32_t rtv, uint32_t pc);
 void     sr_swr_pc(uint32_t addr, uint32_t rtv, uint32_t pc);
+#ifdef SR_NULL_PAGE_GUARD
+#define sr_lwl(rtv, a) sr_lwl((rtv), SR_DATA_ADDRESS(a))
+#define sr_lwr(rtv, a) sr_lwr((rtv), SR_DATA_ADDRESS(a))
+#define sr_swl_pc(a, rtv, pc) sr_swl_pc(SR_DATA_ADDRESS(a), (rtv), (pc))
+#define sr_swr_pc(a, rtv, pc) sr_swr_pc(SR_DATA_ADDRESS(a), (rtv), (pc))
+#endif
 void     sr_break(CpuState *s, uint32_t code, uint32_t pc);
 void     sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 uint32_t sr_bitrev(uint32_t x);
@@ -1262,7 +1323,7 @@ typedef struct SrVarImport {
 typedef struct SrModuleCode {
     const char *name;                 /* module file name, as the title manifest names it */
     uint32_t file_size;               /* identity of the exact bytes that were translated */
-    uint64_t file_fnv1a64;
+    const char *file_sha256;          /* lowercase hex SHA-256 of those bytes */
     uint32_t link_low;                /* image extent in link space: [link_low, link_high) */
     uint32_t link_high;
     uint32_t alignment;               /* largest PT_LOAD alignment */
@@ -1273,8 +1334,8 @@ typedef struct SrModuleCode {
     uint32_t nfuncs;
     const SrModuleSpan *spans;
     uint32_t nspans;
-    /* Non-zero: a code overlay the game copies into memory itself (tools/analyze.py,
-     * MWo3). It is bound, at its link address, when the guest invalidates the instruction
+    /* Non-zero: a code overlay the game copies into memory itself (tools/analyze.py: MWo3,
+     * or ELF type 0xFFA8). It is bound, at its link address, when the guest invalidates the instruction
      * cache over it and these leading bytes of the file (header and text) are in memory,
      * and unbound when they no longer are. sceKernelLoadModule never binds it. */
     uint32_t overlay_check_len;
@@ -1282,6 +1343,12 @@ typedef struct SrModuleCode {
     /* The variables the module imports, linked when it loads and its exporter is loaded. */
     const SrVarImport *var_imports;
     uint32_t nvar_imports;
+    /* Non-NULL: the overlay check covers these link ranges, in order (overlay_check_len
+     * bytes in all), instead of the leading bytes. A fixed-address ELF overlay (ELF type
+     * 0xFFA8) mixes code and data in one segment, so every word of its translated code,
+     * and only that, identifies it (tools/codegen.py translate_runtime_module). */
+    const SrModuleSpan *overlay_check_spans;
+    uint32_t noverlay_check_spans;
 } SrModuleCode;
 
 typedef enum SrModuleBindResult {
@@ -1349,7 +1416,11 @@ void sr_fixed_var_imports_register(const char *module, const SrVarImport *import
 const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
 unsigned sr_module_code_count(void);
 const SrModuleCode *sr_module_code_at(unsigned index);
-/* Identity digest of a module file (FNV-1a, 64-bit), as tools/codegen.py records it. */
+/* Identity digest of a module file: lowercase hex SHA-256, as tools/codegen.py records it. */
+void sr_module_code_sha256(const void *bytes, size_t size, char out[65]);
+/* FNV-1a, 64-bit: the digest of an overlay's leading bytes in guest memory, which is checked
+ * on every instruction-cache invalidate that reaches it. It says whether the overlay is
+ * present, not whose file it is. */
 uint64_t sr_module_code_fnv1a64(const void *bytes, size_t size);
 const char *sr_module_bind_result_name(SrModuleBindResult result);
 /* Bind `code` with its image already laid out in guest memory at `base`. */
@@ -1470,6 +1541,24 @@ typedef struct {
     size_t previous_floor;
 } SrAotReturnBoundaryScope;
 
+#ifdef SR_VERIFY
+/* Sampled in-play differential checking (src/rt/verify.c, issue #1843). Verify builds only. */
+#define SR_VERIFY_STOP_SYSCALL 1
+#define SR_VERIFY_STOP_IMPORT  2
+extern int sr_verify_suppress_direct;
+void sr_verify_begin(CpuState *s, uint32_t target, uint32_t call_pc, uint32_t resume_pc);
+void sr_verify_note_entry(uint32_t target);
+void sr_verify_end(CpuState *s, const SrAotReturnBoundary *boundary);
+void sr_verify_at_stop(CpuState *s, int kind, uint32_t code, uint32_t pc);
+void sr_verify_note_preempt(const char *why);
+void sr_verify_abandon(const char *why);
+/* Write SR_VERIFY_REPORT now, once. The runtime's _Exit paths skip atexit and call this. */
+void sr_verify_report_now(void);
+#define SR_VERIFY_REPORT_NOW() sr_verify_report_now()
+#else
+#define SR_VERIFY_REPORT_NOW() ((void)0)
+#endif
+
 extern SrAotReturnBoundary *sr_aot_return_boundary_top;
 int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
                                  uint32_t call_pc, uint32_t has_resume_pc);
@@ -1513,7 +1602,9 @@ int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target);
  * instruction runs, so one slot suffices and it is never live across a yield (asserted at
  * the yield, syscall and dispatch entry points). A callable body owes its caller the
  * restore of its entry SP once the chain completes; the drain applies the first restore
- * recorded in its chain, which is the value the nested native returns used to leave.
+ * recorded in its chain, which is the value the nested native returns used to leave. It
+ * gives back a frame the chain handed on live, so it only raises SP: a chain that ends
+ * above it left through a longjmp or an unwind, and the guest's SP stands (#1935).
  *
  * A transfer to a computed target is one dispatch (dispatch_tail_step). The direct transfers
  * that follow it used to nest inside that dispatch, so the step drains them itself
@@ -1632,6 +1723,10 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* ge_run_list that also stops at a command boundary once *stop is set, after at least one
+ * command, exactly as it stops at a stall address: it returns the next command's address, with
+ * *stopped set, and resuming there continues the list. */
+uint32_t ge_run_list_until(uint32_t addr, int resume, atomic_int_least32_t *stop, int *stopped);
 /* The 16-bit argument of the FINISH command the last ge_run_list call executed. */
 uint32_t ge_last_finish_id(void);
 /* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
@@ -2013,6 +2108,12 @@ void sr_profile_test_reset(void);
 uint64_t sr_profile_test_block_count(uint32_t pc);
 uint64_t sr_profile_test_lookup_drops(void);
 
+#ifdef SR_VERIFY
+#define SR_VERIFY_NOTE_YIELD() sr_verify_note_preempt("yield")
+#else
+#define SR_VERIFY_NOTE_YIELD() ((void)0)
+#endif
+
 #define SR_YIELD(s, target_pc) do { \
     if (__builtin_expect(g_prof_enabled, 0)) { \
         sr_profile_block(target_pc); \
@@ -2020,6 +2121,7 @@ uint64_t sr_profile_test_lookup_drops(void);
     if (__builtin_expect(sr_sched_on, 1)) { \
         if (atomic_fetch_sub_explicit(&sr_timeslice, 1, memory_order_relaxed) <= 1) { \
             (s)->pc = (target_pc); \
+            SR_VERIFY_NOTE_YIELD(); \
             sr_yield(s); \
         } \
     } \
@@ -2117,6 +2219,11 @@ void     sched_raise_interrupt(uint32_t source);     /* latch source; delivery o
 uint32_t sched_pending_interrupts(void);             /* source bits not yet serviced */
 void     sched_delay_current(uint64_t usec);        /* block current thread for usec */
 void     sched_preempt(void);                       /* yield now if a higher-priority thread is ready */
+/* Set by the preemption timer when a stronger thread's deadline comes. A long HLE call polls it
+ * between units of work and, holding nothing another guest thread could trip on, calls
+ * sched_preempt_point(): that thread then runs inside the call, as it would on the PSP (#1296). */
+extern atomic_int_least32_t sr_preempt_due;
+void     sched_preempt_point(void);
 void     sched_block_on(uint32_t obj);              /* block current thread until sched_wake(obj) */
 void     sched_wait_vblank_start(void);             /* sceDisplayWaitVblankStart: always block to the next vblank start edge */
 int      sched_wait_vblank(void);                   /* sceDisplayWaitVblank: 1 if already inside the vblank interval (no block), else blocks and returns 0 */

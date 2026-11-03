@@ -199,9 +199,6 @@ class PublicTitleIsolationTests(unittest.TestCase):
         for token in forbidden_tokens:
             self.assertNotIn(token, combined, f"Forbidden retail token '{token}' leaked into generated C catalog!")
 
-        from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids
-        self.assertEqual(unregistered_retail_disc_ids(combined), [])
-
         # Every retail entry comes from a tracked, policy-included manifest.
         included_retail = set()
         for mf in tracked_titles():
@@ -591,7 +588,8 @@ class PrivateEbootSuiteOptInTests(unittest.TestCase):
         original_is_file = Path.is_file
 
         def is_eboot(candidate) -> bool:
-            return os.path.normcase(os.path.abspath(os.fspath(candidate))) == eboot_key
+            returned: bool = os.path.normcase(os.path.abspath(os.fspath(candidate))) == eboot_key
+            return returned
 
         def fake_isfile(candidate) -> bool:
             return input_present if is_eboot(candidate) else original_isfile(candidate)

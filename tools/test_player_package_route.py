@@ -663,7 +663,8 @@ class TestPlayerPackageRoute(unittest.TestCase):
         library_dir.mkdir(parents=True, exist_ok=True)
         library = library_dir / "library.json"
         library.write_bytes((self.user_root / "library.json").read_bytes())
-        return library
+        returned: Path = library
+        return returned
 
     # ---- prerequisites -------------------------------------------------------
 
@@ -819,6 +820,35 @@ class TestPlayerPackageRoute(unittest.TestCase):
                          completed.stdout + completed.stderr)
         self.assertIn("STAGING_RESULT status=PASS", completed.stdout)
         self.assertNotIn("STAGING_RESULT status=INCOMPLETE", completed.stdout)
+
+    def test_stage_only_on_an_uncatalogued_disc_says_what_it_left_behind(self):
+        """--stage-only refuses a disc outside the title list, and says what it wrote.
+
+        Failing before: the refusal ended "Nothing was changed" although the inspection had
+        already written the disc's experimental profile into the data folder, and the run
+        printed no STAGING_RESULT line for a script to read.
+        """
+        self.skip_if_toolchain_unavailable()
+        iso_path = self.root / "uncatalogued-stage-only.iso"
+        create_test_iso_with_executables(
+            iso_path, build_plain_mips_elf() + bytes(i % 251 for i in range(70000)),
+            disc_id=DISC_ID, title="Synthetic Experimental Disc",
+        )
+        environment = os.environ.copy()
+        environment["LOCALAPPDATA"] = str(self.local_appdata)
+        environment["APPDATA"] = str(self.root / "appdata")
+        environment["USERPROFILE"] = str(self.root / "userprofile")
+        completed = subprocess.run(
+            [str(self.player), f"--user-data-root={self.user_root}", f"--iso={iso_path}",
+             "--stage-only"],
+            cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(completed.returncode, 3, completed.stdout + completed.stderr)
+        self.assertIn(f"STAGING_RESULT status=FAIL disc_id={DISC_ID}", completed.stdout)
+        self.assertIn("not in Nakagawa's title list yet", completed.stderr)
+        self.assertNotIn("Nothing was changed", completed.stderr)
+        self.assertIn("add the disc from the player's library", completed.stderr)
+        self.assertTrue((self.user_root / "experimental" / DISC_ID / "profile.json").is_file())
 
     def test_uncatalogued_player_route_builds_with_generic_profile(self):
         """The package action upgrades the native profile through bring-up's writer."""
@@ -1441,7 +1471,8 @@ class TestPlayerPackageRoute(unittest.TestCase):
             built = self.run_build_action(self.user_root)
             timings.append(time.perf_counter() - started)
             self.assertEqual(built.returncode, 0, built.stdout[-4000:] + built.stderr[-4000:])
-            return log_path.read_text(encoding="utf-8", errors="replace")
+            returned: str = log_path.read_text(encoding="utf-8", errors="replace")
+            return returned
 
         reused, planned, compiled = build()
         self.assertEqual(reused, 0)

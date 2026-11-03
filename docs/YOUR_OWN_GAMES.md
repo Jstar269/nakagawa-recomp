@@ -31,8 +31,9 @@ Importing a disc doesn't change its status. The **EXPERIMENTAL** badge on the ga
   checks the disc (see [Encrypted games](#supplying-unencrypted-files)).
 - **PSP system fonts (optional, recommended for in-game text).** To see a
   game's text in the PSP's own lettering, copy the Sony font files (`.pgf`)
-  from your own PSP's `flash0:/font/`. The project doesn't include or share
-  them. Connect your PSP by USB as [Copying the fonts from your PSP](SETUP.md#copying-the-fonts-from-your-psp)
+  from your own PSP's `flash0:/font/`. They are plain files; Nakagawa reads them
+  from a local folder and never decrypts anything from `flash0`. The project
+  doesn't include, share or upload them. Connect your PSP by USB as [Copying the fonts from your PSP](SETUP.md#copying-the-fonts-from-your-psp)
   describes and choose **GET FONTS FROM MY PSP** in **Settings > PSP FONTS**, or
   copy them to a folder and run `python tools/nk_cli.py fonts import <folder>`.
   If two files cover the same slot, pick one with `--choose <slot>=<file>`
@@ -317,7 +318,7 @@ reports the result. The runtime's environment switches are in [`DEBUGGING.md`](D
 
 | Command | Reads | Writes / prints |
 | --- | --- | --- |
-| `inspect <iso> [--json] [--root DIR]` | A PSP `.iso` and its `PSP_GAME/PARAM.SFO` | Title, disc ID, executable kind and whether packages, fonts and decrypted inputs are present |
+| `inspect <iso> [--json] [--user-data-root DIR]` | A PSP `.iso` and its `PSP_GAME/PARAM.SFO` | Title, disc ID, executable kind and whether packages, fonts and decrypted inputs are present |
 | `prepare <iso> [--dest DIR] [--user-data-root DIR] [--player EXE]` | A PSP `.iso` | Adds the disc to the library (raw discs may go to `--dest`); archive discs are set up through the player executable |
 | `build-package <disc_id> [--module-dir DIR] [--psp-header HDR] [--progress-json [FILE]] [--log-file FILE]` | The library entry for `disc_id`, your decrypted executable and modules | Recompiles the title into `<player data>/packages/<DISC_ID>/`; progress as one JSON object per line with `--progress-json` |
 | `launch <game_dir> [--profile NAME] [--fps-cap N] [--software]` | A prepared package directory with its `manifest.json` | Plans and starts the run; `--profile` is `Standard`, `Performance`, `Benchmark` or `Diagnostics`; `--software` uses the software GE rasterizer |

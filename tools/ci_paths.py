@@ -22,6 +22,7 @@ runs.
 from __future__ import annotations
 
 import argparse
+import ast
 from functools import lru_cache
 import json
 import os
@@ -141,7 +142,8 @@ def _public_policy() -> object | None:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import publication_policy
 
-        return publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
+        returned: object | None = publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
+        return returned
     except Exception:
         return None
 
@@ -158,7 +160,8 @@ def _is_public_surface(path: str) -> bool:
     if policy is None:
         return True
     try:
-        return policy.resolve(path).disposition == "included"
+        returned: bool = policy.resolve(path).disposition == "included"
+        return returned
     except Exception:
         return True
 
@@ -174,7 +177,8 @@ def _is_policy_included(path: str) -> bool:
     if policy is None:
         return False
     try:
-        return policy.resolve(path).disposition == "included"
+        returned: bool = policy.resolve(path).disposition == "included"
+        return returned
     except Exception:
         return False
 
@@ -565,6 +569,219 @@ def _is_python_tool(path: str) -> bool:
     )
 
 
+#: Files whose text decides which Python test modules the native and Windows gates run.
+#: Those gates run make targets and fixed ``unittest`` module names, never a discovery
+#: sweep (that is the Python shards' job), so a test module none of these files names is
+#: executed by the Python shards alone.
+#: ``tests/`` and ``fixtures/`` are included because a native-side Python driver can import a
+#: tools test module (``tests/native/test_player_ui.py`` imports ``test_player_package_route``).
+_NATIVE_GATE_SOURCE_GLOBS = (
+    "Makefile",
+    "GNUmakefile",
+    "mk/*.mk",
+    "CMakeLists.txt",
+    ".github/workflows/*.yml",
+    ".github/actions/**/*.yml",
+    "tests/**/*.py",
+    "fixtures/**/*.py",
+    "tools/*.sh",
+    "tools/*.ps1",
+)
+_NATIVE_GATE_SCRIPT_GLOB = "tools/*.py"
+
+
+@lru_cache(maxsize=1)
+def _native_gate_sources() -> str | None:
+    """Text of the build and CI descriptors and tool scripts, or None when unreadable.
+
+    Test modules and this classifier are left out: a test that merely names another test
+    is not a gate that runs it. None makes ``_is_unexecuted_test`` answer False, so an
+    unreadable tree keeps every native route.
+    """
+
+    chunks: list[str] = []
+    try:
+        for pattern in _NATIVE_GATE_SOURCE_GLOBS:
+            for path in sorted(ROOT.glob(pattern)):
+                chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+        for path in sorted(ROOT.glob(_NATIVE_GATE_SCRIPT_GLOB)):
+            if path.name.startswith("test_") or path.name in {"ci_paths.py", "mypy_baseline.py"}:
+                continue
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return "\n".join(chunks)
+
+
+def _is_unexecuted_test(path: str) -> bool:
+    """True for a ``tools/test_*.py`` module that no native or Windows gate runs.
+
+    Such a change is exercised by the Python shards only, so it needs neither the native
+    nor the Windows job even when the module's subject (``codegen``, ``hst_*``) is a
+    native one. A module any build or CI descriptor or tool script names stays routed, and
+    so does a CI classifier test (``_is_workflow_ci``), whose edit changes what CI runs.
+    """
+
+    normalised = _normalise(path)
+    pure = PurePosixPath(normalised)
+    if pure.parent != PurePosixPath("tools") or not pure.name.startswith("test_") or pure.suffix != ".py":
+        return False
+    if _is_workflow_ci(normalised):
+        return False
+    sources = _native_gate_sources()
+    if sources is None:
+        return False
+    # A module that no longer exists (a deleted test) is still run by a descriptor that
+    # names it, so the direct name check does not depend on the file being present.
+    return pure.stem not in _gate_executed_tests(sources) and not _names_module(sources, pure.stem)
+
+
+@lru_cache(maxsize=8)
+def _identifiers(text: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[A-Za-z0-9_]+", text))
+
+
+def _names_module(text: str, module: str) -> bool:
+    """Whether ``text`` names ``module`` as a whole identifier (``test_a`` is not in ``test_a_b``)."""
+
+    return module in _identifiers(text)
+
+
+@lru_cache(maxsize=8)
+def _gate_executed_tests(sources: str) -> frozenset[str]:
+    """The ``tools/test_*.py`` modules a native or Windows gate runs, directly or by import.
+
+    A module is run when the gate descriptors and scripts in ``sources`` name it. A module
+    that one of those imports, or names as a string (``importlib.import_module``, a
+    ``unittest`` target), is run through it, and so on. A module that cannot be parsed
+    hides its imports, so every test module counts as run then.
+    """
+
+    tools = ROOT / "tools"
+    modules = {path.stem for path in tools.glob("test_*.py")}
+    executed = {module for module in modules if _names_module(sources, module)}
+    pending = sorted(executed)
+    while pending:
+        module = pending.pop()
+        try:
+            tree = ast.parse((tools / f"{module}.py").read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError):
+            return frozenset(modules)
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                names.add(node.module or "")
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                names.add(node.value)
+        for name in names:
+            for part in name.split("."):
+                if part in modules and part not in executed:
+                    executed.add(part)
+                    pending.append(part)
+    return frozenset(executed)
+
+
+#: Languages Trusted CodeQL analyses (.github/workflows/codeql.yml). ``c-cpp`` and
+#: ``python`` build nothing (``build-mode: none``), so only their own source files and the
+#: workflow definitions the ``actions`` language reads can change a result.
+_CODEQL_SOURCE_SUFFIXES = frozenset(
+    {".c", ".cc", ".cpp", ".cxx", ".c++", ".h", ".hh", ".hpp", ".hxx", ".h++", ".inc", ".inl", ".tcc",
+     ".py", ".pyi", ".pyw"}
+)
+
+
+def _is_codeql_relevant(path: str) -> bool:
+    normalised = _normalise(path)
+    name = PurePosixPath(normalised).name
+    return (
+        PurePosixPath(normalised).suffix.lower() in _CODEQL_SOURCE_SUFFIXES
+        or normalised.startswith((".github/workflows/", ".github/actions/", ".github/codeql/"))
+        or name in {"action.yml", "action.yaml"}
+    )
+
+
+def codeql_scan_needed(paths: Iterable[str]) -> bool:
+    """Whether a pull request's changed paths can change a Trusted CodeQL result.
+
+    Fails closed: no paths, an unreadable history, any C/C++, Python or workflow path
+    (a deleted or renamed one included), or a path this function cannot classify with
+    confidence (a quoted, escaped or control-character name, or one with leading or
+    trailing whitespace) means a full analysis. Only a change made wholly of plainly named
+    other files, for example documentation, assets or Makefiles, skips it.
+    """
+
+    listed = list(paths)
+    if not listed or "<history-unavailable>" in listed:
+        return True
+    if not all(_is_plain_path(path) for path in listed):
+        return True
+    return any(_is_codeql_relevant(path) for path in listed)
+
+
+#: Characters ``git diff`` uses to quote a name it printed without ``-z``.
+QUOTING_CHARACTERS = '"'+chr(92)
+
+
+def _is_plain_path(path: str) -> bool:
+    """True when ``path`` is a name whose suffix can be trusted.
+
+    ``git diff`` without ``-z`` prints a name with non-ASCII bytes as a double-quoted,
+    octal-escaped string, so the suffix of ``src/<e-acute>.c`` becomes ``.c"``. Callers use
+    ``-z``, but a quote, a backslash, a control character or edge whitespace still means
+    the name was not read as written.
+    """
+
+    return (
+        bool(path)
+        and path == path.strip()
+        and not any(ord(char) < 0x20 or ord(char) == 0x7F or char in QUOTING_CHARACTERS for char in path)
+    )
+
+
+def codeql_scope_from_git(base: str, head: str, cwd: Path | None = None) -> list[str]:
+    """The paths that differ between a pull request's base and its merge commit."""
+
+    # ``-z`` prints each name verbatim, NUL-terminated, instead of quoting non-ASCII names.
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-status", "--find-renames", "-z", base, head],
+            cwd=cwd or ROOT,
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return ["<history-unavailable>"]
+    return _parse_changed_paths_z(result.stdout.decode("utf-8", errors="replace"))
+
+
+def _parse_changed_paths_z(output: str) -> list[str]:
+    """Parse ``git diff --name-status -z``, keeping both sides of a rename or copy.
+
+    Names are returned exactly as git printed them. Any record that does not parse makes
+    the whole answer ``<history-unavailable>``.
+    """
+
+    if output and not output.endswith("\0"):
+        return ["<history-unavailable>"]
+    tokens = output.split("\0")
+    if tokens and tokens[-1] == "":
+        tokens.pop()
+    paths: list[str] = []
+    index = 0
+    while index < len(tokens):
+        status = tokens[index]
+        width = 2 if re.fullmatch(r"[RC](?:100|0?[0-9]{1,2})", status) else 1 if re.fullmatch(r"[ACDMTUXB]", status) else 0
+        names = tokens[index + 1 : index + 1 + width]
+        if width == 0 or len(names) != width or not all(names):
+            return ["<history-unavailable>"]
+        paths.extend(names)
+        index += 1 + width
+    return paths
+
+
 def _is_recognised(path: str) -> bool:
     return any(
         predicate(path)
@@ -625,6 +842,24 @@ HOSTED_LINUX_RUNNER = "ubuntu-24.04"
 HOSTED_LINUX_RUNNER_2604 = "ubuntu-26.04"
 SELF_HOSTED_LINUX_RUNNER = ("self-hosted", "linux", "x64", "nk-wsl")
 SELF_HOSTED_REPOSITORY = "Jstar269/nakagawa-recomp"
+
+
+def same_repository(name: object, expected: str) -> bool:
+    """Whether ``name`` is the repository ``expected``, ignoring letter case.
+
+    GitHub treats owner and repository names as case-insensitive and reports the
+    name in its current casing: after the repository was renamed to
+    ``Jstar269/Nakagawa-Recomp``, ``GITHUB_REPOSITORY`` and the payloads' ``full_name``
+    no longer matched the lower-case constant, so no run was trusted for the pool. Only
+    the repository name is folded; refs, branch prefixes, logins and the fork flag are
+    still compared exactly. Two different owners never compare equal. Both names must be
+    ASCII: Unicode case folding would let a crafted name match (the long s in "Jſtar269",
+    the Kelvin sign in "nakagawa"), and GitHub names are ASCII anyway.
+    """
+
+    return isinstance(name, str) and name.isascii() and expected.isascii() and name.lower() == expected.lower()
+
+
 #: Head branches of this repository that may carry an outside contributor's commits: the
 #: desk's ``carry/pr-<N>`` branches for locked fork pull requests, and ``desk/`` working
 #: branches. Their runs stay on hosted runners even though they live in this repository.
@@ -655,7 +890,7 @@ def trusted_for_self_hosted(
     request is never trusted, whatever its branch is called; nor is any other event.
     """
 
-    if repository != SELF_HOSTED_REPOSITORY:
+    if not same_repository(repository, SELF_HOSTED_REPOSITORY):
         return False
     if event_name == "push":
         return ref == "refs/heads/main"
@@ -677,10 +912,10 @@ def trusted_for_self_hosted(
         return False
     head_ref = head.get("ref")
     sender = event.get("sender")
-    owner = repository.split("/", 1)[0]
+    owner = SELF_HOSTED_REPOSITORY.split("/", 1)[0]
     return (
-        head_repo.get("full_name") == repository
-        and base_repo.get("full_name") == repository
+        same_repository(head_repo.get("full_name"), repository)
+        and same_repository(base_repo.get("full_name"), repository)
         and head_repo.get("fork") is False
         and isinstance(head_ref, str)
         and bool(head_ref)
@@ -725,7 +960,7 @@ def codeql_trusted_target(
     ``SELF_HOSTED_UNTRUSTED_PREFIXES``). Every other pull request's analysis stays hosted.
     """
 
-    if repository != SELF_HOSTED_REPOSITORY:
+    if not same_repository(repository, SELF_HOSTED_REPOSITORY):
         return False
     if event_name == "push":
         return ref == "refs/heads/main"
@@ -737,13 +972,15 @@ def codeql_trusted_target(
     head_repo = run.get("head_repository")
     actor = run.get("actor")
     head_branch = run.get("head_branch")
-    if not isinstance(head_repo, dict) or head_repo.get("full_name") != repository or not isinstance(head_branch, str):
+    if not isinstance(head_repo, dict) or not isinstance(head_branch, str):
+        return False
+    if not same_repository(head_repo.get("full_name"), repository):
         return False
     kind = run.get("event")
     if kind == "merge_group":
         return head_branch.startswith("gh-readonly-queue/main/")
     if kind == "pull_request":
-        owner = repository.split("/", 1)[0]
+        owner = SELF_HOSTED_REPOSITORY.split("/", 1)[0]
         return (
             bool(head_branch)
             and not head_branch.startswith(SELF_HOSTED_UNTRUSTED_PREFIXES)
@@ -871,10 +1108,10 @@ def _changed_files_from_git(event_name: str, event: Mapping[str, object]) -> lis
 #: Python shards for a change whose only build-system edit is a recipe-only Makefile
 #: edit. The Makefile-coupled subset (tools/ci_test_shards.py --select makefile) is
 #: about nine tenths of the suite by measured weight, because most heavy modules run
-#: make, so it keeps two runners rather than one; at that width the Python job is
-#: about as long as the native and Windows gates the same change still requires.
-PYTHON_SHARDS_FULL = 4
-PYTHON_SHARDS_MAKEFILE = 2
+#: make, so it keeps four runners, two fewer than the full suite's six. Six full shards keep a
+#: shard well inside the 30-minute job limit on the busy self-hosted pool (2026-11-02).
+PYTHON_SHARDS_FULL = 6
+PYTHON_SHARDS_MAKEFILE = 4
 
 
 def _makefile_revisions(left: str, right: str) -> tuple[str, str] | None:
@@ -942,11 +1179,20 @@ def classify(
     )
     native_runtime = force_full or any(_is_native_runtime(path) for path in files)
     python_tools = force_full or any(_is_python_tool(path) for path in files)
-    native_tool = force_full or any(_is_native_tool(path) for path in files)
     markdown = force_full or any(_is_markdown(path) for path in files)
 
-    native_without_recipe = (
-        native_runtime or build_system or manager_powershell or title_manifest or native_tool or workflow_ci
+    # A tools/test_*.py module no native or Windows gate runs is checked by the Python
+    # shards alone, so it does not route the native and Windows jobs even when its subject
+    # is a native tool. The exported flags above keep describing the path's subject.
+    gated = [path for path in files if not _is_unexecuted_test(path)]
+    native_without_recipe = force_full or any(
+        _is_native_runtime(path)
+        or (_is_build_system(path) and not (makefile_recipe_only and path == "Makefile"))
+        or _is_manager(path)
+        or _is_title_manifest(path)
+        or _is_native_tool(path)
+        or _is_workflow_ci(path)
+        for path in gated
     )
     # A recipe-only Makefile edit still runs every native and Windows gate: those are
     # the jobs that execute recipes, and the edited target may be one of them.
@@ -1017,7 +1263,8 @@ def _read_event(path: str | None) -> dict[str, object]:
     if not path:
         return {}
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        returned: dict[str, object] = json.loads(Path(path).read_text(encoding="utf-8"))
+        return returned
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -1048,7 +1295,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="write only Trusted CodeQL's analysis runner (runner=...) and classify nothing",
     )
+    parser.add_argument(
+        "--codeql-scope",
+        nargs=2,
+        metavar=("BASE", "HEAD"),
+        help="write only whether Trusted CodeQL must analyse a pull request (scan=...) and classify nothing",
+    )
     args = parser.parse_args(argv)
+
+    if args.codeql_scope:
+        changed = codeql_scope_from_git(*args.codeql_scope)
+        scan = codeql_scan_needed(changed)
+        _write_outputs({"scan": str(scan).lower()}, args.github_output)
+        print(f"changed_files={len(changed)}")
+        print("changed_paths=" + ",".join(sorted(changed)))
+        print(f"scan={str(scan).lower()}")
+        return 0
 
     event = _read_event(args.event_path)
     pool = {

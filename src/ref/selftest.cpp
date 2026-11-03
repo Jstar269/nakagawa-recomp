@@ -127,6 +127,64 @@ void TestMemory() {
 	Check("lb sign-extend", s.r[T3], 0xFFFFFFEF);
 }
 
+// lwl/lwr/swl/swr on a little-endian aligned word 0x44332211 (bytes 11 22 33 44 from the
+// lowest address) with rt = 0xAABBCCDD. Every expected value is worked out by hand from the
+// definition (LWL loads bytes k..0 into the top bytes of rt, LWR bytes k..3 into the low
+// bytes, SWL stores the top bytes of rt to bytes k..0, SWR the low bytes to bytes k..3).
+void TestUnalignedWordAccess() {
+	const uint32_t code = 0x08900000;
+	const uint32_t aligned = 0x08A00100;
+	const uint32_t rt = 0xAABBCCDD;
+	const uint32_t lwl_want[4] = {0x11BBCCDD, 0x2211CCDD, 0x332211DD, 0x44332211};
+	const uint32_t lwr_want[4] = {0x44332211, 0xAA443322, 0xAABB4433, 0xAABBCC44};
+	const uint32_t swl_want[4] = {0x443322AA, 0x4433AABB, 0x44AABBCC, 0xAABBCCDD};
+	const uint32_t swr_want[4] = {0xAABBCCDD, 0xBBCCDD11, 0xCCDD2211, 0xDD332211};
+	const struct { uint32_t opcode; const char *name; const uint32_t *want; bool store; } cases[] = {
+		{0x22, "lwl", lwl_want, false}, {0x26, "lwr", lwr_want, false},
+		{0x2A, "swl", swl_want, true}, {0x2E, "swr", swr_want, true},
+	};
+	for (const auto &c : cases) {
+		for (uint32_t k = 0; k < 4; k++) {
+			Memory mem;
+			mem.Write32(aligned, 0x44332211);
+			mem.Write32(code, I(c.opcode, A0, T0, (uint16_t)k));
+			ref::CpuState s;
+			s.pc = code;
+			s.r[A0] = aligned;
+			s.r[T0] = rt;
+			Run(&s, &mem, 1, nullptr);
+			char what[32];
+			std::snprintf(what, sizeof what, "%s offset %u", c.name, k);
+			Check(what, c.store ? mem.Read32(aligned) : s.r[T0], c.want[k]);
+		}
+	}
+}
+
+// Allegrex rotates share the SRL/SRLV encodings: rs == 1 makes srl a rotate right by sa, and
+// sa == 1 makes srlv a rotate right by the low five bits of rs. Values worked out by hand.
+void TestAllegrexRotate() {
+	const uint32_t code = 0x08900000;
+	const struct { uint32_t word; uint32_t rs_value; uint32_t rt_value; uint32_t want; const char *name; } cases[] = {
+		{R(1, T1, T0, 4, 0x02), 0, 0x12345678, 0x81234567, "rotr by 4"},
+		{R(1, T1, T0, 1, 0x02), 0, 0x00000001, 0x80000000, "rotr by 1"},
+		{R(1, T1, T0, 0, 0x02), 0, 0x12345678, 0x12345678, "rotr by 0"},
+		{R(0, T1, T0, 4, 0x02), 0, 0x12345678, 0x01234567, "srl by 4 (rs 0)"},
+		{R(T2, T1, T0, 1, 0x06), 36, 0x12345678, 0x81234567, "rotrv by 36 & 31"},
+		{R(T2, T1, T0, 0, 0x06), 36, 0x12345678, 0x01234567, "srlv by 36 & 31"},
+		{R(T2, T1, T0, 1, 0x06), 32, 0x12345678, 0x12345678, "rotrv by 32 & 31"},
+	};
+	for (const auto &c : cases) {
+		Memory mem;
+		mem.Write32(code, c.word);
+		ref::CpuState s;
+		s.pc = code;
+		s.r[T1] = c.rt_value;
+		s.r[T2] = c.rs_value;
+		Run(&s, &mem, 1, nullptr);
+		Check(c.name, s.r[T0], c.want);
+	}
+}
+
 void TestBranchDelaySlot() {
 	const uint32_t base = 0x08900000;
 	// beq taken: the delay slot runs, the instruction after it is skipped.
@@ -720,6 +778,8 @@ int main() {
 	TestArithmetic();
 	TestMulDiv();
 	TestMemory();
+	TestUnalignedWordAccess();
+	TestAllegrexRotate();
 	TestBranchDelaySlot();
 	TestDaybreak4GuestInterpreterOracle();
 	TestReferenceArithmeticGuards();

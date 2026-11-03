@@ -159,7 +159,8 @@ class SyntheticControlRepository:
         self.refresh()
         _git(self.root, "add", "-A")
         _git(self.root, "commit", "-qm", message)
-        return _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        returned: str = _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        return returned
 
     def read_controls(self) -> tuple[bytes, bytes]:
         return (self.root / LEDGER).read_bytes(), (self.root / EXPORT).read_bytes()

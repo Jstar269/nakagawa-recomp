@@ -19,6 +19,7 @@ import tempfile
 from contextlib import redirect_stdout
 from types import SimpleNamespace
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -220,6 +221,32 @@ class NkCoreTests(unittest.TestCase):
             }
         )
         self.assertNotRegex(summary, _ISSUE_REFERENCE_RE)
+
+    def test_bringup_summaries_tell_the_user_what_to_do_next(self) -> None:
+        # Failing before: an encrypted program stopped bring-up with a bare failure code, a
+        # running game that hit the launch limit read as an unexplained failure, and the
+        # decryption message said Nakagawa does not decrypt games (the player does).
+        def summary(failure_class: str, **extra: object) -> str:
+            report: dict[str, Any] = {
+                "preflight_checks": [], "failure_class": failure_class,
+                "issue_numbers": [308], "reached_stage": "inspect"}
+            report.update(extra)
+            text: str = nk_cli._bringup_human_summary(report)
+            return text
+
+        self.assertIn("--user-data-root", summary("EXECUTABLE_UNSUPPORTED"))
+        decrypt = summary("GUEST_MODULE_DECRYPTION_REQUIRED")
+        self.assertNotIn("does not decrypt", decrypt)
+        self.assertIn("--user-data-root", decrypt)
+        running = summary("LAUNCH_TIMEOUT", reached_stage="launch",
+                          presentation={"frame_submissions": 310})
+        self.assertIn("still running", running)
+        self.assertIn("310 frame(s)", running)
+        silent = summary("LAUNCH_TIMEOUT", reached_stage="launch",
+                         presentation={"frame_submissions": 0})
+        self.assertIn("without presenting a frame", silent)
+        for text in (running, silent, decrypt):
+            self.assertNotRegex(text, _ISSUE_REFERENCE_RE)
 
     def test_title_registry_matching_and_normalization(self) -> None:
         reg = TitleRegistry(include_defaults=True)
@@ -1091,7 +1118,8 @@ def _legacy_retail_manifest() -> dict:
     # carries its identity through kind/disc/game_name, not the public
     # synthetic surface.
     base.pop("profile_zero", None)
-    return base
+    returned: dict[str, Any] = base
+    return returned
 
 
 def _load_python_module_from_source(name: str, source: str, package: str = "nk_core"):
@@ -1323,18 +1351,20 @@ class GenericLauncherHostileTests(unittest.TestCase):
         self.assertNotIn("hst", str(cm.exception))
         self.assertEqual(Path(cmd_a[0]), exe)
 
+        # The default root is this checkout, never the process cwd (#368).
+        checkout = Path(__file__).resolve().parent.parent
         cwd = os.getcwd()
         try:
-            os.chdir(other_root)
-            with self.assertRaises(RuntimeLaunchError):
-                RuntimeLauncher().build_launch_plan(game_dir)
-            os.chdir(self.temp_dir)
-            cmd_b, _ = RuntimeLauncher().build_launch_plan(game_dir)
+            for where in (other_root, self.temp_dir):
+                os.chdir(where)
+                self.assertEqual(RuntimeLauncher().repo_root, checkout)
         finally:
             os.chdir(cwd)
-        # Identity-derived fields are identical across roots and cwds.
-        self.assertEqual(cmd_a[3:5], cmd_b[3:5])
-        self.assertEqual(Path(cmd_b[0]), exe)
+
+    # PreparationEngine has no working-directory default (#368).
+    def test_preparation_engine_requires_explicit_base_dir(self) -> None:
+        with self.assertRaises(TypeError):
+            PreparationEngine()  # type: ignore[call-arg]
 
     # Hostile 11: spaced roots and spaced prepared directories keep working.
     def test_paths_with_spaces_second_title_route(self) -> None:
@@ -1407,6 +1437,9 @@ class GenericLauncherHostileTests(unittest.TestCase):
 
 class GenericLauncherParityTests(unittest.TestCase):
     """Native and Python planners must select the same outcome."""
+    _class_temp: Path
+    _harness: Any
+    gcc: str | None
 
     TITLE2 = "pspdev-phase5-v1"
     TITLE2_DISC = "TEST00005"
@@ -2097,7 +2130,9 @@ class BoundedLibraryJsonTests(unittest.TestCase):
         size = re.search(r"#define NK_LIBRARY_MAX_BYTES \((\d+)L \* 1024L \* 1024L\)", library_h)
         self.assertIsNotNone(games)
         self.assertIsNotNone(size)
+        assert games is not None
         self.assertEqual(int(games.group(1)), MAX_LIBRARY_GAMES)
+        assert size is not None
         self.assertEqual(int(size.group(1)) * 1024 * 1024, MAX_LIBRARY_JSON_BYTES)
 
     def test_full_library_written_by_the_player_is_readable(self) -> None:

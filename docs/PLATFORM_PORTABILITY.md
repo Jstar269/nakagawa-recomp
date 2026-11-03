@@ -71,7 +71,7 @@ primitives that `nk_platform.h` lists for units built without the platform layer
 
 ### 3. Android
 
-Android and similar hosts are a planned target (maintainer decision, 2026-10-23). Every host needs a
+Android and similar hosts are a planned target. Every host needs a
 C toolchain for the user's own game, because the project never publishes recompiled game code; a
 user may build on their PC and move the result to their own device (`AGENTS.md`, section 5).
 
@@ -98,7 +98,7 @@ material in this repository.
 
 ## H.264 backend decision record
 
-**Status: decided and built.** The maintainer chose the FFmpeg H.264 decoder subset on 2026-10-24
+**Status: decided and built.** The FFmpeg H.264 decoder subset is the chosen decoder
 ([#283](https://github.com/Jstar269/nakagawa-recomp/issues/283)), and it landed in
 [#1263](https://github.com/Jstar269/nakagawa-recomp/pull/1263). The shared stream path uses the
 project-authored PSMF producer for program-stream parsing and AU boundaries, behind the `sr_h264`
@@ -130,7 +130,7 @@ must not silently weaken this contract.
 | Candidate | Licence position | Packaging and decision still required |
 | --- | --- | --- |
 | Cisco OpenH264 | BSD-2-Clause is generally compatible with GPL-3.0-or-later, subject to the exact binary's notices and any codec/patent terms. | Prefer a pinned shared library or source-built package per host. Verify redistribution terms, notice retention, architecture coverage, and decoder error behavior. **Awaiting maintainer decision.** |
-| FFmpeg/libavcodec H.264 decoder | **Chosen** (maintainer decision, 2026-10-24, #283). A pinned subset of FFmpeg n4.4 (the pin of the ATRAC3+ import) is vendored under `src/rt/h264_ffmpeg_sub/`: LGPL-2.1-or-later, LGPL configuration only (no `--enable-gpl`, no `--enable-nonfree`), combined with the project's GPL-3.0-or-later terms. | Statically linked with generic C paths only; byte-exact manifest in `src/rt/h264_ffmpeg_sub/PROVENANCE.md`, notices in `NOTICE.md` and `CREDITS.md`. H.264 is patent-encumbered in some jurisdictions: the project ships no encoder and the decoder runs only on the user's own PSP movies. Windows keeps Media Foundation. |
+| FFmpeg/libavcodec H.264 decoder | **Chosen** (#283). A pinned subset of FFmpeg n4.4 (the pin of the ATRAC3+ import) is vendored under `src/rt/h264_ffmpeg_sub/`: LGPL-2.1-or-later, LGPL configuration only (no `--enable-gpl`, no `--enable-nonfree`), combined with the project's GPL-3.0-or-later terms. | Statically linked with generic C paths only; byte-exact manifest in `src/rt/h264_ffmpeg_sub/PROVENANCE.md`, notices in `NOTICE.md` and `CREDITS.md`. H.264 is patent-encumbered in some jurisdictions: the project ships no encoder and the decoder runs only on the user's own PSP movies. Windows keeps Media Foundation. |
 | dav1d | Not a candidate: it decodes AV1, not H.264. | No H.264 backend may be represented by dav1d. |
 
 `H264_FFMPEG` selects the FFmpeg backend: `1` builds the vendored subset and makes it the

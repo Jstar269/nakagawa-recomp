@@ -1005,6 +1005,29 @@ static const CosimKnownDefect SPLEAK_DEFECT = {
  * stopped diverging, and stayed red until the claim was removed. `xcall` is now an
  * ordinary PASS and any regression is an ordinary failure. */
 
+/* The cases the stack census declares, as it declares `spleak` (#1935). `xsibmid` hands
+ * its live frame to `xsibpiece`, which returns at the lowered $sp it was entered at, so in
+ * guest terms the chain from `xsibmid` comes back 0x20 low. Outside the census the tail
+ * record of the body that entered `xsibmid` gives that $sp back; under the census records
+ * carry no restore and each wrapper restores after it has recorded the guest's value. So
+ * the census counts, in lane AOT, the native `xsibmid` of both cases and, in lane MIXED,
+ * the native `xsibtail` that sibcalls the interpreted `xsibmid`. A linked call into the
+ * interpreter owes its entry $sp in both builds, so `xsibcall` balances in lane MIXED. */
+static const struct {
+    const char *name;
+    uint64_t mismatches;
+} CENSUS_DECLARED_CASES[] = { { "xsibtail", 2u }, { "xsibcall", 1u }, { NULL, 0u } };
+
+static int census_declared_case(const char *name, uint64_t *mismatches) {
+    for (unsigned i = 0; CENSUS_DECLARED_CASES[i].name != NULL; i++) {
+        if (strcmp(name, CENSUS_DECLARED_CASES[i].name) == 0) {
+            *mismatches = CENSUS_DECLARED_CASES[i].mismatches;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void qualify_cases(void) {
     for (unsigned i = 0; i < g_case_count; i++) {
         CosimCase *test = &g_cases[i];
@@ -2182,13 +2205,37 @@ int main(int argc, char **argv) {
                 "cosim: mutation isolation skips the dedicated AOT return-boundary cells\n");
     }
     unsigned executed = 0;
+    uint64_t declared_census_mismatches = 0u;
     for (unsigned i = 0; i < g_case_count; i++) {
         if (skip_ra_return_cases && strcmp(g_cases[i].name, "rarewrite") == 0) {
             continue;
         }
+#if defined(SR_STACK_CENSUS_ENABLED)
+        SrStackCensusSummary census_before;
+        sr_stack_census_snapshot(&census_before);
+#endif
         run_case(&g_cases[i], argv[3]);
         executed++;
+#if defined(SR_STACK_CENSUS_ENABLED)
+        uint64_t declared = 0u;
+        if (census_declared_case(g_cases[i].name, &declared)) {
+            SrStackCensusSummary census_after;
+            sr_stack_census_snapshot(&census_after);
+            const uint64_t added = census_after.mismatches - census_before.mismatches;
+            declared_census_mismatches += added;
+            if (added != declared) {
+                char detail[160];
+                snprintf(detail, sizeof detail,
+                         "stack census: declared case added %" PRIu64
+                         " mismatches, expected %" PRIu64, added, declared);
+                report_fail(&g_cases[i], detail);
+            }
+        }
+#endif
     }
+#if !defined(SR_STACK_CENSUS_ENABLED)
+    (void)declared_census_mismatches;
+#endif
     for (unsigned m = 0; m < sizeof g_fcr31_modes / sizeof g_fcr31_modes[0]; m++) {
         for (unsigned i = 0; i < g_case_count; i++) {
             if (strcmp(g_cases[i].name, "fpu") != 0) {
@@ -2234,7 +2281,7 @@ int main(int argc, char **argv) {
     }
     if (stack_leak_control == NULL
         || stack_census.status != SR_STACK_CENSUS_FAILED
-        || stack_census.mismatches != 1u
+        || stack_census.mismatches != 1u + declared_census_mismatches
         || stack_census.entries == 0u
         || stack_census.entries != stack_census.returns
         || !stack_census.unobserved_known
@@ -2265,9 +2312,10 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "cosim: stack census caught the declared spleak control at 0x%08x; "
                 "unobserved=%u, excluded=%" PRIu64 " (expected %" PRIu64 "), "
+                "%" PRIu64 " declared in the cross-tier sibcall cases, "
                 "all other observed entries balanced\n",
                 stack_leak_control->address, stack_census.unobserved,
-                stack_census.excluded, expected_excluded);
+                stack_census.excluded, expected_excluded, declared_census_mismatches);
     }
 #endif
     fprintf(stderr, "\ncosim: %u comparison cases, %d divergence report(s)\n",

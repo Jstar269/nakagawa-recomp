@@ -149,7 +149,10 @@ The summary fields mean:
   do not add `triangle_total` or `empty_control` to the stage sum.
 - `vulkan.submit_ns`, `wait_ns`, `readback_ns`, and `pipeline_creation_ns` measure separate host
   API regions. Readback and general wait can overlap and are intentionally not additive;
-  `readbacks` counts completed CPU readback commits, not every fence poll.
+  `readbacks` counts completed CPU readback commits, not every fence poll, and `readback_bytes` the
+  bytes those commits copied out of the image. A readback takes only the rows guest memory keeps, one
+  device row per guest row, so the bytes grow with the render scale, not its square;
+  `SR_GPU_READBACK_FULL=1` copies the whole scaled target, the reference path (#323).
 - `textures` counts cache hits/misses and central decode calls. `storage` separates public ISO and
   VFS byte/read/failure counters. `media` counts H.264 and ATRAC decode calls, elapsed time, and
   failures. If the host H.264 backend is unavailable, the runtime reports its named boundary
@@ -336,6 +339,56 @@ function: the dispatcher reaches them only as a miss, which stops the run.
   `call_return`, `other`);
 - interpreter instructions, distinct interpreter entry points, distinct miss targets, and entries
   whose PC did not fit the 2048-entry set (`entry_points_overflow`).
+
+**Feeding misses back into analysis (#1848).** `miss_targets` counts guest addresses the dispatcher
+reached with no registered body. Setting `SR_MISS_SEEDS=<file>` makes the runtime also write those
+distinct targets at exit, one `0x%08x` per line in ascending order, under a `# nakagawa-miss-seeds-v1`
+header. A run that exceeded the entry-point set says so in the file (`entry_points_overflow=N`) and on
+stderr, and the merge tool calls the list incomplete. The loop is then:
+
+```powershell
+python tools/miss_seeds.py merge --out <title seed list> --run <label> --elf <the image the run executed> <miss file>...
+# rebuild with the list as extra function entries:
+#   codegen.py ... --miss-seeds=<title seed list>      (Makefile: CODEGEN_USER_ARGS=--miss-seeds=<list>)
+#   analyze.py <elf> --miss-seeds=<title seed list>
+```
+
+`merge` keeps the run that first found each seed (`run=<label>`) and drops targets that are already
+function entries. A target inside a function's body stays in the list: a run entered the body mid-way, and
+the build decides whether that address can have a body of its own. The list can also hold a longjmp
+continuation: the floor runs one by design and the run counts its entry as a miss, and the build refuses it.
+
+Each seed is judged by what the code emitter does with and without the seeds, so the build analyzes the
+image and runs the emitter over every entry both ways before it writes anything, which takes longer than a
+build without the option. A seed that is already an entry without seeds is `known`, and it adds nothing. A
+seed that is unaligned, outside the executable ranges or on an all-zero or all-ones word is ignored. So is
+a seed the frame walk (`tools/entry_frame_balance.py`) shows releasing a frame it never allocated, on any path
+whose `$sp` writes it can follow, and, inside
+the spans the build would own without that seed, a seed the walk does not prove a function entry
+(`not-callable: <role>`). A callable body restores the `$sp` it was entered with, and the interpreter floor
+hands off to any address with a body, so a body inside a live frame would undo its own epilogue and stop a
+run the floor finishes. Inside an owned span a seed needs at least one `jr $ra`, each with `$sp` back where it
+started; one that only loops, only leaves through a computed jump or writes `$sp` from a register is unproven,
+and stays on the floor. So does one with a computed jump and no frame of its own: at net 0 that jump says nothing
+about the frame the seed may be inside. Those spans include what the list's other seeds own: a body from one
+round makes the floor run more words, and the next round's list can name them. Only seeds the build keeps
+count: when a stub refuses a seed, the others are judged again without it. Outside every owned span no
+floor runs the address, so a seed the walk cannot prove still gets its body: without it the run stops there.
+Also ignored is any seed that makes the emitter write a stub it does not write without seeds, on the seed's own entry
+(`untranslatable: <why>`) or on one the seed brought in (`untranslatable: brings 0x...: <why>`): a stub
+would turn a miss the interpreter floor finishes into an abort, even for a reserved word a run never
+executes. A seed the build emits no body for is `not-emitted` (`--omit-aot`). Only a seed that gives its
+address a new translated body is `applied`. Ignored seeds are reported
+(`CODEGEN_MISS_SEEDS: ignored 0x...: <reason>`) and left out, never forced. `CODEGEN_MISS_SEEDS` prints the
+applied, already-known and ignored counts, and the coverage JSON gains a `miss_seeds` map of address to
+status, only for a build given `--miss-seeds`. Without the option the output is unchanged.
+
+Seeding adds input for the next build only. A miss at run time keeps its behaviour: it still prints
+`DISPATCH_MISS_NEW`, still enters the interpreter floor inside an owned span, and still stops the run
+outside one. Seeds apply to the primary image's guest addresses; a runtime-placed module's targets are
+not matched yet. The list is derived from a title's code, so keep it with the title's other private
+build inputs and out of the repository. A changed list is not a Makefile prerequisite, so
+rebuild the title's `_recomp.c` after merging.
 
 The share is a time share. It overstates the interpreter's share of instructions, because the
 interpreter is slower per instruction. The exact instruction share still needs a
@@ -1131,6 +1184,26 @@ pacing was added to fix). A faster route is worthless if it is not the same rout
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
 processes and directories.
 
+#### Running on a disposable Memory Stick
+
+A soak or title route writes to whichever Memory Stick the session resolves.
+`tools/isolated_run.py` copies the stick (and optional settings files) into a new folder
+under a private work directory, points `SR_MEMSTICK` at the copy, runs your command, and
+re-hashes the originals. It prints `ORIGINALS_UNCHANGED`, or `ORIGINAL_CHANGED` naming the
+first differing path (exit status 3). It does not stop the guest writing; keep the work
+directory private, because the copy can hold save data.
+
+The copy is only used by a command that honours an inherited `SR_MEMSTICK`: the bare
+runtime and the launcher route (`nk_launch.c` keeps an explicit `SR_MEMSTICK` instead of
+resolving a stick) do. A command that sets its own stick bypasses the copy, and the wrapper
+then reports `ORIGINAL_CHANGED` after the fact, without restoring anything. `--settings-env`
+names a variable the wrapped command itself reads; no settings-path variable is registered in
+`env_registry.h`, so it redirects settings only for a command that reads the one you name.
+
+```powershell
+python tools/isolated_run.py --memstick <stick> --work-dir <private-dir> -- <soak or route command>
+```
+
 #### Judging a long run
 
 One run of any length is only evidence if something states what "healthy" meant.
@@ -1198,7 +1271,6 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | ---------- | ------------- |
 | `SR_IOLOG=1` | Log file open/read/write operations |
 | `SR_STATLOG=1` | Log stat operations |
-| `SR_PATHHEX=1` | Log path hex values |
 | `SR_UMDDUMP=1` | Dump UMD data |
 
 ### Display & Video (→ SR_DBG_VIDEO)
@@ -1255,7 +1327,7 @@ committed.
 | `SR_VBLANK_Q_US=N` | Host-clock vblank quantum in microseconds. In the default paced profile it does **not** produce vblanks -- the scheduler's rational 60000/1001 source is the only producer -- and only sets the threshold at which a yield is counted as late vblank *service* (reported as `vbl_late_service_yields` by the spin watchdog). It is an out-of-band vblank source only under `SR_NOVBPACE=1` |
 | `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no new frame; a firing is a NO-NEW-FLIP observation, not a hang verdict -- classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints |
 | `SR_GE_TIMING=1` | Opt-in GE completion timing (issue #1296), off by default. A display list that reached its END completes -- finish callback, `sceGeDrawSync`, `sceGeListSync` -- only once guest time passes its cost on one serial GE timeline; the callback is delivered as an interrupt, and the peeks read 2 until it is handled. The cost model in `src/rt/ge.c` is in GE clocks (the bus clock, converted at the emulated bus clock) and every coefficient was measured on a PSP-3000 with `CASE=ge-timing` (PR #1321): per list, command word and PRIM, per vertex by format, per span by width and fill state, texel fetch, CLUT loads and block transfers. Classes the measurement did not cover are charged as the nearest measured class and tagged `UNMEASURED_NEAREST` in the source. Startup prints `GE_TIMING: on, GE time model measured on PSP-3000 ...` |
-| `SR_NOAUDIO=1` | Disable audio output |
+| `SR_AUDIO_DISABLED=1` | Disable audio output (null backend). `SR_AUDIO_BACKEND=null` (or `none`, `0`, `off`) does the same; `SR_AUDIO_BACKEND=dummy` keeps the device open on SDL's dummy driver. `SR_HEADLESS=1` also selects the null backend unless `SR_AUDIO_BACKEND` is set |
 | `SR_AUDIODUMP=PATH` | Debug only, off by default. Write the device mix (every channel's stream after the master gain, as SDL is about to submit it) to a 16-bit PCM WAV at the device's own rate and channel count. The header is patched once per second of audio data and at close, and a stats line (`AUDIODUMP: ... frames= silent_frames= clipped_samples= peak= dropped_frames=`) is printed there. `dropped_frames` counts the frames the dump was offered but did not write, whether past its size limit, after a changed device format, or after a failed write; the first refusal prints one line. The file is closed at a normal exit and at `SR_EXIT_AT_VBLANK`, with or without `SR_AUDIOSTAT`; a runtime that is killed, crashes, or ends on another path that skips `atexit` (`sceKernelExitGame`, the watchdog, a route failure) keeps the last once-a-second patch, so up to a second at the end lies past the header's length. It runs on SDL's audio thread and does file I/O there, so it changes host pacing; never compare timing with it on. Audit the file for silence, clipping, gaps and sample rate |
 | `SR_POSTUMD=1` | Post-UMD processing |
 | `SR_HEAP_BASE=HEX` | Override heap base address |
@@ -1291,10 +1363,11 @@ guest PCs before inferring a missing branch.
 Two sampling traps produced a false "voice audio is silent" diagnosis for a short title/logo
 voice sting. Both are methodology lessons, not game-specific behavior:
 
-- **Power-of-two-only push sampling can miss short audio windows entirely.** The `AUDIO_PUSH`
-  logger under `SR_AUDIOLOG=1` samples the first 16 calls and then only power-of-two call counts.
-  A short voice/SE window (tens of vblanks) can fall entirely between sampled calls, so "every
-  sampled push was peak 0" does not prove silence. When testing a short audio event, log by
+- **Sparse sampling of audio pushes can miss short audio windows entirely.** A log that samples
+  only some push calls (the first few, then power-of-two call counts) can let a short voice/SE
+  window (tens of vblanks) fall entirely between sampled calls, so "every sampled push was
+  peak 0" does not prove silence. The runtime has no such push logger now; the
+  `SR_AUDIOLOG` and `AUDIO_PUSH` lines that described one never matched the source. When testing a short audio event, log by
   semantic trigger (keyon) or over a bounded vblank window around the event instead.
 - **A VAG voice slot can legitimately begin with a zero block before real ADPCM data.** Dumping
   only the first 16 bytes at keyon (or decoding only the first 28-sample block) can classify a
@@ -1556,8 +1629,52 @@ first table gives medians, and the second the intervals on (linked minus absent)
 The ladder rows run with `SR_FLIGHT` and `SR_PERF` both removed by the fixture's `SR_*` rule, so
 they measure the compiled-in cost with the recorder disarmed, as the smoke rows do. The direct
 executable interval is the tightest bound. Neither workload is a GE or presentation workload (the
-smoke summary shows zero GE and Vulkan calls), so the recorder sites in
-`src/rt/gpu_sdl3vk/ge_gpu.c` are not measured here.
+smoke summary shows zero GE and Vulkan calls), so the GE and present recorder sites are measured
+separately, below.
+
+#### GE and present sites
+
+The GE recorder sites are in `src/rt/ge.c` (one `sr_flight_class_enabled(SR_FLIGHT_CLASS_GE)` call
+per list, then an `if (flight_ge_enabled)` test at each draw and at FINISH) and `src/rt/hle_ge.c`
+(`SR_FLIGHT_RECORD_CLASS` at list enqueue, sync, stall update and finish). The present sites are in
+`src/rt/hle_display.c` (one at each `sceDisplaySetFrameBuf` and one per presented frame). Every one
+is that class test with the recorder disarmed; none allocates, locks, sleeps or reads guest memory.
+
+`mingw32-make ge-flight-overhead` measures the draw path. It builds `ge.c` twice, once as the default
+build does and once with `-USR_FLIGHT_RECORDER_LINKED`, and links each into the
+`ge-cpu-profile-validate-selftest` harness, whose `--bench ROUNDS` mode runs two source-owned lists
+through `ge_run_list()` with every profile off and the recorder disarmed (`SR_FLIGHT` unset):
+`scene` (the selftest's main list: every primitive type, patches, a block transfer, a CLUT load) and
+`prims` (1024 zero-area through-mode triangles, so per-primitive work other than rasterization
+dominates, about 215 us a list). `tools/ge_flight_overhead.py` runs the two builds in alternating
+pairs (`GE_FLIGHT_PAIRS`, default 5, with `GE_FLIGHT_ROUNDS` timed rounds of 40 list runs each, default
+30) and checks three things before it reports:
+
+- the linked `ge.o` references `sr_flight_` symbols and the absent one references none (2 and 0);
+- both builds draw the same pixels (a hash of the 512 x 272 framebuffer is equal for each workload);
+- the interval on (linked minus absent) is a 95% percentile bootstrap over the pairs (2000
+  resamples, fixed seed). The verdict is `linked slower` only if the whole interval is above zero.
+  A whole interval below zero is reported as `linked faster (code layout or drift, not a recorder
+  saving)`.
+
+It also times the class test alone: one call to the disarmed `sr_flight_class_enabled()` across
+translation units, 20 million in a row.
+
+Measured on the same Windows 11 host and MSYS2 UCRT64 GCC as the series above, 15 pairs of 60
+rounds, base `cb0080c11`:
+
+| Workload | Linked, disarmed (us a list) | Absent (us a list) | 95% interval on linked minus absent (us) | Result |
+| --- | --- | --- | --- | --- |
+| `prims` (1024 draws) | 219.6 | 216.5 | [-18.8, +4.0] | not distinguishable from noise at 15 pairs |
+| `scene` | 1055.3 | 1144.8 | [-130.5, -3.1] | linked faster; layout or drift, not a saving |
+
+The class test costs 1.8 ns a call with the recorder disarmed. A list pays it once and a present
+or setframebuf site once, so the present sites cost about two calls a frame (3.6 ns at 60 Hz: 216 ns
+a second). The per-draw cost is one test of a local `int`, below what a 1024-draw list can resolve:
+the `prims` interval bounds the whole list, 1024 draws included, at +4.0 us (under 2%), which is
+under 4 ns a draw. The measurement bounds the cost on the draw path; it does not measure the Vulkan
+backend, which has no recorder site. Timings from a shared desktop host move between runs, so repeat
+the target rather than reading one run as a figure.
 
 ## Crash Reporter
 
@@ -1640,6 +1757,112 @@ and every refusal, and builds a second runner with one immediate changed in the 
 which must report `MISMATCH r11`. On a title, build the runner the same way against that
 title's generated code. Snapshots contain guest memory: they stay private like traces and
 captures, and none is ever committed.
+
+## Sampled in-play checking
+
+Snapshot execution checks a call you chose. A verify build checks calls a title makes while it
+plays (#1843). Build with `make VERIFY=1` (default `0`): the runtime, the generated code and the
+reference interpreter in `src/ref` are compiled with `-DSR_VERIFY`, and nothing changes without
+the flag. At a sampled call entry the verifier copies guest RAM into the reference, runs the
+callee there until it returns or reaches a syscall, lets the real translated call run, and
+compares the end states at the matching return boundary (or at the first import or raw syscall)
+in the order the snapshot runner uses: stop kind, `r1`..`r31`, `hi`, `lo`, `f0`..`f31`, `fcr31`,
+out-of-range access counts, then VRAM and RAM from the lowest address up. One check is in flight
+at a time.
+
+| Setting | Meaning |
+| --- | --- |
+| `SR_VERIFY=k` | Check the first `k` calls of each function, then every call whose running count is a power of two. Required unless `SR_VERIFY_EVERY` is set. |
+| `SR_VERIFY_EVERY=n` | After the first `k`, check every `n`-th call instead. |
+| `SR_VERIFY_RATE=r` | At most `r` checks per second of host time (burst `r`). A function with no check yet may overdraw once, so a hot function cannot starve the rest. |
+| `SR_VERIFY_RANGE=lo-hi` | Only functions whose entry is in the hex range. |
+| `SR_VERIFY_STEPS=n` | Reference step budget per check (default 1000000). |
+| `SR_VERIFY_REPORT=file` | Write the report at exit. |
+| `SR_VERIFY_CAPTURE=dir`, `SR_VERIFY_CAPTURE_MAX=n` | Write a snapshot (`.nksnap`) of the first `n` (default 4) mismatches; `snapshot_runner` replays it to the same first difference. |
+
+A malformed value stops the run with status 2; it never turns checking off.
+
+The report has a totals line, one `# skip <reason> <count>` line per skip class, and one row per
+function entered: `addr calls checks match mismatch skip first_mismatch skips checked_at`.
+`checks` is `match + mismatch`; a sample that could not be compared is a skip, never a match:
+`preempted` (a yield, a guest thread switch, a callback or an interrupt ran inside the call),
+`busy` (another check was in flight), `rate`, `abandoned` (the call's boundary was unwound),
+`nonlocal-return` (the call returned somewhere other than its caller), `unknown-call-form`,
+`ref-no-vfpu`, `ref-unimplemented`, `ref-memory-fault`, `ref-break`, `ref-step-limit` and
+`no-reference`. `checked_at` lists the first 16 checked call numbers.
+
+Limits. Each check copies 64 MiB of RAM (and 2 MiB of VRAM), so use `SR_VERIFY_RATE` on a title.
+Scratchpad, the VFPU and COP0 registers and memory written by other host threads or devices are
+not compared, so a mismatch is evidence to look at, not proof. An import stop is matched to the
+reference's syscall at the stub; the import NID is not tied to the stub. Captures hold guest
+memory and stay private, like reports from a title run.
+
+`mingw32-make --no-print-directory verify-selftest` (`make CC=gcc verify-selftest` on Linux)
+runs this on a synthetic module (`fixtures/verify/`): the samplers check exactly the expected
+call numbers, every comparable case reports a match, the skip classes are counted, a generated-C
+mutant is reported as a `MISMATCH` with a capture the snapshot runner replays to the same
+verdict, and the default `recomp.c` carries no verify hook.
+
+## Form sweep
+
+`tools/form_sweep.py` and `src/rt/form_sweep.c` check every scalar instruction form the code
+generator translates against the reference interpreter, across register aliasing and edge
+values (#1844). Aliasing is where a translator goes wrong: a temporary read after the
+destination was written, a sign extension on the wrong copy.
+
+```sh
+mingw32-make --no-print-directory form-sweep-selftest
+```
+
+- **The form list is derived, not typed.** `census` probes `codegen.effect` over the
+  encodings, normalises each emission (register indices and numerals blanked) and groups
+  words with the same shape under the same decode selector into one form. A form added to the
+  generator appears as a new row and is swept with no edit to the sweep; an opcode whose low
+  bits select the form is detected the same way. Named exclusions are printed: `syscall` and
+  `break` (they stop the run; the snapshot cases cover them), COP0 and `vflush`. VFPU words
+  are recognised because codegen routes them to the VFPU emitter (#326 and `vfpu_fuzz`).
+- **Instances.** Per form, every aliasing pattern of its register operands (`rd == rs`,
+  `rd == rt`, `rs == rt`, `$zero` operands, in first-appearance renaming) crossed with each
+  immediate bucket (exact for 0..8, 16, 24, 31, 32; then small, large, max, min and the
+  negative ranges), sampled down to `FORM_SWEEP_CAP` (40) per form with every pattern and
+  every bucket kept. A memory form never gets `$zero` as its base. A form whose delay-slot
+  emission differs from its plain emission is also placed in the delay slot (none does
+  today). Each instance is one tiny guest function in a synthetic module, translated by
+  the ordinary pipeline.
+- **States.** `FORM_SWEEP_STATES` (64) seeded states per instance, from `FORM_SWEEP_SEED`
+  (1844): registers from {0, 1, 2, -1, sign boundaries, a byte, random bits, a scratch pointer},
+  floats 30% from a special list (signed zeros, denormals, infinities, NaNs, FLT_MAX), a
+  random FCR31 rounding mode, and on odd states every named register holds a different value
+  so an aliasing defect cannot hide behind equal values. A state is a pure function of
+  (seed, instance, state index).
+- **Compared.** r1..r31, HI/LO, f0..f31 (raw bits), FCR31, the FP condition, the LL bit, the
+  256-byte scratch window and the out-of-range access counters.
+- **Verdicts.** One report line per form: `MATCH`, `MISMATCH` (with the first encoding, its
+  aliasing pattern, the first state and the differing field), `NOT_CHECKED` (the reference
+  stopped on the instruction: `sync` and `cache` today, listed by name with their op word),
+  `AOT_FAILED` (the translated side stopped or had no body for an instruction the reference
+  ran) or `MISSING`. `NOT_CHECKED` is never a pass; `AOT_FAILED` and `MISSING` fail the run
+  even when another instance of the same form matched.
+- **Replay.** `build/form-sweep/public/form_sweep.exe --only <index> --dump <state>
+  <image> 0x08C00000 <plan>` runs one instance and prints that state's inputs; the index is in
+  `fixture/manifest.json`.
+- **The sweep can fail.** The second half of `form-sweep-selftest` builds a mutant of the code
+  generator (a wrapper that emits `addu` as a write of `rt` into `rd` followed by `rd = rs +
+  rd`, reading `rs` after `rd` was written), generates, compiles and runs the sweep over that
+  form, and requires a `MISMATCH` on exactly the instances where `rd` is `rs` and `rs` differs
+  from `rt`.
+- **Deeper run.** `mingw32-make --no-print-directory form-sweep-deep` runs every instance of every
+  form with 2048 states each.
+
+Two choices keep the comparison honest. When two named float registers hold NaNs with different
+payloads the harness makes them equal and counts it on stderr: an arithmetic result then carries
+whichever payload the host compiler's operand order picks inside the shared helper
+(`src/rt/fp_convert.h`), the translated body and the reference are built with different flags,
+and the PSP's own pick is unmeasured. And the reference's results come from `src/ref`, which
+shares the `sr_fpu_*` helpers with generated code for the float arithmetic: for those forms the
+sweep checks the translation around the helper (operand and destination handling, aliasing,
+rounding-mode plumbing), not the helper's arithmetic, which `fp_convert_selftest` and the cosim
+FPU reference cover.
 
 ## Naming generated functions from a symbol map
 

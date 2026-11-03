@@ -131,7 +131,8 @@ class TrustedLedgerRepository:
     def _commit(self, message: str) -> str:
         _git(self.root, "add", "-A")
         _git(self.root, "commit", "-qm", message)
-        return _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        returned: str = _git(self.root, "rev-parse", "HEAD").stdout.strip()
+        return returned
 
     def controls(self) -> tuple[bytes, bytes]:
         return (self.root / LEDGER).read_bytes(), (self.root / EXPORT).read_bytes()
@@ -248,6 +249,19 @@ class ContribRefreshRefusalTests(unittest.TestCase):
         rc, output = self._run()
         self.assertEqual(rc, 1)
         self.assertIn("CANDIDATE_INDEX_STALE", output)
+
+
+class PublicSourceProfileOrderingTests(unittest.TestCase):
+    """The committed profile keeps its string lists sorted so diffs stay small."""
+
+    def test_profile_lists_are_sorted(self) -> None:
+        profile = json.loads(
+            (Path(__file__).resolve().parent.parent / "assets" / "public_source_profile.json")
+            .read_text(encoding="utf-8")
+        )
+        for key in ("exclude_paths", "notes", "include_paths"):
+            self.assertEqual(profile[key], sorted(profile[key]), key)
+            self.assertEqual(len(profile[key]), len(set(profile[key])), key)
 
 
 if __name__ == "__main__":

@@ -204,6 +204,8 @@ validation layer on, and expects no leaked object and no validation error from e
   software fallback) closes the open command buffer itself. A larger limit trades CPU/GPU
   overlap inside one command buffer for fewer submits and fence waits.
 - `SR_GPU_SYNC_SUBMIT=1` — exact synchronous fallback: one op per submit, each waited on.
+- `SR_GPU_READBACK_FULL=1` — copy the whole scaled target on a readback to guest memory, the
+  reference path for the default copy of the rows guest memory keeps (#323).
 - `SR_VIDEO=gdi` — Phase-0 fallback to the classic GDI window.
 - `SR_VULKAN_VALIDATION=1` — enable the `VK_LAYER_KHRONOS_validation` messenger (fail-closed
   if the layer is requested but missing). See `docs/DEBUGGING.md` for FBSNAP/FBDUMP capture

@@ -359,7 +359,8 @@ int main(void) {
             raise AssertionError(
                 "callback dispatch probe crashed:\n" + result.stdout + result.stderr
             )
-        return result.stdout
+        returned: str = result.stdout
+        return returned
 
     def test_abi_args_inherited_gp_and_ra_ownership(self):
         """The callback body must see the PSP ABI: $a0=count, $a1=arg, $a2=common,

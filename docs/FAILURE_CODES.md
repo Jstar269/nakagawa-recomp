@@ -340,6 +340,7 @@ name is written as `BOOT_EVENT phase=stop reason=semantic-boundary boundary=<nam
 | `misaligned-control-target` | 118 | The game jumped to a misaligned address. |
 | `misaligned-guest-memory-access` | 118 | The game made a misaligned memory access. |
 | `null-code-pointer` | 1375 | The game jumped to address 0, a null code pointer. |
+| `null-data-pointer` | 363 | The game read or wrote through a null pointer. |
 | `target-not-executable` | 118 | The game jumped to an address outside executable code. |
 | `unsupported-import-<name>` | 308 | The game called the system function `<name>`, which Nakagawa does not provide yet. |
 | `unsupported-interpreter-form` | 118 | The interpreter met an instruction form it does not run. |

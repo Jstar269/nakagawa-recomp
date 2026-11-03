@@ -114,6 +114,7 @@ class CDrawerTests(unittest.TestCase):
                 points = list(zip(values[0::2], values[1::2], strict=True))
             value = re.search(r"#define " + rgba + r" 0x([0-9A-Fa-f]{6})FFu", text)
             self.assertIsNotNone(value, rgba)
+            assert value is not None
             colour = tuple(bytes.fromhex(value.group(1)))
             shapes.append((colour, points))
         _, svg_shapes = make_app_icon.load_mark()

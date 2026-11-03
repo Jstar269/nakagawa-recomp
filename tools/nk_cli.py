@@ -98,7 +98,7 @@ from nk_core.iso_inspect import (  # noqa: E402
 )
 import title_manifest  # noqa: E402
 from psp_import_table import MODULE_ATTR_KERNEL as PSP_MODULE_ATTR_KERNEL  # noqa: E402
-from analyze import code_overlay_layout, is_code_overlay  # noqa: E402
+from analyze import check_code_overlay, is_code_overlay  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -342,7 +342,8 @@ class ExperimentalProfileBuildError(PackageBuildError):
 
 def default_user_data_root() -> Path:
     try:
-        return default_data_root()
+        returned: Path = default_data_root()
+        return returned
     except PrerequisiteFetchError as exc:
         raise PackageBuildError(str(exc)) from exc
 
@@ -537,24 +538,13 @@ def _source_media_identity(iso_path: Path, selected: str,
     }
 
 
-#: ELF type of a fixed-address overlay image: one loadable segment at its link address,
-#: no entry point and no module information. The game copies it into place itself.
-ELF_TYPE_FIXED_OVERLAY = 0xFFA8
-
-
 def _unusable_elf_module_reason(stream, file_size: int, entry: IsoDirectoryEntry) -> str:
-    """Name the shared PSP layout rule an ELF32/MIPS module candidate breaks."""
+    """Name the shared PSP layout rule an ELF32/MIPS module candidate breaks.
+
+    (An ELF type 0xFFA8 overlay never gets here: discovery takes it as a code overlay.)"""
     rule = _elf32_mips_iso_violation(
         stream, file_size, entry.lba, entry.size, module=True
     )
-    if rule == "header-fields":
-        header = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 52)
-        if struct.unpack_from("<H", header, 16)[0] == ELF_TYPE_FIXED_OVERLAY:
-            return (
-                "its ELF type 0xFFA8 is a fixed-address overlay image (one segment at its "
-                "link address, no entry point, no module information) that the game copies "
-                "into place itself; the import does not translate that overlay form yet"
-            )
     return f"its ELF32/MIPS image breaks the PSP layout rule {rule or 'unknown'}"
 
 
@@ -589,14 +579,16 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
     host_names = disc_module_host_names(walked)
     for directory, entry in walked:
         host_name = host_names[directory + (entry.name,)]
+        # A code overlay is found by its header whatever its name: the MWo3 magic, or an
+        # ELF type 0xFFA8 image (analyze.check_code_overlay). Any other file that is not a
+        # .prx or .elf is no candidate.
+        overlay = _iso_code_overlay_candidate(
+            iso_path, file_size, directory, entry, host_name
+        )
+        if overlay is not None:
+            candidates.append(overlay)
+            continue
         if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
-            # Any other file is a candidate only when it is a code overlay, found by
-            # its magic whatever its name (analyze.code_overlay_layout).
-            overlay = _iso_code_overlay_candidate(
-                iso_path, file_size, directory, entry, host_name
-            )
-            if overlay is not None:
-                candidates.append(overlay)
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
@@ -717,7 +709,8 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
     if entry.multi_extent or entry.size < 4 or entry.size > MAX_GUEST_MODULE_BYTES:
         return None
     with iso_path.open("rb") as stream:
-        if not is_code_overlay(_read_iso_extent(stream, file_size, entry.lba, entry.size, 0, 4)):
+        head = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, min(entry.size, 18))
+        if not is_code_overlay(head):
             return None
         data = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, entry.size)
     name = host_name or entry.name
@@ -729,7 +722,7 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
                         "has no manifest spelling")
     else:
         try:
-            code_overlay_layout(data)
+            check_code_overlay(data)
         except ValueError as exc:
             kind, reason = "unsupported", f"its code-overlay header is malformed ({exc})"
     return {"name": name, "directory": directory, "entry": entry,
@@ -738,7 +731,8 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
 
 def _encrypted_prx_header_supported(header: bytes) -> bool:
     """The ``~PSP`` shape the decryption step takes (iso_inspect, shared rule)."""
-    return _prx_container_header_supported(header)
+    returned: bool = _prx_container_header_supported(header)
+    return returned
 
 
 def _psp_container_kernel_mode(header: bytes) -> bool:
@@ -989,7 +983,8 @@ def _experimental_build_modules(
         if not isinstance(profile, dict):
             raise ValueError("the experimental profile is not an object")
         if not bindings:
-            return title_manifest.validate_manifest(profile["manifest"])
+            returned: dict[str, Any] = title_manifest.validate_manifest(profile["manifest"])
+            return returned
         return _write_experimental_module_bindings(profile_path, profile, bindings)
     except (OSError, KeyError, ValueError) as exc:
         raise ExperimentalProfileBuildError(
@@ -1230,7 +1225,7 @@ def _require_plain_guest_module(path: Path, name: str, disc_name: str | None) ->
     data = path.read_bytes()
     if is_code_overlay(data):
         try:
-            code_overlay_layout(data)
+            check_code_overlay(data)
             return
         except ValueError:
             pass
@@ -3216,6 +3211,38 @@ def cmd_fonts_import(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    """Write (or, with --preview, only list) the local problem report bundle (#1849)."""
+    from nk_core import report_bundle
+
+    try:
+        user_root = _user_data_root(args.user_data_root)
+        logs_dir, config_dir = report_bundle.resolve_layout(user_root, args.logs_dir, args.config_dir)
+        inputs = report_bundle.ReportInputs(
+            user_data_root=user_root, logs_dir=logs_dir, config_dir=config_dir,
+            title_id=args.title or "", title_name=args.title_name or "", region=args.region or "",
+            flight_recorder=args.flight_recorder)
+        doctor = (
+            (lambda _root: "nk_doctor was skipped (--no-doctor).")
+            if args.no_doctor else report_bundle.run_doctor
+        )
+        plan = report_bundle.build_plan(inputs, report_bundle.Identity.from_environment(), ROOT,
+                                        doctor=doctor)
+        path = None if args.preview else report_bundle.write_bundle(plan, args.output_dir or user_root / "reports")
+    except (report_bundle.ReportError, PackageBuildError) as exc:
+        sys.stderr.write(f"Report error: {exc}\n")
+        return 1
+    files = plan.preview()
+    if args.json:
+        print(json.dumps({"path": str(path) if path else None, "archive": plan.archive_name,
+                          "files": files, "skipped": [list(item) for item in plan.skipped]}, indent=2))
+    else:
+        for item in files:
+            print(f"{item['name']}  ({item['bytes']} bytes)")
+        print(f"Report written: {path}" if path else f"Preview only; would write {plan.archive_name}")
+    return 0
+
+
 def cmd_redump_import(args: argparse.Namespace) -> int:
     """Import the user's own Redump PSP datafile into their data folder (nothing is uploaded)."""
     try:
@@ -3916,6 +3943,21 @@ def _bringup_human_summary(report: dict) -> str:
     elif report["failure_class"] == "DISC_FILES_STAGE_FAILED":
         detail = (" (the game's files on the disc could not be set up; the message above "
                   "says why and what to do next)")
+    elif report["failure_class"] == "EXECUTABLE_UNSUPPORTED":
+        detail = (" (the disc's program file is not usable yet; an encrypted one is "
+                  "decrypted by the player's disc check, so open this disc in the player "
+                  "once, then run this again with --user-data-root set to the player's "
+                  "data folder: this run looks for the decrypted program only in its own "
+                  "data folder)")
+    elif report["failure_class"] == "LAUNCH_TIMEOUT":
+        frames = (report.get("presentation") or {}).get("frame_submissions") or 0
+        detail = (
+            f" (the game was still running when the launch time limit ended and had presented "
+            f"{frames} frame(s); raise --launch-timeout to watch it longer)"
+            if frames else
+            " (the game was still running when the launch time limit ended without presenting "
+            "a frame; raise --launch-timeout to wait longer)"
+        )
     elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
         detail = " (no validated framebuffer was submitted to the GUI presenter)"
     elif report["failure_class"] == "DISC_IMAGE_REFUSED":
@@ -3944,9 +3986,11 @@ def _bringup_human_summary(report: dict) -> str:
         )
     elif report["failure_class"] == "GUEST_MODULE_DECRYPTION_REQUIRED":
         detail = (
-            " (ENCRYPTED_MODULE: a guest module is encrypted. Nakagawa does not "
-            "decrypt games; place a decrypted copy from your own copy in the "
-            "title's decrypted folder)"
+            " (ENCRYPTED_MODULE: a guest module is encrypted. The player decrypts it "
+            "from your own disc when it checks the disc: open this disc in the player "
+            "once, then run this again with --user-data-root set to the player's data "
+            "folder, or place a decrypted copy from your own copy in the title's "
+            "decrypted folder)"
         )
     elif report["failure_class"] == "RUNTIME_HLE_REGISTRY_UNAVAILABLE":
         detail = (
@@ -4199,7 +4243,8 @@ def _write_experimental_module_bindings(profile_path: Path, profile: dict,
         (json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
         .encode("utf-8"),
     )
-    return manifest
+    returned: dict[str, Any] = manifest
+    return returned
 
 
 def _public_import_rows(rows: list[dict]) -> list[dict]:
@@ -5479,6 +5524,23 @@ def main() -> int:
     p_redump.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
     p_redump.set_defaults(func=cmd_redump_import)
 
+    p_report = subparsers.add_parser(
+        "report",
+        help="Write a redacted local problem report ZIP you can attach to an issue (nothing is uploaded)",
+    )
+    p_report.add_argument("--title", help="Disc id of the game the report is about")
+    p_report.add_argument("--title-name", help="Display name, used in the file name")
+    p_report.add_argument("--region", help="Region of the title, for about.txt")
+    p_report.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
+    p_report.add_argument("--logs-dir", type=Path, help="The player's logs folder")
+    p_report.add_argument("--config-dir", type=Path, help="The player's settings folder")
+    p_report.add_argument("--flight-recorder", type=Path, help="A flight-recorder bundle to summarise")
+    p_report.add_argument("--output-dir", type=Path, help="Where the ZIP goes (default <user data>/reports)")
+    p_report.add_argument("--no-doctor", action="store_true", help="Leave out the toolchain check (faster)")
+    p_report.add_argument("--preview", action="store_true", help="List the files without writing the ZIP")
+    p_report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p_report.set_defaults(func=cmd_report)
+
     p_fonts = subparsers.add_parser("fonts", help="Manage PSP firmware system fonts")
     fonts_subparsers = p_fonts.add_subparsers(dest="fonts_subcommand", required=True)
     p_fonts_import = fonts_subparsers.add_parser(
@@ -5514,7 +5576,7 @@ def main() -> int:
     p_inspect = subparsers.add_parser("inspect", help="Inspect a PSP ISO image")
     p_inspect.add_argument("iso", help="Path to PSP ISO image")
     p_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    p_inspect.add_argument("--root", default=None,
+    p_inspect.add_argument("--user-data-root", "--root", dest="root", default=None,
                            help="Player per-user data directory for package, font, and decrypted-input checks")
     p_inspect.set_defaults(func=cmd_inspect)
 
@@ -5618,7 +5680,8 @@ def main() -> int:
     p_vram.set_defaults(func=cmd_vram)
 
     args = parser.parse_args()
-    return args.func(args)
+    returned: int = args.func(args)
+    return returned
 
 
 if __name__ == "__main__":

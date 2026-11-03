@@ -90,7 +90,7 @@ list is not evidence that a distributable installer or title package exists:
 
 ## 4. Packaging and Distribution Roadmap
 
-Maintainer decisions of 2026-10-23 (the per-OS choices; the shared install layout and manifest come
+The per-OS choices (the shared install layout and manifest come
 first and each OS is a thin wrapper around them):
 
 | Target Environment | Packaging Strategy | Binary Artifacts |
@@ -111,7 +111,7 @@ Roadmap items decided with the table:
   expects it. Today the data folders are `Nakagawa` (Windows), `nakagawa-recomp` (Linux) and
   `NakagawaRecomp` (macOS); unify them before a release ships on a second host, with a migration from
   the old Windows folder.
-* **Code signing:** v0.0.1 ships unsigned (maintainer decision, 2026-10-25). Until a build is signed, each
+* **Code signing:** v0.0.1 ships unsigned. Until a build is signed, each
   release publishes the ZIP's SHA-256 and GitHub build attestations for every binary, and the release notes
   explain the SmartScreen prompt. The signing procedure is prepared
   ([`RELEASE_SIGNING.md`](RELEASE_SIGNING.md#sign-the-windows-binaries-authenticode)) and waits for the
@@ -290,7 +290,7 @@ following key components:
 | Runtime source/header digest (section 7) and output-affecting compile/link flags | not required | required |
 
 The current package-layer epochs are `analyzer-codegen-v1`,
-`GENERATED_CODE_ABI_EPOCH = 2`, and `RUNTIME_ABI_EPOCH = 2`. The generated-code
+`GENERATED_CODE_ABI_EPOCH = 3`, and `RUNTIME_ABI_EPOCH = 2`. The generated-code
 and runtime epoch values are compatibility contracts, not release versions. A
 change to the generated C/runtime helper boundary must bump
 `GENERATED_CODE_ABI_EPOCH`; a runtime-package ABI change must bump
@@ -420,7 +420,7 @@ changes neither leaves them alone. A development checkout behaves the same
 way: its packages read as outdated after a runtime edit, because they lack it.
 Changes that must not trigger a rebuild stay out of those files.
 
-What the player does (owner decision, 2026-10-29: suggest, never force):
+What the player does (it suggests a rebuild and never forces one):
 
 * At start it scans the library on a worker. With outdated games and a
   `settings.json` whose `rebuild_prompt_version` is not this player's version,

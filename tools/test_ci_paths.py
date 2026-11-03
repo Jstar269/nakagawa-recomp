@@ -22,6 +22,7 @@ except ModuleNotFoundError:  # Running as ``python -m unittest tools.test_ci_pat
     import tools.ci_paths as ci_paths_module
 
 classify = ci_paths_module.classify
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class CiPathClassificationTests(unittest.TestCase):
@@ -471,20 +472,24 @@ class CiPathAdversarialTests(unittest.TestCase):
         )
 
     def test_hst_tests_use_their_logical_build_subject(self) -> None:
+        # The exported subject flag follows the logical tool; whether a native job runs
+        # is decided separately, by whether any gate runs the test module.
         for path in (
             "tools/test_hst_manager_manifest.py",
             "tools/test_hst_title_manifest.py",
             "tools/test_hst_doctor.py",
         ):
             with self.subTest(path=path):
-                result = classify([path])
-                self.assertEqual(result["run_native"], "true")
-                self.assertEqual(result["run_windows"], "true")
+                self.assertEqual(classify([path])["build_system"], "true")
 
     def test_codegen_test_uses_its_logical_native_subject(self) -> None:
-        result = classify(["tools/test_codegen.py"])
+        # The subject is native; the route follows whether a gate names the module, and a
+        # deleted module that a descriptor still names keeps it.
+        with patch.object(ci_paths_module, "_native_gate_sources", return_value="run test_codegen here"):
+            result = classify(["tools/test_codegen.py"])
         self.assertEqual(result["run_native"], "true")
         self.assertEqual(result["run_windows"], "true")
+        self.assertEqual(result["build_system"], "false")
 
     def test_c_harness_tests_use_their_logical_native_subject(self) -> None:
         for path in (
@@ -501,8 +506,116 @@ class CiPathAdversarialTests(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 result = classify([path])
-                self.assertEqual(result["run_native"], "true")
-                self.assertEqual(result["run_windows"], "true")
+                self.assertEqual(result["run_python"], "true")
+                self.assertEqual(result["native_runtime"], "false")
+                # The subject is a native tool: the test routes the native and Windows jobs
+                # exactly when a gate descriptor or tool script names the module.
+                expected = "false" if ci_paths_module._is_unexecuted_test(path) else "true"
+                self.assertEqual(result["run_native"], expected)
+                self.assertEqual(result["run_windows"], expected)
+
+    def test_tests_only_change_skips_native_and_windows(self) -> None:
+        """A change made only of tests no native or Windows gate runs skips both jobs."""
+
+        with patch.object(ci_paths_module, "_native_gate_sources", return_value="no gate runs a test"):
+            result = classify(["tools/test_codegen_nan_trap.py", "tools/test_hst_doctor.py"])
+        self.assertEqual(result["run_python"], "true")
+        self.assertEqual(result["python_scope"], "all")
+        self.assertEqual(result["run_native"], "false")
+        self.assertEqual(result["run_windows"], "false")
+
+    def test_test_beside_its_subject_still_runs_native_and_windows(self) -> None:
+        with patch.object(ci_paths_module, "_native_gate_sources", return_value="no gate runs a test"):
+            result = classify(["tools/test_codegen_nan_trap.py", "tools/codegen.py"])
+        self.assertEqual(result["run_native"], "true")
+        self.assertEqual(result["run_windows"], "true")
+
+    def test_tests_with_a_native_path_keep_native_and_windows(self) -> None:
+        with patch.object(ci_paths_module, "_native_gate_sources", return_value="no gate runs a test"):
+            result = classify(["tools/test_codegen_nan_trap.py", "src/rt/sched.c"])
+        self.assertEqual(result["run_native"], "true")
+        self.assertEqual(result["run_windows"], "true")
+
+    def test_test_named_by_a_gate_descriptor_keeps_native_and_windows(self) -> None:
+        with patch.object(ci_paths_module, "_native_gate_sources", return_value="python -m unittest test_codegen_nan_trap"):
+            result = classify(["tools/test_codegen_nan_trap.py"])
+            other = classify(["tools/test_hst_doctor.py"])
+        self.assertEqual(result["run_native"], "true")
+        self.assertEqual(result["run_windows"], "true")
+        self.assertEqual(other["run_native"], "false")
+
+    def test_windows_job_modules_named_in_ci_yml_stay_routed(self) -> None:
+        for path in ("tools/test_flash0_font.py", "tools/test_public_ci_wiring.py"):
+            with self.subTest(path=path):
+                self.assertFalse(ci_paths_module._is_unexecuted_test(path))
+
+    def test_unreadable_gate_descriptors_keep_every_native_route(self) -> None:
+        with patch.object(ci_paths_module, "_native_gate_sources", return_value=None):
+            result = classify(["tools/test_codegen_nan_trap.py"])
+        self.assertEqual(result["run_native"], "true")
+        self.assertEqual(result["run_windows"], "true")
+
+    def test_classifier_tests_are_never_unexecuted(self) -> None:
+        for path in ("tools/test_ci_paths.py", "tools/test_ci_required.py", "tools/test_ci_test_shards.py"):
+            with self.subTest(path=path):
+                self.assertFalse(ci_paths_module._is_unexecuted_test(path))
+                self.assertEqual(classify([path])["run_windows"], "true")
+
+    def test_only_tools_test_modules_can_be_unexecuted(self) -> None:
+        for path in ("tools/codegen.py", "tests/native/test_player_ui.py", "tools/sub/test_x.py", "docs/test_x.py"):
+            with self.subTest(path=path):
+                self.assertFalse(ci_paths_module._is_unexecuted_test(path))
+
+    def test_every_windows_gate_named_test_is_routed(self) -> None:
+        """Each test module ci.yml or the Makefile names stays routed through a native gate."""
+
+        sources = ci_paths_module._native_gate_sources()
+        assert sources is not None
+        tools_root = Path(__file__).resolve().parent
+        for test_path in sorted(tools_root.glob("test_*.py")):
+            relative = test_path.relative_to(tools_root.parent).as_posix()
+            if ci_paths_module._names_module(sources, test_path.stem):
+                with self.subTest(path=relative):
+                    self.assertFalse(ci_paths_module._is_unexecuted_test(relative))
+
+    def test_a_test_module_imported_by_a_gate_run_driver_stays_routed(self) -> None:
+        """tests/native/test_player_ui.py imports tools/test_player_package_route."""
+
+        driver = (ROOT / "tests" / "native" / "test_player_ui.py").read_text(encoding="utf-8")
+        self.assertIn("test_player_package_route", driver)
+        self.assertFalse(ci_paths_module._is_unexecuted_test("tools/test_player_package_route.py"))
+
+    def test_a_module_reached_only_through_imports_is_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            tools = Path(scratch) / "tools"
+            tools.mkdir()
+            (tools / "test_gate.py").write_text("import test_helper_one\n", encoding="utf-8")
+            (tools / "test_helper_one.py").write_text("from tools import test_helper_two\n", encoding="utf-8")
+            (tools / "test_helper_two.py").write_text("name = 'tools.test_helper_three'\n", encoding="utf-8")
+            (tools / "test_helper_three.py").write_text("", encoding="utf-8")
+            (tools / "test_alone.py").write_text("", encoding="utf-8")
+            with patch.object(ci_paths_module, "ROOT", Path(scratch)):
+                ci_paths_module._gate_executed_tests.cache_clear()
+                executed = ci_paths_module._gate_executed_tests("python -m unittest test_gate")
+                ci_paths_module._gate_executed_tests.cache_clear()
+        self.assertEqual(executed, frozenset({"test_gate", "test_helper_one", "test_helper_two", "test_helper_three"}))
+
+    def test_an_unparsable_gate_module_makes_every_test_count_as_run(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            tools = Path(scratch) / "tools"
+            tools.mkdir()
+            (tools / "test_gate.py").write_text("def (:\n", encoding="utf-8")
+            (tools / "test_other.py").write_text("", encoding="utf-8")
+            with patch.object(ci_paths_module, "ROOT", Path(scratch)):
+                ci_paths_module._gate_executed_tests.cache_clear()
+                executed = ci_paths_module._gate_executed_tests("unittest test_gate")
+                ci_paths_module._gate_executed_tests.cache_clear()
+        self.assertEqual(executed, frozenset({"test_gate", "test_other"}))
+
+    def test_a_test_whose_name_only_prefixes_a_gate_module_is_not_run(self) -> None:
+        # test_codegen is not named by "test_codegen_llvm".
+        self.assertFalse(ci_paths_module._names_module("python -m unittest test_codegen_llvm", "test_codegen"))
+        self.assertTrue(ci_paths_module._names_module("tools" + chr(92) + "test_codegen.py", "test_codegen"))
 
     def test_python_only_test_keeps_native_gates_off(self) -> None:
         result = classify(["tools/test_progress_tracker.py"])
@@ -517,7 +630,7 @@ class CiPathAdversarialTests(unittest.TestCase):
             logical = ci_paths_module._logical_tool_path(relative)
             self.assertIsNotNone(logical)
             assert logical is not None
-            expected_native = any(
+            subject_native = any(
                 predicate(logical)
                 for predicate in (
                     ci_paths_module._is_workflow_ci,
@@ -526,6 +639,9 @@ class CiPathAdversarialTests(unittest.TestCase):
                     ci_paths_module._is_native_tool,
                 )
             )
+            # A native subject routes the native and Windows jobs unless the test module
+            # itself is one no gate runs; a classifier test always routes them.
+            expected_native = subject_native and not ci_paths_module._is_unexecuted_test(relative)
             result = classify([relative])
             self.assertEqual(result["run_native"] == "true", expected_native, relative)
             self.assertEqual(result["run_windows"] == "true", expected_native, relative)
@@ -569,7 +685,7 @@ class MergeGroupRoutingTests(unittest.TestCase):
                     self.assertEqual(result[key], "true", key)
                 self.assertEqual(result["security_publication"], "true")
                 self.assertEqual(result["python_scope"], "all")
-                self.assertEqual(result["python_num_shards"], "4")
+                self.assertEqual(result["python_num_shards"], str(ci_paths_module.PYTHON_SHARDS_FULL))
                 self.assertEqual(result["docs_only"], "false")
                 self.assertEqual(result["draft"], "false")
 
@@ -732,7 +848,8 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
 
     def edit(self, old: str, new: str) -> tuple[str, ...] | None:
         self.assertIn(old, _SYNTHETIC_MAKEFILE)
-        return self.analyse(_SYNTHETIC_MAKEFILE, _SYNTHETIC_MAKEFILE.replace(old, new, 1))
+        returned: tuple[str, ...] | None = self.analyse(_SYNTHETIC_MAKEFILE, _SYNTHETIC_MAKEFILE.replace(old, new, 1))
+        return returned
 
     def test_synthetic_fixture_parses_as_intended(self) -> None:
         kinds, phony = ci_paths_module._makefile_line_kinds(_SYNTHETIC_MAKEFILE)
@@ -868,6 +985,7 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         )
         flag = re.search(r"(?m)^PLAYER_EXE \?= .*$", makefile)
         self.assertIsNotNone(flag)
+        assert flag is not None
         self.assertIsNone(self.analyse(makefile, makefile.replace(flag.group(0), flag.group(0) + " ", 1)))
         file_recipe = "-DNK_PLAYER_UI_REGRESSION_TEST"
         self.assertIn(file_recipe, makefile)
@@ -881,8 +999,8 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         self.assertEqual(result["run_windows"], "true")
         self.assertEqual(result["run_python"], "true")
         self.assertEqual(result["python_scope"], "makefile")
-        self.assertEqual(json.loads(result["python_shards"]), [0, 1])
-        self.assertEqual(result["python_num_shards"], "2")
+        self.assertEqual(json.loads(result["python_shards"]), list(range(ci_paths_module.PYTHON_SHARDS_MAKEFILE)))
+        self.assertEqual(result["python_num_shards"], str(ci_paths_module.PYTHON_SHARDS_MAKEFILE))
 
     def test_any_other_python_routing_restores_the_full_suite(self) -> None:
         for other in ("tools/codegen.py", "src/rt/hle.c", ".github/workflows/ci.yml",
@@ -890,7 +1008,7 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
             with self.subTest(other=other):
                 result = classify(["Makefile", other], makefile_change=("player-ui-regressions",))
                 self.assertEqual(result["python_scope"], "all")
-                self.assertEqual(json.loads(result["python_shards"]), [0, 1, 2, 3])
+                self.assertEqual(json.loads(result["python_shards"]), list(range(ci_paths_module.PYTHON_SHARDS_FULL)))
                 self.assertEqual(result["run_native"], "true")
 
     def test_unproven_or_absent_analysis_keeps_build_system_routing(self) -> None:
@@ -898,7 +1016,7 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         self.assertEqual(result["build_system"], "true")
         self.assertEqual(result["makefile_recipe_only"], "false")
         self.assertEqual(result["python_scope"], "all")
-        self.assertEqual(json.loads(result["python_shards"]), [0, 1, 2, 3])
+        self.assertEqual(json.loads(result["python_shards"]), list(range(ci_paths_module.PYTHON_SHARDS_FULL)))
         # The analysis result is ignored when the Makefile is not among the changes,
         # and a manual dispatch is always the full matrix.
         self.assertEqual(classify(["docs/CI.md"], makefile_change=())["run_native"], "false")
@@ -1043,6 +1161,7 @@ class PrecommitPathCoverageTests(unittest.TestCase):
             encoding="utf-8")
         block = re.search(r"(?m)^exclude:\s*\|\n((?:[ \t]+[^\n]*(?:\n|$))+)", config)
         self.assertIsNotNone(block, "global pre-commit exclusion must remain explicit")
+        assert block is not None
         pattern = re.compile(textwrap.dedent(block.group(1)))
         for path in (
             "README.md", ".github/workflows/ci.yml", ".pre-commit-config.yaml",
@@ -1218,6 +1337,8 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
 
 REPO = ci_paths_module.SELF_HOSTED_REPOSITORY
 OWNER = REPO.split("/", 1)[0]
+#: The repository's name as GitHub reports it since the rename (the constant is lower case).
+RENAMED_REPO = "Jstar269/Nakagawa-Recomp"
 HOSTED = json.dumps("ubuntu-24.04")
 SELF_HOSTED = json.dumps(["self-hosted", "linux", "x64", "nk-wsl"], separators=(",", ":"))
 NOW = 1_800_000_000
@@ -1261,6 +1382,40 @@ class CodeqlRunnerRoutingTests(unittest.TestCase):
         self.assertEqual(self.route("workflow_run", _wake("merge_group", "gh-readonly-queue/main/pr-7-abc")),
                          SELF_HOSTED)
         self.assertEqual(self.route("workflow_run", _wake("pull_request", "fix/thing")), SELF_HOSTED)
+
+    def test_the_renamed_repository_casing_uses_the_pool_for_trusted_targets(self) -> None:
+        self.assertEqual(self.route("push", repository=RENAMED_REPO), SELF_HOSTED)
+        for kind, branch in (("pull_request", "batch/desk-20261030T193657Z"),
+                             ("merge_group", "gh-readonly-queue/main/pr-7-abc")):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    self.route("workflow_run", _wake(kind, branch, head_repo=RENAMED_REPO),
+                               repository=RENAMED_REPO),
+                    SELF_HOSTED)
+
+    def test_the_renamed_casing_does_not_trust_forks_or_other_owners(self) -> None:
+        cases = {
+            "fork of the renamed repository": _wake("pull_request", "batch/desk-1",
+                                                    head_repo="evil/Nakagawa-Recomp", actor="evil"),
+            "fork pushed as the owner's name": _wake("pull_request", "batch/desk-1",
+                                                     head_repo="evil/Nakagawa-Recomp"),
+            "same-name repository of another owner": _wake("pull_request", "batch/desk-1",
+                                                           head_repo="Jstar269x/Nakagawa-Recomp"),
+            "merge group of a fork": _wake("merge_group", "gh-readonly-queue/main/pr-7-abc",
+                                           head_repo="evil/Nakagawa-Recomp"),
+            "actor login in another casing": _wake("pull_request", "batch/desk-1", head_repo=RENAMED_REPO,
+                                                   actor=OWNER.lower()),
+            "long s in the head owner": _wake("pull_request", "batch/desk-1",
+                                              head_repo="Jſtar269/Nakagawa-Recomp"),
+            "Kelvin sign in the head name": _wake("pull_request", "batch/desk-1",
+                                                  head_repo="Jstar269/NaKagawa-Recomp"),
+        }
+        for label, event in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.route("workflow_run", event, repository=RENAMED_REPO), self.HOSTED)
+        self.assertEqual(self.route("push", repository="evil/Nakagawa-Recomp"), self.HOSTED)
+        self.assertEqual(self.route("push", repository="Jſtar269/nakagawa-recomp"), self.HOSTED)
+        self.assertEqual(self.route("push", repository="Jstar269/naKagawa-recomp"), self.HOSTED)
 
     def test_outside_and_fork_pull_requests_stay_hosted(self) -> None:
         cases = {
@@ -1351,10 +1506,59 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
         with self.subTest("merge group of another branch"):
             self.assertEqual(self.route("merge_group", ref="refs/heads/gh-readonly-queue/dev/pr-1"), HOSTED)
         # A fork runs this workflow in its own repository, where the pool does not exist.
-        for repository in ("someone/nakagawa-recomp", "", "jstar269/nakagawa-recomp"):
+        for repository in ("someone/nakagawa-recomp", ""):
             with self.subTest(repository=repository):
                 self.assertEqual(self.route("push", ref="refs/heads/main", repository=repository), HOSTED)
                 self.assertEqual(self.route("pull_request", _pull_request(), repository=repository), HOSTED)
+
+    def test_the_renamed_repository_casing_is_still_this_repository(self) -> None:
+        """GitHub reports the name as ``Jstar269/Nakagawa-Recomp`` since the rename."""
+        for repository in (RENAMED_REPO, REPO, REPO.upper()):
+            with self.subTest(repository=repository):
+                self.assertEqual(self.route("push", ref="refs/heads/main", repository=repository), SELF_HOSTED)
+                self.assertEqual(
+                    self.route("merge_group", ref="refs/heads/gh-readonly-queue/main/pr-7-" + "a" * 40,
+                               repository=repository),
+                    SELF_HOSTED)
+                self.assertEqual(
+                    self.route("pull_request", _pull_request(head_repo=RENAMED_REPO, base_repo=RENAMED_REPO),
+                               repository=repository),
+                    SELF_HOSTED)
+        with self.subTest("payload in the old casing, environment in the new"):
+            self.assertEqual(self.route("pull_request", _pull_request(), repository=RENAMED_REPO), SELF_HOSTED)
+
+    def test_the_renamed_casing_does_not_trust_other_repositories_or_people(self) -> None:
+        cases = {
+            "fork of the renamed repository": _pull_request(head_repo="evil/Nakagawa-Recomp", fork=True,
+                                                            author="evil", base_repo=RENAMED_REPO),
+            "fork claiming the owner": _pull_request(head_repo="evil/Nakagawa-Recomp", fork=True,
+                                                     base_repo=RENAMED_REPO),
+            "same-name repository of another owner": _pull_request(head_repo="Jstar269x/Nakagawa-Recomp",
+                                                                   base_repo=RENAMED_REPO),
+            "other owner differing only by case": _pull_request(head_repo="JSTAR2690/Nakagawa-Recomp",
+                                                                base_repo=RENAMED_REPO),
+            "fork flag set": _pull_request(head_repo=RENAMED_REPO, base_repo=RENAMED_REPO, fork=True),
+            "carry branch": _pull_request("carry/pr-9", head_repo=RENAMED_REPO, base_repo=RENAMED_REPO),
+            "author login in another casing": _pull_request(head_repo=RENAMED_REPO, base_repo=RENAMED_REPO,
+                                                            author=OWNER.lower()),
+            "sender login in another casing": _pull_request(head_repo=RENAMED_REPO, base_repo=RENAMED_REPO,
+                                                            sender=OWNER.lower()),
+            "long s in the head owner": _pull_request(head_repo="Jſtar269/Nakagawa-Recomp",
+                                                      base_repo=RENAMED_REPO),
+            "Kelvin sign in the head name": _pull_request(head_repo="Jstar269/NaKagawa-Recomp",
+                                                          base_repo=RENAMED_REPO),
+        }
+        for label, event in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.route("pull_request", event, repository=RENAMED_REPO), HOSTED)
+        for repository in ("evil/Nakagawa-Recomp", "Jstar269x/Nakagawa-Recomp", "Jstar269/Nakagawa-Recomp2",
+                           "Jstar269/Nakagawa Recomp", "Jſtar269/nakagawa-recomp",
+                           "Jstar269/naKagawa-recomp", "Jstar269/naKagawa-recomp".upper()):
+            with self.subTest(repository=repository):
+                self.assertEqual(self.route("push", ref="refs/heads/main", repository=repository), HOSTED)
+                self.assertEqual(self.route("pull_request", _pull_request(), repository=repository), HOSTED)
+        with self.subTest("branch refs stay case-sensitive"):
+            self.assertEqual(self.route("push", ref="refs/heads/Main", repository=RENAMED_REPO), HOSTED)
 
     def test_the_off_switch_and_a_stale_heartbeat_send_trusted_runs_to_hosted(self) -> None:
         for switch in ("off", "", "true", "1", "native", "ON "):
@@ -1437,6 +1641,122 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
                                   "NK_SELF_HOSTED_HEARTBEAT": ""}),
             HOSTED,
         )
+
+
+class CodeqlScopeTests(unittest.TestCase):
+    """Trusted CodeQL analyses a pull request only when it can change a result."""
+
+    needed = staticmethod(ci_paths_module.codeql_scan_needed)
+
+    def test_documentation_and_assets_skip_the_analysis(self) -> None:
+        self.assertFalse(self.needed(["docs/CI.md", "README.md", "assets/titles/a.json", "Makefile", "mk/nk_ui.mk"]))
+
+    def test_every_analysed_language_runs_it(self) -> None:
+        for path in (
+            "src/rt/sched.c",
+            "src/core/nk_json.h",
+            "src/gegpu/x.cpp",
+            "tools/codegen.py",
+            "tools/test_ci_paths.py",
+            ".github/workflows/ci.yml",
+            ".github/actions/setup/action.yml",
+            "action.yaml",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(self.needed([path]))
+
+    def test_a_deleted_or_renamed_source_still_runs_it(self) -> None:
+        paths = ci_paths_module._parse_changed_paths("D\tsrc/rt/removed.c\nR100\tsrc/rt/old.c\tdocs/new.md\n")
+        self.assertTrue(self.needed(paths))
+        self.assertTrue(self.needed(["src/rt/old.c", "docs/new.md"]))
+
+    def test_one_relevant_path_among_irrelevant_ones_runs_it(self) -> None:
+        self.assertTrue(self.needed(["docs/a.md", "docs/b.md", "tools/x.py"]))
+
+    def test_unknown_history_fails_closed(self) -> None:
+        self.assertTrue(self.needed([]))
+        self.assertTrue(self.needed(["<history-unavailable>"]))
+        with patch.object(ci_paths_module.subprocess, "run", side_effect=OSError("no git")):
+            self.assertEqual(ci_paths_module.codeql_scope_from_git("a" * 40, "b" * 40), ["<history-unavailable>"])
+
+    def test_cli_writes_only_the_scan_decision(self) -> None:
+        nul = chr(0)
+        with tempfile.TemporaryDirectory() as scratch:
+            output_path = Path(scratch) / "github_output"
+            diff = subprocess.CompletedProcess([], 0, stdout=f"M{nul}docs/CI.md{nul}A{nul}assets/x.png{nul}".encode())
+            with patch.object(ci_paths_module.subprocess, "run", return_value=diff) as run, patch("sys.stdout"):
+                ci_paths_module.main(["--codeql-scope", "a" * 40, "b" * 40, "--github-output", str(output_path)])
+            self.assertEqual(run.call_args.args[0][:3], ["git", "diff", "--name-status"])
+            self.assertIn("-z", run.call_args.args[0])
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "scan=false" + chr(10))
+            diff.stdout = f"M{nul}docs/CI.md{nul}M{nul}src/rt/sched.c{nul}".encode()
+            output_path.unlink()
+            with patch.object(ci_paths_module.subprocess, "run", return_value=diff), patch("sys.stdout"):
+                ci_paths_module.main(["--codeql-scope", "a" * 40, "b" * 40, "--github-output", str(output_path)])
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "scan=true" + chr(10))
+
+    def test_nul_separated_records_keep_both_sides_of_a_rename(self) -> None:
+        nul = chr(0)
+        parsed = ci_paths_module._parse_changed_paths_z(
+            f"D{nul}src/rt/removed.c{nul}R100{nul}src/rt/old.c{nul}docs/new.md{nul}M{nul}a b.txt{nul}"
+        )
+        self.assertEqual(parsed, ["src/rt/removed.c", "src/rt/old.c", "docs/new.md", "a b.txt"])
+        for broken in (f"R100{nul}only-one{nul}", f"Z{nul}x{nul}", f"M{nul}{nul}", f"M{nul}x"):
+            with self.subTest(broken=broken):
+                self.assertEqual(ci_paths_module._parse_changed_paths_z(broken), ["<history-unavailable>"])
+
+    def test_a_quoted_or_unreadable_name_forces_the_analysis(self) -> None:
+        """Unquoted git output prints src/<e-acute>.c as a double-quoted octal string ending in .c and a quote."""
+
+        bs = chr(92)
+        for name in (
+            '"src' + bs + "303" + bs + '251.c"',
+            "src/odd" + bs + "name.c",
+            "src/tab" + chr(9) + "name.c",
+            "src/line" + chr(10) + "break.py",
+            " docs/leading.md",
+            "docs/trailing.md ",
+            "",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(self.needed(["docs/a.md", name]))
+
+    def test_a_non_ascii_source_name_is_read_verbatim_and_analysed(self) -> None:
+        for name in ("src/" + chr(0xE9) + ".c", "tools/" + chr(0x4E2D) + ".py"):
+            with self.subTest(name=name):
+                self.assertTrue(self.needed([name]))
+        self.assertFalse(self.needed(["docs/" + chr(0xE9) + ".md", "assets/" + chr(0x4E2D) + ".png"]))
+
+    def test_real_git_reports_a_non_ascii_new_source_verbatim(self) -> None:
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+        def git(root: Path, *args: str) -> str:
+            return subprocess.run(["git", *args], cwd=root, env=env, check=True,
+                                  capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            git(root, "init", "-q")
+            (root / "README.md").write_text("x", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "base")
+            base = git(root, "rev-parse", "HEAD")
+            (root / "docs").mkdir()
+            (root / "docs" / "a.md").write_text("y", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / ("caf" + chr(0xE9) + ".c")).write_text("int x;", encoding="utf-8")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "change")
+            head = git(root, "rev-parse", "HEAD")
+            paths = ci_paths_module.codeql_scope_from_git(base, head, root)
+            self.assertIn("src/caf" + chr(0xE9) + ".c", paths)
+            self.assertTrue(self.needed(paths))
+            # The quoted form the old parser would have seen ends in a double quote, not .c.
+            legacy = ci_paths_module._parse_changed_paths(git(root, "diff", "--name-status", base, head))
+            self.assertTrue(any(path.endswith('"') for path in legacy))
+            self.assertTrue(self.needed(legacy))
 
 
 if __name__ == "__main__":

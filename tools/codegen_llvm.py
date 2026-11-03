@@ -635,7 +635,8 @@ def lower(cg, elf, start, ranges, known, *, c_text: str, resume_owners=None, res
                            dispatch_boundaries=dispatch_boundaries)
     lowering = FunctionLowering(plan, stack_census)
     function = lowering.lower()
-    return LLVMBody.make(lowering.definition_name, start, lowering.module, function, len(c_text))
+    returned: LLVMBody = LLVMBody.make(lowering.definition_name, start, lowering.module, function, len(c_text))
+    return returned
 
 
 def chunk_module(name: str, bodies, renames: dict[str, str]) -> L.Module:

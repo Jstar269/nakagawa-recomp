@@ -458,7 +458,8 @@ def _defined_cell(row: dict) -> str:
 
 def _reach_cell(row: dict) -> str:
     if row["reach"] != "emitter-reached":
-        return row["reach"]
+        returned: str = row["reach"]
+        return returned
     routes = (["direct"] if row["emitter_direct"] else []) + [f"via `{m}`" for m in row["emitter_macros"]]
     return f"emitter-reached ({', '.join(routes)})"
 

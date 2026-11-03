@@ -24,11 +24,11 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 16 |
-| `ppsspp-derived` | 111 | 90 |
+| `ppsspp-derived` | 117 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 262 | 200 |
-| `unverified` | 224 | 57 |
-| total | 661 | 363 |
+| `synthetic` | 344 | 226 |
+| `unverified` | 159 | 31 |
+| total | 684 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -59,18 +59,20 @@ belongs to without the census's own grouping.
 | NID | Name | Subsystem | Class | Basis |
 | --- | --- | --- | --- | --- |
 | `0x00061e74` | `newlibModuleStreamWrite` | kernel_utils | `unverified` | no recorded evidence |
-| `0x011f03c1` | `sceRtcGetAccumulativeTime` | rtc | `unverified` | no recorded evidence |
+| `0x011f03c1` | `sceRtcGetAccumulativeTime` | rtc | `synthetic` | HLE selftest dispatch |
 | `0x01562ba3` | `sceAudioOutput2Reserve` | audio | `hardware-measured` | PSP oracle PSP-HLE-AUDIO-SRC-001 |
+| `0x01977054` | `sceMpegGetUserdataAu` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x019b25eb` | `__sceSasSetADSR` | audio | `synthetic` | HLE selftest dispatch |
 | `0x0282a3bd` | `sceHttpGetContentLength` | network | `unverified` | no recorded evidence |
-| `0x02baad91` | `sceCtrlGetSamplingCycle` | input | `unverified` | no recorded evidence |
+| `0x02baad91` | `sceCtrlGetSamplingCycle` | input | `synthetic` | HLE selftest dispatch |
 | `0x03444eb4` | `sceGeListSync` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001 |
 | `0x034a921f` | `sceKernelGetVTimerTime` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002, PSP-HLE-VTIMER-003 |
+| `0x03b6807d` | `sceVaudioChReserve` | audio | `synthetic` | HLE selftest dispatch |
 | `0x03d9526f` | `sceHttpSetResolveRetry` | network | `unverified` | no recorded evidence |
 | `0x04b7766e` | `scePowerRegisterCallback` | power | `synthetic` | HLE selftest dispatch |
 | `0x05572a5f` | `sceKernelExitGame` | kernel_module | `hardware-measured` | PSP oracle PSP-SMOKE-001 |
 | `0x0558b075` | `sceMpegAvcCopyYCbCr` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0x05db22ce` | `sceGeUnsetCallback` | ge | `synthetic` | HLE selftest dispatch |
+| `0x05db22ce` | `sceGeUnsetCallback` | ge | `synthetic` | HLE selftest dispatch; note |
 | `0x06a70004` | `sceIoMkdir` | io | `unverified` | no recorded evidence |
 | `0x07ec321a` | `sceMp3ReserveMp3Handle` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x07f58c24` | `__sceSasGetAllEnvelopeHeights` | audio | `unverified` | no recorded evidence |
@@ -79,33 +81,33 @@ belongs to without the census's own grouping.
 | `0x08fff7a0` | `sceNetAdhocctlScan` | network | `unverified` | no recorded evidence |
 | `0x090ccb3f` | `sceKernelPowerTick` | power | `synthetic` | HLE selftest dispatch |
 | `0x092968f4` | `sceKernelCpuSuspendIntr` | kernel_interrupt | `hardware-measured` | PSP oracle PSP-DISPLAY-001 |
-| `0x099ef33c` | `sceFontFindOptimumFont` | font | `unverified` | no recorded evidence |
+| `0x099ef33c` | `sceFontFindOptimumFont` | font | `synthetic` | HLE selftest dispatch |
 | `0x0ad043ed` | `sceNetAdhocctlConnect` | network | `unverified` | no recorded evidence |
-| `0x0afd0d8b` | `scePowerIsBatteryExist` | power | `unverified` | no recorded evidence |
+| `0x0afd0d8b` | `scePowerIsBatteryExist` | power | `synthetic` | HLE selftest dispatch |
 | `0x0b2228e9` | `sceNetAdhocGameModeDeleteReplica` | network | `unverified` | no recorded evidence |
 | `0x0b588501` | `sceCtrlReadLatch` | input | `hardware-measured` | PSP oracle PSP-HLE-CTRL-LATCH-001 |
 | `0x0bf0a3ae` | `sceNetGetLocalEtherAddr` | network | `unverified` | no recorded evidence |
 | `0x0bf608fb` | `sceGeRestoreContext` | ge | `synthetic` | HLE selftest dispatch |
 | `0x0c116e1b` | `sceAtracLowLevelDecode` | audio_codec | `unverified` | no recorded evidence |
-| `0x0c622081` | `sceWlanGetEtherAddr` | network | `unverified` | no recorded evidence |
+| `0x0c622081` | `sceWlanGetEtherAddr` | network | `synthetic` | HLE selftest dispatch |
 | `0x0cae832b` | `sceRegCloseCategory` | system | `synthetic` | HLE selftest dispatch |
 | `0x0d5bc6d2` | `sceUtilityLoadUsbModule` | utility | `unverified` | no recorded evidence |
 | `0x0d69bf40` | `sceRegFlushCategory` | system | `synthetic` | HLE selftest dispatch |
 | `0x0d81716a` | `sceKernelPollMbx` | kernel_sync | `synthetic` | HLE selftest dispatch |
-| `0x0da7535e` | `sceFontGetFontInfo` | font | `unverified` | no recorded evidence |
+| `0x0da7535e` | `sceFontGetFontInfo` | font | `synthetic` | HLE selftest dispatch |
 | `0x0db149f4` | `sceMp3NotifyAddStreamData` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x0ddcd2c9` | `sceKernelTryLockMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
-| `0x0e20f177` | `sceDisplaySetMode` | display | `unverified` | no recorded evidence |
+| `0x0e20f177` | `sceDisplaySetMode` | display | `synthetic` | HLE selftest dispatch |
 | `0x0e2a73ab` | `sceAtracSetData` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x0e3c2e9d` | `sceMpegAvcDecode` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x0ed48fe2` | `sceKernelDeleteNotifyCallback` | kernel_thread | `unverified` | no recorded evidence |
 | `0x0f6c18d7` | `sceMpegAvcDecodeDetail` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0x0facab19` | `sceIoWriteAsync` | io | `unverified` | no recorded evidence |
+| `0x0facab19` | `sceIoWriteAsync` | io | `synthetic` | HLE selftest dispatch |
 | `0x0fae370e` | `sceAtracSetHalfwayBufferAndGetID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x1078c008` | `scePsmfPlayerStop` | mpeg | `synthetic` | HLE selftest dispatch |
 | `0x109f50bc` | `sceIoOpen` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0x10f3bb61` | `memset` | kernel_utils | `synthetic` | HLE selftest dispatch |
-| `0x110dec9a` | `sceKernelUSec2SysClock` | kernel_time | `unverified` | no recorded evidence |
+| `0x110dec9a` | `sceKernelUSec2SysClock` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0x1117c65f` | `sceIoRmdir` | io | `unverified` | no recorded evidence |
 | `0x1181e963` | `sceKernelDelaySysClockThreadCB` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x132f1eca` | `sceAtracReinit` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
@@ -120,27 +122,27 @@ belongs to without the census's own grouping.
 | `0x167afd9e` | `sceMpegInitAu` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x172d316e` | `sceKernelStdin` | kernel_utils | `unverified` | no recorded evidence |
 | `0x17768e14` | `sceRegSetKeyValue` | system | `synthetic` | HLE selftest dispatch |
-| `0x17c1684e` | `sceKernelReferThreadStatus` | kernel_thread | `unverified` | no recorded evidence |
+| `0x17c1684e` | `sceKernelReferThreadStatus` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x18260574` | `sceKernelReceiveMbx` | kernel_sync | `hardware-measured` | PSP oracle PSP-KERNEL-001 |
 | `0x1839852a` | `sceKernelMemcpy` | kernel_utils | `synthetic` | HLE selftest dispatch |
-| `0x191cdeff` | `sceSslEnd` | network | `unverified` | no recorded evidence |
+| `0x191cdeff` | `sceSslEnd` | network | `synthetic` | HLE selftest dispatch |
 | `0x19cff145` | `sceKernelCreateLwMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
-| `0x1b385d8f` | `sceIoLseek32Async` | io | `unverified` | no recorded evidence |
+| `0x1b385d8f` | `sceIoLseek32Async` | io | `synthetic` | HLE selftest dispatch |
 | `0x1b4217bc` | `sceKernelSetCompiledSdkVersion603_605` | kernel_memory | `synthetic` | registry evidence `tools/test_sdkver_c.py` |
 | `0x1b839b83` | `sceMp3LowLevelInit` | audio_codec | `synthetic` | HLE selftest dispatch |
 | `0x1c0d95a6` | `sceGeListEnQueueHead` | ge | `synthetic` | HLE selftest dispatch |
 | `0x1d8a762e` | `sceRegOpenCategory` | system | `synthetic` | HLE selftest dispatch |
-| `0x1e490401` | `scePowerIsBatteryCharging` | power | `unverified` | no recorded evidence |
+| `0x1e490401` | `scePowerIsBatteryCharging` | power | `synthetic` | HLE selftest dispatch |
 | `0x1e57a8e7` | `scePsmfPlayerConfigPlayer` | mpeg | `unverified` | no recorded evidence |
 | `0x1f0fc3e3` | `sceHttpSetRecvTimeOut` | network | `unverified` | no recorded evidence |
 | `0x1f4011e6` | `sceCtrlSetSamplingMode` | input | `synthetic` | HLE selftest dispatch |
 | `0x1f6752ad` | `sceGeEdramGetSize` | ge | `hardware-measured` | PSP oracle PSP-HLE-GE-EDRAM-001 |
-| `0x1f803938` | `sceCtrlReadBufferPositive` | input | `synthetic` | conformance cells and HLE selftest dispatch |
+| `0x1f803938` | `sceCtrlReadBufferPositive` | input | `synthetic` | conformance cells and HLE selftest dispatch; note |
 | `0x1fb15a32` | `sceKernelSetEventFlag` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x1fc64e09` | `sceKernelLockLwMutexCB` | kernel_sync | `synthetic` | conformance cells |
 | `0x1ff89745` | `sceNetAdhocctlJoinEnterGameMode` | network | `unverified` | no recorded evidence |
-| `0x20628e6f` | `sceUmdGetErrorStat` | umd | `unverified` | no recorded evidence |
-| `0x2085d15d` | `scePowerGetBatteryLifePercent` | power | `unverified` | no recorded evidence |
+| `0x20628e6f` | `sceUmdGetErrorStat` | umd | `synthetic` | HLE selftest dispatch |
+| `0x2085d15d` | `scePowerGetBatteryLifePercent` | power | `synthetic` | HLE selftest dispatch |
 | `0x208db1bd` | `sceHprmIsRemoteExist` | input | `hardware-measured` | PSP oracle PSP-HLE-HPRM-001 |
 | `0x20b317a0` | `sceNetAdhocctlAddHandler` | network | `unverified` | no recorded evidence |
 | `0x20fff560` | `sceKernelCreateVTimer` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002, PSP-HLE-VTIMER-003, PSP-HLE-TIMER-ORDER-001 |
@@ -151,16 +153,17 @@ belongs to without the census's own grouping.
 | `0x2255551e` | `sceHttpGetNetworkPspError` | network | `unverified` | no recorded evidence |
 | `0x231fc6b7` | `_sceAtracGetContextAddress` | audio_codec | `unverified` | no recorded evidence |
 | `0x235d8787` | `scePsmfPlayerCreate` | mpeg | `synthetic` | HLE selftest dispatch |
-| `0x237dbd4f` | `sceKernelAllocPartitionMemory` | kernel_memory | `synthetic` | HLE selftest dispatch |
+| `0x237dbd4f` | `sceKernelAllocPartitionMemory` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0x24ac31eb` | `sceUtilityGamedataInstallInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x24fd7bcf` | `sceImposeGetLanguageMode` | utility | `synthetic` | HLE selftest dispatch |
 | `0x267a6dd2` | `__sceSasRevParam` | audio | `unverified` | no recorded evidence |
+| `0x26d25a5d` | `sceRtcTickAddMicroseconds` | rtc | `synthetic` | HLE selftest dispatch |
 | `0x278c0df5` | `sceKernelWaitThreadEnd` | kernel_thread | `synthetic` | conformance cells and HLE selftest dispatch; note |
-| `0x27c4594c` | `sceRtcGetTime_t` | rtc | `unverified` | no recorded evidence |
+| `0x27c4594c` | `sceRtcGetTime_t` | rtc | `synthetic` | HLE selftest dispatch |
 | `0x27cc57f0` | `sceKernelLibcTime` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0x27e22ec2` | `sceKernelResumeDispatchThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x27eb27b8` | `sceIoLseek` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
-| `0x27f6e642` | `sceFontGetNumFontList` | font | `unverified` | no recorded evidence; note |
+| `0x27f6e642` | `sceFontGetNumFontList` | font | `synthetic` | HLE selftest dispatch; note |
 | `0x281928a9` | `sceNetTerm` | network | `synthetic` | HLE selftest dispatch |
 | `0x289d82fe` | `sceDisplaySetFrameBuf` | display | `synthetic` | HLE selftest dispatch |
 | `0x28a8e98a` | `sceRegGetKeyValue` | system | `synthetic` | HLE selftest dispatch |
@@ -170,7 +173,7 @@ belongs to without the census's own grouping.
 | `0x2a2a1e07` | `sceNetAdhocMatchingInit` | network | `unverified` | no recorded evidence |
 | `0x2a2b3de0` | `sceUtilityLoadModule` | utility | `ppsspp-derived` | registry notes name PPSSPP |
 | `0x2a368661` | `sceMp3ResetPlayPosition` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
-| `0x2a3d44ff` | `sceKernelGetCallbackCount` | kernel_thread | `unverified` | no recorded evidence |
+| `0x2a3d44ff` | `sceKernelGetCallbackCount` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x2ad8e239` | `sceUtilityMsgDialogInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x2beb1569` | `scePsmfPlayerBreak` | mpeg | `unverified` | no recorded evidence |
 | `0x2c0db9dd` | `sceRegGetKeysNum` | system | `synthetic` | HLE selftest dispatch |
@@ -187,7 +190,7 @@ belongs to without the census's own grouping.
 | `0x315ad3a0` | `sceKernelSetCompiledSdkVersion380_390` | kernel_memory | `synthetic` | registry evidence `tools/test_sdkver_c.py` |
 | `0x31668baa` | `sceAtracGetChannel` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x31bd0272` | `sceMpegAvcCsc` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0x3251ea56` | `sceIoPollAsync` | io | `unverified` | no recorded evidence |
+| `0x3251ea56` | `sceIoPollAsync` | io | `synthetic` | HLE selftest dispatch |
 | `0x3278ab0c` | `sceNetAdhocGameModeCreateReplica` | network | `unverified` | no recorded evidence |
 | `0x328c546a` | `sceKernelWaitEventFlagCB` | kernel_sync | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x328f9e52` | `sceKernelDeleteVTimer` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002, PSP-HLE-VTIMER-003, PSP-HLE-TIMER-ORDER-001 |
@@ -201,7 +204,7 @@ belongs to without the census's own grouping.
 | `0x34401d65` | `sceNetAdhocctlDisconnect` | network | `unverified` | no recorded evidence |
 | `0x34885e0d` | `sceRtcConvertUtcToLocalTime` | rtc | `synthetic` | HLE selftest dispatch |
 | `0x349b864d` | `sceKernelCancelMsgPipe` | kernel_sync | `ppsspp-derived` | handler comment names PPSSPP |
-| `0x349d6d6c` | `sceKernelCheckCallback` | kernel_thread | `unverified` | no recorded evidence |
+| `0x349d6d6c` | `sceKernelCheckCallback` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x34b78343` | `sceUtilityGetSystemParamString` | utility | `hardware-measured` | PSP oracle PSP-HLE-SYSPARAM-001 |
 | `0x34b9fa9e` | `sceKernelDcacheWritebackInvalidateRange` | cache_dma | `hardware-measured` | PSP oracle PSP-VRAM-MIRROR-001 |
 | `0x34f9c463` | `scePowerGetPllClockFrequencyInt` | power | `hardware-measured` | PSP oracle PSP-HLE-POWER-001 |
@@ -211,6 +214,7 @@ belongs to without the census's own grouping.
 | `0x35750070` | `sceMp3InitResource` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x358ca1bb` | `sceKernelSetCompiledSdkVersion606` | kernel_memory | `synthetic` | registry evidence `tools/test_sdkver_c.py` |
 | `0x35dbd746` | `sceIoWaitAsyncCB` | io | `synthetic` | conformance cells |
+| `0x362a956b` | `LoadExecForUser_362A956B` | kernel_module | `unverified` | no recorded evidence |
 | `0x362cbe8f` | `sceNetAdhocctlGetAdhocId` | network | `unverified` | no recorded evidence |
 | `0x369ed59d` | `sceKernelGetSystemTimeLow` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0x36aa6e91` | `sceImposeSetLanguageMode` | utility | `synthetic` | HLE selftest dispatch |
@@ -225,19 +229,21 @@ belongs to without the census's own grouping.
 | `0x39810265` | `sceKernelReferVplStatus` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0x39af39a6` | `sceNetInit` | network | `synthetic` | HLE selftest dispatch |
 | `0x3a20a200` | `sceAudiocodecGetEDRAM` | audio_codec | `unverified` | no recorded evidence |
-| `0x3a622550` | `sceCtrlPeekBufferPositive` | input | `synthetic` | HLE selftest dispatch |
+| `0x3a622550` | `sceCtrlPeekBufferPositive` | input | `synthetic` | HLE selftest dispatch; note |
 | `0x3ad58b8c` | `sceKernelSuspendDispatchThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
-| `0x3aea8cb6` | `sceFontClose` | font | `unverified` | no recorded evidence |
+| `0x3aea8cb6` | `sceFontClose` | font | `synthetic` | HLE selftest dispatch |
 | `0x3aee7261` | `sceKernelPowerUnlock` | power | `synthetic` | HLE selftest dispatch |
 | `0x3b183e26` | `sceKernelGetThreadExitStatus` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x3b84732d` | `sceKernelCpuResumeIntrWithSync` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
 | `0x3c2fa058` | `sceMp3TermResource` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
+| `0x3c4b7e82` | `sceFontPointToPixelV` | font | `unverified` | no recorded evidence |
 | `0x3cef484f` | `sceMp3SetLoopNum` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x3d6d25a9` | `scePsmfPlayerSetPsmf` | mpeg | `synthetic` | HLE selftest dispatch |
 | `0x3dfaeba9` | `sceUtilityOskShutdownStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x3e0271d3` | `sceKernelVolatileMemLock` | kernel_memory | `synthetic` | conformance cells and HLE selftest dispatch |
-| `0x3ea82a4b` | `scePsmfPlayerGetAudioOutSize` | mpeg | `unverified` | no recorded evidence |
+| `0x3ea82a4b` | `scePsmfPlayerGetAudioOutSize` | mpeg | `synthetic` | HLE selftest dispatch |
 | `0x3eaba285` | `sceHttpAddExtraHeader` | network | `unverified` | no recorded evidence |
+| `0x3ed62233` | `scePsmfPlayerGetCurrentPts` | mpeg | `synthetic` | HLE selftest dispatch |
 | `0x3ee30821` | `sceKernelDcacheWritebackRange` | cache_dma | `unverified` | no recorded evidence; note |
 | `0x3f53e640` | `sceKernelSignalSema` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x3f6e26b5` | `sceAtracSetHalfwayBuffer` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
@@ -248,7 +254,7 @@ belongs to without the census's own grouping.
 | `0x40f8f435` | `sceNetAdhocMatchingGetPoolMaxAlloc` | network | `unverified` | no recorded evidence |
 | `0x42560f23` | `sceMpegRegistStream` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x42778a9f` | `__sceSasInit` | audio | `synthetic` | HLE selftest dispatch |
-| `0x42842c77` | `sceRtcTickAddYears` | rtc | `unverified` | no recorded evidence |
+| `0x42842c77` | `sceRtcTickAddYears` | rtc | `synthetic` | HLE selftest dispatch |
 | `0x42ec03ac` | `sceIoWrite` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0x43196845` | `sceAudioOutput2Release` | audio | `hardware-measured` | PSP oracle PSP-HLE-AUDIO-SRC-001 |
 | `0x438a385a` | `sceGeSaveContext` | ge | `synthetic` | HLE selftest dispatch |
@@ -256,34 +262,37 @@ belongs to without the census's own grouping.
 | `0x446d8de6` | `sceKernelCreateThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x44e07129` | `sceMp3Init` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x4571cc64` | `sceMpegAvcDecodeFlush` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0x469989ad` | `scePower_469989ad` | power | `synthetic` | HLE selftest dispatch |
-| `0x46ebb729` | `sceUmdCheckMedium` | umd | `unverified` | no recorded evidence; note |
+| `0x469989ad` | `scePowerSetClockFrequency630` | power | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
+| `0x46ebb729` | `sceUmdCheckMedium` | umd | `synthetic` | HLE selftest dispatch; note |
 | `0x46f186c3` | `sceDisplayWaitVblankStartCB` | display | `synthetic` | HLE selftest dispatch |
 | `0x46f61f8b` | `scePsmfPlayerGetVideoData` | mpeg | `synthetic` | HLE selftest dispatch |
+| `0x472694cd` | `sceFontPointToPixelH` | font | `unverified` | no recorded evidence |
 | `0x472e3825` | `sceAtracSetMOutDataAndGetID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x478fe6f5` | `scePowerGetBusClockFrequency` | power | `hardware-measured` | PSP oracle PSP-HLE-POWER-001 |
 | `0x47a0b729` | `sceKernelIsCpuIntrSuspended` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
-| `0x48293280` | `sceFontSetResolution` | font | `unverified` | no recorded evidence |
+| `0x48293280` | `sceFontSetResolution` | font | `synthetic` | HLE selftest dispatch |
 | `0x4928bd96` | `sceUtilityMsgDialogAbort` | utility | `ppsspp-derived` | registry notes name PPSSPP |
 | `0x4a719fb2` | `sceKernelFreeTlspl` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0x4a9e5e29` | `sceUmdWaitDriveStatCB` | umd | `synthetic` | conformance cells |
 | `0x4aa9ead6` | `__sceSasSetVoiceATRAC3` | audio | `unverified` | no recorded evidence |
 | `0x4ac57943` | `sceKernelRegisterExitCallback` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0x4aecd179` | `sceUtilityGamedataInstallUpdate` | utility | `synthetic` | HLE selftest dispatch |
-| `0x4b85c861` | `sceUtilityOskUpdate` | utility | `unverified` | generic success handler; performs none of the API contract |
+| `0x4b1b5e82` | `sceRtcCheckValid` | rtc | `synthetic` | HLE selftest dispatch |
+| `0x4b85c861` | `sceUtilityOskUpdate` | utility | `synthetic` | HLE selftest dispatch |
 | `0x4c06e472` | `sceGeContinue` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001 |
 | `0x4c145944` | `sceKernelReferLwMutexStatusByID` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0x4ca16893` | `sceRegRemoveCategory` | system | `synthetic` | HLE selftest dispatch |
 | `0x4cfa57b0` | `sceRtcGetCurrentClock` | rtc | `synthetic` | HLE selftest dispatch |
-| `0x4d4e10ec` | `sceDisplayIsVblank` | display | `unverified` | no recorded evidence |
+| `0x4d4e10ec` | `sceDisplayIsVblank` | display | `synthetic` | HLE selftest dispatch |
 | `0x4da4c788` | `sceNetAdhocPtpSend` | network | `unverified` | no recorded evidence |
 | `0x4db1e739` | `sceUtilityNetconfInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x4e3a1105` | `sceKernelWaitSema` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch; note |
+| `0x50647530` | `sceNetFreeThreadinfo` | network | `unverified` | no recorded evidence |
 | `0x50a14dfc` | `__sceSasCoreWithMix` | audio | `synthetic` | HLE selftest dispatch |
 | `0x50c4cd57` | `sceUtilitySavedataInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x50f0c1ec` | `sceKernelStartModule` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0x50f61d8a` | `sceKernelFreeMemoryBlock` | kernel_memory | `synthetic` | HLE selftest dispatch |
-| `0x52089ca1` | `sceKernelGetThreadStackFreeSize` | kernel_thread | `unverified` | no recorded evidence |
+| `0x52089ca1` | `sceKernelGetThreadStackFreeSize` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x52df196c` | `strlen` | kernel_utils | `synthetic` | HLE selftest dispatch |
 | `0x53b00e9a` | `sceKernelSetVTimerHandlerWide` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0x542ad630` | `sceKernelSetVTimerTime` | kernel_time | `synthetic` | HLE selftest dispatch |
@@ -293,13 +302,14 @@ belongs to without the census's own grouping.
 | `0x56202973` | `sceUmdWaitDriveStatWithTimer` | umd | `synthetic` | conformance cells |
 | `0x5622b7c1` | `sceAtracSetAA3DataAndGetID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x56c039b5` | `sceKernelCreateVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
-| `0x574b6fbc` | `sceFontDoneLib` | font | `unverified` | no recorded evidence |
+| `0x574b6fbc` | `sceFontDoneLib` | font | `synthetic` | HLE selftest dispatch |
 | `0x57641a81` | `sceRegCreateKey` | system | `synthetic` | HLE selftest dispatch |
-| `0x57fcb733` | `sceFontOpenUserFile` | font | `unverified` | no recorded evidence |
+| `0x57726bc1` | `sceRtcGetDayOfWeek` | rtc | `synthetic` | HLE selftest dispatch |
+| `0x57fcb733` | `sceFontOpenUserFile` | font | `synthetic` | HLE selftest dispatch |
 | `0x58b1f937` | `sceKernelPollSema` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0x58b83577` | `scePsmfPlayerSetPsmfCB` | mpeg | `synthetic` | HLE selftest dispatch |
 | `0x591a4aa2` | `sceMpegUnRegistStream` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0x5963991b` | `sceNetApctlDelHandler` | network | `unverified` | no recorded evidence |
+| `0x5963991b` | `sceNetApctlDelHandler` | network | `synthetic` | HLE selftest dispatch |
 | `0x5a014ce0` | `sceNetAdhocctlGetGameModeInfo` | network | `unverified` | no recorded evidence |
 | `0x5b37eb1d` | `sceAudiocodecInit` | audio_codec | `unverified` | no recorded evidence |
 | `0x5bf4dd27` | `sceKernelLockMutexCB` | kernel_sync | `synthetic` | conformance cells |
@@ -324,15 +334,17 @@ belongs to without the census's own grouping.
 | `0x623ae665` | `sceKernelTryAllocateFpl` | kernel_memory | `hardware-measured` | PSP oracle PSP-HLE-KERNEL-STATUS-001 |
 | `0x627e6f3a` | `sceKernelReferSystemStatus` | kernel_thread | `hardware-measured` | PSP oracle PSP-HLE-KERNEL-STATUS-001 |
 | `0x6332aa39` | `sceUtilityNetconfGetStatus` | utility | `synthetic` | HLE selftest dispatch |
-| `0x63632449` | `sceIoIoctl` | io | `unverified` | no recorded evidence |
+| `0x63632449` | `sceIoIoctl` | io | `synthetic` | HLE selftest dispatch |
 | `0x63f2889c` | `sceAudioOutput2ChangeLength` | audio | `unverified` | no recorded evidence |
 | `0x6402490b` | `sceNetAdhocctlDelHandler` | network | `unverified` | no recorded evidence |
+| `0x644395e2` | `sceKernelGetModuleIdList` | kernel_module | `unverified` | no recorded evidence |
 | `0x644e5607` | `sceAtracResetPlayPosition` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x647cef33` | `sceAudioOutput2GetRestSample` | audio | `synthetic` | HLE selftest dispatch; note |
 | `0x64d4540e` | `sceKernelReferThreadProfiler` | kernel_thread | `unverified` | generic success handler; performs none of the API contract |
 | `0x64d50c56` | `sceUtilityUnloadNetModule` | utility | `synthetic` | HLE selftest dispatch |
 | `0x6652b8ca` | `sceKernelSetAlarm` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-TIMER-ORDER-001 |
 | `0x67179b1b` | `sceMpegAvcInitYCbCr` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
+| `0x67585dfd` | `sceVaudioChRelease` | audio | `synthetic` | HLE selftest dispatch |
 | `0x67af3428` | `sceUtilityMsgDialogShutdownStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0x67f17ed7` | `sceFontNewLib` | font | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x682a619b` | `sceMpegInit` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
@@ -344,9 +356,9 @@ belongs to without the census's own grouping.
 | `0x6a638d83` | `sceIoRead` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0x6a8c3cd5` | `sceAtracDecodeData` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x6ad345d7` | `sceKernelSetGPO` | kernel_utils | `synthetic` | HLE selftest dispatch |
-| `0x6af9b50a` | `sceUmdCancelWaitDriveStat` | umd | `unverified` | no recorded evidence |
+| `0x6af9b50a` | `sceUmdCancelWaitDriveStat` | umd | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
 | `0x6b30100f` | `sceKernelUnlockMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
-| `0x6b4a146c` | `sceUmdGetDriveStat` | umd | `unverified` | no recorded evidence; note |
+| `0x6b4a146c` | `sceUmdGetDriveStat` | umd | `synthetic` | HLE selftest dispatch; note |
 | `0x6d212bac` | `sceKernelWaitSemaCB` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch |
 | `0x6f92741b` | `sceNetAdhocPdpCreate` | network | `unverified` | no recorded evidence |
 | `0x6fc46853` | `sceAudioChRelease` | audio | `synthetic` | HLE selftest dispatch; note |
@@ -354,19 +366,20 @@ belongs to without the census's own grouping.
 | `0x707b7629` | `sceMpegFlushAllStream` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x70a703f8` | `sceAudiocodecDecode` | audio_codec | `unverified` | no recorded evidence |
 | `0x71040d5c` | `_sceKernelTryLockLwMutex` | kernel_sync | `unverified` | no recorded evidence; note |
-| `0x71b19e77` | `sceIoLseekAsync` | io | `unverified` | no recorded evidence |
+| `0x71b19e77` | `sceIoLseekAsync` | io | `synthetic` | HLE selftest dispatch |
 | `0x71bc9871` | `sceKernelChangeThreadPriority` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x71ec4271` | `sceKernelLibcGettimeofday` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0x721067f3` | `sceKernelReferTlsplStatus` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0x72189c48` | `sceImposeSetUMDPopup` | utility | `unverified` | no recorded evidence |
 | `0x730ed8bc` | `sceKernelReferCallbackStatus` | kernel_thread | `unverified` | no recorded evidence |
 | `0x732b042a` | `sceMp3EndEntry` | audio_codec | `unverified` | no recorded evidence |
-| `0x737486f2` | `scePowerSetClockFrequency` | power | `synthetic` | HLE selftest dispatch |
+| `0x737486f2` | `scePowerSetClockFrequency` | power | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
 | `0x740fccd1` | `sceMpegAvcDecodeStop` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x74829b76` | `sceKernelReceiveMsgPipe` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x748cbed9` | `sceKernelQueryModuleInfo` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0x7497ea85` | `__sceSasConcatenateATRAC3` | audio | `unverified` | no recorded evidence |
 | `0x74ae582a` | `__sceSasGetEnvelopeHeight` | audio | `unverified` | no recorded evidence |
+| `0x74b21701` | `sceFontPixelToPointH` | font | `unverified` | no recorded evidence |
 | `0x75156e8f` | `sceKernelResumeThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x7591c7db` | `sceKernelSetCompiledSdkVersion` | kernel_memory | `synthetic` | registry evidence `tools/test_sdkver_c.py` |
 | `0x75ecd386` | `sceNetAdhocctlGetState` | network | `unverified` | no recorded evidence |
@@ -375,7 +388,7 @@ belongs to without the census's own grouping.
 | `0x773dd3a3` | `sceDisplayGetCurrentHcount` | display | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x779103a0` | `sceIoRename` | io | `unverified` | no recorded evidence |
 | `0x779242a2` | `sceRtcConvertLocalTimeToUTC` | rtc | `synthetic` | HLE selftest dispatch |
-| `0x77ed8b3a` | `sceDisplayWaitVblankStartMultiCB` | display | `unverified` | no recorded evidence |
+| `0x77ed8b3a` | `sceDisplayWaitVblankStartMultiCB` | display | `synthetic` | HLE selftest dispatch |
 | `0x780f88d1` | `sceAtracGetAtracID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x7853182d` | `sceUtilityGameSharingUpdate` | utility | `synthetic` | HLE selftest dispatch |
 | `0x787d04d5` | `__sceSasSetPause` | audio | `unverified` | no recorded evidence |
@@ -384,7 +397,7 @@ belongs to without the census's own grouping.
 | `0x7a20e7af` | `sceAtracSetDataAndGetID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x7c0dc2a0` | `sceKernelCreateMsgPipe` | kernel_sync | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x7c41f2c2` | `sceKernelSendMsgPipeCB` | kernel_sync | `synthetic` | HLE selftest dispatch |
-| `0x7cff8cf3` | `_sceKernelLockLwMutex` | kernel_sync | `unverified` | no recorded evidence |
+| `0x7cff8cf3` | `_sceKernelLockLwMutex` | kernel_sync | `unverified` | no recorded evidence; note |
 | `0x7db31251` | `sceAtracAddStreamData` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x7de6711b` | `sceRtcFormatRFC2822LocalTime` | rtc | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x7e65b999` | `sceKernelCancelAlarm` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-TIMER-ORDER-001 |
@@ -406,12 +419,12 @@ belongs to without the census's own grouping.
 | `0x83bf7afd` | `sceAtracSetSecondBuffer` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x83e85ea0` | `sceAtracGetSecondBufferInfo` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x840e8133` | `sceKernelWaitThreadEndCB` | kernel_thread | `synthetic` | conformance cells and HLE selftest dispatch |
-| `0x843fbf43` | `scePowerSetCpuClockFrequency` | power | `unverified` | no recorded evidence; note |
+| `0x843fbf43` | `scePowerSetCpuClockFrequency` | power | `synthetic` | HLE selftest dispatch; note |
 | `0x86255ada` | `sceKernelDeleteMbx` | kernel_sync | `hardware-measured` | PSP oracle PSP-KERNEL-001 |
 | `0x868120b5` | `sceAtracSetLoopNum` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
-| `0x87440f5e` | `scePowerIsPowerOnline` | power | `unverified` | no recorded evidence |
+| `0x87440f5e` | `scePowerIsPowerOnline` | power | `synthetic` | HLE selftest dispatch |
 | `0x874624d6` | `sceMpegFinish` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0x87533940` | `sceUmdReplaceProhibit` | umd | `unverified` | no recorded evidence |
+| `0x87533940` | `sceUmdReplaceProhibit` | umd | `synthetic` | HLE selftest dispatch |
 | `0x87677e40` | `sceMp3GetBitRate` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x876dbfad` | `sceKernelSendMsgPipe` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0x877f6d66` | `sceNetAdhocPtpOpen` | network | `unverified` | no recorded evidence |
@@ -422,6 +435,7 @@ belongs to without the census's own grouping.
 | `0x8874dbe0` | `sceUtilitySavedataGetStatus` | utility | `synthetic` | HLE selftest dispatch |
 | `0x8916c003` | `sceNetAdhocctlGetNameByAddr` | network | `unverified` | no recorded evidence |
 | `0x89360950` | `sceNetEtherNtostr` | network | `ppsspp-derived` | registry notes name PPSSPP |
+| `0x8986295e` | `sceVaudioOutputBlocking` | audio | `synthetic` | HLE selftest dispatch |
 | `0x89aa9906` | `sceIoOpenAsync` | io | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x89b3d48c` | `sceKernelDeleteVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0x8a389411` | `sceKernelDisableSubIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
@@ -432,8 +446,8 @@ belongs to without the census's own grouping.
 | `0x8daff657` | `sceKernelCreateTlspl` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0x8db83fdc` | `sceNetAdhocctlGetPeerInfo` | network | `unverified` | no recorded evidence |
 | `0x8eb9ec49` | `sceDisplayWaitVblankCB` | display | `synthetic` | HLE selftest dispatch |
-| `0x8ef08fce` | `sceUmdWaitDriveStat` | umd | `synthetic` | conformance cells |
-| `0x8efb3fa2` | `scePowerGetBatteryLifeTime` | power | `unverified` | no recorded evidence; note |
+| `0x8ef08fce` | `sceUmdWaitDriveStat` | umd | `synthetic` | conformance cells and HLE selftest dispatch |
+| `0x8efb3fa2` | `scePowerGetBatteryLifeTime` | power | `synthetic` | HLE selftest dispatch; note |
 | `0x8f2df740` | `sceKernelStopUnloadSelfModuleWithStatus` | kernel_module | `unverified` | no recorded evidence |
 | `0x8f450998` | `sceMp3GetSamplingRate` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0x8f58bedf` | `sceNetAdhocMatchingCancelTargetWithOpt` | network | `unverified` | no recorded evidence |
@@ -444,7 +458,7 @@ belongs to without the census's own grouping.
 | `0x91e70e35` | `sceUtilityNetconfUpdate` | utility | `synthetic` | HLE selftest dispatch |
 | `0x920f104a` | `sceKernelIcacheInvalidateAll` | cache_dma | `unverified` | no recorded evidence |
 | `0x92e41280` | `sceRegOpenRegistry` | system | `synthetic` | HLE selftest dispatch |
-| `0x93440b11` | `sceWlanDevIsPowerOn` | network | `unverified` | no recorded evidence |
+| `0x93440b11` | `sceWlanDevIsPowerOn` | network | `synthetic` | HLE selftest dispatch |
 | `0x93ef3843` | `sceNetAdhocMatchingStart` | network | `unverified` | no recorded evidence |
 | `0x94416130` | `sceKernelGetThreadmanIdList` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0x946963f3` | `sceUtilityGameSharingGetStatus` | utility | `synthetic` | HLE selftest dispatch |
@@ -454,7 +468,7 @@ belongs to without the census's own grouping.
 | `0x95fd0c2d` | `sceAudioChangeChannelConfig` | audio | `synthetic` | HLE selftest dispatch |
 | `0x977de386` | `sceKernelLoadModule` | kernel_module | `unverified` | no recorded evidence |
 | `0x9790b33c` | `sceUtilitySavedataShutdownStart` | utility | `synthetic` | HLE selftest dispatch |
-| `0x980f4895` | `sceFontGetCharGlyphImage` | font | `unverified` | no recorded evidence |
+| `0x980f4895` | `sceFontGetCharGlyphImage` | font | `synthetic` | HLE selftest dispatch |
 | `0x984c27e7` | `sceDisplayWaitVblankStart` | display | `synthetic` | conformance cells and HLE selftest dispatch |
 | `0x98c204c8` | `sceNetAdhocGameModeUpdateMaster` | network | `unverified` | no recorded evidence |
 | `0x9944f31f` | `sceKernelSuspendThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
@@ -465,13 +479,13 @@ belongs to without the census's own grouping.
 | `0x9ace131e` | `sceKernelSleepThread` | kernel_thread | `synthetic` | conformance cells and HLE selftest dispatch; note |
 | `0x9ae849a7` | `sceAtracGetRemainFrame` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x9b71a274` | `scePsmfPlayerDelete` | mpeg | `synthetic` | HLE selftest dispatch |
-| `0x9b745542` | `sceNpDrmClearLicenseeKey` | npdrm | `unverified` | no recorded evidence |
+| `0x9b745542` | `sceNpDrmClearLicenseeKey` | npdrm | `synthetic` | HLE selftest dispatch |
 | `0x9badb3eb` | `scePowerGetBusClockFrequencyFloat` | power | `hardware-measured` | PSP oracle PSP-HLE-POWER-001, PSP-HLE-POWER-002 |
 | `0x9c5cfb7d` | `sceNetAdhocMatchingGetPoolStat` | network | `unverified` | no recorded evidence |
 | `0x9c6eaad7` | `sceDisplayGetVcount` | display | `synthetic` | HLE selftest dispatch |
 | `0x9cd7de03` | `sceAtracSetMOutHalfwayBufferAndGetID` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x9d689e13` | `sceNetAdhocctlTerm` | network | `unverified` | no recorded evidence |
-| `0x9d9a5ba1` | `sceKernelGetBlockHeadAddr` | kernel_memory | `unverified` | no recorded evidence |
+| `0x9d9a5ba1` | `sceKernelGetBlockHeadAddr` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0x9dcfb7ea` | `sceMpegChangeGetAuMode` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x9df81198` | `sceNetAdhocPtpAccept` | network | `unverified` | no recorded evidence |
 | `0x9ec3676a` | `__sceSasSetADSRmode` | audio | `synthetic` | HLE selftest dispatch |
@@ -479,7 +493,7 @@ belongs to without the census's own grouping.
 | `0x9fa03cd3` | `sceKernelDeleteThread` | kernel_thread | `synthetic` | HLE selftest dispatch; note |
 | `0xa0229362` | `sceNetAdhocGameModeDeleteMaster` | network | `unverified` | no recorded evidence |
 | `0xa089eca4` | `sceKernelMemset` | kernel_utils | `synthetic` | HLE selftest dispatch |
-| `0xa0b5a7c2` | `sceIoReadAsync` | io | `unverified` | no recorded evidence |
+| `0xa0b5a7c2` | `sceIoReadAsync` | io | `synthetic` | HLE selftest dispatch |
 | `0xa0b8ca55` | `scePsmfPlayerUpdate` | mpeg | `synthetic` | HLE selftest dispatch |
 | `0xa0cf2fa4` | `__sceSasSetKeyOff` | audio | `unverified` | no recorded evidence |
 | `0xa11c7026` | `sceMpegAvcDecodeMode` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
@@ -487,11 +501,11 @@ belongs to without the census's own grouping.
 | `0xa1336091` | `sceNpDrmSetLicenseeKey` | npdrm | `ppsspp-derived` | registry notes name PPSSPP |
 | `0xa14f40b2` | `sceKernelVolatileMemTryLock` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0xa232cbe6` | `__sceSasSetTrianglarWave` | audio | `unverified` | no recorded evidence |
-| `0xa291f107` | `sceKernelMaxFreeMemSize` | kernel_memory | `unverified` | no recorded evidence |
+| `0xa291f107` | `sceKernelMaxFreeMemSize` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0xa2bba8be` | `sceAtracGetSoundSample` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xa3589d81` | `__sceSasCore` | audio | `synthetic` | HLE selftest dispatch |
 | `0xa3d81169` | `scePsmfPlayerChangePlayMode` | mpeg | `ppsspp-derived` | handler comment names PPSSPP |
-| `0xa4fc06a4` | `sceGeSetCallback` | ge | `synthetic` | HLE selftest dispatch |
+| `0xa4fc06a4` | `sceGeSetCallback` | ge | `synthetic` | HLE selftest dispatch; note |
 | `0xa554a158` | `sceAtracGetBitrate` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xa569e425` | `sceKernelVolatileMemUnlock` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0xa5c055ce` | `sceNetAdhocctlCreateEnterGameMode` | network | `unverified` | no recorded evidence |
@@ -502,7 +516,7 @@ belongs to without the census's own grouping.
 | `0xa703fe0f` | `sceMp3GetInfoToAddStreamData` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0xa7144800` | `sceCtrlSetIdleCancelThreshold` | input | `synthetic` | HLE selftest dispatch |
 | `0xa780cf7e` | `sceMpegMallocAvcEsBuf` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
-| `0xa834319d` | `sceFontOpen` | font | `unverified` | no recorded evidence |
+| `0xa834319d` | `sceFontOpen` | font | `synthetic` | HLE selftest dispatch |
 | `0xa85880d0` | `scePowerCheckWlanCoexistenceClock` | power | `unverified` | generic success handler; performs none of the API contract |
 | `0xa8e8c846` | `sceKernelReferMbxStatus` | kernel_sync | `hardware-measured` | PSP oracle PSP-KERNEL-001 |
 | `0xa9c2cb9a` | `sceKernelReferMutexStatus` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
@@ -514,7 +528,7 @@ belongs to without the census's own grouping.
 | `0xace946e8` | `sceIoGetstat` | io | `ppsspp-derived` | handler comment names PPSSPP |
 | `0xad84d37f` | `__sceSasSetPitch` | audio | `unverified` | no recorded evidence |
 | `0xae6d2027` | `sceMp3GetMPEGVersion` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceMp3 block: derived-translated from PPSSPP at a pinned revision |
-| `0xaee7404d` | `sceUmdRegisterUMDCallBack` | umd | `unverified` | no recorded evidence |
+| `0xaee7404d` | `sceUmdRegisterUMDCallBack` | umd | `synthetic` | HLE selftest dispatch |
 | `0xaf36d708` | `sceKernelTryAllocateVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0xb011922f` | `sceAudioGetChannelRestLength` | audio | `synthetic` | HLE selftest dispatch; note |
 | `0xb011b11f` | `sceKernelLockMutex` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch; note |
@@ -523,12 +537,13 @@ belongs to without the census's own grouping.
 | `0xb240a59e` | `sceMpegRingbufferPut` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0xb287bd61` | `sceGeDrawSync` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001, PSP-VRAM-MIRROR-001 |
 | `0xb293727f` | `sceIoChangeAsyncPriority` | io | `unverified` | no recorded evidence |
-| `0xb29ddf9c` | `sceIoDopen` | io | `unverified` | no recorded evidence; note |
+| `0xb29ddf9c` | `sceIoDopen` | io | `synthetic` | HLE selftest dispatch; note |
 | `0xb3a59970` | `sceKernelGetVTimerBase` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-002 |
 | `0xb3b5d042` | `sceAtracGetOutputChannel` | audio_codec | `unverified` | generic success handler; performs none of the API contract |
 | `0xb435dec5` | `sceKernelDcacheWritebackInvalidateAll` | cache_dma | `unverified` | no recorded evidence |
-| `0xb4432bc8` | `scePowerGetBatteryChargingStatus` | power | `unverified` | no recorded evidence; note |
+| `0xb4432bc8` | `scePowerGetBatteryChargingStatus` | power | `synthetic` | HLE selftest dispatch; note |
 | `0xb448ec0d` | `sceGeBreak` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001 |
+| `0xb4f378fa` | `sceDisplayIsForeground` | display | `unverified` | no recorded evidence |
 | `0xb55249d2` | `sceKernelIsCpuIntrEnable` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
 | `0xb57e95d9` | `sceUtilityGamedataInstallGetStatus` | utility | `synthetic` | HLE selftest dispatch |
 | `0xb58e61b7` | `sceNetAdhocMatchingSetHelloOpt` | network | `unverified` | no recorded evidence |
@@ -542,20 +557,21 @@ belongs to without the census's own grouping.
 | `0xb7e1d8e7` | `sceAudioChangeChannelVolume` | audio | `synthetic` | HLE selftest dispatch |
 | `0xb7f46618` | `sceKernelLoadModuleByID` | kernel_module | `unverified` | no recorded evidence |
 | `0xb8a740f4` | `sceIoChstat` | io | `unverified` | no recorded evidence |
-| `0xb8d7b3fb` | `scePowerSetBusClockFrequency` | power | `unverified` | no recorded evidence |
+| `0xb8d7b3fb` | `scePowerSetBusClockFrequency` | power | `synthetic` | HLE selftest dispatch |
 | `0xb9685118` | `sceNetAdhocGetPtpStat` | network | `unverified` | no recorded evidence |
 | `0xb9848a74` | `scePsmfPlayerGetAudioData` | mpeg | `unverified` | no recorded evidence |
-| `0xba4051d6` | `sceKernelCancelCallback` | kernel_thread | `unverified` | no recorded evidence |
+| `0xba4051d6` | `sceKernelCancelCallback` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0xba6b92e2` | `sceKernelSysClock2USec` | kernel_time | `synthetic` | HLE selftest dispatch |
-| `0xbb8e7fe6` | `sceFontOpenUserMemory` | font | `unverified` | no recorded evidence |
+| `0xbb8e7fe6` | `sceFontOpenUserMemory` | font | `synthetic` | HLE selftest dispatch |
 | `0xbc6febc5` | `sceKernelReferSemaStatus` | kernel_sync | `synthetic` | HLE selftest dispatch |
-| `0xbc75d85b` | `sceFontGetFontList` | font | `unverified` | no recorded evidence |
+| `0xbc75d85b` | `sceFontGetFontList` | font | `synthetic` | HLE selftest dispatch |
 | `0xbd11b7c2` | `__sceSasGetGrain` | audio | `synthetic` | HLE selftest dispatch |
 | `0xbd123d9e` | `sceKernelDelaySysClockThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
-| `0xbd2bde07` | `sceUmdUnRegisterUMDCallBack` | umd | `unverified` | no recorded evidence |
+| `0xbd2bde07` | `sceUmdUnRegisterUMDCallBack` | umd | `synthetic` | HLE selftest dispatch |
 | `0xbd2f1094` | `sceKernelLoadExec` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0xbd681969` | `scePowerGetBusClockFrequencyInt` | power | `hardware-measured` | PSP oracle PSP-HLE-POWER-001 |
-| `0xbea46419` | `sceKernelLockLwMutex` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch |
+| `0xbda7d894` | `sceUtilityHtmlViewerGetStatus` | utility | `unverified` | no recorded evidence |
+| `0xbea46419` | `sceKernelLockLwMutex` | kernel_sync | `synthetic` | conformance cells and HLE selftest dispatch; note |
 | `0xbed27435` | `sceKernelAllocateVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0xbeed3a47` | `_sceKernelUnlockLwMutex` | kernel_sync | `unverified` | no recorded evidence; note |
 | `0xbfa98062` | `sceKernelDcacheInvalidateRange` | cache_dma | `hardware-measured` | PSP oracle PSP-VRAM-MIRROR-001 |
@@ -567,16 +583,17 @@ belongs to without the census's own grouping.
 | `0xc152080a` | `sceCtrlPeekBufferNegative` | input | `synthetic` | HLE selftest dispatch |
 | `0xc1734599` | `sceKernelReferLwMutexStatus` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0xc2df770e` | `sceKernelIcacheInvalidateRange` | cache_dma | `unverified` | no recorded evidence |
-| `0xc41c2853` | `sceRtcGetTickResolution` | rtc | `unverified` | no recorded evidence |
+| `0xc41c2853` | `sceRtcGetTickResolution` | rtc | `synthetic` | HLE selftest dispatch |
+| `0xc45c99cc` | `sceMpegQueryUserdataEsSize` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c; registry notes name PPSSPP |
 | `0xc492f751` | `sceUtilityGameSharingInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0xc5768d02` | `sceRegGetKeyInfoByName` | system | `synthetic` | HLE selftest dispatch |
 | `0xc58bcd9e` | `sceNetAdhocMatchingGetMembers` | network | `unverified` | no recorded evidence |
 | `0xc6183d47` | `sceUmdActivate` | umd | `ppsspp-derived` | registry notes name PPSSPP |
 | `0xc629af26` | `sceUtilityLoadAvModule` | utility | `synthetic` | HLE selftest dispatch |
 | `0xc68d9437` | `sceKernelStartVTimer` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002, PSP-HLE-VTIMER-003, PSP-HLE-TIMER-ORDER-001 |
-| `0xc69bebce` | `sceOpenPSIDGetOpenPSID` | system | `unverified` | no recorded evidence |
+| `0xc69bebce` | `sceOpenPSIDGetOpenPSID` | system | `synthetic` | HLE selftest dispatch |
 | `0xc7c1fc57` | `sceNetAdhocGetPdpStat` | network | `unverified` | no recorded evidence |
-| `0xc8cd158c` | `sceKernelUSec2SysClockWide` | kernel_time | `unverified` | no recorded evidence |
+| `0xc8cd158c` | `sceKernelUSec2SysClockWide` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0xca04a2b9` | `sceKernelRegisterSubIntrHandler` | kernel_interrupt | `synthetic` | HLE selftest dispatch |
 | `0xca3ca3d2` | `sceAtracGetBufferInfoForReseting` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xca5eda6f` | `sceNetAdhocMatchingCreate` | network | `unverified` | no recorded evidence |
@@ -584,7 +601,8 @@ belongs to without the census's own grouping.
 | `0xcb05f8d6` | `sceIoGetAsyncStat` | io | `unverified` | no recorded evidence |
 | `0xcb2e439e` | `sceAudioSetChannelDataLen` | audio | `synthetic` | HLE selftest dispatch |
 | `0xcbcd4f79` | `__sceSasSetSimpleADSR` | audio | `synthetic` | HLE selftest dispatch |
-| `0xcbe9f02a` | `sceUmdReplacePermit` | umd | `unverified` | no recorded evidence |
+| `0xcbe9f02a` | `sceUmdReplacePermit` | umd | `synthetic` | HLE selftest dispatch |
+| `0xcc393e48` | `sceNetGetMallocStat` | network | `unverified` | no recorded evidence |
 | `0xcd203292` | `sceKernelCancelEventFlag` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0xceadeb47` | `sceKernelDelayThread` | kernel_thread | `synthetic` | conformance cells and HLE selftest dispatch; note |
 | `0xceb870b1` | `sceMpegFreeAvcEsBuf` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
@@ -593,13 +611,13 @@ belongs to without the census's own grouping.
 | `0xd021c0fb` | `sceMp3Decode` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0xd0a56296` | `sceMp3CheckStreamDataNeeded` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0xd0aeee87` | `sceKernelStopVTimer` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-VTIMER-001, PSP-HLE-VTIMER-002, PSP-HLE-VTIMER-003, PSP-HLE-TIMER-ORDER-001 |
-| `0xd13bde95` | `sceKernelCheckThreadStack` | kernel_thread | `unverified` | no recorded evidence |
+| `0xd13bde95` | `sceKernelCheckThreadStack` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0xd1c8945e` | `sceHttpEnd` | network | `unverified` | no recorded evidence |
 | `0xd1e0a01e` | `__sceSasSetGrain` | audio | `unverified` | no recorded evidence |
 | `0xd1f59fdb` | `sceAtracStartEntry` | audio_codec | `unverified` | no recorded evidence |
 | `0xd1ff982a` | `sceKernelStopModule` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0xd2d615ef` | `sceKernelCancelVTimerHandler` | kernel_time | `synthetic` | HLE selftest dispatch |
-| `0xd3075926` | `scePowerIsLowBattery` | power | `unverified` | no recorded evidence |
+| `0xd3075926` | `scePowerIsLowBattery` | power | `synthetic` | HLE selftest dispatch |
 | `0xd4475aa8` | `sceRegGetKeyInfo` | system | `synthetic` | HLE selftest dispatch |
 | `0xd4b95ffb` | `sceUtilitySavedataUpdate` | utility | `synthetic` | HLE selftest dispatch |
 | `0xd59ead2f` | `sceKernelWakeupThread` | kernel_thread | `synthetic` | HLE selftest dispatch; note |
@@ -610,23 +628,24 @@ belongs to without the census's own grouping.
 | `0xd675ebb8` | `sceKernelSelfStopUnloadModule` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0xd6a5f2f7` | `sceAtracGetMaxSample` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xd6da4ba1` | `sceKernelCreateSema` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
-| `0xd7763699` | `sceWlanGetSwitchState` | network | `unverified` | no recorded evidence |
+| `0xd7763699` | `sceWlanGetSwitchState` | network | `synthetic` | HLE selftest dispatch |
 | `0xd7a29f46` | `sceMpegRingbufferQueryMemSize` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
+| `0xd81957b7` | `sceUtilityScreenshotGetStatus` | utility | `unverified` | no recorded evidence |
 | `0xd8199e4c` | `sceKernelReferFplStatus` | kernel_memory | `hardware-measured` | PSP oracle PSP-HLE-KERNEL-STATUS-001 |
 | `0xd8779ac6` | `sceKernelIcacheClearAll` | cache_dma | `unverified` | no recorded evidence |
 | `0xd8b299ae` | `sceKernelSetVTimerHandler` | kernel_time | `hardware-measured` | PSP oracle PSP-HLE-TIMER-ORDER-001 |
-| `0xd8b73127` | `sceKernelGetModuleIdByAddress` | kernel_module | `unverified` | no recorded evidence |
+| `0xd8b73127` | `sceKernelGetModuleIdByAddress` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0xd8c5f121` | `sceMpegCreate` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0xd8f54a51` | `sceMp3GetLoopNum` | audio_codec | `ppsspp-derived` | sceMp3 block: derived-translated from PPSSPP at a pinned revision |
 | `0xd979e9bf` | `sceKernelAllocateFpl` | kernel_memory | `synthetic` | conformance cells and HLE selftest dispatch; note |
 | `0xd97f94d8` | `sceDmacTryMemcpy` | cache_dma | `hardware-measured` | PSP oracle PSP-DMAC-001 |
-| `0xda6b76a1` | `sceCtrlGetSamplingMode` | input | `unverified` | no recorded evidence |
+| `0xda6b76a1` | `sceCtrlGetSamplingMode` | input | `synthetic` | HLE selftest dispatch |
 | `0xdb738f35` | `sceKernelGetSystemTime` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0xdb83a952` | `sceKernelGetMemoryBlockAddr` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0xdba6c4c4` | `sceDisplayGetFramePerSec` | display | `synthetic` | HLE selftest dispatch; note |
 | `0xdc692ee3` | `sceKernelTryLockLwMutex` | kernel_sync | `synthetic` | HLE selftest dispatch; note |
 | `0xdc93cfef` | `sceGeGetCmd` | ge | `synthetic` | HLE selftest dispatch |
-| `0xdcc80c2f` | `sceFontGetCharInfo` | font | `unverified` | no recorded evidence |
+| `0xdcc80c2f` | `sceFontGetCharInfo` | font | `synthetic` | HLE selftest dispatch |
 | `0xdea197d4` | `sceDisplayGetMode` | display | `unverified` | no recorded evidence |
 | `0xded9d28e` | `sceNetAdhocctlGetParameter` | network | `unverified` | no recorded evidence |
 | `0xdf089680` | `scePsmfPlayerGetPsmfInfo` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
@@ -636,36 +655,37 @@ belongs to without the census's own grouping.
 | `0xe0727056` | `sceAudioSRCOutputBlocking` | audio | `hardware-measured` | PSP oracle PSP-HLE-AUDIO-SRC-001 |
 | `0xe08bdac1` | `sceNetAdhocPtpListen` | network | `unverified` | no recorded evidence |
 | `0xe0d68148` | `sceGeListUpdateStallAddr` | ge | `synthetic` | HLE selftest dispatch |
-| `0xe1619d7c` | `sceKernelSysClock2USecWide` | kernel_time | `unverified` | no recorded evidence |
+| `0xe1619d7c` | `sceKernelSysClock2USecWide` | kernel_time | `synthetic` | HLE selftest dispatch |
 | `0xe162cb14` | `sceNetAdhocctlGetPeerList` | network | `unverified` | no recorded evidence |
 | `0xe175ef66` | `__sceSasGetOutputmode` | audio | `synthetic` | HLE selftest dispatch |
-| `0xe1c93e47` | `sceRtcGetTime64_t` | rtc | `unverified` | no recorded evidence; note |
+| `0xe1c93e47` | `sceRtcGetTime64_t` | rtc | `synthetic` | HLE selftest dispatch; note |
 | `0xe1cd9561` | `__sceSasSetVoicePCM` | audio | `synthetic` | HLE selftest dispatch |
 | `0xe1ce83a7` | `sceMpegGetAtracAu` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c; registry notes name PPSSPP |
 | `0xe1d621d7` | `sceNetAdhocInit` | network | `unverified` | no recorded evidence |
 | `0xe23e3a35` | `sceAtracGetNextDecodePosition` | audio_codec | `ppsspp-derived` | sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
-| `0xe23eec33` | `sceIoWaitAsync` | io | `synthetic` | conformance cells |
+| `0xe23eec33` | `sceIoWaitAsync` | io | `synthetic` | conformance cells and HLE selftest dispatch |
 | `0xe26f226e` | `sceNetAdhocctlInit` | network | `unverified` | no recorded evidence |
 | `0xe2d56b2d` | `sceAudioOutputPanned` | audio | `unverified` | no recorded evidence |
-| `0xe3eb004c` | `sceIoDread` | io | `unverified` | no recorded evidence |
+| `0xe3eb004c` | `sceIoDread` | io | `synthetic` | HLE selftest dispatch |
 | `0xe3ee2c81` | `sceMp3LowLevelDecode` | audio_codec | `synthetic` | HLE selftest dispatch |
 | `0xe47e40e4` | `sceGeEdramGetAddr` | ge | `hardware-measured` | PSP oracle PSP-HLE-GE-EDRAM-001, PSP-VRAM-MIRROR-001 |
 | `0xe49bfe92` | `sceUtilityUnloadModule` | utility | `ppsspp-derived` | registry notes name PPSSPP |
+| `0xe51b4b7a` | `sceRtcTickAddDays` | rtc | `synthetic` | HLE selftest dispatch |
 | `0xe7282cb6` | `sceKernelAllocateFplCB` | kernel_memory | `synthetic` | conformance cells and HLE selftest dispatch |
-| `0xe792cd94` | `scePsmfPlayerReleasePsmf` | mpeg | `unverified` | no recorded evidence |
+| `0xe792cd94` | `scePsmfPlayerReleasePsmf` | mpeg | `synthetic` | HLE selftest dispatch |
 | `0xe7c27d1b` | `sceRtcGetCurrentClockLocalTime` | rtc | `synthetic` | HLE selftest dispatch |
 | `0xe81caf8f` | `sceKernelCreateCallback` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0xe83742ba` | `sceUmdDeactivate` | umd | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP; note |
 | `0xe855bf76` | `__sceSasSetOutputmode` | audio | `unverified` | no recorded evidence |
 | `0xe88f759b` | `sceAtracGetInternalErrorInfo` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
-| `0xe95a012b` | `sceIoIoctlAsync` | io | `unverified` | no recorded evidence |
+| `0xe95a012b` | `sceIoIoctlAsync` | io | `synthetic` | HLE selftest dispatch |
 | `0xe9b3061e` | `sceKernelSendMbx` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0xea382a27` | `scePowerGetPllClockFrequencyFloat` | power | `hardware-measured` | PSP oracle PSP-HLE-POWER-001, PSP-HLE-POWER-002 |
 | `0xea3c6108` | `sceNetAdhocMatchingCancelTarget` | network | `unverified` | no recorded evidence |
-| `0xea748e31` | `sceKernelChangeCurrentThreadAttr` | kernel_thread | `unverified` | no recorded evidence |
+| `0xea748e31` | `sceKernelChangeCurrentThreadAttr` | kernel_thread | `synthetic` | HLE selftest dispatch |
 | `0xeadb1bd7` | `sceKernelPowerLock` | power | `synthetic` | HLE selftest dispatch |
-| `0xeb092469` | `sceIoDclose` | io | `unverified` | no recorded evidence; note |
-| `0xebd177d6` | `scePowerSetClockFrequency350` | power | `synthetic` | HLE selftest dispatch |
+| `0xeb092469` | `sceIoDclose` | io | `synthetic` | HLE selftest dispatch; note |
+| `0xebd177d6` | `scePowerSetClockFrequency350` | power | `ppsspp-derived` | handler comment names PPSSPP; registry notes name PPSSPP |
 | `0xebd5c3e6` | `sceKernelSetCompiledSdkVersion395` | kernel_memory | `synthetic` | registry evidence `tools/test_sdkver_c.py` |
 | `0xec0635c1` | `sceNetAdhocctlCreate` | network | `unverified` | no recorded evidence |
 | `0xec0a693f` | `sceKernelAllocateVplCB` | kernel_memory | `synthetic` | HLE selftest dispatch |
@@ -673,16 +693,17 @@ belongs to without the census's own grouping.
 | `0xeca32a99` | `sceAtracIsSecondBufferNeeded` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0xed1410e0` | `sceKernelDeleteFpl` | kernel_memory | `hardware-measured` | PSP oracle PSP-HLE-KERNEL-STATUS-001 |
 | `0xedba5844` | `sceKernelDeleteCallback` | kernel_thread | `synthetic` | HLE selftest dispatch |
-| `0xee232411` | `sceFontSetAltCharacterCode` | font | `unverified` | no recorded evidence |
+| `0xee232411` | `sceFontSetAltCharacterCode` | font | `synthetic` | HLE selftest dispatch |
 | `0xeeda2e54` | `sceDisplayGetFrameBuf` | display | `hardware-measured` | PSP oracle PSP-VRAM-MIRROR-001 |
 | `0xef9e4c70` | `sceKernelDeleteEventFlag` | kernel_sync | `ppsspp-derived` | handler comment names PPSSPP |
 | `0xefc6f80f` | `sceUtilityGameSharingShutdownStart` | utility | `synthetic` | HLE selftest dispatch |
-| `0xf0a26395` | `sceKernelGetModuleId` | kernel_module | `unverified` | no recorded evidence |
+| `0xf0a26395` | `sceKernelGetModuleId` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0xf0b7da1c` | `sceKernelDeleteMsgPipe` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0xf0eb1125` | `sceMpegAvcDecodeYCbCr` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0xf16eaf4f` | `sceNetAdhocMatchingDelete` | network | `unverified` | no recorded evidence |
 | `0xf27a9c51` | `sceIoRemove` | io | `hardware-measured` | PSP oracle PSP-IO-001 |
 | `0xf2930c9c` | `sceMpegAvcDecodeStopYCbCr` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
+| `0xf2a4afe5` | `sceRtcTickAddSeconds` | rtc | `synthetic` | HLE selftest dispatch |
 | `0xf3986382` | `sceKernelReceiveMbxCB` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0xf3f76017` | `sceUtilityOskGetStatus` | utility | `synthetic` | HLE selftest dispatch |
 | `0xf475845d` | `sceKernelStartThread` | kernel_thread | `synthetic` | HLE selftest dispatch |
@@ -695,15 +716,17 @@ belongs to without the census's own grouping.
 | `0xf77d77cb` | `sceKernelSetCompilerVersion` | kernel_memory | `synthetic` | registry evidence `tools/test_sdkver_c.py` |
 | `0xf78ba90a` | `sceKernelStderr` | kernel_utils | `unverified` | no recorded evidence |
 | `0xf79472d7` | `sceNetAdhocMatchingSendData` | network | `unverified` | no recorded evidence |
+| `0xf7d13214` | `sceNetAdhocDiscoverStop` | network | `unverified` | no recorded evidence |
 | `0xf7d8d092` | `sceUtilityUnloadAvModule` | utility | `synthetic` | HLE selftest dispatch |
 | `0xf8170fbe` | `sceKernelDeleteMutex` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0xf88155f6` | `sceUtilityNetconfShutdownStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0xf8dcb679` | `sceMpegQueryAtracEsSize` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0xf8ef08a6` | `scePsmfPlayerGetCurrentStatus` | mpeg | `synthetic` | HLE selftest dispatch |
-| `0xf919f628` | `sceKernelTotalFreeMemSize` | kernel_memory | `unverified` | no recorded evidence |
+| `0xf8f0752e` | `sceFontPixelToPointV` | font | `unverified` | no recorded evidence |
+| `0xf919f628` | `sceKernelTotalFreeMemSize` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0xf9275d98` | `sceKernelLoadModuleBufferUsbWlan` | kernel_module | `unverified` | no recorded evidence |
 | `0xf983b186` | `__sceSasRevVON` | audio | `unverified` | no recorded evidence |
-| `0xf9d8eb63` | `sceHttpsEnd` | network | `unverified` | no recorded evidence |
+| `0xf9d8eb63` | `sceHttpsEnd` | network | `synthetic` | HLE selftest dispatch |
 | `0xfa324b4e` | `sceNetAdhocGameModeUpdateReplica` | network | `unverified` | no recorded evidence |
 | `0xfa835cde` | `sceKernelGetTlsAddr` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0xfa8a5739` | `sceRegCloseRegistry` | system | `synthetic` | HLE selftest dispatch |
@@ -717,7 +740,7 @@ belongs to without the census's own grouping.
 | `0xfe246728` | `sceMpegGetAvcAu` | mpeg | `ppsspp-derived` | handler comment names PPSSPP; sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0xfe707fdf` | `sceKernelAllocMemoryBlock` | kernel_memory | `synthetic` | HLE selftest dispatch |
 | `0xfee03a2f` | `scePowerGetCpuClockFrequency` | power | `hardware-measured` | PSP oracle PSP-HLE-POWER-001 |
-| `0xff5940b6` | `sceIoCloseAsync` | io | `unverified` | no recorded evidence |
+| `0xff5940b6` | `sceIoCloseAsync` | io | `synthetic` | HLE selftest dispatch |
 | `0xffc36a14` | `sceKernelReferThreadRunStatus` | kernel_thread | `unverified` | no recorded evidence |
 
 ## VFPU forms
@@ -791,8 +814,8 @@ belongs to without the census's own grouping.
 | `vfpu-19-66008000-a21bfdaec595` | `0x19` | `0x66008008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-a, issue-40-group-b |
 | `vfpu-19-66808000-e34d27a47e20` | `0x19` | `0x66808001` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
 | `vfpu-1b-6c000000-c3c11660a80b` | `0x1b` | `0x6c000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c018100-35968732032f` | `0x1b` | `0x6c01810f` | 3 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c018100-b8b444e70e06` | `0x1b` | `0x6c01818f` | 4 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-1b-6c018100-35968732032f` | `0x1b` | `0x6c01810f` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c018100-b8b444e70e06` | `0x1b` | `0x6c01818f` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-1b-6c020000-3c835b4d17fc` | `0x1b` | `0x6c020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c028000-9340359d1b9e` | `0x1b` | `0x6c028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c028000-d8a78b010d2a` | `0x1b` | `0x6c028004` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -800,24 +823,24 @@ belongs to without the census's own grouping.
 | `vfpu-1b-6c030100-dd458aca8e67` | `0x1b` | `0x6c030105` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c038100-2a248253ae1d` | `0x1b` | `0x6c038105` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c038100-bb708866aad1` | `0x1b` | `0x6c038185` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c050100-b22e268335ba` | `0x1b` | `0x6c050101` | 1 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c050100-efc06a11ea23` | `0x1b` | `0x6c05010f` | 1 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c058100-3d5b5325cfff` | `0x1b` | `0x6c058181` | 4 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c080000-d8932454186f` | `0x1b` | `0x6c0800ff` | 2 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-1b-6c050100-b22e268335ba` | `0x1b` | `0x6c050101` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c050100-efc06a11ea23` | `0x1b` | `0x6c05010f` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c058100-3d5b5325cfff` | `0x1b` | `0x6c058181` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c080000-d8932454186f` | `0x1b` | `0x6c0800ff` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-1b-6c0a0800-17b5909369e7` | `0x1b` | `0x6c0a080c` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c0a0800-9bc084e3e2cb` | `0x1b` | `0x6c0a088c` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c0a8800-d82f94555599` | `0x1b` | `0x6c0a888c` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6c0a8800-da7f16f9194a` | `0x1b` | `0x6c0a880c` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6c170100-41342d6cca15` | `0x1b` | `0x6c170181` | 2 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6c3f8100-09cbcbd04122` | `0x1b` | `0x6c3f8101` | 3 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-1b-6c170100-41342d6cca15` | `0x1b` | `0x6c170181` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6c3f8100-09cbcbd04122` | `0x1b` | `0x6c3f8101` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-1b-6d000000-6c9ec6f00b6b` | `0x1b` | `0x6d000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6d018000-67a821de4443` | `0x1b` | `0x6d01807f` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6d018100-342c1b50a7cf` | `0x1b` | `0x6d018180` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6d020000-05c5b518292e` | `0x1b` | `0x6d020084` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-1b-6e800000-5892d48f0b5a` | `0x1b` | `0x6e800000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6e808000-60c44851743e` | `0x1b` | `0x6e808001` | 3 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6e808000-d5aff2b94fa6` | `0x1b` | `0x6e808090` | 4 | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-1b-6e810100-2116777d0d40` | `0x1b` | `0x6e810190` | 2 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-1b-6e800000-5892d48f0b5a` | `0x1b` | `0x6e800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6e808000-60c44851743e` | `0x1b` | `0x6e808001` | 3 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6e808000-d5aff2b94fa6` | `0x1b` | `0x6e808090` | 4 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
+| `vfpu-1b-6e810100-2116777d0d40` | `0x1b` | `0x6e810190` | 2 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-1b-6f000000-c76c882fac89` | `0x1b` | `0x6f000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6f010100-ea8a350b708d` | `0x1b` | `0x6f01018f` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-1b-6f028000-9b185cb51eac` | `0x1b` | `0x6f028084` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -834,8 +857,8 @@ belongs to without the census's own grouping.
 | `vfpu-32-c80a8000-03e9778a09ca` | `0x32` | `0xc80a8010` | - | `aot-direct` | `unverified` | no recorded evidence |
 | `vfpu-32-c8200000-e6a0811adc19` | `0x32` | `0xc8200000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-32-c8208000-9661c284ed73` | `0x32` | `0xc8208010` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-32-c8218000-7da4ff69d5a3` | `0x32` | `0xc821800f` | - | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-32-c8250000-237b2992f72e` | `0x32` | `0xc825000f` | - | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-32-c8218000-7da4ff69d5a3` | `0x32` | `0xc821800f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-32-c8250000-237b2992f72e` | `0x32` | `0xc825000f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-32-c8258000-1c3c462e8d50` | `0x32` | `0xc8258081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-32-c8260000-266eef066eaf` | `0x32` | `0xc8260001` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-34-d0000000-0d11775c2fde` | `0x34` | `0xd0000000` | 1 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -931,7 +954,7 @@ belongs to without the census's own grouping.
 | `vfpu-34-d01f8000-13306d9c22d2` | `0x34` | `0xd01f8004` | 3 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
 | `vfpu-34-d01f8000-4a572d3f61f1` | `0x34` | `0xd01f8084` | 4 | `aot-direct` | `ppsspp-derived` | calls `sr_vfpu_asin` |
 | `vfpu-34-d0200000-569020674441` | `0x34` | `0xd0200000` | 1 | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
-| `vfpu-34-d0210000-12b37ebc278e` | `0x34` | `0xd0210000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_vrndi_rule_cells` |
+| `vfpu-34-d0210000-12b37ebc278e` | `0x34` | `0xd0210000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff`, `vfpu-interp-selftest:check_vrndi_rule_cells` |
 | `vfpu-34-d0218000-ac69ea1bf731` | `0x34` | `0xd021800f` | 3 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0220000-41aec2c1ea09` | `0x34` | `0xd0220000` | 1 | `aot-direct` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
 | `vfpu-34-d0228000-bf2dcb1482da` | `0x34` | `0xd022808f` | 4 | `aot-routes-to-sr-vfpu-interp` | `hardware-measured` | selftest pinned to PSP-VFPU-FORMS-001 |
@@ -999,7 +1022,7 @@ belongs to without the census's own grouping.
 | `vfpu-36-d8018100-a59abdf93d57` | `0x36` | `0xd801810f` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-36-d8050100-311bbc14b1ed` | `0x36` | `0xd8050101` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-36-d8200000-21b49665cf78` | `0x36` | `0xd8200000` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-36-d8218000-44bff127c0fe` | `0x36` | `0xd821800f` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-36-d8218000-44bff127c0fe` | `0x36` | `0xd821800f` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-36-d8258000-b04c26043d59` | `0x36` | `0xd8258081` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-37-dc000000-04aa804c6140` | `0x37` | `0xdc000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-37-dd000000-fc234082344e` | `0x37` | `0xdd000000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -1013,41 +1036,41 @@ belongs to without the census's own grouping.
 | `vfpu-3a-e80a8000-9cb883fdeff7` | `0x3a` | `0xe80a8010` | - | `aot-direct` | `unverified` | no recorded evidence |
 | `vfpu-3a-e8200000-5783c16d2ba9` | `0x3a` | `0xe8200000` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3a-e8208000-680691006847` | `0x3a` | `0xe8208010` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3a-e8218000-853dd708f98b` | `0x3a` | `0xe821800f` | - | `aot-direct` | `unverified` | no recorded evidence |
-| `vfpu-3a-e8250000-ef69f6c7813d` | `0x3a` | `0xe825000f` | - | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3a-e8218000-853dd708f98b` | `0x3a` | `0xe821800f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
+| `vfpu-3a-e8250000-ef69f6c7813d` | `0x3a` | `0xe825000f` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3a-e8258000-aa889c2278dc` | `0x3a` | `0xe8258081` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3a-e8260000-420666dfdabb` | `0x3a` | `0xe8260001` | - | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f0000000-36a0dfd6f25e` | `0x3c` | `0xf0000000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f0000000-36a0dfd6f25e` | `0x3c` | `0xf0000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f0018100-5a4cbf0afcde` | `0x3c` | `0xf001818f` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f0018100-ae9fcb3f5729` | `0x3c` | `0xf001810f` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-vmmul-vtfm3-nan |
 | `vfpu-3c-f0040000-87e8800f7077` | `0x3c` | `0xf0040088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f0800000-6269167e2f9b` | `0x3c` | `0xf0800080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f0800000-74175c7ed704` | `0x3c` | `0xf0800000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f0800000-74175c7ed704` | `0x3c` | `0xf0800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f0818100-1436ad21d7ee` | `0x3c` | `0xf081818f` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f0818100-a21cd625cf03` | `0x3c` | `0xf0818101` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f1000000-c53432ee06d9` | `0x3c` | `0xf1000000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f1000000-c53432ee06d9` | `0x3c` | `0xf1000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f1018000-f4f54cf36cf1` | `0x3c` | `0xf101807f` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f1018100-ad659c2f8f04` | `0x3c` | `0xf1018180` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f1040000-75031de63abb` | `0x3c` | `0xf1040088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f1800000-698ca1415af9` | `0x3c` | `0xf1800000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f1800000-698ca1415af9` | `0x3c` | `0xf1800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f1808000-7629a00da228` | `0x3c` | `0xf1808010` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-vmmul-vtfm3-nan |
 | `vfpu-3c-f1818000-f4d5da436b74` | `0x3c` | `0xf1818090` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f1830000-a250b91c407a` | `0x3c` | `0xf18300ff` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f2000000-6c250f1e9dc1` | `0x3c` | `0xf2000000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f2000000-6c250f1e9dc1` | `0x3c` | `0xf2000000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f2008000-5b136f7b67ad` | `0x3c` | `0xf200807f` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
 | `vfpu-3c-f2018000-10d8b1518c48` | `0x3c` | `0xf20180ff` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f2030100-67f127769a35` | `0x3c` | `0xf20301ff` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f2808000-28bdadf840d9` | `0x3c` | `0xf2808090` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f2808000-a8b7c9270777` | `0x3c` | `0xf2808001` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3800000-33c04b695fcc` | `0x3c` | `0xf3800088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3800000-8a57926c1d7d` | `0x3c` | `0xf3800000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f3800000-8a57926c1d7d` | `0x3c` | `0xf3800000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f3808000-7b56bb3b366e` | `0x3c` | `0xf3808008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3808000-c9722109ff7d` | `0x3c` | `0xf3808081` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3810000-67f127769a35` | `0x3c` | `0xf3810088` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3c-f3810000-6c250f1e9dc1` | `0x3c` | `0xf3810000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f3810000-6c250f1e9dc1` | `0x3c` | `0xf3810000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f3818000-10d8b1518c48` | `0x3c` | `0xf3818088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3818000-5b136f7b67ad` | `0x3c` | `0xf3818008` | 3 | `aot-direct` | `hardware-measured` | census tier H: issue-40-group-b |
-| `vfpu-3c-f3830000-4d3e36431900` | `0x3c` | `0xf3830000` | 1 | `aot-direct` | `unverified` | no recorded evidence |
+| `vfpu-3c-f3830000-4d3e36431900` | `0x3c` | `0xf3830000` | 1 | `aot-direct` | `synthetic` | `vfpu-interp-selftest:check_overlap_diff` |
 | `vfpu-3c-f3830000-b0763af87a26` | `0x3c` | `0xf3830080` | 2 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3838000-2559d0e2853f` | `0x3c` | `0xf3838008` | 3 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3c-f3838000-4172a423a232` | `0x3c` | `0xf3838088` | 4 | `aot-direct` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
@@ -1084,6 +1107,6 @@ belongs to without the census's own grouping.
 | `vfpu-3e-f8018100-bdb3647af048` | `0x3e` | `0xf801810f` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-3e-f8050100-e50967e96480` | `0x3e` | `0xf8050101` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
 | `vfpu-3e-f8200000-c7eee1612aba` | `0x3e` | `0xf8200000` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
-| `vfpu-3e-f8218000-9dd390013655` | `0x3e` | `0xf821800f` | - | `aot-routes-to-sr-vfpu-interp` | `unverified` | no recorded evidence |
+| `vfpu-3e-f8218000-9dd390013655` | `0x3e` | `0xf821800f` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3e-f8258000-51b5a0cb59ca` | `0x3e` | `0xf8258081` | - | `aot-routes-to-sr-vfpu-interp` | `synthetic` | `make vfpu_fuzz`, `tools.test_vfpu_synth_corpus.CategoryDistinguishingTests.test_positive_corpus_has_no_fallback` |
 | `vfpu-3f-fc000000-2f62df9cdfc2` | `0x3f` | `0xfc000000` | - | `aot-direct` | `unverified` | no recorded evidence |

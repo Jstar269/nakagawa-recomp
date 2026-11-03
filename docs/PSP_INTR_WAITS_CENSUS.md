@@ -24,12 +24,12 @@ the runtime HLE sources, `tools/hle_sources.py`). Regenerate with `python tools/
 - total exact APIs: **72**
 - missing: **0**
 - registered (fake success): **0**
-- implemented: **71**
-- controlled-unsupported: **1**
+- implemented: **72**
+- controlled-unsupported: **0**
 
 Open-owner counts:
 
-- #341: 36
+- #341: 32
 
 ## Census
 
@@ -39,14 +39,14 @@ Open-owner counts:
 | `sceAudioSRCChRelease` | implemented | - | dedicated | partial | `h_AudioSRCChRelease` | `0x5c37c0ae` |
 | `sceAudioSRCChReserve` | implemented | - | dedicated | partial | `h_AudioSRCChReserve` | `0x38553111` |
 | `sceAudioSRCOutputBlocking` | implemented | - | dedicated | partial | `h_AudioSRCOutputBlocking` | `0xe0727056` |
-| `sceCtrlReadBufferPositive` | implemented | #341 | dedicated | unreviewed | `h_CtrlReadBuffer` | `0x1f803938` |
+| `sceCtrlReadBufferPositive` | implemented | - | dedicated | partial | `h_CtrlReadBuffer` | `0x1f803938` |
 | `sceDisplayIsVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayIsVblank` | `0x4d4e10ec` |
 | `sceDisplayWaitVblank` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblank` | `0x36cdfade` |
 | `sceDisplayWaitVblankCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankCB` | `0x8eb9ec49` |
 | `sceDisplayWaitVblankStart` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStart` | `0x984c27e7` |
 | `sceDisplayWaitVblankStartCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankStartCB` | `0x46f186c3` |
 | `sceDisplayWaitVblankStartMulti` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartMulti` | `0x40f1469c` |
-| `sceDisplayWaitVblankStartMultiCB` | controlled-unsupported | - | controlled_unsupported | controlled_unsupported | `h_ControlledUnsupported` | `0x77ed8b3a` |
+| `sceDisplayWaitVblankStartMultiCB` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartMultiCB` | `0x77ed8b3a` |
 | `sceGeDrawSync` | implemented | - | dedicated | partial | `h_GeDrawSync` | `0xb287bd61` |
 | `sceGeListDeQueue` | implemented | - | dedicated | partial | `h_GeListDeQueue` | `0x5fb86ab0` |
 | `sceGeListSync` | implemented | - | dedicated | partial | `h_GeListSync` | `0x03444eb4` |
@@ -61,8 +61,8 @@ Open-owner counts:
 | `sceKernelAllocateVpl` | implemented | - | dedicated | partial | `h_AllocateVpl` | `0xbed27435` |
 | `sceKernelAllocateVplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateVplCB` | `0xec0a693f` |
 | `sceKernelCancelReceiveMbx` | implemented | - | dedicated | partial | `h_CancelReceiveMbx` | `0x87d4dd36` |
-| `sceKernelCpuResumeIntr` | implemented | #341 | dedicated | unreviewed | `h_CpuResumeIntr` | `0x5f10d406` |
-| `sceKernelCpuSuspendIntr` | implemented | #341 | dedicated | unreviewed | `h_CpuSuspendIntr` | `0x092968f4` |
+| `sceKernelCpuResumeIntr` | implemented | - | dedicated | partial | `h_CpuResumeIntr` | `0x5f10d406` |
+| `sceKernelCpuSuspendIntr` | implemented | - | dedicated | partial | `h_CpuSuspendIntr` | `0x092968f4` |
 | `sceKernelCreateMbx` | implemented | - | dedicated | partial | `h_CreateMbx` | `0x8125221d` |
 | `sceKernelCreateTlspl` | implemented | #341 | dedicated | unreviewed | `h_CreateTlspl` | `0x8daff657` |
 | `sceKernelDelaySysClockThread` | implemented | #341 | dedicated | unreviewed | `h_DelaySysClockThread` | `0xbd123d9e` |
@@ -74,7 +74,7 @@ Open-owner counts:
 | `sceKernelEnableSubIntr` | implemented | #341 | dedicated | unreviewed | `h_EnableSubIntr` | `0xfb8e22ec` |
 | `sceKernelFreeTlspl` | implemented | #341 | dedicated | unreviewed | `h_FreeTlspl` | `0x4a719fb2` |
 | `sceKernelGetTlsAddr` | implemented | #341 | dedicated | unreviewed | `h_GetTlsAddr` | `0xfa835cde` |
-| `sceKernelLockLwMutex` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutex` | `0xbea46419` |
+| `sceKernelLockLwMutex` | implemented | - | dedicated | partial | `h_LockLwMutex` | `0xbea46419` |
 | `sceKernelLockLwMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutexCB` | `0x1fc64e09` |
 | `sceKernelLockMutex` | implemented | - | dedicated | partial | `h_LockMutex` | `0xb011b11f` |
 | `sceKernelLockMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockMutexCB` | `0x5bf4dd27` |

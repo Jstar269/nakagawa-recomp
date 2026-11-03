@@ -7,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -164,6 +165,7 @@ class DispositionTests(unittest.TestCase):
 
 class LiveManifestTests(unittest.TestCase):
     """Join against the real hle.c registrations (not a synthetic manifest)."""
+    census: dict[str, Any]
 
     @classmethod
     def setUpClass(cls) -> None:

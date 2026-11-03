@@ -54,7 +54,7 @@ The verified native host contract is the Windows contract in [`SETUP.md`](SETUP.
 
 - Windows 11 x64.
 - PowerShell 7.4 or newer; Windows PowerShell 5.1 is not supported.
-- CPython 3.15.x.
+- CPython 3.15.x (3.14.x is also accepted).
 - MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
 - Explicit SDL3 dependency discovery ([#331](https://github.com/Jstar269/nakagawa-recomp/issues/331)).
 - A current Vulkan SDK and Vulkan-capable GPU.
@@ -368,7 +368,7 @@ python tools/publish_audit.py --candidate-root $Source --candidate-tree --public
 
 ### Bundled prerequisite licensing policy
 
-Owner decisions of 2026-10-26 on [#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285), implemented by the package script above:
+The policy agreed on [#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285), implemented by the package script above:
 
 - **Corresponding source ships with the release, not as a written offer.** The prerequisite source archive holds, for every bundled prerequisite, the source it was built from: the MSYS2 source package (`*.src.tar.zst`, with the PKGBUILD, the MSYS2 patches and the upstream source tarballs) of each MSYS2 package's pkgbase at the pinned version, the python.org source release of CPython, and the upstream source release of each third-party library built into the CPython runtime (below). It is published next to the ZIP in the same release.
 - **Every bundled package is covered**, not only the copyleft ones, so no licence classification decides what ships.
@@ -393,6 +393,41 @@ The CPython 3.15.1 embeddable runtime contains third-party libraries besides CPy
 Libraries that CPython's own source tree carries (Expat, HACL*, mimalloc) are in the CPython source release. Each library's licence file is copied into `prereqs/notices/cpython-embed-amd64/sources/`; SQLite's source carries a public-domain blessing instead of a licence file. Staging refuses a runtime library that no pinned source accounts for (`BUNDLE_SOURCE_UNACCOUNTED`), a pinned library the runtime no longer ships (`BUNDLE_SOURCE_DRIFT`), and a library pin not re-checked against the current CPython version (`SOURCE_VERSION_MISMATCH`).
 
 The Microsoft Visual C++ runtime (`vcruntime140.dll`, `vcruntime140_1.dll`) has no public source. It is redistributed under the terms python.org ships with the runtime, the section "Additional Conditions for this Windows binary build" of `prereqs/notices/cpython-embed-amd64/LICENSE.txt`; staging refuses a runtime whose notice lacks that section (`BUNDLE_NOTICE_MISSING`), and `SOURCES.txt` names both files under "No public source".
+
+## Release asset names
+
+A release is laid out so that a catalogue launcher, which picks a download by file name, and a person read
+it the same way ([#1876](https://github.com/Jstar269/nakagawa-recomp/issues/1876)). Such a launcher skips
+checksum, signature, source and debug files, ranks the archives that are left, reads the platform from the
+name, and refuses a file whose checksum changed after it first recorded it. The contract:
+
+- **One player archive per OS and architecture**, with the platform in its name:
+  `nakagawa-recomp-<version>-windows-x64.zip`. There is no second archive for the same platform (no
+  installer, no "portable" variant, no renamed copy). A new platform is a new archive such as
+  `...-linux-x64.zip`, added to this list when it exists.
+- **Every other file carries a word a name filter drops**: `.sha256` (`...zip.sha256`), `.minisig`
+  (`...zip.sha256.minisig`, a signature of the checksum file, optional), and `source`
+  (`nakagawa-recomp-<version>-prerequisite-sources.zip` and its `.sha256`). The SBOMs and
+  `SHA256SUMS.txt` live inside the ZIP, not beside it.
+- **One version** in every name.
+- **A published asset is never replaced or edited.** A changed file is a new version, so a recorded checksum
+  stays true.
+
+`--check-assets` takes either one folder that holds only the files to publish, or the files themselves. It
+checks the names and exits 1 with a named problem (`ASSET_PLATFORM_DUPLICATE`, `ASSET_SECOND_ARCHIVE`,
+`ASSET_PLAYER_MISSING`, `ASSET_SOURCE_MISSING`, `ASSET_SOURCE_DUPLICATE`, `ASSET_CHECKSUM_MISSING`,
+`ASSET_ORPHAN`, `ASSET_VERSION_MIXED`, `ASSET_FILTER_MISMATCH`, `ASSET_NAME_UNKNOWN`). The recipe's
+`$ArtifactRoot` also holds the staged folder, so name the files:
+
+```powershell
+python tools/stage_install.py --check-assets $Zip "$Zip.sha256" $SourceZip "$SourceZip.sha256"
+```
+
+Run it before the signature exists, and again with `"$Zip.sha256.minisig"` added, before anything is
+attached to a release. `tools/test_stage_install.py` keeps the rule from drifting.
+
+Wine and Proton: the Windows ZIP is the build used there. The smoke run and its known limits are in
+[`SETUP.md`](SETUP.md#wine-and-proton).
 
 ## Clean-VM offline acceptance
 

@@ -5145,6 +5145,7 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
         case VIEW_PSP_FONTS:
         case VIEW_ACCESSIBILITY_SETTINGS:
         case VIEW_ACE_SETTINGS:
+        case VIEW_PROBLEM_REPORT:
             /* Drawn only by the nk_ui launcher. */
             break;
         default:
