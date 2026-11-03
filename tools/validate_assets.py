@@ -105,13 +105,15 @@ def compute_digest(fpath: str, algorithm: str) -> str:
 def _gim_u16(data: bytes, offset: int) -> int:
     if offset + 2 > len(data):
         raise IndexError(f"u16 read at {offset:#x} is past end of data ({len(data)} bytes)")
-    return struct.unpack_from("<H", data, offset)[0]
+    returned: int = struct.unpack_from("<H", data, offset)[0]
+    return returned
 
 
 def _gim_u32(data: bytes, offset: int) -> int:
     if offset + 4 > len(data):
         raise IndexError(f"u32 read at {offset:#x} is past end of data ({len(data)} bytes)")
-    return struct.unpack_from("<I", data, offset)[0]
+    returned: int = struct.unpack_from("<I", data, offset)[0]
+    return returned
 
 
 def check_gim_palette(gim_path: str) -> tuple[bool, str]:

@@ -16,7 +16,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import urljoin, urlsplit
 import zipfile
 
@@ -747,7 +747,8 @@ def verify_bundle(manifest_path: Path, bundle_root: Path) -> dict:
             if listed.get(relative) != (notice["sha256"].lower(), notice["size_bytes"]):
                 raise PrerequisiteFetchError(f"BUNDLE_INVALID: {relative} is not the pinned licence file.")
     _check_bundled_libraries(manifest, {source["id"]: source for source in sources}, bundle_root)
-    return bundle
+    returned: dict[str, Any] = bundle
+    return returned
 
 
 # ---- Corresponding source (#1285) -------------------------------------------
@@ -927,7 +928,8 @@ def _read_archive_member(archive: Path | io.BytesIO, member: str, label: str) ->
             stream = package.extractfile(member)
             if stream is None:
                 raise KeyError(member)
-            return stream.read()
+            returned: bytes = stream.read()
+            return returned
     except (KeyError, OSError, EOFError, tarfile.TarError, zipfile.BadZipFile) as exc:
         raise PrerequisiteFetchError(f"SOURCE_NOTICE_MISSING: {label} has no {member}.") from exc
 

@@ -54,6 +54,15 @@ host0 log.
 64-word k0 block of the probe thread and of new threads, and checks whether a
 thread that reuses a dirtied stack still starts with k0+4 == 0 (#363).
 
+`CASE=memory-edge` (`PSP-MEMEDGE-001`, 74 cells and a done record) measures where
+user RAM and VRAM end and calls `sceIoWrite`, `sceIoRead`, `sceDmacMemcpy` and
+`sceDmacTryMemcpy` with a buffer placed at that edge (#303, #1380). The placement
+helper is `mem_edge.h`, which another probe can include to put a buffer's last or
+first N bytes at a measured boundary; the probe reports success in the record's
+`setup_mask` word. A write past an edge runs only after the same API refused the same
+overrun on the reading side; a cell that cannot be recorded in user mode is a `SKIP`
+row with its reason.
+
 Bounded follow-up cases for issues #69, #311, and #303 are `CASE=ge-nan`,
 `CASE=audio-query`, and `CASE=dma-cells`; these remain `NOT_RUN`. The
 `CASE=delay-zero` records were measured on the accepted 2026-10-01 PSPLink
@@ -643,7 +652,9 @@ follow-up faulted at user EPC 0; the NULL callback follow-up stopped at
 `sceKernelCheckCallback` and the watchdog recovered the PSP without an exception frame.
 The fetch-zero case also captured an exprint frame. The `0x08000000` A3 PRX was refused
 after its transport preflight, and `0x40000000` was not launched, because the recovered
-PSP reported `pspver 6.6.1` instead of the required `6.6.0`.
+PSP reported `pspver 6.6.1` instead of the required `6.6.0`. Launches now declare the
+measured `pspver` to the runner. Both fetches were captured on 2026-11-02 at `pspver 6.6.1`
+as instruction bus errors (Cause `0x10000018`, EPC = the target).
 
 ### #312 instruction trace
 
@@ -651,9 +662,12 @@ PSP reported `pspver 6.6.1` instead of the required `6.6.0`.
 `fpu-state` and `vfpu-state` fixtures, along with the existing GPR, HI/LO and store
 state. `CASE=insn-trace-exception` raises a `break` in a branch delay slot; the
 runner keeps its EPC, Cause, BadVAddr and Status frame from `exprint` in teardown.
-The original two trace fixtures remain measured. The new FPU/VFPU and delay-slot
-exception fixtures have local tests and clean PRX builds, but their PSP runs were
-blocked by the `pspver` mismatch described above; they are not hardware evidence.
+On 2026-11-02 (`pspver` 6.6.1, exact source commit `1fbab0c6`) the `insn-trace` run
+was acceptance-eligible, and all four fixtures' PSP traces agree with Nakagawa's;
+`tools/test_insn_trace.py` pins their digests. The `insn-trace-exception` frame
+(EPC = the branch, Cause `0x90000024`) and the `0x08000000` and `0x40000000` fetch
+frames were captured as diagnostics. See `docs/HARDWARE_ORACLE.md`, "#1375 and #312
+runs 2026-11-02".
 
 The seven `hle-*` rows are single-launch probes built from `probe_hle_measure.c`, and they are
 not in the campaign queue. Five cases ran on a PSP-3000 on 2026-10-15 (build `b5d6fc5b`):

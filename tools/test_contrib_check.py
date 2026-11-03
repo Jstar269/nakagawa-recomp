@@ -233,6 +233,8 @@ class TestStrictCompileFlagsMirrorTheMakefile(unittest.TestCase):
     Vulkan backend all failed on unchanged `origin/main`, for every contributor
     who touched them.  The per-source table must stay the Makefile's own flags.
     """
+    assignments: dict[str, list[str]]
+    makefile: str
 
     @classmethod
     def setUpClass(cls) -> None:
