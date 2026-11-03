@@ -294,7 +294,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
 
     Their handlers live in hle_power.c, so the registrations do too: one obvious owner per
     NID. The NID set is pinned here rather than derived from the sources, so the test
-    cannot pass by reading the old location. scePower_469989ad and
+    cannot pass by reading the old location. scePowerSetClockFrequency630 and
     scePowerCheckWlanCoexistenceClock joined when hle.c was split.
     """
 
@@ -307,7 +307,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         0xFEE03A2F, 0xBD681969, 0xEA382A27, 0xB1A52C83, 0x9BADB3EB,              # measured clock alias, Int and Float getters (PSP-3000 6.61 oracle 2026-10-15, PSP-HLE-POWER-001)
         0xB4432BC8, 0x8EFB3FA2, 0x843FBF43,                                      # charging status, battery life time, CPU clock setter (PSP-3000 6.61, 2026-10-24)
         0xB8D7B3FB,                                                              # scePowerSetBusClockFrequency (pspautotests power/freq.expected)
-        0x469989AD, 0xA85880D0,                                                  # scePower_469989ad refusal, WLAN coexistence clock (#307)
+        0x469989AD, 0xA85880D0,                                                  # scePowerSetClockFrequency630 (PPSSPP c9e2afb6), WLAN coexistence clock (#307)
     })
 
     def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
@@ -451,8 +451,7 @@ class RegistrationSubsystemTests(unittest.TestCase):
         self.assertIsNone(hle_manifest.subsystem_for("synthUnowned"))
 
     def test_every_hle_power_c_registration_is_in_the_power_subsystem(self) -> None:
-        """The one unit already split out agrees with the map. The reverse need not hold yet:
-        hle.c still registers the scePower_469989ad controlled refusal."""
+        """The one unit already split out agrees with the map."""
         by_owner = {r["name"]: r["subsystem"] for r in self.manifest["registrations"]
                     if r["owner_file"] == "src/rt/hle_power.c"}
         self.assertTrue(by_owner)
@@ -1371,14 +1370,12 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x39af39a6": ("sceNetInit", "0x80010086"),
                 "0xf9d8eb63": ("sceHttpsEnd", "0x80010086"),
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
-                "0x469989ad": ("scePower_469989ad", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
                 "0x438a385a": ("sceGeSaveContext", "0x80020002"),
                 "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
                 "0x08d98894": ("sceNpDrmEdataSetupKey", "0x80020002"),
                 "0xf9275d98": ("sceKernelLoadModuleBufferUsbWlan", "0x80020002"),
-                "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
                 "0x70a703f8": ("sceAudiocodecDecode", "0x80010086"),
                 "0x72189c48": ("sceImposeSetUMDPopup", "0x80010086"),
                 "0x77ed8b3a": ("sceDisplayWaitVblankStartMultiCB", "0x80020002"),
@@ -1871,7 +1868,8 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-HLE-CTRL-LATCH-001",
                 "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-INTR-001",
                 "PSP-HLE-KERNEL-STATUS-001",
-                "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SYSPARAM-001",
+                "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SAVEDATA-GETSIZE-001",
+                "PSP-HLE-SYSPARAM-001",
                 "PSP-HLE-TIMER-ORDER-001", "PSP-HLE-VTIMER-001", "PSP-HLE-VTIMER-002",
                 "PSP-HLE-VTIMER-003", "PSP-INTR-CAUSE-001", "PSP-IO-001", "PSP-IO-EOF-001", "PSP-KERNEL-001",
                 "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-SEM-001", "PSP-KERNEL-STATUS-001",

@@ -4113,9 +4113,16 @@ static int player_load_library(PlayerRun *run) {
              * build; the entry keeps the inspection-reported status. */
 
             if (run->stage_only && !res.is_supported) {
+                /* The inspection above has already written the disc's experimental
+                   profile and decrypted its program into the data folder, so say
+                   what is there and where the game is added instead. */
                 fprintf(stderr, "[PLAYER] Disc %s is not in Nakagawa's title list yet, so "
-                        "its files cannot be set up. Nothing was changed.\n",
+                        "--stage-only cannot set up its files. Its experimental profile is "
+                        "recorded in Nakagawa's data folder and its program was checked there; "
+                        "add the disc from the player's library and build it from there.\n",
                         app->inspecting_game.disc_id);
+                printf("[PLAYER] STAGING_RESULT status=FAIL disc_id=%s\n",
+                       app->inspecting_game.disc_id);
                 return 3;
             }
 

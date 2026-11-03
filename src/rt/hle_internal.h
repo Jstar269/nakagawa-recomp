@@ -969,6 +969,7 @@ typedef struct {
     int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
     int busy; // the list has started; only sceGeDrawSync(0) or a reset clears it (uofw isBusy)
+    int preempted; // stopped short of its stall address for a stronger thread, with work left
     uint64_t order; // enqueue order: the active queue runs the oldest first
     uint32_t finish_id; // the 16-bit argument of the FINISH that ended it: the callback's id
     uint64_t done_us; // GE_LIST_DRAWING: modelled completion time (guest us)
@@ -1161,6 +1162,7 @@ extern uint32_t s_deferred_self_stop_thread_uid;
 extern SrLoadExecRequest s_loadexec_request;
 extern int s_loadexec_pending;
 extern uint32_t s_loadexec_boot_uid;
+extern char s_loadexec_program_path[256];
 LoadedModule *find_loaded_module(uint32_t uid);
 LoadedModule *alloc_loaded_module_slot(void);
 void retire_loaded_module(LoadedModule *mod);
@@ -1337,6 +1339,7 @@ int io_path_is_disc_device(const char *path);
 IoRawDevicePath io_raw_device_path(const char *path);
 int data_archive_guest_path_allowed(const char *guest_path);
 uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot);
+uint32_t hle_io_probe_open(const char *path);
 int io_host_seek(FILE *host, uint32_t offset);
 int io_restore_truncated_gap(Fd *f);
 uint32_t h_IoWrite(CpuState *s);
@@ -1441,6 +1444,7 @@ void hle_register_ctrl_sampling_handlers(void);
 void hle_register_gpi_gpo_handlers(void);
 void hle_register_mpeg_shared_handlers(void);
 void hle_register_mpeg_avc_decode_handler(void);
+void hle_register_mpeg_userdata_handlers(void);
 void hle_register_mpeg_ycbcr_handlers(void);
 void hle_register_impose_handlers(void);
 void hle_register_font_handlers(void);
@@ -1480,7 +1484,6 @@ void hle_register_time_rtc(void);
 void hle_register_time_kernel_time_2(void);
 void hle_register_unregistered_import_kernel_time_1(void);
 void hle_register_unregistered_import_kernel_thread_1(void);
-void hle_register_unregistered_import_power(void);
 void hle_register_unregistered_import_kernel_thread_2(void);
 void hle_register_unregistered_import_kernel_time_2(void);
 void hle_register_unregistered_import_display(void);
@@ -1503,7 +1506,6 @@ void hle_register_init_kernel_utils_1(void);
 void hle_register_init_kernel_memory_1(void);
 void hle_register_init_kernel_thread_1(void);
 void hle_register_init_mpeg(void);
-void hle_register_init_umd(void);
 void hle_register_init_kernel_thread_2(void);
 void hle_register_init_kernel_memory_2(void);
 void hle_register_init_kernel_utils_2(void);
