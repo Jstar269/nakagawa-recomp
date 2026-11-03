@@ -1210,7 +1210,7 @@ One console is one data point; see §11. Nothing here closes issue #70
     the GE holds one level of detail per 4-pixel span of a row (x & ~3) and triangle, read at the span's
     second pixel, or at its first covered pixel when that lies further right; the strip's diagonal moves
     where each triangle's spans start, row by row. Automatic mode is log16(rho) - log16(q), two quantised
-    logarithms, with rho the largest absolute screen gradient of u * q and v * q (the planes the triangle
+    logarithms, with rho the largest absolute screen gradient of `u * q` and `v * q` (the planes the triangle
     interpolates; `a-quad-v16-w1to8` and `a-quad-v8-w1to8` rule out using only the u-along-x and v-along-y
     terms) and q the 1/w at the reference pixel; the slope mode reads the same q (`s-s1-w8to1`,
     `s-s3-w1to8`), and the bias is added after both logarithms (`a-quad-w1to4-bm1f8`). The 2026-11-03 run
