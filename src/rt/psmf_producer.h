@@ -140,6 +140,9 @@ int sr_psmf_producer_feed_stream(SrPsmfProducer *producer, const uint8_t *data,
                                  uint32_t len, int eos);
 uint64_t sr_psmf_producer_stream_bytes(const SrPsmfProducer *producer);
 uint64_t sr_psmf_producer_stream_cursor(const SrPsmfProducer *producer);
+/* Stream offset of the packet holding the oldest byte of `kind` the demux still keeps, which is the
+ * unit still open when every complete one has been popped; the bytes fed when it keeps none. */
+uint64_t sr_psmf_producer_unit_offset(SrPsmfProducer *producer, SrPsmfAuKind kind);
 int64_t sr_psmf_producer_first_audio_pts(const SrPsmfProducer *producer);
 void sr_psmf_producer_close(SrPsmfProducer *producer);
 void sr_psmf_producer_reset(SrPsmfProducer *producer);
