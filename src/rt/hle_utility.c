@@ -643,6 +643,13 @@ static uint32_t h_GamedataDialogInit(CpuState *s) { return utility_storage_init(
 static uint32_t h_GamedataDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_gamedata_dialog); }
 static uint32_t h_GamedataDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_gamedata_dialog); }
 static uint32_t h_GamedataDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_gamedata_dialog); }
+/* sceUtilityHtmlViewerGetStatus and sceUtilityScreenshotGetStatus: the runtime has no HTML viewer
+ * or screenshot dialog (their InitStart imports are not registered and stop the run), so neither
+ * type can hold the dialog slot, and a GetStatus for a type that does not hold it is WRONG_TYPE.
+ * pspautotests utility/dialog/status.expected and htmlviewer.expected (rev 1a9e6c31, recorded on
+ * a PSP): "html=WRONG_TYPE shot=WRONG_TYPE" at boot, while a message dialog runs, and after it. */
+static uint32_t h_HtmlViewerStatus(CpuState *s) { (void)s; return SCE_ERROR_UTILITY_WRONG_TYPE; }
+static uint32_t h_ScreenshotStatus(CpuState *s) { (void)s; return SCE_ERROR_UTILITY_WRONG_TYPE; }
 static uint32_t h_SharingDialogInit(CpuState *s) { return utility_storage_init(&s_sharing_dialog, A0); }
 static uint32_t h_SharingDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_sharing_dialog); }
 static uint32_t h_SharingDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_sharing_dialog); }
@@ -902,6 +909,8 @@ void hle_register_utility_dialog_handlers(void) {
     sr_hle_register(0x4aecd179, "sceUtilityGamedataInstallUpdate", h_GamedataDialogUpdate);
     sr_hle_register(0xb57e95d9, "sceUtilityGamedataInstallGetStatus", h_GamedataDialogStatus);
     sr_hle_register(0x32e32dcb, "sceUtilityGamedataInstallShutdownStart", h_GamedataDialogShutdown);
+    sr_hle_register(0xbda7d894, "sceUtilityHtmlViewerGetStatus", h_HtmlViewerStatus);
+    sr_hle_register(0xd81957b7, "sceUtilityScreenshotGetStatus", h_ScreenshotStatus);
     sr_hle_register(0xc492f751, "sceUtilityGameSharingInitStart", h_SharingDialogInit);
     sr_hle_register(0x7853182d, "sceUtilityGameSharingUpdate", h_SharingDialogUpdate);
     sr_hle_register(0x946963f3, "sceUtilityGameSharingGetStatus", h_SharingDialogStatus);

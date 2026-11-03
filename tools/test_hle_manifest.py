@@ -1358,6 +1358,10 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
                 # sceNetTerm: the cleanup a title runs after sceNetInit refused (offline).
                 "0x281928a9": ("sceNetTerm", "0x80010086"),
+                # The net stack's thread and pool bookkeeping and adhoc discovery stop (offline).
+                "0x50647530": ("sceNetFreeThreadinfo", "0x80010086"),
+                "0xcc393e48": ("sceNetGetMallocStat", "0x80010086"),
+                "0xf7d13214": ("sceNetAdhocDiscoverStop", "0x80010086"),
                 "0x29681260": ("sceAudiocodecReleaseEDRAM", "0x80010086"),
                 "0x011f03c1": ("sceRtcGetAccumulativeTime", "0x80020002"),
                 "0x191cdeff": ("sceSslEnd", "0x80010086"),
