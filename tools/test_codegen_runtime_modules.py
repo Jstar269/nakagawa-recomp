@@ -571,6 +571,43 @@ class RuntimeModuleBoundaries(unittest.TestCase):
         self.assertEqual(identity(data_word, 0x13572468), own, "data is not identity")
         self.assertNotEqual(identity(second + 4, 0x2402000B), own, "code is identity")
 
+    def test_fixed_overlay_interpreter_authority_is_its_analysed_code(self):
+        # The segment's data words are not code: a jump into them misses by name instead
+        # of running under the interpreter, so the module's spans are the analysed code.
+        data, first, second, data_word = basic_fixed_overlay()
+        path = self.root / "OVL_STAGE.ELF"
+        path.write_bytes(data)
+        with contextlib.redirect_stderr(io.StringIO()):
+            module = codegen.translate_runtime_module(0, str(path))
+        counts = dict(module.functions)
+        self.assertEqual(module.spans, [(first, first + 4 * counts[first]),
+                                        (second, second + 4 * counts[second])])
+        for word in (data_word, data_word + 4):
+            self.assertFalse(in_ranges(word, module.spans), f"0x{word:08x} is data")
+        self.assertIn(f"static const SrModuleSpan sr_m0_spans[] = {{\n"
+                      f"    {{ 0x{first:08x}u, 0x{first + 4 * counts[first]:08x}u }},",
+                      "\n".join(codegen.runtime_module_descriptor_lines(module)))
+
+    def test_fixed_overlay_identity_covers_a_leaf_it_calls(self):
+        # A leaf reached only by `jal` opens no stack frame, but its translation runs from
+        # the bound overlay, so its words are part of the identity.
+        data, caller, leaf, _data_word = basic_fixed_overlay(FIXED_OVERLAY_LEAF_SEGMENT)
+        path = self.root / "OVL_LEAF.ELF"
+        path.write_bytes(data)
+        with contextlib.redirect_stderr(io.StringIO()):
+            module = codegen.translate_runtime_module(0, str(path))
+        self.assertIsNone(module.unsupported_reason)
+        self.assertEqual(module.functions, [(caller, 7), (leaf, 2)])
+        self.assertEqual(module.overlay_check_spans, ((caller, leaf + 8),))
+        own = (module.overlay_check_len, module.overlay_check_fnv1a64)
+        changed = bytearray(data)
+        struct.pack_into("<I", changed, 0x54 + leaf + 4 - OVERLAY_LINK, 0x2402000B)
+        path.write_bytes(changed)
+        with contextlib.redirect_stderr(io.StringIO()):
+            other = codegen.translate_runtime_module(0, str(path))
+        self.assertNotEqual((other.overlay_check_len, other.overlay_check_fnv1a64), own,
+                            "the leaf's `li v0, 9` is part of the identity")
+
     def test_an_mwo3_overlay_descriptor_has_no_function_check(self):
         data, _entry, _ctor, _memsz = basic_code_overlay()
         path = self.root / "Title.ovl"
@@ -637,11 +674,18 @@ FIXED_OVERLAY_SEGMENT = b"".join(struct.pack("<I", w) for w in [
     0x27BDFFF0, 0x24020009, 0x03E00008, 0x27BD0010,   # addiu sp,-16; li v0,9; jr ra; addiu sp,16
 ])
 
+# A function that calls a leaf with `jal`; the leaf opens no stack frame.
+FIXED_OVERLAY_LEAF_SEGMENT = b"".join(struct.pack("<I", w) for w in [
+    0x27BDFFF0, 0xAFBF0000, 0x0E300007, 0x00000000,   # addiu sp,-16; sw ra,0(sp); jal leaf; nop
+    0x8FBF0000, 0x03E00008, 0x27BD0010,               # lw ra,0(sp); jr ra; addiu sp,16
+    0x03E00008, 0x24020009,                           # leaf: jr ra; li v0,9
+])
 
-def basic_fixed_overlay():
-    """An ELF type 0xFFA8 overlay of FIXED_OVERLAY_SEGMENT at OVERLAY_LINK, its one section
-    named for the overlay. Returns (bytes, first function, second function, data word)."""
-    segment = FIXED_OVERLAY_SEGMENT
+
+def basic_fixed_overlay(segment=FIXED_OVERLAY_SEGMENT):
+    """An ELF type 0xFFA8 overlay of ``segment`` at OVERLAY_LINK, its one section named for
+    the overlay. Returns (bytes, first function, second function, data word); the last
+    two for FIXED_OVERLAY_LEAF_SEGMENT are the caller and the leaf, with no data word."""
     names = b"\0.ovl_stage\0.shstrtab\0"
     seg_off = 0x54
     names_off = seg_off + len(segment)
@@ -657,6 +701,8 @@ def basic_fixed_overlay():
     struct.pack_into("<10I", out, shoff + 40, 1, 1, 7, OVERLAY_LINK, seg_off, len(segment),
                      0, 0, 4, 0)
     struct.pack_into("<10I", out, shoff + 80, 12, 3, 0, 0, names_off, len(names), 0, 0, 1, 0)
+    if segment == FIXED_OVERLAY_LEAF_SEGMENT:
+        return bytes(out), OVERLAY_LINK, OVERLAY_LINK + 0x1C, None
     return bytes(out), OVERLAY_LINK, OVERLAY_LINK + 0x18, OVERLAY_LINK + 0x10
 
 

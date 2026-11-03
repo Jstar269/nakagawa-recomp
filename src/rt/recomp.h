@@ -1284,8 +1284,8 @@ typedef struct SrModuleCode {
     uint32_t nvar_imports;
     /* Non-NULL: the overlay check covers these link ranges, in order (overlay_check_len
      * bytes in all), instead of the leading bytes. A fixed-address ELF overlay (ELF type
-     * 0xFFA8) mixes code and data in one segment, so only its translated code identifies
-     * it (tools/codegen.py fixed_overlay_check_spans). */
+     * 0xFFA8) mixes code and data in one segment, so every word of its translated code,
+     * and only that, identifies it (tools/codegen.py translate_runtime_module). */
     const SrModuleSpan *overlay_check_spans;
     uint32_t noverlay_check_spans;
 } SrModuleCode;

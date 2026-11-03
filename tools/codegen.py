@@ -3710,7 +3710,7 @@ class RuntimeModuleTranslation:
     # leading bytes of the file (its header and text), not when the game loads a module.
     overlay_check_len: int = 0
     # Non-empty: the check covers these (start, end) link ranges, in order, instead of
-    # leading bytes; a fixed-address ELF overlay (fixed_overlay_check_spans).
+    # leading bytes; a fixed-address ELF overlay, whose check is its translated words.
     overlay_check_spans: tuple = ()
     # analyze.static_coverage of the module's own link space (None when untranslatable).
     coverage: dict | None = None
@@ -3803,19 +3803,15 @@ def var_import_table_lines(name, imports):
     return lines
 
 
-def fixed_overlay_check_spans(elf, functions):
-    """The ranges that identify a fixed-address ELF overlay in guest memory: the translated
-    words of each function (link address, nwords) whose first instruction allocates a
-    stack frame (`addiu sp, sp, -n`), in address order."""
-    spans = []
-    for address, nwords in sorted(functions):
-        first = elf.read_at_vaddr(address, 4) if nwords else None
-        if first is None or len(first) < 4:
-            continue
-        word = int.from_bytes(first, "little")
-        if (word >> 16) == 0x27BD and (word & 0x8000):
-            spans.append((address, address + 4 * nwords))
-    return tuple(spans)
+def word_runs(addresses):
+    """The word addresses as merged (start, end) runs of contiguous words, in order."""
+    runs = []
+    for address in sorted(addresses):
+        if runs and runs[-1][1] == address:
+            runs[-1][1] = address + 4
+        else:
+            runs.append([address, address + 4])
+    return [(lo, hi) for lo, hi in runs]
 
 
 def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
@@ -3872,11 +3868,12 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         module.unsupported_reason = f"module image cannot be laid out: {exc}"
         return module
     ranges = exec_ranges(elf)
+    discovery = {}
     try:
         # A code overlay's entry points are held by the executable (entry_hints).
         analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
                               entry_hints=entry_hints if overlay else None,
-                              mixed_code_data=fixed_overlay)
+                              mixed_code_data=fixed_overlay, report=discovery)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1
@@ -3912,6 +3909,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     space = AddressSpace(base_symbol=module.base_symbol, prefix=module.prefix,
                          relocations=relocations, patched=var_sites)
     spans = span_index(ranges)
+    translated_words = set()
     previous_space = ADDRESS_SPACE
     ADDRESS_SPACE = space
     try:
@@ -3932,6 +3930,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
                     text = "\n".join(emit_function(elf, a, spans, known, profile=profile,
                                                    flow=flow))
                     nwords = len(head_run_words(elf, a, flow[0]))
+                    translated_words.update(flow[0])
                 except Unsupported as exc:
                     reason = str(exc).replace('"', "'")
                     text = (f"void {space.symbol(a)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
@@ -3946,17 +3945,19 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     module.spans = sorted(set((lo, hi) for lo, hi in ranges if hi > lo))
     if fixed_overlay:
         # Its file mixes code and data in one segment, so no leading run of bytes is code
-        # only. The identity is the translated words of every function that opens a stack
-        # frame (`addiu sp, sp, -n`), in address order: the gap fill also starts functions
-        # after each return, which in this layout can be data the game later writes.
-        module.overlay_check_spans = fixed_overlay_check_spans(elf, module.functions)
+        # only. The identity is every word a translation was emitted for, in address order,
+        # so no translated body can run over words that differ from the file. Interpreter
+        # authority is the analysed code alone (the traced words, the stubbed functions'
+        # included, and the translated ones): a jump into the data is a named miss.
+        module.overlay_check_spans = tuple(word_runs(translated_words))
         words = b"".join(elf.read_at_vaddr(lo, hi - lo) for lo, hi in module.overlay_check_spans)
         module.overlay_check_len = len(words)
         module.overlay_check_fnv1a64 = fnv1a64(words)
+        code = {a for a in set(discovery.get("covered", ())) | translated_words | known
+                if in_ranges(a, ranges)}
+        module.spans = word_runs(code)
         if not words:
-            module.unsupported_reason = (
-                "code overlay has no translated function that opens a stack frame to "
-                "identify it")
+            module.unsupported_reason = "code overlay has no translated code to identify it"
     module_stubbed = {a for a, _ in module.stubbed}
     module.coverage = static_coverage(
         elf, ranges, known,

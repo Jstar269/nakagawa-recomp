@@ -455,13 +455,14 @@ static void mixed_body(CpuState *s) { g_body_hits++; s->r[2] = 0x0cu; s->pc = s-
 static const SrModuleFunc k_mixed_funcs[] = {
     { MIXED_FIRST, 4u, mixed_body }, { MIXED_SECOND, 4u, mixed_body },
 };
-static const SrModuleSpan k_mixed_spans[] = { { MIXED_LINK, MIXED_LINK + 0x40u } };
+/* Codegen gives the module its analysed code as spans and checks its translated words;
+ * here both are the two functions. */
 static const SrModuleSpan k_mixed_check_spans[] = {
     { MIXED_FIRST, MIXED_FIRST + 0x10u }, { MIXED_SECOND, MIXED_SECOND + 0x10u },
 };
 static SrModuleCode k_mixed = {
     "OVL_MIXED.ELF", 0x100u, 0x7777u, MIXED_LINK, MIXED_LINK + 0x40u, 0x4u, 0u, NULL,
-    &g_mixed_base, k_mixed_funcs, 2u, k_mixed_spans, 1u, MIXED_CHECK_LEN, 0u, NULL, 0u,
+    &g_mixed_base, k_mixed_funcs, 2u, k_mixed_check_spans, 2u, MIXED_CHECK_LEN, 0u, NULL, 0u,
     k_mixed_check_spans, 2u,
 };
 
@@ -504,11 +505,23 @@ static void test_mixed_overlay_is_identified_by_its_code_ranges(void) {
     Probe bound = probe(MIXED_SECOND, PROBE_PC, PROBE_RA);
     CHECK(bound.body_ran && bound.v0 == 0x0cu, "the bound mixed overlay's translation runs");
 
-    MEM_W32(MIXED_DATA, 0xdeadbeefu);
+    MEM_W32(MIXED_DATA, 0x24020077u);       /* data that decodes as addiu v0, zero, 0x77 */
+    MEM_W32(MIXED_DATA + 4u, 0x03e00008u);  /* jr ra */
+    MEM_W32(MIXED_DATA + 8u, 0x00000000u);  /* nop */
     MEM_W32(MIXED_LINK + 0x30u, 0xfeedfaceu);
     CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
               sr_module_code_is_bound(&k_mixed, NULL),
           "writes to the data between and after its code ranges keep it bound");
+
+    /* Its spans are the analysed code only: a jump into the data is a miss, never an
+     * interpretation of the data words. */
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+    g_interp_handoff_hits = 0;
+    Probe into_data = probe(MIXED_DATA, PROBE_PC, PROBE_RA);
+    CHECK(!into_data.body_ran && into_data.dispatch_result < 0 && g_interp_handoff_hits == 0,
+          "a jump into a bound mixed overlay's data misses instead of being interpreted "
+          "(result %d, handoffs %d)", into_data.dispatch_result, g_interp_handoff_hits);
 
     MEM_W32(MIXED_FIRST + 8u, 0u);
     CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 1u &&

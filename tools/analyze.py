@@ -362,7 +362,8 @@ def code_overlay_elf(data):
 
     A fixed-address ELF overlay (ELF type 0xFFA8) becomes the same kind of image, with its
     one segment named .text: nothing in the file separates its code from its data, so the
-    analysis finds the code by control flow from the pointers the executable holds."""
+    analysis finds the code by control flow from the pointers the executable holds, and
+    codegen grants execution authority only over the code it found."""
     if is_fixed_overlay(data):
         load, offset, filesz, memsz = fixed_overlay_segment(data)
         segment = bytes(data[offset:offset + filesz])
@@ -2364,8 +2365,9 @@ def _keep_prologue_seeds(d):
     In an image whose code section also holds its data (a fixed-address ELF overlay), the
     word after a return or a jump is as likely data as a function, and a trace started
     there runs through the data and can swallow the next real function's prologue. A
-    prologue word is rare in data, so it stays a seed; code no seed reaches is still
-    inside the executable span and runs under the interpreter."""
+    prologue word is rare in data, so it stays a seed. Code no seed reaches is outside the
+    module's spans (codegen gives such an image only its analysed code), so a jump there
+    is a named dispatch miss."""
     def is_prologue(address):
         word = d.elf.read_at_vaddr(address, 4)
         return (word is not None and len(word) == 4
