@@ -182,7 +182,7 @@ an unsupported path is rejected as `PACKAGE_UNSUPPORTED_PATH` (#296).
 | `format`, `schema_version` | `nakagawa-aot-package`, version `2`. |
 | `title` | Manifest `id`, display name, kind, raw manifest SHA-256, and protected-semantics digest. |
 | `inputs` | SHA-256 for the manifest, executable ELF, selected PRXs with load addresses, and optional PSP header. Absolute input paths are omitted. |
-| `title_input_identity` | Versioned exact local inputs: manifest/profile and schema, DISC_ID/region/DISC_VERSION, selected PARAM.SFO facts, ISO container facts, decrypted main executable name/hash, required guest PRX names/hashes, raw selected executable and required module hashes from their ISO members, and optional PSP-header hash/magic. Retail hashes remain only in per-user package data. |
+| `title_input_identity` | Versioned exact local inputs: manifest/profile and schema, DISC_ID/region/DISC_VERSION, selected PARAM.SFO facts, ISO container facts (format, volume ID, size, PVD sector and sector size; the parser's `format_warnings` notes are diagnostics and not part of the record), decrypted main executable name/hash, required guest PRX names/hashes, raw selected executable and required module hashes from their ISO members, and optional PSP-header hash/magic. Retail hashes remain only in per-user package data. |
 | `runtime` | `CpuState` ABI version and header hash, resolved guest run entry, runtime contract, bindings, and required bindings. |
 | `executable` | Relative native executable path and hash plus the guest ELF entry address. |
 | `generated_objects` | Sorted relative object paths and SHA-256 hashes. |

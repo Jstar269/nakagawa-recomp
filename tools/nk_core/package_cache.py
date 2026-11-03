@@ -120,7 +120,12 @@ def build_title_input_identity(
     container: Mapping[str, Any] | None = None,
     source_media: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the private, versioned identity record for one package input set."""
+    """Build the private, versioned identity record for one package input set.
+
+    ``container["format_warnings"]`` (parser notes from ``inspect_iso``) is diagnostic text,
+    not an input fact: it is dropped here so it neither fails the exact container schema nor
+    changes the identity digest when a note is reworded. Any other extra key still fails.
+    """
     module_records = [
         {"name": item.get("name"), "sha256": item.get("sha256")}
         for item in sorted(modules, key=lambda item: str(item.get("name", "")))
@@ -138,7 +143,10 @@ def build_title_input_identity(
             "disc_version": disc_version,
         },
         "param_sfo": dict(param_sfo) if param_sfo is not None else None,
-        "container": dict(container) if container is not None else None,
+        "container": (
+            {key: item for key, item in container.items() if key != "format_warnings"}
+            if container is not None else None
+        ),
         "main_executable": {"name": executable_name, "sha256": executable_sha256},
         "modules": module_records,
         "psp_header": (

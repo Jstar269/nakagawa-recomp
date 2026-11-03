@@ -81,6 +81,48 @@ class PackageCacheTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_identity_ignores_container_format_warnings(self) -> None:
+        """inspect_iso records tolerated disc quirks under container["format_warnings"]; they are
+        diagnostics, not identity: the record still validates and its digest does not move."""
+        container = {
+            "format": "iso9660", "volume_id": "CACHE_TEST",
+            "size_bytes": 2048, "pvd_sector": 16, "sector_size": 2048,
+            "format_warnings": ["PARAM.SFO TITLE is not UTF-8 (raw bytes 41 96 42)"],
+        }
+        identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[],
+            disc_id="TEST00001",
+            region="TEST",
+            disc_version="1.00",
+            param_sfo={"DISC_ID": "TEST00001", "DISC_VERSION": "1.00"},
+            container=container,
+        )
+        self.assertEqual(identity, self.identity)
+        self.assertEqual(
+            package_cache.title_input_identity_digest(identity),
+            package_cache.title_input_identity_digest(self.identity),
+        )
+        self.assertEqual(package_cache.title_input_identity_changes(self.identity, identity), ())
+        self.assertIn("format_warnings", container, "the caller's metadata is not modified")
+
+    def test_identity_container_still_refuses_unknown_keys(self) -> None:
+        for extra in ({"format_warnings": ["note"]}, {"label": "x"}):
+            invalid = dict(self.identity)
+            invalid["container"] = {**self.identity["container"], **extra}
+            with self.assertRaisesRegex(package_cache.PackageCacheError, "container metadata"):
+                package_cache.validate_title_input_identity(invalid)
+        with self.assertRaisesRegex(package_cache.PackageCacheError, "container metadata"):
+            package_cache.build_title_input_identity(
+                manifest={"id": "synthetic-cache-test", "schema_version": 1},
+                executable_name="EBOOT.BIN",
+                executable_sha256="2" * 64,
+                modules=[],
+                container={**self.identity["container"], "label": "x"},
+            )
+
     def test_native_build_report_byte_ceiling_matches_python(self) -> None:
         header = (ROOT / "src/core/nk_title_manifest.h").read_text(
             encoding="utf-8"
