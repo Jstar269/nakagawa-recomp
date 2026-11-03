@@ -8,21 +8,23 @@
 // before it exits. Every import is user-mode and comes from a per-family import
 // block (hle_*_imports.S) or the shared threadman_user_imports.S.
 //
-// Seven single-launch cases share this file: CASE=hle-vtimer-unit
+// Eight single-launch cases share this file: CASE=hle-vtimer-unit
 // (PSP-HLE-VTIMER-002), hle-vtimer-errors (PSP-HLE-VTIMER-003),
 // hle-kernel-pool-bounds (PSP-HLE-KERNEL-STATUS-002), hle-power-float-v0
 // (PSP-HLE-POWER-002), hle-null-out-pointers (PSP-HLE-NULL-OUT-001),
-// hle-audio-src (PSP-HLE-AUDIO-SRC-001) and hle-timer-order
-// (PSP-HLE-TIMER-ORDER-001). Cases 97-101 have recorded PSP-3000 runs from
+// hle-audio-src (PSP-HLE-AUDIO-SRC-001), hle-timer-order
+// (PSP-HLE-TIMER-ORDER-001) and hle-savedata-getsize
+// (PSP-HLE-SAVEDATA-GETSIZE-001). Cases 97-101 have recorded PSP-3000 runs from
 // 2026-10-15: the VTimer and power cases were measured; pool-bounds was captured
 // only in its earlier revision, and the revised form has not run; null-out was
-// captured incomplete. Cases 102-103 have not run on hardware.
+// captured incomplete. Case 104 was measured on 2026-11-02 (docs/HARDWARE_ORACLE.md).
 // Their pass rule is machinery only: a record is PASS when its calls completed and were
 // recorded in order, and SKIP only when the object a cell needs (a timer, pool or
 // block UID) was not obtained. A fixed-pool delete after a refused create is PASS
 // with out0 0 and issues no delete, because the refusal is what that create measures.
 // No returned value is compared with an expected PSP value, here, in the host checker
-// or in the parser. hle-null-out-pointers passes NULL as a mandatory out pointer,
+// or in the parser; hle-savedata-getsize's check that its save is absent is a precondition
+// of its measurement, not a PSP semantic. hle-null-out-pointers passes NULL as a mandatory out pointer,
 // which may fault in kernel mode, so it is scheduled last in a session.
 //
 // Record stream (tools/psp_oracle/protocol.py): NAKAGAWA_PSP_META, then one
@@ -43,8 +45,10 @@
 #include <psppower.h>
 #include <psphprm.h>
 #include <pspctrl.h>
-#include <psputility_sysparam.h>
+#include <psputility.h>
 #include <pspge.h>
+#include <pspdisplay.h>
+#include <pspsuspend.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -71,6 +75,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_NULL_OUT_POINTERS 101
 #define HLE_CASE_AUDIO_SRC 102
 #define HLE_CASE_TIMER_ORDER 103
+#define HLE_CASE_SAVEDATA_GETSIZE 104
 
 #if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
 #define HLE_CAMPAIGN_ID "hle-kernel-status"
@@ -128,6 +133,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "hle-timer-order"
 #define HLE_TEST_ID "PSP-HLE-TIMER-ORDER-001"
 #define HLE_LOG "host0:/hle_timer_order_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_SAVEDATA_GETSIZE
+#define HLE_CAMPAIGN_ID "hle-savedata-getsize"
+#define HLE_TEST_ID "PSP-HLE-SAVEDATA-GETSIZE-001"
+#define HLE_LOG "host0:/hle_savedata_getsize_log.txt"
 #else
 #error probe_hle_measure.c has no family for this PSP_ORACLE_CASE
 #endif
@@ -136,7 +145,7 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_SENTINEL 0xA5A5A5A5u
 /* The same value as text, for the assembly wrappers (HLE_PFV_WRAPPER). */
 #define HLE_SENTINEL_HEX "0xA5A5A5A5"
-#define HLE_MAX_WORDS 18u
+#define HLE_MAX_WORDS 24u
 #define HLE_POLL_ITERATIONS 200u
 #define HLE_POLL_DELAY_US 10000u
 #define HLE_DELAY_US 20000u
@@ -1895,6 +1904,242 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_TIMER_ORDER */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_SAVEDATA_GETSIZE
+
+/* #308, PR #1898: what savedata mode 22 (GETSIZE) answers when the named save does not exist,
+   and whether it still fills in the free and shortfall fields. GETSIZE changes nothing on
+   the Memory Stick: the save name is one no game owns, and the probe makes and deletes no
+   save. No dialog shows and no button is pressed. Every cell here measures a save that does
+   not exist, so the save directory must be absent before and after each dialog: a stat that
+   does not return HLE_SD_SAVE_ABSENT makes COMPLETE report FAIL, and the host contract
+   (validate_hle_savedata_getsize_absent) refuses the stream.
+
+   The dialog must run in game context (standalone PSPLink after a soft reset). Launched under
+   the XMB, InitStart returned 0 and the status stayed at INIT with an SceUtilityInit thread
+   left behind (two launches, 2026-10-31), so volatile-lock-before records whether the memory
+   the utility needs is free when the first dialog starts.
+
+   Each dialog runs as in a game's frame loop, at most HLE_SD_POLL_VBLANKS polls one vblank
+   apart: GetStatus; Update(1) when RUNNING; ShutdownStart once FINISHED; done when NONE
+   follows an accepted ShutdownStart. A dialog not done by the bound is recorded with the
+   TIMEOUT outcome and makes COMPLETE report FAIL. Dialog record words (result is InitStart's
+   return):
+     out0 the common result word (block + 0x1c, preset to HLE_SENTINEL) after the dialog
+     out1 the GetStatus values, one nibble per change, the first change in the highest
+          nibble (0-4 as returned, 0xE for any other value; the first eight changes)
+     out2 the number of changes, out3 the number of GetStatus polls
+     out4 the outcome: 0 NONE after an accepted ShutdownStart, 1 TIMEOUT, 2 InitStart
+          refused (one GetStatus sample, then no Update or ShutdownStart)
+     out5 the ShutdownStart return (HLE_SENTINEL when not called)
+     out6 the last GetStatus return, out7 the number of Update calls
+     out8 the bind word (block + 0x34, preset to HLE_SENTINEL)
+     out9-out23 the 15 sizeInfo words: numSecure, numNormal, the secure and normal list
+          pointers, sectorSize, freeSectors, freeKB, freeString[8], neededKB, neededString[8],
+          overwriteKB, overwriteString[8]. All but the four inputs are preset to HLE_SENTINEL,
+          so a field the utility leaves alone shows, and a NULL sizeInfo leaves all 15 at
+          HLE_SENTINEL. A list pointer that still holds the probe's value reads as 1, so no
+          probe address enters the record. */
+#define HLE_SD_PARAM_BYTES 0x600u
+#define HLE_SD_MODE_GETSIZE 22u
+#define HLE_SD_STATUS_NONE 0
+#define HLE_SD_STATUS_RUNNING 2
+#define HLE_SD_STATUS_FINISHED 3
+#define HLE_SD_POLL_VBLANKS 1200u
+#define HLE_SD_SIZE_INFO_WORDS 15u
+#define HLE_SD_SIZE_ENTRY_BYTES 24u
+#define HLE_SD_SECURE_FITS_BYTES 0x2000ull
+#define HLE_SD_SECURE_TOO_BIG_BYTES 0x1000000000ull
+#define HLE_SD_DRIVER_WORDS 9u
+#define HLE_SD_DIALOG_WORDS 24u
+#define HLE_SD_SEQ_NIBBLES 8u
+#define HLE_SD_OUTCOME_COMPLETE 0u
+#define HLE_SD_OUTCOME_TIMEOUT 1u
+#define HLE_SD_OUTCOME_INIT_REFUSED 2u
+#define HLE_SD_SAVE_ABSENT 0x80010002u /* sceIoGetstat: no such file or directory */
+#define HLE_SD_GAME_NAME "NKPROBE01"
+#define HLE_SD_SAVE_NAME "GETSIZE"
+#define HLE_SD_SAVE_DIR "ms0:/PSP/SAVEDATA/" HLE_SD_GAME_NAME HLE_SD_SAVE_NAME
+_Static_assert(HLE_SD_DIALOG_WORDS == HLE_SD_DRIVER_WORDS + HLE_SD_SIZE_INFO_WORDS,
+               "a dialog record is the driver words and the sizeInfo block");
+_Static_assert(HLE_SD_DIALOG_WORDS <= HLE_MAX_WORDS, "a dialog record fits the writer");
+
+static uint8_t s_hle_sd_param[HLE_SD_PARAM_BYTES] __attribute__((aligned(64)));
+static uint32_t s_hle_sd_size_info[HLE_SD_SIZE_INFO_WORDS] __attribute__((aligned(64)));
+static uint8_t s_hle_sd_entry[HLE_SD_SIZE_ENTRY_BYTES] __attribute__((aligned(64)));
+static uint32_t s_hle_sd_timeouts;
+static uint32_t s_hle_sd_not_absent;
+
+static void hle_sd_put32(uint32_t offset, uint32_t value)
+{
+    memcpy(s_hle_sd_param + offset, &value, sizeof(value));
+}
+
+static uint32_t hle_sd_get32(uint32_t offset)
+{
+    uint32_t value;
+    memcpy(&value, s_hle_sd_param + offset, sizeof(value));
+    return value;
+}
+
+/* A NUL-terminated text into a zeroed field; every text here is shorter than its field. */
+static void hle_sd_put_text(uint32_t offset, const char *text)
+{
+    memcpy(s_hle_sd_param + offset, text, strlen(text) + 1u);
+}
+
+/* The block one GETSIZE reads, at the offsets src/rt/savedata.c reads (its SDP_* enum). A
+   field not set here is zero: no data buffer, no key. A non-zero `secure_bytes` lists one
+   secure file of that size in sizeInfo; it is only a number the utility adds up, so 64 GiB
+   writes nothing. With `with_size_info` 0 the pointer stays NULL. */
+static void hle_sd_param(int with_size_info, uint64_t secure_bytes)
+{
+    memset(s_hle_sd_param, 0, sizeof(s_hle_sd_param));
+    memset(s_hle_sd_entry, 0, sizeof(s_hle_sd_entry));
+    hle_sd_put32(0x00u, HLE_SD_PARAM_BYTES); /* common size */
+    hle_sd_put32(0x04u, 1u);                 /* language: English */
+    hle_sd_put32(0x08u, 1u);                 /* buttonSwap: cross accepts */
+    hle_sd_put32(0x0cu, 17u);                /* graphics thread priority */
+    hle_sd_put32(0x10u, 19u);                /* access thread priority */
+    hle_sd_put32(0x14u, 18u);                /* font thread priority */
+    hle_sd_put32(0x18u, 16u);                /* sound thread priority */
+    hle_sd_put32(0x1cu, HLE_SENTINEL);       /* common result: an unwritten word shows */
+    hle_sd_put32(0x30u, HLE_SD_MODE_GETSIZE);
+    hle_sd_put32(0x34u, HLE_SENTINEL);       /* bind: an unwritten word shows */
+    hle_sd_put_text(0x3cu, HLE_SD_GAME_NAME);
+    hle_sd_put_text(0x4cu, HLE_SD_SAVE_NAME);
+    for (uint32_t i = 0; i < HLE_SD_SIZE_INFO_WORDS; i++) {
+        s_hle_sd_size_info[i] = HLE_SENTINEL;
+    }
+    if (with_size_info) {
+        s_hle_sd_size_info[0] = secure_bytes ? 1u : 0u;
+        s_hle_sd_size_info[1] = 0u;
+        s_hle_sd_size_info[2] = secure_bytes ? (uint32_t)(uintptr_t)s_hle_sd_entry : 0u;
+        s_hle_sd_size_info[3] = 0u;
+        if (secure_bytes) {
+            memcpy(s_hle_sd_entry, &secure_bytes, sizeof(secure_bytes));
+            memcpy(s_hle_sd_entry + 8u, "DATA.BIN", sizeof("DATA.BIN"));
+        }
+        hle_sd_put32(0x5fcu, (uint32_t)(uintptr_t)s_hle_sd_size_info);
+    }
+}
+
+static uint32_t hle_sd_nibble(int status)
+{
+    return (status >= 0 && status <= 4) ? (uint32_t)status : 0xEu;
+}
+
+/* One dialog on the block hle_sd_param built; out1-out7 of the record. */
+static int hle_sd_run(const char *step, uint32_t *words)
+{
+    int accepted = 0;
+    int finish_shutdown = 0;
+    words[5] = HLE_SENTINEL;
+    hle_step(step);
+    const int init = sceUtilitySavedataInitStart((SceUtilitySavedataParam *)(void *)s_hle_sd_param);
+    uint32_t outcome = init >= 0 ? HLE_SD_OUTCOME_TIMEOUT : HLE_SD_OUTCOME_INIT_REFUSED;
+    const uint32_t bound = init >= 0 ? HLE_SD_POLL_VBLANKS : 1u;
+    int last = 0;
+    for (uint32_t i = 0; i < bound; i++) {
+        const int status = sceUtilitySavedataGetStatus();
+        words[3]++;
+        words[6] = (uint32_t)status;
+        if (i == 0 || status != last) {
+            if (words[2] < HLE_SD_SEQ_NIBBLES) {
+                words[1] = (words[1] << 4) | hle_sd_nibble(status);
+            }
+            words[2]++;
+            last = status;
+        }
+        if (init < 0) {
+            break;
+        }
+        if (status == HLE_SD_STATUS_RUNNING) {
+            sceUtilitySavedataUpdate(1);
+            words[7]++;
+        } else if (status == HLE_SD_STATUS_FINISHED && !finish_shutdown) {
+            const int rc = sceUtilitySavedataShutdownStart();
+            words[5] = (uint32_t)rc;
+            finish_shutdown = 1;
+            accepted = rc >= 0;
+        } else if (status == HLE_SD_STATUS_NONE && accepted) {
+            outcome = HLE_SD_OUTCOME_COMPLETE;
+            break;
+        }
+        (void)sceDisplayWaitVblankStart();
+    }
+    if (outcome == HLE_SD_OUTCOME_TIMEOUT) {
+        s_hle_sd_timeouts++;
+    }
+    words[4] = outcome;
+    return init;
+}
+
+static void hle_sd_dialog(const char *case_id, int with_size_info, uint64_t secure_bytes)
+{
+    uint32_t out[HLE_SD_DIALOG_WORDS];
+    memset(out, 0, sizeof(out));
+    hle_sd_param(with_size_info, secure_bytes);
+    const int init = hle_sd_run(case_id, out);
+    out[0] = hle_sd_get32(0x1cu);
+    out[8] = hle_sd_get32(0x34u);
+    for (uint32_t i = 0; i < HLE_SD_SIZE_INFO_WORDS; i++) {
+        out[HLE_SD_DRIVER_WORDS + i] = s_hle_sd_size_info[i];
+    }
+    if (secure_bytes && s_hle_sd_size_info[2] == (uint32_t)(uintptr_t)s_hle_sd_entry) {
+        out[HLE_SD_DRIVER_WORDS + 2] = 1u;
+    }
+    hle_record(case_id, "PASS", (uint32_t)init, out, HLE_SD_DIALOG_WORDS);
+}
+
+/* The save's directory: the result is sceIoGetstat's return. Any other than
+   HLE_SD_SAVE_ABSENT voids the run, whichever cell saw it. */
+static void hle_sd_absent(const char *case_id)
+{
+    SceIoStat st;
+    memset(&st, 0, sizeof(st));
+    hle_step(case_id);
+    const int rc = sceIoGetstat(HLE_SD_SAVE_DIR, &st);
+    if ((uint32_t)rc != HLE_SD_SAVE_ABSENT) {
+        s_hle_sd_not_absent++;
+    }
+    const uint32_t out[1] = {(uint32_t)st.st_mode};
+    hle_record(case_id, "PASS", (uint32_t)rc, out, 1);
+}
+
+/* TryLock of volatile memory, released at once when it succeeds. out0 is the Unlock return,
+   or HLE_SENTINEL when the lock was not obtained; out1 the reported size. */
+static void hle_sd_volatile_lock(const char *case_id)
+{
+    void *ptr = NULL;
+    int size = 0;
+    hle_step(case_id);
+    const int rc = sceKernelVolatileMemTryLock(0, &ptr, &size);
+    const uint32_t out[2] = {
+        rc == 0 ? (uint32_t)sceKernelVolatileMemUnlock(0) : HLE_SENTINEL,
+        (uint32_t)size,
+    };
+    hle_record(case_id, "PASS", (uint32_t)rc, out, 2);
+}
+
+static int hle_run(void)
+{
+    hle_sd_absent("save-absent-before");
+    hle_sd_volatile_lock("volatile-lock-before");
+    hle_sd_dialog("getsize-missing-secure", 1, HLE_SD_SECURE_FITS_BYTES);
+    hle_sd_absent("save-absent-after-secure");
+    hle_sd_dialog("getsize-missing-empty", 1, 0u);
+    hle_sd_absent("save-absent-after-empty");
+    hle_sd_dialog("getsize-missing-shortfall", 1, HLE_SD_SECURE_TOO_BIG_BYTES);
+    hle_sd_absent("save-absent-after-shortfall");
+    /* Last: a NULL out pointer can fault in kernel mode, and the cells above are on host0. */
+    hle_sd_dialog("getsize-missing-null", 0, 0u);
+    hle_sd_absent("save-absent-after-null");
+    return s_hle_sd_timeouts == 0u && s_hle_sd_not_absent == 0u;
+}
+
+#endif /* HLE_CASE_SAVEDATA_GETSIZE */
 
 /* ------------------------------------------------------------------------- */
 
