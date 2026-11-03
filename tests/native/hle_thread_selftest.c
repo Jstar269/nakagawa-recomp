@@ -25874,6 +25874,44 @@ static void test_ge_block_transfer_span_atomicity(void) {
 }
 
 
+/* #1732: a store to plain RAM is inline only while no store instrumentation is armed.
+ * Through every view a store must land where the full load reads it, and each armed
+ * instrument must send stores to the full body, which is where it is reported. */
+static void test_inline_stores_match_full_bodies(void) {
+    reset_fixture();
+    static const uint32_t addrs[] = {
+        0x08100000u, 0x0bfffffcu, 0x88104000u, 0xa8104010u, 0x48104020u,
+        0x04001000u, 0x04201f00u, 0x04403040u, 0x04603040u,
+    };
+    int stores_ok = 1;
+    for (uint32_t k = 0; k < sizeof addrs / sizeof addrs[0]; k++) {
+        const uint32_t a = addrs[k];
+        const uint32_t v = 0x9abc0000u | k;
+        sr_w32_pc(a, v, 0u);
+        if (sr_r32_slow(a) != v) stores_ok = 0;
+        sr_w16_pc(a, (uint16_t)(v >> 4), 0u);
+        if (sr_r16_slow(a) != (uint16_t)(v >> 4)) stores_ok = 0;
+        sr_w8_pc(a + 3u, (uint8_t)(k + 1u), 0u);
+        if (sr_r8_slow(a + 3u) != (uint8_t)(k + 1u)) stores_ok = 0;
+    }
+    expect(stores_ok, "inline stores land where the full loads read through every view");
+    int gating_ok = sr_store_plain();
+    g_sr_store_context_pc = 0x08801000u;
+    gating_ok &= !sr_store_plain();
+    g_sr_store_context_pc = 0u;
+    g_sr_last_writer_enabled = 1;
+    gating_ok &= !sr_store_plain();
+    g_sr_last_writer_enabled = 0;
+    g_sr_mem_watch_count = 1;
+    gating_ok &= !sr_store_plain();
+    g_sr_mem_watch_count = 0;
+    g_sr_heap_watch = 1;
+    gating_ok &= !sr_store_plain();
+    g_sr_heap_watch = 0;
+    gating_ok &= sr_store_plain();
+    expect(gating_ok, "each armed store instrument sends stores to the full body");
+}
+
 static void test_bulk_guest_span_atomicity(void) {
     reset_fixture();
     sr_hle_init();
@@ -43942,6 +43980,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_dcache_maintenance_notifies_renderer();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
+    test_inline_stores_match_full_bodies();
     test_sysclib_memory_imports();
     test_thread_stack_free_size_contract();
     test_check_thread_stack_contract();
