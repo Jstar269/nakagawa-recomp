@@ -65,6 +65,59 @@ Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the p
   processor, as far as memory allows, and the build screen counts the parts as they finish.
   A first build takes several minutes. To choose the job count yourself, set the
   `NK_PACKAGE_JOBS` environment variable to a number from 1 to 8 before starting the player.
+- **Where your data lives.** Imported discs, built games, saves and settings are in the per-user data
+  folder (`%LOCALAPPDATA%\Nakagawa\data`, [below](#2-supply-local-game-inputs)), never inside the unpacked
+  release. An update unpacks into a new folder and leaves the data folder alone, so deleting an old release
+  folder deletes no games or saves.
+
+## Wine and Proton
+
+The Windows ZIP is the only player build; there is no Linux build yet ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)).
+Wine or Proton is not a supported platform, and nothing in the project is changed to make it work. This is
+the smoke run for [#1876](https://github.com/Jstar269/nakagawa-recomp/issues/1876). It needs no game disc and
+no network.
+
+1. Unpack `nakagawa-recomp-<version>-windows-x64.zip` into an empty folder and check the unpacked files
+   against `SHA256SUMS.txt`.
+2. Start `bin\nakagawa_player.exe` (`wine bin/nakagawa_player.exe`, or add it to Steam as a non-Steam game
+   and pick a Proton version). The first run used Wine 9.0 only; no minimum version is claimed.
+3. Optional, the one step that needs a disc: pick a folder of your own discs in the library and confirm the
+   scan lists them. Without a disc, record this step as `NOT_RUN`.
+4. Run a showcase demo from **Test this PC** (they ship in `bin\demos\` and need no disc) and confirm it
+   draws and runs. The repository's `display-smoke` target needs the MSYS2 toolchain from a source checkout
+   and is not part of the ZIP.
+
+Record the Wine or Proton version, the graphics driver and each step's result as `PASS`, `FAIL` or
+`NOT_RUN` in the issue or the pull request. A failure is reported as a failure.
+
+Known unknowns, each to be recorded by the first run rather than assumed:
+
+- **BUILD PACKAGE.** The player compiles a game on your machine with the bundled `prereqs/` toolchain
+  (`gcc.exe` and `mingw32-make.exe`). Whether that toolchain starts under Wine, and how long a build takes
+  there, has not been measured.
+- **Audio and gamepads** depend on the Wine audio driver and on SDL3's gamepad support under Wine.
+- **Check for updates** does the same network request as on Windows, so it works only if the prefix has
+  network access.
+
+Result of the first run (2026-11-02, [#1876](https://github.com/Jstar269/nakagawa-recomp/issues/1876)),
+on the ZIP layout from `tools/stage_install.py --dest` and `--portable-zip` built from the pull request's
+head (the player, its runtime DLLs and `source/`; not the attested release ZIP, so no `prereqs/`, no demos):
+Wine 9.0 (Ubuntu 24.04 `wine64`, 64-bit prefix only) under WSL 2, Xvfb as the display, Mesa software Vulkan drivers installed, no
+GPU, no audio device, no game disc.
+
+| Step | Result |
+| --- | --- |
+| Unpack the ZIP, check `SHA256SUMS.txt` | `PASS` |
+| `nakagawa_player.exe --help` | `PASS` |
+| Player renders the library, About and Settings views to 1280x720 screenshots | `PASS` (non-blank) |
+| The synthetic display-smoke fixture, built natively, run under Wine with `--sched` | `PASS` (`DRIVER_EXPECT_U32 ... status=PASS`) |
+| The same fixture with `--gui` in a window, and with `--sched --gui` offscreen | `PASS` |
+| Scan a folder of real discs | `NOT_RUN` (no disc; the scan is not exercised by the synthetic route) |
+| BUILD PACKAGE with the bundled `prereqs/` toolchain | `NOT_RUN` (the local ZIP has no `prereqs/`) |
+| Audio, gamepad, Check for updates | `NOT_RUN` |
+| Proton | `NOT_RUN` (not installed) |
+
+Wine printed `failed to open C:\windows\syswow64\rundll32.exe` once while creating the prefix, and every 64-bit program above ran regardless.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
