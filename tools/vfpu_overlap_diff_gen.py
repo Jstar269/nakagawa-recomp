@@ -15,13 +15,16 @@ vfpu_effect), so the header stays in sync with the current emitter.
 
 from __future__ import annotations
 
+import random
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import vfpu_coverage_report
 
 
 def _bin_word(op6: int, sub: int, size: int, vd: int, vs: int, vt: int) -> int:
@@ -179,6 +182,200 @@ def build_cases() -> tuple[list[tuple[int, str, int]], int, tuple[int, int]]:
     return cases, exotic_index, cmp_range
 
 
+# Alias and edge-value sweep (issue #326). Every census row that the AOT emits directly and
+# the interpreter supports is a form; each form gets one instance per register-overlap
+# signature its encoding allows (after the instruction-form sweep idea in the #326 prior-art
+# note: registers are renamed by first appearance, so "vd == vs" and "vd, vs disjoint" are
+# different forms). check_alias_edge_sweep() runs every instance on seeded states that mix
+# edge values into the lanes and draw the S, T and D prefixes.
+SWEEP_ADDR = 0x08900000
+SWEEP_FIELDS = (("d", 0), ("s", 8), ("t", 16))
+# Register values that reach every overlap class: the same matrix with another column,
+# row offset or the transpose bit, and other matrices for disjoint operands.
+SWEEP_POOL = (0x00, 0x01, 0x02, 0x03, 0x20, 0x21, 0x40, 0x41, 0x60, 0x63, 0x04, 0x24, 0x08, 0x48, 0x1C)
+SWEEP_TRIES = 600
+# Memory forms need a guest address; check_quad_memops covers them. Major 0x3F (the prefix
+# reset effect() emits for vflush and its neighbours) never reaches sr_vfpu_interp, so it has
+# no interpreter lane to compare.
+SWEEP_EXCLUDED_OPS = frozenset(vfpu_coverage_report.MEMORY_OPS | {0x3F})
+SWEEP_CHUNK = 64
+
+
+def _with_field(word: int, shift: int, value: int) -> int:
+    return (word & ~(0x7F << shift)) | ((value & 0x7F) << shift)
+
+
+def _direct_body(word: int) -> str | None:
+    """The production AOT body for a word, or None when it is not emitted directly."""
+    try:
+        body, _, _ = codegen.vfpu_effect(SWEEP_ADDR, word)
+    except codegen.Unsupported:
+        return None
+    return None if "sr_vfpu_interp" in body else body
+
+
+def _relation(a: int, b: int, size: int) -> str:
+    if a == b:
+        return "="
+    lanes_a = set(codegen.vreg_indices(a, size))
+    lanes_b = set(codegen.vreg_indices(b, size))
+    return "~" if lanes_a & lanes_b else "|"
+
+
+def alias_signature(fields: dict[str, int], size: int) -> str:
+    """'d=s' (same register), 'd~s' (lanes overlap), 'd|s' (disjoint), per operand pair."""
+    parts = []
+    for x, y in (("d", "s"), ("d", "t"), ("s", "t")):
+        if x in fields and y in fields:
+            parts.append(f"{x}{_relation(fields[x], fields[y], size)}{y}")
+    return ",".join(parts) if parts else "as-encoded"
+
+
+def _active_fields(word: int, body: str) -> list[tuple[str, int]]:
+    """Register fields of a form: rewriting them changes the body but not its structure."""
+    structure = vfpu_coverage_report._aot_structure(body)
+    active = []
+    for name, shift in SWEEP_FIELDS:
+        for value in (0x01, 0x22, 0x45):
+            other = _direct_body(_with_field(word, shift, value))
+            if other is not None and other != body and vfpu_coverage_report._aot_structure(other) == structure:
+                active.append((name, shift))
+                break
+    return active
+
+
+@lru_cache(maxsize=1)
+def build_sweep_cases() -> tuple[tuple[str, ...], tuple[tuple[int, int, str], ...]]:
+    """(form ids, cases); a case is (word, form index, alias signature)."""
+    forms = [form for form in vfpu_coverage_report.supported_direct_forms()
+             if form[1][0] not in SWEEP_EXCLUDED_OPS]
+    candidates: list[tuple[int, int, str]] = []
+    for index, (_, _, words) in enumerate(forms):
+        rep = words[0]
+        body = _direct_body(rep)
+        if body is None:
+            raise AssertionError(f"sweep form word 0x{rep:08x} is not emitted directly")
+        structure = vfpu_coverage_report._aot_structure(body)
+        size = codegen.vec_size(rep)
+        active = _active_fields(rep, body)
+        encoded = alias_signature({name: (rep >> shift) & 0x7F for name, shift in active}, size)
+        candidates.append((rep, index, encoded))
+        if not active:
+            continue
+        combos: list[tuple[int, ...]] = [()]
+        for _ in active:
+            combos = [c + (v,) for c in combos for v in SWEEP_POOL]
+        random.Random(rep).shuffle(combos)
+        seen = {encoded}
+        for combo in combos[:SWEEP_TRIES]:
+            values = {name: value for (name, _), value in zip(active, combo)}
+            signature = alias_signature(values, size)
+            if signature in seen:
+                continue
+            word = rep
+            for (_, shift), value in zip(active, combo):
+                word = _with_field(word, shift, value)
+            other = _direct_body(word)
+            if other is None or vfpu_coverage_report._aot_structure(other) != structure:
+                continue
+            seen.add(signature)
+            candidates.append((word, index, signature))
+    # Keep a variant only when the census puts it in the same row as its form.
+    keys = {int(str(record["word"])): vfpu_coverage_report.row_key(record)
+            for record in vfpu_coverage_report.classify_words(w for w, _, _ in candidates)}
+    cases: list[tuple[int, int, str]] = []
+    done: set[int] = set()
+    for word, index, signature in candidates:
+        if keys[word] == forms[index][1] and word not in done:
+            done.add(word)
+            cases.append((word, index, signature))
+    return tuple(form[0] for form in forms), tuple(cases)
+
+
+def sweep_words() -> frozenset[int]:
+    """Words vfpu_interp_selftest runs through check_alias_edge_sweep."""
+    return frozenset(word for word, _, _ in build_sweep_cases()[1])
+
+
+# The sweep's own mutant: a generator that runs vadd twice, re-reading its sources after
+# committing the destination. Only the instances whose destination overlaps a source can see
+# the difference, so check_alias_edge_sweep() requires exactly those to mismatch.
+_MUTANT_HEAD = "{ float _s[4],_t[4],_d[4]; "
+_MUTANT_TAIL = "s->vfpuCtrl[0]=0xe4u;"
+_MUTANT_MARK = "_d[_i]=_s[_i]+_t[_i];"
+
+
+def mutant_body(body: str) -> str | None:
+    if not body.startswith(_MUTANT_HEAD) or _MUTANT_MARK not in body or _MUTANT_TAIL not in body:
+        return None
+    tail = body.index(_MUTANT_TAIL)
+    core = body[len(_MUTANT_HEAD):tail]
+    return _MUTANT_HEAD + core + core + body[tail:]
+
+
+def _sweep_lines(forms: tuple[str, ...], cases: tuple[tuple[int, int, str], ...]) -> list[str]:
+    out = [f"#define SWEEP_NFORMS {len(forms)}", f"#define SWEEP_NCASES {len(cases)}", ""]
+    out.append("static const char *const sweep_forms[SWEEP_NFORMS] = {")
+    out.extend(f'    "{form}",' for form in forms)
+    out.append("};")
+    out.append("")
+    out.append("static const struct { uint32_t w; uint16_t form; const char *alias; } "
+               "sweep_cases[SWEEP_NCASES] = {")
+    out.extend(f'    {{0x{w:08x}u, {index}, "{signature}"}},' for w, index, signature in cases)
+    out.append("};")
+    out.append("")
+    # A body that stops at a fail-closed boundary (a prefix or width without a recorded rule)
+    # calls sr_unimplemented and returns. Inside the sweep that stop is a result to compare
+    # with the interpreter's SR_VFPU_OTHER, so it is recorded and its log line dropped.
+    out.append("static int sweep_stopped;")
+    out.append("static void sweep_unimplemented(uint32_t pc, const char *why) "
+               "{ (void)pc; (void)why; sweep_stopped = 1; }")
+    out.append("static int sweep_log(FILE *f, const char *fmt, ...) { (void)f; (void)fmt; return 0; }")
+    out.append("#define sr_unimplemented sweep_unimplemented")
+    out.append("#define fprintf sweep_log")
+    # One function per chunk keeps each switch small enough to compile quickly.
+    out.append("#pragma GCC diagnostic push")
+    out.append('#pragma GCC diagnostic ignored "-Wunused-variable"')
+    chunks = (len(cases) + SWEEP_CHUNK - 1) // SWEEP_CHUNK
+    for chunk in range(chunks):
+        out.append(f"static void sweep_run_codegen_{chunk}(CpuState *s, int idx) {{")
+        out.append("    switch (idx) {")
+        for i in range(chunk * SWEEP_CHUNK, min(len(cases), (chunk + 1) * SWEEP_CHUNK)):
+            out.append(f"    case {i}: {_direct_body(cases[i][0])} break;")
+        out.append("    default: break;")
+        out.append("    }")
+        out.append("}")
+    mutants = [(i, mutant_body(str(_direct_body(w)))) for i, (w, _, _) in enumerate(cases)]
+    mutants = [(i, body) for i, body in mutants if body is not None]
+    if not mutants:
+        raise AssertionError("the sweep mutant matched no vadd instance")
+    out.append(f"#define SWEEP_NMUTANTS {len(mutants)}")
+    out.append("static const int sweep_mutant_case[SWEEP_NMUTANTS] = {")
+    out.append("    " + ", ".join(str(i) for i, _ in mutants))
+    out.append("};")
+    out.append("static void sweep_run_mutant(CpuState *s, int m) {")
+    out.append("    sweep_stopped = 0;")
+    out.append("    switch (m) {")
+    for m, (_, body) in enumerate(mutants):
+        out.append(f"    case {m}: {body} break;")
+    out.append("    default: break;")
+    out.append("    }")
+    out.append("}")
+    out.append("#pragma GCC diagnostic pop")
+    out.append("#undef fprintf")
+    out.append("#undef sr_unimplemented")
+    out.append("static void sweep_run_codegen(CpuState *s, int idx) {")
+    out.append("    sweep_stopped = 0;")
+    out.append(f"    switch (idx / {SWEEP_CHUNK}) {{")
+    for chunk in range(chunks):
+        out.append(f"    case {chunk}: sweep_run_codegen_{chunk}(s, idx); break;")
+    out.append("    default: break;")
+    out.append("    }")
+    out.append("}")
+    out.append("")
+    return out
+
+
 def write_header(out_path: str, cases: list[tuple[int, str, int]], exotic_index: int,
                  cmp_range: tuple[int, int]) -> None:
     out = ["/* Generated by tools/vfpu_overlap_diff_gen.py. Do not edit. */", ""]
@@ -209,6 +406,7 @@ def write_header(out_path: str, cases: list[tuple[int, str, int]], exotic_index:
     out.append("}")
     out.append("#pragma GCC diagnostic pop")
     out.append("")
+    out.extend(_sweep_lines(*build_sweep_cases()))
     out.append("#endif /* NAKAGAWA_VFPU_OVERLAP_DIFF_H */")
     Path(out_path).write_text("\n".join(out) + "\n", encoding="ascii", newline="\n")
     sys.stderr.write(f"vfpu_overlap_diff_gen: {len(cases)} cases -> {out_path}\n")
