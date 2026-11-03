@@ -637,21 +637,22 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                  * of 1.0 (vfad) or 1/n (vavg: 0.5, 0x3eaaaaab, 0.25), as PSP-VFPU-FUNNEL-001
                  * measured (2026-10-29, issue #326, vfpu_dot_bits above). The S prefix was
                  * measured as negation on any lane and swizzles inside the width (no prefix,
-                 * negate-all, and wzyx with lanes 0/2 negated at .q); a swizzle reaching
-                 * past the width, abs and constant lanes, a T or D prefix, and .s are
+                 * negate-all, and wzyx with lanes 0/2 negated at .q). Abs and constant lanes
+                 * take the S prefix read every other form uses (sr_vread), not a reading of
+                 * these two forms, so they are project-modelled (a title's vfad.t of (x, x, -1)
+                 * needs them). A swizzle reaching past the width, a T or D prefix, and .s are
                  * UNMEASURED and refused. Neither form writes VFPU_CC. */
                 static const uint32_t recip[5] = {0u, 0u, 0x3f000000u, 0x3eaaaaabu, 0x3e800000u};
                 const uint32_t sp = s->vfpuCtrl[0];
                 uint32_t sv[4], tv[4];
                 if (s->vfpuCtrl[1] != 0xe4u || s->vfpuCtrl[2] != 0u) return SR_VFPU_OTHER;
-                vreg_idx(vs, n, si);
                 for (int i = 0; i < n; i++) {
-                    const uint32_t sw = (sp >> (2 * i)) & 3u;
-                    if (sw >= (uint32_t)n || ((sp >> (8 + i)) & 1u) || ((sp >> (12 + i)) & 1u))
+                    if (!((sp >> (12 + i)) & 1u) && ((sp >> (2 * i)) & 3u) >= (uint32_t)n)
                         return SR_VFPU_OTHER;
-                    sv[i] = s->vi[si[sw]] ^ (((sp >> (16 + i)) & 1u) << 31);
                     tv[i] = op9 == 6 ? 0x3f800000u : recip[n];
                 }
+                vreg_idx(vs, n, si);
+                sr_vread((float *)sv, s, si, n, sp);
                 vreg_idx(vd, 1, di);
                 s->vi[di[0]] = vfpu_dot_bits(sv, tv, n);
                 eat_prefix(s); return SR_VFPU_COMPUTE;

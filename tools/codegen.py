@@ -18,6 +18,7 @@ import argparse
 import bisect
 import contextlib
 import dataclasses
+import hashlib
 import struct
 import re
 import os
@@ -36,7 +37,7 @@ from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
-    static_coverage, branch_kind, BRANCH_UNCOND,
+    static_coverage, branch_kind, BRANCH_UNCOND, _gpr_writes,
 )
 from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
 from host_stubs import HST_SIMPLE_STUBS
@@ -189,6 +190,18 @@ def _enhancement_rewrite(addr: int) -> dict | None:
     return site["rewrite"]
 
 
+def _refuse_argument_site_on_a_loop(entry: int) -> None:
+    """An argument_x2 site doubles once per call: a branch back to its entry would double again."""
+    if not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
+        return
+    site = ENHANCEMENT_SITES.get(entry)
+    if site is not None and site["rewrite"]["kind"] == "scale_int_args":
+        raise enhancement_package.EnhancementPackageError(
+            f"site {site['id']}: argument_x2 doubles once per call, and this function "
+            "branches back to its entry (fail-closed refusal)"
+        )
+
+
 def _enhancement_boundary(addr: int) -> bool:
     """Whether ``addr`` is the package's update boundary; the caller emits its count."""
     if ENHANCEMENT_UPDATE_BOUNDARY is None or ADDRESS_SPACE.runtime_module:
@@ -223,6 +236,8 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
         enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
     elif kind == "scale_int_reg":
         enh = f"{stock_line.strip()} s->r[{rw['reg']}] <<= 1;"
+    elif kind == "scale_int_args":
+        enh = " ".join([stock_line.strip()] + [f"s->r[{r}] <<= 1;" for r in rw["regs"]])
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
     elif kind == "scale_f_store":
@@ -941,8 +956,102 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
         f.write("#endif\n")
 
 
-def guest_owns_entry_sp(elf, insns):
-    """True when a body loads $sp from memory, so its returns leave the guest's $sp.
+#: GPRs a call leaves alone: a value known before it is known after it.
+_CALL_SAVED_GPRS = frozenset({16, 17, 18, 19, 20, 21, 22, 23, 29, 30})
+#: VFPU encodings `_gpr_writes` does not classify. None of them writes a GPR.
+_VFPU_OPCODES = frozenset({0x18, 0x19, 0x1B, 0x34, 0x36, 0x37, 0x3C, 0x3F})
+#: Stores to guest memory: a known address loses whatever value was known there.
+_STORE_OPCODES = frozenset({0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x39, 0x3A, 0x3D, 0x3E})
+
+
+def _frame_step(w, regs, slots):
+    """One non-control word's effect on the values known as offsets from the entry $sp."""
+    regs, slots = dict(regs), dict(slots)
+    op, fn = w >> 26, w & 0x3F
+    offset = (regs[rs(w)] + s16(w)) & 0xFFFFFFFF if rs(w) in regs else None
+    target, value = None, None
+    if op in (0x08, 0x09):
+        target, value = rt(w), offset
+    elif op == 0x23:
+        target, value = rt(w), slots.get(offset)
+    elif op == 0 and fn in (0x21, 0x25) and 0 in (rs(w), rt(w)):
+        target, value = rd(w), regs.get(rs(w) or rt(w))
+    if op in _STORE_OPCODES and offset is not None:
+        width = 16 if op in (0x3D, 0x3E) else 4
+        for slot in [slot for slot in slots if offset - 4 < slot < offset + width]:
+            del slots[slot]
+        if op == 0x2B and rt(w) in regs:
+            slots[offset] = regs[rt(w)]
+    written = _gpr_writes(w)
+    if written == "unknown":
+        written = (frozenset({rt(w)}) if op == 0x12 else
+                   frozenset() if op in _VFPU_OPCODES else frozenset(range(32)))
+    for reg in written:
+        regs.pop(reg, None)
+    if target and value is not None:
+        regs[target] = value
+    return regs, slots
+
+
+def _frame_walk(elf, start, insns, labels):
+    """What each path of a body knows of its frame, from the entry $sp at offset 0.
+
+    Returns (states, slot_states, released): the (registers, memory) known before each word,
+    the same before each delay slot, and whether a transfer leaves the body with $sp back at
+    its entry value. A store through a register not known here is taken to miss the frame.
+    """
+    states, slot_states, work = {}, {}, []
+    released = False
+
+    def meet(table, addr, regs, slots):
+        old = table.get(addr)
+        if old is not None:
+            regs = {k: v for k, v in regs.items() if old[0].get(k) == v}
+            slots = {k: v for k, v in slots.items() if old[1].get(k) == v}
+            if (regs, slots) == old:
+                return False
+        table[addr] = (regs, slots)
+        return True
+
+    def reach(addr, regs, slots):
+        nonlocal released
+        if addr not in insns:
+            released = released or regs.get(29) == 0
+        elif meet(states, addr, regs, slots):
+            work.append(addr)
+
+    reach(start, {29: 0}, {})
+    while work:
+        addr = work.pop()
+        regs, slots = states[addr]
+        w = read32(elf, addr)
+        if w is None or is_eret(w):
+            continue
+        if not is_control(w):
+            reach(addr + 4, *_frame_step(w, regs, slots))
+            continue
+        slot = read32(elf, addr + 4)
+        meet(slot_states, addr + 4, regs, slots)
+        after = _frame_step(slot, regs, slots) if slot is not None else (regs, slots)
+        op, fn = w >> 26, w & 0x3F
+        if op == 2:
+            reach(jump_target(addr, w), *after)
+        elif op == 3 or (op == 0 and fn == 9) or is_link(w):
+            kept = {k: v for k, v in after[0].items() if k in _CALL_SAVED_GPRS}
+            reach(addr + 8, kept, after[1])
+        elif op == 0 and fn == 8:
+            if rs(w) != 31:
+                released = released or after[0].get(29) == 0
+                for label in labels:
+                    reach(label, *after)
+        else:
+            reach(branch_target(addr, w), *after)
+            reach(addr + 8, *((regs, slots) if is_likely(w) else after))
+    return states, slot_states, released
+
+
+def guest_owns_entry_sp(elf, start, insns, labels):
+    """True when a body's returns must leave $sp as the guest set it.
 
     A callable body owes its caller the entry $sp, and its returns restore it (F3E). A body
     that loads $sp from memory is a longjmp or a context switch: it returns into the frame
@@ -950,11 +1059,33 @@ def guest_owns_entry_sp(elf, insns):
     tail transfers and its fall-through end therefore leave $sp as the guest set it, as a
     resume body's do. A frame adjustment (`addiu sp, sp, imm`) or `move sp, fp` keeps the
     callable contract.
+
+    So does freeing an alloca (#1892): the body binds $fp from $sp, saves $sp in its frame
+    and reloads it through $fp. It must record the entry $sp at its tail transfers, because
+    the pieces of the function that follow are entries entered at a lowered $sp, and the
+    first restore of a chain is the one that survives. On every path to the load, this body
+    must have bound $fp itself and saved the value in that slot, so a piece that uses a
+    frame someone else set up, or a switch that rebinds $fp, stays with the guest.
+
+    A body that frees its alloca, releases its frame and tail-calls is the guest's too. The
+    callee takes over the caller's $sp, and if it is a longjmp a recorded restore would undo
+    it.
     """
-    for addr in insns:
+    loads = [addr for addr in sorted(insns)
+             if (read32(elf, addr) or 0) >> 26 == 0x23 and rt(read32(elf, addr)) == 29]
+    if not loads:
+        return False
+    states, slot_states, released = _frame_walk(elf, start, insns, labels)
+    if released:
+        return True
+    for addr in loads:
+        seen = [table[addr] for table in (states, slot_states) if addr in table]
         w = read32(elf, addr)
-        if w is not None and (w >> 26) == 0x23 and ((w >> 16) & 0x1F) == 29:
+        if rs(w) != 30 or not seen:
             return True
+        for regs, slots in seen:
+            if 30 not in regs or (regs[30] + s16(w)) & 0xFFFFFFFF not in slots:
+                return True
     return False
 
 
@@ -3136,9 +3267,11 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             dispatch_boundaries=dispatch_boundaries)
     insns, labels, continuations = flow
     # A body that loads $sp leaves it to the guest at every exit, as a resume body does.
-    if not resumable and guest_owns_entry_sp(elf, insns):
+    if not resumable and guest_owns_entry_sp(elf, start, insns, labels):
         resumable = True
         GUEST_SP_ENTRIES.add(start)
+    if start in labels:
+        _refuse_argument_site_on_a_loop(start)
     for label in labels:
         # A label on the delay slot of a transfer that never falls through runs the slot
         # as an ordinary word; when that word goes on to the next one, the walk owns that
@@ -3562,6 +3695,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
+            if target == start:
+                # A `j` to the entry is a tail edge, not a label, so the check on labels
+                # above misses it; it enters the entry again and would double again.
+                _refuse_argument_site_on_a_loop(start)
             if target == addr:
                 # Self-loop (a spin wait): the native call below would recurse on the host
                 # stack once per iteration. Keep it a backward goto with the preemption point.
@@ -3700,6 +3837,9 @@ class RuntimeModuleTranslation:
     index: int
     name: str
     file_size: int
+    # The identity the loader checks. The FNV-1a digest only names shared units and symbols,
+    # where modules that agree on it are told apart by module_hashes.
+    file_sha256: str
     file_fnv1a64: int
     link_low: int = 0
     link_high: int = 0
@@ -3819,7 +3959,8 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         data = source.read()
     name = os.path.basename(module_path)
     module = RuntimeModuleTranslation(
-        index=index, name=name, file_size=len(data), file_fnv1a64=fnv1a64(data),
+        index=index, name=name, file_size=len(data),
+        file_sha256=hashlib.sha256(data).hexdigest(), file_fnv1a64=fnv1a64(data),
         texts=[], functions=[], spans=[], stubbed=[], shared=shared,
     )
     sys.stderr.write(f"Processing runtime-placed module: {name}\n")
@@ -4298,7 +4439,7 @@ def runtime_module_descriptor_lines(module):
     reason = c_string(module.unsupported_reason) if module.unsupported_reason else "NULL"
     lines += [
         f"static const SrModuleCode sr_m{k}_code = {{",
-        f"    {c_string(module.name)}, 0x{module.file_size:08x}u, 0x{module.file_fnv1a64:016x}ull,",
+        f"    {c_string(module.name)}, 0x{module.file_size:08x}u, \"{module.file_sha256}\",",
         f"    0x{module.link_low:08x}u, 0x{module.link_high:08x}u, 0x{module.alignment:x}u, "
         f"{1 if module.relocatable else 0}u,",
         f"    {reason}, &{module.base_symbol},",

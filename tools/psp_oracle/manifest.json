@@ -1304,6 +1304,59 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-HLE-SAVEDATA-GETSIZE-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": ["save-absent-before", "volatile-lock-before", "getsize-missing-secure", "save-absent-after-secure", "getsize-missing-empty", "save-absent-after-empty", "getsize-missing-shortfall", "save-absent-after-shortfall", "getsize-missing-null", "save-absent-after-null", "hle-savedata-getsize-done"],
+        "measurement_note": "Measured by the 2026-11-02 PSP-3000 single-case run (firmware 6.6.1, game context, boot 107) of public commit eded11ac, case hle-savedata-getsize: 10 records and the done record, all PASS, acceptance-eligible with 0 blockers. Cited: for a save that does not exist, a non-NULL sizeInfo gives common result 0x80110327 with the free fields and neededKB written and overwriteKB and overwriteString left alone; a NULL sizeInfo gives common result 0; and the save directory stays absent. Commit 1a3d3d22 (boot 106) agreed on the cells it shares. The check that fails a run whose save directory was not absent came after this run; the recorded stream passes it.",
+        "group": "system",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_savedata_getsize.prx",
+        "apis": [
+          "sceDisplayWaitVblankStart",
+          "sceIoClose",
+          "sceIoGetstat",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelVolatileMemTryLock",
+          "sceKernelVolatileMemUnlock",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "sceUtilitySavedataGetStatus",
+          "sceUtilitySavedataInitStart",
+          "sceUtilitySavedataShutdownStart",
+          "sceUtilitySavedataUpdate"
+        ],
+        "diagnostic_case_ids": [
+          "hle-savedata-getsize"
+        ],
+        "case_ids": [
+          "save-absent-before",
+          "volatile-lock-before",
+          "getsize-missing-secure",
+          "save-absent-after-secure",
+          "getsize-missing-empty",
+          "save-absent-after-empty",
+          "getsize-missing-shortfall",
+          "save-absent-after-shortfall",
+          "getsize-missing-null",
+          "save-absent-after-null",
+          "hle-savedata-getsize-done"
+        ],
+        "invariant": "Savedata mode 22 under the probe-owned names NKPROBE01 and GETSIZE, which no save uses: InitStart, then GetStatus once a vblank, Update(1) while RUNNING and ShutdownStart on FINISHED, at most 1200 polls. It records InitStart's return, the common result word, the bind word, the status sequence and the 15 sizeInfo words, for one secure entry that fits, no entries, one secure entry larger than the Memory Stick and a NULL sizeInfo, and sceIoGetstat of the save directory before and after each dialog.",
+        "issues": [
+          308
+        ],
+        "risk": "medium; read-only on the Memory Stick; a NULL sizeInfo cell runs last because a NULL out pointer can fault in kernel mode; game context only",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-HLE-ISSUES-001",
         "status": "implemented",
         "hardware_evidence": "NOT_RUN",
@@ -2179,6 +2232,63 @@
           1382
         ],
         "risk": "low; four sub-interrupt handlers (disabled and released), the sampling mode and cycle (restored), the volatile lock (unlocked), 4 KiB blocks (freed), and one 16-byte Memory Stick file in a probe-owned directory the probe creates only when absent and removes; the MAC address and OpenPSID are never read (import gate)",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-IO-EOF-001",
+        "status": "implemented",
+        "hardware_evidence": "MEASURED",
+        "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        "evidence_cases": [
+          "io-eof-mkdir",
+          "io-eof-missing",
+          "io-eof-create",
+          "io-eof-seek-negative",
+          "io-eof-seek-negative-rdonly",
+          "io-eof-write-past",
+          "io-eof-gap",
+          "io-eof-read-past",
+          "io-eof-cleanup",
+          "io-seek-eof-done"
+        ],
+        "measurement_note": "Measured by the 2026-11-02 PSP-3000 single-case run (firmware 6.6.1, ARK-5.1.0, PSPLink through Nakagawa Link, boot 100) of commit f484ef58, case io-seek-eof after the transport-write preflight: 9 records and the done record (out0 9), all PASS, acceptance-eligible with 0 blockers. Cited: every record's raw words except the io-eof-gap gap words, which hold old Memory Stick bytes and stay private. PASS means the call results were recorded, and the parser compares no value; the raw stream stays in the private campaign directory.",
+        "group": "kernel",
+        "source": "fixtures/psp_oracle/probe_kernel_semantics.c",
+        "prx": "io_seek_eof.prx",
+        "apis": [
+          "sceIoDopen",
+          "sceIoDclose",
+          "sceIoMkdir",
+          "sceIoOpen",
+          "sceIoClose",
+          "sceIoWrite",
+          "sceIoRead",
+          "sceIoLseek",
+          "sceIoLseek32",
+          "sceIoGetstat",
+          "sceIoRemove",
+          "sceIoRmdir"
+        ],
+        "diagnostic_case_ids": [
+          "io-seek-eof"
+        ],
+        "case_ids": [
+          "io-eof-mkdir",
+          "io-eof-missing",
+          "io-eof-create",
+          "io-eof-seek-negative",
+          "io-eof-seek-negative-rdonly",
+          "io-eof-write-past",
+          "io-eof-gap",
+          "io-eof-read-past",
+          "io-eof-cleanup",
+          "io-seek-eof-done"
+        ],
+        "invariant": "Raw results of #1380's Memory Stick file cells in a probe-owned directory: sceIoOpen of a missing file without PSP_O_CREAT (write-only, read-write, read-only, write-only with PSP_O_TRUNC) and sceIoGetstat of it afterwards; sceIoLseek to a destination before the start from SEEK_SET, SEEK_CUR and SEEK_END and sceIoLseek32 to -1 on a read-write descriptor, and SEEK_SET -1 on a read-only one, each with the position after it; a seek past the end of a 16-byte file, the size before and after a 4-byte write there, the position after it, and a read of the whole file (count, tail, position); a seek past the end and a read there. No value is interpreted.",
+        "issues": [
+          1380
+        ],
+        "risk": "low; one 16-byte Memory Stick file grown to 0x24 bytes in a probe-owned directory the probe creates only when absent and removes; the MAC address and OpenPSID are never read (import gate)",
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
