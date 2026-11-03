@@ -31628,6 +31628,40 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     s_fixture_loaded_end = 0x00400000u;
 }
 
+/* PSP-MODULE-START-001: the module_start thread's 0x40000-byte stack is at the top of the user
+ * partition and the stack of the thread it creates sits directly below. Deleting the top stack
+ * returns 0x40000 bytes to the partition but leaves sceKernelMaxFreeMemSize unchanged, because
+ * the freed range is a block of its own below the lower live stack, not part of the span. */
+static void test_max_free_unchanged_after_top_stack_deleted(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+    const uint32_t NID_MAX_FREE = 0xa291f107u;
+    const uint32_t NID_DELETE_THREAD = 0x9fa03cd3u;
+    CpuState cpu;
+    reset_fixture();
+    s_fixture_loaded_end = 0x08a00000u;
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+    uint32_t top = sched_create_thread(0x2000u, 32, 0x40000u);
+    uint32_t top_floor = sched_guest_stack_floor();
+    uint32_t lower = sched_create_thread(0x2004u, 32, 0x4000u);
+    uint32_t lower_floor = sched_guest_stack_floor();
+    expect(top != 0u && lower != 0u && top_floor == 0x0a000000u - 0x40000u &&
+           lower_floor == top_floor - 0x4000u,
+           "a 0x40000-byte top stack and a 0x4000-byte stack directly below it are created");
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t before = sr_syscall(&cpu, NID_MAX_FREE);
+    expect(before == lower_floor - base0, "MaxFreeMemSize stops at the lower live stack");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = top;
+    expect(sr_syscall(&cpu, NID_DELETE_THREAD) == 0u, "the top-most stack's thread is deleted");
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t after = sr_syscall(&cpu, NID_MAX_FREE);
+    expect(after == before && after == lower_floor - base0,
+           "MaxFreeMemSize is unchanged after the top stack is freed (PSP-MODULE-START-001)");
+    s_fixture_loaded_end = 0x00400000u;
+}
+
 /* sceKernelQueryModuleInfo answers the main module from its generated record, as uOFW
  * queryModule.c fills SceKernelModuleInfo: buffer before size, size 64 or 96 from SDK 2.80,
  * unknown uid refused, attribute without privilege bits and a NUL-padded name only at size 96.
@@ -43987,6 +44021,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
     test_partition_ends_at_lowest_live_stack();
+    test_max_free_unchanged_after_top_stack_deleted();
     test_partition_spans_the_whole_user_partition();
     test_partition_unknown_block_codes();
     test_module_id_queries_resolve_owning_module();
