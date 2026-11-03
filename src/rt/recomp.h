@@ -1636,6 +1636,10 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* ge_run_list that also stops at a command boundary once *stop is set, after at least one
+ * command, exactly as it stops at a stall address: it returns the next command's address, with
+ * *stopped set, and resuming there continues the list. */
+uint32_t ge_run_list_until(uint32_t addr, int resume, atomic_int_least32_t *stop, int *stopped);
 /* The 16-bit argument of the FINISH command the last ge_run_list call executed. */
 uint32_t ge_last_finish_id(void);
 /* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
@@ -2121,6 +2125,11 @@ void     sched_raise_interrupt(uint32_t source);     /* latch source; delivery o
 uint32_t sched_pending_interrupts(void);             /* source bits not yet serviced */
 void     sched_delay_current(uint64_t usec);        /* block current thread for usec */
 void     sched_preempt(void);                       /* yield now if a higher-priority thread is ready */
+/* Set by the preemption timer when a stronger thread's deadline comes. A long HLE call polls it
+ * between units of work and, holding nothing another guest thread could trip on, calls
+ * sched_preempt_point(): that thread then runs inside the call, as it would on the PSP (#1296). */
+extern atomic_int_least32_t sr_preempt_due;
+void     sched_preempt_point(void);
 void     sched_block_on(uint32_t obj);              /* block current thread until sched_wake(obj) */
 void     sched_wait_vblank_start(void);             /* sceDisplayWaitVblankStart: always block to the next vblank start edge */
 int      sched_wait_vblank(void);                   /* sceDisplayWaitVblank: 1 if already inside the vblank interval (no block), else blocks and returns 0 */

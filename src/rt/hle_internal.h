@@ -969,6 +969,7 @@ typedef struct {
     int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
     int busy; // the list has started; only sceGeDrawSync(0) or a reset clears it (uofw isBusy)
+    int preempted; // stopped short of its stall address for a stronger thread, with work left
     uint64_t order; // enqueue order: the active queue runs the oldest first
     uint32_t finish_id; // the 16-bit argument of the FINISH that ended it: the callback's id
     uint64_t done_us; // GE_LIST_DRAWING: modelled completion time (guest us)
