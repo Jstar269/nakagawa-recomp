@@ -293,6 +293,11 @@ enum { SR_UTILITY_STORAGE_GAMEDATA = 1, SR_UTILITY_STORAGE_GAMESHARING = 2 };
 #define SCE_ERROR_UTILITY_INVALID_STATUS 0x80110001u
 #define SCE_ERROR_UTILITY_WRONG_TYPE     0x80110005u
 static int utility_slot_active_locked(void);    /* fwd: asks the holder's own state machine */
+/* The vblank count when the holder's start-up (InitStart) or shutdown (ShutdownStart) began.
+ * Either step completes on the next vblank the scheduler delivers (utility_slot_settle_locked).
+ * One value serves every type, as only the slot's holder has a step in progress. Written under
+ * dialog_lock. */
+static uint32_t s_utility_step_vcount;
 /* Take the slot for `type`, or refuse while its holder is active. Caller holds dialog_lock. */
 static uint32_t utility_slot_claim_locked(int type) {
     if (utility_slot_active_locked()) {
@@ -341,7 +346,8 @@ static uint32_t h_SavedataInitStart(CpuState *s) {
         dialog_unlock();
         return claim;
     }
-    s_dlg_param = A0; s_dlg_param_size = size; s_dlg_status = 1; s_dlg_tick = 0;
+    s_dlg_param = A0; s_dlg_param_size = size; s_dlg_status = 1;
+    s_utility_step_vcount = sr_display_vcount();
     s_dlg_work_started = s_dlg_work_done = 0;
     s_dlg_generation++;
     s_dlg_result = 0;
@@ -364,17 +370,13 @@ static uint32_t h_DlgGetStatus(CpuState *s) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
-    int ret = s_dlg_status;
-    if (s_dlg_status == 1) {              /* INIT reported: start-up completes, RUNNING */
-        s_dlg_status = 2; s_dlg_tick = 0;
-    } else if (s_dlg_status == 4) {       /* SHUTDOWN reported: the shutdown completes, NONE */
-        s_dlg_status = 0;
-    }
+    utility_slot_settle_locked();
+    const int ret = s_dlg_status;
     if (getenv("SR_DLGLOG")) {                            /* log transitions only (unbounded) */
         static int last = -1;
-        if (s_dlg_status != last) {
-            fprintf(stderr, "DlgGetStatus: ret=%d -> status=%d (result=0x%08x)\n", ret, s_dlg_status, s_dlg_result);
-            last = s_dlg_status;
+        if (ret != last) {
+            fprintf(stderr, "DlgGetStatus: status=%d (result=0x%08x)\n", ret, s_dlg_result);
+            last = ret;
         }
     }
     dialog_unlock();
@@ -388,6 +390,7 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
+    utility_slot_settle_locked();
     if (s_dlg_status == 0 || s_dlg_status == 1) { /* NONE and INIT reject Update (#1386) */
         dialog_unlock();
         return SCE_ERROR_UTILITY_INVALID_STATUS;
@@ -397,7 +400,7 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
         param = s_dlg_param;
         size = s_dlg_param_size;
         generation = s_dlg_generation;
-    } else if (s_dlg_status == 2 && s_dlg_work_done && ++s_dlg_tick >= 2) {
+    } else if (s_dlg_status == 2 && s_dlg_work_done) {  /* the work completed: FINISHED */
         s_dlg_status = 3;
         if (s_dlg_param) MEM_W32(s_dlg_param + 0x1c, s_dlg_result);
         if (getenv("SR_DLGLOG")) fprintf(stderr, "SavedataUpdate: FINISHED result=0x%08x written to 0x%08x\n",
@@ -432,6 +435,7 @@ static uint32_t h_DlgShutdown(CpuState *s) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
+    utility_slot_settle_locked();
     /* PSPAutotests tests/utility/dialog/status.expected: repeated shutdown and
      * shutdown after NONE return INVALID_STATUS. */
     if (s_dlg_status == 0 || s_dlg_status == 4) {
@@ -440,8 +444,10 @@ static uint32_t h_DlgShutdown(CpuState *s) {
     }
     if (s_dlg_status == 3 && caller_priority > UTILITY_SAVEDATA_SHUTDOWN_PRIORITY)
         s_dlg_status = 0;                /* the shutdown ran before the caller got the CPU back */
-    else
-        s_dlg_status = 4;
+    else {
+        s_dlg_status = 4;                /* NONE on the next vblank (utility_slot_settle_locked) */
+        s_utility_step_vcount = sr_display_vcount();
+    }
     dialog_unlock();
     if (getenv("SR_DLGLOG")) fprintf(stderr, "DlgShutdownStart\n");
     return 0;
@@ -470,8 +476,8 @@ static uint32_t utility_dialog_init(UtilityDialog *d, uint32_t param) {
     d->result = 0;
     d->generation++;
     d->status = 1;
-    d->ticks = 0;
     d->work_started = d->work_done = d->aborted = 0;
+    s_utility_step_vcount = sr_display_vcount();
     MEM_W32(param + 0x1c, 0);
     dialog_unlock();
     return 0;
@@ -498,6 +504,7 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
+    utility_slot_settle_locked();
     /* Still starting up: Update does not move INIT (#1386). A message dialog also refuses
      * Update once it is back at NONE ("msg Update after done: INVALID_STATUS", PSPAutotests
      * tests/utility/dialog/status.expected); netconf, gamedata and sharing are unmeasured there
@@ -515,7 +522,7 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
         param = d->param;
         generation = d->generation;
         kind = d->kind;
-    } else if (d->status == 2 && d->work_done && ++d->ticks >= 2) {
+    } else if (d->status == 2 && d->work_done) {  /* the work completed: FINISHED */
         d->status = 3;
         if (d->param) MEM_W32(d->param + 0x1c, d->result);
     }
@@ -549,16 +556,8 @@ static uint32_t utility_dialog_status(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
-    uint32_t ret = (uint32_t)d->status;
-    if (d->status == 1) {
-        d->status = 2;
-        d->ticks = 0;
-    } else if (d->status == 4) {
-        d->status = 0;
-        d->param = 0;
-        d->ticks = 0;
-        d->work_started = d->work_done = 0;
-    }
+    utility_slot_settle_locked();
+    const uint32_t ret = (uint32_t)d->status;
     dialog_unlock();
     return ret;
 }
@@ -568,6 +567,7 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
+    utility_slot_settle_locked();
     /* A message dialog shuts down only from FINISHED: ShutdownStart during INIT, while RUNNING and
      * again after it are INVALID_STATUS (PSPAutotests tests/utility/dialog/status.expected). The
      * other types are unmeasured and keep the old rule. */
@@ -575,7 +575,10 @@ static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
         dialog_unlock();
         return d->kind == UTILITY_MSG ? SCE_ERROR_UTILITY_INVALID_STATUS : 0u;
     }
-    d->status = 4;
+    if (d->status != 4) {                /* NONE on the next vblank (utility_slot_settle_locked) */
+        d->status = 4;
+        s_utility_step_vcount = sr_display_vcount();
+    }
     dialog_unlock();
     return 0;
 }
@@ -596,6 +599,7 @@ static uint32_t utility_dialog_abort(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
+    utility_slot_settle_locked();
     if (d->status != 2) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_INVALID_STATUS;
@@ -657,11 +661,12 @@ static uint32_t h_SharingDialogShutdown(CpuState *s) { (void)s; return utility_d
 uint32_t s_osk_param = 0;
 int s_osk_field = 0;           /* the next field to answer */
 static int s_osk_request_open = 0;    /* a person's answer to that field is pending */
-/* The slot's holder is active from its InitStart until it is back at NONE: once its own
- * GetStatus has reported the way back, or at once for a savedata ShutdownStart from a caller
- * worse than 0x20 (h_DlgShutdown). Only then may another InitStart take the slot. Caller holds
- * dialog_lock. */
+/* The slot's holder is active from its InitStart until it is back at NONE: once a vblank has
+ * been delivered after its ShutdownStart (utility_slot_settle_locked), or at once for a
+ * savedata ShutdownStart from a caller worse than 0x20 (h_DlgShutdown). Only then may another
+ * InitStart take the slot. Caller holds dialog_lock. */
 static int utility_slot_active_locked(void) {
+    utility_slot_settle_locked();
     switch (s_utility_slot) {
     case UTILITY_SLOT_SAVEDATA:    return s_dlg_status != 0;
     case UTILITY_SLOT_MSG:         return s_msg_dialog.status != 0;
@@ -670,6 +675,44 @@ static int utility_slot_active_locked(void) {
     case UTILITY_SLOT_GAMESHARING: return s_sharing_dialog.status != 0;
     case UTILITY_SLOT_OSK:         return s_osk_status != OSK_NONE;
     default:                       return 0;
+    }
+}
+/* Apply the holder's frame-driven steps (#1386): once a vblank has been delivered since its
+ * InitStart, start-up has completed (INIT -> RUNNING, the OSK's INIT -> VISIBLE); once one has
+ * been delivered since its ShutdownStart, the shutdown has completed (SHUTDOWN -> NONE, the
+ * OSK's FINISHED -> NONE) and the slot is free for the next InitStart. The scheduler delivers
+ * vblanks while a guest polls, so a dialog never waits on a GetStatus call or a call count.
+ * Caller holds dialog_lock. */
+static void utility_dialog_settle(UtilityDialog *d) {
+    if (d->status == 1) {
+        d->status = 2;
+    } else if (d->status == 4) {
+        d->status = 0;
+        d->param = 0;
+        d->work_started = d->work_done = d->aborted = 0;
+    }
+}
+void utility_slot_settle_locked(void) {
+    if (sr_display_vcount() == s_utility_step_vcount) return;
+    switch (s_utility_slot) {
+    case UTILITY_SLOT_SAVEDATA:
+        if (s_dlg_status == 1) s_dlg_status = 2;
+        else if (s_dlg_status == 4) s_dlg_status = 0;
+        break;
+    case UTILITY_SLOT_MSG:         utility_dialog_settle(&s_msg_dialog); break;
+    case UTILITY_SLOT_NETCONF:     utility_dialog_settle(&s_net_dialog); break;
+    case UTILITY_SLOT_GAMEDATA:    utility_dialog_settle(&s_gamedata_dialog); break;
+    case UTILITY_SLOT_GAMESHARING: utility_dialog_settle(&s_sharing_dialog); break;
+    case UTILITY_SLOT_OSK:
+        if (s_osk_status == OSK_INIT) {
+            s_osk_status = OSK_VISIBLE;
+        } else if (s_osk_status == OSK_FINISHED) {
+            s_osk_status = OSK_NONE;
+            s_osk_param = 0;
+        }
+        break;
+    default:
+        break;
     }
 }
 
@@ -838,7 +881,8 @@ static uint32_t h_OskInitStart(CpuState *s) {
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_OSK);
     if (!claim) {
         s_osk_param = A0;
-        s_osk_status = OSK_INIT;
+        s_osk_status = OSK_INIT;                           /* VISIBLE on the next vblank */
+        s_utility_step_vcount = sr_display_vcount();
         s_osk_field = 0;
         s_osk_script_read = 0;                             /* a new keyboard re-reads its answers */
     }
@@ -850,11 +894,14 @@ static uint32_t h_OskInitStart(CpuState *s) {
 static uint32_t h_OskGetStatus(CpuState *s) {
     (void)s;
     if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
-    int ret = s_osk_status;
-    if (s_osk_status == OSK_INIT) s_osk_status = OSK_VISIBLE;
-    else if (s_osk_status == OSK_VISIBLE) { if (osk_collect()) s_osk_status = OSK_QUIT; }
-    else if (s_osk_status == OSK_FINISHED) { s_osk_status = OSK_NONE; s_osk_param = 0; }
-    return (uint32_t)ret;                                  /* QUIT stands until ShutdownStart */
+    dialog_lock();
+    utility_slot_settle_locked();
+    const int ret = s_osk_status;
+    dialog_unlock();
+    /* VISIBLE moves to QUIT on the poll that finds every field answered; QUIT stands until
+     * ShutdownStart. */
+    if (ret == OSK_VISIBLE && osk_collect()) s_osk_status = OSK_QUIT;
+    return (uint32_t)ret;
 }
 /* PSP-3000 measurements (#363): no keyboard returns WRONG_TYPE (0x80110005);
  * INIT, VISIBLE and NONE after use refuse shutdown with INVALID_STATUS (0x80110001).
@@ -862,10 +909,19 @@ static uint32_t h_OskGetStatus(CpuState *s) {
 static uint32_t h_OskShutdown(CpuState *s) {
     (void)s;
     if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
-    if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_VISIBLE)
+    dialog_lock();
+    utility_slot_settle_locked();
+    const int status = s_osk_status;
+    dialog_unlock();
+    if (status == OSK_NONE || status == OSK_INIT || status == OSK_VISIBLE)
         return 0x80110001u;
     osk_abandon_request();
-    if (s_osk_status) s_osk_status = OSK_FINISHED;         /* then NONE on the next poll */
+    dialog_lock();
+    if (s_osk_status == OSK_QUIT) {                        /* then NONE on the next vblank */
+        s_osk_status = OSK_FINISHED;
+        s_utility_step_vcount = sr_display_vcount();
+    }
+    dialog_unlock();
     return 0;
 }
 /* PSP-3000 measurements (#363): Update succeeds in VISIBLE (speed 0 and 1),
@@ -873,7 +929,11 @@ static uint32_t h_OskShutdown(CpuState *s) {
 static uint32_t h_OskUpdate(CpuState *s) {
     (void)s;
     if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
-    if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_QUIT)
+    dialog_lock();
+    utility_slot_settle_locked();
+    const int status = s_osk_status;
+    dialog_unlock();
+    if (status == OSK_NONE || status == OSK_INIT || status == OSK_QUIT)
         return 0x80110001u;
     return 0;
 }
