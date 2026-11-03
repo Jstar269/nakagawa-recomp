@@ -206,9 +206,17 @@ class TraceWindowProbeTests(unittest.TestCase):
         )
         self.assertIn("$(CC) $(RECOMP_FLAGS)", MAKEFILE)
 
+        # Each store helper is an inline main-RAM fast path that runs only while no store
+        # instrumentation is armed (sr_store_plain, which includes SR_WATCH_ACTIVE()), and
+        # otherwise the *_slow body, which reports the store to the watch.
+        plain = body_of(RECOMP_H, "static inline int sr_store_plain(")
+        self.assertIn("SR_WATCH_ACTIVE()", plain)
         for helper in ("sr_w8_pc", "sr_w16_pc", "sr_w32_pc"):
             body = body_of(RECOMP_H, f"static inline void {helper}(")
-            self.assertIn("SR_WATCH_STORE_IF_ARMED(pc, a, v", body)
+            self.assertIn("sr_store_plain()", body)
+            self.assertIn(f"{helper}_slow(a, v, pc);", body)
+            slow = body_of(RECOMP_H, f"static inline __attribute__((noinline)) void {helper}_slow(")
+            self.assertIn("SR_WATCH_STORE_IF_ARMED(pc, a, v", slow)
 
         self.assertIn("MEM_W32_PC(", CODEGEN_PY,
                       "generated AOT stores must keep their guest instruction PC")
@@ -219,7 +227,11 @@ class TraceWindowProbeTests(unittest.TestCase):
         self.assertIn("test_valid_aot_miss_executes_guest_bytes", DISPATCH_SELFTEST)
         self.assertIn("test_aot_store_watch_synthetic_guest", DISPATCH_SELFTEST)
         self.assertIn("sr_watch_match_count()", DISPATCH_SELFTEST)
+        self.assertIn("test_ram_store_watch_every_width", DISPATCH_SELFTEST)
         self.assertIn("memory-watch-selftest", MAKEFILE)
+        self.assertIn("--watch 0x08801000:4", MAKEFILE)
+        self.assertIn('strcmp(argv[1], "--watch") == 0', DISPATCH_SELFTEST)
+        self.assertIn("native-core-tests: memory-watch-selftest", MAKEFILE)
 
 
 if __name__ == "__main__":
