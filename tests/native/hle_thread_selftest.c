@@ -8429,10 +8429,11 @@ static void test_io_devctl_memory_stick(void) {
 /* ---- savedata GETSIZE / SIZES free space (#308) ---------------------------------------------
  * GETSIZE reports a shortfall, never the size of the data. On a PSP (pspautotests
  * tests/utility/savedata/getsize.expected, revision 2ed7c9c5) a zero-filled sizeInfo with no
- * entries for a save that does not exist changes only sectorSize (0x8000), freeSectors,
- * freeKB and freeString, and the result is 0. Free space is the host-backed Memory Stick the
- * capacity devctl measures, in 32 KiB sectors; the shortfall arithmetic for listed entries
- * follows PPSSPP SavedataParam::GetSize as a behaviour reference. */
+ * entries for a save that exists changes only sectorSize (0x8000), freeSectors, freeKB and
+ * freeString, and the result is 0. A save that does not exist fills in the same figures and
+ * reports RW_NO_DATA (PPSSPP as the behaviour reference, UNMEASURED on a PSP). Free space is the
+ * host-backed Memory Stick the capacity devctl measures, in 32 KiB sectors; the shortfall
+ * arithmetic for listed entries follows PPSSPP SavedataParam::GetSize as a behaviour reference. */
 extern void sr_hle_test_set_memstick_free_bytes(int mode, uint64_t bytes);
 
 enum {
@@ -8520,7 +8521,7 @@ static void test_savedata_getsize_free_space(void) {
     sr_hle_test_register_iofilemgr();
     sr_hle_test_set_memstick_free_bytes(0, 0u);
 
-    /* 1. The hardware case: zero-filled sizeInfo, no entries, save missing. */
+    /* 1. Zero-filled sizeInfo, no entries, save missing: the figures, then RW_NO_DATA. */
     {
         uint64_t before = 0, after = 0;
         getsize_param(22u, "_GameData0");
@@ -8530,7 +8531,7 @@ static void test_savedata_getsize_free_space(void) {
         uint64_t lo = before < after ? before : after, hi = before < after ? after : before;
         uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
         expect(measured, "the capacity devctl measures the synthetic Memory Stick's host volume");
-        expect(rc == 0u, "GETSIZE for a save that does not exist returns 0, as on a PSP");
+        expect(rc == 0x80110327u, "GETSIZE for a save that does not exist reports RW_NO_DATA");
         expect(MEM_R32(GETSIZE_INFO_ADDR + 0u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 4u) == 0u &&
                    MEM_R32(GETSIZE_INFO_ADDR + 8u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 12u) == 0u,
                "GETSIZE leaves the entry counts and pointers alone");
@@ -8550,17 +8551,19 @@ static void test_savedata_getsize_free_space(void) {
                "GETSIZE with no entries leaves neededString and overwriteString untouched");
     }
 
-    /* 2. One secure entry of a few KB on a missing save fits: nothing needed. */
+    /* 2. One secure entry of a few KB on a missing save fits: nothing needed, still no data. A
+     * game reads this pair as "no save yet, and room to make one". */
     {
         getsize_param(22u, "_GameData0");
         getsize_entry(GETSIZE_SECURE_ADDR, 0x2000u, "DATA.BIN");
         MEM_W32(GETSIZE_INFO_ADDR + 0u, 1u);
         MEM_W32(GETSIZE_INFO_ADDR + 8u, GETSIZE_SECURE_ADDR);
-        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0u &&
+        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0x80110327u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 16u) == 0x8000u &&
                    MEM_R32(GETSIZE_INFO_ADDR + 36u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 48u) == 0u &&
                    getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, zero8) &&
                    getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 52u, zero8),
-               "GETSIZE for one small secure file on a missing save reports neededKB 0, overwriteKB 0");
+               "GETSIZE for one small secure file on a missing save reports RW_NO_DATA, neededKB 0, overwriteKB 0");
     }
 
     /* 3. A shortfall: 64 KiB free (plus a partial sector), more data than that. */
@@ -8605,10 +8608,11 @@ static void test_savedata_getsize_free_space(void) {
                "GETSIZE needs nothing when the files it replaces free enough space");
     }
 
-    /* 4. SIZES msFree reports the same free figures as GETSIZE: the PSP's 1 GB record. */
+    /* 4. SIZES msFree reports the same free figures as GETSIZE: the PSP's 1 GB record, whose
+     * save exists. */
     sr_hle_test_set_memstick_free_bytes(1, 0x40000000u + 0x7fffu);
     {
-        getsize_param(22u, "_GameData0");
+        getsize_param(22u, "_GameData1");
         uint32_t getsize_rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
         uint32_t sector_size = MEM_R32(GETSIZE_INFO_ADDR + 16u);
         uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
@@ -25671,6 +25675,26 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
      * never happened. */
     expect(s_gpu_dirty_calls == 0u,
            "no rejected DMA request issues a GPU dirty notification");
+
+    /* PSP-MEMEDGE-001: the last 256 bytes of VRAM as a source with the request running 4
+     * bytes (and 0x1000) past the end into the 0x04200000 mirror returned 0 and copied the
+     * whole request on a PSP-3000, for both APIs. The first 256 bytes are the VRAM bytes. */
+    {
+        static const uint32_t over[] = {4u, 0x1000u};
+        for (size_t i = 0; i < sizeof(over) / sizeof(over[0]); i++) {
+            dmac_fill(0x041fff00u, 256u);
+            dmac_clear(dst, 0x1200u, 0xa5u);
+            expect(bulk_call(nid, dst, 0x041fff00u, 256u + over[i]) == 0u,
+                   "PSP: a VRAM source running past the end of VRAM returns success");
+            expect(dmac_span_matches(dst, 256u, 0u),
+                   "PSP: a VRAM source running past the end of VRAM copies its VRAM bytes");
+            expect(!dmac_span_is(dst + 256u, 4u, 0xa5u),
+                   "PSP: a VRAM source running past the end of VRAM copies the bytes past it");
+            expect(dmac_span_is(dst + 256u + over[i], 4u, 0xa5u),
+                   "PSP: a VRAM source running past the end copies no more than requested");
+        }
+        gpu_dirty_reset();
+    }
 
     /* Exactly-to-the-end must still be accepted: the bound is the real arena
      * end, not a conservative margin that would reject legal transfers. */
