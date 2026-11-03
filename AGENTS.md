@@ -119,6 +119,9 @@ the full rules.
   under GPL-3.0-or-later. A DCO sign-off is optional; if the person wants one, they review the final
   diff and add it themselves (`git commit -s`). The agent never adds it ([DCO policy](docs/DCO_POLICY.md)).
 - It says where every new file came from (next section).
+- It meets the professional-finish checks in [`REVIEW.md`](REVIEW.md#professional-finish): code that matches
+  its surroundings, plain prose with no filler, hype or emoji, no leftovers or stray files, the existing
+  terms, short UI text, and PR text that states what changed, the evidence and what is not done.
 
 ### New files: what to put in the pull request
 

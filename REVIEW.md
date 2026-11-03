@@ -115,6 +115,22 @@ Authors, human or agent, check these before requesting review; reviewers flag th
   before the hosted attestation runs
   ([step by step](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
 
+### Professional finish
+
+Every change, from a person or an agent, reads like careful, deliberate work. Completeness still comes before
+brevity, but every line has to carry information. Reviewers flag:
+
+- **Code idiom.** New code that doesn't match the surrounding naming, structure and comment density, or comments that
+  restate what the code does instead of saying why.
+- **Prose.** Filler, hype, hedging or marketing tone in code comments, docs, commit messages or PR text, and emoji
+  anywhere in code, docs or UI strings.
+- **Leftovers.** Dead code, duplicate helpers, debug output, commented-out blocks, and stray or one-off files (scratch
+  scripts, notes, logs).
+- **Terms.** A new word for something the docs already name; use the existing term (see Repository terms above).
+- **UI text.** Labels and messages that aren't short and plain, or that say more than the user needs to act.
+- **Pull request text.** Anything beyond what changed, the evidence for it, and what is not done or not verified.
+  No repeated summaries or decorative formatting.
+
 ## Review style
 
 Lead with the concrete failure scenario: inputs first, then the wrong result. Cite

@@ -24,9 +24,9 @@
 > `VIEW_PREPARING` screen is still an honest unavailable state, reachable today
 > only as a captured view.
 
-## 1. Executive Vision: The Honest "Program + ISO" Contract
+## 1. Goal: the "Program + ISO" contract
 
-The ultimate productization goal of Nakagawa Recomp is to deliver a seamless, modern, zero-terminal gaming experience without sacrificing low-level emulation (LLE) correctness or provenance integrity:
+The player's goal is that a user goes from their own disc to a running game without a terminal, while keeping low-level emulation (LLE) correctness and provenance intact:
 
 ```text
 Download / Install Nakagawa Recomp
