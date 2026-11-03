@@ -25,6 +25,7 @@ the platform ladder and pin the generated contract the runtime binds:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import re
@@ -42,6 +43,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
 import prx_reloc_model
+import analyze as analyzer
 from analyze import Elf, analyze, exec_ranges, in_ranges
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -133,7 +135,7 @@ class RuntimeModuleTranslation(unittest.TestCase):
             self.assertIsNotNone(block)
             text = block.group(1)
             self.assertIn(f'"{spec.file_name}", 0x{len(data):08x}u, '
-                          f'0x{codegen.fnv1a64(data):016x}ull', text)
+                          f'"{hashlib.sha256(data).hexdigest()}"', text)
             self.assertIn(f"0x{relocations.load_low:08x}u, 0x{relocations.load_high:08x}u, "
                           f"0x{relocations.alignment:x}u, 1u", text)
             self.assertIn(f"NULL, &{self.base(index)}", text)
@@ -526,8 +528,512 @@ class RuntimeModuleBoundaries(unittest.TestCase):
         self.assertNotIn(leaf, plain)
         self.assertEqual(hinted - plain, {leaf})
 
+    def test_fixed_overlay_elf_is_identified_by_its_translated_code(self):
+        # An ELF type 0xFFA8 overlay is one segment of mixed code and data. It translates
+        # at its link address, and its identity is the translated words of the functions
+        # that open a stack frame, so a change to its data keeps the identity and a
+        # change to its code does not.
+        data, first, second, data_word = basic_fixed_overlay()
+        path = self.root / "OVL_STAGE.ELF"
+        path.write_bytes(data)
+        with contextlib.redirect_stderr(io.StringIO()):
+            module = codegen.translate_runtime_module(0, str(path))
+        self.assertIsNone(module.unsupported_reason)
+        self.assertEqual((module.link_low, module.link_high, module.relocatable),
+                         (OVERLAY_LINK, OVERLAY_LINK + len(FIXED_OVERLAY_SEGMENT), False))
+        counts = dict(module.functions)
+        self.assertLessEqual({first, second}, set(counts))
+        self.assertEqual(module.overlay_check_spans,
+                         ((first, first + 4 * counts[first]),
+                          (second, second + 4 * counts[second])))
+        self.assertTrue(all(lo >= second or hi <= data_word
+                            for lo, hi in module.overlay_check_spans))
+        segment = FIXED_OVERLAY_SEGMENT
+        words = b"".join(segment[lo - OVERLAY_LINK:hi - OVERLAY_LINK]
+                         for lo, hi in module.overlay_check_spans)
+        self.assertEqual(module.overlay_check_len, len(words))
+        self.assertEqual(module.overlay_check_fnv1a64, codegen.fnv1a64(words))
+        descriptor = "\n".join(codegen.runtime_module_descriptor_lines(module))
+        self.assertIn(f"0x{module.overlay_check_len:08x}u, "
+                      f"0x{module.overlay_check_fnv1a64:016x}ull,", descriptor)
+        self.assertIn(f"    {{ 0x{second:08x}u, 0x{second + 4 * counts[second]:08x}u }},",
+                      descriptor)
+        self.assertIn("NULL, 0u, sr_m0_check_spans, 2u\n};", descriptor)
+
+        def identity(edit_at, word):
+            changed = bytearray(data)
+            struct.pack_into("<I", changed, 0x54 + edit_at - OVERLAY_LINK, word)
+            path.write_bytes(changed)
+            with contextlib.redirect_stderr(io.StringIO()):
+                other = codegen.translate_runtime_module(0, str(path))
+            return other.overlay_check_len, other.overlay_check_fnv1a64
+
+        own = (module.overlay_check_len, module.overlay_check_fnv1a64)
+        self.assertEqual(identity(data_word, 0x13572468), own, "data is not identity")
+        self.assertNotEqual(identity(second + 4, 0x2402000B), own, "code is identity")
+
+    def test_fixed_overlay_interpreter_authority_is_its_analysed_code(self):
+        # The segment's data words are not code: a jump into them misses by name instead
+        # of running under the interpreter, so the module's spans are the analysed code.
+        data, first, second, data_word = basic_fixed_overlay()
+        path = self.root / "OVL_STAGE.ELF"
+        path.write_bytes(data)
+        with contextlib.redirect_stderr(io.StringIO()):
+            module = codegen.translate_runtime_module(0, str(path))
+        counts = dict(module.functions)
+        self.assertEqual(module.spans, [(first, first + 4 * counts[first]),
+                                        (second, second + 4 * counts[second])])
+        for word in (data_word, data_word + 4):
+            self.assertFalse(in_ranges(word, module.spans), f"0x{word:08x} is data")
+        self.assertIn(f"static const SrModuleSpan sr_m0_spans[] = {{\n"
+                      f"    {{ 0x{first:08x}u, 0x{first + 4 * counts[first]:08x}u }},",
+                      "\n".join(codegen.runtime_module_descriptor_lines(module)))
+
+    def fixed_overlay_module(self, segment, name="OVL_CALLBACK.ELF"):
+        data = basic_fixed_overlay(segment)[0]
+        path = self.root / name
+        path.write_bytes(data)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            module = codegen.translate_runtime_module(0, str(path))
+        return module, err.getvalue()
+
+    def test_fixed_overlay_callback_its_code_calls_is_code(self):
+        # `la a0, cb` in traced code names a callback that opens no frame and does not
+        # start with `jr ra`; the same register is the target of the `jalr`, so it is a
+        # function inside the spans and the identity. `la a1, table` reaches no `jr`/`jalr`:
+        # it names data, which stays outside both and is named as a candidate.
+        _data, caller, callback, table = basic_fixed_overlay(FIXED_OVERLAY_CALLBACK_SEGMENT)
+        module, err = self.fixed_overlay_module(FIXED_OVERLAY_CALLBACK_SEGMENT)
+        self.assertIsNone(module.unsupported_reason)
+        self.assertEqual(module.functions, [(caller, 11), (callback, 3)])
+        self.assertEqual(module.spans, [(caller, table)])
+        self.assertEqual(module.overlay_check_spans, ((caller, table),))
+        for word in (table, table + 4):
+            self.assertFalse(in_ranges(word, module.spans), f"0x{word:08x} is data")
+        self.assertEqual(module.code_candidates, (table,))
+        self.assertIn(f"0x{table:08x}: materialized address with no evidence it is code", err)
+
+    def test_fixed_overlay_table_that_decodes_is_not_code(self):
+        # Zeros decode as `nop`, small integers and floats as ALU forms: a table the code
+        # names with `la a1, table` translates as well as code does. Nothing calls or jumps
+        # to it, so it gets no executable authority and is not part of the identity.
+        _data, caller, callback, table = basic_fixed_overlay(FIXED_OVERLAY_CALLBACK_SEGMENT)
+        prefix = FIXED_OVERLAY_CALLBACK_SEGMENT[:table - OVERLAY_LINK]
+        returns = [0x03E00008, 0x00000000]  # jr ra; nop
+        tables = {
+            "zeros at the end": [0, 0],
+            "zeros": [0, 0] + returns,
+            "small integers": [2, 3] + returns,
+            "floats": [0x3F800000, 0x3F800000] + returns,
+        }
+        for case, words in tables.items():
+            with self.subTest(case=case):
+                segment = prefix + b"".join(struct.pack("<I", w) for w in words)
+                module, err = self.fixed_overlay_module(segment)
+                self.assertIsNone(module.unsupported_reason)
+                self.assertEqual(module.functions, [(caller, 11), (callback, 3)])
+                self.assertEqual(module.spans, [(caller, table)])
+                self.assertEqual(module.overlay_check_spans, ((caller, table),))
+                self.assertEqual(module.code_candidates, (table,))
+                self.assertIn(f"0x{table:08x}: materialized address", err)
+
+    def test_fixed_overlay_call_target_pair_is_traced_in_one_register(self):
+        # The `lui`/`addiu` pair that forms a call target is evidence only when both halves
+        # are traced code and build the one register the `jalr` reads.
+        _data, caller, callback, table = basic_fixed_overlay(FIXED_OVERLAY_CALLBACK_SEGMENT)
+        words = list(struct.unpack(f"<{len(FIXED_OVERLAY_CALLBACK_SEGMENT) // 4}I",
+                                   FIXED_OVERLAY_CALLBACK_SEGMENT))
+        words[2:4] = [0x3C0108C0, 0x2424002C]  # lui at,0x08c0; addiu a0,at,0x2c
+        module, _err = self.fixed_overlay_module(b"".join(struct.pack("<I", w) for w in words))
+        self.assertEqual(module.functions, [(caller, 11)], "two registers")
+        self.assertFalse(in_ranges(callback, module.spans))
+        self.assertEqual(module.code_candidates, (callback, table))
+
+        # A data word before the function reads as `lui a0`; the function adds to its
+        # incoming a0 and calls it. No traced `lui` forms that target.
+        untraced = b"".join(struct.pack("<I", w) for w in [
+            0x3C0408C0,                                   # data: reads as lui a0,0x08c0
+            0x27BDFFF0, 0xAFBF0000, 0x24840024,           # addiu sp,-16; sw ra; addiu a0,a0,0x24
+            0x0080F809, 0x00000000,                       # jalr a0; nop
+            0x8FBF0000, 0x03E00008, 0x27BD0010,           # lw ra,0(sp); jr ra; addiu sp,16
+            0x8CA20000, 0x03E00008, 0x00000000,           # 0x24: lw v0,0(a1); jr ra; nop
+        ])
+        module, _err = self.fixed_overlay_module(untraced, "OVL_UNTRACED.ELF")
+        self.assertEqual(module.functions, [(OVERLAY_LINK + 4, 8)], "untraced lui")
+        self.assertFalse(in_ranges(OVERLAY_LINK + 0x24, module.spans))
+        self.assertEqual(module.code_candidates, (OVERLAY_LINK + 0x24,))
+
+    def call_target_overlay(self, setup, name, pad_words=0, trailer=()):
+        """A fixed overlay whose caller builds a0 with ``setup`` words and calls it with
+        `jalr a0`, followed by a callback (`lw v0,0(a1); jr ra; nop`) ``pad_words`` words of
+        untraced zeros after the caller, then the untraced ``trailer`` words. Returns
+        (module, callback address)."""
+        head = [0x27BDFFF0, 0xAFBF0000] + list(setup) + [
+            0x0080F809, 0x00000000,                   # jalr a0; nop
+            0x8FBF0000, 0x03E00008, 0x27BD0010]       # lw ra,0(sp); jr ra; addiu sp,16
+        callback = OVERLAY_LINK + 4 * (len(head) + pad_words)
+        tail = [0x8CA20000, 0x03E00008, 0x00000000]   # cb: lw v0,0(a1); jr ra; nop
+        words = head + [0] * pad_words + tail + list(trailer)
+        module, _err = self.fixed_overlay_module(
+            b"".join(struct.pack("<I", w) for w in words), name)
+        return module, callback
+
+    def test_fixed_overlay_call_target_pair_forms(self):
+        # (c) `lui`/`ori` builds the target as `lui`/`addiu` does. (d) An `addiu` low half
+        # of 0xfff0 is -16: lui 0x08c1 with it names 0x08c0fff0, not 0x08c1fff0.
+        module, cb = self.call_target_overlay(
+            [0x3C0408C0, 0x34840000 | ((OVERLAY_LINK + 0x24) & 0xFFFF)], "OVL_ORI.ELF")
+        self.assertEqual(cb, OVERLAY_LINK + 0x24)
+        self.assertIn(cb, [a for a, _n in module.functions], "lui/ori")
+        self.assertEqual(module.code_candidates, ())
+        pad = (0xFFF0 - 0x24) // 4
+        module, cb = self.call_target_overlay([0x3C0408C1, 0x2484FFF0], "OVL_NEG.ELF", pad)
+        self.assertEqual(cb, 0x08C0FFF0)
+        self.assertIn(cb, [a for a, _n in module.functions], "negative low half")
+        self.assertEqual(module.code_candidates, ())
+
+    def test_fixed_overlay_call_target_pair_must_be_the_last_writes(self):
+        cb = OVERLAY_LINK + 0x28
+        lui, addiu = 0x3C0408C0, 0x24840000 | (cb & 0xFFFF)
+        # (b) A load or an `addu` into the register after the pair replaces the value.
+        for case, extra in (("lw", 0x8CA40000), ("addu", 0x00852021)):
+            with self.subTest(case=case):
+                module, _cb = self.call_target_overlay([lui, addiu, extra], f"OVL_{case}.ELF")
+                self.assertNotIn(cb, [a for a, _n in module.functions])
+                self.assertEqual(module.code_candidates, (cb,))
+        # (a) A branch from before the pair lands between the pair and the `jalr`: the
+        # register holds a different value on that path.
+        merge_cb = OVERLAY_LINK + 0x30
+        module, _cb = self.call_target_overlay([
+            0x14C00003, 0x24040000,                   # bne a2,zero,merge; li a0,0
+            lui, 0x24840000 | (merge_cb & 0xFFFF),
+            0x00000000,                               # merge: nop
+        ], "OVL_MERGE.ELF")
+        self.assertNotIn(merge_cb, [a for a, _n in module.functions])
+        self.assertEqual(module.code_candidates, (merge_cb,))
+
+    def assert_not_call_evidence(self, setup, name, cb, trailer=()):
+        module, _cb = self.call_target_overlay(setup, name, trailer=trailer)
+        self.assertNotIn(cb, [a for a, _n in module.functions])
+        self.assertFalse(in_ranges(cb, module.spans))
+        self.assertIn(cb, module.code_candidates)
+
+    def test_fixed_overlay_call_target_pair_is_not_in_a_delay_slot(self):
+        # The `lui` in a branch's delay slot is in another basic block than the `addiu` and
+        # the `jalr`. After `beql` it runs only when the branch is taken, so the fall-through
+        # path calls incoming a0 + lo; after `beq` the rule refuses it the same way.
+        cb = OVERLAY_LINK + 0x28
+        for case, branch in (("beql", 0x50C00004), ("beq", 0x10C00004)):
+            with self.subTest(case=case):
+                self.assert_not_call_evidence(
+                    [branch, 0x3C0408C0, 0x24840000 | (cb & 0xFFFF)], f"OVL_{case}.ELF", cb)
+
+    def test_fixed_overlay_call_target_pair_does_not_span_a_called_entry(self):
+        # A `jal` names the `addiu`, or the `jalr` itself: callers that enter there arrive
+        # with any a0, so the `lui` before the entry is not the value the `jalr` reads.
+        cb = OVERLAY_LINK + 0x2C
+        lui, addiu = 0x3C0408C0, 0x24840000 | (cb & 0xFFFF)
+        for case, entry in (("addiu", OVERLAY_LINK + 0x14), ("jalr", OVERLAY_LINK + 0x18)):
+            with self.subTest(case=case):
+                jal = 0x0C000000 | ((entry >> 2) & 0x03FFFFFF)
+                self.assert_not_call_evidence(
+                    [jal, 0x00000000, lui, addiu], f"OVL_JAL_{case}.ELF", cb)
+
+    def test_fixed_overlay_call_target_pair_does_not_span_an_address_taken_entry(self):
+        # A callback entry the code materializes (`la a1` naming the `nop` before the
+        # `jalr`), or an in-image word naming it (a jump-table pad), is another way in.
+        with self.subTest(case="materialized"):
+            cb = OVERLAY_LINK + 0x30
+            self.assert_not_call_evidence([
+                0x3C0408C0, 0x24840000 | (cb & 0xFFFF),
+                0x3C0508C0, 0x24A50018,               # la a1, 0x08c00018 (the nop below)
+                0x00000000,
+            ], "OVL_LA_PAD.ELF", cb)
+        with self.subTest(case="table word"):
+            cb = OVERLAY_LINK + 0x28
+            self.assert_not_call_evidence(
+                [0x3C0408C0, 0x24840000 | (cb & 0xFFFF), 0x00000000], "OVL_TABLE_PAD.ELF", cb,
+                trailer=[OVERLAY_LINK + 0x10])        # data word naming that nop
+
+    def test_fixed_overlay_call_target_pair_holds_against_code_traced_later(self):
+        # T1's pair passes when it is checked first, but T2, found by the same pass, branches
+        # to T1's `addiu`: against the final traced code another path enters between the
+        # `lui` and the `jalr`, so T1 is withdrawn and named as a candidate. T2 holds. When
+        # T1 itself jumps to a T3 it forms, T3 was traced only through T1 and goes with it.
+        t1 = OVERLAY_LINK + 0x34
+
+        def caller(t2):
+            return [0x27BDFFF0, 0xAFBF0000,               # addiu sp,-16; sw ra,0(sp)
+                    0x3C0408C0, 0x24840034, 0x0080F809, 0,                # T1: jalr a0
+                    0x3C0408C0, 0x24840000 | (t2 & 0xFFFF), 0x0080F809, 0,  # T2: jalr a0
+                    0x8FBF0000, 0x03E00008, 0x27BD0010]   # lw ra,0(sp); jr ra; addiu sp,16
+
+        def branch_to_t1_addiu(source):                   # b 0x0c; nop
+            return [0x10000000 | ((OVERLAY_LINK + 0x0C - source - 4) >> 2 & 0xFFFF), 0]
+
+        t3 = OVERLAY_LINK + 0x4C
+        cases = {
+            "callback": (OVERLAY_LINK + 0x40, None, [
+                0x8CA20000, 0x03E00008, 0,                # T1: lw v0,0(a1); jr ra; nop
+                *branch_to_t1_addiu(OVERLAY_LINK + 0x40)]),
+            "chain": (OVERLAY_LINK + 0x44, t3, [
+                0x3C0408C0, 0x24840000 | (t3 & 0xFFFF),   # T1: lui a0; addiu a0,T3
+                0x00800008, 0,                            # jr a0; nop
+                *branch_to_t1_addiu(OVERLAY_LINK + 0x44),
+                0x8CA20000, 0x03E00008, 0]),              # T3: lw v0,0(a1); jr ra; nop
+        }
+        for case, (t2, chained, tail) in cases.items():
+            with self.subTest(case=case):
+                segment = b"".join(struct.pack("<I", w) for w in caller(t2) + tail)
+                module, err = self.fixed_overlay_module(segment, f"OVL_LATE_{case}.ELF")
+                self.assertIsNone(module.unsupported_reason)
+                self.assertEqual([a for a, _n in module.functions], [OVERLAY_LINK, t2])
+                self.assertFalse(in_ranges(t1, module.spans))
+                if chained is not None:
+                    self.assertFalse(in_ranges(chained, module.spans))
+                self.assertEqual(module.code_candidates, (t1,))
+                self.assertIn(f"0x{t1:08x}: materialized address with no evidence it is code",
+                              err)
+
+    def test_fixed_overlay_withdrawn_target_stays_refused_for_good(self):
+        # Fail-closed by design: a target withdrawn once is never re-admitted, even when the
+        # code that invalidated it is itself withdrawn later and the final traced code would
+        # give it valid evidence. The leaders come from code reachable only through targets,
+        # so re-admitting could cycle. Here T (+0x44) is withdrawn in attempt 1 (U branches
+        # to its `addiu`), W (+0x6c) is accepted in attempt 2 and withdraws U, and the pass
+        # ends in attempt 3 with T still refused: never a function, no executable
+        # authority, a named candidate on stderr, so a call into it is a dispatch miss.
+        t, u, x, w = (OVERLAY_LINK + off for off in (0x44, 0x4C, 0x54, 0x6C))
+
+        def la_jalr(target):
+            return [0x3C0408C0, 0x24840000 | (target & 0xFFFF), 0x0080F809, 0]
+
+        def branch(source, target):                       # b target; nop
+            return [0x10000000 | ((target - source - 4) >> 2 & 0xFFFF), 0]
+
+        words = [0x27BDFFF0, 0xAFBF0000, *la_jalr(t), *la_jalr(u), *la_jalr(x),
+                 0x8FBF0000, 0x03E00008, 0x27BD0010]
+        words += branch(t, x + 4)                         # T: kills X's pair naming W
+        words += branch(u, OVERLAY_LINK + 0x0C)           # U: kills the caller's pair naming T
+        words += [*la_jalr(w), 0x03E00008, 0]             # X: calls W
+        words += branch(w, OVERLAY_LINK + 0x1C)           # W: kills the caller's pair naming U
+        self.assertEqual(OVERLAY_LINK + 4 * len(words) - 8, w)
+        data = basic_fixed_overlay(b"".join(struct.pack("<I", v) for v in words))[0]
+        report, err = {}, io.StringIO()
+        with contextlib.redirect_stderr(err):
+            functions, _ = analyze(Elf(data), mixed_code_data=True, report=report)
+        self.assertEqual(sorted(functions), [OVERLAY_LINK, x, w])
+        self.assertEqual(report["materialized_code_work"]["attempts"], 3)
+        self.assertEqual(report["code_candidates"], frozenset({t, u}))
+        self.assertNotIn(t, functions)
+
+    @staticmethod
+    def cascading_withdrawal_words(links):
+        # Link i: the caller calls A_i and X_i. A_i branches into X_{i+1}'s `addiu`, so X_{i+1}
+        # names B_{i+1} only once A_i is withdrawn. B_i branches into the caller's pair
+        # naming A_i. So every attempt withdraws exactly one A, whatever the batching.
+        def la_jalr(target):
+            return [0x3C0408C0, 0x24840000 | (target & 0xFFFF), 0x0080F809, 0]
+
+        def branch(source, target):
+            return [0x10000000 | ((target - source - 4) >> 2 & 0xFFFF), 0]
+
+        base = OVERLAY_LINK + 4 * (2 + 8 * links + 3)
+        a, x, b = {}, {}, {}
+        cursor = base
+        for kind, size in ((a, 2), (x, 6), (b, 2)):
+            for i in range(1, links + 1):
+                kind[i] = cursor
+                cursor += 4 * (size + (1 if kind is a and i == links else 0))
+        words = [0x27BDFFF0, 0xAFBF0000]
+        for i in range(1, links + 1):
+            words += la_jalr(a[i]) + la_jalr(x[i])
+        words += [0x8FBF0000, 0x03E00008, 0x27BD0010]
+        for i in range(1, links + 1):
+            words += (branch(a[i], x[i + 1] + 4) if i < links
+                      else [0x8CA20000, 0x03E00008, 0])
+        for i in range(1, links + 1):
+            words += [*la_jalr(b[i]), 0x03E00008, 0]
+        for i in range(1, links + 1):
+            words += branch(b[i], OVERLAY_LINK + 4 * (2 + 8 * (i - 1)) + 4)
+        return words, a
+
+    def test_fixed_overlay_cascading_withdrawals_pin_their_operation_count(self):
+        # Each failing target of one final check is withdrawn in the same rerun
+        # (lost = accepted - named). A cascade still costs one rerun per level, and each
+        # rerun re-checks every site, so the work is quadratic in the cascade depth: the
+        # counts for 200 links are pinned so a regression is caught.
+        links = 200
+        words, a = self.cascading_withdrawal_words(links)
+        data = basic_fixed_overlay(b"".join(struct.pack("<I", v) for v in words))[0]
+        report = {}
+        with contextlib.redirect_stderr(io.StringIO()):
+            functions, _ = analyze(Elf(data), mixed_code_data=True, report=report)
+        self.assertEqual(report["code_candidates"],
+                         frozenset(a.values()))
+        work = report["materialized_code_work"]
+        self.assertEqual(
+            {k: work[k] for k in ("attempts", "rounds", "traces", "site_checks", "block_words")},
+            {"attempts": 201, "rounds": 603, "traces": 402,
+             "site_checks": 140900, "block_words": 382902})
+        self.assertEqual(len(functions), 1 + 2 * links)
+
+    def test_fixed_overlay_call_target_pass_is_linear_in_its_targets(self):
+        # One caller forms and calls 1000 callbacks (`lw v0,0(a1); jr ra; nop`, not
+        # entry-shaped), 7005 words in all. Each call site is checked once, its block
+        # walked once, and the targets are traced in one batch.
+        count = 1000
+        head = 2 + 4 * count + 3
+        words = [0x27BDFFF0, 0xAFBF0000]
+        callbacks = [OVERLAY_LINK + 4 * head + 12 * i for i in range(count)]
+        for cb in callbacks:
+            words += [0x3C040000 | (cb >> 16), 0x24840000 | (cb & 0xFFFF), 0x0080F809, 0]
+        words += [0x8FBF0000, 0x03E00008, 0x27BD0010]
+        words += [0x8CA20000, 0x03E00008, 0] * count
+        self.assertLess(callbacks[-1] & 0xFFFF, 0x8000)  # every addiu low half is positive
+        data = basic_fixed_overlay(b"".join(struct.pack("<I", w) for w in words))[0]
+        report = {}
+        with contextlib.redirect_stderr(io.StringIO()):
+            functions, _ = analyze(Elf(data), mixed_code_data=True, report=report)
+        self.assertEqual(sorted(functions), [OVERLAY_LINK, *callbacks])
+        self.assertEqual(report["code_candidates"], frozenset())
+        work = report["materialized_code_work"]
+        self.assertEqual((work["attempts"], work["traces"]), (1, 1))
+        self.assertLessEqual(work["site_checks"], count)
+        self.assertLessEqual(work["block_words"], 3 * count + 2)
+
+    def test_fixed_overlay_identity_covers_a_leaf_it_calls(self):
+        # A leaf reached only by `jal` opens no stack frame, but its translation runs from
+        # the bound overlay, so its words are part of the identity.
+        data, caller, leaf, _data_word = basic_fixed_overlay(FIXED_OVERLAY_LEAF_SEGMENT)
+        path = self.root / "OVL_LEAF.ELF"
+        path.write_bytes(data)
+        with contextlib.redirect_stderr(io.StringIO()):
+            module = codegen.translate_runtime_module(0, str(path))
+        self.assertIsNone(module.unsupported_reason)
+        self.assertEqual(module.functions, [(caller, 7), (leaf, 2)])
+        self.assertEqual(module.overlay_check_spans, ((caller, leaf + 8),))
+        own = (module.overlay_check_len, module.overlay_check_fnv1a64)
+        changed = bytearray(data)
+        struct.pack_into("<I", changed, 0x54 + leaf + 4 - OVERLAY_LINK, 0x2402000B)
+        path.write_bytes(changed)
+        with contextlib.redirect_stderr(io.StringIO()):
+            other = codegen.translate_runtime_module(0, str(path))
+        self.assertNotEqual((other.overlay_check_len, other.overlay_check_fnv1a64), own,
+                            "the leaf's `li v0, 9` is part of the identity")
+
+    def test_an_mwo3_overlay_descriptor_has_no_function_check(self):
+        data, _entry, _ctor, _memsz = basic_code_overlay()
+        path = self.root / "Title.ovl"
+        path.write_bytes(data)
+        with contextlib.redirect_stderr(io.StringIO()):
+            module = codegen.translate_runtime_module(0, str(path))
+        self.assertEqual(module.overlay_check_spans, ())
+        self.assertTrue("\n".join(codegen.runtime_module_descriptor_lines(module))
+                        .endswith("    NULL, 0u, NULL, 0u\n};\n"))
+
+    def test_fixed_overlay_header_rules_refuse_every_other_shape(self):
+        # Only one non-empty PT_LOAD, word aligned and inside the file and the 32-bit address
+        # space, of a MIPS image with no entry point, is a fixed-address ELF overlay.
+        data, _first, _second, _data_word = basic_fixed_overlay()
+        self.assertEqual(analyzer.fixed_overlay_segment(data),
+                         (OVERLAY_LINK, 0x54, len(FIXED_OVERLAY_SEGMENT), len(FIXED_OVERLAY_SEGMENT)))
+        self.assertTrue(analyzer.is_code_overlay(data[:18]))
+        self.assertFalse(analyzer.is_fixed_overlay(data[:17]), "a header too short to hold the type")
+        self.assertFalse(analyzer.is_fixed_overlay(data[:16] + struct.pack("<H", 0xFFA0)))
+
+        def patched(fmt, offset, value):
+            out = bytearray(data)
+            struct.pack_into(fmt, out, offset, value)
+            return bytes(out)
+
+        refused = {
+            "not MIPS": patched("<H", 18, 3),
+            "names an entry point": patched("<I", 24, OVERLAY_LINK),
+            "exactly one program header": patched("<H", 44, 2),
+            "entry size": patched("<H", 42, 40),
+            "not PT_LOAD": patched("<I", 52, 4),
+            "empty": patched("<I", 52 + 16, 0),
+            "memsz below filesz": patched("<I", 52 + 20, 4),
+            "unaligned": patched("<I", 52 + 8, OVERLAY_LINK + 2),
+            "past the file": patched("<I", 52 + 4, len(data)),
+            "past 4 GiB": patched("<I", 52 + 8, 0xFFFFFFF0),
+            "truncated header": data[:40],
+        }
+        for case, image in refused.items():
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                analyzer.check_code_overlay(image)
+
+    def test_a_malformed_fixed_overlay_elf_gets_a_named_descriptor(self):
+        data, _first, _second, _data_word = basic_fixed_overlay()
+        path = self.root / "OVL_BAD.ELF"
+        path.write_bytes(data[:24] + struct.pack("<I", OVERLAY_LINK) + data[28:])
+        out = self.root / "out" / "g_recomp.c"
+        out.parent.mkdir()
+        status, _out, err = run_codegen([
+            str(self.main), str(out), "--base=0x08940000", f"--extra-elf={path}@runtime"])
+        self.assertEqual(status, 0, err)
+        self.assertRegex(out.read_text(encoding="ascii"),
+                         r'"code overlay cannot be translated: ELF overlay is not MIPS, '
+                         r'or names an entry point"')
+
 
 OVERLAY_LINK = 0x08C00000
+
+# One segment holding a function, two data words, then a second function: the layout of
+# an ELF type 0xFFA8 overlay, whose single section mixes code and data.
+FIXED_OVERLAY_SEGMENT = b"".join(struct.pack("<I", w) for w in [
+    0x27BDFFF0, 0x03E00008, 0x27BD0010, 0x00000000,   # addiu sp,-16; jr ra; addiu sp,16
+    0x41544144, 0x08C00000,                           # data: "DATA", a pointer
+    0x27BDFFF0, 0x24020009, 0x03E00008, 0x27BD0010,   # addiu sp,-16; li v0,9; jr ra; addiu sp,16
+])
+
+# A function that calls a leaf with `jal`; the leaf opens no stack frame.
+FIXED_OVERLAY_LEAF_SEGMENT = b"".join(struct.pack("<I", w) for w in [
+    0x27BDFFF0, 0xAFBF0000, 0x0E300007, 0x00000000,   # addiu sp,-16; sw ra,0(sp); jal leaf; nop
+    0x8FBF0000, 0x03E00008, 0x27BD0010,               # lw ra,0(sp); jr ra; addiu sp,16
+    0x03E00008, 0x24020009,                           # leaf: jr ra; li v0,9
+])
+
+# A function that materializes a callback (`la a0, cb`) and a data table (`la a1, table`)
+# and calls the callback through a register.
+FIXED_OVERLAY_CALLBACK_SEGMENT = b"".join(struct.pack("<I", w) for w in [
+    0x27BDFFF0, 0xAFBF0000,                           # addiu sp,-16; sw ra,0(sp)
+    0x3C0408C0, 0x2484002C,                           # lui a0,0x08c0; addiu a0,a0,0x2c (cb)
+    0x3C0508C0, 0x24A50038,                           # lui a1,0x08c0; addiu a1,a1,0x38 (table)
+    0x0080F809, 0x00000000,                           # jalr a0; nop
+    0x8FBF0000, 0x03E00008, 0x27BD0010,               # lw ra,0(sp); jr ra; addiu sp,16
+    0x8CA20000, 0x03E00008, 0x00000000,               # cb: lw v0,0(a1); jr ra; nop
+    0x41544144, 0x08C00000,                           # table: "DATA", a pointer
+])
+
+
+def basic_fixed_overlay(segment=FIXED_OVERLAY_SEGMENT):
+    """An ELF type 0xFFA8 overlay of ``segment`` at OVERLAY_LINK, its one section named for
+    the overlay. Returns (bytes, first function, second function, data word); the last
+    two for FIXED_OVERLAY_LEAF_SEGMENT are the caller and the leaf, with no data word, and
+    for FIXED_OVERLAY_CALLBACK_SEGMENT the caller, the callback and the table."""
+    names = b"\0.ovl_stage\0.shstrtab\0"
+    seg_off = 0x54
+    names_off = seg_off + len(segment)
+    shoff = (names_off + len(names) + 3) & ~3
+    out = bytearray(shoff + 40 * 3)
+    out[:16] = b"\x7fELF\x01\x01\x01" + bytes(9)
+    struct.pack_into("<HHIIIIIHHHHHH", out, 16, 0xFFA8, 8, 1, 0, 52, shoff, 0x10A23001,
+                     52, 32, 1, 40, 3, 2)
+    struct.pack_into("<8I", out, 52, 1, seg_off, OVERLAY_LINK, OVERLAY_LINK,
+                     len(segment), len(segment), 7, 4)
+    out[seg_off:names_off] = segment
+    out[names_off:names_off + len(names)] = names
+    struct.pack_into("<10I", out, shoff + 40, 1, 1, 7, OVERLAY_LINK, seg_off, len(segment),
+                     0, 0, 4, 0)
+    struct.pack_into("<10I", out, shoff + 80, 12, 3, 0, 0, names_off, len(names), 0, 0, 1, 0)
+    if segment == FIXED_OVERLAY_LEAF_SEGMENT:
+        return bytes(out), OVERLAY_LINK, OVERLAY_LINK + 0x1C, None
+    if segment == FIXED_OVERLAY_CALLBACK_SEGMENT:
+        return bytes(out), OVERLAY_LINK, OVERLAY_LINK + 0x2C, OVERLAY_LINK + 0x38
+    return bytes(out), OVERLAY_LINK, OVERLAY_LINK + 0x18, OVERLAY_LINK + 0x10
 
 
 def basic_code_overlay():

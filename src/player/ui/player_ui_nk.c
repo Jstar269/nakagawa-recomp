@@ -8,6 +8,7 @@
 #include "player_ui_sound.h"
 #include "iso_reader.h"
 #include "nk_platform.h"
+#include "nk_portable.h"
 #include "nk_ui_input.h"
 #include "nk_ui_theme.h"
 #include "nk_ui_widgets.h"
@@ -116,6 +117,7 @@ struct PlayerUiNk {
     char flow_title[NK_MAX_TITLE_LEN + NK_MAX_DISC_ID_LEN + 16];
     PlayerUiPrereqItem prereq_items[PLAYER_UI_PREREQ_CAP];
     char version_line[64];
+    char data_root_line[NK_MAX_PATH + 48]; /* About: which data folder is in use */
     char wizard_detail[160];
     char wizard_blocked[PLAYER_UI_BLOCKED_REASON_MAX];
     char wizard_resolution[96];
@@ -401,6 +403,14 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window, Play
     nk_ui_sdl_input_init(&player->input);
     player_ui_version_line(NK_PLAYER_VERSION, (long long)NK_PLAYER_BUILD_EPOCH,
                            player->version_line, sizeof(player->version_line));
+    {
+        char data_root[NK_MAX_PATH];
+        if (nk_platform_resolve_app_data_dir(data_root, sizeof(data_root))) {
+            (void)snprintf(player->data_root_line, sizeof(player->data_root_line),
+                           "%s: %s", nk_portable_in_use() ? "Data folder (portable mode)"
+                                                          : "Data folder", data_root);
+        }
+    }
     player->ready = true;
     if (error != NULL && error_size > 0u) error[0] = '\0';
     return player;
@@ -2609,7 +2619,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             app->selected_game_index = (int)action.title_index;
             nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
             (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_TITLE);
-            player->title_primary_refocus = false;
+            /* A page opened while PLAY is still off (its package check has not ended)
+               puts focus on the next button; arm the refocus so PLAY takes it back
+               when it turns on, unless the user moves first. */
+            player->title_primary_refocus = true;
+            player->title_primary_fallback = 0u;
             action.kind = PLAYER_UI_ACTION_NONE;
         } else if (action.kind == PLAYER_UI_ACTION_PAGE_PREVIOUS) {
             if (player->library_page > 0u) --player->library_page;
@@ -2692,7 +2706,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                         player->title_primary_fallback = 0u;
                     } else if (player->title_primary_refocus &&
                                player->title_primary_fallback == 0u) {
-                        player->title_primary_fallback = focused;
+                        /* A page just opened still shows the library's focus for a
+                           frame or two; the fallback is the page's own button. */
+                        if (focused >= 0x2000u && focused < 0x3000u) {
+                            player->title_primary_fallback = focused;
+                        }
                     } else if (player->title_primary_refocus &&
                                focused != player->title_primary_fallback) {
                         player->title_primary_refocus = false;
@@ -2851,6 +2869,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         memset(&model, 0, sizeof(model));
         model.version_line = player->version_line;
         model.build_commit = NK_PLAYER_BUILD_COMMIT;
+        model.data_root_line = player->data_root_line;
         model.logical_width = scale.logical_w;
         model.logical_height = scale.logical_h;
         action = player_ui_screen_about(player->ui, &model);

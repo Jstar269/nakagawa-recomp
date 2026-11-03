@@ -18,6 +18,7 @@ import argparse
 import bisect
 import contextlib
 import dataclasses
+import hashlib
 import struct
 import re
 import os
@@ -35,8 +36,9 @@ import build_profile
 from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
-    code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
-    static_coverage, branch_kind, BRANCH_UNCOND,
+    check_code_overlay, code_overlay_elf, code_overlay_layout, data_section_words,
+    is_code_overlay, is_fixed_overlay, static_coverage, branch_kind, BRANCH_UNCOND,
+    _gpr_writes,
 )
 from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
 from host_stubs import HST_SIMPLE_STUBS
@@ -108,6 +110,15 @@ class CodegenOptions:
     # they expand to ((void)0) and neither half changes behaviour on its own.
     nan_trap: bool = False
 
+    # Null-page guard (#363). True when the primary image starts inside the range the PSP
+    # leaves unmapped, so a null base plus a field offset would reach its first bytes
+    # instead of faulting. The generated header then defines SR_NULL_PAGE_GUARD, and those
+    # accesses stop by name (src/rt/recomp.h): every scalar access form, and every bulk span
+    # a body hands to memset/memmove or the native stubs, which forms its host pointer
+    # through SR_HOST(SR_DATA_SPAN(a, n)). main() sets it from the image; any other image's
+    # generated C is byte-identical.
+    null_page_guard: bool = False
+
     # Local guest-register promotion (#284). When True, runs of simple instructions
     # keep the guest GPRs they touch in C locals (`_gpr<n>`) and write them back to
     # s->r[] before every label, control transfer, non-promoted instruction and the
@@ -121,6 +132,9 @@ class CodegenOptions:
 
 
 OPTIONS = CodegenOptions()
+
+#: First address the PSP maps, the scratchpad; SR_PSP_UNMAPPED_END in src/rt/recomp.h.
+PSP_UNMAPPED_END = 0x00010000
 
 
 @contextlib.contextmanager
@@ -177,6 +191,18 @@ def _enhancement_rewrite(addr: int) -> dict | None:
     return site["rewrite"]
 
 
+def _refuse_argument_site_on_a_loop(entry: int) -> None:
+    """An argument_x2 site doubles once per call: a branch back to its entry would double again."""
+    if not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
+        return
+    site = ENHANCEMENT_SITES.get(entry)
+    if site is not None and site["rewrite"]["kind"] == "scale_int_args":
+        raise enhancement_package.EnhancementPackageError(
+            f"site {site['id']}: argument_x2 doubles once per call, and this function "
+            "branches back to its entry (fail-closed refusal)"
+        )
+
+
 def _enhancement_boundary(addr: int) -> bool:
     """Whether ``addr`` is the package's update boundary; the caller emits its count."""
     if ENHANCEMENT_UPDATE_BOUNDARY is None or ADDRESS_SPACE.runtime_module:
@@ -211,6 +237,8 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
         enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
     elif kind == "scale_int_reg":
         enh = f"{stock_line.strip()} s->r[{rw['reg']}] <<= 1;"
+    elif kind == "scale_int_args":
+        enh = " ".join([stock_line.strip()] + [f"s->r[{r}] <<= 1;" for r in rw["regs"]])
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
     elif kind == "scale_f_store":
@@ -223,6 +251,12 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
         raise ValueError(f"unknown enhancement rewrite kind {kind!r}")
     return (f"    if (nk_enhancement_on()) {{ {enh.strip()} }}\n"
             f"    else {{ {stock_line.strip()} }}")
+
+
+def code_word_read(width, address):
+    """C read of a word of translated code. The body is reading its own instruction, which
+    is not a guest data access, so it does not pass through the null-page guard."""
+    return f"sr_r{width}({address})" if OPTIONS.null_page_guard else f"MEM_R{width}({address})"
 
 
 class RelocatedWord(int):
@@ -307,7 +341,7 @@ class AddressSpace:
             if (w >> 26) not in _RELOCATABLE_IMMEDIATE_OPS:
                 raise Unsupported(
                     f"variable-import {kind} reference on opcode 0x{w >> 26:02x} at 0x{addr:08x}")
-            return RelocatedWord(w, f"MEM_R16({self.pc(addr)})")
+            return RelocatedWord(w, code_word_read(16, self.pc(addr)))
         if not self.runtime_module:
             return w
         site = self._site(addr)
@@ -319,7 +353,7 @@ class AddressSpace:
                 raise Unsupported(
                     f"{site.kind} relocation on opcode 0x{op:02x} at 0x{addr:08x}")
             # Little-endian: the immediate is the halfword at the word's address.
-            return RelocatedWord(w, f"MEM_R16({self.pc(addr)})")
+            return RelocatedWord(w, code_word_read(16, self.pc(addr)))
         if site.kind == "jump26":
             if op not in (2, 3):
                 raise Unsupported(f"jump relocation on opcode 0x{op:02x} at 0x{addr:08x}")
@@ -893,6 +927,8 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
     renames = renames or {}
     with open(path, "w", encoding="ascii", newline="\n") as f:
         f.write("#ifndef RECOMP_FUNCS_H\n#define RECOMP_FUNCS_H\n")
+        if OPTIONS.null_page_guard:
+            f.write("#define SR_NULL_PAGE_GUARD 1\n")
         f.write('#include "recomp.h"\n\n')
         f.write("#ifndef SR_CPUSTATE_ABI_VERSION\n")
         f.write('#error "generated functions require SR_CPUSTATE_ABI_VERSION"\n')
@@ -921,8 +957,102 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
         f.write("#endif\n")
 
 
-def guest_owns_entry_sp(elf, insns):
-    """True when a body loads $sp from memory, so its returns leave the guest's $sp.
+#: GPRs a call leaves alone: a value known before it is known after it.
+_CALL_SAVED_GPRS = frozenset({16, 17, 18, 19, 20, 21, 22, 23, 29, 30})
+#: VFPU encodings `_gpr_writes` does not classify. None of them writes a GPR.
+_VFPU_OPCODES = frozenset({0x18, 0x19, 0x1B, 0x34, 0x36, 0x37, 0x3C, 0x3F})
+#: Stores to guest memory: a known address loses whatever value was known there.
+_STORE_OPCODES = frozenset({0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x39, 0x3A, 0x3D, 0x3E})
+
+
+def _frame_step(w, regs, slots):
+    """One non-control word's effect on the values known as offsets from the entry $sp."""
+    regs, slots = dict(regs), dict(slots)
+    op, fn = w >> 26, w & 0x3F
+    offset = (regs[rs(w)] + s16(w)) & 0xFFFFFFFF if rs(w) in regs else None
+    target, value = None, None
+    if op in (0x08, 0x09):
+        target, value = rt(w), offset
+    elif op == 0x23:
+        target, value = rt(w), slots.get(offset)
+    elif op == 0 and fn in (0x21, 0x25) and 0 in (rs(w), rt(w)):
+        target, value = rd(w), regs.get(rs(w) or rt(w))
+    if op in _STORE_OPCODES and offset is not None:
+        width = 16 if op in (0x3D, 0x3E) else 4
+        for slot in [slot for slot in slots if offset - 4 < slot < offset + width]:
+            del slots[slot]
+        if op == 0x2B and rt(w) in regs:
+            slots[offset] = regs[rt(w)]
+    written = _gpr_writes(w)
+    if written == "unknown":
+        written = (frozenset({rt(w)}) if op == 0x12 else
+                   frozenset() if op in _VFPU_OPCODES else frozenset(range(32)))
+    for reg in written:
+        regs.pop(reg, None)
+    if target and value is not None:
+        regs[target] = value
+    return regs, slots
+
+
+def _frame_walk(elf, start, insns, labels):
+    """What each path of a body knows of its frame, from the entry $sp at offset 0.
+
+    Returns (states, slot_states, released): the (registers, memory) known before each word,
+    the same before each delay slot, and whether a transfer leaves the body with $sp back at
+    its entry value. A store through a register not known here is taken to miss the frame.
+    """
+    states, slot_states, work = {}, {}, []
+    released = False
+
+    def meet(table, addr, regs, slots):
+        old = table.get(addr)
+        if old is not None:
+            regs = {k: v for k, v in regs.items() if old[0].get(k) == v}
+            slots = {k: v for k, v in slots.items() if old[1].get(k) == v}
+            if (regs, slots) == old:
+                return False
+        table[addr] = (regs, slots)
+        return True
+
+    def reach(addr, regs, slots):
+        nonlocal released
+        if addr not in insns:
+            released = released or regs.get(29) == 0
+        elif meet(states, addr, regs, slots):
+            work.append(addr)
+
+    reach(start, {29: 0}, {})
+    while work:
+        addr = work.pop()
+        regs, slots = states[addr]
+        w = read32(elf, addr)
+        if w is None or is_eret(w):
+            continue
+        if not is_control(w):
+            reach(addr + 4, *_frame_step(w, regs, slots))
+            continue
+        slot = read32(elf, addr + 4)
+        meet(slot_states, addr + 4, regs, slots)
+        after = _frame_step(slot, regs, slots) if slot is not None else (regs, slots)
+        op, fn = w >> 26, w & 0x3F
+        if op == 2:
+            reach(jump_target(addr, w), *after)
+        elif op == 3 or (op == 0 and fn == 9) or is_link(w):
+            kept = {k: v for k, v in after[0].items() if k in _CALL_SAVED_GPRS}
+            reach(addr + 8, kept, after[1])
+        elif op == 0 and fn == 8:
+            if rs(w) != 31:
+                released = released or after[0].get(29) == 0
+                for label in labels:
+                    reach(label, *after)
+        else:
+            reach(branch_target(addr, w), *after)
+            reach(addr + 8, *((regs, slots) if is_likely(w) else after))
+    return states, slot_states, released
+
+
+def guest_owns_entry_sp(elf, start, insns, labels):
+    """True when a body's returns must leave $sp as the guest set it.
 
     A callable body owes its caller the entry $sp, and its returns restore it (F3E). A body
     that loads $sp from memory is a longjmp or a context switch: it returns into the frame
@@ -930,11 +1060,33 @@ def guest_owns_entry_sp(elf, insns):
     tail transfers and its fall-through end therefore leave $sp as the guest set it, as a
     resume body's do. A frame adjustment (`addiu sp, sp, imm`) or `move sp, fp` keeps the
     callable contract.
+
+    So does freeing an alloca (#1892): the body binds $fp from $sp, saves $sp in its frame
+    and reloads it through $fp. It must record the entry $sp at its tail transfers, because
+    the pieces of the function that follow are entries entered at a lowered $sp, and the
+    first restore of a chain is the one that survives. On every path to the load, this body
+    must have bound $fp itself and saved the value in that slot, so a piece that uses a
+    frame someone else set up, or a switch that rebinds $fp, stays with the guest.
+
+    A body that frees its alloca, releases its frame and tail-calls is the guest's too. The
+    callee takes over the caller's $sp, and if it is a longjmp a recorded restore would undo
+    it.
     """
-    for addr in insns:
+    loads = [addr for addr in sorted(insns)
+             if (read32(elf, addr) or 0) >> 26 == 0x23 and rt(read32(elf, addr)) == 29]
+    if not loads:
+        return False
+    states, slot_states, released = _frame_walk(elf, start, insns, labels)
+    if released:
+        return True
+    for addr in loads:
+        seen = [table[addr] for table in (states, slot_states) if addr in table]
         w = read32(elf, addr)
-        if w is not None and (w >> 26) == 0x23 and ((w >> 16) & 0x1F) == 29:
+        if rs(w) != 30 or not seen:
             return True
+        for regs, slots in seen:
+            if 30 not in regs or (regs[30] + s16(w)) & 0xFFFFFFFF not in slots:
+                return True
     return False
 
 
@@ -993,7 +1145,7 @@ def emit_decoded_jump_target(addr):
     memory when the transfer runs: the delay slot's 256 MiB segment and the word's 26-bit
     index (AddressSpace.unrelocated_jump)."""
     return (f"((({G(addr)} + 4u) & 0xF0000000u) | "
-            f"((MEM_R32({G(addr)}) & 0x03FFFFFFu) << 2))")
+            f"(({code_word_read(32, G(addr))} & 0x03FFFFFFu) << 2))")
 
 
 def emit_checked_body_call(symbol, call_pc):
@@ -1280,18 +1432,6 @@ def mreg_index(reg, side, j, i):
 class Unsupported(Exception):
     pass
 
-# The HST PRX is linked/recompiled at guest address zero, while the original PSP
-# process maps it above the unmapped null page. A few guest data-structure walkers
-# intentionally read fields from their null terminator. Keep those reviewed data
-# loads zero-valued without changing instruction dispatch or legitimate low .text
-# addresses. This is relocation compatibility, not a loop cap.
-NULL_BASE_WORD_LOADS = {
-    0x0003E014: "command-list initial sentinel read",
-    0x0003E04C: "command-list next sentinel read",
-    0x0003E060: "command-list null completion callback",
-    0x000705D4: "uninitialized job-queue count read",
-}
-
 # Effect of a non-control instruction -> (c_statement, store_addr_expr_or_None, store_size).
 # Loads and stores whose effective address must satisfy the hardware's data
 # access rules under --lle-cpu, as {opcode: (width, is_store)}.
@@ -1388,7 +1528,7 @@ def _ll_sc_stmt(addr, w, op, lle_cpu, delay_branch_pc):
             f"sr_end(s, _ea, _sc ? 4 : 0); }}"), SELF_TRACED, 0
 
 
-def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+def effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     op = w >> 26
     if op == 0x10:  # COP0 (spec 3.4)
         cop_rs = (w >> 21) & 0x1F
@@ -1510,17 +1650,12 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
             if sub == 0x14: return wr(rd(w), f"sr_bitrev({R(rt(w))})"), None, 0                      # bitrev
         raise Unsupported(f"SPECIAL3 funct 0x{fn:02x} at 0x{addr:08x}")
     # Under the LLE gate every aligned load and store is address-checked first.
-    # The hst_profile null-base word-load workaround keeps its own emission:
-    # it is a title-specific hack, and production fixtures never opt into LLE.
-    if lle_cpu and op in LLE_ACCESS and not (hst_profile and op == 0x23 and addr in NULL_BASE_WORD_LOADS):
+    if lle_cpu and op in LLE_ACCESS:
         return _lle_access_stmt(addr, w, op, delay_branch_pc)
     # loads
     if op == 0x20: return wr(rt(w), f"((uint32_t)(int32_t)(int8_t)MEM_R8({R(rs(w))} + {simm(w)}))"), None, 0   # lb
     if op == 0x21: return wr(rt(w), f"((uint32_t)(int32_t)(int16_t)MEM_R16({R(rs(w))} + {simm(w)}))"), None, 0  # lh
-    if op == 0x23:
-        if hst_profile and addr in NULL_BASE_WORD_LOADS:
-            return wr(rt(w), f"({R(rs(w))} == 0u ? 0u : MEM_R32({R(rs(w))} + {simm(w)}))"), None, 0
-        return wr(rt(w), f"MEM_R32({R(rs(w))} + {simm(w)})"), None, 0   # lw
+    if op == 0x23: return wr(rt(w), f"MEM_R32({R(rs(w))} + {simm(w)})"), None, 0   # lw
     if op == 0x24: return wr(rt(w), f"MEM_R8({R(rs(w))} + {simm(w)})"), None, 0    # lbu
     if op == 0x25: return wr(rt(w), f"MEM_R16({R(rs(w))} + {simm(w)})"), None, 0   # lhu
     # stores
@@ -2682,9 +2817,9 @@ def _walk_body(elf, start, ranges, known, resume_owners, dispatch_boundaries,
             pc = next_pc
     return insns, labels, continuations
 
-def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+def _plain_line(addr, w, trace_w, lle_cpu=False, delay_branch_pc=None):
     try:
-        eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+        eff, saddr, ssize = effect(addr, w, lle_cpu=lle_cpu,
                                    delay_branch_pc=delay_branch_pc)
     except Unsupported:
         # Keep the owning function translatable when the static emitter does not know a
@@ -2698,8 +2833,8 @@ def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch
         return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff}"
     return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
 
-def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
-    line = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+def normal_line(addr, w, lle_cpu=False, delay_branch_pc=None):
+    line = _plain_line(addr, w, w, lle_cpu=lle_cpu,
                        delay_branch_pc=delay_branch_pc)
     if w is not None and _enhancement_boundary(addr):
         # One logic update begins here: count it before the stock statement runs.
@@ -2710,7 +2845,7 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
     word_line = None
     if rw["kind"] == "word":
         # The trace hook keeps the stock word: guest memory still holds it.
-        word_line = _plain_line(addr, rw["word"], w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+        word_line = _plain_line(addr, rw["word"], w, lle_cpu=lle_cpu,
                                 delay_branch_pc=delay_branch_pc)
     return _enhanced_line(rw, line, word_line)
 
@@ -2771,13 +2906,13 @@ class RegisterPromotion:
         self.in_span = False
         return lines
 
-    def try_line(self, addr, w, hst_profile=False, lle_cpu=False):
+    def try_line(self, addr, w, lle_cpu=False):
         """The promoted lines for one instruction, or None to emit it the legacy way."""
         global _PROMO_LINE
         collector = _PromotedLine()
         _PROMO_LINE = collector
         try:
-            text = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu)
+            text = _plain_line(addr, w, w, lle_cpu=lle_cpu)
         except Unsupported:
             text = None
         finally:
@@ -2829,7 +2964,7 @@ def _flow_return(resumable=False):
     """Leave the native body when a helper set flow metadata (spec 3.4)."""
     return "if (s->flow_kind != 0u) { return; }"
 
-def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
+def delay_slot_lines(ds, dsw, branch_pc, lle_cpu=False,
                      resumable=False, indent="    "):
     """Emission for one branch delay slot (spec 3.4).
 
@@ -2846,7 +2981,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
     dop, dfn = dsw >> 26, dsw & 0x3F
     if dop == 0 and dfn == 0x0C:  # syscall in delay slot
         if not lle_cpu:
-            return [normal_line(ds, dsw, hst_profile=hst_profile)]
+            return [normal_line(ds, dsw)]
         code = (dsw >> 6) & 0xFFFFF
         _ = code
         return [
@@ -2858,7 +2993,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
         ]
     if dop == 0 and dfn == 0x0D:  # break in delay slot
         if not lle_cpu:
-            return [normal_line(ds, dsw, hst_profile=hst_profile)]
+            return [normal_line(ds, dsw)]
         code = (dsw >> 6) & 0xFFFFF
         _ = code
         return [
@@ -2881,7 +3016,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
             f"{indent}sr_end(s, 0u, 0);",
             f"{indent}{_flow_return(resumable)}",
         ]
-    return [normal_line(ds, dsw, hst_profile=hst_profile, lle_cpu=lle_cpu,
+    return [normal_line(ds, dsw, lle_cpu=lle_cpu,
                         delay_branch_pc=branch_pc if lle_cpu else None)]
 
 # ---------------------------------------------------------------------------
@@ -3133,9 +3268,11 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             dispatch_boundaries=dispatch_boundaries)
     insns, labels, continuations = flow
     # A body that loads $sp leaves it to the guest at every exit, as a resume body does.
-    if not resumable and guest_owns_entry_sp(elf, insns):
+    if not resumable and guest_owns_entry_sp(elf, start, insns, labels):
         resumable = True
         GUEST_SP_ENTRIES.add(start)
+    if start in labels:
+        _refuse_argument_site_on_a_loop(start)
     for label in labels:
         # A label on the delay slot of a transfer that never falls through runs the slot
         # as an ordinary word; when that word goes on to the next one, the walk owns that
@@ -3207,7 +3344,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             if (not is_control(w) and not _is_cop0_move(w) and addr not in sv_points
                     and addr not in continuations and _enhancement_rewrite(addr) is None
                     and not (hst_profile and addr in _HST_INLINE_SITES)):
-                promoted = promo.try_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu)
+                promoted = promo.try_line(addr, w, lle_cpu=lle_cpu)
             if promoted is not None:
                 out.extend(promoted)
                 continue
@@ -3299,7 +3436,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 "      if (_mf_cnt > 0x00100000u) fprintf(stderr, \"MEMSET_FASTPATH: large count=0x%x base=0x%x r16=0x%08x MEM[r16+0]=0x%08x MEM[r16+4]=0x%08x MEM[r16+8]=0x%08x ra=0x%08x\\n\", _mf_cnt, _mf_base, s->r[16], (s->r[16]<0x0c000000u?MEM_R32(s->r[16]):0xDEADu), (s->r[16]<0x0c000000u?MEM_R32(s->r[16]+4u):0xDEADu), (s->r[16]<0x0c000000u?MEM_R32(s->r[16]+8u):0xDEADu), s->r[31]);\n"
                 "      if (_mf_cnt > 0 && _mf_cnt < 0x04000000u && sr_guest_span_writable(_mf_base, _mf_cnt)) {\n"
                 "          if (g_sr_heap_watch) sr_heap_note_bulk_write(_mf_base, _mf_cnt, 0x0006ea1cu);\n"
-                "          memset(SR_HOST(_mf_base), 0, _mf_cnt);\n"
+                "          memset(SR_HOST(SR_DATA_SPAN(_mf_base, _mf_cnt)), 0, _mf_cnt);\n"
                 "      } else {\n"
                 "          if (_mf_cnt) sr_oor(_mf_base, 0u, 1);\n"
                 "      }\n"
@@ -3358,7 +3495,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 "          if (_as_dst_lo < _as_dst_hi && _as_src_base < 0x0c000000u && _as_dst_lo < 0x0c000000u &&\n"
                 "              (uint64_t)_as_src_base + _as_nbytes <= 0x0c000000u && (uint64_t)_as_dst_lo + _as_nbytes <= 0x0c000000u) {\n"
                 "              if (g_sr_heap_watch) sr_heap_note_bulk_write(_as_dst_lo, (uint32_t)_as_nbytes, 0x00108630u);\n"
-                "              memmove(SR_HOST(_as_dst_lo), SR_HOST(_as_src_base), (size_t)_as_nbytes);\n"
+                "              memmove(SR_HOST(SR_DATA_SPAN(_as_dst_lo, _as_nbytes)),\n"
+                "                      SR_HOST(SR_DATA_SPAN(_as_src_base, _as_nbytes)), (size_t)_as_nbytes);\n"
                 "          } else {\n"
                 "              for (uint32_t _as_i = 0; _as_i < _as_n; _as_i++) {\n"
                 "                  uint32_t _as_d = _as_dst_hi - 8u * (_as_i + 1u);\n"
@@ -3413,7 +3551,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             )
 
         if not is_control(w):
-            out.append(normal_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu))
+            out.append(normal_line(addr, w, lle_cpu=lle_cpu))
             if _is_cop0_move(w):
                 # MFC0/MTC0 can raise (privilege/reserved encoding): propagate
                 # the resulting flow before any native continuation (spec 3.4).
@@ -3441,8 +3579,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 3 and ADDRESS_SPACE.unrelocated_jump(addr):  # jal the loader leaves as linked
             resume = G((addr + 8) & 0xFFFFFFFF)
             out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
-            out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); s->r[31] = {resume}; sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu,
+            out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); s->r[31] = {resume}; sr_end(s, 0u, 0);")
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                         resumable=resumable, indent="      "))
             out.append(f"      dispatch_call(s, _t, {resume}); }}")
             if addr in continuations:
@@ -3454,7 +3592,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             _jal_rw = _enhancement_rewrite(addr)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
             if target in known or target in resume_owners:
                 _call_stmt = f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
                 if lle_cpu:
@@ -3489,7 +3627,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.append(f"    {{ uint32_t _t = {R(a)};")
             out.append(f"      {emit_code_pointer_check('_t', addr)}")
             out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
                                         indent="      "))
             if d != 0:
                 out.append(
@@ -3519,12 +3657,12 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 elif ds_is_syscall and dsw is not None:
                     # LLE: the delay-slot syscall raises with BD set (spec 3.4).
                     out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                    out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
+                    out.extend(delay_slot_lines(ds, dsw, addr,
                                                 lle_cpu=lle_cpu, resumable=resumable,
                                                 indent="      "))
                 else:
                     out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                    out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
+                    out.extend(delay_slot_lines(ds, dsw, addr,
                                                 lle_cpu=lle_cpu, resumable=resumable,
                                                 indent="      "))
                 out.append(f"      {emit_host_return(resumable, stack_census=stack_census)} }}")
@@ -3536,28 +3674,32 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elif ds_is_syscall and dsw is not None:
                 # LLE: the delay-slot syscall raises with BD set (spec 3.4).
                 out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+                out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
             else:
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
                 out.append(f"    {{ uint32_t _t = {R(a)};")
                 out.append(f"      {emit_code_pointer_check('_t', addr)}")
                 out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
+                out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
                                             indent="      "))
                 out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         if op == 2 and ADDRESS_SPACE.unrelocated_jump(addr):  # j the loader leaves as linked
             out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
-            out.append(f"      sr_begin(s, {G(addr)}, MEM_R32({G(addr)})); sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu,
+            out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); sr_end(s, 0u, 0);")
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                         resumable=resumable, indent="      "))
             out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         if op == 2:  # j
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
+            if target == start:
+                # A `j` to the entry is a tail edge, not a label, so the check on labels
+                # above misses it; it enters the entry again and would double again.
+                _refuse_argument_site_on_a_loop(start)
             if target == addr:
                 # Self-loop (a spin wait): the native call below would recurse on the host
                 # stack once per iteration. Keep it a backward goto with the preemption point.
@@ -3590,7 +3732,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
 
         out.append(f"    {{ uint32_t _c = {cond};{inject_stmt}")
         out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-        _delay = delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable)
+        _delay = delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable)
         _delay_inline = " ".join(line.strip() for line in _delay)
         if is_linked_call(elf, addr, w, ranges):
             # bltzal/bgezal (bal = bgezal $zero) to a callable is a CALL (#968), inside
@@ -3696,6 +3838,9 @@ class RuntimeModuleTranslation:
     index: int
     name: str
     file_size: int
+    # The identity the loader checks. The FNV-1a digest only names shared units and symbols,
+    # where modules that agree on it are told apart by module_hashes.
+    file_sha256: str
     file_fnv1a64: int
     link_low: int = 0
     link_high: int = 0
@@ -3709,6 +3854,12 @@ class RuntimeModuleTranslation:
     # A code overlay (analyze.code_overlay_layout) is bound when guest memory holds these
     # leading bytes of the file (its header and text), not when the game loads a module.
     overlay_check_len: int = 0
+    # Non-empty: the check covers these (start, end) link ranges, in order, instead of
+    # leading bytes; a fixed-address ELF overlay, whose check is its translated words.
+    overlay_check_spans: tuple = ()
+    # A fixed-address ELF overlay: the addresses its code materializes with no evidence that
+    # they are code, left outside the spans (analyze._seed_materialized_code).
+    code_candidates: tuple = ()
     # analyze.static_coverage of the module's own link space (None when untranslatable).
     coverage: dict | None = None
     overlay_check_fnv1a64: int = 0
@@ -3800,6 +3951,17 @@ def var_import_table_lines(name, imports):
     return lines
 
 
+def word_runs(addresses):
+    """The word addresses as merged (start, end) runs of contiguous words, in order."""
+    runs = []
+    for address in sorted(addresses):
+        if runs and runs[-1][1] == address:
+            runs[-1][1] = address + 4
+        else:
+            runs.append([address, address + 4])
+    return [(lo, hi) for lo, hi in runs]
+
+
 def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
                              entry_hints=None):
     """Translate one runtime-placed module in its own link space.
@@ -3815,20 +3977,25 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         data = source.read()
     name = os.path.basename(module_path)
     module = RuntimeModuleTranslation(
-        index=index, name=name, file_size=len(data), file_fnv1a64=fnv1a64(data),
+        index=index, name=name, file_size=len(data),
+        file_sha256=hashlib.sha256(data).hexdigest(), file_fnv1a64=fnv1a64(data),
         texts=[], functions=[], spans=[], stubbed=[], shared=shared,
     )
     sys.stderr.write(f"Processing runtime-placed module: {name}\n")
-    if is_code_overlay(data):
+    overlay = is_code_overlay(data)
+    fixed_overlay = is_fixed_overlay(data)
+    if overlay:
         # The analysis reads a code overlay through its fixed-address ELF image; the
         # descriptor keeps the file's own identity and the bytes that identify it in memory.
         try:
-            layout = code_overlay_layout(data)
+            check_code_overlay(data)
         except ValueError as exc:
             module.unsupported_reason = f"code overlay cannot be translated: {exc}"
             return module
-        module.overlay_check_len = layout.check_bytes
-        module.overlay_check_fnv1a64 = fnv1a64(data[:layout.check_bytes])
+        if not fixed_overlay:
+            layout = code_overlay_layout(data)
+            module.overlay_check_len = layout.check_bytes
+            module.overlay_check_fnv1a64 = fnv1a64(data[:layout.check_bytes])
         data = code_overlay_elf(data)
     try:
         relocations = prx_reloc_model.model_relocations(data, name)
@@ -3850,10 +4017,12 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         module.unsupported_reason = f"module image cannot be laid out: {exc}"
         return module
     ranges = exec_ranges(elf)
+    discovery = {}
     try:
         # A code overlay's entry points are held by the executable (entry_hints).
         analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
-                              entry_hints=entry_hints if module.overlay_check_len else None)
+                              entry_hints=entry_hints if overlay else None,
+                              mixed_code_data=fixed_overlay, report=discovery)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1
@@ -3889,6 +4058,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     space = AddressSpace(base_symbol=module.base_symbol, prefix=module.prefix,
                          relocations=relocations, patched=var_sites)
     spans = span_index(ranges)
+    translated_words = set()
     previous_space = ADDRESS_SPACE
     ADDRESS_SPACE = space
     try:
@@ -3909,6 +4079,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
                     text = "\n".join(emit_function(elf, a, spans, known, profile=profile,
                                                    flow=flow))
                     nwords = len(head_run_words(elf, a, flow[0]))
+                    translated_words.update(flow[0])
                 except Unsupported as exc:
                     reason = str(exc).replace('"', "'")
                     text = (f"void {space.symbol(a)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
@@ -3921,6 +4092,29 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     finally:
         ADDRESS_SPACE = previous_space
     module.spans = sorted(set((lo, hi) for lo, hi in ranges if hi > lo))
+    if fixed_overlay:
+        # Its file mixes code and data in one segment, so no leading run of bytes is code
+        # only. The identity is every word a translation was emitted for, in address order,
+        # so no translated body can run over words that differ from the file. Interpreter
+        # authority is the analysed code alone (the traced words, the stubbed functions'
+        # included, and the translated ones): a jump into the data is a named miss.
+        module.overlay_check_spans = tuple(word_runs(translated_words))
+        words = b"".join(elf.read_at_vaddr(lo, hi - lo) for lo, hi in module.overlay_check_spans)
+        module.overlay_check_len = len(words)
+        module.overlay_check_fnv1a64 = fnv1a64(words)
+        code = {a for a in set(discovery.get("covered", ())) | translated_words | known
+                if in_ranges(a, ranges)}
+        module.spans = word_runs(code)
+        # An address its traced code materializes but never calls or jumps to may be data
+        # (analyze._seed_materialized_code): it has no executable authority and is not part
+        # of the identity, so a call to it is a named miss. Name each one here.
+        module.code_candidates = tuple(sorted(
+            a for a in discovery.get("code_candidates", ()) if not in_ranges(a, module.spans)))
+        for a in module.code_candidates:
+            sys.stderr.write(f"codegen: {name}@0x{a:08x}: materialized address with no "
+                             "evidence it is code; outside the spans\n")
+        if not words:
+            module.unsupported_reason = "code overlay has no translated code to identify it"
     module_stubbed = {a for a, _ in module.stubbed}
     module.coverage = static_coverage(
         elf, ranges, known,
@@ -4291,16 +4485,24 @@ def runtime_module_descriptor_lines(module):
     if module.var_imports:
         var_imports = f"sr_m{k}_var_imports"
         lines.extend(var_import_table_lines(var_imports, module.var_imports))
+    check_spans = "NULL"
+    if module.overlay_check_spans:
+        check_spans = f"sr_m{k}_check_spans"
+        lines.append(f"static const SrModuleSpan sr_m{k}_check_spans[] = {{")
+        lines.extend(f"    {{ 0x{lo:08x}u, 0x{hi:08x}u }},"
+                     for lo, hi in module.overlay_check_spans)
+        lines.append("};")
     reason = c_string(module.unsupported_reason) if module.unsupported_reason else "NULL"
     lines += [
         f"static const SrModuleCode sr_m{k}_code = {{",
-        f"    {c_string(module.name)}, 0x{module.file_size:08x}u, 0x{module.file_fnv1a64:016x}ull,",
+        f"    {c_string(module.name)}, 0x{module.file_size:08x}u, \"{module.file_sha256}\",",
         f"    0x{module.link_low:08x}u, 0x{module.link_high:08x}u, 0x{module.alignment:x}u, "
         f"{1 if module.relocatable else 0}u,",
         f"    {reason}, &{module.base_symbol},",
         f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u,",
         f"    0x{module.overlay_check_len:08x}u, 0x{module.overlay_check_fnv1a64:016x}ull,",
-        f"    {var_imports}, {len(module.var_imports)}u",
+        f"    {var_imports}, {len(module.var_imports)}u, "
+        f"{check_spans}, {len(module.overlay_check_spans)}u",
         "};",
         "",
     ]
@@ -4607,6 +4809,8 @@ def main(argv):
                 "code pointer (#1375); place it at a nonzero base\n")
             return 2
     elf = Elf(elf_path, base=base)
+    OPTIONS.null_page_guard = (
+        min(seg["vaddr"] for seg in elf.segments if seg["type"] == 1) < PSP_UNMAPPED_END)
     try:
         module_record = main_module_record(elf)
     except MainModuleRecordError as exc:
@@ -4823,6 +5027,9 @@ def main(argv):
     def llvm_body(text, image, a, image_ranges, image_known, **kwargs):
         """--backend=llvm: the function's LLVM body, else its C text with the reason."""
         if backend != "llvm":
+            return text
+        if OPTIONS.null_page_guard:
+            llvm_fallbacks.append((a, "the LLVM backend has no null-page guard (#363)"))
             return text
         try:
             body = codegen_llvm.lower(sys.modules[__name__], image, a, image_ranges, image_known,

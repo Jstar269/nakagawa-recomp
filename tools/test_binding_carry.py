@@ -188,7 +188,6 @@ class ManifestTests(Revisions, unittest.TestCase):
             "worker_thread_entry": old["EDIT"],
             "launcher_thread_entry": old["GONE"],
             "dispatch_aliases": [{"from": old["H1"], "to": old["H2"]}],
-            "callback_terminators": [{"sentinel": 0xFFFFFFFF, "pc": old["U2"] + 8}],
         }
         manifest = json.loads((ROOT / "assets/titles/display-smoke.json").read_text(encoding="utf-8"))
         manifest["runtime_bindings"] = bindings
@@ -218,7 +217,6 @@ class ManifestTests(Revisions, unittest.TestCase):
         self.assertNotIn("worker_thread_entry", proposal)
         self.assertNotIn("launcher_thread_entry", proposal)
         self.assertEqual(proposal["dispatch_aliases"], [{"from": self.new["H1"], "to": self.new["H2"]}])
-        self.assertEqual(proposal["callback_terminators"], [{"sentinel": 0xFFFFFFFF, "pc": self.new["U2"] + 8}])
         self.assertEqual(code, 1, "an uncarried binding must make the run fail loudly")
         title_manifest.validate_runtime_bindings(proposal, "$.runtime_bindings")
 
@@ -231,7 +229,6 @@ class ManifestTests(Revisions, unittest.TestCase):
     def test_a_dropped_pair_end_drops_the_whole_alias_and_says_so(self):
         bindings = copy.deepcopy(self.bindings)
         bindings["dispatch_aliases"] = [{"from": self.old["H1"], "to": self.old["GONE"]}]
-        bindings["callback_terminators"] = [{"sentinel": 0xFFFFFFFF, "pc": self.old["GONE"] + 4}]
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         manifest["runtime_bindings"] = bindings
         path = self.root / "title-dropped.json"
@@ -239,9 +236,7 @@ class ManifestTests(Revisions, unittest.TestCase):
         _, report = binding_carry.run(self.args(manifest=str(path)))
         proposal = report["proposed_runtime_bindings"]
         self.assertNotIn("dispatch_aliases", proposal)
-        self.assertNotIn("callback_terminators", proposal)
         self.assertTrue(any("dispatch_aliases[0]" in note for note in report["notes"]))
-        self.assertTrue(any("callback_terminators[0]" in note for note in report["notes"]))
 
     def test_an_interior_address_is_carried_only_where_the_code_lines_up(self):
         matcher = binding_carry.Matcher(binding_carry.load_module(self.old_cfg, None),

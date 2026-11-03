@@ -5710,6 +5710,17 @@ uint32_t ge_last_finish_id(void) { return s_ge_finish_id; }
  * also drew non-black content into it, and which buffer it targeted. */
 unsigned long g_list_writes=0, g_list_nonblack=0, g_list_clearpx=0;
 static uint32_t ge_run_list_inner(uint32_t addr, int resume);
+static atomic_int_least32_t *s_ge_run_stop;   /* ge_run_list_until's flag, for one run */
+static int s_ge_run_stopped;
+
+uint32_t ge_run_list_until(uint32_t addr, int resume, atomic_int_least32_t *stop, int *stopped) {
+    s_ge_run_stop = stop;
+    s_ge_run_stopped = 0;
+    uint32_t next = ge_run_list(addr, resume);
+    s_ge_run_stop = NULL;
+    *stopped = s_ge_run_stopped;
+    return next;
+}
 
 uint32_t ge_run_list(uint32_t addr, int resume) {
     uint64_t perf_started = sr_perf_now_ns();
@@ -6370,6 +6381,14 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             /* A list streamed through stall updates reaches its END in a later run, which
              * counts only its own primitives: count these toward the capture now. */
             if (ge_capture_active()) s_capture_total_prims += prims;
+            return addr;
+        }
+        /* An early stop is a stall the guest did not ask for, so nothing holds it apart from one:
+         * every word before addr has run. The first command always runs, so a stop makes
+         * progress and a fresh list has its stack reset; a SIGNAL stays with its END. */
+        if (s_ge_run_stop && guard != 0 && !pending_signal &&
+            atomic_load_explicit(s_ge_run_stop, memory_order_relaxed)) {
+            s_ge_run_stopped = 1;
             return addr;
         }
         uint32_t op=MEM_R32(addr); addr+=4;

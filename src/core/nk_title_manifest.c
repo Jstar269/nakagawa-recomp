@@ -1304,9 +1304,16 @@ static bool manifest_parse_runtime_bindings(ManifestParse *mp) {
                 return false;
             }
         }
+        if (obj_get(rb_node, "callback_terminators")) {
+            if (error_buf) snprintf(error_buf, error_buf_len,
+                "$.runtime_bindings.callback_terminators: CALLBACK_TERMINATOR_RETIRED: the "
+                "runtime no longer reports a dispatch target as a completed walk; remove "
+                "this field");
+            return false;
+        }
         static const char * const allowed_rb_keys[] = {
             "schema_version", "fallback_entry", "worker_thread_entry", "launcher_thread_entry",
-            "expected_data_file_count", "dispatch_aliases", "callback_terminators", NULL
+            "expected_data_file_count", "dispatch_aliases", NULL
         };
         static const char * const required_rb_keys[] = {"schema_version", NULL};
         if (!check_object_keys(rb_node, "$.runtime_bindings", allowed_rb_keys, required_rb_keys, error_buf, error_buf_len)) {
