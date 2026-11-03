@@ -1554,13 +1554,21 @@ int main(int argc, char **argv) {{
                                  "native layout rule")
 
     def test_start_entry_is_shared_by_python_and_c(self) -> None:
-        # module_start wins over e_entry, then module_bootstart, then e_entry; an image with
-        # no module info (p_paddr == p_vaddr) starts at e_entry.
+        # module_start wins over e_entry, then module_bootstart, then e_entry; a NID listed
+        # twice resolves to its last entry; an image with no module info (p_paddr ==
+        # p_vaddr) starts at e_entry.
         cases = [
             ("module-start-over-e-entry", build_module_start_elf(entry=0x08804008),
              0x08804004, None),
             ("module-start-over-bootstart", build_module_start_elf(entry=0, exports=(
                 (MODULE_BOOTSTART_NID, 0x8), (MODULE_START_NID, 0x4))), 0x08804004, None),
+            # A table that lists module_start twice (a retail executable lists a game
+            # routine first and its crt0 entry last): the module manager stores every
+            # match, so the last one is entered.
+            ("module-start-listed-twice", build_module_start_elf(entry=0x08804008, exports=(
+                (MODULE_START_NID, 0x4), (MODULE_START_NID, 0x8))), 0x08804008, None),
+            ("bootstart-listed-twice", build_module_start_elf(entry=0, exports=(
+                (MODULE_BOOTSTART_NID, 0x4), (MODULE_BOOTSTART_NID, 0xC))), 0x0880400C, None),
             ("bootstart-without-start", build_module_start_elf(
                 entry=0x08804008, exports=((MODULE_BOOTSTART_NID, 0xC),)), 0x0880400C, None),
             ("e-entry-without-exports", build_module_start_elf(
