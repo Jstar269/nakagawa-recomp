@@ -44,6 +44,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -92,7 +93,8 @@ HST_DISC_ID = "UCUS98701"
 
 
 def _load(path: pathlib.Path) -> dict:
-    return title_manifest.load_manifest(path)
+    returned: dict[str, Any] = title_manifest.load_manifest(path)
+    return returned
 
 
 class GenericTitleProofFixtures(unittest.TestCase):
@@ -119,8 +121,7 @@ class GenericTitleProofFixtures(unittest.TestCase):
         self.assertFalse(any("\\" in p or ":" in p for p in [normalized["filesystem"]["data_root"]]))
         # Runtime bindings are disjoint from the other two synthetics.
         self.assertEqual(len(normalized["runtime_bindings"]["dispatch_aliases"]), 2)
-        # One terminator: the sentinel-0 entry was retired (#1375).
-        self.assertEqual(len(normalized["runtime_bindings"]["callback_terminators"]), 1)
+        self.assertNotIn("callback_terminators", normalized["runtime_bindings"])
 
     def test_three_fixtures_are_pairwise_disjoint(self) -> None:
         """The three public synthetics use disjoint address families; matrix can distinguish."""
@@ -134,9 +135,6 @@ class GenericTitleProofFixtures(unittest.TestCase):
             used = {v for k, v in bindings.items() if isinstance(v, int)}
             for alias in bindings.get("dispatch_aliases", []):
                 used |= {alias["from"], alias["to"]}
-            for term in bindings.get("callback_terminators", []):
-                used |= {term.get("pc", 0), term.get("ra", 0)}
-                used.discard(0)
             # check against HST retired span/modules
             self.assertNotIn(HST_SPAN[0], used)
         self.assertEqual(len(bases), 3, "each fixture must have a distinct executable base")

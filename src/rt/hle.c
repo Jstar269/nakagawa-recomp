@@ -1931,6 +1931,7 @@ uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...) {
         sr_trace_close();
         sr_compat_report();
         sr_perf_shutdown();
+        SR_VERIFY_REPORT_NOW();
         fflush(stderr);
         _Exit(7);
     }
@@ -2058,6 +2059,8 @@ uint32_t s_deferred_self_stop_uid;
 uint32_t s_deferred_self_stop_thread_uid;
 static void hle_module_thread_exit(uint32_t uid);
 uint32_t s_loadexec_boot_uid;
+/* The guest path of the program the last LoadExec booted; empty while the boot program runs. */
+char s_loadexec_program_path[256];
 
 LoadedModule *find_loaded_module(uint32_t uid) {
     for (int i = 0; i < s_nloaded_modules; i++) {
@@ -2806,19 +2809,26 @@ void sr_hle_test_set_compiled_sdk_version(uint32_t version) {
  * captures (hrydgard/pspautotests e2d098fc, tests/utility/savedata/{initstatus,noupdate,
  * shutdownstatus}.expected and tests/utility/dialog/{status,priority}.expected):
  *  - INIT -> RUNNING is the dialog's own start-up. Every caller priority from 16 to 111 sees
- *    INIT on the GetStatus right after InitStart, and RUNNING follows with no Update call.
- *    Update does not move it: a message Update during INIT returns INVALID_STATUS, and
- *    savedata's (unmeasured) fails closed the same way. How long INIT lasts is unmeasured, so
- *    here start-up completes once a GetStatus has reported INIT.
+ *    INIT on the GetStatus right after InitStart, and RUNNING follows with no Update call once
+ *    the caller yields. Update does not move it: a message Update during INIT returns
+ *    INVALID_STATUS, and savedata's (unmeasured) fails closed the same way. How long INIT
+ *    lasts is unmeasured, so here start-up completes on the first vblank delivered after
+ *    InitStart, the first display frame the dialog can draw: a caller that polls within the
+ *    frame of its InitStart sees INIT, and one a frame later sees RUNNING, however many
+ *    GetStatus calls it made.
  *  - RUNNING -> FINISHED needs Update: a savedata dialog polled for two seconds without one
- *    stays RUNNING. The first Update does the work; FINISHED comes after the work and two more
- *    Updates, a count no capture measures.
+ *    stays RUNNING. The first Update does the dialog's work, and the first Update after that
+ *    work has completed moves to FINISHED, so FINISHED follows the work's completion rather
+ *    than a count of Updates.
  *  - SHUTDOWN -> NONE is the shutdown's own completion. A message dialog shows SHUTDOWN to
  *    every caller priority measured; a savedata shutdown ends at priority 0x20, so a caller
  *    at 0x20 sees SHUTDOWN and a worse one sees NONE at once (h_DlgShutdown). When NONE
- *    follows a reported SHUTDOWN is unmeasured: here on the next GetStatus.
+ *    follows a reported SHUTDOWN is unmeasured: here on the first vblank delivered after
+ *    ShutdownStart, as for start-up. Until then the dialog keeps the slot.
+ * Both frame-driven steps are applied by utility_slot_settle_locked, which every utility call
+ * runs first, so a call sees the state the dialog has reached whichever call comes first.
  * The OSK is a separate utility with its own state enum and is handled with the rest of it
- * below. */
+ * in hle_utility.c; its INIT -> VISIBLE and FINISHED -> NONE follow the same frames. */
 int guest_cstr(uint32_t addr, char *out, int max);
 static atomic_flag s_dialog_lock = ATOMIC_FLAG_INIT;
 void dialog_lock(void) {
@@ -2842,7 +2852,7 @@ int32_t sr_savedata_console_offset_minutes(void) {
     return (int32_t)psp_profile_local_offset_minutes(NULL, NULL);
 }
 
-int s_dlg_status = 0, s_dlg_tick = 0;
+int s_dlg_status = 0;
 int sr_savedata_pause_busy(void) {
     dialog_lock();
     const int busy = s_dlg_status >= 1 && s_dlg_status <= 3;
@@ -2856,7 +2866,6 @@ void utility_dialogs_reset_locked(void) {
     UtilityDialog *const dialogs[] = { &s_msg_dialog, &s_net_dialog, &s_gamedata_dialog,
                                        &s_sharing_dialog };
     s_dlg_status = 0;
-    s_dlg_tick = 0;
     s_dlg_param = 0u;
     s_dlg_result = 0u;
     s_dlg_work_started = s_dlg_work_done = 0u;
@@ -2867,7 +2876,6 @@ void utility_dialogs_reset_locked(void) {
         d->result = 0u;
         d->generation++;
         d->status = 0;
-        d->ticks = 0u;
         d->work_started = d->work_done = d->aborted = 0u;
     }
     s_utility_slot = UTILITY_SLOT_NONE;
@@ -3548,9 +3556,14 @@ int hle_fd_allocate(void) {
     }
     return -1;
 }
-/* Destination of a seek on a file descriptor (#1380). pspautotests tests/io/file at
- * f573fe8c9122a8ff5db4f030d74557bed644b4e0 records -1 for a destination before the start
- * and accepts one past the end (a read there returns 0). A Memory Stick file's position is
+/* Destination of a seek on a file descriptor (#1380). A Memory Stick seek to a destination
+ * before the start answers EINVAL (0x80010016; sceIoLseek's high word 0xFFFFFFFF) with the
+ * position unchanged, from SEEK_SET, SEEK_CUR and SEEK_END and through sceIoLseek32, on
+ * read-write and read-only descriptors (measured on a PSP-3000 6.61 by PSP-IO-EOF-001
+ * io-eof-seek-negative and io-eof-seek-negative-rdonly, 2026-11-02, probe f484ef58). Other
+ * devices keep the -1 pspautotests tests/io/file at f573fe8c9122a8ff5db4f030d74557bed644b4e0
+ * records there (UNMEASURED). A destination past the end is accepted and a read there returns
+ * 0 (pspautotests; also measured by io-eof-read-past). A Memory Stick file's position is
  * 32 bits wide: a destination of 0xFFFFFFFF is accepted and one past it answers EINVAL
  * (0x80010016) with the position unchanged, from SEEK_SET and from SEEK_END alike (measured on
  * a PSP-3000 6.61 by PSP-KERNEL-SEM-001 io-seek64 and io-seek64-rdwr, 2026-10-31, probe
@@ -4015,10 +4028,6 @@ static void hle_register_launch_sweep_blocker_handlers(void) {
 static void hle_register_unregistered_import_batch(void) {
     hle_register_unregistered_import_kernel_time_1();
     hle_register_unregistered_import_kernel_thread_1();
-    /* scePower_469989ad (0x469989ad) has no public name in the sources this project may consult, so
-     * it is refused under its synthetic name rather than given a guessed one. Its contract needs a
-     * named source and a probe before it can be modelled. */
-    hle_register_unregistered_import_power();
     /* sceKernelReferSystemStatus: measured for the bytes written and the size field; see h_ReferSystemStatus. */
     hle_register_unregistered_import_kernel_thread_2();
     /* VTimer lifecycle and query surface (measured; see the VTimer block above). */
@@ -4119,6 +4128,7 @@ void sr_hle_init(void) {
 #ifdef SR_MPEG_MEDIA_SELFTEST
     hle_register_mpeg_ycbcr_handlers();
     hle_register_mpeg_avc_decode_handler();
+    hle_register_mpeg_userdata_handlers();
     /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
      * so the guest getter and the A/V presentation boundaries are reachable from a
      * production-path test (issue #279). */
@@ -4129,6 +4139,9 @@ void sr_hle_init(void) {
     hle_register_display_setframebuf_handler();
     hle_register_regular_audio_handlers();
     hle_register_output2_audio_handlers();
+    /* The sceAtrac family, so the fixture's RIFF-header mutation stage reaches the
+     * production track parser and stream calls (#969). */
+    hle_register_atrac_handlers();
 #else
     hle_fd_init();
     g_callcount = getenv("SR_CALLCOUNT") ? 1 : 0;
@@ -4218,7 +4231,6 @@ void sr_hle_init(void) {
     hle_register_psmf_player_handlers();
     /* sceLibFont: synchronized handles backed by parsed firmware/user PGFs. */
     hle_register_font_handlers();
-    hle_register_init_umd();
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
     hle_register_kernel_module_handlers();
     /* IoFileMgrForUser: file IO from the ISO. */
@@ -4361,6 +4373,9 @@ static void hle_nidlog_note(uint32_t nid) {
 }
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
+#ifdef SR_VERIFY
+    sr_verify_at_stop(s, SR_VERIFY_STOP_IMPORT, nid, 0u);
+#endif
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -4425,7 +4440,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_hit_hle = 1;
         /* Under the fiber scheduler, longjmp across fibers is invalid; stop the process cleanly
          * after flushing the trace. The plain driver (no scheduler) keeps the longjmp boundary. */
-        if (sr_sched_on) { sr_trace_close(); sr_compat_report(); sr_perf_shutdown(); fflush(stderr); _Exit(7); }
+        if (sr_sched_on) { sr_trace_close(); sr_compat_report(); sr_perf_shutdown(); SR_VERIFY_REPORT_NOW(); fflush(stderr); _Exit(7); }
         longjmp(g_hle_jmp, 1);
     }
     if (hle_syslog_on()) {
@@ -4532,6 +4547,7 @@ int sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
     mod->start_entry_ran = 1;
     mark_module_started(mod->module_start);
     s_loadexec_boot_uid = uid;
+    snprintf(s_loadexec_program_path, sizeof(s_loadexec_program_path), "%s", guest_path);
     *entry_out = mod->module_start;
     *gp_out = mod->gp;
     return 1;

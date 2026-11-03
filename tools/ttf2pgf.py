@@ -55,7 +55,7 @@ except ImportError:  # direct script execution
     import pgf_writer  # type: ignore[no-redef]
 
 CONVERTER_NAME = "ttf2pgf"
-CONVERTER_VERSION = "0.2.0"
+CONVERTER_VERSION = "0.3.0"
 SPEC_PATH = "docs/cleanroom/PGF_CONVERTER_SPEC.md"
 PIN_SCHEMA = "font-pin/v1"
 
@@ -82,6 +82,8 @@ MAX_PPEM = 128
 MAX_EMBOLDEN = SUPERSAMPLE
 DEFAULT_PPEM = 12
 DEFAULT_CODES = "0x20-0x7E"
+ELLIPSIS_CODE = 0x2026
+FULL_STOP_CODE = 0x2E
 DEFAULT_FONT_NAME = "Nakagawa Open Latin"
 DEFAULT_FONT_TYPE = "Regular"
 JAPANESE_CODE_POINTS_SHA256 = "abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889"
@@ -275,25 +277,29 @@ def validate_output_name(name: str, pin: SourcePin | None) -> None:
 def _u16(data: bytes, offset: int, section: str) -> int:
     if offset < 0 or offset + 2 > len(data):
         raise _refuse("malformed-font", f"{section}: read of 2 bytes at {offset} is out of bounds")
-    return struct.unpack_from(">H", data, offset)[0]
+    returned: int = struct.unpack_from(">H", data, offset)[0]
+    return returned
 
 
 def _s16(data: bytes, offset: int, section: str) -> int:
     if offset < 0 or offset + 2 > len(data):
         raise _refuse("malformed-font", f"{section}: read of 2 bytes at {offset} is out of bounds")
-    return struct.unpack_from(">h", data, offset)[0]
+    returned: int = struct.unpack_from(">h", data, offset)[0]
+    return returned
 
 
 def _u32(data: bytes, offset: int, section: str) -> int:
     if offset < 0 or offset + 4 > len(data):
         raise _refuse("malformed-font", f"{section}: read of 4 bytes at {offset} is out of bounds")
-    return struct.unpack_from(">I", data, offset)[0]
+    returned: int = struct.unpack_from(">I", data, offset)[0]
+    return returned
 
 
 def _s8(data: bytes, offset: int, section: str) -> int:
     if offset < 0 or offset + 1 > len(data):
         raise _refuse("malformed-font", f"{section}: read of 1 byte at {offset} is out of bounds")
-    return struct.unpack_from(">b", data, offset)[0]
+    returned: int = struct.unpack_from(">b", data, offset)[0]
+    return returned
 
 
 @dataclass(frozen=True)
@@ -1445,9 +1451,10 @@ class _Planner:
     number of glyphs it names.
     """
 
-    def __init__(self, font: _Ttf, codes: list[int] | tuple[int, ...]) -> None:
+    def __init__(self, font: _Ttf, codes: list[int] | tuple[int, ...], *, baseline_ellipsis: bool = False) -> None:
         self.font = font
         self.codes = tuple(codes)
+        self.outline_shift: dict[int, int] = {}
         gids: dict[int, int] = {}
         for code in self.codes:
             gid = font.glyph_id(code)
@@ -1459,13 +1466,37 @@ class _Planner:
             gids[code] = gid
         self.gids = gids
         self._rasters: dict[int, dict[int, _Raster]] = {}
+        if baseline_ellipsis:
+            self.outline_shift[ELLIPSIS_CODE] = self._ellipsis_shift()
+
+    def _ellipsis_shift(self) -> int:
+        """Font units that set the ellipsis on the full stop's line.
+
+        A Japanese font centres U+2026 on the em, which reads as three raised dots in Latin text.
+        """
+        stop = self.font.glyph_id(FULL_STOP_CODE)
+        if ELLIPSIS_CODE not in self.gids or stop is None:
+            raise _refuse("baseline-ellipsis-unavailable", "the code set or the font lacks U+2026 or U+002E")
+        ellipsis_low = min((y for contour in self.font.outline(self.gids[ELLIPSIS_CODE]) for _x, y, _on in contour),
+                           default=None)
+        stop_low = min((y for contour in self.font.outline(stop) for _x, y, _on in contour), default=None)
+        if ellipsis_low is None or stop_low is None:
+            raise _refuse("baseline-ellipsis-unavailable", "U+2026 or U+002E has no outline")
+        return int(stop_low) - int(ellipsis_low)
+
+    def outline(self, code: int) -> list[list[tuple]]:
+        """The code's contours in font units, after any shift this conversion asked for."""
+        contours = self.font.outline(self.gids[code])
+        shift = self.outline_shift.get(code, 0)
+        if not shift:
+            return contours
+        return [[(x, y + shift, on) for x, y, on in contour] for contour in contours]
 
     def raster_at(self, code: int, ppem: int) -> _Raster:
         per_size = self._rasters.setdefault(ppem, {})
         cached = per_size.get(code)
         if cached is None:
-            contours = self.font.outline(self.gids[code])
-            cached = _plan_raster(contours, ppem, self.font.units_per_em)
+            cached = _plan_raster(self.outline(code), ppem, self.font.units_per_em)
             per_size[code] = cached
         return cached
 
@@ -1491,7 +1522,7 @@ class _Planner:
         ascender = 0
         descender = 0
         for code in self.codes:
-            contours = self.font.outline(self.gids[code])
+            contours = self.outline(code)
             if not contours:
                 continue
             top = 0
@@ -1555,6 +1586,11 @@ def convert(
     embolden_x: int = 0,
     embolden_y: int = 0,
     embolden_advance: int = 0,
+    nominal_size_26_6: int | None = None,
+    resolution_26_6: int = pgf_writer.DEFAULT_RESOLUTION,
+    header_ascender_26_6: int | None = None,
+    header_descender_26_6: int | None = None,
+    baseline_ellipsis: bool = False,
 ) -> Conversion:
     """Convert one pinned TrueType font into a PGF image plus its manifest.
 
@@ -1596,7 +1632,7 @@ def convert(
     validate_output_name(font_name, pin)
 
     font = _Ttf(data)
-    planner = _Planner(font, code_list)
+    planner = _Planner(font, code_list, baseline_ellipsis=baseline_ellipsis)
 
     chosen_targets: dict | None = None
     if metric_targets is not None:
@@ -1664,7 +1700,10 @@ def convert(
             glyphs,
             font_name=font_name,
             font_type=font_type,
-            nominal_em_26_6=ppem * 64,
+            nominal_em_26_6=ppem * 64 if nominal_size_26_6 is None else nominal_size_26_6,
+            resolution_26_6=resolution_26_6,
+            ascender_26_6=header_ascender_26_6,
+            descender_26_6=header_descender_26_6,
         )
     except pgf_writer.PgfWriteError as exc:
         prefix = f"{exc.reason}: "
@@ -1690,6 +1729,10 @@ def convert(
         pin=pin,
         metric_targets=chosen_targets,
         embolden=(embolden_x, embolden_y, embolden_advance),
+        nominal_size_26_6=ppem * 64 if nominal_size_26_6 is None else nominal_size_26_6,
+        resolution_26_6=resolution_26_6,
+        header_extents=(header_ascender_26_6, header_descender_26_6),
+        baseline_ellipsis=baseline_ellipsis,
     )
     return Conversion(
         image=image,
@@ -1735,7 +1778,11 @@ def _build_manifest(
     output_path: str,
     pin: SourcePin | None,
     metric_targets: dict | None,
+    nominal_size_26_6: int,
+    resolution_26_6: int,
     embolden: tuple[int, int, int] = (0, 0, 0),
+    header_extents: tuple[int | None, int | None] = (None, None),
+    baseline_ellipsis: bool = False,
 ) -> dict:
     first, last = codes
     header = _read_header_fields(image)
@@ -1798,7 +1845,11 @@ def _build_manifest(
         },
         "parameters": {
             "ppem": ppem,
-            "nominal_em_26_6": ppem * 64,
+            "nominal_em_26_6": nominal_size_26_6,
+            "resolution_26_6": resolution_26_6,
+            "header_ascender_26_6": header_extents[0],
+            "header_descender_26_6": header_extents[1],
+            "baseline_ellipsis": baseline_ellipsis,
             "supersample": SUPERSAMPLE,
             "coverage_bits": 4,
             "rounding": "scale: floor(x * ppem * 64 / upem + 1/2); coverage: floor((n * 15 + 32) / 64)",
@@ -1886,6 +1937,24 @@ def _main(argv: list[str]) -> int:
         default=0,
         help=f"add N/8 px to every advance to make room for bolder strokes (0..{MAX_EMBOLDEN}, default 0)",
     )
+    parser.add_argument(
+        "--nominal-size",
+        type=int,
+        help="header horizontal and vertical size in 26.6 points (default: ppem * 64)",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=pgf_writer.DEFAULT_RESOLUTION,
+        help=f"header horizontal and vertical resolution in 26.6 dpi (default {pgf_writer.DEFAULT_RESOLUTION})",
+    )
+    parser.add_argument("--header-ascender", type=int, help="header ascender in 26.6 px (default: the glyphs' extreme)")
+    parser.add_argument("--header-descender", type=int, help="header descender in 26.6 px (default: the glyphs' extreme)")
+    parser.add_argument(
+        "--baseline-ellipsis",
+        action="store_true",
+        help="set U+2026 on the line of U+002E, for a font that centres it on the em",
+    )
     args = parser.parse_args(argv)
 
     if args.manifest is not None and args.pin is None:
@@ -1920,6 +1989,11 @@ def _main(argv: list[str]) -> int:
             embolden_x=args.embolden_x,
             embolden_y=args.embolden_y,
             embolden_advance=args.embolden_advance,
+            nominal_size_26_6=args.nominal_size,
+            resolution_26_6=args.resolution,
+            header_ascender_26_6=args.header_ascender,
+            header_descender_26_6=args.header_descender,
+            baseline_ellipsis=args.baseline_ellipsis,
         )
         manifest = manifest_bytes(conversion.manifest)
     except TtfConvertError as exc:

@@ -1506,6 +1506,9 @@
       "null-code-pointer": {
         "issue": 1375
       },
+      "null-data-pointer": {
+        "issue": 363
+      },
       "target-not-executable": {
         "issue": 118
       },

@@ -98,7 +98,7 @@ Titles that omit the key are unaffected.
 - `synthetic-title2.json` is a third source-owned fixture added for the
   generic-title planning proof: it uses a distinct supported synthetic address
   family (`0x090xxxxx`), a distinct module name (`synthetic2.prx` at
-  `0x09400000`), and disjoint `dispatch_aliases`/`callback_terminators`. It
+  `0x09400000`), and disjoint `dispatch_aliases`. It
   builds the shared profile-zero source at this manifest's own address family.
   `profile-zero-e2e` asserts the same seven-case route without generic-core
   title branches.
@@ -134,6 +134,25 @@ UCUS98701 as the built-in `hst` title. Its `executable`, `module_dir` and
 `nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst`
 reads. Shipping it does not make the runtime generic or prove portability or
 correctness for another title.
+
+## Carrying runtime bindings to another revision
+
+A manifest's `runtime_bindings` hold addresses in one executable. For another revision of the same
+game, `tools/binding_carry.py` proposes the new block by matching functions on their code with
+relocations masked (`--old-cfg`, `--new-cfg` are `codegen.py --cfg-report` outputs; `--manifest`
+is only read):
+
+```powershell
+python tools/binding_carry.py --old-cfg old_cfg.json --new-cfg new_cfg.json --manifest assets/titles/<title>.json --out-bindings proposed.json --report report.json
+```
+
+Each bound address is reported as `exact`, `neighbour` (identical code told apart by the functions
+around it), `fuzzy` (changed code, 0.75 similarity or more and clearly ahead of the runner-up),
+`caller` (placed by exactly matched callers), `ambiguous` or `unmatched`. Only `exact` and
+`neighbour` results are written unless `--accept-fuzzy` is given, and the other two are marked
+`CHECK BY HAND`. An alias pair with an unresolved end is dropped whole, and the exit status
+is non-zero while anything is left out. The analysis inputs and the report come from a title: keep
+them private.
 
 ## Qualification
 

@@ -88,6 +88,7 @@ void sched_liveness_set_starvation_limit(unsigned limit);
 
 int     sr_sched_on = 0;
 atomic_int_least32_t sr_timeslice = 0;
+atomic_int_least32_t sr_preempt_due = 0;
 
 #define TIMESLICE 1000           /* yields per thread run before preemption (smaller = more frequent vblank delivery, fixes UMD-init spin) */
 #define MAXTHREADS 128
@@ -203,6 +204,7 @@ typedef struct {
      * the import the thread itself is inside, never another thread's. */
     int      import_active;
     uint32_t import_nid;
+    int      pc_stale;            /* switched out inside a call: saved.pc is its last yield */
     int      has_block_nid;       /* the last block happened inside an import */
     uint32_t block_nid;           /* NID of that import */
     int      block_start_valid;   /* block_start_us is the start of the current wait */
@@ -1471,6 +1473,24 @@ static void scheduler_progress_time(void) {
     scheduler_latch_due_events();
 }
 
+/* Time also passes for threads that hand the CPU to one another. sr_yield's slow path runs only
+ * when a slice reaches its count, and a dispatch grants a fresh count, so threads that block and
+ * wake each other within their slices, with one always ready, reach neither that path nor the
+ * idle loop. Then the clock stood still and no VBLANK came due: a title's own PSMF player, its
+ * threads passing a picture around while the game waited for the display, never saw another
+ * VBLANK (#286). So each pass of the scheduler keeps time and serves what came due. Turbo has no
+ * host clock to read, and scheduler_progress_time charges it a whole quantum, so it charges one
+ * per TIMESLICE dispatches, the rate at which a dispatch counts as a yield. */
+static uint32_t s_dispatches_since_time;
+
+static void scheduler_keep_time_at_dispatch(void) {
+    pace_setup();
+    if (!s_pace_on && ++s_dispatches_since_time < TIMESLICE) return;
+    s_dispatches_since_time = 0;
+    scheduler_progress_time();
+    scheduler_service_pending();
+}
+
 static void scheduler_add_time(uint64_t delta) {
     sched_pause_assert_no_guest("scheduler_add_time");
     if (delta > UINT64_MAX - s_vtime_us) s_vtime_us = UINT64_MAX;
@@ -2210,7 +2230,9 @@ static void scheduler_vtimer_service(void) {
  * of this decision shipped with no executable coverage at all. */
 typedef struct {
     uint64_t soonest;        /* earliest finite wake deadline, else SCHED_WAIT_FOREVER */
-    int waiting_on_vblank;   /* a live thread is parked on VBLANK_WAIT_OBJ */
+    int waiting_on_vblank;   /* a live thread waits for the next VBLANK: parked on
+                              * VBLANK_WAIT_OBJ, or on CTRL_WAIT_OBJ, which the sample
+                              * taken at each VBLANK wakes (sr_ctrl_sample) */
     int vblank_can_wake;     /* ...and the source can still fire AND be serviced */
     int unwakeable;          /* nothing the runtime can do will ready anyone */
 } SchedIdleState;
@@ -2225,7 +2247,7 @@ static SchedIdleState sched_classify_idle(void) {
         any_waiting = 1;
         if (s_tcb[i].wake < st.soonest) st.soonest = s_tcb[i].wake;
         if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ &&
-            s_tcb[i].wait_obj == VBLANK_WAIT_OBJ)
+            (s_tcb[i].wait_obj == VBLANK_WAIT_OBJ || s_tcb[i].wait_obj == CTRL_WAIT_OBJ))
             st.waiting_on_vblank = 1;
     }
     /* A pending alarm is a guest timer like any other deadline, but only while somebody is
@@ -2719,6 +2741,9 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
         sched_destroy_thread_coro(t);
         t->started = 0;
         t->wakeups = 0; t->sleeping = 0; t->wait_obj = 0; t->wake = 0;
+        /* The re-seeded pc is the entry, where the thread really resumes: the "switched out
+         * inside a call" mark from its last run must not hide it from unload safety (#286). */
+        t->pc_stale = 0;
         memset(&t->saved, 0, sizeof(t->saved));
         t->saved.r[26] = t->k0_init;
         t->saved.r[29] = t->sp_init;
@@ -3188,6 +3213,7 @@ static void sched_preempt_timer_check(uint64_t now_ns) {
     if (s_preempt_timer_at_ns == UINT64_MAX || now_ns < s_preempt_timer_at_ns) return;
     s_preempt_timer_at_ns = UINT64_MAX;
     atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
+    atomic_store_explicit(&sr_preempt_due, 1, memory_order_relaxed);
 }
 
 /* Publish the deadline for the thread that is running now. Called on the guest's host
@@ -3269,6 +3295,7 @@ void sr_yield(CpuState *s) {
     /* The slice ended, by its count or by the preemption timer: whatever the timer
      * held is spent, so the next arm publishes afresh. */
     s_preempt_timer_published = UINT64_MAX;
+    atomic_store_explicit(&sr_preempt_due, 0, memory_order_relaxed);
     if (s->r[28] != 0u) {
         s_gp = s->r[28];
     }
@@ -3538,6 +3565,26 @@ void sched_preempt(void) {
         SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_PREEMPT, s_cur, 0u);
     }
 #endif
+}
+
+/* The timer's interrupt edge inside a long HLE call (#1296). Guest code reaches sr_yield at its
+ * SR_YIELD points, but a call into the runtime has none, so the deadline the timer met would wait
+ * for the call to return: a GE list ran its priority-40 caller for up to 120 ms with the
+ * priority-16 sound thread due. The call polls sr_preempt_due between units of work and comes
+ * here, and the stronger thread runs under the strict-priority rule. The caller keeps its host
+ * stack, as in any HLE wait, so it only has to leave what it owns as another thread may find it.
+ * Interrupts stay latched until a scheduler boundary, as they do during the call.
+ *
+ * With interrupts or dispatch disabled, or no thread running, the switch stays deferred like any
+ * other. The deadline is then left spent, not re-published: it would fire again at once, on every
+ * command of the call, and the next boundary publishes it anyway. */
+void sched_preempt_point(void) {
+    atomic_store_explicit(&sr_preempt_due, 0, memory_order_relaxed);
+    if (s_cur < 0 || !s_interrupts_enabled || !s_dispatch_enabled) return;
+    s_preempt_timer_published = UINT64_MAX;
+    scheduler_progress_time();
+    sched_preempt();
+    sched_preempt_timer_arm();
 }
 
 /* Diagnostic switches read on every block, delay or scheduler pass. The environment is
@@ -4422,6 +4469,12 @@ static int sched_pc_in_module(uint32_t pc, uint32_t start, uint32_t end) {
  * module image being retired. Refuse that synthetic safety case. Threads in
  * object/timer waits are deliberately excluded: PSP-3000 measurement #1106
  * showed that such waiters and their kernel objects survive late-module unload.
+ *
+ * Generated code writes pc only at a yield that ends a slice, so a thread inside a call, the
+ * caller of this check among them, still shows where its last slice ended. That can be the
+ * image: a title that deletes its player and unloads the module from its own code was refused
+ * for a pc it had left, and its next load of the player failed for good (#286). Such a thread
+ * goes on at $ra, the check that stays.
  */
 int sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid) {
     if (start >= end) return 0;
@@ -4431,7 +4484,8 @@ int sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid) 
         if (t->state != TH_READY && t->state != TH_RUNNING) continue;
         const CpuState *state = (t->state == TH_RUNNING && i == s_cur && s_cpu)
                               ? s_cpu : &t->saved;
-        if (sched_pc_in_module(state->pc, start, end) ||
+        int pc_stale = i == s_cur || t->pc_stale;
+        if ((!pc_stale && sched_pc_in_module(state->pc, start, end)) ||
             sched_pc_in_module(state->r[31], start, end))
             return 1;
     }
@@ -5189,6 +5243,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
                 fprintf(stderr, "  uid 0x%x entry 0x%08x %s prio %d wait_obj 0x%x\n",
                         s_tcb[i].uid, s_tcb[i].entry, stn[s_tcb[i].state], s_tcb[i].priority, s_tcb[i].wait_obj);
         }
+        scheduler_keep_time_at_dispatch();
         int idx = pick_next();
         if (idx < 0) {
             if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
@@ -5316,6 +5371,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         sr_exec_slice_begin(t->exec_tier);
         sr_coro_switch(t->coro);           /* run until it yields/blocks/exits */
         t->exec_tier = sr_exec_slice_end();
+        t->pc_stale = !s_pause_switch_from_yield;
         sr_aot_return_boundary_stack_swap(&t->aot_return_boundary_stack);
         if (sr_perf_enabled) sr_perf_guest_end();
         t->hle_depth = g_hle_depth;

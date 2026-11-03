@@ -548,6 +548,14 @@ target_include_directories(test_input_settings PRIVATE
 target_link_libraries(test_input_settings PRIVATE nakagawa_core)
 add_test(NAME input_settings_test COMMAND test_input_settings)
 
+add_executable(test_portable_mode
+    tests/native/test_portable_mode.c
+    tests/native/native_test_isolation.c
+)
+target_include_directories(test_portable_mode PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
+target_link_libraries(test_portable_mode PRIVATE nakagawa_core)
+add_test(NAME portable_mode_test COMMAND test_portable_mode)
+
 if(WIN32)
     add_executable(argv_echo_helper tests/native/argv_echo_helper.c)
     target_link_libraries(argv_echo_helper PRIVATE shell32)

@@ -265,7 +265,30 @@ typedef struct {
      * [lo, hi) VRAM-offset byte spans (target_note_cpu_write, target_sync_cpu_writes). */
     uint32_t cpu_lo[TARGET_CPU_SPANS], cpu_hi[TARGET_CPU_SPANS];
     int cpu_n;
+    /* Rows [draw_y0, draw_y1) the GPU drew since guest VRAM last matched. The GE has no buffer
+     * height: FB_H is the image's, and what a title keeps below its target, vertices for one,
+     * is not the target's. Every other row of the image equals guest VRAM. */
+    int draw_y0, draw_y1;
 } Target;
+
+static void target_note_drawn(Target *t, int y0, int y1) {
+    if (y0 >= y1) return;
+    if (t->draw_y0 >= t->draw_y1) { t->draw_y0 = y0; t->draw_y1 = y1; return; }
+    if (y0 < t->draw_y0) t->draw_y0 = y0;
+    if (y1 > t->draw_y1) t->draw_y1 = y1;
+}
+
+static void target_note_clean(Target *t) {
+    t->clean_gen = t->render_gen;
+    t->draw_y0 = t->draw_y1 = 0;
+}
+
+/* Whether rows [y0, y1) of `t` hold any byte of the VRAM-offset span [off0, off1). */
+static int target_rows_hit(const Target *t, int y0, int y1, uint64_t off0, uint64_t off1) {
+    if (y0 >= y1) return 0;
+    const uint64_t row = (uint64_t)t->stride * (t->fmt == 3u ? 4u : 2u);
+    return off0 < t->fba + (uint64_t)y1 * row && t->fba + (uint64_t)y0 * row < off1;
+}
 
 /* Presentation readbacks use their own command buffer, fence, and persistently mapped
  * buffer.  This lets the guest-VRAM conversion complete on a later emulator tick while
@@ -280,6 +303,7 @@ typedef struct {
     VkImage image;
     uint64_t gen;
     uint32_t fba, stride, fmt;
+    int y0, y1;                            /* the rows the commit writes */
     int pending;
     int commit;
 } ReadbackSlot;
@@ -335,6 +359,7 @@ static uint32_t s_readback_cursor;
 /* Background presentation readbacks have no synchronous caller to return an error to.
  * Keep failures sticky so the explicit snapshot boundary can refuse stale guest VRAM. */
 static unsigned long long s_readback_commit_failures;
+static int s_readback_full;                /* SR_GPU_READBACK_FULL: the reference copy (#323) */
 
 static VkRenderPass s_rp;
 
@@ -1034,9 +1059,39 @@ static GeGpuFbDescriptor target_descriptor(uint32_t fba, uint32_t stride, uint32
     return d;
 }
 
-/* `src` is the full SCALED readback (SCL_W x SCL_H); each guest pixel is written from
- * the top-left device subpixel of its scale x scale cell (identity at scale 1). */
-static int write_guest_fb(const uint32_t *src, uint32_t fba, uint32_t stride, uint32_t fmt) {
+/* Guest memory keeps the top-left device pixel of each scale x scale cell, so a readback takes
+ * only the rows y * scale, packed one after another in the buffer, and the bytes copied grow
+ * with the scale, not with its square (#323). SR_GPU_READBACK_FULL=1 copies the whole scaled
+ * target instead, the reference path. */
+static uint32_t readback_row_step(void) {
+    return s_readback_full ? (uint32_t)s_scale : 1u;
+}
+
+static VkDeviceSize readback_bytes(uint32_t bpp) {
+    return (VkDeviceSize)SCL_W * (s_readback_full ? SCL_H : FB_H) * bpp;
+}
+
+static void cmd_copy_readback(VkCommandBuffer cmd, VkImage img, VkImageAspectFlags aspect,
+                              VkBuffer buf, uint32_t bpp) {
+    VkBufferImageCopy c[FB_H];
+    const uint32_t regions = s_readback_full || s_scale == 1 ? 1u : FB_H;
+    memset(c, 0, regions * sizeof(c[0]));
+    for (uint32_t i = 0; i < regions; i++) {
+        c[i].bufferOffset = (VkDeviceSize)i * SCL_W * bpp;
+        c[i].imageSubresource.aspectMask = aspect;
+        c[i].imageSubresource.layerCount = 1;
+        c[i].imageOffset.y = (int32_t)(i * (uint32_t)s_scale);
+        c[i].imageExtent.width = SCL_W;
+        c[i].imageExtent.height = regions == 1u ? SCL_H : 1u;
+        c[i].imageExtent.depth = 1;
+    }
+    vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, regions, c);
+}
+
+/* `src` is a readback (cmd_copy_readback); each guest pixel of rows [y0, y1) is written from the
+ * top-left device subpixel of its scale x scale cell (identity at scale 1). */
+static int write_guest_fb(const uint32_t *src, uint32_t fba, uint32_t stride, uint32_t fmt,
+                          int y0, int y1) {
     uint32_t srow = SCL_W;
     GeGpuFbDescriptor desc = target_descriptor(fba, stride, fmt);
     GeGpuFbSpan span;
@@ -1048,8 +1103,8 @@ static int write_guest_fb(const uint32_t *src, uint32_t fba, uint32_t stride, ui
     }
     uint32_t wb = desc.width;
     uint32_t rba = span.base;
-    for (uint32_t y = 0; y < FB_H; y++) {
-        const uint32_t *sl = src + (uint32_t)(y * s_scale) * srow;
+    for (uint32_t y = (uint32_t)y0; y < (uint32_t)y1; y++) {
+        const uint32_t *sl = src + y * readback_row_step() * srow;
         if ((fmt & 3) == 3) {
             uint32_t *dst = (uint32_t *)SR_HOST(rba + y * stride * 4);
             if (s_scale == 1) memcpy(dst, sl, wb * 4);
@@ -1083,9 +1138,9 @@ static int readback_finish(ReadbackSlot *r, int wait, int allow_commit) {
     int commit_failed = 0;
     if (allow_commit && r->commit && t && t->used && t->img == r->image &&
         t->gpu_valid && t->render_gen == r->gen) {
-        if (write_guest_fb(r->map, r->fba, r->stride, r->fmt)) {
-            t->clean_gen = r->gen;
-            if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)(SCL_W * SCL_H * 4u));
+        if (write_guest_fb(r->map, r->fba, r->stride, r->fmt, r->y0, r->y1)) {
+            target_note_clean(t);
+            if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)readback_bytes(4u));
             s_cnt_readback++;
         } else {
             commit_failed = 1;
@@ -1296,14 +1351,22 @@ static VkDescriptorSet make_descriptor(VkImageView view, VkSampler smp, VkDescri
 
 static uint32_t s_flushgen = 1;            /* bumped per submit: invalidates state template */
 
+static const SnapRect k_snap_rect_empty = { 0, 0, 0, 0 };
+
+/* What pending_rows has covered of the queued batches: the box, how many batches, and how much
+ * of the last of them. */
+static SnapRect s_pend_box;
+static uint32_t s_pend_batches, s_pend_count;
+
 static void batches_reset(void) {
     s_nbatch = 0; s_nverts = 0;
     s_ntnl = 0; s_ntnlp = 0;
+    s_pend_box = k_snap_rect_empty;
+    s_pend_batches = s_pend_count = 0;
     s_flushgen++;
     for (int i = 0; i < s_tex_n; i++) s_tex[i].pending = 0;
 }
 
-static const SnapRect k_snap_rect_empty = { 0, 0, 0, 0 };
 
 static int snap_rect_empty(const SnapRect *r) { return r->x0 >= r->x1 || r->y0 >= r->y1; }
 
@@ -1388,6 +1451,25 @@ static SnapRect tnl_rect(const Batch *b, uint32_t first, uint32_t count) {
 
 static SnapRect batch_rect(const Batch *b) {
     return b->key.tnl ? tnl_rect(b, b->first, b->count) : verts_rect(b, b->first, b->count);
+}
+
+/* The rows the queued batches draw, in [y0, y1). A title reading its VRAM between draws asks once
+ * per vertex, so each call covers only what was queued since the last one. */
+static void pending_rows(int *y0, int *y1) {
+    for (uint32_t i = s_pend_batches ? s_pend_batches - 1u : 0u; i < s_nbatch; i++) {
+        const Batch *b = &s_batch[i];
+        const uint32_t done = i + 1u == s_pend_batches ? s_pend_count : 0u;
+        if (b->count <= done) continue;
+        SnapRect r = b->key.tnl ? tnl_rect(b, b->first + done, b->count - done)
+                                : verts_rect(b, b->first + done, b->count - done);
+        snap_rect_union(&s_pend_box, &r);
+    }
+    if (s_nbatch) {
+        s_pend_batches = s_nbatch;
+        s_pend_count = s_batch[s_nbatch - 1u].count;
+    }
+    *y0 = s_pend_box.y0;
+    *y1 = s_pend_box.y1;
 }
 
 static int batch_reads_dst(const Batch *b) {
@@ -1665,6 +1747,7 @@ static int submit_pending(void) {
         }
         const int tracked = s_snap_src == t && s_snap_tracked && s_snap_dirty_gen == t->render_gen;
         ok = submit_range(t, i, j);
+        target_note_drawn(t, drawn.y0, drawn.y1);
         if (ok && tracked) {
             /* Outside what this op drew, the snapshot still holds the target. */
             snap_rect_union(&s_snap_dirty, &drawn);
@@ -1719,6 +1802,10 @@ static int target_readback(Target *t) {
     }
     readback_poll();
     if (t->clean_gen == t->render_gen) return 1;   /* VRAM already current */
+    if (t->draw_y0 >= t->draw_y1) {
+        target_note_clean(t);                      /* nothing it drew reached a row */
+        return 1;
+    }
     /* A presentation copy of this exact generation may already be in flight.  Waiting
      * for that target-local fence avoids issuing a duplicate copy. */
     for (int i = 0; i < READBACK_FRAMES; i++) {
@@ -1731,19 +1818,29 @@ static int target_readback(Target *t) {
     if (!cmd_begin()) return 0;
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkBufferImageCopy c = {0};
-    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    c.imageSubresource.layerCount = 1;
-    c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(s_cmd, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer, 1, &c);
+    cmd_copy_readback(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, s_xfer, 4u);
     if (!cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION)) return 0;
-    if (!write_guest_fb((const uint32_t *)s_xfer_map, t->fba, t->stride, t->fmt)) return 0;
-    uint32_t bpp = t->fmt == 3u ? 4u : 2u;
-    ge_zbuf_invalidate_guest_span(0x04000000u + t->fba,
-                                  t->stride * FB_H * bpp);
-    t->clean_gen = t->render_gen;
+    const int y0 = t->draw_y0, y1 = t->draw_y1;
+    if (!write_guest_fb((const uint32_t *)s_xfer_map, t->fba, t->stride, t->fmt, y0, y1)) return 0;
+    uint32_t row = t->stride * (t->fmt == 3u ? 4u : 2u);
+    ge_zbuf_invalidate_guest_span(0x04000000u + t->fba + (uint32_t)y0 * row,
+                                  (uint32_t)(y1 - y0) * row);
+    target_note_clean(t);
+    if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)readback_bytes(4u));
     s_cnt_readback++;
     return 1;
+}
+
+/* Write back what `t` holds of the VRAM-offset span [off, off + bytes), which is nothing unless
+ * the GPU drew one of the rows the span lies in. */
+static int target_readback_span(Target *t, uint32_t off, uint32_t bytes) {
+    if (t == s_cur && s_nbatch) {
+        int y0, y1;
+        pending_rows(&y0, &y1);
+        if (target_rows_hit(t, y0, y1, off, (uint64_t)off + bytes) && !submit_pending()) return 0;
+    }
+    if (!target_rows_hit(t, t->draw_y0, t->draw_y1, off, (uint64_t)off + bytes)) return 1;
+    return target_readback(t);
 }
 
 /* Queue the image transition and optional guest-VRAM copy needed by presentation.
@@ -1786,13 +1883,7 @@ static int target_prepare_present(Target *t) {
     if (vkBeginCommandBuffer(r->cmd, &bi) != VK_SUCCESS) return 0;
     to_layout(r->cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    if (copy) {
-        VkBufferImageCopy c = {0};
-        c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        c.imageSubresource.layerCount = 1;
-        c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
-        vkCmdCopyImageToBuffer(r->cmd, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r->buf, 1, &c);
-    }
+    if (copy) cmd_copy_readback(r->cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, r->buf, 4u);
     if (vkEndCommandBuffer(r->cmd) != VK_SUCCESS ||
         vkResetFences(s_dev, 1, &r->fence) != VK_SUCCESS) {
         t->layout = old_layout;
@@ -1814,6 +1905,7 @@ static int target_prepare_present(Target *t) {
     r->image = t->img;
     r->gen = t->render_gen;
     r->fba = t->fba; r->stride = t->stride; r->fmt = t->fmt;
+    r->y0 = t->draw_y0; r->y1 = t->draw_y1;
     r->commit = copy;
     r->pending = 1;
     return 1;
@@ -1874,7 +1966,7 @@ static int target_upload(Target *t) {
     t->gpu_valid = 1;
     t->cpu_n = 0;                          /* the whole image now holds guest VRAM */
     t->render_gen++;                       /* image content changed (snapshot reuse check) */
-    t->clean_gen = t->render_gen;          /* VRAM is the source: in sync by definition */
+    target_note_clean(t);                  /* VRAM is the source: in sync by definition */
     s_cnt_upload++;
     return 1;
 }
@@ -2046,7 +2138,7 @@ static int target_patch_vram_dirty(Target *t, uint32_t dirty_addr, uint32_t dirt
     t->gpu_valid = 1;
     t->render_gen++;
     if (was_clean || (overlap0 == target0 && overlap1 == target1))
-        t->clean_gen = t->render_gen;
+        target_note_clean(t);
     s_cnt_upload++;
     return 1;
 }
@@ -2226,11 +2318,7 @@ static int depth_to_cpu(DepthEnt *d) {
     if (!cmd_begin()) return 0;
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkBufferImageCopy c = {0};
-    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    c.imageSubresource.layerCount = 1;
-    c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(s_cmd, d->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer, 1, &c);
+    cmd_copy_readback(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, s_xfer, 2u);
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_DEPTH_READBACK)) return 0;
@@ -2238,7 +2326,8 @@ static int depth_to_cpu(DepthEnt *d) {
     for (uint32_t y = 0; y < FB_H; y++)
         for (uint32_t x = 0; x < FB_W; x++)
             s_zbuf[y * d->zstride + x] =
-                src[(uint32_t)(y * s_scale) * SCL_W + x * s_scale];
+                src[y * readback_row_step() * SCL_W + x * s_scale];
+    if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)readback_bytes(2u));
     d->cpu_dirty = 1;
     d->guest_dirty = 0;
     ge_zbuf_note_external_write();
@@ -2272,11 +2361,7 @@ static int depth_readback_to_guest(DepthEnt *d) {
     if (!cmd_begin()) return 0;
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkBufferImageCopy c = {0};
-    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    c.imageSubresource.layerCount = 1;
-    c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(s_cmd, d->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer, 1, &c);
+    cmd_copy_readback(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, s_xfer, 2u);
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_DEPTH_READBACK)) return 0;
@@ -2287,14 +2372,14 @@ static int depth_readback_to_guest(DepthEnt *d) {
         for (uint32_t x = 0; x < width; x++) {
             uint32_t linear = (y * d->zstride + x) * 2u;
             uint32_t addr = 0x04000000u + ((d->zba + linear) ^ 0x2040u);
-            uint16_t value = src[(uint32_t)(y * s_scale) * SCL_W + x * (uint32_t)s_scale];
+            uint16_t value = src[y * readback_row_step() * SCL_W + x * (uint32_t)s_scale];
             if (!sr_inrange_n(addr, 2u)) return 0;
             memcpy(SR_HOST_LINEAR(addr), &value, sizeof value);
         }
     }
     d->guest_dirty = 0;
     ge_zbuf_invalidate_guest_span(depth_first, depth_end - depth_first);
-    if (sr_perf_enabled) sr_perf_vulkan_readback(FB_W * FB_H * 2u);
+    if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)readback_bytes(2u));
     return 1;
 }
 
@@ -2833,9 +2918,7 @@ static void tex_mip_targets_readback(const TexMipKey *mip, const uint32_t *level
         uint32_t off = vram_off(mip->addr[i]);
         for (int t = 0; t < MAX_TGT; t++) {
             Target *tg = &s_tgts[t];
-            if (!tg->used || !tg->gpu_valid) continue;
-            uint32_t flen = tg->stride * FB_H * (tg->fmt == 3u ? 4u : 2u);
-            if (off < tg->fba + flen && tg->fba < off + level_bytes[i]) (void)target_readback(tg);
+            if (tg->used && tg->gpu_valid) (void)target_readback_span(tg, off, level_bytes[i]);
         }
     }
 }
@@ -3040,6 +3123,23 @@ static int blend_needs_shader(uint32_t sfp, uint32_t dfp, uint32_t eq, uint32_t 
            blend_dual_fix(sfp, dfp, fixa, fixb);
 }
 
+/* Find the target that holds VRAM offset `a` (gpu_valid not required). The GE has no buffer height
+ * register, so a target's span below is its widest case, 272 rows: a title that stacks short
+ * targets puts the next target's base inside that span. The nearest base at or below `a` owns the
+ * address. */
+static Target *target_containing(uint32_t a) {
+    Target *best = NULL;
+    for (int i = 0; i < MAX_TGT; i++) {
+        Target *t = &s_tgts[i];
+        if (!t->used) continue;
+        uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
+        if (a < t->fba || a >= t->fba + t->stride * FB_H * bpp_t) continue;
+        if (!best || t->fba > best->fba || (t->fba == best->fba && t->gpu_valid && !best->gpu_valid))
+            best = t;
+    }
+    return best;
+}
+
 /* Build pipeline key + push constants for the current GE state. Always succeeds. */
 static void build_state(int persp, int sprite, Batch *b) {
     uint64_t key_started = cpu_profile_now();
@@ -3225,17 +3325,8 @@ static void build_state(int persp, int sprite, Batch *b) {
     b->dset = s_white_set;
     if (textured) {
         uint64_t lookup_started = cpu_profile_now();
-        Target *src = NULL;
-        if (is_vram(g->tex_addr)) {
-            uint32_t ta = vram_off(g->tex_addr);
-            for (int i = 0; i < MAX_TGT; i++) {
-                Target *ti = &s_tgts[i];
-                if (!ti->used || !ti->gpu_valid) continue;
-                uint32_t bpp_t = ti->fmt == 3 ? 4 : 2;
-                uint32_t flen = ti->stride * FB_H * bpp_t;
-                if (ta >= ti->fba && ta < ti->fba + flen) { src = ti; break; }
-            }
-        }
+        Target *src = is_vram(g->tex_addr) ? target_containing(vram_off(g->tex_addr)) : NULL;
+        if (src && !src->gpu_valid) src = NULL;
         cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, lookup_started);
         if (src) {
             static int nortt = -1;
@@ -3277,7 +3368,8 @@ static void build_state(int persp, int sprite, Batch *b) {
                 b->pc.texsize[3] = (float)(pix / src->stride);
             } else {
                 /* incompatible stride/format reinterpretation, or mip levels: VRAM + decoder */
-                target_readback(src);
+                (void)target_readback_span(src, vram_off(g->tex_addr),
+                                           tex_span_size(g->tex_bufw, g->tex_w, g->tex_h));
                 b->dset = tex_get();
             }
         } else {
@@ -3857,13 +3949,14 @@ static int hook_vram_read(uint32_t addr, uint32_t bytes) {
     if (!s_ready || !bytes) return 1;
     uint64_t read0 = SR_PHYS(addr);
     uint64_t read1 = read0 + bytes;
+    /* Offsets from the start of VRAM; a read below it wraps to where no target lies. */
+    const uint64_t off0 = read0 - UINT64_C(0x04000000), off1 = read1 - UINT64_C(0x04000000);
     if (s_nbatch) {
         int queued_overlap = 0;
         if (s_cur && s_cur->used && s_cur->gpu_valid) {
-            uint32_t bpp = s_cur->fmt == 3u ? 4u : 2u;
-            uint64_t target0 = UINT64_C(0x04000000) + s_cur->fba;
-            uint64_t target1 = target0 + (uint64_t)s_cur->stride * FB_H * bpp;
-            queued_overlap = read0 < target1 && target0 < read1;
+            int y0, y1;
+            pending_rows(&y0, &y1);
+            queued_overlap = target_rows_hit(s_cur, y0, y1, off0, off1);
         }
         if (!queued_overlap && s_cur && s_cur->dep)
             queued_overlap = depth_span_overlaps(s_cur->dep, addr, bytes);
@@ -3872,10 +3965,7 @@ static int hook_vram_read(uint32_t addr, uint32_t bytes) {
     for (int i = 0; i < MAX_TGT; i++) {
         Target *t = &s_tgts[i];
         if (!t->used || !t->gpu_valid || t->clean_gen == t->render_gen) continue;
-        uint32_t bpp = t->fmt == 3u ? 4u : 2u;
-        uint64_t target0 = UINT64_C(0x04000000) + t->fba;
-        uint64_t target1 = target0 + (uint64_t)t->stride * FB_H * bpp;
-        if (read0 < target1 && target0 < read1 && !target_readback(t)) return 0;
+        if (target_rows_hit(t, t->draw_y0, t->draw_y1, off0, off1) && !target_readback(t)) return 0;
     }
     for (int i = 0; i < MAX_DEP; i++) {
         DepthEnt *d = &s_deps[i];
@@ -3908,17 +3998,6 @@ static int hook_vram_pending(void) {
 }
 
 /* ---- GE block transfer: GPU-side image blit ------------------------------------------------ */
-
-/* Find the target whose address range contains VRAM offset `a` (gpu_valid not required). */
-static Target *target_containing(uint32_t a) {
-    for (int i = 0; i < MAX_TGT; i++) {
-        Target *t = &s_tgts[i];
-        if (!t->used) continue;
-        uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
-        if (a >= t->fba && a < t->fba + t->stride * FB_H * bpp_t) return t;
-    }
-    return NULL;
-}
 
 /* Perform the block transfer as a vkCmdCopyImage between two framebuffer targets. Returns 1
  * on success (guest VRAM left stale for the destination, like any rendered-to target); 0
@@ -3967,6 +4046,7 @@ static int hook_xfer(uint32_t startdata) {
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_TRANSFER_BLIT)) return 0;
     dst->render_gen++;                       /* content changed (snapshot/present tracking) */
+    target_note_drawn(dst, (int)dy, (int)(dy + h));
     if (g_ace_on) ace_note_target_draw(dst->fba);
     sr_vram_mark_renderer_pending();
     dst->lru = s_lru++;
@@ -3995,6 +4075,7 @@ int gegpu_replay_reset(void) {
     for (int i = 0; i < MAX_TGT; i++) {
         s_tgts[i].gpu_valid = 0;
         s_tgts[i].clean_gen = 0;
+        s_tgts[i].draw_y0 = s_tgts[i].draw_y1 = 0;
     }
     for (int i = 0; i < MAX_DEP; i++) s_deps[i].cpu_dirty = 1;
     for (int i = 0; i < s_tex_n; i++) s_tex[i].content_valid = 0;
@@ -4061,11 +4142,7 @@ void gegpu_flush(const char *reason) {
         uint32_t bytes = (srcY + h) * (srcStride ? srcStride : 512u) * 4u;  /* conservative */
         for (int i = 0; i < MAX_TGT; i++) {
             Target *t = &s_tgts[i];
-            if (!t->used || !t->gpu_valid) continue;
-            uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
-            uint32_t flen = t->stride * FB_H * bpp_t;
-            if (a0 < t->fba + flen && t->fba < a0 + bytes)
-                target_readback(t);
+            if (t->used && t->gpu_valid) (void)target_readback_span(t, a0, bytes);
         }
         return;
     }
@@ -4075,11 +4152,7 @@ void gegpu_flush(const char *reason) {
         uint32_t ca = vram_off(s_ge->clut_addr);
         for (int i = 0; i < MAX_TGT; i++) {
             Target *t = &s_tgts[i];
-            if (!t->used || !t->gpu_valid) continue;
-            uint32_t bpp_t = t->fmt == 3 ? 4 : 2;
-            uint32_t flen = t->stride * FB_H * bpp_t;
-            if (ca < t->fba + flen && t->fba < ca + 2048)
-                target_readback(t);
+            if (t->used && t->gpu_valid) (void)target_readback_span(t, ca, 2048u);
         }
         return;
     }
@@ -4222,6 +4295,8 @@ int gegpu_init(void) {
         const char *shadow_disable = getenv("SR_GPU_TEX_SHADOW_DISABLE");
         s_tex_shadow_enabled = !(shadow_disable && shadow_disable[0] &&
                                  strcmp(shadow_disable, "0") != 0);
+        const char *readback_full = getenv("SR_GPU_READBACK_FULL");
+        s_readback_full = readback_full && readback_full[0] && strcmp(readback_full, "0") != 0;
         const char *sync = getenv("SR_GPU_SYNC_SUBMIT");
         s_async_submit = !(sync && sync[0] && strcmp(sync, "0") != 0);
         s_submit_batch_ops = SUBMIT_BATCH_MAX;
@@ -4302,7 +4377,7 @@ int gegpu_init(void) {
         cbi.commandBufferCount = 1;
         VKC(vkAllocateCommandBuffers(s_dev, &cbi, &r->cmd));
         VKC(vkCreateFence(s_dev, &fci, NULL, &r->fence));
-        if (!make_buffer((VkDeviceSize)SCL_W * SCL_H * 4u, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        if (!make_buffer(readback_bytes(4u), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                          &r->buf, &r->mem, (void **)&r->map)) return 0;
     }
 

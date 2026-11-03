@@ -458,6 +458,9 @@ def build_pgf(
     font_name: str = DEFAULT_FONT_NAME,
     font_type: str = DEFAULT_FONT_TYPE,
     nominal_em_26_6: int = DEFAULT_NOMINAL_EM_26_6,
+    resolution_26_6: int = DEFAULT_RESOLUTION,
+    ascender_26_6: int | None = None,
+    descender_26_6: int | None = None,
 ) -> bytes:
     """Write one deterministic PGF image from an in-memory glyph set.
 
@@ -465,7 +468,10 @@ def build_pgf(
     change the output.  A code span wider than the glyph set is a sparse character
     map: codes without a glyph hold the absence sentinel (PGF_SPEC.md 3.1, 3.2).
     ``nominal_em_26_6`` is written to the header's horizontal and vertical size
-    fields. Every rejection is a :class:`PgfWriteError` naming its reason.
+    fields and ``resolution_26_6`` to its two resolution fields. ``ascender_26_6`` and
+    ``descender_26_6`` replace the header's ascender and descender, which otherwise are the
+    extrema of the glyph set: the console's own fonts carry design values there, and a game can
+    place its baseline by them. Every rejection is a :class:`PgfWriteError` naming its reason.
     """
     name_bytes = _validate_font_name(font_name)
     type_bytes = _font_field(font_type, "font type")
@@ -479,6 +485,18 @@ def build_pgf(
             "nominal-size-out-of-range",
             f"nominal em size {nominal_em_26_6!r} must be an integer 1..{MAX_NOMINAL_EM_26_6} in 26.6 units",
         )
+    if (
+        not isinstance(resolution_26_6, int)
+        or isinstance(resolution_26_6, bool)
+        or not 1 <= resolution_26_6 <= INT32_MAX
+    ):
+        raise _refuse("resolution-out-of-range", f"resolution {resolution_26_6!r} must be a positive 26.6 value")
+    for label, value, low, high in (
+        ("ascender", ascender_26_6, 0, INT32_MAX),
+        ("descender", descender_26_6, INT32_MIN, 0),
+    ):
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high):
+            raise _refuse("header-metric-out-of-range", f"header {label} {value!r} is outside {low}..{high}")
     glyphs = list(glyphs)
     if not glyphs:
         raise _refuse("empty-glyph-set", "a PGF needs at least one glyph record")
@@ -542,6 +560,10 @@ def build_pgf(
     struct.pack_into("<H", header, 0xB8, last_glyph)
 
     extrema = _extrema(plans)
+    if ascender_26_6 is not None:
+        extrema["ascender"] = ascender_26_6
+    if descender_26_6 is not None:
+        extrema["descender"] = descender_26_6
     for index, key in enumerate(
         ("ascender", "descender", "left_x", "base_y", "centre_x", "top_y", "advance_x", "advance_y")
     ):
@@ -557,8 +579,8 @@ def build_pgf(
     struct.pack_into("<I", header, 0x170, 0)
     struct.pack_into("<i", header, 0x24, nominal_em_26_6)
     struct.pack_into("<i", header, 0x28, nominal_em_26_6)
-    struct.pack_into("<i", header, 0x2C, DEFAULT_RESOLUTION)
-    struct.pack_into("<i", header, 0x30, DEFAULT_RESOLUTION)
+    struct.pack_into("<i", header, 0x2C, resolution_26_6)
+    struct.pack_into("<i", header, 0x30, resolution_26_6)
 
     image = bytes(header) + b"".join(tables) + _packed_section(char_map, char_map_bits)
     image += _packed_section(pointers, pointer_bits) + bytes(glyph_data)

@@ -715,7 +715,8 @@ def _resolve_codegen_profile(
                 "codegen profile conflicts with the manifest "
                 f"(requested {requested!r}, manifest {declared!r})"
             )
-        return declared
+        returned: str = declared
+        return returned
     if requested is None:
         raise TitleCodegenPlanError(
             "codegen_profile is absent from the manifest; an explicit profile is required"
@@ -1220,7 +1221,8 @@ def _analysis_base(module: dict[str, Any], path: Path) -> int | None:
     runtime-placed module its link space -- base 0 for a relocatable PSP module, its
     absolute link addresses for a fixed-address image -- exactly as codegen translates it."""
     if module.get("placement") != "runtime":
-        return module["load_address"]
+        returned: int | None = module["load_address"]
+        return returned
     with path.open("rb") as stream:
         header = stream.read(18)
     if len(header) == 18 and header[:4] == b"\x7fELF" and int.from_bytes(header[16:18], "little") == 0xFFA0:
@@ -1304,7 +1306,7 @@ def _make_input_images(
 
             try:
                 with source["path"].open("rb") as stream:
-                    overlay = analyze.is_code_overlay(stream.read(4))
+                    overlay = analyze.is_code_overlay(stream.read(18))
                 # A code overlay has no import table: it calls the executable's stubs.
                 stubs, findings = ({}, []) if overlay else _import_model(elf)
             except ImportTableError as exc:

@@ -1197,6 +1197,39 @@ void sr_exec_interp_exit(int returned_to_aot, int call_return) {
     else s_exec.exits_aot_handoff++;
 }
 
+static int miss_target_compare(const void *left, const void *right) {
+    uint32_t a = *(const uint32_t *)left, b = *(const uint32_t *)right;
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/* SR_MISS_SEEDS: the distinct dispatch-miss targets of this run, one guest address per line in
+ * ascending order, for tools/miss_seeds.py to merge into the title's seed list (#1848). It only
+ * reports what the run already counted; nothing here changes how a miss is handled. A target
+ * that did not fit the entry-point set is counted in points_overflow, and the file says so
+ * rather than passing a short list off as complete. */
+static void exec_write_miss_seeds(const char *path) {
+    uint32_t targets[SR_EXEC_ENTRY_POINT_SLOTS];
+    size_t count = 0;
+    for (unsigned i = 0; i < SR_EXEC_ENTRY_POINT_SLOTS; i++)
+        if (s_exec.point_used[i] && s_exec.point_miss[i]) targets[count++] = s_exec.point_pc[i];
+    qsort(targets, count, sizeof targets[0], miss_target_compare);
+    FILE *out = fopen(path, "w");
+    if (!out) {
+        fprintf(stderr, "EXEC_SHARE: cannot open SR_MISS_SEEDS output\n");
+        return;
+    }
+    fprintf(out, "# nakagawa-miss-seeds-v1\n# miss_targets=%zu entry_points_overflow=%llu\n", count,
+            (unsigned long long)s_exec.points_overflow);
+    for (size_t i = 0; i < count; i++) fprintf(out, "0x%08" PRIx32 "\n", targets[i]);
+    if (fclose(out) != 0)
+        fprintf(stderr, "EXEC_SHARE: cannot write SR_MISS_SEEDS output\n");
+    if (s_exec.points_overflow)
+        fprintf(stderr,
+                "EXEC_SHARE: %llu interpreter entries did not fit the entry-point set; the "
+                "SR_MISS_SEEDS list may be incomplete\n",
+                (unsigned long long)s_exec.points_overflow);
+}
+
 void sr_exec_share_arm(void) { s_exec.armed = 1; }
 
 void sr_exec_share_report(void) {
@@ -1227,6 +1260,8 @@ void sr_exec_share_report(void) {
             (unsigned long long)sr_exec_interp_instructions, s_exec.points,
             s_exec.miss_points, (unsigned long long)s_exec.points_overflow);
     fflush(stderr);
+    const char *seeds_path = getenv("SR_MISS_SEEDS");
+    if (seeds_path && seeds_path[0]) exec_write_miss_seeds(seeds_path);
     const char *path = getenv("SR_EXEC_SHARE_JSON");
     if (!path || !path[0]) return;
     FILE *out = fopen(path, "w");

@@ -476,7 +476,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_PAGE_UPDATES,      /* VIEW_UPDATES: check for updates */
     PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET, /* VIEW_CONFIRM_FACTORY_RESET */
     PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY, /* VIEW_ACCESSIBILITY_SETTINGS */
-    PLAYER_UI_SETTINGS_PAGE_ACE            /* VIEW_ACE_SETTINGS */
+    PLAYER_UI_SETTINGS_PAGE_ACE,           /* VIEW_ACE_SETTINGS */
+    PLAYER_UI_SETTINGS_PAGE_PROBLEM_REPORT /* VIEW_PROBLEM_REPORT */
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -533,8 +534,24 @@ typedef enum {
     PLAYER_UI_SETTINGS_CYCLE_ACE_FILTERING,  /* 16x, 8x, 4x, 2x, Off */
     PLAYER_UI_SETTINGS_TOGGLE_ACE_TEXT,
     PLAYER_UI_SETTINGS_TOGGLE_ACE_READOUT,
-    PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE
+    PLAYER_UI_SETTINGS_TOGGLE_ACE_NOTICE,
+    PLAYER_UI_SETTINGS_OPEN_PROBLEM_REPORT,  /* Settings > Problem report: lists the files */
+    PLAYER_UI_SETTINGS_CREATE_REPORT,        /* write the bundle on this PC */
+    PLAYER_UI_SETTINGS_OPEN_REPORT_FOLDER
 } PlayerUiSettingsOp;
+
+#define PLAYER_UI_REPORT_LINES 24u   /* PLAYER_REPORT_MAX_FILES */
+
+/* Where the problem report is, in the order of player_state's PlayerReportPhase. */
+typedef enum {
+    PLAYER_UI_REPORT_IDLE = 0,
+    PLAYER_UI_REPORT_PREVIEWING,
+    PLAYER_UI_REPORT_PREVIEWED,
+    PLAYER_UI_REPORT_CREATING,
+    PLAYER_UI_REPORT_DONE,
+    PLAYER_UI_REPORT_FAILED,
+    PLAYER_UI_REPORT_NO_PYTHON
+} PlayerUiReportStep;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
 #define PLAYER_UI_RESET_FOLDERS 5u   /* PLAYER_FACTORY_RESET_FOLDERS */
@@ -607,6 +624,13 @@ typedef struct {
     const char *update_folder;      /* the downloads folder or the new version's folder */
     const char *update_error_title;
     const char *update_error_message;
+    /* Problem report (VIEW_PROBLEM_REPORT): the files it would hold, then where it went */
+    PlayerUiReportStep report_step;
+    const char *report_lines[PLAYER_UI_REPORT_LINES];   /* "name  (size)" */
+    size_t report_line_count;
+    const char *report_path;        /* the written ZIP */
+    const char *report_command;     /* what to run by hand without Python */
+    const char *report_message;     /* why it failed */
     /* Online and developer options */
     bool online_mode;
     bool online_news;
@@ -812,6 +836,7 @@ typedef struct {
 typedef struct {
     const char *version_line;   /* "v0.0.1 (10-23-2026)" (player_ui_version_line) */
     const char *build_commit;   /* short source commit, or NULL / "" */
+    const char *data_root_line; /* which data folder is in use (#1850), or NULL / "" */
     float logical_width;
     float logical_height;
 } PlayerUiAboutModel;
@@ -927,6 +952,9 @@ enum {
     PLAYER_UI_ID_SETTINGS_ACE_TEXT = 0x4544u,
     PLAYER_UI_ID_SETTINGS_ACE_READOUT = 0x4545u,
     PLAYER_UI_ID_SETTINGS_ACE_NOTICE = 0x4546u,
+    PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT = 0x4550u,   /* Settings: opens the Problem report page */
+    PLAYER_UI_ID_REPORT_CREATE = 0x4551u,
+    PLAYER_UI_ID_REPORT_FOLDER = 0x4552u,
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the control, 0-18 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,

@@ -563,7 +563,8 @@ class MutationKillTests(unittest.TestCase):
         cls.workloads = WORKLOADS
 
     def _exe_ready(self, name: str) -> bool:
-        return (self.workloads / name / f"{name.split('/')[-1]}.exe").is_file()
+        returned: bool = (self.workloads / name / f"{name.split('/')[-1]}.exe").is_file()
+        return returned
 
     @nightly_tier
     def test_m9_flipping_expected_result_kills_fpu_word_gate(self):

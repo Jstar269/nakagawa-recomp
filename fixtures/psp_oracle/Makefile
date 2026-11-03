@@ -204,6 +204,8 @@ else ifeq ($(CASE),hle-audio-src)
 CASE_ID = 102
 else ifeq ($(CASE),hle-timer-order)
 CASE_ID = 103
+else ifeq ($(CASE),hle-savedata-getsize)
+CASE_ID = 104
 # 106-108: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
 # #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells; 108 the
 # #326 VFPU form words (vh2f, vuc2i, vsocp, vwbn, vrndf1/2).
@@ -276,6 +278,9 @@ CASE_ID = 117
 # 118: the #303 DMAC transfer-time and busy-channel cells (probe_dmac_timing.c).
 else ifeq ($(CASE),dma-timing)
 CASE_ID = 118
+# 138: the #303/#1380 memory-edge cells and the placement fixture mem_edge.h (probe_memory_edge.c).
+else ifeq ($(CASE),memory-edge)
+CASE_ID = 138
 # 119: the #312 real-PSP instruction trace (probe_insn_trace.c, insn_trace_tramp.S).
 else ifeq ($(CASE),insn-trace)
 CASE_ID = 119
@@ -295,6 +300,10 @@ CASE_ID = 124
 # WLAN state.
 else ifeq ($(CASE),kernel-semantics)
 CASE_ID = 127
+# 136: #1380's Memory Stick open-without-create, negative-seek and past-end write/read cells
+# (probe_kernel_semantics.c, its own probe-owned directory).
+else ifeq ($(CASE),io-seek-eof)
+CASE_ID = 136
 # 128: #1375 P1 plus non-invoking P2 registrations; 129/130 are separately guarded NULL invokes.
 else ifeq ($(CASE),null-code-registration)
 CASE_ID = 128
@@ -489,6 +498,9 @@ OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),hle-timer-order)
 TARGET = $(BUILD_DIR)/hle_timer_order
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-savedata-getsize)
+TARGET = $(BUILD_DIR)/hle_savedata_getsize
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_utility_imports.o
 # HLE issue cells: their own source, which installs and removes interrupt and timer
 # handlers (107) and reaches a kernel getter through the kernel bridge (106), so they
 # stay out of probe_hle_measure.c. Same ThreadManForUser block and module lifecycle.
@@ -524,6 +536,9 @@ OBJS = $(BUILD_DIR)/probe_ge_sample.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),kernel-semantics)
 TARGET = $(BUILD_DIR)/kernel_semantics
 OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),io-seek-eof)
+TARGET = $(BUILD_DIR)/io_seek_eof
+OBJS = $(BUILD_DIR)/probe_kernel_semantics.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),null-code-registration)
 TARGET = $(BUILD_DIR)/null_code_registration
 OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
@@ -538,6 +553,11 @@ OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),dma-timing)
 TARGET = $(BUILD_DIR)/dma_timing
 OBJS = $(BUILD_DIR)/probe_dmac_timing.o $(BUILD_DIR)/threadman_user_imports.o
+# The memory-edge cells: their own source with the same writer, ThreadManForUser block and
+# module lifecycle as the HLE issue cells, plus the placement header mem_edge.h.
+else ifeq ($(CASE),memory-edge)
+TARGET = $(BUILD_DIR)/memory_edge
+OBJS = $(BUILD_DIR)/probe_memory_edge.o $(BUILD_DIR)/threadman_user_imports.o
 # The GE raster corpus: the same source as the sample-point cells, case 123.
 else ifeq ($(CASE),ge-raster)
 TARGET = $(BUILD_DIR)/ge_raster
@@ -657,6 +677,20 @@ USER_MODE_IMPORT_GATE_ARGS += --exact-library sceSuspendForUser=0x3E0271D3,0xA14
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceWlanDrv=0xD7763699,0x93440B11
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
 endif
+# io-seek-eof: file calls only (IoFileMgrForUser and the shared ThreadManForUser block); none
+# of kernel-semantics' interrupt, controller, suspend or WLAN imports, nothing from the bridge.
+ifeq ($(CASE),io-seek-eof)
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library sceCtrl
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceSuspendForUser --forbid-library sceWlanDrv
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
+# memory-edge: partition-memory, file and DMAC calls only; none of the interrupt, controller,
+# suspend or WLAN imports, nothing from the kernel bridge, and no OpenPSID.
+ifeq ($(CASE),memory-edge)
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library sceCtrl
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceSuspendForUser --forbid-library sceWlanDrv
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library sceOpenPSID --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
 # intr-cause: exactly kuKernelCall from the kernel bridge, the two sceDisplay reads, and from
 # Kernel_Library the suspend/resume pair plus the two LwMutex calls the PSPSDK libc glue
 # imports; nothing from the interrupt manager or SystemCtrlForUser.
@@ -666,6 +700,16 @@ USER_MODE_IMPORT_GATE_ARGS += --exact-library KUBridge=0x9060F69D
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceDisplay=0x984C27E7,0x9C6EAAD7
 USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager --forbid-library SystemCtrlForUser
+endif
+# hle_utility_imports.S declares the two system-parameter Get calls (the CRT's timezone
+# setup calls the Int one in every PRX) and, for hle-savedata-getsize (case 104) only, the
+# four savedata dialog calls. Each build is pinned to exactly its own sceUtility set, so
+# hle-sysparam cannot import a savedata call and neither can import a Set call.
+ifeq ($(CASE),hle-sysparam)
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343
+endif
+ifeq ($(CASE),hle-savedata-getsize)
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUtility=0xA5DA2406,0x34B78343,0x50C4CD57,0x8874DBE0,0xD4B95FFB,0x9790B33C
 endif
 ifeq ($(CASE),cpu-timing)
 # The shared probe cleanup checks interrupt state; cpu-timing also calls the
@@ -740,6 +784,10 @@ PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
 # And the kernel semantics cells (probe_kernel_semantics.c).
 ifneq ($(filter $(BUILD_DIR)/probe_kernel_semantics.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
+# And the memory-edge cells (probe_memory_edge.c).
+ifneq ($(filter $(BUILD_DIR)/probe_memory_edge.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
 # And the DMAC transfer-time cells (probe_dmac_timing.c).
@@ -833,6 +881,9 @@ $(BUILD_DIR)/probe_insn_trace.o: probe_insn_trace.c insn_trace_fixtures.h
 $(BUILD_DIR)/probe_module_start.o: probe_module_start.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/probe_kernel_semantics.o: probe_kernel_semantics.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_memory_edge.o: probe_memory_edge.c mem_edge.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/insn_trace_tramp.o: insn_trace_tramp.S

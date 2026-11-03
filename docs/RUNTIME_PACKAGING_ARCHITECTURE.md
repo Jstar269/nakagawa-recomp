@@ -290,7 +290,7 @@ following key components:
 | Runtime source/header digest (section 7) and output-affecting compile/link flags | not required | required |
 
 The current package-layer epochs are `analyzer-codegen-v1`,
-`GENERATED_CODE_ABI_EPOCH = 2`, and `RUNTIME_ABI_EPOCH = 2`. The generated-code
+`GENERATED_CODE_ABI_EPOCH = 3`, and `RUNTIME_ABI_EPOCH = 2`. The generated-code
 and runtime epoch values are compatibility contracts, not release versions. A
 change to the generated C/runtime helper boundary must bump
 `GENERATED_CODE_ABI_EPOCH`; a runtime-package ABI change must bump

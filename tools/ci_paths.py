@@ -142,7 +142,8 @@ def _public_policy() -> object | None:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import publication_policy
 
-        return publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
+        returned: object | None = publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
+        return returned
     except Exception:
         return None
 
@@ -159,7 +160,8 @@ def _is_public_surface(path: str) -> bool:
     if policy is None:
         return True
     try:
-        return policy.resolve(path).disposition == "included"
+        returned: bool = policy.resolve(path).disposition == "included"
+        return returned
     except Exception:
         return True
 
@@ -175,7 +177,8 @@ def _is_policy_included(path: str) -> bool:
     if policy is None:
         return False
     try:
-        return policy.resolve(path).disposition == "included"
+        returned: bool = policy.resolve(path).disposition == "included"
+        return returned
     except Exception:
         return False
 
@@ -839,6 +842,24 @@ HOSTED_LINUX_RUNNER = "ubuntu-24.04"
 HOSTED_LINUX_RUNNER_2604 = "ubuntu-26.04"
 SELF_HOSTED_LINUX_RUNNER = ("self-hosted", "linux", "x64", "nk-wsl")
 SELF_HOSTED_REPOSITORY = "Jstar269/nakagawa-recomp"
+
+
+def same_repository(name: object, expected: str) -> bool:
+    """Whether ``name`` is the repository ``expected``, ignoring letter case.
+
+    GitHub treats owner and repository names as case-insensitive and reports the
+    name in its current casing: after the repository was renamed to
+    ``Jstar269/Nakagawa-Recomp``, ``GITHUB_REPOSITORY`` and the payloads' ``full_name``
+    no longer matched the lower-case constant, so no run was trusted for the pool. Only
+    the repository name is folded; refs, branch prefixes, logins and the fork flag are
+    still compared exactly. Two different owners never compare equal. Both names must be
+    ASCII: Unicode case folding would let a crafted name match (the long s in "Jſtar269",
+    the Kelvin sign in "nakagawa"), and GitHub names are ASCII anyway.
+    """
+
+    return isinstance(name, str) and name.isascii() and expected.isascii() and name.lower() == expected.lower()
+
+
 #: Head branches of this repository that may carry an outside contributor's commits: the
 #: desk's ``carry/pr-<N>`` branches for locked fork pull requests, and ``desk/`` working
 #: branches. Their runs stay on hosted runners even though they live in this repository.
@@ -869,7 +890,7 @@ def trusted_for_self_hosted(
     request is never trusted, whatever its branch is called; nor is any other event.
     """
 
-    if repository != SELF_HOSTED_REPOSITORY:
+    if not same_repository(repository, SELF_HOSTED_REPOSITORY):
         return False
     if event_name == "push":
         return ref == "refs/heads/main"
@@ -891,10 +912,10 @@ def trusted_for_self_hosted(
         return False
     head_ref = head.get("ref")
     sender = event.get("sender")
-    owner = repository.split("/", 1)[0]
+    owner = SELF_HOSTED_REPOSITORY.split("/", 1)[0]
     return (
-        head_repo.get("full_name") == repository
-        and base_repo.get("full_name") == repository
+        same_repository(head_repo.get("full_name"), repository)
+        and same_repository(base_repo.get("full_name"), repository)
         and head_repo.get("fork") is False
         and isinstance(head_ref, str)
         and bool(head_ref)
@@ -939,7 +960,7 @@ def codeql_trusted_target(
     ``SELF_HOSTED_UNTRUSTED_PREFIXES``). Every other pull request's analysis stays hosted.
     """
 
-    if repository != SELF_HOSTED_REPOSITORY:
+    if not same_repository(repository, SELF_HOSTED_REPOSITORY):
         return False
     if event_name == "push":
         return ref == "refs/heads/main"
@@ -951,13 +972,15 @@ def codeql_trusted_target(
     head_repo = run.get("head_repository")
     actor = run.get("actor")
     head_branch = run.get("head_branch")
-    if not isinstance(head_repo, dict) or head_repo.get("full_name") != repository or not isinstance(head_branch, str):
+    if not isinstance(head_repo, dict) or not isinstance(head_branch, str):
+        return False
+    if not same_repository(head_repo.get("full_name"), repository):
         return False
     kind = run.get("event")
     if kind == "merge_group":
         return head_branch.startswith("gh-readonly-queue/main/")
     if kind == "pull_request":
-        owner = repository.split("/", 1)[0]
+        owner = SELF_HOSTED_REPOSITORY.split("/", 1)[0]
         return (
             bool(head_branch)
             and not head_branch.startswith(SELF_HOSTED_UNTRUSTED_PREFIXES)
@@ -1240,7 +1263,8 @@ def _read_event(path: str | None) -> dict[str, object]:
     if not path:
         return {}
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        returned: dict[str, object] = json.loads(Path(path).read_text(encoding="utf-8"))
+        return returned
     except (OSError, json.JSONDecodeError):
         return {}
 
