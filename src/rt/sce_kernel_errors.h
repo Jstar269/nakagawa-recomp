@@ -40,6 +40,7 @@
 #define SCE_KERNEL_ERROR_CAN_NOT_STOP               0x80020136u
 #define SCE_KERNEL_ERROR_ALREADY_STOPPING           0x8002013fu
 #define SCE_KERNEL_ERROR_MODULE_MGR_BUSY            0x80020143u
+#define SCE_KERNEL_ERROR_PROHIBIT_LOADMODULE_DEVICE 0x80020146u
 #define SCE_KERNEL_ERROR_CANNOT_GET_MODULE_INFO     0x8002014au
 
 /* ---- threads. The suspend/resume statuses are the measured "Threads / Status codes" cells in

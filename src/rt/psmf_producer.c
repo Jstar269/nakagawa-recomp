@@ -849,6 +849,12 @@ uint64_t sr_psmf_producer_stream_bytes(const SrPsmfProducer *p) {
     return p && p->streaming ? p->ps_total : 0;
 }
 
+uint64_t sr_psmf_producer_unit_offset(SrPsmfProducer *p, SrPsmfAuKind kind) {
+    if (!p || !p->streaming) return 0;
+    const PtsMark *m = track_head_mark(&p->track[kind]);
+    return m ? m->ps_offset : p->ps_total;
+}
+
 uint64_t sr_psmf_producer_stream_cursor(const SrPsmfProducer *p) {
     return p && p->streaming ? p->cursor : 0;
 }

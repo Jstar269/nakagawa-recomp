@@ -247,8 +247,8 @@ const SrModuleCode *sr_module_code_at(unsigned index) {
     return index < s_module_code_count ? s_module_codes[index] : NULL;
 }
 
-/* FNV-1a over bytes, 64-bit. tools/codegen.py records the same digest of each
- * translated module file; the shared vectors are pinned by both test suites. */
+/* FNV-1a over bytes, 64-bit. tools/codegen.py records the same digest of an overlay's
+ * leading bytes; the shared vectors are pinned by both test suites. */
 uint64_t sr_module_code_fnv1a64(const void *bytes, size_t size) {
     const unsigned char *p = (const unsigned char *)bytes;
     uint64_t h = 0xcbf29ce484222325ull;

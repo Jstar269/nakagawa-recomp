@@ -163,10 +163,18 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 			const uint32_t funct = Funct(op);
 			switch (funct) {
 				case 0x00: SetR(s, Rd(op), s->r[Rt(op)] << Sa(op)); return StopReason::kRunning;          // sll
-				case 0x02: SetR(s, Rd(op), s->r[Rt(op)] >> Sa(op)); return StopReason::kRunning;          // srl
+				case 0x02: {  // srl; Allegrex rs == 1 makes it rotr (the form sweep, #1844, found it missing)
+					const uint32_t v = s->r[Rt(op)], n = Sa(op);
+					SetR(s, Rd(op), Rs(op) == 1 ? (n == 0 ? v : (v >> n) | (v << (32 - n))) : v >> n);
+					return StopReason::kRunning;
+				}
 				case 0x03: SetR(s, Rd(op), ArithShiftRight(s->r[Rt(op)], Sa(op))); return StopReason::kRunning;  // sra
 				case 0x04: SetR(s, Rd(op), s->r[Rt(op)] << (s->r[Rs(op)] & 31)); return StopReason::kRunning;          // sllv
-				case 0x06: SetR(s, Rd(op), s->r[Rt(op)] >> (s->r[Rs(op)] & 31)); return StopReason::kRunning;          // srlv
+				case 0x06: {  // srlv; Allegrex sa == 1 makes it rotrv
+					const uint32_t v = s->r[Rt(op)], n = s->r[Rs(op)] & 31;
+					SetR(s, Rd(op), Sa(op) == 1 ? (n == 0 ? v : (v >> n) | (v << (32 - n))) : v >> n);
+					return StopReason::kRunning;
+				}
 				case 0x07: SetR(s, Rd(op), ArithShiftRight(s->r[Rt(op)], s->r[Rs(op)] & 31)); return StopReason::kRunning;  // srav
 				case 0x08: {  // jr
 					s->next_pc = s->r[Rs(op)];
@@ -312,52 +320,37 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 		case 0x28: mem->Write8(s->r[Rs(op)] + SImm(op), (uint8_t)s->r[Rt(op)]); return StopReason::kRunning;   // sb
 		case 0x29: mem->Write16(s->r[Rs(op)] + SImm(op), (uint16_t)s->r[Rt(op)]); return StopReason::kRunning; // sh
 		case 0x2B: mem->Write32(s->r[Rs(op)] + SImm(op), s->r[Rt(op)]); return StopReason::kRunning;  // sw
-		case 0x22: {  // lwl: unaligned little-endian word left (high bytes)
+		// Unaligned word access, little-endian (PSP). For the byte offset k = addr & 3 within the
+		// aligned word: LWL loads bytes k..0 into the top k+1 bytes of rt, LWR loads bytes k..3
+		// into the low 4-k bytes, SWL stores the top k+1 bytes of rt to bytes k..0, SWR stores the
+		// low 4-k bytes of rt to bytes k..3. Same merge as PPSSPP and src/rt/recomp.c; the form
+		// sweep (#1844) found the earlier big-endian-style masks here taking the wrong bytes.
+		case 0x22: {  // lwl
 			uint32_t addr = s->r[Rs(op)] + SImm(op);
-			uint32_t aligned = addr & ~3u;
-			uint32_t rtv = s->r[Rt(op)];
-			uint32_t word = mem->Read32(aligned);
-			int shift = (addr & 3) * 8;
-			// Little-endian LWL: for addr+k, take the high (4-k) bytes of the aligned
-			// word and merge them into the low end of rtv.
-			uint32_t mask = 0xFFFFFFFFu << (24 - shift);
-			uint32_t result = (rtv & ~mask) | ((word << shift) & mask);
-			SetR(s, Rt(op), result);
+			uint32_t word = mem->Read32(addr & ~3u);
+			uint32_t shift = (addr & 3) * 8;
+			SetR(s, Rt(op), (s->r[Rt(op)] & (0x00FFFFFFu >> shift)) | (word << (24 - shift)));
 			return StopReason::kRunning;
 		}
-		case 0x26: {  // lwr: unaligned little-endian word right (low bytes)
+		case 0x26: {  // lwr
 			uint32_t addr = s->r[Rs(op)] + SImm(op);
-			uint32_t aligned = addr & ~3u;
-			uint32_t rtv = s->r[Rt(op)];
-			uint32_t word = mem->Read32(aligned);
-			int shift = (addr & 3) * 8;
-			// Little-endian LWR: for addr+k, take the low (k+1) bytes of the aligned
-			// word and merge them into the high end of rtv.
-			uint32_t mask = 0xFFFFFFFFu >> (24 - shift);
-			uint32_t result = (rtv & ~mask) | ((word >> (24 - shift)) & mask);
-			SetR(s, Rt(op), result);
+			uint32_t word = mem->Read32(addr & ~3u);
+			uint32_t shift = (addr & 3) * 8;
+			SetR(s, Rt(op), (s->r[Rt(op)] & (0xFFFFFF00u << (24 - shift))) | (word >> shift));
 			return StopReason::kRunning;
 		}
-		case 0x2A: {  // swl: store-word-left (high bytes of rt to low bytes of aligned word)
+		case 0x2A: {  // swl
 			uint32_t addr = s->r[Rs(op)] + SImm(op);
-			uint32_t aligned = addr & ~3u;
-			uint32_t rtv = s->r[Rt(op)];
-			uint32_t word = mem->Read32(aligned);
-			int shift = (addr & 3) * 8;
-			uint32_t mask = 0xFFFFFFFFu << (24 - shift);
-			uint32_t result = (word & ~mask) | ((rtv >> shift) & mask);
-			mem->Write32(aligned, result);
+			uint32_t word = mem->Read32(addr & ~3u);
+			uint32_t shift = (addr & 3) * 8;
+			mem->Write32(addr & ~3u, (s->r[Rt(op)] >> (24 - shift)) | (word & (0xFFFFFF00u << shift)));
 			return StopReason::kRunning;
 		}
-		case 0x2E: {  // swr: store-word-right (low bytes of rt to high bytes of aligned word)
+		case 0x2E: {  // swr
 			uint32_t addr = s->r[Rs(op)] + SImm(op);
-			uint32_t aligned = addr & ~3u;
-			uint32_t rtv = s->r[Rt(op)];
-			uint32_t word = mem->Read32(aligned);
-			int shift = (addr & 3) * 8;
-			uint32_t mask = 0xFFFFFFFFu >> (24 - shift);
-			uint32_t result = (word & ~mask) | ((rtv << (24 - shift)) & mask);
-			mem->Write32(aligned, result);
+			uint32_t word = mem->Read32(addr & ~3u);
+			uint32_t shift = (addr & 3) * 8;
+			mem->Write32(addr & ~3u, (s->r[Rt(op)] << shift) | (word & (0x00FFFFFFu >> (24 - shift))));
 			return StopReason::kRunning;
 		}
 		case 0x30: {  // ll: load the word and set the link (MIPS32 LLbit)
