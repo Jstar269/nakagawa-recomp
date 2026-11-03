@@ -818,7 +818,7 @@ PLAYER_GUI_LDFLAGS  := -mwindows
 # The app icon (assets/brand/nakagawa.rc) and the VERSIONINFO that gives Task Manager and
 # Explorer a friendly name, as one Windows resource object linked into the player and each
 # title executable; SDL gives every window the executable's first icon group. Each object
-# is compiled from its own generated script (tools/win_version_resource.py) because the
+# is compiled from its own generated script (tools/make_app_icon.py) because the
 # player and every title name themselves differently. Other systems set the same picture
 # at run time (nk_ui_app_icon_rgba in src/ui/nk_ui_widgets.c), so they link no object.
 WINDRES             ?= windres
@@ -2264,12 +2264,12 @@ PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isr
 # (or GAME_NAME when the build has no manifest). The version is NK_PLAYER_VERSION.
 # windres finds the icon through --include-dir.
 ifeq ($(OS),Windows_NT)
-NK_VERSION_RESOURCE_TOOL := tools/win_version_resource.py
+NK_VERSION_RESOURCE_TOOL := tools/make_app_icon.py
 NK_VERSION_RESOURCE_DEPS := $(NK_VERSION_RESOURCE_TOOL) src/player/ui/player_ui_nk.h
 $(BUILD_ROOT)/nakagawa_icon.rc: $(NK_VERSION_RESOURCE_DEPS)
-	"$(PYTHON)" $(NK_VERSION_RESOURCE_TOOL) --player --original-filename "$(notdir $(PLAYER_EXE))" --output $@
+	"$(PYTHON)" $(NK_VERSION_RESOURCE_TOOL) --version-rc $@ --original-filename "$(notdir $(PLAYER_EXE))" --player
 $(BUILD_DIR)/nakagawa_icon.rc: $(NK_VERSION_RESOURCE_DEPS) $(strip $(TITLE_MANIFEST))
-	"$(PYTHON)" $(NK_VERSION_RESOURCE_TOOL) $(if $(strip $(TITLE_MANIFEST)),--manifest "$(strip $(TITLE_MANIFEST))",--title-name "$(GAME_NAME)") --original-filename "$(GAME_NAME)$(EXE_EXT)" --output $@
+	"$(PYTHON)" $(NK_VERSION_RESOURCE_TOOL) --version-rc $@ --original-filename "$(GAME_NAME)$(EXE_EXT)" $(if $(strip $(TITLE_MANIFEST)),--manifest "$(strip $(TITLE_MANIFEST))",--title-name "$(GAME_NAME)")
 $(sort $(PLAYER_ICON_OBJ) $(TITLE_ICON_OBJ)): %/nakagawa_icon.o: %/nakagawa_icon.rc assets/brand/nakagawa.rc assets/brand/nakagawa.ico
 	$(WINDRES) --input-format=rc --output-format=coff --include-dir=assets/brand -i $< -o $@
 endif

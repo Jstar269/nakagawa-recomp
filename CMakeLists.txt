@@ -695,7 +695,7 @@ if(BUILD_PLAYER)
         # The app icon; SDL gives every window the executable's first icon group (see the
         # Makefile PLAYER_ICON_OBJ note). Other systems set it at run time instead.
         # The VERSIONINFO that names the player in Task Manager comes from the same generated
-        # script the Makefile compiles (tools/win_version_resource.py); without Python the
+        # script the Makefile compiles (tools/make_app_icon.py); without Python the
         # player keeps the icon alone and Windows shows its file name.
         enable_language(RC)
         find_package(Python3 COMPONENTS Interpreter)
@@ -703,9 +703,9 @@ if(BUILD_PLAYER)
             set(NK_PLAYER_RC "${CMAKE_CURRENT_BINARY_DIR}/nakagawa_icon.rc")
             add_custom_command(
                 OUTPUT "${NK_PLAYER_RC}"
-                COMMAND "${Python3_EXECUTABLE}" tools/win_version_resource.py --player
-                        --original-filename nakagawa_player.exe --output "${NK_PLAYER_RC}"
-                DEPENDS tools/win_version_resource.py src/player/ui/player_ui_nk.h
+                COMMAND "${Python3_EXECUTABLE}" tools/make_app_icon.py
+                        --version-rc "${NK_PLAYER_RC}" --original-filename nakagawa_player.exe --player
+                DEPENDS tools/make_app_icon.py src/player/ui/player_ui_nk.h
                 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                 VERBATIM
             )
