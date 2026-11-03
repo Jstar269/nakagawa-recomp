@@ -605,14 +605,13 @@ static uint32_t h_DeleteNotifyCallback(CpuState *s) {
     return sr_callback_table_unregister(A0) ? 0u : 0x800201A1u;
 }
 
-/* ---- CancelSema / CancelEventFlag / ReleaseWaitThread (PSP-B2-01 / PSP-B3-01,
- * campaign psp-hw-20260917).  These wake blocked waiters with an explicit
+/* ---- CancelSema / CancelEventFlag / ReleaseWaitThread (PSP-B2-01 / PSP-B3-01).  These wake blocked waiters with an explicit
  * result instead of a satisfaction, which is why h_WaitSema / h_WaitEventFlag
  * consult sched_take_wake_result() right after each sched_block_on(). ---- */
 
 
 static uint32_t h_ReleaseWaitThread(CpuState *s) {
-    /* a0=thid. PSP-B3-01 (psp-hw-20260917): a waiter is released with
+    /* a0=thid. Measured on a PSP-3000, firmware 6.61 (PSP-B3-01, docs/HARDWARE_ORACLE.md): a waiter is released with
      * WAIT_RELEASE; the running caller (by uid or 0) answers ILLEGAL_THID and a
      * deleted thread answers UNKNOWN_THID. */
     uint32_t uid = A0;

@@ -79,7 +79,7 @@ class CodegenOptions:
     # never off the seam return, because legitimate HLE errors are nonzero.
     lle_import_seam: bool = False
 
-    # Entry splitting (owner decision, 2026-10-29). A body normally owns every
+    # Entry splitting. A body normally owns every
     # instruction it reaches by a conditional branch, including another entry's code, so
     # each entry of a large branch-connected region translates its own copy of the region
     # (one title: 6,539 entries in a 1.33M-instruction region). A body whose walk would

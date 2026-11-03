@@ -4,7 +4,7 @@
  * KeyStore for the PSP decryption boundary (issue #295).
  *
  * The player and the tools fill it from the built-in game tables
- * (nk_keystore_load_builtin, owner decision 2026-10-27).  nk_decrypt can
+ * (nk_keystore_load_builtin).  nk_decrypt can
  * instead be given a JSON key file (--key-file), which the synthetic tests
  * use so their per-run keys never mix with the built-in set.  Validation is
  * fail-closed: shape, names and value lengths are checked, and every

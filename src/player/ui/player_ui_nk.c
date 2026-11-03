@@ -70,8 +70,7 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
      "Shows a lit, rotating cube that answers the stick and buttons, with sound.", ""},
     {"showcase-breakout-v1", "Partially works", PLAYER_UI_TIER_PLAYABLE,
      "Plays a full game of Breakout with sound and keeps your high score.", ""},
-    /* Playable: the owner played full matches and Story Mode on 2026-10-24
-       (#1297). */
+    /* Playable: full matches and Story Mode were played through (#1297). */
     {"UCUS98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
      "Known issues: a few late sound wakes while loading, and some movies show black."},
@@ -1967,7 +1966,7 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->status_rgba = PLAYER_UI_READY;
         out->status_marker = "●";
     }
-    /* An older Nakagawa built this package (owner, 2026-10-29): it still
+    /* An older Nakagawa built this package: it still
        plays, and the cards say what a rebuild would do, that it is queued or
        running, or that its disc is missing. */
     PlayerRebuildCard rebuild;

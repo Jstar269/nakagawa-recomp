@@ -3,9 +3,9 @@
 
 """The public HST title manifest: tracked, public-included, scrubbed, and on the manager contract.
 
-The manifest is public by owner decision (2026-10-27): it ships so a new user's
+The manifest is public by policy: it ships so a new user's
 player recognizes UCUS98701 as the built-in ``hst`` title. These tests hold it to
-that decision -- tracked and included, never ignored or excluded -- and to the
+that policy -- tracked and included, never ignored or excluded -- and to the
 scrub the decision required: addresses, disc identity, module names and load
 addresses, profiles and runtime bindings, and no private paths or evidence.
 """

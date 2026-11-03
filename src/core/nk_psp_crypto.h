@@ -6,8 +6,7 @@
  *
  * This engine implements container formats and cryptographic algorithms
  * only.  Every key, seed, XOR pad and curve value arrives at run time
- * through a KeyStore: the built-in game tables (nk_psp_builtin_keys.c,
- * owner decision 2026-10-27), or a key file given to nk_decrypt for
+ * through a KeyStore: the built-in game tables (nk_psp_builtin_keys.c), or a key file given to nk_decrypt for
  * synthetic tests.  A missing entry fails closed with its exact name.
  * Firmware containers are refused by name before any key lookup.
  */

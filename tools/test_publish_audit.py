@@ -353,7 +353,7 @@ class TestPublishAudit(unittest.TestCase):
         self.assertEqual(publish_audit.private_key_assignment_lines(c_macro_neg, "src/pgd.h"), [])
 
     def test_only_the_reviewed_game_key_table_may_hold_key_literals(self):
-        # Owner decision 2026-10-27: one exact path carries the public game
+        # Policy: one exact path carries the public game
         # tables; the same bytes anywhere else still fail.
         c_key = "static const u8 key_D91613F0[] = {%s};" % ", ".join(
             "0x%02X" % i for i in range(16))

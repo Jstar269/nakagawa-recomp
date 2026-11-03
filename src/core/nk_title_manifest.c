@@ -570,7 +570,7 @@ static bool manifest_parse_identity(ManifestParse *mp) {
         return false;
     }
 
-    /* 4b. game_name: optional explicit build-name declaration (issue #196 Phase 4).
+    /* 4b. game_name: optional explicit build-name declaration (issue #196).
      * The manager accepts -GameName, this field, or a portable id derivation —
      * never an id-prefix mint. Same identifier contract as $.id. */
     mp->gn_node = obj_get(root, "game_name");
@@ -931,7 +931,7 @@ static bool manifest_parse_filesystem(ManifestParse *mp) {
     /* 9. filesystem validation */
     JsonNode *fs_node = obj_get(root, "filesystem");
     /* executable/module_dir/psp_header/disc_image are optional input-location declarations
-     * (issue #196 Phase 4): a manifest declares where its private inputs live.
+     * (issue #196): a manifest declares where its private inputs live.
      * The runtime consumes only the required runtime-filesystem contract today;
      * the optional declarations are accepted (and validated) for tool parity. */
     static const char * const allowed_fs_keys[] = {"data_root", "memory_stick_root", "device_prefixes", "executable", "module_dir", "psp_header", "disc_image", "loose_content_roots", NULL};
@@ -5249,7 +5249,7 @@ static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
 }
 
 /* -----------------------------------------------------------------------------
- * Package build identity: which Nakagawa built a package (owner, 2026-10-29)
+ * Package build identity: which Nakagawa built a package
  * -------------------------------------------------------------------------- */
 
 /* The relative paths (forward slashes) a source-tree digest covers, collected

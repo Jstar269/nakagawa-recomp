@@ -923,7 +923,7 @@ class WindowsCompilerCacheTests(unittest.TestCase):
 
     ccache keys an entry on the compiler's contents, the command line and the contents of
     every header, so a hit is an identical compile. The cache is restored in every part
-    and saved only by a trusted run on main (owner decision of 2026-10-30): pull requests
+    and saved only by a trusted run on main: pull requests
     and merge groups read it and never write it (#373). CC must stay `gcc`, and the
     masquerading `gcc` must resolve into the UCRT64 toolchain, whose location the build's
     SDL3 toolchain check reads.

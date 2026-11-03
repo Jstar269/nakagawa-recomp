@@ -2,8 +2,7 @@
  * Copyright (c) 2012- PPSSPP Project
  * Copyright (C) 2026 the Nakagawa Recomp authors
  *
- * Built-in PSP game-decryption key tables (owner decision 2026-10-27,
- * issue #295): the ~PSP tag recipes and the KIRK values the decryption
+ * Built-in PSP game-decryption key tables (issue #295): the ~PSP tag recipes and the KIRK values the decryption
  * boundary needs, so a user's own game disc decrypts without a key file.
  * Firmware containers are never decrypted: their tags are listed only so the
  * boundary can refuse them by name before any key lookup.

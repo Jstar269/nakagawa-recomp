@@ -1451,7 +1451,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->developer_mode = false;
     memset(settings->enhancement_60hz_discs, 0, sizeof(settings->enhancement_60hz_discs));
     settings->enhancement_60hz_disc_count = 0;
-    /* Ace Mode is off until the player turns it on (owner, 2026-10-31); the features it
+    /* Ace Mode is off until the player turns it on; the features it
        turns on keep their defaults while it is off. */
     settings->ace.enabled = false;
     settings->ace.af = 16;
@@ -6567,7 +6567,7 @@ static bool player_is_usable_mips_elf32(const char *path, bool module) {
     return usable;
 }
 
-/* Built-in game decryption (owner decision 2026-10-27, #295). The largest
+/* Built-in game decryption (#295). The largest
    program file the boundary takes from a disc, as in the module scan. */
 #define PLAYER_DECRYPT_MAX_INPUT (64u * 1024u * 1024u)
 
@@ -8665,7 +8665,7 @@ const PlayerPreflightCheck *player_app_package_build_preflight_blocker(
     return preflight->passed ? NULL : &preflight->blocker;
 }
 
-/* ---- Games built by an older Nakagawa (owner decision, 2026-10-29) ---------------
+/* ---- Games built by an older Nakagawa ----------------------------------------
    The scan compares what each package records about the Nakagawa that built
    it (nk_title_manifest_aot_package_build_identity) with what a build from this
    player's own source tree would record (nk_title_manifest_source_build_identity).

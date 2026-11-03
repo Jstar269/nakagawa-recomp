@@ -11,7 +11,7 @@
  * gui_pause_* functions run the pause overlay.
  *
  * The default presenter is SDL3 + Vulkan (src/rt/gpu_sdl3vk), which owns the window and ALL input
- * devices — the comprehensive SDL3 gamepad subsystem plus an SDL keyboard fallback. gui.c simply
+ * devices: the SDL3 gamepad subsystem plus an SDL keyboard fallback. gui.c
  * forwards that state to the runtime. When SR_VIDEO=gdi selects the legacy Win32/GDI window
  * (a top-level window + a 32-bit DIB the PSP framebuffer is converted into each frame), input
  * falls back to a keyboard-only GetAsyncKeyState mapping; controllers on that debug path are not

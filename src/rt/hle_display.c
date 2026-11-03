@@ -487,7 +487,7 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
     s_fbcap_legacy[0] = '\0';
     if (sync != 0u) return NULL;
     /* SR_FBSNAP_WINDOWS alone selects FBSNAP (every present inside the windows), so the
-     * windows are parsed before the owner decision, which uses the same effective cadence
+     * windows are parsed before the decision below, which uses the same effective cadence
      * as the gate below (sr_fbcap_snap_every). */
     fbcap_parse_windows_once();
     int fbsnap_every = sr_fbcap_snap_every(getenv("SR_FBSNAP"), s_fbsnap_win_n > 0);
@@ -916,8 +916,7 @@ static uint32_t h_DisplayIsForeground(CpuState *s) {
  * 60000/1001 rational the scheduler uses for its display phase, evaluated as
  * float == 0x426fc29f bits (59.9400599f, PSP-3001/6.61-ARK measured anchor).
  * The previous h_ok registration returned 0 in $v0 but left $f0 stale, so a
- * guest reading the float received poisoned state (issue #80 display-clock
- * campaign). */
+ * guest reading the float received poisoned state (issue #80). */
 static uint32_t h_DisplayGetFramePerSec(CpuState *s) {
     (void)s;
     s->f[0] = 60000.0f / 1001.0f;

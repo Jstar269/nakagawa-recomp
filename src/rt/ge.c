@@ -3764,15 +3764,15 @@ static void transform_model_vtx_clip(const ModelVtx *m, CVtx *o) {
         ? SDL_GetTicksNS() : 0;
     float mx=m->x, my=m->y, mz=m->z;
 
-    /* World transform (model → world) */
+    /* World transform (model -> world) */
     float wx, wy, wz;
     mat43_mul(ge.world, mx, my, mz, &wx, &wy, &wz);
 
-    /* View transform (world → camera) */
+    /* View transform (world -> camera) */
     float cx, cy, cz;
     mat43_mul(ge.view, wx, wy, wz, &cx, &cy, &cz);
 
-    /* Projection (camera → clip). The divisor is the real clip-space w from the projection
+    /* Projection (camera -> clip). The divisor is the real clip-space w from the projection
      * matrix W row: perspective matrices (sceGumPerspective) have W row (0,0,-1,0), so
      * clipw == -cz; orthographic matrices have W row (0,0,0,1), so clipw == 1 and view
      * depth must NOT divide (hangar/menu 3D and overlay quads use ortho). */
@@ -3917,7 +3917,7 @@ static void transform_vtx_clip(uint32_t addr, const VFmt *vf, CVtx *o) {
 /* Smallest clip-space w kept by the near clipper. */
 #define NEAR_W 1e-3f
 
-/* Perspective divide + viewport: clip-space vertex (cw > 0 required) → screen vertex. */
+/* Perspective divide + viewport: clip-space vertex (cw > 0 required) -> screen vertex. */
 static void project_cvtx(const CVtx *c, Vtx *o) {
     float inv_w = 1.0f / c->cw;
     float ndcx = c->cx * inv_w, ndcy = c->cy * inv_w, ndcz = c->cz * inv_w;

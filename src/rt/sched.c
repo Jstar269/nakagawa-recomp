@@ -4015,7 +4015,7 @@ void sched_wake(uint32_t obj) {
 #endif
 }
 
-/* PSP-B2-01 (psp-hw-20260917): a cancelled waiter leaves its wait with a kernel
+/* Measured on a PSP-3000, firmware 6.61 (PSP-B2-01, docs/HARDWARE_ORACLE.md): a cancelled waiter leaves its wait with a kernel
  * result instead of the object being satisfied -- WAIT_CANCEL (0x800201A9) from
  * CancelSema/CancelEventFlag/CancelReceiveMbx, WAIT_DELETE (0x800201B5) from
  * deleting the waited object, WAIT_RELEASE (0x800201AA) from ReleaseWaitThread.
@@ -4046,7 +4046,7 @@ void sched_wake_with_result(uint32_t obj, uint32_t result) {
 }
 
 int sched_take_wake_result(uint32_t *result_out) {
-    /* PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): wake results are kernel error
+    /* Measured (PSP-B2-01 / PSP-B3-01): wake results are kernel error
      * codes (0x800201A9/0x800201AA/0x800201B5) whose high bit is set, so they
      * are negative as a signed int. Returning the code directly with a -1
      * sentinel misclassifies every real wake as "none". Report presence
@@ -4073,7 +4073,7 @@ int sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid) {
     return 0;
 }
 
-/* Number of threads currently blocked on obj. PSP-B2-01 (psp-hw-20260917):
+/* Number of threads currently blocked on obj. Measured (PSP-B2-01):
  * CancelSema / CancelEventFlag report this count to the caller. */
 int sched_count_waiters(uint32_t obj) {
     int n = 0;
@@ -4083,7 +4083,7 @@ int sched_count_waiters(uint32_t obj) {
     return n;
 }
 
-/* PSP-B3-01 (psp-hw-20260917): ReleaseWaitThread readies one blocked thread and
+/* Measured (PSP-B3-01): ReleaseWaitThread readies one blocked thread and
  * hands it WAIT_RELEASE as its wait result. The target must be in an object
  * wait; anything else (running, dormant, deleted, delay) reports no waiter. */
 int sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result) {
@@ -4251,7 +4251,7 @@ uint32_t sched_thread_wakeup(uint32_t uid) {
     uid = resolve_thread_uid(uid);
     TCB *t = tcb_by_uid(uid);
     if (!t) return SCE_KERNEL_ERROR_UNKNOWN_THID;
-    /* PSP-B3-01 (psp-hw-20260917): a dormant (never-started or terminated)
+    /* Measured (PSP-B3-01): a dormant (never-started or terminated)
      * target answers DORMANT (0x800201A2), it does not bank a wakeup. */
     if (t->state == TH_DORMANT) return SCE_KERNEL_ERROR_DORMANT;
     {
@@ -4308,7 +4308,7 @@ static uint32_t psp_thread_status(const TCB *t) {
 static uint32_t psp_wait_type(const TCB *t) {
     if (t->state == TH_WAIT_DELAY) return PSP_WAIT_DELAY;
     if (t->state == TH_WAIT_OBJ && t->sleeping && t->wait_obj == t->uid) return PSP_WAIT_SLEEP;
-    /* PSP-B2-01 / PSP-B3-01 (psp-hw-20260917): ReferThreadStatus distinguishes
+    /* Measured (PSP-B2-01 / PSP-B3-01): ReferThreadStatus distinguishes
      * object waits (sema 3, evf 4, lwmutex 13); the kind is latched at block
      * time because the waited UID alone does not identify its type. */
     if (t->state == TH_WAIT_OBJ) return t->wait_kind ? (uint32_t)t->wait_kind : PSP_WAIT_OBJECT;
@@ -4570,7 +4570,7 @@ int sched_current_priority(void) { return s_cur >= 0 ? s_tcb[s_cur].priority : 3
  * Results follow the PSPAutotests threads/threads/change.expected cells (#1388):
  *   - an unknown, -1 or deleted UID answers UNKNOWN_THID;
  *   - a dormant (never-started or finished) target answers DORMANT, as PSP-B3-01
- *     (psp-hw-20260917) also measured;
+ *     also measured;
  *   - user priorities 0x08..0x77 are accepted; -2, -1, 0x01..0x07, 0x78 and 0x79 answer
  *     ILLEGAL_PRIORITY (0x80020193, the code the thread-rotate-range cell measured for an
  *     out-of-range ready-queue priority) and leave the priority unchanged;
