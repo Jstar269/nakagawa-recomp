@@ -256,13 +256,16 @@ static uint32_t font_call_alloc(CpuState *s, uint32_t allocFn, uint32_t userData
     if (allocFn) return ge_call_guest_rv(s, allocFn, userData, size, 0);
     return 0;
 }
-/* A guest allocator result is usable only when its whole span is guest-writable and it overlaps
- * no live or reserved library or font object; a duplicate or overlapping return would alias one
- * handle's state onto another's. Rejected blocks are not passed to freeFunc: an out-of-range
- * block is not the guest's, and an overlapping one belongs to a live object. Host policy: what
- * the PSP's libfont does with such a block is UNMEASURED, so this fails closed. Holds hle_lock. */
+/* A guest allocator result is usable only when it is word-aligned, its whole span is
+ * guest-writable and it overlaps no live or reserved library or font object; a duplicate or
+ * overlapping return would alias one handle's state onto another's. The library and font
+ * structs are written a word at a time, and an Allegrex word store to an address that is not a
+ * multiple of 4 raises an address error, so the PSP's libfont cannot have used a misaligned
+ * block either. Rejected blocks are not passed to freeFunc: an out-of-range block is not the
+ * guest's, and an overlapping one belongs to a live object. Host policy: what the PSP's libfont
+ * does with such a block is UNMEASURED, so this fails closed. Holds hle_lock. */
 static int font_alloc_span_free_locked(uint32_t addr, uint32_t size) {
-    if (!addr || !sr_guest_span_writable(addr, size)) return 0;
+    if (!addr || (addr & 3u) != 0u || !sr_guest_span_writable(addr, size)) return 0;
     uint64_t lo = addr, hi = (uint64_t)addr + size;
     for (size_t i = 0; i < sizeof(s_fontlibs) / sizeof(s_fontlibs[0]); i++) {
         const SrFontLib *L = &s_fontlibs[i];
@@ -711,16 +714,29 @@ uint32_t h_FontGetCharInfo(CpuState *s) {
 }
 
 
+/* A glyph image the draw cannot place: the 0x18-byte GlyphImage is not guest memory, names a
+ * pixel format above 4 or a NULL buffer, or a bitmap row the glyph covers is not writable guest
+ * memory. The PSP's libfont reads and stores through these pointers unchecked, so what it does
+ * is UNMEASURED; the run stops by name instead of answering success with nothing drawn. A glyph
+ * that is missing or lies wholly outside the buffer is not this: it draws nothing and answers 0. */
+static uint32_t font_glyph_image_stop(const char *name, uint32_t gi, PgfDrawStatus status) {
+    if (status == PGF_DRAW_BAD_BUFFER)
+        return hle_unmodelled_stop(name, "with glyph image 0x%08x, whose bitmap rows are not "
+                                   "writable guest memory, is not measured", gi);
+    return hle_unmodelled_stop(name, "with glyph image 0x%08x, which is not readable guest "
+                               "memory or names an unknown pixel format or a NULL buffer, is "
+                               "not measured", gi);
+}
+
 uint32_t h_FontGetCharGlyphImage(CpuState *s) {
     uint32_t cc = A1 & 0xffff, gi = A2;
     if (!gi) return SR_FONT_ERROR_INVALID_ARG;
     SrFont *f = NULL; const PGF *p = font_pgf_for(A0, (int)cc, &f);
-    if (p) {
-        (void)pgf_draw_glyph(p, (int)cc, font_alt_char_for(f), gi);
-        font_release(f); return 0;
-    }
+    if (!p) { font_release(f); return SR_FONT_ERROR_INVALID_ARG; }
+    PgfDrawStatus drawn = pgf_draw_glyph_status(p, (int)cc, font_alt_char_for(f), gi);
     font_release(f);
-    return SR_FONT_ERROR_INVALID_ARG;
+    if (drawn < 0) return font_glyph_image_stop("sceFontGetCharGlyphImage", gi, drawn);
+    return 0;
 }
 
 /* Some libfont revisions expose an internal glyph-table-id entry point even though the public
@@ -730,9 +746,10 @@ uint32_t h_FontGetGlyphImageById(CpuState *s) {
     if (!A2) return SR_FONT_ERROR_INVALID_ARG;
     SrFont *f = NULL; const PGF *p = font_acquire(A0, &f);
     if (!p) { font_release(f); return SR_FONT_ERROR_INVALID_ARG; }
-    int drawn = pgf_draw_glyph_by_id(p, (int)A1, A2);
+    PgfDrawStatus drawn = pgf_draw_glyph_by_id_status(p, (int)A1, A2);
     font_release(f);
-    return drawn ? 0 : SR_FONT_ERROR_INVALID_ARG;
+    if (drawn < 0) return font_glyph_image_stop("sceFontGetGlyphImageById", A2, drawn);
+    return drawn == PGF_DRAW_DONE ? 0 : SR_FONT_ERROR_INVALID_ARG;
 }
 /* sceFontSetResolution(lib, float hRes, float vRes): the library's resolution, which
  * sceFontFindOptimumFont uses for a style that names none. Measured on a PSP (pspautotests
