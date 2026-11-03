@@ -167,6 +167,7 @@
     X("SR_PCSAMPLE", "flag-presence", "off", "sched.c", "When set, enables scheduler PC sampling.") \
     X("SR_PERF", "flag-nonzero", "off", "perf.c", "Enables runtime performance counters with stderr reporting; an explicit 0 also keeps CSV/JSON output off.") \
     X("SR_PERF_CSV", "path", "unset (no CSV)", "perf.c", "File the performance counters are written to as CSV; setting it enables perf collection.") \
+    X("SR_PERF_FRAMES", "path", "unset: no per-frame file", "perf.c", "File that gets one CSV row per new game frame: its host work, wall time and the cost by area; setting it enables perf collection.") \
     X("SR_PERF_JSON", "path", "unset: no JSON performance file", "perf.c", "File path to which the performance recorder writes its JSON report.") \
     X("SR_PIXWHO", "list", "unset", "ge.c", "Comma pair x,y selecting a pixel whose writers are reported.") \
     X("SR_PPM_DUMP", "path", "unset (no dump)", "driver.c", "Output file path for a 64x64 PPM dump of the framebuffer at exit.") \
