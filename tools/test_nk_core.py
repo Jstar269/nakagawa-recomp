@@ -1325,18 +1325,20 @@ class GenericLauncherHostileTests(unittest.TestCase):
         self.assertNotIn("hst", str(cm.exception))
         self.assertEqual(Path(cmd_a[0]), exe)
 
+        # The default root is this checkout, never the process cwd (#368).
+        checkout = Path(__file__).resolve().parent.parent
         cwd = os.getcwd()
         try:
-            os.chdir(other_root)
-            with self.assertRaises(RuntimeLaunchError):
-                RuntimeLauncher().build_launch_plan(game_dir)
-            os.chdir(self.temp_dir)
-            cmd_b, _ = RuntimeLauncher().build_launch_plan(game_dir)
+            for where in (other_root, self.temp_dir):
+                os.chdir(where)
+                self.assertEqual(RuntimeLauncher().repo_root, checkout)
         finally:
             os.chdir(cwd)
-        # Identity-derived fields are identical across roots and cwds.
-        self.assertEqual(cmd_a[3:5], cmd_b[3:5])
-        self.assertEqual(Path(cmd_b[0]), exe)
+
+    # PreparationEngine has no working-directory default (#368).
+    def test_preparation_engine_requires_explicit_base_dir(self) -> None:
+        with self.assertRaises(TypeError):
+            PreparationEngine()  # type: ignore[call-arg]
 
     # Hostile 11: spaced roots and spaced prepared directories keep working.
     def test_paths_with_spaces_second_title_route(self) -> None:

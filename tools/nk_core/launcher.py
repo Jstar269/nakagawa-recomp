@@ -76,6 +76,10 @@ class RuntimeLaunchError(RuntimeError):
     """Raised when runtime parameters or binaries are invalid."""
 
 
+# The checkout this module belongs to, never the process working directory.
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[2]
+
+
 class RuntimeLauncher:
     """Constructs explicit, fail-closed runtime launch sessions.
 
@@ -91,7 +95,7 @@ class RuntimeLauncher:
         repo_root: Optional[Path] = None,
         registry: Optional[Any] = None,
     ) -> None:
-        self.repo_root = Path(repo_root or Path.cwd()).resolve()
+        self.repo_root = Path(repo_root or _CHECKOUT_ROOT).resolve()
         # An explicit registry injection keeps private-title routes (and
         # tests) from mutating the process-wide default registry; the
         # default remains the canonical public registry.
