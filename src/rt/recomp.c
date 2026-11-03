@@ -2303,7 +2303,7 @@ int sr_aot_return_boundary_end(CpuState *s) {
          * so everything it needs is read now. */
         const uint32_t target = (uint32_t)boundary->observed_target;
         const uint32_t resume_pc = boundary->resume_pc;
-        const SrGuestInterpCallBoundary call = { resume_pc };
+        const SrGuestInterpCallBoundary call = { .resume_pc = resume_pc };
         /* A host wrapper of an abandoned body (the stack census) may have restored its own
          * entry $sp on the way out; the frame runs on the $sp the guest restored. */
         s->r[29] = boundary->resume_sp;
@@ -2705,7 +2705,8 @@ int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
     if ((resume_pc & 3u) != 0u) {
         return SR_GUEST_INTERP_MISALIGNED_PC;
     }
-    SrGuestInterpCallBoundary boundary = { resume_pc };
+    SrGuestInterpCallBoundary boundary = {
+        .resume_pc = resume_pc, .entry_sp = s->r[29], .owes_entry_sp = 1u };
     return dispatch_try_with_boundary(s, target, &boundary, SR_DRAIN_CHAIN);
 }
 

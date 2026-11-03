@@ -1351,10 +1351,10 @@
     "status": "partial"
   },
   "0x4b85c861": {
-    "classification": "fake_success",
+    "classification": "dedicated",
     "handler": "h_OskUpdate",
     "name": "sceUtilityOskUpdate",
-    "status": "stub"
+    "status": "partial"
   },
   "0x4c06e472": {
     "classification": "dedicated",

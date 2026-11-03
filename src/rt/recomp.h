@@ -1602,7 +1602,9 @@ int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target);
  * instruction runs, so one slot suffices and it is never live across a yield (asserted at
  * the yield, syscall and dispatch entry points). A callable body owes its caller the
  * restore of its entry SP once the chain completes; the drain applies the first restore
- * recorded in its chain, which is the value the nested native returns used to leave.
+ * recorded in its chain, which is the value the nested native returns used to leave. It
+ * gives back a frame the chain handed on live, so it only raises SP: a chain that ends
+ * above it left through a longjmp or an unwind, and the guest's SP stands (#1935).
  *
  * A transfer to a computed target is one dispatch (dispatch_tail_step). The direct transfers
  * that follow it used to nest inside that dispatch, so the step drains them itself

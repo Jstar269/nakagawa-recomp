@@ -2031,6 +2031,7 @@ static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out) {
 }
 static int hle_loadexec_dialog_busy(void) {
     dialog_lock();
+    utility_slot_settle_locked();
     int busy = s_dlg_status != 0 || s_utility_slot == UTILITY_SLOT_OSK;
     dialog_unlock();
     return busy || s_osk_status != OSK_NONE;

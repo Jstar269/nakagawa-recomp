@@ -569,6 +569,8 @@ EMITTERS = frozenset({
     "_refuse_unemitted_enhancement_sites", "_registrable_exec_spans", "_apply_options",
     "_load_enhancement_package", "_symbol_names", "_registration_lines", "_write_chunks",
     "_write_unit_fallbacks", "_remove_stale_chunks", "_print_summary",
+    # Added on main for miss seeds (#1848).
+    "import_stub_test",
 })
 
 #: Title-owned address tables, and how each one's profile gate is enforced.

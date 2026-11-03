@@ -38,7 +38,7 @@ from analyze import (
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     check_code_overlay, code_overlay_elf, code_overlay_layout, data_section_words,
     is_code_overlay, is_fixed_overlay, static_coverage, branch_kind, BRANCH_UNCOND,
-    _gpr_writes,
+    seeds_in_analysis, _gpr_writes,
 )
 from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
 from host_stubs import HST_SIMPLE_STUBS
@@ -46,6 +46,7 @@ import codegen_llvm
 import compat_overrides
 import enhancement_package
 import entry_frame_balance
+import miss_seeds
 from imports import ImportTableError, format_boundary
 
 
@@ -965,6 +966,11 @@ _VFPU_OPCODES = frozenset({0x18, 0x19, 0x1B, 0x34, 0x36, 0x37, 0x3C, 0x3F})
 _STORE_OPCODES = frozenset({0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x39, 0x3A, 0x3D, 0x3E})
 
 
+#: A pseudo-register the walk keeps while no path to a word has loaded $sp from anything but
+#: the frame's own slot. The meet keeps it only where every path does.
+_OWN_SP = -1
+
+
 def _frame_step(w, regs, slots):
     """One non-control word's effect on the values known as offsets from the entry $sp."""
     regs, slots = dict(regs), dict(slots)
@@ -975,6 +981,9 @@ def _frame_step(w, regs, slots):
         target, value = rt(w), offset
     elif op == 0x23:
         target, value = rt(w), slots.get(offset)
+        # The frame's own slot: read through the $fp this body bound, where it saved $sp.
+        if rt(w) == 29 and (rs(w) != 30 or offset not in slots):
+            regs.pop(_OWN_SP, None)
     elif op == 0 and fn in (0x21, 0x25) and 0 in (rs(w), rt(w)):
         target, value = rd(w), regs.get(rs(w) or rt(w))
     if op in _STORE_OPCODES and offset is not None:
@@ -994,34 +1003,58 @@ def _frame_step(w, regs, slots):
     return regs, slots
 
 
-def _frame_walk(elf, start, insns, labels):
-    """What each path of a body knows of its frame, from the entry $sp at offset 0.
+def guest_sp_exits(elf, start, insns, labels):
+    """The exits of a body that leave $sp as the guest set it (#1892, #1935)."""
+    return _sp_exit_walk(elf, start, insns, labels)[0]
 
-    Returns (states, slot_states, released): the (registers, memory) known before each word,
-    the same before each delay slot, and whether a transfer leaves the body with $sp back at
-    its entry value. A store through a register not known here is taken to miss the frame.
+
+def _sp_exit_walk(elf, start, insns, labels):
+    """(the exits of a body that leave $sp as the guest set it, all of its exits).
+
+    A callable body owes its caller the entry $sp, and its exits restore it (F3E). A load of
+    $sp from memory is a longjmp or a context switch: it moves into the frame whose $sp it
+    loaded, and restoring the entry $sp after it would undo it. So every exit a path through
+    such a load reaches leaves $sp to the guest, as a resume body's exits do. The body's
+    other exits keep the contract. A frame adjustment (`addiu sp, sp, imm`) or `move sp, fp`
+    keeps it too.
+
+    So does freeing an alloca: the body binds $fp from $sp, saves $sp in its frame and
+    reloads it through $fp. It must record the entry $sp at its tail transfers, because the
+    pieces of the function that follow are entries entered at a lowered $sp, and the first
+    restore of a chain is the one that survives. On every path to the load, this body must
+    have bound $fp itself and saved the value in that slot, so a piece that uses a frame
+    someone else set up, or a switch that rebinds $fp, leaves $sp to the guest.
+
+    The walk follows every path from the entry and keeps what is known as an offset from the
+    entry $sp: registers, including copies of $sp, and memory in the frame. A call keeps the
+    call-saved registers and the frame; a store through a register not known here is taken
+    to miss the frame. An exit is the address of a transfer that leaves the body, or the
+    address outside the body it falls into.
     """
-    states, slot_states, work = {}, {}, []
-    released = False
+    if not any((read32(elf, addr) or 0) >> 26 == 0x23 and rt(read32(elf, addr)) == 29
+               for addr in insns):
+        return frozenset(), frozenset()
+    states, work, guest, exits = {}, [], set(), set()
 
-    def meet(table, addr, regs, slots):
-        old = table.get(addr)
+    def leave(addr, regs):
+        exits.add(addr)
+        if _OWN_SP not in regs:
+            guest.add(addr)
+
+    def reach(addr, regs, slots, exit_at=None):
+        if addr not in insns:
+            leave(addr if exit_at is None else exit_at, regs)
+            return
+        old = states.get(addr)
         if old is not None:
             regs = {k: v for k, v in regs.items() if old[0].get(k) == v}
             slots = {k: v for k, v in slots.items() if old[1].get(k) == v}
             if (regs, slots) == old:
-                return False
-        table[addr] = (regs, slots)
-        return True
+                return
+        states[addr] = (regs, slots)
+        work.append(addr)
 
-    def reach(addr, regs, slots):
-        nonlocal released
-        if addr not in insns:
-            released = released or regs.get(29) == 0
-        elif meet(states, addr, regs, slots):
-            work.append(addr)
-
-    reach(start, {29: 0}, {})
+    reach(start, {29: 0, _OWN_SP: 0}, {})
     while work:
         addr = work.pop()
         regs, slots = states[addr]
@@ -1032,62 +1065,27 @@ def _frame_walk(elf, start, insns, labels):
             reach(addr + 4, *_frame_step(w, regs, slots))
             continue
         slot = read32(elf, addr + 4)
-        meet(slot_states, addr + 4, regs, slots)
         after = _frame_step(slot, regs, slots) if slot is not None else (regs, slots)
         op, fn = w >> 26, w & 0x3F
         if op == 2:
-            reach(jump_target(addr, w), *after)
-        elif op == 3 or (op == 0 and fn == 9) or is_link(w):
-            kept = {k: v for k, v in after[0].items() if k in _CALL_SAVED_GPRS}
-            reach(addr + 8, kept, after[1])
-        elif op == 0 and fn == 8:
+            reach(jump_target(addr, w), *after, exit_at=addr)
+        elif (op == 0 and fn in (0x08, 0x09) and (fn == 0x08 or rd(w) == 0)):
+            leave(addr, after[0])
             if rs(w) != 31:
-                released = released or after[0].get(29) == 0
                 for label in labels:
                     reach(label, *after)
+        elif op == 3 or (op == 0 and fn == 0x09) or is_link(w):
+            kept = {k: v for k, v in after[0].items() if k in _CALL_SAVED_GPRS or k == _OWN_SP}
+            reach(addr + 8, kept, after[1])
         else:
-            reach(branch_target(addr, w), *after)
+            reach(branch_target(addr, w), *after, exit_at=addr)
             reach(addr + 8, *((regs, slots) if is_likely(w) else after))
-    return states, slot_states, released
+    return frozenset(guest), frozenset(exits)
 
 
 def guest_owns_entry_sp(elf, start, insns, labels):
-    """True when a body's returns must leave $sp as the guest set it.
-
-    A callable body owes its caller the entry $sp, and its returns restore it (F3E). A body
-    that loads $sp from memory is a longjmp or a context switch: it returns into the frame
-    whose $sp it loaded, and restoring the entry $sp there would undo it. Its returns, its
-    tail transfers and its fall-through end therefore leave $sp as the guest set it, as a
-    resume body's do. A frame adjustment (`addiu sp, sp, imm`) or `move sp, fp` keeps the
-    callable contract.
-
-    So does freeing an alloca (#1892): the body binds $fp from $sp, saves $sp in its frame
-    and reloads it through $fp. It must record the entry $sp at its tail transfers, because
-    the pieces of the function that follow are entries entered at a lowered $sp, and the
-    first restore of a chain is the one that survives. On every path to the load, this body
-    must have bound $fp itself and saved the value in that slot, so a piece that uses a
-    frame someone else set up, or a switch that rebinds $fp, stays with the guest.
-
-    A body that frees its alloca, releases its frame and tail-calls is the guest's too. The
-    callee takes over the caller's $sp, and if it is a longjmp a recorded restore would undo
-    it.
-    """
-    loads = [addr for addr in sorted(insns)
-             if (read32(elf, addr) or 0) >> 26 == 0x23 and rt(read32(elf, addr)) == 29]
-    if not loads:
-        return False
-    states, slot_states, released = _frame_walk(elf, start, insns, labels)
-    if released:
-        return True
-    for addr in loads:
-        seen = [table[addr] for table in (states, slot_states) if addr in table]
-        w = read32(elf, addr)
-        if rs(w) != 30 or not seen:
-            return True
-        for regs, slots in seen:
-            if 30 not in regs or (regs[30] + s16(w)) & 0xFFFFFFFF not in slots:
-                return True
-    return False
+    """True when some exit of a body leaves $sp as the guest set it (guest_sp_exits)."""
+    return bool(guest_sp_exits(elf, start, insns, labels))
 
 
 def emit_host_return(resumable, comment=None, stack_census=False):
@@ -3254,7 +3252,8 @@ class _BodyContext:
 
     ``labels`` already carries the planned skip targets and the entry label, ``dup_slot_skips``
     maps a control instruction to the word its inline delay slot lets control jump over, and
-    ``resumable`` is the final answer, after a body that loads ``$sp`` has claimed it.
+    ``resumable`` is the final answer, after a body that loads ``$sp`` has claimed every exit,
+    and ``guest_exits`` are the exits of a body that claimed only some (#1935).
     """
     elf: object
     ranges: object
@@ -3269,6 +3268,7 @@ class _BodyContext:
     resumable: bool
     stack_census: bool
     start: int
+    guest_exits: frozenset
 
 
 def _check_delay_slot_labels(elf, start, insns, labels, continuations, ranges):
@@ -3603,6 +3603,7 @@ def _emit_jalr(ctx, out, addr, w, ds, dsw):
     """``jalr rd, rs``: the target is read at the transfer, before the slot."""
     lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
     stack_census = ctx.stack_census
+    guest_exits = ctx.guest_exits
     d, a = rd(w), rs(w)
     link = f"s->r[{d}] = {G((addr + 8) & 0xFFFFFFFF)}; " if d != 0 else ""
     # The transfer target is read AT the transfer, before its delay slot
@@ -3621,7 +3622,7 @@ def _emit_jalr(ctx, out, addr, w, ds, dsw):
         _emit_slot_exit(ctx, out, addr)
     else:
         out.append(
-            f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}"
+            f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}"
         )
 
 
@@ -3629,6 +3630,7 @@ def _emit_jr(ctx, out, addr, w, ds, dsw):
     """``jr rs``: a return, a syscall bridge, or a computed tail call."""
     lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
     stack_census = ctx.stack_census
+    guest_exits = ctx.guest_exits
     ds_is_syscall = dsw is not None and (dsw >> 26) == 0 and (dsw & 0x3F) == 0x0C
     a = rs(w)
     if a == 31:
@@ -3652,12 +3654,12 @@ def _emit_jr(ctx, out, addr, w, ds, dsw):
             out.extend(delay_slot_lines(ds, dsw, addr,
                                         lle_cpu=lle_cpu, resumable=resumable,
                                         indent="      "))
-        out.append(f"      {emit_host_return(resumable, stack_census=stack_census)} }}")
+        out.append(f"      {emit_host_return(resumable or addr in guest_exits, stack_census=stack_census)} }}")
     elif ds_is_syscall and dsw is not None and not lle_cpu:
         out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
         # JR with syscall in delay slot. This is not reachable for current eboot stubs (handled by is_stub),
         # but if reached in general code, route it via the correct raw-syscall mechanism with PC.
-        out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, {G(ds)}); {emit_host_return(resumable, stack_census=stack_census)}")
+        out.append(f"    sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, {G(ds)}); {emit_host_return(resumable or addr in guest_exits, stack_census=stack_census)}")
     elif ds_is_syscall and dsw is not None:
         # LLE: the delay-slot syscall raises with BD set (spec 3.4).
         out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
@@ -3670,18 +3672,19 @@ def _emit_jr(ctx, out, addr, w, ds, dsw):
         out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
         out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,
                                     indent="      "))
-        out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
+        out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
 
 
 def _emit_unrelocated_j(ctx, out, addr, w, ds, dsw):
     """``j`` the loader leaves as linked."""
     lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
     stack_census = ctx.stack_census
+    guest_exits = ctx.guest_exits
     out.append(f"    {{ uint32_t _t = {emit_decoded_jump_target(addr)};")
     out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); sr_end(s, 0u, 0);")
     out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                 resumable=resumable, indent="      "))
-    out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
+    out.append(f"      {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
 
 
 def _emit_j(ctx, out, addr, w, ds, dsw):
@@ -3689,6 +3692,7 @@ def _emit_j(ctx, out, addr, w, ds, dsw):
     known, resume_owners, labels = ctx.known, ctx.resume_owners, ctx.labels
     lle_cpu, resumable = ctx.lle_cpu, ctx.resumable
     stack_census = ctx.stack_census
+    guest_exits = ctx.guest_exits
     target = jump_target(addr, w)
     out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
     out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable))
@@ -3703,12 +3707,12 @@ def _emit_j(ctx, out, addr, w, ds, dsw):
     elif (target in known or target in resume_owners) and not (
         target in resume_owners and target in labels
     ):
-        out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable, stack_census)}")
+        out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or addr in guest_exits, stack_census)}")
     elif target in labels:
         y = f"SR_YIELD(s, {G(addr)}); " if target <= addr else ""   # backward j: loop edge
         out.append(f"    {y}goto L_{target:08x};")
     else:
-        out.append(f"    {{ uint32_t _t = {G(target)}; {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
+        out.append(f"    {{ uint32_t _t = {G(target)}; {emit_tail_transfer('_t', None, resumable or addr in guest_exits, stack_census)} }}")
 
 
 def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
@@ -3716,6 +3720,7 @@ def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
     elf, ranges, known = ctx.elf, ctx.ranges, ctx.known
     resume_owners, labels, hst_profile = ctx.resume_owners, ctx.labels, ctx.hst_profile
     lle_cpu, resumable, stack_census = ctx.lle_cpu, ctx.resumable, ctx.stack_census
+    guest_exits = ctx.guest_exits
     target = branch_target(addr, w)
     y = f"SR_YIELD(s, {G(addr)}); " if target <= addr else ""
     link = f"s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; " if is_link(w) else ""
@@ -3767,7 +3772,7 @@ def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
         # transfer as `j` to that entry, after the delay slot (annulled on the
         # not-taken path of a likely branch).
         tail = emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners),
-                                  resumable, stack_census)
+                                  resumable or addr in guest_exits, stack_census)
         if is_likely(w):
             out.append(f"      if (_c) {{ {_delay_inline} {tail} }} }}")
         else:
@@ -3775,10 +3780,10 @@ def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
             out.append(f"      if (_c) {{ {tail} }} }}")
     else:
         if is_likely(w):
-            out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
+            out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census)} }} }} }}")
         else:
             out.extend("   " + line for line in _delay)
-            out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
+            out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable or addr in guest_exits, stack_census)} }} }} }}")
     _emit_slot_exit(ctx, out, addr, "slot already ran inline (or was annulled)")
 
 
@@ -3809,6 +3814,7 @@ def _emit_continuation_blocks(ctx, out):
     """The blocks that continue a body past a synthetic boundary, after the sorted words."""
     resume_owners, dispatch_boundaries, continuations = ctx.resume_owners, ctx.dispatch_boundaries, ctx.continuations
     resumable, stack_census = ctx.resumable, ctx.stack_census
+    guest_exits = ctx.guest_exits
     # Do not let an unrelated natural end path fall into the first continuation
     # block merely because the blocks live after the sorted instruction bodies.
     out.append("    goto _sr_fallthrough_return;")
@@ -3821,11 +3827,57 @@ def _emit_continuation_blocks(ctx, out):
             # dispatch the guest target and then leave the current native body.
             out.append(
                 f"    {{ uint32_t _t = {G(target)}; "
-                f"{emit_tail_transfer('_t', None, resumable, stack_census)} }}"
+                f"{emit_tail_transfer('_t', None, resumable or target in guest_exits, stack_census)} }}"
             )
         else:
-            out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable, stack_census, 'synthetic boundary: the owning entry frame is restored after the chain')}")
+            out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable or target in guest_exits, stack_census, 'synthetic boundary: the owning entry frame is restored after the chain')}")
     out.append("  _sr_fallthrough_return: ;")
+
+
+def emitter_seed_check(elf, profile=None, omitted=(), stack_census=False):
+    """A ``seed_check`` for ``analyze`` (miss seeds, #1848): what the primary image's emission loop
+    in ``main`` does with an entry set. It maps each entry that loop would emit to None for a body
+    or to why it would write an abort stub there, under the image's own address space, so
+    ``analyze`` reports a seed from the emitter's result. An enhancement package does not enter
+    into it: a rewrite replaces a word's text after the stock word is translated."""
+    impmap = primary_import_map(elf)
+    is_stub = import_stub_test(elf, impmap)
+    space = AddressSpace(patched=variable_import_sites(elf)[1])
+    hand_written = set()
+    if profile == "hst":
+        hand_written = set(HST_CUSTOM_STUBS) | set(HST_SIMPLE_STUBS)
+
+    def check(entries, ranges, only=None):
+        global ADDRESS_SPACE
+        catalog = build_entry_catalog(entries, ranges, profile=profile, elf=elf)
+        for address in omitted:
+            catalog.pop(address, None)
+        known = {addr for addr, info in catalog.items() if info.callable}
+        resume_owners = {addr: info.owner for addr, info in catalog.items() if info.resumable}
+        emission = {}
+        previous_space = ADDRESS_SPACE
+        ADDRESS_SPACE = space
+        try:
+            for address in sorted(catalog):
+                if only is not None and address != only:
+                    continue
+                emission[address] = None
+                if address in hand_written:
+                    continue
+                if is_stub(address):
+                    if address not in impmap:
+                        emission[address] = NO_NID_IMPORT_STUB
+                    continue
+                try:
+                    emit_function(elf, address, ranges, known, resume_owners=resume_owners,
+                                  resumable=catalog[address].resumable, profile=profile,
+                                  dispatch_boundaries=set(omitted), stack_census=stack_census)
+                except Unsupported as exc:
+                    emission[address] = str(exc).replace('"', "'")
+        finally:
+            ADDRESS_SPACE = previous_space
+        return emission
+    return check
 
 
 def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False,
@@ -3847,10 +3899,16 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elf, start, ranges, known, resume_owners=resume_owners,
             dispatch_boundaries=dispatch_boundaries)
     insns, labels, continuations = flow
-    # A body that loads $sp leaves it to the guest at every exit, as a resume body does.
-    if not resumable and guest_owns_entry_sp(elf, start, insns, labels):
-        resumable = True
+    # An exit that a load of $sp reaches leaves $sp to the guest, as a resume body's do.
+    guest_exits, exits = (frozenset(), frozenset()) if resumable else _sp_exit_walk(
+        elf, start, insns, labels)
+    if guest_exits:
         GUEST_SP_ENTRIES.add(start)
+        if guest_exits == exits:
+            resumable = True
+        else:
+            # The census leaves such a body unwrapped, so its other exits keep their restore.
+            stack_census = False
     if start in labels:
         _refuse_argument_site_on_a_loop(start)
     _check_delay_slot_labels(elf, start, insns, labels, continuations, ranges)
@@ -3874,7 +3932,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         labels.add(start)
         out.append(f"    goto L_{start:08x};")
     ctx = _BodyContext(elf, ranges, known, resume_owners, dispatch_boundaries, labels, continuations,
-                       dup_slot_skips, hst_profile, lle_cpu, resumable, stack_census, start)
+                       dup_slot_skips, hst_profile, lle_cpu, resumable, stack_census, start, guest_exits)
     consumed = set()
     promo = RegisterPromotion() if OPTIONS.promote_registers else None
     for addr in sorted(insns):
@@ -3916,7 +3974,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if declaration is not None:
             out.insert(1, declaration)
         PROMOTION_STATS["functions"] += 1
-    out.append(f"    {emit_host_fallthrough(resumable, stack_census=stack_census)}")
+    falls_as_guest = any(addr not in insns for addr in guest_exits)
+    out.append(f"    {emit_host_fallthrough(resumable or falls_as_guest, stack_census=stack_census)}")
     out.append("}")
     out.append("")
     if any(BODY_CALL_DRAIN in line for line in out):
@@ -4012,6 +4071,35 @@ def c_string(text):
 
 #: The PSP reference type of each variable-import reference kind (SrVarImportRef.kind).
 VAR_REFERENCE_KIND = {"word32": 2, "hi16": 5, "lo16": 6}
+NO_NID_IMPORT_STUB = "import stub without NID mapping"
+
+
+def primary_import_map(elf):
+    """The primary image's import stubs, {address: (library, NID)}. An image with no import table
+    has none."""
+    if elf.reloc is None and elf.sec(".rodata.sceModuleInfo") is None:
+        return {}
+    try:
+        from imports import parse_imports
+        return parse_imports(elf)
+    except ImportTableError:
+        raise
+    except Exception as e:
+        sys.stderr.write(f"warning: import table parse failed: {e}\n")
+        return {}
+
+
+def import_stub_test(elf, impmap):
+    """Whether an address of the primary image is an import stub. Stripped linked executables may
+    reconstruct the loader-owned table as .lib.stub instead of having a named .sceStub.text
+    section."""
+    stub = elf.sec(".sceStub.text") or elf.sec(".lib.stub")
+
+    def is_stub(a):
+        if a in impmap:
+            return True
+        return stub is not None and stub["addr"] <= a < stub["addr"] + stub["size"]
+    return is_stub
 
 
 def variable_import_sites(elf):
@@ -4387,7 +4475,7 @@ COVERAGE_TOTAL_FIELDS = (
 )
 
 
-def write_coverage_report(path, images, module_translations):
+def write_coverage_report(path, images, module_translations, miss_seed_outcome=None):
     """Write what this run translated, per image and in total (``<game>_recomp_coverage.json``).
 
     The numbers come from analyze.static_coverage over the same entries and executable
@@ -4406,6 +4494,10 @@ def write_coverage_report(path, images, module_translations):
     owned = total["owned_words"]
     total["translated_share"] = round(total["translated_words"] / owned, 6) if owned else None
     report = {"schema_version": 1, "total": total, "images": rows}
+    if miss_seed_outcome is not None:
+        # Present only for a build given --miss-seeds, so a default report is unchanged.
+        report["miss_seeds"] = {f"0x{address:08x}": status
+                                for address, status in sorted(miss_seed_outcome.items())}
     with open(path, "w", encoding="ascii", newline="\n") as output:
         output.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print("CODEGEN_COVERAGE " + " ".join(
@@ -4663,7 +4755,8 @@ _USAGE = (
     "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
     "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
     "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
-    "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm]\n"
+    "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm] "
+    "[--miss-seeds=FILE]\n"
     "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
 )
 
@@ -4704,6 +4797,7 @@ def _command_line_parser():
     value("--symbol-map", "guest symbol map naming functions and sites")
     flag("--name-imports", "name each import stub after the function its NID imports")
     value("--backend", "c (default) or llvm (#330)")
+    value("--miss-seeds", "a dispatch-miss seed list (tools/miss_seeds.py): extra function entries")
     parser.add_argument("--omit-aot", action="append", default=[], metavar="ADDR[,ADDR...]",
                         help="leave these entries to the dispatcher instead of direct C calls")
     value("--enhancement-package", "enhancement package to apply")
@@ -4747,6 +4841,7 @@ def _validated_options(cli):
     for option, given in (("--enhancement-data-root", cli.enhancement_data_root),
                           ("--enhancement-package", cli.enhancement_package),
                           ("--symbol-map", cli.symbol_map),
+                          ("--miss-seeds", cli.miss_seeds),
                           ("--cfg-report", cli.cfg_report)):
         if given == "":
             raise _Refusal(2, f"{option} requires a path\n")
@@ -4856,7 +4951,8 @@ def _refuse_offset0_pointers(images):
                    "code pointer (#1375); place it at a nonzero base\n")
 
 
-def _cfg_report_and_gate(elf, analyzed, ranges, extra_spans, cfg_report_path, cfg_gate):
+def _cfg_report_and_gate(elf, analyzed, ranges, extra_spans, cfg_report_path, cfg_gate,
+                         miss_seed_outcome=None):
     """The canonical CFG report of the primary image, written when asked, and the opt-in ownership gate.
 
     Returns the report, or None when neither ``--cfg-report`` nor ``--cfg-gate`` is on.
@@ -4871,7 +4967,10 @@ def _cfg_report_and_gate(elf, analyzed, ranges, extra_spans, cfg_report_path, cf
         # A report-only run describes gate-mode analysis but must not change
         # the entry set that feeds code emission.
         try:
-            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+            report_entries, report_ranges = analyze(
+                elf, extra_spans=extra_spans, cfg_gate=True,
+                **({"seeds": seeds_in_analysis(miss_seed_outcome)}
+                   if miss_seed_outcome is not None else {}))
         except ImportTableError as exc:
             raise _Refusal(1, f"codegen: {format_boundary(exc)}\n") from None
     cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
@@ -5450,12 +5549,29 @@ def _translate(argv):
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
     extra_spans = resolve_extra_spans(extra_span_arg)
+    # Seeds from a run's dispatch misses (tools/miss_seeds.py, #1848) are extra entries for the
+    # primary image only. Without --miss-seeds the analysis call is exactly the one it always was.
+    seed_args = {}
+    if cli.miss_seeds is not None:
+        try:
+            seed_args = {"seeds": set(miss_seeds.read_seed_file(cli.miss_seeds).seeds),
+                         "report": {}}
+        except miss_seeds.SeedFileError as exc:
+            sys.stderr.write(f"codegen: {exc}\n")
+            return 2
     try:
-        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+        if seed_args:
+            seed_args["seed_check"] = emitter_seed_check(elf, profile, frozenset(omit_aot.addrs),
+                                                         stack_census)
+        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate, **seed_args)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
         return 1
-    cfg_report = _cfg_report_and_gate(elf, analyzed, ranges, extra_spans, cfg_report_path, cfg_gate)
+    miss_seed_outcome = seed_args["report"]["miss_seeds"] if seed_args else None
+    if miss_seed_outcome is not None:
+        miss_seeds.report_outcome(miss_seed_outcome, prefix="CODEGEN_MISS_SEEDS")
+    cfg_report = _cfg_report_and_gate(elf, analyzed, ranges, extra_spans, cfg_report_path, cfg_gate,
+                                      miss_seed_outcome)
     owned_exec_ranges = list(ranges)
     catalog = build_entry_catalog(analyzed, ranges, profile=profile, elf=elf)
     omitted = omit_aot.apply(catalog, elf.entry)
@@ -5472,16 +5588,11 @@ def _translate(argv):
     _load_enhancement_package(elf, known, symbols, enhancement_pkg_path, enhancement_data_root,
                               symbol_map_path)
 
-    impmap = {}
-    if elf.reloc is not None or elf.sec(".rodata.sceModuleInfo") is not None:
-        try:
-            from imports import parse_imports
-            impmap = parse_imports(elf)
-        except ImportTableError as e:
-            sys.stderr.write(f"codegen: {format_boundary(e)}\n")
-            return 1
-        except Exception as e:
-            sys.stderr.write(f"warning: import table parse failed: {e}\n")
+    try:
+        impmap = primary_import_map(elf)
+    except ImportTableError as e:
+        sys.stderr.write(f"codegen: {format_boundary(e)}\n")
+        return 1
     # The executable's variable imports: the runtime linker patches their reference sites,
     # so the code reads those immediates from memory (AddressSpace.patched).
     global ADDRESS_SPACE
@@ -5491,14 +5602,7 @@ def _translate(argv):
         sys.stderr.write(f"codegen: {format_boundary(e)}\n")
         return 1
     ADDRESS_SPACE = AddressSpace(patched=main_var_sites)
-
-    # Stripped linked executables may reconstruct the loader-owned table as
-    # .lib.stub instead of having a named .sceStub.text section.
-    stub = elf.sec(".sceStub.text") or elf.sec(".lib.stub")
-    def is_stub(a):
-        if a in impmap:
-            return True
-        return stub is not None and stub["addr"] <= a < stub["addr"] + stub["size"]
+    is_stub = import_stub_test(elf, impmap)
 
     emitted = []
     stubbed = []
@@ -5563,8 +5667,8 @@ def _translate(argv):
                 text = import_stub_text(a, lib, nid)
                 import_nids[a] = nid
             else:
-                text = f"void f_{a:08x}(CpuState *s) {{  /* import stub without NID mapping */\n"
-                text += f"    sr_unimplemented(0x{a:08x}u, \"import stub without NID mapping\");\n}}"
+                text = f"void f_{a:08x}(CpuState *s) {{  /* {NO_NID_IMPORT_STUB} */\n"
+                text += f"    sr_unimplemented(0x{a:08x}u, \"{NO_NID_IMPORT_STUB}\");\n}}"
             func_texts.append(text)
             emitted.append(a)
             continue
@@ -5773,7 +5877,8 @@ def _translate(argv):
             for a, r in sorted(module.stubbed):
                 f.write(f"{module.name}@0x{a:08x} {r}\n")
 
-    write_coverage_report(f"{base_name}_coverage.json", coverage_images, module_translations)
+    write_coverage_report(f"{base_name}_coverage.json", coverage_images, module_translations,
+                          miss_seed_outcome=miss_seed_outcome)
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"

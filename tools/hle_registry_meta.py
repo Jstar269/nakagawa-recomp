@@ -315,6 +315,15 @@ HANDLER_METADATA = {
         ],
         "limitation": "the fallback is kept host-side and used by GetCharInfo and GetCharGlyphImage; the PSP library struct field that holds it is not part of this runtime's library layout, and a library handle that is not live stops the run by name",
     },
+    "h_OskUpdate": {
+        "status": "partial",
+        "evidence": [
+            "#363 (PSP-3000 measurements, comments 6330742629 and 6331070692): WRONG_TYPE 0x80110005 before a keyboard starts; 0 in VISIBLE for speed 0 and 1; INVALID_STATUS 0x80110001 in INIT, QUIT and NONE after use",
+            "tests/native/hle_thread_selftest.c:test_osk_update_and_shutdown_init_states",
+            "tests/native/hle_thread_selftest.c:test_utility_dialog_frame_driven_status",
+        ],
+        "limitation": "the return codes follow the measured states, and INIT ends on the vblank after InitStart (#1386); Update does not drive the keyboard, whose text is collected from GetStatus (#281), and Update in FINISHED returns 0, which is not measured (#341)",
+    },
     "h_MsgDialogAbort": {
         "status": "partial",
         "evidence": [

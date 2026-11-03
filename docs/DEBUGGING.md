@@ -340,6 +340,56 @@ function: the dispatcher reaches them only as a miss, which stops the run.
 - interpreter instructions, distinct interpreter entry points, distinct miss targets, and entries
   whose PC did not fit the 2048-entry set (`entry_points_overflow`).
 
+**Feeding misses back into analysis (#1848).** `miss_targets` counts guest addresses the dispatcher
+reached with no registered body. Setting `SR_MISS_SEEDS=<file>` makes the runtime also write those
+distinct targets at exit, one `0x%08x` per line in ascending order, under a `# nakagawa-miss-seeds-v1`
+header. A run that exceeded the entry-point set says so in the file (`entry_points_overflow=N`) and on
+stderr, and the merge tool calls the list incomplete. The loop is then:
+
+```powershell
+python tools/miss_seeds.py merge --out <title seed list> --run <label> --elf <the image the run executed> <miss file>...
+# rebuild with the list as extra function entries:
+#   codegen.py ... --miss-seeds=<title seed list>      (Makefile: CODEGEN_USER_ARGS=--miss-seeds=<list>)
+#   analyze.py <elf> --miss-seeds=<title seed list>
+```
+
+`merge` keeps the run that first found each seed (`run=<label>`) and drops targets that are already
+function entries. A target inside a function's body stays in the list: a run entered the body mid-way, and
+the build decides whether that address can have a body of its own. The list can also hold a longjmp
+continuation: the floor runs one by design and the run counts its entry as a miss, and the build refuses it.
+
+Each seed is judged by what the code emitter does with and without the seeds, so the build analyzes the
+image and runs the emitter over every entry both ways before it writes anything, which takes longer than a
+build without the option. A seed that is already an entry without seeds is `known`, and it adds nothing. A
+seed that is unaligned, outside the executable ranges or on an all-zero or all-ones word is ignored. So is
+a seed the frame walk (`tools/entry_frame_balance.py`) shows releasing a frame it never allocated, on any path
+whose `$sp` writes it can follow, and, inside
+the spans the build would own without that seed, a seed the walk does not prove a function entry
+(`not-callable: <role>`). A callable body restores the `$sp` it was entered with, and the interpreter floor
+hands off to any address with a body, so a body inside a live frame would undo its own epilogue and stop a
+run the floor finishes. Inside an owned span a seed needs at least one `jr $ra`, each with `$sp` back where it
+started; one that only loops, only leaves through a computed jump or writes `$sp` from a register is unproven,
+and stays on the floor. So does one with a computed jump and no frame of its own: at net 0 that jump says nothing
+about the frame the seed may be inside. Those spans include what the list's other seeds own: a body from one
+round makes the floor run more words, and the next round's list can name them. Only seeds the build keeps
+count: when a stub refuses a seed, the others are judged again without it. Outside every owned span no
+floor runs the address, so a seed the walk cannot prove still gets its body: without it the run stops there.
+Also ignored is any seed that makes the emitter write a stub it does not write without seeds, on the seed's own entry
+(`untranslatable: <why>`) or on one the seed brought in (`untranslatable: brings 0x...: <why>`): a stub
+would turn a miss the interpreter floor finishes into an abort, even for a reserved word a run never
+executes. A seed the build emits no body for is `not-emitted` (`--omit-aot`). Only a seed that gives its
+address a new translated body is `applied`. Ignored seeds are reported
+(`CODEGEN_MISS_SEEDS: ignored 0x...: <reason>`) and left out, never forced. `CODEGEN_MISS_SEEDS` prints the
+applied, already-known and ignored counts, and the coverage JSON gains a `miss_seeds` map of address to
+status, only for a build given `--miss-seeds`. Without the option the output is unchanged.
+
+Seeding adds input for the next build only. A miss at run time keeps its behaviour: it still prints
+`DISPATCH_MISS_NEW`, still enters the interpreter floor inside an owned span, and still stops the run
+outside one. Seeds apply to the primary image's guest addresses; a runtime-placed module's targets are
+not matched yet. The list is derived from a title's code, so keep it with the title's other private
+build inputs and out of the repository. A changed list is not a Makefile prerequisite, so
+rebuild the title's `_recomp.c` after merging.
+
 The share is a time share. It overstates the interpreter's share of instructions, because the
 interpreter is slower per instruction. The exact instruction share still needs a
 `PERF_AOT_INSTRUCTIONS=1` build with `SR_PERF=1`. Time is charged to the tier that is running. A

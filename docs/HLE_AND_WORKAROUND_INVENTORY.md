@@ -46,13 +46,13 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **684** (dedicated **577**, fake_success **5**, controlled_unsupported **102**).
-Semantic handler census: **555** handlers across **27** API families, covering **584** handler-associated NID registrations.
+Registered NIDs: **684** (dedicated **578**, fake_success **4**, controlled_unsupported **102**).
+Semantic handler census: **556** handlers across **27** API families, covering **585** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 255 | 263 |
+| `partial` | 256 | 264 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 3 | 7 |
 | `unreviewed` | 282 | 290 |
@@ -83,10 +83,10 @@ Semantic handler census: **555** handlers across **27** API families, covering *
 | `sceRtc` | 5 | 12 | 0 | 0 | 1 | 18 | 18 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 6 | 1 | 0 | 7 | 14 | 14 |
-| `sceUtility` | 0 | 9 | 0 | 0 | 27 | 36 | 36 |
+| `sceUtility` | 0 | 10 | 0 | 0 | 27 | 37 | 37 |
 | `sceVaudio` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **255** | **1** | **3** | **282** | **555** | **584** |
+| **Total** | **14** | **256** | **1** | **3** | **282** | **556** | **585** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -1035,6 +1035,11 @@ Semantic handler census: **555** handlers across **27** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_sequence
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_without_update
   - Evidence: PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown
+- **`h_OskUpdate`** (`sceUtility`): `sceUtilityOskUpdate` (0x4b85c861)
+  - Limitation: the return codes follow the measured states, and INIT ends on the vblank after InitStart (#1386); Update does not drive the keyboard, whose text is collected from GetStatus (#281), and Update in FINISHED returns 0, which is not measured (#341)
+  - Evidence: #363 (PSP-3000 measurements, comments 6330742629 and 6331070692): WRONG_TYPE 0x80110005 before a keyboard starts; 0 in VISIBLE for speed 0 and 1; INVALID_STATUS 0x80110001 in INIT, QUIT and NONE after use
+  - Evidence: tests/native/hle_thread_selftest.c:test_osk_update_and_shutdown_init_states
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_dialog_frame_driven_status
 - **`h_ScreenshotStatus`** (`sceUtility`): `sceUtilityScreenshotGetStatus` (0xd81957b7)
   - Limitation: always WRONG_TYPE: the runtime has no screenshot dialog, and its InitStart import is not registered
   - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
