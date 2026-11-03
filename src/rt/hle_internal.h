@@ -1335,6 +1335,7 @@ int io_path_is_disc_device(const char *path);
 IoRawDevicePath io_raw_device_path(const char *path);
 int data_archive_guest_path_allowed(const char *guest_path);
 uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot);
+uint32_t hle_io_probe_open(const char *path);
 int io_host_seek(FILE *host, uint32_t offset);
 uint32_t h_IoWrite(CpuState *s);
 uint32_t h_IoRead(CpuState *s);

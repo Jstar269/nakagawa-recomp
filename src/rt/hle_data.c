@@ -2326,6 +2326,18 @@ uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot) {
     }
     return rc;
 }
+
+/* A read-only open of path that is closed again at once: 0 when the open succeeds, or the
+ * error sceIoOpen returns. sceKernelLoadModule opens its file this way before it reads a
+ * byte, so a path that opens nothing fails with the open's error (uofw modulemgr,
+ * src/kd/modulemgr/loadModule.c, sceKernelLoadModule). */
+uint32_t hle_io_probe_open(const char *path) {
+    uint32_t rc = h_io_open_path_stock(path, 1u, -1);
+    if (rc >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0]))) return rc;
+    if (s_fds[rc].used) hle_fd_release(&s_fds[rc], 0);
+    s_closed_res[rc] = 0;
+    return 0u;
+}
 int io_host_seek(FILE *host, uint32_t offset) {
 #ifdef _WIN32
     return _fseeki64(host, (int64_t)offset, SEEK_SET);
