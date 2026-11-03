@@ -36,15 +36,18 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **443** (declared in `recomp.h`: 378)
-- reach class: emitter-reached 77, production-runtime-only 330, selftest-only 18, address-only 7, none 11
-- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 408
+- helpers: **446** (declared in `recomp.h`: 378)
+- reach class: emitter-reached 77, production-runtime-only 334, selftest-only 17, address-only 7, none 11
+- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 411
 
 ## Helpers
 
 | helper | defined in | recomp.h | reach | provenance |
 | --- | --- | --- | --- | --- |
 | `SDL_GetTicksNS` | none | no | production-runtime-only | declared-only (no definition under `src/`) |
+| `code_capture_note` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `code_capture_put32` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `code_capture_word_free` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_after_aot` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_call` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
@@ -358,7 +361,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_module_code_count` | `rt/guest_interp.c` | yes | selftest-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_fetch_authority` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_find` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
-| `sr_module_code_fnv1a64` | `rt/guest_interp.c` | yes | selftest-only | `rt/guest_interp.c`: project_authored_attested |
+| `sr_module_code_fnv1a64` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_is_bound` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_lookup` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_register` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |
