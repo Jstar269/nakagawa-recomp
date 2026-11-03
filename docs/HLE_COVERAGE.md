@@ -24,10 +24,10 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 16 |
-| `ppsspp-derived` | 117 | 90 |
+| `ppsspp-derived` | 119 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 344 | 226 |
-| `unverified` | 159 | 31 |
+| `synthetic` | 343 | 226 |
+| `unverified` | 158 | 31 |
 | total | 684 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -181,7 +181,7 @@ belongs to without the census's own grouping.
 | `0x2c8e6ab3` | `__sceSasGetPauseFlag` | audio | `unverified` | no recorded evidence |
 | `0x2d0e4e0a` | `scePsmfPlayerSetTempBuf` | mpeg | `unverified` | no recorded evidence |
 | `0x2d211135` | `sceRegGetKeys` | system | `synthetic` | HLE selftest dispatch |
-| `0x2d53f36e` | `sceAudioOutput2OutputBlocking` | audio | `unverified` | no recorded evidence; note |
+| `0x2d53f36e` | `sceAudioOutput2OutputBlocking` | audio | `ppsspp-derived` | registry notes name PPSSPP; note |
 | `0x2dd3e298` | `sceAtracGetBufferInfoForResetting` | audio_codec | `ppsspp-derived` | handler comment names PPSSPP; sceAtrac block: stream bookkeeping ported from PPSSPP sceAtrac.cpp |
 | `0x2e0911aa` | `sceKernelUnloadModule` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0x30be0259` | `sceRegGetKeyValueByName` | system | `synthetic` | HLE selftest dispatch |
@@ -435,7 +435,7 @@ belongs to without the census's own grouping.
 | `0x8874dbe0` | `sceUtilitySavedataGetStatus` | utility | `synthetic` | HLE selftest dispatch |
 | `0x8916c003` | `sceNetAdhocctlGetNameByAddr` | network | `unverified` | no recorded evidence |
 | `0x89360950` | `sceNetEtherNtostr` | network | `ppsspp-derived` | registry notes name PPSSPP |
-| `0x8986295e` | `sceVaudioOutputBlocking` | audio | `synthetic` | HLE selftest dispatch |
+| `0x8986295e` | `sceVaudioOutputBlocking` | audio | `ppsspp-derived` | registry notes name PPSSPP |
 | `0x89aa9906` | `sceIoOpenAsync` | io | `ppsspp-derived` | handler comment names PPSSPP |
 | `0x89b3d48c` | `sceKernelDeleteVpl` | kernel_memory | `synthetic` | HLE selftest dispatch; note |
 | `0x8a389411` | `sceKernelDisableSubIntr` | kernel_interrupt | `synthetic` | HLE selftest dispatch |

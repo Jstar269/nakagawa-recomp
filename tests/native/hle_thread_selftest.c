@@ -380,6 +380,7 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_AUDIO_OUTPUT2_RESERVE 0x01562ba3u
 #define NID_SCE_AUDIO_OUTPUT2_RELEASE 0x43196845u
 #define NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE 0x647cef33u
+#define NID_SCE_AUDIO_OUTPUT2_OUTPUT_BLOCKING 0x2d53f36eu
 #define NID_SCE_AUDIO_SRC_CH_RESERVE 0x38553111u
 #define NID_SCE_AUDIO_SRC_CH_RELEASE 0x5c37c0aeu
 #define NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING 0xe0727056u
@@ -10531,6 +10532,50 @@ static void test_audio_output2_release_refuses_while_queued(void) {
     audio_fixture_reset();
 }
 
+/* The Output2/SRC blocking outputs accept volumes up to 0xFFFFF (PPSSPP-derived, unmeasured
+ * on a PSP: hrydgard/ppsspp caa91b54b535 Core/HLE/sceAudio.cpp, "0xFFFFF, not 0xFFFF"), not
+ * just up to the 0x8000 unity gain. A game that plays its
+ * sound at 0xFFFF must get its block mixed, not 0x8026000B: a sound thread that ignores the
+ * error never blocks and starves every lower-priority thread. Above the bound the call still
+ * refuses and submits nothing. Entered through the production NIDs. */
+static void test_audio_output2_and_src_accept_volumes_to_0xfffff(void) {
+    enum { OUT_BUF = 0x08a00000u };   /* 64 stereo frames: 256 bytes inside the arena */
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) == 0u,
+           "Output2 reserves a 64-sample channel");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_OUTPUT_BLOCKING, 0xffffu, OUT_BUF, 0u) == 0u &&
+               s_audio_push_calls == 1u,
+           "Output2 output at volume 0xFFFF is accepted and mixed");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_OUTPUT_BLOCKING, 0xfffffu, OUT_BUF, 0u) == 0u &&
+               s_audio_push_calls == 2u,
+           "Output2 output at volume 0xFFFFF is accepted and mixed");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_OUTPUT_BLOCKING, 0x100000u, OUT_BUF, 0u) ==
+               0x8026000bu && s_audio_push_calls == 2u,
+           "Output2 output above 0xFFFFF returns 0x8026000B and submits nothing");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "Output2 releases once drained");
+
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 64u, 44100u, 2u) == 0u,
+           "SRC reserves 64 samples at 44100 Hz stereo");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0xffffu, OUT_BUF, 0u) == 64u &&
+               s_audio_push_calls == 3u,
+           "SRC output at volume 0xFFFF returns the sample count and is mixed");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0xfffffu, OUT_BUF, 0u) == 64u &&
+               s_audio_push_calls == 4u,
+           "SRC output at volume 0xFFFFF returns the sample count and is mixed");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x100000u, OUT_BUF, 0u) ==
+               0x8026000bu && s_audio_push_calls == 4u,
+           "SRC output above 0xFFFFF returns 0x8026000B and submits nothing");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "SRC releases");
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+}
+
 static size_t audio_resampler_convert_chunks(SrAudioResampler *state,
                                              const int16_t *input,
                                              size_t input_frames,
@@ -10915,9 +10960,9 @@ static void test_vaudio_plays_through_the_src_slot(void) {
                    0x80260008u,
            "the SRC release and output do not act on a Vaudio reservation");
     expect(s_audio_push_calls == 0u, "nothing reached the mixer through the other API");
-    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8001u, VA_BUF, 0u) ==
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x100000u, VA_BUF, 0u) ==
                0x8026000bu,
-           "a Vaudio volume above 0x8000 returns 0x8026000b");
+           "a Vaudio volume above 0xFFFFF returns 0x8026000b");
     expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) == 1152u,
            "Vaudio output returns the reserved sample count");
     expect(s_audio_push_calls == 1u && s_audio_push_frames == 1152,
@@ -45444,6 +45489,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_audio_output2_release_refuses_while_queued();
     test_audio_resampler_quality_and_streaming();
     test_audio_src_matches_the_measured_contract();
+    test_audio_output2_and_src_accept_volumes_to_0xfffff();
     test_vaudio_plays_through_the_src_slot();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
