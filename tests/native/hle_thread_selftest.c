@@ -2050,6 +2050,8 @@ static void rt_write_stop_option(uint32_t size, uint32_t mpid, uint32_t priority
     MEM_W32(RT_STOP_OPTION_ADDR + 16u, attr);
 }
 
+extern void sr_hle_test_set_compiled_sdk_version(uint32_t version);
+
 static uint32_t rt_stop_with_option(uint32_t uid, uint32_t option) {
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
@@ -2340,13 +2342,9 @@ static void test_runtime_placed_modules(void) {
                "runtime placement: a linked guest export does not clear the caller's LLbit");
     }
 
-    /* A SceKernelSMOption the module manager refuses leaves the module started. */
-    {
-        CpuState sdk;
-        memset(&sdk, 0, sizeof(sdk));
-        sdk.r[4] = 0x02080000u;
-        (void)sr_syscall(&sdk, 0x7591c7dbu); /* sceKernelSetCompiledSdkVersion */
-    }
+    /* A SceKernelSMOption the module manager refuses leaves the module started. The size
+     * check applies from SDK 2.08 on. */
+    sr_hle_test_set_compiled_sdk_version(0x02080000u);
     rt_write_stop_option(16u, 2u, 0u, 0u);
     expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == SCE_KERNEL_ERROR_ILLEGAL_SIZE &&
                s_rt_stop_calls == 0u,
@@ -2358,7 +2356,8 @@ static void test_runtime_placed_modules(void) {
     expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == 0x80020002u &&
                s_rt_stop_calls == 0u,
            "runtime placement: a stop thread stack outside the user partition is refused");
-    expect(rt_stop_with_option(uid, 0x00000010u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR &&
+    /* The option block's 20 bytes would run past the end of guest memory. */
+    expect(rt_stop_with_option(uid, 0x0bfffff0u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR &&
                s_rt_stop_calls == 0u,
            "runtime placement: an unreadable stop option is refused");
 
@@ -2370,11 +2369,7 @@ static void test_runtime_placed_modules(void) {
                s_rt_stop_priority == 0x30,
            "runtime placement: StopModule runs module_stop at the option's priority and "
            "reports its status");
-    {
-        CpuState sdk;
-        memset(&sdk, 0, sizeof(sdk));
-        (void)sr_syscall(&sdk, 0x7591c7dbu);
-    }
+    sr_hle_test_set_compiled_sdk_version(0u);
     rt_capture_begin();
     uint32_t unloaded = rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u);
     out = rt_capture_end();
