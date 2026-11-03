@@ -41,7 +41,8 @@ The rules it links to decide whether a change can land, so read them once.
    have the right to submit it, under GPL-3.0-or-later. A DCO sign-off (`git commit -s`, which adds
    `Signed-off-by: Your Name <you@example.com>`) is welcome but optional, and only the person who wrote the
    change may add it. See [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
-9. **Open the pull request.** Use a draft if it is not finished, fill in the template, and say what is left.
+9. **Open the pull request.** Fill in the template. Use a draft only while the change is unfinished, and say what is
+   left; mark it **Ready for review** as soon as it is finished, with its tests and checks run.
    Ask questions in the [Help](https://github.com/Jstar269/nakagawa-recomp/discussions/categories/help) category
    of GitHub Discussions, or comment on the issue you are working on.
 
@@ -351,8 +352,7 @@ a pass.
 
 A new file is a new public path, and only the maintainer can admit one: the provenance record that covers it is
 private. In your pull request, say who wrote each new file (and with which AI tool, if any) or, for code from
-another project, the project, exact revision and licence. Open the pull request as a draft anyway and list the new
-files there; do not edit `PUBLIC_EXPORT.json` or the ledger to make the check pass. The maintainer admits each new
+another project, the project, exact revision and licence. List the new files in the pull request; do not edit `PUBLIC_EXPORT.json` or the ledger to make the check pass. The maintainer admits each new
 file's origin: its class and, for imported code, the upstream project, revision and licence. Your later edits to
 a file you wrote need no new admission, as long as that claim still holds. The exception is a file imported
 byte-identical from another project: the admission binds its exact bytes. To change one, ask first. Its row in that

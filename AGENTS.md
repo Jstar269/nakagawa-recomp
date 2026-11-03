@@ -33,7 +33,8 @@ Before you change anything:
    not already fixed there and that no open pull request already covers it.
 4. Make the change, with a test that fails before it and passes after it.
 5. Run the checks for the files you changed (below, and Section 9).
-6. Open a **Draft** pull request and fill in the template.
+6. Open the pull request and fill in the template. Use **Draft** only while the change is unfinished; once it is
+   finished, with its tests and checks run and the template filled, it is ready for review.
 
 If you were asked only to review or diagnose, report what you found and stop: no branch, commit or
 pull request.
@@ -102,7 +103,8 @@ the full rules.
 
 ### What a good pull request looks like
 
-- A **Draft** pull request from a branch on your fork, with **Allow edits by maintainers** left on.
+- A pull request from a branch on your fork, with **Allow edits by maintainers** left on. It is a
+  **Draft** only while it is unfinished, and a finished one is ready for review, never left as a Draft.
   Related changes may share it; unrelated ones go in separate pull requests, and none is stacked on
   another.
 - It says what was wrong, links the issue (`Tracks #123`), and lists what each change does.
@@ -164,7 +166,7 @@ request; [`CONTRIBUTING.md`](CONTRIBUTING.md#provenance-controls) says what each
   `oracle/...`) with a date or issue suffix.
 - Keep the change coherent, avoid stacked pull requests, and leave other people's unmerged work
   alone.
-- By default, stop and report after a bounded implementation, its tests, or a Draft pull request.
+- By default, stop and report after a bounded implementation, its tests, or its pull request.
 - Only the maintainer's agents ever integrate. An explicit maintainer mission may authorize
   autonomous integration only when the exact head has required hosted CI green, no open
   review/change request remains, provenance/publication gates pass, no private-input or hardware
@@ -410,15 +412,19 @@ handler, run one native self-test, capture frames unattended):
 
 ## 10. PR and integration authorization
 
-- When the task includes a pull request, push early: open a Draft PR after the first valid commit.
-  Group related work: one PR may carry several related fixes in the same area or a whole feature
+- When the task includes a pull request, push early: open a Draft PR after the first valid commit,
+  and mark it Ready as soon as the change is finished (tests and checks run, template filled), or open
+  it ready for review when it is finished at the first push. A ready PR is never left as a Draft. The
+  switch re-runs only `ci-trust-verdict.yml` and `provenance-attestation.yml`; `ci.yml` does not
+  run on `ready_for_review`. Group related work: one PR may carry several related fixes in the same area or a whole feature
   slice, and fewer, larger PRs are better than one PR per finding. Include exact base/head SHAs,
   scope, new-path provenance, failing-before evidence, tests, uncertainty, private/hardware status,
   and blockers.
-- Never mark Ready, merge, enable auto-merge, close other PRs, or bypass required checks
-  unless Section 2's autonomous-integration conditions hold; local success never means a
-  Draft is hosted-CI green. A contributor's agent leaves Ready to its person. A substantive
-  correction after Ready returns the PR to Draft and requires fresh exact-head validation.
+- Ready means finished and open for review, not approved or integrated. Never merge, enable
+  auto-merge, close other PRs, or bypass required checks unless Section 2's autonomous-integration
+  conditions hold; local success never means a PR is hosted-CI green. A contributor's agent leaves
+  the switch to Ready to its person. A substantive correction after Ready returns the PR to Draft
+  and requires fresh exact-head validation.
 - Before readiness, fetch `origin/main` and merge it when needed; never rebase or
   force-push a pushed branch. Preserve newer-main behavior, regenerate only required
   canonical metadata, rerun affected gates, and freeze the exact validated head.
@@ -436,7 +442,7 @@ MISSION:
 BASE_SHA:
 HEAD_SHA:
 PR:
-STATUS: DRAFT / BLOCKED / READY-QUALITY
+STATUS: DRAFT / READY / BLOCKED
 RESULT:
 ROOT_CAUSE:
 CHANGED_FILES:
