@@ -250,6 +250,8 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
             {PLAYER_UI_ID_SETTINGS_BUILD_CACHE, "Build tools and cache", 0u,
              PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE},
             {PLAYER_UI_ID_SETTINGS_FONTS, "PSP fonts", 0u, PLAYER_UI_SETTINGS_OPEN_FONTS},
+            {PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT, "Problem report", 0u,
+             PLAYER_UI_SETTINGS_OPEN_PROBLEM_REPORT},
             {PLAYER_UI_ID_SETTINGS_FACTORY_RESET, "Factory reset", NK_UI_BUTTON_DANGER,
              PLAYER_UI_SETTINGS_OPEN_FACTORY_RESET}
         };
@@ -268,6 +270,121 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         }
     }
     nk_ui_end_container(ui);
+}
+
+/* Settings > Problem report (#1849): what the bundle would hold, then one click to write
+   it on this PC. Nothing is uploaded; the page says the issue tracker is public. */
+static void settings_problem_report(NkUi *ui, const PlayerUiSettingsModel *model, float inner,
+                                    PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    PlayerUiReportStep step = model->report_step;
+    bool busy = step == PLAYER_UI_REPORT_PREVIEWING || step == PLAYER_UI_REPORT_CREATING;
+    const char *lead;
+    uint32_t lead_rgba = theme->muted;
+    scr_flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
+    nk_ui_text_role(ui, FLOW_ID_TITLE, "Problem report", NK_UI_TYPE_TITLE, theme->paper);
+    switch (step) {
+        case PLAYER_UI_REPORT_PREVIEWING:
+            lead = "Listing what the report would hold...";
+            break;
+        case PLAYER_UI_REPORT_CREATING:
+            lead = "Writing the report. Checking the build tools can take a minute...";
+            break;
+        case PLAYER_UI_REPORT_DONE:
+            lead = "The report is written. Open the ZIP and look through it before you attach "
+                   "it to an issue: issues on GitHub are public.";
+            lead_rgba = theme->ready;
+            break;
+        case PLAYER_UI_REPORT_FAILED:
+            lead = "The report could not be written.";
+            lead_rgba = theme->warning;
+            break;
+        case PLAYER_UI_REPORT_NO_PYTHON:
+            lead = "Python isn't available here, so the report can't be made from this window. "
+                   "Run this command in a terminal from the Nakagawa folder instead.";
+            lead_rgba = theme->warning;
+            break;
+        case PLAYER_UI_REPORT_PREVIEWED:
+        case PLAYER_UI_REPORT_IDLE:
+        default:
+            lead = "Writes a ZIP on this PC with the logs and settings that help someone fix a "
+                   "problem. Your user name and folders are replaced, and game files, saves and "
+                   "keys are left out. Nothing is uploaded.";
+            break;
+    }
+    nk_ui_text_role(ui, FLOW_ID_LEAD, lead, NK_UI_TYPE_BODY_S, lead_rgba);
+    if (scr_wizard_box_begin(ui, 0u)) {
+        NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
+        if (step == PLAYER_UI_REPORT_NO_PYTHON) {
+            nk_ui_text_role(ui, SET_ID_TEXT + 0x300u, safe_text(model->report_command, ""),
+                            NK_UI_TYPE_DATA, theme->paper);
+        } else if (step == PLAYER_UI_REPORT_FAILED) {
+            nk_ui_text(ui, SET_ID_TEXT + 0x300u,
+                       nk_ui_text_clamp(ui, safe_text(model->report_message, ""), &text,
+                                        inner - 32.0f, 3), &text);
+        } else if (step == PLAYER_UI_REPORT_DONE) {
+            nk_ui_text_role(ui, SET_ID_TEXT + 0x300u, safe_text(model->report_path, ""),
+                            NK_UI_TYPE_DATA, theme->paper);
+        }
+        if (model->report_line_count > 0u) {
+            size_t shown = model->report_line_count < 16u ? model->report_line_count : 16u;
+            float column = (inner - 32.0f - NK_UI_SPACE_4) / 2.0f;
+            NkUiLayout cols = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                          NK_UI_SPACE_4);
+            nk_ui_text_role(ui, SET_ID_TEXT + 0x301u,
+                            step == PLAYER_UI_REPORT_DONE ? "The ZIP holds:" : "The ZIP would hold:",
+                            NK_UI_TYPE_BODY_S, theme->muted);
+            if (nk_ui_begin_container(ui, SET_ID_TEXT + 0x310u, &cols, NULL)) {
+                for (size_t c = 0u; c < 2u; ++c) {
+                    NkUiLayout col = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(column),
+                                                 sizing_fit(), 2.0f);
+                    if (!nk_ui_begin_container(ui, (NkUiId)(SET_ID_TEXT + 0x311u + (NkUiId)c),
+                                               &col, NULL)) {
+                        continue;
+                    }
+                    for (size_t r = 0u; r < 8u; ++r) {
+                        size_t item = c * 8u + r;
+                        if (item >= shown) break;
+                        nk_ui_text(ui, (NkUiId)(SET_ID_TEXT + 0x320u + (NkUiId)item),
+                                   nk_ui_text_clamp(ui, safe_text(model->report_lines[item], ""),
+                                                    &text, column, 1), &text);
+                    }
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_end_container(ui);
+            }
+            if (model->report_line_count > shown) {
+                char more[48];
+                (void)snprintf(more, sizeof(more), "and %zu more", model->report_line_count - shown);
+                nk_ui_text_role(ui, SET_ID_TEXT + 0x302u, more, NK_UI_TYPE_CAPTION, theme->muted);
+            }
+        }
+        nk_ui_end_container(ui);
+    }
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+        row.padding_top = NK_UI_SPACE_1;
+        if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+            if (step == PLAYER_UI_REPORT_PREVIEWED || step == PLAYER_UI_REPORT_FAILED ||
+                step == PLAYER_UI_REPORT_DONE) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_REPORT_CREATE,
+                                 step == PLAYER_UI_REPORT_DONE ? "Create again"
+                                                               : "Create the report",
+                                 step == PLAYER_UI_REPORT_PREVIEWED ? NK_UI_BUTTON_PRIMARY : 0u)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_CREATE_REPORT);
+                }
+            }
+            if (step == PLAYER_UI_REPORT_DONE &&
+                nk_ui_button(ui, PLAYER_UI_ID_REPORT_FOLDER, "Open folder", NK_UI_BUTTON_PRIMARY)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_OPEN_REPORT_FOLDER);
+            }
+            if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back",
+                             busy || step == PLAYER_UI_REPORT_NO_PYTHON ? NK_UI_BUTTON_PRIMARY : 0u)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
 }
 
 /* Text only wraps at spaces, so a folder path is one word that would run out of
@@ -849,6 +966,9 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
         break;
     case PLAYER_UI_SETTINGS_PAGE_UPDATES:
         settings_updates(ui, model, inner, result);
+        break;
+    case PLAYER_UI_SETTINGS_PAGE_PROBLEM_REPORT:
+        settings_problem_report(ui, model, inner, result);
         break;
     case PLAYER_UI_SETTINGS_PAGE_FONTS:
         /* Walkthrough blocker: the wizard's Fonts step is not on the Add to

@@ -848,7 +848,8 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
 
     def edit(self, old: str, new: str) -> tuple[str, ...] | None:
         self.assertIn(old, _SYNTHETIC_MAKEFILE)
-        return self.analyse(_SYNTHETIC_MAKEFILE, _SYNTHETIC_MAKEFILE.replace(old, new, 1))
+        returned: tuple[str, ...] | None = self.analyse(_SYNTHETIC_MAKEFILE, _SYNTHETIC_MAKEFILE.replace(old, new, 1))
+        return returned
 
     def test_synthetic_fixture_parses_as_intended(self) -> None:
         kinds, phony = ci_paths_module._makefile_line_kinds(_SYNTHETIC_MAKEFILE)
@@ -984,6 +985,7 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
         )
         flag = re.search(r"(?m)^PLAYER_EXE \?= .*$", makefile)
         self.assertIsNotNone(flag)
+        assert flag is not None
         self.assertIsNone(self.analyse(makefile, makefile.replace(flag.group(0), flag.group(0) + " ", 1)))
         file_recipe = "-DNK_PLAYER_UI_REGRESSION_TEST"
         self.assertIn(file_recipe, makefile)
@@ -1159,6 +1161,7 @@ class PrecommitPathCoverageTests(unittest.TestCase):
             encoding="utf-8")
         block = re.search(r"(?m)^exclude:\s*\|\n((?:[ \t]+[^\n]*(?:\n|$))+)", config)
         self.assertIsNotNone(block, "global pre-commit exclusion must remain explicit")
+        assert block is not None
         pattern = re.compile(textwrap.dedent(block.group(1)))
         for path in (
             "README.md", ".github/workflows/ci.yml", ".pre-commit-config.yaml",
