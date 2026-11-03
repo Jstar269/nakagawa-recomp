@@ -340,7 +340,8 @@ typedef struct GeGpuHooks {
  * Opt-in with SR_GPU_TNL=1. ge.c stays the arbiter: it hands a transform-mode triangle PRIM to
  * the backend only when the result is provably the one its own T&L gives through the same
  * rasterizer. The state is a subset of transform_model_vtx_clip's (no specular or powered
- * diffuse light, which needs host powf; texture map mode 0; gouraud shading; not clear mode),
+ * diffuse light while light_vertex uses the C library's powf: the shader has only ge_powf, which
+ * ge_pow_set_exact selects on both routes; texture map mode 0; gouraud shading; not clear mode),
  * every float input is 0 or a normal number of magnitude 2^-40..2^40, and a clip-space bound of
  * the PRIM's vertices shows that no vertex is non-finite, out of the screen grid or the depth
  * range, or near the near plane, so every triangle is drawn whole. The vertex shader
@@ -366,6 +367,8 @@ typedef struct GeTnlLight {
     float l[3];                        /* normalized direction or position (ge.c light_consts) */
     float acol[3], dcol[3];            /* ambient and diffuse colour, 0..1 */
     float att[3];                      /* constant, linear and quadratic attenuation */
+    uint32_t comp;                     /* light components: 0 diffuse, 1 + specular, 2 powered diffuse */
+    float scol[3];                     /* specular colour, 0..1 */
 } GeTnlLight;
 
 /* Everything the vertex shader reads, as ge.c's T&L uses it. 32-bit words only (std430). */
@@ -383,6 +386,8 @@ typedef struct GeTnlParams {
     uint32_t lit_alpha;                    /* lit alpha when MATERIALUPDATE bit 0 is clear */
     uint32_t amb_alpha;                    /* scene ambient alpha */
     float mat_amb[3], mat_dif[3], emissive[3], amb[3];
+    float mat_spe[3];                      /* material specular colour */
+    float spec_coef;                       /* the specular power, as GeState */
     GeTnlLight light[GE_TNL_LIGHTS];
 } GeTnlParams;
 
@@ -406,6 +411,13 @@ void      ge_set_gpu_hooks(const GeGpuHooks *h);
  * backend declined, since the last reset. */
 void      ge_tnl_set_enabled(int on);
 void      ge_tnl_counts(unsigned long long *taken, unsigned long long *cpu, int reset);
+/* The specular and powered-diffuse power light_vertex uses: 0 (the default) the C library's
+ * powf, 1 ge_powf, the integer power psp_tnl.vert repeats bit for bit, which also lets the GPU
+ * T&L take those lights. The selftest seams give ge_powf and its 64 x 64-bit high product
+ * (out: C's, then the shader's limb form, each high word first). */
+void      ge_pow_set_exact(int on);
+float     ge_pow_selftest_powf(float x, float y);
+void      ge_pow_selftest_mul(const uint32_t a[2], const uint32_t b[2], uint32_t out[4]);
 /* Post-write notification for CPU-side writes that may alias GPU-cached framebuffers
  * (movie decode, DMA memcpy). No-op when no GPU backend is registered. */
 void      sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);

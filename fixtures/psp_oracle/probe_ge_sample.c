@@ -17,6 +17,10 @@
 //     framebuffer formats, dithering, pixel masks, logic operations, clear mode and fog.
 //     The cell table and list builder are the block shared with tests/native/hle_thread_selftest.c,
 //     which runs the same cells through the software GE and compares each window's digest.
+//   CASE=ge-light (PSP-GE-LIGHT-001, #1732): the 8-bit colour the GE's per-vertex lighting
+//     gives for a specular term (light component 1) and a powered-diffuse term (component 2)
+//     over ten specular coefficients, one flat-shaded transform-mode quad per pixel, so a
+//     host can compare candidate pow implementations with the hardware.
 //
 // ge-sample: each draw is one raw display list (no libpspgu) into a 64x32 8888 framebuffer
 // at VRAM offset 0x100000, cleared by the CPU through the uncached VRAM mirror before the list is
@@ -32,6 +36,11 @@
 // 16x4 window x 16..31, y 8..11 and queues its list; the depth cells also use a 4 KiB depth
 // block at VRAM offset 0x110000, written only by the GE. The window is read back raw (16-bit
 // formats zero-extended), one record per row (out0 = x 16 ... out15 = x 31).
+//
+// ge-light: per coefficient k, the 272 normals' z and y bits (seventeen `<k>-zN` and `<k>-yN`
+// records), then for family s (specular) and family d (powered diffuse) one draw into the
+// same 8 KiB block: a `<f>-<k>-draw` record and the 16x17 window x 16..31, y 8..24 read back
+// raw, one `<f>-<k>-rN` record per row. Sample i is the pixel (16 + i % 16, 8 + i / 16).
 //
 // Record stream and log: the same writer, round trip and module lifecycle as
 // probe_hle_issues.c (copied byte for byte): NAKAGAWA_PSP_META, a NAKAGAWA_PSP_STEP
@@ -64,6 +73,7 @@ PSP_HEAP_SIZE_KB(64);
 #define GE_CASE_SAMPLE 109
 #define GE_CASE_RASTER 123
 #define GE_CASE_MIP 126
+#define GE_CASE_LIGHT 139
 
 #if PSP_ORACLE_CASE == GE_CASE_SAMPLE
 #define HLE_CAMPAIGN_ID "ge-sample"
@@ -77,6 +87,10 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "ge-mip"
 #define HLE_TEST_ID "PSP-GE-MIP-001"
 #define HLE_LOG "host0:/ge_mip_log.txt"
+#elif PSP_ORACLE_CASE == GE_CASE_LIGHT
+#define HLE_CAMPAIGN_ID "ge-light"
+#define HLE_TEST_ID "PSP-GE-LIGHT-001"
+#define HLE_LOG "host0:/ge_light_log.txt"
 #else
 #error probe_ge_sample.c has no case for this PSP_ORACLE_CASE
 #endif
@@ -1577,6 +1591,353 @@ static int hle_run(void)
 }
 
 #endif /* GE_CASE_MIP */
+
+/* ------------------------------------------------------------------------- */
+
+#if PSP_ORACLE_CASE == GE_CASE_LIGHT
+
+#include <math.h>
+
+/* GE lighting cells (PSP-GE-LIGHT-001, #1732). Each draw is one display list of project-written
+ * command words (no game data): transform mode, world = view = identity, an orthographic
+ * projection (clip = vertex position, w = 1) and the ge-mip viewport (screen x = 32 + 32 X,
+ * y = 16 + 16 Y on a 64x32 8888 buffer). Sample i is a flat-shaded quad (two triangles, six
+ * vertices of type float normal | float position, all with the same normal) covering
+ * [x - 0.375, x + 0.625] x [y - 0.375, y + 0.625] for the pixel (x, y) = (16 + i % 16,
+ * 8 + i / 16): its pixel whether the GE samples at the integer or the half-integer point, and
+ * no neighbour. Every per-fragment unit, texturing, fog, dither, blending and culling is off,
+ * so the pixel is the lit vertex colour.
+ *
+ * One light, light 0, directional (type 0) with position (0, 0, 1): the Blinn half vector with
+ * the eye (0, 0, 1) is (0, 0, 2), so N.L and N.H are both the normal's z. MATERIALUPDATE 0,
+ * emissive, material ambient, scene ambient and the light's ambient colour 0; material and
+ * scene ambient alpha 0xff, light mode single colour.
+ *   family s (specular):        light component 1, light diffuse 0, light specular and
+ *                               material specular 0xffffff, material diffuse 0;
+ *   family d (powered diffuse): light component 2, light diffuse and material diffuse
+ *                               0xffffff, light and material specular 0.
+ * The specular coefficient k is the float's top 24 bits (exact for every k here).
+ *
+ * Normals: (0, y, z) in float. Samples 0..255 have z = powf((j + 0.5) / 256, 1 / k), so z^k
+ * spreads over 0..1; samples 256..271 have z = 1 - m 2^-24 for m = 0..15. y is
+ * sqrtf(max(0, 1 - z z)). Both are computed on the PSP CPU and recorded bit for bit, so the
+ * host needs no libm of its own to know the GE's input. */
+
+#define GL_FB_OFFSET 0x00100000u   /* VRAM-relative colour buffer, stride 64, 32 rows */
+#define GL_ZB_OFFSET 0x00110000u   /* depth buffer pointer; depth test and writes are off */
+#define GL_STRIDE 64u
+#define GL_ROWS 32u
+#define GL_WX 16u                  /* window x 16..31, y 8..24 */
+#define GL_WY 8u
+#define GL_WW 16u
+#define GL_WH 17u
+#define GL_N 272u                  /* samples: one per window pixel */
+#define GL_SPREAD 256u             /* samples 0..255 spread z^k over 0..1; 256..271 near 1 */
+#define GL_VTX_FLOATS 6u           /* nx, ny, nz, x, y, z */
+#define GL_VTX_PER_SAMPLE 6u
+#define GL_VTX_WORDS (GL_N * GL_VTX_PER_SAMPLE * GL_VTX_FLOATS)
+#define GL_LIST_WORDS 160u
+#define GL_WAIT_POLLS 5000u        /* 5000 x 100 us: a half-second bound per draw */
+#define GL_WAIT_POLL_US 100u
+
+struct gl_coef {
+    const char *name;
+    float k;
+};
+
+#define GL_COEF_COUNT 10u
+static const struct gl_coef gl_coefs[GL_COEF_COUNT] = {
+    {"k1", 1.0f}, {"k2", 2.0f}, {"k3p5", 3.5f}, {"k8", 8.0f}, {"k10", 10.0f},
+    {"k16", 16.0f}, {"k31", 31.0f}, {"k64", 64.0f}, {"k100", 100.0f}, {"k128", 128.0f},
+};
+
+/* Family s: light component 1, specular colours white. Family d: component 2, diffuse white. */
+struct gl_family {
+    const char *name;
+    uint32_t comp, light_diffuse, light_specular, mat_diffuse, mat_specular;
+};
+
+static const struct gl_family gl_families[2] = {
+    {"s", 1u, 0x000000u, 0xffffffu, 0x000000u, 0xffffffu},
+    {"d", 2u, 0xffffffu, 0x000000u, 0xffffffu, 0x000000u},
+};
+
+static float s_gl_vtx[GL_VTX_WORDS] __attribute__((aligned(64)));
+static uint32_t s_gl_list[GL_LIST_WORDS] __attribute__((aligned(64)));
+static uint32_t s_gl_ny[GL_N];
+static uint32_t s_gl_nz[GL_N];
+static uint32_t s_gl_win[GL_N];
+
+static uint32_t gl_fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
+static float gl_bitsf(uint32_t u)
+{
+    float f;
+    memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
+static uint32_t gl_phys(const void *p)
+{
+    return (uint32_t)(uintptr_t)p & 0x0fffffffu;
+}
+
+/* The uncached mirror of the 8 KiB colour block at VRAM offset GL_FB_OFFSET. */
+static volatile uint32_t *gl_fb(void)
+{
+    const uint32_t vram = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    return (volatile uint32_t *)(uintptr_t)((vram | 0x40000000u) + GL_FB_OFFSET);
+}
+
+/* The 272 normals for coefficient k, as float bits. */
+static void gl_normals(float k)
+{
+    const float inv = 1.0f / k;
+    for (uint32_t i = 0; i < GL_N; i++) {
+        float z;
+        if (i < GL_SPREAD) {
+            z = powf(((float)i + 0.5f) / (float)GL_SPREAD, inv);
+            if (!(z <= 1.0f)) {
+                z = 1.0f;
+            }
+            if (z < 0.0f) {
+                z = 0.0f;
+            }
+        } else {
+            z = 1.0f - (float)(i - GL_SPREAD) * 0x1p-24f;
+        }
+        const float y = sqrtf(fmaxf(0.0f, 1.0f - z * z));
+        s_gl_nz[i] = gl_fbits(z);
+        s_gl_ny[i] = gl_fbits(y);
+    }
+}
+
+/* Every sample's six vertices: float normal (0, y, z), then float position (X, Y, 0) in clip
+   units of the viewport, x = 32 + 32 X and y = 16 + 16 Y. Every coordinate is a multiple of
+   1/8 pixel, so the clip values and their screen positions are exact. */
+static void gl_vertices(void)
+{
+    static const float corner[GL_VTX_PER_SAMPLE][2] = {
+        {-0.375f, -0.375f}, {0.625f, -0.375f}, {-0.375f, 0.625f},
+        {-0.375f, 0.625f}, {0.625f, -0.375f}, {0.625f, 0.625f},
+    };
+    float *v = s_gl_vtx;
+    for (uint32_t i = 0; i < GL_N; i++) {
+        const float px = (float)(GL_WX + i % GL_WW);
+        const float py = (float)(GL_WY + i / GL_WW);
+        const float ny = gl_bitsf(s_gl_ny[i]);
+        const float nz = gl_bitsf(s_gl_nz[i]);
+        for (uint32_t c = 0; c < GL_VTX_PER_SAMPLE; c++) {
+            *v++ = 0.0f;
+            *v++ = ny;
+            *v++ = nz;
+            *v++ = (px + corner[c][0] - 32.0f) / 32.0f;
+            *v++ = (py + corner[c][1] - 16.0f) / 16.0f;
+            *v++ = 0.0f;
+        }
+    }
+}
+
+/* The draw's display list for vertex words at `vtx` (physical address); returns the word count.
+   Every state the draw reads is set. */
+static uint32_t gl_list(const struct gl_family *f, float k, uint32_t vtx, uint32_t *out)
+{
+    static const uint8_t off_units[12] = {0x17u, 0x1cu, 0x1du, 0x1fu, 0x20u, 0x21u,
+                                          0x22u, 0x23u, 0x24u, 0x25u, 0x27u, 0x28u};
+    static const float ident43[12] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                      0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f};
+    static const float proj[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                   0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    const uint32_t full = (GL_STRIDE - 1u) | ((GL_ROWS - 1u) << 10);
+    const uint32_t one = gl_fbits(1.0f) >> 8;
+    uint32_t n = 0;
+#define GL_W(cmd, data) (out[n++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(data) & 0x00ffffffu))
+    GL_W(0x10, (vtx >> 8) & 0x000f0000u);
+    GL_W(0x9c, GL_FB_OFFSET);
+    GL_W(0x9d, GL_STRIDE);
+    GL_W(0xd2, 3u);             /* 8888 */
+    GL_W(0x9e, GL_ZB_OFFSET);
+    GL_W(0x9f, GL_STRIDE);
+    GL_W(0x15, 0);
+    GL_W(0x16, full);
+    GL_W(0xd4, 0);
+    GL_W(0xd5, full);
+    GL_W(0xd6, 0);
+    GL_W(0xd7, 0xffffu);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GL_W(off_units[i], 0);
+    }
+    GL_W(0x1e, 0);              /* texture off */
+    GL_W(0xc9, 0);              /* texture function MODULATE, RGB, no colour doubling */
+    GL_W(0x50, 0);              /* flat shading */
+    GL_W(0xd3, 0);              /* clear mode off */
+    GL_W(0xe7, 1);              /* depth writes off */
+    GL_W(0xe8, 0);
+    GL_W(0xe9, 0);
+    GL_W(0xdb, 0x00ff0001u);    /* alpha test ALWAYS */
+    GL_W(0xd8, 1);              /* colour test ALWAYS */
+    GL_W(0xd9, 0);
+    GL_W(0xda, 0);
+    GL_W(0xdc, 0x00ff0001u);    /* stencil test ALWAYS */
+    GL_W(0xdd, 0);              /* KEEP, KEEP, KEEP */
+    GL_W(0xde, 1);              /* depth test ALWAYS */
+    GL_W(0xdf, 0x32u);
+    GL_W(0xe0, 0);
+    GL_W(0xe1, 0);
+    GL_W(0xe6, 3);              /* logic op COPY */
+    GL_W(0xcf, 0);
+    GL_W(0xcd, 0);
+    GL_W(0xce, 0);
+    /* Material and scene. */
+    GL_W(0x51, 0);              /* normals not reversed */
+    GL_W(0x53, 0);              /* MATERIALUPDATE: every material colour from its register */
+    GL_W(0x54, 0);              /* emissive */
+    GL_W(0x55, 0);              /* material ambient */
+    GL_W(0x56, f->mat_diffuse);
+    GL_W(0x57, f->mat_specular);
+    GL_W(0x58, 0xffu);          /* material alpha */
+    GL_W(0x5b, gl_fbits(k) >> 8);
+    GL_W(0x5c, 0);              /* scene ambient colour */
+    GL_W(0x5d, 0xffu);          /* scene ambient alpha */
+    GL_W(0x5e, 0);              /* light mode: single colour */
+    /* Light 0: directional, position (0, 0, 1); lights 1-3 off. */
+    GL_W(0x5f, f->comp);
+    for (uint32_t i = 1; i < 4u; i++) {
+        GL_W(0x5f + i, 0);
+    }
+    GL_W(0x63, 0);
+    GL_W(0x64, 0);
+    GL_W(0x65, one);
+    GL_W(0x6f, 0);              /* direction, used only by spot lights */
+    GL_W(0x70, 0);
+    GL_W(0x71, one);
+    GL_W(0x7b, one);            /* attenuation 1, 0, 0, used only by point and spot lights */
+    GL_W(0x7c, 0);
+    GL_W(0x7d, 0);
+    GL_W(0x8f, 0);              /* light 0 ambient */
+    GL_W(0x90, f->light_diffuse);
+    GL_W(0x91, f->light_specular);
+    GL_W(0x18, 1);
+    GL_W(0x19, 0);
+    GL_W(0x1a, 0);
+    GL_W(0x1b, 0);
+    GL_W(0x17, 1);              /* lighting on */
+    /* Transform. */
+    GL_W(0x3a, 0);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GL_W(0x3b, gl_fbits(ident43[i]) >> 8);
+    }
+    GL_W(0x3c, 0);
+    for (uint32_t i = 0; i < 12u; i++) {
+        GL_W(0x3d, gl_fbits(ident43[i]) >> 8);
+    }
+    GL_W(0x3e, 0);
+    for (uint32_t i = 0; i < 16u; i++) {
+        GL_W(0x3f, gl_fbits(proj[i]) >> 8);
+    }
+    GL_W(0x42, gl_fbits(32.0f) >> 8);   /* viewport: x = 32 + 32 X, y = 16 + 16 Y */
+    GL_W(0x43, gl_fbits(16.0f) >> 8);
+    GL_W(0x44, 0);
+    GL_W(0x45, gl_fbits(2048.0f) >> 8);
+    GL_W(0x46, gl_fbits(2048.0f) >> 8);
+    GL_W(0x47, gl_fbits(32768.0f) >> 8);
+    GL_W(0x4c, (2048u - 32u) << 4);
+    GL_W(0x4d, (2048u - 16u) << 4);
+    GL_W(0x12, 0x000001e0u);    /* transform, float normal, float position */
+    GL_W(0x01, vtx);
+    GL_W(0x04, (3u << 16) | (GL_N * GL_VTX_PER_SAMPLE));   /* triangles */
+    GL_W(0x0f, 0);
+    GL_W(0x0c, 0);
+#undef GL_W
+    return n;
+}
+
+/* One draw: clear the block, queue the list, wait (bounded), read the window back, then the
+   records: `<f>-<k>-draw` (the GE wait outcome, the list length, k and the light component) and
+   one `<f>-<k>-rN` record per window row. */
+static void gl_draw(const struct gl_family *f, const struct gl_coef *c)
+{
+    static char name[32];
+    static char row[48];
+    snprintf(name, sizeof(name), "%s-%s", f->name, c->name);
+    hle_step(name);
+    volatile uint32_t *fb = gl_fb();
+    for (unsigned i = 0; i < GL_STRIDE * GL_ROWS; i++) {
+        fb[i] = 0u;
+    }
+    __asm__ volatile("sync" ::: "memory");
+    const uint32_t words = gl_list(f, c->k, gl_phys(s_gl_vtx), s_gl_list);
+    sceKernelDcacheWritebackAll();
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    const int qid = sceGeListEnQueue(s_gl_list, NULL, -1, NULL);
+    int list_state = qid;
+    int draw_state = -1;
+    int idle = 0;
+    for (unsigned i = 0; i < GL_WAIT_POLLS; i++) {
+        list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+        draw_state = sceGeDrawSync(1);
+        idle = draw_state == PSP_GE_LIST_DONE;
+        if (idle) {
+            break;
+        }
+        sceKernelDelayThread(GL_WAIT_POLL_US);
+    }
+    const uint32_t elapsed = sceKernelGetSystemTimeLow() - t0;
+    int reset_rc = 0;
+    if (!idle) {
+        PspGeBreakParam param;
+        memset(&param, 0, sizeof(param));
+        reset_rc = sceGeBreak(1, &param);
+        for (unsigned i = 0; i < GL_WAIT_POLLS; i++) {
+            if (sceGeDrawSync(1) == PSP_GE_LIST_DONE) {
+                break;
+            }
+            sceKernelDelayThread(GL_WAIT_POLL_US);
+        }
+    }
+    for (uint32_t i = 0; i < GL_N; i++) {
+        s_gl_win[i] = fb[(GL_WY + i / GL_WW) * GL_STRIDE + GL_WX + i % GL_WW];
+    }
+    const uint32_t draw[10] = {(uint32_t)qid, (uint32_t)list_state, (uint32_t)draw_state,
+                               elapsed, (uint32_t)idle, (uint32_t)reset_rc, words,
+                               gl_fbits(c->k), gl_fbits(c->k) >> 8, f->comp};
+    snprintf(row, sizeof(row), "%s-draw", name);
+    hle_record(row, qid < 0 ? "FAIL" : idle ? "PASS" : "TIMEOUT", (uint32_t)qid, draw, 10);
+    for (uint32_t y = 0; y < GL_WH; y++) {
+        snprintf(row, sizeof(row), "%s-r%u", name, (unsigned int)y);
+        hle_record(row, "PASS", y, &s_gl_win[y * GL_WW], GL_WW);
+    }
+}
+
+/* Per coefficient: the normals' z rows, their y rows, then the s and d draws. */
+static int hle_run(void)
+{
+    static char row[48];
+    for (uint32_t ci = 0; ci < GL_COEF_COUNT; ci++) {
+        const struct gl_coef *c = &gl_coefs[ci];
+        gl_normals(c->k);
+        gl_vertices();
+        for (uint32_t y = 0; y < GL_WH; y++) {
+            snprintf(row, sizeof(row), "%s-z%u", c->name, (unsigned int)y);
+            hle_record(row, "PASS", gl_fbits(c->k), &s_gl_nz[y * GL_WW], GL_WW);
+        }
+        for (uint32_t y = 0; y < GL_WH; y++) {
+            snprintf(row, sizeof(row), "%s-y%u", c->name, (unsigned int)y);
+            hle_record(row, "PASS", gl_fbits(c->k), &s_gl_ny[y * GL_WW], GL_WW);
+        }
+        for (uint32_t fi = 0; fi < 2u; fi++) {
+            gl_draw(&gl_families[fi], c);
+        }
+    }
+    return 1;
+}
+
+#endif /* GE_CASE_LIGHT */
 
 /* ------------------------------------------------------------------------- */
 
