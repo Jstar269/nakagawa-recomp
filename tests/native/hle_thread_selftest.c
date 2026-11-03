@@ -24326,11 +24326,10 @@ static void test_ge_mip_cells_software_contract(void) {
     sr_hle_test_ge_lists_reset();
 }
 
-/* PSP-GE-MIP-001 (#1373): the window digest each cell left on a PSP-3000 (system software 6.61,
- * ARK-5.1.0; pspver 6.6.0; probe case ge-mip at 66940d76, docs/HARDWARE_ORACLE.md). Index k is gm_cells[k]. `modelled` is 0
- * for the two cells whose w varies across the window: there the PSP holds one level of detail
- * per 4-pixel span of a row at a triangle-dependent point (ge.c tex_detail16), which the
- * software GE does not model, so their digests are recorded but not required. */
+/* PSP-GE-MIP-001 (#1373): the window digest each of the 66 cells left on a PSP-3000 (pspver
+ * 6.6.0; probe case ge-mip, the 2026-11-03 run at 99a384bb on boot 111, docs/HARDWARE_ORACLE.md;
+ * the first 57 windows are bit-identical to the earlier run at 66940d76). Index k is gm_cells[k].
+ * Every cell is required, the varying-w ones included (ge.c raster_tri_lod_span). */
 static const struct {
     const char *name;
     uint64_t psp;
@@ -24392,14 +24391,19 @@ static const struct {
     {"sn-s1-w3", 0x9dc00e67ab07b725ull},
     {"s-s1-w1to8", 0xc96687bd2bfe7501ull},
     {"s-spr-s4", 0x9dc00e67ab07b725ull},
+    {"a-quad-v16-w1to8", 0x83874c0f11083431ull},
+    {"a-quad-v16-w8to1", 0x3310acc574ce1449ull},
+    {"a-quad-v8-w1to8", 0xa62327ab488981bdull},
+    {"a-quad-u48-w1to4", 0xd40bef19621a2b65ull},
+    {"a-quad-w4to1", 0x0d9488367ddac995ull},
+    {"an-quad-w1to4", 0xcfdef10ef7c147d5ull},
+    {"a-quad-w1to4-bm1f8", 0xc0a0b4c6c4a601a1ull},
+    {"s-s1-w8to1", 0xd859e68db495cbd9ull},
+    {"s-s3-w1to8", 0x3637655ff7f299f1ull},
 };
 
-static int gm_cell_modelled(const char *name) {
-    return strcmp(name, "a-quad-w1to4") != 0 && strcmp(name, "s-s1-w1to8") != 0;
-}
-
 /* Every PSP-GE-MIP-001 cell through production dispatch and the software GE, with the probe's
- * own list, vertices and texture; each modelled cell's window must match the PSP's digest. A
+ * own list, vertices and texture; each cell's window must match the PSP's digest. A
  * diverging cell prints its software window for comparison with the raw hardware rows. */
 static void test_ge_mip_cells_match_psp(void) {
     CpuState cpu;
@@ -24426,7 +24430,6 @@ static void test_ge_mip_cells_match_psp(void) {
         for (uint32_t i = 0; i < GM_N; i++)
             px[i] = MEM_R32(fb + ((GM_WY + i / GM_WW) * GM_STRIDE + GM_WX + i % GM_WW) * 4u);
         if (strcmp(s_gm_psp[k].name, c->name) != 0) names_ok = 0;
-        if (!gm_cell_modelled(c->name)) continue;
         modelled++;
         const uint64_t digest = gm_digest(px);
         if (digest != s_gm_psp[k].psp) {
@@ -24440,8 +24443,8 @@ static void test_ge_mip_cells_match_psp(void) {
     }
     expect(names_ok, "PSP-GE-MIP-001 digest table rows name the cells in table order");
     expect(synced, "every PSP-GE-MIP-001 list is accepted and completes");
-    expect(modelled == GM_CELL_COUNT - 2u, "PSP-GE-MIP-001 leaves only the two varying-w cells unmodelled");
-    expect(diverged == 0, "every modelled PSP-GE-MIP-001 cell matches the PSP window digest");
+    expect(modelled == GM_CELL_COUNT, "every PSP-GE-MIP-001 cell is checked, the varying-w ones included");
+    expect(diverged == 0, "every PSP-GE-MIP-001 cell matches the PSP window digest");
     sr_hle_test_ge_lists_reset();
 }
 
@@ -27191,6 +27194,18 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
            "PSP: a zero-size request modifies no destination byte");
     expect(s_gpu_dirty_calls == 0u,
            "a zero-size request issues no GPU dirty notification");
+
+    /* Hardware: size 0 with a NULL destination, a NULL source or destination
+     * 0xFFFFFFFF -> 0x80000104 too, for both APIs, nothing written (PSP-DMAC-001
+     * invalid-tail-s0-a/b/d, 2026-11-03): the size check precedes the pointer checks. */
+    expect(bulk_call(nid, 0u, src, 0u) == SCE_DMAC_ILLEGAL_SIZE,
+           "PSP: size 0 with a NULL destination returns the illegal-size error");
+    expect(bulk_call(nid, dst, 0u, 0u) == SCE_DMAC_ILLEGAL_SIZE,
+           "PSP: size 0 with a NULL source returns the illegal-size error");
+    expect(bulk_call(nid, 0xffffffffu, src, 0u) == SCE_DMAC_ILLEGAL_SIZE,
+           "PSP: size 0 with destination 0xFFFFFFFF returns the illegal-size error");
+    expect(dmac_span_is(dst, 256u, 0xa5u) && s_gpu_dirty_calls == 0u,
+           "PSP: a zero-size request with a bad pointer writes nothing");
 
     /* Hardware: NULL dst or NULL src with size 64 -> 0x80000103 (v4 and v6).
      * Guest address 0 is inside this runtime's flat arena, so without an
