@@ -1517,7 +1517,10 @@ int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target);
  * instruction runs, so one slot suffices and it is never live across a yield (asserted at
  * the yield, syscall and dispatch entry points). A callable body owes its caller the
  * restore of its entry SP once the chain completes; the drain applies the first restore
- * recorded in its chain, which is the value the nested native returns used to leave.
+ * recorded in its chain, which is the value the nested native returns used to leave. A
+ * transfer that leaves SP at the recording body's entry value owes none (#1935): the next
+ * body is entered at that SP and owes it in turn, and a longjmp it runs keeps the SP it
+ * loads.
  *
  * A transfer to a computed target is one dispatch (dispatch_tail_step). The direct transfers
  * that follow it used to nest inside that dispatch, so the step drains them itself
@@ -1551,7 +1554,7 @@ static inline void sr_tail_record(CpuState *s, uint32_t target, RecompFn fn,
     sr_tail_transfer.state = s;
     sr_tail_transfer.target = target;
     sr_tail_transfer.restore_sp = restore_sp;
-    sr_tail_transfer.has_restore = owes_restore ? 1u : 0u;
+    sr_tail_transfer.has_restore = (owes_restore && s->r[29] != restore_sp) ? 1u : 0u;
     sr_tail_transfer.pending = 1u;
 }
 #define SR_TAIL_DRAIN(s) do { \

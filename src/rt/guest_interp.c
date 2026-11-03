@@ -1412,6 +1412,15 @@ static SrGuestInterpCtl classify_control(
     return SR_CTL_REJECT;
 }
 
+/* A load of $sp that keeps it within the stack a call allocated, between where $sp was and
+ * where the caller left it, frees only that call's own space, as an alloca free does. Any
+ * other load of $sp moves to another frame: a longjmp or a context switch (#1935). */
+static int sp_load_leaves_frame(uint32_t opcode, uint32_t before, uint32_t after,
+                                const SrGuestInterpCallBoundary *boundary) {
+    if ((opcode >> 26) != 0x23u || ((opcode >> 16) & 31u) != 29u) return 0;
+    return boundary == NULL || after < before || after >= boundary->entry_sp;
+}
+
 static SrGuestInterpResult sr_guest_interp_run_internal(
     CpuState *s,
     uint32_t entry,
@@ -1420,6 +1429,8 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
     uint32_t pc = entry;
     unsigned long long instruction_count = 0u;
     const int log_dispatch = getenv("SR_DISPLOG") != NULL;
+    /* Whether this run has loaded $sp out of the stack its call allocated (#1935). */
+    int loaded_sp = 0;
     set_fault(fault, entry, 0u, entry, 0);
     /* Establish the COP0 delay-slot contract (spec 3.5): straight-line code
      * runs with in_delay_slot clear; the branch path below sets it around
@@ -1498,7 +1509,16 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                         "GUEST_INTERP_AOT_HANDOFF pc=0x%08" PRIx32 " instructions=%llu\n",
                         pc, instruction_count);
             }
+            /* A called body that hands its live frame on by a TAIL owes its caller the $sp
+             * it was called with once the chain completes, as a native body records it
+             * (sr_tail_record); the native body it hands to was entered at a lowered $sp and
+             * owes nobody. One that loaded $sp out of that stack (sp_load_leaves_frame), a
+             * longjmp or a context switch, leaves it to the guest (#1935). */
+            const int owes = boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&
+                             s->r[29] != boundary->entry_sp;
+            const uint32_t entry_sp = owes ? boundary->entry_sp : 0u;
             dispatch(s, pc);
+            if (owes) s->r[29] = entry_sp;
             return SR_GUEST_INTERP_AOT_HANDOFF;
         }
 
@@ -1597,8 +1617,10 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             uint32_t saved_next_pc = s->next_pc;
             s->in_delay_slot = 1u;
             s->next_pc = pc;
+            const uint32_t delay_sp = s->r[29];
             SrGuestInterpResult delay_result = execute_noncontrol(
                 s, pc + 4u, delay_opcode, &delay_store_address, &delay_store_size, fault);
+            if (sp_load_leaves_frame(delay_opcode, delay_sp, s->r[29], boundary)) loaded_sp = 1;
             s->in_delay_slot = 0u;
             s->next_pc = saved_next_pc;
             if (delay_result != SR_GUEST_INTERP_AOT_HANDOFF) {
@@ -1644,8 +1666,10 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
         uint32_t store_address = 0u;
         int store_size = 0;
         sr_begin(s, pc, opcode);
+        const uint32_t sp_before = s->r[29];
         SrGuestInterpResult result = execute_noncontrol(
             s, pc, opcode, &store_address, &store_size, fault);
+        if (sp_load_leaves_frame(opcode, sp_before, s->r[29], boundary)) loaded_sp = 1;
         if (result != SR_GUEST_INTERP_AOT_HANDOFF) {
             if (result == SR_GUEST_INTERP_EXCEPTION ||
                 result == SR_GUEST_INTERP_ERET) {

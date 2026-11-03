@@ -479,7 +479,8 @@ _A1 = 5
 
 def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
                              rebinds_fp: bool = False,
-                             tail_called_from_alloca: bool = False) -> tuple[int, ...]:
+                             tail_called_from_alloca: bool = False,
+                             tail_called_plainly: bool = False) -> tuple[int, ...]:
     """setjmp in F, longjmp from G called by F: F's setjmp returns again, v0 = 0x107.
 
     F saves $sp and $ra in a two-word jmp_buf on its frame, then calls G, which calls
@@ -491,7 +492,8 @@ def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
     With ``rebinds_fp``, longjmp binds $fp from $sp, saves $sp through it, then points $fp at
     the jmp_buf and loads through it: the same base and offset again, in other memory. With
     ``tail_called_from_alloca``, G calls H, which frees an alloca, releases its frame and
-    tail-calls longjmp.
+    tail-calls longjmp. With ``tail_called_plainly``, H has a frame and no alloca, and
+    tail-calls longjmp the same way.
     """
     t, g, setjmp, longjmp, done = 0x1020, 0x1044, 0x1060, 0x1070, 0x1034
     saves = ([_addu(_T8, _A0, 0), _addiu(_A0, _A0, 8), _sw(_SP, 0, _A0), _addu(_A0, _T8, 0)]
@@ -507,7 +509,10 @@ def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
         _sw(_SP, 0x10, _FP), _addiu(_SP, _SP, -0x30),
         _lw(_SP, 0x10, _FP), _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
         _addiu(_SP, _SP, 0x20), _j(longjmp), _NOP,
-    ] if tail_called_from_alloca else []
+    ] if tail_called_from_alloca else [
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # H
+        _lw(_RA, 0x1C, _SP), _j(longjmp), _addiu(_SP, _SP, 0x20),
+    ] if tail_called_plainly else []
     words = _probe_program([
         _addiu(_SP, _SP, -0x40), _sw(_RA, 0x3C, _SP),        # 0x1010 F
         _jal(setjmp), _addiu(_A0, _SP, 0x10),                # 0x1018 setjmp(&buf)
@@ -517,7 +522,7 @@ def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
         _addiu(_V0, _V0, 0x100),                             # 0x1034 done
         _lw(_RA, 0x3C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x40),
         _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1044 G
-        _jal(h if tail_called_from_alloca else longjmp),     # 0x104c longjmp(buf, 7)
+        _jal(h if tail_called_from_alloca or tail_called_plainly else longjmp),  # 0x104c
         _addiu(_A1, 0, 7),
         _lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20),
         _sw(_SP, 0, _A0), _sw(_RA, 4, _A0),                  # 0x1060 setjmp
@@ -570,6 +575,72 @@ def _alloca_switch_chain(*, reach: str) -> tuple[int, ...]:
     return words
 
 
+def _switch_chain_with_another_way_out(*, other: str) -> tuple[int, ...]:
+    """_alloca_switch_chain(reach="j") with one more way out of F, which a0 >= 0 never takes.
+
+    "sibcall" releases F's frame and tail-calls through a register; "foreign" loads $sp
+    through a1 and returns, as a longjmp does. Neither is the switch's path, so F still owes
+    its entry $sp there. CASE frees the alloca through $fp and returns for F, and its own
+    return writes back the lowered $sp it was entered at: only F's record gives F's caller
+    the $sp F was called with.
+    """
+    other_at = 0x1050
+    other_words = {
+        "sibcall": [_lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP), _lui(_T9, 0), None,
+                    _jr(_T9), _addiu(_SP, _SP, 0x20)],
+        "foreign": [_lw(_SP, 0, _A1), _jr(_RA), _NOP],
+    }[other]
+    case = other_at + 4 * len(other_words)
+    exit_body = case + 24
+    other_words = [_ori(_T9, _T9, case) if word is None else word for word in other_words]
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
+        _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),             # 0x1018
+        _sw(_SP, 0x10, _FP),                                 # 0x1020 save $sp
+        _i(0x05, _A0, 0, (exit_body - 0x1028) >> 2), _NOP,   # 0x1024 bne a0, zero, EXIT
+        _regimm(0x00, _A0, 0x102C, other_at), _NOP,          # 0x102C bltz a0, OTHER
+        _addiu(_SP, _SP, -0x30),                             # 0x1034 alloca
+        _lui(_T8, 0), _ori(_T8, _T8, exit_body),             # 0x1038
+        _lui(_T9, 0), _ori(_T9, _T9, case),                  # 0x1040
+        _jr(_T9), _NOP,                                      # 0x1048 the switch
+        *other_words,                                        # 0x1050 OTHER
+        _addiu(_V0, 0, 0x56), _addu(_SP, _FP, 0),            # CASE
+        _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
+        _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _lw(_SP, 0x10, _FP), _addu(_SP, _FP, 0),             # EXIT: reload the saved $sp
+        _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
+        _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _jal(exit_body), _NOP, _jal(case), _NOP,
+    ])
+    assert len(words) == (exit_body + 0x28 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+def _call_into_a_live_frame_tail() -> tuple[int, ...]:
+    """G calls F, which lowers $sp and hands its live frame to TAIL, an entry of its own.
+
+    TAIL releases F's frame and returns for F, and its own return writes back the lowered
+    $sp it was entered at. The drain at G's call site applies F's record before G goes on,
+    so G reads back the word it saved in its own frame: v0 = 0x57 + 0x100.
+    """
+    f, tail = 0x103C, 0x1054
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x10), _sw(_RA, 0x0C, _SP),        # 0x1010 G
+        _addiu(_T0, 0, 0x100), _sw(_T0, 0x08, _SP),          # 0x1018
+        _jal(f), _NOP,                                       # 0x1020
+        _lw(_T0, 0x08, _SP), _addu(_V0, _V0, _T0),           # 0x1028
+        _lw(_RA, 0x0C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x10),  # 0x1030
+        _addiu(_SP, _SP, -0x20), _sw(_FP, 0x18, _SP),        # 0x103C F
+        _addu(_FP, _SP, 0), _addiu(_V0, 0, 0x57),            # 0x1044
+        _j(tail), _NOP,                                      # 0x104C
+        _addu(_SP, _FP, 0), _lw(_FP, 0x18, _SP),             # 0x1054 TAIL
+        _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _jal(tail), _NOP,                                    # TAIL is an entry
+    ])
+    assert len(words) == (tail + 0x18 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
 def _alloca_tail_end(*, saved_through_a_copy: bool = False) -> tuple[int, ...]:
     """A function that frees an alloca in the delay slot of a `j` to its own epilogue.
 
@@ -595,7 +666,7 @@ def _alloca_tail_end(*, saved_through_a_copy: bool = False) -> tuple[int, ...]:
     return words
 
 
-def _scoped_arrays_function() -> tuple[int, ...]:
+def _scoped_arrays_function(*, sibcall_on_error: bool = False) -> tuple[int, ...]:
     """The shape a compiler gives a function with variable-length arrays in an inner scope.
 
     F keeps its frame through $fp, calls a helper and leaves early through its shared
@@ -603,9 +674,18 @@ def _scoped_arrays_function() -> tuple[int, ...]:
     it, the last by a run-time size, keeps their addresses in frame slots, fills them in a
     loop, calls again and frees them all with one load in the delay slot of the `j` to the
     epilogue. The epilogue is an entry of its own, entered at a $sp that is not F's caller's.
-    A VFPU word stands where such code keeps its prefix setup: it writes no GPR.
+    A VFPU word stands where such code keeps its prefix setup: it writes no GPR. With
+    ``sibcall_on_error``, F leaves on a negative a0 by releasing its frame and tail-calling
+    the helper, as an optimizing compiler emits a call in return position.
     """
-    tail, helper, loop = 0x1090, 0x10A8, 0x1060
+    shift = 8 if sibcall_on_error else 0
+    tail, helper, loop = 0x1090 + shift, 0x10A8 + shift, 0x1060 + shift
+    err = helper + 8
+    on_error = [_regimm(0x00, _A0, 0x1030, err), _NOP] if sibcall_on_error else []
+    error_path = [
+        _lw(_RA, 0x54, _SP), _lw(_FP, 0x50, _SP),            # ERR
+        _lw(16, 0x30, _SP), _j(helper), _addiu(_SP, _SP, 0x80),
+    ] if sibcall_on_error else []
     s0, t1 = 16, 9
     subu_sp_t0 = (_SP << 21) | (_T0 << 16) | (_SP << 11) | 0x23
     vpfxs_identity = 0xDC00E4E4
@@ -615,7 +695,8 @@ def _scoped_arrays_function() -> tuple[int, ...]:
         _sw(s0, 0x30, _SP),                                  # 0x1020
         _jal(helper), _sw(_A0, 0x10, _FP),                   # 0x1024
         _lw(_A0, 0x10, _FP),                                 # 0x102C
-        _i(0x04, _A0, 0, (tail - 0x1034) >> 2),              # 0x1030 beq a0, zero, TAIL
+        *on_error,                                           # bltz a0, ERR
+        _i(0x04, _A0, 0, (tail - 0x1034 - shift) >> 2),      # beq a0, zero, TAIL
         _addiu(_V0, 0, 0x59),                                # 0x1034
         _sw(_SP, 0x0C, _FP), _addiu(_SP, _SP, -0x20),        # 0x1038 the scope
         _sw(_SP, 0x14, _FP), _addiu(_SP, _SP, -0x20),        # 0x1040
@@ -625,16 +706,18 @@ def _scoped_arrays_function() -> tuple[int, ...]:
         _lw(_A1, 0x14, _FP), _sw(0, 0, _A1),                 # 0x1060 loop
         _lw(_A1, 0x18, _FP), _sw(0, 0, _A1),                 # 0x1068
         _sw(s0, 0, _FP), _addiu(t1, t1, 1),                  # 0x1070 a slot beside the save
-        _i(0x05, t1, _A0, (loop - 0x107C) >> 2), _NOP,       # 0x1078 bne t1, a0, loop
+        _i(0x05, t1, _A0, (loop - 0x107C - shift) >> 2), _NOP,  # bne t1, a0, loop
         _jal(helper), _addiu(_V0, 0, 0x58),                  # 0x1080
         _j(tail), _lw(_SP, 0x0C, _FP),                       # 0x1088 free them all
         _addu(_SP, _FP, 0), _lw(_RA, 0x54, _SP),             # 0x1090 TAIL
         _lw(_FP, 0x50, _SP), _lw(s0, 0x30, _SP),             # 0x1098
         _jr(_RA), _addiu(_SP, _SP, 0x80),                    # 0x10A0
-        _jr(_RA), _NOP,                                      # 0x10A8 helper
-        _jal(tail), _NOP,                                    # 0x10B0 TAIL is an entry
+        _jr(_RA), _NOP,                                      # helper
+        *error_path,
+        _jal(tail), _NOP,                                    # TAIL is an entry
     ])
-    assert len(words) == (0x10B8 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    assert len(words) == (err + 4 * len(error_path) + 8 - _PROBE_BASE) // 4, (
+        "the fixture's labels moved")
     return words
 
 
@@ -1115,7 +1198,9 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
             "M2-early-resume",
             interp_old="if (boundary && instruction_count != 0u && pc == boundary->resume_pc) {",
             interp_new="if (boundary && instruction_count != 0u && pc == boundary->resume_pc - 4u) {",
-            diagnostic="CALL frame/outer return state was not restored exactly",
+            # The callee's TAIL handoff restores the $sp it was called with (#1935), so the
+            # frame comes out right; the early resume shows as the native outer return run.
+            diagnostic="CALL boundary handed the interpreted callee through the native outer return",
         )
 
     def test_M3_resume_boundary_one_instruction_late_executes_continuation(self):
@@ -1385,10 +1470,17 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v0"), 3, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
 
-    def _assert_mutant_fails(self, name, words, iterations, mutate, check):
+    def test_a_call_site_drains_before_the_caller_goes_on(self):
+        _generated, results = self._probe(_call_into_a_live_frame_tail(), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 0x157, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def _assert_mutant_fails(self, name, words, iterations, mutate, check, codegen_args=()):
         with scratch_dir.TemporaryDirectory(prefix="depth_mutant_") as tmp:
             work = Path(tmp)
-            exe, output = _build_depth_probe(words, work, mutate=mutate)
+            exe, output = _build_depth_probe(words, work, mutate=mutate, codegen_args=codegen_args)
             self.assertIsNotNone(exe, f"{name}: MUTANT_BUILD_FAILED (not a semantic kill)\n{output}")
             results = [_run_depth_probe(exe, n) for n in iterations]
         self.assertTrue(check(results), f"{name}: MUTANT_SURVIVED {results}")
@@ -1477,8 +1569,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # frame, so the run stops or F's code runs on G's frame.
         self._assert_mutant_fails(
             "J1-longjmp-restores-its-entry-sp", _longjmp_into_live_frame(), (0,),
-            {"codegen.py": ("    states, slot_states, released = _frame_walk(elf, start, insns, labels)",
-                            "    return False")},
+            {"codegen.py": ("    return frozenset(guest)", "    return frozenset()")},
             lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107
             or r[0][2].get("v1") != _PROBE_SP,
         )
@@ -1491,11 +1582,11 @@ class GeneratedCallDepthTests(unittest.TestCase):
 
     def test_own_slot_mutant_fails_for_its_semantic(self):
         # S1: reloading the frame's own slot counts as a longjmp again: F records no restore.
-        loads_are_foreign = {"codegen.py": ("    if released:", "    if True:")}
+        loads_are_foreign = {"codegen.py": (
+            "if rt(w) == 29 and (rs(w) != 30 or offset not in slots):", "if rt(w) == 29:")}
+        # CASE in the switch chain hands on at the $sp it was entered at and records
+        # nothing (sr_tail_record), so the pieces that return for F are the ones that tell.
         for name, fixture, iteration in (
-                ("S1-own-slot-is-foreign-switch", _alloca_switch_chain(reach="j"), 0),
-                ("S1-own-slot-is-foreign-continuation", _alloca_switch_chain(reach="fall"), 0),
-                ("S1-own-slot-is-foreign-computed", _alloca_switch_chain(reach="computed"), 0),
                 ("S1-own-slot-is-foreign-tail-end", _alloca_tail_end(), 0),
                 ("S1-own-slot-is-foreign-scoped-arrays", _scoped_arrays_function(), 2)):
             self._assert_mutant_fails(
@@ -1570,25 +1661,98 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 self.assertEqual(rc, 0, output)
                 self.assertEqual(fields.get("v0"), 0x56, output)
                 self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_a_tail_call_into_longjmp_from_a_released_frame_keeps_the_longjmp(self):
+        # H releases its frame and tail-calls longjmp, after freeing an alloca or with a
+        # plain frame. A restore recorded at that transfer would run after longjmp loaded
+        # its $sp. Before (#1935): the plain H recorded one, and the run stopped.
+        released_tail_records = {"recomp.h": (
+            "(owes_restore && s->r[29] != restore_sp) ? 1u : 0u", "owes_restore ? 1u : 0u")}
+        for name, words in (
+                ("alloca", _longjmp_into_live_frame(tail_called_from_alloca=True)),
+                ("plain", _longjmp_into_live_frame(tail_called_plainly=True))):
+            with self.subTest(name):
+                _generated, results = self._probe(words, (0,))
+                rc, output, fields = results[0]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x107, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        # R1: a transfer at the entry $sp still owes the restore.
         self._assert_mutant_fails(
-            "F4-fp-is-known-at-entry", _piece_on_a_frame_it_did_not_bind(head="foreign"), (0,),
-            {"codegen.py": ("    reach(start, {29: 0}, {})", "    reach(start, {29: 0, 30: 0}, {})")},
+            "R1-released-tail-still-records", _longjmp_into_live_frame(tail_called_plainly=True),
+            (0,), released_tail_records,
+            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107
+            or r[0][2].get("v1") != _PROBE_SP,
+        )
+
+    def test_another_way_out_of_the_switch_head_keeps_its_restore(self):
+        # F's other path never runs. Before (#1935): a sibcall on it, or a $sp load on it,
+        # took the restore from every exit of F, and CASE's lowered entry $sp reached F's
+        # caller.
+        for other in ("sibcall", "foreign"):
+            with self.subTest(other):
+                generated, results = self._probe(
+                    _switch_chain_with_another_way_out(other=other), (0, 1))
+                for rc, output, fields in results:
+                    self.assertEqual(rc, 0, output)
+                    self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+                self.assertEqual(results[0][2].get("v0"), 0x56, results[0][1])
+                body = generated[generated.index("void f_00001010(CpuState *s) {"):]
+                body = body[:body.index("\n}")]
+                self.assertIn("_sp_entry, 1u", body, "F records its entry $sp at the switch")
+        # P1: a $sp load on one path takes the restore from every exit of the body.
+        self._assert_mutant_fails(
+            "P1-the-verdict-is-per-body", _switch_chain_with_another_way_out(other="foreign"),
+            (0,),
+            {"codegen.py": ("        GUEST_SP_ENTRIES.add(start)\n        if guest_exits == exits:",
+                            "        guest_exits = exits\n        if True:")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
         )
 
-    def test_a_tail_call_into_longjmp_from_a_released_frame_keeps_the_longjmp(self):
-        # H frees its alloca, releases its frame and tail-calls longjmp. A recorded restore
-        # would run after longjmp loaded its $sp.
-        words = _longjmp_into_live_frame(tail_called_from_alloca=True)
-        _generated, results = self._probe(words, (0,))
-        rc, output, fields = results[0]
-        self.assertEqual(rc, 0, output)
-        self.assertEqual(fields.get("v0"), 0x107, output)
-        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+    def test_scoped_arrays_with_a_sibcall_keep_the_callers_sp(self):
+        # The shape of real code again, with an error path that releases the frame and
+        # tail-calls the helper. Before (#1935): that path took F's record from the scope's
+        # way out as well, and the epilogue's own entry $sp reached F's caller.
+        words = _scoped_arrays_function(sibcall_on_error=True)
+        _generated, results = self._probe(words, (0, 2))
+        for (rc, output, fields), v0 in zip(results, (0x59, 0x58), strict=True):
+            self.assertEqual(rc, 0, output)
+            self.assertEqual(fields.get("v0"), v0, output)
+            self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_an_interpreted_head_agrees_with_the_native_one(self):
+        # F runs in the interpreter and hands its live frame to a native piece entered at
+        # the lowered $sp. Before (#1935): the piece's entry $sp reached F's caller, while
+        # the native F's record gave the caller its own. The tail end frees its alloca in
+        # the interpreter, which keeps the frame.
+        interpreted_f = ("--omit-aot=0x00001010",)
+        for name, words, iterations in (
+                ("switch j", _alloca_switch_chain(reach="j"), (0, 1)),
+                ("switch computed", _alloca_switch_chain(reach="computed"), (0, 1)),
+                ("alloca tail end", _alloca_tail_end(), (0,)),
+                # The scope's VFPU word stops the interpreter (#308): the early way out only.
+                ("scoped arrays", _scoped_arrays_function(), (0,))):
+            with self.subTest(name):
+                _generated, results = self._probe(words, iterations, codegen_args=interpreted_f)
+                for rc, output, fields in results:
+                    self.assertEqual(rc, 0, output)
+                    self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        # I1: the interpreter's handoff owes nothing.
         self._assert_mutant_fails(
-            "F5-released-tail-still-records", words, (0,),
-            {"codegen.py": ("    if released:", "    if False:")},
+            "I1-interpreted-handoff-owes-nothing", _alloca_tail_end(), (0,),
+            {"guest_interp.c": ("            if (owes) s->r[29] = entry_sp;",
+                                "            (void)entry_sp;")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+            codegen_args=interpreted_f,
+        )
+        # I2: every interpreted load of $sp counts as leaving the frame, an alloca free too.
+        self._assert_mutant_fails(
+            "I2-an-alloca-free-leaves-the-frame", _alloca_tail_end(), (0,),
+            {"guest_interp.c": (
+                "    return boundary == NULL || after < before || after >= boundary->entry_sp;",
+                "    return 1;")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+            codegen_args=interpreted_f,
         )
 
     def test_a_slot_through_another_base_is_not_the_frames(self):
@@ -1619,10 +1783,11 @@ class GeneratedCallDepthTests(unittest.TestCase):
         )
         # A direct CALL site stops draining: the callee's transfer is left recorded.
         self._assert_mutant_fails(
-            "T3-call-site-does-not-drain", _tails_per_call_recursion(1), (4,),
+            "T3-call-site-does-not-drain", _call_into_a_live_frame_tail(), (0,),
             {"codegen.py": ('return f"{symbol}(s); {BODY_CALL_DRAIN}"',
                             'return f"{symbol}(s);"')},
-            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 4 or r[0][2].get("sp") != _PROBE_SP,
+            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x157
+            or r[0][2].get("v1") != _PROBE_SP,
         )
         # A computed step drains the whole chain: one native drain per computed transfer.
         self._assert_mutant_fails(
