@@ -352,6 +352,44 @@ class TestStrictCompileUnavailableInputs(unittest.TestCase):
         self.assertIn("Vulkan SDK", gate.detail)
         self.assertIn("No usable Vulkan SDK found.", gate.detail)
 
+    def _gate_for_output(self, source: str, stderr: str):
+        with mock.patch.dict(contrib_check.os.environ, {"CC": "cc"}), \
+                mock.patch.object(contrib_check, "vulkan_include_flags", return_value=([], "")), \
+                mock.patch.object(contrib_check.subprocess, "run", return_value=_Completed(1, "", stderr)):
+            return contrib_check.c_gate([source])
+
+    def test_a_missing_pspsdk_header_is_a_skip_with_its_reason_never_a_fail(self) -> None:
+        for header in ("pspkernel.h", "pspiofilemgr_fcntl.h", "psputility_osk.h"):
+            with self.subTest(header=header):
+                gate = self._gate_for_output(
+                    "fixtures/psp_oracle/probe_ge_sample.c",
+                    f"fixtures/psp_oracle/probe_ge_sample.c:5:10: fatal error: {header}: "
+                    "No such file or directory\ncompilation terminated.",
+                )
+                self.assertEqual(gate.status, contrib_check.SKIP)
+                self.assertIn("PSPSDK", gate.detail)
+                self.assertIn(header, gate.detail)
+
+    def test_a_missing_project_psp_header_still_fails(self) -> None:
+        gate = self._gate_for_output(
+            "tests/native/test_player_state.c",
+            "tests/native/test_player_state.c:3:10: fatal error: psp_seal_fixture.h: "
+            "No such file or directory\ncompilation terminated.",
+        )
+        self.assertEqual(gate.status, contrib_check.FAIL)
+
+    def test_a_real_error_beside_a_missing_sdk_header_still_fails(self) -> None:
+        for header in ("pspkernel.h", "vulkan/vulkan.h"):
+            with self.subTest(header=header):
+                gate = self._gate_for_output(
+                    "fixtures/psp_oracle/probe_ge_sample.c",
+                    "fixtures/psp_oracle/probe_ge_sample.c:2:1: error: unknown type name 'foo_t'\n"
+                    f"fixtures/psp_oracle/probe_ge_sample.c:5:10: fatal error: {header}: "
+                    "No such file or directory\ncompilation terminated.",
+                )
+                self.assertEqual(gate.status, contrib_check.FAIL)
+                self.assertIn("unknown type name", gate.detail)
+
     def test_a_discovered_vulkan_sdk_is_on_the_include_path(self) -> None:
         sdk = Path(tempfile.gettempdir()) / "VulkanSDK" / "1.4.0"
         with mock.patch.object(contrib_check, "discover_vulkan_sdk", return_value=sdk):
