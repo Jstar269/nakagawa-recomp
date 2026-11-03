@@ -214,6 +214,26 @@ Two images with one disc ID still share some folders, so only one of them is rea
 When two images share a disc ID, `nk_cli.py build-package` needs `--iso-path` to say which one to build, and the
 player's remove refuses to guess which of the two to take out.
 
+### Catching a title that went backwards
+
+`tools/library_regress.py` turns library runs into a regression net. `record <library-build.json> --store <folder>`
+keeps a snapshot of the run: for each title, its commit and its place on a short ladder (build failed, built, first
+frame presented, at least 60 frames presented) and how the first launch ended (still running at the launch timeout,
+exited, stopped with the named missing piece, crashed, or hung with no frame). `compare <old> <new>` takes two
+snapshots or two manifests, lists every title that went down or up with both commits (`--repo <checkout>` lists the
+first-parent commits between them) and exits 1 when any title went down: a lower rung, or a title that was still
+running at a rung and now stops there. A title that stops at the same rung in another way (another missing piece, or
+a hang where a missing import stopped it before, often because the import now works) is listed as changed, for
+review. Runs are compared like for like only when their launch timeout and frame threshold match; otherwise only the
+rung is compared, up to the first frame.
+
+`fast` is the check before landing a batch: it boots a rotating subset of the titles that reached a frame in a full
+baseline, sized from the baseline's per-title times to fit `--budget-minutes` (60 by default), builds them with
+`library_build.py --only` into a scratch folder, waits for a free title slot first when `--slot-dir` names a folder
+of lock files, and compares the result with the baseline. Each run continues the rotation where the last one
+stopped. A full `library_build.py` run with `record` is the weekly ladder. Snapshots and comparisons name your own
+discs, so they stay private like the manifest.
+
 Builds run below normal priority with no window, `--jobs` at a time (default one per eight logical CPUs, at most
 four). A title over `--title-timeout` (2,400 s by default) is stopped and recorded. A `PAUSE` file in the work folder
 holds new titles until it is removed, and a `STOP` file ends the run once the titles already started finish. The

@@ -249,6 +249,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `library_build.py` | Build every disc in a folder into one player data folder, with a per-title manifest, keyed by disc ID and image hash and checked against your Redump list. |
 | `compat_table.py` | Turn a private library build into the public whole-library summary in `docs/COMPATIBILITY.md`: counts only, refusing any disc identifier. |
 | `library_sweep.py` | Run the production ISO bring-up route across a library and aggregate blockers. |
+| `library_regress.py` | Library regression net: record each title's ladder place (built, first frame, frames, how its launch ended) per run and commit, compare two runs for titles that went backwards, and run a timed boot-to-first-frame subset. |
 | `progress_tracker.py` | Run concrete gating checks against real outputs and emit a structured progress record. |
 
 ### Publication, provenance and supply chain
@@ -518,6 +519,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_compat_table.py` | The whole-library summary's tier rules, and that no title, disc ID, file name or hash reaches it. |
 | `test_disc_verify.py` | Whole-image hashing, the Redump datafile reader, the verified retail / modified / unknown tiers, and bring-up library records keyed by disc ID plus hash. |
 | `test_library_sweep.py` | Regressions for the private, resumable library compatibility sweep. |
+| `test_library_regress.py` | The library ladder, its snapshots, the run comparer with its commit ranges, the fast subset's rotation and budget, and title slots. |
 | `test_matrix_disposition.py` | Guard the evidence-matrix disposition field against becoming uninformative. |
 | `test_matrix_report.py` | Generate a conservative, machine-readable unittest evidence matrix. |
 | `test_parse_fuzz.py` | Seeded, deterministic mutation fuzzing over the public offline parsers. |

@@ -16,7 +16,8 @@ the same folder lists every title that built.
 The run never stops on one title: each disc ends with a record (built, or the exact failure)
 in ``library-build.json`` and ``library-build.md``, written after every title to the data
 folder and to ``--manifest-dir``. A stopped run resumes where it left off. Only ``.iso``
-files are discs; other files are counted by kind and skipped.
+files are discs; other files are counted by kind and skipped. ``--only`` names the discs to
+build (by their path in the disc folder); every other record is kept as it was.
 
 Discs are keyed by disc ID plus the hash of the whole image (``nk_core.disc_verify``): a
 file with the disc ID and the same SHA-1 as one seen before is recorded as a duplicate of the
@@ -275,7 +276,7 @@ class LibraryBuild:
                  pause_poll_seconds: float = PAUSE_POLL_SECONDS,
                  dat: disc_verify.RedumpDat | None = None, verify_only: bool = False,
                  hash_disc: Callable[[Path], disc_verify.DiscDigest] = disc_verify.hash_image,
-                 commit: str | None = None) -> None:
+                 commit: str | None = None, only: frozenset[str] | None = None) -> None:
         self.disc_root = disc_root.resolve(strict=True)
         self.user_data_root = user_data_root.resolve()
         self.work_root = work_root.resolve()
@@ -295,6 +296,7 @@ class LibraryBuild:
         self.verify_only = verify_only
         self.hash_disc = hash_disc
         self.commit = commit
+        self.only = only
         self.lock = threading.Lock()
         self.records: dict[str, dict[str, Any]] = {}
         self.skipped: Counter = Counter()
@@ -365,8 +367,13 @@ class LibraryBuild:
         self._load_previous()
         discs, self.skipped = discover(self.disc_root)
         present: list[dict[str, Any]] = []
+        keys = {_source_key(path, self.disc_root) for path in discs}
         for path in discs:
             key = _source_key(path, self.disc_root)
+            if self.only is not None and key not in self.only:
+                if key in self.records:
+                    present.append(self.records[key])  # kept as it was, never rebuilt
+                continue
             stat = path.stat()
             record = self.records.get(key)
             unchanged = (record is not None and record.get("size_bytes") == stat.st_size
@@ -390,7 +397,6 @@ class LibraryBuild:
                                    "identify_detail": f"{type(exc).__name__}: {exc}"[:300]})
                 self.records[key] = record
             present.append(record)
-        keys = {record["source_key"] for record in present}
         for key in list(self.records):
             if key not in keys:
                 del self.records[key]  # the file is gone from the folder
@@ -415,6 +421,8 @@ class LibraryBuild:
                 record["outcome"] = "PENDING"
                 record.pop("duplicate_of", None)
             outcome = record.get("outcome")
+            if self.only is not None and key not in self.only:
+                continue
             if self.verify_only or (outcome in FINAL_OUTCOMES
                                     and not (self.retry_failed and outcome in RETRY_OUTCOMES)):
                 continue
@@ -733,6 +741,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retry-failed", action="store_true",
                         help="Build again the titles whose last attempt failed or timed out")
     parser.add_argument("--limit", type=int, default=None, help="Build at most this many titles")
+    parser.add_argument("--only", type=Path, default=None,
+                        help="A file of source keys (one disc path per line, relative to the disc "
+                             "folder): build only those discs and keep every other record as it is")
     parser.add_argument("--no-decrypt", action="store_true",
                         help="Skip the disc check that decrypts each disc's executable and modules")
     parser.add_argument("--redump-dat", type=Path, default=None,
@@ -743,6 +754,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.jobs < 1 or args.title_timeout < 1 or args.launch_timeout < 1:
         parser.error("--jobs, --title-timeout and --launch-timeout must be positive")
+    only = None
+    if args.only is not None:
+        only = frozenset(line.strip().casefold() for line in
+                         args.only.read_text(encoding="utf-8").splitlines() if line.strip())
     dat = None
     if args.redump_dat is not None:
         try:
@@ -754,7 +769,7 @@ def main(argv: list[str] | None = None) -> int:
         jobs=args.jobs, priority=args.priority, title_timeout_seconds=args.title_timeout,
         launch_timeout_seconds=args.launch_timeout, retry_failed=args.retry_failed,
         limit=args.limit, decrypt=None if args.no_decrypt else DiscDecryption(),
-        dat=dat, verify_only=args.verify_only, commit=source_commit(),
+        dat=dat, verify_only=args.verify_only, commit=source_commit(), only=only,
     )
     manifest = build.run()
     print(json.dumps({"counts": manifest["counts"],
