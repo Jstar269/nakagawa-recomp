@@ -142,6 +142,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `analyze.py` | Discover function boundaries, executable spans and tail calls in a guest ELF. |
 | `analyze_cfg.py` | The canonical CFG report, its gate and the static coverage census, with the branch decode they use. `analyze.py` imports every name back. |
 | `analysis_ir.py` | Advisory analysis IR from a `codegen.py --cfg-report` file: blocks, functions, call graph, xrefs, register use; parity check, annotation comparison and `explain`. |
+| `binding_carry.py` | Proposes a title manifest's `runtime_bindings` for another revision by matching functions on masked code (exact, neighbour tie-break, fuzzy, via callers); refuses ambiguous matches (#1847). |
 | `imports.py` | Walk guest import tables and resolve MIPS NIDs to HLE handler names. |
 | `codegen.py` | Translate guest MIPS to C and split the output into `<g>_recomp_<n>.c` chunks. |
 | `codegen_llvm.py` | The opt-in LLVM IR backend (`--backend=llvm`, #330): lower supported functions to `<g>_recomp_<n>.ll`. |
@@ -183,6 +184,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `import_stub_census.py` | Import-stub census: every import-table stub of an image is owned, bodied and reaches the HLE (or a named refusal). |
 | `psp_import_table.py` | Defensive PSP ELF import-table parser for the import-coverage gate. |
 | `flight_diff.py` | Compare two source-safe flight-recorder bundles. |
+| `ge_flight_overhead.py` | Compare the GE draw path with the flight recorder linked and disarmed against compiled out (`ge-flight-overhead`). |
 | `ge_transition_diff.py` | Offline diff for the narrow GE transition trace. |
 | `ge_replay_metrics.py` | Strict parsers for aggregate GE replay CPU-profile summaries. |
 | `ge_stat_windows.py` | Read the runtime's `SR_GESTAT` windows by the vblank that closed them, for gates such as the showcase smoke. |
@@ -340,6 +342,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | Module | Purpose |
 | --- | --- |
 | `test_analysis_ir.py` | Analysis IR parity with codegen's CFG report, JSON round trip, annotation comparison and `explain` (#305). |
+| `test_binding_carry.py` | Binding carry over two synthetic revisions: exact, neighbour, fuzzy, caller, ambiguous decoy, unmatched and NID-matched stubs (#1847). |
 | `test_analyze_tailcall.py` | Regression tests for the analyzer's tail-call promotion. |
 | `test_analyze_import_stub_entries.py` | Import-table stubs outside the named code sections are owned function entries, with codegen bodies. |
 | `test_analyze_toml_emit.py` | Locks the analyzer TOML emitter's fail-closed string contract. |
@@ -499,6 +502,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_extract_xb_security.py` | Synthetic, retail-free coverage for extraction containment and limits. |
 | `test_flight_build_identity.py` | Reproducible build identity of the flight recorder's build block. |
 | `test_flight_diff.py` | Flight-recorder bundle schema, comparability refusal and cross-run diffing. |
+| `test_ge_flight_overhead.py` | Bench-output parsing, bootstrap interval and verdicts of the GE flight-recorder overhead driver. |
 | `test_funcdiff_cmp.py` | Fail-closed oracle trace comparison: divergence, empty and truncated traces fail. |
 | `test_gate_exit_resolution.py` | Shared exit-stub discovery and trace helpers used by the correctness gates. |
 | `test_ge_capture.py` | GE capture route regressions. |

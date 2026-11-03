@@ -116,7 +116,8 @@ def analyze_lines(lines: list[str], doc: dict[str, Any] | None = None) -> dict[s
         directory = Path(scratch)
         perf = write_summary(directory, doc if doc is not None else summary_doc())
         log = write_log(directory, lines)
-        return perf_attribution.analyze(perf, log)
+        returned: dict[str, Any] = perf_attribution.analyze(perf, log)
+        return returned
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:

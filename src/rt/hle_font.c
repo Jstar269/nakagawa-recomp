@@ -357,10 +357,15 @@ static void font_write_info(uint32_t addr, const PGF *pgf,
     font_overlay_style(addr, info, userMemory);
 }
 
+/* The error-code output of the Open and NewLib calls is written without a NULL check on the PSP,
+ * which crashes on a NULL one, so a NULL or unwritable pointer is an unmeasured stop, not a refusal. */
+#define FONT_REQUIRE_ERR_PTR(name, ptr)     do {         if (!(ptr) || !sr_guest_span_writable((ptr), 4u))             return hle_unmodelled_stop((name), "with an unwritable error pointer 0x%08x is not measured", (ptr));     } while (0)
+
 static uint32_t h_FontNewLib(CpuState *s) {
     /* sceFontNewLib(a0=FontNewLibParams*, a1=u32* errorCode). PPSSPP param layout:
      * +0 userData, +4 numFonts, +8 cacheData, +0xc allocFunc, +0x10 freeFunc, ... */
     uint32_t params = A0, errPtr = A1;
+    FONT_REQUIRE_ERR_PTR("sceFontNewLib", errPtr);
     uint32_t userData = 0, allocFn = 0, freeFn = 0, requestedFonts = 0;
     uint32_t paramsCopy[11] = {0};
     if (params && !sr_guest_span_readable(params, (uint32_t)sizeof(paramsCopy))) {
@@ -519,6 +524,7 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
     return fh;
 }
 static uint32_t h_FontOpen(CpuState *s) {
+    FONT_REQUIRE_ERR_PTR("sceFontOpen", A3);
     /* sceFontOpen(a0=lib, a1=index, a2=mode, a3=u32* errorCode). A NULL library answers
      * INVALID_LIB, and an index past the system font list (-1 and 50 measured) INVALID_ARG
      * (pspautotests tests/font/open.expected at f573fe8c, recorded on a PSP). */
@@ -545,7 +551,7 @@ static uint32_t h_FontOpen(CpuState *s) {
 /* Reads via the same VFS as sceIoOpen, defined with the descriptor implementation below. */
 static uint32_t font_read_user_file(uint32_t guest_path, uint8_t **bytes, uint32_t *size);
 static uint32_t h_FontOpenUserFile(CpuState *s) {
-    if (!A3 || !sr_guest_span_writable(A3, 4u)) return SR_FONT_ERROR_INVALID_ARG;
+    FONT_REQUIRE_ERR_PTR("sceFontOpenUserFile", A3);
     if (!A1) { MEM_W32(A3, SR_FONT_ERROR_INVALID_ARG); return 0; }
     SrFontLib lib;
     if (!fontlib_snapshot(A0, &lib)) { MEM_W32(A3, SR_FONT_ERROR_INVALID_LIB); return 0; }
@@ -560,6 +566,7 @@ static uint32_t h_FontOpenUserFile(CpuState *s) {
 }
 static uint32_t h_FontOpenUserMemory(CpuState *s) {
     /* sceFontOpenUserMemory(a0=lib, a1=memAddr, a2=memLen, a3=u32* errorCode). */
+    FONT_REQUIRE_ERR_PTR("sceFontOpenUserMemory", A3);
     font_load();
     PGF *owned = NULL;
     if (A1 && A2 >= 16 && A2 <= 16u * 1024u * 1024u && sr_guest_span_readable(A1, A2)) {
@@ -752,6 +759,39 @@ static uint32_t h_FontSetResolution(CpuState *s) {
     hle_unlock();
     return 0;
 }
+
+/* sceFontPixelToPointH/V and sceFontPointToPixelH/V (lib, float value, u32 *errorCode): a size
+ * converted between pixels and points at the library's resolution, 72 points to the inch:
+ * points = pixels * 72 / res and pixels = points * res / 72, the horizontal pair using hRes and
+ * the vertical pair vRes.  pspautotests tests/font/resolution.expected (f573fe8c, recorded on a
+ * PSP): at 128 x 128, 5.0 pixels is 2.812500 points and 5.0 points is 8.888889 pixels; at
+ * 64 x 64 they are 5.625000 and 4.444445; -5.0 gives the negated result and 0.0 gives 0.0; each
+ * writes errorCode 0.  A NULL library writes 0x80460002 and returns 0.0.  The float argument
+ * arrives in $f12 (MIPS EABI), the result leaves in $f0, and errorCode is $a1.  The hardware run
+ * converts on a library already closed with sceFontDoneLib, and crashes on a NULL errorCode;
+ * neither is modeled, so a library that is not live and an unwritable errorCode stop by name.
+ * The result is rounded to float after the multiply and divide, as the reference arithmetic. */
+static uint32_t font_convert(CpuState *s, const char *name, int vertical, int to_points) {
+    const float value = s->f[12];
+    if (!A1 || !sr_guest_span_writable(A1, 4u))
+        return hle_unmodelled_stop(name, "with an unwritable errorCode 0x%08x is not measured", A1);
+    if (!A0) {
+        MEM_W32(A1, SR_FONT_ERROR_INVALID_LIB);
+        s->f[0] = 0.0f;
+        return 0;
+    }
+    SrFontLib L;
+    if (!fontlib_snapshot(A0, &L))
+        return hle_unmodelled_stop(name, "on library 0x%08x, which is not live, is not measured", A0);
+    const float res = vertical ? L.vRes : L.hRes;
+    MEM_W32(A1, 0u);
+    s->f[0] = to_points ? value * 72.0f / res : value * res / 72.0f;
+    return 0;
+}
+static uint32_t h_FontPixelToPointH(CpuState *s) { return font_convert(s, "sceFontPixelToPointH", 0, 1); }
+static uint32_t h_FontPixelToPointV(CpuState *s) { return font_convert(s, "sceFontPixelToPointV", 1, 1); }
+static uint32_t h_FontPointToPixelH(CpuState *s) { return font_convert(s, "sceFontPointToPixelH", 0, 0); }
+static uint32_t h_FontPointToPixelV(CpuState *s) { return font_convert(s, "sceFontPointToPixelV", 1, 0); }
 
 /* One served system font's style, as sceFontFindOptimumFont compares it. */
 typedef struct {
@@ -986,4 +1026,8 @@ void hle_register_launch_sweep_blocker_font(void) {
     sr_hle_register(0x27f6e642, "sceFontGetNumFontList", h_FontGetNumFontList);
     sr_hle_register(0xbc75d85b, "sceFontGetFontList", h_FontGetFontList);
     sr_hle_register(0xee232411, "sceFontSetAltCharacterCode", h_FontSetAltCharacterCode);
+    sr_hle_register(0x74b21701, "sceFontPixelToPointH", h_FontPixelToPointH);
+    sr_hle_register(0xf8f0752e, "sceFontPixelToPointV", h_FontPixelToPointV);
+    sr_hle_register(0x472694cd, "sceFontPointToPixelH", h_FontPointToPixelH);
+    sr_hle_register(0x3c4b7e82, "sceFontPointToPixelV", h_FontPointToPixelV);
 }

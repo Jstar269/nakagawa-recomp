@@ -349,8 +349,9 @@ uint32_t h_IoWrite(CpuState *s) {
     while (done < count) {
         uint32_t n = count - done; if (n > sizeof(tmp)) n = sizeof(tmp);
         for (uint32_t k = 0; k < n; k++) tmp[k] = (uint8_t)MEM_R8(src + done + k);
-        done += (uint32_t)fwrite(tmp, 1, n, f->host);
-        if (done < count) break;
+        uint32_t wrote = (uint32_t)fwrite(tmp, 1, n, f->host);
+        done += wrote;
+        if (wrote < n) break;
     }
     fflush(f->host);
     f->off += done; if (f->off > f->size) f->size = f->off;

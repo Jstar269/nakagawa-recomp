@@ -5,13 +5,14 @@ folder next to the program (for example `build/font/`) and adds the project's ow
 
 ## The project's own fonts
 
-The build makes three fonts in the PSP's font format (`.pgf`) from open fonts, with the project's converter
+The build makes four fonts in the PSP's font format (`.pgf`) from open fonts, with the project's converter
 `tools/ttf2pgf.py`:
 
 | File | Used for | Made from | Licence |
 | --- | --- | --- | --- |
 | `nkjpn.pgf` | Japanese text | M PLUS 1p Regular | SIL Open Font License 1.1 |
-| `nkltn.pgf` | Latin text | M PLUS 1p Regular | SIL Open Font License 1.1 |
+| `nkltn.pgf` | Latin text, the PSP's larger size (`ltn0` to `ltn7`) | M PLUS 1p Regular | SIL Open Font License 1.1 |
+| `nkltns.pgf` | Latin text, the PSP's smaller size (`ltn8` to `ltn15`) | M PLUS 1p Regular | SIL Open Font License 1.1 |
 | `nkkr.pgf` | Korean text | Gowun Dodum Regular | SIL Open Font License 1.1 |
 
 Each font comes with its licence text (`nkjpn-OFL.txt` and so on) and a manifest (`nkjpn.json` and so on) that names
@@ -20,7 +21,9 @@ its exact source file and the converter settings. The source fonts are pinned in
 each `PIN.json` gives the file's SHA-256 and where it came from. Generated fonts are never committed.
 
 These fonts are stand-ins. They let a game draw its text when you have not imported your PSP's fonts, but they look
-different from the PSP's.
+different from the PSP's. The two Latin fonts are sized and weighted to come close: their nominal sizes are the PSP's,
+and their x-height, cap height, stem width and spacing are set from aggregate measurements of the PSP fonts of the same
+size. No letter shape comes from those fonts, and the bold and italic faces are served by the regular one.
 
 ## Your PSP's own fonts
 
@@ -32,9 +35,11 @@ the PSP's fonts.
 ## How a game finds its fonts
 
 When a game asks for one of the PSP's system fonts, it gets your imported copy of that font first. A Latin font you
-have not imported is served by your nearest imported font of the same size, and otherwise by `nkltn.pgf`; a Japanese
-or Korean font you have not imported is served by `nkjpn.pgf` or `nkkr.pgf`. The full order, and how to see which
-file serves each font, is in [System fonts](../docs/SETUP.md#system-fonts).
+have not imported is served by your nearest imported font of the same size, and otherwise by `nkltn.pgf` or
+`nkltns.pgf`, whichever has its size; a Japanese or Korean font you have not imported is served by `nkjpn.pgf` or
+`nkkr.pgf`. The full order, and how to see which file serves each font, is in
+[System fonts](../docs/SETUP.md#system-fonts). The log has one `flash0: game opened` line for each font a game opens,
+with the file that serves it.
 
 The `SR_FONTDIR` environment variable points the runtime at another folder instead of the one next to the program. A
 folder that is missing or cannot be read is reported as an error; nothing quietly takes its place.
