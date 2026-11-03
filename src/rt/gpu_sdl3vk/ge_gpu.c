@@ -335,6 +335,7 @@ static uint32_t s_readback_cursor;
 /* Background presentation readbacks have no synchronous caller to return an error to.
  * Keep failures sticky so the explicit snapshot boundary can refuse stale guest VRAM. */
 static unsigned long long s_readback_commit_failures;
+static int s_readback_full;                /* SR_GPU_READBACK_FULL: the reference copy (#323) */
 
 static VkRenderPass s_rp;
 
@@ -1034,8 +1035,37 @@ static GeGpuFbDescriptor target_descriptor(uint32_t fba, uint32_t stride, uint32
     return d;
 }
 
-/* `src` is the full SCALED readback (SCL_W x SCL_H); each guest pixel is written from
- * the top-left device subpixel of its scale x scale cell (identity at scale 1). */
+/* Guest memory keeps the top-left device pixel of each scale x scale cell, so a readback takes
+ * only the rows y * scale, packed one after another in the buffer, and the bytes copied grow
+ * with the scale, not with its square (#323). SR_GPU_READBACK_FULL=1 copies the whole scaled
+ * target instead, the reference path. */
+static uint32_t readback_row_step(void) {
+    return s_readback_full ? (uint32_t)s_scale : 1u;
+}
+
+static VkDeviceSize readback_bytes(uint32_t bpp) {
+    return (VkDeviceSize)SCL_W * (s_readback_full ? SCL_H : FB_H) * bpp;
+}
+
+static void cmd_copy_readback(VkCommandBuffer cmd, VkImage img, VkImageAspectFlags aspect,
+                              VkBuffer buf, uint32_t bpp) {
+    VkBufferImageCopy c[FB_H];
+    const uint32_t regions = s_readback_full || s_scale == 1 ? 1u : FB_H;
+    memset(c, 0, regions * sizeof(c[0]));
+    for (uint32_t i = 0; i < regions; i++) {
+        c[i].bufferOffset = (VkDeviceSize)i * SCL_W * bpp;
+        c[i].imageSubresource.aspectMask = aspect;
+        c[i].imageSubresource.layerCount = 1;
+        c[i].imageOffset.y = (int32_t)(i * (uint32_t)s_scale);
+        c[i].imageExtent.width = SCL_W;
+        c[i].imageExtent.height = regions == 1u ? SCL_H : 1u;
+        c[i].imageExtent.depth = 1;
+    }
+    vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, regions, c);
+}
+
+/* `src` is a readback (cmd_copy_readback); each guest pixel is written from the top-left
+ * device subpixel of its scale x scale cell (identity at scale 1). */
 static int write_guest_fb(const uint32_t *src, uint32_t fba, uint32_t stride, uint32_t fmt) {
     uint32_t srow = SCL_W;
     GeGpuFbDescriptor desc = target_descriptor(fba, stride, fmt);
@@ -1049,7 +1079,7 @@ static int write_guest_fb(const uint32_t *src, uint32_t fba, uint32_t stride, ui
     uint32_t wb = desc.width;
     uint32_t rba = span.base;
     for (uint32_t y = 0; y < FB_H; y++) {
-        const uint32_t *sl = src + (uint32_t)(y * s_scale) * srow;
+        const uint32_t *sl = src + y * readback_row_step() * srow;
         if ((fmt & 3) == 3) {
             uint32_t *dst = (uint32_t *)SR_HOST(rba + y * stride * 4);
             if (s_scale == 1) memcpy(dst, sl, wb * 4);
@@ -1085,7 +1115,7 @@ static int readback_finish(ReadbackSlot *r, int wait, int allow_commit) {
         t->gpu_valid && t->render_gen == r->gen) {
         if (write_guest_fb(r->map, r->fba, r->stride, r->fmt)) {
             t->clean_gen = r->gen;
-            if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)(SCL_W * SCL_H * 4u));
+            if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)readback_bytes(4u));
             s_cnt_readback++;
         } else {
             commit_failed = 1;
@@ -1731,17 +1761,14 @@ static int target_readback(Target *t) {
     if (!cmd_begin()) return 0;
     to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkBufferImageCopy c = {0};
-    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    c.imageSubresource.layerCount = 1;
-    c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(s_cmd, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer, 1, &c);
+    cmd_copy_readback(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, s_xfer, 4u);
     if (!cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION)) return 0;
     if (!write_guest_fb((const uint32_t *)s_xfer_map, t->fba, t->stride, t->fmt)) return 0;
     uint32_t bpp = t->fmt == 3u ? 4u : 2u;
     ge_zbuf_invalidate_guest_span(0x04000000u + t->fba,
                                   t->stride * FB_H * bpp);
     t->clean_gen = t->render_gen;
+    if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)readback_bytes(4u));
     s_cnt_readback++;
     return 1;
 }
@@ -1786,13 +1813,7 @@ static int target_prepare_present(Target *t) {
     if (vkBeginCommandBuffer(r->cmd, &bi) != VK_SUCCESS) return 0;
     to_layout(r->cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    if (copy) {
-        VkBufferImageCopy c = {0};
-        c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        c.imageSubresource.layerCount = 1;
-        c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
-        vkCmdCopyImageToBuffer(r->cmd, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r->buf, 1, &c);
-    }
+    if (copy) cmd_copy_readback(r->cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, r->buf, 4u);
     if (vkEndCommandBuffer(r->cmd) != VK_SUCCESS ||
         vkResetFences(s_dev, 1, &r->fence) != VK_SUCCESS) {
         t->layout = old_layout;
@@ -2226,11 +2247,7 @@ static int depth_to_cpu(DepthEnt *d) {
     if (!cmd_begin()) return 0;
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkBufferImageCopy c = {0};
-    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    c.imageSubresource.layerCount = 1;
-    c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(s_cmd, d->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer, 1, &c);
+    cmd_copy_readback(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, s_xfer, 2u);
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_DEPTH_READBACK)) return 0;
@@ -2238,7 +2255,8 @@ static int depth_to_cpu(DepthEnt *d) {
     for (uint32_t y = 0; y < FB_H; y++)
         for (uint32_t x = 0; x < FB_W; x++)
             s_zbuf[y * d->zstride + x] =
-                src[(uint32_t)(y * s_scale) * SCL_W + x * s_scale];
+                src[y * readback_row_step() * SCL_W + x * s_scale];
+    if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)readback_bytes(2u));
     d->cpu_dirty = 1;
     d->guest_dirty = 0;
     ge_zbuf_note_external_write();
@@ -2272,11 +2290,7 @@ static int depth_readback_to_guest(DepthEnt *d) {
     if (!cmd_begin()) return 0;
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkBufferImageCopy c = {0};
-    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    c.imageSubresource.layerCount = 1;
-    c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(s_cmd, d->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer, 1, &c);
+    cmd_copy_readback(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, s_xfer, 2u);
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_DEPTH_READBACK)) return 0;
@@ -2287,14 +2301,14 @@ static int depth_readback_to_guest(DepthEnt *d) {
         for (uint32_t x = 0; x < width; x++) {
             uint32_t linear = (y * d->zstride + x) * 2u;
             uint32_t addr = 0x04000000u + ((d->zba + linear) ^ 0x2040u);
-            uint16_t value = src[(uint32_t)(y * s_scale) * SCL_W + x * (uint32_t)s_scale];
+            uint16_t value = src[y * readback_row_step() * SCL_W + x * (uint32_t)s_scale];
             if (!sr_inrange_n(addr, 2u)) return 0;
             memcpy(SR_HOST_LINEAR(addr), &value, sizeof value);
         }
     }
     d->guest_dirty = 0;
     ge_zbuf_invalidate_guest_span(depth_first, depth_end - depth_first);
-    if (sr_perf_enabled) sr_perf_vulkan_readback(FB_W * FB_H * 2u);
+    if (sr_perf_enabled) sr_perf_vulkan_readback((uint32_t)readback_bytes(2u));
     return 1;
 }
 
@@ -4222,6 +4236,8 @@ int gegpu_init(void) {
         const char *shadow_disable = getenv("SR_GPU_TEX_SHADOW_DISABLE");
         s_tex_shadow_enabled = !(shadow_disable && shadow_disable[0] &&
                                  strcmp(shadow_disable, "0") != 0);
+        const char *readback_full = getenv("SR_GPU_READBACK_FULL");
+        s_readback_full = readback_full && readback_full[0] && strcmp(readback_full, "0") != 0;
         const char *sync = getenv("SR_GPU_SYNC_SUBMIT");
         s_async_submit = !(sync && sync[0] && strcmp(sync, "0") != 0);
         s_submit_batch_ops = SUBMIT_BATCH_MAX;
@@ -4302,7 +4318,7 @@ int gegpu_init(void) {
         cbi.commandBufferCount = 1;
         VKC(vkAllocateCommandBuffers(s_dev, &cbi, &r->cmd));
         VKC(vkCreateFence(s_dev, &fci, NULL, &r->fence));
-        if (!make_buffer((VkDeviceSize)SCL_W * SCL_H * 4u, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        if (!make_buffer(readback_bytes(4u), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                          &r->buf, &r->mem, (void **)&r->map)) return 0;
     }
 

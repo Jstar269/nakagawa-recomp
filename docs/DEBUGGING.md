@@ -149,7 +149,10 @@ The summary fields mean:
   do not add `triangle_total` or `empty_control` to the stage sum.
 - `vulkan.submit_ns`, `wait_ns`, `readback_ns`, and `pipeline_creation_ns` measure separate host
   API regions. Readback and general wait can overlap and are intentionally not additive;
-  `readbacks` counts completed CPU readback commits, not every fence poll.
+  `readbacks` counts completed CPU readback commits, not every fence poll, and `readback_bytes` the
+  bytes those commits copied out of the image. A readback takes only the rows guest memory keeps, one
+  device row per guest row, so the bytes grow with the render scale, not its square;
+  `SR_GPU_READBACK_FULL=1` copies the whole scaled target, the reference path (#323).
 - `textures` counts cache hits/misses and central decode calls. `storage` separates public ISO and
   VFS byte/read/failure counters. `media` counts H.264 and ATRAC decode calls, elapsed time, and
   failures. If the host H.264 backend is unavailable, the runtime reports its named boundary
