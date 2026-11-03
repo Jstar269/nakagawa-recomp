@@ -2769,7 +2769,10 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
         uint32_t rounded = (arglen + 15u) & ~15u;
         uint32_t stack_base = t->stack_base;
         uint32_t src_phys = SR_PHYS(argp);
-        uint32_t dst = t->sp_init - rounded;
+        /* The block sits directly under the k0 block: argv = stack + size - 0x100 - round16(len)
+         * (the "Argument length" cells: stack+0x6f0 for 1..8 bytes on a 0x800 stack, +0x6b0 for 80,
+         * +0x100 for 0x600). */
+        uint32_t dst = t->k0_init - rounded;
         uint32_t dst_phys = SR_PHYS(dst);
         int size_ok = arglen <= 0x0c000000u && rounded >= arglen && rounded <= t->sp_init;
         int src_ok = size_ok && src_phys < 0x0c000000u && arglen <= 0x0c000000u - src_phys;

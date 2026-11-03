@@ -470,7 +470,9 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
         ge_enqueue_trace_result(s, "update_stall", list_id, "not_found", 0u, 0);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list_id=0x%08x NOT FOUND or not stalled\n", list_id);
-        return 0;
+        /* PSPAutotests tests/gpu/ge/queue.expected (recorded on a PSP): an id that names no list
+         * (0, or one already dequeued) returns 0x80000100. */
+        return 0x80000100u; /* SCE_KERNEL_ERROR_INVALID_ID */
     }
 
     if (s_ge_lists[slot].executed) {

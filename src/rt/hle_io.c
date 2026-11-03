@@ -946,6 +946,10 @@ static uint32_t h_IoDread(CpuState *s) {
     DirFd *d = &s_dirfds[fd];
     if (!de) return 0x80010009u; /* preserve baseline behavior for null pointer */
     IsoDirEntry e;
+    /* The ISO listing keeps its 0x124 permission bits; the Memory Stick listing reports the FAT shape
+     * PSPAutotests tests/io/stat/stat.expected records on a PSP ("dread vs getstat": mode 0x21ff
+     * attr 0x0020 for a file, 0x11ff attr 0x0010 for a directory, equal to sceIoGetstat's). */
+    const int ms_shape = d->backend != 0;
     if (d->backend == 0) {
         int r = iso_list(d->path, d->index, &e);
         if (r <= 0) return r < 0 ? 0x80010005u : 0;
@@ -963,7 +967,7 @@ static uint32_t h_IoDread(CpuState *s) {
         e.lba = ve->lba;
     }
     for (uint32_t i = 0; i < 0x15cu; i++) MEM_W8(de + i, 0);
-    MEM_W32(de + 0x00, (e.is_dir ? 0x1000u : 0x2000u) | 0x0124u);
+    MEM_W32(de + 0x00, (e.is_dir ? 0x1000u : 0x2000u) | (ms_shape ? 0x01ffu : 0x0124u));
     MEM_W32(de + 0x04, e.is_dir ? 0x0010u : 0x0020u);
     MEM_W32(de + 0x08, e.size); MEM_W32(de + 0x0c, 0);
     MEM_W32(de + 0x40, e.lba);
@@ -1895,14 +1899,16 @@ static uint32_t h_IoGetstat(CpuState *s) {
                     if (getenv("SR_STATLOG"))
                         fprintf(stderr, "Getstat(%s) -> ms0 host size=0x%llx dir=%d\n",
                                 path, (unsigned long long)fsize, is_dir);
-                    for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
-                    MEM_W32(st + 0, is_dir ? (0x1000u | 0x0124u) : (0x2000u | 0x0124u));
-                    MEM_W32(st + 4, is_dir ? 0x0010u : (0x0004u | 0x0001u));
+                    /* Memory Stick FAT shape, PSPAutotests tests/io/stat/stat.expected (recorded on a PSP): file mode
+                     * 0x21ff attr 0x0020, directory mode 0x11ff attr 0x0010; bytes [0..0x3f] are written and st_private
+                     * is left as the caller had it. */
+                    for (int i = 0; i < 0x40; i++) MEM_W8(st + (uint32_t)i, 0);
+                    MEM_W32(st + 0, is_dir ? 0x11ffu : 0x21ffu);
+                    MEM_W32(st + 4, is_dir ? 0x0010u : 0x0020u);
                     if (!is_dir) {
                         MEM_W32(st + 8, (uint32_t)fsize);
                         MEM_W32(st + 12, (uint32_t)(fsize >> 32));
                     }
-                    MEM_W32(st + 0x40, 0); /* st_private[0]: no LBN (host-backed) */
                     return 0;
                 }
                 free(wh);
@@ -1919,14 +1925,16 @@ static uint32_t h_IoGetstat(CpuState *s) {
                 if (getenv("SR_STATLOG"))
                     fprintf(stderr, "Getstat(%s) -> ms0 host size=0x%llx dir=%d\n",
                             path, (unsigned long long)fsize, is_dir);
-                for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
-                MEM_W32(st + 0, is_dir ? (0x1000u | 0x0124u) : (0x2000u | 0x0124u));
-                MEM_W32(st + 4, is_dir ? 0x0010u : (0x0004u | 0x0001u));
+                /* Memory Stick FAT shape, PSPAutotests tests/io/stat/stat.expected (recorded on a PSP): file mode
+                 * 0x21ff attr 0x0020, directory mode 0x11ff attr 0x0010; bytes [0..0x3f] are written and st_private
+                 * is left as the caller had it. */
+                for (int i = 0; i < 0x40; i++) MEM_W8(st + (uint32_t)i, 0);
+                MEM_W32(st + 0, is_dir ? 0x11ffu : 0x21ffu);
+                MEM_W32(st + 4, is_dir ? 0x0010u : 0x0020u);
                 if (!is_dir) {
                     MEM_W32(st + 8, (uint32_t)fsize);
                     MEM_W32(st + 12, (uint32_t)(fsize >> 32));
                 }
-                MEM_W32(st + 0x40, 0); /* st_private[0]: no LBN (host-backed) */
                 return 0;
             }
 #endif
