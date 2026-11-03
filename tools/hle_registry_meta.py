@@ -266,6 +266,15 @@ HANDLER_METADATA = {
         ],
         "limitation": "accepts 1..retained PLL and refuses the rest with 0x800001fe, measured only at PLL 222; the clock the getters report after an accepted request is the retained request, not measured",
     },
+    "h_PowerSetClockFrequency": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_power_set_clock_frequency_range_checks",
+            "PSPAutotests tests/power/freq.expected (2ed7c9c5, recorded on a PSP): (n, n, n / 2) returns 0 for 19..333 and 0x800001fe for -1..18 and 334",
+            "PPSSPP scePower.cpp (c9e2afb6): the ranges, and one function behind 0x737486f2, 0xebd177d6 and 0x469989ad",
+        ],
+        "limitation": "the PLL range is recorded for (n, n, n / 2) only; the independent CPU and bus limits are PPSSPP's and not measured; an accepted request is retained verbatim, while the recording shows the PSP stepping it (19 reads back as PLL 190, CPU 18, bus 95), and PPSSPP's delay on a PLL change is not modelled (#341)",
+    },
     "h_PowerSetBusClockFrequency": {
         "status": "partial",
         "evidence": [
@@ -640,6 +649,14 @@ HANDLER_METADATA = {
             "hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)",
         ],
         "limitation": "moves the modeled drive to the measured deactivated state 0x12 and notifies the callback with that state, as PPSSPP does; the callback argument, the return value (0) and argument checks are not hardware measured",
+    },
+    "h_UmdCancelWaitDriveStat": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_umd_cancel_wait_drive_stat",
+            "PPSSPP sceUmd.cpp sceUmdCancelWaitDriveStat (c9e2afb6): every drive waiter resumes with SCE_KERNEL_ERROR_WAIT_CANCEL and the call returns 0",
+        ],
+        "limitation": "the results follow PPSSPP and are host-selftested, not hardware measured; a stronger waiter runs at once, as after sceKernelCancelSema, which PPSSPP does not do and no measurement settles (#341)",
     },
     "h_UmdUnRegisterUMDCallBack": {
         "status": "partial",
