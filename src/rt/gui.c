@@ -34,12 +34,12 @@
 #include "ace.h"             /* Ace Mode: crisp keyboard; refused by the acceptance checkpoint */
 #ifdef SR_SDL3VK
 #include "gpu_sdl3vk/ge_gpu.h"
+#include "gpu_sdl3vk/ace_smooth.h" /* Ace Mode's in-between frames */
 #endif
 #if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
 #include "nk_ui_theme.h"         /* the pause overlay's scrim token */
 #include "overlay/overlay_host.h" /* the pause overlay's pages (C9c) */
 #include "gpu_sdl3vk/ace_ui.h"   /* Ace Mode's in-game UI: notice, readout, crisp keyboard */
-#include "gpu_sdl3vk/ace_smooth.h" /* Ace Mode's in-between frames */
 #include "nk_platform.h"         /* the system's Reduce motion, for the Ace UI */
 #include "ge_shared.h"           /* the developer VRAM viewer's decoders (#314) */
 #include <SDL3/SDL_events.h>
@@ -70,19 +70,33 @@ enum {
     PRESENT_CAP_SCANOUT = -2
 };
 
-/* gui-present-selftest compiles this file alone and exercises only the host present
- * pacing below. The presenters need guest memory, the scheduler, perf telemetry and
- * the SDL3/Vulkan backend, so they stay out of that binary instead of being stubbed:
- * a pacing regression must not depend on a stubbed runtime. */
-#ifndef SR_GUI_PRESENT_SELFTEST
+/* gui-present-selftest compiles this file alone. It exercises the host present pacing below
+ * and, with the SDL3 presenter, the input and quit hand-off after Ace Mode's held present
+ * (gui_ace_vblank): the events that present reads must reach the game's input state before
+ * its controller sample, and a closed window must request quit. That hand-off and the input
+ * state it fills (SR_GUI_INPUT_PATH) run against the sdl3vk and runtime stubs in the selftest
+ * block at the end of this file; each stub the test does not expect to be called fails it.
+ * The presenters themselves need guest memory, the scheduler, perf telemetry and the Vulkan
+ * backend, so they stay out of that binary: a pacing regression must not depend on a stubbed
+ * presenter. */
+#if !defined(SR_GUI_PRESENT_SELFTEST) || defined(SR_SDL3VK)
+#define SR_GUI_INPUT_PATH 1
+#endif
+#ifdef SR_GUI_INPUT_PATH
 static int      s_on = 0;
 #ifdef SR_SDL3VK
 static int      s_sdl3 = 0;            /* SDL3+Vulkan presenter active (src/rt/gpu_sdl3vk) */
+static AceBetween *s_ace_smooth;       /* Ace Mode's in-between frames, when smooth motion is on */
 #endif
+static int      s_offscreen = 0;        /* explicit host-memory presenter for headless bring-up */
+static uint32_t s_buttons = 0;
+static uint8_t  s_lx = 128, s_ly = 128;   /* live left-stick (0..255, 128=centre), latched each present */
+static int      s_pad_present = 0;         /* a controller is currently connected */
+#endif /* SR_GUI_INPUT_PATH */
+#ifndef SR_GUI_PRESENT_SELFTEST
 #if defined(SR_SDL3VK) || defined(_WIN32)
 static bool     s_foreground_request_issued;
 #endif
-static int      s_offscreen = 0;        /* explicit host-memory presenter for headless bring-up */
 static uint64_t s_offscreen_frames;
 static int      s_headless_accept_parsed;
 static int      s_headless_accept_requested;
@@ -97,9 +111,6 @@ static HWND     s_hwnd;
 static BITMAPINFO s_bmi;
 #endif
 static uint32_t *s_px;                 /* PSP_W*PSP_H BGRA for every presenter, including offscreen */
-static uint32_t s_buttons = 0;
-static uint8_t  s_lx = 128, s_ly = 128;   /* live left-stick (0..255, 128=centre), latched each present */
-static int      s_pad_present = 0;         /* a controller is currently connected */
 static uint64_t s_last_ns;             /* fallback frame-pacing deadline */
 /* The framebuffer the guest last had displayed: a pause freezes its current contents. */
 static struct { uint32_t addr; int fmt; uint32_t stride; int valid; } s_shown_fb;
@@ -107,7 +118,7 @@ static struct { uint32_t addr; int fmt; uint32_t stride; int valid; } s_shown_fb
 static uint64_t s_present_next_ns;      /* host output cap; never delays guest execution */
 static int      s_present_cap = PRESENT_CAP_ENV_UNRESOLVED;
 
-#ifndef SR_GUI_PRESENT_SELFTEST
+#ifdef SR_GUI_INPUT_PATH
 /* Keep boot milestones observable to the parent player without depending on
  * whether the platform process backend inherits stderr. The file is opt-in and
  * is otherwise not opened by the runtime. */
@@ -139,7 +150,9 @@ static void sr_gui_boot_event(const char *format, ...) {
     }
     fclose(file);
 }
+#endif /* SR_GUI_INPUT_PATH */
 
+#ifndef SR_GUI_PRESENT_SELFTEST
 static void gui_headless_acceptance_parse(void) {
     if (s_headless_accept_parsed) return;
     s_headless_accept_parsed = 1;
@@ -244,7 +257,6 @@ static int present_slot_due(void) {
     return present_slot_due_at(SDL_GetTicksNS());
 }
 
-#ifndef SR_GUI_PRESENT_SELFTEST
 #ifdef SR_SDL3VK
 /* The window's keys and typed text go to the in-window keyboard while it is open. The text
  * input is claimed only then, so Escape opens the pause the rest of the time. */
@@ -287,6 +299,7 @@ static void sync_sdl_input(void) {
 }
 #endif
 
+#ifndef SR_GUI_PRESENT_SELFTEST
 #if defined(SR_SDL3VK) || defined(_WIN32)
 static bool sr_gui_is_headless_presenter(void) {
     const char *headless = getenv("SR_HEADLESS");
@@ -475,7 +488,6 @@ static void gui_ace_ui_init(void) {
  * Made once at start in an Ace run that asks for it, and only then is the show pass registered,
  * so any other present records what it did before. Without compute the feature is off for the
  * run, said once. */
-static AceBetween *s_ace_smooth;
 static AcePresentKind s_ace_present_kind;
 
 static void *gui_ace_show_pass(void *cmd, void *src, int *w, int *h) {
@@ -747,6 +759,8 @@ int gui_interactive(void) {
 #endif
     return 1;
 }
+#endif /* !SR_GUI_PRESENT_SELFTEST */
+#ifdef SR_GUI_INPUT_PATH
 uint32_t gui_buttons(void) { return s_buttons; }
 void gui_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly = s_ly; }
 int gui_pad_present(void) { return s_pad_present; }
@@ -758,6 +772,8 @@ void gui_consume_button_pulses(void) {
     }
 #endif
 }
+#endif /* SR_GUI_INPUT_PATH */
+#ifndef SR_GUI_PRESENT_SELFTEST
 
 /* Gamepad presses since the last call (osk_overlay.h). The keyboard takes them every VBLANK,
  * so the list never builds up while it is closed. Returns 0 when no SDL3 presenter is up: the
@@ -851,8 +867,9 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
  * driver, which writes the SR_PERF summary, releases the presenter (gui_shutdown) and returns
  * from main, so every stdio stream is flushed and every atexit handler runs. The guest threads
  * are coroutines left suspended at a scheduler boundary; no atexit handler resumes one. */
+#endif /* !SR_GUI_PRESENT_SELFTEST */
+#ifdef SR_GUI_INPUT_PATH
 static int s_quit_requested;
-static int s_quit_stop_reported;
 
 #if defined(SR_SDL3VK) || defined(_WIN32)   /* the presenters that have a window to close */
 static void gui_quit_request(void) {
@@ -867,6 +884,10 @@ static void gui_quit_request(void) {
 int gui_quit_requested(void) {
     return s_quit_requested;
 }
+#endif /* SR_GUI_INPUT_PATH */
+
+#ifndef SR_GUI_PRESENT_SELFTEST
+static int s_quit_stop_reported;
 
 int gui_stop_requested(void) {
     if (gui_headless_acceptance_complete()) return 1;
@@ -929,19 +950,31 @@ static int display_cpu_source_current(uint32_t fbaddr, int fmt, uint32_t stride)
     return sr_guest_span_readable_current(fbaddr, total_bytes);
 }
 
-/* The VBLANK after an in-between: its held frame goes to the screen. Nothing of the guest runs:
- * no input is latched and no capture can be armed here, and the VBLANK's timing is the host's
- * present cost, like any other. Off, ace_smooth_vblank says no. */
+#endif /* !SR_GUI_PRESENT_SELFTEST */
+
+#ifdef SR_GUI_INPUT_PATH
+/* The VBLANK after an in-between: its held frame goes to the screen. Nothing of the guest runs
+ * and no capture can be armed here, and the VBLANK's timing is the host's present cost, like any
+ * other. The present reads the window's events, so, as after every present, they go to the
+ * game's input state before its controller sample later in this VBLANK reads it (a tap seen
+ * only by the presenter would be cleared unread), and a closed window requests quit. Off,
+ * ace_smooth_vblank says no. */
 void gui_ace_vblank(uint32_t vcount) {
-#if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
+#ifdef SR_SDL3VK
     if (!ace_smooth_vblank(vcount)) return;
     if (!s_ace_smooth || s_quit_requested || !s_on || !s_sdl3 || s_offscreen ||
         sr_capture_is_armed()) return;
-    if (sdl3vk_present_held() == 1) ace_smooth_note_present(ACE_PRESENT_HELD, SDL_GetTicksNS());
+    int result = sdl3vk_present_held();
+    sync_sdl_input();
+    if (result == 0) gui_quit_request();
+    if (result == 1) ace_smooth_note_present(ACE_PRESENT_HELD, SDL_GetTicksNS());
 #else
     (void)vcount;
 #endif
 }
+#endif /* SR_GUI_INPUT_PATH */
+
+#ifndef SR_GUI_PRESENT_SELFTEST
 
 int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!s_on) return 0;
@@ -1792,6 +1825,119 @@ static void selftest_explicit_cap_halves_scanout_flips(void) {
     assert(presented >= 299u && presented <= 301u);
 }
 
+#ifdef SR_SDL3VK
+/* ---- the input and quit hand-off after Ace Mode's held present (gui_ace_vblank) ----------
+ * The sdl3vk and runtime calls that path makes, stubbed. Each stub either does what the test
+ * expects of it or fails the test: a call nobody expected is a finding, never ignored. The
+ * presenter's input model is sdl3vk's: a button pressed and released between two reads is kept
+ * as a pulse until the game's sample consumes it, and sdl3vk_buttons reports held | pulses. */
+static void selftest_unexpected(const char *name) {
+    fprintf(stderr, "gui-present-selftest: unexpected call to %s\n", name);
+    fflush(stderr);
+    abort();
+}
+
+int sr_perf_enabled = 0;
+int sr_sched_on = 1;
+uint64_t sr_perf_now_ns_impl(void) { selftest_unexpected("sr_perf_now_ns_impl"); return 0; }
+
+static uint32_t s_stub_held;          /* buttons down now */
+static uint32_t s_stub_pulse;         /* pressed and released since the last consume */
+static uint32_t s_stub_tap;           /* what the next held present's event read records */
+static int      s_stub_held_result = -2; /* -2: sdl3vk_present_held is not expected */
+static unsigned s_stub_held_calls;
+static unsigned s_stub_stop_due_calls;
+
+uint32_t sdl3vk_buttons(void) { return s_stub_held | s_stub_pulse; }
+void sdl3vk_consume_button_pulses(void) { s_stub_pulse = 0; }
+void sdl3vk_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = 128; if (ly) *ly = 128; }
+int sdl3vk_pad_present(void) { return 1; }
+void sdl3vk_set_text_claim(int on) { if (on) selftest_unexpected("sdl3vk_set_text_claim(1)"); }
+int sdl3vk_take_key_events(Sdl3VkKeyEvent *out, int max) { (void)out; (void)max; return 0; }
+int sdl3vk_take_pause_request(void) { return SDL3VK_PAUSE_REQUEST_NONE; }
+int sr_osk_overlay_active(void) { return 0; }
+void sr_osk_overlay_key(OskKey key) { (void)key; selftest_unexpected("sr_osk_overlay_key"); }
+void sr_osk_overlay_type(uint32_t codepoint) { (void)codepoint; selftest_unexpected("sr_osk_overlay_type"); }
+SrPauseVerdict sched_pause_request(SrPauseSource source) {
+    (void)source;
+    selftest_unexpected("sched_pause_request");
+    return (SrPauseVerdict)0;
+}
+int sr_exit_request_stop_due(void) { s_stub_stop_due_calls++; return 0; }
+int sr_capture_is_armed(void) { return 0; }
+
+/* The held present reads the window's events, as every present does: the tap lands there. */
+int sdl3vk_present_held(void) {
+    if (s_stub_held_result == -2) selftest_unexpected("sdl3vk_present_held");
+    s_stub_held_calls++;
+    s_stub_pulse |= s_stub_tap;
+    s_stub_tap = 0;
+    return s_stub_held_result;
+}
+
+/* hle_route.c's VBLANK sample: read the buttons, then consume the pulses it has passed on. */
+static uint32_t selftest_game_sample(void) {
+    uint32_t buttons = gui_buttons();
+    gui_consume_button_pulses();
+    return buttons;
+}
+
+/* One smooth-motion run whose next VBLANK presents the held frame. */
+static void selftest_hold_frame(int result) {
+    s_on = 1;
+    s_sdl3 = 1;
+    s_offscreen = 0;
+    s_ace_smooth = (AceBetween *)&s_stub_held;   /* any non-NULL handle: never dereferenced */
+    g_ace_on = 1;
+    ace_smooth_shown_between(1000u);
+    s_stub_held_result = result;
+}
+
+/* A press and release that the held present's event read records reach the game's sample in
+ * the same VBLANK; the sample then consumes it, as on any other VBLANK. */
+static void selftest_held_present_passes_a_tap_to_the_game(void) {
+    const uint32_t cross = 0x4000u;
+    s_quit_requested = 0;
+    s_buttons = 0;
+    s_stub_held = 0;
+    s_stub_pulse = 0;
+    selftest_hold_frame(1);
+    AcePaceStats before, after;
+    ace_pace_stats(&before);
+    s_stub_tap = cross;
+    unsigned calls = s_stub_held_calls;
+    gui_ace_vblank(1u);
+    assert(s_stub_held_calls == calls + 1u);
+    assert((selftest_game_sample() & cross) != 0u);
+    assert((selftest_game_sample() & cross) == 0u);
+    ace_pace_stats(&after);
+    assert(after.kind[ACE_PRESENT_HELD] == before.kind[ACE_PRESENT_HELD] + 1u);
+    assert(!gui_quit_requested());
+    s_stub_held_result = -2;
+}
+
+/* A held present that finds the window closed requests quit, as gui_present does, and is not
+ * counted as a present. */
+static void selftest_held_present_window_closed_requests_quit(void) {
+    s_quit_requested = 0;
+    s_stub_stop_due_calls = 0;
+    selftest_hold_frame(0);
+    AcePaceStats before, after;
+    ace_pace_stats(&before);
+    gui_ace_vblank(1u);
+    assert(gui_quit_requested());
+    assert(s_stub_stop_due_calls == 1u);
+    ace_pace_stats(&after);
+    assert(after.kind[ACE_PRESENT_HELD] == before.kind[ACE_PRESENT_HELD]);
+    /* After a quit no held frame is presented. */
+    s_stub_held_result = -2;
+    selftest_hold_frame(-2);
+    gui_ace_vblank(1u);
+    s_quit_requested = 0;
+    g_ace_on = 0;
+}
+#endif /* SR_SDL3VK */
+
 /* The unset SR_FPS_CAP default is the PSP scanout period, not a slower title-specific
  * rate: a guest may submit a framebuffer several times per scanout and every submission
  * past the next output slot is dropped rather than delaying the guest. */
@@ -1818,6 +1964,10 @@ int main(void) {
     selftest_two_flips_per_scanout_present_once_per_scanout();
     selftest_burst_presents_once();
     selftest_explicit_cap_halves_scanout_flips();
+#ifdef SR_SDL3VK
+    selftest_held_present_passes_a_tap_to_the_game();
+    selftest_held_present_window_closed_requests_quit();
+#endif
     return 0;
 }
 #endif
