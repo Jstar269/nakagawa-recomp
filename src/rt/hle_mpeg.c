@@ -1085,6 +1085,8 @@ uint32_t mpeg_malloc_avc_es_buf(uint32_t mpegAddr);
 uint32_t mpeg_free_avc_es_buf(uint32_t mpegAddr, uint32_t esBuf);
 uint32_t mpeg_init_au(uint32_t mpegAddr, uint32_t esBuffer, uint32_t auAddr);
 uint32_t mpeg_query_atrac_es_size(uint32_t mpegAddr, uint32_t esSizeAddr, uint32_t outSizeAddr);
+uint32_t mpeg_query_userdata_es_size(uint32_t mpegAddr, uint32_t esSizeAddr, uint32_t outSizeAddr);
+uint32_t mpeg_get_userdata_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint32_t resultAddr);
 #ifndef SR_HLE_THREAD_SELFTEST
 uint32_t mpeg_flush_all_stream(uint32_t mpegAddr);
 uint32_t mpeg_avc_decode_flush(uint32_t mpegAddr);
@@ -1124,6 +1126,8 @@ static uint32_t h_MpegAvcCopyYCbCr(CpuState *s) { return mpeg_avc_copy_ycbcr(A0,
 static uint32_t h_MpegAvcCsc(CpuState *s) { return mpeg_avc_csc(A0, A1, A2, A3, stack_arg(s, 0)); }
 static uint32_t h_MpegQueryPcmEsSize(CpuState *s) { return mpeg_query_pcm_es_size(A0, A1, A2); }
 static uint32_t h_MpegGetPcmAu(CpuState *s) { return mpeg_get_pcm_au(A0, A1, A2, A3); }
+static uint32_t h_MpegQueryUserdataEsSize(CpuState *s) { return mpeg_query_userdata_es_size(A0, A1, A2); }
+static uint32_t h_MpegGetUserdataAu(CpuState *s) { return mpeg_get_userdata_au(A0, A1, A2, A3); }
 static uint32_t h_MpegChangeGetAuMode(CpuState *s) { return mpeg_change_get_au_mode(A0, A1, A2); }
 static uint32_t h_MpegRingbufferConstruct(CpuState *s) { return mpeg_ringbuffer_construct(A0, A1, A2, A3, stack_arg(s, 0), stack_arg(s, 1)); }
 static uint32_t h_MpegRingbufferAvailable(CpuState *s) { return mpeg_ringbuffer_available_size(A0); }
@@ -1240,6 +1244,10 @@ void hle_register_mpeg_avc_decode_handler(void) {
     sr_hle_register(0x0f6c18d7, "sceMpegAvcDecodeDetail", h_MpegAvcDecodeDetail);
 }
 
+void hle_register_mpeg_userdata_handlers(void) {
+    sr_hle_register(0xc45c99cc, "sceMpegQueryUserdataEsSize", h_MpegQueryUserdataEsSize);
+    sr_hle_register(0x01977054, "sceMpegGetUserdataAu", h_MpegGetUserdataAu);
+}
 void hle_register_mpeg_ycbcr_handlers(void) {
     sr_hle_register(0x211a057c, "sceMpegAvcQueryYCbCrSize", h_MpegAvcQueryYCbCrSize);
     sr_hle_register(0x67179b1b, "sceMpegAvcInitYCbCr", h_MpegAvcInitYCbCr);
@@ -1302,6 +1310,7 @@ void hle_register_init_mpeg(void) {
     sr_hle_register(0xfe246728, "sceMpegGetAvcAu", h_MpegGetAvcAu);
     sr_hle_register(0xe1ce83a7, "sceMpegGetAtracAu", h_MpegGetAtracAu);
     hle_register_mpeg_avc_decode_handler();
+    hle_register_mpeg_userdata_handlers();
     sr_hle_register(0x800c44df, "sceMpegAtracDecode", h_MpegAtracDecode);
     sr_hle_register(0x740fccd1, "sceMpegAvcDecodeStop", h_MpegAvcDecodeStop);
     sr_hle_register(0xa780cf7e, "sceMpegMallocAvcEsBuf", h_MpegMallocAvcEsBuf);

@@ -2353,26 +2353,24 @@ class TestSanitizedBringup(unittest.TestCase):
         user_manifest: dict | None = None,
         native_stager=None,
         package_build=None,
+        data_root: Path | None = None,
     ):
         work_dir = work_root / "work"
         report_path = work_root / "bringup.json"
+        user_data = data_root if data_root is not None else work_dir / "user-data"
         if user_manifest is not None:
-            manifest_dir = work_dir / "user-data" / "manifests"
+            manifest_dir = user_data / "manifests"
             manifest_dir.mkdir(parents=True, exist_ok=True)
             (manifest_dir / "user-title.json").write_text(
                 json.dumps(user_manifest), encoding="utf-8"
             )
         if user_decrypted_modules:
-            decrypted_dir = (
-                work_dir / "user-data" / "titles" / "ULUS99998" / "decrypted"
-            )
+            decrypted_dir = user_data / "titles" / "ULUS99998" / "decrypted"
             decrypted_dir.mkdir(parents=True, exist_ok=True)
             for name, module_bytes in user_decrypted_modules.items():
                 (decrypted_dir / name).write_bytes(module_bytes)
         if user_decrypted_eboot is not None:
-            decrypted_dir = (
-                work_dir / "user-data" / "titles" / "ULUS99998" / "decrypted"
-            )
+            decrypted_dir = user_data / "titles" / "ULUS99998" / "decrypted"
             decrypted_dir.mkdir(parents=True, exist_ok=True)
             (decrypted_dir / "EBOOT.elf").write_bytes(user_decrypted_eboot)
         args = argparse.Namespace(
@@ -2381,6 +2379,8 @@ class TestSanitizedBringup(unittest.TestCase):
             report=str(report_path),
             launch_timeout=1,
         )
+        if data_root is not None:
+            args.user_data_root = str(data_root)
 
         class FakeProcess:
             returncode = 0
@@ -2606,6 +2606,43 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertIn("does not provide decrypted executables", summary)
         self.assertIn("unmodified copy of your disc", summary)
         nk_cli.validate_bringup_report(report)
+
+    def test_encrypted_disc_bringup_advice_works_with_the_players_data_folder(self):
+        """The advice for an encrypted program is true: --user-data-root finds the decrypted file.
+
+        Failing before: the advice said to open the disc in the player and run this again,
+        but a plain re-run builds into its own work-folder data folder, so it stopped at
+        inspect the same way. The player's decrypted program is found only through the
+        data folder it wrote to, which the advice now names."""
+        work_root = self.root / "encrypted-disc-advice-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "encrypted.iso"
+        create_test_iso_with_executables(
+            iso_path, build_psp_container(), disc_id="ULUS99998",
+            title="Synthetic Encrypted Disc",
+        )
+
+        status, report = self._run_module_fixture(iso_path, work_root)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED")
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("--user-data-root", summary)
+        # A plain re-run, as the old advice said, stops the same way.
+        again_root = self.root / "encrypted-disc-advice-again"
+        again_root.mkdir(parents=True)
+        status, report = self._run_module_fixture(iso_path, again_root)
+        self.assertEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED")
+        # With the player's data folder, which holds the program the player decrypted.
+        player_data = self.root / "players-data-folder"
+        with_flag_root = self.root / "encrypted-disc-advice-flag"
+        with_flag_root.mkdir(parents=True)
+        status, report = self._run_module_fixture(
+            iso_path, with_flag_root, data_root=player_data,
+            user_decrypted_eboot=build_synthetic_original_elf(),
+        )
+        self.assertEqual(report["stages"]["inspect"]["status"], "PASS", report)
+        self.assertNotEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED", report)
 
     def test_cfw_loader_uses_user_original_and_excludes_patch_module(self):
         work_root = self.root / "cfw-loader-original-case"

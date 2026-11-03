@@ -218,6 +218,8 @@ class TestMpegYcbcrContracts(unittest.TestCase):
             "h_MpegAvcCsc": "partial",
             "h_MpegQueryPcmEsSize": "partial",
             "h_MpegGetPcmAu": "controlled_unsupported",
+            "h_MpegQueryUserdataEsSize": "partial",
+            "h_MpegGetUserdataAu": "controlled_unsupported",
             "h_MpegChangeGetAuMode": "partial",
         }
         self.assertEqual({k: meta.HANDLER_STATUS.get(k) for k in expected}, expected)

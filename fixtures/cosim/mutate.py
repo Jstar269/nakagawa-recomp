@@ -162,6 +162,16 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
     ),
     Mutant(
+        "entry-sp-not-owed-at-a-linked-call",
+        "an interpreted body called by a linked call hands its live frame to a native "
+        "piece and owes its caller nothing (#1935)",
+        [(
+            "            const int owes = boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&\n",
+            "            const int owes = 0 && boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&\n",
+            1,
+        )],
+    ),
+    Mutant(
         "wrong-branch-target",
         "incorrect branch target",
         [(
@@ -378,11 +388,11 @@ MUTANTS: tuple[Mutant, ...] = (
                 "            out.append(f\"      {emit_code_pointer_check('_t', addr)}\")\n"
                 "            out.append(f\"      sr_begin(s, {G(addr)}, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
-                "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
+                "            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,\n"
                 "                                        indent=\"      \"))",
                 "            out.append(f\"    sr_begin(s, {G(addr)}, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
-                "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
+                "            out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu, resumable=resumable,\n"
                 "                                        indent=\"      \"))\n"
                 "            out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
                 "            out.append(f\"      {emit_code_pointer_check('_t', addr)}\")",
