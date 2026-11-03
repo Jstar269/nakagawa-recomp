@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **422** (declared in `recomp.h`: 357)
-- reach class: emitter-reached 75, production-runtime-only 313, selftest-only 18, address-only 7, none 9
-- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 394
+- helpers: **423** (declared in `recomp.h`: 358)
+- reach class: emitter-reached 76, production-runtime-only 313, selftest-only 18, address-only 7, none 9
+- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 395
 
 ## Helpers
 
@@ -346,6 +346,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_lookup` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_lwl` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_lwr` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `sr_main_func_exports_register` | `rt/hle.c` | yes | emitter-reached (direct) | `rt/hle.c`: upstream_derived |
 | `sr_main_module_register` | `rt/hle_kernel_module.c`, `rt/snapshot_runner.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested |
 | `sr_main_var_exports_register` | `rt/hle_kernel_module.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_main_var_imports_register` | `rt/hle_kernel_module.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived |
