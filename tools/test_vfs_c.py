@@ -321,6 +321,27 @@ int main(int argc, char **argv) {
             }
         }
     }
+    /* A module is declared under one spelling, whichever one the title loads it by. */
+    {
+        static const char *const spellings[] = {
+            "disc0:/sce_lbn25_size1000", "disc0:/sce_lbn025_size0x1000",
+            "umd0:/sce_lbn0x25_size1000", "disc0:/sce_lbn0X25_size0x1000",
+        };
+        char extent[64];
+        for (size_t i = 0; i < sizeof(spellings) / sizeof(spellings[0]); i++) {
+            int named = iso_sector_extent_path(spellings[i], extent, sizeof(extent));
+            if (i == 3 ? named : !named || strcmp(extent, "disc0:/sce_lbn0x25_size0x1000") != 0) {
+                fprintf(stderr, "FAIL: sector-extent spelling %s\n", spellings[i]);
+                return 1;
+            }
+        }
+        if (iso_sector_extent_path("ms0:/sce_lbn0x25_size0x1000", extent, sizeof(extent)) ||
+            iso_sector_extent_path("disc0:/PSP_GAME/SYSDIR/EBOOT.BIN", extent, sizeof(extent)) ||
+            iso_sector_extent_path("disc0:/sce_lbn0x25_size0x1000", extent, 8)) {
+            fprintf(stderr, "FAIL: only a disc sector extent that fits has a spelling\n");
+            return 1;
+        }
+    }
     if (iso_lookup("disc0:/sce_lbn0x25", &lba, &sz) == 0 ||
         iso_lookup("disc0:/sce_lbn0x_size0x1000", &lba, &sz) == 0 ||
         iso_lookup("disc0:/sce_lbn0x25_size0x0", &lba, &sz) == 0 ||

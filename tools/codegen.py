@@ -5220,11 +5220,12 @@ def main(argv):
     }]
 
     # Variable imports of modules translated at a fixed base, linked when each loads, and the
-    # variables the executable exports, registered at boot (src/rt/hle.c, #308).
+    # variables and functions the executable exports, registered at boot (src/rt/hle.c, #308).
     fixed_var_imports = []
     try:
-        from imports import variable_exports
+        from imports import function_exports, variable_exports
         main_var_exports = variable_exports(elf)
+        main_func_exports = function_exports(elf, impmap)
     except ImportTableError as e:
         sys.stderr.write(f"codegen: {format_boundary(e)}\n")
         return 1
@@ -5534,12 +5535,20 @@ def main(argv):
         main_out.extend(f"    {{ {c_library_name(e.library)}, 0x{e.nid:08x}u, 0x{e.address:08x}u }},"
                         for e in main_var_exports)
         main_out.append("};")
+    if main_func_exports:
+        main_out.append("static const SrMainFuncExport sr_main_func_exports[] = {")
+        main_out.extend(f"    {{ 0x{nid:08x}u, 0x{address:08x}u }},"
+                        for nid, address in main_func_exports)
+        main_out.append("};")
     main_out.append("\nvoid sr_register_all(void) {")
     if module_record is not None:
         main_out.append("    sr_main_module_register(&sr_main_module_record);")
     if main_var_exports:
         main_out.append(f"    sr_main_var_exports_register(sr_main_var_exports, "
                         f"{len(main_var_exports)}u);")
+    if main_func_exports:
+        main_out.append(f"    sr_main_func_exports_register(sr_main_func_exports, "
+                        f"{len(main_func_exports)}u);")
     if main_var_imports:
         main_out.append(f"    sr_main_var_imports_register(sr_main_var_imports, "
                         f"{len(main_var_imports)}u);")
