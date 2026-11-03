@@ -3923,7 +3923,7 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		tests/native/pcm_wav_dump.c tests/native/test_pcm_wav_dump.c -o $(BUILD_ROOT)/test_pcm_wav_dump$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pcm_wav_dump$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/archive_vfs.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters 100
 	$(call PSMF_PRODUCER_SELFTEST_CMD,100)
@@ -3955,7 +3955,7 @@ endif
 fuzz-parsers:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
+		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c src/rt/archive_vfs.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)
 	$(MAKE) --no-print-directory psmf-producer-selftest \
