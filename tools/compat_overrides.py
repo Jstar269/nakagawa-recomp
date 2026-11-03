@@ -70,8 +70,10 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from makefile_text import read_makefile  # noqa: E402
+# A sibling import, like codegen.py's own: this module must not put tools/ at the
+# front of sys.path, or a scratch copy of an analysis module (the call-boundary
+# mutants) would be shadowed by the tracked one once codegen imports this file.
+from makefile_text import read_makefile
 
 ROOT = Path(__file__).resolve().parent.parent
 
