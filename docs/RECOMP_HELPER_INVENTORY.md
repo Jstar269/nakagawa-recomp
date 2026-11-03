@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **434** (declared in `recomp.h`: 369)
-- reach class: emitter-reached 76, production-runtime-only 322, selftest-only 18, address-only 7, none 11
-- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 399
+- helpers: **437** (declared in `recomp.h`: 370)
+- reach class: emitter-reached 76, production-runtime-only 325, selftest-only 18, address-only 7, none 11
+- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 402
 
 ## Helpers
 
@@ -47,9 +47,12 @@ does not make this file stale. `--details` prints them to stdout.
 | `SDL_GetTicksNS` | none | no | production-runtime-only | declared-only (no definition under `src/`) |
 | `dispatch` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_after_aot` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
-| `dispatch_call` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `dispatch_call` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_call_aot` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `dispatch_call_checked` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `dispatch_call_continue` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_call_try` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `dispatch_call_try_at` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_from_host` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_host_stack_measure` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `dispatch_host_stack_preflight` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |

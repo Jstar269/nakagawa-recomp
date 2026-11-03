@@ -503,9 +503,9 @@ class GeneratedLleFatalFlowTests(unittest.TestCase):
         self.assertEqual(source.count("sr_cpu_raise_exception(s, 8u"), 1)
         self.assertEqual(source.count("sr_cpu_raise_exception(s, 9u"), 1)
         self.assertIn(
-            "dispatch_call(s, 0x08810800u, 0x08810828u);", source)
+            "if (dispatch_call_checked(s, 0x08810800u, 0x08810828u)) return;", source)
         self.assertIn(
-            "dispatch_call(s, 0x08810840u, 0x08810868u);", source)
+            "if (dispatch_call_checked(s, 0x08810840u, 0x08810868u)) return;", source)
         self.assertEqual(source.count("s->r[8] = (0u + 0x00000001u);"), 2)
 
     def test_make_compiles_the_generated_fixture_into_the_runtime_selftest(self):

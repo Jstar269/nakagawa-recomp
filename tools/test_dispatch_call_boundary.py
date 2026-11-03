@@ -182,6 +182,9 @@ def _beq(rs: int, rt: int, here: int, target: int) -> int:
 def _j(target: int) -> int: return (0x02 << 26) | ((target >> 2) & 0x03FFFFFF)
 def _jal(target: int) -> int: return (0x03 << 26) | ((target >> 2) & 0x03FFFFFF)
 def _jr(rs: int) -> int: return (rs << 21) | 0x08
+def _mfc0(rt: int, rd: int) -> int: return 0x40000000 | (rt << 16) | (rd << 11)
+def _mtc0(rt: int, rd: int) -> int: return 0x40800000 | (rt << 16) | (rd << 11)
+_BREAK, _ERET, _K0, _CP0_EPC = 0x0000000D, 0x42000018, 26, 14
 def _addu(rd: int, rs: int, rt: int) -> int: return (rs << 21) | (rt << 16) | (rd << 11) | 0x21
 
 
@@ -480,7 +483,9 @@ _A1 = 5
 def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
                              rebinds_fp: bool = False,
                              tail_called_from_alloca: bool = False,
-                             tail_called_plainly: bool = False) -> tuple[int, ...]:
+                             tail_called_plainly: bool = False,
+                             through_a_piece: bool = False,
+                             eret_into: str | None = None) -> tuple[int, ...]:
     """setjmp in F, longjmp from G called by F: F's setjmp returns again, v0 = 0x107.
 
     F saves $sp and $ra in a two-word jmp_buf on its frame, then calls G, which calls
@@ -493,7 +498,11 @@ def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
     the jmp_buf and loads through it: the same base and offset again, in other memory. With
     ``tail_called_from_alloca``, G calls H, which frees an alloca, releases its frame and
     tail-calls longjmp. With ``tail_called_plainly``, H has a frame and no alloca, and
-    tail-calls longjmp the same way.
+    tail-calls longjmp the same way. With ``through_a_piece``, H lowers $sp and hands its
+    live frame to P with `j`; P, an entry of its own, tail-calls longjmp. With ``eret_into``,
+    H lowers $sp and executes `break`; the handler at _ERET_VECTOR(...) steps EPC past it and
+    erets into M, the rest of H and an entry of its own. M releases H's frame and returns
+    ("returns": G returns normally, v0 = 0xee0) or tail-calls longjmp ("longjmp").
     """
     t, g, setjmp, longjmp, done = 0x1020, 0x1044, 0x1060, 0x1070, 0x1034
     saves = ([_addu(_T8, _A0, 0), _addiu(_A0, _A0, 8), _sw(_SP, 0, _A0), _addu(_A0, _T8, 0)]
@@ -512,7 +521,20 @@ def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
     ] if tail_called_from_alloca else [
         _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # H
         _lw(_RA, 0x1C, _SP), _j(longjmp), _addiu(_SP, _SP, 0x20),
-    ] if tail_called_plainly else []
+    ] if tail_called_plainly else [
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # H
+        _j(longjmp + 4 * (len(saves) + 8)), _NOP,            # j P
+        _j(longjmp), _NOP,                                   # P
+        _jal(longjmp + 4 * (len(saves) + 8)), _NOP,          # never run: makes P an entry
+    ] if through_a_piece else [
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # H
+        _BREAK,
+        *({"returns": [_lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20)],   # M
+           "longjmp": [_j(longjmp), _NOP, _NOP]}[eret_into]),
+        _mfc0(_K0, _CP0_EPC), _addiu(_K0, _K0, 4),           # the vector
+        _mtc0(_K0, _CP0_EPC), _ERET,
+        _jal(h + 24), _NOP,                                  # never run: the vector is an entry
+    ] if eret_into else []
     words = _probe_program([
         _addiu(_SP, _SP, -0x40), _sw(_RA, 0x3C, _SP),        # 0x1010 F
         _jal(setjmp), _addiu(_A0, _SP, 0x10),                # 0x1018 setjmp(&buf)
@@ -522,7 +544,8 @@ def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
         _addiu(_V0, _V0, 0x100),                             # 0x1034 done
         _lw(_RA, 0x3C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x40),
         _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1044 G
-        _jal(h if tail_called_from_alloca or tail_called_plainly else longjmp),  # 0x104c
+        _jal(h if tail_called_from_alloca or tail_called_plainly or through_a_piece
+             or eret_into else longjmp),                     # 0x104c
         _addiu(_A1, 0, 7),
         _lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20),
         _sw(_SP, 0, _A0), _sw(_RA, 4, _A0),                  # 0x1060 setjmp
@@ -535,6 +558,11 @@ def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
     assert len(words) == (h + 4 * len(frees_alloca_then_tail_calls) - _PROBE_BASE) // 4, (
         "the fixture's labels moved")
     return words
+
+
+def _eret_vector(words: tuple[int, ...]) -> int:
+    """The exception vector of _longjmp_into_live_frame(eret_into=...): its handler."""
+    return _PROBE_BASE + 4 * (len(words) - 6)
 
 
 def _alloca_switch_chain(*, reach: str) -> tuple[int, ...]:
@@ -942,6 +970,9 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < sizeof image / sizeof image[0]; i++)
         MEM_W32(PROBE_BASE + 4u * (uint32_t)i, image[i]);
     sr_register_all();
+#ifdef PROBE_VECTOR
+    sr_cpu_lle_set_vectors(PROBE_VECTOR, PROBE_VECTOR, PROBE_VECTOR);
+#endif
     memset(&g_probe_state, 0, sizeof g_probe_state);
     g_probe_state.r[29] = PROBE_SP;
     g_probe_state.r[31] = SR_HOST_RETURN_PC;   /* a host entry's return address (#1375) */
@@ -1028,14 +1059,15 @@ def _mutated_copy(source: Path, work: Path, mutation: tuple[str, str] | None) ->
 
 def _build_depth_probe(
     words: tuple[int, ...], work: Path, *, codegen_args: tuple[str, ...] = (),
-    mutate: dict[str, tuple[str, str]] | None = None,
+    mutate: dict[str, tuple[str, str]] | None = None, vector: int | None = None,
 ) -> tuple[Path | None, str]:
     """Translate a source-owned fixture and link it into the depth-probe harness.
 
     ``mutate`` maps ``codegen.py``, ``analyze.py``, ``entry_frame_balance.py``,
     ``recomp.c``, ``recomp.h``, ``guest_interp.c`` or ``sr_coro.c`` to one exact
     replacement applied to a scratch copy, so a mutant is generated, compiled and run
-    through the same production path as the unmutated build.
+    through the same production path as the unmutated build. ``vector`` points every LLE
+    exception vector at that guest address.
     """
     assert CC is not None
     mutate = mutate or {}
@@ -1107,6 +1139,7 @@ def _build_depth_probe(
             CC, "-std=c11", "-O0", "-fno-strict-aliasing",
             "-Wall", "-Wextra", "-DSR_SDL3VK", "-D_CRT_SECURE_NO_WARNINGS",
             *(("-DSR_STACK_CENSUS_ENABLED",) if "--stack-census" in codegen_args else ()),
+            *((f"-DPROBE_VECTOR=0x{vector:08x}u",) if vector is not None else ()),
             "-I", str(work), "-I", str(ROOT / "src" / "rt"),
             str(harness), str(generated), str(work / "probe_0.c"),
             str(guest_interp), str(PERF),
@@ -1448,10 +1481,11 @@ class StackCensusPipelineTests(unittest.TestCase):
 class GeneratedCallDepthTests(unittest.TestCase):
     """Generated code on a production-size guest fiber, measured at each guest entry."""
 
-    def _probe(self, words, iterations, *, codegen_args=()):
+    def _probe(self, words, iterations, *, codegen_args=(), vector=None):
         with scratch_dir.TemporaryDirectory(prefix="depth_probe_") as tmp:
             work = Path(tmp)
-            exe, output = _build_depth_probe(words, work, codegen_args=codegen_args)
+            exe, output = _build_depth_probe(words, work, codegen_args=codegen_args,
+                                             vector=vector)
             self.assertIsNotNone(exe, output)
             generated = (work / "probe_0.c").read_text(encoding="utf-8")
             results = [_run_depth_probe(exe, n) for n in iterations]
@@ -1610,10 +1644,12 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v0"), 0x157, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
 
-    def _assert_mutant_fails(self, name, words, iterations, mutate, check, codegen_args=()):
+    def _assert_mutant_fails(self, name, words, iterations, mutate, check, codegen_args=(),
+                             vector=None):
         with scratch_dir.TemporaryDirectory(prefix="depth_mutant_") as tmp:
             work = Path(tmp)
-            exe, output = _build_depth_probe(words, work, mutate=mutate, codegen_args=codegen_args)
+            exe, output = _build_depth_probe(words, work, mutate=mutate, codegen_args=codegen_args,
+                                             vector=vector)
             self.assertIsNotNone(exe, f"{name}: MUTANT_BUILD_FAILED (not a semantic kill)\n{output}")
             results = [_run_depth_probe(exe, n) for n in iterations]
         self.assertTrue(check(results), f"{name}: MUTANT_SURVIVED {results}")
@@ -1819,6 +1855,62 @@ class GeneratedCallDepthTests(unittest.TestCase):
             or r[0][2].get("v1") != _PROBE_SP,
         )
 
+    def test_a_longjmp_through_an_interpreted_callees_piece_reaches_the_setjmp_frame(self):
+        # G calls H, which lowers $sp and hands its live frame to the native piece P, and P
+        # tail-calls longjmp. Natively that return lands in G's linked call to H and unwinds
+        # to F's live frame. Before (#1935): with H interpreted, G called it through a plain
+        # dispatch_call, nothing checked the piece's return, and the interpreter wrote H's
+        # entry $sp back and handed back as if H had returned: G returned, v0 = 0xee0.
+        words = _longjmp_into_live_frame(through_a_piece=True)
+        omit_h = ("--omit-aot=0x00001080",)
+        for codegen_args in ((), omit_h):
+            with self.subTest(interpreted=bool(codegen_args)):
+                generated, results = self._probe(words, (0,), codegen_args=codegen_args)
+                rc, output, fields = results[0]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x107, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+                self.assertGreater(fields.get("unwinds", 0), 0, output)
+        self.assertIn("if (dispatch_call_checked(s, 0x00001080u, 0x00001054u)) return;", generated)
+        # N1: a dispatch call site runs its continuation whatever the call did, as before.
+        self._assert_mutant_fails(
+            "N1-a-dispatch-call-site-ignores-its-end-check", words, (0,),
+            {"codegen.py": (
+                'return f"if (dispatch_call_checked(s, {target_expr}, {resume_expr})) return;"',
+                'return f"(void)dispatch_call_checked(s, {target_expr}, {resume_expr});"')},
+            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107,
+            codegen_args=omit_h,
+        )
+        # N2: the handoff writes H's entry $sp back over the $sp longjmp loaded.
+        self._assert_mutant_fails(
+            "N2-the-handoff-restores-after-a-return-elsewhere", words, (0,),
+            {"guest_interp.c": ("if (owes && !returned_elsewhere) s->r[29] = entry_sp;",
+                                "if (owes) s->r[29] = entry_sp;")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107
+            or r[0][2].get("v1") != _PROBE_SP,
+            codegen_args=omit_h,
+        )
+
+    def test_an_eret_into_the_rest_of_an_interpreted_callee_keeps_its_call(self):
+        # H lowers $sp and executes `break`. The handler, native or interpreted, steps EPC
+        # past it and erets into M, the rest of H, which the interpreter runs under H's
+        # call: M releases H's frame and returns (G returns, v0 = 0xee0), or tail-calls
+        # longjmp, whose return reaches F's setjmp frame (v0 = 0x107). H runs interpreted:
+        # the native tier raises an exception to the dispatch that entered the body, past
+        # every native frame in between (LLE Phase 1).
+        for kind, v0 in (("returns", 0xEE0), ("longjmp", 0x107)):
+            words = _longjmp_into_live_frame(eret_into=kind)
+            vector = _eret_vector(words)
+            for omitted in ((0x1080,), (0x1080, vector)):
+                codegen_args = ("--lle-cpu", *(f"--omit-aot=0x{a:08x}" for a in omitted))
+                with self.subTest(kind, handler_interpreted=len(omitted) > 1):
+                    _generated, results = self._probe(
+                        words, (0,), codegen_args=codegen_args, vector=vector)
+                    rc, output, fields = results[0]
+                    self.assertEqual(rc, 0, output)
+                    self.assertEqual(fields.get("v0"), v0, output)
+                    self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
     def test_another_way_out_of_the_switch_head_keeps_its_restore(self):
         # F's other path never runs. Before (#1935): a sibcall on it, or a $sp load on it,
         # took the restore from every exit of F, and CASE's lowered entry $sp reached F's
@@ -1874,8 +1966,8 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # I1: the interpreter's handoff owes nothing.
         self._assert_mutant_fails(
             "I1-interpreted-handoff-owes-nothing", _alloca_tail_end(), (0,),
-            {"guest_interp.c": ("            if (owes) s->r[29] = entry_sp;",
-                                "            (void)entry_sp;")},
+            {"guest_interp.c": ("            if (owes && !returned_elsewhere) s->r[29] = entry_sp;",
+                                "            (void)entry_sp; (void)returned_elsewhere;")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
             codegen_args=interpreted_f,
         )
