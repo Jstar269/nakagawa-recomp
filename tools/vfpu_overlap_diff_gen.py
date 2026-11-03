@@ -302,7 +302,7 @@ def sweep_words() -> frozenset[int]:
 # the difference, so check_alias_edge_sweep() requires exactly those to mismatch.
 _MUTANT_HEAD = "{ float _s[4],_t[4],_d[4]; "
 _MUTANT_TAIL = "s->vfpuCtrl[0]=0xe4u;"
-_MUTANT_MARK = "_d[_i]=_s[_i]+_t[_i];"
+_MUTANT_MARK = "_d[_i]=sr_vf_add(_s[_i],_t[_i]);"
 
 
 def mutant_body(body: str) -> str | None:

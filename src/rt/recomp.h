@@ -1126,6 +1126,33 @@ int sr_guest_format_host(CpuState *s, uint32_t fmt, uint32_t first_reg,
 void sr_vread(float *r, const CpuState *s, const uint8_t *idx, int n, uint32_t prefix);
 void sr_vwrite(CpuState *s, const uint8_t *idx, float *d, int n, uint32_t dprefix);
 
+/* VFPU lane arithmetic with the NaN result fixed by rule (issue #326). C leaves the NaN
+ * that a NaN-producing operation returns to the host: x86-64 SSE keeps the first NaN
+ * source, and an optimiser may swap the operands of a commutative + or *. So the
+ * generated code and sr_vfpu_interp, each compiled on its own, kept different NaNs when
+ * two met (the alias-edge sweep in tests/native/vfpu_interp_selftest.c, built at -O1 or
+ * -O2). Both lanes call these helpers for every lane operation of vadd, vsub, vmul, vdiv,
+ * vscl, vdot, vhdp, vcrs, vcrsp, vqmul, vmmul, vtfm and vmscl. The rule is the one x86-64
+ * SSE applies in source order, so -O0 results on x86-64 are unchanged: the first NaN
+ * operand, quieted, else the invalid-operation NaN 0xFFC00000 (Inf - Inf, 0 * Inf, 0 / 0,
+ * Inf / Inf). It is project semantics, not PSP evidence: the PSP's NaN word for these
+ * forms is unmeasured or contested (docs/HARDWARE_ORACLE.md, PSP-GE-001 and the issue #40
+ * fixture fixtures/vfpu_nan_payload/vfpu_nan_cases.h disagree). */
+static inline float sr_vf_nan(float a, float b) {
+    uint32_t u;
+    float r;
+    if (a != a) memcpy(&u, &a, 4);
+    else if (b != b) memcpy(&u, &b, 4);
+    else u = 0xffc00000u;
+    u |= 0x00400000u;
+    memcpy(&r, &u, 4);
+    return r;
+}
+static inline float sr_vf_add(float a, float b) { const float r = a + b; return r == r ? r : sr_vf_nan(a, b); }
+static inline float sr_vf_sub(float a, float b) { const float r = a - b; return r == r ? r : sr_vf_nan(a, b); }
+static inline float sr_vf_mul(float a, float b) { const float r = a * b; return r == r ? r : sr_vf_nan(a, b); }
+static inline float sr_vf_div(float a, float b) { const float r = a / b; return r == r ? r : sr_vf_nan(a, b); }
+
 /* VFPU transcendentals, exact ports of PPSSPP's table-based kernels (the PSP hardware does
  * not compute these with IEEE math). The lookup tables are loaded once from assets/vfpu/
  * (override the directory with PSP_VFPU_TABLES); the loader validates exact length, EOF,

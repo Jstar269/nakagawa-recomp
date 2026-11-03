@@ -2650,6 +2650,45 @@ static int sweep_diff(const CpuState *a, const CpuState *b, char *where, size_t 
     return 0;
 }
 
+/* The NaN rule of the sr_vf_* lane helpers (src/rt/recomp.h, issue #326), which the generated
+ * code and sr_vfpu_interp share: the first NaN operand quieted, else 0xFFC00000 for an invalid
+ * operation. Swapping two NaN operands swaps the result, whatever the host compiler does with
+ * a plain + or *. Project semantics, not PSP evidence. */
+static int check_vf_nan_rule(void) {
+    static const struct { uint32_t a, b, add, sub, mul, div; } cells[] = {
+        {0x7fc12345u, 0xffc00001u, 0x7fc12345u, 0x7fc12345u, 0x7fc12345u, 0x7fc12345u},
+        {0xffc00001u, 0x7fc12345u, 0xffc00001u, 0xffc00001u, 0xffc00001u, 0xffc00001u},
+        {0x7f800001u, 0x3f800000u, 0x7fc00001u, 0x7fc00001u, 0x7fc00001u, 0x7fc00001u}, /* sNaN quieted */
+        {0x3f800000u, 0xff800002u, 0xffc00002u, 0xffc00002u, 0xffc00002u, 0xffc00002u},
+        {0x7f800000u, 0xff800000u, 0xffc00000u, 0x7f800000u, 0xff800000u, 0xffc00000u}, /* Inf, -Inf */
+        {0x00000000u, 0x7f800000u, 0x7f800000u, 0xff800000u, 0xffc00000u, 0x00000000u}, /* 0, Inf */
+        {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0xffc00000u}, /* 0 / 0 */
+        {0x3fc00000u, 0x40000000u, 0x40600000u, 0xbf000000u, 0x40400000u, 0x3f400000u}, /* 1.5, 2 */
+    };
+    int bad = 0;
+    for (size_t i = 0; i < sizeof(cells) / sizeof(cells[0]); i++) {
+        float a, b, r[4];
+        uint32_t got[4];
+        memcpy(&a, &cells[i].a, 4);
+        memcpy(&b, &cells[i].b, 4);
+        r[0] = sr_vf_add(a, b);
+        r[1] = sr_vf_sub(a, b);
+        r[2] = sr_vf_mul(a, b);
+        r[3] = sr_vf_div(a, b);
+        memcpy(got, r, sizeof(got));
+        const uint32_t want[4] = {cells[i].add, cells[i].sub, cells[i].mul, cells[i].div};
+        for (int k = 0; k < 4; k++) {
+            if (got[k] != want[k]) {
+                fprintf(stderr, "FAIL: sr_vf_%s(0x%08x, 0x%08x) = 0x%08x, want 0x%08x\n",
+                        (const char *[]){"add", "sub", "mul", "div"}[k], cells[i].a, cells[i].b, got[k], want[k]);
+                bad = 1;
+            }
+        }
+    }
+    CHECK(!bad, "sr_vf_* lane helpers return the first NaN operand, quieted, or 0xFFC00000");
+    return bad;
+}
+
 /* One sweep state through one AOT body (the production one, or the mutant) and the
  * interpreter. Returns 1 and fills where[] when the two lanes disagree. */
 static int sweep_one(int c, int mutant, CpuState *s0, char *where, size_t n) {
@@ -2750,6 +2789,7 @@ int main(void) {
     bad |= check_vfpu3_compare_parity();
     bad |= check_vhdp_signed_zero_corpus();
     bad |= check_vf2i_conversions();
+    bad |= check_vf_nan_rule();
     bad |= check_alias_edge_sweep();
     bad |= g_failures != 0;
     if (bad == 0) {
