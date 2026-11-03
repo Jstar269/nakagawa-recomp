@@ -2058,6 +2058,8 @@ uint32_t s_deferred_self_stop_uid;
 uint32_t s_deferred_self_stop_thread_uid;
 static void hle_module_thread_exit(uint32_t uid);
 uint32_t s_loadexec_boot_uid;
+/* The guest path of the program the last LoadExec booted; empty while the boot program runs. */
+char s_loadexec_program_path[256];
 
 LoadedModule *find_loaded_module(uint32_t uid) {
     for (int i = 0; i < s_nloaded_modules; i++) {
@@ -4532,6 +4534,7 @@ int sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
     mod->start_entry_ran = 1;
     mark_module_started(mod->module_start);
     s_loadexec_boot_uid = uid;
+    snprintf(s_loadexec_program_path, sizeof(s_loadexec_program_path), "%s", guest_path);
     *entry_out = mod->module_start;
     *gp_out = mod->gp;
     return 1;

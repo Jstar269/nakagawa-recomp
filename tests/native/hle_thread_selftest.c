@@ -2527,6 +2527,26 @@ static void test_runtime_placed_modules(void) {
         expect(uid == 0x80020146u /* PROHIBIT_LOADMODULE_DEVICE */ &&
                    sr_hle_test_module_count() == 0u,
                "runtime placement: a disc title's LoadModule from ms0: is refused by the device");
+        /* The program a LoadExec boots decides from then on: the disc title replaced by
+         * its ms0: program (the manifest's required runtime module) may load from ms0:. */
+        {
+            extern void sr_hle_test_loadexec_program_reset(void);
+            extern uint32_t s_loadexec_boot_uid;
+            uint32_t exec_entry = 0u, exec_gp = 0u;
+            int booted = sr_hle_loadexec_boot_module(alpha_guest, &exec_entry, &exec_gp);
+            uint32_t exec_uid = s_loadexec_boot_uid;
+            uid = rt_load(undeclared_guest, 0u);
+            expect(booted && exec_entry != 0u && uid != 0u && (uid & 0x80000000u) == 0u &&
+                       rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+                   "runtime placement: after a LoadExec to an ms0: program, LoadModule from ms0: records the module");
+            expect(rt_lifecycle(sr_hle_test_stop_module, exec_uid, 0u, 0u, 0u) == 0u &&
+                       rt_lifecycle(sr_hle_test_unload_module, exec_uid, 0u, 0u, 0u) == 0u,
+                   "runtime placement: the LoadExec program unloads");
+            sr_hle_test_loadexec_program_reset();
+            uid = rt_load(undeclared_guest, 0u);
+            expect(uid == 0x80020146u && sr_hle_test_module_count() == 0u,
+                   "runtime placement: with the disc program running again, LoadModule from ms0: is refused");
+        }
         hle_test_setenv("SR_BOOT_PATH", "ms0:/PSP/GAME/NKRT/EBOOT.PBP");
         uid = rt_load(undeclared_guest, 0u);
         expect(uid != 0u && (uid & 0x80000000u) == 0u &&

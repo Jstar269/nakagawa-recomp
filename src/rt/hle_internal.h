@@ -1159,6 +1159,7 @@ extern uint32_t s_deferred_self_stop_thread_uid;
 extern SrLoadExecRequest s_loadexec_request;
 extern int s_loadexec_pending;
 extern uint32_t s_loadexec_boot_uid;
+extern char s_loadexec_program_path[256];
 LoadedModule *find_loaded_module(uint32_t uid);
 LoadedModule *alloc_loaded_module_slot(void);
 void retire_loaded_module(LoadedModule *mod);

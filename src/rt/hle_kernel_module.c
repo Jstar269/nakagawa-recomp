@@ -201,10 +201,12 @@ static int module_path_on_device(const char *path, const char *device) {
     return 1;
 }
 
-/* A title booted from the disc: the boot path the driver seeds names disc0: or umd0:. */
-static int module_boot_from_disc(void) {
-    const char *boot = getenv("SR_BOOT_PATH");
-    return module_path_on_device(boot, "disc0:") || module_path_on_device(boot, "umd0:");
+/* The running program came from the disc: the program the last sceKernelLoadExec booted, or
+ * before any LoadExec the boot path the driver seeds, names disc0: or umd0:. */
+static int module_program_from_disc(void) {
+    const char *program = s_loadexec_program_path[0] ? s_loadexec_program_path
+                                                     : getenv("SR_BOOT_PATH");
+    return module_path_on_device(program, "disc0:") || module_path_on_device(program, "umd0:");
 }
 
 /* Text/data/bss sizes of a PRX image as the kernel's loader sums them (uOFW
@@ -2025,9 +2027,10 @@ static uint32_t h_LoadModule(CpuState *s) {
     if (rc != 0u) return rc;
     /* The module manager opens the file, then asks the device whether it may load a
      * module from it, before it reads a byte (uofw modulemgr, src/kd/modulemgr/loadModule.c,
-     * sceKernelLoadModule). A path that opens nothing fails with the open's error. A title
-     * booted from the disc may not load from the Memory Stick: the device refuses and the
-     * load fails with PROHIBIT_LOADMODULE_DEVICE. Tekken 6 (ULUS10466) loads files on ms0:
+     * sceKernelLoadModule). A path that opens nothing fails with the open's error. When the
+     * running program came from the disc, the Memory Stick refuses to serve a module: the
+     * device's check fails and the load fails with PROHIBIT_LOADMODULE_DEVICE. A program a
+     * LoadExec booted from ms0: may load from it. Tekken 6 (ULUS10466) loads files on ms0:
      * and reads a load that succeeds, or fails on the file's format, as a copy running from
      * the Memory Stick. The refusal is the result the title's own check expects; it is
      * unmeasured on this project's PSP.
@@ -2036,7 +2039,7 @@ static uint32_t h_LoadModule(CpuState *s) {
     if (!sr_title_config_guest_module(resolved, NULL, NULL, NULL, NULL) &&
         !module_path_on_device(resolved, "flash0:")) {
         rc = hle_io_probe_open(resolved);
-        if (rc == 0u && module_boot_from_disc() &&
+        if (rc == 0u && module_program_from_disc() &&
             (module_path_on_device(resolved, "ms0:") || module_path_on_device(resolved, "fatms0:")))
             rc = SCE_KERNEL_ERROR_PROHIBIT_LOADMODULE_DEVICE;
         if (rc != 0u) {
@@ -2218,6 +2221,11 @@ uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
 uint32_t sr_hle_test_load_module_by_id(CpuState *s) { return h_LoadModuleByID(s); }
 uint32_t sr_hle_test_start_module(CpuState *s) { return h_StartModule(s); }
 uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
+/* Forget the program a test LoadExec booted, so the boot path decides again. */
+void sr_hle_test_loadexec_program_reset(void) {
+    s_loadexec_program_path[0] = '\0';
+    s_loadexec_boot_uid = 0u;
+}
 #endif
 static const char *hle_fd_guest_path(uint32_t fd) {
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used ||
