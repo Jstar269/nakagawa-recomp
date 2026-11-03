@@ -4134,6 +4134,9 @@ void sr_hle_init(void) {
     hle_register_display_setframebuf_handler();
     hle_register_regular_audio_handlers();
     hle_register_output2_audio_handlers();
+    /* The sceAtrac family, so the fixture's RIFF-header mutation stage reaches the
+     * production track parser and stream calls (#969). */
+    hle_register_atrac_handlers();
 #else
     hle_fd_init();
     g_callcount = getenv("SR_CALLCOUNT") ? 1 : 0;
