@@ -852,10 +852,12 @@ def same_repository(name: object, expected: str) -> bool:
     ``Jstar269/Nakagawa-Recomp``, ``GITHUB_REPOSITORY`` and the payloads' ``full_name``
     no longer matched the lower-case constant, so no run was trusted for the pool. Only
     the repository name is folded; refs, branch prefixes, logins and the fork flag are
-    still compared exactly. Two different owners never compare equal.
+    still compared exactly. Two different owners never compare equal. Both names must be
+    ASCII: Unicode case folding would let a crafted name match (the long s in "Jſtar269",
+    the Kelvin sign in "nakagawa"), and GitHub names are ASCII anyway.
     """
 
-    return isinstance(name, str) and name.casefold() == expected.casefold()
+    return isinstance(name, str) and name.isascii() and expected.isascii() and name.lower() == expected.lower()
 
 
 #: Head branches of this repository that may carry an outside contributor's commits: the

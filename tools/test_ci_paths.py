@@ -1403,11 +1403,19 @@ class CodeqlRunnerRoutingTests(unittest.TestCase):
                                                            head_repo="Jstar269x/Nakagawa-Recomp"),
             "merge group of a fork": _wake("merge_group", "gh-readonly-queue/main/pr-7-abc",
                                            head_repo="evil/Nakagawa-Recomp"),
+            "actor login in another casing": _wake("pull_request", "batch/desk-1", head_repo=RENAMED_REPO,
+                                                   actor=OWNER.lower()),
+            "long s in the head owner": _wake("pull_request", "batch/desk-1",
+                                              head_repo="Jſtar269/Nakagawa-Recomp"),
+            "Kelvin sign in the head name": _wake("pull_request", "batch/desk-1",
+                                                  head_repo="Jstar269/NaKagawa-Recomp"),
         }
         for label, event in cases.items():
             with self.subTest(label):
                 self.assertEqual(self.route("workflow_run", event, repository=RENAMED_REPO), self.HOSTED)
         self.assertEqual(self.route("push", repository="evil/Nakagawa-Recomp"), self.HOSTED)
+        self.assertEqual(self.route("push", repository="Jſtar269/nakagawa-recomp"), self.HOSTED)
+        self.assertEqual(self.route("push", repository="Jstar269/naKagawa-recomp"), self.HOSTED)
 
     def test_outside_and_fork_pull_requests_stay_hosted(self) -> None:
         cases = {
@@ -1533,12 +1541,19 @@ class SelfHostedRunnerRoutingTests(unittest.TestCase):
             "carry branch": _pull_request("carry/pr-9", head_repo=RENAMED_REPO, base_repo=RENAMED_REPO),
             "author login in another casing": _pull_request(head_repo=RENAMED_REPO, base_repo=RENAMED_REPO,
                                                             author=OWNER.lower()),
+            "sender login in another casing": _pull_request(head_repo=RENAMED_REPO, base_repo=RENAMED_REPO,
+                                                            sender=OWNER.lower()),
+            "long s in the head owner": _pull_request(head_repo="Jſtar269/Nakagawa-Recomp",
+                                                      base_repo=RENAMED_REPO),
+            "Kelvin sign in the head name": _pull_request(head_repo="Jstar269/NaKagawa-Recomp",
+                                                          base_repo=RENAMED_REPO),
         }
         for label, event in cases.items():
             with self.subTest(label):
                 self.assertEqual(self.route("pull_request", event, repository=RENAMED_REPO), HOSTED)
         for repository in ("evil/Nakagawa-Recomp", "Jstar269x/Nakagawa-Recomp", "Jstar269/Nakagawa-Recomp2",
-                           "Jstar269/Nakagawa Recomp"):
+                           "Jstar269/Nakagawa Recomp", "Jſtar269/nakagawa-recomp",
+                           "Jstar269/naKagawa-recomp", "Jstar269/naKagawa-recomp".upper()):
             with self.subTest(repository=repository):
                 self.assertEqual(self.route("push", ref="refs/heads/main", repository=repository), HOSTED)
                 self.assertEqual(self.route("pull_request", _pull_request(), repository=repository), HOSTED)
