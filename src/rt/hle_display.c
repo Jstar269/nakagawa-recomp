@@ -487,8 +487,8 @@ static const char *fbcap_arm_for_present(uint32_t vcount, const DisplayFrameStat
     s_fbcap_legacy[0] = '\0';
     if (sync != 0u) return NULL;
     /* SR_FBSNAP_WINDOWS alone selects FBSNAP (every present inside the windows), so the
-     * windows are parsed before the decision below, which uses the same effective cadence
-     * as the gate below (sr_fbcap_snap_every). */
+     * windows are parsed before the capture-owner decision (sr_fbcap_owner()), which uses
+     * the same effective cadence as the gate below (sr_fbcap_snap_every). */
     fbcap_parse_windows_once();
     int fbsnap_every = sr_fbcap_snap_every(getenv("SR_FBSNAP"), s_fbsnap_win_n > 0);
     int owner = sr_fbcap_owner(sr_fbcap_env_on("SR_FBDUMP"), fbsnap_every > 0);

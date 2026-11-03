@@ -15198,7 +15198,8 @@ static void test_sema_hardware_codes(void) {
     s_cur = -1;
 }
 
-/* Measured on a PSP-3000, firmware 6.61 (PSP-B1-01 / PSP-B2-01, docs/HARDWARE_ORACLE.md): LwMutex return codes and workarea
+/* Measured on a PSP-3000, firmware 6.61 (PSP-B1-01 / PSP-B2-01,
+ * docs/HARDWARE_ORACLE.md): LwMutex return codes and workarea
  * writes. The workarea lives at a fixed guest address; the fixture thread is the
  * owner, and "another owner" is simulated by writing a foreign uid. */
 #define B1_LW_WORKAREA 0x00250300u
@@ -15794,7 +15795,8 @@ static void test_expired_timed_object_waits_enter_strict_priority(void) {
  *                                   returns 0; on the running caller (0) it
  *                                   returns 0x80020197.
  *
- * Before the cancel/release family was implemented the three NIDs were unregistered entirely (a guest call
+ * Before the cancel/release family was implemented the three NIDs were
+ * unregistered entirely (a guest call
  * stopped at the HLE boundary), and the waiter side had no way to observe a
  * non-satisfaction wake. The waiter runs on its own coroutine exactly like the
  * strict-priority fixture above; the main fixture thread plays the canceller.

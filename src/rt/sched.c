@@ -4015,7 +4015,8 @@ void sched_wake(uint32_t obj) {
 #endif
 }
 
-/* Measured on a PSP-3000, firmware 6.61 (PSP-B2-01, docs/HARDWARE_ORACLE.md): a cancelled waiter leaves its wait with a kernel
+/* Measured on a PSP-3000, firmware 6.61 (PSP-B2-01, docs/HARDWARE_ORACLE.md): a
+ * cancelled waiter leaves its wait with a kernel
  * result instead of the object being satisfied -- WAIT_CANCEL (0x800201A9) from
  * CancelSema/CancelEventFlag/CancelReceiveMbx, WAIT_DELETE (0x800201B5) from
  * deleting the waited object, WAIT_RELEASE (0x800201AA) from ReleaseWaitThread.

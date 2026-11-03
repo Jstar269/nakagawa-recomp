@@ -343,7 +343,8 @@ static uint32_t h_TrySendMsgPipe(CpuState *s) {
     if (resultp) MEM_W32(resultp, 0);
     MsgPipe *p = msg_pipe_find(A0);
     if (!p) return SCE_KERNEL_ERROR_UNKNOWN_MPPID;
-    /* Measured on a PSP-3000, firmware 6.61 (PSP-B3-01, docs/HARDWARE_ORACLE.md): wait mode 2 is ILLEGAL_MODE (0x80020195). */
+    /* Measured on a PSP-3000, firmware 6.61 (PSP-B3-01, docs/HARDWARE_ORACLE.md):
+     * wait mode 2 is ILLEGAL_MODE (0x80020195). */
     if (A3 > 1u) return 0x80020195u;
     if ((int32_t)A2 < 0) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A2 == 0 || (p->capacity && A2 > p->capacity)) return SCE_KERNEL_ERROR_ILLEGAL_SIZE;
