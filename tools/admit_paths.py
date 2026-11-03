@@ -159,7 +159,8 @@ def _canonical(document: dict) -> bytes:
 def _canonical_profile_bytes(document: dict) -> bytes:
     """Serialize a profile in the one canonical form (``provenance_ledger.canonical_profile_bytes``)."""
     try:
-        return provenance_ledger.canonical_profile_bytes(document)
+        returned: bytes = provenance_ledger.canonical_profile_bytes(document)
+        return returned
     except ValueError as error:
         raise AdmitError("POLICY_PROFILE_INVALID", str(error)) from error
 

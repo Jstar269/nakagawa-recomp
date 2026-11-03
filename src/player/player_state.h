@@ -55,7 +55,8 @@ typedef enum {
     VIEW_UPDATES,           /* Settings > Updates: check for and fetch a newer version */
     VIEW_CONFIRM_FACTORY_RESET, /* Settings > Factory reset: what moves aside */
     VIEW_ACCESSIBILITY_SETTINGS, /* Settings > Accessibility: size, contrast, motion */
-    VIEW_ACE_SETTINGS           /* Settings > Ace Mode (src/rt/ace.h); the last value */
+    VIEW_ACE_SETTINGS,          /* Settings > Ace Mode (src/rt/ace.h) */
+    VIEW_PROBLEM_REPORT         /* Settings > Problem report (#1849); the last value */
 } PlayerView;
 
 typedef enum {
@@ -333,6 +334,32 @@ typedef struct {
     char install_dir[NK_MAX_PATH];
     NkUpdateError error;
 } PlayerUpdateState;
+
+/* Settings > Problem report (#1849): `python tools/nk_cli.py report` writes a redacted
+   bundle on this PC. The page lists what it would contain, then writes it on a click.
+   Nothing is uploaded. */
+typedef enum {
+    PLAYER_REPORT_IDLE = 0,
+    PLAYER_REPORT_PREVIEWING,   /* listing the files */
+    PLAYER_REPORT_PREVIEWED,    /* the list is shown; Create is offered */
+    PLAYER_REPORT_CREATING,     /* writing the ZIP (runs the toolchain check) */
+    PLAYER_REPORT_DONE,         /* the ZIP is at path */
+    PLAYER_REPORT_FAILED,
+    PLAYER_REPORT_NO_PYTHON     /* no interpreter: the page gives the command to run */
+} PlayerReportPhase;
+
+#define PLAYER_REPORT_MAX_FILES 24
+#define PLAYER_REPORT_FILE_NAME 72
+
+typedef struct {
+    PlayerReportPhase phase;
+    char path[NK_MAX_PATH];     /* the written ZIP */
+    char message[480];          /* why it failed */
+    char command[160];          /* what to run by hand */
+    int file_count;
+    char file_names[PLAYER_REPORT_MAX_FILES][PLAYER_REPORT_FILE_NAME];
+    unsigned long long file_bytes[PLAYER_REPORT_MAX_FILES];
+} PlayerReportState;
 
 typedef enum {
     PLAYER_PREREQ_IDLE = 0,
@@ -746,6 +773,7 @@ struct PlayerApp {
     bool request_open_folder;
     char requested_open_path[NK_MAX_PATH];
     PlayerUpdateState update;
+    PlayerReportState report;
 
     /* Native core state */
     NkLibrary library;

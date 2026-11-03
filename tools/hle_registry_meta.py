@@ -488,6 +488,14 @@ HANDLER_METADATA = {
         ],
         "limitation": "host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs are written only when the loaded libpsmfplayer module's exported module_sdk_version is 0x03090510 (a firmware-loaded player records no build); lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)",
     },
+    "h_PsmfGetCurrentPts": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/psmf_media_selftest.c:test_player_av_presentation_timing",
+            "PSPAutotests tests/video/psmfplayer/getcurrentpts.expected (f573fe8c, recorded on a PSP): Initial 0x80616001, Standby and Playing-before-a-picture 0x8061600c, then one 32-bit write of the last picture's pts",
+        ],
+        "limitation": "host HLE player; the pts is the displaypts of the last picture the video getter delivered, written as one 32-bit word; a NULL or unwritable output once a picture exists (the hardware run crashes) and a player that scePsmfPlayerStop returned to standby after playing are not measured and stop the run by name",
+    },
     # The licensee key is recorded for sceNpDrmEdataSetupKey, which stays refused: no key
     # material ships with the project and nothing decrypts.
     "h_NpDrmSetLicenseeKey": {
@@ -1158,6 +1166,118 @@ HANDLER_METADATA = {
         ],
         "limitation": "moves the calendar year with the leap day clamped to February 28, and a result outside years 1..9999 returns 0 with dest unwritten (pspautotests-recorded); a source tick past year 9999 and NULL or unmapped pointers are not measured and stop the run by name",
     },
+    "h_RtcTickAddMicroseconds": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddMicroseconds",
+        ],
+        "limitation": "adds the 64-bit count modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name",
+    },
+    "h_RtcTickAddSeconds": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddSeconds",
+        ],
+        "limitation": "adds the 64-bit count times 1000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name",
+    },
+    "h_RtcTickAddDays": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddDays",
+        ],
+        "limitation": "adds the sign-extended 32-bit day count times 86400000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name",
+    },
+    "h_RtcGetDayOfWeek": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/lookup.expected (f573fe8c, recorded on a PSP): checkDayOfWeek",
+        ],
+        "limitation": "Sunday is 0; months 1..12 of years 1..9999 with the day carried linearly (the measured cells); a month of 0 or above 12 answers only the seven measured triples, and any other month, year or day outside those stops the run by name",
+    },
+    "h_RtcCheckValid": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest",
+            "PSPAutotests tests/rtc/lookup.expected (f573fe8c, recorded on a PSP): checkRtcCheckValid and checkMaxYear",
+        ],
+        "limitation": "returns 0 or the first failing field as -1 year, -2 month, -3 day, -4 hour, -5 minute, -6 second, -7 microsecond (measured); a day of 0 or one from the month length to 31, and a NULL or unmapped pointer, are not measured and stop the run by name",
+    },
+    "h_DisplayIsForeground": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts",
+            "PSPAutotests tests/display/isstate.expected (1a9e6c31, recorded on a PSP): 0 with no framebuffer, 1 with one set, 1 after a latched request for address 0",
+        ],
+        "limitation": "reports whether the active scanout address is non-zero; the result before sceDisplaySetMode or any framebuffer is not measured and follows from the zero address",
+    },
+    "h_GetModuleIdList": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts",
+            "PSPAutotests tests/modules/idlist/idlist.expected (1a9e6c31, recorded on a PSP): byte size, whole entries, count is the total, the caller's module is listed",
+        ],
+        "limitation": "lists only the main module and the modules the runtime loaded (a PSP also lists firmware modules), main first and then in load order, an order that is not measured; an unwritable count or buffer is not measured and stops the run by name",
+    },
+    "h_LoadExecForUser_362A956B": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts",
+            "PSPAutotests tests/threads/callbacks/exit.expected (1a9e6c31, recorded on a PSP, compiled SDK 3.95): checkpoints under LoadExecForUser_362A956B",
+        ],
+        "limitation": "reads the registered exit callback's argument block as {mode, params, common}: no live callback 0x800201a1, NULL argument 0x800200d3, mode 4 or above 0x800200d2, params size below 12 0x800201bc, else clears params->unk1 and sets params->unk2 to -1; an unusable params pointer stops the run by name; the check order when mode and size both fail, and other compiled SDK versions, are not measured",
+    },
+    "h_FontPixelToPointH": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_font_measured_contract",
+            "PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPixelToPointH conversions",
+        ],
+        "limitation": "pixels * 72 / hRes in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name",
+    },
+    "h_FontPixelToPointV": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_font_measured_contract",
+            "PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPixelToPointV conversions",
+        ],
+        "limitation": "pixels * 72 / vRes in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name",
+    },
+    "h_FontPointToPixelH": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_font_measured_contract",
+            "PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPointToPixelH conversions",
+        ],
+        "limitation": "points * hRes / 72 in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name",
+    },
+    "h_FontPointToPixelV": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_font_measured_contract",
+            "PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPointToPixelV conversions",
+        ],
+        "limitation": "points * vRes / 72 in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name",
+    },
+    "h_HtmlViewerStatus": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts",
+            "PSPAutotests tests/utility/dialog/status.expected and htmlviewer.expected (1a9e6c31, recorded on a PSP): html=WRONG_TYPE when no HTML viewer was started",
+        ],
+        "limitation": "always WRONG_TYPE: the runtime has no HTML viewer dialog, and its InitStart import is not registered",
+    },
+    "h_ScreenshotStatus": {
+        "status": "partial",
+        "evidence": [
+            "tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts",
+            "PSPAutotests tests/utility/dialog/status.expected (1a9e6c31, recorded on a PSP): shot=WRONG_TYPE when no screenshot dialog was started",
+        ],
+        "limitation": "always WRONG_TYPE: the runtime has no screenshot dialog, and its InitStart import is not registered",
+    },
     "h_RtcGetTickResolution": {
         "status": "complete",
         "evidence": [
@@ -1808,6 +1928,41 @@ HANDLER_METADATA = {
         ],
         "limitation": "a live block is freed once and coalesced, and a freed, zero or unknown UID returns 0x800200CB as recorded; freeing during a reschedule and the kernel's per-block header accounting are not modeled",
     },
+    "h_MaxFreeMemSize": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MODULE-START-001: after the module_start thread's 0x40000-byte stack is freed, sceKernelMaxFreeMemSize does not change, because the stack of the thread module_start created sits directly below the freed range)",
+            "tests/native/hle_thread_selftest.c:test_partition_ends_at_lowest_live_stack",
+            "tests/native/hle_thread_selftest.c:test_max_free_unchanged_after_top_stack_deleted",
+            "tests/native/hle_thread_selftest.c:test_partition_spans_the_whole_user_partition",
+        ],
+        "limitation": "the result is the larger of the span below the lowest live thread stack and the biggest freed block; only the unchanged-after-stack-free case is measured, so the absolute value at boot, the kernel's block-header and alignment accounting, and the value with several free blocks are not measured (#341)",
+    },
+    "h_GeSetCallback": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: sceGeSetCallback with a {NULL, NULL} struct returned ID 1 and queued no handler)",
+            "tests/native/hle_thread_selftest.c:test_ge_guest_sentinel",
+        ],
+        "limitation": "registration with null handlers returning an ID is captured on the PSP-3000 (the P1/P2 envelope is CAPTURED, not acceptance-eligible); the PSP returned 1 for the first registration it saw while this runtime hands out the lowest free ID from 0, the table size (16 here) and the full-table result are not measured, and a struct that is not readable returns the illegal-address code unmeasured (#341)",
+    },
+    "h_GeUnsetCallback": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: sceGeUnsetCallback of the ID that sceGeSetCallback returned gave 0)",
+            "tests/native/hle_thread_selftest.c:test_ge_guest_sentinel",
+        ],
+        "limitation": "unsetting a registered ID returning 0 is captured on the PSP-3000 (CAPTURED, not acceptance-eligible); this runtime also returns 0 for an unregistered or out-of-range ID, which no PSP cell records (#341)",
+    },
+    "h_LockLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells: an owner's unlock hands ownership directly to the waiter; a self-held non-recursive timed Lock fails immediately with 0x800201CF)",
+            "tests/native/hle_thread_selftest.c:test_lwmutex_hardware_codes",
+            "tests/native/hle_thread_selftest.c:test_b23_second_round",
+        ],
+        "limitation": "uncontended and recursive acquisition, blocking until the owner's hand-off, the self-held non-recursive refusal and the timeout code follow the recorded cells; invalid workareas, a count of 0 or below, an unwritable timeout pointer, callback delivery during the wait, interrupt context and several-waiter ordering are not measured (#341)",
+    },
     "h_CpuSuspendIntr": {
         "status": "partial",
         "evidence": [
@@ -2158,17 +2313,13 @@ WAIVERS = ()
 # Never add an entry to make that gate pass: review the handler instead.
 PROFILE_ZERO_ISSUE = "https://github.com/Jstar269/nakagawa-recomp/issues/341"
 PROFILE_ZERO_UNREVIEWED_IMPORTS = {
-    0x05DB22CE: {"name": "sceGeUnsetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeUnsetCallback
     0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
     0x13F592BC: {"name": "sceAudioOutputPannedBlocking", "issue": PROFILE_ZERO_ISSUE},  # h_AudioOutputPannedBlocking
     0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
     0x293B45B8: {"name": "sceKernelGetThreadId", "issue": PROFILE_ZERO_ISSUE},  # h_GetThreadIdSched
     0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
-    0xA291F107: {"name": "sceKernelMaxFreeMemSize", "issue": PROFILE_ZERO_ISSUE},  # h_MaxFreeMemSize
-    0xA4FC06A4: {"name": "sceGeSetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeSetCallback
     0xA6BAB2E9: {"name": "sceKernelStdout", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
     0xACE946E8: {"name": "sceIoGetstat", "issue": PROFILE_ZERO_ISSUE},  # h_IoGetstat
-    0xBEA46419: {"name": "sceKernelLockLwMutex", "issue": PROFILE_ZERO_ISSUE},  # h_LockLwMutex
     0xD675EBB8: {"name": "sceKernelSelfStopUnloadModule", "issue": PROFILE_ZERO_ISSUE},  # h_SelfStopUnloadModule
     0xE0D68148: {"name": "sceGeListUpdateStallAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GeListUpdateStallAddr
     0xE3EB004C: {"name": "sceIoDread", "issue": PROFILE_ZERO_ISSUE},  # h_IoDread
@@ -2304,6 +2455,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelVolatileMem": "kernel_memory",
     # --- kernel: module loading and process exit ---
     "sceKernelExitGame": "kernel_module",
+    "LoadExecForUser_362A956B": "kernel_module",
     "sceKernelGetModuleId": "kernel_module",
     "sceKernelLoadExec": "kernel_module",
     "sceKernelLoadModule": "kernel_module",

@@ -888,6 +888,17 @@ static uint32_t h_DisplayIsVblank(CpuState *s) {
     (void)s;
     return (sr_get_ge_status() & 0x20) ? 1 : 0;
 }
+/* sceDisplayIsForeground(): 1 while the application's scanout framebuffer address is non-zero.
+ * pspautotests display/isstate.expected (rev 1a9e6c31, recorded on a PSP): 0 after
+ * sceDisplaySetFrameBuf(0, 0, 0, 0); 1 after sceDisplaySetFrameBuf(0x04000000, 512, 3, 0), at the
+ * start, after the vblank and during vsync; and still 1 after a latched (sync 1) request for
+ * address 0, because the address leaves the scanout only at the next vblank.  That is the active
+ * address, not the latched one.  Before sceDisplaySetMode or any framebuffer the state is not
+ * measured; the active address is 0 there, so it reports 0. */
+static uint32_t h_DisplayIsForeground(CpuState *s) {
+    (void)s;
+    return s_display_active.addr != 0u ? 1u : 0u;
+}
 /* sceDisplayGetFramePerSec returns the PSP display refresh rate as a
  * single-precision float through $f0 (the MIPS float-return convention); the
  * integer $v0 status is what the handler returns.  The value is the same
@@ -1151,6 +1162,7 @@ void hle_register_display_handlers(void) {
     sr_hle_register(0x773dd3a3, "sceDisplayGetCurrentHcount", h_DisplayGetCurrentHcount);
     sr_hle_register(0x210eab3a, "sceDisplayGetAccumulatedHcount", h_DisplayGetAccumulatedHcount);
     sr_hle_register(0x4d4e10ec, "sceDisplayIsVblank", h_DisplayIsVblank);
+    sr_hle_register(0xb4f378fa, "sceDisplayIsForeground", h_DisplayIsForeground);
     sr_hle_register(0xdea197d4, "sceDisplayGetMode", h_DisplayGetMode);
     sr_hle_register(0xdba6c4c4, "sceDisplayGetFramePerSec", h_DisplayGetFramePerSec);
 }

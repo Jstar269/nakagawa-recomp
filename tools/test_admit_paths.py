@@ -27,6 +27,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -217,7 +218,8 @@ class _Fixture:
         )
 
     def record(self, relative: str) -> dict:
-        return json.loads((self.authority / relative).read_text(encoding="utf-8"))
+        returned: dict[str, Any] = json.loads((self.authority / relative).read_text(encoding="utf-8"))
+        return returned
 
     def remote_main(self) -> str:
         return git(self.remote, "rev-parse", "main")
@@ -1054,7 +1056,8 @@ class PolicyDeltaIssueTest(unittest.TestCase):
 
     def _issue(self, fixture: _Fixture, **kwargs) -> dict:
         kwargs.setdefault("approval_basis", self.BASIS)
-        return admit_paths.issue_policy_delta(pr_worktree=fixture.pr, private_repo=fixture.authority, **kwargs)
+        returned: dict[str, Any] = admit_paths.issue_policy_delta(pr_worktree=fixture.pr, private_repo=fixture.authority, **kwargs)
+        return returned
 
     def _authority(self, fixture: _Fixture, result: dict) -> tuple[Path, dict]:
         (record,) = result["records"]

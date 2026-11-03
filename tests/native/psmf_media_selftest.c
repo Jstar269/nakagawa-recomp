@@ -2599,6 +2599,7 @@ int iso_sector_count(uint32_t *out_sectors) {
 #define AV_NID_DELETE      0x9b71a274u
 #define AV_NID_GET_INFO    0xdf089680u
 #define AV_NID_RELEASE     0xe792cd94u
+#define AV_NID_GET_CUR_PTS 0x3ed62233u
 #define AV_STATUS_PLAYING  0x00000004u
 #define AV_STATUS_FINISHED 0x00000200u
 #define AV_ERR_NO_DATA     0x8061600cu
@@ -2613,6 +2614,7 @@ int iso_sector_count(uint32_t *out_sectors) {
 #define AV_VIDEO  0x08604000u   /* ScePsmfPlayerVideoData: frameWidth, displaybuf, displaypts */
 #define AV_AUDIO  0x08605000u   /* one 8192-byte PCM sink */
 #define AV_INFO   0x08606000u   /* PsmfInfo (20 bytes), then the width and height words */
+#define AV_PTSOUT 0x08607000u   /* scePsmfPlayerGetCurrentPts output: one 64-bit sentinel */
 
 /* The authored timelines.  Video spacing *is* PSMF_VIDEO_PTS_STEP: 90000 * 1001 / 30000 = 3003
  * ticks exactly at 29.97 fps (30000/1001), so video PTS drift is identically 0.
@@ -3207,6 +3209,13 @@ static void test_psmf_av_timing_first_principles(void) {
  * those comparable points bounded for the whole run.  Both packet layouts must give the
  * same presentation times: the packed one is where a packet's PTS used to be handed to
  * every unit commencing in it (issue #279). */
+/* scePsmfPlayerGetCurrentPts with pspautotests' 0x1337133713371337 sentinel in the output. */
+static uint32_t av_current_pts(void) {
+    MEM_W32(AV_PTSOUT, 0x13371337u);
+    MEM_W32(AV_PTSOUT + 4, 0x13371337u);
+    return guest_mpeg_import(AV_NID_GET_CUR_PTS, AV_PLAYER, AV_PTSOUT, 0, 0, 0);
+}
+
 static void test_player_av_presentation_timing(int layout) {
     uint32_t size = 0;
     int failures_before = failures;
@@ -3233,10 +3242,19 @@ static void test_player_av_presentation_timing(int layout) {
 
     CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0,
           "psmf-av: the player is created");
+    /* getcurrentpts.expected: Initial is 80616001, Standby and Playing-before-a-picture are
+     * 8061600c, and the output stays untouched. */
+    CHECK(av_current_pts() == AV_ERR_STATUS && MEM_R32(AV_PTSOUT) == 0x13371337u,
+          "psmf-av: GetCurrentPts on an initial player is the status error");
     CHECK(guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER, AV_PATH, 0, 0, 0) == 0,
           "psmf-av: the source-owned A/V stream is opened");
+    CHECK(av_current_pts() == AV_ERR_NO_DATA && MEM_R32(AV_PTSOUT) == 0x13371337u,
+          "psmf-av: GetCurrentPts on a standby player is NO_DATA");
     CHECK(guest_mpeg_import(AV_NID_START, AV_PLAYER, AV_CONFIG, 0, 0, 0) == 0,
           "psmf-av: playback starts");
+    CHECK(av_current_pts() == AV_ERR_NO_DATA && MEM_R32(AV_PTSOUT) == 0x13371337u &&
+              MEM_R32(AV_PTSOUT + 4) == 0x13371337u,
+          "psmf-av: GetCurrentPts before the first picture is NO_DATA");
     CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER, 0, 0, 0, 0) == AV_STATUS_PLAYING,
           "psmf-av: the guest sees a playing player");
 
@@ -3269,6 +3287,10 @@ static void test_player_av_presentation_timing(int layout) {
                 if (video_out < AV_PICTURES) {
                     CHECK((int64_t)MEM_R32(AV_VIDEO + 8) == av_video_pts(video_out),
                           "psmf-av: guest displaypts equals the authored picture time");
+                    /* One 32-bit word: the low half of the sentinel is replaced, the high half kept. */
+                    CHECK(av_current_pts() == 0 && MEM_R32(AV_PTSOUT) == MEM_R32(AV_VIDEO + 8) &&
+                              MEM_R32(AV_PTSOUT + 4) == 0x13371337u,
+                          "psmf-av: GetCurrentPts reports the last delivered picture time");
                     video_out++;
                 }
             } else {
@@ -3311,6 +3333,9 @@ static void test_player_av_presentation_timing(int layout) {
     }
     CHECK(guest_mpeg_import(AV_NID_GET_STATUS, AV_PLAYER, 0, 0, 0, 0) == AV_STATUS_FINISHED,
           "psmf-av: the player reports its end after the stream is consumed");
+    CHECK(av_current_pts() == 0 && MEM_R32(AV_PTSOUT) == (uint32_t)av_video_pts(AV_PICTURES - 1) &&
+              MEM_R32(AV_PTSOUT + 4) == 0x13371337u,
+          "psmf-av: a finished player reports its last picture time");
     av_sample_summaries();
 
     /* Terminal snapshot: the last published line is the FINISHED summary. */
