@@ -27,6 +27,7 @@ CpuState *s_cpu;
  * production GE object but not debug.c, so it supplies the same inert definitions that
  * gpu_coherence_selftest.c does. Without these the target does not link at all. */
 int g_sr_last_writer_enabled;
+uint32_t g_sr_store_context_pc;
 int g_sr_store_context_mem_gpr = -1;
 uint32_t g_sr_store_context_mem_offset;
 unsigned g_sr_store_context_mem_words;
