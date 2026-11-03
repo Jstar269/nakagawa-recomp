@@ -1966,6 +1966,56 @@ class TestEnhancementRateComparison(unittest.TestCase):
         self.assertEqual(total, int(lines[-1].split(",")[1]) - int(lines[1].split(",")[1]))
         self.assertAlmostEqual(m["phases"]["1"]["updates_per_second"], 30.0, delta=0.5)
 
+    def test_change_events_and_a_loading_phase(self) -> None:
+        # A flag that flips every 45 stock updates; the package doubles the period. The enhanced
+        # run opens with a phase where no logic runs, which must not mark the run as slowed.
+        flip = {"mode": lambda n, v: "1", "flag": lambda n, v: str((n // 45) % 2)}
+        _sample_csv(self.tmp / "stock.csv", hz=30, seconds=60, columns=flip)
+        _sample_csv(self.tmp / "enh.csv", hz=60, seconds=60,
+                    columns={"mode": lambda n, v: "1", "flag": lambda n, v: str((n // 90) % 2)})
+        lines = (self.tmp / "enh.csv").read_text(encoding="utf-8").splitlines()
+        first_updates = lines[1].split(",")[1]
+        loading = [f"{v},{first_updates},0,0" for v in range(1, 601)]
+        shifted = [",".join([str(int(c[0]) + 600), *c[1:]]) for c in (row.split(",") for row in lines[1:])]
+        (self.tmp / "enh.csv").write_text("\n".join([lines[0], *loading, *shifted]) + "\n", encoding="utf-8")
+        out = StringIO()
+        with mock.patch("sys.stdout", out):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "stock.csv"), str(self.tmp / "enh.csv"),
+                                           "--phase", "mode", "--event", "change:flag",
+                                           "--json", str(self.tmp / "r.json")])
+        data = json.loads((self.tmp / "r.json").read_text(encoding="utf-8"))
+        self.assertEqual(rc, 0, out.getvalue())
+        whole, loading_phase = data["report"]["phases"][0], data["report"]["phases"][1]
+        self.assertEqual((loading_phase["phase"], loading_phase["logic"]), ("0", "ABSENT"))
+        self.assertLess(whole["enhanced"]["updates_per_second"], 57.0)
+        self.assertEqual(whole["events"][0]["verdict"], "PASS")
+        self.assertGreater(whole["events"][0]["stock"], 30)
+
+    def test_unusable_steps_count_nothing(self) -> None:
+        # An unreadable vblank, a repeated vblank and an empty cell each drop their steps.
+        (self.tmp / "s.csv").write_text("vblank,updates,flag\n1,0,0\nx,1,0\n3,2,\n3,3,1\n5,4,1\n7,5,\n9,6,2\n",
+                                        encoding="utf-8")
+        rows = enhancement_package.load_sample_rows(self.tmp / "s.csv", ["updates", "flag"])
+        m = enhancement_package.measure_rates(rows, updates="updates", nominal_hz=30,
+                                              events=[enhancement_package.parse_rate_event("change:flag")])
+        b = m["phases"]["all"]
+        self.assertEqual((b["vblanks"], b["updates"], b["events"]["change:flag"]), (6, 3, 0))
+
+    def test_bad_sample_files_refuse(self) -> None:
+        for body, why in (("", "empty sample file"), ("frame,updates\n1,0\n", "first column must be vblank"),
+                          ("vblank,updates\n1,0\n2\n", r"s.csv:3: 1 cells, the header has 2")):
+            (self.tmp / "s.csv").write_text(body, encoding="utf-8")
+            with self.subTest(why=why), self.assertRaisesRegex(EnhancementPackageError, why):
+                enhancement_package.load_sample_rows(self.tmp / "s.csv", ["updates"])
+        _sample_csv(self.tmp / "s.csv", hz=30, seconds=1, columns={})
+        err = StringIO()
+        with mock.patch("sys.stderr", err):
+            rc = enhancement_package.main(["--compare-rates", str(self.tmp / "s.csv"), str(self.tmp / "s.csv"),
+                                           "--event", "count:serves"])
+        self.assertEqual(rc, 1)
+        self.assertIn("rates: FAIL:", err.getvalue())
+        self.assertIn("no column serves", err.getvalue())
+
     def test_bad_event_specs_and_missing_columns_refuse(self) -> None:
         for spec in ("count", "sum:x", "lcg:x:1", "count:x=0", "change:x:y", "lcg:x:1:1:65"):
             with self.subTest(spec=spec), self.assertRaises(EnhancementPackageError):

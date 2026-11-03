@@ -2077,9 +2077,9 @@ def _rates_main(args: argparse.Namespace) -> int:
                                               indent=2) + "\n", encoding="utf-8")
     whole = report["phases"][0]
     unjudged = sum(c["verdict"] == "NOT_JUDGED" for c in whole["events"])
+    # Judged per phase: a phase with no updates at all (a loading screen) lowers the whole run's
+    # rate without any logic running slow.
     slowed = [p["phase"] for p in report["phases"][1:] if p["logic"] == "SLOWED"]
-    if whole["logic"] == "SLOWED" and not slowed:
-        slowed = ["all"]
     if report["failures"] or report["unresolved"]:
         verdict = "FAIL"
     elif unjudged or not events or slowed:
