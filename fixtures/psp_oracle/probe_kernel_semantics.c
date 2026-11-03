@@ -6,6 +6,9 @@
 //     #1390 controller sampling cells, #1383 volatile-lock types and allocations, #1380
 //     exclusive create and 64-bit seeks in a probe-owned Memory Stick directory, and #1382
 //     WLAN switch and power state. The console's MAC address and OpenPSID are never read.
+//   CASE=io-seek-eof (PSP-IO-EOF-001): #1380 opens of a missing Memory Stick file without
+//     PSP_O_CREAT, negative seeks, a write after a seek past the end (the size, the gap's
+//     bytes and the tail) and a read past the end, in its own probe-owned directory.
 //
 // These cells live apart from probe_hle_issues.c because they do what that file may not:
 // they write and remove a Memory Stick file and directory, allocate partition memory, and
@@ -39,12 +42,18 @@ PSP_HEAP_SIZE_KB(64);
 #endif
 
 #define KS_CASE_KERNEL_SEM 127
-#if PSP_ORACLE_CASE != KS_CASE_KERNEL_SEM
-#error probe_kernel_semantics.c has no case for this PSP_ORACLE_CASE
-#endif
+#define KS_CASE_IO_EOF 136
+#if PSP_ORACLE_CASE == KS_CASE_KERNEL_SEM
 #define HLE_CAMPAIGN_ID "kernel-semantics"
 #define HLE_TEST_ID "PSP-KERNEL-SEM-001"
 #define HLE_LOG "host0:/kernel_semantics_log.txt"
+#elif PSP_ORACLE_CASE == KS_CASE_IO_EOF
+#define HLE_CAMPAIGN_ID "io-seek-eof"
+#define HLE_TEST_ID "PSP-IO-EOF-001"
+#define HLE_LOG "host0:/io_seek_eof_log.txt"
+#else
+#error probe_kernel_semantics.c has no case for this PSP_ORACLE_CASE
+#endif
 #define HLE_DONE_ID HLE_CAMPAIGN_ID "-done"
 
 #define HLE_SENTINEL 0xA5A5A5A5u
@@ -235,6 +244,7 @@ int module_stop(SceSize args, void *argp)
    (freed) and the Memory Stick directory (removed). */
 
 
+#if PSP_ORACLE_CASE == KS_CASE_KERNEL_SEM
 /* ---- (a) VBLANK sub-interrupt delivery order --------------------------------------------- */
 #define KS_VBL_LOG 48u
 #define KS_VBL_SUBS 4u
@@ -634,8 +644,226 @@ static void ks_wlan(void)
     hle_record("wlan-state", "PASS", 0u, w, 2u);
 }
 
+#endif /* KS_CASE_KERNEL_SEM */
+
+#if PSP_ORACLE_CASE == KS_CASE_IO_EOF
+/* ---- io-seek-eof: #1380 open without O_CREAT, negative seeks, past-end write and read ----- */
+/* One launch, user mode, Memory Stick only, inside ms0:/NKKSEM01 (created and removed by the
+   probe; every row is SKIP when the directory already exists, so nothing outside the probe's
+   own directory is touched). Every row has a fixed word count; a word that does not apply is
+   HLE_SENTINEL. A 64-bit seek result is recorded as (low, high). */
+#define KE_DIR "ms0:/NKKSEM01"
+#define KE_FILE KE_DIR "/e.bin"
+#define KE_MISSING KE_DIR "/missing.bin"
+#define KE_SIZE 16u
+#define KE_PAST 0x20u
+#define KE_TAIL 4u
+#define KE_READ 0x30u
+#define KE_FILL 0xEEu
+#define KE_ROWS 9u
+static const char *const k_ke_rows[KE_ROWS] = {
+    "io-eof-mkdir", "io-eof-missing", "io-eof-create", "io-eof-seek-negative",
+    "io-eof-seek-negative-rdonly", "io-eof-write-past", "io-eof-gap", "io-eof-read-past",
+    "io-eof-cleanup",
+};
+static const uint32_t k_ke_words[KE_ROWS] = { 1u, 5u, 3u, 16u, 5u, 8u, 8u, 5u, 3u };
+
+static void ke_skip_from(unsigned first, uint32_t result)
+{
+    uint32_t w[16];
+    for (unsigned r = first; r < KE_ROWS; r++) {
+        for (unsigned i = 0; i < k_ke_words[r]; i++) w[i] = HLE_SENTINEL;
+        hle_record(k_ke_rows[r], "SKIP", result, w, k_ke_words[r]);
+    }
+}
+
+static void ke_off(uint32_t *w, SceOff r)
+{
+    w[0] = (uint32_t)((uint64_t)r & 0xffffffffu);
+    w[1] = (uint32_t)((uint64_t)r >> 32);
+}
+
+static uint32_t ke_le_word(const uint8_t *b)
+{
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) |
+           ((uint32_t)b[3] << 24);
+}
+
+static void ke_io(void)
+{
+    uint32_t w[16];
+    SceIoStat st;
+    hle_step("io-eof-precheck");
+    const SceUID pre = sceIoDopen(KE_DIR);
+    if (pre >= 0) {
+        /* The directory exists: it is not the probe's, so nothing below may touch it. */
+        (void)sceIoDclose(pre);
+        ke_skip_from(0u, (uint32_t)pre);
+        return;
+    }
+
+    hle_step("io-eof-mkdir");
+    const int made = sceIoMkdir(KE_DIR, 0777);
+    w[0] = (uint32_t)made;
+    hle_record("io-eof-mkdir", "PASS", (uint32_t)made, w, 1u);
+    if (made < 0) {
+        ke_skip_from(1u, (uint32_t)made);
+        return;
+    }
+
+    /* io-eof-missing: a missing file in the probe's directory opened write-only, read-write,
+       read-only and write-only with O_TRUNC, each without PSP_O_CREAT, then sceIoGetstat of
+       the path (did any open create it). An unexpected descriptor is closed and the file
+       removed. */
+    hle_step("io-eof-missing");
+    static const int missing_flags[4] = {
+        PSP_O_WRONLY, PSP_O_RDWR, PSP_O_RDONLY, PSP_O_WRONLY | PSP_O_TRUNC,
+    };
+    int opened = 0;
+    for (unsigned i = 0; i < 4u; i++) {
+        const SceUID mfd = sceIoOpen(KE_MISSING, missing_flags[i], 0777);
+        w[i] = (uint32_t)mfd;
+        if (mfd >= 0) {
+            (void)sceIoClose(mfd);
+            opened = 1;
+        }
+    }
+    memset(&st, 0, sizeof(st));
+    w[4] = (uint32_t)sceIoGetstat(KE_MISSING, &st);
+    if (opened || (int)w[4] >= 0) {
+        (void)sceIoRemove(KE_MISSING);
+    }
+    hle_record("io-eof-missing", "PASS", 0u, w, 5u);
+
+    /* io-eof-create: the 16-byte file with O_CREAT|O_EXCL, its write and close. */
+    hle_step("io-eof-create");
+    static const char bytes[KE_SIZE] = { 'n', 'a', 'k', 'a', 'g', 'a', 'w', 'a',
+                                         '-', 'e', 'o', 'f', '-', '0', '0', '1' };
+    SceUID fd = sceIoOpen(KE_FILE, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_EXCL, 0777);
+    w[0] = (uint32_t)fd;
+    w[1] = fd >= 0 ? (uint32_t)sceIoWrite(fd, bytes, sizeof(bytes)) : HLE_SENTINEL;
+    w[2] = fd >= 0 ? (uint32_t)sceIoClose(fd) : HLE_SENTINEL;
+    hle_record("io-eof-create", "PASS", (uint32_t)fd, w, 3u);
+    if (fd < 0 || (int)w[1] != (int)KE_SIZE) {
+        ke_skip_from(3u, (uint32_t)fd);
+        (void)sceIoRemove(KE_FILE);
+        (void)sceIoRmdir(KE_DIR);
+        return;
+    }
+
+    /* io-eof-seek-negative on a read-write descriptor: Lseek SET 8 (low), Lseek SET -1, CUR 0,
+       Lseek CUR -16, CUR 0, Lseek END -32, CUR 0 (each low, high), Lseek32 SET -1, Lseek32
+       CUR 0, then the close. Nothing is written. */
+    hle_step("io-eof-seek-negative");
+    fd = sceIoOpen(KE_FILE, PSP_O_RDWR, 0777);
+    if (fd >= 0) {
+        w[0] = (uint32_t)sceIoLseek(fd, 8, PSP_SEEK_SET);
+        ke_off(&w[1], sceIoLseek(fd, -1, PSP_SEEK_SET));
+        ke_off(&w[3], sceIoLseek(fd, 0, PSP_SEEK_CUR));
+        ke_off(&w[5], sceIoLseek(fd, -16, PSP_SEEK_CUR));
+        ke_off(&w[7], sceIoLseek(fd, 0, PSP_SEEK_CUR));
+        ke_off(&w[9], sceIoLseek(fd, -32, PSP_SEEK_END));
+        ke_off(&w[11], sceIoLseek(fd, 0, PSP_SEEK_CUR));
+        w[13] = (uint32_t)sceIoLseek32(fd, -1, PSP_SEEK_SET);
+        w[14] = (uint32_t)sceIoLseek32(fd, 0, PSP_SEEK_CUR);
+        w[15] = (uint32_t)sceIoClose(fd);
+        hle_record("io-eof-seek-negative", "PASS", (uint32_t)fd, w, 16u);
+    } else {
+        for (unsigned i = 0; i < 16u; i++) w[i] = HLE_SENTINEL;
+        hle_record("io-eof-seek-negative", "FAIL", (uint32_t)fd, w, 16u);
+    }
+
+    /* io-eof-seek-negative-rdonly: Lseek SET -1 and CUR 0 (each low, high), then the close. */
+    hle_step("io-eof-seek-negative-rdonly");
+    fd = sceIoOpen(KE_FILE, PSP_O_RDONLY, 0777);
+    if (fd >= 0) {
+        ke_off(&w[0], sceIoLseek(fd, -1, PSP_SEEK_SET));
+        ke_off(&w[2], sceIoLseek(fd, 0, PSP_SEEK_CUR));
+        w[4] = (uint32_t)sceIoClose(fd);
+        hle_record("io-eof-seek-negative-rdonly", "PASS", (uint32_t)fd, w, 5u);
+    } else {
+        for (unsigned i = 0; i < 5u; i++) w[i] = HLE_SENTINEL;
+        hle_record("io-eof-seek-negative-rdonly", "FAIL", (uint32_t)fd, w, 5u);
+    }
+
+    /* io-eof-write-past: on a read-write descriptor, Lseek SET 0x20 (low, high), the size
+       before the write (sceIoGetstat low), a 4-byte write there, Lseek CUR 0 (low), the close,
+       then the size after (low, high). */
+    hle_step("io-eof-write-past");
+    static const char tail[KE_TAIL] = { 'T', 'A', 'I', 'L' };
+    fd = sceIoOpen(KE_FILE, PSP_O_RDWR, 0777);
+    if (fd >= 0) {
+        ke_off(&w[0], sceIoLseek(fd, KE_PAST, PSP_SEEK_SET));
+        memset(&st, 0, sizeof(st));
+        const int gs = sceIoGetstat(KE_FILE, &st);
+        w[2] = gs >= 0 ? (uint32_t)((uint64_t)st.st_size & 0xffffffffu) : (uint32_t)gs;
+        w[3] = (uint32_t)sceIoWrite(fd, tail, sizeof(tail));
+        w[4] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+        w[5] = (uint32_t)sceIoClose(fd);
+        memset(&st, 0, sizeof(st));
+        const int gs2 = sceIoGetstat(KE_FILE, &st);
+        w[6] = gs2 >= 0 ? (uint32_t)((uint64_t)st.st_size & 0xffffffffu) : (uint32_t)gs2;
+        w[7] = gs2 >= 0 ? (uint32_t)((uint64_t)st.st_size >> 32) : HLE_SENTINEL;
+        hle_record("io-eof-write-past", "PASS", (uint32_t)fd, w, 8u);
+    } else {
+        for (unsigned i = 0; i < 8u; i++) w[i] = HLE_SENTINEL;
+        hle_record("io-eof-write-past", "FAIL", (uint32_t)fd, w, 8u);
+    }
+
+    /* io-eof-gap: read 0x30 bytes from offset 0 into a buffer filled with 0xEE: the read
+       result, the gap bytes 16..31 as four little-endian words, the bytes 32..35 (the tail),
+       Lseek CUR 0 (low) and the close. */
+    hle_step("io-eof-gap");
+    static uint8_t buf[KE_READ];
+    memset(buf, KE_FILL, sizeof(buf));
+    fd = sceIoOpen(KE_FILE, PSP_O_RDONLY, 0777);
+    if (fd >= 0) {
+        w[0] = (uint32_t)sceIoRead(fd, buf, sizeof(buf));
+        for (unsigned i = 0; i < 4u; i++) w[1 + i] = ke_le_word(&buf[KE_SIZE + 4u * i]);
+        w[5] = ke_le_word(&buf[KE_PAST]);
+        w[6] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+        w[7] = (uint32_t)sceIoClose(fd);
+        hle_record("io-eof-gap", "PASS", (uint32_t)fd, w, 8u);
+    } else {
+        for (unsigned i = 0; i < 8u; i++) w[i] = HLE_SENTINEL;
+        hle_record("io-eof-gap", "FAIL", (uint32_t)fd, w, 8u);
+    }
+
+    /* io-eof-read-past on a read-only descriptor: Lseek SET 0x40 (low, high), a read of 4
+       there, Lseek CUR 0 (low), then the close. */
+    hle_step("io-eof-read-past");
+    fd = sceIoOpen(KE_FILE, PSP_O_RDONLY, 0777);
+    if (fd >= 0) {
+        uint8_t four[4];
+        ke_off(&w[0], sceIoLseek(fd, 0x40, PSP_SEEK_SET));
+        w[2] = (uint32_t)sceIoRead(fd, four, sizeof(four));
+        w[3] = (uint32_t)sceIoLseek(fd, 0, PSP_SEEK_CUR);
+        w[4] = (uint32_t)sceIoClose(fd);
+        hle_record("io-eof-read-past", "PASS", (uint32_t)fd, w, 5u);
+    } else {
+        for (unsigned i = 0; i < 5u; i++) w[i] = HLE_SENTINEL;
+        hle_record("io-eof-read-past", "FAIL", (uint32_t)fd, w, 5u);
+    }
+
+    /* io-eof-cleanup: remove the file and the directory, then confirm the directory is gone. */
+    hle_step("io-eof-cleanup");
+    w[0] = (uint32_t)sceIoRemove(KE_FILE);
+    w[1] = (uint32_t)sceIoRmdir(KE_DIR);
+    const SceUID post = sceIoDopen(KE_DIR);
+    w[2] = (uint32_t)post;
+    if (post >= 0) {
+        (void)sceIoDclose(post);
+    }
+    hle_record("io-eof-cleanup", "PASS", 0u, w, 3u);
+}
+#endif /* KS_CASE_IO_EOF */
+
 static int hle_run(void)
 {
+#if PSP_ORACLE_CASE == KS_CASE_IO_EOF
+    ke_io();
+    return 1;
+#else
     ks_subintr_order();
     ks_ctrl_empty_read();
     ks_ctrl_short_read();
@@ -650,6 +878,7 @@ static int hle_run(void)
     ks_io();
     ks_wlan();
     return 1;
+#endif
 }
 
 /* ------------------------------------------------------------------------- */
