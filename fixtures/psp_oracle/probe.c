@@ -2068,6 +2068,13 @@ static void run_dmac_concurrency(int emulated) {
 #define DMAC_INVALID_SETUP_GEOMETRY 0x02u
 #define DMAC_INVALID_SETUP_END_NEIGHBOR 0x04u
 #define DMAC_INVALID_NEIGHBOR_BYTES 0x1000u
+/* sysmem block type 4 (HighAligned, uofw sysmem): the highest free address aligned to the
+ * power of two passed as the address argument. PSPSDK's enum stops at PSP_SMEM_Addr. Plain
+ * PSP_SMEM_High gave a page-aligned block in the standalone-PSPLink context (2026-11-02) but
+ * not under the XMB, where the top of partition 2 is partly allocated (2026-11-03, setup_mask
+ * 0x1). The free gap left above an aligned block is under one page, so the end-neighbour
+ * refusal still holds. */
+#define DMAC_INVALID_SMEM_HIGH_ALIGNED 4
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_MEMCPY_DST
 #define DMAC_INVALID_API DMAC_API_MEMCPY
@@ -2201,8 +2208,9 @@ static int dmac_invalid_acquire(uint32_t *setup_mask, uint32_t *setup_error,
     *setup_mask = 0;
     *setup_error = 0;
     *block_uid = sceKernelAllocPartitionMemory(
-        DMAC_INVALID_PARTITION, "oracle-dmac-scratch", PSP_SMEM_High,
-        DMAC_INVALID_SCRATCH_BYTES, NULL);
+        DMAC_INVALID_PARTITION, "oracle-dmac-scratch",
+        DMAC_INVALID_SMEM_HIGH_ALIGNED, DMAC_INVALID_SCRATCH_BYTES,
+        (void *)(uintptr_t)DMAC_INVALID_NEIGHBOR_BYTES);
     if (*block_uid < 0) {
         *setup_error = (uint32_t)*block_uid;
         return 0;

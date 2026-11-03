@@ -2218,6 +2218,8 @@ GE_MIP_CELLS = (
     "al-u3v2", "a-4x-b1", "a-4x-bm1", "al-2x-b0f8", "a-quad-w2", "a-quad-w1to4", "s-s1-w1",
     "s-s1-w2", "s-s1-w3", "s-s1-w4", "s-s1-w8", "s-s1-wh", "s-s2-w1", "s-s2-w4", "s-sh-w8",
     "s-s1-w2-b1", "s-s1-w2-4x", "sn-s1-w3", "s-s1-w1to8", "s-spr-s4",
+    "a-quad-v16-w1to8", "a-quad-v16-w8to1", "a-quad-v8-w1to8", "a-quad-u48-w1to4",
+    "a-quad-w4to1", "an-quad-w1to4", "a-quad-w1to4-bm1f8", "s-s1-w8to1", "s-s3-w1to8",
 )
 GE_MIP_CASES = tuple(case for cell in GE_MIP_CELLS
                      for case in (f"{cell}-draw", *(f"{cell}-r{y}" for y in GE_RASTER_ROWS)))

@@ -517,7 +517,8 @@ class NewProbeResultParserTests(unittest.TestCase):
             probe,
             r"\*block_uid\s*=\s*sceKernelAllocPartitionMemory\(\s*"
             r"DMAC_INVALID_PARTITION,\s*\"oracle-dmac-scratch\",\s*"
-            r"PSP_SMEM_High,\s*DMAC_INVALID_SCRATCH_BYTES,\s*NULL\);",
+            r"DMAC_INVALID_SMEM_HIGH_ALIGNED,\s*DMAC_INVALID_SCRATCH_BYTES,\s*"
+            r"\(void \*\)\(uintptr_t\)DMAC_INVALID_NEIGHBOR_BYTES\);",
         )
         self.assertIn(
             "*block_head = (uint8_t *)sceKernelGetBlockHeadAddr(*block_uid);",
