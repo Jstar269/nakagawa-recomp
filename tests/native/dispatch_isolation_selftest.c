@@ -320,22 +320,21 @@ static const SrModuleFunc k_module_b_funcs[] = {
 };
 static const SrModuleSpan k_module_spans[] = { { 0x00u, 0x60u } };
 static const SrModuleCode k_module_a = {
-    "overlay_a.prx", 0x200u, 0x1111u, 0x00u, 0x100u, 0x10u, 1u, NULL, &g_module_a_base,
+    "overlay_a.prx", 0x200u, NULL, 0x00u, 0x100u, 0x10u, 1u, NULL, &g_module_a_base,
     k_module_a_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 static const SrModuleCode k_module_b = {
-    "overlay_b.prx", 0x300u, 0x2222u, 0x00u, 0x200u, 0x10u, 1u, NULL, &g_module_b_base,
+    "overlay_b.prx", 0x300u, NULL, 0x00u, 0x200u, 0x10u, 1u, NULL, &g_module_b_base,
     k_module_b_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 static const SrModuleFunc k_module_fixed_funcs[] = { { MODULE_FIXED_LINK, 2u, module_a_entry } };
 static const SrModuleSpan k_module_fixed_spans[] = { { MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x20u } };
 static const SrModuleCode k_module_fixed = {
-    "fixed.prx", 0x80u, 0x3333u, MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x40u, 0x4u, 0u, NULL,
-    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u,
-    NULL, 0u, NULL, 0u,
+    "fixed.prx", 0x80u, NULL, MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x40u, 0x4u, 0u, NULL,
+    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 static const SrModuleCode k_module_unsupported = {
-    "untranslatable.prx", 0x80u, 0x4444u, 0x00u, 0x40u, 0x4u, 1u,
+    "untranslatable.prx", 0x80u, NULL, 0x00u, 0x40u, 0x4u, 1u,
     "relocations cannot be translated: synthetic", &g_module_fixed_base,
     NULL, 0u, NULL, 0u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
@@ -359,14 +358,12 @@ static const SrModuleFunc k_overlay_b_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_b
 #define OVERLAY_UNTRANSLATED (OVERLAY_LINK + 0x60u)
 static const SrModuleSpan k_overlay_spans[] = { { OVERLAY_ENTRY, OVERLAY_LINK + 0x70u } };
 static SrModuleCode k_overlay_a = {
-    "A.ovl", OVERLAY_CHECK_BYTES, 0x5555u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
-    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
-    NULL, 0u, NULL, 0u,
+    "A.ovl", OVERLAY_CHECK_BYTES, NULL, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
+    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u, NULL, 0u,
 };
 static SrModuleCode k_overlay_b = {
-    "B.ovl", OVERLAY_CHECK_BYTES, 0x6666u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
-    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
-    NULL, 0u, NULL, 0u,
+    "B.ovl", OVERLAY_CHECK_BYTES, NULL, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
+    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u, NULL, 0u,
 };
 
 static uint32_t overlay_word(uint32_t tag, uint32_t off) { return tag | off; }
@@ -461,7 +458,7 @@ static const SrModuleSpan k_mixed_check_spans[] = {
     { MIXED_FIRST, MIXED_FIRST + 0x10u }, { MIXED_SECOND, MIXED_SECOND + 0x10u },
 };
 static SrModuleCode k_mixed = {
-    "OVL_MIXED.ELF", 0x100u, 0x7777u, MIXED_LINK, MIXED_LINK + 0x40u, 0x4u, 0u, NULL,
+    "OVL_MIXED.ELF", 0x100u, NULL, MIXED_LINK, MIXED_LINK + 0x40u, 0x4u, 0u, NULL,
     &g_mixed_base, k_mixed_funcs, 2u, k_mixed_check_spans, 2u, MIXED_CHECK_LEN, 0u, NULL, 0u,
     k_mixed_check_spans, 2u,
 };

@@ -25,6 +25,7 @@ the platform ladder and pin the generated contract the runtime binds:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import re
@@ -134,7 +135,7 @@ class RuntimeModuleTranslation(unittest.TestCase):
             self.assertIsNotNone(block)
             text = block.group(1)
             self.assertIn(f'"{spec.file_name}", 0x{len(data):08x}u, '
-                          f'0x{codegen.fnv1a64(data):016x}ull', text)
+                          f'"{hashlib.sha256(data).hexdigest()}"', text)
             self.assertIn(f"0x{relocations.load_low:08x}u, 0x{relocations.load_high:08x}u, "
                           f"0x{relocations.alignment:x}u, 1u", text)
             self.assertIn(f"NULL, &{self.base(index)}", text)

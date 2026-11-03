@@ -1724,6 +1724,11 @@ static SrModuleCode s_rt_alpha_code = {
     "rt-alpha.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_alpha_base,
     s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u, 0u, 0u,
 };
+static uint32_t s_rt_identity_base;
+static SrModuleCode s_rt_identity_code = {
+    "rt-identity.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_identity_base,
+    s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u, 0u, 0u,
+};
 /* A library module with no start routine; its stop body is the alpha one. */
 static uint32_t s_rt_nostart_base;
 static const SrModuleFunc s_rt_nostart_funcs[] = {
@@ -1983,8 +1988,11 @@ static int runtime_module_identity(const char *path, SrModuleCode *code) {
     size_t n = fread(bytes, 1, sizeof(bytes), f);
     fclose(f);
     if (n == 0 || n == sizeof(bytes)) return 0;
+    char *digest = realloc((char *)code->file_sha256, 65u);
+    if (!digest) return 0;
+    sr_module_code_sha256(bytes, n, digest);
     code->file_size = (uint32_t)n;
-    code->file_fnv1a64 = sr_module_code_fnv1a64(bytes, n);
+    code->file_sha256 = digest;
     return 1;
 }
 
@@ -2186,6 +2194,43 @@ static void test_runtime_placed_guest_owned_library(void) {
 }
 
 static TCB *fixture_thread(uint32_t uid, int state, int priority);
+static int write_runtime_module_bytes(const char *path, const uint8_t *bytes, size_t size) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(bytes, 1, size, f);
+    int close_result = fclose(f);
+    return written == size && close_result == 0;
+}
+
+/* A staged file is the translated module only if it holds the same bytes. These two files have
+ * one size and one FNV-1a digest, so only a digest that separates them can tell them apart. */
+static void test_runtime_module_identity_separates_files(void) {
+    extern int loadexec_module_file_matches_translation(const char *file);
+    static const uint8_t translated[8] = {0xBC, 0x43, 0xEC, 0x56, 0x60, 0x9C, 0xEA, 0xF3};
+    static const uint8_t other[8] = {0xBD, 0x98, 0x12, 0x56, 0xD6, 0xD4, 0x0F, 0x4C};
+    char path[1024], digest[65];
+    sr_module_code_sha256("abc", 3u, digest);
+    expect(strcmp(digest, "ba7816bf8f01cfea414140de5dae2223"
+                          "b00361a396177a9cb410ff61f20015ad") == 0,
+           "module identity: the digest is lowercase hex SHA-256, as codegen records it");
+    runtime_module_path(path, sizeof(path), "rt-identity.prx");
+    expect(sr_module_code_fnv1a64(translated, sizeof(translated)) ==
+               sr_module_code_fnv1a64(other, sizeof(other)),
+           "module identity: the fixture files agree on size and FNV-1a");
+    expect(write_runtime_module_bytes(path, translated, sizeof(translated)) &&
+               runtime_module_identity(path, &s_rt_identity_code),
+           "module identity: the descriptor records the translated file");
+    sr_module_code_reset();
+    sr_module_code_register(&s_rt_identity_code);
+    expect(loadexec_module_file_matches_translation("rt-identity.prx") == 1,
+           "module identity: the translated bytes match");
+    expect(write_runtime_module_bytes(path, other, sizeof(other)) &&
+               loadexec_module_file_matches_translation("rt-identity.prx") == 0,
+           "module identity: other bytes do not match, though size and FNV-1a agree");
+    sr_module_code_reset();
+    remove(path);
+}
+
 static void test_runtime_placed_modules(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
@@ -2219,6 +2264,7 @@ static void test_runtime_placed_modules(void) {
     expect(runtime_module_identity(alpha_path, &s_rt_alpha_code) &&
                runtime_module_identity(delta_path, &s_rt_delta_code),
            "runtime placement: descriptors record the fixture identities");
+    test_runtime_module_identity_separates_files();
 
     hle_test_setenv("SR_REAL_MODULE_START", NULL);
     sr_hle_test_module_reset();
@@ -3846,6 +3892,56 @@ static void test_fd_namespace(void) {
         expect(sr_hle_test_io_close(&cpu) == 0u &&
                    fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
                "TRUNC without PSP_O_CREAT truncates the existing file");
+        remove(flags_host);
+
+        /* PSP_O_TRUNC, measured on a PSP-3000 (#1892): the file is empty from the open on, but
+         * a write past the end brings back the old bytes below it, which is how a game installs
+         * a file in chunks, and the file ends at that write. */
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0602u;
+        uint32_t chunk_fd = sr_hle_test_io_open(&cpu);
+        fd_guest_copy(payload_addr, "abcdefgh", 8u);
+        fd_set_write(&cpu, chunk_fd, payload_addr, 8u);
+        expect(sr_hle_test_io_write(&cpu) == 8u, "TRUNC fixture writes its first chunk");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        (void)sr_hle_test_io_close(&cpu);
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0603u; /* RDWR | CREAT | TRUNC */
+        chunk_fd = sr_hle_test_io_open(&cpu);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        cpu.r[5] = 0u;
+        cpu.r[6] = 2u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 0u, "a TRUNC descriptor sees an empty file");
+        expect(fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
+               "a TRUNC open leaves the host file empty, whatever happens before close");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        cpu.r[5] = 4u;
+        cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == 4u, "TRUNC fixture seeks to its second chunk");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        cpu.r[5] = payload_addr;
+        cpu.r[6] = 2u;
+        expect(sr_hle_test_io_read(&cpu) == 0u, "a read past the TRUNC end returns nothing");
+        fd_guest_copy(payload_addr, "WX", 2u);
+        fd_set_write(&cpu, chunk_fd, payload_addr, 2u);
+        expect(sr_hle_test_io_write(&cpu) == 2u, "TRUNC fixture writes its second chunk");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"abcdWX", 6u),
+               "a write past the TRUNC end brings back the bytes below it and ends the file");
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0602u;
+        chunk_fd = sr_hle_test_io_open(&cpu);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = chunk_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
+               "TRUNC with no write ends at an empty file");
         remove(flags_host);
     }
 
@@ -5924,6 +6020,41 @@ static void profile_read(uint8_t mac[6], uint8_t psid[16]) {
            "both console-profile getters answer 0");
     for (uint32_t i = 0; i < 6u; i++) mac[i] = MEM_R8(PROFILE_OUT + i);
     for (uint32_t i = 0; i < 16u; i++) psid[i] = MEM_R8(PROFILE_OUT + 16u + i);
+}
+
+/* Portable mode (#1850): the game process's registry overlay follows SR_USER_DATA_ROOT, the root the
+ * launcher resolved, not the platform default; SR_SYSTEM_REGISTRY still wins, and a relative root
+ * is refused rather than answered with the default. */
+char *sreg_overlay_path(void);
+static void test_sysreg_overlay_follows_user_data_root(void) {
+    char cwd[1024], root[2048];
+    char *path;
+    size_t len;
+    const char suffix[] = "registry";
+    if (!getcwd(cwd, sizeof(cwd))) {
+        expect(0, "getcwd for the user-data-root test");
+        return;
+    }
+    snprintf(root, sizeof(root), "%s/%s/udr", cwd, SYSREG_SCRATCH_DIR);
+    sysreg_env(NULL);
+    hle_test_setenv("SR_USER_DATA_ROOT", root);
+    path = sreg_overlay_path();
+    len = path ? strlen(path) : 0u;
+    expect(path && strstr(path, "udr") && strstr(path, suffix) && len > 11u &&
+               strcmp(path + len - 11u, "system.json") == 0,
+           "SR_USER_DATA_ROOT sets the registry overlay's folder");
+    free(path);
+    sysreg_env(SYSREG_SCRATCH_FILE);
+    path = sreg_overlay_path();
+    expect(path && strcmp(path, SYSREG_SCRATCH_FILE) == 0, "SR_SYSTEM_REGISTRY wins over SR_USER_DATA_ROOT");
+    free(path);
+    sysreg_env(NULL);
+    hle_test_setenv("SR_USER_DATA_ROOT", "relative-root");
+    path = sreg_overlay_path();
+    expect(path == NULL, "a relative SR_USER_DATA_ROOT is refused, not answered with the default folder");
+    free(path);
+    hle_test_setenv("SR_USER_DATA_ROOT", NULL);
+    sysreg_env(SYSREG_SCRATCH_FILE);
 }
 
 static void test_console_profile_identity(void) {
@@ -43827,6 +43958,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_explicit_refusals();
     test_npdrm_licensee_key();
     test_sysreg_virtual_registry();
+    test_sysreg_overlay_follows_user_data_root();
     test_console_profile_identity();
     test_sysreg_write_model();
     test_sysparam_nickname_string();
