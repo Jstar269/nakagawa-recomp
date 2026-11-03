@@ -2381,44 +2381,106 @@ def _keep_prologue_seeds(d):
     d.jtails = {a for a in d.jtails if is_prologue(a)}
 
 
-def _seed_materialized_code(d, code_check):
-    """Make functions of the addresses traced code materializes that decode as code.
+def _traced_definition(d, use_addr, reg):
+    """The last traced word before ``use_addr`` that writes ``reg``, as ``(addr, word)``,
+    within the straight-line run of traced code that ends there; ``None`` when the run
+    leaves traced code, passes a function entry or a control transfer, or meets an
+    encoding _gpr_writes does not classify before any write."""
+    addr = use_addr - 4
+    while addr in d.covered:
+        raw = d.elf.read_at_vaddr(addr, 4)
+        if raw is None or len(raw) < 4:
+            return None
+        word = int.from_bytes(raw, "little")
+        writes = _gpr_writes(word)
+        if writes is None or writes == "unknown":
+            return None
+        if reg in writes:
+            return addr, word
+        if addr in d.functions:
+            return None
+        addr -= 4
+    return None
+
+
+def _traced_call_target(d, site, reg):
+    """The address a `lui reg` / `addiu reg, reg` (or `ori`) pair builds in ``reg`` for the
+    `jr`/`jalr` at ``site``: both halves traced code, in that one register, the last writes
+    of it before the transfer. ``None`` for any other definition (a load, an `addu`, an
+    incoming argument)."""
+    low = _traced_definition(d, site, reg)
+    if low is None:
+        return None
+    l_addr, l_word = low
+    op = l_word >> 26
+    if op not in (0x09, 0x0D) or (l_word >> 21) & 0x1F != reg:
+        return None
+    high = _traced_definition(d, l_addr, reg)
+    if high is None or high[1] >> 26 != 0x0F:
+        return None
+    upper = (high[1] & 0xFFFF) << 16
+    if op == 0x09:
+        lo = l_word & 0xFFFF
+        target = (upper + lo - (0x10000 if lo & 0x8000 else 0)) & 0xFFFFFFFF
+    else:
+        target = upper | (l_word & 0xFFFF)
+    if (target & 3) or not in_ranges(target, d.ranges) \
+            or not _relocated_as(d.relocated, l_addr, "lo16"):
+        return None
+    return target
+
+
+def _seed_materialized_code(d):
+    """Make functions of the addresses traced code materializes and then calls or jumps to.
 
     In an image whose code section also holds its data, a materialized address that is
     neither a prologue nor `jr $ra` (a callback such as `lw v0, 0(a1); jr ra`) is no seed
-    of its own (_keep_prologue_seeds). It becomes a function when the `lui`/`addiu` (or
-    `ori`) pair that forms it lies in traced code, and ``code_check(address, entries)``
-    accepts the body from there as code. A pointer to data, `la a0, table`, forms the
-    same pair, so the check is what refuses it. Repeats until nothing new is found:
-    each new function may materialize further addresses."""
-    refused = set()
+    of its own (_keep_prologue_seeds). `la a1, table` forms the same `lui`/`addiu` pair
+    as `la a0, cb`, and a table of zeros, small integers or floats decodes as well as code
+    does, so neither the pair nor the bytes say which is code. The evidence is the flow:
+    the address becomes a function when traced code builds it with a `lui`/`addiu` (or
+    `ori`) pair in one register and that register is the target of a traced `jr`/`jalr`
+    (_traced_call_target). Repeats until nothing new is found: each new function may call
+    further addresses.
+
+    Returns the materialized addresses with no such evidence whose `la` low half is traced:
+    they stay outside the spans, with no executable authority, for the caller to name."""
     changed = True
     while changed:
         changed = False
-        for target in sorted(d.materialized):
-            if target in d.functions or target in d.covered or target in refused:
+        for site in sorted(d.covered):
+            raw = d.elf.read_at_vaddr(site, 4)
+            if raw is None or len(raw) < 4:
                 continue
-            if not any(site in d.covered for site in d.materialized[target]):
+            word = int.from_bytes(raw, "little")
+            reg = (word >> 21) & 0x1F
+            if word >> 26 != 0 or (word & 0x3F) not in (0x08, 0x09) or reg in (0, 31):
                 continue
-            if not code_check(target, frozenset(d.functions)):
-                refused.add(target)
+            target = _traced_call_target(d, site, reg)
+            if target is None or target in d.functions or target in d.covered:
                 continue
             d.functions.add(target)
             d.discover([target])
             changed = True
+    return frozenset(
+        target for target, sites in d.materialized.items()
+        if target not in d.functions and target not in d.covered
+        and any(site in d.covered for site in sites))
 
 
 def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
-            entry_hints=None, mixed_code_data=False, code_check=None):
+            entry_hints=None, mixed_code_data=False):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
     # `entry_hints` are code pointers another image holds into this one (data_section_words).
     # `mixed_code_data` names an image whose code section also holds its data
-    # (_keep_prologue_seeds); `code_check` then decides which addresses its traced code
-    # materializes are code (_seed_materialized_code).
+    # (_keep_prologue_seeds); the addresses its traced code materializes are code only when
+    # that code calls or jumps to them (_seed_materialized_code).
     # `report`, when a dict, receives the discovery state the import-stub census reads:
     # covered (every traced instruction address), calls (every direct-call target seen),
-    # and hc (the high-confidence seeds). The return value is unchanged.
+    # and hc (the high-confidence seeds), and code_candidates: the materialized addresses
+    # of a mixed image left outside its code for want of evidence. The return value is
+    # unchanged.
     d = _Discovery(elf, extra_spans, cfg_gate, trace_memo)
     _seed_entry_point(d)
     _seed_prologues_and_terminators(d)
@@ -2434,8 +2496,9 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     d.discover(list(d.hc))
     pending_tail_calls = _promote_tail_calls(d)
     _fill_gaps(d, pending_tail_calls)
-    if mixed_code_data and code_check is not None:
-        _seed_materialized_code(d, code_check)
+    code_candidates = frozenset()
+    if mixed_code_data:
+        code_candidates = _seed_materialized_code(d)
 
     # The late passes can reach start-up code that calls a pointer array (a function
     # entered only through a pointer or the gap fill); seed those arrays too.
@@ -2443,7 +2506,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
 
     merged_ranges = _owned_spans(d)
     if report is not None:
-        report.update(covered=d.covered, calls=d.calls, hc=d.hc)
+        report.update(covered=d.covered, calls=d.calls, hc=d.hc,
+                      code_candidates=code_candidates - d.covered - d.functions)
     return d.functions, merged_ranges
 
 

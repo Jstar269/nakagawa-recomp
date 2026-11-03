@@ -588,22 +588,80 @@ class RuntimeModuleBoundaries(unittest.TestCase):
                       f"    {{ 0x{first:08x}u, 0x{first + 4 * counts[first]:08x}u }},",
                       "\n".join(codegen.runtime_module_descriptor_lines(module)))
 
-    def test_fixed_overlay_callback_its_code_materializes_is_code(self):
-        # `la a0, cb` in traced code names a callback that opens no frame and does not
-        # start with `jr ra`; it decodes as code, so it is a function inside the spans and
-        # the identity. `la a1, table` names data that does not decode ("DATA" is a
-        # reserved COP0 form), so the table stays outside both.
-        data, caller, callback, table = basic_fixed_overlay(FIXED_OVERLAY_CALLBACK_SEGMENT)
-        path = self.root / "OVL_CALLBACK.ELF"
+    def fixed_overlay_module(self, segment, name="OVL_CALLBACK.ELF"):
+        data = basic_fixed_overlay(segment)[0]
+        path = self.root / name
         path.write_bytes(data)
-        with contextlib.redirect_stderr(io.StringIO()):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
             module = codegen.translate_runtime_module(0, str(path))
+        return module, err.getvalue()
+
+    def test_fixed_overlay_callback_its_code_calls_is_code(self):
+        # `la a0, cb` in traced code names a callback that opens no frame and does not
+        # start with `jr ra`; the same register is the target of the `jalr`, so it is a
+        # function inside the spans and the identity. `la a1, table` reaches no `jr`/`jalr`:
+        # it names data, which stays outside both and is named as a candidate.
+        _data, caller, callback, table = basic_fixed_overlay(FIXED_OVERLAY_CALLBACK_SEGMENT)
+        module, err = self.fixed_overlay_module(FIXED_OVERLAY_CALLBACK_SEGMENT)
         self.assertIsNone(module.unsupported_reason)
         self.assertEqual(module.functions, [(caller, 11), (callback, 3)])
         self.assertEqual(module.spans, [(caller, table)])
         self.assertEqual(module.overlay_check_spans, ((caller, table),))
         for word in (table, table + 4):
             self.assertFalse(in_ranges(word, module.spans), f"0x{word:08x} is data")
+        self.assertEqual(module.code_candidates, (table,))
+        self.assertIn(f"0x{table:08x}: materialized address with no evidence it is code", err)
+
+    def test_fixed_overlay_table_that_decodes_is_not_code(self):
+        # Zeros decode as `nop`, small integers and floats as ALU forms: a table the code
+        # names with `la a1, table` translates as well as code does. Nothing calls or jumps
+        # to it, so it gets no executable authority and is not part of the identity.
+        _data, caller, callback, table = basic_fixed_overlay(FIXED_OVERLAY_CALLBACK_SEGMENT)
+        prefix = FIXED_OVERLAY_CALLBACK_SEGMENT[:table - OVERLAY_LINK]
+        returns = [0x03E00008, 0x00000000]  # jr ra; nop
+        tables = {
+            "zeros at the end": [0, 0],
+            "zeros": [0, 0] + returns,
+            "small integers": [2, 3] + returns,
+            "floats": [0x3F800000, 0x3F800000] + returns,
+        }
+        for case, words in tables.items():
+            with self.subTest(case=case):
+                segment = prefix + b"".join(struct.pack("<I", w) for w in words)
+                module, err = self.fixed_overlay_module(segment)
+                self.assertIsNone(module.unsupported_reason)
+                self.assertEqual(module.functions, [(caller, 11), (callback, 3)])
+                self.assertEqual(module.spans, [(caller, table)])
+                self.assertEqual(module.overlay_check_spans, ((caller, table),))
+                self.assertEqual(module.code_candidates, (table,))
+                self.assertIn(f"0x{table:08x}: materialized address", err)
+
+    def test_fixed_overlay_call_target_pair_is_traced_in_one_register(self):
+        # The `lui`/`addiu` pair that forms a call target is evidence only when both halves
+        # are traced code and build the one register the `jalr` reads.
+        _data, caller, callback, table = basic_fixed_overlay(FIXED_OVERLAY_CALLBACK_SEGMENT)
+        words = list(struct.unpack(f"<{len(FIXED_OVERLAY_CALLBACK_SEGMENT) // 4}I",
+                                   FIXED_OVERLAY_CALLBACK_SEGMENT))
+        words[2:4] = [0x3C0108C0, 0x2424002C]  # lui at,0x08c0; addiu a0,at,0x2c
+        module, _err = self.fixed_overlay_module(b"".join(struct.pack("<I", w) for w in words))
+        self.assertEqual(module.functions, [(caller, 11)], "two registers")
+        self.assertFalse(in_ranges(callback, module.spans))
+        self.assertEqual(module.code_candidates, (callback, table))
+
+        # A data word before the function reads as `lui a0`; the function adds to its
+        # incoming a0 and calls it. No traced `lui` forms that target.
+        untraced = b"".join(struct.pack("<I", w) for w in [
+            0x3C0408C0,                                   # data: reads as lui a0,0x08c0
+            0x27BDFFF0, 0xAFBF0000, 0x24840024,           # addiu sp,-16; sw ra; addiu a0,a0,0x24
+            0x0080F809, 0x00000000,                       # jalr a0; nop
+            0x8FBF0000, 0x03E00008, 0x27BD0010,           # lw ra,0(sp); jr ra; addiu sp,16
+            0x8CA20000, 0x03E00008, 0x00000000,           # 0x24: lw v0,0(a1); jr ra; nop
+        ])
+        module, _err = self.fixed_overlay_module(untraced, "OVL_UNTRACED.ELF")
+        self.assertEqual(module.functions, [(OVERLAY_LINK + 4, 8)], "untraced lui")
+        self.assertFalse(in_ranges(OVERLAY_LINK + 0x24, module.spans))
+        self.assertEqual(module.code_candidates, (OVERLAY_LINK + 0x24,))
 
     def test_fixed_overlay_identity_covers_a_leaf_it_calls(self):
         # A leaf reached only by `jal` opens no stack frame, but its translation runs from

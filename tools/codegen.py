@@ -3712,6 +3712,9 @@ class RuntimeModuleTranslation:
     # Non-empty: the check covers these (start, end) link ranges, in order, instead of
     # leading bytes; a fixed-address ELF overlay, whose check is its translated words.
     overlay_check_spans: tuple = ()
+    # A fixed-address ELF overlay: the addresses its code materializes with no evidence that
+    # they are code, left outside the spans (analyze._seed_materialized_code).
+    code_candidates: tuple = ()
     # analyze.static_coverage of the module's own link space (None when untranslatable).
     coverage: dict | None = None
     overlay_check_fnv1a64: int = 0
@@ -3803,26 +3806,6 @@ def var_import_table_lines(name, imports):
     return lines
 
 
-def decodes_as_code(elf, ranges, space):
-    """The analysis's ``code_check`` for an image whose code section also holds its data:
-    whether the body from an address translates here, by the rules every translated body
-    follows (each word a known instruction, no control in a delay slot), with ``entries``
-    as the other functions. A data word refuses it as an untranslatable body would."""
-    spans = span_index(ranges)
-
-    def check(address, entries):
-        global ADDRESS_SPACE
-        previous, ADDRESS_SPACE = ADDRESS_SPACE, space
-        try:
-            emit_function(elf, address, spans, set(entries) | {address})
-        except Unsupported:
-            return False
-        finally:
-            ADDRESS_SPACE = previous
-        return True
-    return check
-
-
 def word_runs(addresses):
     """The word addresses as merged (start, end) runs of contiguous words, in order."""
     runs = []
@@ -3889,16 +3872,11 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         return module
     ranges = exec_ranges(elf)
     discovery = {}
-    code_check = None
-    if fixed_overlay:
-        code_check = decodes_as_code(elf, ranges, AddressSpace(
-            base_symbol=module.base_symbol, prefix=module.prefix, relocations=relocations))
     try:
         # A code overlay's entry points are held by the executable (entry_hints).
         analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
                               entry_hints=entry_hints if overlay else None,
-                              mixed_code_data=fixed_overlay, report=discovery,
-                              code_check=code_check)
+                              mixed_code_data=fixed_overlay, report=discovery)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1
@@ -3981,6 +3959,14 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         code = {a for a in set(discovery.get("covered", ())) | translated_words | known
                 if in_ranges(a, ranges)}
         module.spans = word_runs(code)
+        # An address its traced code materializes but never calls or jumps to may be data
+        # (analyze._seed_materialized_code): it has no executable authority and is not part
+        # of the identity, so a call to it is a named miss. Name each one here.
+        module.code_candidates = tuple(sorted(
+            a for a in discovery.get("code_candidates", ()) if not in_ranges(a, module.spans)))
+        for a in module.code_candidates:
+            sys.stderr.write(f"codegen: {name}@0x{a:08x}: materialized address with no "
+                             "evidence it is code; outside the spans\n")
         if not words:
             module.unsupported_reason = "code overlay has no translated code to identify it"
     module_stubbed = {a for a, _ in module.stubbed}
