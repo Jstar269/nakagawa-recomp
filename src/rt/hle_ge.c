@@ -216,10 +216,8 @@ static uint64_t ge_timing_now_ns(void) {
 
 /* Put `clk` GE clocks of work on the timeline, at the current bus clock. */
 static void ge_timing_add_clk(double clk) {
+    /* scePowerSetClockFrequency refuses a zero bus clock, so this is never 0. */
     uint32_t mhz = sr_power_bus_clock_mhz();
-    /* scePowerSetClockFrequency retains its request verbatim; a zero bus clock, which no PSP
-     * runs at, keeps the boot clock rather than dividing by zero. */
-    if (mhz == 0u) mhz = SR_POWER_BOOT_BUS_MHZ;
     uint64_t now = ge_timing_now_ns();
     if (s_ge_busy_until_ns < now) s_ge_busy_until_ns = now;
     if (clk > 0.0) s_ge_busy_until_ns += (uint64_t)(clk * 1000.0 / (double)mhz + 0.5);  /* nearest ns */

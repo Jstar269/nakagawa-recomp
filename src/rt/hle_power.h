@@ -35,7 +35,6 @@ uint32_t h_PowerGetPllClockFrequencyFloat(CpuState *s);
 uint32_t h_PowerGetCpuClockFrequencyFloat(CpuState *s);
 uint32_t h_PowerGetBusClockFrequencyFloat(CpuState *s);
 uint32_t h_PowerSetClockFrequency(CpuState *s);
-uint32_t h_PowerSetClockFrequency350(CpuState *s);
 uint32_t h_PowerSetCpuClockFrequency(CpuState *s);
 uint32_t h_PowerSetBusClockFrequency(CpuState *s);
 
