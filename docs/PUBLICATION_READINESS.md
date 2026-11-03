@@ -29,7 +29,7 @@ inspects. Each is listed here with its control:
 
 | Channel | Control |
 | --- | --- |
-| Repository wiki | Editing restricted to collaborators. Pages summarize and link to the maintained docs, which stay authoritative. A wiki edit follows the same boundary rules as a tracked change: no private paths, retail-derived data, keys, or redistribution claims. Review the wiki after any boundary-rule change. |
+| Repository wiki | Disabled. The maintained documents in `docs/` are the only reference. |
 | Discussions, issues, and PR/review comments | Maintainer-moderated. The same boundary rules apply; private evidence is described, never attached. |
 | Releases and release assets | Every tag, release, and release-asset operation requires explicit maintainer authorization in the current turn (AGENTS.md section 3); agents never perform one on their own initiative. Tag creation is additionally locked by the `release-tags-locked` ruleset, and packages follow `PREVIEW_RELEASE.md` and its fail-closed scan. Those two are content controls, not authorization. |
 | GitHub Actions logs and job summaries | Public on this repository. Workflows must not print private paths, inputs, evidence, or trusted-authority material, and must not upload artifacts containing them; the provenance attestation job writes only its verdict summary to the step summary and never the trusted ledger. A workflow change that adds output is reviewed against these rules. |

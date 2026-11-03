@@ -10,7 +10,7 @@
 
 **Play PSP games you own as native Windows programs.**
 
-**[Download](https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.1) · [Website](https://jstar269.github.io/nakagawa-recomp/) · [Compatibility](docs/COMPATIBILITY.md) · [Discussions](https://github.com/Jstar269/nakagawa-recomp/discussions) · [Wiki](https://github.com/Jstar269/nakagawa-recomp/wiki)**
+**[Download](https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.1) · [Website](https://jstar269.github.io/nakagawa-recomp/) · [Compatibility](docs/COMPATIBILITY.md) · [Discussions](https://github.com/Jstar269/nakagawa-recomp/discussions)**
 
 [![CI](https://github.com/Jstar269/nakagawa-recomp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Jstar269/nakagawa-recomp/actions/workflows/ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)

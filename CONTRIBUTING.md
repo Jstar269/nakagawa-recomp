@@ -12,7 +12,8 @@ The rules it links to decide whether a change can land, so read them once.
    self-contained, no PSP or retail game needed) or
    [`help wanted`](https://github.com/Jstar269/nakagawa-recomp/labels/help%20wanted) (a contributor can take
    it). Issues labelled `needs-psp-hardware` need a physical PSP run, and `needs-owner-decision` waits on a
-   maintainer. Search existing issues before you open a new one. Every issue carries at least one label and a
+   maintainer. Search existing issues before you open a new one. Title an issue `Area: summary`, for example
+   `VFPU: expand verified semantic coverage for second-title instruction forms`. Every issue carries at least one label and a
    milestone: `v0.0.1` (the release's own steps), `v0.0.2` (bugs, HLE and accuracy fixes, tooling), `v0.1.0` (a
    second title, the flight recorder, the hardware oracle), `v0.2.0` (product and distribution) or `v0.3.0`
    (enhancements, diagnostic views, performance, new platforms). If GitHub won't let you set them, say in the

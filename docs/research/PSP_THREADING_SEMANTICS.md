@@ -436,13 +436,12 @@ comparison, or local build cannot be reported as hardware validation. Physical
 device execution, private trace handling, provenance authority, and release or
 merge decisions remain outside this documentation change.
 
-## Local Wiki synchronization drafts
+## Summary drafts
 
-This section is local source/draft material only. It records the text that can
-later be synchronized to the two public knowledge surfaces; no remote Wiki was
-edited by this documentation change.
+This section holds two draft summaries of the research above. Neither has been
+published anywhere.
 
-### Nakagawa project Wiki draft
+### Nakagawa project summary draft
 
 #### PSP threading semantics in Nakagawa
 
@@ -475,7 +474,7 @@ edited by this documentation change.
   records and 10 launches. The full consolidated totals remain 59 unique
    cases, 71 records, and 13 launches. Completed on physical PSP hardware: `CT/ST-ORACLE_EXECUTION = HARDWARE_MEASURED`.
 
-### General PSP recompilation Wiki draft
+### General PSP recompilation summary draft
 
 #### PSP ThreadMan and scheduler model
 
