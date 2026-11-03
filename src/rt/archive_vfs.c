@@ -154,16 +154,6 @@ static int archive_mount_reserve(SrArchiveVfs *vfs, size_t wanted) {
     return 1;
 }
 
-static char *archive_strdup_lower(const char *value) {
-    char normalized[NK_XB_MAX_NAME_BYTES + 1u];
-    if (!archive_normalize_key(value, normalized, sizeof(normalized), 0)) return NULL;
-    size_t length = strlen(normalized);
-    char *copy = (char *)malloc(length + 1u);
-    if (!copy) return NULL;
-    memcpy(copy, normalized, length + 1u);
-    return copy;
-}
-
 static char *archive_strdup(const char *value) {
     if (!value) return NULL;
     size_t length = strlen(value);
@@ -244,8 +234,16 @@ static NkResult archive_adopt(SrArchiveVfs *vfs, NkXbArchive *archive, int varia
             archive_index_rollback(vfs, first);
             return NK_ERROR_INVALID_XB;
         }
+        /* A member name with no key is a malformed archive, not a short allocation: the
+         * XB reader keeps a Shift-JIS trail byte 0x5c, which the key rule reads as a
+         * separator, so such a name can end in one or hold an empty component. */
+        char key[NK_XB_MAX_NAME_BYTES + 1u];
+        if (!archive_normalize_key(source->path, key, sizeof(key), 0)) {
+            archive_index_rollback(vfs, first);
+            return NK_ERROR_INVALID_XB;
+        }
         SrArchiveIndexEntry *target = &vfs->index[vfs->index_count];
-        target->key = archive_strdup_lower(source->path);
+        target->key = archive_strdup(key);
         target->path = archive_strdup(source->path);
         if (!target->key || !target->path) {
             free(target->key);

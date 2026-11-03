@@ -15,8 +15,8 @@
   "counts": {
     "pspsdk-sourced": 840,
     "hash-verified": 623,
-    "library-attributed": 54,
-    "editorial-alias": 10,
+    "library-attributed": 53,
+    "editorial-alias": 11,
     "unresolved": 88
   },
   "entries": [
@@ -6096,12 +6096,6 @@
     },
     {
       "class": "library-attributed",
-      "name": "scePower_469989ad",
-      "nid": "0x469989ad",
-      "library": "scePower"
-    },
-    {
-      "class": "library-attributed",
       "name": "scePower_545A7F3C",
       "nid": "0x545a7f3c",
       "library": "scePower"
@@ -6254,6 +6248,12 @@
       "class": "editorial-alias",
       "name": "scePowerSetClockFrequency350",
       "nid": "0xebd177d6",
+      "alias_of": "scePowerSetClockFrequency"
+    },
+    {
+      "class": "editorial-alias",
+      "name": "scePowerSetClockFrequency630",
+      "nid": "0x469989ad",
       "alias_of": "scePowerSetClockFrequency"
     },
     {
