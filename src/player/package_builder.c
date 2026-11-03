@@ -2368,7 +2368,7 @@ NkResult package_builder_start(
         session->is_failed = true;
         session->current_stage = PACKAGE_BUILD_STAGE_FAILED;
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
-                      "Couldn't start the build.");
+                      "Couldn't start the build. Try again, and use Copy details if it keeps happening.");
         return NK_ERROR_PROCESS_SPAWN;
     }
 
@@ -2475,7 +2475,7 @@ void package_builder_poll(PackageBuildSession *session, uint64_t current_time_ms
                 }
                 if (!session->failure_boundary[0]) {
                     snprintf(session->failure_boundary, sizeof(session->failure_boundary),
-                             "The build stopped with exit code %d.", session->exit_code);
+                             "The build stopped with exit code %d. Use Copy details to see why, then try again.", session->exit_code);
                 }
             }
         } else if (!session->is_complete && !session->is_failed) {

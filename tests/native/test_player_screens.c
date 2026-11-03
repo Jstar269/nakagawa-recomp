@@ -334,7 +334,7 @@ static const char *const k_font_lines[18];
 
 static const char *const k_settings_tools[] = {
     "synthetic-compiler 14.2 \xC2\xB7 GPL-3.0-or-later",
-    "synthetic-headers 0.9 \xC2\xB7 licence review in the works"
+    "synthetic-headers 0.9 \xC2\xB7 licence not yet reviewed"
 };
 
 static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
@@ -2008,7 +2008,7 @@ static void test_plain_cards(void) {
     /* Report this game: a known cause says so and links its issue, and the
        report steps back to a small button; an unknown one leads with it. */
     CHECK(strstr(dump, "This is a known issue (#308).") != NULL &&
-              strstr(dump, "\"VIEW ON GITHUB\"") != NULL &&
+              strstr(dump, "\"VIEW ISSUE #308 ON GITHUB\"") != NULL &&
               strstr(dump, "\"REPORT THIS GAME\"") != NULL &&
               strstr(dump, "\"SEE EXISTING REPORTS\"") != NULL,
           "a known stop names its issue next to Report this game and the existing reports");

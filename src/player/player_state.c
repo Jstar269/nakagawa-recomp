@@ -7424,7 +7424,7 @@ static PlayerModuleScanStatus player_scan_disc_modules(
         if (boundary_message && boundary_message_size) {
             snprintf(boundary_message, boundary_message_size,
                      "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
-                     "%u directories; more folders aren't supported yet.",
+                     "%u directories; more directories aren't supported yet.",
                      NK_ISO_MODULE_TREE_MAX_DIRECTORIES);
         }
         return PLAYER_MODULE_SCAN_DIRECTORY_LIMIT;
@@ -8000,7 +8000,7 @@ static void player_build_compatibility_preflight_for_game(
     if (game->is_experimental) {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXPERIMENTAL", PREFLIGHT_IN_PROGRESS,
-                             "Experimental: this game has not been verified. Compatibility is unknown. Other games aren't supported yet.",
+                             "Experimental: this game has not been verified. Compatibility is unknown. Verifying other games and starting any disc image aren't supported yet.",
                              issues, 1);
     }
 
@@ -8161,7 +8161,7 @@ static void player_build_compatibility_preflight_for_game(
     if (!game->title_id[0]) {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_UNSUPPORTED,
-                             "No profile for this game yet; it isn't supported yet.",
+                             "This game isn't in Nakagawa's list of supported games yet.",
                              issues, 1);
     } else {
         char package_reason[2048] = "";

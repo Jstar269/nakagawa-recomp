@@ -1872,12 +1872,12 @@ int main(int argc, char **argv) {{
         create_test_iso_with_module_tree(iso_file, modules)
         with self.assertRaisesRegex(
             IsoInspectionError,
-            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets aren't supported yet",
         ):
             list_disc_module_candidates(iso_file)
         with self.assertRaisesRegex(
             nk_cli.PackageBuildError,
-            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets are in the works",
+            "DISC_MODULE_CANDIDATE_LIMIT.*256.*larger module sets aren't supported yet",
         ):
             nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
 

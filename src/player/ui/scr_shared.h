@@ -132,7 +132,7 @@ typedef struct {
 
 /* The online and developer switches, in the wizard and in Settings. */
 #define WIZARD_ONLINE_SENTENCE                                                    \
-    "Lets Nakagawa check nakagawa.jaycast.net for news and lets you send reports. Nothing is " \
+    "When on, Nakagawa checks nakagawa.jaycast.net for news and lets you send reports. Nothing is " \
     "sent without you."
 #define WIZARD_DEVELOPER_SENTENCE \
     "Show a developer log on screen to help track down problems. Stays on this PC."

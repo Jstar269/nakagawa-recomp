@@ -1751,8 +1751,8 @@ def walk_disc_module_entries(
         if visited > MAX_MODULE_DIRECTORIES:
             raise IsoInspectionError(
                 "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery exceeds "
-                f"{MAX_MODULE_DIRECTORIES} directories; broader discovery is "
-                "in the works."
+                f"{MAX_MODULE_DIRECTORIES} directories; more directories "
+                "aren't supported yet."
             )
         entries = read_module_directory(directory)
         if entries is None:
@@ -1770,7 +1770,7 @@ def walk_disc_module_entries(
                         raise IsoInspectionError(
                             "DISC_MODULE_DIRECTORY_LIMIT: ISO module discovery "
                             f"exceeds {MAX_MODULE_DIRECTORIES} directories; "
-                            "broader discovery is in the works."
+                            "more directories aren't supported yet."
                         )
                     directories.append((directory + (entry.name,), depth + 1))
                 continue
@@ -1922,7 +1922,7 @@ def list_disc_module_candidates(iso_path: Path | str) -> list[dict]:
                 raise IsoInspectionError(
                     "DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
                     f"{MAX_MODULE_CANDIDATES} guest-module candidates; larger "
-                    "module sets are in the works."
+                    "module sets aren't supported yet."
                 )
     return candidates
 
@@ -2471,7 +2471,7 @@ def inspect_compatibility_preflight(
     else:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": "Unknown/malformed executable boundary; broader title support is in the works.",
+            "message": "Unknown or malformed executable; this game isn't supported yet.",
             "issues": [308],
         }
 
@@ -2487,7 +2487,7 @@ def inspect_compatibility_preflight(
     experimental_check = {
         "code": "EXPERIMENTAL",
         "status": "IN_PROGRESS",
-        "message": "Experimental: this game has not been verified. Compatibility is unknown. Verification for additional titles and generic title intake are in the works.",
+        "message": "Experimental: this game has not been verified. Compatibility is unknown. Verifying other games and starting any disc image aren't supported yet.",
         "issues": [308],
     } if is_experimental else None
 
@@ -2500,7 +2500,7 @@ def inspect_compatibility_preflight(
     elif metadata.matched_profile is None:
         runtime_check = {
             "code": "RUNTIME_PACKAGE", "status": "UNSUPPORTED",
-            "message": "Title profile missing; generic title support is in the works.",
+            "message": "This game isn't in Nakagawa's list of supported games yet.",
             "issues": [308],
         }
     elif package_present:

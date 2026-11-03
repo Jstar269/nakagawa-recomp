@@ -4578,24 +4578,28 @@ class NativePlayerUiTests(unittest.TestCase):
         longer than any fixed wait the script could guess: the old WAIT_MS=100
         ended on the stopped game's card whenever a slow runner took longer
         than that to reach the package check."""
-        run = self.run_player(
-            "library", ("WAIT_MS=50", "KEY_TAB", "KEY_RETURN", "WAIT_VIEW=error,10000"),
-            error_code="RUNTIME_ERROR_EXIT", ui_mode="next",
-            env_extra={"NK_UI_TEST_SLOW_START_MS": "600"},
-        )
-        # --ui=next exits 4 when the launcher can't start, so a run that got here
-        # drew the next UI; anything else is a failure, never a skip.
-        self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", str(run["stdout"]))
-        frames = run["frames"]
-        assert isinstance(frames, list)
-        self.assertEqual(frames[0]["error"], "RUNTIME_ERROR_EXIT")
-        pending = [frame for frame in frames if frame["launch_pending"] == "1"]
-        self.assertTrue(pending, "Restart game started a launch")
-        self.assertEqual(pending[0]["view"], "library", "the restart left the stopped game's card")
-        self.assertEqual(frames[-1]["view"], "error", run["stdout"])
-        self.assertIn(frames[-1]["error"], ("RUNTIME_PACKAGE_NOT_READY",), run["stdout"])
-        self.assertEqual(frames[-1]["launch_pending"], "0")
-        self.assertNotEqual(frames[-1]["error_retry"], "Restart_game")
+        # Right-arrow and Tab both move from the primary button to Restart game: the
+        # directional move must not depend on how wide the button labels are.
+        for move_key in ("KEY_RIGHT", "KEY_TAB"):
+            with self.subTest(move_key=move_key):
+                run = self.run_player(
+                    "library", ("WAIT_MS=50", move_key, "KEY_RETURN", "WAIT_VIEW=error,10000"),
+                    error_code="RUNTIME_ERROR_EXIT", ui_mode="next",
+                    env_extra={"NK_UI_TEST_SLOW_START_MS": "600"},
+                )
+                # --ui=next exits 4 when the launcher can't start, so a run that got here
+                # drew the next UI; anything else is a failure, never a skip.
+                self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", str(run["stdout"]))
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["error"], "RUNTIME_ERROR_EXIT")
+                pending = [frame for frame in frames if frame["launch_pending"] == "1"]
+                self.assertTrue(pending, "Restart game started a launch")
+                self.assertEqual(pending[0]["view"], "library", "the restart left the stopped game's card")
+                self.assertEqual(frames[-1]["view"], "error", run["stdout"])
+                self.assertIn(frames[-1]["error"], ("RUNTIME_PACKAGE_NOT_READY",), run["stdout"])
+                self.assertEqual(frames[-1]["launch_pending"], "0")
+                self.assertNotEqual(frames[-1]["error_retry"], "Restart_game")
 
     # Enum values of PlayerUiPackageState (src/player/ui/player_ui_nk.h).
     PACKAGE_READY = "1"

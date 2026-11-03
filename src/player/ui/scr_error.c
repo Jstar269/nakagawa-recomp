@@ -99,7 +99,9 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
         }
         if (nk_ui_begin_container(ui, FLOW_ID_REPORT_ROW, &row, NULL)) {
             if (model->known_issue != 0u) {
-                if (nk_ui_button(ui, PLAYER_UI_ID_ERROR_ISSUE, "View on GitHub", 0u)) {
+                char issue[40];
+                (void)snprintf(issue, sizeof(issue), "View issue #%u on GitHub", model->known_issue);
+                if (nk_ui_button(ui, PLAYER_UI_ID_ERROR_ISSUE, nk_ui_frame_text(ui, issue), 0u)) {
                     result = action(PLAYER_UI_ACTION_ERROR_KNOWN_ISSUE, 0u,
                                     PLAYER_UI_PRIMARY_NONE);
                 }
