@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -49,7 +50,8 @@ def scalar_rule(enc: int) -> int:
 
 
 def load_fixture() -> dict:
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+    returned: dict[str, Any] = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    return returned
 
 
 def build_and_run_c() -> dict[tuple[int, int], list[int]]:
@@ -125,6 +127,7 @@ class FixtureIntegrityTest(unittest.TestCase):
 
 class HardwareAgreementTest(unittest.TestCase):
     """TIER H. Assertions about what real silicon did."""
+    fx: dict[str, Any]
 
     @classmethod
     def setUpClass(cls) -> None:

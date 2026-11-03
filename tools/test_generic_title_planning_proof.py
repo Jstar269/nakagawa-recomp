@@ -44,6 +44,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -92,7 +93,8 @@ HST_DISC_ID = "UCUS98701"
 
 
 def _load(path: pathlib.Path) -> dict:
-    return title_manifest.load_manifest(path)
+    returned: dict[str, Any] = title_manifest.load_manifest(path)
+    return returned
 
 
 class GenericTitleProofFixtures(unittest.TestCase):

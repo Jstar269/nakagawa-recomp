@@ -108,6 +108,7 @@ def main() -> int:
             width, field = m.group(1), int(m.group(2), 16)
             lm = re.search(r"lanes=(\S+)", line)
             key = (width, field)
+            assert lm is not None
             lanes = parse_lanes(lm.group(1))
             if key not in width_cases:
                 width_cases[key] = lanes

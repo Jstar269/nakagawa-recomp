@@ -90,7 +90,8 @@ def _make_raw_archive(entries) -> bytes:
         )
         payloads.append(payload)
         offset += len(payload)
-    return header + bytes(fst) + string_section + b"".join(payloads)
+    returned: bytes = header + bytes(fst) + string_section + b"".join(payloads)
+    return returned
 
 
 def _huffman_stream(data: bytes) -> bytes:

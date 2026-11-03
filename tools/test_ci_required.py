@@ -134,6 +134,7 @@ class CiRequiredTests(unittest.TestCase):
             r"^\s*pull_request:\s*\n\s*types:\s*\[([^\]]*)\]", workflow, re.MULTILINE
         )
         self.assertIsNotNone(match, "ci.yml must list the pull_request event types explicitly")
+        assert match is not None
         declared = {item.strip() for item in match.group(1).split(",")}
         self.assertEqual(declared, {"opened", "synchronize", "reopened"})
         self.assertIn("cancel-in-progress: true", workflow)

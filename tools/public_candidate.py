@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from typing import Any
 
 try:
     from . import publish_audit
@@ -49,7 +50,8 @@ def load_profile(path: Path) -> dict:
     for value in [*prefixes, *globs, *paths]:
         if not isinstance(value, str) or not value or PurePosixPath(value).is_absolute() or ".." in PurePosixPath(value).parts:
             raise ValueError(f"unsafe exclusion: {value!r}")
-    return data
+    returned: dict[str, Any] = data
+    return returned
 
 
 def is_excluded(relative_path: str, profile: dict) -> bool:

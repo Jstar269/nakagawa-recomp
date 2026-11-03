@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -493,6 +494,7 @@ class TitleManifestTests(unittest.TestCase):
             re.DOTALL,
         )
         self.assertIsNotNone(section)
+        assert section is not None
         roots = json.loads("{" + section.group(1) + "}")["loose_content_roots"]
         self.assertEqual(roots, [{
             "root": ".", "mount": "", "precedence": 0,
@@ -757,7 +759,8 @@ class NativeTitleIdentityTests(unittest.TestCase):
         value["disc"] = {"id": "TEST12345", "region": "NA",
                          "revision_policy": "explicit-compatible-revisions",
                          "compatible_revisions": ["TEST12346"]}
-        return value
+        returned: dict[str, Any] = value
+        return returned
 
     def test_native_strings_and_identity_lookups_preserve_the_manifest(self) -> None:
         value = self.retail()

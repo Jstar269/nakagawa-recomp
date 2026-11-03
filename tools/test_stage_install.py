@@ -290,7 +290,8 @@ class PortableZipTests(unittest.TestCase):
         out = self.root / name
         stage_install.write_portable_zip(stage, out, source_date_epoch=kwargs.pop("epoch", _EPOCH),
                                          verify_runtime=kwargs.pop("verify", _no_runtime_check))
-        return out
+        returned: Path = out
+        return returned
 
     def test_two_builds_of_the_same_stage_are_byte_identical(self):
         first = _make_stage(self.root / "a", reverse=False, mtime=1_700_000_000)

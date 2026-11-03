@@ -1342,6 +1342,8 @@ int player_app_focus_count(const PlayerApp *app) {
             return 4; /* interface size, high contrast, reduce motion, back */
         case VIEW_ACE_SETTINGS:
             return 6; /* Ace Mode, filtering, crisp text, readout, badge, done */
+        case VIEW_PROBLEM_REPORT:
+            return 3; /* create, open folder, back */
         case VIEW_ONLINE_SETTINGS:
             /* online switch (+ news, reports while it is on), developer
                switch (+ open log while it is on), back */

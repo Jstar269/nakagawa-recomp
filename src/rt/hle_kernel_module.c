@@ -1340,6 +1340,33 @@ static uint32_t reject_module_transition(const char *operation, uint32_t uid,
 /* Host path helpers defined with the rest of the host-path layer below. */
 static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out);
 
+/* LoadExecForUser_362A956B(): reads the registered exit callback's common argument as a block
+ * { int mode; ExitParams *params; int common; }, its address being the argument + 8, and on
+ * success clears params->unk1 and sets params->unk2 to -1 (the first word, a size, is kept).
+ * pspautotests threads/callbacks/exit.expected (rev 1a9e6c31, recorded on a PSP, compiled SDK
+ * 3.95): no live exit callback is 0x800201a1; a callback whose argument is NULL is 0x800200d3;
+ * mode 0..3 with a params size of 12 or more (including a negative one, read as unsigned) is 0
+ * and writes (0, -1); mode 4 or above (including -1) is 0x800200d2; a size below 12 is
+ * 0x800201bc with the block untouched.  A params pointer or block the guest cannot read or write
+ * is not measured and stops by name.  Also unmeasured: which of the mode and size checks comes
+ * first when both fail (the mode is checked first here), and the result under a compiled SDK
+ * version other than 3.95's (the same here). */
+static uint32_t h_LoadExecForUser_362A956B(CpuState *s) {
+    (void)s;
+    int idx = s_exit_cb_uid ? sr_callback_find_in_table(s_exit_cb_uid) : -1;
+    if (idx < 0) return 0x800201a1u;                      /* UNKNOWN_CBID */
+    const uint32_t arg = s_callbacks[idx].arg;
+    if (arg < 8u || !sr_guest_span_readable(arg - 8u, 8u)) return 0x800200d3u; /* ILLEGAL_ADDR */
+    const uint32_t mode = MEM_R32(arg - 8u), params = MEM_R32(arg - 4u);
+    if (mode >= 4u) return 0x800200d2u;                   /* ILLEGAL_ARGUMENT */
+    if (!params || !sr_guest_span_readable(params, 12u) || !sr_guest_span_writable(params + 4u, 8u))
+        return hle_unmodelled_stop("LoadExecForUser_362A956B", "with an unusable parameter block 0x%08x is not measured", params);
+    if (MEM_R32(params) < 12u) return 0x800201bcu;        /* ILLEGAL_SIZE */
+    MEM_W32(params + 4u, 0u);
+    MEM_W32(params + 8u, 0xffffffffu);
+    return 0;
+}
+
 /* sceKernelExitGame terminates the guest process in thread and interrupt contexts. */
 static uint32_t h_ExitGame(CpuState *s) {
     /* sceKernelExitGame takes no argument (PSPSDK psploadexec.h declares
@@ -1457,6 +1484,42 @@ static uint32_t h_GetModuleIdByAddress(CpuState *s) {
 static uint32_t h_GetModuleId(CpuState *s) {
     uint32_t uid = module_uid_at(s->r[31]);
     return uid ? uid : SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+}
+
+/* sceKernelGetModuleIdList(SceUID *ids, SceSize size, int *count): size is in bytes, whole entries
+ * are written (ceil(size / 4), never more than there are modules, so a size of 5 writes two) and
+ * count receives the number of modules, not the number written.  pspautotests
+ * modules/idlist/idlist.expected (rev 1a9e6c31, recorded on a PSP): a size of 0 writes nothing
+ * and returns 0; sizes 1..8 return 0; a negative size, or a NULL buffer even with size 0, returns
+ * 0x800200d3 and leaves count untouched; the caller's own module is in the list.  A PSP lists its
+ * firmware modules too; the runtime lists the ones it holds: the main module first, then the
+ * loaded ones in load order.  The order is not measured.  A NULL or unwritable count, and an
+ * unwritable buffer, are not measured and stop the run by name. */
+static uint32_t h_GetModuleIdList(CpuState *s) {
+    const uint32_t ids = A0, count_ptr = A2;
+    const int32_t size = (int32_t)A1;
+    if (!ids || size < 0) return 0x800200d3u;             /* ILLEGAL_ADDR (module manager's) */
+    if (!count_ptr || !sr_guest_span_writable(count_ptr, 4u))
+        return hle_unmodelled_stop("sceKernelGetModuleIdList", "with an unwritable count 0x%08x is not measured", count_ptr);
+    uint32_t list[sizeof(s_loaded_modules) / sizeof(s_loaded_modules[0]) + 1u];
+    uint32_t total = 0u;
+    if (sr_loaded_base() < sr_loaded_end()) {
+        if (!s_main_module_uid) s_main_module_uid = sr_alloc_uid();
+        list[total++] = s_main_module_uid;
+    }
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        const LoadedModule *mod = &s_loaded_modules[i];
+        if (!mod->in_use || mod->state == MODULE_STATE_UNUSED || mod->state == MODULE_STATE_UNLOADED)
+            continue;
+        list[total++] = mod->uid;
+    }
+    uint32_t n = (uint32_t)(((uint64_t)(uint32_t)size + 3u) / 4u);
+    if (n > total) n = total;
+    if (n && !sr_guest_span_writable(ids, n * 4u))
+        return hle_unmodelled_stop("sceKernelGetModuleIdList", "with an unwritable buffer 0x%08x is not measured", ids);
+    for (uint32_t i = 0; i < n; i++) MEM_W32(ids + 4u * i, list[i]);
+    MEM_W32(count_ptr, total);
+    return 0;
 }
 
 /* The main module's kernel record, registered by the generated sr_register_all() when the
@@ -2172,6 +2235,7 @@ void hle_register_module_lifecycle_handlers(void) {
     sr_hle_register(0xb7f46618, "sceKernelLoadModuleByID", h_LoadModuleByID);
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
     sr_hle_register(0xf0a26395, "sceKernelGetModuleId", h_GetModuleId);
+    sr_hle_register(0x644395e2, "sceKernelGetModuleIdList", h_GetModuleIdList);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleIdByAddress);
     sr_hle_register(0x748cbed9, "sceKernelQueryModuleInfo", h_QueryModuleInfo);
     sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
@@ -2183,4 +2247,5 @@ void hle_register_module_lifecycle_handlers(void) {
 /* From hle_register_selftest_oracle_handlers(). */
 void hle_register_selftest_oracle_kernel_module(void) {
     sr_hle_register(0x4ac57943, "sceKernelRegisterExitCallback", h_RegisterExitCallback);
+    sr_hle_register(0x362a956b, "LoadExecForUser_362A956B", h_LoadExecForUser_362A956B);
 }

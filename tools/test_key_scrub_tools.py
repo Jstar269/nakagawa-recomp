@@ -240,7 +240,8 @@ class TestCliVerdicts(unittest.TestCase):
 
     def _main_in(self, repo: Path, keys: Path) -> int:
         with _chdir(repo):
-            return vks.main(["--keys", str(keys)])
+            returned: int = vks.main(["--keys", str(keys)])
+            return returned
 
     @contextlib.contextmanager
     def _capture(self):

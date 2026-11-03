@@ -59,7 +59,8 @@ def _base_commit(repo: Path, requested: str | None) -> str:
             "TRUSTED_BASELINE_MISSING",
             "cannot resolve a trusted base; set PROVENANCE_BASE_SHA to the exact base commit",
         )
-    return value
+    returned: str = value
+    return returned
 
 
 def generate_controls(
