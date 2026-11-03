@@ -29,6 +29,7 @@
 #define ABOUT_ID_LINK ABOUT_ID(0x00002Cu)
 #define ABOUT_ID_BUILD ABOUT_ID(0x00002Du)
 #define ABOUT_ID_FOOT ABOUT_ID(0x00002Eu)
+#define ABOUT_ID_DATA_ROOT ABOUT_ID(0x00002Fu)
 #define ABOUT_ID_PROMPTS ABOUT_ID(0x000040u)
 #define ABOUT_ID_WAVES ABOUT_ID(0x000050u)
 
@@ -147,6 +148,10 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
                     nk_ui_text_role(ui, ABOUT_ID_BUILD, build, NK_UI_TYPE_FOOTNOTE, theme->dim);
                 }
                 nk_ui_end_container(ui);
+            }
+            if (model->data_root_line != NULL && model->data_root_line[0] != '\0') {
+                nk_ui_text_role(ui, ABOUT_ID_DATA_ROOT, model->data_root_line,
+                                NK_UI_TYPE_FOOTNOTE, theme->dim);
             }
             nk_ui_end_container(ui);
         }

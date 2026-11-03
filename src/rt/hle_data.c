@@ -90,19 +90,38 @@ void sreg_build_font_registry(void) {
     }
 }
 
-/* The overlay file: SR_SYSTEM_REGISTRY when set, else <per-user data dir>/registry/system.json.
- * NULL when neither resolves, or when the variable is set but cannot be read as UTF-8 (falling
- * back to the default file then would silently write somewhere the user did not choose). */
+/* The overlay file: SR_SYSTEM_REGISTRY when set, else <data root>/registry/system.json, where the
+ * data root is SR_USER_DATA_ROOT (the root the launcher resolved, so portable mode and
+ * --user-data-root reach the game process) or, with that unset or empty, the platform's per-user
+ * directory. NULL when neither resolves, or when a variable is set but unusable (unreadable, or a
+ * relative SR_USER_DATA_ROOT): falling back to the default file then would silently write somewhere
+ * the user did not choose. */
 char *sreg_overlay_path(void) {
-    char *env = NULL, *path;
+    char *env = NULL, *path, *root_utf8 = NULL;
+    wchar_t *configured = NULL, *root = NULL;
     char dir[4096];
     char sep = nk_platform_path_separator();
-    int present = 0;
+    int present = 0, root_present = 0;
     size_t need;
     if (!sr_utf8_env_alloc(L"SR_SYSTEM_REGISTRY", &env, &present)) return NULL;
     if (present && env && env[0]) return env;
     free(env);
-    if (!nk_platform_resolve_app_data_dir(dir, sizeof(dir))) return NULL;
+    if (!sr_wide_env_alloc(L"SR_USER_DATA_ROOT", &configured, &root_present)) return NULL;
+    if (root_present && configured && configured[0]) {
+        int valid = sr_wide_configured_root_wide_alloc(configured, &root) &&
+                    sr_wide_to_utf8_alloc(root, &root_utf8) && strlen(root_utf8) < sizeof(dir);
+        free(configured);
+        free(root);
+        if (!valid) {
+            free(root_utf8);
+            return NULL;
+        }
+        snprintf(dir, sizeof(dir), "%s", root_utf8);
+        free(root_utf8);
+    } else {
+        free(configured);
+        if (!nk_platform_resolve_app_data_dir(dir, sizeof(dir))) return NULL;
+    }
     need = strlen(dir) + sizeof("/registry/system.json");
     path = (char *)malloc(need);
     if (!path) return NULL;
