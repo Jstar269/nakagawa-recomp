@@ -117,8 +117,7 @@ GPU, no audio device, no game disc.
 | Audio, gamepad, Check for updates | `NOT_RUN` |
 | Proton | `NOT_RUN` (not installed) |
 
-Wine printed `failed to open C:\windows\syswow64\rundll32.exe` once while creating the prefix, which is a message from a 32-bit helper,
-and every 64-bit program above ran regardless.
+Wine printed `failed to open C:\windows\syswow64\rundll32.exe` once while creating the prefix, and every 64-bit program above ran regardless.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
