@@ -1689,7 +1689,12 @@ static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
     int ok = cmd_batch_record(SR_PERF_GE_RENDER_BATCH);
     t->gpu_valid = 1;
     t->render_gen++;
-    if (t->dep) t->dep->guest_dirty = 1;
+    /* Only a batch that writes depth (a depth test with writes on, or a clear that fills depth)
+     * makes the depth surface newer than guest VRAM. A title that writes no depth may leave zbp on
+     * a colour buffer, and writing the untouched surface back would overwrite those pixels. */
+    int zwrite = 0;
+    for (uint32_t i = b0; i < b1 && !zwrite; i++) zwrite = s_batch[i].key.zwrite;
+    if (t->dep && zwrite) t->dep->guest_dirty = 1;
     sr_vram_mark_renderer_pending();
     s_cnt_submit++;
     if (s_stats) {
