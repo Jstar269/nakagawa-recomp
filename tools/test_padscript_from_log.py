@@ -4,7 +4,9 @@
 
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import padscript_from_log as padscript
@@ -159,6 +161,46 @@ class TestPadscriptFromLog(unittest.TestCase):
             padscript.pulses_from_transitions(transitions),
             [padscript.Pulse(10, 0, 30, 200, 128)],
         )
+
+    def test_stick_min_width_below_one_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "stick_min_width must be at least 1"):
+            padscript.pulses_from_transitions([], stick_min_width=0)
+
+    def test_log_that_ends_with_the_stick_held_keeps_a_minimum_width_row(self):
+        transitions = [padscript.Transition(10, 0, 0, 0, 255)]
+        self.assertEqual(
+            padscript.pulses_from_transitions(transitions, minimum_width=6),
+            [padscript.Pulse(10, 0, 6, 0, 255)],
+        )
+
+    def test_log_that_ends_inside_a_split_press_holds_the_press_its_minimum(self):
+        transitions = [
+            padscript.Transition(10, 0, 0x4000),
+            padscript.Transition(15, 0x4000, 0x4000, 255, 128),
+        ]
+        self.assertEqual(
+            padscript.pulses_from_transitions(transitions, minimum_width=8),
+            [padscript.Pulse(10, 0x4000, 5), padscript.Pulse(15, 0x4000, 3, 255, 128)],
+        )
+
+    def test_command_line_writes_stick_columns_and_honours_stick_min_width(self):
+        lines = [
+            "ctrl_latch: vcount=10 buttons 0x0000 -> 0x0000 lx=200 ly=128\n",
+            "ctrl_latch: vcount=11 buttons 0x0000 -> 0x0000 lx=255 ly=128\n",
+            "ctrl_latch: vcount=30 buttons 0x0000 -> 0x0000 lx=128 ly=128\n",
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "stderr.log"
+            log.write_text("".join(lines), encoding="utf-8")
+            for extra, expected in (
+                ([], "10 0x0000 20 255 128\n"),
+                (["--stick-min-width", "1"], "10 0x0000 1 200 128\n11 0x0000 19 255 128\n"),
+            ):
+                out = Path(temp) / "route.pad"
+                argv = ["padscript_from_log.py", str(log), "-o", str(out), *extra]
+                with mock.patch.object(sys, "argv", argv):
+                    self.assertEqual(padscript.main(), 0)
+                self.assertEqual(out.read_text(encoding="utf-8"), expected)
 
     def test_out_of_range_stick_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "stick position out of range"):
