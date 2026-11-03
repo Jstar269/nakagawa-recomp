@@ -1253,17 +1253,44 @@ int main(int argc, char **argv) {{
         candidates = nk_cli._discover_iso_module_candidates(broken_iso, "EBOOT.BIN")
         self.assertEqual(candidates[0]["kind"], "unsupported")
 
-    def test_fixed_address_overlay_elf_type_is_named(self) -> None:
+    def test_fixed_address_overlay_elf_is_a_code_overlay(self) -> None:
         # ELF type 0xFFA8: one segment at a fixed link address, no entry point, no module
-        # information; the game copies it into place itself. The import does not
-        # translate that form yet and says so, instead of a bare header rule.
+        # information; the game copies it into place itself. It is found by its header
+        # whatever its name, staged as it is and declared runtime-placed like an MWo3
+        # overlay; one whose header breaks the form is a named unsupported candidate.
         overlay = build_plain_mips_elf(0xFFA8, vaddr=0x089AC2F0, entry=0, p_flags=7)
-        iso_file = self.temp_dir / "fixed-overlay.iso"
-        create_test_iso_with_module_tree(iso_file, {"PSP_GAME/USRDIR/stage.elf": overlay})
+        work = self.temp_dir / "fixed-overlay"
+        user_root = work / "user"
+        user_root.mkdir(parents=True)
+        selected = work / "selected.elf"
+        selected.write_bytes(build_plain_mips_elf())
+        iso_file = work / "fixed-overlay.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/stage.elf": overlay,
+                       "PSP_GAME/USRDIR/DATA/battle.bin": overlay},
+            disc_id="TEST00087",
+        )
         candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual(sorted((c["name"], c["kind"]) for c in candidates),
+                         [("battle.bin", "code-overlay"), ("stage.elf", "code-overlay")])
+        declared, deferred, staged = nk_cli._declare_experimental_disc_modules(
+            iso_file, user_root, "TEST00087", candidates, selected, {},
+        )
+        self.assertEqual(deferred, [])
+        self.assertIn({
+            "name": "stage.elf", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/stage.elf",
+        }, declared)
+        self.assertEqual((staged / "stage.elf").read_bytes(), overlay)
+
+        entry_point = build_plain_mips_elf(0xFFA8, vaddr=0x089AC2F0, p_flags=7)
+        bad_iso = work / "bad-fixed-overlay.iso"
+        create_test_iso_with_module_tree(
+            bad_iso, {"PSP_GAME/USRDIR/stage.elf": entry_point}, disc_id="TEST00088")
+        candidates = nk_cli._discover_iso_module_candidates(bad_iso, "EBOOT.BIN")
         self.assertEqual(candidates[0]["kind"], "unsupported")
-        self.assertIn("ELF type 0xFFA8", candidates[0]["reason"])
-        self.assertIn("does not translate that overlay form yet", candidates[0]["reason"])
+        self.assertIn("code-overlay header is malformed", candidates[0]["reason"])
+        self.assertIn("names an entry point", candidates[0]["reason"])
 
     @staticmethod
     def _build_prx_without_module_info() -> bytes:

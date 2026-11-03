@@ -24,8 +24,8 @@ the runtime HLE sources, `tools/hle_sources.py`). Regenerate with `python tools/
 - total exact APIs: **72**
 - missing: **0**
 - registered (fake success): **0**
-- implemented: **71**
-- controlled-unsupported: **1**
+- implemented: **72**
+- controlled-unsupported: **0**
 
 Open-owner counts:
 
@@ -46,7 +46,7 @@ Open-owner counts:
 | `sceDisplayWaitVblankStart` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStart` | `0x984c27e7` |
 | `sceDisplayWaitVblankStartCB` | implemented | #341 | dedicated | unreviewed | `h_DisplayWaitVblankStartCB` | `0x46f186c3` |
 | `sceDisplayWaitVblankStartMulti` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartMulti` | `0x40f1469c` |
-| `sceDisplayWaitVblankStartMultiCB` | controlled-unsupported | - | controlled_unsupported | controlled_unsupported | `h_ControlledUnsupported` | `0x77ed8b3a` |
+| `sceDisplayWaitVblankStartMultiCB` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartMultiCB` | `0x77ed8b3a` |
 | `sceGeDrawSync` | implemented | - | dedicated | partial | `h_GeDrawSync` | `0xb287bd61` |
 | `sceGeListDeQueue` | implemented | - | dedicated | partial | `h_GeListDeQueue` | `0x5fb86ab0` |
 | `sceGeListSync` | implemented | - | dedicated | partial | `h_GeListSync` | `0x03444eb4` |

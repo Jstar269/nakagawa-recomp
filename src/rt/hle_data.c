@@ -2392,6 +2392,7 @@ uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot) {
         fprintf(stderr, "ENHANCEMENT_DATA_MISMATCH: the run stops here\n");
         sr_trace_close();
         sr_perf_shutdown();
+        SR_VERIFY_REPORT_NOW();
         fflush(stderr);
         _Exit(1);
     }

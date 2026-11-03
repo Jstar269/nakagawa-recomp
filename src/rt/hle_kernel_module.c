@@ -433,7 +433,10 @@ unsigned register_prx_exports(const char *host_path, uint32_t base) {
     memcpy(&phoff, eh + 28, 4); memcpy(&phentsz, eh + 42, 2); memcpy(&phnum, eh + 44, 2);
     uint32_t e_entry = 0;
     memcpy(&e_entry, eh + 24, 4);
-    if (e_entry != 0 && e_entry <= UINT32_MAX - base) {
+    /* An entry of 0 is the module's first address. 0xFFFFFFFF declares no entry at all: a
+     * library module such as a retail libfont has no start routine, and its first function
+     * is not one (#363). */
+    if (e_entry != 0xFFFFFFFFu && e_entry <= UINT32_MAX - base) {
         s_last_prx_entry = base + e_entry;
     }
     uint64_t ph_bytes = (uint64_t)phentsz * phnum;
@@ -913,7 +916,6 @@ static int populate_guest_module(const char *file, uint32_t base, int required) 
         if (!load_prx_image(image_path, base, file)) return 0;
     }
     (void)register_known_module(guest_module_root(), file, base);
-    if (!s_last_prx_entry) s_last_prx_entry = base;
     return 1;
 }
 
@@ -988,6 +990,7 @@ static uint32_t hle_libfont_startup_stop(const char *reason) {
         sr_trace_close();
         sr_compat_report();
         sr_perf_shutdown();
+        SR_VERIFY_REPORT_NOW();
         fflush(stderr);
         _Exit(HLE_LIBFONT_STARTUP_STOP_EXIT);
     }
@@ -1802,11 +1805,8 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
     default:
         return SCE_ERROR_MODULE_BAD_ID;
     }
-    /* The calling thread is inside this call, so where it goes next is its return address,
-     * not the pc saved at its last dispatch, which may lie in a module it called earlier. */
     if (mod->image_base && mod->image_end > mod->image_base &&
-        ((s->r[31] >= mod->image_base && s->r[31] < mod->image_end) ||
-         sched_module_range_busy(mod->image_base, mod->image_end, sched_current_uid()))) {
+        sched_module_range_busy(mod->image_base, mod->image_end, 0u)) {
         fprintf(stderr, "PRX_MODULE_UNLOAD_ACTIVE_THREAD_SYNTHETIC: uid=0x%x image="
                         "[0x%08x,0x%08x) has a ready/running continuation; refusing "
                         "with NOT_IMPLEMENTED (active-thread unload result unmeasured)\n",
@@ -2131,6 +2131,25 @@ static uint32_t h_LoadModuleByID(CpuState *s) {
     return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;  /* named refusal; the PSP return is unmeasured */
 }
 
+#ifdef SR_HLE_THREAD_SELFTEST
+/* The start routine the fixed-address path records for an image, and for a manifest module. */
+uint32_t sr_hle_test_prx_start_entry(const char *host_path, uint32_t base) {
+    s_last_prx_entry = 0;
+    (void)register_prx_exports(host_path, base);
+    return s_last_prx_entry;
+}
+uint32_t sr_hle_test_populated_start_entry(const char *file, uint32_t base) {
+    return populate_guest_module(file, base, 0) ? s_last_prx_entry : UINT32_MAX;
+}
+int sr_hle_test_set_fixed_module_image(uint32_t uid, uint32_t base, uint32_t end) {
+    LoadedModule *mod = find_loaded_module(uid);
+    if (!mod || base >= end) return 0;
+    mod->image_base = base;
+    mod->image_end = end;
+    return 1;
+}
+#endif
+
 static uint32_t h_StartModule(CpuState *s) {
     uint32_t uid = A0;
     uint32_t arglen = A1;
@@ -2210,9 +2229,11 @@ static uint32_t h_StartModule(CpuState *s) {
         return 0;
     }
 
-    if (allow_entry && mod->runtime_placed && mod->code && mod->module_start == 0) {
-        /* A guest-placed module that declares no start routine starts by making its
-         * exports linkable; no guest code runs. Its stop entry, if any, runs at stop. */
+    if (allow_entry && mod->module_start == 0 &&
+        (mod->runtime_placed ? mod->code != NULL : mod->image_base != 0u)) {
+        /* A module whose image is in place and that declares no start routine starts by
+         * making its exports linkable; no guest code runs. Its stop entry, if any, runs at
+         * stop. */
         fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> module declares no "
                         "start routine; exports linked\n", uid, mod->path);
         mark_module_started(mod->image_base);

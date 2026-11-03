@@ -1326,7 +1326,7 @@ def _make_input_images(
 
             try:
                 with source["path"].open("rb") as stream:
-                    overlay = analyze.is_code_overlay(stream.read(4))
+                    overlay = analyze.is_code_overlay(stream.read(18))
                 # A code overlay has no import table: it calls the executable's stubs.
                 stubs, findings = ({}, []) if overlay else _import_model(elf)
             except ImportTableError as exc:

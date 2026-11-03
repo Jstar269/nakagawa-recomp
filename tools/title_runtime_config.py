@@ -40,8 +40,9 @@ import title_manifest
 #: 8 splits the single profile macro into a diagnostic one and an honest
 #: compatibility-debt one (#363). Version 9 removes host libfont readiness
 #: injection from the generated runtime contract. Version 11 removes the display
-#: bring-up, runtime-sync and frame-latch bindings (#363).
-GENERATED_SCHEMA_VERSION = 11
+#: bring-up, runtime-sync and frame-latch bindings (#363). Version 12 removes the
+#: forced-completion collection (#363).
+GENERATED_SCHEMA_VERSION = 12
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -61,7 +62,6 @@ COUNT_BITS: dict[str, str] = {
 #: rejects an empty array, so a set bit always means at least one entry.
 COLLECTION_BITS: dict[str, str] = {
     "dispatch_aliases": "SR_TITLE_CFG_DISPATCH_ALIASES",
-    "callback_terminators": "SR_TITLE_CFG_CALLBACK_TERMINATORS",
 }
 
 #: Emitted object -> the C validity bit that gates it. An object is atomic:
@@ -221,19 +221,6 @@ def render_header(config: dict[str, Any]) -> str:
         tail = CONT if index + 1 < len(aliases) else ''
         lines.append(
             f"    SR_TITLE_CFG_ALIAS(0x{alias['from']:08x}u, 0x{alias['to']:08x}u){tail}")
-
-    terminators: list[dict[str, int]] = bindings.get('callback_terminators', [])
-    lines += ['', f'#define SR_TITLE_CONFIG_CALLBACK_TERMINATOR_COUNT {len(terminators)}',
-              '#define SR_TITLE_CONFIG_CALLBACK_TERMINATOR_LIST' + (CONT if terminators else '')]
-    for index, entry in enumerate(terminators):
-        tail = CONT if index + 1 < len(terminators) else ''
-        # (sentinel, has_pc, pc, has_ra, ra): an absent constraint emits has_*=0, so
-        # the runtime never compares a call site against a placeholder address.
-        lines.append(
-            '    SR_TITLE_CFG_TERMINATOR('
-            f"0x{entry['sentinel']:08x}u, "
-            f"{1 if 'pc' in entry else 0}u, 0x{entry.get('pc', 0):08x}u, "
-            f"{1 if 'ra' in entry else 0}u, 0x{entry.get('ra', 0):08x}u){tail}")
 
     # Expected data file count: scalar typed census, 0 = disabled.
     for name in COUNT_BITS:
