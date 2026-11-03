@@ -14067,6 +14067,17 @@
       }
     },
     {
+      "path": "tools/miss_seeds.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "miss-seeds-1848",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
       "path": "tools/modified_file_notice_audit.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -16388,6 +16399,17 @@
       "evidence": {
         "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
         "record_id": "tools-unit-tests-1811",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      }
+    },
+    {
+      "path": "tools/test_miss_seeds.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "miss-seeds-1848",
         "evidence_tier": "S",
         "authorship": "independent implementation record",
         "upstream_attribution": null

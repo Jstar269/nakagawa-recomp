@@ -556,7 +556,8 @@ class _FakeElf:
 ADDR_OPERANDS = frozenset({"addr", "a", "start"})
 
 #: Functions whose bodies decide what translated C is emitted.
-EMITTERS = frozenset({"effect", "normal_line", "emit_function", "main", "sv_plan"})
+EMITTERS = frozenset({"effect", "normal_line", "emit_function", "main", "sv_plan",
+                      "import_stub_test"})
 
 #: Title-owned address tables, and how each one's profile gate is enforced.
 #: A membership test against one of these binds guest addresses to HST

@@ -38,7 +38,7 @@ from analyze import (
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     check_code_overlay, code_overlay_elf, code_overlay_layout, data_section_words,
     is_code_overlay, is_fixed_overlay, static_coverage, branch_kind, BRANCH_UNCOND,
-    _gpr_writes,
+    seeds_in_analysis, _gpr_writes,
 )
 from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
 from host_stubs import HST_SIMPLE_STUBS
@@ -46,6 +46,7 @@ import codegen_llvm
 import compat_overrides
 import enhancement_package
 import entry_frame_balance
+import miss_seeds
 from imports import ImportTableError, format_boundary
 
 
@@ -3245,6 +3246,52 @@ static void sr_sv_check(CpuState *s, uint32_t pc, int reg, uint32_t expect) {
     }
 }"""
 
+def emitter_seed_check(elf, profile=None, omitted=(), stack_census=False):
+    """A ``seed_check`` for ``analyze`` (miss seeds, #1848): what the primary image's emission loop
+    in ``main`` does with an entry set. It maps each entry that loop would emit to None for a body
+    or to why it would write an abort stub there, under the image's own address space, so
+    ``analyze`` reports a seed from the emitter's result. An enhancement package does not enter
+    into it: a rewrite replaces a word's text after the stock word is translated."""
+    impmap = primary_import_map(elf)
+    is_stub = import_stub_test(elf, impmap)
+    space = AddressSpace(patched=variable_import_sites(elf)[1])
+    hand_written = set()
+    if profile == "hst":
+        hand_written = set(HST_CUSTOM_STUBS) | set(HST_SIMPLE_STUBS)
+
+    def check(entries, ranges, only=None):
+        global ADDRESS_SPACE
+        catalog = build_entry_catalog(entries, ranges, profile=profile, elf=elf)
+        for address in omitted:
+            catalog.pop(address, None)
+        known = {addr for addr, info in catalog.items() if info.callable}
+        resume_owners = {addr: info.owner for addr, info in catalog.items() if info.resumable}
+        emission = {}
+        previous_space = ADDRESS_SPACE
+        ADDRESS_SPACE = space
+        try:
+            for address in sorted(catalog):
+                if only is not None and address != only:
+                    continue
+                emission[address] = None
+                if address in hand_written:
+                    continue
+                if is_stub(address):
+                    if address not in impmap:
+                        emission[address] = NO_NID_IMPORT_STUB
+                    continue
+                try:
+                    emit_function(elf, address, ranges, known, resume_owners=resume_owners,
+                                  resumable=catalog[address].resumable, profile=profile,
+                                  dispatch_boundaries=set(omitted), stack_census=stack_census)
+                except Unsupported as exc:
+                    emission[address] = str(exc).replace('"', "'")
+        finally:
+            ADDRESS_SPACE = previous_space
+        return emission
+    return check
+
+
 def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False,
                   profile=None, dispatch_boundaries=None, lle_cpu=False,
                   stack_census=False, flow=None):
@@ -3909,6 +3956,35 @@ def c_string(text):
 
 #: The PSP reference type of each variable-import reference kind (SrVarImportRef.kind).
 VAR_REFERENCE_KIND = {"word32": 2, "hi16": 5, "lo16": 6}
+NO_NID_IMPORT_STUB = "import stub without NID mapping"
+
+
+def primary_import_map(elf):
+    """The primary image's import stubs, {address: (library, NID)}. An image with no import table
+    has none."""
+    if elf.reloc is None and elf.sec(".rodata.sceModuleInfo") is None:
+        return {}
+    try:
+        from imports import parse_imports
+        return parse_imports(elf)
+    except ImportTableError:
+        raise
+    except Exception as e:
+        sys.stderr.write(f"warning: import table parse failed: {e}\n")
+        return {}
+
+
+def import_stub_test(elf, impmap):
+    """Whether an address of the primary image is an import stub. Stripped linked executables may
+    reconstruct the loader-owned table as .lib.stub instead of having a named .sceStub.text
+    section."""
+    stub = elf.sec(".sceStub.text") or elf.sec(".lib.stub")
+
+    def is_stub(a):
+        if a in impmap:
+            return True
+        return stub is not None and stub["addr"] <= a < stub["addr"] + stub["size"]
+    return is_stub
 
 
 def variable_import_sites(elf):
@@ -4284,7 +4360,7 @@ COVERAGE_TOTAL_FIELDS = (
 )
 
 
-def write_coverage_report(path, images, module_translations):
+def write_coverage_report(path, images, module_translations, miss_seed_outcome=None):
     """Write what this run translated, per image and in total (``<game>_recomp_coverage.json``).
 
     The numbers come from analyze.static_coverage over the same entries and executable
@@ -4303,6 +4379,10 @@ def write_coverage_report(path, images, module_translations):
     owned = total["owned_words"]
     total["translated_share"] = round(total["translated_words"] / owned, 6) if owned else None
     report = {"schema_version": 1, "total": total, "images": rows}
+    if miss_seed_outcome is not None:
+        # Present only for a build given --miss-seeds, so a default report is unchanged.
+        report["miss_seeds"] = {f"0x{address:08x}": status
+                                for address, status in sorted(miss_seed_outcome.items())}
     with open(path, "w", encoding="ascii", newline="\n") as output:
         output.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print("CODEGEN_COVERAGE " + " ".join(
@@ -4560,7 +4640,8 @@ _USAGE = (
     "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
     "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
     "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
-    "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm]\n"
+    "[--stack-census] [--symbol-map=FILE] [--name-imports] [--backend=c|llvm] "
+    "[--miss-seeds=FILE]\n"
     "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
 )
 
@@ -4601,6 +4682,7 @@ def _command_line_parser():
     value("--symbol-map", "guest symbol map naming functions and sites")
     flag("--name-imports", "name each import stub after the function its NID imports")
     value("--backend", "c (default) or llvm (#330)")
+    value("--miss-seeds", "a dispatch-miss seed list (tools/miss_seeds.py): extra function entries")
     parser.add_argument("--omit-aot", action="append", default=[], metavar="ADDR[,ADDR...]",
                         help="leave these entries to the dispatcher instead of direct C calls")
     value("--enhancement-package", "enhancement package to apply")
@@ -4667,6 +4749,7 @@ def main(argv):
     for option, given in (("--enhancement-data-root", enhancement_data_root),
                           ("--enhancement-package", enhancement_pkg_path),
                           ("--symbol-map", symbol_map_path),
+                          ("--miss-seeds", cli.miss_seeds),
                           ("--cfg-report", cfg_report_path)):
         if given == "":
             sys.stderr.write(f"{option} requires a path\n")
@@ -4827,11 +4910,27 @@ def main(argv):
     # module below is rebased to its own load address and is analyzed with no extra
     # span at all, so one module's title configuration can never reach another's.
     extra_spans = resolve_extra_spans(extra_span_arg)
+    # Seeds from a run's dispatch misses (tools/miss_seeds.py, #1848) are extra entries for the
+    # primary image only. Without --miss-seeds the analysis call is exactly the one it always was.
+    seed_args = {}
+    if cli.miss_seeds is not None:
+        try:
+            seed_args = {"seeds": set(miss_seeds.read_seed_file(cli.miss_seeds).seeds),
+                         "report": {}}
+        except miss_seeds.SeedFileError as exc:
+            sys.stderr.write(f"codegen: {exc}\n")
+            return 2
     try:
-        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+        if seed_args:
+            seed_args["seed_check"] = emitter_seed_check(elf, profile, frozenset(omit_aot.addrs),
+                                                         stack_census)
+        analyzed, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate, **seed_args)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
         return 1
+    miss_seed_outcome = seed_args["report"]["miss_seeds"] if seed_args else None
+    if miss_seed_outcome is not None:
+        miss_seeds.report_outcome(miss_seed_outcome, prefix="CODEGEN_MISS_SEEDS")
     if cfg_report_path is not None or cfg_gate:
         # This opt-in gate audits the primary image. Extra modules have their own
         # analyzer invocation below and remain a separate bring-up surface until
@@ -4841,7 +4940,9 @@ def main(argv):
             # A report-only run describes gate-mode analysis but must not change
             # the entry set that feeds code emission.
             try:
-                report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+                report_entries, report_ranges = analyze(
+                    elf, extra_spans=extra_spans, cfg_gate=True,
+                    **({"seeds": seeds_in_analysis(miss_seed_outcome)} if seed_args else {}))
             except ImportTableError as exc:
                 sys.stderr.write(f"codegen: {format_boundary(exc)}\n")
                 return 1
@@ -4993,16 +5094,11 @@ def main(argv):
             )
             return 1
 
-    impmap = {}
-    if elf.reloc is not None or elf.sec(".rodata.sceModuleInfo") is not None:
-        try:
-            from imports import parse_imports
-            impmap = parse_imports(elf)
-        except ImportTableError as e:
-            sys.stderr.write(f"codegen: {format_boundary(e)}\n")
-            return 1
-        except Exception as e:
-            sys.stderr.write(f"warning: import table parse failed: {e}\n")
+    try:
+        impmap = primary_import_map(elf)
+    except ImportTableError as e:
+        sys.stderr.write(f"codegen: {format_boundary(e)}\n")
+        return 1
     # The executable's variable imports: the runtime linker patches their reference sites,
     # so the code reads those immediates from memory (AddressSpace.patched).
     global ADDRESS_SPACE
@@ -5012,14 +5108,7 @@ def main(argv):
         sys.stderr.write(f"codegen: {format_boundary(e)}\n")
         return 1
     ADDRESS_SPACE = AddressSpace(patched=main_var_sites)
-
-    # Stripped linked executables may reconstruct the loader-owned table as
-    # .lib.stub instead of having a named .sceStub.text section.
-    stub = elf.sec(".sceStub.text") or elf.sec(".lib.stub")
-    def is_stub(a):
-        if a in impmap:
-            return True
-        return stub is not None and stub["addr"] <= a < stub["addr"] + stub["size"]
+    is_stub = import_stub_test(elf, impmap)
 
     emitted = []
     stubbed = []
@@ -5084,8 +5173,8 @@ def main(argv):
                 text = import_stub_text(a, lib, nid)
                 import_nids[a] = nid
             else:
-                text = f"void f_{a:08x}(CpuState *s) {{  /* import stub without NID mapping */\n"
-                text += f"    sr_unimplemented(0x{a:08x}u, \"import stub without NID mapping\");\n}}"
+                text = f"void f_{a:08x}(CpuState *s) {{  /* {NO_NID_IMPORT_STUB} */\n"
+                text += f"    sr_unimplemented(0x{a:08x}u, \"{NO_NID_IMPORT_STUB}\");\n}}"
             func_texts.append(text)
             emitted.append(a)
             continue
@@ -5351,7 +5440,8 @@ def main(argv):
             for a, r in sorted(module.stubbed):
                 f.write(f"{module.name}@0x{a:08x} {r}\n")
 
-    write_coverage_report(f"{base_name}_coverage.json", coverage_images, module_translations)
+    write_coverage_report(f"{base_name}_coverage.json", coverage_images, module_translations,
+                          miss_seed_outcome=miss_seed_outcome)
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"
