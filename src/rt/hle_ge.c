@@ -298,7 +298,7 @@ void sr_hle_test_ge_preempt_hook(void (*hook)(uint32_t list_id)) { s_ge_test_pre
  * thread for tens of milliseconds at a time (#1296). When the deadline comes the run stops at a
  * command boundary, which is a stall the guest did not ask for: no frame of the run stays on the
  * stack, and the list is stalled at current_pc with work left, a state every entry point already
- * handles. The other thread's enqueue queues behind it and its sync waits for it.
+ * handles. The other thread's enqueue queues behind it.
  *
  * The stronger thread may also drive this list: advance its stall address or run it on, pause it,
  * or reset the GE and reuse the slot. So the state is read again after the switch; whoever ran the
@@ -376,6 +376,24 @@ static void ge_queue_run(CpuState *s) {
     }
 }
 
+/* Run on every list that was stopped for a stronger thread. Nothing else moves such a list if the
+ * thread running it never comes back (it was terminated or suspended, or a stronger thread spins
+ * on a peek), and the GE does not wait for that thread on the PSP. So a call that asks about the
+ * lists runs them first, on its own thread, and answers as if the stop had not happened. */
+static void ge_lists_finish_stopped(CpuState *s) {
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].status != GE_LIST_STALLED || !s_ge_lists[i].preempted) continue;
+        uint32_t next_pc = 0;
+        if (!ge_list_run(i, s_ge_lists[i].current_pc, 1, &next_pc)) continue;
+        if (next_pc == 0) {
+            ge_list_reached_end(s, i);
+            ge_queue_run(s);
+        } else {
+            s_ge_lists[i].current_pc = next_pc;
+        }
+    }
+}
+
 static uint32_t h_GeListEnQueue(CpuState *s) {
     uint32_t list = A0;
     uint32_t stall = A1;
@@ -423,20 +441,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
  * outstanding, queue order would matter and this runtime cannot honor head
  * insertion yet. */
 static uint32_t h_GeListEnQueueHead(CpuState *s) {
-    for (int i = 0; i < GE_LIST_MAX; i++) {
-        /* A list stopped for this thread would have ended before the thread ran. */
-        if (s_ge_lists[i].status == GE_LIST_STALLED && s_ge_lists[i].preempted) {
-            uint32_t next_pc = 0;
-            if (ge_list_run(i, s_ge_lists[i].current_pc, 1, &next_pc)) {
-                if (next_pc == 0) {
-                    ge_list_reached_end(s, i);
-                    ge_queue_run(s);
-                } else {
-                    s_ge_lists[i].current_pc = next_pc;
-                }
-            }
-        }
-    }
+    ge_lists_finish_stopped(s);
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
             return hle_unmodelled_stop("sceGeListEnQueueHead",
@@ -569,6 +574,7 @@ static uint32_t h_GeListSync(CpuState *s) {
                 qid, syncType, l->status, l->current_pc);
     if (syncType == 0u) {
         for (;;) {
+            ge_lists_finish_stopped(s);
             if (l->status == GE_LIST_DRAWING) {
                 /* Opt-in timing model: delay until the modelled completion has been delivered.
                  * A caller that cannot be delayed (interrupt context), or whose completion
@@ -593,9 +599,10 @@ static uint32_t h_GeListSync(CpuState *s) {
         return 0;
     }
     if (syncType != 1u) return GE_ERROR_INVALID_MODE;
+    ge_lists_finish_stopped(s);
     switch (l->status) {
     case GE_LIST_QUEUED: return 1u; /* uofw SCE_GE_LIST_QUEUED */
-    case GE_LIST_STALLED: return l->preempted ? GE_SYNC_DRAWING : GE_LIST_SYNC_STALLED;
+    case GE_LIST_STALLED: return GE_LIST_SYNC_STALLED;
     case GE_LIST_PAUSED: return GE_LIST_SYNC_PAUSED;
     case GE_LIST_DRAWING: return GE_SYNC_DRAWING;
     case GE_LIST_COMPLETED:
@@ -660,6 +667,7 @@ static uint32_t h_GeDrawSync(CpuState *s) {
     if (mode > 1u) return GE_ERROR_INVALID_MODE;
     int recorded = 0;
     for (;;) {
+        ge_lists_finish_stopped(s);
         /* Opt-in timing model: wait for every drawing list first. A list a producer released
          * while this call waited can be drawing on the next pass. */
         if (s_ge_timing_drawing) {
@@ -680,8 +688,6 @@ static uint32_t h_GeDrawSync(CpuState *s) {
         }
         if (mode == 1u) {
             if (head < 0) return 0u;
-            if (s_ge_lists[head].status == GE_LIST_STALLED && s_ge_lists[head].preempted)
-                return GE_SYNC_DRAWING;
             return s_ge_lists[head].status == GE_LIST_PAUSED ? GE_DRAW_SYNC_PAUSED : GE_DRAW_SYNC_STALLED;
         }
         if (head < 0) break;

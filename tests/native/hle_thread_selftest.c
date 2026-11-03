@@ -23977,8 +23977,8 @@ static void test_ge_blocking_sync_waits_for_stalled_list(void) {
  * MUTANT: drop the stop check in ge_run_list_inner -- the base behaviour: the list runs to its
  *   END in one piece and the stronger thread runs after the call. MUTANT: drop the state check
  *   after sched_preempt_point in ge_list_run -- a run goes on over a list another caller paused,
- *   ended or replaced. MUTANT: drop guard != 0 -- a fresh list can stop before its first command
- *   and resume with a stale call stack; the stop count here goes up by one. MUTANT: drop
+ *   ended or replaced. MUTANT: drop guard != 0 -- a run stops before its first command, so with
+ *   the flag set again at every stop the list never moves and this test does not end. MUTANT: drop
  *   !pending_signal -- the stop count of the SIGNAL cell goes up by one. */
 enum {
     GPP_MAIN_ENTRY = 0x08a62000u,
@@ -23986,6 +23986,7 @@ enum {
     GPP_FINISH_ENTRY = 0x08a62080u,
     GPP_NAME = 0x08a620c0u,
     GPP_CALLBACK = 0x08a62100u,
+    GPP_OWNER_ENTRY = 0x08a62140u,
     GPP_LIST = 0x08a63000u,
     GPP_LIST2 = 0x08a65000u,
     GPP_FINISH_OP = 0x0f000000u,
@@ -23994,12 +23995,17 @@ enum {
     GPP_NOPS = 32u,
     GPP_LONG_NOPS = 1000u
 };
-enum { GPP_STOP_EVERY, GPP_ADVANCE, GPP_PAUSE, GPP_REPLACE, GPP_ENQUEUE, GPP_ENQUEUE_HEAD };
+enum {
+    GPP_STOP_EVERY, GPP_ADVANCE, GPP_PAUSE, GPP_REPLACE, GPP_ENQUEUE, GPP_ENQUEUE_HEAD, GPP_PEEK_LIST,
+    GPP_PEEK_DRAW
+};
+enum { GPP_THREADS_PEEK, GPP_THREADS_LOST_OWNER_LIST, GPP_THREADS_LOST_OWNER_DRAW };
 void sr_hle_test_ge_preempt_hook(void (*hook)(uint32_t list_id));
 static int s_gpp_mode;
 static unsigned s_gpp_stops, s_gpp_finishes, s_gpp_strong_done, s_gpp_strong_at_return;
 static uint32_t s_gpp_id, s_gpp_end, s_gpp_list2_id, s_gpp_peek_list, s_gpp_peek_draw, s_gpp_paused_peek;
-static uint32_t s_gpp_cbid;
+static uint32_t s_gpp_cbid, s_gpp_owner, s_gpp_wait_result;
+static int s_gpp_threads;
 
 static void gpp_finish_fn(CpuState *cpu) {
     s_gpp_finishes++;
@@ -24018,11 +24024,7 @@ static void gpp_stop_again(void) { atomic_store_explicit(&sr_preempt_due, 1, mem
 
 static void gpp_hook(uint32_t list_id) {
     s_gpp_id = list_id;
-    if (++s_gpp_stops == 1u) {
-        s_gpp_peek_list = gsw_call(NID_SCE_GE_LIST_SYNC, list_id, 1u, 0u, 0u);
-        s_gpp_peek_draw = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
-    }
-    if (s_gpp_stops != 3u || s_gpp_mode == GPP_STOP_EVERY) {
+    if (++s_gpp_stops != 3u || s_gpp_mode == GPP_STOP_EVERY) {
         gpp_stop_again();
         return;
     }
@@ -24049,6 +24051,13 @@ static void gpp_hook(uint32_t list_id) {
         (void)gpp_write_list(GPP_LIST2, 0u);
         s_gpp_list2_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE_HEAD, GPP_LIST2, 0u, s_gpp_cbid, 0u);
         break;
+    case GPP_PEEK_LIST:
+        s_gpp_peek_list = gsw_call(NID_SCE_GE_LIST_SYNC, list_id, 1u, 0u, 0u);
+        gpp_stop_again();   /* a run that went on from the wrong place would stop here again */
+        break;
+    case GPP_PEEK_DRAW:
+        s_gpp_peek_draw = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+        break;
     default:
         break;
     }
@@ -24069,6 +24078,15 @@ static uint32_t gpp_cell(int mode, uint32_t stall_words) {
 
 static void gpp_strong_fn(CpuState *cpu) {
     (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, 1u, 0u, 0u, 0u);
+    if (s_gpp_threads != GPP_THREADS_PEEK) {
+        (void)gsw_call(NID_SCE_KERNEL_TERMINATE_THREAD, s_gpp_owner, 0u, 0u, 0u);
+        s_gpp_wait_result = s_gpp_threads == GPP_THREADS_LOST_OWNER_LIST
+                                ? gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_id, 0u, 0u, 0u)
+                                : gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u);
+        s_gpp_strong_done = 1u;
+        cpu->r[2] = 0u;
+        return;
+    }
     s_gpp_peek_draw = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
     s_gpp_peek_list = gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_id, 1u, 0u, 0u);
     (void)gpp_write_list(GPP_LIST2, 0u);
@@ -24077,24 +24095,39 @@ static void gpp_strong_fn(CpuState *cpu) {
     cpu->r[2] = 0u;
 }
 
+static void gpp_owner_fn(CpuState *cpu) {
+    gpp_stop_again();
+    (void)gsw_call(NID_SCE_GE_LIST_UPDATE_STALL_ADDR, s_gpp_id, s_gpp_end, 0u, 0u);
+    cpu->r[2] = 0u;
+}
+
 static void gpp_main_fn(CpuState *cpu) {
     uint32_t thid = gsw_call(NID_SCE_KERNEL_CREATE_THREAD, GPP_NAME, GPP_STRONG_ENTRY, 16u, 0x1000u);
     (void)gsw_call(NID_SCE_KERNEL_START_THREAD, thid, 0u, 0u, 0u);   /* it runs and parks */
-    (void)gpp_write_list(GPP_LIST, GPP_LONG_NOPS);
+    s_gpp_end = gpp_write_list(GPP_LIST, GPP_LONG_NOPS);
     s_gpp_mode = GPP_STOP_EVERY;
+    if (s_gpp_threads != GPP_THREADS_PEEK) {
+        /* A list held at its start, so the strong thread knows its id before the run stops. */
+        s_gpp_id = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST, GPP_LIST, s_gpp_cbid, 0u);
+        s_gpp_owner = gsw_call(NID_SCE_KERNEL_CREATE_THREAD, GPP_NAME, GPP_OWNER_ENTRY, 24u, 0x1000u);
+        (void)gsw_call(NID_SCE_KERNEL_START_THREAD, s_gpp_owner, 0u, 0u, 0u);
+        cpu->r[2] = 0u;
+        return;
+    }
     gpp_stop_again();
     (void)gsw_call(NID_SCE_GE_LIST_ENQUEUE, GPP_LIST, 0u, s_gpp_cbid, 0u);
     s_gpp_strong_at_return = s_gpp_strong_done;
     cpu->r[2] = 0u;
 }
 
-static void test_ge_list_stops_for_a_stronger_thread(void) {
+static void gpp_setup(void) {
     reset_fixture();
     sr_hle_init();
     sr_test_guest_fn_reset();
     sr_test_register_guest_fn(GPP_FINISH_ENTRY, gpp_finish_fn);
     sr_test_register_guest_fn(GPP_MAIN_ENTRY, gpp_main_fn);
     sr_test_register_guest_fn(GPP_STRONG_ENTRY, gpp_strong_fn);
+    sr_test_register_guest_fn(GPP_OWNER_ENTRY, gpp_owner_fn);
     title_hle_write_cstr(GPP_NAME, "ge-strong");
     MEM_W32(GPP_CALLBACK, 0u);
     MEM_W32(GPP_CALLBACK + 4u, 0u);
@@ -24103,6 +24136,23 @@ static void test_ge_list_stops_for_a_stronger_thread(void) {
     s_gpp_cbid = gsw_call(NID_SCE_GE_SET_CALLBACK, GPP_CALLBACK, 0u, 0u, 0u);
     expect(s_gpp_cbid < 16u, "the GE finish callback registers");
     sr_hle_test_ge_preempt_hook(gpp_hook);
+}
+
+/* The production path: real threads on their own coroutines. */
+static void gpp_threads_cell(int threads) {
+    gpp_setup();
+    sr_hle_test_ge_lists_reset();
+    s_gpp_threads = threads;
+    s_gpp_stops = s_gpp_finishes = s_gpp_strong_done = s_gpp_strong_at_return = 0u;
+    s_gpp_peek_list = s_gpp_peek_draw = s_gpp_wait_result = 0xdeadbeefu;
+    s_gpp_list2_id = 0u;
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(GPP_MAIN_ENTRY, 0u, 0u);
+}
+
+static void test_ge_list_stops_for_a_stronger_thread(void) {
+    gpp_setup();
 
     /* A stop before every command but the first; the list still ends once. */
     uint32_t id = gpp_cell(GPP_STOP_EVERY, 0u);
@@ -24110,8 +24160,18 @@ static void test_ge_list_stops_for_a_stronger_thread(void) {
            "a run stops at every command boundary after the first, as at a stall address");
     expect(gsw_call(NID_SCE_GE_LIST_SYNC, id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 1u,
            "a list stopped at every command reaches its END and fires its finish callback once");
-    expect(s_gpp_peek_list == 2u && s_gpp_peek_draw == 2u,
-           "a stopped list peeks as drawing (2), not as a stall the guest asked for (3)");
+
+    /* A peek finishes a stopped list and reads it done, so a spinning stronger thread cannot
+     * wait on a list that needs a weaker one to move. */
+    (void)gpp_cell(GPP_PEEK_LIST, 0u);
+    expect(s_gpp_peek_list == 0u && s_gpp_finishes == 1u && s_gpp_stops == 3u,
+           "sceGeListSync(1) finishes a stopped list on the calling thread and reads it done");
+    (void)gpp_cell(GPP_PEEK_DRAW, 0u);
+    expect(s_gpp_peek_draw == 0u && s_gpp_finishes == 1u && s_gpp_stops == 3u,
+           "sceGeDrawSync(1) finishes a stopped list on the calling thread and reads it done");
+    (void)gpp_cell(GPP_PEEK_LIST, 8u);
+    expect(s_gpp_peek_list == 3u && s_gpp_finishes == 0u && s_gpp_stops == 3u,
+           "a peek at a list stopped on the way to a stall address reads that stall");
 
     /* SIGNAL pairs with the END after it: no stop between them. */
     sr_hle_test_ge_lists_reset();
@@ -24166,20 +24226,23 @@ static void test_ge_list_stops_for_a_stronger_thread(void) {
                s_gpp_finishes == 2u,
            "sceGeListEnQueueHead during a stop finishes the stopped list instead of stopping the run");
 
-    /* The production path: a real stronger thread, on its own coroutine, runs inside the call. */
-    sr_hle_test_ge_lists_reset();
-    s_gpp_stops = s_gpp_finishes = s_gpp_strong_done = s_gpp_strong_at_return = 0u;
-    s_gpp_peek_list = s_gpp_peek_draw = 0xdeadbeefu;
-    s_gpp_list2_id = 0u;
-    g_worker_uid = SR_ROLE_UID_NONE;
-    memset(s_cpu, 0, sizeof(*s_cpu));
-    sched_run(GPP_MAIN_ENTRY, 0u, 0u);
+    /* A stronger thread runs inside the call, and what it asks finishes the list. */
+    gpp_threads_cell(GPP_THREADS_PEEK);
     expect(s_gpp_strong_at_return == 1u,
            "a stronger thread due during a list runs before sceGeListEnQueue returns");
-    expect(s_gpp_peek_draw == 2u && s_gpp_peek_list == 2u,
-           "the stronger thread finds the list drawing");
+    expect(s_gpp_peek_draw == 0u && s_gpp_peek_list == 0u,
+           "the stronger thread's peeks read the stopped list finished, as if it had not stopped");
     expect(gsw_call(NID_SCE_GE_LIST_SYNC, s_gpp_list2_id, 1u, 0u, 0u) == 0u && s_gpp_finishes == 2u,
-           "the stronger thread's own list queues behind the stopped one and both end once");
+           "the stronger thread's own list and the stopped one both end once");
+
+    /* The thread that was running the list never comes back. */
+    gpp_threads_cell(GPP_THREADS_LOST_OWNER_LIST);
+    expect(s_gpp_strong_done == 1u && s_gpp_wait_result == 0u && s_gpp_finishes == 1u,
+           "a blocking sceGeListSync finishes a list whose thread was terminated during a stop");
+    gpp_threads_cell(GPP_THREADS_LOST_OWNER_DRAW);
+    expect(s_gpp_strong_done == 1u && s_gpp_wait_result == 0u && s_gpp_finishes == 1u,
+           "a blocking sceGeDrawSync finishes a list whose thread was terminated during a stop");
+    s_gpp_threads = GPP_THREADS_PEEK;
 
     sr_hle_test_ge_preempt_hook(NULL);
     atomic_store_explicit(&sr_preempt_due, 0, memory_order_relaxed);

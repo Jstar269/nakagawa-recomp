@@ -102,8 +102,6 @@ void    sched_resume_interrupts(uint32_t state) { (void)state; }
 int     sched_interrupts_enabled(void) { return 1; }
 void    sched_delay_current(uint32_t usec) { (void)usec; }
 void    sched_preempt(void) {}
-atomic_int_least32_t sr_preempt_due;
-void    sched_preempt_point(void) {}
 void    sched_block_on(uint32_t obj) { (void)obj; }
 void    sched_wait_vblank_start(void) {}
 int     sched_wait_vblank(void) { return 0; }
@@ -201,9 +199,6 @@ int      sr_hle_register_late_import(uint32_t nid, uint32_t target) { (void)nid;
 /* --- GE stubs (ge.c / gpu_sdl3vk) --- */
 uint32_t sr_get_ge_status(void) { return 0u; }
 uint32_t ge_run_list(uint32_t addr, int resume) { (void)addr; (void)resume; return 0u; }
-uint32_t ge_run_list_until(uint32_t addr, int resume, atomic_int_least32_t *stop, int *stopped) {
-    (void)addr; (void)resume; (void)stop; *stopped = 0; return 0u;
-}
 uint32_t ge_last_finish_id(void) { return 0u; }
 uint32_t ge_framebuffer(void) { return 0u; }
 uint32_t g_ge_stall_addr = 0;
