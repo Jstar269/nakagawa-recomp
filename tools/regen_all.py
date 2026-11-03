@@ -38,7 +38,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from typing import Callable
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "tools"
@@ -268,7 +268,8 @@ def _without_admission(ledger: bytes | None) -> dict | None:
     except ValueError:
         return None
     document.pop("admission", None)
-    return document
+    returned: dict[str, Any] | None = document
+    return returned
 
 
 def _provenance(check: bool, base: str | None) -> tuple[str, list[str], str]:

@@ -17,7 +17,7 @@ import sys
 import tarfile
 import tempfile
 import threading
-from typing import Callable
+from typing import Any, Callable
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -293,7 +293,8 @@ class TestPrerequisiteFetcher(unittest.TestCase):
                 [sys.executable, "-c", probe, tools, json.dumps(item), str(target)],
                 capture_output=True, text=True, check=True,
             )
-            return json.loads(result.stdout)
+            returned: dict[str, Any] = json.loads(result.stdout)
+            return returned
 
         before = _PayloadHandler.requests
         self.assertEqual(run_probe(destination),
@@ -1279,6 +1280,7 @@ class TestNetworkEgressAllowlist(unittest.TestCase):
             # A macro is string literals, possibly joined with NK_UPDATE_REPOSITORY.
             match = re.search(rf"#define {name}\s+((?:[^\n]*\\\n)*[^\n]*)", header)
             self.assertIsNotNone(match, name)
+            assert match is not None
             value = match.group(1).replace("\\\n", " ")
             value = value.replace("NK_UPDATE_REPOSITORY", f'"{UPDATE_CHECK_REPOSITORY}"')
             return "".join(re.findall(r'"([^"]*)"', value))

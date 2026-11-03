@@ -67,6 +67,7 @@ RETIRED_RUNTIME_BINDING_FIELDS = (
     "frame_ready_latch_addr",
     "display_bringup",
     "runtime_sync",
+    "callback_terminators",
 )
 
 #: The host assists retired under #363. A manifest that still names one fails with this
@@ -77,6 +78,10 @@ HLE_ASSIST_RETIRED_MESSAGE = (
     "runtime sync state or advances a frame latch; remove this field and let the title's "
     "own code initialize that state"
 )
+CALLBACK_TERMINATOR_RETIRED_MESSAGE = (
+    "CALLBACK_TERMINATOR_RETIRED: the runtime no longer reports a dispatch target as a "
+    "completed walk; remove this field"
+)
 
 
 def retired_binding_message(name: str) -> str:
@@ -86,6 +91,8 @@ def retired_binding_message(name: str) -> str:
                 "remove this field and provide translated guest libfont startup")
     if name in RETIRED_HLE_ASSIST_BINDINGS:
         return HLE_ASSIST_RETIRED_MESSAGE
+    if name == "callback_terminators":
+        return CALLBACK_TERMINATOR_RETIRED_MESSAGE
     return f"{name} is retired; runtime does not write guest VBLANK counters"
 
 # Expected extracted-data file count for the title's xbdata tree.
@@ -98,9 +105,8 @@ RUNTIME_BINDING_PAIRS: tuple[tuple[str, str], ...] = ()
 
 #: Optional *typed collections* of title bindings. Unlike the scalar fields above, each
 #: names a set of semantic sites rather than one address, so the runtime carries a table
-#: instead of a single value. Both are individually optional and both are empty in a
-#: generic build.
-RUNTIME_BINDING_COLLECTIONS = ("dispatch_aliases", "callback_terminators")
+#: instead of a single value. It is optional and empty in a generic build.
+RUNTIME_BINDING_COLLECTIONS = ("dispatch_aliases",)
 
 #: Optional *typed objects* of title bindings. None remains: the display bring-up and
 #: runtime-sync objects were retired under #363.
@@ -127,7 +133,6 @@ DECLARABLE_BINDING_FAMILIES = (
 #: that should be fixed upstream, and the bound keeps a malformed manifest from turning
 #: into an unbounded runtime table.
 MAX_DISPATCH_ALIASES = 32
-MAX_CALLBACK_TERMINATORS = 32
 MAX_LOOSE_CONTENT_ROOTS = 16
 MAX_LOOSE_CONTENT_PRECEDENCE = 65535
 MAX_LOOSE_CONTENT_EXCLUDES = 2
@@ -240,7 +245,8 @@ def identifier(value: Any, path: str) -> str:
     value = text(value, path, 64)
     if not ID_RE.fullmatch(value):
         fail(path, "must match ^[a-z0-9][a-z0-9._-]{0,63}$")
-    return value
+    returned: str = value
+    return returned
 
 
 def portable_path(value: Any, path: str) -> str:
@@ -667,7 +673,8 @@ def guest_address(value: Any, path: str) -> int:
         fail(path, "must not be zero; omit the field to leave the binding unconfigured")
     if value % 4 != 0:
         fail(path, "must be 4-byte aligned")
-    return value
+    returned: int = value
+    return returned
 
 
 def validate_dispatch_aliases(value: Any, path: str) -> list[dict[str, int]]:
@@ -718,87 +725,6 @@ def validate_dispatch_aliases(value: Any, path: str) -> list[dict[str, int]]:
     return result
 
 
-def _terminator_context(entry: dict[str, int]) -> tuple[int, int]:
-    """Sort/compare key for one terminator: absent pc/ra sort as 0 (never a valid value)."""
-    return (entry.get("pc", 0), entry.get("ra", 0))
-
-
-def validate_callback_terminators(value: Any, path: str) -> list[dict[str, int]]:
-    """Validate the callback-terminator collection.
-
-    A terminator says "at this exact call site, this sentinel target means the guest's
-    callback walk is COMPLETE" -- report completion to the caller instead of treating
-    the sentinel as a permissive dispatch miss, which a circular walker would read as
-    "keep going" and loop forever.
-
-    ``sentinel`` is a raw target value, not an address: the real one is 0xFFFFFFFF, so
-    the alignment rule for a guest address does not apply to it. A sentinel of 0 is
-    refused (#1375): a transfer to 0 is a null code pointer, which stops the run by name
-    in every tier and backend, so it can never be a list terminator. Being a target value is also what subjects it to the core VFPU
-    reservation, which ``pc``/``ra`` are not subject to. ``pc`` and ``ra`` are genuine guest addresses and *at least one*
-    is required -- an entry with neither would make the sentinel terminate everywhere,
-    which is exactly the address-global behavior this collection exists to avoid.
-    """
-    items = array(value, path, MAX_CALLBACK_TERMINATORS)
-    if not items:
-        fail(path, "must not be empty; omit the field instead")
-    result: list[dict[str, int]] = []
-    for index, item in enumerate(items):
-        item_path = f"{path}[{index}]"
-        item = obj(item, item_path, {"sentinel", "pc", "ra"})
-        require(item, item_path, "sentinel")
-        entry: dict[str, int] = {"sentinel": uint(item["sentinel"], f"{item_path}.sentinel")}
-        if entry["sentinel"] == 0:
-            fail(
-                f"{item_path}.sentinel",
-                "must not be 0: a transfer to 0 is a null code pointer, which stops the "
-                "run, never a callback-list terminator",
-            )
-        # The sentinel is compared against a dispatch TARGET. `pc`/`ra` are compared
-        # against CpuState fields at the call site, never against a target, so the core
-        # reservation does not apply to them.
-        reject_core_reserved_target(entry["sentinel"], f"{item_path}.sentinel", "sentinel")
-        for field in ("pc", "ra"):
-            if field in item:
-                entry[field] = guest_address(item[field], f"{item_path}.{field}")
-        if "pc" not in entry and "ra" not in entry:
-            fail(
-                item_path,
-                "must constrain at least one of pc/ra; an unconstrained terminator would "
-                "match this sentinel at every call site in the program",
-            )
-        result.append(entry)
-    for index, entry in enumerate(result):
-        for other_index, other in enumerate(result):
-            if other_index == index:
-                continue
-            if other["sentinel"] != entry["sentinel"]:
-                continue
-            # `other` subsumes `entry` when it constrains a subset of the same context:
-            # every site matching `entry` already matches `other`, so `entry` can never
-            # decide anything. Two identical entries subsume each other; report the
-            # duplicate first because it has the clearer fix.
-            subsumes = all(
-                field not in other or other.get(field) == entry.get(field)
-                for field in ("pc", "ra")
-            )
-            if not subsumes:
-                continue
-            if other == entry and other_index > index:
-                fail(
-                    f"{path}[{other_index}]",
-                    f"duplicates the terminator already declared at {path}[{index}]",
-                )
-            if other != entry:
-                fail(
-                    f"{path}[{index}]",
-                    f"is unreachable behind the broader terminator at {path}[{other_index}], "
-                    "which already matches every site this entry could",
-                )
-    result.sort(key=lambda entry: (entry["sentinel"], *_terminator_context(entry)))
-    return result
-
-
 def validate_expected_data_file_count(value: Any, path: str) -> int:
     """Validate the expected extracted-data file-count census.
 
@@ -841,9 +767,6 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
     if "dispatch_aliases" in value:
         result["dispatch_aliases"] = validate_dispatch_aliases(
             value["dispatch_aliases"], f"{path}.dispatch_aliases")
-    if "callback_terminators" in value:
-        result["callback_terminators"] = validate_callback_terminators(
-            value["callback_terminators"], f"{path}.callback_terminators")
     if len(result) == 1:
         fail(path, "must configure at least one binding; omit the block instead")
     for left, right in RUNTIME_BINDING_PAIRS:

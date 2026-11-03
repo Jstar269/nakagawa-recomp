@@ -89,6 +89,7 @@ import sys
 import tempfile
 import unicodedata
 from dataclasses import dataclass
+from typing import Any
 
 try:
     from .nk_core.git_isolation import isolated_git_env
@@ -538,11 +539,23 @@ def derive_policy_delta_v3(
 
 def _read_policy_delta_v3_document(raw: bytes) -> dict:
     """Parse a V3 authority strictly; the shape only, not its truth against any profile."""
+    return _read_derived_delta_document(
+        raw,
+        version=POLICY_DELTA_V3_SCHEMA_VERSION,
+        added_entry_valid=lambda item: (
+            isinstance(item, dict) and set(item) == {"path", "sha256"} and _is_sha256(item["sha256"])
+        ),
+        added_entry_shape="include_added entries carry exactly a path and a lowercase sha256",
+    )
+
+
+def _read_derived_delta_document(raw: bytes, *, version: int, added_entry_valid, added_entry_shape: str) -> dict:
+    """Parse a V3 or V4 authority strictly: every list, rule and added entry, not its truth."""
     def reject_duplicates(pairs: list[tuple[str, object]]) -> dict:
         result: dict = {}
         for key, value in pairs:
             if key in result:
-                raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"duplicate key {key!r} in a V3 authority")
+                raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"duplicate key {key!r} in a V{version} authority")
             result[key] = value
         return result
 
@@ -551,18 +564,14 @@ def _read_policy_delta_v3_document(raw: bytes) -> dict:
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"cannot read the V3 authority: {error}") from error
     if not isinstance(document, dict) or set(document) != _V3_KEYS:
-        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"a V3 authority carries exactly {sorted(_V3_KEYS)}")
-    if document["kind"] != POLICY_DELTA_KIND or document["schema_version"] != POLICY_DELTA_V3_SCHEMA_VERSION:
-        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", "not a V3 policy-delta authority")
-    added = document["include_added"]
-    if not isinstance(added, list) or not all(
-        isinstance(item, dict) and set(item) == {"path", "sha256"} and _is_sha256(item["sha256"])
-        for item in added
-    ):
         raise RefreshError(
-            "POLICY_DELTA_AUTHORITY_INVALID",
-            "include_added entries carry exactly a path and a lowercase sha256",
+            "POLICY_DELTA_AUTHORITY_INVALID", f"a V{version} authority carries exactly {sorted(_V3_KEYS)}",
         )
+    if document["kind"] != POLICY_DELTA_KIND or document["schema_version"] != version:
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"not a V{version} policy-delta authority")
+    added = document["include_added"]
+    if not isinstance(added, list) or not all(added_entry_valid(item) for item in added):
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", added_entry_shape)
     lists = {"include_added": [_v3_path(item["path"]) for item in added]}
     for key in _V3_PATH_LISTS:
         if not isinstance(document[key], list):
@@ -599,7 +608,7 @@ def _read_policy_delta_v3_document(raw: bytes) -> dict:
     if keys != sorted(set(keys)):
         raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", "rule_changes must be sorted by key, each key once")
     if not any(lists.values()) and not keys:
-        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", "a V3 authority must record at least one change")
+        raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"a V{version} authority must record at least one change")
     return document
 
 
@@ -687,7 +696,16 @@ def verify_policy_delta_v3(
     )
     if raw != policy_delta_v3_bytes(derived):
         raise _explain_v3_difference(supplied, derived, baseline_document=baseline_document)
-    # Preconditions the derivation alone does not imply.
+    _check_derived_delta_preconditions(
+        derived, base_blobs=base_blobs, candidate_blobs=candidate_blobs, candidate_policy=candidate_policy,
+    )
+    return _normalized_derived_delta(derived)
+
+
+def _check_derived_delta_preconditions(
+    derived: dict, *, base_blobs: dict[str, bytes], candidate_blobs: dict[str, bytes], candidate_policy,
+) -> None:
+    """Preconditions a V3 or V4 derivation alone does not imply."""
     folded = {}
     for path in candidate_blobs:
         folded.setdefault(_fold(path), []).append(path)
@@ -696,7 +714,7 @@ def verify_policy_delta_v3(
         if path in base_blobs:
             raise RefreshError(
                 "POLICY_DELTA_PATH_EXISTS",
-                f"{path} already exists in the base tree; a V3 delta publishes only new files",
+                f"{path} already exists in the base tree; a policy delta publishes only new files",
             )
         if len(folded[_fold(path)]) > 1:
             raise RefreshError(
@@ -709,12 +727,273 @@ def verify_policy_delta_v3(
                 "POLICY_DELTA_UNCLASSIFIED_PATH",
                 f"removing the exclusion of {path} leaves it unclassified; include it or keep it excluded",
             )
+
+
+def _normalized_derived_delta(derived: dict) -> dict:
+    """The V1/V2 shape of a derived V3 or V4 delta (path lists, rule-change names)."""
     normalized = {
         "include_added": [item["path"] for item in derived["include_added"]],
         **{key: list(derived[key]) for key in _V3_PATH_LISTS},
         "rule_changes": [entry["key"] for entry in derived["rule_changes"]],
     }
     return dict(sorted(normalized.items()))
+
+
+# ---------------------------------------------------------------------------
+# Policy-delta authority V4: added paths bound to their origin claim (2026-11-02)
+# ---------------------------------------------------------------------------
+#
+# A V3 authority binds every added path to the SHA-256 of its admitted bytes, so
+# any edit before the pull request lands -- a hook trimming a final blank line,
+# one type annotation -- moves the derived name, the lookup misses, and the path
+# needs a whole new admission. The pin bought no safety: once a path lands, an
+# edit to it needs only its exact trusted record, never a new admission.
+#
+# A V4 authority binds each added path to what the admission decided, its origin
+# claim, and binds bytes only where the bytes are the claim:
+#
+# * ``claim`` is derived from the trusted detailed ledger alone by
+#   :func:`admission_claim`: the public class, the exact record id, and that
+#   record's classification, upstream, upstream revision and upstream licence.
+#   The candidate cannot influence it. Changing the record changes the claim,
+#   and only a new admission records a new one;
+# * ``binding`` is ``"claim"`` or ``"bytes"``. A ``"bytes"`` entry also carries
+#   the SHA-256 of the admitted bytes. ``admit_paths.py`` writes it by default
+#   for a ``third_party`` origin, a file imported byte-identical from an
+#   upstream revision; changing such a file needs a new admission that records
+#   it as a LOCAL DELTA (``"claim"``);
+# * the removed paths, exclude-list changes and rule changes exactly as V3.
+#
+# It is stored as ``docs/provenance/policy-deltas-v4/<key>.json``, where the key
+# is the SHA-256 of the *selector*: the document with each added entry reduced
+# to its path (:func:`policy_delta_v4_key`). The selector depends on the two
+# profiles alone, so an edit to an added file leaves the name, and the decision
+# it selects, unchanged. The name still only selects: the verifier derives the
+# whole document again -- selector, claims and, for ``"bytes"`` entries,
+# digests -- and requires the supplied bytes to equal it exactly.
+
+POLICY_DELTA_V4_SCHEMA_VERSION = 4
+#: Where the private authority keeps V4 documents, each named ``<sha256 of its selector>.json``.
+POLICY_DELTA_V4_DIR = "docs/provenance/policy-deltas-v4"
+#: How a V4 authority binds an added path: to its origin claim alone, or to its exact bytes too.
+POLICY_DELTA_BINDINGS = ("claim", "bytes")
+#: The trusted record fields an origin claim carries besides the public class and the record id.
+ADMISSION_CLAIM_RECORD_FIELDS = ("upstream", "upstream_revision", "upstream_license")
+_CLAIM_KEYS = frozenset({"classification", "record_id", "record_classification", *ADMISSION_CLAIM_RECORD_FIELDS})
+
+
+def admission_claim(path: str, record: dict | None) -> dict:
+    """The origin claim a V4 authority binds ``path`` to, from its exact trusted record (or none).
+
+    It is the class the gate derives (``_class_for``) and, when that derivation consulted the
+    record, the record's id, classification, upstream, upstream revision and upstream licence.
+    The admission and the verifier both call this with the same exact record from the trusted
+    detailed ledger, so they agree byte for byte while the record is unchanged.
+    """
+    classification, evidence = _class_for(path, record)
+    if classification == "unresolved":
+        raise RefreshError(
+            "POLICY_DELTA_CLAIM_UNRESOLVED",
+            f"{path} has no resolvable origin claim in the trusted detailed ledger; it cannot be admitted",
+        )
+    consulted = record if record is not None and evidence.get("record_id") is not None else None
+    claim: dict = {
+        "classification": classification,
+        "record_id": consulted["id"] if consulted is not None else None,
+        "record_classification": consulted.get("classification") if consulted is not None else None,
+    }
+    for field in ADMISSION_CLAIM_RECORD_FIELDS:
+        claim[field] = consulted.get(field) if consulted is not None else None
+    return claim
+
+
+def policy_delta_v4_selector(baseline_document: dict, candidate_document: dict) -> dict:
+    """The claim-free part of a V4 authority: the profile change, each added path by name alone."""
+    document = derive_policy_delta_v3(baseline_document, candidate_document, lambda _path: "0" * 64)
+    document["schema_version"] = POLICY_DELTA_V4_SCHEMA_VERSION
+    document["include_added"] = [item["path"] for item in document["include_added"]]
+    return document
+
+
+def policy_delta_v4_key(baseline_document: dict, candidate_document: dict) -> str:
+    """The file name (without ``.json``) of the V4 authority for this profile change."""
+    selector = policy_delta_v4_selector(baseline_document, candidate_document)
+    return hashlib.sha256(policy_delta_v3_bytes(selector)).hexdigest()
+
+
+def derive_policy_delta_v4(
+    baseline_document: dict,
+    candidate_document: dict,
+    *,
+    digest_of,
+    claim_of,
+    binding_of,
+) -> dict:
+    """The V4 authority document for the profile change from ``baseline_document`` to ``candidate_document``.
+
+    ``digest_of(path)`` returns the SHA-256 of the candidate's file (``None`` when the candidate
+    does not carry it), ``claim_of(path)`` the path's :func:`admission_claim`, and
+    ``binding_of(path)`` ``"claim"`` or ``"bytes"``. Raises ``RefreshError`` as
+    ``derive_policy_delta_v3`` does, and for an unknown binding or an unresolvable claim.
+    """
+    document = policy_delta_v4_selector(baseline_document, candidate_document)
+    added = []
+    for path in document["include_added"]:
+        digest = digest_of(path)
+        if digest is None:
+            raise RefreshError(
+                "POLICY_DELTA_ADDED_PATH_MISSING",
+                f"the candidate profile publishes {path}, which the candidate tree does not carry",
+            )
+        binding = binding_of(path)
+        if binding not in POLICY_DELTA_BINDINGS:
+            raise RefreshError("POLICY_DELTA_AUTHORITY_INVALID", f"{path} has unknown binding {binding!r}")
+        entry: dict = {"path": path, "binding": binding, "claim": claim_of(path)}
+        if binding == "bytes":
+            entry["sha256"] = digest
+        added.append(entry)
+    document["include_added"] = added
+    return document
+
+
+def _v4_added_entry_valid(item: object) -> bool:
+    if not isinstance(item, dict) or item.get("binding") not in POLICY_DELTA_BINDINGS:
+        return False
+    keys = {"path", "binding", "claim"} | ({"sha256"} if item["binding"] == "bytes" else set())
+    if set(item) != keys or (item["binding"] == "bytes" and not _is_sha256(item["sha256"])):
+        return False
+    claim = item["claim"]
+    return (
+        isinstance(claim, dict) and set(claim) == _CLAIM_KEYS
+        and isinstance(claim["classification"], str) and claim["classification"] != "unresolved"
+        and (claim["record_id"] is None or isinstance(claim["record_id"], str))
+    )
+
+
+def _read_policy_delta_v4_document(raw: bytes) -> dict:
+    """Parse a V4 authority strictly; the shape only, not its truth against any profile."""
+    return _read_derived_delta_document(
+        raw,
+        version=POLICY_DELTA_V4_SCHEMA_VERSION,
+        added_entry_valid=_v4_added_entry_valid,
+        added_entry_shape=(
+            "include_added entries carry exactly a path, a binding (claim or bytes), a claim with "
+            f"{sorted(_CLAIM_KEYS)}, and a lowercase sha256 for a bytes binding only"
+        ),
+    )
+
+
+def is_policy_delta_v4(raw: bytes) -> bool:
+    """True when ``raw`` declares itself a V4 authority (it may still be invalid)."""
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(document, dict) and document.get("schema_version") == POLICY_DELTA_V4_SCHEMA_VERSION
+
+
+def is_derived_policy_delta(raw: bytes) -> bool:
+    """True for a V3 or V4 authority: the verifier derives it from the profiles, with no blessed copy."""
+    return is_policy_delta_v3(raw) or is_policy_delta_v4(raw)
+
+
+def _explain_v4_difference(supplied: dict, derived: dict, *, baseline_document: dict) -> RefreshError:
+    """Name the first way an approved V4 change differs from this candidate's change."""
+    approved = {item["path"]: item for item in supplied["include_added"]}
+    actual = {item["path"]: item for item in derived["include_added"]}
+    if set(approved) == set(actual):
+        for path in sorted(approved):
+            want, have = approved[path], actual[path]
+            for field in sorted(_CLAIM_KEYS):
+                if want["claim"][field] != have["claim"][field]:
+                    return RefreshError(
+                        "POLICY_DELTA_CLAIM_MISMATCH",
+                        f"{path}: the admission recorded {field} {want['claim'][field]!r}, but the trusted "
+                        f"ledger now gives {have['claim'][field]!r}; an origin claim changes only through "
+                        "a new admission",
+                    )
+            if want.get("sha256") != have.get("sha256"):
+                return RefreshError(
+                    "POLICY_DELTA_ADDED_BYTES_MISMATCH",
+                    f"{path} was admitted as a byte-identical import (sha256 {want['sha256']}) and now "
+                    f"carries sha256 {have['sha256']}; restore the imported bytes, or admit it again as a "
+                    "LOCAL DELTA",
+                )
+
+    # Path sets, list preconditions and rule values: the V3 explanation, with each added entry
+    # (whose claim and binding are compared above) reduced to its path and one placeholder digest.
+    def as_v3(document: dict) -> dict:
+        return {**document, "include_added": [
+            {"path": item["path"], "sha256": "0" * 64} for item in document["include_added"]
+        ]}
+    return _explain_v3_difference(as_v3(supplied), as_v3(derived), baseline_document=baseline_document)
+
+
+def verify_policy_delta_v4(
+    raw: bytes,
+    *,
+    baseline_policy_bytes: bytes,
+    candidate_policy_bytes: bytes,
+    base_blobs: dict[str, bytes],
+    candidate_blobs: dict[str, bytes],
+    candidate_policy,
+    claim_of,
+) -> dict:
+    """Check a V4 authority against this exact candidate, base and trusted ledger; return the normalized delta.
+
+    ``claim_of(path)`` is :func:`admission_claim` over the trusted detailed ledger's exact
+    record for ``path``. The supplied document chooses only each added path's binding; every
+    other byte is derived here and must match.
+    """
+    supplied = _read_policy_delta_v4_document(raw)
+    try:
+        baseline_document = json.loads(baseline_policy_bytes.decode("utf-8"))
+        candidate_document = json.loads(candidate_policy_bytes.decode("utf-8"))
+        canonical = canonical_profile_bytes(candidate_document)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, AttributeError) as error:
+        raise RefreshError("CANDIDATE_POLICY_INVALID", f"cannot read the profiles: {error}") from error
+    if canonical != candidate_policy_bytes:
+        raise RefreshError(
+            "CANDIDATE_POLICY_NOT_CANONICAL",
+            "the candidate profile is not in canonical form (sorted path lists, two-space JSON, one final LF)",
+        )
+    bindings = {item["path"]: item["binding"] for item in supplied["include_added"]}
+    derived = derive_policy_delta_v4(
+        baseline_document, candidate_document,
+        digest_of=lambda path: hashlib.sha256(candidate_blobs[path]).hexdigest() if path in candidate_blobs else None,
+        claim_of=claim_of,
+        # A path the approval does not name is derived claim-bound; the path sets then differ.
+        binding_of=lambda path: bindings.get(path, "claim"),
+    )
+    if raw != policy_delta_v3_bytes(derived):
+        raise _explain_v4_difference(supplied, derived, baseline_document=baseline_document)
+    _check_derived_delta_preconditions(
+        derived, base_blobs=base_blobs, candidate_blobs=candidate_blobs, candidate_policy=candidate_policy,
+    )
+    return _normalized_derived_delta(derived)
+
+
+def verify_derived_policy_delta(
+    raw: bytes,
+    *,
+    baseline_policy_bytes: bytes,
+    candidate_policy_bytes: bytes,
+    base_blobs: dict[str, bytes],
+    candidate_blobs: dict[str, bytes],
+    candidate_policy,
+    claim_of,
+) -> dict:
+    """Verify a V3 (byte-bound) or V4 (claim-bound) authority, whichever ``raw`` declares."""
+    if is_policy_delta_v4(raw):
+        return verify_policy_delta_v4(
+            raw, baseline_policy_bytes=baseline_policy_bytes, candidate_policy_bytes=candidate_policy_bytes,
+            base_blobs=base_blobs, candidate_blobs=candidate_blobs, candidate_policy=candidate_policy,
+            claim_of=claim_of,
+        )
+    return verify_policy_delta_v3(
+        raw, baseline_policy_bytes=baseline_policy_bytes, candidate_policy_bytes=candidate_policy_bytes,
+        base_blobs=base_blobs, candidate_blobs=candidate_blobs, candidate_policy=candidate_policy,
+    )
 
 
 def _control_path(root: Path, relative: str, *, code: str) -> Path:
@@ -1130,7 +1409,8 @@ def claims_ledger(document: dict) -> dict:
     for entry in claims.get("entries", []):
         if isinstance(entry, dict):
             entry.pop("sha256", None)
-    return claims
+    returned: dict[str, Any] = claims
+    return returned
 
 
 def claims_ledger_bytes(document: dict) -> bytes:
@@ -1769,7 +2049,8 @@ def _refresh_document(
         expected = hashlib.sha256(candidate.blobs[path]).hexdigest()
         if entry.get("sha256") != expected:
             raise RefreshError("REFRESH_OUTPUT_INVALID", f"output hash does not match candidate bytes for {path}")
-    return output
+    returned: dict[str, Any] = output
+    return returned
 
 
 def _refresh_export_bytes(
@@ -1802,6 +2083,24 @@ def _refresh_export_bytes(
     # public_export.build_control_document.
     return _canonical_json_bytes(_build_control_document(document))
 
+
+def _trusted_claims(trusted_ledger_path: Path):
+    """``claim_of`` for a V4 authority: :func:`admission_claim` over the trusted detailed ledger.
+
+    A public snapshot carries no records, so no V4 claim can be derived from it and every
+    lookup fails closed.
+    """
+    document = _read_json_file(trusted_ledger_path, code="TRUSTED_LEDGER_INVALID")
+    records = _detailed_records(document) if "records" in document else None
+
+    def claim_of(path: str) -> dict:
+        if records is None:
+            raise RefreshError(
+                "POLICY_DELTA_CLAIM_UNVERIFIABLE",
+                "a V4 policy delta binds origin claims, which only the trusted detailed ledger can derive",
+            )
+        return admission_claim(path, records.get(path))
+    return claim_of
 
 def refresh_reviewed(
     *,
@@ -1902,12 +2201,12 @@ def refresh_reviewed(
         v3_raw = _external_input(
             policy_delta_authority, candidate_root=controlled_root, label="policy delta authority",
         ).read_bytes()
-        if not is_policy_delta_v3(v3_raw):
+        if not is_derived_policy_delta(v3_raw):
             v3_raw = None
         elif trusted_candidate_policy is not None:
             raise RefreshError(
                 "POLICY_DELTA_ARGUMENT_REQUIRED",
-                "a V3 policy delta authority derives the candidate profile; pass no --trusted-candidate-policy",
+                "a V3 or V4 policy delta authority derives the candidate profile; pass no --trusted-candidate-policy",
             )
         if v3_raw is None and trusted_candidate_policy is None:
             raise RefreshError(
@@ -1932,13 +2231,14 @@ def refresh_reviewed(
                 candidate_policy = _load_publication_policy(policy_file)
             except Exception as error:
                 raise RefreshError("CANDIDATE_POLICY_INVALID", "candidate policy is invalid") from error
-        policy_delta = verify_policy_delta_v3(
+        policy_delta = verify_derived_policy_delta(
             v3_raw,
             baseline_policy_bytes=policy_raw,
             candidate_policy_bytes=blessed_policy_raw,
             base_blobs=trusted.blobs,
             candidate_blobs=candidate.blobs,
             candidate_policy=candidate_policy,
+            claim_of=_trusted_claims(trusted_ledger_path),
         )
         candidate_policy_raw = blessed_policy_raw
     elif trusted_candidate_policy is not None:

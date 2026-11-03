@@ -19,6 +19,7 @@ import time
 import unittest
 from typing import Sequence
 from urllib.parse import parse_qs, quote, urlsplit
+import zipfile
 import zlib
 
 
@@ -698,6 +699,7 @@ def compute_effective_timeout(
       - WAIT_MS=<duration_ms>: waits for explicit millisecond duration.
       - WAIT_VIEW=<view_mask>,<timeout_ms>: waits up to timeout_ms for view match.
       - WAIT_PACKAGE_STATUS=<status>,<timeout_ms>: waits for package validation.
+      - WAIT_REPORT=<phase>,<timeout_ms>: waits for the Problem report phase number.
 
     When explicit_timeout is None, sums all wait event bounds and adds
     TIMEOUT_BUFFER_SECONDS over DEFAULT_BASE_TIMEOUT_SECONDS to ensure slow
@@ -712,7 +714,7 @@ def compute_effective_timeout(
                 effective += int(ev.split("=", 1)[1]) / 1000.0
             except ValueError:
                 pass
-        elif ev.startswith("WAIT_VIEW=") and "," in ev:
+        elif ev.startswith(("WAIT_VIEW=", "WAIT_REPORT=")) and "," in ev:
             try:
                 effective += int(ev.split(",", 1)[1]) / 1000.0
             except ValueError:
@@ -2763,6 +2765,67 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "updates")
 
+    @staticmethod
+    def problem_report_steps(stdout: str) -> tuple[list[dict[str, str]], list[str]]:
+        """The Problem report phases the player settled on, and the file names it listed."""
+        steps = []
+        names = []
+        for line in stdout.splitlines():
+            if line.startswith("[PLAYER_UI_TEST] problem_report="):
+                steps.append(dict(re.findall(r"([a-z_]+)=(\S+)", line)))
+            elif line.startswith("[PLAYER_UI_TEST] problem_report_file="):
+                names.append(line.split("=", 1)[1])
+        return steps, names
+
+    def test_problem_report_page_previews_then_writes_one_local_bundle(self) -> None:
+        """#1849: the Problem report page lists every file with a size, Create writes the
+        ZIP on this PC, and the page then shows where it went."""
+        # The GPU probe in the report tool takes up to ~10 s on a hosted runner, so the waits are long.
+        # The report tool refuses a data folder inside the repository, where the
+        # sandbox lies, so the regression build writes under a folder outside it.
+        with tempfile.TemporaryDirectory(prefix="nk-report-test-") as tmp:
+            env = {"NK_UI_TEST_REPORT_DATA_ROOT": tmp}
+            # Wait for the previewed phase (2), press Create, then wait for done (4); 6 is
+            # the no-Python page, which ends either wait and skips the test below.
+            run = self.next_ui_run(
+                "problem-report",
+                ("WAIT_REPORT=2|6,60000", "KEY_RETURN", "WAIT_REPORT=4|6,150000"),
+                env_extra=env)
+            stdout = run["stdout"]
+            assert isinstance(stdout, str)
+            steps, names = self.problem_report_steps(stdout)
+            phases = [int(step["problem_report"]) for step in steps]
+            if 6 in phases:
+                self.skipTest("no Python interpreter on this host, so the page shows the command")
+            # 1 is listing, 2 previewed, 4 done (PlayerReportPhase).
+            self.assertEqual(phases[:1], [1], stdout)
+            self.assertIn(2, phases, stdout)
+            self.assertEqual(phases[-1], 4, stdout)
+            self.assertIn("about.txt", names)
+            written = Path(steps[-1]["path"])
+            self.assertEqual(written.parent, Path(tmp) / "reports", "nothing leaves this PC")
+            with zipfile.ZipFile(written) as bundle:
+                self.assertIn("about.txt", bundle.namelist())
+                self.assertEqual(sorted(bundle.namelist()), sorted(names[-len(bundle.namelist()):]))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "problem_report")
+
+    def test_problem_report_that_cannot_start_its_worker_says_so_on_the_page(self) -> None:
+        """#1849: if the report thread cannot start, the page shows a failed phase with the
+        command to run by hand, never an empty page where Create does nothing."""
+        with tempfile.TemporaryDirectory(prefix="nk-report-test-") as tmp:
+            env = {"NK_UI_TEST_REPORT_DATA_ROOT": tmp, "NK_UI_TEST_FAIL_REPORT_THREAD_CREATE": "1"}
+            run = self.next_ui_run(
+                "problem-report", ("WAIT_REPORT=5,10000",), env_extra=env)
+        stdout = run["stdout"]
+        assert isinstance(stdout, str)
+        steps, _ = self.problem_report_steps(stdout)
+        self.assertEqual([int(step["problem_report"]) for step in steps][-1:], [5], stdout)
+        self.assertIn("[PLAYER_UI_TEST] problem_report_message=The report could not be started.",
+                      stdout)
+        self.assertIn("nk_cli.py report", stdout)
+
     def test_update_check_offline_shows_one_plain_card_and_no_retries(self) -> None:
         run, steps, requests = self.update_run(
             "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=1500"), None)
@@ -4586,6 +4649,29 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn(outcome["error"], ("RUNTIME_NOT_FOUND", "PROCESS_SPAWN_FAILED",
                                          "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT"),
                       run["stdout"])
+
+    def test_title_opened_during_the_package_check_gets_play_focus_when_it_ends(self) -> None:
+        """A title opened before its package check ends focuses PLAY once PLAY turns on.
+
+        NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS stands in for a check that hashes a large
+        package. Failing-before: PLAY was off on the first frame, so focus landed on
+        OPEN SAVE FOLDER and stayed there when PLAY came on; Enter (or a pad's A) then
+        opened the save folder instead of starting the game."""
+        run = self.run_player(
+            "ready", ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=4000"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "1500"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        labels = [frame["next_primary_label"] for frame in frames]
+        self.assertTrue(any(label.startswith("disabled:") for label in labels),
+                        f"PLAY was never off while the check ran: {sorted(set(labels))}")
+        self.assertEqual(frames[-1]["next_primary_label"], "PLAY", run["stdout"])
+        self.assertEqual(frames[-1]["next_focus"], self.TITLE_PRIMARY,
+                         "PLAY has focus once the package check turns it on")
 
     ROUTE_REBUILD = "7"
     OUTDATED_LABEL = "Built_by_an_older_Nakagawa._Rebuild_for_the_latest_fixes."

@@ -43,7 +43,7 @@
     X("SR_AUDIO_DISABLED", "string", "unset (audio enabled)", "audio_unavailable.c", "When set to exactly 1, host audio output is disabled and the null audio backend is used.") \
     X("SR_BLOCKLOG", "flag-presence", "off", "debug.h,sched.c", "Logs each time the scheduler parks a thread in a delay or object wait; read once per process.") \
     X("SR_BOOT_EVENT_FILE", "path", "unset (no event file)", "driver.c,gui.c,hle.c,hle_kernel_module.c,recomp.c", "File to which boot progress events are appended in addition to stderr.") \
-    X("SR_BOOT_PATH", "path", "unset (no boot argument seeded)", "driver.c", "Guest boot path (under 4096 bytes) placed in the entry's argument block.") \
+    X("SR_BOOT_PATH", "path", "unset (no boot argument seeded)", "driver.c,hle_kernel_module.c", "Guest boot path (under 4096 bytes) placed in the entry's argument block; a disc0: or umd0: path marks a title booted from the disc.") \
     X("SR_BREAKLOG", "flag-presence", "off", "debug.h", "Legacy switch that turns on the memory debug log class, like SR_OORLOG.") \
     X("SR_BREAK_FATAL", "flag-nonzero", "off: BREAK is logged and execution continues", "recomp.c", "Makes a guest BREAK instruction record a fatal event and abort the process.") \
     X("SR_CALLCOUNT", "flag-presence", "off", "hle.c", "When set, enables per-call counting of HLE function invocations.") \
@@ -106,12 +106,13 @@
     X("SR_GE_TIMING", "string", "off (enabled only when exactly \"1\")", "hle.c", "Set to 1 to turn on the measured GE time model and print a GE_TIMING banner.") \
     X("SR_GE_TRANSITION_TRACE", "path", "off", "ge.c", "Writes a GE transition trace to this file; 1 uses a default log path and 0 or empty disables it.") \
     X("SR_GPU_CAPTURE_TERMINAL_CASE", "string", "unset: lifecycle self-test runs", "gpu_sdl3vk/sdl3vk.c", "Names a terminal-fault case for the GPU capture self-test; when set, the lifecycle self-test is skipped.") \
-    X("SR_GPU_COHERENCE_CASE", "string", "unset (run all cases)", "gpu_sdl3vk/ge_gpu.c", "Restricts the GPU coherence self-test to one case; scaled-upload or mip-lod.") \
+    X("SR_GPU_COHERENCE_CASE", "string", "unset (run all cases)", "gpu_sdl3vk/ge_gpu.c", "Restricts the GPU coherence self-test to one case; scaled-upload, mip-lod or readback-rows.") \
     X("SR_GPU_CPU_PROFILE", "flag-nonzero", "off", "ge.c,ge_replay.c,gpu_sdl3vk/ge_gpu.c", "Enables CPU-side profiling of GPU and GE replay paths, with wall-phase stats in replay.") \
     X("SR_GPU_GE", "flag-nonzero", "off (software GE)", "gui.c", "Enables the GPU GE renderer when set to a non-empty value other than 0.") \
     X("SR_GPU_LOG", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c", "Enables verbose logging in the Vulkan GE backend and also turns on its statistics.") \
     X("SR_GPU_NORTT", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c", "When nonzero, changes how a texture sourced from a render target is bound in the GPU path.") \
     X("SR_GPU_PRESENT_DBG", "flag-presence", "off (first 3 early exits still logged)", "gpu_sdl3vk/ge_gpu.c", "Logs every GPU present call and every early-exit decline to stderr.") \
+    X("SR_GPU_READBACK_FULL", "flag-nonzero", "off (only the rows guest memory keeps are copied)", "gpu_sdl3vk/ge_gpu.c", "When enabled, a readback to guest memory copies the whole scaled target, the reference path for the narrowed copy.") \
     X("SR_GPU_SCALE", "number", "1 (falls back to SR_RESOLUTION_SCALE)", "gpu_sdl3vk/ge_gpu.c", "Internal render scale multiplier for the GPU GE renderer.") \
     X("SR_GPU_STATS", "flag-nonzero", "off", "gpu_sdl3vk/ge_gpu.c", "Enables statistics output in the Vulkan GE backend.") \
     X("SR_GPU_SUBMIT_BATCH", "number", "SUBMIT_BATCH_MAX", "gpu_sdl3vk/ge_gpu.c", "Number of GPU ops per submit batch; values outside 1 to the maximum are ignored.") \
@@ -135,6 +136,7 @@
     X("SR_LOOSE_CONTENT_ROOTS", "list", "unset (no loose content roots)", "hle_thread_selftest.c", "Serialized list of extra loose-content root directories bound alongside the primary root.") \
     X("SR_MASTER_VOLUME", "number", "100", "audio_unavailable.c", "Master audio volume as a percentage, converted to a gain by the audio backend.") \
     X("SR_MEMSTICK", "path", "memstick", "hle_thread_selftest.c,vfs_path.h", "Host directory that serves as the guest ms0: memory stick root.") \
+    X("SR_MISS_SEEDS", "path", "unset (no file written)", "perf.c", "File to which the run's distinct dispatch-miss targets are written at exit, one guest address per line, for tools/miss_seeds.py.") \
     X("SR_MODULE_DIR", "path", "place_game_here/EXTRACTED/decrypted", "hle_kernel_module.c,hle_thread_selftest.c", "Directory holding the decrypted guest modules the runtime loads.") \
     X("SR_MPEGAV", "flag-presence", "off", "hle.c", "Enables MPEG/PSMF audio-video sync logging (also enabled by SR_MPEGLOG).") \
     X("SR_MPEGLOG", "flag-presence", "off", "debug.h,h264_ffmpeg.c,h264_mf.c,hle.c,hle_mpeg.c,mpeg.c", "Enables MPEG and H.264 decoder diagnostic logging in the video and MPEG HLE code.") \
@@ -213,6 +215,14 @@
     X("SR_VBLANK_Q_US", "number", "16000", "sched.c", "Vblank pacing quantum in microseconds.") \
     X("SR_VBLOG", "flag-presence", "off", "debug.h,sched.c", "Enables per-VBLANK scheduler logging.") \
     X("SR_VDUMP", "flag-presence", "off", "ge.c", "Dumps GE vertex data for each vertex type seen.") \
+    X("SR_VERIFY", "number", "unset (verify build off)", "verify.c", "Verify build only: checks the first N calls of each translated function against the reference interpreter, then power-of-two counts.") \
+    X("SR_VERIFY_CAPTURE", "path", "unset (no captures)", "verify.c", "Verify build only: directory that receives a replayable .nksnap capture of each mismatching call.") \
+    X("SR_VERIFY_CAPTURE_MAX", "number", "4", "verify.c", "Verify build only: most captures written per run.") \
+    X("SR_VERIFY_EVERY", "number", "unset", "verify.c", "Verify build only: checks every Nth call of each translated function instead of the power-of-two sampler.") \
+    X("SR_VERIFY_RANGE", "string", "unset (all functions)", "verify.c", "Verify build only: LO-HI hex address range of function entries that are checked.") \
+    X("SR_VERIFY_RATE", "number", "unset (no budget)", "verify.c", "Verify build only: checks per second budget; calls over it are skipped and counted.") \
+    X("SR_VERIFY_REPORT", "path", "unset (no report written)", "verify.c", "Verify build only: path of the per-function calls and checks report.") \
+    X("SR_VERIFY_STEPS", "number", "1000000", "verify.c", "Verify build only: reference-interpreter step limit for one checked call.") \
     X("SR_VIDEO", "string", "unset: the Vulkan presenter is used", "gui.c,osk_text_entry.c,sched.c", "Selects the presenter: gdi for the Win32 window, offscreen for headless, otherwise Vulkan.") \
     X("SR_VRAMDUMP", "string", "unset (off)", "hle_display.c", "Selection of VRAM dumps to write; requires SR_VRAMDUMP_DIR to name an output directory.") \
     X("SR_VRAMDUMP_DIR", "path", "unset (VRAM dump refused)", "hle_display.c", "Existing output directory required when SR_VRAMDUMP selects VRAM dumps.") \

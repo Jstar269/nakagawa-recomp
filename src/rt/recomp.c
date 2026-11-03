@@ -1897,6 +1897,22 @@ void sr_null_code_pointer(CpuState *s, uint32_t transfer_pc) {
     exit(1);
 }
 
+/* SR_NULL_PAGE_GUARD (recomp.h). `function` is the translated body that made the access:
+ * a load carries no guest pc, and s->pc is only as fresh as the last return. */
+void sr_null_data_pointer(uint32_t address, const char *function) {
+    fprintf(stderr,
+            "NULL_DATA_POINTER: %s accessed guest 0x%08" PRIx32 ", below the PSP's first mapped "
+            "address ra=0x%08" PRIx32 " sp=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
+            function, address, s_cpu ? s_cpu->r[31] : 0u, s_cpu ? s_cpu->r[29] : 0u,
+            sched_current_uid());
+    fprintf(stderr, "  SEMANTIC_BOUNDARY: null-data-pointer; see #363\n");
+    dispatch_record_semantic_stop_issue("null-data-pointer", 363u);
+    dump_dispatch_trace();
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, 0u, address, 0u);
+    fflush(stderr);
+    exit(1);
+}
+
 void sr_null_return_address(CpuState *s) {
     fprintf(stderr,
             "NULL_CODE_POINTER: jr $ra returns to 0x00000000 sp=0x%08" PRIx32 " uid=0x%" PRIx32
@@ -1974,6 +1990,9 @@ static size_t sr_aot_return_boundary_capacity;
 static size_t sr_aot_return_boundary_floor;
 
 void sr_aot_return_boundaries_reset(void) {
+#ifdef SR_VERIFY
+    sr_verify_abandon("boundary-reset");
+#endif
     sr_aot_return_boundary_depth = 0u;
     sr_aot_return_boundary_top = NULL;
     sr_aot_return_boundary_floor = 0u;
@@ -1981,6 +2000,9 @@ void sr_aot_return_boundaries_reset(void) {
 
 void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *other) {
     if (!other) return;
+#ifdef SR_VERIFY
+    sr_verify_note_preempt("stack-swap");
+#endif
     SrAotReturnBoundaryStack active = {
         sr_aot_return_boundaries,
         sr_aot_return_boundary_depth,
@@ -2009,6 +2031,9 @@ void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack) {
 
 void sr_aot_return_boundary_scope_begin(SrAotReturnBoundaryScope *scope) {
     if (!scope) return;
+#ifdef SR_VERIFY
+    sr_verify_note_preempt("callback-or-interrupt");
+#endif
     scope->depth = sr_aot_return_boundary_depth;
     scope->previous_floor = sr_aot_return_boundary_floor;
     sr_aot_return_boundary_floor = sr_aot_return_boundary_depth;
@@ -2112,6 +2137,9 @@ int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
     boundary->unwinding = 0u;
     boundary->resume_sp = 0u;
     sr_aot_return_boundary_top = boundary;
+#ifdef SR_VERIFY
+    if (has_resume_pc && !sr_verify_suppress_direct) sr_verify_begin(s, 0u, call_pc, resume_pc);
+#endif
     return 0;
 }
 
@@ -2245,6 +2273,9 @@ int sr_aot_return_boundary_end(CpuState *s) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, call_pc, 0u, 0u);
         return 1;
     }
+#ifdef SR_VERIFY
+    sr_verify_end(s, boundary);
+#endif
     sr_aot_return_boundary_depth--;
     sr_aot_return_boundary_top = sr_aot_return_boundary_depth
         ? &sr_aot_return_boundaries[sr_aot_return_boundary_depth - 1u] : NULL;
@@ -2272,7 +2303,7 @@ int sr_aot_return_boundary_end(CpuState *s) {
          * so everything it needs is read now. */
         const uint32_t target = (uint32_t)boundary->observed_target;
         const uint32_t resume_pc = boundary->resume_pc;
-        const SrGuestInterpCallBoundary call = { resume_pc };
+        const SrGuestInterpCallBoundary call = { .resume_pc = resume_pc };
         /* A host wrapper of an abandoned body (the stack census) may have restored its own
          * entry $sp on the way out; the frame runs on the $sp the guest restored. */
         s->r[29] = boundary->resume_sp;
@@ -2330,15 +2361,28 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
     if (owns_return_boundary) {
         const uint32_t call_pc = call_boundary != NULL
             ? call_boundary->resume_pc - 8u : s->pc;
-        if (sr_aot_return_boundary_begin(
+#ifdef SR_VERIFY
+        sr_verify_suppress_direct = 1;   /* this boundary is reported below, with its target */
+#endif
+        const int begin_failed = sr_aot_return_boundary_begin(
             s,
             call_boundary != NULL ? call_boundary->resume_pc : 0u,
-            call_pc, call_boundary != NULL ? 1u : 0u)) {
+            call_pc, call_boundary != NULL ? 1u : 0u);
+#ifdef SR_VERIFY
+        sr_verify_suppress_direct = 0;
+#endif
+        if (begin_failed) {
             return;
         }
         sr_aot_return_boundary_top->dispatch_owned = 1u;
+#ifdef SR_VERIFY
+        if (call_boundary != NULL) sr_verify_begin(s, target, call_pc, call_boundary->resume_pc);
+#endif
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
+#ifdef SR_VERIFY
+    sr_verify_note_entry(target);
+#endif
     int exec_previous = sr_exec_enter(SR_EXEC_TIER_AOT);
     fn(s);
     /* Complete the body's TAIL chain (#855) where the nested calls used to complete it:
@@ -2404,26 +2448,6 @@ static int dispatch_try_with_boundary(
             sr_unimplemented(pc,"VFPU runtime interpreter returned SR_VFPU_OTHER");
         }
         s->pc=pc+4;
-        return SR_GUEST_INTERP_AOT_HANDOFF;
-    }
-    /* Configured callback terminators.
-     *
-     * A guest that walks a circular callback list reaches its terminal entry with a
-     * sentinel target (-1 is the shape seen in practice). The permissive miss
-     * path answers 0, which such a walker reads as "continue", so it loops forever.
-     * Where a title's configuration names the exact call site, report COMPLETION to the
-     * caller instead: v0 = 1, return to $ra.
-     *
-     * The semantic is generic and lives here; only the call-site identity is configured,
-     * and it must be configured -- an unconfigured build matches nothing and the same
-     * sentinel at the same site follows ordinary dispatch behavior below. This sits
-     * AFTER the VFPU tag check on purpose: the VFPU encoding is core dispatch vocabulary
-     * that a title configuration must never be able to shadow. A sentinel of 0 is
-     * refused by the manifest validator (#1375): a target of 0 is a null code pointer,
-     * which stops by name below, never a completed walk. */
-    if (sr_title_config_is_callback_terminator(target, s->pc, s->r[31])) {
-        s->r[2] = 1u;
-        s->pc = s->r[31];
         return SR_GUEST_INTERP_AOT_HANDOFF;
     }
     /* Guest address 0 (#1375). Dispatch is keyed on `target` alone. s->pc is not lost-state
@@ -2681,7 +2705,8 @@ int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
     if ((resume_pc & 3u) != 0u) {
         return SR_GUEST_INTERP_MISALIGNED_PC;
     }
-    SrGuestInterpCallBoundary boundary = { resume_pc };
+    SrGuestInterpCallBoundary boundary = {
+        .resume_pc = resume_pc, .entry_sp = s->r[29], .owes_entry_sp = 1u };
     return dispatch_try_with_boundary(s, target, &boundary, SR_DRAIN_CHAIN);
 }
 

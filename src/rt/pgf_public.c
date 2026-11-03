@@ -1151,13 +1151,13 @@ typedef struct PgfPlan {
     PgfDirtySpan dirty[PGF_MAX_GLYPH_EDGE + 1u];
 } PgfPlan;
 
-static int pgf_read_target(uint32_t guest_image, PgfTarget *target) {
+static PgfDrawStatus pgf_read_target(uint32_t guest_image, PgfTarget *target) {
     uint8_t image[PGF_GLYPH_IMAGE_SIZE];
     uint16_t buffer_width;
     uint16_t buffer_height;
     uint16_t bytes_per_line;
 
-    if (!pgf_guest_read(guest_image, image, sizeof(image))) return 0;
+    if (!pgf_guest_read(guest_image, image, sizeof(image))) return PGF_DRAW_BAD_IMAGE;
     target->format = pgf_u32(image);
     target->base_x = 0;
     target->base_y = 0;
@@ -1172,10 +1172,11 @@ static int pgf_read_target(uint32_t guest_image, PgfTarget *target) {
     target->buffer_height = buffer_height;
     target->bytes_per_line = bytes_per_line;
     target->buffer_address = pgf_u32(image + 0x14u);
-    if (target->format > 4u || target->buffer_address == 0u ||
-        buffer_width == 0u || buffer_height == 0u || bytes_per_line == 0u) {
-        return 0;
+    if (target->format > 4u) return PGF_DRAW_BAD_IMAGE;
+    if (buffer_width == 0u || buffer_height == 0u || bytes_per_line == 0u) {
+        return PGF_DRAW_NOTHING;
     }
+    if (target->buffer_address == 0u) return PGF_DRAW_BAD_IMAGE;
     if (target->format <= 1u) {
         target->addressable_width = (uint64_t)bytes_per_line * 2u;
         target->unit_bytes = 1u;
@@ -1189,13 +1190,13 @@ static int pgf_read_target(uint32_t guest_image, PgfTarget *target) {
         target->addressable_width = bytes_per_line / 4u;
         target->unit_bytes = 4u;
     }
-    return target->addressable_width != 0u;
+    return target->addressable_width != 0u ? PGF_DRAW_DONE : PGF_DRAW_NOTHING;
 }
 
 /* Preflight one component: validate every byte it may touch, and record the
    clipped pixel interval and the dirty spans, before any pixel is written. */
-static int pgf_plan_component(const PgfTarget *target, const PgfGlyph *glyph,
-                              PgfPlan *plan) {
+static PgfDrawStatus pgf_plan_component(const PgfTarget *target, const PgfGlyph *glyph,
+                                        PgfPlan *plan) {
     uint64_t writable_width;
     uint64_t footprint_width;
     uint64_t footprint_height;
@@ -1212,7 +1213,7 @@ static int pgf_plan_component(const PgfTarget *target, const PgfGlyph *glyph,
         glyph->width > PGF_MAX_GLYPH_EDGE || glyph->height > PGF_MAX_GLYPH_EDGE ||
         (uint64_t)glyph->width * glyph->height > PGF_MAX_SAMPLES ||
         (glyph->row_order != 1u && glyph->row_order != 2u)) {
-        return 0;
+        return PGF_DRAW_NOTHING;
     }
     writable_width = target->buffer_width < target->addressable_width ?
                      target->buffer_width : target->addressable_width;
@@ -1222,7 +1223,7 @@ static int pgf_plan_component(const PgfTarget *target, const PgfGlyph *glyph,
     pixel_x1 = target->base_x + (int64_t)footprint_width;
     actual_x1 = pixel_x1 < 0 ? 0u : (uint64_t)pixel_x1;
     if (actual_x1 > writable_width) actual_x1 = writable_width;
-    if (actual_x0 >= actual_x1) return 0;
+    if (actual_x0 >= actual_x1) return PGF_DRAW_NOTHING;
 
     first_y = target->base_y < 0 ? 0 : target->base_y;
     last_y = target->base_y + (int64_t)footprint_height;
@@ -1243,7 +1244,7 @@ static int pgf_plan_component(const PgfTarget *target, const PgfGlyph *glyph,
         if (byte_end <= byte_start ||
             !pgf_guest_row_span(target->buffer_address, row_offset, byte_start,
                                 byte_end - byte_start, &ignored_address)) {
-            return 0;
+            return PGF_DRAW_BAD_BUFFER;
         }
     }
 
@@ -1262,14 +1263,14 @@ static int pgf_plan_component(const PgfTarget *target, const PgfGlyph *glyph,
             if (byte_count == 0u || byte_count > UINT32_MAX ||
                 !pgf_guest_row_span(target->buffer_address, row_offset, byte_start,
                                     byte_count, &address)) {
-                return 0;
+                return PGF_DRAW_BAD_BUFFER;
             }
             plan->dirty[plan->dirty_count].address = address;
             plan->dirty[plan->dirty_count].size = (uint32_t)byte_count;
             ++plan->dirty_count;
         }
     }
-    return 1;
+    return PGF_DRAW_DONE;
 }
 
 /* Write one planned component's pixels, then report its dirty spans. */
@@ -1312,46 +1313,64 @@ static void pgf_blit_component(const PGF *p, const PgfTarget *target,
     }
 }
 
-static int pgf_draw(const PGF *p, const PgfGlyph *glyph, uint32_t guest_image) {
-    PgfTarget target;
+static PgfDrawStatus pgf_draw(const PGF *p, const PgfGlyph *glyph, const PgfTarget *target) {
     PgfPlan plans[PGF_COMPOSITE_PARTS];
     PgfGlyph parts[PGF_COMPOSITE_PARTS];
+    PgfDrawStatus status;
     unsigned part;
     int drawn = 0;
 
-    if (!p || !glyph || !pgf_read_target(guest_image, &target)) return 0;
     if (!glyph->composite) {
-        if (!pgf_plan_component(&target, glyph, &plans[0])) return 0;
-        pgf_blit_component(p, &target, glyph, &plans[0], 0);
-        return 1;
+        status = pgf_plan_component(target, glyph, &plans[0]);
+        if (status != PGF_DRAW_DONE) return status;
+        pgf_blit_component(p, target, glyph, &plans[0], 0);
+        return PGF_DRAW_DONE;
     }
     /* Every component is preflighted before the first pixel is written, so a
        component that cannot be placed leaves the whole draw untouched. */
     for (part = 0; part < PGF_COMPOSITE_PARTS; ++part) {
         if (glyph->component[part] == PGF_COMPONENT_NONE) continue;
-        if (!pgf_checked_glyph(p, glyph->component[part], &parts[part], 0) ||
-            !pgf_plan_component(&target, &parts[part], &plans[part])) {
-            return 0;
+        if (!pgf_checked_glyph(p, glyph->component[part], &parts[part], 0)) {
+            return PGF_DRAW_NOTHING;
         }
+        status = pgf_plan_component(target, &parts[part], &plans[part]);
+        if (status != PGF_DRAW_DONE) return status;
     }
     /* The first present component is written as it is; the later ones combine with it. */
     for (part = 0; part < PGF_COMPOSITE_PARTS; ++part) {
         if (glyph->component[part] == PGF_COMPONENT_NONE) continue;
-        pgf_blit_component(p, &target, &parts[part], &plans[part], drawn);
+        pgf_blit_component(p, target, &parts[part], &plans[part], drawn);
         drawn = 1;
     }
-    return 1;
+    return PGF_DRAW_DONE;
+}
+
+/* The glyph image is read before the glyph is looked up, so an image that is not guest memory is
+   reported even when the character has no glyph. */
+PgfDrawStatus pgf_draw_glyph_status(const PGF *p, int char_code, int alt_char_code,
+                                    uint32_t guest_image) {
+    PgfTarget target;
+    PgfGlyph glyph;
+    PgfDrawStatus status = pgf_read_target(guest_image, &target);
+    if (status != PGF_DRAW_DONE) return status;
+    if (!p || !pgf_lookup(p, char_code, alt_char_code, 1, &glyph)) return PGF_DRAW_NOTHING;
+    return pgf_draw(p, &glyph, &target);
+}
+
+PgfDrawStatus pgf_draw_glyph_by_id_status(const PGF *p, int glyph_id, uint32_t guest_image) {
+    PgfTarget target;
+    PgfGlyph glyph;
+    PgfDrawStatus status = pgf_read_target(guest_image, &target);
+    if (status != PGF_DRAW_DONE) return status;
+    if (!pgf_get_glyph_by_id(p, glyph_id, &glyph)) return PGF_DRAW_NOTHING;
+    return pgf_draw(p, &glyph, &target);
 }
 
 int pgf_draw_glyph(const PGF *p, int char_code, int alt_char_code,
                    uint32_t guest_image) {
-    PgfGlyph glyph;
-    if (!pgf_lookup(p, char_code, alt_char_code, 1, &glyph)) return 0;
-    return pgf_draw(p, &glyph, guest_image);
+    return pgf_draw_glyph_status(p, char_code, alt_char_code, guest_image) == PGF_DRAW_DONE;
 }
 
 int pgf_draw_glyph_by_id(const PGF *p, int glyph_id, uint32_t guest_image) {
-    PgfGlyph glyph;
-    if (!pgf_get_glyph_by_id(p, glyph_id, &glyph)) return 0;
-    return pgf_draw(p, &glyph, guest_image);
+    return pgf_draw_glyph_by_id_status(p, glyph_id, guest_image) == PGF_DRAW_DONE;
 }

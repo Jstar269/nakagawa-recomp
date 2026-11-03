@@ -8,6 +8,7 @@
 #include "player_ui_sound.h"
 #include "iso_reader.h"
 #include "nk_platform.h"
+#include "nk_portable.h"
 #include "nk_ui_input.h"
 #include "nk_ui_theme.h"
 #include "nk_ui_widgets.h"
@@ -116,6 +117,7 @@ struct PlayerUiNk {
     char flow_title[NK_MAX_TITLE_LEN + NK_MAX_DISC_ID_LEN + 16];
     PlayerUiPrereqItem prereq_items[PLAYER_UI_PREREQ_CAP];
     char version_line[64];
+    char data_root_line[NK_MAX_PATH + 48]; /* About: which data folder is in use */
     char wizard_detail[160];
     char wizard_blocked[PLAYER_UI_BLOCKED_REASON_MAX];
     char wizard_resolution[96];
@@ -142,6 +144,8 @@ struct PlayerUiNk {
     size_t reset_folder_count;
     bool reset_folders_ready;
     char update_folder[NK_MAX_PATH];
+    char report_path[NK_MAX_PATH];
+    char report_lines[PLAYER_UI_REPORT_LINES][112];
     char update_notice[96];
     char pad_bindings[PLAYER_UI_CONTROLLER_CONTROLS][128];
     InputBindingGlyph pad_glyphs[PLAYER_UI_CONTROLLER_CONTROLS];
@@ -399,6 +403,14 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window, Play
     nk_ui_sdl_input_init(&player->input);
     player_ui_version_line(NK_PLAYER_VERSION, (long long)NK_PLAYER_BUILD_EPOCH,
                            player->version_line, sizeof(player->version_line));
+    {
+        char data_root[NK_MAX_PATH];
+        if (nk_platform_resolve_app_data_dir(data_root, sizeof(data_root))) {
+            (void)snprintf(player->data_root_line, sizeof(player->data_root_line),
+                           "%s: %s", nk_portable_in_use() ? "Data folder (portable mode)"
+                                                          : "Data folder", data_root);
+        }
+    }
     player->ready = true;
     if (error != NULL && error_size > 0u) error[0] = '\0';
     return player;
@@ -426,7 +438,7 @@ static bool player_ui_settings_view(PlayerView view) {
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
            view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES ||
            view == VIEW_CONFIRM_FACTORY_RESET || view == VIEW_ACCESSIBILITY_SETTINGS ||
-           view == VIEW_ACE_SETTINGS;
+           view == VIEW_ACE_SETTINGS || view == VIEW_PROBLEM_REPORT;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -763,6 +775,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
         case VIEW_UPDATES: model.page = PLAYER_UI_SETTINGS_PAGE_UPDATES; break;
+        case VIEW_PROBLEM_REPORT: model.page = PLAYER_UI_SETTINGS_PAGE_PROBLEM_REPORT; break;
         case VIEW_CONFIRM_FACTORY_RESET:
             model.page = PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET;
             if (!player->reset_folders_ready) {
@@ -914,6 +927,22 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         model.update_folder = player->update_folder;
         model.update_error_title = update->error.title;
         model.update_error_message = update->error.message;
+    }
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_PROBLEM_REPORT) {
+        const PlayerReportState *report = &app->report;
+        model.report_step = (PlayerUiReportStep)report->phase;
+        model.report_command = report->command;
+        model.report_message = report->message;
+        snprintf(player->report_path, sizeof(player->report_path), "%s", report->path);
+        player_ui_display_in_place(player->report_path, sizeof(player->report_path));
+        model.report_path = player->report_path;
+        for (int i = 0; i < report->file_count && (unsigned)i < PLAYER_UI_REPORT_LINES; ++i) {
+            unsigned long long bytes = report->file_bytes[i];
+            snprintf(player->report_lines[i], sizeof(player->report_lines[i]), "%s  (%llu %s)",
+                     report->file_names[i], bytes >= 1024u ? (bytes + 1023u) / 1024u : bytes,
+                     bytes >= 1024u ? "KB" : "bytes");
+            model.report_lines[model.report_line_count++] = player->report_lines[i];
+        }
     }
     model.logical_width = scale.logical_w;
     model.logical_height = scale.logical_h;
@@ -1301,6 +1330,7 @@ static unsigned player_ui_flow_screen(const PlayerApp *app) {
                                      : CALIBRATION_STAGE_INACTIVE);
             break;
         case VIEW_UPDATES: screen += (unsigned)app->update.phase; break;
+        case VIEW_PROBLEM_REPORT: screen += (unsigned)app->report.phase; break;
         default: break;
     }
     return screen;
@@ -1344,6 +1374,8 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                         ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
                     : player->last_view == VIEW_PSP_FONTS ? PLAYER_UI_ID_SETTINGS_FONTS
                     : player->last_view == VIEW_UPDATES ? PLAYER_UI_ID_SETTINGS_UPDATES
+                    : player->last_view == VIEW_PROBLEM_REPORT
+                        ? PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT
                     : player->last_view == VIEW_CONFIRM_FACTORY_RESET
                         ? PLAYER_UI_ID_SETTINGS_FACTORY_RESET
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
@@ -1387,6 +1419,10 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                     case PLAYER_UPDATE_INSTALLING: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
                     default: focus = PLAYER_UI_ID_UPDATE_CHECK; break;
                 }
+                break;
+            case VIEW_PROBLEM_REPORT:
+                focus = app->report.phase == PLAYER_REPORT_PREVIEWED
+                    ? PLAYER_UI_ID_REPORT_CREATE : PLAYER_UI_ID_SETTINGS_BACK;
                 break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_ACCESSIBILITY_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE; break;
@@ -2583,7 +2619,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             app->selected_game_index = (int)action.title_index;
             nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
             (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_TITLE);
-            player->title_primary_refocus = false;
+            /* A page opened while PLAY is still off (its package check has not ended)
+               puts focus on the next button; arm the refocus so PLAY takes it back
+               when it turns on, unless the user moves first. */
+            player->title_primary_refocus = true;
+            player->title_primary_fallback = 0u;
             action.kind = PLAYER_UI_ACTION_NONE;
         } else if (action.kind == PLAYER_UI_ACTION_PAGE_PREVIOUS) {
             if (player->library_page > 0u) --player->library_page;
@@ -2666,7 +2706,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                         player->title_primary_fallback = 0u;
                     } else if (player->title_primary_refocus &&
                                player->title_primary_fallback == 0u) {
-                        player->title_primary_fallback = focused;
+                        /* A page just opened still shows the library's focus for a
+                           frame or two; the fallback is the page's own button. */
+                        if (focused >= 0x2000u && focused < 0x3000u) {
+                            player->title_primary_fallback = focused;
+                        }
                     } else if (player->title_primary_refocus &&
                                focused != player->title_primary_fallback) {
                         player->title_primary_refocus = false;
@@ -2825,6 +2869,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         memset(&model, 0, sizeof(model));
         model.version_line = player->version_line;
         model.build_commit = NK_PLAYER_BUILD_COMMIT;
+        model.data_root_line = player->data_root_line;
         model.logical_width = scale.logical_w;
         model.logical_height = scale.logical_h;
         action = player_ui_screen_about(player->ui, &model);

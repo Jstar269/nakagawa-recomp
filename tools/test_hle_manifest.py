@@ -294,7 +294,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
 
     Their handlers live in hle_power.c, so the registrations do too: one obvious owner per
     NID. The NID set is pinned here rather than derived from the sources, so the test
-    cannot pass by reading the old location. scePower_469989ad and
+    cannot pass by reading the old location. scePowerSetClockFrequency630 and
     scePowerCheckWlanCoexistenceClock joined when hle.c was split.
     """
 
@@ -307,7 +307,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         0xFEE03A2F, 0xBD681969, 0xEA382A27, 0xB1A52C83, 0x9BADB3EB,              # measured clock alias, Int and Float getters (PSP-3000 6.61 oracle 2026-10-15, PSP-HLE-POWER-001)
         0xB4432BC8, 0x8EFB3FA2, 0x843FBF43,                                      # charging status, battery life time, CPU clock setter (PSP-3000 6.61, 2026-10-24)
         0xB8D7B3FB,                                                              # scePowerSetBusClockFrequency (pspautotests power/freq.expected)
-        0x469989AD, 0xA85880D0,                                                  # scePower_469989ad refusal, WLAN coexistence clock (#307)
+        0x469989AD, 0xA85880D0,                                                  # scePowerSetClockFrequency630 (PPSSPP c9e2afb6), WLAN coexistence clock (#307)
     })
 
     def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
@@ -451,8 +451,7 @@ class RegistrationSubsystemTests(unittest.TestCase):
         self.assertIsNone(hle_manifest.subsystem_for("synthUnowned"))
 
     def test_every_hle_power_c_registration_is_in_the_power_subsystem(self) -> None:
-        """The one unit already split out agrees with the map. The reverse need not hold yet:
-        hle.c still registers the scePower_469989ad controlled refusal."""
+        """The one unit already split out agrees with the map."""
         by_owner = {r["name"]: r["subsystem"] for r in self.manifest["registrations"]
                     if r["owner_file"] == "src/rt/hle_power.c"}
         self.assertTrue(by_owner)
@@ -926,6 +925,7 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
                     "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-seek64, io-seek64-rdwr)",
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-EOF-001: io-eof-seek-negative, io-eof-seek-negative-rdonly, io-eof-write-past, io-eof-read-past)",
                     "tests/native/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
@@ -935,6 +935,7 @@ class LiveManifestTests(unittest.TestCase):
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)",
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
                     "docs/HARDWARE_ORACLE.md (PSP-KERNEL-SEM-001: io-missing-parent, io-excl-new, io-excl-existing)",
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-EOF-001: io-eof-missing)",
                     "tests/native/hle_thread_selftest.c:test_ms0_unified_namespace",
                 ],
             ),
@@ -1323,8 +1324,8 @@ static uint32_t h_SynthReal(CpuState *s) {
             fake,
             {
                 # sceKernelVolatileMemUnlock left this list once its PSP-measured states were
-                # implemented (#1135); sceUtilityOskUpdate stays for its unmeasured VISIBLE state.
-                "0x4b85c861": "sceUtilityOskUpdate",
+                # implemented (#1135), and sceUtilityOskUpdate once its #363-measured states
+                # were checked under the dialog lock (#1386).
                 "0xb3b5d042": "sceAtracGetOutputChannel",
                 # Profiler refers return NULL because no profiler is modeled, which is what
                 # firmware with profiling off reports. The body is a bare `return 0`, so the
@@ -1358,6 +1359,10 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
                 # sceNetTerm: the cleanup a title runs after sceNetInit refused (offline).
                 "0x281928a9": ("sceNetTerm", "0x80010086"),
+                # The net stack's thread and pool bookkeeping and adhoc discovery stop (offline).
+                "0x50647530": ("sceNetFreeThreadinfo", "0x80010086"),
+                "0xcc393e48": ("sceNetGetMallocStat", "0x80010086"),
+                "0xf7d13214": ("sceNetAdhocDiscoverStop", "0x80010086"),
                 "0x29681260": ("sceAudiocodecReleaseEDRAM", "0x80010086"),
                 "0x011f03c1": ("sceRtcGetAccumulativeTime", "0x80020002"),
                 "0x191cdeff": ("sceSslEnd", "0x80010086"),
@@ -1365,17 +1370,14 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x39af39a6": ("sceNetInit", "0x80010086"),
                 "0xf9d8eb63": ("sceHttpsEnd", "0x80010086"),
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
-                "0x469989ad": ("scePower_469989ad", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
                 "0x438a385a": ("sceGeSaveContext", "0x80020002"),
                 "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
                 "0x08d98894": ("sceNpDrmEdataSetupKey", "0x80020002"),
                 "0xf9275d98": ("sceKernelLoadModuleBufferUsbWlan", "0x80020002"),
-                "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
                 "0x70a703f8": ("sceAudiocodecDecode", "0x80010086"),
                 "0x72189c48": ("sceImposeSetUMDPopup", "0x80010086"),
-                "0x77ed8b3a": ("sceDisplayWaitVblankStartMultiCB", "0x80020002"),
                 "0x7ed59bc4": ("sceDisplaySetHoldMode", "0x80020002"),
                 "0x8c943191": ("sceImposeGetBatteryIconStatus", "0x80010086"),
                 "0xab1abe07": ("sceHttpInit", "0x80010086"),
@@ -1602,6 +1604,81 @@ class ConformanceJoinTests(unittest.TestCase):
             hle_manifest.selftest_dispatched_nids("(void)sr_syscall(&cpu, 0x05572a5fu);"),
         )
 
+    def test_selftest_dispatch_sees_enum_and_const_constants(self) -> None:
+        source = (
+            "static void test_a(void) {\n"
+            "    enum { NID_A = 0x11111111u, OTHER = 3 };\n"
+            "    static const uint32_t nid_b = 0x22222222u;\n"
+            "    CpuState cpu;\n"
+            "    expect(sr_syscall(&cpu, NID_A) == 0u, \"a\");\n"
+            "    expect(sr_syscall(&cpu, (uint32_t)nid_b) == 0u, \"b\");\n"
+            "}\n"
+        )
+        found = hle_manifest.selftest_dispatched_nids(source)
+        self.assertIn(0x11111111, found)
+        self.assertIn(0x22222222, found)
+
+    def test_selftest_dispatch_follows_helpers_that_forward_the_nid(self) -> None:
+        source = (
+            "static uint32_t call4(uint32_t nid, uint32_t a0) {\n"
+            "    CpuState cpu;\n"
+            "    cpu.r[4] = a0;\n"
+            "    return sr_syscall(&cpu, nid);\n"
+            "}\n"
+            "static uint32_t call_twice(uint32_t a0, uint32_t id) {\n"
+            "    return call4(id, a0) + call4(id, a0);\n"
+            "}\n"
+            "static void test_b(void) {\n"
+            "    enum { NID_VIA_HELPER = 0x33333333u, NID_VIA_CHAIN = 0x44444444u };\n"
+            "    expect(call4(NID_VIA_HELPER, 0u) == 0u, \"helper\");\n"
+            "    expect(call4(0x55555555u, 0u) == 0u, \"literal through a helper\");\n"
+            "    expect(call_twice(0u, NID_VIA_CHAIN) == 0u, \"two levels\");\n"
+            "}\n"
+        )
+        found = hle_manifest.selftest_dispatched_nids(source)
+        self.assertEqual(found, {0x33333333, 0x55555555, 0x44444444})
+
+    def test_selftest_dispatch_ignores_names_that_are_not_dispatched(self) -> None:
+        """Decoys: a constant that only appears near a test is not an exercise."""
+        source = (
+            "static uint32_t check_only(uint32_t nid) {\n"
+            "    return sr_hle_test_is_registered(nid);\n"
+            "}\n"
+            "static void test_c(void) {\n"
+            "    enum { NID_REG_ONLY = 0x66666666u, NID_IN_TABLE = 0x77777777u,\n"
+            "           NID_IN_COMMENT = 0x88888888u, NID_IN_STRING = 0x99999999u,\n"
+            "           NID_UNUSED = 0xaaaaaaaau, NID_VIA_CHECK = 0xbbbbbbbbu };\n"
+            "    static const uint32_t table[] = { NID_IN_TABLE };\n"
+            "    CpuState cpu;\n"
+            "    expect(sr_hle_test_is_registered(NID_REG_ONLY), \"registered\");\n"
+            "    expect(check_only(NID_VIA_CHECK), \"a helper that does not dispatch\");\n"
+            "    /* sr_syscall(&cpu, NID_IN_COMMENT); */\n"
+            "    puts(\"sr_syscall(&cpu, NID_IN_STRING)\");\n"
+            "    (void)table; (void)cpu;\n"
+            "}\n"
+        )
+        self.assertEqual(hle_manifest.selftest_dispatched_nids(source), set())
+
+    def test_selftest_dispatch_resolves_a_constant_in_its_own_function(self) -> None:
+        """Two tests may reuse a name for different NIDs; only the dispatching one counts."""
+        source = (
+            "static void test_d(void) {\n"
+            "    enum { NID_SAME = 0xc1c1c1c1u };\n"
+            "}\n"
+            "static void test_e(void) {\n"
+            "    enum { NID_SAME = 0x1d1d1d1du };\n"
+            "    expect(sr_hle_test_is_registered(NID_SAME), \"registered only\");\n"
+            "}\n"
+            "static void test_f(void) {\n"
+            "    enum { NID_SAME = 0x2e2e2e2eu };\n"
+            "    CpuState cpu;\n"
+            "    expect(sr_syscall(&cpu, NID_SAME) == 0u, \"dispatched\");\n"
+            "}\n"
+        )
+        found = hle_manifest.selftest_dispatched_nids(source)
+        self.assertIn(0x2E2E2E2E, found)
+        self.assertNotIn(0x1D1D1D1D, found)
+
 
 class EvidenceTierTests(unittest.TestCase):
     @staticmethod
@@ -1790,9 +1867,10 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-HLE-CTRL-LATCH-001",
                 "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-INTR-001",
                 "PSP-HLE-KERNEL-STATUS-001",
-                "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SYSPARAM-001",
+                "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SAVEDATA-GETSIZE-001",
+                "PSP-HLE-SYSPARAM-001",
                 "PSP-HLE-TIMER-ORDER-001", "PSP-HLE-VTIMER-001", "PSP-HLE-VTIMER-002",
-                "PSP-HLE-VTIMER-003", "PSP-INTR-CAUSE-001", "PSP-IO-001", "PSP-KERNEL-001",
+                "PSP-HLE-VTIMER-003", "PSP-INTR-CAUSE-001", "PSP-IO-001", "PSP-IO-EOF-001", "PSP-KERNEL-001",
                 "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-SEM-001", "PSP-KERNEL-STATUS-001",
                 "PSP-LLSC-001",
                 "PSP-MODULE-START-001", "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
@@ -2463,6 +2541,18 @@ class CensusTests(unittest.TestCase):
                 self.assertNotIn(handler, meta.PARTIAL_WITHOUT_EVIDENCE)
         # The profile-zero imports that moved off `unreviewed` leave the allowlist.
         for nid in (0x092968F4, 0x5F10D406, 0x237DBD4F, 0x1F803938):
+            self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+
+    def test_profile_zero_thread_memory_ge_batch_has_evidence_and_named_limits(self) -> None:
+        """The second #341 profile-zero batch: cited evidence, named limits, allowlist shrunk."""
+        batch = ("h_MaxFreeMemSize", "h_GeSetCallback", "h_GeUnsetCallback", "h_LockLwMutex")
+        for handler in batch:
+            with self.subTest(handler=handler):
+                self.assertEqual(meta.HANDLER_STATUS.get(handler), "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE.get(handler))
+                self.assertIn("#341", meta.HANDLER_LIMITATIONS.get(handler, ""))
+                self.assertNotIn(handler, meta.PARTIAL_WITHOUT_EVIDENCE)
+        for nid in (0xA291F107, 0xA4FC06A4, 0x05DB22CE, 0xBEA46419):
             self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
 
     def test_census_is_deterministic(self) -> None:

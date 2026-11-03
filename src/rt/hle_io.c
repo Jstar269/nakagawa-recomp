@@ -344,13 +344,15 @@ uint32_t h_IoWrite(CpuState *s) {
                     "descriptor's 32-bit position is not supported yet (0x80010086)\n");
         return 0x80010086u;
     }
+    if (f->truncated_bytes && !io_restore_truncated_gap(f)) return 0x80010005u;
     if (io_host_seek(f->host, f->off) != 0) return 0x80010005u;  /* host I/O error */
     uint8_t tmp[4096]; uint32_t done = 0;
     while (done < count) {
         uint32_t n = count - done; if (n > sizeof(tmp)) n = sizeof(tmp);
         for (uint32_t k = 0; k < n; k++) tmp[k] = (uint8_t)MEM_R8(src + done + k);
-        done += (uint32_t)fwrite(tmp, 1, n, f->host);
-        if (done < count) break;
+        uint32_t wrote = (uint32_t)fwrite(tmp, 1, n, f->host);
+        done += wrote;
+        if (wrote < n) break;
     }
     fflush(f->host);
     f->off += done; if (f->off > f->size) f->size = f->off;

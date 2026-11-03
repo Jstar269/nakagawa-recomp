@@ -272,8 +272,7 @@ HST_GUEST_ABORT = 0x00000a1c
 
 def hst_emission_sites(cg) -> set[int]:
     """Addresses where emit_function emits HST-profile code instead of the plain word."""
-    return (set(cg._SV_SPECIAL) | set(cg.GUEST_PATCHES) | set(cg.NULL_BASE_WORD_LOADS)
-            | {HST_GUEST_ABORT})
+    return (set(cg._SV_SPECIAL) | set(cg.GUEST_PATCHES) | {HST_GUEST_ABORT})
 
 
 def plan_function(cg, elf, start, ranges, known, *, resume_owners=None, resumable=False,
@@ -294,7 +293,7 @@ def plan_function(cg, elf, start, ranges, known, *, resume_owners=None, resumabl
         raise Unsupported("empty body")
     if not space.patched.keys().isdisjoint(insns):
         raise Unsupported("variable-import reference site (its immediate is read from memory)")
-    if not resumable and cg.guest_owns_entry_sp(elf, insns):
+    if not resumable and cg.guest_owns_entry_sp(elf, start, insns, labels):
         # Its exits leave $sp to the guest and the stack census leaves it unwrapped
         # (codegen.GUEST_SP_ENTRIES); the C backend owns that contract.
         raise Unsupported("loads $sp, so its exits leave $sp to the guest (kept in C)")

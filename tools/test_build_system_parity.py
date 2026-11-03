@@ -112,6 +112,7 @@ class BuildSystemParityTests(unittest.TestCase):
             self.makefile_text, re.MULTILINE,
         )
         self.assertIsNotNone(match, "the Makefile reads the key with one Python command")
+        assert match is not None
         code = match.group(1)
         python = shutil.which("python") or shutil.which("python3")
         if not python:

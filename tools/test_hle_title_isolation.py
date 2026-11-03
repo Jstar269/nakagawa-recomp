@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 import sys
@@ -88,30 +89,27 @@ def synthetic_bindings(shift: int = 0) -> dict:
         "worker_thread_entry": 0x08910010 + shift,
         "launcher_thread_entry": 0x08910020 + shift,
         "dispatch_aliases": [{"from": 0x08911000 + shift, "to": 0x08911010 + shift}],
-        "callback_terminators": [
-            {"sentinel": 0xFFFFFFFF, "pc": 0x08912000 + shift, "ra": 0x08912010 + shift},
-        ],
     }
 
 
 def synthetic_addresses(bindings: dict) -> set[int]:
-    """Every guest address a binding set names (a terminator sentinel is a value)."""
+    """Every guest address a binding set names."""
     found = {bindings[name] for name in title_manifest.RUNTIME_BINDING_FIELDS if name in bindings}
     for alias in bindings.get("dispatch_aliases", []):
         found |= {alias["from"], alias["to"]}
-    for entry in bindings.get("callback_terminators", []):
-        found |= {entry[field] for field in ("pc", "ra") if field in entry}
     return found
 
 
 def synthetic_manifest_configured(shift: int = 0) -> dict:
     base = json.loads(FIXTURE_B.read_text(encoding="utf-8"))
     base["runtime_bindings"] = {"schema_version": 1, **synthetic_bindings(shift)}
-    return base
+    returned: dict[str, Any] = base
+    return returned
 
 
 def header_for(manifest: dict | None) -> str:
-    return title_runtime_config.render_header(title_runtime_config.bindings_from_manifest(manifest))
+    returned: str = title_runtime_config.render_header(title_runtime_config.bindings_from_manifest(manifest))
+    return returned
 
 
 class GenericIsolationTests(unittest.TestCase):
@@ -283,11 +281,6 @@ class InvalidAddressTests(unittest.TestCase):
         reserved = 0x40000000  # inside VFPU window
         m = synthetic_manifest_configured()
         m["runtime_bindings"]["dispatch_aliases"][0]["from"] = reserved
-        with self.assertRaises(title_manifest.TitleManifestError) as cm:
-            title_manifest.validate_manifest(m)
-        self.assertIn("core VFPU", str(cm.exception))
-        m = synthetic_manifest_configured()
-        m["runtime_bindings"]["callback_terminators"][0]["sentinel"] = reserved
         with self.assertRaises(title_manifest.TitleManifestError) as cm:
             title_manifest.validate_manifest(m)
         self.assertIn("core VFPU", str(cm.exception))

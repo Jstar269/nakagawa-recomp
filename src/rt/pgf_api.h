@@ -64,6 +64,21 @@ void pgf_close(PGF *p);
 int pgf_has_char(const PGF *p, int char_code);
 void pgf_get_font_info(const PGF *p, uint32_t guest_info);
 int pgf_get_char_info(const PGF *p, int char_code, int alt_char_code, uint32_t guest_info);
+/* What a glyph draw did. The negative results name a glyph image this backend cannot place, so a
+ * caller can surface it instead of answering success with nothing drawn. Every byte the draw would
+ * touch is still checked before the first pixel is written; a negative result writes nothing. */
+typedef enum {
+    PGF_DRAW_BAD_BUFFER = -2, /* a bitmap row the glyph covers is not writable guest memory */
+    PGF_DRAW_BAD_IMAGE = -1,  /* the 0x18-byte glyph image is not readable guest memory, names a
+                                 pixel format above 4, or has a NULL buffer with a nonzero size */
+    PGF_DRAW_NOTHING = 0,     /* no font or glyph, an empty glyph, a zero-sized buffer, or a glyph
+                                 wholly beside the buffer */
+    PGF_DRAW_DONE = 1
+} PgfDrawStatus;
+PgfDrawStatus pgf_draw_glyph_status(const PGF *p, int char_code, int alt_char_code,
+                                    uint32_t guest_image);
+PgfDrawStatus pgf_draw_glyph_by_id_status(const PGF *p, int glyph_id, uint32_t guest_image);
+/* 1 when the draw is PGF_DRAW_DONE, else 0. */
 int pgf_draw_glyph(const PGF *p, int char_code, int alt_char_code, uint32_t guest_image);
 int pgf_draw_glyph_by_id(const PGF *p, int glyph_id, uint32_t guest_image);
 

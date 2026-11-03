@@ -88,7 +88,8 @@ def _image_segment_extent(
 ) -> tuple[int, int]:
     """Return a segment range bounded relative to its flat-image origin."""
     start = address_bias + vaddr
-    return image_extent(image_origin, start - image_origin, memsz, label)
+    returned: tuple[int, int] = image_extent(image_origin, start - image_origin, memsz, label)
+    return returned
 
 
 @dataclass(frozen=True)

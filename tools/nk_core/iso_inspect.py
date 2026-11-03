@@ -150,7 +150,8 @@ def runtime_registered_nids() -> frozenset[int]:
             f"the runtime HLE registry reader could not be loaded: {exc}"
         ) from exc
     try:
-        return hle_manifest.registered_nids()
+        returned: frozenset[int] = hle_manifest.registered_nids()
+        return returned
     except (OSError, ValueError, hle_manifest.ManifestError) as exc:
         raise RuntimeRegistryUnavailableError(
             f"the runtime HLE registry (src/rt/hle.c) could not be read: {exc}"
@@ -417,9 +418,9 @@ def plan_guest_module_layout(
       otherwise). Two fixed-address modules may share addresses: only modules loaded
       at the same time compete for memory, and the allocator decides that when the
       game loads them.
-    * a code overlay (an MWo3 file the game reads into memory itself) is declared the
-      same way and translated at its own load address; the runtime binds it when the
-      game invalidates the instruction cache over it, not at sceKernelLoadModule.
+    * a code overlay (an MWo3 or ELF type 0xFFA8 file the game reads into memory
+      itself) is declared the same way and translated at its own load address; the
+      runtime binds it when the game invalidates the instruction cache over it, not at sceKernelLoadModule.
 
     Modules are listed by case-insensitive filename.
     """
@@ -473,14 +474,14 @@ def plan_guest_module_layout(
                 "reason": "duplicate of the main executable, not loaded as a module",
             })
             continue
-        if mod_bytes[:4] == b"MWo3":
+        from analyze import check_code_overlay, is_code_overlay
+        if is_code_overlay(mod_bytes):
             # A code overlay is not a module: the game reads it to its own load address
             # and announces it with an instruction-cache invalidate, where the runtime
             # binds its translation. It is translated like a runtime-placed module and
             # never loaded through sceKernelLoadModule.
-            from analyze import code_overlay_layout
             try:
-                code_overlay_layout(mod_bytes)
+                check_code_overlay(mod_bytes)
             except ValueError as exc:
                 raise IsoInspectionError(
                     f"code overlay has a malformed header: {name}: {exc}",
@@ -1332,7 +1333,8 @@ def _read_iso_extent(
     data = stream.read(count)
     if len(data) != count:
         raise IsoInspectionError("ISO file span is truncated")
-    return data
+    returned: bytes = data
+    return returned
 
 
 def _read_iso_directory_entries(
@@ -1482,7 +1484,8 @@ def _image_read(read, offset: int, count: int) -> bytes | None:
         return None
     if data is None or len(data) != count:
         return None
-    return data
+    returned: bytes | None = data
+    return returned
 
 
 PSP_NID_MODULE_START = 0xD632ACDB
@@ -1526,7 +1529,8 @@ def _elf32_psp_start_entry(read, image_size: int) -> tuple[int, str | None]:
     def mapped(address: int, count: int) -> int | None:
         for _type, p_offset, vaddr, _paddr, p_filesz, *_rest in loads:
             if vaddr <= address and address - vaddr + count <= p_filesz:
-                return p_offset + address - vaddr
+                returned: int | None = p_offset + address - vaddr
+                return returned
         return None
 
     info_offset = p_paddr & 0x1FFFFFFF
