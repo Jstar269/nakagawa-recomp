@@ -184,9 +184,29 @@
               "accel_x0.25",
               "launch_velocity_x0.5",
               "offset_x2",
-              "window_start_x2"
+              "window_start_x2",
+              "argument_x2"
             ],
             "description": "Declarative frame-rate rescale transform class."
+          },
+          "arguments": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "a0",
+                "a1",
+                "a2",
+                "a3",
+                "t0",
+                "t1",
+                "t2",
+                "t3"
+              ]
+            },
+            "description": "argument_x2 only: the argument registers the site doubles at the function entry."
           },
           "operand": {
             "type": "string",
