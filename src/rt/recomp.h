@@ -829,7 +829,14 @@ static inline int sr_guest_memmove(uint32_t dst, uint32_t src, uint32_t size) {
     return ok;
 }
 
-static inline uint8_t  sr_r8 (uint32_t a) {
+/* The full scalar accessors. They stay out of line so the inline fast paths below stay
+ * small in generated code, and stay `inline` so a unit that never calls one emits nothing;
+ * GCC reports that pair under -Wattributes. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif
+static inline __attribute__((noinline)) uint8_t sr_r8_slow(uint32_t a) {
     if (sr_inrange(a)) {
         uint8_t v;
         if (sr_vram_cpu_aperture(a)) {
@@ -843,7 +850,7 @@ static inline uint8_t  sr_r8 (uint32_t a) {
     }
     sr_oor(a,0,0); return 0u;
 }
-static inline uint16_t sr_r16(uint32_t a) {
+static inline __attribute__((noinline)) uint16_t sr_r16_slow(uint32_t a) {
     if (sr_inrange_n(a, 2)) {
         if (sr_vram_cpu_span_touches(a, 2u)) {
             sr_guest_vram_read_prepare_bytes(a, 2u);
@@ -856,7 +863,7 @@ static inline uint16_t sr_r16(uint32_t a) {
     }
     sr_oor(a,0,0); return 0u;
 }
-static inline uint32_t sr_r32(uint32_t a) {
+static inline __attribute__((noinline)) uint32_t sr_r32_slow(uint32_t a) {
     if ((a & 0xFFFFFFFC) == 0x04084000) {
         extern uint32_t sr_get_ge_status(void);
         return sr_get_ge_status();
@@ -874,7 +881,7 @@ static inline uint32_t sr_r32(uint32_t a) {
     }
     sr_oor(a,0,0); return 0u;
 }
-static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
+static inline __attribute__((noinline)) void sr_w8_pc_slow(uint32_t a, uint8_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 1u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 1u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
@@ -891,7 +898,7 @@ static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
         SR_WATCH_STORE_IF_ARMED(pc, a, v, 1u);
     } else sr_oor(a, v, 1);
 }
-static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
+static inline __attribute__((noinline)) void sr_w16_pc_slow(uint32_t a, uint16_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 2u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 2u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
@@ -909,7 +916,7 @@ static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
         SR_WATCH_STORE_IF_ARMED(pc, a, v, 2u);
     } else sr_oor(a, v, 1);
 }
-static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
+static inline __attribute__((noinline)) void sr_w32_pc_slow(uint32_t a, uint32_t v, uint32_t pc) {
     if (__builtin_expect(g_sr_store_context_pc != 0u, 0)) sr_log_store_context(a, v, 4u, pc);
     if (__builtin_expect(g_sr_last_writer_enabled, 0)) sr_note_mem_write(a, 4u, v, pc);
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
@@ -926,6 +933,49 @@ static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
         }
         SR_WATCH_STORE_IF_ARMED(pc, a, v, 4u);
     } else sr_oor(a, v, 1);
+}
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+/* The accessors guest code calls on every load and store. Main RAM with no store
+ * instrumentation armed is a plain host access, small enough to inline; everything else
+ * (VRAM, the GE status word, out-of-range addresses, watches) takes the *_slow body. */
+static inline uint32_t sr_ram_offset(uint32_t a) { return SR_PHYS(a) - SR_RAM_BASE; }
+static inline int sr_store_plain(void) {
+    return !(g_sr_store_context_pc | (uint32_t)g_sr_last_writer_enabled |
+             (uint32_t)g_sr_mem_watch_count | (uint32_t)g_sr_heap_watch |
+             (uint32_t)SR_WATCH_ACTIVE());
+}
+static inline uint8_t sr_r8(uint32_t a) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o < 0x04000000u, 1)) return g_mem[o];
+    return sr_r8_slow(a);
+}
+static inline uint16_t sr_r16(uint32_t a) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o <= 0x04000000u - 2u, 1)) { uint16_t v; memcpy(&v, g_mem + o, 2); return v; }
+    return sr_r16_slow(a);
+}
+static inline uint32_t sr_r32(uint32_t a) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o <= 0x04000000u - 4u, 1)) { uint32_t v; memcpy(&v, g_mem + o, 4); return v; }
+    return sr_r32_slow(a);
+}
+static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o < 0x04000000u && sr_store_plain(), 1)) { g_mem[o] = v; return; }
+    sr_w8_pc_slow(a, v, pc);
+}
+static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o <= 0x04000000u - 2u && sr_store_plain(), 1)) { memcpy(g_mem + o, &v, 2); return; }
+    sr_w16_pc_slow(a, v, pc);
+}
+static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
+    const uint32_t o = sr_ram_offset(a);
+    if (__builtin_expect(o <= 0x04000000u - 4u && sr_store_plain(), 1)) { memcpy(g_mem + o, &v, 4); return; }
+    sr_w32_pc_slow(a, v, pc);
 }
 static inline void sr_w8 (uint32_t a, uint8_t v) { sr_w8_pc(a, v, 0); }
 static inline void sr_w16(uint32_t a, uint16_t v) { sr_w16_pc(a, v, 0); }
@@ -1409,6 +1459,13 @@ typedef struct SrVarExportDecl {
     uint32_t addr;
 } SrVarExportDecl;
 void sr_main_var_exports_register(const SrVarExportDecl *exports, uint32_t count);
+/* A function the main image exports. The table is sorted by NID, unique, and outlives the run:
+ * the executable is started before any module, so importers link to these from boot. */
+typedef struct SrMainFuncExport {
+    uint32_t nid;
+    uint32_t addr;
+} SrMainFuncExport;
+void sr_main_func_exports_register(const SrMainFuncExport *exports, uint32_t count);
 /* The variable imports of a module translated at a fixed base (absolute sites), keyed by its
  * file name; they link when that module loads and unlink when it unloads. */
 void sr_fixed_var_imports_register(const char *module, const SrVarImport *imports,
