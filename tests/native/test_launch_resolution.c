@@ -1678,6 +1678,15 @@ int main(int argc, char **argv) {
         assert(nk_launch_prepare_session(&forced_session, &game, root1) == NK_OK);
         assert(strstr(forced_session.memstick_root, "forced-ms") != NULL);
         assert(nk_platform_dir_exists(forced_session.memstick_root));
+        /* An unusable SR_MEMSTICK refuses the launch instead of using the real stick. */
+        snprintf(forced, sizeof(forced), "%s%cms-blocker", root1, sep);
+        write_file(forced, "not a directory");
+        snprintf(forced, sizeof(forced), "%s%cms-blocker%csub", root1, sep, sep);
+        set_environment_value("SR_MEMSTICK", forced);
+        memset(&forced_session, 0, sizeof(forced_session));
+        assert(nk_launch_prepare_session(&forced_session, &game, root1) == NK_ERROR_IO);
+        assert(strstr(forced_session.last_error, "SR_MEMSTICK") != NULL);
+        assert(forced_session.memstick_root[0] == 0);
         restore_environment_value("SR_MEMSTICK", prev_copy, had);
     }
 

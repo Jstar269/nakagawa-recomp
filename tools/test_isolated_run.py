@@ -57,7 +57,10 @@ class IsolatedRunTests(unittest.TestCase):
             len(list(self.work.glob("isolated-*/memstick/PSP/SAVEDATA/NEW.BIN"))), 1)
 
     def test_settings_write_to_copy_passes(self) -> None:
-        code, out = self._main("-c", STUB, "SR_TEST_SETTINGS", "../extra.ini", settings=True)
+        # The variable names the copied settings file, so write beside it, not under it.
+        stub = ("import os, sys, pathlib\n"
+                "pathlib.Path(os.environ[sys.argv[1]]).with_name(sys.argv[2]).write_text('x')\n")
+        code, out = self._main("-c", stub, "SR_TEST_SETTINGS", "extra.ini", settings=True)
         self.assertEqual(code, 0, out)
         self.assertEqual(self.settings.read_text(), "a=1")
 

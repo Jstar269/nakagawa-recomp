@@ -1275,12 +1275,21 @@ NkResult nk_launch_prepare_session(
      * disposable copy; the value is exported to the child below unchanged. */
     {
         const char *forced = getenv("SR_MEMSTICK");
-        if (forced && *forced && ensure_writable_dir(forced)) {
-            char absolute[NK_MAX_PATH * 2];
-            if (nk_platform_absolute_path(forced, absolute, sizeof(absolute))) {
-                safe_copy_path(session->memstick_root, sizeof(session->memstick_root), absolute);
+        if (forced && *forced) {
+            if (ensure_writable_dir(forced)) {
+                char absolute[NK_MAX_PATH * 2];
+                if (nk_platform_absolute_path(forced, absolute, sizeof(absolute))) {
+                    safe_copy_path(session->memstick_root, sizeof(session->memstick_root), absolute);
+                } else {
+                    safe_copy_path(session->memstick_root, sizeof(session->memstick_root), forced);
+                }
             } else {
-                safe_copy_path(session->memstick_root, sizeof(session->memstick_root), forced);
+                /* A redirect request must never fall back to the real Memory Stick. */
+                snprintf(session->last_error, sizeof(session->last_error),
+                         "SR_MEMSTICK is set but is not a writable directory; refusing to "
+                         "fall back to the default save location.");
+                nk_title_catalog_snapshot_release(&title_snapshot);
+                return NK_ERROR_IO;
             }
         }
     }
