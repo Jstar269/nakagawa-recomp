@@ -41805,6 +41805,145 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
     expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
 }
 
+/* #1384: glyph-image spans, allocator alignment and the handle lifecycle, through production
+ * dispatch. A GlyphImage (0x18 bytes: u32 pixel format, s32 x and y in 1/64 pixel, u16 buffer
+ * width, height and bytes per line, u16 pad, u32 buffer) that the draw cannot place stops the run
+ * by name: the PSP's libfont stores through it unchecked, so its behaviour is UNMEASURED. A glyph
+ * wholly outside the buffer draws nothing and answers 0. The handle results after close and
+ * DoneLib are host policy (the PSP result is UNMEASURED): a handle that is not live is refused
+ * and freeFunc never sees a block twice. */
+#define FLT_NID_GLYPH  0x980f4895u
+#define FLT_GI         0x09050400u
+#define FLT_BITMAP     0x09050800u
+#define FLT_FONT_2     0x09070100u
+static void flt_write_glyph_image(uint32_t at, uint32_t format, int32_t x64, uint16_t w,
+                                  uint16_t h, uint16_t bpl, uint32_t buffer) {
+    MEM_W32(at + 0x00u, format);
+    MEM_W32(at + 0x04u, (uint32_t)x64);
+    MEM_W32(at + 0x08u, 0u);
+    MEM_W16(at + 0x0cu, w);
+    MEM_W16(at + 0x0eu, h);
+    MEM_W16(at + 0x10u, bpl);
+    MEM_W16(at + 0x12u, 0u);
+    MEM_W32(at + 0x14u, buffer);
+}
+static void test_font_glyph_image_and_handles(uint32_t served_index) {
+    if (!sr_hle_test_is_registered(FLT_NID_NEWLIB)) sr_hle_init();
+    expect(sr_hle_test_is_registered(FLT_NID_GLYPH), "sceFontGetCharGlyphImage is registered");
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    flt_write_params(FLT_PARAMS, 4u);
+
+    /* An allocator block that is not word-aligned is refused before anything is written to it. */
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+    MEM_W32(FLT_LIB_A, 0x5a5a5a5au);
+    MEM_W32(FLT_LIB_A + 4u, 0x5a5a5a5au);
+    expect(flt_new_lib(FLT_PARAMS, FLT_LIB_A + 2u) == 0u && MEM_R32(FLT_ERR) == FLT_ERR_OOM &&
+               s_flt_alloc_calls == 1u && MEM_R32(FLT_LIB_A + 4u) == 0x5a5a5a5au &&
+               flt_call(FLT_NID_DONELIB, FLT_LIB_A + 2u, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB &&
+               s_flt_free_calls == 0u,
+           "sceFontNewLib refuses a misaligned allocator block, writes nothing and publishes no library");
+    const uint32_t lib = flt_new_lib(FLT_PARAMS, FLT_LIB_A);
+    expect(lib == FLT_LIB_A && MEM_R32(FLT_ERR) == 0u, "a library opens at an aligned block");
+    s_flt_alloc_ret = FLT_FONT + 2u;
+    MEM_W32(FLT_FONT + 4u, 0x5a5a5a5au);
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_OOM && MEM_R32(lib + 0x14u) == 0u &&
+               MEM_R32(FLT_FONT + 4u) == 0x5a5a5a5au && s_flt_free_calls == 0u,
+           "sceFontOpen refuses a misaligned font block and leaves the open count at zero");
+    s_flt_alloc_ret = FLT_FONT;
+    const uint32_t font = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(font == FLT_FONT && MEM_R32(FLT_ERR) == 0u, "a font opens at an aligned block");
+
+    /* Glyph images, drawn with the first of 'A' and U+3042 the served font has. Its bitmap size
+     * comes from sceFontGetCharInfo, so a buffer can end exactly one byte short of its last row. */
+    static const uint32_t glyph_candidates[2] = { 0x41u, 0x3042u };
+    uint32_t ch = 0u, glyph_w = 0u, glyph_h = 0u;
+    for (int i = 0; i < 2 && glyph_w == 0u; i++) {
+        ch = glyph_candidates[i];
+        if (flt_call(FLT_NID_CHAR, font, ch, FLT_INFO, 0u) != 0u) continue;
+        glyph_w = MEM_R32(FLT_INFO + 0x00u);
+        glyph_h = MEM_R32(FLT_INFO + 0x04u);
+    }
+    expect(glyph_w > 0u && glyph_w <= 16u && glyph_h > 0u && glyph_h <= 16u,
+           "the served font has a glyph whose bitmap fits a 16 x 16 buffer");
+    uint32_t stops = sr_hle_test_unmodelled_stops();
+    for (uint32_t i = 0; i < 0x100u; i += 4u) MEM_W32(FLT_BITMAP + i, 0u);
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, FLT_BITMAP);
+    expect(flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u) == 0u &&
+               sr_hle_test_unmodelled_stops() == stops,
+           "sceFontGetCharGlyphImage draws into a complete glyph image and bitmap");
+    flt_write_glyph_image(FLT_GI, 2u, 100 * 64, 16u, 16u, 16u, FLT_BITMAP);
+    expect(flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u) == 0u &&
+               sr_hle_test_unmodelled_stops() == stops,
+           "a glyph wholly right of the buffer draws nothing and answers 0");
+
+    const uint32_t gi_tail = FLT_GUEST_TOP - 0x10u;
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, gi_tail, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "a 0x18-byte glyph image that ends past guest memory stops by name, not success");
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, 0xffffu, gi_tail, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "the glyph image is checked even for a character the font lacks");
+    /* Every row but the last fits; the last row's final byte is the first one past guest memory. */
+    const uint32_t bitmap_tail = FLT_GUEST_TOP + 1u - ((glyph_h - 1u) * 16u + glyph_w);
+    MEM_W8(bitmap_tail, 0x5au);
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, bitmap_tail);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u && MEM_R8(bitmap_tail) == 0x5au,
+           "a bitmap whose last row ends past guest memory stops by name and writes no row");
+    flt_write_glyph_image(FLT_GI, 5u, 0, 16u, 16u, 16u, FLT_BITMAP);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u, "pixel format 5 stops by name");
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, 0u);
+    stops = sr_hle_test_unmodelled_stops();
+    (void)flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u);
+    expect(sr_hle_test_unmodelled_stops() == stops + 1u,
+           "a NULL bitmap with a nonzero size stops by name");
+    flt_write_glyph_image(FLT_GI, 2u, 0, 16u, 16u, 16u, FLT_BITMAP);
+
+    /* Close and reopen. A font opened twice is one handle; its second close frees it once. */
+    s_flt_alloc_calls = s_flt_free_calls = 0;
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == font && s_flt_alloc_calls == 0u,
+           "a second open of the same font answers the same handle");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 0u &&
+               flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 1u &&
+               s_flt_last_free == font && MEM_R32(lib + 0x14u) == 0u,
+           "the second close of a twice-opened font frees its block once");
+    s_flt_alloc_ret = FLT_FONT;
+    expect(flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR) == font && s_flt_alloc_calls == 1u &&
+               MEM_R32(FLT_ERR) == 0u && MEM_R32(lib + 0x14u) == 1u,
+           "a reopen the allocator places at the freed block is a new font with a fresh allocation");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == 0u && s_flt_free_calls == 2u,
+           "that new font closes after one open: its open count did not carry over");
+    s_flt_alloc_ret = FLT_FONT_2;
+    const uint32_t font2 = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(font2 == FLT_FONT_2 && MEM_R32(FLT_ERR) == 0u, "a reopen at another block answers that block");
+    expect(flt_call(FLT_NID_INFO, font, FLT_INFO, 0u, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_CHAR, font, ch, FLT_INFO, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_GLYPH, font, ch, FLT_GI, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG && s_flt_free_calls == 2u,
+           "the stale handle of the closed font is refused everywhere and frees nothing");
+    expect(flt_call(FLT_NID_INFO, font2, FLT_INFO, 0u, 0u) == 0u, "the reopened font serves");
+
+    /* Handles of the wrong kind. */
+    expect(flt_call(FLT_NID_CLOSE, lib, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG &&
+               flt_call(FLT_NID_OPEN, font2, served_index, 0u, FLT_ERR) == 0u &&
+               MEM_R32(FLT_ERR) == FLT_ERR_INVALID_LIB &&
+               flt_call(FLT_NID_DONELIB, font2, 0u, 0u, 0u) == FLT_ERR_INVALID_LIB &&
+               s_flt_free_calls == 2u,
+           "a library handle is not a font and a font handle is not a library");
+
+    /* DoneLib with the font still open (test_font_error_ptr_and_done_lib covers its frees). */
+    expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u &&
+               flt_call(FLT_NID_GLYPH, font2, ch, FLT_GI, 0u) == FLT_ERR_INVALID_ARG,
+           "a font retired by sceFontDoneLib draws no glyph");
+}
+
 /* #1384: the error-code output of every Open call and of NewLib is a span-checked output (a
  * NULL one crashes the PSP, so it is an unmeasured stop, never a quiet write), and DoneLib with
  * a font still open retires the font as well. The PSP's result for that DoneLib is UNMEASURED:
@@ -42531,6 +42670,7 @@ static void test_flash0_font_device(void) {
         }
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_glyph_image_and_handles(served_index);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_measured_contract(served_index);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_error_ptr_and_done_lib(served_index);
         test_font_list_contract(&expected_sources);
