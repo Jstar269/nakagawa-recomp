@@ -40547,6 +40547,50 @@ static void test_font_lib_lifecycle(uint32_t served_index) {
     expect(flt_call(FLT_NID_DONELIB, FLT_LIB_B, 0u, 0u, 0u) == 0u, "the second library is retired");
 }
 
+/* #1384: the error-code output of every Open call and of NewLib is a span-checked output (a
+ * NULL one crashes the PSP, so it is an unmeasured stop, never a quiet write), and DoneLib with
+ * a font still open retires the font as well. The PSP's result for that DoneLib is UNMEASURED:
+ * the assertions pin the host's behaviour, not hardware. */
+static void test_font_error_ptr_and_done_lib(uint32_t served_index) {
+    if (!sr_hle_test_is_registered(FLT_NID_NEWLIB)) sr_hle_init();
+    sr_test_register_guest_fn(FLT_ALLOC_ENTRY, flt_alloc_fn);
+    sr_test_register_guest_fn(FLT_FREE_ENTRY, flt_free_fn);
+    flt_write_params(FLT_PARAMS, 4u);
+    flt_write_params(FLT_PARAMS + 0x100u, 4u);
+    s_flt_alloc_ret = FLT_LIB_A;
+    uint32_t lib = flt_call(FLT_NID_NEWLIB, FLT_PARAMS, FLT_ERR, 0u, 0u);
+    expect(lib == FLT_LIB_A, "a library for the error-pointer checks");
+
+    const uint32_t bad[2] = { 0u, FLT_GUEST_TOP - 2u };
+    for (int b = 0; b < 2; b++) {
+        s_flt_alloc_calls = 0;
+        uint32_t stops = sr_hle_test_unmodelled_stops();
+        (void)flt_call(FLT_NID_NEWLIB, FLT_PARAMS, bad[b], 0u, 0u);
+        (void)flt_call(FLT_NID_OPEN, lib, served_index, 0u, bad[b]);
+        (void)flt_call(FLT_NID_USERMEM, lib, FLT_PARAMS, 0x100u, bad[b]);
+        (void)flt_call(0x57fcb733u, lib, FLT_PARAMS, 1u, bad[b]);
+        expect(sr_hle_test_unmodelled_stops() == stops + 4u,
+               "NewLib and the Open calls stop on a NULL or unwritable error pointer");
+        expect(s_flt_alloc_calls == 0u, "a stopped call reaches no allocator");
+    }
+    expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u, "the error-pointer library is retired");
+
+    /* DoneLib while a font is still open frees the font's block and then the library's. */
+    s_flt_alloc_ret = FLT_LIB_A;
+    lib = flt_call(FLT_NID_NEWLIB, FLT_PARAMS, FLT_ERR, 0u, 0u);
+    s_flt_alloc_ret = FLT_FONT;
+    uint32_t font = flt_call(FLT_NID_OPEN, lib, served_index, 0u, FLT_ERR);
+    expect(lib == FLT_LIB_A && font == FLT_FONT && MEM_R32(FLT_ERR) == 0u, "a library with an open font");
+    s_flt_free_calls = 0;
+    expect(flt_call(FLT_NID_DONELIB, lib, 0u, 0u, 0u) == 0u && s_flt_free_calls == 2u &&
+               s_flt_last_free == FLT_LIB_A,
+           "sceFontDoneLib with a font open retires it and frees the font and the library once each");
+    expect(flt_call(FLT_NID_CLOSE, font, 0u, 0u, 0u) == FLT_ERR_INVALID_ARG && s_flt_free_calls == 2u,
+           "sceFontClose after sceFontDoneLib fails closed without freeing again");
+    expect(flt_call(FLT_NID_INFO, font, FLT_INFO, 0u, 0u) == FLT_ERR_INVALID_ARG,
+           "a font retired by sceFontDoneLib is refused");
+}
+
 /* #1384: what pspautotests tests/font (f573fe8c9122a8ff5db4f030d74557bed644b4e0, recorded on a PSP)
  * measures about libraries and handles, driven through production dispatch: newlib.expected
  * (numFonts -1, 0, 10 and 100 all succeed: a count above 9 serves 9, 0 is accepted), open.expected
@@ -41183,6 +41227,7 @@ static void test_flash0_font_device(void) {
         expect(served_index < SR_FONT_REGISTRY_COUNT, "the flash0 fixture serves at least one sceFont index");
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_lib_lifecycle(served_index);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_measured_contract(served_index);
+        if (served_index < SR_FONT_REGISTRY_COUNT) test_font_error_ptr_and_done_lib(served_index);
         test_font_list_contract(&expected_sources);
         if (served_index < SR_FONT_REGISTRY_COUNT) test_font_alt_char_contract(served_index);
     }
