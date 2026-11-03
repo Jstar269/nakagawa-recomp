@@ -952,6 +952,7 @@ static uint32_t hle_libfont_startup_stop(const char *reason) {
         sr_trace_close();
         sr_compat_report();
         sr_perf_shutdown();
+        SR_VERIFY_REPORT_NOW();
         fflush(stderr);
         _Exit(HLE_LIBFONT_STARTUP_STOP_EXIT);
     }
