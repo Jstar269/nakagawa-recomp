@@ -55,6 +55,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     () if os.name == "nt" else ("build/mygame/coro_selftest_asm",)
 ) + (
     "build/mygame/ge_raster_ref_selftest",
+    "build/mygame/psmf_media_focused_selftest --fuzz-iters 0",
     "build/test_pgf_public",
     "build/test_core_catalog",
     "build/test_parsers_hostile",
