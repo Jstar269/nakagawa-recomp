@@ -376,7 +376,7 @@ typedef struct {
     uint8_t videoStreamDim[128][2], audioStreamChannels[128];
     uint32_t audioChannels, audioFrequency;
     uint32_t videoCodec, videoStreamNum, audioCodec, audioStreamNum, playMode, playSpeed;
-    uint32_t pixelMode, loopStatus, warmup, breakRequested; int64_t currentPts, durationPts, presentationBase;
+    uint32_t pixelMode, loopStatus, warmup, breakRequested, stoppedAfterStart; int64_t currentPts, durationPts, presentationBase;
     SrPsmfProducer *producer;
     struct { uint32_t lba, size; } source;
     /* Decoder-owned output stage.  Nothing here fabricates a frame or a PCM block: video

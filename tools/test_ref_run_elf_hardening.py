@@ -182,6 +182,9 @@ class TestReferenceRunnerTerminationContract(unittest.TestCase):
     drive the real CLI with synthetic source-owned ELFs and assert the process
     status AND the structured stop metadata together.
     """
+    exe: Path
+    root: Path
+    tmp: scratch_dir.TemporaryDirectory
 
     OPCODE_SYSCALL = 0x0000000C
     OPCODE_NOP = 0x00000000

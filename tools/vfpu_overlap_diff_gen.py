@@ -63,6 +63,27 @@ def _matrix1_word(which: int, size: int, vd: int, vs: int) -> int:
     )
 
 
+# One word per supported census row that had no differential evidence before this list
+# (tools/vfpu_coverage_report.py credits a row when any of its words is in this set).
+CENSUS_GAP_WORDS: tuple[int, ...] = (
+    # major 0x1B: vcmp, vscmp at other vector registers/widths
+    0x6C01810F, 0x6C01818F, 0x6C050101, 0x6C05010F, 0x6C058181, 0x6C0800FF,
+    0x6C170181, 0x6C3F8101, 0x6E800000, 0x6E808001, 0x6E808090, 0x6E810190,
+    # major 0x3C: matrix forms (vmmul/vtfm/vcrsp/vmmov/vmidt/vmzero/vmone/vrot...)
+    0xF0000000, 0xF0800000, 0xF1000000, 0xF1800000, 0xF2000000, 0xF3800000,
+    0xF3810000, 0xF3830000, 0xF3A0000F, 0xF3A00000, 0xF3A1008F, 0xF3A1800F,
+    0xF3A181FF, 0xF3A30080, 0xF3A48000, 0xF3AA0080, 0xF3AB8181, 0xF3B0008F,
+    0xF3B00000, 0xF3B0007F, 0xF3B0807F, 0xF3B100FF, 0xF3B18010, 0xF3B28090,
+    0xF3B5808F, 0xF3B58000, 0xF3B68080, 0xF3B90080, 0xF3BB8101, 0xF3BF7FFF,
+    0xF3BFFFFF,
+)
+
+
+def census_gap_size(word: int) -> int:
+    """Vector size 1..4 from bit 7 (low) and bit 15 (high)."""
+    return ((word >> 7) & 1 | ((word >> 15) & 1) << 1) + 1
+
+
 def build_cases() -> tuple[list[tuple[int, str, int]], int, tuple[int, int]]:
     cases: list[tuple[int, str, int]] = []
 
@@ -141,6 +162,14 @@ def build_cases() -> tuple[list[tuple[int, str, int]], int, tuple[int, int]]:
             cases.append((_bin_word(0x1B, sub, size, 0x00, 0x04, 0x08), f"{op}-{suffix}", size))
     cmp_range = (cmp_first, len(cases) - cmp_first)
 
+    # Census-gap forms (issue #326): supported VFPU3 compare/min/max and VFPU6 matrix forms
+    # that the synthetic fuzz corpus (minimal registers) does not reach. Each is one
+    # representative word of a census row, taken from the census itself; check_overlap_diff()
+    # runs the generated body and sr_vfpu_interp on the same state and compares every v[] lane
+    # and vfpuCtrl[]. This is an AOT/interpreter cross-check, not PSP evidence.
+    for w in CENSUS_GAP_WORDS:
+        cases.append((w, f"census-{w:08x}", census_gap_size(w)))
+
     # Verify every word decodes through the production emitter without fallback.
     for w, name, _ in cases:
         body, _, _ = codegen.vfpu_effect(0x08900000, w)
@@ -166,6 +195,10 @@ def write_header(out_path: str, cases: list[tuple[int, str, int]], exotic_index:
         out.append(f'    {{0x{w:08x}u, "{name}"}},')
     out.append("};")
     out.append("")
+    # Emitted bodies are compiled with -w in generated chunks; some (matrix scalar forms) declare
+    # a helper they do not read, which a -Werror strict compile of this header would reject.
+    out.append("#pragma GCC diagnostic push")
+    out.append('#pragma GCC diagnostic ignored "-Wunused-variable"')
     out.append("static void overlap_diff_run_codegen(CpuState *s, int idx) {")
     out.append("    switch (idx) {")
     for i, (w, name, _) in enumerate(cases):
@@ -174,6 +207,7 @@ def write_header(out_path: str, cases: list[tuple[int, str, int]], exotic_index:
     out.append("    default: break;")
     out.append("    }")
     out.append("}")
+    out.append("#pragma GCC diagnostic pop")
     out.append("")
     out.append("#endif /* NAKAGAWA_VFPU_OVERLAP_DIFF_H */")
     Path(out_path).write_text("\n".join(out) + "\n", encoding="ascii", newline="\n")

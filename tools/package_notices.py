@@ -78,7 +78,8 @@ def load_component_inventory(path: Path | None = None) -> dict[str, Any]:
             "PACKAGE_LICENSE_RECORD_MISSING",
             f"LICENSE_RECORD_SOURCE_INCOMPLETE: {COMPONENTS_IDENTITY} declares no native.dlls records",
         )
-    return data
+    returned: dict[str, Any] = data
+    return returned
 
 
 def notice_file_name(record: dict[str, Any]) -> str:
@@ -212,7 +213,8 @@ def _prerequisite_toolchain_root() -> Path | None:
         data_root = default_data_root()
     except PrerequisiteFetchError:
         return None
-    return data_root / "prerequisites" / "msys64" / "ucrt64"
+    returned: Path | None = data_root / "prerequisites" / "msys64" / "ucrt64"
+    return returned
 
 
 def resolve_toolchain_root() -> Path | None:

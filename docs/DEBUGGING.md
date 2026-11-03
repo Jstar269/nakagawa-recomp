@@ -149,7 +149,10 @@ The summary fields mean:
   do not add `triangle_total` or `empty_control` to the stage sum.
 - `vulkan.submit_ns`, `wait_ns`, `readback_ns`, and `pipeline_creation_ns` measure separate host
   API regions. Readback and general wait can overlap and are intentionally not additive;
-  `readbacks` counts completed CPU readback commits, not every fence poll.
+  `readbacks` counts completed CPU readback commits, not every fence poll, and `readback_bytes` the
+  bytes those commits copied out of the image. A readback takes only the rows guest memory keeps, one
+  device row per guest row, so the bytes grow with the render scale, not its square;
+  `SR_GPU_READBACK_FULL=1` copies the whole scaled target, the reference path (#323).
 - `textures` counts cache hits/misses and central decode calls. `storage` separates public ISO and
   VFS byte/read/failure counters. `media` counts H.264 and ATRAC decode calls, elapsed time, and
   failures. If the host H.264 backend is unavailable, the runtime reports its named boundary
@@ -1576,8 +1579,52 @@ first table gives medians, and the second the intervals on (linked minus absent)
 The ladder rows run with `SR_FLIGHT` and `SR_PERF` both removed by the fixture's `SR_*` rule, so
 they measure the compiled-in cost with the recorder disarmed, as the smoke rows do. The direct
 executable interval is the tightest bound. Neither workload is a GE or presentation workload (the
-smoke summary shows zero GE and Vulkan calls), so the recorder sites in
-`src/rt/gpu_sdl3vk/ge_gpu.c` are not measured here.
+smoke summary shows zero GE and Vulkan calls), so the GE and present recorder sites are measured
+separately, below.
+
+#### GE and present sites
+
+The GE recorder sites are in `src/rt/ge.c` (one `sr_flight_class_enabled(SR_FLIGHT_CLASS_GE)` call
+per list, then an `if (flight_ge_enabled)` test at each draw and at FINISH) and `src/rt/hle_ge.c`
+(`SR_FLIGHT_RECORD_CLASS` at list enqueue, sync, stall update and finish). The present sites are in
+`src/rt/hle_display.c` (one at each `sceDisplaySetFrameBuf` and one per presented frame). Every one
+is that class test with the recorder disarmed; none allocates, locks, sleeps or reads guest memory.
+
+`mingw32-make ge-flight-overhead` measures the draw path. It builds `ge.c` twice, once as the default
+build does and once with `-USR_FLIGHT_RECORDER_LINKED`, and links each into the
+`ge-cpu-profile-validate-selftest` harness, whose `--bench ROUNDS` mode runs two source-owned lists
+through `ge_run_list()` with every profile off and the recorder disarmed (`SR_FLIGHT` unset):
+`scene` (the selftest's main list: every primitive type, patches, a block transfer, a CLUT load) and
+`prims` (1024 zero-area through-mode triangles, so per-primitive work other than rasterization
+dominates, about 215 us a list). `tools/ge_flight_overhead.py` runs the two builds in alternating
+pairs (`GE_FLIGHT_PAIRS`, default 5, with `GE_FLIGHT_ROUNDS` timed rounds of 40 list runs each, default
+30) and checks three things before it reports:
+
+- the linked `ge.o` references `sr_flight_` symbols and the absent one references none (2 and 0);
+- both builds draw the same pixels (a hash of the 512 x 272 framebuffer is equal for each workload);
+- the interval on (linked minus absent) is a 95% percentile bootstrap over the pairs (2000
+  resamples, fixed seed). The verdict is `linked slower` only if the whole interval is above zero.
+  A whole interval below zero is reported as `linked faster (code layout or drift, not a recorder
+  saving)`.
+
+It also times the class test alone: one call to the disarmed `sr_flight_class_enabled()` across
+translation units, 20 million in a row.
+
+Measured on the same Windows 11 host and MSYS2 UCRT64 GCC as the series above, 15 pairs of 60
+rounds, base `cb0080c11`:
+
+| Workload | Linked, disarmed (us a list) | Absent (us a list) | 95% interval on linked minus absent (us) | Result |
+| --- | --- | --- | --- | --- |
+| `prims` (1024 draws) | 219.6 | 216.5 | [-18.8, +4.0] | not distinguishable from noise at 15 pairs |
+| `scene` | 1055.3 | 1144.8 | [-130.5, -3.1] | linked faster; layout or drift, not a saving |
+
+The class test costs 1.8 ns a call with the recorder disarmed. A list pays it once and a present
+or setframebuf site once, so the present sites cost about two calls a frame (3.6 ns at 60 Hz: 216 ns
+a second). The per-draw cost is one test of a local `int`, below what a 1024-draw list can resolve:
+the `prims` interval bounds the whole list, 1024 draws included, at +4.0 us (under 2%), which is
+under 4 ns a draw. The measurement bounds the cost on the draw path; it does not measure the Vulkan
+backend, which has no recorder site. Timings from a shared desktop host move between runs, so repeat
+the target rather than reading one run as a figure.
 
 ## Crash Reporter
 

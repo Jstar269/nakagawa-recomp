@@ -23,6 +23,11 @@
 //
 // The Makefile runs this twice, once with --strip-cache-disabled, because ge.c latches
 // the strip-cache switch once per process.
+//
+// `--bench ROUNDS` is not a test.  It times the same production GE object on two source-owned
+// workloads with the flight recorder compiled in but disarmed, or compiled out when the
+// build passes -USR_FLIGHT_RECORDER_LINKED, and prints one line per workload plus a
+// framebuffer hash so two builds can be compared (the ge-flight-overhead target, #320).
 
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L /* setenv/unsetenv under a strict -std */
@@ -32,6 +37,12 @@
 #include "debug.h"
 #include "ge_capture.h"
 #include "ge_shared.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -1738,8 +1749,112 @@ static void test_ge_bounding_box_branch(void) {
     printf("BBOX cases=%u (software and GPU hooks)\n", (unsigned)(sizeof cases / sizeof cases[0]));
 }
 
+/* ---- --bench: disarmed flight recorder cost on the GE paths (#320) ---- */
+
+#define LIST_BENCH       0x08120000u
+#define BENCH_PRIMS      1024u
+#define BENCH_RUNS_PER_ROUND 40u
+#define BENCH_CALLS      20000000u
+#define BENCH_FB_BYTES   (512u * 272u * 4u)
+
+static uint64_t bench_now_ns(void) {
+#ifdef _WIN32
+    LARGE_INTEGER f, c;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (uint64_t)((double)c.QuadPart * 1e9 / (double)f.QuadPart);
+#else
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
+#endif
+}
+
+static int bench_cmp(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return (x > y) - (x < y);
+}
+
+static uint64_t bench_fb_hash(void) {
+    uint64_t h = 1469598103934665603u;
+    const uint8_t *p = SR_HOST(0x04044000u);
+    for (uint32_t i = 0; i < BENCH_FB_BYTES; i++) h = (h ^ p[i]) * 1099511628211u;
+    return h;
+}
+
+/* One list of BENCH_PRIMS through-mode triangles after the common setup. */
+static void bench_build_list(void) {
+    s_pc = LIST_BENCH;
+    emit_setup();
+    uint32_t tri = vtx(10.0f, 40.0f, 0.0f);          /* zero area: no pixels, so the */
+    vtx(10.0f, 40.0f, 0.0f);                         /* per-primitive bookkeeping dominates */
+    vtx(10.0f, 40.0f, 0.0f);
+    W(0x12, VT_THROUGH);
+    for (uint32_t i = 0; i < BENCH_PRIMS; i++) prim(3, 3, tri);
+    W(0x0F, 0);                                          /* FINISH */
+    W(0x0C, 0);                                          /* END */
+}
+
+static void bench_workload(const char *name, uint32_t list, uint32_t prims, uint32_t rounds) {
+    uint64_t *samples = (uint64_t *)malloc(rounds * sizeof *samples);
+    if (!samples) exit(2);
+    configure(NULL, NULL, NULL, NULL);                   /* every profile off */
+    memset(SR_HOST(0x04044000u), 0, BENCH_FB_BYTES);
+    for (uint32_t i = 0; i < 4u; i++) run_list(list, name);  /* warm up */
+    for (uint32_t r = 0; r < rounds; r++) {
+        uint64_t t0 = bench_now_ns();
+        for (uint32_t i = 0; i < BENCH_RUNS_PER_ROUND; i++) run_list(list, name);
+        samples[r] = (bench_now_ns() - t0) / BENCH_RUNS_PER_ROUND;
+    }
+    uint64_t hash = bench_fb_hash();
+    qsort(samples, rounds, sizeof *samples, bench_cmp);
+    printf("GE_FLIGHT_BENCH flavour=%s workload=%s prims=%" PRIu32 " rounds=%" PRIu32
+           " ns_per_list_median=%" PRIu64 " ns_per_list_min=%" PRIu64 " fb_hash=%016" PRIx64 "\n",
+#ifdef SR_FLIGHT_RECORDER_LINKED
+           "linked",
+#else
+           "absent",
+#endif
+           name, prims, rounds, samples[rounds / 2u], samples[0], hash);
+    free(samples);
+}
+
+static int bench_main(uint32_t rounds) {
+    uint8_t *arena = (uint8_t *)calloc(0x0c000000u, 1);
+    if (!arena) return 2;
+    g_mem = arena + 0x08000000u;
+    build_lists();
+    bench_build_list();
+#ifdef SR_FLIGHT_RECORDER_LINKED
+    /* The recorder is disarmed (SR_FLIGHT unset): the GE class reads as off, and the
+     * cross-object class test, the call each list and present site makes, is timed alone. */
+    if (sr_flight_class_enabled(SR_FLIGHT_CLASS_GE)) {
+        fprintf(stderr, "ge_cpu_profile_validate_selftest: --bench needs SR_FLIGHT unset\n");
+        return 2;
+    }
+    volatile uint32_t sink = 0;
+    uint64_t t0 = bench_now_ns();
+    for (uint32_t i = 0; i < BENCH_CALLS; i++) sink += (uint32_t)sr_flight_class_enabled(SR_FLIGHT_CLASS_GE);
+    uint64_t dt = bench_now_ns() - t0;
+    printf("GE_FLIGHT_BENCH flavour=linked class_check calls=%u ns_per_call_x1000=%" PRIu64
+           " sink=%u\n", BENCH_CALLS, dt * 1000u / BENCH_CALLS, (unsigned)sink);
+#endif
+    bench_workload("scene", LIST_MAIN, 0, rounds);
+    bench_workload("prims", LIST_BENCH, BENCH_PRIMS, rounds);
+    free(arena);
+    return s_failures ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     int strip_cache = 1;
+    if (argc == 3 && strcmp(argv[1], "--bench") == 0) {
+        long rounds = strtol(argv[2], NULL, 10);
+        if (rounds < 1 || rounds > 100000) {
+            fprintf(stderr, "usage: %s --bench ROUNDS (1 to 100000)\n", argv[0]);
+            return 2;
+        }
+        return bench_main((uint32_t)rounds);
+    }
     if (argc == 2 && strcmp(argv[1], "--strip-cache-disabled") == 0) strip_cache = 0;
     else if (argc != 1) {
         fprintf(stderr, "usage: %s [--strip-cache-disabled]\n", argv[0]);
