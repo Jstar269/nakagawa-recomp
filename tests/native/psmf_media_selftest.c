@@ -2313,6 +2313,45 @@ static void test_mpeg_pcm_and_au_mode(void) {
     mpeg_finish();
 }
 
+/* Userdata imports, through the production NIDs: a title asks for the sizes when it sets a movie
+ * up and polls for an access unit while it plays. No userdata is demuxed, so the poll stays an
+ * explicit NO_DATA. */
+static void test_mpeg_userdata_imports(void) {
+    enum {
+        UD_DESC = 0x08130000u, UD_DATA = 0x08140000u, UD_OUT = 0x08150000u,
+        NID_QUERY = 0xc45c99ccu, NID_GET_AU = 0x01977054u
+    };
+    const uint32_t sentinel = 0xA5A5A5A5u;
+    MEM_W32(UD_DESC, 0u);
+    CHECK(mpeg_create(UD_DESC, UD_DATA, 0x10000u, 0, 64u, 0, 0) == 0, "MPEG userdata fixture creates a context");
+    CHECK(guest_mpeg_import(NID_QUERY, UD_DESC, UD_OUT, UD_OUT + 4u, 0u, 0u) == 0u &&
+              MEM_R32(UD_OUT) == 0xA0000u && MEM_R32(UD_OUT + 4u) == 0xA0000u,
+          "MPEG userdata size query returns 0xA0000 for the ES and the output");
+    MEM_W32(UD_OUT, sentinel);
+    MEM_W32(UD_OUT + 4u, sentinel);
+    CHECK(guest_mpeg_import(NID_QUERY, 0u, UD_OUT, UD_OUT + 4u, 0u, 0u) == UINT32_MAX &&
+              guest_mpeg_import(NID_QUERY, UD_DESC, UD_OUT + 1u, UD_OUT + 4u, 0u, 0u) == UINT32_MAX &&
+              guest_mpeg_import(NID_QUERY, UD_DESC, UD_OUT, 0u, 0u, 0u) == UINT32_MAX &&
+              MEM_R32(UD_OUT) == sentinel && MEM_R32(UD_OUT + 4u) == sentinel,
+          "MPEG userdata size query refuses a bad handle or pointer and writes nothing");
+    uint32_t sid = mpeg_regist_stream(UD_DESC, MPEG_DATA_STREAM, 0u);
+    MEM_W32(UD_OUT + 8u, sentinel);
+    MEM_W32(UD_OUT + 12u, sentinel);
+    MEM_W32(UD_OUT + 16u, sentinel);
+    MEM_W32(UD_OUT + 36u, sentinel);
+    CHECK(sid != 0u && guest_mpeg_import(NID_GET_AU, UD_DESC, sid, UD_OUT + 16u, UD_OUT + 8u, 0u) ==
+                           SCE_MPEG_ERROR_NO_DATA &&
+              MEM_R32(UD_OUT + 8u) == 0u && MEM_R32(UD_OUT + 12u) == 0u,
+          "MPEG userdata AU is an explicit no-data refusal that clears the two result words");
+    CHECK(MEM_R32(UD_OUT + 16u) == sentinel && MEM_R32(UD_OUT + 36u) == sentinel,
+          "MPEG userdata AU refusal leaves the access unit alone");
+    MEM_W32(UD_OUT + 8u, sentinel);
+    CHECK(guest_mpeg_import(NID_GET_AU, 0u, sid, UD_OUT + 16u, UD_OUT + 8u, 0u) == UINT32_MAX &&
+              MEM_R32(UD_OUT + 8u) == sentinel,
+          "MPEG userdata AU refuses a bad handle and writes nothing");
+    mpeg_finish();
+}
+
 /* ---- movie frame writers behind the swizzled VRAM mirrors (#1049) ------------------------
  * Hot Shots Tennis hands its movie buffers to sceMpegAvcCsc / sceMpegAvcDecode through the
  * 0x042 and 0x046 mirror views of VRAM. The bulk writers used to refuse such a span (and log
@@ -4419,6 +4458,7 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_picture_time_by_bytes();
     test_mpeg_ycbcr_guest_decode();
     test_mpeg_pcm_and_au_mode();
+    test_mpeg_userdata_imports();
     test_mpeg_csc_swizzled_vram_mirrors();
     test_mpeg_avc_decode_clear_in_vram_mirrors();
     test_player_lifecycle_releases_what_it_acquired();
