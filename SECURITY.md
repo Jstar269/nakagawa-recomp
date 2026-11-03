@@ -120,6 +120,7 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `tools/decompme_export.py` | SHA-1 | PSP NID derivation (`sha1(name)[0:4]`, little-endian) | Keep: the PSP defines it |
 | `tools/gen_nidnames.py` | SHA-1 | PSP NID derivation | Keep: the PSP defines it |
 | `tools/nid_name_proof.py` | SHA-1 | PSP NID derivation | Keep: the PSP defines it |
+| `tools/provenance_attest_verify.py` | SHA-1 | Git blob ID of a file a `PROVENANCE.md` row declares imported byte-identical, compared with the row's recorded blob ID (a SHA-256 column, where present, is checked too) | Keep: Git object identity |
 | `tools/verify_vfpu_provenance.py` | SHA-1 | Git blob ID of a VFPU table against the pinned upstream tree | Keep: Git object identity |
 | `tools/validate_assets.py` | MD5 | Reads legacy, unversioned local asset references; new ones are versioned SHA-256 | Keep: legacy compatibility only, not a security check |
 | `tools/extract_xb.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |

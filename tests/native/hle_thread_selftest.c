@@ -8429,10 +8429,11 @@ static void test_io_devctl_memory_stick(void) {
 /* ---- savedata GETSIZE / SIZES free space (#308) ---------------------------------------------
  * GETSIZE reports a shortfall, never the size of the data. On a PSP (pspautotests
  * tests/utility/savedata/getsize.expected, revision 2ed7c9c5) a zero-filled sizeInfo with no
- * entries for a save that does not exist changes only sectorSize (0x8000), freeSectors,
- * freeKB and freeString, and the result is 0. Free space is the host-backed Memory Stick the
- * capacity devctl measures, in 32 KiB sectors; the shortfall arithmetic for listed entries
- * follows PPSSPP SavedataParam::GetSize as a behaviour reference. */
+ * entries for a save that exists changes only sectorSize (0x8000), freeSectors, freeKB and
+ * freeString, and the result is 0. A save that does not exist fills in the same figures and
+ * reports RW_NO_DATA (PPSSPP as the behaviour reference, UNMEASURED on a PSP). Free space is the
+ * host-backed Memory Stick the capacity devctl measures, in 32 KiB sectors; the shortfall
+ * arithmetic for listed entries follows PPSSPP SavedataParam::GetSize as a behaviour reference. */
 extern void sr_hle_test_set_memstick_free_bytes(int mode, uint64_t bytes);
 
 enum {
@@ -8520,7 +8521,7 @@ static void test_savedata_getsize_free_space(void) {
     sr_hle_test_register_iofilemgr();
     sr_hle_test_set_memstick_free_bytes(0, 0u);
 
-    /* 1. The hardware case: zero-filled sizeInfo, no entries, save missing. */
+    /* 1. Zero-filled sizeInfo, no entries, save missing: the figures, then RW_NO_DATA. */
     {
         uint64_t before = 0, after = 0;
         getsize_param(22u, "_GameData0");
@@ -8530,7 +8531,7 @@ static void test_savedata_getsize_free_space(void) {
         uint64_t lo = before < after ? before : after, hi = before < after ? after : before;
         uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
         expect(measured, "the capacity devctl measures the synthetic Memory Stick's host volume");
-        expect(rc == 0u, "GETSIZE for a save that does not exist returns 0, as on a PSP");
+        expect(rc == 0x80110327u, "GETSIZE for a save that does not exist reports RW_NO_DATA");
         expect(MEM_R32(GETSIZE_INFO_ADDR + 0u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 4u) == 0u &&
                    MEM_R32(GETSIZE_INFO_ADDR + 8u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 12u) == 0u,
                "GETSIZE leaves the entry counts and pointers alone");
@@ -8550,17 +8551,19 @@ static void test_savedata_getsize_free_space(void) {
                "GETSIZE with no entries leaves neededString and overwriteString untouched");
     }
 
-    /* 2. One secure entry of a few KB on a missing save fits: nothing needed. */
+    /* 2. One secure entry of a few KB on a missing save fits: nothing needed, still no data. A
+     * game reads this pair as "no save yet, and room to make one". */
     {
         getsize_param(22u, "_GameData0");
         getsize_entry(GETSIZE_SECURE_ADDR, 0x2000u, "DATA.BIN");
         MEM_W32(GETSIZE_INFO_ADDR + 0u, 1u);
         MEM_W32(GETSIZE_INFO_ADDR + 8u, GETSIZE_SECURE_ADDR);
-        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0u &&
+        expect(sr_savedata_execute(GETSIZE_PARAM_ADDR) == 0x80110327u &&
+                   MEM_R32(GETSIZE_INFO_ADDR + 16u) == 0x8000u &&
                    MEM_R32(GETSIZE_INFO_ADDR + 36u) == 0u && MEM_R32(GETSIZE_INFO_ADDR + 48u) == 0u &&
                    getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 40u, zero8) &&
                    getsize_guest_bytes_are(GETSIZE_INFO_ADDR + 52u, zero8),
-               "GETSIZE for one small secure file on a missing save reports neededKB 0, overwriteKB 0");
+               "GETSIZE for one small secure file on a missing save reports RW_NO_DATA, neededKB 0, overwriteKB 0");
     }
 
     /* 3. A shortfall: 64 KiB free (plus a partial sector), more data than that. */
@@ -8605,10 +8608,11 @@ static void test_savedata_getsize_free_space(void) {
                "GETSIZE needs nothing when the files it replaces free enough space");
     }
 
-    /* 4. SIZES msFree reports the same free figures as GETSIZE: the PSP's 1 GB record. */
+    /* 4. SIZES msFree reports the same free figures as GETSIZE: the PSP's 1 GB record, whose
+     * save exists. */
     sr_hle_test_set_memstick_free_bytes(1, 0x40000000u + 0x7fffu);
     {
-        getsize_param(22u, "_GameData0");
+        getsize_param(22u, "_GameData1");
         uint32_t getsize_rc = sr_savedata_execute(GETSIZE_PARAM_ADDR);
         uint32_t sector_size = MEM_R32(GETSIZE_INFO_ADDR + 16u);
         uint32_t sectors = MEM_R32(GETSIZE_INFO_ADDR + 20u);
@@ -10572,6 +10576,106 @@ static void test_psp_measured_power_battery_20261024(void) {
     expect(td24b_dispatch4(NID_POWER_LIFE_TIME, 0u, 0u, 0u, 0u) == 376u,
            "on battery scePowerGetBatteryLifeTime reports the measured 376 minutes");
     sr_hle_test_power_set_external(1);
+}
+
+/* #1814, #1815, #1816: synthetic checks that pin what the production handlers do today for
+ * NIDs the verification ledger had no recorded evidence for. They are NOT PSP measurements:
+ * a value here records this runtime's current behaviour, nothing more. (The measured power
+ * values live in test_psp_measured_power_battery_20261024; this test enters each NID by its
+ * literal number and also pins that the handlers read no argument register.) Every leg goes
+ * through sr_syscall, the production dispatch of the production registration. */
+static void test_pinned_handlers_1814_1815_1816(void) {
+    enum { CLOCK = 0x00270080u, GARBAGE = 0xa57c3de1u };
+    CpuState cpu;
+    uint32_t i;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    sr_hle_test_umd_reset();
+
+    /* #1814: scePowerIsBatteryExist(void), scePowerIsBatteryCharging(void) and
+     * scePowerGetBatteryLifePercent(void). Registers a0-a3 hold garbage: a handler that
+     * read an argument would change its answer. */
+    expect(sr_hle_test_is_registered(0x0afd0d8bu) && sr_hle_test_is_registered(0x1e490401u) &&
+               sr_hle_test_is_registered(0x2085d15du),
+           "the three power-status NIDs have a production registration");
+    for (i = 0u; i < 2u; i++) {
+        uint32_t percent = i == 0u ? 96u : 93u; /* external power online, then on battery */
+        sr_hle_test_power_set_external((int)(i == 0u));
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x0afd0d8bu) == 1u,
+               "scePowerIsBatteryExist reports a battery present in both power states (pins current behaviour)");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x1e490401u) == 0u,
+               "scePowerIsBatteryCharging reports not charging in both power states (pins current behaviour)");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x2085d15du) == percent,
+               "scePowerGetBatteryLifePercent follows the external-power state (pins current behaviour)");
+    }
+    sr_hle_test_power_set_external(1);
+
+    /* #1815: sceKernelUSec2SysClock(unsigned int usec, SceKernelSysClock *clock). usec is a
+     * 32-bit register, so 0xffffffff is the largest input: a value above 2^32 cannot reach
+     * the handler. The 64-bit clock is {low = usec, high = 0}. */
+    static const uint32_t usec_cases[] = {0u, 1u, 0x7fffffffu, 0x80000000u, 0xffffffffu};
+    for (i = 0u; i < sizeof(usec_cases) / sizeof(usec_cases[0]); i++) {
+        MEM_W32(CLOCK, GARBAGE);
+        MEM_W32(CLOCK + 4u, GARBAGE);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = usec_cases[i];
+        cpu.r[5] = CLOCK;
+        cpu.r[6] = cpu.r[7] = GARBAGE;
+        expect(sr_syscall(&cpu, 0x110dec9au) == 0u && MEM_R32(CLOCK) == usec_cases[i] &&
+                   MEM_R32(CLOCK + 4u) == 0u,
+               "sceKernelUSec2SysClock stores {usec, 0} and overwrites a stale high word (pins current behaviour)");
+    }
+    /* A null output pointer is refused with SCE_KERNEL_ERROR_ILLEGAL_ADDR (0x800200d3)
+     * and nothing in the neighbouring words changes. */
+    MEM_W32(CLOCK, GARBAGE);
+    MEM_W32(CLOCK + 4u, GARBAGE);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0xffffffffu;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, 0x110dec9au) == 0x800200d3u && MEM_R32(CLOCK) == GARBAGE &&
+               MEM_R32(CLOCK + 4u) == GARBAGE,
+           "sceKernelUSec2SysClock refuses a null output pointer and writes nothing (pins current behaviour)");
+
+    /* #1816: argument reads checked against the public signatures. sceUmdGetErrorStat(void)
+     * reads no argument; sceDisplaySetMode(int mode, int width, int height) reads a0-a2 and
+     * ignores a3. Neither handler reads a register beyond its signature, so no fix is needed
+     * and these checks pin current behaviour. */
+    expect(sr_hle_test_is_registered(0x20628e6fu) && sr_hle_test_is_registered(0x0e20f177u),
+           "sceUmdGetErrorStat and sceDisplaySetMode have a production registration");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x20628e6fu) == 0u,
+           "sceUmdGetErrorStat reports no drive error while the disc is present and active (pins current behaviour)");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, 0xe83742bau) == 0u, "sceUmdDeactivate returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cpu.r[5] = cpu.r[6] = cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x20628e6fu) == 0u,
+           "sceUmdGetErrorStat still reports no drive error with the disc present but deactivated (pins current behaviour)");
+    sr_hle_test_umd_reset();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 480u;
+    cpu.r[6] = 272u;
+    cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x0e20f177u) == 0u,
+           "sceDisplaySetMode (mode 0, 480x272) returns SCE_DISPLAY_SET_MODE_SUCCESS (pins current behaviour)");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GARBAGE;
+    cpu.r[5] = GARBAGE;
+    cpu.r[6] = GARBAGE;
+    cpu.r[7] = GARBAGE;
+    expect(sr_syscall(&cpu, 0x0e20f177u) == 0u,
+           "sceDisplaySetMode accepts any mode and size and still returns 0 (pins current behaviour)");
 }
 
 static void test_psp_measured_cpu_clock_user_mode_20261024(void) {
@@ -25853,6 +25957,26 @@ static void test_dmac_hardware_semantics(uint32_t nid, const char *who) {
      * never happened. */
     expect(s_gpu_dirty_calls == 0u,
            "no rejected DMA request issues a GPU dirty notification");
+
+    /* PSP-MEMEDGE-001: the last 256 bytes of VRAM as a source with the request running 4
+     * bytes (and 0x1000) past the end into the 0x04200000 mirror returned 0 and copied the
+     * whole request on a PSP-3000, for both APIs. The first 256 bytes are the VRAM bytes. */
+    {
+        static const uint32_t over[] = {4u, 0x1000u};
+        for (size_t i = 0; i < sizeof(over) / sizeof(over[0]); i++) {
+            dmac_fill(0x041fff00u, 256u);
+            dmac_clear(dst, 0x1200u, 0xa5u);
+            expect(bulk_call(nid, dst, 0x041fff00u, 256u + over[i]) == 0u,
+                   "PSP: a VRAM source running past the end of VRAM returns success");
+            expect(dmac_span_matches(dst, 256u, 0u),
+                   "PSP: a VRAM source running past the end of VRAM copies its VRAM bytes");
+            expect(!dmac_span_is(dst + 256u, 4u, 0xa5u),
+                   "PSP: a VRAM source running past the end of VRAM copies the bytes past it");
+            expect(dmac_span_is(dst + 256u + over[i], 4u, 0xa5u),
+                   "PSP: a VRAM source running past the end copies no more than requested");
+        }
+        gpu_dirty_reset();
+    }
 
     /* Exactly-to-the-end must still be accepted: the bound is the real arena
      * end, not a conservative margin that would reject legal transfers. */
@@ -43439,6 +43563,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_umd_unregister_callback();
     test_umd_replace_permission_and_disc_info();
     test_psp_measured_power_battery_20261024();
+    test_pinned_handlers_1814_1815_1816();
     test_psp_measured_cpu_clock_user_mode_20261024();
     test_psp_measured_rtc_time64_20261024();
     test_power_set_bus_clock_frequency_autotest();
