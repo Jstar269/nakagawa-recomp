@@ -211,13 +211,16 @@ class LoweringTests(unittest.TestCase):
             self.lower(program(JR_RA, NOP))
 
     def test_hst_emission_sites_cover_every_hst_address_in_emit_function(self):
-        # Every `hst_profile and ... addr == <literal>` site in emit_function emits
-        # something other than the plain word; the LLVM backend must refuse each one.
+        # Every `hst_profile and ... addr == <literal>` site in emit_function or
+        # one of the `_emit_*` steps it was split into (#1531) emits something
+        # other than the plain word; the LLVM backend must refuse each one.
         tree = ast.parse((ROOT / "tools" / "codegen.py").read_text(encoding="utf-8"))
-        emit = next(n for n in ast.walk(tree)
-                    if isinstance(n, ast.FunctionDef) and n.name == "emit_function")
+        emitters = [n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef)
+                    and (n.name == "emit_function" or n.name.startswith("_emit_"))]
+        self.assertIn("_emit_hst_patch_site", {n.name for n in emitters})
         literals = set()
-        for node in ast.walk(emit):
+        for node in (n for emit in emitters for n in ast.walk(emit)):
             if not isinstance(node, ast.If):
                 continue
             names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
