@@ -144,6 +144,8 @@ struct PlayerUiNk {
     size_t reset_folder_count;
     bool reset_folders_ready;
     char update_folder[NK_MAX_PATH];
+    char report_path[NK_MAX_PATH];
+    char report_lines[PLAYER_UI_REPORT_LINES][112];
     char update_notice[96];
     char pad_bindings[PLAYER_UI_CONTROLLER_CONTROLS][128];
     InputBindingGlyph pad_glyphs[PLAYER_UI_CONTROLLER_CONTROLS];
@@ -436,7 +438,7 @@ static bool player_ui_settings_view(PlayerView view) {
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
            view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS || view == VIEW_UPDATES ||
            view == VIEW_CONFIRM_FACTORY_RESET || view == VIEW_ACCESSIBILITY_SETTINGS ||
-           view == VIEW_ACE_SETTINGS;
+           view == VIEW_ACE_SETTINGS || view == VIEW_PROBLEM_REPORT;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -773,6 +775,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
         case VIEW_UPDATES: model.page = PLAYER_UI_SETTINGS_PAGE_UPDATES; break;
+        case VIEW_PROBLEM_REPORT: model.page = PLAYER_UI_SETTINGS_PAGE_PROBLEM_REPORT; break;
         case VIEW_CONFIRM_FACTORY_RESET:
             model.page = PLAYER_UI_SETTINGS_PAGE_FACTORY_RESET;
             if (!player->reset_folders_ready) {
@@ -924,6 +927,22 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         model.update_folder = player->update_folder;
         model.update_error_title = update->error.title;
         model.update_error_message = update->error.message;
+    }
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_PROBLEM_REPORT) {
+        const PlayerReportState *report = &app->report;
+        model.report_step = (PlayerUiReportStep)report->phase;
+        model.report_command = report->command;
+        model.report_message = report->message;
+        snprintf(player->report_path, sizeof(player->report_path), "%s", report->path);
+        player_ui_display_in_place(player->report_path, sizeof(player->report_path));
+        model.report_path = player->report_path;
+        for (int i = 0; i < report->file_count && (unsigned)i < PLAYER_UI_REPORT_LINES; ++i) {
+            unsigned long long bytes = report->file_bytes[i];
+            snprintf(player->report_lines[i], sizeof(player->report_lines[i]), "%s  (%llu %s)",
+                     report->file_names[i], bytes >= 1024u ? (bytes + 1023u) / 1024u : bytes,
+                     bytes >= 1024u ? "KB" : "bytes");
+            model.report_lines[model.report_line_count++] = player->report_lines[i];
+        }
     }
     model.logical_width = scale.logical_w;
     model.logical_height = scale.logical_h;
@@ -1311,6 +1330,7 @@ static unsigned player_ui_flow_screen(const PlayerApp *app) {
                                      : CALIBRATION_STAGE_INACTIVE);
             break;
         case VIEW_UPDATES: screen += (unsigned)app->update.phase; break;
+        case VIEW_PROBLEM_REPORT: screen += (unsigned)app->report.phase; break;
         default: break;
     }
     return screen;
@@ -1354,6 +1374,8 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                         ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
                     : player->last_view == VIEW_PSP_FONTS ? PLAYER_UI_ID_SETTINGS_FONTS
                     : player->last_view == VIEW_UPDATES ? PLAYER_UI_ID_SETTINGS_UPDATES
+                    : player->last_view == VIEW_PROBLEM_REPORT
+                        ? PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT
                     : player->last_view == VIEW_CONFIRM_FACTORY_RESET
                         ? PLAYER_UI_ID_SETTINGS_FACTORY_RESET
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
@@ -1397,6 +1419,10 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                     case PLAYER_UPDATE_INSTALLING: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
                     default: focus = PLAYER_UI_ID_UPDATE_CHECK; break;
                 }
+                break;
+            case VIEW_PROBLEM_REPORT:
+                focus = app->report.phase == PLAYER_REPORT_PREVIEWED
+                    ? PLAYER_UI_ID_REPORT_CREATE : PLAYER_UI_ID_SETTINGS_BACK;
                 break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_ACCESSIBILITY_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_INTERFACE_SIZE; break;

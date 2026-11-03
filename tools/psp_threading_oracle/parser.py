@@ -64,7 +64,8 @@ MATRIX_PATH = pathlib.Path(__file__).resolve().parents[2] / "fixtures" / "psp_th
 
 def load_matrix(path: pathlib.Path | None = None) -> dict[str, Any]:
     p = path or MATRIX_PATH
-    return json.loads(p.read_text(encoding="utf-8"))
+    returned: dict[str, Any] = json.loads(p.read_text(encoding="utf-8"))
+    return returned
 
 def expected_case_ids(matrix: dict[str, Any] | None = None) -> set[str]:
     m = matrix or load_matrix()

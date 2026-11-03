@@ -144,6 +144,8 @@ def _link_outputs(commands: list[str]) -> set[str]:
 
 
 class NativeCoreTestsContractTests(unittest.TestCase):
+    commands: list[str]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.commands = _dry_run("native-core-tests")
