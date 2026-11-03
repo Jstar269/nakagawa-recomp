@@ -162,12 +162,12 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
     ),
     Mutant(
-        "entry-sp-owed-at-sibcall",
-        "an interpreted body that hands its live frame to a native piece is made to "
-        "restore the entry $sp first (#1935)",
+        "entry-sp-not-owed-at-a-linked-call",
+        "an interpreted body called by a linked call hands its live frame to a native "
+        "piece and owes its caller nothing (#1935)",
         [(
-            "    const int owes_entry_sp = boundary == NULL || boundary->owes_entry_sp;\n",
-            "    const int owes_entry_sp = boundary != NULL && boundary->owes_entry_sp;\n",
+            "            const int owes = boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&\n",
+            "            const int owes = 0 && boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&\n",
             1,
         )],
     ),

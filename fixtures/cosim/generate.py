@@ -1245,9 +1245,9 @@ def _cell_xsibmid() -> list[int]:
     Omitted in lane MIXED, so the production interpreter runs it. It lowers
     $sp, saves $fp, sets $fp to the live frame and then `j`-transfers to a
     registered piece WITHOUT freeing the frame. The piece is entered at this
-    body's lowered $sp and returns at it, so this body owes its entry $sp once
-    the chain completes: entered by the `xsibtail` sibcall, which records no
-    restore at its own entry $sp, as much as by the `xsibcall` linked call.
+    body's lowered $sp and returns at it, so the $sp this body was entered at
+    must come back once the chain completes: from the `xsibtail` sibcall's
+    record, or from this body's run when the `xsibcall` linked call enters it.
     """
     return [
         _i(0x09, SP, SP, -0x20),            # 0x00 addiu sp, sp, -0x20
@@ -1279,7 +1279,6 @@ def _cell_xsibtail() -> list[int]:
 
     It goes through a register, as `xtail` does: a `j` names its target's native
     body in the tail record, so lane MIXED's runtime omission would not reach it.
-    At the entry $sp the record owes no restore either way.
     """
     return [
         _i(0x09, ZERO, V0, 4),              # 0x00 addiu v0, zero, 4

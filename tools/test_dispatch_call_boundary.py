@@ -641,12 +641,20 @@ def _call_into_a_live_frame_tail() -> tuple[int, ...]:
     return words
 
 
-def _native_head_into_an_alloca_tail_end(*, crossing: str) -> tuple[int, ...]:
+_S0 = 16
+# 94c278ec9's rule: a transfer that leaves $sp at the recording body's entry owes no restore.
+_SIBCALL_RECORDS_NOTHING = {"recomp.h": (
+    "    sr_tail_transfer.has_restore = owes_restore ? 1u : 0u;",
+    "    sr_tail_transfer.has_restore = (owes_restore && s->r[29] != restore_sp) ? 1u : 0u;")}
+
+
+def _native_head_into_an_alloca_tail_end(*, crossing: str, frame: int = _FP) -> tuple[int, ...]:
     """H reaches F of _alloca_tail_end by a sibcall ("tail") or a linked call ("call").
 
-    With F interpreted, F hands its live frame to TAIL, a native entry entered at F's
-    lowered $sp, whose own return writes that $sp back. A sibcall at H's entry $sp records
-    no restore of H's, so F's own entry $sp must come back from F, in either tier.
+    F hands its live frame to TAIL, a native entry entered at F's lowered $sp, whose own
+    return writes that $sp back. Through $s0 (`frame`) F's alloca free is a $sp load the
+    frame walk does not own, so every exit of F is the guest's and F records nothing.
+    Either way the record of the body that entered F must give H's caller its $sp back.
     """
     head = {
         "tail": [_j(0), _NOP],
@@ -660,16 +668,40 @@ def _native_head_into_an_alloca_tail_end(*, crossing: str) -> tuple[int, ...]:
     words = _probe_program([
         *head,                                               # 0x1010 H
         _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # F
-        _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),
-        _sw(_SP, 0x10, _FP), _addiu(_SP, _SP, -0x30),        # save $sp, alloca
+        _sw(frame, 0x18, _SP), _addu(frame, _SP, 0),
+        _sw(_SP, 0x10, frame), _addiu(_SP, _SP, -0x30),      # save $sp, alloca
         _addiu(_V0, 0, 0x57),
-        _j(tail), _lw(_SP, 0x10, _FP),                       # free it in the slot
-        _addu(_SP, _FP, 0),                                  # TAIL
-        _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
+        _j(tail), _lw(_SP, 0x10, frame),                     # free it in the slot
+        _addu(_SP, frame, 0),                                # TAIL
+        _lw(_RA, 0x1C, _SP), _lw(frame, 0x18, _SP),
         _jr(_RA), _addiu(_SP, _SP, 0x20),
         _jal(tail), _NOP, _jal(f), _NOP,                     # both are entries
     ])
     assert len(words) == (tail + 0x24 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+def _a_piece_that_releases_a_guest_bodys_frame() -> tuple[int, ...]:
+    """F, a guest-$sp body, hands its live frame to the piece P by a computed TAIL.
+
+    F reloads $sp through a copy, so its only exit is the guest's and it records nothing.
+    P releases F's frame in the slot of a sibcall to the leaf N. P was entered at F's
+    lowered $sp; once the chain completes, $sp must be the released one, F's entry $sp.
+    """
+    piece, leaf = 0x1030, 0x103C
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
+        _sw(_SP, 0x10, _SP), _addu(_T8, _SP, 0),
+        _lw(_SP, 0x10, _T8),                                 # a $sp load the walk does not own
+        _addiu(_T9, 0, piece),
+        _jr(_T9), _NOP,                                      # computed TAIL to P
+        _lw(_RA, 0x1C, _SP),                                 # 0x1030 P
+        _j(leaf), _addiu(_SP, _SP, 0x20),                    # release F's frame in the slot
+        _addiu(_V0, 0, 0x58),                                # 0x103C N
+        _jr(_RA), _NOP,
+        _jal(piece), _NOP, _jal(leaf), _NOP,                 # both are entries
+    ])
+    assert len(words) == (leaf + 0x1C - _PROBE_BASE) // 4, "the fixture's labels moved"
     return words
 
 
@@ -1503,9 +1535,9 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
 
     def test_a_native_head_into_an_interpreted_body_keeps_its_callers_sp(self):
-        # Before: an interpreted body entered by a TAIL owed nothing, and H's sibcall at its
-        # entry $sp records nothing (sr_tail_record), so TAIL's lowered entry $sp reached H's
-        # caller. A linked call into the interpreter owed its entry $sp already.
+        # 94c278ec9 recorded nothing at a sibcall made at the entry $sp, and an interpreted
+        # body entered by a TAIL owes nothing, so TAIL's lowered entry $sp reached H's caller.
+        # A linked call into the interpreter owes its entry $sp.
         for crossing in ("tail", "call"):
             words = _native_head_into_an_alloca_tail_end(crossing=crossing)
             f = 0x1010 + (8 if crossing == "tail" else 0x1C)
@@ -1516,15 +1548,59 @@ class GeneratedCallDepthTests(unittest.TestCase):
                     self.assertEqual(rc, 0, output)
                     self.assertEqual(fields.get("v0"), 0x57, output)
                     self.assertEqual(fields.get("v1"), _PROBE_SP, output)
-        # I3: a run entered by a TAIL owes nothing again.
+        # A1: a transfer at the entry $sp records nothing, as on 94c278ec9.
         self._assert_mutant_fails(
-            "I3-tail-entered-interpreter-owes-nothing",
+            "A1-a-sibcall-at-the-entry-sp-records-nothing",
             _native_head_into_an_alloca_tail_end(crossing="tail"), (0,),
-            {"guest_interp.c": (
-                "    const int owes_entry_sp = boundary == NULL || boundary->owes_entry_sp;",
-                "    const int owes_entry_sp = boundary != NULL && boundary->owes_entry_sp;")},
+            _SIBCALL_RECORDS_NOTHING,
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
             codegen_args=("--omit-aot=0x00001018",),
+        )
+
+    def test_a_sibcall_into_a_guest_sp_body_keeps_the_callers_sp(self):
+        # F frees its alloca through $s0, so it records nothing. On 9832da426 H's sibcall
+        # at its entry $sp recorded nothing either, and natively TAIL's lowered entry $sp
+        # reached H's caller (v1=0x09efffe0); interpreted, F owed it. By a linked call F
+        # interpreted owes its caller's $sp; BASE_SHA lost it there as well. Native F, by a
+        # linked call, is the open limit (#1935): its callee owns the restore, F has none.
+        for crossing in ("tail", "call"):
+            words = _native_head_into_an_alloca_tail_end(crossing=crossing, frame=_S0)
+            f = 0x1010 + (8 if crossing == "tail" else 0x1C)
+            tiers = ((), (f"--omit-aot=0x{f:08x}",)) if crossing == "tail" else (
+                (f"--omit-aot=0x{f:08x}",),)
+            for codegen_args in tiers:
+                with self.subTest(crossing=crossing, interpreted=bool(codegen_args)):
+                    _generated, results = self._probe(words, (0,), codegen_args=codegen_args)
+                    rc, output, fields = results[0]
+                    self.assertEqual(rc, 0, output)
+                    self.assertEqual(fields.get("v0"), 0x57, output)
+                    self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self._assert_mutant_fails(
+            "A1-a-sibcall-at-the-entry-sp-records-nothing",
+            _native_head_into_an_alloca_tail_end(crossing="tail", frame=_S0), (0,),
+            _SIBCALL_RECORDS_NOTHING,
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+        )
+
+    def test_a_piece_that_releases_its_frame_keeps_the_released_sp(self):
+        # P records its lowered entry $sp, and the chain ends above it at F's entry $sp.
+        # Before (BASE_SHA, 9832da426): natively the drain lowered $sp to P's record. On
+        # 9832da426, interpreted, P's run owed the $sp it started at and wrote it back.
+        for codegen_args in ((), ("--omit-aot=0x00001030",)):
+            with self.subTest(interpreted=bool(codegen_args)):
+                _generated, results = self._probe(
+                    _a_piece_that_releases_a_guest_bodys_frame(), (0,), codegen_args=codegen_args)
+                rc, output, fields = results[0]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x58, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        # R1 again: the drain lowers $sp to its restore.
+        self._assert_mutant_fails(
+            "R1-the-drain-lowers-sp", _a_piece_that_releases_a_guest_bodys_frame(), (0,),
+            {"guest_interp.c": (
+                "    if (chain_restores && s->r[29] < chain_sp) s->r[29] = chain_sp;",
+                "    if (chain_restores) s->r[29] = chain_sp;")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
         )
 
     def test_a_call_site_drains_before_the_caller_goes_on(self):
@@ -1721,10 +1797,11 @@ class GeneratedCallDepthTests(unittest.TestCase):
 
     def test_a_tail_call_into_longjmp_from_a_released_frame_keeps_the_longjmp(self):
         # H releases its frame and tail-calls longjmp, after freeing an alloca or with a
-        # plain frame. A restore recorded at that transfer would run after longjmp loaded
-        # its $sp. Before (#1935): the plain H recorded one, and the run stopped.
-        released_tail_records = {"recomp.h": (
-            "(owes_restore && s->r[29] != restore_sp) ? 1u : 0u", "owes_restore ? 1u : 0u")}
+        # plain frame. The plain H records its entry $sp, and longjmp ends the chain above
+        # it. Before (#1935): the drain lowered $sp to that record, and the run stopped.
+        released_tail_records = {"guest_interp.c": (
+            "    if (chain_restores && s->r[29] < chain_sp) s->r[29] = chain_sp;",
+            "    if (chain_restores) s->r[29] = chain_sp;")}
         for name, words in (
                 ("alloca", _longjmp_into_live_frame(tail_called_from_alloca=True)),
                 ("plain", _longjmp_into_live_frame(tail_called_plainly=True))):
@@ -1734,9 +1811,9 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 self.assertEqual(rc, 0, output)
                 self.assertEqual(fields.get("v0"), 0x107, output)
                 self.assertEqual(fields.get("v1"), _PROBE_SP, output)
-        # R1: a transfer at the entry $sp still owes the restore.
+        # R1: the drain lowers $sp to its restore too.
         self._assert_mutant_fails(
-            "R1-released-tail-still-records", _longjmp_into_live_frame(tail_called_plainly=True),
+            "R1-the-drain-lowers-sp", _longjmp_into_live_frame(tail_called_plainly=True),
             (0,), released_tail_records,
             lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107
             or r[0][2].get("v1") != _PROBE_SP,
@@ -1806,7 +1883,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self._assert_mutant_fails(
             "I2-an-alloca-free-leaves-the-frame", _alloca_tail_end(), (0,),
             {"guest_interp.c": (
-                "    return after < before || after >= entry_sp;",
+                "    return boundary == NULL || after < before || after >= boundary->entry_sp;",
                 "    return 1;")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
             codegen_args=interpreted_f,

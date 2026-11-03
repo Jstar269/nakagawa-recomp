@@ -1005,17 +1005,25 @@ static const CosimKnownDefect SPLEAK_DEFECT = {
  * stopped diverging, and stayed red until the claim was removed. `xcall` is now an
  * ordinary PASS and any regression is an ordinary failure. */
 
-/* The cases whose native lane the stack census declares, as it declares `spleak` (#1935):
- * `xsibmid` hands its live frame to `xsibpiece`, which returns at the lowered $sp it was
- * entered at, so in guest terms the native `xsibmid` body comes back 0x20 low. Its tail
- * record gives the caller back its entry $sp; under the census that restore is the
- * wrapper's, after it has recorded the guest's value. Each case adds exactly one mismatch:
- * the native `xsibmid` entry of lane AOT. Lane MIXED interprets `xsibmid`, unwrapped. */
-static const char *const CENSUS_DECLARED_CASES[] = { "xsibtail", "xsibcall", NULL };
+/* The cases the stack census declares, as it declares `spleak` (#1935). `xsibmid` hands
+ * its live frame to `xsibpiece`, which returns at the lowered $sp it was entered at, so in
+ * guest terms the chain from `xsibmid` comes back 0x20 low. Outside the census the tail
+ * record of the body that entered `xsibmid` gives that $sp back; under the census records
+ * carry no restore and each wrapper restores after it has recorded the guest's value. So
+ * the census counts, in lane AOT, the native `xsibmid` of both cases and, in lane MIXED,
+ * the native `xsibtail` that sibcalls the interpreted `xsibmid`. A linked call into the
+ * interpreter owes its entry $sp in both builds, so `xsibcall` balances in lane MIXED. */
+static const struct {
+    const char *name;
+    uint64_t mismatches;
+} CENSUS_DECLARED_CASES[] = { { "xsibtail", 2u }, { "xsibcall", 1u }, { NULL, 0u } };
 
-static int census_declared_case(const char *name) {
-    for (unsigned i = 0; CENSUS_DECLARED_CASES[i] != NULL; i++) {
-        if (strcmp(name, CENSUS_DECLARED_CASES[i]) == 0) return 1;
+static int census_declared_case(const char *name, uint64_t *mismatches) {
+    for (unsigned i = 0; CENSUS_DECLARED_CASES[i].name != NULL; i++) {
+        if (strcmp(name, CENSUS_DECLARED_CASES[i].name) == 0) {
+            *mismatches = CENSUS_DECLARED_CASES[i].mismatches;
+            return 1;
+        }
     }
     return 0;
 }
@@ -2209,16 +2217,17 @@ int main(int argc, char **argv) {
         run_case(&g_cases[i], argv[3]);
         executed++;
 #if defined(SR_STACK_CENSUS_ENABLED)
-        if (census_declared_case(g_cases[i].name)) {
+        uint64_t declared = 0u;
+        if (census_declared_case(g_cases[i].name, &declared)) {
             SrStackCensusSummary census_after;
             sr_stack_census_snapshot(&census_after);
             const uint64_t added = census_after.mismatches - census_before.mismatches;
             declared_census_mismatches += added;
-            if (added != 1u) {
+            if (added != declared) {
                 char detail[160];
                 snprintf(detail, sizeof detail,
                          "stack census: declared case added %" PRIu64
-                         " mismatches, expected 1", added);
+                         " mismatches, expected %" PRIu64, added, declared);
                 report_fail(&g_cases[i], detail);
             }
         }
