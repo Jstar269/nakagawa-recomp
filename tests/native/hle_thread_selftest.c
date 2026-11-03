@@ -331,6 +331,7 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_KERNEL_LOAD_EXEC 0xbd2f1094u
 #define NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE 0xd675ebb8u
 #define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI 0x40f1469cu
+#define NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB 0x77ed8b3au
 #define NID_SCE_REG_CLOSE_CATEGORY 0x0cae832bu
 #define NID_SCE_REG_OPEN_CATEGORY 0x1d8a762eu
 #define NID_SCE_REG_OPEN_REGISTRY 0x92e41280u
@@ -382,6 +383,9 @@ static uint32_t vblank_delivered(uint32_t no, uint32_t *arg) {
 #define NID_SCE_AUDIO_SRC_CH_RESERVE 0x38553111u
 #define NID_SCE_AUDIO_SRC_CH_RELEASE 0x5c37c0aeu
 #define NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING 0xe0727056u
+#define NID_SCE_VAUDIO_CH_RESERVE 0x03b6807du
+#define NID_SCE_VAUDIO_CH_RELEASE 0x67585dfdu
+#define NID_SCE_VAUDIO_OUTPUT_BLOCKING 0x8986295eu
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
@@ -7090,7 +7094,6 @@ static void test_unregistered_batch_refusals(void) {
         const char *name;
     } refused[] = {
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
-        {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
         {0x72189c48u, 0x80010086u, "sceImposeSetUMDPopup"},
         {0x8c943191u, 0x80010086u, "sceImposeGetBatteryIconStatus"},
         {0x0bf0a3aeu, 0x80010086u, "sceNetGetLocalEtherAddr"},
@@ -10538,6 +10541,91 @@ static void test_audio_src_matches_the_measured_contract(void) {
            "an unmodelled rate is refused, and nothing is reserved");
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
            "the refused reserve left the slot free");
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+}
+
+/* sceVaudioChReserve / sceVaudioOutputBlocking / sceVaudioChRelease (#286). A title's own PSMF
+ * player route reserved Vaudio with (1152, 44100, 2) and stopped there while the NIDs had no
+ * handler. Vaudio plays through the SRC slot; the sample-count set, the format and the second-
+ * reserve word follow the public behaviour reference named at h_VaudioChReserve and are
+ * unmeasured. */
+static void test_vaudio_plays_through_the_src_slot(void) {
+    enum { VA_BUF = 0x08a00000u };   /* 1152 stereo frames: 4608 bytes inside the arena */
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    expect(sr_hle_test_is_registered(NID_SCE_VAUDIO_CH_RESERVE) &&
+           sr_hle_test_is_registered(NID_SCE_VAUDIO_CH_RELEASE) &&
+           sr_hle_test_is_registered(NID_SCE_VAUDIO_OUTPUT_BLOCKING),
+           "the three Vaudio NIDs have production registrations");
+
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "Vaudio release with nothing reserved returns 0x80260008");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) ==
+               0x80260008u,
+           "Vaudio output with nothing reserved returns 0x80260008");
+
+    /* The title's reservation, a blocking output, and the release. */
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1152u, 44100u, 2u) == 0u,
+           "Vaudio reserves 1152 samples at 44100 Hz, format 2");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1152u, 44100u, 2u) == 0x80000021u,
+           "a second Vaudio reserve returns 0x80000021");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0x80268002u,
+           "SRC reserve while Vaudio holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 512u, 0u, 0u) == 0x80268002u,
+           "Output2 reserve while Vaudio holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u &&
+               audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) ==
+                   0x80260008u,
+           "the SRC release and output do not act on a Vaudio reservation");
+    expect(s_audio_push_calls == 0u, "nothing reached the mixer through the other API");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8001u, VA_BUF, 0u) ==
+               0x8026000bu,
+           "a Vaudio volume above 0x8000 returns 0x8026000b");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_OUTPUT_BLOCKING, 0x8000u, VA_BUF, 0u) == 1152u,
+           "Vaudio output returns the reserved sample count");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames == 1152,
+           "the 44100 Hz block reaches the mixer once, with all 1152 frames");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "Vaudio release after the output returns 0");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "a second Vaudio release returns 0x80260008");
+
+    /* A Vaudio release does not free an SRC reservation, and Vaudio cannot reserve over it. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0u,
+           "SRC reserves for the cross-API check");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, 1024u, 44100u, 2u) == 0x80268002u,
+           "Vaudio reserve while SRC holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "a Vaudio release does not free an SRC reservation");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "the SRC reservation survived and now releases");
+
+    /* The reserve shapes, each released at once when accepted. */
+    static const struct {
+        uint32_t samples, freq, format, want;
+    } shapes[] = {
+        {256u,  44100u, 2u, 0u},
+        {576u,  44100u, 2u, 0u},
+        {1024u, 48000u, 2u, 0u},            /* the SRC converter's other rate */
+        {2048u, 0u,     2u, 0u},            /* rate 0: taken as 44100 Hz */
+        {1000u, 44100u, 2u, 0x80000104u},   /* not one of the five sample counts */
+        {0u,    44100u, 2u, 0x80000104u},
+        {1152u, 44100u, 0u, 0x80000108u},   /* format 0 */
+        {1152u, 44100u, 1u, 0x80000108u},   /* format 1 */
+        {1152u, 22050u, 2u, 0x80000003u},   /* a rate the SRC converter does not model */
+    };
+    for (unsigned i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) {
+        const uint32_t got = audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RESERVE, shapes[i].samples,
+                                            shapes[i].freq, shapes[i].format);
+        expect(got == shapes[i].want, "Vaudio reserve shape returns the modelled word");
+        expect(audio_dispatch(&cpu, NID_SCE_VAUDIO_CH_RELEASE, 0u, 0u, 0u) ==
+                   (got == 0u ? 0u : 0x80260008u),
+               "an accepted shape releases at once, and a refused one reserved nothing");
+    }
     sr_hle_test_audio_reset();
     audio_fixture_reset();
 }
@@ -35113,7 +35201,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_msgpipe_parks;
         extern int s_vm_parks;
         extern int s_ctrlc_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
+        int expected_parks = 1 /* MultiCB waiter */ + 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + 3 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks + s_ctrlc_parks;
         char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -38346,9 +38434,65 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     cpu.r[4] = uid_a;
     expect(sr_syscall(&cpu, 0x2e0911aau) == 0x80020002u,
            "lifecycle: unload refuses while a module thread is ready to execute its image");
+    /* A thread inside a call goes on at $ra; its pc still shows its last slice's end, and that
+     * can be the image it has left, as for a title that deletes its player and unloads the
+     * module from its own code (#286). A thread that left at a yield resumes at its pc. */
+    uint32_t in_a = LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1;
+    active_module_thread->pc_stale = 1;
+    active_module_thread->saved.r[31] = 0x08900000u;
+    expect(!sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a ready thread parked in a call is not held to its stale pc");
+    active_module_thread->saved.r[31] = in_a;
+    expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a ready thread parked in a call still returns into the image at $ra");
     active_module_thread->state = TH_DORMANT;
     active_module_thread->deleted = 1;
     active_module_thread->entry = 0u;
+
+    TCB *unloader = fixture_thread(0x6f1u, TH_RUNNING, 20);
+    unloader->started = 1;
+    int cur_before_unloader = s_cur;
+    s_cur = (int)(unloader - s_tcb);
+    CpuState cpu_before_unloader = *s_cpu;
+    s_cpu->pc = in_a;
+    s_cpu->r[31] = 0x08900000u;
+    expect(!sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: the unload's own caller is not held to its stale pc");
+    s_cpu->r[31] = in_a;
+    expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+           "lifecycle: a caller inside the image is still a continuation");
+    *s_cpu = cpu_before_unloader;
+
+    /* A thread that exited from inside a call keeps that mark while dormant. Started again
+     * through sceKernelStartThread, it re-enters at its entry, and an entry inside the image is
+     * a continuation into it: the restart must not leave the old mark hiding that pc. */
+    uint32_t restart_uid = sched_create_thread(in_a, 30, 0x2000u);
+    TCB *restarted = tcb_by_uid(restart_uid);
+    expect(restart_uid != 0u && restarted != NULL,
+           "lifecycle: a thread whose entry is in the image is created");
+    if (restarted) {
+        restarted->started = 1;   /* as the scheduler leaves a thread that ran and exited */
+        restarted->state = TH_DORMANT;
+        restarted->pc_stale = 1;
+        s_cpu->r[4] = restart_uid;
+        s_cpu->r[5] = 0u;
+        s_cpu->r[6] = 0u;
+        expect(sr_syscall(s_cpu, NID_SCE_KERNEL_START_THREAD) == 0u,
+               "lifecycle: sceKernelStartThread restarts the exited thread");
+        *s_cpu = cpu_before_unloader;
+        expect(restarted->state == TH_READY && restarted->saved.pc == in_a &&
+                   restarted->saved.r[31] == 0u,
+               "lifecycle: the restarted thread is ready at its entry with no return address");
+        expect(sched_module_range_busy(in_a, in_a + 4u, 0u),
+               "lifecycle: a restarted thread whose entry is in the image keeps unload refused");
+        restarted->state = TH_DORMANT;
+        restarted->deleted = 1;
+        restarted->entry = 0u;
+    }
+    s_cur = cur_before_unloader;
+    unloader->state = TH_DORMANT;
+    unloader->deleted = 1;
+    unloader->entry = 0u;
 
     /* ---- unload A: retire exactly its own state ---- */
     unsigned images_before = sr_hle_test_image_count();
@@ -40987,6 +41131,73 @@ static void test_issue339_callback_wait_dispatch(void) {
     s_oracle_mode = saved_oracle_mode;
 }
 
+/* The CB form of the multi-period wait (#286): a title's own PSMF player route calls it once a
+ * frame, and a refusal returned at once left that thread spinning with no display wait at all.
+ * It refuses as the plain form does, services the caller's callbacks, and returns after the
+ * requested periods.
+ *
+ * MUTANT: register the NID as a refusal again -- every check here fails.
+ * MUTANT: stop after one period -- the waiter does not block for the second. */
+static void test_display_multi_cb_wait(void) {
+    int saved_oracle_mode = s_oracle_mode;
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+
+    reset_fixture();
+    sr_hle_init();
+    s_cur = -1;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB) == 0x800001feu,
+           "sceDisplayWaitVblankStartMultiCB rejects a zero period with INVALID_VALUE");
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB) == CNW_ERR,
+           "sceDisplayWaitVblankStartMultiCB refuses to report success without a current thread");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *owner = fixture_thread(0x77e0u, TH_RUNNING, 32);
+    owner->started = 1;
+    TCB *waiter = fixture_thread(0x77e1u, TH_READY, 40);
+    waiter->started = 1;
+    SelftestVblankWaitCtx wait;
+    memset(&wait, 0, sizeof(wait));
+    wait.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI_CB;
+    wait.arg0 = 2u;
+    waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &wait, (size_t)4 << 20);
+    s_cur = (int)(waiter - s_tcb);
+    uint32_t callback_uid = issue339_create_pending_callback();
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(callback_uid != 0 && s_oracle_callback_calls == 1 && !wait.returned &&
+               waiter->state == TH_WAIT_OBJ && waiter->wait_obj == VBLANK_WAIT_OBJ &&
+               waiter->is_cb_wait,
+           "MultiCB services a callback then blocks on the first VBLANK period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(!wait.returned && waiter->state == TH_WAIT_OBJ &&
+               waiter->wait_obj == VBLANK_WAIT_OBJ && s_vbl_count == 1u,
+           "MultiCB waits again for its remaining period");
+
+    s_cur = (int)(owner - s_tcb);
+    deliver_vblank();
+    s_cur = (int)(waiter - s_tcb);
+    if (waiter->coro) sr_coro_switch(waiter->coro);
+    expect(wait.returned && wait.ret == 0u && s_vbl_count == 2u,
+           "MultiCB returns success after both periods");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = callback_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK) == 0,
+           "MultiCB callback unregisters cleanly");
+    if (waiter->coro) {
+        sr_coro_destroy(waiter->coro);
+        waiter->coro = NULL;
+    }
+    s_oracle_mode = saved_oracle_mode;
+}
+
 static void test_issue339_vblank_cb_wait_requires_a_current_thread(void) {
     reset_fixture();
     s_cur = -1;
@@ -41012,6 +41223,7 @@ static void test_issue339_wait_nids_production_dispatch(void) {
     test_issue339_terminate_waiting_thread();
     test_issue339_sysclock_delay_dispatch();
     test_issue339_callback_wait_dispatch();
+    test_display_multi_cb_wait();
     test_issue339_vblank_cb_wait_requires_a_current_thread();
 }
 
@@ -44715,6 +44927,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_audio_output2_release_refuses_while_queued();
     test_audio_resampler_quality_and_streaming();
     test_audio_src_matches_the_measured_contract();
+    test_vaudio_plays_through_the_src_slot();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
