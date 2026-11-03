@@ -2148,14 +2148,14 @@ static float tex_footprint_rho2(float du_dx, float dv_dx, float du_dy, float dv_
  *                   through mode): one level above the slope at w = 1 (s-s1-w1), one more per
  *                   doubling of w (s-s1-w2 .. s-s1-w8), and the texture size plays no part
  *                   (s-s1-w2-4x). log16(1/3) = -27 gives w = 3 level 2 + 11/16 (s-s1-w3).
- * Those cells draw with one footprint, or one w, per window. Where w varies across a
- * triangle (a-quad-w1to4, s-s1-w1to8) the PSP holds one level of detail per 4-pixel span of
- * a row, at a point that depends on the triangle, and the per-fragment value here differs
- * from it; that rule is not modelled. */
-static int tex_detail16(float rho2, float q) {
+ * `auto16` is the automatic mode's value before the bias; the caller computes it, since a
+ * triangle's differs from a sprite's or a line's (raster_tri_lod_span).
+ * Where w varies across a triangle (a-quad-w1to4, s-s1-w1to8) a triangle's fragment takes q,
+ * in both modes, from its span's reference pixel (raster_tri_lod_span). */
+static int tex_detail16(int auto16, float q) {
     int bias16 = (int)(ge.tex_lod_bias * 16.0f);
     switch (ge.tex_level_mode) {
-    case 0u: return ge_lod_log16(sqrtf(rho2)) + bias16;
+    case 0u: return auto16 + bias16;
     case 2u: return 16 + ge_lod_log16(ge.tex_lod_slope) - ge_lod_log16(q) + bias16;
     default: return bias16;
     }
@@ -2818,10 +2818,11 @@ static int color_test(int r, int g, int b) {
 }
 
 /* Compute final pixel colour from interpolated texcoord+colour+fog.
- * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point), `q` the fragment's
- * interpolated 1/w (1 in through mode).
+ * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point), `auto16` the
+ * automatic level of detail before the bias (tex_detail16), `q` the 1/w the level of detail
+ * reads (1 in through mode).
  * `fog` is fixed-point 0..256 (256 = no fog). Returns 0 if the alpha test rejects. */
-static int shade(float u, float fv, float rho2, float q, int fog,
+static int shade(float u, float fv, float rho2, int auto16, float q, int fog,
                  int vr, int vg, int vb, int va, int *or_, int *og, int *ob, int *oa) {
     int r, g, b, a;
     int dbg_ta = -1;
@@ -2837,7 +2838,7 @@ static int shade(float u, float fv, float rho2, float q, int fog,
         uint32_t level = 0u;
         int frac = 0, minifying = rho2 > 1.0f;
         if (ge_tex_mip_active(&ge)) {
-            int detail16 = tex_detail16(rho2, q);
+            int detail16 = tex_detail16(auto16, q);
             ge_tex_level_pick(detail16, ge.tex_filter, ge.tex_max_level, &level, &frac);
             minifying = detail16 > 0;
         }
@@ -3341,6 +3342,24 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     long long bias0 = (dy0 < 0 || (dy0 == 0 && dx0 > 0)) ? 0 : -1;
     long long bias1 = (dy1 < 0 || (dy1 == 0 && dx1 > 0)) ? 0 : -1;
     long long bias2 = (dy2 < 0 || (dy2 == 0 && dx2 > 0)) ? 0 : -1;
+    /* raster_tri_lod_span: the level of detail of a triangle (#1373), measured on a PSP-3000
+     * (PSP-GE-MIP-001: a-quad-w1to4, s-s1-w1to8 and the varying-w confirmation cells; the
+     * largest of all four components, not u along x and v along y only: a-quad-v16-w1to8,
+     * a-quad-v8-w1to8; two separate logarithms: a-quad-u48-w1to4). The GE
+     * holds one value per span of 4 pixels of a row (x & ~3) and triangle, read at the span's
+     * reference pixel: its second pixel, or its first covered pixel when that lies further
+     * right. The automatic mode is log16(rho) - log16(q), two quantised logarithms like the
+     * slope mode's, with rho the largest |screen gradient| of u * q and v * q (the planes the
+     * triangle interpolates, in level-0 texels) and q the 1/w at the reference pixel; the
+     * slope mode reads that q too. A per-fragment, perspective-correct footprint does not
+     * match those two cells. */
+    int lod_rho16 = 0;
+    if (textured) {
+        float su_dx = w0_dx * iu_ac + w1_dx * iu_bc, su_dy = w0_dy * iu_ac + w1_dy * iu_bc;
+        float sv_dx = w0_dx * iv_ac + w1_dx * iv_bc, sv_dy = w0_dy * iv_ac + w1_dy * iv_bc;
+        lod_rho16 = ge_lod_log16(fmaxf(fmaxf(fabsf(su_dx), fabsf(su_dy)),
+                                       fmaxf(fabsf(sv_dx), fabsf(sv_dy))));
+    }
     long long px0 = (long long)minx*16 + 8, py0 = (long long)miny*16 + 8;
     long long e0r = dx0*(py0-ay)  - dy0*(px0-ax);
     long long e1r = dx1*(py0-by)  - dy1*(px0-bx);
@@ -3348,8 +3367,13 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
 
     for (int y=miny; y<=maxy; y++, e0r+=dx0*16, e1r+=dx1*16, e2r+=dx2*16) {
         long long e0=e0r, e1=e1r, e2=e2r;
+        int span_x = -1, span_ref = 0;   /* raster_tri_lod_span, per row */
         for (int x=minx; x<=maxx; x++, e0-=dy0*16, e1-=dy1*16, e2-=dy2*16) {
             if ((e0+bias0) < 0 || (e1+bias1) < 0 || (e2+bias2) < 0) continue;
+            if ((x & ~3) != span_x) {
+                span_x = x & ~3;
+                span_ref = x > span_x + 1 ? x : span_x + 1;
+            }
             float w0f = (float)e1*inv, w1f = (float)e2*inv;
             AT_PIX(irw, rw); AT_PIX(iz, z); AT_PIX(ifog, fog);
             if (!zrange_ok(iz, persp)) { if (s_stat_on > 0) s_stat.zrange++; continue; }
@@ -3377,8 +3401,13 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             }
 
             float u = 0, fv = 0;
-            float rho2 = 0.0f;
+            float rho2 = 0.0f, lod_q = irw;
+            int auto16 = 0;
             if (textured) {
+                long long d = (long long)(span_ref - x);
+                float rw0 = (float)(e1 - dy1 * 16 * d) * inv, rw1 = (float)(e2 - dy2 * 16 * d) * inv;
+                lod_q = VC->rw + rw0 * irw_ac + rw1 * irw_bc;
+                auto16 = lod_rho16 - ge_lod_log16(lod_q);
                 AT_PIX(iu, u); AT_PIX(iv, v);
                 float iu_dx = w0_dx * iu_ac + w1_dx * iu_bc;
                 float iv_dx = w0_dx * iv_ac + w1_dx * iv_bc;
@@ -3405,7 +3434,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             int fog = use_fog ? (int)(clampf01(ifog) * 256.0f) : 256;
 
             int sr,sg,sb,sa;
-            if (!shade(u,fv,rho2,irw,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+            if (!shade(u,fv,rho2,auto16,lod_q,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
 
             /* SR_PIXWHO=x,y: log every triangle that writes the chosen pixel — identifies
              * which draw owns a misrendered region without guessing from geometry. */
@@ -3508,7 +3537,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         if (!zrange_ok(lz, persp)) { if (s_stat_on > 0) s_stat.zrange++; continue; }
         int fog = use_fog ? (int)(clampf01(A->fog+(B->fog-A->fog)*t)*256.0f) : 256;
         int sr,sg,sb,sa;
-        if (!shade(u,fv,rho2,lq,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+        if (!shade(u,fv,rho2,ge_lod_log16(sqrtf(rho2)),lq,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
         put_px_rgba_tested(x,y,clamp_z(lz),use_z,sr,sg,sb,sa);
     }
 }
@@ -3533,7 +3562,7 @@ static void draw_point_vtx(const Vtx *A, int persp) {
     int fog = (persp && ge.fog_enable && !ge.clear) ? (int)(clampf01(A->fog)*256.0f) : 256;
     s_in3d = persp;
     int sr,sg,sb,sa;
-    if (!shade(u,fv,0.0f,persp ? A->rw : 1.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
+    if (!shade(u,fv,0.0f,ge_lod_log16(0.0f),persp ? A->rw : 1.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
     int use_z = persp ? ge.ztest_enable : thru_ztest();
     put_px_rgba_tested((int)A->x,(int)A->y,clamp_z(A->z),use_z,sr,sg,sb,sa);
 }
@@ -4544,6 +4573,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     float u_start = u_left + 0.5f * u_dir;
     float v_start = v_top + 0.5f * v_dir;
     float rho2 = tex_footprint_rho2(u_dir, 0.0f, 0.0f, v_dir);
+    int spr_auto16 = ge_lod_log16(sqrtf(rho2));
     /* The slope mode's 1/w: 1 in through mode; a transform-mode sprite takes its second
      * vertex's, as it does for colour, depth and fog (unmeasured on a PSP). */
     float sq = persp ? p1->rw : 1.0f;
@@ -4572,7 +4602,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         for (int x = xa; x < xb; x++) {
             float u = u_start + (float)(x - xa) * u_dir;
             int r, g, b, a;
-            if (!shade(u, fv, rho2, sq, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
+            if (!shade(u, fv, rho2, spr_auto16, sq, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
             put_px_rgba_tested(x, y, pz, use_z, r, g, b, a);
         }
     }

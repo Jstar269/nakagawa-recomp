@@ -1194,6 +1194,10 @@ DMAC_INVALID_CASES = {
     },
 }
 
+# Block allocated, page geometry, refused page at the block's end: the one boundary a cell
+# can cross (bits 0-2; the begin-side refusal of the 2026-11-02 design is gone).
+DMAC_INVALID_SETUP_MASK = 0x7
+
 DMAC_INVALID_FIELDS = frozenset({
     "result", "rc", "P", "matches", "guards_outside", "post_guard",
     "overflow_band", "source_intact", "setup_mask", "K", "delta", "api",
@@ -1317,7 +1321,7 @@ def parse_dmac_invalid_tail_output(text: str, campaign_case: str):
             if values["delta"] != delta or delta not in DMAC_INVALID_DELTAS:
                 raise ProtocolError(f"{campaign_case}: {record.case_id} delta is outside the cell matrix")
         if record.status == "SKIP":
-            if values["executed"] != 0 or values["setup_mask"] == 0xF:
+            if values["executed"] != 0 or values["setup_mask"] == DMAC_INVALID_SETUP_MASK:
                 raise ProtocolError(f"{campaign_case}: {record.case_id} SKIP did not fail a setup gate")
             if values["cache_discipline"] != 0:
                 raise ProtocolError(f"{campaign_case}: {record.case_id} SKIP claims a transfer cache bracket")
@@ -1332,7 +1336,7 @@ def parse_dmac_invalid_tail_output(text: str, campaign_case: str):
                 raise ProtocolError(f"{campaign_case}: {record.case_id} SKIP contains transfer mutations")
             continue
 
-        if values["executed"] != 1 or values["setup_mask"] != 0xF:
+        if values["executed"] != 1 or values["setup_mask"] != DMAC_INVALID_SETUP_MASK:
             raise ProtocolError(f"{campaign_case}: {record.case_id} PASS lacks ownership proof")
         if values["cache_discipline"] != 1 or values["source_intact"] != 1:
             raise ProtocolError(f"{campaign_case}: {record.case_id} PASS lacks cache/source integrity")
@@ -2214,6 +2218,8 @@ GE_MIP_CELLS = (
     "al-u3v2", "a-4x-b1", "a-4x-bm1", "al-2x-b0f8", "a-quad-w2", "a-quad-w1to4", "s-s1-w1",
     "s-s1-w2", "s-s1-w3", "s-s1-w4", "s-s1-w8", "s-s1-wh", "s-s2-w1", "s-s2-w4", "s-sh-w8",
     "s-s1-w2-b1", "s-s1-w2-4x", "sn-s1-w3", "s-s1-w1to8", "s-spr-s4",
+    "a-quad-v16-w1to8", "a-quad-v16-w8to1", "a-quad-v8-w1to8", "a-quad-u48-w1to4",
+    "a-quad-w4to1", "an-quad-w1to4", "a-quad-w1to4-bm1f8", "s-s1-w8to1", "s-s3-w1to8",
 )
 GE_MIP_CASES = tuple(case for cell in GE_MIP_CELLS
                      for case in (f"{cell}-draw", *(f"{cell}-r{y}" for y in GE_RASTER_ROWS)))
