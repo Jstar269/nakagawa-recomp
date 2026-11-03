@@ -298,6 +298,57 @@ class TestImportNameSafety(unittest.TestCase):
             imports_tool.VariableExport("VarLib", 0xBBBB0002, 0x1320),
         ))
 
+    class FunctionExportImage:
+        """.lib.ent: the nameless lifecycle entry, then two libraries with `second` as the
+        NID and address of the function the second one exports beside its variable."""
+
+        def __init__(self, second):
+            self.mem = bytearray(0x400)
+            head = struct.pack("<IHHBBHI", 0, 0, 0x8000, 4, 1, 1, 0x1100)
+            first = struct.pack("<IHHBBHI", 0x1200, 1, 1, 4, 0, 2, 0x1140)
+            other = struct.pack("<IHHBBHI", 0x1208, 1, 1, 4, 1, 1, 0x1160)
+            self.mem[0x000:0x030] = head + first + other
+            struct.pack_into("<II", self.mem, 0x100, 0xD632ACDB, 0x0F7C276C)
+            struct.pack_into("<4I", self.mem, 0x140, 0xCCCC0002, 0xCCCC0001, 0x1340, 0x1350)
+            struct.pack_into("<4I", self.mem, 0x160, second[0], 0xBBBB0001, second[1], 0x1370)
+            self.mem[0x200:0x20e] = b"First\x00\x00\x00Other\x00"
+
+        def sec(self, name):
+            return {"addr": 0x1000, "size": 0x30} if name == ".lib.ent" else None
+
+        def read_at_vaddr(self, address, size):
+            start = address - 0x1000
+            return bytes(self.mem[start:start + size]) if 0 <= start <= len(self.mem) - size else None
+
+    def test_function_exports_are_every_named_library_function_sorted_by_nid(self):
+        self.assertEqual(
+            imports_tool.function_exports(self.FunctionExportImage((0xCCCC0000, 0x1360)), {}),
+            ((0xCCCC0000, 0x1360), (0xCCCC0001, 0x1350), (0xCCCC0002, 0x1340)))
+
+    def test_function_exports_keep_a_nid_two_libraries_export_at_one_address(self):
+        self.assertEqual(
+            imports_tool.function_exports(self.FunctionExportImage((0xCCCC0001, 0x1350)), {}),
+            ((0xCCCC0001, 0x1350), (0xCCCC0002, 0x1340)))
+
+    def test_function_exports_leave_out_the_images_own_stub_for_that_nid(self):
+        # Linked, the stub would call the same NID and so call itself until the stack ran out.
+        image = self.FunctionExportImage((0xCCCC0000, 0x1360))
+        self.assertEqual(
+            imports_tool.function_exports(image, {0x1360: ("sceRtc", 0xCCCC0000)}),
+            ((0xCCCC0001, 0x1350), (0xCCCC0002, 0x1340)))
+
+    def test_function_exports_keep_a_stub_exported_under_another_nid(self):
+        image = self.FunctionExportImage((0xCCCC0000, 0x1360))
+        self.assertIn(
+            (0xCCCC0000, 0x1360),
+            imports_tool.function_exports(image, {0x1360: ("sceRtc", 0xDDDD0000)}))
+
+    def test_function_exports_refuse_a_nid_with_two_addresses(self):
+        with self.assertRaises(imports_tool.ImportTableError) as raised:
+            imports_tool.function_exports(self.FunctionExportImage((0xCCCC0001, 0x1360)), {})
+
+        self.assertIn("exports 0xcccc0001", str(raised.exception))
+
     def test_variable_import_reference_list_must_be_mapped(self):
         elf = self._variable_entry()
         struct.pack_into("<II", elf.mem, self.VSTUB_TABLE - FakeElf.BASE, 0x9000, 0x0ABC1234)
