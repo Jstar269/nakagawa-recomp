@@ -2004,6 +2004,42 @@ static uint32_t io_open_exclusive_existing(const char *path) {
     return 0x80010011u;
 }
 
+/* PSP_O_TRUNC on a PSP's Memory Stick, measured on a PSP-3000 (#1892): the file is empty from
+ * the open on, for sceIoGetstat, a seek to the end, a read and any other descriptor. But a write
+ * past the end does not leave zeros below it: the old bytes come back. So a game that installs a
+ * file in chunks can reopen it with PSP_O_TRUNC for each chunk, seek to the chunk and write it.
+ * The host file is cut at open, and the descriptor keeps the bytes for such a write. */
+static uint8_t *io_truncate_keeping_bytes(FILE *host, uint32_t size) {
+    uint8_t *bytes = (uint8_t *)malloc(size);
+    if (!bytes) return NULL;
+    rewind(host);
+    int failed = fread(bytes, 1, size, host) != size;
+    if (!failed) {
+        rewind(host);
+#ifdef _WIN32
+        failed = _chsize_s(_fileno(host), 0) != 0;
+#else
+        failed = ftruncate(fileno(host), 0) != 0;
+#endif
+    }
+    if (failed) {
+        free(bytes);
+        return NULL;
+    }
+    rewind(host);
+    return bytes;
+}
+
+/* Before a write at f->off: the bytes PSP_O_TRUNC kept that a gap below it brings back. */
+int io_restore_truncated_gap(Fd *f) {
+    uint32_t end = 0;
+    if (!sr_stream_size_u32(f->host, &end)) return 0;
+    const uint32_t stop = f->off < f->truncated_size ? f->off : f->truncated_size;
+    if (end >= stop) return 1;
+    return io_host_seek(f->host, end) == 0 &&
+           fwrite(f->truncated_bytes + end, 1, stop - end, f->host) == stop - end;
+}
+
 /* Host-serve a guest file from the extracted-XB data root (SR_DATAROOT).
  *
  * This is the long-term groundwork for the text-loader (.to) fix and any other
@@ -2088,7 +2124,10 @@ static uint32_t h_io_open_path_stock(const char *path, uint32_t flags, int force
          * and TRUNC or APPEND change it; with CREAT | EXCL only a new file opens (#1380). */
         char *hp = host_path_alloc(path);
         const wchar_t *mode;
-        if (flags & 0x0400) mode = L"w+b";            /* TRUNC */
+        /* A written file is cut below, once its bytes are kept (io_truncate_keeping_bytes). */
+        const int truncate_keeping = (flags & 0x0400) && writing && !exclusive &&
+                                     !(flags & 0x0100);
+        if ((flags & 0x0400) && !truncate_keeping) mode = L"w+b";  /* TRUNC */
         else if (flags & 0x0100) mode = L"a+b";       /* APPEND */
         else if (writing || creating) mode = L"r+b"; /* update; CREAT falls back to create below */
         else mode = L"rb";                           /* read-only host file (e.g. a prior save) */
@@ -2221,9 +2260,22 @@ static uint32_t h_io_open_path_stock(const char *path, uint32_t flags, int force
                     path);
             return 0x80010005;
         }
+        uint8_t *truncated_bytes = NULL;
+        const uint32_t truncated_size = host_size;
+        if (truncate_keeping && host_size) {
+            truncated_bytes = io_truncate_keeping_bytes(fp, host_size);
+            if (!truncated_bytes) {
+                fclose(fp);
+                fprintf(stderr, "sceIoOpen: PSP_O_TRUNC failed on the host file: %s\n", path);
+                return 0x80010005;
+            }
+            host_size = 0;
+        }
         s_fds[slot].used = 1; s_fds[slot].host = fp; s_fds[slot].lba = 0;
         s_fds[slot].size = host_size; s_fds[slot].off = 0;
         s_fds[slot].writable = writing || creating;
+        s_fds[slot].truncated_bytes = truncated_bytes;
+        s_fds[slot].truncated_size = truncated_bytes ? truncated_size : 0u;
         return (uint32_t)slot;
     }
 from_iso:
