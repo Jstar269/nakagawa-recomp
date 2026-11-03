@@ -1094,6 +1094,10 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         self.assertEqual(plan("step_x0.5", 0x24840001), {"kind": "gate"})  # addiu a0,a0,1
         self.assertEqual(plan("count_x2", 0x2484FFFF), {"kind": "gate"})  # addiu a0,a0,-1
         self.assertEqual(plan("retention_m_to_sqrt(m)", 0x3C023F40)["word"], 0x3C023F5E)
+        self.assertEqual(plan("decay_k_to_1-sqrt(1-k)", 0xC4430010),  # lwc1 f3: map the loaded factor
+                         {"kind": "map_f_reg", "reg": 3, "map": "decay"})
+        self.assertEqual(plan("retention_m_to_sqrt(m)", 0xC4430010),
+                         {"kind": "map_f_reg", "reg": 3, "map": "retention"})
         self.assertEqual(plan("gate_30hz", 0x0C000480), {"kind": "gate"})  # jal
         self.assertEqual(plan("count_x2", 0xC4430010), {"kind": "scale_f_reg", "reg": 3, "factor": 2.0})
         self.assertEqual(
@@ -1111,6 +1115,8 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             ("count_x2", 0x44841000),  # mtc1
             ("vblank_wait_2_to_1", 0x24020003),
             ("decay_k_to_1-sqrt(1-k)", 0x3C023F80),  # 1.0 is outside (0, 1)
+            ("decay_k_to_1-sqrt(1-k)", 0xE4430010),  # swc1 stores, it does not load the factor
+            ("retention_m_to_sqrt(m)", 0x24020003),
         ):
             with self.subTest(transform=transform, word=f"{word:08x}"):
                 with self.assertRaises(EnhancementPackageError):
@@ -1231,6 +1237,27 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             0x1300: ("helper", 0),
         })
         self.assertEqual(names, {"synth_vblank_wait": 0x1100})
+
+    def test_mapped_factor_runs_only_when_enabled_and_inside_the_unit_interval(self) -> None:
+        """An lwc1 factor is mapped after the stock load, behind the toggle, and only inside (0, 1)."""
+        lwc1 = 0xC4430010  # lwc1 $f3, 0x10($v0)
+        saved = codegen.ENHANCEMENT_SITES
+        try:
+            for kind, expr in (("decay", "1.0f - sqrtf(1.0f - s->f[3])"), ("retention", "sqrtf(s->f[3])")):
+                with self.subTest(map=kind):
+                    codegen.ENHANCEMENT_SITES = {
+                        0x1300: {"rewrite": {"kind": "map_f_reg", "reg": 3, "map": kind}}
+                    }
+                    codegen.ENHANCEMENT_APPLIED.clear()
+                    line = codegen.normal_line(0x1300, lwc1, lle_cpu=False)
+                    enhanced, stock = line.split("else", 1)
+                    self.assertIn("nk_enhancement_on()", enhanced)
+                    self.assertIn(f"if (s->f[3] > 0.0f && s->f[3] < 1.0f) {{ s->f[3] = {expr}; }}", enhanced)
+                    self.assertLess(enhanced.index("s->fi[3]"), enhanced.index(expr))
+                    self.assertNotIn("sqrtf", stock)
+        finally:
+            codegen.ENHANCEMENT_SITES = saved
+            codegen.ENHANCEMENT_APPLIED.clear()
 
     def test_lle_scaled_store_never_writes_the_fpr(self) -> None:
         """Under --lle-cpu a faulting swc1 returns early, so the rewrite must not touch s->f."""

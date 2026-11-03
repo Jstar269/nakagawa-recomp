@@ -1431,8 +1431,11 @@ def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
         _refuse(site, w, "gate_30hz needs a call or an accumulating update")
 
     if tf in ("decay_k_to_1-sqrt(1-k)", "retention_m_to_sqrt(m)"):
+        if op == 0x31:  # lwc1 of a per-update factor: map the loaded register
+            return {"kind": "map_f_reg", "reg": rt,
+                    "map": "decay" if tf == "decay_k_to_1-sqrt(1-k)" else "retention"}
         if op != 0x0F:
-            _refuse(site, w, "expects the lui of a float constant")
+            _refuse(site, w, "expects the lui of a float constant or an lwc1")
         value = _f32(imm16 << 16)
         if not 0.0 < value < 1.0:
             _refuse(site, w, f"float constant {value!r} is outside (0, 1)")

@@ -213,6 +213,12 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
         enh = f"{stock_line.strip()} s->r[{rw['reg']}] <<= 1;"
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
+    elif kind == "map_f_reg":
+        r = rw["reg"]
+        # A factor read from memory is only known at run time: outside (0, 1) it keeps the stock value.
+        expr = {"decay": f"1.0f - sqrtf(1.0f - s->f[{r}])", "retention": f"sqrtf(s->f[{r}])"}[rw["map"]]
+        enh = (f"{stock_line.strip()} if (s->f[{r}] > 0.0f && s->f[{r}] < 1.0f) "
+               f"{{ s->f[{r}] = {expr}; }}")
     elif kind == "scale_f_store":
         enh = _scaled_store_line(rw, stock_line)
     elif kind == "scale_f_addend":
