@@ -263,19 +263,29 @@ static uint32_t font_call_alloc(CpuState *s, uint32_t allocFn, uint32_t userData
  * multiple of 4 raises an address error, so the PSP's libfont cannot have used a misaligned
  * block either. Rejected blocks are not passed to freeFunc: an out-of-range block is not the
  * guest's, and an overlapping one belongs to a live object. Host policy: what the PSP's libfont
- * does with such a block is UNMEASURED, so this fails closed. Holds hle_lock. */
+ * does with such a block is UNMEASURED, so this fails closed. The caller answers OOM; a refused
+ * non-NULL block is named on stderr so it is not mistaken for the guest allocator running out
+ * (a NULL return is that, and is not logged). Holds hle_lock. */
+static int font_alloc_refused(uint32_t addr, uint32_t size, const char *reason) {
+    fprintf(stderr, "sceFont: allocator block 0x%08x (0x%x bytes) refused: %s; answering OOM\n",
+            addr, size, reason);
+    return 0;
+}
 static int font_alloc_span_free_locked(uint32_t addr, uint32_t size) {
-    if (!addr || (addr & 3u) != 0u || !sr_guest_span_writable(addr, size)) return 0;
+    if (!addr) return 0;
+    if ((addr & 3u) != 0u) return font_alloc_refused(addr, size, "not word-aligned");
+    if (!sr_guest_span_writable(addr, size))
+        return font_alloc_refused(addr, size, "not writable guest memory");
     uint64_t lo = addr, hi = (uint64_t)addr + size;
     for (size_t i = 0; i < sizeof(s_fontlibs) / sizeof(s_fontlibs[0]); i++) {
         const SrFontLib *L = &s_fontlibs[i];
         if (L->used && L->handle && lo < (uint64_t)L->handle + L->allocSize && L->handle < hi)
-            return 0;
+            return font_alloc_refused(addr, size, "overlaps a live font library");
     }
     for (size_t i = 0; i < sizeof(s_fonts) / sizeof(s_fonts[0]); i++) {
         const SrFont *f = &s_fonts[i];
         if (f->used && f->handle && lo < (uint64_t)f->handle + SR_FONT_SIZE && f->handle < hi)
-            return 0;
+            return font_alloc_refused(addr, size, "overlaps a live font");
     }
     return 1;
 }
