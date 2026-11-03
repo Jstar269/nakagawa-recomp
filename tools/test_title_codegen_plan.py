@@ -24,6 +24,7 @@ import title_codegen_plan
 import title_manifest
 import test_public_title_isolation
 from test_import_name_safety import build_synthetic_import_prx
+from import_fixtures import build_module_elf
 import nk_cli
 from nk_core import package_cache
 
@@ -965,6 +966,31 @@ class CompileObjectReuseTests(unittest.TestCase):
         for name in ("nk_lib_0123456789abcde.c", "nk_lib_0123456789abcdef_.c",
                      "nk_lib_0123456789abcdef_x.c", "nk_lib_0123456789abcdef_1.o"):
             self.assertFalse(title_codegen_plan._is_aot_output(name, "game"), name)
+
+
+class ImportsNoSourceExportsTests(unittest.TestCase):
+    def test_a_library_the_game_exports_is_not_an_unsupported_import(self) -> None:
+        # A game's modules import its executable's library: thousands of rows across many
+        # modules, none a function the runtime serves. A NID nothing exports stays reported,
+        # even in a library that exports others, and so does an exported NID imported from
+        # another library.
+        def row(library: str, nid: int) -> dict:
+            return {"module": "menu.bin", "library": library, "nid": f"0x{nid:08x}"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "selected.elf"
+            executable.write_bytes(build_module_elf([("main", 0x4001, [0x51000001], [])]))
+            module = Path(directory) / "menu.bin"
+            module.write_bytes(build_module_elf(
+                [("menu", 0x4001, [0x52000001], [])],
+                imports=[("main", [0x51000001, 0x51000002])],
+            ))
+            rows = [row("main", 0x51000001), row("main", 0x51000002), row("sceAudio", 0x51000001)]
+            self.assertEqual(
+                title_codegen_plan._imports_no_source_exports(
+                    rows, [{"path": executable}, {"path": module}]),
+                rows[1:],
+            )
 
 
 if __name__ == "__main__":

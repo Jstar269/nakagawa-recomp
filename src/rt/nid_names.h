@@ -480,7 +480,7 @@ static const SrNidName sr_nid_table[] = {
     {0x45310f07u, "sceUsbMicInputInitEx"},
     {0x4571cc64u, "sceMpegAvcDecodeFlush"},
     {0x45c18506u, "sceUtilitySetSystemParamInt"},
-    {0x469989adu, "scePower_469989ad"},
+    {0x469989adu, "scePowerSetClockFrequency630"},
     {0x46ebb729u, "sceUmdCheckMedium"},
     {0x46f186c3u, "sceDisplayWaitVblankStartCB"},
     {0x46f61f8bu, "scePsmfPlayerGetVideoData"},

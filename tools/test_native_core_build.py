@@ -55,6 +55,10 @@ _RUNS_BEFORE_PROCESS_TEST = (
     () if os.name == "nt" else ("build/mygame/coro_selftest_asm",)
 ) + (
     "build/mygame/ge_raster_ref_selftest",
+    # memory-watch-selftest: the store watch on the interpreter's data word (SR_WATCH from
+    # the target), then on a main-RAM word, where unwatched stores take the inline path.
+    "build/mygame/dispatch_isolation_selftest_generic",
+    "build/mygame/dispatch_isolation_selftest_generic --watch 0x08801000:4",
     "build/test_pgf_public",
     "build/test_core_catalog",
     "build/test_parsers_hostile",
@@ -73,6 +77,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/psmf_producer_selftest --fuzz-iters 100",
     "build/test_input_profile",
     "build/test_nk_sig",
+    "build/test_portable_mode",
 )
 _PROCESS_TEST = "build/test_win32_process" if os.name == "nt" else "build/test_posix_process"
 EXPECTED_RUNS = _RUNS_BEFORE_PROCESS_TEST + (_PROCESS_TEST,)

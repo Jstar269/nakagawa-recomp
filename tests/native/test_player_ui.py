@@ -4650,6 +4650,29 @@ class NativePlayerUiTests(unittest.TestCase):
                                          "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT"),
                       run["stdout"])
 
+    def test_title_opened_during_the_package_check_gets_play_focus_when_it_ends(self) -> None:
+        """A title opened before its package check ends focuses PLAY once PLAY turns on.
+
+        NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS stands in for a check that hashes a large
+        package. Failing-before: PLAY was off on the first frame, so focus landed on
+        OPEN SAVE FOLDER and stayed there when PLAY came on; Enter (or a pad's A) then
+        opened the save folder instead of starting the game."""
+        run = self.run_player(
+            "ready", ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=4000"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "1500"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        labels = [frame["next_primary_label"] for frame in frames]
+        self.assertTrue(any(label.startswith("disabled:") for label in labels),
+                        f"PLAY was never off while the check ran: {sorted(set(labels))}")
+        self.assertEqual(frames[-1]["next_primary_label"], "PLAY", run["stdout"])
+        self.assertEqual(frames[-1]["next_focus"], self.TITLE_PRIMARY,
+                         "PLAY has focus once the package check turns it on")
+
     ROUTE_REBUILD = "7"
     OUTDATED_LABEL = "Built_by_an_older_Nakagawa._Rebuild_for_the_latest_fixes."
 

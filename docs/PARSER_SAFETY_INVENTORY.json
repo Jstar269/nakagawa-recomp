@@ -441,7 +441,8 @@
         "tests/native/test_player_state.c"
       ],
       "malformed_input_coverage": [
-        "Truncated package/report JSON, schema/field mismatch, missing files and digest/contract mismatch."
+        "Truncated package/report JSON, schema/field mismatch, missing files and digest/contract mismatch.",
+        "Structure-aware member edits (value replacement, removal, duplication, whitespace) of a valid package, report or completion manifest, with the completion digests re-hashed so inputs pass first validation."
       ],
       "resource_gaps": [
         "Referenced executable hashing is linear and has no separate byte/time cap in this validator.",
@@ -582,6 +583,67 @@
           "tests": [
             "tests/native/test_fuzz_parsers.c",
             "tests/native/test_xb_parser.c"
+          ],
+          "campaign": "100 seeded iterations via native-core-tests; family limits/clamps apply."
+        },
+        "sanitizer": {
+          "status": "AVAILABLE_NOT_CI",
+          "target": "make CC=gcc fuzz-parsers",
+          "instrumentation": "AddressSanitizer and UndefinedBehaviorSanitizer on non-Windows.",
+          "ci": false
+        },
+        "coverage_guided_fuzzer": "NOT_CONFIGURED",
+        "overflow_oob_mutation_kill": "NOT_RUN"
+      }
+    },
+    {
+      "boundary": "Archive VFS over mounted XB archives",
+      "entry": "src/rt/archive_vfs.c:sr_archive_vfs_mount_memory; sr_archive_vfs_mount_file; sr_archive_vfs_lookup; sr_archive_vfs_read; sr_archive_vfs_list_dir",
+      "max_input": "Archives are bounded by the XB provider; member keys are at most 255 bytes; entry sizes above UINT32_MAX are refused.",
+      "tables_nesting": "One sorted key index across mounts; directory listing walks key prefixes, with no recursion.",
+      "arithmetic": {
+        "safe": "SAFE",
+        "evidence": [
+          "src/rt/archive_vfs.c:archive_adopt",
+          "src/rt/archive_vfs.c:archive_index_reserve",
+          "src/rt/archive_vfs.c:archive_cache_reserve",
+          "src/rt/archive_vfs.c:archive_normalize_key"
+        ]
+      },
+      "allocation_time": "Index, mount and cache arrays grow by checked doubling; the expanded-entry cache is capped by sr_archive_vfs_configure.",
+      "failure_atomicity": "A mount that fails rolls back every index entry it added, so earlier mounts stay published unchanged.",
+      "harness": "tests/native/test_fuzz_parsers.c:test_fuzz_archive_vfs; tests/native/test_xb_parser.c:test_archive_vfs_keyless_member_is_invalid",
+      "status": "PARTIAL",
+      "id": "archive-vfs-c",
+      "source_paths": [
+        "src/rt/archive_vfs.c",
+        "src/rt/archive_vfs.h"
+      ],
+      "test_paths": [
+        "tests/native/test_fuzz_parsers.c",
+        "tests/native/test_xb_parser.c"
+      ],
+      "malformed_input_coverage": [
+        "Seeded multi-mount archive sets with variant suffixes, Shift-JIS and mixed-case member names, and mutated archives; every lookup is checked against a model of the key rule, and read-back bytes are compared.",
+        "A member name with no key is refused as an invalid archive."
+      ],
+      "resource_gaps": [
+        "The key rule folds bytes without Shift-JIS awareness, so a trail byte can be case-folded or read as a separator; the PSP-visible semantics are not measured.",
+        "The sanitizer stage runs only through the optional make fuzz-parsers target."
+      ],
+      "campaigns": {
+        "deterministic_regression": {
+          "status": "IN_CI",
+          "tests": [
+            "tests/native/test_fuzz_parsers.c",
+            "tests/native/test_xb_parser.c"
+          ],
+          "runner": "make CC=gcc native-core-tests"
+        },
+        "seeded_mutations": {
+          "status": "IN_CI",
+          "tests": [
+            "tests/native/test_fuzz_parsers.c"
           ],
           "campaign": "100 seeded iterations via native-core-tests; family limits/clamps apply."
         },
@@ -923,6 +985,61 @@
       }
     },
     {
+      "boundary": "sceAtrac RIFF track header parser",
+      "entry": "src/rt/hle_audio_codec.c:atrac_parse_track",
+      "max_input": "The guest span must be readable in full; the chunk scan stops at 1 MiB (ATRAC_RIFF_SCAN_MAX); fmt channel counts other than 1 or 2 are refused.",
+      "tables_nesting": "Flat RIFF chunk list; no recursion.",
+      "arithmetic": {
+        "safe": "SAFE",
+        "evidence": [
+          "src/rt/hle_audio_codec.c:atrac_parse_track",
+          "src/rt/hle_audio_codec.c:ATRAC_RIFF_SCAN_MAX"
+        ]
+      },
+      "allocation_time": "No host allocation; the scan is linear and capped at 1 MiB.",
+      "failure_atomicity": "The track is parsed into locals and committed only on success, so a refused buffer leaves the existing context untouched.",
+      "harness": "tests/native/psmf_media_selftest.c:test_atrac_riff_mutations; tests/native/psmf_media_selftest.c:test_atrac_channel_count_refusal",
+      "status": "PARTIAL",
+      "id": "atrac-riff-track-c",
+      "source_paths": [
+        "src/rt/hle_audio_codec.c"
+      ],
+      "test_paths": [
+        "tests/native/psmf_media_selftest.c"
+      ],
+      "malformed_input_coverage": [
+        "Valid ATRAC3 and ATRAC3+ tracks mutated in their RIFF, fmt, fact, smpl and data chunks, fed whole or as a prefix through every Set entry point; accepted tracks are driven through decode, streaming, loop and buffer-info calls with guarded guest buffers.",
+        "fmt channel counts other than mono or stereo are refused as UNKNOWN_FORMAT."
+      ],
+      "resource_gaps": [
+        "The channel-count refusal follows the public reference implementation and is UNMEASURED on a PSP."
+      ],
+      "campaigns": {
+        "deterministic_regression": {
+          "status": "IN_CI",
+          "tests": [
+            "tests/native/psmf_media_selftest.c"
+          ],
+          "runner": "make CC=gcc H264_FFMPEG=1 psmf-media-selftest"
+        },
+        "seeded_mutations": {
+          "status": "IN_CI",
+          "tests": [
+            "tests/native/psmf_media_selftest.c"
+          ],
+          "campaign": "100 seeded iterations in psmf-media-selftest; make fuzz-parsers passes FUZZ_ITERS through."
+        },
+        "sanitizer": {
+          "status": "CI_ASAN_UBSAN",
+          "target": "make CC=gcc H264_FFMPEG=1 psmf-media-selftest; optional make fuzz-parsers",
+          "instrumentation": "AddressSanitizer and UndefinedBehaviorSanitizer on non-Windows",
+          "ci": true
+        },
+        "coverage_guided_fuzzer": "NOT_CONFIGURED",
+        "overflow_oob_mutation_kill": "NOT_RUN"
+      }
+    },
+    {
       "boundary": "Public PGF font reader",
       "entry": "src/rt/pgf_public.c:pgf_open; pgf_open_memory; pgf_parse_directory",
       "max_input": "16 MiB per image; map/pointer/shadow counts capped at 1048576; glyph edge 127; at most three composite components.",
@@ -937,8 +1054,8 @@
       },
       "allocation_time": "Image/object allocations are bounded by 16 MiB; directory validation scans declared tables.",
       "failure_atomicity": "Open returns NULL and frees allocations on parse failure; glyph writes are preflighted before commit.",
-      "harness": "tests/native/test_pgf_public.c:test_deterministic_mutations",
-      "gap": "Public parser and deterministic mutations exist; no PGF sanitizer or coverage-guided campaign.",
+      "harness": "tests/native/test_pgf_public.c:test_deterministic_mutations; tests/native/test_fuzz_parsers.c:test_fuzz_pgf",
+      "gap": "Deterministic mutations and a structure-aware seeded stage (valid fonts of every revision, then header, table, map and glyph-record edits, with guarded glyph draws into guest memory) exist; the stage's sanitizer run is not in CI and no coverage-guided campaign exists.",
       "status": "PARTIAL",
       "id": "pgf-public-reader-c",
       "source_paths": [
@@ -946,33 +1063,37 @@
         "src/rt/pgf_api.h"
       ],
       "test_paths": [
-        "tests/native/test_pgf_public.c"
+        "tests/native/test_pgf_public.c",
+        "tests/native/test_fuzz_parsers.c"
       ],
       "malformed_input_coverage": [
-        "Short/bad header and revision, invalid table spans/counts/maps, bad glyph/composite references, geometry and deterministic mutations."
+        "Short/bad header and revision, invalid table spans/counts/maps, bad glyph/composite references, geometry and deterministic mutations.",
+        "Seeded structure-aware fonts (revisions 0-3, sparse maps, shadow and metric tables, composite glyphs) mutated field by field; validate and open must agree, and draws into guarded guest buffers must stay inside the declared region."
       ],
       "resource_gaps": [
-        "PGF has deterministic mutation tests but no sanitizer/coverage-guided campaign; declared table counts may reach 1048576."
+        "The PGF sanitizer stage runs only through the optional make fuzz-parsers target; declared table counts may reach 1048576."
       ],
       "campaigns": {
         "deterministic_regression": {
           "status": "IN_CI",
           "tests": [
-            "tests/native/test_pgf_public.c"
+            "tests/native/test_pgf_public.c",
+            "tests/native/test_fuzz_parsers.c"
           ],
           "runner": "make CC=gcc native-core-tests"
         },
         "seeded_mutations": {
           "status": "IN_CI",
           "tests": [
-            "tests/native/test_pgf_public.c"
+            "tests/native/test_pgf_public.c",
+            "tests/native/test_fuzz_parsers.c"
           ],
-          "campaign": "Source-owned deterministic mutation loop in PGF selftest."
+          "campaign": "Source-owned deterministic mutation loop in the PGF selftest, plus the structure-aware test_fuzz_pgf stage (100 seeded iterations via native-core-tests)."
         },
         "sanitizer": {
-          "status": "NOT_COVERED",
-          "target": null,
-          "instrumentation": "PGF is not built by make fuzz-parsers; native-core-tests is unsanitized.",
+          "status": "AVAILABLE_NOT_CI",
+          "target": "make CC=gcc fuzz-parsers",
+          "instrumentation": "AddressSanitizer and UndefinedBehaviorSanitizer on non-Windows.",
           "ci": false
         },
         "coverage_guided_fuzzer": "NOT_CONFIGURED",
@@ -2116,7 +2237,7 @@
   "issue_acceptance_remaining": [
     "No coverage-guided fuzzer is configured.",
     "The native test_fuzz_parsers ASan/UBSan campaign is available through make fuzz-parsers but is not wired into current CI; PSMF producer and ATRAC3+ decoder sanitizer coverage exists in CI.",
-    "PGF, nk_json, nk_input_profile, nk_font, the player package-builder and settings routes, Python library/cache/font/flight/tooling JSON, and GIM still lack sanitizer-backed mutation coverage; the Python library/cache/font/flight/tooling readers also lack byte/depth/count ceilings, direct Python SFO/manifest buffers lack independent byte caps, and direct PSP container APIs lack a raw-input cap.",
+    "nk_json, nk_input_profile, nk_font, the player package-builder and settings routes, Python library/cache/font/flight/tooling JSON, and GIM still lack sanitizer-backed mutation coverage; the Python library/cache/font/flight/tooling readers also lack byte/depth/count ceilings, direct Python SFO/manifest buffers lack independent byte caps, and direct PSP container APIs lack a raw-input cap.",
     "tools/ppm2png.py validates nothing: a truncated or non-P6 frame dump raises an unhandled Python exception, and the tool has no malformed-input test.",
     "The Windows Media Foundation demux seam is not exercised by the Linux sanitizer route and has no current Windows sanitizer campaign.",
     "No overflow/out-of-bounds semantic mutation-kill result is recorded.",

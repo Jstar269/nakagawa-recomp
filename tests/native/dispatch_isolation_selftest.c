@@ -2,8 +2,9 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
 /*
- * Executable isolation tests for the two typed dispatch bindings that title
- * configuration owns: DISPATCH ALIASES and CALLBACK TERMINATORS.
+ * Executable isolation tests for the typed dispatch binding that title
+ * configuration owns: DISPATCH ALIASES. The retired forced-completion site is checked
+ * as ordinary dispatch-miss traffic in every build.
  *
  * Standalone host executable, no game inputs required. The harness #includes recomp.c
  * and drives the real production dispatch core. The executable-span case enters the
@@ -14,7 +15,7 @@
  *
  * The same source is built once per title configuration by the Makefile matrix:
  *
- *   generic    -- no title configuration; both collections empty
+ *   generic    -- no title configuration; the collection is empty
  *   fixture-a  -- assets/titles/pspdev-phase5.json
  *   fixture-b  -- assets/titles/synthetic.json  (a DISJOINT synthetic address family)
  *
@@ -150,6 +151,19 @@ static int g_failures = 0;
 #define INTERP_EXEC_END   (INTERP_EXEC_START + 20u)
 #define INTERP_DATA_ADDR  0x00601000u
 #define WATCH_AOT_PC      0x00608004u
+#define WATCH_RAM_ADDR    0x08801000u
+
+/* The SR_WATCH reports one store of `width` bytes at `addr` makes: 1 when the armed ADDR:LEN
+ * range overlaps it, else 0. The watch itself is configured once from the same variable. */
+static uint64_t watch_hits(uint32_t addr, uint32_t width) {
+    const char *spec = getenv("SR_WATCH");
+    if (!SR_WATCH_ACTIVE() || !spec) return 0u;
+    char *end = NULL;
+    const unsigned long long start = strtoull(spec, &end, 0);
+    if (!end || *end != ':') return 0u;
+    const unsigned long long len = strtoull(end + 1, NULL, 0);
+    return (uint64_t)addr < start + len && (uint64_t)addr + width > start ? 1u : 0u;
+}
 #define INTERP_REJECT_ADDR 0x00602000u
 #define INTERP_UNOWNED_AOT_ADDR 0x00603000u
 #define INTERP_PARTIAL_AOT_ADDR 0x00604000u
@@ -257,8 +271,9 @@ static Probe probe(uint32_t target, uint32_t pc, uint32_t ra) {
     return out;
 }
 
-/* dispatch() reports a completed callback walk as v0 = 1, pc = ra. Nothing else does. */
-static int terminated(Probe p) { return p.v0 == 1u && p.pc == p.ra; }
+/* The runtime no longer reports a dispatch target as a completed callback walk
+ * (v0 = 1, pc = ra); the retired-site checks assert that no probe looks like one. */
+static int completed_walk(Probe p) { return p.v0 == 1u && p.pc == p.ra; }
 
 /* The generic outcome for a target no binding claims: reject it without fabricated
  * register/PC progress. This includes null, data-looking, historical resource-handle,
@@ -320,23 +335,23 @@ static const SrModuleFunc k_module_b_funcs[] = {
 };
 static const SrModuleSpan k_module_spans[] = { { 0x00u, 0x60u } };
 static const SrModuleCode k_module_a = {
-    "overlay_a.prx", 0x200u, 0x1111u, 0x00u, 0x100u, 0x10u, 1u, NULL, &g_module_a_base,
-    k_module_a_funcs, 2u, k_module_spans, 1u, 0u, 0u,
+    "overlay_a.prx", 0x200u, NULL, 0x00u, 0x100u, 0x10u, 1u, NULL, &g_module_a_base,
+    k_module_a_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 static const SrModuleCode k_module_b = {
-    "overlay_b.prx", 0x300u, 0x2222u, 0x00u, 0x200u, 0x10u, 1u, NULL, &g_module_b_base,
-    k_module_b_funcs, 2u, k_module_spans, 1u, 0u, 0u,
+    "overlay_b.prx", 0x300u, NULL, 0x00u, 0x200u, 0x10u, 1u, NULL, &g_module_b_base,
+    k_module_b_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 static const SrModuleFunc k_module_fixed_funcs[] = { { MODULE_FIXED_LINK, 2u, module_a_entry } };
 static const SrModuleSpan k_module_fixed_spans[] = { { MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x20u } };
 static const SrModuleCode k_module_fixed = {
-    "fixed.prx", 0x80u, 0x3333u, MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x40u, 0x4u, 0u, NULL,
-    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u,
+    "fixed.prx", 0x80u, NULL, MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x40u, 0x4u, 0u, NULL,
+    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 static const SrModuleCode k_module_unsupported = {
-    "untranslatable.prx", 0x80u, 0x4444u, 0x00u, 0x40u, 0x4u, 1u,
+    "untranslatable.prx", 0x80u, NULL, 0x00u, 0x40u, 0x4u, 1u,
     "relocations cannot be translated: synthetic", &g_module_fixed_base,
-    NULL, 0u, NULL, 0u, 0u, 0u,
+    NULL, 0u, NULL, 0u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 
 /* Two code overlays translated for the same link range. Each is bound only while guest
@@ -358,12 +373,12 @@ static const SrModuleFunc k_overlay_b_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_b
 #define OVERLAY_UNTRANSLATED (OVERLAY_LINK + 0x60u)
 static const SrModuleSpan k_overlay_spans[] = { { OVERLAY_ENTRY, OVERLAY_LINK + 0x70u } };
 static SrModuleCode k_overlay_a = {
-    "A.ovl", OVERLAY_CHECK_BYTES, 0x5555u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
-    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
+    "A.ovl", OVERLAY_CHECK_BYTES, NULL, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
+    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u, NULL, 0u,
 };
 static SrModuleCode k_overlay_b = {
-    "B.ovl", OVERLAY_CHECK_BYTES, 0x6666u, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
-    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u,
+    "B.ovl", OVERLAY_CHECK_BYTES, NULL, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
+    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u, NULL, 0u,
 };
 
 static uint32_t overlay_word(uint32_t tag, uint32_t off) { return tag | off; }
@@ -435,6 +450,95 @@ static void test_code_overlays_follow_guest_memory(void) {
           "loading another overlay over the range swaps the binding");
     Probe b = probe(OVERLAY_ENTRY, PROBE_PC, PROBE_RA);
     CHECK(b.body_ran && b.v0 == 0x0bu, "the newly bound overlay's translation runs");
+
+    sr_module_code_reset();
+}
+
+/* A fixed-address ELF overlay mixes code and data in one segment, so its identity is a
+ * list of code ranges (overlay_check_spans) with data between them, not leading bytes. */
+#define MIXED_LINK      0x08B20000u
+#define MIXED_FIRST     MIXED_LINK
+#define MIXED_DATA      (MIXED_LINK + 0x10u)
+#define MIXED_SECOND    (MIXED_LINK + 0x20u)
+#define MIXED_CHECK_LEN 0x20u
+
+static uint32_t g_mixed_base;
+static void mixed_body(CpuState *s) { g_body_hits++; s->r[2] = 0x0cu; s->pc = s->r[31]; }
+static const SrModuleFunc k_mixed_funcs[] = {
+    { MIXED_FIRST, 4u, mixed_body }, { MIXED_SECOND, 4u, mixed_body },
+};
+/* Codegen gives the module its analysed code as spans and checks its translated words;
+ * here both are the two functions. */
+static const SrModuleSpan k_mixed_check_spans[] = {
+    { MIXED_FIRST, MIXED_FIRST + 0x10u }, { MIXED_SECOND, MIXED_SECOND + 0x10u },
+};
+static SrModuleCode k_mixed = {
+    "OVL_MIXED.ELF", 0x100u, NULL, MIXED_LINK, MIXED_LINK + 0x40u, 0x4u, 0u, NULL,
+    &g_mixed_base, k_mixed_funcs, 2u, k_mixed_check_spans, 2u, MIXED_CHECK_LEN, 0u, NULL, 0u,
+    k_mixed_check_spans, 2u,
+};
+
+static uint32_t mixed_word(uint32_t address) { return 0x27bd0000u | (address & 0xffffu); }
+
+static void write_mixed_image(void) {
+    for (uint32_t address = MIXED_LINK; address < MIXED_LINK + 0x40u; address += 4u)
+        MEM_W32(address, mixed_word(address));
+}
+
+static uint64_t mixed_digest(void) {
+    unsigned char bytes[MIXED_CHECK_LEN];
+    size_t n = 0;
+    for (unsigned i = 0; i < 2u; i++) {
+        for (uint32_t address = k_mixed_check_spans[i].start;
+             address < k_mixed_check_spans[i].end; address += 4u) {
+            uint32_t word = mixed_word(address);
+            for (unsigned b = 0; b < 4u; b++) bytes[n++] = (unsigned char)(word >> (8u * b));
+        }
+    }
+    return sr_module_code_fnv1a64(bytes, n);
+}
+
+static void test_mixed_overlay_is_identified_by_its_code_ranges(void) {
+    sr_module_code_reset();
+    sr_exec_span_reset();
+    k_mixed.overlay_check_fnv1a64 = mixed_digest();
+    sr_module_code_register(&k_mixed);
+
+    write_mixed_image();
+    MEM_W32(MIXED_SECOND + 4u, 0u);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
+              !sr_module_code_is_bound(&k_mixed, NULL),
+          "a mixed overlay whose second code range differs is not bound");
+
+    write_mixed_image();
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 1u &&
+              sr_module_code_is_bound(&k_mixed, NULL),
+          "a mixed overlay whose code ranges are all in memory is bound");
+    Probe bound = probe(MIXED_SECOND, PROBE_PC, PROBE_RA);
+    CHECK(bound.body_ran && bound.v0 == 0x0cu, "the bound mixed overlay's translation runs");
+
+    MEM_W32(MIXED_DATA, 0x24020077u);       /* data that decodes as addiu v0, zero, 0x77 */
+    MEM_W32(MIXED_DATA + 4u, 0x03e00008u);  /* jr ra */
+    MEM_W32(MIXED_DATA + 8u, 0x00000000u);  /* nop */
+    MEM_W32(MIXED_LINK + 0x30u, 0xfeedfaceu);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
+              sr_module_code_is_bound(&k_mixed, NULL),
+          "writes to the data between and after its code ranges keep it bound");
+
+    /* Its spans are the analysed code only: a jump into the data is a miss, never an
+     * interpretation of the data words. */
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+    g_interp_handoff_hits = 0;
+    Probe into_data = probe(MIXED_DATA, PROBE_PC, PROBE_RA);
+    CHECK(!into_data.body_ran && into_data.dispatch_result < 0 && g_interp_handoff_hits == 0,
+          "a jump into a bound mixed overlay's data misses instead of being interpreted "
+          "(result %d, handoffs %d)", into_data.dispatch_result, g_interp_handoff_hits);
+
+    MEM_W32(MIXED_FIRST + 8u, 0u);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 1u &&
+              !sr_module_code_is_bound(&k_mixed, NULL),
+          "a write to a code range unbinds it");
 
     sr_module_code_reset();
 }
@@ -719,8 +823,8 @@ static void test_valid_aot_miss_executes_guest_bytes(void) {
     CHECK(MEM_R32(INTERP_DATA_ADDR) == 0x00001234u,
           "valid executable miss did not perform the guest store (mem=0x%08x)",
           MEM_R32(INTERP_DATA_ADDR));
-    CHECK(!SR_WATCH_ACTIVE() || sr_watch_match_count() == watch_before + 1u,
-          "interpreter store did not trigger exactly one SR_WATCH hit");
+    CHECK(sr_watch_match_count() == watch_before + watch_hits(INTERP_DATA_ADDR, 4u),
+          "interpreter store did not trigger exactly the SR_WATCH hits its range implies");
     CHECK(s.r[2] == 0x00001235u,
           "valid executable miss did not execute load + return delay slot (v0=0x%08x)",
           s.r[2]);
@@ -746,15 +850,46 @@ static void synthetic_aot_watch_body(CpuState *s) {
 }
 
 static void test_aot_store_watch_synthetic_guest(void) {
-    if (!SR_WATCH_ACTIVE()) return;
     const uint64_t watch_before = sr_watch_match_count();
     CpuState s;
     memset(&s, 0, sizeof s);
     synthetic_aot_watch_body(&s);
     CHECK(MEM_R32(INTERP_DATA_ADDR) == 0x89abcdefu,
           "synthetic AOT body did not perform its guest store");
-    CHECK(sr_watch_match_count() == watch_before + 1u,
-          "AOT store did not trigger exactly one SR_WATCH hit");
+    CHECK(sr_watch_match_count() == watch_before + watch_hits(INTERP_DATA_ADDR, 4u),
+          "AOT store did not trigger exactly the SR_WATCH hits its range implies");
+}
+
+/* A store to main RAM takes the accessors' inline path unless store instrumentation is armed
+ * (recomp.h sr_store_plain). An armed SR_WATCH must still see every such store, of every width,
+ * and no store beside the range. memory-watch-selftest arms WATCH_RAM_ADDR:4. */
+static void test_ram_store_watch_every_width(void) {
+    CHECK(sr_ram_offset(WATCH_RAM_ADDR) < 0x04000000u,
+          "WATCH_RAM_ADDR must be main RAM, where the inline store path applies");
+    MEM_W32(WATCH_RAM_ADDR, 0u);
+    MEM_W32(WATCH_RAM_ADDR + 4u, 0u);
+    const uint64_t before = sr_watch_match_count();
+    MEM_W8_PC(WATCH_RAM_ADDR + 3u, 0x5au, WATCH_AOT_PC);
+    const uint64_t after8 = sr_watch_match_count();
+    MEM_W16_PC(WATCH_RAM_ADDR, 0x1234u, WATCH_AOT_PC);
+    const uint64_t after16 = sr_watch_match_count();
+    MEM_W32_PC(WATCH_RAM_ADDR, 0x89abcdefu, WATCH_AOT_PC);
+    const uint64_t after32 = sr_watch_match_count();
+    MEM_W32_PC(WATCH_RAM_ADDR + 4u, 0x01020304u, WATCH_AOT_PC);
+    const uint64_t after_beside = sr_watch_match_count();
+    CHECK(after8 == before + watch_hits(WATCH_RAM_ADDR + 3u, 1u),
+          "a byte store to watched RAM went unreported (hits=%llu)",
+          (unsigned long long)(after8 - before));
+    CHECK(after16 == after8 + watch_hits(WATCH_RAM_ADDR, 2u),
+          "a halfword store to watched RAM went unreported (hits=%llu)",
+          (unsigned long long)(after16 - after8));
+    CHECK(after32 == after16 + watch_hits(WATCH_RAM_ADDR, 4u),
+          "a word store to watched RAM went unreported (hits=%llu)",
+          (unsigned long long)(after32 - after16));
+    CHECK(after_beside == after32 + watch_hits(WATCH_RAM_ADDR + 4u, 4u),
+          "a store beside the watched range was reported");
+    CHECK(MEM_R32(WATCH_RAM_ADDR) == 0x89abcdefu && MEM_R32(WATCH_RAM_ADDR + 4u) == 0x01020304u,
+          "watched RAM stores did not land");
 }
 
 static int g_call_continuation_hits = 0;
@@ -1449,7 +1584,7 @@ static void test_host_stack_exhaustion_is_a_named_boundary(const char *self_path
  * Each probe is skipped when the configuration under test genuinely DECLARES that
  * binding, so this source stays correct for a configuration that legitimately owns these
  * addresses -- the title they came from. Under that configuration the binding is instead
- * asserted by test_configured_aliases_redirect / the terminator test, which is the right
+ * asserted by test_configured_aliases_redirect, which is the right
  * claim to make there. What must never happen is a build that applies one of them
  * WITHOUT declaring it, and that is what the checks below rule out. */
 static void test_retired_bindings_are_inert(void) {
@@ -1471,18 +1606,20 @@ static void test_retired_bindings_are_inert(void) {
     }
 
     /* Null is a data pointer, never a generic success return. */
-    if (!sr_title_config_is_callback_terminator(0u, PROBE_PC, 0x0003e06cu)) {
+    {
         Probe p = probe(0u, PROBE_PC, 0x0003e06cu);
-        CHECK(!terminated(p), "unconfigured null target (ra=0x0003e06c) reports completion "
+        CHECK(!completed_walk(p), "null target (ra=0x0003e06c) reports completion "
               "in configuration \"%s\"", sr_title_config()->source_id);
         CHECK(generic_outcome(p, 0u), "target 0 at the retired site is not ordinary "
               "null-call policy (v0=0x%08x pc=0x%08x)", p.v0, p.pc);
     }
 
-    /* The retired -1 terminator: target UINT32_MAX at pc = 0x00292fa0, ra = 0x00047a0c. */
-    if (!sr_title_config_is_callback_terminator(UINT32_MAX, 0x00292fa0u, 0x00047a0cu)) {
+    /* The retired -1 forced completion: target UINT32_MAX at pc = 0x00292fa0,
+     * ra = 0x00047a0c. The runtime no longer reports a dispatch target as a completed
+     * walk, so this is an ordinary dispatch miss in every configuration. */
+    {
         Probe p = probe(UINT32_MAX, 0x00292fa0u, 0x00047a0cu);
-        CHECK(!terminated(p), "retired -1 terminator (pc=0x00292fa0 ra=0x00047a0c) still "
+        CHECK(!completed_walk(p), "retired -1 terminator (pc=0x00292fa0 ra=0x00047a0c) still "
               "reports completion in configuration \"%s\"", sr_title_config()->source_id);
         CHECK(generic_outcome(p, UINT32_MAX), "target -1 at the retired site is not an "
               "ordinary dispatch miss (v0=0x%08x pc=0x%08x)", p.v0, p.pc);
@@ -1640,68 +1777,6 @@ static void test_foreign_aliases_do_not_redirect(void) {
     }
 }
 
-/* ---- terminators: the sentinel is generic, the call site is not -------------------- */
-
-static void test_configured_terminators_match_their_site_only(void) {
-    const SrTitleRuntimeConfig *cfg = sr_title_config();
-    for (unsigned i = 0; i < cfg->callback_terminator_count; i++) {
-        const SrTitleCallbackTerminator *t = &cfg->callback_terminators[i];
-        CHECK(t->sentinel != 0u, "configuration \"%s\" declares a sentinel-0 terminator; a "
-              "target of 0 is a null code pointer (#1375)", cfg->source_id);
-        /* An unconstrained field is not compared, so any value stands in for it. */
-        uint32_t pc = t->has_pc ? t->pc : PROBE_PC;
-        uint32_t ra = t->has_ra ? t->ra : PROBE_RA;
-
-        Probe p = probe(t->sentinel, pc, ra);
-        CHECK(terminated(p), "configured terminator (sentinel=0x%08x pc=0x%08x ra=0x%08x) "
-              "did not report completion (v0=0x%08x pc=0x%08x)",
-              t->sentinel, pc, ra, p.v0, p.pc);
-
-        /* The SAME sentinel one step away from the configured site must follow generic
-         * behavior. This is the property that keeps a sentinel from becoming global. */
-        if (t->has_pc) {
-            Probe q = probe(t->sentinel, pc + 4u, ra);
-            CHECK(!terminated(q), "sentinel 0x%08x terminated at pc=0x%08x, which is not "
-                  "the configured site", t->sentinel, pc + 4u);
-            CHECK(generic_outcome(q, t->sentinel), "sentinel 0x%08x off-site is not generic "
-                  "(v0=0x%08x pc=0x%08x)", t->sentinel, q.v0, q.pc);
-        }
-        if (t->has_ra) {
-            Probe q = probe(t->sentinel, pc, ra + 4u);
-            CHECK(!terminated(q), "sentinel 0x%08x terminated at ra=0x%08x, which is not "
-                  "the configured site", t->sentinel, ra + 4u);
-            CHECK(generic_outcome(q, t->sentinel), "sentinel 0x%08x off-site is not generic "
-                  "(v0=0x%08x pc=0x%08x)", t->sentinel, q.v0, q.pc);
-        }
-    }
-}
-
-/* Both public fixtures deliberately use the SAME sentinel values at DIFFERENT sites, so
- * a build must never terminate at a site only the other fixture declares. The sentinel-0
- * sites are each fixture's retired null terminator (#1375): no build terminates there. */
-static const struct { uint32_t sentinel, pc, ra; } FOREIGN_TERMINATOR_SITES[] = {
-    { 0u,          PROBE_PC,     0x08805300u },  /* pspdev-phase5, retired */
-    { UINT32_MAX,  0x08805400u,  0x08805500u },  /* pspdev-phase5 */
-    { 0u,          PROBE_PC,     0x08806300u },  /* synthetic, retired */
-    { UINT32_MAX,  0x08806400u,  0x08806500u },  /* synthetic */
-};
-
-static void test_foreign_terminator_sites_are_generic(void) {
-    for (size_t i = 0; i < sizeof FOREIGN_TERMINATOR_SITES / sizeof FOREIGN_TERMINATOR_SITES[0]; i++) {
-        uint32_t sentinel = FOREIGN_TERMINATOR_SITES[i].sentinel;
-        uint32_t pc = FOREIGN_TERMINATOR_SITES[i].pc;
-        uint32_t ra = FOREIGN_TERMINATOR_SITES[i].ra;
-        /* Skip a site this build genuinely declares; it is asserted above. */
-        if (sr_title_config_is_callback_terminator(sentinel, pc, ra)) continue;
-        Probe p = probe(sentinel, pc, ra);
-        CHECK(!terminated(p), "another title's terminator site (sentinel=0x%08x pc=0x%08x "
-              "ra=0x%08x) reported completion in configuration \"%s\"",
-              sentinel, pc, ra, sr_title_config()->source_id);
-        CHECK(generic_outcome(p, sentinel), "another title's terminator site is not generic "
-              "(sentinel=0x%08x v0=0x%08x pc=0x%08x)", sentinel, p.v0, p.pc);
-    }
-}
-
 /* ---- the generic build inherits nothing -------------------------------------------- */
 
 static void test_generic_build_configures_no_collection(void) {
@@ -1709,31 +1784,21 @@ static void test_generic_build_configures_no_collection(void) {
     if (strcmp(cfg->source_id, "none") != 0) return;   /* not the generic build */
     CHECK(cfg->dispatch_alias_count == 0u,
           "the generic configuration declares %u dispatch alias(es)", cfg->dispatch_alias_count);
-    CHECK(cfg->callback_terminator_count == 0u,
-          "the generic configuration declares %u callback terminator(s)",
-          cfg->callback_terminator_count);
-    CHECK((cfg->valid & (SR_TITLE_CFG_DISPATCH_ALIASES | SR_TITLE_CFG_CALLBACK_TERMINATORS)) == 0u,
+    CHECK((cfg->valid & SR_TITLE_CFG_DISPATCH_ALIASES) == 0u,
           "the generic configuration set a collection validity bit (valid=0x%x)", cfg->valid);
-    /* Every foreign site is exercised by the tests above; the claim here is the stronger
-     * one that no input at all can produce a match. */
-    CHECK(!sr_title_config_is_callback_terminator(0u, PROBE_PC, PROBE_RA) &&
-          !sr_title_config_is_callback_terminator(UINT32_MAX, PROBE_PC, PROBE_RA),
-          "an unconfigured build matched a callback terminator");
     CHECK(!sr_title_config_dispatch_alias(0u, NULL) &&
           !sr_title_config_dispatch_alias(UINT32_MAX, NULL),
           "an unconfigured build resolved a dispatch alias");
 }
 
-/* A configured build must declare at least one of each, or the matrix would be asserting
+/* A configured build must declare at least one alias, or the matrix would be asserting
  * emptiness three times over and prove nothing about the configured path. */
-static void test_configured_build_declares_both_collections(void) {
+static void test_configured_build_declares_aliases(void) {
     const SrTitleRuntimeConfig *cfg = sr_title_config();
     if (strcmp(cfg->source_id, "none") == 0) return;
     CHECK(cfg->dispatch_alias_count > 0u,
           "configuration \"%s\" declares no dispatch alias; the fixture is not exercising "
           "the configured path", cfg->source_id);
-    CHECK(cfg->callback_terminator_count > 0u,
-          "configuration \"%s\" declares no callback terminator", cfg->source_id);
 }
 
 /* ---- TD-27 stale dispatch redirect ------------------------------------------------
@@ -2069,6 +2134,33 @@ static void test_null_code_pointer_is_not_the_offset0_function(const char *self_
           "generated-code null code pointer check did not stop the run with status 1 "
           "(status=%d)", child_status);
 
+    /* #363: a zero-based image's generated data access. An address past the PSP's unmapped
+     * range passes, and a null base plus a field offset ends the process by name. */
+    CHECK(sr_null_page_checked(SR_PSP_UNMAPPED_END, __func__) == SR_PSP_UNMAPPED_END,
+          "the first mapped address did not pass the null-page guard");
+    remove(event_path);
+    set_boot_event_file(event_path);
+    child_status = run_dispatch_child(self_path, "--null-data-pointer-child");
+    set_boot_event_file("");
+    CHECK(child_status == 1,
+          "generated-code null data pointer check did not stop the run with status 1 "
+          "(status=%d)", child_status);
+    CHECK(boot_event_file_names(event_path, "boundary=null-data-pointer issue=363"),
+          "null data pointer stop did not record its boot event naming #363");
+    /* A native fill or copy standing in for a translated loop: an empty span at a null base
+     * touches nothing and passes, and any other stops before a byte moves. */
+    CHECK(sr_null_span_checked(0u, 0u, __func__) == 0u,
+          "an empty span at a null base did not pass the null-page guard");
+    remove(event_path);
+    set_boot_event_file(event_path);
+    child_status = run_dispatch_child(self_path, "--null-data-span-child");
+    set_boot_event_file("");
+    CHECK(child_status == 1,
+          "generated-code null span check did not stop the run with status 1 "
+          "(status=%d)", child_status);
+    CHECK(boot_event_file_names(event_path, "boundary=null-data-pointer issue=363"),
+          "null span stop did not record its boot event naming #363");
+
     sr_exec_span_reset();
 }
 
@@ -2278,6 +2370,15 @@ static void test_host_entries_return_through_the_host_return_address(const char 
 
 int main(int argc, char **argv) {
     sr_mem_init();
+    /* `--watch ADDR:LEN` arms SR_WATCH for this run (and the children it starts), so
+     * memory-watch-selftest can run one binary under two ranges without a sub-make. */
+    if (argc == 3 && strcmp(argv[1], "--watch") == 0) {
+#ifdef _WIN32
+        _putenv_s("SR_WATCH", argv[2]);
+#else
+        setenv("SR_WATCH", argv[2], 1);
+#endif
+    }
     sr_watch_configure();
     sr_watch_note_vblank(7u);
     atomic_store(&sr_timeslice, 0);
@@ -2299,6 +2400,14 @@ int main(int argc, char **argv) {
         SR_CODE_POINTER(&s, s.r[25], NULLPTR_EXEC_START);
         return 99; /* fail-open: a null code pointer must never fall through */
     }
+    if (argc == 2 && strcmp(argv[1], "--null-data-pointer-child") == 0) {
+        (void)sr_null_page_checked(8u, "null_data_pointer_child");
+        return 99; /* fail-open: a null base must never reach image bytes */
+    }
+    if (argc == 2 && strcmp(argv[1], "--null-data-span-child") == 0) {
+        (void)sr_null_span_checked(0u, 8u, "null_data_span_child");
+        return 99; /* fail-open: a bulk pass must never start at a null base */
+    }
     if (argc == 2 && strcmp(argv[1], "--host-tail-return-child") == 0)
         return run_host_tail_return_child();
     if (argc == 2 && strcmp(argv[1], "--null-return-child") == 0) {
@@ -2317,13 +2426,14 @@ int main(int argc, char **argv) {
 
     const SrTitleRuntimeConfig *cfg = sr_title_config();
     fprintf(stderr, "dispatch-isolation-selftest: configuration \"%s\" "
-            "(%u alias(es), %u terminator(s))\n",
-            cfg->source_id, cfg->dispatch_alias_count, cfg->callback_terminator_count);
+            "(%u alias(es))\n",
+            cfg->source_id, cfg->dispatch_alias_count);
 
     test_generic_build_configures_no_collection();
-    test_configured_build_declares_both_collections();
+    test_configured_build_declares_aliases();
     test_valid_aot_miss_executes_guest_bytes();
     test_aot_store_watch_synthetic_guest();
+    test_ram_store_watch_every_width();
     test_aot_call_returns_before_native_continuation();
     test_interpreter_tail_transfers_remain_untyped();
     test_interpreter_rejects_unowned_and_invalid_fetches();
@@ -2336,13 +2446,12 @@ int main(int argc, char **argv) {
     test_historical_call_target_fails_at_named_boundary();
     test_runtime_module_binding_is_the_authority_for_its_range();
     test_code_overlays_follow_guest_memory();
+    test_mixed_overlay_is_identified_by_its_code_ranges();
     test_late_import_retirement_is_visible_after_warm_dispatch();
     test_historical_target_shapes_fail_closed();
     test_diagnostic_exact_hooks_never_consume();
     test_configured_aliases_redirect();
     test_foreign_aliases_do_not_redirect();
-    test_configured_terminators_match_their_site_only();
-    test_foreign_terminator_sites_are_generic();
     test_stale_hook_redirects_to_interpreter();
     test_null_code_pointer_is_not_the_offset0_function(argv[0]);
     test_host_entries_return_through_the_host_return_address(argv[0]);

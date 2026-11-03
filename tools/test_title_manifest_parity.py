@@ -147,6 +147,25 @@ class TitleManifestParityTests(unittest.TestCase):
                     self.assertIn(field, output)
                     self.assertNotIn("#", output)
 
+    def test_retired_callback_terminators_have_named_native_migration_error(self):
+        manifest = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
+        manifest["runtime_bindings"]["callback_terminators"] = [
+            {"sentinel": 0xFFFFFFFF, "pc": 0x08906000, "ra": 0x08906100}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "legacy-callback-terminators.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            py_ok, py_output = self._run_python(path)
+            c_ok, c_output = self._run_native(path)
+        for accepted, output, parser in (
+            (py_ok, py_output, "Python"),
+            (c_ok, c_output, "native"),
+        ):
+            self.assertFalse(accepted, f"{parser} parser accepted retired callback_terminators")
+            self.assertIn("CALLBACK_TERMINATOR_RETIRED: the runtime no longer reports a "
+                          "dispatch target as a completed walk", output)
+            self.assertIn("callback_terminators", output)
+            self.assertNotIn("#", output)
+
     def test_loose_root_bindings_and_failures_have_native_python_parity(self):
         base = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
         base["filesystem"]["loose_content_roots"] = [

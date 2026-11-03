@@ -50,7 +50,11 @@ from enhancement_package import (
     UPDATE_BOUNDARY_KEYS,
     VALID_CATEGORIES,
     EnhancementPackageError,
+    _gpr_written,
+    _validate_site_extras,
     compute_stock_words_digest,
+    draft_package_declaration,
+    draft_timing_package,
     find_data_file,
     load_package,
     plan_data_value,
@@ -1168,6 +1172,73 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                 hashlib.sha256(package_cache.canonical_json(opts_enhanced).encode("utf-8")).hexdigest(),
             )
 
+    def _argument_package(self, tmp: Path, helper_words: dict[int, int]) -> tuple[dict[str, Any], dict[str, str]]:
+        """A package with one argument_x2 site on a helper the entry calls."""
+        words = dict(self.words)
+        words[0x00001030] = 0x0C000000 | (0x00001700 >> 2)  # jal helper, then the stock return
+        words[0x00001034] = 0x00000000
+        words[0x00001038] = 0x03E00008
+        words[0x0000103C] = 0x00000000
+        words.update(helper_words)
+        elf_bytes = _write_synthetic_mips_elf(tmp / "synth.elf", words, self.entry)
+        pkg, symbols = self._make_package_and_symbols(elf_bytes)
+        symbols["synth_repeat_helper"] = "0x00001700"
+        pkg["sites"].append({
+            "id": "SYNTH_ARGS",
+            "function": "synth_repeat_helper",
+            "insn_offset": 0,
+            "stock_digest": compute_stock_words_digest([helper_words[0x00001700]]),
+            "transform": "argument_x2",
+            "arguments": ["a3", "t0"],
+        })
+        return pkg, symbols
+
+    def test_argument_x2_doubles_the_named_arguments_only_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            pkg, symbols = self._argument_package(tmp, {
+                0x00001700: 0x8C820080,  # lw v0,128(a0)
+                0x00001704: 0x03E00008,
+                0x00001708: 0x00000000,
+            })
+            rc, output, files = self._codegen_with(tmp, "args", pkg, symbols)
+            self.assertEqual(rc, 0, output)
+            combined = b"\n".join(files.values()).decode("utf-8")
+            lines = combined.splitlines()
+            at = next(i for i, line in enumerate(lines) if "s->r[7] <<= 1; s->r[8] <<= 1;" in line)
+            self.assertIn("if (nk_enhancement_on()) {", lines[at])
+            # The doubling follows the stock load, and the other arm is the stock load alone.
+            self.assertLess(lines[at].index("0x8c820080"), lines[at].index("s->r[7] <<= 1"))
+            self.assertIn("else {", lines[at + 1])
+            self.assertIn("0x8c820080", lines[at + 1])
+            self.assertNotIn("<<= 1", lines[at + 1])
+
+    def test_argument_x2_refuses_a_function_that_branches_back_to_its_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            pkg, symbols = self._argument_package(tmp, {
+                0x00001700: 0x8C820080,  # lw v0,128(a0)
+                0x00001704: 0x1040FFFE,  # beqz v0, entry: a second pass would double again
+                0x00001708: 0x00000000,
+                0x0000170C: 0x03E00008,
+                0x00001710: 0x00000000,
+            })
+            with self.assertRaises(EnhancementPackageError) as ctx:
+                self._codegen_with(tmp, "loop", pkg, symbols)
+            self.assertIn("branches back to its entry", str(ctx.exception))
+
+    def test_argument_x2_refuses_a_function_that_jumps_back_to_its_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            pkg, symbols = self._argument_package(tmp, {
+                0x00001700: 0x8C820080,  # lw v0,128(a0)
+                0x00001704: 0x08000000 | (0x00001700 >> 2),  # j entry: a second pass would double again
+                0x00001708: 0x00000000,
+            })
+            with self.assertRaises(EnhancementPackageError) as ctx:
+                self._codegen_with(tmp, "selfj", pkg, symbols)
+            self.assertIn("branches back to its entry", str(ctx.exception))
+
     def test_a_site_that_is_never_emitted_refuses_the_package(self) -> None:
         """Every verified site must be emitted; a site whose function is stubbed refuses."""
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1510,6 +1581,81 @@ class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
                     self._plan(transform, word)
                 self.assertIn(why, str(ctx.exception))
 
+    def test_argument_x2_plans_and_refuses(self) -> None:
+        site = {"arguments": ["a3", "t0"], "insn_offset": 0, "word_count": 1}
+        # lw v0,128(a0) leaves the arguments alone.
+        self.assertEqual(self._plan("argument_x2", 0x8C820080, **site),
+                         {"kind": "scale_int_args", "regs": [7, 8]})
+        # lw a3,128(a0) writes one: doubling after it would double the loaded value.
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            self._plan("argument_x2", 0x8C870080, **site)
+        self.assertIn("writes an argument", str(ctx.exception))
+        # Every other form that writes a3 refuses too, not only the plain loads.
+        for name, word in self._A3_WRITERS:
+            with self.subTest(form=name):
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    self._plan("argument_x2", word, **site)
+                self.assertIn("writes an argument", str(ctx.exception))
+
+    # (form, encoding) of instructions that write a3 (r7).
+    _A3_WRITERS = (
+        ("lwl", 0x88870000),
+        ("lwr", 0x98870000),
+        ("ll", 0xC0870000),
+        ("sc", 0xE0870000),
+        ("mfc1", 0x44071000),
+        ("cfc1", 0x4447F800),
+        ("mfc0", 0x40076000),
+        ("ext", 0x7C873800),
+        ("ins", 0x7C873804),
+        ("seb", 0x7C043C20),
+        ("seh", 0x7C043E20),
+        ("clz", 0x00803816),
+        ("clo", 0x00803817),
+        ("mfv", 0x48670000),
+        ("mfvc", 0x48670080),
+    )
+
+    def test_gpr_written_table(self) -> None:
+        for name, word in self._A3_WRITERS:
+            with self.subTest(form=name):
+                self.assertEqual(_gpr_written(word), 7)
+        for name, word in (
+            ("sw", 0xAFA70000),
+            ("mtc1", 0x44843800),
+            ("mtv", 0x48E70000),
+            ("mtvc", 0x48E70080),
+            ("mthi", 0x00800011),
+            ("mtlo", 0x00800013),
+            ("mult", 0x00870018),
+            ("jr", 0x03E00008),
+            ("syscall", 0x0000000C),
+            ("sync", 0x0000000F),
+            ("beq", 0x10870002),
+        ):
+            with self.subTest(form=name):
+                self.assertIsNone(_gpr_written(word))
+
+    def test_argument_x2_validation(self) -> None:
+        for extra, why in (
+            ({}, "needs a list"),
+            ({"arguments": []}, "needs a list"),
+            ({"arguments": ["s0"]}, "needs a list"),
+            ({"arguments": ["a3", "a3"]}, "needs a list"),
+            ({"arguments": "a3"}, "needs a list"),
+            ({"arguments": ["a3"], "insn_offset": 4}, "function entry"),
+            ({"arguments": ["a3"], "word_count": 2}, "function entry"),
+        ):
+            with self.subTest(extra=extra):
+                site = dict({"transform": "argument_x2", "insn_offset": 0, "word_count": 1}, **extra)
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    _validate_site_extras(site, "sites[0]")
+                self.assertIn(why, str(ctx.exception))
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            _validate_site_extras({"transform": "count_x2", "insn_offset": 0, "word_count": 1,
+                                   "arguments": ["a3"]}, "sites[0]")
+        self.assertIn("belongs only to argument_x2", str(ctx.exception))
+
     def test_accel_and_double_upper_words(self) -> None:
         # lui v0,0x3d05 (the upper half of 0.0326667): two exponent steps are exact.
         word = self._plan("accel_x0.25", 0x3C023D05)["word"]
@@ -1581,6 +1727,125 @@ class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
         del missing["sites"][0]["acceleration_site"]
         with self.assertRaisesRegex(EnhancementPackageError, "needs acceleration_site"):
             validate_package(missing)
+
+
+def _i(op: int, rs: int, rt: int, imm: int) -> int:
+    return (op << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+
+def _jal(target: int) -> int:
+    return (0x03 << 26) | ((target >> 2) & 0x3FFFFFF)
+
+
+def _move(rd: int, rs: int) -> int:
+    return (rs << 21) | (rd << 11) | 0x21     # addu rd, rs, zero
+
+
+_NOP, _JR_RA = 0, 0x03E00008
+_ZERO, _AT, _V0, _V1, _A0, _A1, _A2, _SP = 0, 1, 2, 3, 4, 5, 6, 29
+
+
+def _program(blocks: dict[int, list[int]]) -> dict[int, int]:
+    return {base + 4 * i: w for base, ws in blocks.items() for i, w in enumerate(ws)}
+
+
+class TestEnhancementDraft(unittest.TestCase):
+    """The 60 Hz draft finds the frame-pacing waits of a synthetic title."""
+
+    STUB_REG, STUB_WAIT, STUB_MULTI = 0x9000, 0x9008, 0x9010
+    IMPORTS = {STUB_REG: 0xCA04A2B9, STUB_WAIT: 0x984C27E7, STUB_MULTI: 0x40F1469C}
+
+    def _counter_title(self, *, increment: bool = True, wrapper: bool = True) -> dict[int, int]:
+        handler = [
+            _i(0x0F, 0, _V1, 0x0031), _i(0x23, _V1, _A1, 0x105C),          # lw a1, counter
+            _i(0x0F, 0, _A0, 0x0031),
+            _i(0x09, _A1, _A1, 1 if increment else 0),                      # addiu a1, a1, 1
+            _i(0x2B, _A0, _A1, 0x105C), _JR_RA, _NOP,
+        ]
+        if wrapper:   # register_vblank(handler) -> sceKernelRegisterSubIntrHandler(30, 0, handler, 0)
+            registration = {
+                0x1100: [_i(0x0F, 0, _A0, 0), _i(0x09, _A0, _A0, 0x1000), _jal(0x1180), _NOP, _JR_RA, _NOP],
+                0x1180: [_i(0x09, _SP, _SP, -16), _move(_V1, _A0), _i(0x09, _ZERO, _A0, 30),
+                         _move(_A2, _V1), _jal(self.STUB_REG), _NOP, _JR_RA, _NOP],
+            }
+        else:
+            registration = {
+                0x1100: [_i(0x0F, 0, _A2, 0), _i(0x09, _A2, _A2, 0x1000), _i(0x09, _ZERO, _A0, 30),
+                         _jal(self.STUB_REG), _NOP, _JR_RA, _NOP],
+            }
+        wait = [
+            _jal(self.STUB_WAIT), _NOP,                                       # wait one VBLANK
+            _i(0x0F, 0, _V0, 0x0031), _i(0x23, _V0, _V0, 0x105C),
+            _i(0x0B, _V0, _AT, 2),                                            # sltiu at, v0, 2
+            _i(0x05, _AT, 0, -6 & 0xFFFF), _NOP,                              # bnez at, back
+            _i(0x0F, 0, _V0, 0x0031), _i(0x2B, _V0, _ZERO, 0x105C),           # sw zero, counter
+            _JR_RA, _NOP,
+        ]
+        return _program({0x1000: handler, **registration, 0x1200: wait,
+                         0x1300: [_jal(0x1200), _NOP, _JR_RA, _NOP],          # frame body
+                         0x1400: [_jal(0x1300), _NOP, _JR_RA, _NOP]})         # main loop
+
+    def test_counter_poll_through_a_registration_wrapper(self) -> None:
+        for wrapper in (True, False):
+            with self.subTest(wrapper=wrapper):
+                words = self._counter_title(wrapper=wrapper)
+                draft = draft_timing_package(words, self.IMPORTS)
+                self.assertEqual(len(draft["pacing_sites"]), 1)
+                site = draft["pacing_sites"][0]
+                self.assertEqual((site["kind"], site["address"], site["function"], site["insn_offset"]),
+                                 ("vblank_counter_poll", 0x1210, 0x1200, 0x10))
+                self.assertEqual(site["counter"], 0x0031105C)
+                self.assertTrue(site["handler_registered"])
+                self.assertEqual(draft["boundary_candidates"], [{"function": 0x1300, "calls": [0x1300]}])
+                self.assertEqual(draft["unexplained_waits"], [])   # the poll's own one-VBLANK wait
+
+    def test_package_validates_and_rewrites_the_poll(self) -> None:
+        words = self._counter_title()
+        package, symbols = draft_package_declaration(
+            draft_timing_package(words, self.IMPORTS), words, package_id="synth-60hz",
+            title_id="synthetic-allegrex-v1", executable_sha256="a" * 64, game_version="1.00")
+        validate_package(package)
+        self.assertEqual(symbols, {"draft_fn_00001200": "0x00001200", "draft_fn_00001300": "0x00001300"})
+        self.assertEqual(package["update_boundary"]["function"], "draft_fn_00001300")
+        site = package["sites"][0]
+        self.assertEqual(site["transform"], "vblank_wait_2_to_1")
+        self.assertEqual(plan_site_rewrite(site, words[0x1210])["word"], _i(0x0B, _V0, _AT, 1))
+        resolved = verify_and_resolve_sites(
+            package, executable_sha256="a" * 64, symbol_to_addr={k: int(v, 16) for k, v in symbols.items()},
+            read_words_fn=lambda a, n: [words[a + 4 * i] for i in range(n)] if a in words else None)
+        self.assertEqual(sorted(resolved), [0x1210])
+
+    def test_wait_multi_and_unexplained_waits(self) -> None:
+        words = _program({
+            0x2000: [_i(0x09, _ZERO, _A0, 2), _jal(self.STUB_MULTI), _NOP, _JR_RA, _NOP],
+            0x2100: [_jal(self.STUB_WAIT), _NOP, _jal(self.STUB_WAIT), _NOP, _JR_RA, _NOP],
+            0x2200: [_jal(0x2000), _NOP, _jal(0x2000), _NOP, _JR_RA, _NOP],
+            0x2300: [_jal(0x2000), _NOP, _jal(0x2100), _NOP, _JR_RA, _NOP],
+        })
+        draft = draft_timing_package(words, self.IMPORTS, function_starts=[0x2200, 0x2300])  # symbol entries
+        self.assertEqual([(s["kind"], s["address"], s["api"]) for s in draft["pacing_sites"]],
+                         [("wait_multi_2", 0x2000, "sceDisplayWaitVblankStartMulti")])
+        self.assertEqual(draft["boundary_candidates"], [{"function": 0x2200, "calls": [0x2200, 0x2208]},
+                                                        {"function": 0x2300, "calls": [0x2300]}])
+        self.assertEqual([(w["call"], w["function"]) for w in draft["unexplained_waits"]],
+                         [(0x2100, 0x2100), (0x2108, 0x2100)])
+        package, _ = draft_package_declaration(draft, words, package_id="synth-60hz",
+                                               title_id="synthetic-allegrex-v1", executable_sha256="a" * 64,
+                                               game_version="1.00")
+        self.assertNotIn("update_boundary", package)   # two candidates: a person chooses
+        self.assertEqual(plan_site_rewrite(package["sites"][0], words[0x2000])["word"], _i(0x09, _ZERO, _A0, 1))
+
+    def test_no_pacing_without_an_increment_or_a_clear(self) -> None:
+        words = self._counter_title(increment=False)
+        draft = draft_timing_package(words, self.IMPORTS)
+        self.assertEqual(draft["pacing_sites"], [])
+        self.assertEqual([w["call"] for w in draft["unexplained_waits"]], [0x1200])
+        with self.assertRaisesRegex(EnhancementPackageError, "No frame-pacing wait"):
+            draft_package_declaration(draft, words, package_id="synth-60hz", title_id="synthetic-allegrex-v1",
+                                      executable_sha256="a" * 64, game_version="1.00")
+        cleared_elsewhere = self._counter_title()
+        cleared_elsewhere[0x1220] = _NOP     # drop the `sw zero, counter`
+        self.assertEqual(draft_timing_package(cleared_elsewhere, self.IMPORTS)["pacing_sites"], [])
 
 
 class TestEnhancementBuildPackageWiring(unittest.TestCase):

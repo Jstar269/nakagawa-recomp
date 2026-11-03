@@ -281,13 +281,61 @@ def data_section_words(elf):
     return words
 
 
+# Fixed-address ELF overlays: ELF type 0xFFA8, a single PT_LOAD at its link address, no
+# entry point and no module information. The game copies the segment into place itself
+# and calls into it through pointers the executable holds; the kernel never loads it. One
+# section covers the whole segment, so its code and its data are not told apart by the
+# file: the analysis finds the code by control flow from the executable's pointers.
+FIXED_OVERLAY_ELF_TYPE = 0xFFA8
+FIXED_OVERLAY_HEADER_BYTES = 52
+
+
+def is_fixed_overlay(data):
+    """Whether a file's header (at least its first 18 bytes) names a fixed-address ELF overlay."""
+    head = bytes(data[:18])
+    return (len(head) == 18 and head[:6] == b"\x7fELF\x01\x01"
+            and struct.unpack_from("<H", head, 16)[0] == FIXED_OVERLAY_ELF_TYPE)
+
+
+def fixed_overlay_segment(data):
+    """Validate a fixed-address ELF overlay; return (load, file offset, filesz, memsz).
+
+    ValueError if malformed."""
+    if not is_fixed_overlay(data):
+        raise ValueError("not an ELF type 0xFFA8 overlay")
+    if len(data) < FIXED_OVERLAY_HEADER_BYTES:
+        raise ValueError("ELF overlay is shorter than its header")
+    machine, _version, entry, phoff = struct.unpack_from("<HIII", data, 18)
+    phentsize, phnum = struct.unpack_from("<HH", data, 42)
+    if machine != 8 or entry != 0:
+        raise ValueError("ELF overlay is not MIPS, or names an entry point")
+    if phentsize != 32 or phnum != 1 or phoff + 32 > len(data):
+        raise ValueError("ELF overlay does not have exactly one program header")
+    p_type, offset, load, _paddr, filesz, memsz = struct.unpack_from("<6I", data, phoff)
+    if p_type != 1 or filesz == 0 or memsz < filesz:
+        raise ValueError("ELF overlay's program header is not one non-empty PT_LOAD")
+    if load & 3 or offset + filesz > len(data) or load + memsz > 0x100000000:
+        raise ValueError("ELF overlay's segment is unaligned or lies outside the file "
+                         "or the 32-bit address space")
+    return load, offset, filesz, memsz
+
+
 def is_code_overlay(data):
-    return bytes(data[:4]) == CODE_OVERLAY_MAGIC
+    """Whether a file is a code overlay of either form (MWo3, or ELF type 0xFFA8)."""
+    return bytes(data[:4]) == CODE_OVERLAY_MAGIC or is_fixed_overlay(data)
+
+
+def check_code_overlay(data):
+    """Validate a code overlay of either form; ValueError if malformed."""
+    if is_fixed_overlay(data):
+        fixed_overlay_segment(data)
+    else:
+        code_overlay_layout(data)
 
 
 def code_overlay_layout(data):
     """Validate an MWo3 code overlay and return its CodeOverlayLayout; ValueError if malformed."""
-    if not is_code_overlay(data):
+    if bytes(data[:4]) != CODE_OVERLAY_MAGIC:
         raise ValueError("not an MWo3 code overlay")
     if len(data) < CODE_OVERLAY_HEADER_BYTES:
         raise ValueError("MWo3 overlay is shorter than its header")
@@ -310,36 +358,58 @@ def code_overlay_elf(data):
     One PT_LOAD maps the whole file at its load address (bss included), and the sections
     name the text, data, init array and bss, so the analysis treats the overlay exactly as
     it treats a fixed-address module: the text is the only code, and the init array and
-    data pointer tables seed functions. Nothing is relocated."""
+    data pointer tables seed functions. Nothing is relocated.
+
+    A fixed-address ELF overlay (ELF type 0xFFA8) becomes the same kind of image, with its
+    one segment named .text: nothing in the file separates its code from its data, so the
+    analysis finds the code by control flow from the pointers the executable holds, and
+    codegen grants execution authority only over the code it found."""
+    if is_fixed_overlay(data):
+        load, offset, filesz, memsz = fixed_overlay_segment(data)
+        segment = bytes(data[offset:offset + filesz])
+        sections = [(b".text", 1, 0x6, load, 0, filesz)]
+        if memsz > filesz:
+            sections.append((b".bss", 8, 0x3, load + filesz, None, memsz - filesz))
+        return _fixed_address_elf(load, segment, memsz, sections)
     layout = code_overlay_layout(data)
+    sections = [(b".text", 1, 0x6, layout.text_lo, CODE_OVERLAY_HEADER_BYTES, layout.text_size)]
+    if layout.data_size:
+        sections.append((b".data", 1, 0x3, layout.data_lo, layout.data_lo - layout.load,
+                         layout.data_size))
+    if layout.init_hi > layout.init_lo:
+        sections.append((b".init_array", 14, 0x3, layout.init_lo, layout.init_lo - layout.load,
+                         layout.init_hi - layout.init_lo))
+    if layout.bss_size:
+        sections.append((b".bss", 8, 0x3, layout.file_end, None, layout.bss_size))
+    return _fixed_address_elf(layout.load, data, len(data) + layout.bss_size, sections)
+
+
+def _fixed_address_elf(load, image, memsz, sections):
+    """An ELF32 executable that maps ``image`` at ``load`` (one PT_LOAD of ``memsz`` bytes).
+
+    ``sections`` are (name, type, flags, address, offset in ``image`` or None, size); the
+    names are among .text, .data, .init_array and .bss."""
     names = b"\0.text\0.data\0.init_array\0.bss\0.shstrtab\0"
     image_off = 0x60                                    # header (52) + one phdr (32), aligned
-    names_off = image_off + len(data)
+    names_off = image_off + len(image)
     shoff = (names_off + len(names) + 3) & ~3
 
     def name_at(text):
         return names.index(text + b"\0")
 
-    sections = [(0, 0, 0, 0, 0, 0)]
-    sections.append((name_at(b".text"), 1, 0x6, layout.text_lo,
-                     image_off + CODE_OVERLAY_HEADER_BYTES, layout.text_size))
-    if layout.data_size:
-        sections.append((name_at(b".data"), 1, 0x3, layout.data_lo,
-                         image_off + layout.data_lo - layout.load, layout.data_size))
-    if layout.init_hi > layout.init_lo:
-        sections.append((name_at(b".init_array"), 14, 0x3, layout.init_lo,
-                         image_off + layout.init_lo - layout.load, layout.init_hi - layout.init_lo))
-    if layout.bss_size:
-        sections.append((name_at(b".bss"), 8, 0x3, layout.file_end, names_off, layout.bss_size))
-    sections.append((name_at(b".shstrtab"), 3, 0, 0, names_off, len(names)))
+    table = [(0, 0, 0, 0, 0, 0)]
+    for name, typ, flags, addr, offset, size in sections:
+        table.append((name_at(name), typ, flags, addr,
+                      names_off if offset is None else image_off + offset, size))
+    table.append((name_at(b".shstrtab"), 3, 0, 0, names_off, len(names)))
+    sections = table
 
     out = bytearray(shoff + 40 * len(sections))
     out[:16] = b"\x7fELF\x01\x01\x01" + bytes(9)
     struct.pack_into("<HHIIIIIHHHHHH", out, 16, 2, 8, 1, 0, 52, shoff, 0,
                      52, 32, 1, 40, len(sections), len(sections) - 1)
-    struct.pack_into("<8I", out, 52, 1, image_off, layout.load, 0, len(data),
-                     len(data) + layout.bss_size, 7, 4)
-    out[image_off:image_off + len(data)] = data
+    struct.pack_into("<8I", out, 52, 1, image_off, load, 0, len(image), memsz, 7, 4)
+    out[image_off:image_off + len(image)] = image
     out[names_off:names_off + len(names)] = names
     for index, (name, typ, flags, addr, off, size) in enumerate(sections):
         struct.pack_into("<10I", out, shoff + 40 * index, name, typ, flags, addr, off, size,
@@ -1781,6 +1851,9 @@ class _Discovery:
         self.hc = set()
         self.noisy = set()
         self.jtails = set()  # every in-range `j` target; candidates for tail-call promotion below
+        # In-range materialized addresses (`lui` + `addiu`/`ori`) that are not entry-shaped:
+        # {target: the low-half instruction addresses}. _seed_materialized_code reads it.
+        self.materialized = {}
         # `covered` ends up holding every instruction that belongs to some known function, so the
         # weak signals that land inside a function body (internal blocks) can be discarded.
         self.covered = set()
@@ -2057,6 +2130,7 @@ def _seed_address_materializations(d):
                 hc.add(val)
             else:
                 noisy.add(val)
+                d.materialized.setdefault(val, set()).add(low_half_addr)
         elif in_ranges(val, file_exec_ranges) and _is_address_taken_entry(elf, val):
             # Executable PT_LOAD bytes outside the named code sections (.init, .fini)
             # are already callable when a `jal` names them; a materialized pointer to
@@ -2177,6 +2251,184 @@ def _seed_address_materializations(d):
                         else: break
 
 
+#: What became of a miss seed (`analyze`'s `report["miss_seeds"]`), decided by comparing the build
+#: with and without seeds: `applied` is an entry the seeds added, with a translated body; `known`
+#: was an entry without them. Anything else names why it was ignored.
+SEED_APPLIED = "applied"
+SEED_KNOWN = "known"
+SEED_UNALIGNED = "unaligned"
+SEED_OUTSIDE_CODE = "outside-executable-ranges"
+SEED_NOT_CODE = "not-a-function-start"
+#: `untranslatable: [brings 0x...: ]<why>`: with the seed the emitter stubs an entry it does not
+#: stub without it, the seed's own or the named one. A stub registered for an address replaces
+#: the interpreter floor a run reaches there today with an abort, so the seed stays out.
+SEED_UNTRANSLATABLE = "untranslatable"
+#: `not-callable: <role>[: where]`: the seed gets no body. A seed becomes a callable body that
+#: restores the `$sp` it was entered with, and the interpreter floor hands off to any address with
+#: a body. Inside a live frame that restore undoes the epilogue. A seed the frame walk shows
+#: releasing a frame it never allocated is refused everywhere. An address the build would own
+#: without that seed stays on the floor, which runs it on the guest's own `$sp`, unless the walk
+#: proves it an entry. The floor cannot run any other address: the run stops there without a body,
+#: so a seed the walk only cannot prove keeps its entry.
+SEED_NOT_CALLABLE = "not-callable"
+#: The seed is an analysis entry but the build emits no body for it (--omit-aot).
+SEED_NOT_EMITTED = "not-emitted"
+
+
+def _seed_not_callable(d, address):
+    """None for a proven entry: every return nets `$sp` to zero, and any computed jump leaves a
+    frame the seed allocated itself. Otherwise `(why, released)`: `released` when a path the walk
+    follows exactly releases a frame the seed did not allocate, whatever the other paths do; false
+    when the walk only cannot prove an entry. At net 0 from a seed with no frame, a computed jump says
+    nothing: the frame the seed is inside can be released in the arm the walk cannot follow, and
+    `_walk_frame` falls out of a noreturn call into the next function's return."""
+    # entry_frame_balance imports this module, so it is imported where it is used.
+    import entry_frame_balance
+    ranges = [*d.ranges, *d.file_exec_ranges, *d.proven_spans]
+    exact = entry_frame_balance.profile_exact_paths(d.elf, address, ranges)
+    for where, deltas in (("a return", exact.return_deltas),
+                          ("a computed jump", exact.tail_deltas)):
+        released = sorted(delta for delta in deltas if delta > 0)
+        if released:
+            return (f"{SEED_NOT_CALLABLE}: {entry_frame_balance.CONTINUATION}: "
+                    f"$sp net {released[0]:+d} at {where}", True)
+    # The proof of an entry stays a whole-walk one: one `$sp` write the walk cannot follow, on any
+    # path, leaves the seed unproven.
+    profile = entry_frame_balance.profile_entry(d.elf, address, ranges)
+    role = entry_frame_balance.classify(profile)
+    if role != entry_frame_balance.CALLABLE:
+        return f"{SEED_NOT_CALLABLE}: {role}", False
+    if profile.tail_deltas and not profile.has_prologue:
+        return (f"{SEED_NOT_CALLABLE}: {entry_frame_balance.INDETERMINATE}: "
+                "computed jump with no frame of its own", False)
+    return None
+
+
+def _seed_miss_targets(d, seeds, floor, unproven):
+    """Add each dispatch-miss target that can start a function to the entries, and return why
+    each other one cannot. A seed that does not look like a function start, that releases a frame,
+    or that is unproven on `floor` is reported and left out: seeding adds analysis input, it never
+    forces a body (AGENTS.md Section 6). An unproven seed off `floor` is added, and `unproven`
+    receives why it is unproven."""
+    unusable = {}
+    for address in sorted(set(seeds)):
+        if address & 3:
+            unusable[address] = SEED_UNALIGNED
+        elif not d.callable_target(address):
+            unusable[address] = SEED_OUTSIDE_CODE
+        else:
+            raw = d.elf.read_at_vaddr(address, 4)
+            word = int.from_bytes(raw, "little") if raw is not None and len(raw) == 4 else None
+            # An all-zero or all-ones word is padding or erased data, not the first instruction
+            # of a function a run entered on purpose.
+            if word is None or word in (0x00000000, 0xFFFFFFFF):
+                unusable[address] = SEED_NOT_CODE
+            else:
+                verdict = _seed_not_callable(d, address)
+                if verdict is None:
+                    d.hc.add(address)
+                    continue
+                why, released = verdict
+                if released or in_ranges(address, floor):
+                    unusable[address] = why
+                else:
+                    unproven[address] = why
+                    d.hc.add(address)
+    return unusable
+
+
+def _seed_behind(run, seed_check, candidates, stub):
+    """A seed of `candidates` that makes `stub` a stub. The empty list leaves `stub` alone and the
+    whole list does not, so a bisection of the list's prefixes ends on a seed that makes the
+    difference, whichever others it needs."""
+    low, high = 0, len(candidates)
+    while high - low > 1:
+        middle = (low + high) // 2
+        entries, ranges = run(candidates[:middle])
+        if seed_check(entries, ranges, only=stub).get(stub) is None:
+            low = middle
+        else:
+            high = middle
+    return candidates[low]
+
+
+def _refuse_seeds_on_seeds_floor(run, candidates, refused):
+    """The `candidates` left once each unproven seed a kept seed's trace owns is in `refused`.
+    `_resolve_seeds` asks again whenever it drops a seed, so this judges the final set.
+
+    A list grows by rounds: the build with a seed's body owns more words, the floor runs them, and
+    the next list names them. The floor runs such a seed in the build without it, so it needs the
+    proof an owned address needs. The spans with every seed cannot tell, since each seed's own
+    trace owns it, so each is asked of the build with the others. A seed refused here leaves that
+    build, so of two unproven seeds that own each other, the lower is refused and the higher kept."""
+    unproven = {}
+    run(candidates, None, None, unproven)
+    kept = list(candidates)
+    for address in sorted(unproven):
+        others = [seed for seed in kept if seed != address]
+        if in_ranges(address, run(others)[1]):
+            refused[address] = unproven[address]
+            kept = others
+    return kept
+
+
+def _resolve_seeds(unseeded, run, seeds, seed_check, report):
+    """Analyze with the seeds that leave the emitter's result no worse, and report each seed from
+    the two final results, with seeds and without, never from a state along the way.
+
+    `unseeded` is the analysis without seeds, `run(seeds, report, unusable, unproven)` one with
+    them. `seed_check(entries, ranges, only=None)` maps each entry the build would emit (`only`
+    alone, when given) to None for a body or to why the emitter stubs it. Without a check every
+    entry counts as a body. Any stub the seeds add refuses a seed, whatever entry it is on. Each
+    refusal for a stub can take away the trace that owned an unproven seed, so the ownership test
+    runs again over every seed not refused for a stub, until no stub refuses one more."""
+    if seed_check is None:
+        def seed_check(entries, ranges, only=None):
+            return dict.fromkeys(entries)
+    entries, ranges = unseeded
+    baseline = set(entries)
+    baseline_stubs = {a for a, why in seed_check(entries, ranges).items() if why is not None}
+    stubbed = {}
+    while True:
+        refused = dict(stubbed)
+        candidates = _refuse_seeds_on_seeds_floor(
+            run, sorted(set(seeds) - baseline - stubbed.keys()), refused)
+        unusable = {}
+        result = run(candidates, report, unusable)
+        emitted = seed_check(*result)
+        new_stubs = {a: why for a, why in emitted.items()
+                     if why is not None and a not in baseline_stubs}
+        if not new_stubs:
+            break
+        own = new_stubs.keys() & set(candidates)
+        for address in own:
+            stubbed[address] = f"{SEED_UNTRANSLATABLE}: {new_stubs[address]}"
+        if not own:
+            stub = min(new_stubs)
+            seed = _seed_behind(run, seed_check, candidates, stub)
+            stubbed[seed] = f"{SEED_UNTRANSLATABLE}: brings 0x{stub:08x}: {new_stubs[stub]}"
+    outcome = {}
+    for address in set(seeds):
+        if address in baseline:
+            outcome[address] = SEED_KNOWN
+        elif address in refused:
+            outcome[address] = refused[address]
+        elif address in unusable:
+            outcome[address] = unusable[address]
+        else:
+            outcome[address] = SEED_APPLIED if address in emitted else SEED_NOT_EMITTED
+    if report is not None:
+        report["miss_seeds"] = outcome
+    return result
+
+
+def seeds_in_analysis(outcome):
+    """The seeds of a `report["miss_seeds"]` the analysis kept: pass them to analyze the same image
+    another way (`cfg_gate`) with the entries this build has, without resolving them again."""
+    return {address for address, status in outcome.items()
+            if status in (SEED_APPLIED, SEED_NOT_EMITTED)}
+
+
 def _promote_tail_calls(d):
     """Return the calls of the last promoted tail-call body, for the gap fill to resolve."""
     elf, jtails, functions = d.elf, d.jtails, d.functions
@@ -2289,14 +2541,313 @@ def _owned_spans(d):
     return merged_ranges
 
 
+def _keep_prologue_seeds(d):
+    """Drop every weak seed but a stack-frame prologue (`addiu sp, sp, -n`).
+
+    In an image whose code section also holds its data (a fixed-address ELF overlay), the
+    word after a return or a jump is as likely data as a function, and a trace started
+    there runs through the data and can swallow the next real function's prologue. A
+    prologue word is rare in data, so it stays a seed. Code no seed reaches is outside the
+    module's spans (codegen gives such an image only its analysed code), so a jump there
+    is a named dispatch miss."""
+    def is_prologue(address):
+        word = d.elf.read_at_vaddr(address, 4)
+        return (word is not None and len(word) == 4
+                and (int.from_bytes(word, "little") >> 16) == 0x27BD
+                and int.from_bytes(word, "little") & 0x8000)
+    d.noisy = {a for a in d.noisy if is_prologue(a)}
+    d.jtails = {a for a in d.jtails if is_prologue(a)}
+
+
+def _traced_word(d, addr):
+    """The word at ``addr`` when it is traced code, else ``None``."""
+    if addr not in d.covered:
+        return None
+    raw = d.elf.read_at_vaddr(addr, 4)
+    return None if raw is None or len(raw) < 4 else int.from_bytes(raw, "little")
+
+
+def _in_traced_delay_slot(d, addr):
+    """Whether ``addr`` is the delay slot of a traced control transfer, likely or not."""
+    word = _traced_word(d, addr - 4)
+    return word is not None and _cfg_control_transfer(word)
+
+
+class _BlockLeaderCensus:
+    """The basic-block leaders of an image's traced code (_seed_materialized_code), as a
+    container: ``addr in census``.
+
+    A leader is an address another path can enter at: a function start or call target,
+    every seed and materialized address (callbacks and exception entries the code names),
+    every code pointer another image holds into this one, every word of the image (a jump
+    table, or a pad an in-image word names: in a mixed image the code section holds the
+    tables), the target of a traced direct branch or jump, and the word after each traced
+    control transfer's delay slot (and after an `eret`). The image's words and its branch
+    and jump edges are read once. The leaders the traced code makes are a set that only
+    grows: trace() adds those of the words newly traced, so no traced word is read twice.
+    The function starts, call targets and seeds are the discovery's own sets, read live."""
+
+    def __init__(self, d, entry_hints=()):
+        self.d = d
+        image_words = {word for _addr, word in _iter_code_words(d.elf, d.ranges)}
+        self.fixed = frozenset(image_words | data_section_words(d.elf)
+                               | set(entry_hints or ()) | {d.elf.entry})
+        self.edge_targets = {}  # source -> the targets of its direct branch or jump
+        for edges in (direct_branch_edges(d.elf, d.ranges), direct_j_edges(d.elf, d.ranges)):
+            for target, sources in edges.items():
+                for source in sources:
+                    source = source[0] if isinstance(source, tuple) else source
+                    self.edge_targets.setdefault(source, []).append(target)
+        self.traced = set()
+
+    def __contains__(self, addr):
+        d = self.d
+        return (addr in self.traced or addr in self.fixed or addr in d.functions
+                or addr in d.calls or addr in d.hc or addr in d.noisy or addr in d.jtails
+                or addr in d.materialized)
+
+    def restart(self):
+        """Forget the traced code's leaders and take those of the traced code as it is now."""
+        self.traced = set()
+        self.trace(self.d.covered)
+
+    def trace(self, addrs):
+        """Add the leaders the newly traced words ``addrs`` make; return the new ones."""
+        d, traced, new = self.d, self.traced, []
+        for addr in addrs:
+            found = list(self.edge_targets.get(addr, ()))
+            word = _traced_word(d, addr)
+            if word is not None:
+                if _cfg_control_transfer(word):
+                    found.append(addr + 8)
+                elif _cfg_is_eret(word):
+                    found.append(addr + 4)
+            for leader in found:
+                if leader not in traced:
+                    traced.add(leader)
+                    new.append(leader)
+        return new
+
+
+def _register_jump(d, site):
+    """The register a traced `jr`/`jalr` at ``site`` jumps through, or ``None`` (not traced,
+    not such a jump, or `$zero`/`$ra`)."""
+    word = _traced_word(d, site)
+    if word is None or word >> 26 != 0 or (word & 0x3F) not in (0x08, 0x09):
+        return None
+    reg = (word >> 21) & 0x1F
+    return None if reg in (0, 31) else reg
+
+
+def _discovery_state(d):
+    """A copy of what d.discover() changes, for _restore_discovery."""
+    walked = d.walked_by_ranges
+    return (set(d.covered), set(d.calls), set(d.hc), set(d.functions), list(d.proven_spans),
+            None if walked is None else {key: set(words) for key, words in walked.items()})
+
+
+def _restore_discovery(d, state):
+    """Return the discovery, in place, to a _discovery_state copy."""
+    covered, calls, hc, functions, proven_spans, walked = state
+    for live, saved in ((d.covered, covered), (d.calls, calls), (d.hc, hc),
+                        (d.functions, functions)):
+        live.clear()
+        live.update(saved)
+    d.proven_spans[:] = proven_spans
+    if walked is not None:
+        d.walked_by_ranges.clear()
+        d.walked_by_ranges.update({key: set(words) for key, words in walked.items()})
+
+
+def _traced_block_start(d, site, leaders):
+    """The first address of the basic block of traced code that ends at ``site``: the walk
+    back stops at a leader, at untraced bytes, and after a control transfer."""
+    start = site
+    while start not in leaders:
+        word = _traced_word(d, start - 4)
+        if word is None or _cfg_control_transfer(word):
+            break
+        start -= 4
+    return start
+
+
+def _traced_call_target(d, site, reg, leaders, start=None):
+    """The address a `lui reg` / `addiu reg, reg` (or `ori`) pair builds in ``reg`` for the
+    `jr`/`jalr` at ``site``, or ``None``. ``start``, when given, is the block's first word
+    (_traced_block_start of the same leaders).
+
+    The rule, in basic-block terms: the `lui`, the low half and the jump lie in one basic
+    block of traced code (no leader after the block's first word, so no other path enters
+    between them); none of the three sits in a delay slot, likely or not (the jump's own
+    delay slot follows it and does not matter); the low half is the last write of ``reg``
+    before the jump and the `lui` the last write before the low half. Any other definition
+    (a load, an `addu`, an incoming argument, an encoding _gpr_writes does not classify)
+    gives ``None``."""
+    if start is None:
+        start = _traced_block_start(d, site, leaders)
+    low = _defining_word(d.elf, start, site, reg)
+    if low is None:
+        return None
+    l_addr, l_word = low
+    op = l_word >> 26
+    if op not in (0x09, 0x0D) or (l_word >> 21) & 0x1F != reg:
+        return None
+    high = _defining_word(d.elf, start, l_addr, reg)
+    if high is None or high[1] >> 26 != 0x0F:
+        return None
+    if any(_in_traced_delay_slot(d, a) for a in (high[0], l_addr, site)):
+        return None
+    upper = (high[1] & 0xFFFF) << 16
+    if op == 0x09:
+        lo = l_word & 0xFFFF
+        target = (upper + lo - (0x10000 if lo & 0x8000 else 0)) & 0xFFFFFFFF
+    else:
+        target = upper | (l_word & 0xFFFF)
+    if (target & 3) or not in_ranges(target, d.ranges) \
+            or not _relocated_as(d.relocated, l_addr, "lo16"):
+        return None
+    return target
+
+
+def _seed_materialized_code(d, entry_hints=(), work=None):
+    """Make functions of the addresses traced code materializes and then calls or jumps to.
+
+    In an image whose code section also holds its data, a materialized address that is
+    neither a prologue nor `jr $ra` (a callback such as `lw v0, 0(a1); jr ra`) is no seed
+    of its own (_keep_prologue_seeds). `la a1, table` forms the same `lui`/`addiu` pair
+    as `la a0, cb`, and a table of zeros, small integers or floats decodes as well as code
+    does, so neither the pair nor the bytes say which is code. The evidence is the flow:
+    the address becomes a function when traced code builds it with a `lui`/`addiu` (or
+    `ori`) pair in one register and that register is the target of a traced `jr`/`jalr`
+    (_traced_call_target), all three in one basic block (_BlockLeaderCensus).
+
+    The evidence must hold against the final traced code, not the code traced when a
+    target was accepted: a function found later can branch into the block of a pair
+    accepted before it (to its `addiu`), and then the pair is no evidence. So the pass
+    runs to a fixpoint. Each round checks the call sites whose block the last round
+    changed (a new leader or newly traced word in it, or just before it), accepts the
+    targets they name and traces them all at once; each new function may call further
+    addresses. Once a round accepts nothing, every accepted target is checked against the
+    final leaders. A target no traced site names any more is withdrawn and refused from
+    then on: the discovery returns to its state before the pass, which drops the code
+    traced only through that target, and the pass runs again. Every target that fails
+    the same final check is withdrawn together, in one rerun. Each rerun refuses at least
+    one more target for good, so the pass ends.
+
+    A withdrawn target stays refused even when the final traced code would give it valid
+    evidence (the code that invalidated it may itself be withdrawn in a later rerun).
+    That is deliberate and fail-closed: the target never gets executable authority, and
+    it stays in the returned candidates and on stderr, so a later call into it is a named,
+    terminating dispatch miss. Re-admitting it could cycle, because the leaders come from
+    code that is reachable only through targets.
+
+    Worst case: the reruns are bounded by the cascade depth (withdrawing one target
+    enables evidence that withdraws the next), at most the number of targets, and each
+    rerun repeats the whole pass, so a cascade of n links costs O(n^2) site checks. A
+    test pins 200 links at 201 attempts and 140900 site checks. Without a cascade the
+    pass is one attempt. A round costs one trace of the new targets
+    and one check of each changed site: the leaders the traced code makes are added as it
+    is traced (_BlockLeaderCensus.trace), never recounted.
+
+    Returns the materialized addresses with no such evidence whose `la` low half is
+    traced, and the withdrawn targets: they stay outside the spans, with no executable
+    authority, for the caller to name. ``work``, when a dict, receives the pass's
+    operation counts: attempts (runs from the pre-pass state), rounds, traces (calls to
+    d.discover), site_checks (call sites checked) and block_words (words their block
+    walks read)."""
+    census = _BlockLeaderCensus(d, entry_hints)
+    counts = {"attempts": 0, "rounds": 0, "traces": 0, "site_checks": 0, "block_words": 0}
+    before = _discovery_state(d)
+    withdrawn = set()
+    while True:
+        counts["attempts"] += 1
+        census.restart()
+        named, starts = {}, {}  # call site -> the target it names now / its block's start
+        sites = [a for a in sorted(d.covered) if _register_jump(d, a) is not None]
+        pending, accepted = sites, set()
+        while pending:
+            counts["rounds"] += 1
+            batch = set()
+            for site in pending:
+                start = _traced_block_start(d, site, census)
+                target = _traced_call_target(d, site, _register_jump(d, site), census, start)
+                counts["site_checks"] += 1
+                counts["block_words"] += (site - start) // 4 + 1
+                named[site], starts[site] = target, start
+                if (target is not None and target not in withdrawn
+                        and target not in d.functions and target not in d.covered):
+                    batch.add(target)
+            if not batch:
+                break
+            accepted |= batch
+            covered, functions, calls, hc = (
+                set(d.covered), set(d.functions), set(d.calls), set(d.hc))
+            d.functions.update(batch)
+            d.discover(sorted(batch))
+            counts["traces"] += 1
+            traced = d.covered - covered
+            new_sites = {a for a in traced if _register_jump(d, a) is not None}
+            if new_sites:
+                sites = sorted(set(sites) | new_sites)
+            # A site's result reads its block and the word before it, so only an event in
+            # [start - 4, site] can change it: blocks end at their jump, so the first site
+            # at or after an event is the only one whose block can hold it.
+            pending = set(new_sites)
+            for addr in (traced.union(census.trace(traced), d.functions - functions,
+                                      d.calls - calls, d.hc - hc)):
+                i = bisect.bisect_left(sites, addr)
+                if i < len(sites) and sites[i] in starts and addr >= starts[sites[i]] - 4:
+                    pending.add(sites[i])
+            pending = sorted(pending)
+        lost = accepted - set(named.values())
+        if not lost:
+            break
+        withdrawn |= lost
+        _restore_discovery(d, before)
+    if work is not None:
+        work.update(counts)
+    return frozenset(
+        target for target, sites in d.materialized.items()
+        if target not in d.functions and target not in d.covered
+        and any(site in d.covered for site in sites)) | (withdrawn - d.functions - d.covered)
+
+
 def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
-            entry_hints=None):
+            entry_hints=None, mixed_code_data=False, seeds=None, seed_check=None):
+    # `seeds` are guest addresses a run reached as dispatch misses (tools/miss_seeds.py, #1848):
+    # extra function entries for this build. `report["miss_seeds"]` maps each to its status (see
+    # `_resolve_seeds`, which takes `seed_check`). None changes nothing.
+    if seeds is None:
+        return _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints,
+                        mixed_code_data)
+
+    unseeded = _analyze(elf, extra_spans, cfg_gate, trace_memo, None, entry_hints,
+                        mixed_code_data)
+
+    def run(with_seeds, run_report=None, unusable=None, unproven=None):
+        return _analyze(elf, extra_spans, cfg_gate, trace_memo, run_report, entry_hints,
+                        mixed_code_data, with_seeds, {} if unusable is None else unusable,
+                        unseeded[1], {} if unproven is None else unproven)
+    return _resolve_seeds(unseeded, run, seeds, seed_check, report)
+
+
+def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints,
+             mixed_code_data=False, seeds=(), unusable=None, floor=(), unproven=None):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
     # `entry_hints` are code pointers another image holds into this one (data_section_words).
+    # `mixed_code_data` names an image whose code section also holds its data
+    # (_keep_prologue_seeds); the addresses its traced code materializes are code only when
+    # that code calls or jumps to them (_seed_materialized_code).
     # `report`, when a dict, receives the discovery state the import-stub census reads:
     # covered (every traced instruction address), calls (every direct-call target seen),
-    # and hc (the high-confidence seeds). The return value is unchanged.
+    # and hc (the high-confidence seeds), and code_candidates: the materialized addresses
+    # of a mixed image left outside its code for want of evidence, with
+    # materialized_code_work, the operation counts of that pass (empty for other images).
+    # The return value is unchanged.
+    # `seeds` are extra entries; `unusable`, a dict, receives why any of them cannot be one.
+    # `floor` is the owned spans of the same analysis without seeds; `unproven`, a dict, receives
+    # why a seed added off that floor is not proven an entry.
     d = _Discovery(elf, extra_spans, cfg_gate, trace_memo)
     _seed_entry_point(d)
     _seed_prologues_and_terminators(d)
@@ -2304,12 +2855,20 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     _seed_import_stubs(d)
     _seed_function_pointer_tables(d, entry_hints)
     _seed_address_materializations(d)
+    if mixed_code_data:
+        _keep_prologue_seeds(d)
+    if seeds:
+        unusable.update(_seed_miss_targets(d, seeds, floor, unproven))
 
     # Trace each function's extent from the high-confidence seeds, following discovered calls.
     d.functions = set(d.hc)
     d.discover(list(d.hc))
     pending_tail_calls = _promote_tail_calls(d)
     _fill_gaps(d, pending_tail_calls)
+    code_candidates = frozenset()
+    materialized_code_work = {}
+    if mixed_code_data:
+        code_candidates = _seed_materialized_code(d, entry_hints, materialized_code_work)
 
     # The late passes can reach start-up code that calls a pointer array (a function
     # entered only through a pointer or the gap fill); seed those arrays too.
@@ -2317,7 +2876,9 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
 
     merged_ranges = _owned_spans(d)
     if report is not None:
-        report.update(covered=d.covered, calls=d.calls, hc=d.hc)
+        report.update(covered=d.covered, calls=d.calls, hc=d.hc,
+                      code_candidates=code_candidates - d.covered - d.functions,
+                      materialized_code_work=materialized_code_work)
     return d.functions, merged_ranges
 
 
@@ -2460,9 +3021,17 @@ def _build_arg_parser():
                         help="write the canonical CFG report")
     parser.add_argument("--cfg-gate", action="store_true",
                         help="fail when the canonical CFG report has findings")
+    parser.add_argument("--miss-seeds", metavar="SEEDS", default=None,
+                        help="a seed list from tools/miss_seeds.py: extra function entries")
     parser.add_argument("--quiet", action="store_true", help="skip the ground-truth recall listing")
     parser.set_defaults(steps=None)
     return parser
+
+
+def _emitter_seed_check(elf):
+    """The seed check of the standalone command: the code emitter decides what it can translate."""
+    import codegen  # codegen imports this module, so import it only when a seed list is given
+    return codegen.emitter_seed_check(elf)
 
 
 def main(argv):
@@ -2480,8 +3049,19 @@ def main(argv):
         return 2
     elf = Elf(ns.elf, base=base)
     extra_spans = resolve_extra_spans(extra_span_arg)
+    seeds = None
+    if ns.miss_seeds is not None:
+        import miss_seeds
+        try:
+            seeds = set(miss_seeds.read_seed_file(ns.miss_seeds).seeds)
+        except miss_seeds.SeedFileError as exc:
+            sys.stderr.write(f"analyze: {exc}\n")
+            return 2
+    seed_report = {}
     try:
-        starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate)
+        starts, ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=cfg_gate,
+                                 seeds=seeds, report=seed_report,
+                                 seed_check=_emitter_seed_check(elf) if seeds else None)
     except Exception as exc:
         boundary_code = getattr(exc, "code", None)
         if not isinstance(boundary_code, str) or not boundary_code.startswith("ANALYZER_"):
@@ -2489,6 +3069,9 @@ def main(argv):
         message = "This PSP import-table layout is not supported yet."
         sys.stderr.write(f"{boundary_code}: {exc}. {message}\n")
         return 1
+    if seeds is not None:
+        import miss_seeds
+        miss_seeds.report_outcome(seed_report["miss_seeds"])
     model = build_model(elf, starts)
 
     quiet = ns.quiet
@@ -2498,7 +3081,9 @@ def main(argv):
         if not cfg_gate:
             # A report-only run describes gate-mode analysis but must not change
             # the entry set used for the model and recall output below.
-            report_entries, report_ranges = analyze(elf, extra_spans=extra_spans, cfg_gate=True)
+            report_entries, report_ranges = analyze(
+                elf, extra_spans=extra_spans, cfg_gate=True,
+                seeds=seeds_in_analysis(seed_report["miss_seeds"]) if seeds else None)
         cfg_report = canonical_cfg_report(elf, ranges=report_ranges, entries=report_entries)
         if cfg_report_path is not None:
             parent = os.path.dirname(cfg_report_path)
