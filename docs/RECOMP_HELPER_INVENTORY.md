@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **419** (declared in `recomp.h`: 354)
-- reach class: emitter-reached 75, production-runtime-only 311, selftest-only 17, address-only 7, none 9
-- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 391
+- helpers: **420** (declared in `recomp.h`: 355)
+- reach class: emitter-reached 75, production-runtime-only 312, selftest-only 17, address-only 7, none 9
+- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 392
 
 ## Helpers
 
@@ -78,6 +78,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `ge_timing_run_clk` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_timing_set_enabled` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_transition_trace_check` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
+| `gui_ace_vblank` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_analog` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_buttons` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_consume_button_pulses` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
@@ -141,7 +142,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_partition_release_high` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_pause_active` | `rt/sched.c` | yes | none | `rt/sched.c`: upstream_derived |
 | `sched_pause_pending` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
-| `sched_pause_request` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_pause_request` | `rt/gui.c`, `rt/sched.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived; `rt/sched.c`: upstream_derived |
 | `sched_pause_source` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_pause_total_ns` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
 | `sched_pending_interrupts` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
@@ -262,7 +263,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_exec_span_reset` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |
 | `sr_exit_request_expired` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_exit_request_quit` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
-| `sr_exit_request_stop_due` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
+| `sr_exit_request_stop_due` | `rt/gui.c`, `rt/hle.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived; `rt/hle.c`: upstream_derived |
 | `sr_exp2_approx` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_exp2_fixed` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_fixed_var_imports_register` | `rt/hle_kernel_module.c` | yes | emitter-reached (direct) | `rt/hle_kernel_module.c`: upstream_derived |
