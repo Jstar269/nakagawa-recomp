@@ -2189,40 +2189,50 @@ SEED_NOT_CODE = "not-a-function-start"
 #: stub without it, the seed's own or the named one. A stub registered for an address replaces
 #: the interpreter floor a run reaches there today with an abort, so the seed stays out.
 SEED_UNTRANSLATABLE = "untranslatable"
-#: `not-callable: <role>[: where]`: the frame walk does not prove a real function entry. A seed
-#: becomes a callable body that restores the `$sp` it was entered with, and the interpreter floor
-#: hands off to any address with a body. Inside a live frame that restore undoes the epilogue, so
-#: the address stays on the floor, which runs it on the guest's own `$sp`.
+#: `not-callable: <role>[: where]`: the seed gets no body. A seed becomes a callable body that
+#: restores the `$sp` it was entered with, and the interpreter floor hands off to any address with
+#: a body. Inside a live frame that restore undoes the epilogue. An address the build owns without
+#: seeds stays on the floor, which runs it on the guest's own `$sp`, unless the frame walk proves
+#: it an entry. The floor cannot run any other address: the run stops there without a body, so
+#: only a seed the walk shows releasing a frame it never allocated is refused.
 SEED_NOT_CALLABLE = "not-callable"
 #: The seed is an analysis entry but the build emits no body for it (--omit-aot).
 SEED_NOT_EMITTED = "not-emitted"
 
 
-def _seed_not_callable(d, address):
-    """Why the seed at `address` is not a function entry, or None when it is proven one: every
-    return nets `$sp` to zero, and no computed jump leaves with a frame released that the seed did
-    not allocate. Anything the walk cannot prove is refused: the floor still runs that address."""
+def _seed_not_callable(d, address, floor):
+    """Why the seed at `address` gets no body, or None when it may have one. A seed that releases a
+    frame it did not allocate is refused anywhere. On the `floor`, the owned spans without seeds,
+    the seed must also be proven an entry: every return nets `$sp` to zero, and any computed jump
+    leaves a frame the seed allocated itself. At net 0 from a seed with no frame, a computed jump
+    says nothing: the frame the seed is inside can be released in the arm the walk cannot follow,
+    and `_walk_frame` falls out of a noreturn call into the next function's return."""
     # entry_frame_balance imports this module, so it is imported where it is used.
     import entry_frame_balance
     profile = entry_frame_balance.profile_entry(
         d.elf, address, [*d.ranges, *d.file_exec_ranges, *d.proven_spans])
     role = entry_frame_balance.classify(profile)
     released_at_tail = sorted(delta for delta in profile.tail_deltas if delta > 0)
-    if role == entry_frame_balance.CALLABLE and not released_at_tail:
-        return None
     if role == entry_frame_balance.CONTINUATION:
         return f"{SEED_NOT_CALLABLE}: {role}: $sp net {profile.continuation_delta:+d} at a return"
-    if role == entry_frame_balance.CALLABLE:
+    if role == entry_frame_balance.CALLABLE and released_at_tail:
         return (f"{SEED_NOT_CALLABLE}: {entry_frame_balance.CONTINUATION}: "
                 f"$sp net {released_at_tail[0]:+d} at a computed jump")
-    return f"{SEED_NOT_CALLABLE}: {role}"
+    if not in_ranges(address, floor):
+        return None
+    if role != entry_frame_balance.CALLABLE:
+        return f"{SEED_NOT_CALLABLE}: {role}"
+    if profile.tail_deltas and not profile.has_prologue:
+        return (f"{SEED_NOT_CALLABLE}: {entry_frame_balance.INDETERMINATE}: "
+                "computed jump with no frame of its own")
+    return None
 
 
-def _seed_miss_targets(d, seeds):
+def _seed_miss_targets(d, seeds, floor):
     """Add each dispatch-miss target that can start a function to the entries, and return why
-    each other one cannot. A seed that does not look like a function start, or that the frame
-    walk does not prove is one, is reported and left out: seeding adds analysis input, it never
-    forces a body (AGENTS.md Section 6)."""
+    each other one cannot. A seed that does not look like a function start, or that
+    `_seed_not_callable` refuses under `floor`, is reported and left out: seeding adds analysis
+    input, it never forces a body (AGENTS.md Section 6)."""
     unusable = {}
     for address in sorted(set(seeds)):
         if address & 3:
@@ -2237,7 +2247,7 @@ def _seed_miss_targets(d, seeds):
             if word is None or word in (0x00000000, 0xFFFFFFFF):
                 unusable[address] = SEED_NOT_CODE
             else:
-                refused = _seed_not_callable(d, address)
+                refused = _seed_not_callable(d, address, floor)
                 if refused is None:
                     d.hc.add(address)
                 else:
@@ -2260,18 +2270,18 @@ def _seed_behind(run, seed_check, candidates, stub):
     return candidates[low]
 
 
-def _resolve_seeds(run, seeds, seed_check, report):
+def _resolve_seeds(unseeded, run, seeds, seed_check, report):
     """Analyze with the seeds that leave the emitter's result no worse, and report each seed from
     the two final results, with seeds and without, never from a state along the way.
 
-    `run(seeds, report, unusable)` is one analysis. `seed_check(entries, ranges, only=None)` maps
-    each entry the build would emit (`only` alone, when given) to None for a body or to why the
-    emitter stubs it. Without a check every entry counts as a body. Any stub the seeds add refuses
+    `unseeded` is the analysis without seeds, `run(seeds, report, unusable)` one with them.
+    `seed_check(entries, ranges, only=None)` maps each entry the build would emit (`only` alone,
+    when given) to None for a body or to why the emitter stubs it. Without a check every entry counts as a body. Any stub the seeds add refuses
     a seed, whatever entry it is on, and the analysis runs again without that seed."""
     if seed_check is None:
         def seed_check(entries, ranges, only=None):
             return dict.fromkeys(entries)
-    entries, ranges = run(())
+    entries, ranges = unseeded
     baseline = set(entries)
     baseline_stubs = {a for a, why in seed_check(entries, ranges).items() if why is not None}
     candidates = sorted(set(seeds) - baseline)
@@ -2434,14 +2444,16 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     if seeds is None:
         return _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints)
 
+    unseeded = _analyze(elf, extra_spans, cfg_gate, trace_memo, None, entry_hints)
+
     def run(with_seeds, run_report=None, unusable=None):
         return _analyze(elf, extra_spans, cfg_gate, trace_memo, run_report, entry_hints,
-                        with_seeds, {} if unusable is None else unusable)
-    return _resolve_seeds(run, seeds, seed_check, report)
+                        with_seeds, {} if unusable is None else unusable, unseeded[1])
+    return _resolve_seeds(unseeded, run, seeds, seed_check, report)
 
 
 def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints, seeds=(),
-             unusable=None):
+             unusable=None, floor=()):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
     # `entry_hints` are code pointers another image holds into this one (data_section_words).
@@ -2449,6 +2461,7 @@ def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints, seeds=
     # covered (every traced instruction address), calls (every direct-call target seen),
     # and hc (the high-confidence seeds). The return value is unchanged.
     # `seeds` are extra entries; `unusable`, a dict, receives why any of them cannot be one.
+    # `floor` is the owned spans of the same analysis without seeds.
     d = _Discovery(elf, extra_spans, cfg_gate, trace_memo)
     _seed_entry_point(d)
     _seed_prologues_and_terminators(d)
@@ -2457,7 +2470,7 @@ def _analyze(elf, extra_spans, cfg_gate, trace_memo, report, entry_hints, seeds=
     _seed_function_pointer_tables(d, entry_hints)
     _seed_address_materializations(d)
     if seeds:
-        unusable.update(_seed_miss_targets(d, seeds))
+        unusable.update(_seed_miss_targets(d, seeds, floor))
 
     # Trace each function's extent from the high-confidence seeds, following discovered calls.
     d.functions = set(d.hc)

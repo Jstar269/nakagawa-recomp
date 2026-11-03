@@ -137,6 +137,51 @@ UNPROVEN_WORDS = {
     RELOADED_SP + 8: 0x03E00008,      # jr ra
     RELOADED_SP + 12: 0x00000000,     # nop (delay slot)
 }
+# A body whose frame the walk cannot see. TARGET owns the frame and branches to the seed, which is
+# a jump-table switch: the release is in the arm only the computed jump reaches, and the `default:`
+# is a noreturn call at the end of the function, so the walk falls out of the call into the next
+# function's `jr ra`. Both exits read net 0 from the seed.
+SWITCH = TARGET + 24
+SWITCH_ARM = SWITCH + 32
+SWITCH_DEFAULT = SWITCH_ARM + 16
+NORETURN = SWITCH_DEFAULT + 16
+SWITCH_WORDS = {
+    **{a: w for a, w in WORDS.items() if a < TARGET},
+    TARGET: 0x27BDFFF0,          # addiu sp, sp, -16
+    TARGET + 4: 0xAFBF0000,      # sw ra, 0(sp)
+    TARGET + 8: 0x14A00003,      # bne a1, zero, SWITCH (taken: a1 = 40)
+    TARGET + 12: 0x00000000,     # nop (delay slot)
+    TARGET + 16: RESERVED,       # never executed
+    TARGET + 20: 0x00000000,     # nop
+    SWITCH: 0x2CA80064,          # sltiu t0, a1, 100
+    SWITCH + 4: 0x1100000A,      # beq t0, zero, SWITCH_DEFAULT
+    SWITCH + 8: 0x00000000,      # nop (delay slot)
+    SWITCH + 12: 0x8C890000,     # lw t1, 0(a0): TARGET, from the pointer cell
+    SWITCH + 16: 0x25290000 | (SWITCH_ARM - TARGET),  # addiu t1, t1, ...: an arm analysis cannot see
+    SWITCH + 20: 0x01200008,     # jr t1
+    SWITCH + 24: 0x00000000,     # nop (delay slot)
+    SWITCH + 28: BREAK,
+    SWITCH_ARM: ADDU,
+    SWITCH_ARM + 4: 0x8FBF0000,  # lw ra, 0(sp)
+    SWITCH_ARM + 8: 0x03E00008,  # jr ra
+    SWITCH_ARM + 12: 0x27BD0010,  # addiu sp, sp, 16 (delay slot)
+    SWITCH_DEFAULT: 0x0C000000 | NORETURN >> 2,   # jal NORETURN
+    SWITCH_DEFAULT + 4: 0x00000000,    # nop (delay slot)
+    SWITCH_DEFAULT + 8: 0x03E00008,    # jr ra: the next function
+    SWITCH_DEFAULT + 12: 0x00000000,   # nop (delay slot)
+    NORETURN: 0x03E00008,        # jr ra
+    NORETURN + 4: 0x00000000,    # nop (delay slot)
+}
+# A real entry the walk cannot prove: a thunk that leaves through `jr t9`, to the leaf before it.
+THUNK_WORDS = {
+    **{a: w for a, w in WORDS.items() if a < ENTRY + 32},
+    ENTRY + 32: 0x03E00008,      # jr ra
+    ENTRY + 36: ADDU,            # delay slot
+    TARGET: 0x3C190001,          # lui t9, 1
+    TARGET + 4: 0x37390000 | (ENTRY + 32) & 0xFFFF,   # ori t9, t9, ...
+    TARGET + 8: 0x03200008,      # jr t9
+    TARGET + 12: 0x00000000,     # nop (delay slot)
+}
 # A synthetic setjmp/longjmp. E calls F; F builds a frame and calls setjmp; the second return from
 # setjmp, by way of longjmp, lands on CONTINUATION, the word after the setjmp call, in F's frame.
 F = ENTRY + 0x1C
@@ -284,6 +329,15 @@ RUNTIME_SOURCES = (
 def _image_bytes(words):
     return b"".join(struct.pack("<I", words.get(a, 0))
                     for a in range(ENTRY, max(words) + 4, 4))
+
+
+def _text_ends_at(blob, end):
+    """The image with `.text` cut at `end`: the words after it stay in the executable segment, in
+    no named section, like module-start or `.init` code. The floor owns none of them untraced."""
+    image = bytearray(blob)
+    section_table = struct.unpack_from("<I", image, 32)[0]
+    struct.pack_into("<I", image, section_table + 40 + 20, end - ENTRY)
+    return bytes(image)
 
 
 def _codegen(elf_path, out_c, *extra):
@@ -466,6 +520,30 @@ class AnalysisSeedTests(_Fixture):
         self.assertNotIn(CALLEE, starts)
         self.assertLessEqual(bystanders, starts)
 
+    def test_an_innocent_seed_that_sorts_first_keeps_its_entry(self):
+        stub = {ENTRY: "split"}
+        check = _emission(lambda entries: stub if TARGET + 4 in entries else {})
+        report: dict = {}
+        starts = _functions(self.elf_path, seeds={TARGET, TARGET + 4}, report=report,
+                            seed_check=check)
+        self.assertEqual(report["miss_seeds"], {
+            TARGET: analyze.SEED_APPLIED,
+            TARGET + 4: f"{analyze.SEED_UNTRANSLATABLE}: brings 0x{ENTRY:08x}: split",
+        })
+        self.assertIn(TARGET, starts)
+
+    def test_the_seed_behind_a_stub_is_found_wherever_it_sorts(self):
+        stub = ENTRY
+        candidates = [TARGET, TARGET + 4, TARGET + 8, TARGET + 12]
+
+        def run(seeds):
+            return {stub, *seeds}, []
+
+        for bringer in candidates:
+            with self.subTest(hex(bringer)):
+                check = _emission(lambda entries, b=bringer: {stub: "split"} if b in entries else {})
+                self.assertEqual(analyze._seed_behind(run, check, candidates, stub), bringer)
+
     def test_a_seed_that_is_not_a_function_entry_is_refused_with_why(self):
         unproven = self.work / "unproven.elf"
         unproven.write_bytes(_synthetic_elf(UNPROVEN_WORDS, ENTRY))
@@ -473,19 +551,60 @@ class AnalysisSeedTests(_Fixture):
         mid_frame.write_bytes(_synthetic_elf(MID_FRAME_WORDS, ENTRY))
         longjmp = self.work / "longjmp.elf"
         longjmp.write_bytes(_synthetic_elf(LONGJMP_WORDS, ENTRY))
+        switch = self.work / "switch.elf"
+        switch.write_bytes(_synthetic_elf(SWITCH_WORDS, ENTRY))
         for elf, seed, why in (
                 (self.elf_path, ENTRY + 20, "continuation: $sp net +16 at a return"),
                 (mid_frame, MID_FRAME, "continuation: $sp net +16 at a return"),
                 (longjmp, CONTINUATION, "continuation: $sp net +16 at a return"),
                 (unproven, UNPROVEN_TAIL, "indeterminate"),
                 (unproven, RELEASED_TAIL, "continuation: $sp net +16 at a computed jump"),
-                (unproven, RELOADED_SP, "indeterminate")):
+                (unproven, RELOADED_SP, "indeterminate"),
+                (switch, SWITCH, "indeterminate: computed jump with no frame of its own")):
             with self.subTest(hex(seed)):
                 report: dict = {}
                 starts = _functions(elf, seeds={seed}, report=report)
                 self.assertEqual(report["miss_seeds"],
                                  {seed: f"{analyze.SEED_NOT_CALLABLE}: {why}"})
                 self.assertEqual(starts, _functions(elf))
+
+    def test_a_frame_of_its_own_makes_a_computed_exit_at_net_zero_an_entry(self):
+        words = {
+            **{a: w for a, w in WORDS.items() if a < TARGET},
+            TARGET: 0x27BDFFF0,          # addiu sp, sp, -16
+            TARGET + 4: 0xAFBF0000,      # sw ra, 0(sp)
+            TARGET + 8: 0x10A00004,      # beq a1, zero, TARGET+28
+            TARGET + 12: 0x00000000,     # nop (delay slot)
+            TARGET + 16: 0x8FBF0000,     # lw ra, 0(sp)
+            TARGET + 20: 0x03200008,     # jr t9: the tail call of a function that owns its frame
+            TARGET + 24: 0x27BD0010,     # addiu sp, sp, 16 (delay slot)
+            TARGET + 28: 0x8FBF0000,     # lw ra, 0(sp)
+            TARGET + 32: 0x03E00008,     # jr ra
+            TARGET + 36: 0x27BD0010,     # addiu sp, sp, 16 (delay slot)
+        }
+        elf = self.work / "framed_tail.elf"
+        elf.write_bytes(_synthetic_elf(words, ENTRY))
+        report: dict = {}
+        self.assertIn(TARGET, _functions(elf, seeds={TARGET}, report=report))
+        self.assertEqual(report["miss_seeds"], {TARGET: analyze.SEED_APPLIED})
+
+    def test_an_unproven_seed_the_floor_cannot_run_is_an_entry(self):
+        elf = self.work / "thunk.elf"
+        elf.write_bytes(_text_ends_at(_synthetic_elf(THUNK_WORDS, ENTRY), TARGET))
+        self.assertNotIn(TARGET, _functions(elf))
+        report: dict = {}
+        starts = _functions(elf, seeds={TARGET}, report=report)
+        self.assertEqual(report["miss_seeds"], {TARGET: analyze.SEED_APPLIED})
+        self.assertIn(TARGET, starts)
+
+    def test_a_proven_frame_release_is_refused_where_the_floor_cannot_run(self):
+        elf = self.work / "mid_frame_outside.elf"
+        elf.write_bytes(_text_ends_at(_synthetic_elf(MID_FRAME_WORDS, ENTRY), TARGET))
+        report: dict = {}
+        starts = _functions(elf, seeds={MID_FRAME}, report=report)
+        self.assertEqual(report["miss_seeds"], {
+            MID_FRAME: f"{analyze.SEED_NOT_CALLABLE}: continuation: $sp net +16 at a return"})
+        self.assertNotIn(MID_FRAME, starts)
 
     def test_a_word_inside_a_body_with_no_frame_live_is_still_a_seed(self):
         report: dict = {}
@@ -726,11 +845,12 @@ class EndToEndTests(_Fixture):
         cls.harness = cls.work / "harness.c"
         cls.harness.write_text(HARNESS, encoding="ascii", newline="\n")
 
-    def build_and_run(self, name, *codegen_args, words=None):
+    def build_and_run(self, name, *codegen_args, words=None, text_end=None):
         elf_path, image = self.elf_path, self.image
         if words is not None:
             elf_path, image = self.work / f"{name}.elf", self.work / f"{name}.bin"
-            elf_path.write_bytes(_synthetic_elf(words, ENTRY))
+            blob = _synthetic_elf(words, ENTRY)
+            elf_path.write_bytes(blob if text_end is None else _text_ends_at(blob, text_end))
             image.write_bytes(_image_bytes(words))
         out = self.work / name
         out.mkdir()
@@ -844,6 +964,32 @@ class EndToEndTests(_Fixture):
         self.assertNotIn("SEMANTIC_BOUNDARY", run.stderr)
         self.assertEqual(fields["miss_targets"], "1")
         self.assertEqual(set(miss_seeds.read_seed_file(miss_file).seeds), {TARGET})
+
+    def test_a_seed_whose_frame_the_walk_cannot_see_leaves_the_run_unchanged(self):
+        # The seed's exits all read net 0: a computed jump, and a return past a noreturn call. Its
+        # real path is the computed jump, into an arm that releases the frame the seed is inside.
+        # A body here would restore the entry $sp at that jump and stop a run the floor finishes.
+        seeds = self.write_seeds("switch.txt", f"# nakagawa-miss-seeds-v1\n0x{SWITCH:08x}\n")
+        run, fields, miss_file, generated = self.build_and_run(
+            "switch", f"--miss-seeds={seeds}", words=SWITCH_WORDS)
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=0 known=0 ignored=1", generated.stdout)
+        self.assertIn(f"ignored 0x{SWITCH:08x}: not-callable: indeterminate", generated.stderr)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("RESULT v0=42", run.stdout)
+        self.assertNotIn("SEMANTIC_BOUNDARY", run.stderr)
+        self.assertEqual(fields["miss_targets"], "1")
+        self.assertEqual(set(miss_seeds.read_seed_file(miss_file).seeds), {TARGET})
+
+    def test_a_seed_the_floor_cannot_run_finishes_the_run_it_would_have_stopped(self):
+        # The thunk has no return for the walk to read, but no floor runs that address either:
+        # without the seed the run stops at the fetch boundary.
+        seeds = self.write_seeds("thunk.txt", f"# nakagawa-miss-seeds-v1\n0x{TARGET:08x}\n")
+        run, _fields, miss_file, generated = self.build_and_run(
+            "thunk", f"--miss-seeds={seeds}", words=THUNK_WORDS, text_end=TARGET)
+        self.assertIn("CODEGEN_MISS_SEEDS seeds=1 applied=1 known=0 ignored=0", generated.stdout)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("RESULT v0=42", run.stdout)
+        self.assertNotIn(TARGET, miss_seeds.read_seed_file(miss_file).seeds)
 
     def test_the_loop_leaves_a_longjmp_continuation_on_the_floor(self):
         # The floor runs the continuation by design: nothing misses, yet the run's file lists it
