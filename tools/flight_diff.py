@@ -465,7 +465,8 @@ def load_bundle(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise FlightDiffError(f"{path}: cannot read JSON: {exc}") from exc
     validate_bundle(bundle)
-    return bundle
+    returned: dict[str, Any] = bundle
+    return returned
 
 
 def _event_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:

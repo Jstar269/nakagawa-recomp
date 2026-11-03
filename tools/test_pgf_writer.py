@@ -105,7 +105,8 @@ def _metrics(glyph: Glyph) -> dict[str, int]:
 
 
 def _signed(data: bytes, offset: int) -> int:
-    return struct.unpack_from("<i", data, offset)[0]
+    returned: int = struct.unpack_from("<i", data, offset)[0]
+    return returned
 
 
 def _bits(data: bytes, offset: int, bit_offset: int, width: int) -> int:
@@ -422,6 +423,8 @@ class PgfWriterSparseAndHeaderTests(unittest.TestCase):
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class PgfWriterReaderRoundTripTests(unittest.TestCase):
     """The generated font opens through the public reader and matches bit-exactly."""
+    exe: str
+    tmp: str
 
     @classmethod
     def setUpClass(cls) -> None:

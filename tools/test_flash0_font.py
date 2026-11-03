@@ -44,6 +44,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
@@ -179,7 +180,8 @@ def synthetic_pgf(
         )
         for index, code in enumerate(codes)
     ]
-    return pgf_writer.build_pgf(glyphs, font_name=font_name, nominal_em_26_6=nominal_em_26_6)
+    returned: bytes = pgf_writer.build_pgf(glyphs, font_name=font_name, nominal_em_26_6=nominal_em_26_6)
+    return returned
 
 
 def cache_dir(root: Path) -> Path:
@@ -379,7 +381,8 @@ class Flash0FontFixtureContractTests(unittest.TestCase):
         self.japanese = header_string("NK_FONT_SLOT_JAPANESE_FILE")
 
     def manifest(self) -> dict:
-        return json.loads((cache_dir(self.root) / fonts.MANIFEST_NAME).read_text(encoding="utf-8"))
+        returned: dict[str, Any] = json.loads((cache_dir(self.root) / fonts.MANIFEST_NAME).read_text(encoding="utf-8"))
+        return returned
 
     def test_fixture_fonts_name_their_slots(self) -> None:
         cache = fonts.validate_pgf_data((cache_dir(self.root) / self.latin).read_bytes())
@@ -440,6 +443,7 @@ class Flash0FontFixtureContractTests(unittest.TestCase):
             self.assertIn("src/core/nk_font.c", line, line[:160])
         runtime = re.search(r"(?ms)^RT_SRCS\s*:=\s*(.*?)^RT_OBJS\s*:=", makefile)
         self.assertIsNotNone(runtime)
+        assert runtime is not None
         self.assertIn("src/core/nk_font.c", runtime.group(1).replace("\\\n", " ").split())
 
 
@@ -719,6 +723,9 @@ class Flash0FontDirRefusalNativeTests(unittest.TestCase):
     flash0_font_sources reaches only SR_USER_DATA_ROOT (set absolute, so nk_platform_get_path is never
     called), SR_FONTDIR (always set in these cases), and the wide helpers.
     """
+    exe: Path
+    scratch: scratch_dir.TemporaryDirectory
+    tmp: Path
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -823,6 +830,7 @@ class Flash0FontDeviceTests(unittest.TestCase):
         vfs = VFS_HEADER.read_text(encoding="utf-8")
         mapping = re.search(r"case SR_CD_NOT_FOUND: return (0x[0-9A-Fa-f]+)u;", vfs)
         self.assertIsNotNone(mapping, "sr_cd_psp_error must map SR_CD_NOT_FOUND")
+        assert mapping is not None
         vfs_not_found = int(mapping.group(1), 16)
         self.assertEqual(vfs_not_found, 0x80010002)
         header_value = c_unsigned_define(FLASH0_HEADER, "SR_FLASH0_ERR_NOT_FOUND")

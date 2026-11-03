@@ -1277,11 +1277,13 @@ _FPU_RESULT_FUNCS = (0x00, 0x01, 0x02, 0x03, 0x05, 0x06, 0x07)  # add sub mul di
 
 
 def _f32(bits: int) -> float:
-    return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
+    returned: float = struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
+    return returned
 
 
 def _f32_bits(value: float) -> int:
-    return struct.unpack("<I", struct.pack("<f", value))[0]
+    returned: int = struct.unpack("<I", struct.pack("<f", value))[0]
+    return returned
 
 
 def _refuse(site: Mapping[str, Any], w: int, why: str) -> NoReturn:

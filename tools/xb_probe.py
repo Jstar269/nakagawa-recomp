@@ -169,10 +169,12 @@ class _Reader:
         return self.read(1, what)[0]
 
     def u16(self, what: str = "u16") -> int:
-        return struct.unpack(self.endian + "H", self.read(2, what))[0]
+        returned: int = struct.unpack(self.endian + "H", self.read(2, what))[0]
+        return returned
 
     def u32(self, what: str = "u32") -> int:
-        return struct.unpack(self.endian + "I", self.read(4, what))[0]
+        returned: int = struct.unpack(self.endian + "I", self.read(4, what))[0]
+        return returned
 
     def align(self, alignment: int, what: str = "alignment") -> None:
         if alignment <= 0 or alignment & (alignment - 1):
