@@ -512,8 +512,9 @@ def check_release_assets(names) -> list[str]:
         source = _SOURCE_ZIP.fullmatch(name)
         if player:
             players.setdefault(player[2], []).append(name)
-        if player or source:
-            versions.add((player or source)[1])
+        matched = player or source
+        if matched:
+            versions.add(matched[1])
             continue
         checked = re.fullmatch(r"(nakagawa-recomp-.+\.zip)\.sha256(\.minisig)?", name)
         if checked and (_PLAYER_ZIP.fullmatch(checked[1]) or _SOURCE_ZIP.fullmatch(checked[1])):
