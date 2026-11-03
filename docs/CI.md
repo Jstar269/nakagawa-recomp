@@ -131,7 +131,8 @@ a ready pull request. No `Ready for review` transition or manual
 `opened`, `synchronize` and `reopened` - the events that can carry a new head -
 so a `Ready for review` (or back-to-draft) transition, which cannot change the
 head, does not start a second run over a tree that already carries its
-validation. That workflow still cancels superseded runs, and docs-only or other
+validation. `ci-trust-verdict.yml` and `provenance-attestation.yml` do list
+`ready_for_review`, so marking a pull request Ready re-runs only those two. `ci.yml` still cancels superseded runs, and docs-only or other
 irrelevant jobs remain skipped by the classifier. `workflow_dispatch` remains
 available when a maintainer deliberately wants the complete matrix regardless of
 changed paths.

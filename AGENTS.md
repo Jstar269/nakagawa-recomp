@@ -417,9 +417,8 @@ handler, run one native self-test, capture frames unattended):
 
 - When the task includes a pull request, push early: open a Draft PR after the first valid commit,
   and mark it Ready as soon as the change is finished (tests and checks run, template filled), or open
-  it ready for review when it is finished at the first push. A ready PR is never left as a Draft. The
-  switch re-runs only `ci-trust-verdict.yml` and `provenance-attestation.yml`; `ci.yml` does not
-  run on `ready_for_review`. Group related work: one PR may carry several related fixes in the same area or a whole feature
+  it ready for review when it is finished at the first push. A ready PR is never left as a Draft.
+  Group related work: one PR may carry several related fixes in the same area or a whole feature
   slice, and fewer, larger PRs are better than one PR per finding. Include exact base/head SHAs,
   scope, new-path provenance, failing-before evidence, tests, uncertainty, private/hardware status,
   and blockers.
