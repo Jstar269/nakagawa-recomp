@@ -1896,12 +1896,37 @@ static int check_psp_measured_funnel(void) {
             }
         }
     }
-    /* .s, abs and constant S lanes, and T or D prefixes are unmeasured: refused. */
+    /* Abs and constant S lanes take the shared S prefix read. The first row is the word and
+     * prefix a title runs: vfad.t over (x, x, -1), with lane 3's swizzle past the width unused. */
+    static const struct { uint32_t w, sp, c000[4], want; } read_stage[] = {
+        {0xd0468242u, 0x440d0u, {0x40400000u, 0u, 0u, 0u}, 0x40a00000u},  /* 3 + 3 - 1 = 5 */
+        {0xd0468088u, 0x001e4u, {0xc0000000u, 0x3f800000u, 0u, 0u}, 0x40400000u},  /* |-2| + 1 */
+        {0xd0468088u, 0x010e4u, {0x41200000u, 0x3f800000u, 0u, 0u}, 0x3f800000u},  /* 0 + 1 */
+        {0xd0478088u, 0x020e4u, {0x40400000u, 0x41100000u, 0u, 0u}, 0x3f800000u},  /* vavg.q of
+                                                                                    * (3, 1, 0, 0) */
+    };
+    for (unsigned r = 0; r < sizeof(read_stage) / sizeof(read_stage[0]); r++) {
+        CpuState s;
+        uint8_t si[4], di[1];
+        const int lanes = (read_stage[r].w & 0x8080u) == 0x8000u ? 3 : 4;
+        setup_identity_compute(&s);
+        vreg_idx((read_stage[r].w >> 8) & 0x7fu, lanes, si);
+        vreg_idx(read_stage[r].w & 0x7fu, 1, di);
+        for (int l = 0; l < lanes; l++) s.vi[si[l]] = read_stage[r].c000[l];
+        s.vfpuCtrl[0] = read_stage[r].sp;
+        const int kind = sr_vfpu_interp(&s, read_stage[r].w);
+        g_checks++;
+        if (kind != SR_VFPU_COMPUTE || s.vi[di[0]] != read_stage[r].want || s.vfpuCtrl[0] != 0xe4u) {
+            g_failures++;
+            bad = 1;
+            fprintf(stderr, "FAIL: vfad/vavg S prefix read %u: want=0x%08x got=0x%08x kind=%d\n", r,
+                    read_stage[r].want, s.vi[di[0]], kind);
+        }
+    }
+    /* .s, a swizzle past the width, and T or D prefixes are unmeasured: refused. */
     static const struct { uint32_t w, ctrl0, ctrl1, ctrl2; } refuse[] = {
         {0xd0460008u, 0xe4u, 0xe4u, 0u},      /* vfad.s */
         {0xd0468008u, 0xe7u, 0xe4u, 0u},      /* vfad.t, lane 0 swizzled from lane 3 */
-        {0xd0468088u, 0x001e4u, 0xe4u, 0u},   /* abs on lane 0 */
-        {0xd0468088u, 0x010e4u, 0xe4u, 0u},   /* constant lane 0 */
         {0xd0478088u, 0xe4u, 0x1bu, 0u},      /* T prefix */
         {0xd0478088u, 0xe4u, 0xe4u, 0x1u},    /* D prefix */
     };
