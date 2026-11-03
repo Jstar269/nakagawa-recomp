@@ -4214,21 +4214,34 @@ def translate_code_capture(index, image, profile=None, cfg_gate=False):
     ``image`` is a ``code_capture.CaptureImage``: a window of guest memory and the addresses
     runs called in it. It translates as an ELF type 0xFFA8 overlay at the window's address,
     seeded only from those addresses, so its identity (overlay_check_spans) is the words its
-    code holds and nothing else in the window. Its range is the extent of that code, so a
-    capture of other code nearby can be bound beside it. A target the translation does not
-    give a body is named here; at run time a call to it still stops by name."""
+    code holds and nothing else in the window.
+
+    Its executable authority is exactly that identity: a bound translation lets the
+    interpreter run only words the runtime checked are the captured ones. Words the analysis
+    traced but did not translate (an untranslatable function, and whatever its trace ran
+    into) are neither identity nor authority, and nor is a function that has no translated
+    word. Its range is the extent of the identity, so a capture of other code nearby can be
+    bound beside it, and a call to anything outside the identity stops as target-not-executable
+    (outside the range, with a capture of its own). A target the translation does not give a
+    body is named here."""
     import code_capture
     module = translate_runtime_module(index, None, profile=profile, cfg_gate=cfg_gate,
                                       data=code_capture.image_overlay_elf(image),
                                       name=image.name, entries=image.targets)
     if isinstance(module, int):
         return module
-    if module.unsupported_reason is None and module.spans:
-        module.link_low, module.link_high = module.spans[0][0], module.spans[-1][1]
-    bodies = {a for a, _ in module.functions} - {a for a, _ in module.stubbed}
+    identity = [tuple(span) for span in module.overlay_check_spans]
+    kept = [(fn, text) for fn, text in zip(module.functions, module.texts, strict=True)
+            if in_ranges(fn[0], identity)]
+    module.functions = [fn for fn, _ in kept]
+    module.texts = [text for _, text in kept]
+    module.spans = identity
+    if module.unsupported_reason is None and identity:
+        module.link_low, module.link_high = identity[0][0], identity[-1][1]
+    bodies = {a for a, _ in module.functions}
     for target in sorted(image.targets - bodies):
         sys.stderr.write(f"codegen: {image.name}: captured target 0x{target:08x} has no "
-                         "translation; a call to it still stops by name\n")
+                         "translation; a call to it stops as target-not-executable\n")
     return module
 
 

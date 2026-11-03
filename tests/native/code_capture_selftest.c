@@ -12,7 +12,8 @@
  *       No translation covers the routine. The call stops as not-executable with v0 and pc
  *       untouched, and with SR_CODE_CAPTURE=<folder> the runtime writes one capture of the
  *       unowned RAM around the target, which ends where an executable span begins. Without
- *       SR_CODE_CAPTURE nothing is written.
+ *       SR_CODE_CAPTURE nothing is written. A call to a word no translation can be made for
+ *       (COP3) beside it is captured as well.
  *
  *   tools/code_capture.py translate --out <unit.c> <folder>
  *
@@ -20,7 +21,9 @@
  *       The translation is bound while memory holds the routine, whatever the data around it
  *       holds, and takes the call. Once one word of its code differs, it is unbound: the call
  *       stops again and writes a capture of the new bytes. With the code restored it is bound
- *       again.
+ *       again. Its executable authority is only the words it was checked against: code the
+ *       game writes after binding where the untranslatable word's trace ran, and that word
+ *       itself, stop as not-executable and are captured, never interpreted.
  *
  * Standalone host executable, no game inputs. The harness #includes recomp.c and drives the
  * production dispatch_call_try(); setup is test-specific, so this is white-box evidence.
@@ -96,6 +99,8 @@ static int g_failures = 0;
 #define CAPTURE_TARGET 0x09c1b780u          /* the routine's entry */
 #define CAPTURE_LEAF   (CAPTURE_TARGET + 0x20u)
 #define CAPTURE_DATA   (CAPTURE_TARGET + 0x100u) /* data the game keeps beside the code */
+#define CAPTURE_DEAD   (CAPTURE_TARGET + 0x200u) /* a called word no translation can be made for */
+#define CAPTURE_FRESH  (CAPTURE_DEAD + 0x100u)   /* where the game writes code after binding */
 #define MAIN_SPAN_LO   (CAPTURE_TARGET + 0x400u) /* an executable span above the routine */
 #define MAIN_SPAN_HI   (CAPTURE_TARGET + 0x500u)
 #define CALLER_PC      0x08804010u
@@ -121,6 +126,7 @@ static void install_routine(uint32_t leaf_word, uint32_t data_word) {
     /* A prologue-shaped data word: the capture holds it, the translation must not use it. */
     MEM_W32(CAPTURE_DATA, data_word);
     MEM_W32(CAPTURE_DATA + 4u, 0x41544144u);
+    MEM_W32(CAPTURE_DEAD, 0x4c000000u);                    /* COP3: refused by the emitter */
 }
 
 typedef struct {
@@ -128,7 +134,7 @@ typedef struct {
     uint32_t v0, pc, sp;
 } Call;
 
-static Call call_routine(void) {
+static Call call_at(uint32_t target) {
     CpuState s;
     memset(&s, 0, sizeof s);
     s.pc = CALLER_PC;
@@ -137,12 +143,14 @@ static Call call_routine(void) {
     s.r[2] = 0xdeadbeefu;   /* poison: only the routine may write v0 */
     s_code_capture_last[0] = '\0';
     Call out;
-    out.result = dispatch_call_try(&s, CAPTURE_TARGET, RESUME_PC);
+    out.result = dispatch_call_try(&s, target, RESUME_PC);
     out.v0 = s.r[2];
     out.pc = s.pc;
     out.sp = s.r[29];
     return out;
 }
+
+static Call call_routine(void) { return call_at(CAPTURE_TARGET); }
 
 static void set_capture_folder(const char *folder) {
 #ifdef _WIN32
@@ -219,6 +227,11 @@ static int run_capture(const char *folder) {
     Call again = call_routine();
     CHECK(again.result < 0 && strcmp(s_code_capture_last, first) == 0,
           "the same bytes make the same capture");
+
+    Call dead = call_at(CAPTURE_DEAD);
+    CHECK(dead.result == SR_GUEST_INTERP_NOT_EXECUTABLE && s_code_capture_last[0] != '\0' &&
+              strcmp(s_code_capture_last, first) != 0,
+          "a call to the untranslatable word stops and is captured (result %d)", dead.result);
     return g_failures;
 }
 
@@ -242,6 +255,24 @@ static int run_bound(const char *folder) {
           "the translation takes the call and returns (result %d v0 0x%08x sp 0x%08x)",
           bound.result, bound.v0, bound.sp);
     CHECK(s_code_capture_last[0] == '\0', "a bound call writes no capture");
+
+    /* Code written after binding where the untranslatable word's trace ran is not part of the
+     * identity, so it has no executable authority: it stops and is captured, never interpreted. */
+    MEM_W32(CAPTURE_FRESH, 0x24020077u);       /* addiu v0, zero, 0x77 */
+    MEM_W32(CAPTURE_FRESH + 4u, 0x03e00008u);  /* jr ra */
+    MEM_W32(CAPTURE_FRESH + 8u, 0x00000000u);  /* nop */
+    CHECK(sr_module_code_fetch_authority(CAPTURE_FRESH) < 0,
+          "code beyond the identity is outside the bound translation (authority %d)",
+          sr_module_code_fetch_authority(CAPTURE_FRESH));
+    Call fresh = call_at(CAPTURE_FRESH);
+    CHECK(fresh.result == SR_GUEST_INTERP_NOT_EXECUTABLE && fresh.v0 == 0xdeadbeefu,
+          "unchecked code written after binding stops (result %d v0 0x%08x)",
+          fresh.result, fresh.v0);
+    CHECK(s_code_capture_last[0] != '\0', "the unchecked code is captured");
+    Call dead = call_at(CAPTURE_DEAD);
+    CHECK(dead.result == SR_GUEST_INTERP_NOT_EXECUTABLE && s_code_capture_last[0] != '\0',
+          "the untranslatable target stops as not-executable and is captured (result %d)",
+          dead.result);
 
     install_routine(LEAF_ADDIU + 1u, 0x13572468u);   /* addiu v0, a0, 0x31 */
     CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 1u,

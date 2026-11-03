@@ -210,8 +210,10 @@ class CaptureTranslation(unittest.TestCase):
         self.assertNotEqual(other.name, module.name)
 
     def test_a_target_without_a_translation_is_named(self):
-        # A target on a word the emitter refuses (COP3) gets no body; the build says so, and a
-        # call to it stops by name at run time (its stub calls sr_unimplemented).
+        # A target on a word the emitter refuses (COP3) gets no body; the build says so. Its
+        # trace runs on through the zeros after it, and none of that is identity, so none of
+        # it is executable authority or inside the bound range: a call there stops as
+        # target-not-executable and is captured again.
         dead = TARGET + 0x200
         images = code_capture.group_captures(
             [capture({dead: 0x4C000000}, target=dead), capture({dead: 0x4C000000})])
@@ -219,7 +221,26 @@ class CaptureTranslation(unittest.TestCase):
         module, err = translate(images[0])
         self.assertIn(f"captured target 0x{dead:08x} has no translation", err)
         self.assertEqual([a for a, _ in module.stubbed], [dead])
-        self.assertEqual({a: n for a, n in module.functions if a != dead}, {TARGET: 7, LEAF: 3})
+        self.assertEqual(dict(module.functions), {TARGET: 7, LEAF: 3})
+        self.assertEqual(len(module.texts), 2)
+        self.assertEqual(module.spans, list(module.overlay_check_spans))
+        self.assertEqual(module.spans, [(TARGET, TARGET + 0x1C), (LEAF, CODE_END)])
+        self.assertEqual((module.link_low, module.link_high), (TARGET, CODE_END))
+        for word in (dead, dead + 4, dead + 0x100, LOAD + WINDOW - 4):
+            self.assertFalse(in_ranges(word, module.spans), f"0x{word:08x} has no authority")
+
+    def test_executable_authority_is_exactly_the_identity(self):
+        # Every word the interpreter may run inside a bound capture is a word the runtime
+        # checked against the capture before binding it.
+        for edits, targets in (({}, {TARGET}), ({TARGET + 0x200: 0x4C000000},
+                                                {TARGET, TARGET + 0x200})):
+            image = code_capture.group_captures(
+                [capture(edits, target=target) for target in sorted(targets)])[0]
+            module, _ = translate(image)
+            with self.subTest(targets=sorted(targets)):
+                self.assertEqual(module.spans, list(module.overlay_check_spans))
+                self.assertLessEqual(module.link_low, module.spans[0][0])
+                self.assertEqual(module.link_high, module.spans[-1][1])
 
     def test_an_image_with_no_code_gets_a_named_descriptor(self):
         dead = TARGET + 0x200
