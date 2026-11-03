@@ -181,7 +181,7 @@ int iso_sector_extent_path(const char *guest_path, char *out, size_t out_size) {
         !iso_parse_sector_extent(norm_path, &lba, &size)) {
         return 0;
     }
-    int written = snprintf(out, out_size, "disc0:/sce_lbn0x%x_size0x%x", lba, size);
+    int written = snprintf(out, out_size, "disc0:/sce_lbn0x%x_size0x%x", (unsigned)lba, (unsigned)size);
     return written > 0 && (size_t)written < out_size;
 }
 

@@ -281,7 +281,7 @@ static uint32_t read_module_stop_option(uint32_t option, ModuleStopThread *threa
     if (attr & ~MODULE_SM_LEGAL_ATTR) return 0x80020001u; /* SCE_KERNEL_ERROR_ERROR */
     if (mpid != 0u && mpid != GUEST_MODULE_PARTITION_USER) {
         fprintf(stderr, "SEMANTIC_BOUNDARY: MODULE_STOP_PARTITION_UNSUPPORTED: stop thread stack "
-                        "in partition %u; only the user partition is modelled; refusing\n", mpid);
+                        "in partition %u; only the user partition is modelled; refusing\n", (unsigned)mpid);
         return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
     }
     if (priority != 0u) thread->priority = (int)priority;
