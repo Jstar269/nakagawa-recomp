@@ -170,6 +170,19 @@ class LibraryBuildTests(unittest.TestCase):
         self.assertEqual({source: record["outcome"] for source, record in self.by_source(result).items()},
                          {"ok-test70011.iso": "BUILT", "Sub/ok-test70012.iso": "BUILT"})
 
+    def test_only_refuses_a_name_that_matches_no_disc(self) -> None:
+        self.disc("ok-test70014.iso", "TEST70014")
+        with self.assertRaises(library_build.OnlyListError):
+            self.build(only=frozenset({"ok-test70014.iso", "no-such-disc.iso"})).run()
+        self.assertEqual(self.calls(), [])
+
+    def test_an_only_list_accepts_windows_separators_and_any_case(self) -> None:
+        listing = self.root / "only.txt"
+        windows_path = "\\".join(["Sub", "OK-Test70015.iso"])
+        listing.write_text(windows_path + "\r\n\n  ok-test70016.iso  \n", encoding="utf-8")
+        self.assertEqual(library_build.read_only_list(listing),
+                         frozenset({"sub/ok-test70015.iso", "ok-test70016.iso"}))
+
     def test_a_disc_id_seen_before_is_a_duplicate_and_builds_once(self) -> None:
         self.disc("a/ok-test70010.iso", "TEST70010")
         self.disc("b/ok-test70010.iso", "TEST70010")

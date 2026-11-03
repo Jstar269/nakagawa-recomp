@@ -17,7 +17,8 @@ The run never stops on one title: each disc ends with a record (built, or the ex
 in ``library-build.json`` and ``library-build.md``, written after every title to the data
 folder and to ``--manifest-dir``. A stopped run resumes where it left off. Only ``.iso``
 files are discs; other files are counted by kind and skipped. ``--only`` names the discs to
-build (by their path in the disc folder); every other record is kept as it was.
+build (by their path in the disc folder, either slash, any case); every other record is kept
+as it was, and a name that matches no disc stops the run before anything builds.
 
 Discs are keyed by disc ID plus the hash of the whole image (``nk_core.disc_verify``): a
 file with the disc ID and the same SHA-1 as one seen before is recorded as a duplicate of the
@@ -72,6 +73,17 @@ PAUSE_POLL_SECONDS = 30.0
 _BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 _IDLE_PRIORITY_CLASS = 0x00000040
 _CREATE_NO_WINDOW = 0x08000000
+
+
+class OnlyListError(ValueError):
+    """An --only list names a disc the folder does not hold."""
+
+
+def read_only_list(path: Path) -> frozenset[str]:
+    """The source keys of an --only file: one disc path per line, relative to the disc folder,
+    with either slash and in any case."""
+    return frozenset(line.strip().replace("\\", "/").casefold()
+                     for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
 
 
 def default_jobs(cpu_count: int | None) -> int:
@@ -368,6 +380,10 @@ class LibraryBuild:
         discs, self.skipped = discover(self.disc_root)
         present: list[dict[str, Any]] = []
         keys = {_source_key(path, self.disc_root) for path in discs}
+        if self.only is not None and not self.only <= keys:
+            unknown = sorted(self.only - keys)
+            raise OnlyListError(f"--only names {len(unknown)} disc(s) not in the disc folder, "
+                                f"first {unknown[0]!r}")
         for path in discs:
             key = _source_key(path, self.disc_root)
             if self.only is not None and key not in self.only:
@@ -754,10 +770,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.jobs < 1 or args.title_timeout < 1 or args.launch_timeout < 1:
         parser.error("--jobs, --title-timeout and --launch-timeout must be positive")
-    only = None
-    if args.only is not None:
-        only = frozenset(line.strip().casefold() for line in
-                         args.only.read_text(encoding="utf-8").splitlines() if line.strip())
+    only = read_only_list(args.only) if args.only is not None else None
     dat = None
     if args.redump_dat is not None:
         try:
@@ -771,7 +784,11 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit, decrypt=None if args.no_decrypt else DiscDecryption(),
         dat=dat, verify_only=args.verify_only, commit=source_commit(), only=only,
     )
-    manifest = build.run()
+    try:
+        manifest = build.run()
+    except OnlyListError as exc:
+        print(f"library_build: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps({"counts": manifest["counts"],
                       "verification": manifest["verification_counts"]}, sort_keys=True))
     return 0

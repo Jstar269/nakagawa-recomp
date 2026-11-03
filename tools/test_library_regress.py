@@ -95,6 +95,22 @@ class LadderTests(unittest.TestCase):
         self.assertEqual(self.place(built(60))["rung"], "frames")  # type: ignore[index]
         self.assertEqual(self.place(built(59), frames=10)["rung"], "frames")  # type: ignore[index]
 
+    def test_a_launch_with_no_recorded_status_is_unknown_not_environment(self) -> None:
+        for record in ({"outcome": "BUILT", "failure_class": None},
+                       {"outcome": "BUILT", "failure_class": None, "launch": {"frame_submissions": 0}}):
+            place = self.place(record)
+            assert place is not None
+            self.assertEqual((place["end"], place["stop"]), ("unknown", "LAUNCH_STATUS_MISSING"))
+
+    def test_a_failed_launch_without_a_failure_class_is_a_stop(self) -> None:
+        failed = built(0, None, status="FAIL")
+        timed_out = built(5, None, status="FAIL")
+        timed_out["launch"]["exit_classification"] = "TIMED_OUT"
+        place = self.place(failed)
+        assert place is not None
+        self.assertEqual((place["end"], place["stop"]), ("crash", "LAUNCH_FAIL_UNCLASSIFIED"))
+        self.assertEqual(self.place(timed_out)["end"], "running")  # type: ignore[index]
+
     def test_titles_this_run_did_not_end_are_not_on_the_ladder(self) -> None:
         for outcome in ("PENDING", "RUNNING", "DUPLICATE"):
             self.assertIsNone(self.place({"outcome": outcome}))
@@ -147,8 +163,11 @@ class CompareTests(unittest.TestCase):
         self.assertEqual([row["source_key"] for row in result["down"]], ["crash.iso", "down.iso"])
         self.assertEqual([row["source_key"] for row in result["up"]], ["up.iso"])
         self.assertEqual([row["source_key"] for row in result["changed"]], ["stop.iso"])
-        self.assertEqual(result["counts"], {"down": 2, "up": 1, "changed": 1, "same": 1, "not_compared": 1,
-                                            "only_old": 1, "only_new": 1})
+        self.assertEqual(result["counts"], {"down": 2, "up": 1, "changed": 1, "same": 1, "no_verdict": 2,
+                                            "not_compared": 0, "skipped": 0, "only_new": 1})
+        self.assertEqual([(row["source_key"], row["reason"]) for row in result["no_verdict"]],
+                         [("env.iso", "HEADLESS_UNAVAILABLE"), ("gone.iso", "missing")])
+        self.assertEqual(result["verdict"], "down")
         down = result["down"][1]
         self.assertEqual((down["old"]["commit"], down["new"]["commit"]), (OLD, NEW))
         self.assertEqual((down["old"]["rung"], down["new"]["rung"]), ("frames", "first_frame"))
@@ -176,6 +195,35 @@ class CompareTests(unittest.TestCase):
         self.assertFalse(same("UNSUPPORTED_IMPORT:sceRtc:sceRtcGetTime_t", "UNSUPPORTED_IMPORT:sceUsb:sceUsbStart"))
         self.assertFalse(same("UNRESOLVED_DISPATCH_TARGET:a", "RUNTIME_SEMANTIC_BOUNDARY:a"))
         self.assertFalse(same(None, "UNSUPPORTED_IMPORT"))
+
+    def test_a_run_that_compares_nothing_is_no_verdict(self) -> None:
+        titles = ("a.iso", "b.iso", "c.iso")
+        old, new = self.snapshots({key: built(400) for key in titles},
+                                  {key: built(0, "HEADLESS_UNAVAILABLE") for key in titles})
+        result = library_regress.compare(old, new)
+        self.assertEqual(result["verdict"], "no_verdict")
+        self.assertEqual([row["source_key"] for row in result["no_verdict"]], list(titles))
+        self.assertEqual(result["no_verdict"][0]["reason"], "HEADLESS_UNAVAILABLE")
+        self.assertEqual(library_regress.exit_code(result), library_regress.EXIT_NO_VERDICT)
+
+    def test_a_title_missing_or_unfinished_in_the_new_run_is_no_verdict(self) -> None:
+        old, new = self.snapshots({"a.iso": built(400), "b.iso": built(400), "c.iso": built(400)},
+                                  {"a.iso": built(400), "b.iso": {"outcome": "PENDING"}})
+        result = library_regress.compare(old, new)
+        self.assertEqual([(row["source_key"], row["reason"]) for row in result["no_verdict"]],
+                         [("b.iso", "PENDING"), ("c.iso", "missing")])
+        self.assertEqual(result["verdict"], "no_verdict")
+        partial = library_regress.compare(old, new, partial=True)
+        self.assertEqual((partial["verdict"], partial["counts"]["no_verdict"], partial["counts"]["skipped"]),
+                         ("pass", 0, 2))
+
+    def test_a_title_the_old_run_could_not_judge_is_listed_and_does_not_fail(self) -> None:
+        old, new = self.snapshots({"a.iso": built(0, "HEADLESS_UNAVAILABLE"), "b.iso": built(400)},
+                                  {"a.iso": built(400), "b.iso": built(400)})
+        result = library_regress.compare(old, new)
+        self.assertEqual([row["source_key"] for row in result["not_compared"]], ["a.iso"])
+        self.assertEqual(result["verdict"], "pass")
+        self.assertIn("NOT-COMPARED", library_regress.render_comparison(result))
 
     def test_a_fast_run_is_compared_up_to_the_first_frame(self) -> None:
         old, new = self.snapshots({"a.iso": built(400), "b.iso": built(400)},
@@ -206,8 +254,13 @@ class CompareTests(unittest.TestCase):
 
         ranges = library_regress.commit_ranges(result, Path("repo"), run=fake_git)
         self.assertEqual(ranges, {f"{OLD}..{NEW}": ["b0b0b0b merge two", "a1a1a1a merge one"]})
-        self.assertEqual(calls[0][-1], f"{OLD}..{NEW}")
+        self.assertEqual(calls[0][-2:], [f"{OLD}..{NEW}", "--"])
         self.assertIn("--first-parent", calls[0])
+        # A commit field that is not a hash never reaches git.
+        result["down"][0]["old"]["commit"] = "--output=x"
+        ranges = library_regress.commit_ranges(result, Path("repo"), run=fake_git)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("error", ranges[f"--output=x..{NEW}"])
 
 
 class CommandLineTests(unittest.TestCase):
@@ -238,6 +291,24 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("down 1", text)
         self.assertEqual(json.loads((self.root / "out.json").read_text(encoding="utf-8"))["counts"]["down"], 1)
         self.assertEqual(self.main("compare", str(old), str(better))[0], 0)
+
+    def test_compare_never_passes_a_run_that_proves_nothing(self) -> None:
+        old = self.write("old.json", manifest({f"t{index}.iso": built(400) for index in range(3)}))
+        headless = self.write("headless.json", manifest(
+            {f"t{index}.iso": built(0, "HEADLESS_UNAVAILABLE") for index in range(3)}, commit=NEW))
+        code, text = self.main("compare", str(old), str(headless))
+        self.assertEqual(code, library_regress.EXIT_NO_VERDICT)
+        self.assertNotEqual(code, 0)
+        self.assertIn("NO-VERDICT TEST00000  Title 0", text)
+        self.assertEqual(self.main("compare", str(old), str(headless), "--partial")[0],
+                         library_regress.EXIT_NO_VERDICT)
+
+    def test_compare_partial_judges_only_what_the_new_run_ended(self) -> None:
+        old = self.write("old.json", manifest({"a.iso": built(400), "b.iso": built(400)}))
+        halfway = self.write("halfway.json", manifest({"a.iso": built(400), "b.iso": {"outcome": "RUNNING"}},
+                                                      commit=NEW))
+        self.assertEqual(self.main("compare", str(old), str(halfway))[0], library_regress.EXIT_NO_VERDICT)
+        self.assertEqual(self.main("compare", str(old), str(halfway), "--partial")[0], 0)
 
     def test_record_keeps_snapshots_and_history_reads_them_back(self) -> None:
         store = self.root / "store"
@@ -348,7 +419,8 @@ class FastRunTests(unittest.TestCase):
         options.update(overrides)
         return argparse.Namespace(**options)
 
-    def fake_library_build(self, frames: int) -> tuple[list[list[str]], Callable[..., subprocess.CompletedProcess]]:
+    def fake_library_build(self, frames: int, *, drop: int = 0, pending: int = 0
+                           ) -> tuple[list[list[str]], Callable[..., subprocess.CompletedProcess]]:
         calls: list[list[str]] = []
 
         def run(command: list[str], **_options) -> subprocess.CompletedProcess:
@@ -358,8 +430,10 @@ class FastRunTests(unittest.TestCase):
             scratch = Path(command[command.index("--work-dir") + 1])
             scratch.mkdir(parents=True)
             out = Path(command[command.index("--manifest-dir") + 1]) / "library-build.json"
-            out.write_text(json.dumps(manifest({key: built(frames) for key in only}, commit=NEW)),
-                           encoding="utf-8")
+            records: dict[str, dict] = {key: built(frames) for key in only[drop:]}
+            for key in list(records)[:pending]:
+                records[key] = {"outcome": "PENDING"}
+            out.write_text(json.dumps(manifest(records, commit=NEW)), encoding="utf-8")
             return subprocess.CompletedProcess(command, 0)
 
         return calls, run
@@ -379,6 +453,18 @@ class FastRunTests(unittest.TestCase):
         self.assertIn("down 2", out.getvalue())
         snapshot = json.loads((self.store / "snapshots" / state["last_snapshot"]).read_text(encoding="utf-8"))
         self.assertEqual(snapshot["mode"], "fast")
+
+    def test_a_selected_title_the_fast_run_did_not_end_is_no_verdict(self) -> None:
+        for options in ({"drop": 1}, {"pending": 1}):
+            with self.subTest(**options):
+                _calls, run = self.fake_library_build(frames=5, **options)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = library_regress.run_fast(self.args(cursor=0), run=run, log=lambda _text: None)
+                self.assertEqual(code, library_regress.EXIT_NO_VERDICT)
+                self.assertIn("NO-VERDICT", out.getvalue())
+                for run_dir in (self.store / "runs").glob("2*"):
+                    run_dir.rename(run_dir.with_name(f"done-{len(options)}-{next(iter(options))}-" + run_dir.name))
 
     def test_the_next_fast_run_continues_the_rotation(self) -> None:
         _calls, run = self.fake_library_build(frames=5)

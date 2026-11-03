@@ -24,12 +24,19 @@ How the launch ended is recorded beside the rung: ``running``, ``exited``, ``nam
 class and its runtime boundary or first runtime import, for example
 ``UNSUPPORTED_IMPORT:sceFoo:sceFooBar``). ``running`` is a title still presenting frames when
 the launch timeout ended it; ``hang`` is a launch timeout with no frame at all. A launch the
-host could not run (``environment``) is recorded and never compared.
+host could not run (``environment``) or a built title whose launch recorded no status
+(``unknown``) gives no verdict.
 
 ``record`` turns a manifest into a ladder snapshot in the store, one file per run, with each
-title's commit. ``compare`` reports every title that went down or up between two snapshots (or
-two manifests), with both commits, and exits 1 when any title went down: a lower rung, or a
-title that was alive at a rung and stopped there. A title that stops at the same rung in a
+title's commit and the titles the run did not end. ``compare`` reports every title that went
+down or up between two snapshots (or two manifests), with both commits, and exits 1 when any
+title went down: a lower rung, or a title that was alive at a rung and stopped there. It exits
+3 (no verdict) when a title the old run judged has no verdict in the new one (missing, left
+PENDING or RUNNING, or a launch with no verdict), or when nothing could be compared at all; it
+never exits 0 for a run that proves nothing. ``--partial`` judges only the titles the new run
+ended, for a run still in progress; a fast snapshot is judged on the titles it was given.
+Titles are keyed by their path in the disc folder, so a disc that was moved or renamed is a
+different title: its old key has no verdict until the baseline is recorded again. A title that stops at the same rung in a
 different way (another missing piece, or a hang where a missing import stopped it before, which
 is often the import now working) is listed as changed, for review, and is not a regression. Two
 runs are compared like for like only when their launch timeout and frame threshold match;
@@ -40,7 +47,9 @@ otherwise only the rung is compared, up to ``first_frame``. A fast snapshot is c
 titles that reached a frame in the baseline, sized from the baseline's per-title times to fit
 the budget. It waits for a title slot (``--slot-dir``: one lock file per running job, at most
 ``--max-slots`` machine-wide), builds the subset with ``library_build.py --only`` into a fresh
-scratch folder, records the run and compares it with the baseline. The full ladder is a whole
+scratch folder, records the run and compares it with the baseline. Every selected title must
+end with a verdict; one that does not makes the run exit 3, like a run with no slot or a
+failed build. The full ladder is a whole
 ``library_build.py`` run followed by ``record``.
 
 Snapshots, manifests and comparisons name the user's own discs: they are private records and
@@ -55,6 +64,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -72,6 +82,10 @@ END_RANK = {"crash": 0, "hang": 0, "named_stop": 0, "exited": 1, "running": 1}
 DEFAULT_FRAMES = 60
 DEFAULT_BUDGET_MINUTES = 60
 DEFAULT_TITLE_COST_SECONDS = 1800
+EXIT_DOWN = 1
+EXIT_NO_VERDICT = 3
+# A title in this state has no verdict: it is never compared, and the comparer says so.
+NO_VERDICT_ENDS = frozenset({"environment", "unknown"})
 STOP_NAME_MAX = 120
 # A launch the host could not give the title: never a verdict on the title.
 ENVIRONMENT_CLASSES = frozenset({
@@ -144,8 +158,18 @@ def classify(record: dict[str, Any], frames_threshold: int = DEFAULT_FRAMES) -> 
     rung = "frames" if presented and frames >= frames_threshold else (
         "first_frame" if presented else "built")
     failure = launch.get("failure_class") or record.get("failure_class")
+    status = launch.get("status")
+    if failure in (None, "NONE") and status not in (None, "PASS", "NOT_RUN"):
+        # A launch that failed without a class: a timeout is still one, anything else a stop.
+        failure = "LAUNCH_TIMEOUT" if launch.get("exit_classification") == "TIMED_OUT" else None
+        if failure is None:
+            return {"rung": rung, "end": "crash", "frames": frames,
+                    "stop": _stop_name(f"LAUNCH_{status}_UNCLASSIFIED")}
     stop = None
-    if launch.get("status") in (None, "NOT_RUN") or failure in ENVIRONMENT_CLASSES:
+    if status is None:
+        end = "unknown"
+        stop = "LAUNCH_STATUS_MISSING"
+    elif status == "NOT_RUN" or failure in ENVIRONMENT_CLASSES:
         end = "environment"
         stop = _stop_name(failure or "LAUNCH_NOT_RUN")
     elif failure in (None, "NONE"):
@@ -187,13 +211,14 @@ def snapshot_from_manifest(manifest: dict[str, Any], *, mode: str = "full",
     if mode not in ("full", "fast"):
         raise ValueError(f"unknown mode {mode!r}")
     titles: dict[str, dict[str, Any]] = {}
-    untested = 0
+    untested: dict[str, dict[str, Any]] = {}
     for record in manifest["titles"]:
         if not isinstance(record, dict) or not isinstance(record.get("source_key"), str):
             continue
         place = classify(record, frames_threshold)
         if place is None:
-            untested += 1
+            untested[record["source_key"]] = {"outcome": record.get("outcome") or "NO_OUTCOME",
+                                              "disc_id": record.get("disc_id"), "title": record.get("title")}
             continue
         place.update({
             "disc_id": record.get("disc_id"),
@@ -215,7 +240,8 @@ def snapshot_from_manifest(manifest: dict[str, Any], *, mode: str = "full",
             "ceiling": "first_frame" if mode == "fast" else "frames",
             "launch_timeout_seconds": _launch_timeout(manifest) or launch_timeout,
         },
-        "untested": untested,
+        "untested": len(untested),
+        "untested_titles": untested,
         "titles": titles,
     }
 
@@ -241,11 +267,19 @@ def record(snapshot: dict[str, Any], store: Path) -> Path:
     """Keep a snapshot in the store's ``snapshots`` folder under the next sequence number, so
     the names sort in the order the runs were recorded and no run replaces another."""
     folder = store / "snapshots"
+    folder.mkdir(parents=True, exist_ok=True)
     numbers = [int(path.name.split("-", 1)[0]) for path in folder.glob("*.json")
-               if path.name.split("-", 1)[0].isdigit()] if folder.is_dir() else []
-    path = folder / f"{max(numbers, default=0) + 1:05d}-{_snapshot_name(snapshot)}"
-    _write_json(path, snapshot)
-    return path
+               if path.name.split("-", 1)[0].isdigit()]
+    number = max(numbers, default=0) + 1
+    while True:
+        path = folder / f"{number:05d}-{_snapshot_name(snapshot)}"
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))  # claim the number
+        except FileExistsError:
+            number += 1  # another record took it at the same moment
+            continue
+        _write_json(path, snapshot)
+        return path
 
 
 # -- comparison ------------------------------------------------------------------------------
@@ -268,8 +302,24 @@ def same_stop(old: str | None, new: str | None) -> bool:
     return len(old_parts) == 1 or len(new_parts) == 1 or old_parts[-1] == new_parts[-1]
 
 
-def compare(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
-    """Every title in both snapshots: down, up, changed at the same place, or the same."""
+def _row(key: str, before: dict[str, Any], after: dict[str, Any] | None,
+         untested: dict[str, Any] | None = None) -> dict[str, Any]:
+    fields = ("rung", "end", "stop", "frames", "commit")
+    return {
+        "source_key": key,
+        "disc_id": (after or {}).get("disc_id") or before.get("disc_id") or (untested or {}).get("disc_id"),
+        "title": (after or {}).get("title") or before.get("title") or (untested or {}).get("title"),
+        "old": {field: before.get(field) for field in fields},
+        "new": {field: after.get(field) for field in fields} if after is not None else None,
+    }
+
+
+def compare(old: dict[str, Any], new: dict[str, Any], *, keys: Iterable[str] | None = None,
+            partial: bool = False) -> dict[str, Any]:
+    """Judge every title the old run judged (or ``keys``, or a fast run's own titles): down, up,
+    changed at the same place, the same, or no verdict in the new run. ``partial`` skips the
+    titles the new run has not ended (still to build, or not in it at all) instead of
+    counting them as no verdict."""
     old_ladder, new_ladder = old["ladder"], new["ladder"]
     like = (old_ladder.get("launch_timeout_seconds") is not None
             and old_ladder.get("launch_timeout_seconds") == new_ladder.get("launch_timeout_seconds")
@@ -277,18 +327,40 @@ def compare(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     ceiling = min(RUNGS.index(old_ladder["ceiling"]), RUNGS.index(new_ladder["ceiling"]))
     if not like:
         ceiling = min(ceiling, RUNGS.index("first_frame"))
-    rows: dict[str, list[dict[str, Any]]] = {"down": [], "up": [], "changed": [], "not_compared": []}
-    same = 0
-    for key in sorted(set(old["titles"]) & set(new["titles"])):
-        before, after = old["titles"][key], new["titles"][key]
-        row = {
-            "source_key": key,
-            "disc_id": after.get("disc_id") or before.get("disc_id"),
-            "title": after.get("title") or before.get("title"),
-            "old": {field: before.get(field) for field in ("rung", "end", "stop", "frames", "commit")},
-            "new": {field: after.get(field) for field in ("rung", "end", "stop", "frames", "commit")},
-        }
-        if "environment" in (before["end"], after["end"]):
+    untested_titles: dict[str, Any] = new.get("untested_titles") or {}
+    if keys is not None:
+        scope = set(keys)
+    elif new["mode"] == "fast":
+        scope = set(new["titles"]) | set(untested_titles)
+    else:
+        scope = set(old["titles"])
+    rows: dict[str, list[dict[str, Any]]] = {"down": [], "up": [], "changed": [], "not_compared": [],
+                                             "no_verdict": []}
+    same = skipped = 0
+    for key in sorted(scope):
+        before, after = old["titles"].get(key), new["titles"].get(key)
+        if before is None:
+            # The old run has no place for it: nothing to judge against.
+            rows["not_compared"].append({"source_key": key, "disc_id": (after or {}).get("disc_id"),
+                                         "title": (after or {}).get("title"), "old": None,
+                                         "new": after, "reason": "not in the old run"})
+            continue
+        if after is None:
+            if partial:
+                skipped += 1
+                continue
+            untested = untested_titles.get(key)
+            row = _row(key, before, None, untested)
+            row["reason"] = untested["outcome"] if untested else "missing"
+            rows["no_verdict"].append(row)
+            continue
+        row = _row(key, before, after)
+        if after["end"] in NO_VERDICT_ENDS:
+            row["reason"] = after.get("stop") or after["end"]
+            rows["no_verdict"].append(row)
+            continue
+        if before["end"] in NO_VERDICT_ENDS:
+            row["reason"] = f"old run: {before.get('stop') or before['end']}"
             rows["not_compared"].append(row)
             continue
         old_score, new_score = _score(before, ceiling, like), _score(after, ceiling, like)
@@ -300,18 +372,34 @@ def compare(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
             rows["changed"].append(row)
         else:
             same += 1
+    compared = len(rows["down"]) + len(rows["up"]) + len(rows["changed"]) + same
+    if rows["down"]:
+        verdict = "down"
+    elif rows["no_verdict"] or compared == 0:
+        verdict = "no_verdict"
+    else:
+        verdict = "pass"
     return {
+        "verdict": verdict,
         "like_for_like": like,
         "compared_up_to": RUNGS[ceiling],
         "old": {"mode": old["mode"], "commits": old["commits"], "recorded_at": old["recorded_at"]},
         "new": {"mode": new["mode"], "commits": new["commits"], "recorded_at": new["recorded_at"]},
         "counts": {"down": len(rows["down"]), "up": len(rows["up"]),
                    "changed": len(rows["changed"]), "same": same,
-                   "not_compared": len(rows["not_compared"]),
-                   "only_old": len(set(old["titles"]) - set(new["titles"])),
+                   "no_verdict": len(rows["no_verdict"]), "not_compared": len(rows["not_compared"]),
+                   "skipped": skipped,
                    "only_new": len(set(new["titles"]) - set(old["titles"]))},
         **rows,
     }
+
+
+def exit_code(result: dict[str, Any]) -> int:
+    """1 when a title went down, 3 when the comparison has no verdict, 0 only when it passed."""
+    return {"down": EXIT_DOWN, "no_verdict": EXIT_NO_VERDICT}.get(result["verdict"], 0)
+
+
+_COMMIT = re.compile(r"[0-9a-fA-F]{7,64}")
 
 
 def commit_ranges(result: dict[str, Any], repo: Path,
@@ -325,14 +413,19 @@ def commit_ranges(result: dict[str, Any], repo: Path,
         span = f"{old_commit}..{new_commit}"
         if span in ranges:
             continue
-        completed = run(["git", "-C", str(repo), "log", "--first-parent", "--format=%h %s", span],
+        if not all(_COMMIT.fullmatch(commit) for commit in (old_commit, new_commit)):
+            ranges[span] = {"error": "not a commit hash"}
+            continue
+        completed = run(["git", "-C", str(repo), "log", "--first-parent", "--format=%h %s", span, "--"],
                         capture_output=True, text=True, encoding="utf-8", check=False)
         ranges[span] = (completed.stdout.splitlines() if completed.returncode == 0
                         else {"error": completed.stderr.strip()[:300]})
     return ranges
 
 
-def _place_text(place: dict[str, Any]) -> str:
+def _place_text(place: dict[str, Any] | None) -> str:
+    if place is None:
+        return "no result"
     text = f"{place['rung']}/{place['end']}"
     if place.get("stop"):
         text += f" {place['stop']}"
@@ -348,17 +441,22 @@ def render_comparison(result: dict[str, Any]) -> str:
     lines = [
         f"old {result['old']['mode']} {', '.join(_short(c) for c in result['old']['commits']) or '?'}"
         f" -> new {result['new']['mode']} {', '.join(_short(c) for c in result['new']['commits']) or '?'}",
-        f"compared up to {result['compared_up_to']}"
+        f"verdict {result['verdict'].upper()}; compared up to {result['compared_up_to']}"
         f"{'' if result['like_for_like'] else ' (rung only: launch timeout or frame threshold differ)'}",
-        "down {down}  up {up}  changed {changed}  same {same}  not compared {not_compared}"
-        "  only old {only_old}  only new {only_new}".format(**counts),
+        "down {down}  up {up}  changed {changed}  same {same}  no verdict {no_verdict}"
+        "  not compared {not_compared}  skipped {skipped}  only new {only_new}".format(**counts),
     ]
-    for kind, label in (("down", "DOWN"), ("up", "UP"), ("changed", "CHANGED")):
+    for kind, label in (("down", "DOWN"), ("no_verdict", "NO-VERDICT"), ("not_compared", "NOT-COMPARED"),
+                        ("up", "UP"), ("changed", "CHANGED")):
         for row in result[kind]:
-            lines.append(
-                f"{label:7} {row['disc_id'] or '?':10} {row['title'] or row['source_key']}: "
-                f"{_place_text(row['old'])} -> {_place_text(row['new'])} "
-                f"[{_short(row['old']['commit'])}..{_short(row['new']['commit'])}]")
+            old_commit = (row["old"] or {}).get("commit")
+            new_commit = (row["new"] or {}).get("commit")
+            line = (f"{label:7} {row['disc_id'] or '?':10} {row['title'] or row['source_key']}: "
+                    f"{_place_text(row['old'])} -> {_place_text(row['new'])} "
+                    f"[{_short(old_commit)}..{_short(new_commit)}]")
+            if row.get("reason"):
+                line += f" ({row['reason']})"
+            lines.append(line)
     for span, commits in (result.get("commit_ranges") or {}).items():
         lines.append(f"range {span}:")
         if isinstance(commits, dict):
@@ -479,7 +577,7 @@ def run_fast(args: argparse.Namespace, *,
         + (f"; {len(choice['too_slow'])} over the budget alone, passed over" if choice["too_slow"] else ""))
     if not choice["selected"]:
         log("fast: nothing to run")
-        return 2
+        return EXIT_NO_VERDICT
     run_id = f"{_utc_now().replace(':', '').replace('-', '')}-fast"
     run_dir = store / "runs" / run_id
     run_dir.mkdir(parents=True)
@@ -496,7 +594,7 @@ def run_fast(args: argparse.Namespace, *,
                             log=log)
         if lock is None:
             log("fast: no title slot")
-            return 2
+            return EXIT_NO_VERDICT
     try:
         command = [sys.executable, str(LIBRARY_BUILD), str(args.disc_root),
                    "--user-data-root", str(scratch / "data"), "--work-dir", str(scratch / "work"),
@@ -510,11 +608,11 @@ def run_fast(args: argparse.Namespace, *,
     manifest_path = run_dir / "library-build.json"
     if completed.returncode != 0 or not manifest_path.is_file():
         log(f"fast: library_build.py ended {completed.returncode}; no verdict")
-        return 2
+        return EXIT_NO_VERDICT
     snapshot = snapshot_from_manifest(_read_json(manifest_path), mode="fast",
                                       frames_threshold=baseline["ladder"]["frames_threshold"])
     path = record(snapshot, store)
-    result = compare(baseline, snapshot)
+    result = compare(baseline, snapshot, keys=choice["selected"])  # every selected title needs a verdict
     if args.repo is not None:
         result["commit_ranges"] = commit_ranges(result, args.repo, run=run)
     _write_json(run_dir / "comparison.json", result)
@@ -524,7 +622,7 @@ def run_fast(args: argparse.Namespace, *,
     _write_json(state_path, state)
     if not args.keep_scratch:
         shutil.rmtree(scratch, ignore_errors=True)
-    return 1 if result["down"] else 0
+    return exit_code(result)
 
 
 # -- command line ----------------------------------------------------------------------------
@@ -558,6 +656,8 @@ def main(argv: list[str] | None = None) -> int:
     compare_command.add_argument("--repo", type=Path, default=None,
                                  help="A checkout: list the first-parent commits of each range that went down")
     compare_command.add_argument("--json", type=Path, default=None, help="Also write the result here")
+    compare_command.add_argument("--partial", action="store_true",
+                                 help="Judge only the titles the new run ended (a run still in progress)")
     compare_command.add_argument("--old-commit", default=None, help="Commit for an old manifest with none")
     compare_command.add_argument("--new-commit", default=None, help="Commit for a new manifest with none")
     compare_command.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
@@ -599,13 +699,13 @@ def main(argv: list[str] | None = None) -> int:
         common = {"frames_threshold": args.frames, "launch_timeout": args.launch_timeout}
         old = load_snapshot(args.old, commit=args.old_commit, **common)
         new = load_snapshot(args.new, commit=args.new_commit, **common)
-        result = compare(old, new)
+        result = compare(old, new, partial=args.partial)
         if args.repo is not None:
             result["commit_ranges"] = commit_ranges(result, args.repo)
         if args.json is not None:
             _write_json(args.json, result)
         sys.stdout.write(render_comparison(result))
-        return 1 if result["down"] else 0
+        return exit_code(result)
     if args.command == "history":
         for row in history(args.store, args.title):
             print(json.dumps(row, ensure_ascii=False))

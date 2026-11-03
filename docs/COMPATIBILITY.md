@@ -224,14 +224,18 @@ snapshots or two manifests, lists every title that went down or up with both com
 first-parent commits between them) and exits 1 when any title went down: a lower rung, or a title that was still
 running at a rung and now stops there. A title that stops at the same rung in another way (another missing piece, or
 a hang where a missing import stopped it before, often because the import now works) is listed as changed, for
-review. Runs are compared like for like only when their launch timeout and frame threshold match; otherwise only the
-rung is compared, up to the first frame.
+review. It never passes a run that proves nothing: it exits 3 (no verdict) when a title the old run judged is
+missing from the new run, was left unfinished, or launched without a verdict (no video on the host, or no recorded
+launch status), and when nothing could be compared at all; each such title is listed. `--partial` judges only the
+titles a run still in progress has ended. Runs are compared like for like only when their launch timeout and frame
+threshold match; otherwise only the rung is compared, up to the first frame. Titles are keyed by their path in the
+disc folder, so a moved or renamed disc counts as a different title until the baseline is recorded again.
 
 `fast` is the check before landing a batch: it boots a rotating subset of the titles that reached a frame in a full
 baseline, sized from the baseline's per-title times to fit `--budget-minutes` (60 by default), builds them with
 `library_build.py --only` into a scratch folder, waits for a free title slot first when `--slot-dir` names a folder
-of lock files, and compares the result with the baseline. Each run continues the rotation where the last one
-stopped. A full `library_build.py` run with `record` is the weekly ladder. Snapshots and comparisons name your own
+of lock files, and compares the result with the baseline; a selected title that ends without a verdict makes the
+run exit 3. Each run continues the rotation where the last one stopped. A full `library_build.py` run with `record` is the weekly ladder. Snapshots and comparisons name your own
 discs, so they stay private like the manifest.
 
 Builds run below normal priority with no window, `--jobs` at a time (default one per eight logical CPUs, at most
