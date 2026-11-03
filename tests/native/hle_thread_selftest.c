@@ -8835,6 +8835,65 @@ static void test_utility_dialog_frame_driven_status(void) {
     sr_hle_test_osk_slot_reset();
 }
 
+/* #1386: a guest that spins on GetStatus without waiting for vblank still sees its dialog start
+ * up. Its loop's back-edge SR_YIELD reaches sr_yield at the end of each timeslice, which latches
+ * the elapsed display periods (scheduler_progress_time -> scheduler_latch_due_events ->
+ * sr_display_advance_vcount) whether or not another thread can run, so start-up completes on
+ * the first vblank the spin crosses. Here the only guest thread spins, the scheduler's
+ * deterministic quantum stands in for host time, and nothing advances VCOUNT by hand. */
+static uint32_t s_spin_first_status, s_spin_status, s_spin_yields, s_spin_vcount_start;
+
+static void utility_spin_coro_body(void *arg) {
+    (void)arg;
+    CpuState ctl;
+    s_spin_first_status = utility_call(&ctl, NID_MSG_DIALOG_STATUS, 0u);
+    s_spin_status = s_spin_first_status;
+    /* Sixteen yields bound the test, not the dialog: the 10 ms quantum crosses a vblank on
+     * the second. */
+    for (s_spin_yields = 0; s_spin_yields < 16u && s_spin_status == 1u; s_spin_yields++) {
+        memset(&ctl, 0, sizeof(ctl));
+        sr_yield(&ctl);
+        s_spin_status = utility_call(&ctl, NID_MSG_DIALOG_STATUS, 0u);
+    }
+}
+
+static void test_utility_dialog_start_up_during_status_spin(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    s_pace_on = 0;   /* deterministic: the scheduler quantum, not the host clock */
+    TCB *self = fixture_thread(0x5d0u, TH_RUNNING, 0x20);
+    s_cur = (int)(self - s_tcb);
+    self->started = 1;
+    s_vtime_us = 5000u;
+    s_vbl_next_us = s_vtime_us + 16683u;
+    s_vbl_event_period_rem = 0;
+    expect(sched_interrupts_enabled(), "spin fixture: CPU interrupts are enabled");
+
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u,
+           "spin fixture: the message dialog starts");
+    s_spin_vcount_start = sr_display_vcount();
+    s_spin_first_status = s_spin_status = 0xffffffffu;
+    s_spin_yields = 0;
+    self->coro = sr_coro_create(utility_spin_coro_body, NULL, (size_t)1 << 20);
+    expect(self->coro != NULL, "spin fixture: the guest coroutine is created");
+    if (self->coro) {
+        sr_coro_switch(self->coro);
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+    expect(s_spin_first_status == 1u,
+           "a GetStatus spin reports INIT before its first scheduler boundary");
+    expect(s_spin_status == 2u && s_spin_yields >= 1u && s_spin_yields < 16u &&
+               sr_display_vcount() != s_spin_vcount_start,
+           "a GetStatus spin that never waits for vblank sees RUNNING once the scheduler "
+           "boundaries in its loop have latched a vblank");
+    s_cur = -1;
+    sr_hle_test_osk_slot_reset();
+}
+
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
                                uint32_t indata, uint32_t inlen,
                                uint32_t outdata, uint32_t outlen) {
@@ -44740,6 +44799,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_utility_dialog_cancel_cleanup();
     test_utility_dialog_status_sequence();
     test_utility_dialog_frame_driven_status();
+    test_utility_dialog_start_up_during_status_spin();
     test_savedata_older_parameter_versions();
     test_msg_dialog_answer_field();
     test_msg_dialog_abort_sequence();

@@ -894,13 +894,15 @@ static uint32_t h_OskInitStart(CpuState *s) {
 static uint32_t h_OskGetStatus(CpuState *s) {
     (void)s;
     if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
+    /* VISIBLE moves to QUIT on the poll that finds every field answered; QUIT stands until
+     * ShutdownStart. The check and the move share one lock section, so a ShutdownStart on
+     * another thread sees either VISIBLE or QUIT, never a keyboard between the two.
+     * osk_collect neither yields nor takes the lock (osk_text_entry.c uses interlocked state). */
     dialog_lock();
     utility_slot_settle_locked();
     const int ret = s_osk_status;
-    dialog_unlock();
-    /* VISIBLE moves to QUIT on the poll that finds every field answered; QUIT stands until
-     * ShutdownStart. */
     if (ret == OSK_VISIBLE && osk_collect()) s_osk_status = OSK_QUIT;
+    dialog_unlock();
     return (uint32_t)ret;
 }
 /* PSP-3000 measurements (#363): no keyboard returns WRONG_TYPE (0x80110005);
@@ -912,12 +914,12 @@ static uint32_t h_OskShutdown(CpuState *s) {
     dialog_lock();
     utility_slot_settle_locked();
     const int status = s_osk_status;
-    dialog_unlock();
-    if (status == OSK_NONE || status == OSK_INIT || status == OSK_VISIBLE)
+    if (status == OSK_NONE || status == OSK_INIT || status == OSK_VISIBLE) {
+        dialog_unlock();
         return 0x80110001u;
+    }
     osk_abandon_request();
-    dialog_lock();
-    if (s_osk_status == OSK_QUIT) {                        /* then NONE on the next vblank */
+    if (status == OSK_QUIT) {                              /* then NONE on the next vblank */
         s_osk_status = OSK_FINISHED;
         s_utility_step_vcount = sr_display_vcount();
     }

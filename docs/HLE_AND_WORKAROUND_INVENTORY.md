@@ -46,13 +46,13 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **681** (dedicated **573**, fake_success **5**, controlled_unsupported **103**).
-Semantic handler census: **551** handlers across **26** API families, covering **580** handler-associated NID registrations.
+Registered NIDs: **681** (dedicated **574**, fake_success **4**, controlled_unsupported **103**).
+Semantic handler census: **552** handlers across **26** API families, covering **581** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 251 | 259 |
+| `partial` | 252 | 260 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 3 | 7 |
 | `unreviewed` | 282 | 290 |
@@ -83,9 +83,9 @@ Semantic handler census: **551** handlers across **26** API families, covering *
 | `sceRtc` | 5 | 12 | 0 | 0 | 1 | 18 | 18 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 6 | 1 | 0 | 7 | 14 | 14 |
-| `sceUtility` | 0 | 9 | 0 | 0 | 27 | 36 | 36 |
+| `sceUtility` | 0 | 10 | 0 | 0 | 27 | 37 | 37 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **251** | **1** | **3** | **282** | **551** | **580** |
+| **Total** | **14** | **252** | **1** | **3** | **282** | **552** | **581** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -1031,6 +1031,11 @@ Semantic handler census: **551** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_sequence
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_without_update
   - Evidence: PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown
+- **`h_OskUpdate`** (`sceUtility`): `sceUtilityOskUpdate` (0x4b85c861)
+  - Limitation: the return codes follow the measured states, and INIT ends on the vblank after InitStart (#1386); Update does not drive the keyboard, whose text is collected from GetStatus (#281), and Update in FINISHED returns 0, which is not measured (#341)
+  - Evidence: #363 (PSP-3000 measurements, comments 6330742629 and 6331070692): WRONG_TYPE 0x80110005 before a keyboard starts; 0 in VISIBLE for speed 0 and 1; INVALID_STATUS 0x80110001 in INIT, QUIT and NONE after use
+  - Evidence: tests/native/hle_thread_selftest.c:test_osk_update_and_shutdown_init_states
+  - Evidence: tests/native/hle_thread_selftest.c:test_utility_dialog_frame_driven_status
 - **`h_ScreenshotStatus`** (`sceUtility`): `sceUtilityScreenshotGetStatus` (0xd81957b7)
   - Limitation: always WRONG_TYPE: the runtime has no screenshot dialog, and its InitStart import is not registered
   - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
@@ -1212,7 +1217,7 @@ The current registration classes and semantic statuses are in the generated cens
 | `IoFileMgrForUser` | `sceIoDevctl` (`0x54f5fb11`) | Partial Memory Stick support for `ms0:` and `fatms0:`: capacity/free-cluster geometry comes from the unified Memory Stick root shared with ordinary `sceIo*` and savedata (`SR_MEMSTICK`, default `memstick/`); inserted and ready queries write 1 and 4; registering a live callback for insert/eject events adds it to a 32-entry list and queues one notification with argument 1 (inserted), delivered on the owning thread at its next callback point; unregister removes one matching entry, an unknown UID returns `0x80010016`, and deleting a callback drops its registrations. No later insert or eject event exists ([#1378](https://github.com/Jstar269/nakagawa-recomp/issues/1378)). Other device/command pairs return `0x80010086`, log once per pair, and appear in the #281 exit summary. |
 | `sceAtrac3plus` | `sceAtracGetOutputChannel` (`0xb3b5d042`) | Compatibility exception: existing acceptance is retained while output-channel mapping is tracked by #286. |
 | `sceKernelVolatileMemUnlock` | `sceKernelVolatileMemUnlock` (`0xa569e425`) | Compatibility exception at the migration: the documented asset-loading route uses this call around the shared volatile-memory scratch buffer (#281). It now returns the PSP-measured states (#1135) and hands the lock to the oldest `sceKernelVolatileMemLock` caller blocked on it (#1383). |
-| `sceUtility` | `sceUtilityOskUpdate` (`0x4b85c861`) | Compatibility exception: the current route collects text and advances the OSK state from `sceUtilityOskGetStatus`; update keeps its no-op success while that dialog contract is unfinished (#281). |
+| `sceUtility` | `sceUtilityOskUpdate` (`0x4b85c861`) | Partial: returns the PSP-3000 measured results for each keyboard state (#363). It does not drive the keyboard: the current route collects text from `sceUtilityOskGetStatus` (#281), and Update in FINISHED returns 0, which is not measured. |
 
 ---
 
