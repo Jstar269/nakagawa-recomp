@@ -357,10 +357,15 @@ static void font_write_info(uint32_t addr, const PGF *pgf,
     font_overlay_style(addr, info, userMemory);
 }
 
+/* The error-code output of the Open and NewLib calls is written without a NULL check on the PSP,
+ * which crashes on a NULL one, so a NULL or unwritable pointer is an unmeasured stop, not a refusal. */
+#define FONT_REQUIRE_ERR_PTR(name, ptr)     do {         if (!(ptr) || !sr_guest_span_writable((ptr), 4u))             return hle_unmodelled_stop((name), "with an unwritable error pointer 0x%08x is not measured", (ptr));     } while (0)
+
 static uint32_t h_FontNewLib(CpuState *s) {
     /* sceFontNewLib(a0=FontNewLibParams*, a1=u32* errorCode). PPSSPP param layout:
      * +0 userData, +4 numFonts, +8 cacheData, +0xc allocFunc, +0x10 freeFunc, ... */
     uint32_t params = A0, errPtr = A1;
+    FONT_REQUIRE_ERR_PTR("sceFontNewLib", errPtr);
     uint32_t userData = 0, allocFn = 0, freeFn = 0, requestedFonts = 0;
     uint32_t paramsCopy[11] = {0};
     if (params && !sr_guest_span_readable(params, (uint32_t)sizeof(paramsCopy))) {
@@ -519,6 +524,7 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
     return fh;
 }
 static uint32_t h_FontOpen(CpuState *s) {
+    FONT_REQUIRE_ERR_PTR("sceFontOpen", A3);
     /* sceFontOpen(a0=lib, a1=index, a2=mode, a3=u32* errorCode). A NULL library answers
      * INVALID_LIB, and an index past the system font list (-1 and 50 measured) INVALID_ARG
      * (pspautotests tests/font/open.expected at f573fe8c, recorded on a PSP). */
@@ -545,7 +551,7 @@ static uint32_t h_FontOpen(CpuState *s) {
 /* Reads via the same VFS as sceIoOpen, defined with the descriptor implementation below. */
 static uint32_t font_read_user_file(uint32_t guest_path, uint8_t **bytes, uint32_t *size);
 static uint32_t h_FontOpenUserFile(CpuState *s) {
-    if (!A3 || !sr_guest_span_writable(A3, 4u)) return SR_FONT_ERROR_INVALID_ARG;
+    FONT_REQUIRE_ERR_PTR("sceFontOpenUserFile", A3);
     if (!A1) { MEM_W32(A3, SR_FONT_ERROR_INVALID_ARG); return 0; }
     SrFontLib lib;
     if (!fontlib_snapshot(A0, &lib)) { MEM_W32(A3, SR_FONT_ERROR_INVALID_LIB); return 0; }
@@ -560,6 +566,7 @@ static uint32_t h_FontOpenUserFile(CpuState *s) {
 }
 static uint32_t h_FontOpenUserMemory(CpuState *s) {
     /* sceFontOpenUserMemory(a0=lib, a1=memAddr, a2=memLen, a3=u32* errorCode). */
+    FONT_REQUIRE_ERR_PTR("sceFontOpenUserMemory", A3);
     font_load();
     PGF *owned = NULL;
     if (A1 && A2 >= 16 && A2 <= 16u * 1024u * 1024u && sr_guest_span_readable(A1, A2)) {
