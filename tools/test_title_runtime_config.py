@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -75,7 +76,8 @@ def base_manifest(**bindings: int) -> dict:
         manifest["runtime_bindings"] = {"schema_version": 1, **bindings}
     else:
         manifest.pop("runtime_bindings", None)
-    return manifest
+    returned: dict[str, Any] = manifest
+    return returned
 
 
 class RuntimeBindingValidation(unittest.TestCase):
@@ -536,6 +538,7 @@ class GeneratedConfiguration(unittest.TestCase):
                           "SR_TITLE_CONFIG_COMPAT_PROFILE"):
                 emitted = re.search(rf"#define {macro} ([01])$", header, re.MULTILINE)
                 self.assertIsNotNone(emitted, f"{macro} is not emitted at all")
+                assert emitted is not None
                 bits.append(emitted.group(1))
             return tuple(bits)
 
@@ -696,7 +699,8 @@ class GeneratedCollections(unittest.TestCase):
 
     def config(self, path: Path | None) -> dict:
         manifest = None if path is None else json.loads(path.read_text(encoding="utf-8"))
-        return title_runtime_config.bindings_from_manifest(manifest)
+        returned: dict[str, Any] = title_runtime_config.bindings_from_manifest(manifest)
+        return returned
 
     def test_generic_configuration_emits_empty_collections(self) -> None:
         header = title_runtime_config.render_header(self.config(None))
@@ -1271,12 +1275,14 @@ class TitleConfigIdentityIsLoadBearing(unittest.TestCase):
     exited 0 on an incremental tree, recorded the generic digest in runtime_profile.json,
     and recompiled title_config.o against the previous title's header.
     """
+    make: str
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.make = shutil.which("mingw32-make") or shutil.which("make")
-        if not cls.make:
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if not make:
             raise unittest.SkipTest("GNU Make is required")
+        cls.make = make
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-title-identity-")
@@ -1308,10 +1314,12 @@ class TitleConfigIdentityIsLoadBearing(unittest.TestCase):
         match = re.search(r'#define SR_TITLE_CONFIG_SOURCE_ID "([^"]*)"',
                           self.header.read_text(encoding="utf-8"))
         self.assertIsNotNone(match, "the generated header must name its source")
+        assert match is not None
         return match.group(1)
 
     def title_id(self, manifest: Path) -> str:
-        return json.loads(manifest.read_text(encoding="utf-8"))["id"]
+        returned: str = json.loads(manifest.read_text(encoding="utf-8"))["id"]
+        return returned
 
     def test_a_bound_build_produces_that_title_s_configuration(self) -> None:
         self.assertEqual(self.make_header(game="fixture", manifest=self.fixture_a).returncode, 0)

@@ -320,8 +320,9 @@ static Flash0Source flash0_resolve(const Flash0Sources *sources, NkFontSlot slot
 
 static unsigned char s_flash0_latin_logged[NK_FONT_LATIN_INDEX_COUNT];
 
-static const char *flash0_latin_backing_name(int served_index) {
-    if (served_index >= 0) return nk_font_latin_index_filename(served_index);
+static const char *flash0_latin_backing_name(const NkFontLatinResolution *resolution) {
+    if (resolution->source == NK_FONT_SOURCE_PROJECT) return resolution->project_file;
+    if (resolution->served_index >= 0) return nk_font_latin_index_filename(resolution->served_index);
     return NK_FONT_SLOT_LATIN_FILE;
 }
 
@@ -338,7 +339,7 @@ static void flash0_log_latin_index(int index, const NkFontLatinResolution *resol
         return;
     }
     const char *source = resolution->source == NK_FONT_SOURCE_USER ? "user-imported" : "project";
-    const char *backing = flash0_latin_backing_name(resolution->served_index);
+    const char *backing = flash0_latin_backing_name(resolution);
     if (resolution->source == NK_FONT_SOURCE_USER && resolution->served_index == index) {
         fprintf(stderr, "flash0: Latin registry index=%d requested=%s backing=%s source=%s selection=exact\n",
                 index + 1, nk_font_latin_index_filename(index), backing, source);
@@ -370,14 +371,14 @@ static Flash0Source flash0_resolve_latin_index(const Flash0Sources *sources, int
         return FLASH0_SOURCE_NONE;
     }
     if (resolution.source == NK_FONT_SOURCE_USER) {
-        file = flash0_latin_backing_name(resolution.served_index);
+        file = flash0_latin_backing_name(&resolution);
         if (!flash0_user_cache_path(path, capacity, sources->user_data_dir, file)) {
             flash0_log_latin_index(index, &resolution);
             return FLASH0_SOURCE_NONE;
         }
         source = FLASH0_SOURCE_USER;
     } else {
-        file = NK_FONT_SLOT_LATIN_FILE;
+        file = flash0_latin_backing_name(&resolution);
         if (!flash0_project_path(path, capacity, sources->project_dir, file)) {
             flash0_log_latin_index(index, &resolution);
             return FLASH0_SOURCE_NONE;
@@ -478,6 +479,22 @@ static uint32_t flash0_refuse_path(Flash0PathKind kind, const char *guest_path) 
     }
 }
 
+/* The registry lines above print while the font list is built, for every font the game could ask
+ * for. This line names a font the game did ask for, once per file for the life of the process: the
+ * registry table showed ltn0 exact while the game opened ltn8, a substitute (#1300). */
+static uint32_t s_flash0_opens_logged;
+
+static void flash0_log_open(unsigned bit, const char *requested, const char *backing, Flash0Source source) {
+    if (s_flash0_opens_logged & (1u << bit)) return;
+    s_flash0_opens_logged |= 1u << bit;
+    fprintf(stderr, "flash0: game opened %s backing=%s source=%s\n", requested, backing,
+            source == FLASH0_SOURCE_USER ? "user-imported" : "project");
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_flash0_font_test_opens_logged(void) { return s_flash0_opens_logged; }
+#endif
+
 int sr_flash0_font_is_device_path(const char *guest_path) {
     return guest_path && ascii_ci_prefix(guest_path, "flash0:");
 }
@@ -508,14 +525,17 @@ uint32_t sr_flash0_font_open(const char *guest_path, uint32_t flags,
         char path[SR_FLASH0_PATH_MAX + 64];
         FILE *fp = NULL;
         uint32_t size = 0;
+        NkFontLatinResolution resolution;
         Flash0Source source = flash0_resolve_latin_index(sources, latin_index, path, sizeof(path),
-                                                         &fp, &size, NULL);
+                                                         &fp, &size, &resolution);
         if (source == FLASH0_SOURCE_NONE) {
             char detail[128];
             snprintf(detail, sizeof(detail), "Latin registry index %d has no source; %s",
                      latin_index + 1, guest_path);
             return flash0_refuse(SR_FLASH0_ERR_NOT_FOUND, "missing Latin index", detail);
         }
+        flash0_log_open((unsigned)latin_index, nk_font_latin_index_filename(latin_index),
+                        flash0_latin_backing_name(&resolution), source);
         *host_out = fp;
         *size_out = size;
         return 0u;
@@ -529,6 +549,7 @@ uint32_t sr_flash0_font_open(const char *guest_path, uint32_t flags,
     uint32_t size = 0;
     Flash0Source source = flash0_resolve(sources, slot, &fp, &size);
     if (source == FLASH0_SOURCE_NONE) return flash0_refuse_missing_slot(slot, guest_path);
+    flash0_log_open(NK_FONT_LATIN_INDEX_COUNT + (unsigned)slot, name, s_flash0_slots[slot].served_name, source);
     if (getenv("SR_FONTLOG"))
         fprintf(stderr, "flash0: slot=%s source=%s size=%u\n", flash0_slot_label(slot),
                 source == FLASH0_SOURCE_USER ? "user" : "project", (unsigned)size);

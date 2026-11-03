@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -38,7 +39,8 @@ def _policy_excluded(path: str) -> bool:
     for a policy-excluded path is legitimately absent from disk.
     """
     policy = publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
-    return policy.resolve(path).is_excluded
+    returned: bool = policy.resolve(path).is_excluded
+    return returned
 
 RELEASE_MANIFEST = ROOT / "assets" / "release_manifest.json"
 PY_LOCK = ROOT / "tools" / "requirements-lock.txt"
@@ -48,7 +50,8 @@ def load_manifest() -> dict:
     if not RELEASE_MANIFEST.is_file():
         raise AssertionError("assets/release_manifest.json must exist")
     with RELEASE_MANIFEST.open("r", encoding="utf-8") as stream:
-        return json.load(stream)
+        returned: dict[str, Any] = json.load(stream)
+        return returned
 
 
 def load_sbom_inputs() -> tuple[dict, list[dict], list[dict]]:
