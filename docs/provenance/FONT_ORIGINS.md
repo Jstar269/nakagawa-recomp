@@ -173,7 +173,8 @@ and Korean slots from pinned OFL sources with the project-owned converter
 (`src/rt/pgf_public.c`). Each generated file is a project conversion, not a
 claim that it is an authentic firmware font.
 
-The project builds one open Latin fallback (`nkltn.pgf`). It does not bundle
+The project builds two open Latin fallbacks, `nkltn.pgf` for the console's
+larger Latin size and `nkltns.pgf` for its smaller one. It does not bundle
 firmware Latin files: `ltn0.pgf` through `ltn15.pgf` stay in the user's local
 font cache when imported. The runtime's per-index source and fallback order is
 documented in [`SETUP.md`](../SETUP.md#system-fonts).
@@ -244,12 +245,14 @@ and canonical SHA-256
 `7fbcaac92248acdb1c2704c3fef2181e7bc49f2b0e9d0f970cd029fb58057340`. M PLUS
 1p covers all 348 points; the missing-point list is empty.
 
-The build creates `nkltn.pgf` at 12 ppem with project-owned name `Nakagawa
-Open Latin` and style `Regular`. No source-family string is copied into PGF
+The build creates `nkltn.pgf` at 19 ppem and `nkltns.pgf` at 13 ppem, each
+with the emboldening and header options in the `Makefile`, the project-owned
+name `Nakagawa Open Latin` and style `Regular`. No source-family string is copied into PGF
 name or style fields. The generated output is included in the one project-font
 asset-copy step and is not committed.
 
-Two independent project-font builds produced identical bytes:
+Two independent project-font builds of the first, 12 ppem `nkltn.pgf` produced
+identical bytes:
 
 | Output | Size | SHA-256 |
 | --- | ---: | --- |

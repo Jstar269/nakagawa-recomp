@@ -213,6 +213,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
                FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE, FLOW_SETTINGS_ACE_OFF,
+               FLOW_SETTINGS_REPORT, FLOW_SETTINGS_REPORT_NO_PYTHON,
                FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -346,6 +347,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
         : which == FLOW_SETTINGS_ACCESSIBILITY ? PLAYER_UI_SETTINGS_PAGE_ACCESSIBILITY
         : which == FLOW_SETTINGS_ACE || which == FLOW_SETTINGS_ACE_OFF ? PLAYER_UI_SETTINGS_PAGE_ACE
+        : which == FLOW_SETTINGS_REPORT || which == FLOW_SETTINGS_REPORT_NO_PYTHON
+            ? PLAYER_UI_SETTINGS_PAGE_PROBLEM_REPORT
         : which == FLOW_SETTINGS_UPDATES || which == FLOW_SETTINGS_UPDATE_FAILED ||
           which == FLOW_SETTINGS_UPDATE_NO_KEY || which == FLOW_SETTINGS_UPDATE_REFUSED
             ? PLAYER_UI_SETTINGS_PAGE_UPDATES
@@ -393,6 +396,17 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         settings.update_can_download = true;
         settings.update_zip_name = "nakagawa-recomp-0.0.3-windows-x64.zip";
         settings.update_zip_bytes = 284758051ull;
+    }
+    if (which == FLOW_SETTINGS_REPORT) {
+        /* The listing the preview found, before the click that writes the ZIP. */
+        settings.report_step = PLAYER_UI_REPORT_PREVIEWED;
+        settings.report_lines[settings.report_line_count++] = "about.txt  (1 KB)";
+        settings.report_lines[settings.report_line_count++] = "logs/developer-log.txt  (4 KB)";
+        settings.report_lines[settings.report_line_count++] = "nk_doctor.txt  (2 KB)";
+    }
+    if (which == FLOW_SETTINGS_REPORT_NO_PYTHON) {
+        settings.report_step = PLAYER_UI_REPORT_NO_PYTHON;
+        settings.report_command = "python tools/nk_cli.py report --title TEST00001";
     }
     if (which == FLOW_SETTINGS_UPDATE_NO_KEY) {
         /* A build without an update-signing key: the release page only. */
@@ -2606,6 +2620,10 @@ static void test_settings_pages(void) {
         {FLOW_SETTINGS_UPDATE_REFUSED, PLAYER_UI_ID_UPDATE_PAGE,
          PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE,
          "a refused download still offers its release page"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_PROBLEM_REPORT,
+         PLAYER_UI_SETTINGS_OPEN_PROBLEM_REPORT, "Problem report opens its page"},
+        {FLOW_SETTINGS_REPORT, PLAYER_UI_ID_REPORT_CREATE, PLAYER_UI_SETTINGS_CREATE_REPORT,
+         "Create the report writes the ZIP, only when pressed"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ONLINE, PLAYER_UI_SETTINGS_OPEN_ONLINE,
          "Online and developer opens its page"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_NOTICES, PLAYER_UI_SETTINGS_OPEN_NOTICES,
@@ -2646,7 +2664,8 @@ static void test_settings_pages(void) {
                                      FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                                      FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
                                      FLOW_SETTINGS_ACCESSIBILITY, FLOW_SETTINGS_ACE,
-                                     FLOW_SETTINGS_ACE_OFF};
+                                     FLOW_SETTINGS_ACE_OFF, FLOW_SETTINGS_REPORT,
+                                     FLOW_SETTINGS_REPORT_NO_PYTHON};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -2672,6 +2691,16 @@ static void test_settings_pages(void) {
               strstr(dump, "Animations in Windows: on.\"") != NULL &&
               strstr(dump, "\xE2\x80\xA6\"") == NULL,
           "Accessibility shows each choice and, uncut, what Automatic follows now");
+    CHECK(flow_case_fits(FLOW_SETTINGS_REPORT, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "about.txt  (1 KB)") != NULL &&
+              strstr(dump, "nk_doctor.txt  (2 KB)") != NULL &&
+              strstr(dump, "Nothing is uploaded") != NULL &&
+              strstr(dump, "\"CREATE THE REPORT\"") != NULL,
+          "Problem report lists every file with its size and says nothing is uploaded");
+    CHECK(flow_case_fits(FLOW_SETTINGS_REPORT_NO_PYTHON, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "python tools/nk_cli.py report --title TEST00001") != NULL &&
+              strstr(dump, "\"CREATE THE REPORT\"") == NULL,
+          "without Python the Problem report page gives the command and offers no Create");
     /* Ace Mode (src/rt/ace.h): every row with its value and, uncut, what it does and costs;
        off, the feature rows cannot be changed or focused, and their values are kept. */
     CHECK(flow_case_fits(FLOW_SETTINGS_ACE, 960, 540, dump, sizeof(dump)) &&

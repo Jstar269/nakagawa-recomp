@@ -43,7 +43,8 @@ def synth_meta_plausible(run_id: int = 0x12345678) -> str:
 def required_outs_for(case_id: str) -> list[str]:
     for c in MATRIX["cases"]:
         if c["case_id"] == case_id:
-            return c.get("required_out_fields", [])
+            returned: list[str] = c.get("required_out_fields", [])
+            return returned
     return []
 
 def synth_record(case_id: str, result: int = 0, status: str = "PASS", attempt: int = 0, extra: str | None = None) -> str:

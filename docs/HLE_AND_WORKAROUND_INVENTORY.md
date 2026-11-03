@@ -46,46 +46,46 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **661** (dedicated **555**, fake_success **5**, controlled_unsupported **101**).
-Semantic handler census: **534** handlers across **26** API families, covering **561** handler-associated NID registrations.
+Registered NIDs: **679** (dedicated **570**, fake_success **5**, controlled_unsupported **104**).
+Semantic handler census: **549** handlers across **26** API families, covering **576** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 229 | 234 |
+| `partial` | 248 | 254 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 288 | 297 |
+| `unreviewed` | 284 | 292 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | `newlib` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
+| `other` | 1 | 1 | 0 | 0 | 0 | 2 | 2 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 10 | 0 | 0 | 2 | 12 | 12 |
-| `sceDisplay` | 1 | 5 | 0 | 0 | 8 | 14 | 14 |
+| `sceDisplay` | 1 | 6 | 0 | 0 | 8 | 15 | 15 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
-| `sceFont` | 0 | 3 | 0 | 0 | 11 | 14 | 14 |
-| `sceGe` | 2 | 8 | 0 | 0 | 4 | 14 | 14 |
+| `sceFont` | 0 | 7 | 0 | 0 | 11 | 18 | 18 |
+| `sceGe` | 2 | 10 | 0 | 0 | 2 | 14 | 14 |
 | `sceHprm` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 101 | 0 | 0 | 85 | 189 | 207 |
+| `sceKernel` | 3 | 104 | 0 | 0 | 83 | 190 | 208 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 11 | 0 | 1 | 25 | 37 | 37 |
 | `sceNet` | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 10 | 0 | 0 | 9 | 19 | 21 |
-| `scePsmf` | 0 | 3 | 0 | 0 | 14 | 17 | 17 |
+| `scePsmf` | 0 | 4 | 0 | 0 | 14 | 18 | 18 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
-| `sceRtc` | 5 | 7 | 0 | 0 | 1 | 13 | 13 |
+| `sceRtc` | 5 | 12 | 0 | 0 | 1 | 18 | 18 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 5 | 1 | 0 | 7 | 13 | 13 |
-| `sceUtility` | 0 | 7 | 0 | 0 | 27 | 34 | 34 |
+| `sceUtility` | 0 | 9 | 0 | 0 | 27 | 36 | 36 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **229** | **1** | **2** | **288** | **534** | **561** |
+| **Total** | **14** | **248** | **1** | **2** | **284** | **549** | **576** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -154,6 +154,10 @@ Semantic handler census: **534** handlers across **26** API families, covering *
 
 #### Partial Handlers (Named Limitations)
 
+- **`h_LoadExecForUser_362A956B`** (`other`): `LoadExecForUser_362A956B` (0x362a956b)
+  - Limitation: reads the registered exit callback's argument block as {mode, params, common}: no live callback 0x800201a1, NULL argument 0x800200d3, mode 4 or above 0x800200d2, params size below 12 0x800201bc, else clears params->unk1 and sets params->unk2 to -1; an unusable params pointer stops the run by name; the check order when mode and size both fail, and other compiled SDK versions, are not measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/threads/callbacks/exit.expected (1a9e6c31, recorded on a PSP, compiled SDK 3.95): checkpoints under LoadExecForUser_362A956B
 - **`h_AudioChRelease`** (`sceAudio`): `sceAudioChRelease` (0x6fc46853)
   - Limitation: the cells release channel 0 after the two valid blocking-output calls and query it after release; unreserved, out-of-range, and other channel-state release results are unmeasured (#341)
   - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
@@ -251,6 +255,10 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_vcount_freezes_while_cpu_interrupts_are_masked
   - Evidence: tests/native/hle_thread_selftest.c:test_vcount_credits_one_deferred_period_on_resume
   - Evidence: tests/native/hle_thread_selftest.c:test_vcount_tracks_elapsed_source_periods
+- **`h_DisplayIsForeground`** (`sceDisplay`): `sceDisplayIsForeground` (0xb4f378fa)
+  - Limitation: reports whether the active scanout address is non-zero; the result before sceDisplaySetMode or any framebuffer is not measured and follows from the zero address
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/display/isstate.expected (1a9e6c31, recorded on a PSP): 0 with no framebuffer, 1 with one set, 1 after a latched request for address 0
 - **`h_DisplaySetFrameBuf`** (`sceDisplay`): `sceDisplaySetFrameBuf` (0x289d82fe)
   - Limitation: display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -276,6 +284,22 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_font_list_contract
   - Evidence: PSPAutotests tests/font/fontlist.expected (2ed7c9c5, the console's libfont on a PSP): 18 and error 0 for a live library, 0 and 0x80460002 for a NULL library
   - Evidence: hardware measurement 2026-10-15, PSP-3000 6.6.1: the system font list holds 18 fonts (src/rt/flash0_font.c registry rows)
+- **`h_FontPixelToPointH`** (`sceFont`): `sceFontPixelToPointH` (0x74b21701)
+  - Limitation: pixels * 72 / hRes in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_measured_contract
+  - Evidence: PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPixelToPointH conversions
+- **`h_FontPixelToPointV`** (`sceFont`): `sceFontPixelToPointV` (0xf8f0752e)
+  - Limitation: pixels * 72 / vRes in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_measured_contract
+  - Evidence: PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPixelToPointV conversions
+- **`h_FontPointToPixelH`** (`sceFont`): `sceFontPointToPixelH` (0x472694cd)
+  - Limitation: points * hRes / 72 in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_measured_contract
+  - Evidence: PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPointToPixelH conversions
+- **`h_FontPointToPixelV`** (`sceFont`): `sceFontPointToPixelV` (0x3c4b7e82)
+  - Limitation: points * vRes / 72 in float with errorCode 0; a NULL library writes INVALID_LIB and returns 0.0 (measured); a library already closed (the PSP still converts) and a NULL errorCode (the PSP crashes) are not modeled and stop the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_font_measured_contract
+  - Evidence: PSPAutotests tests/font/resolution.expected (f573fe8c, recorded on a PSP): sceFontPointToPixelV conversions
 - **`h_FontSetAltCharacterCode`** (`sceFont`): `sceFontSetAltCharacterCode` (0xee232411)
   - Limitation: the fallback is kept host-side and used by GetCharInfo and GetCharGlyphImage; the PSP library struct field that holds it is not part of this runtime's library layout, and a library handle that is not live stops the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_font_alt_char_contract
@@ -316,6 +340,14 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_ge_break_continue
   - Evidence: tests/native/hle_thread_selftest.c:test_ge_blocking_sync_waits_for_stalled_list
   - Evidence: tests/native/hle_thread_selftest.c:test_ge_sync_ids_match_psp
+- **`h_GeSetCallback`** (`sceGe`): `sceGeSetCallback` (0xa4fc06a4)
+  - Limitation: registration with null handlers returning an ID is captured on the PSP-3000 (the P1/P2 envelope is CAPTURED, not acceptance-eligible); the PSP returned 1 for the first registration it saw while this runtime hands out the lowest free ID from 0, the table size (16 here) and the full-table result are not measured, and a struct that is not readable returns the illegal-address code unmeasured (#341)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: sceGeSetCallback with a {NULL, NULL} struct returned ID 1 and queued no handler)
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_guest_sentinel
+- **`h_GeUnsetCallback`** (`sceGe`): `sceGeUnsetCallback` (0x05db22ce)
+  - Limitation: unsetting a registered ID returning 0 is captured on the PSP-3000 (CAPTURED, not acceptance-eligible); this runtime also returns 0 for an unregistered or out-of-range ID, which no PSP cell records (#341)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-NULLCODE-001: sceGeUnsetCallback of the ID that sceGeSetCallback returned gave 0)
+  - Evidence: tests/native/hle_thread_selftest.c:test_ge_guest_sentinel
 - **`h_HprmIsHeadphoneExist`** (`sceHprm`): `sceHprmIsHeadphoneExist` (0x7e69eda4)
   - Limitation: reports the modeled accessory state, 0 by default as measured twice on the oracle console; the accessory state during that run was not recorded, so the conditions under which firmware reports 1 are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-HPRM-001: hprm-headphone-first, hprm-headphone-second)
@@ -579,6 +611,10 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_td28_partition_free_reuse
 - **`h_GetMemoryBlockAddr`** (`sceKernel`): `sceKernelGetMemoryBlockAddr` (0xdb83a952)
   - Limitation: resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured
+- **`h_GetModuleIdList`** (`sceKernel`): `sceKernelGetModuleIdList` (0x644395e2)
+  - Limitation: lists only the main module and the modules the runtime loaded (a PSP also lists firmware modules), main first and then in load order, an order that is not measured; an unwritable count or buffer is not measured and stops the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/modules/idlist/idlist.expected (1a9e6c31, recorded on a PSP): byte size, whole entries, count is the total, the caller's module is listed
 - **`h_GetSystemTime`** (`sceKernel`): `sceKernelGetSystemTime` (0xdb738f35)
   - Limitation: writes the 64-bit modeled microsecond clock and returns 0; the illegal-address result is the runtime's own code (RTC_ILLEGAL_ADDR), not a PSP measurement, and the clock origin is not compared with hardware
 - **`h_GetSystemTimeLow`** (`sceKernel`): `sceKernelGetSystemTimeLow` (0x369ed59d)
@@ -599,9 +635,20 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: tests/native/hle_thread_selftest.c:test_kernel_devkit_version_measured
   - Evidence: src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION
   - Evidence: hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)
+- **`h_LockLwMutex`** (`sceKernel`): `_sceKernelLockLwMutex` (0x7cff8cf3), `sceKernelLockLwMutex` (0xbea46419)
+  - Limitation: uncontended and recursive acquisition, blocking until the owner's hand-off, the self-held non-recursive refusal and the timeout code follow the recorded cells; invalid workareas, a count of 0 or below, an unwritable timeout pointer, callback delivery during the wait, interrupt context and several-waiter ordering are not measured (#341)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells: an owner's unlock hands ownership directly to the waiter; a self-held non-recursive timed Lock fails immediately with 0x800201CF)
+  - Evidence: tests/native/hle_thread_selftest.c:test_lwmutex_hardware_codes
+  - Evidence: tests/native/hle_thread_selftest.c:test_b23_second_round
 - **`h_LockMutex`** (`sceKernel`): `sceKernelLockMutex` (0xb011b11f)
   - Limitation: measured cases cover finite timeout, priority inheritance, and the listed interrupt-context refusals; full attribute/recursion ranges, negative counts, multi-waiter priority ordering, and invalid timeout-pointer precedence are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-timeout-quanta, mutex-priority-inheritance, and accepted interrupt-context cell)
+- **`h_MaxFreeMemSize`** (`sceKernel`): `sceKernelMaxFreeMemSize` (0xa291f107)
+  - Limitation: the result is the larger of the span below the lowest live thread stack and the biggest freed block; only the unchanged-after-stack-free case is measured, so the absolute value at boot, the kernel's block-header and alignment accounting, and the value with several free blocks are not measured (#341)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MODULE-START-001: after the module_start thread's 0x40000-byte stack is freed, sceKernelMaxFreeMemSize does not change, because the stack of the thread module_start created sits directly below the freed range)
+  - Evidence: tests/native/hle_thread_selftest.c:test_partition_ends_at_lowest_live_stack
+  - Evidence: tests/native/hle_thread_selftest.c:test_max_free_unchanged_after_top_stack_deleted
+  - Evidence: tests/native/hle_thread_selftest.c:test_partition_spans_the_whole_user_partition
 - **`h_Memcpy`** (`sceKernel`): `sceKernelMemcpy` (0x1839852a)
   - Limitation: copies with memmove semantics for overlapping spans, which the PSP's memcpy does not promise and whose overlap behaviour is unmeasured; bad guest spans are refused through the runtime's out-of-range path, not a PSP error code
 - **`h_NotifyCallback`** (`sceKernel`): `sceKernelNotifyCallback` (0xc11ba8c4)
@@ -851,6 +898,10 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 user mode at PLL 222 (1 and 222 accepted; 0, 333, 334 and 223 refused with 0x800001fe)
 - **`h_PsmfGetAudio`** (`scePsmf`): `scePsmfPlayerGetAudioData` (0xb9848a74)
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
+- **`h_PsmfGetCurrentPts`** (`scePsmf`): `scePsmfPlayerGetCurrentPts` (0x3ed62233)
+  - Limitation: host HLE player; the pts is the displaypts of the last picture the video getter delivered, written as one 32-bit word; a NULL or unwritable output once a picture exists (the hardware run crashes) and a player that scePsmfPlayerStop returned to standby after playing are not measured and stop the run by name
+  - Evidence: tests/native/psmf_media_selftest.c:test_player_av_presentation_timing
+  - Evidence: PSPAutotests tests/video/psmfplayer/getcurrentpts.expected (f573fe8c, recorded on a PSP): Initial 0x80616001, Standby and Playing-before-a-picture 0x8061600c, then one 32-bit write of the last picture's pts
 - **`h_PsmfGetPsmfInfo`** (`scePsmf`): `scePsmfPlayerGetPsmfInfo` (0xdf089680)
   - Limitation: host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs are written only when the loaded libpsmfplayer module's exported module_sdk_version is 0x03090510 (a firmware-loaded player records no build); lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)
   - Evidence: tests/native/psmf_media_selftest.c:test_player_get_psmf_info
@@ -887,6 +938,10 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: removes an empty category a game created through a mode-2 registry handle; measured default categories are refused (EPERM) and non-empty ones too (ENOTEMPTY); write semantics and the errno-class codes are not hardware measured
 - **`h_RegSetKeyValue`** (`sceReg`): `sceRegSetKeyValue` (0x17768e14)
   - Limitation: writes an existing key through a mode-2 category handle (mode 1 is EACCES): INT exactly 4 bytes, a STR takes the size of its new value (string sizes follow their values, measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration), BIN up to its fixed size with the rest zero-filled; persists on a flush; write semantics and the errno-class codes are not hardware measured
+- **`h_RtcCheckValid`** (`sceRtc`): `sceRtcCheckValid` (0x4b1b5e82)
+  - Limitation: returns 0 or the first failing field as -1 year, -2 month, -3 day, -4 hour, -5 minute, -6 second, -7 microsecond (measured); a day of 0 or one from the month length to 31, and a NULL or unmapped pointer, are not measured and stop the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
+  - Evidence: PSPAutotests tests/rtc/lookup.expected (f573fe8c, recorded on a PSP): checkRtcCheckValid and checkMaxYear
 - **`h_RtcConvertLocalToUtc`** (`sceRtc`): `sceRtcConvertLocalTimeToUTC` (0x779242a2)
   - Limitation: applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
@@ -897,6 +952,10 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; on the first run the setting starts from the host's local time zone (SR_HOST_TIME_ZONE) and is retained, else the seed is the oracle console's measured setting, not a factory default; the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
   - Evidence: src/rt/hle.c:psp_profile_local_offset_minutes
+- **`h_RtcGetDayOfWeek`** (`sceRtc`): `sceRtcGetDayOfWeek` (0x57726bc1)
+  - Limitation: Sunday is 0; months 1..12 of years 1..9999 with the day carried linearly (the measured cells); a month of 0 or above 12 answers only the seven measured triples, and any other month, year or day outside those stops the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
+  - Evidence: PSPAutotests tests/rtc/lookup.expected (f573fe8c, recorded on a PSP): checkDayOfWeek
 - **`h_RtcGetTime64_t`** (`sceRtc`): `sceRtcGetTime64_t` (0xe1c93e47)
   - Limitation: out-of-range fields normalise by calendar carry, whose exact seconds are this arithmetic rather than measured; year 0, month 0 and day 0 are refused with 0x800001fe and a refusal leaves the output unwritten, both unmeasured; a NULL or unreadable date and an unwritable non-NULL output take the HLE guest-fault stop
   - Evidence: tests/native/hle_thread_selftest.c:test_psp_measured_rtc_time64_20261024
@@ -907,6 +966,18 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Evidence: PSPAutotests tests/rtc/convert.expected (2ed7c9c5, recorded on a PSP): checkRtcGetTime_t, 2012-09-20 07:12:15.000500 -> 1348125135
 - **`h_RtcGetWin32FileTime`** (`sceRtc`): `sceRtcGetWin32FileTime` (0xcf561893)
   - Limitation: cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)
+- **`h_RtcTickAddDays`** (`sceRtc`): `sceRtcTickAddDays` (0xe51b4b7a)
+  - Limitation: adds the sign-extended 32-bit day count times 86400000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
+  - Evidence: PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddDays
+- **`h_RtcTickAddMicroseconds`** (`sceRtc`): `sceRtcTickAddMicroseconds` (0x26d25a5d)
+  - Limitation: adds the 64-bit count modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
+  - Evidence: PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddMicroseconds
+- **`h_RtcTickAddSeconds`** (`sceRtc`): `sceRtcTickAddSeconds` (0xf2a4afe5)
+  - Limitation: adds the 64-bit count times 1000000 modulo 2^64 and returns 0, a wrap past year 1 or 9999 included (pspautotests-recorded); a NULL or unmapped source or destination is not measured and stops the run by name
+  - Evidence: tests/native/hle_thread_selftest.c:test_rtc_tick_add_day_of_week_check_valid_autotest
+  - Evidence: PSPAutotests tests/rtc/arithmetic.expected (f573fe8c, recorded on a PSP): checkRtcTickAddSeconds
 - **`h_RtcTickAddYears`** (`sceRtc`): `sceRtcTickAddYears` (0x42842c77)
   - Limitation: moves the calendar year with the leap day clamped to February 28, and a result outside years 1..9999 returns 0 with dest unwritten (pspautotests-recorded); a source tick past year 9999 and NULL or unmapped pointers are not measured and stop the run by name
   - Evidence: tests/native/hle_thread_selftest.c:test_rtc_time_t_add_years_resolution_autotest
@@ -937,11 +1008,19 @@ Semantic handler census: **534** handlers across **26** API families, covering *
   - Limitation: the nickname (id 1) copy with its NUL and the short-buffer 0x80110102 refusal that writes nothing are measured; other string ids, a null buffer and len <= 0 return 0x80110103 without a measurement, and the nickname is the registry value (empty by default), not the console's
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-SYSPARAM-001: string-id-1-len-0x80, string-id-1-len-0x04)
   - Evidence: tests/native/hle_thread_selftest.c:test_sysparam_nickname_string
+- **`h_HtmlViewerStatus`** (`sceUtility`): `sceUtilityHtmlViewerGetStatus` (0xbda7d894)
+  - Limitation: always WRONG_TYPE: the runtime has no HTML viewer dialog, and its InitStart import is not registered
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/utility/dialog/status.expected and htmlviewer.expected (1a9e6c31, recorded on a PSP): html=WRONG_TYPE when no HTML viewer was started
 - **`h_MsgDialogAbort`** (`sceUtility`): `sceUtilityMsgDialogAbort` (0x4928bd96)
   - Limitation: return codes and the RUNNING to FINISHED step are pspautotests-recorded; the result written (2, SCE_UTILITY_DIALOG_RESULT_ABORT) follows PPSSPP as a behaviour reference (derived, not PSP-measured; queued for the next PSP matrix run), and a button answer the model wrote at the first Update stays
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_sequence
   - Evidence: tests/native/hle_thread_selftest.c:test_msg_dialog_abort_without_update
   - Evidence: PSPAutotests tests/utility/msgdialog/abort.expected (2ed7c9c5, recorded on a PSP): the return codes and status sequence before init, during init, while visible, after the next Update and through shutdown
+- **`h_ScreenshotStatus`** (`sceUtility`): `sceUtilityScreenshotGetStatus` (0xd81957b7)
+  - Limitation: always WRONG_TYPE: the runtime has no screenshot dialog, and its InitStart import is not registered
+  - Evidence: tests/native/hle_thread_selftest.c:test_imports_20261102_measured_contracts
+  - Evidence: PSPAutotests tests/utility/dialog/status.expected (1a9e6c31, recorded on a PSP): shot=WRONG_TYPE when no screenshot dialog was started
 - **`h_UtilityLoadModule`** (`sceUtility`): `sceUtilityLoadModule` (0x2a2b3de0)
   - Limitation: records utility module state only; the user-partition memory a real module occupies is not reserved; IDs and dependencies follow PPSSPP, not measured on this project's PSP
   - Evidence: tests/native/hle_thread_selftest.c:test_utility_av_module_state

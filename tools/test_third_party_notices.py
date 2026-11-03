@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -33,7 +34,8 @@ PY_LOCKFILE = "tools/requirements-lock.txt"
 
 
 def inventory() -> dict:
-    return package_notices.load_component_inventory()
+    returned: dict[str, Any] = package_notices.load_component_inventory()
+    return returned
 
 
 def all_component_records(data: dict) -> dict[str, dict]:

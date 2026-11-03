@@ -89,7 +89,8 @@ def _require_integer(value: Any, path: str) -> None:
 def _require_object(value: Any, path: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         _fail(path, "expected an object")
-    return value
+    returned: dict[str, Any] = value
+    return returned
 
 
 def _require_keys(value: dict[str, Any], keys: tuple[str, ...], path: str) -> None:
@@ -165,7 +166,8 @@ def load_summary(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise PerfSummaryError(f"{path}: cannot read JSON: {exc}") from exc
     validate_summary(value)
-    return value
+    returned: dict[str, Any] = value
+    return returned
 
 
 def _value_at(summary: dict[str, Any], path: str) -> Any:
@@ -177,9 +179,11 @@ def _value_at(summary: dict[str, Any], path: str) -> Any:
 
 def _close(before: Any, after: Any, tolerance: float) -> bool:
     if not (_is_number(before) and _is_number(after)):
-        return before == after
+        returned: bool = before == after
+        return returned
     if tolerance == 0.0:
-        return before == after
+        returned = before == after
+        return returned
     # str() is the shortest decimal that round-trips, so 0.3 means exactly 3/10 as typed,
     # not its binary neighbour (which sits just below 3/10 and would flip the inclusive bound).
     delta = abs(Fraction(after) - Fraction(before))
