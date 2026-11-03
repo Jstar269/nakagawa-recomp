@@ -1078,7 +1078,12 @@ a trace, a key or a console-bound value, or when it is not plain text, and long 
 from a whole line. Every line is redacted: your home folder (backslash or slash, the doubled slashes of
 JSON, the `\\?\` and `file:///` prefixes, the `/mnt/c` mount, and the Windows, Linux and macOS profile
 folders, found both by the account this PC names and by their shape) becomes `~`, your account name becomes `<user>` and this PC's name `<host>`. Read the ZIP before you
-attach it. The launcher button for this is not built yet (#1849).
+attach it.
+
+In the launcher, **Settings > Problem report** does the same: it lists every file with its size, **Create the
+report** writes the ZIP, and **Open folder** shows it. The launcher runs the command above with your
+Python, so without a Python it shows the command to run yourself instead of failing quietly. Creating
+the report runs the toolchain check, which can take a minute.
 
 ### Windows host pitfalls
 
