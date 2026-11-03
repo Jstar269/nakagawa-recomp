@@ -245,7 +245,7 @@ instead of pretending it worked or crashing without a word.
   `PBP_PACKAGE_UNSUPPORTED`; only the package's own `PARAM.SFO` is read to write
   that sentence.
 - **Encrypted program:** the player decrypts it from your own disc
-  ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). If that stops, the checklist
+  ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)). If that stops, the checklist
   reports `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with the reason and names
   the game's folder. An unencrypted `BOOT.BIN` on the disc, or a valid
   `EBOOT.elf` already in that folder, is used as it is. PGD/amctrl protection is

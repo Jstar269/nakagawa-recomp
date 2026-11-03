@@ -21,8 +21,8 @@ $$\text{ORIGINAL\_GUEST\_EXECUTION} \succ \text{LLE/GENERIC PSP BEHAVIOR} \succ 
    - `iso_reader.c` / `iso_reader.h`: Pure C ISO9660 PVD reader and `PARAM.SFO` parser identifying `DISC_ID`, `TITLE`, and matching against qualified title registries.
    - `player_state.c` / `player_state.h`: Finite-state machine managing library games, inspection, asynchronous extraction metrics, settings, and structured recovery actions.
    - `setup_staging.c` / `setup_staging.h`: Native worker-facing staging boundary that keeps cancellation/progress separate from SDL and invokes the source-owned ISO/XB layers.
-   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`. The player decrypts a disc's encrypted executable and modules into the per-title folder (#295); one it can't decrypt and with no user-supplied plain copy there fails closed as `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with a named result
-     ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+   - The optional local bridge discovers named plain support PRXs the user has already placed in a recognized local folder and stages them under `EXTRACTED/decrypted/`. The player decrypts a disc's encrypted executable and modules into the per-title folder (#1494); one it can't decrypt and with no user-supplied plain copy there fails closed as `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with a named result
+     ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)).
    - `ui_renderer.c` / `ui_renderer.h`: the first SDL3 renderer (Dark Court palette, card layouts, scaled text, offscreen screenshots), now legacy.
    - `main.c`: Interactive event loop with native file dialog (`SDL_ShowOpenFileDialog`), reactive SDL worker notifications, gamepad detection and d-pad/shoulder library navigation, arrow-key and scroll-wheel selection across the whole library, drag-and-drop ISO support, and a headless test driver. Demo fixtures are opt-in (`--demo`, or any `--view=` capture run) and are never written to the user's library file.
    - `nk_xb.c` / `nk_xb.h`: Project-authored bounded XB FST parser and native LZS/Huffman/nested tag-0 decoder; no `third_party/libxb` dependency.
@@ -166,7 +166,7 @@ vblanks, so the guest-visible frame checkpoint is readable without a display.
 source-owned display guest: the BUILD PACKAGE action
 (`package_builder_start` → `tools/nk_cli.py build-package`, real analysis,
 codegen and compilation), the player's own package validator, the headless
-launch, two named missing-prerequisite boundaries ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)
+launch, two named missing-prerequisite boundaries ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)
 decrypted inputs, [#296](https://github.com/Jstar269/nakagawa-recomp/issues/296)
 `--psp-header`), and a before/after check that the route changed no
 repository-tracked file.

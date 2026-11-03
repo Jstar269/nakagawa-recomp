@@ -34,7 +34,7 @@ Where this page and the code disagree, the code is current and this page is upda
   that asks for consent (the build-tool download) says exactly what it fetches, from where, and how big it is.
 - **No console trade dress.** No PSP system icons, sounds or names, no XMB-style horizontal category bar. The
   waves, the palette and the seasonal arc are the project's own.
-- **No key-file UI anywhere.** The player decrypts the user's own disc with built-in tables (#295) and reads no key
+- **No key-file UI anywhere.** The player decrypts the user's own disc with built-in tables (#1494) and reads no key
   file. No screen, step, setting, dialog or path row asks for, finds or names a key file. A disc whose program
   is encrypted gets the plain note the host supplies ("Nakagawa decrypts this game's program from your own disc, on
   this PC"), and one it can't decrypt gets the named reason.

@@ -34,7 +34,7 @@ We aim to respond promptly and will remove material where appropriate.
   its exact path, revision and notice. The per-file lineage, the pin status (the exact PPSSPP
   revision of the inherited files is unknown) and the GPL-2.0-or-later files under `src/` are
   listed in [`src/rt/PROVENANCE.md`](src/rt/PROVENANCE.md).
-- **PSP game decryption (issue #295)** — `src/core/nk_psp_*`. The KIRK engine
+- **PSP game decryption (PR #1494)** — `src/core/nk_psp_*`. The KIRK engine
   (`nk_psp_kirk.*`, GPL-3.0-or-later per its own notice), the AES and SHA-1 cores
   (`nk_psp_aes.*`, `nk_psp_sha1.*`, public-domain Rijndael and SHA-1 notices
   retained), KL4E/KL3E decompression (`nk_psp_kle.*`) and the `~PSP` container

@@ -62,13 +62,13 @@ You need:
 | *Hot Shots Tennis: Get a Grip* | Playable | Full matches and Story Mode at the game's own 30 frames per second on the reference PC. Its title file ships with Nakagawa. Movies show black in v0.0.1; builds after it show them ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)). |
 | PAC-MAN Championship Edition | In-game | Reaches its menu, plays a stage and resumes from its own save, through general fixes with no game-specific code ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556), [#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126)). The rest of the game hasn't been tried. |
 | *Super Stardust Portable* | Title screen | Goes through its menus to difficulty select, then stops by name at a VFPU instruction Nakagawa doesn't support yet ([#326](https://github.com/Jstar269/nakagawa-recomp/issues/326)). |
-| Eleven more games, *LittleBigPlanet* among them | Not rated | Seen to start or run, in the project's testing or in user reports on v0.0.1, but not checked by the maintainer. Several reach menus or gameplay, most well below full speed. [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) says how far each one gets. |
-| Any other PSP game | Not rated | The player imports it, builds a package and names anything that isn't supported yet. Going straight from your disc to a running game for more titles is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). |
+| Eleven more games, *LittleBigPlanet* among them | No tier | Seen to start or run, in the project's testing or in user reports on v0.0.1, but not checked by the maintainer. Several reach menus or gameplay, most well below full speed. [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) says how far each one gets. |
+| Any other PSP game | No tier | The player imports it, builds a package and names anything that isn't supported yet. Going straight from your disc to a running game for more titles is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). |
 | Two showcase demos | Playable | Small PSP programs the project wrote as tests. They ship with the release and need no game files. |
 
-Ratings use the player's words, and each comes from the game's status in
-[`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md#status-words), which has the full detail for every game and every
-part of the PSP. To report how a game runs, post in
+Ratings use the player's words. Hot Shots Tennis and the two showcase demos are rated from the player's own record;
+every other rating comes from the game's status in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md#status-words),
+which has the full detail for every game and every part of the PSP. To report how a game runs, post in
 [Compatibility reports](https://github.com/Jstar269/nakagawa-recomp/discussions/categories/compatibility-reports).
 
 ## How it works

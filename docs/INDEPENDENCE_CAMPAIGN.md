@@ -227,7 +227,7 @@ replacement by an LLE path that makes the component unnecessary ·
   relocation application are public-format facts; NID/import-table
   resolution cites PSPSDK structures and the project's NID corpus
   (`tools/nid_corpus.json`, IND-1). The built-in game decryption
-  (`src/core/nk_psp_*`, #295) is a separate derived-translated family
+  (`src/core/nk_psp_*`, #1494) is a separate derived-translated family
   (`src/core/PROVENANCE.md`); this campaign tracks loader provenance and
   rewrite scope only.
 - **G4 PGF → (a) + (a).** Both the publishable reader (against `pgf_api.h`,

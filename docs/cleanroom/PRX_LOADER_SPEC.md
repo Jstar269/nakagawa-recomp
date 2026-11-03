@@ -23,7 +23,7 @@ reporting the module's identity, entry point, exported functions, and import stu
 the runtime can link and start it.
 
 **Out of scope.** This loader does not decrypt or decompress `~PSP` containers. The
-player decrypts them before analysis (`src/core/nk_psp_*`, #295); the
+player decrypts them before analysis (`src/core/nk_psp_*`, #1494); the
 player and CLI refuse an encrypted container that still has no plain copy. Choosing the base address (the title
 manifest's `modules[].load_address`, validated by `tools/title_manifest.py`),
 reserving guest memory (the allocator's exact-address reservation), running
