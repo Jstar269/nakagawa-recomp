@@ -36,7 +36,7 @@ from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
     code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
-    static_coverage, branch_kind, BRANCH_UNCOND,
+    static_coverage, branch_kind, BRANCH_UNCOND, _gpr_writes,
 )
 from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
 from host_stubs import HST_SIMPLE_STUBS
@@ -921,32 +921,137 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), re
         f.write("#endif\n")
 
 
-def guest_owns_entry_sp(elf, insns):
-    """True when a body loads $sp from memory it did not save it to, so its returns leave it.
+#: GPRs a call leaves alone: a value known before it is known after it.
+_CALL_SAVED_GPRS = frozenset({16, 17, 18, 19, 20, 21, 22, 23, 29, 30})
+#: VFPU encodings `_gpr_writes` does not classify. None of them writes a GPR.
+_VFPU_OPCODES = frozenset({0x18, 0x19, 0x1B, 0x34, 0x36, 0x37, 0x3C, 0x3F})
+#: Stores to guest memory: a known address loses whatever value was known there.
+_STORE_OPCODES = frozenset({0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x39, 0x3A, 0x3D, 0x3E})
+
+
+def _frame_step(w, regs, slots):
+    """One non-control word's effect on the values known as offsets from the entry $sp."""
+    regs, slots = dict(regs), dict(slots)
+    op, fn = w >> 26, w & 0x3F
+    offset = (regs[rs(w)] + s16(w)) & 0xFFFFFFFF if rs(w) in regs else None
+    target, value = None, None
+    if op in (0x08, 0x09):
+        target, value = rt(w), offset
+    elif op == 0x23:
+        target, value = rt(w), slots.get(offset)
+    elif op == 0 and fn in (0x21, 0x25) and 0 in (rs(w), rt(w)):
+        target, value = rd(w), regs.get(rs(w) or rt(w))
+    if op in _STORE_OPCODES and offset is not None:
+        width = 16 if op in (0x3D, 0x3E) else 4
+        for slot in [slot for slot in slots if offset - 4 < slot < offset + width]:
+            del slots[slot]
+        if op == 0x2B and rt(w) in regs:
+            slots[offset] = regs[rt(w)]
+    written = _gpr_writes(w)
+    if written == "unknown":
+        written = (frozenset({rt(w)}) if op == 0x12 else
+                   frozenset() if op in _VFPU_OPCODES else frozenset(range(32)))
+    for reg in written:
+        regs.pop(reg, None)
+    if target and value is not None:
+        regs[target] = value
+    return regs, slots
+
+
+def _frame_walk(elf, start, insns, labels):
+    """What each path of a body knows of its frame, from the entry $sp at offset 0.
+
+    Returns (states, slot_states, released): the (registers, memory) known before each word,
+    the same before each delay slot, and whether a transfer leaves the body with $sp back at
+    its entry value. A store through a register not known here is taken to miss the frame.
+    """
+    states, slot_states, work = {}, {}, []
+    released = False
+
+    def meet(table, addr, regs, slots):
+        old = table.get(addr)
+        if old is not None:
+            regs = {k: v for k, v in regs.items() if old[0].get(k) == v}
+            slots = {k: v for k, v in slots.items() if old[1].get(k) == v}
+            if (regs, slots) == old:
+                return False
+        table[addr] = (regs, slots)
+        return True
+
+    def reach(addr, regs, slots):
+        nonlocal released
+        if addr not in insns:
+            released = released or regs.get(29) == 0
+        elif meet(states, addr, regs, slots):
+            work.append(addr)
+
+    reach(start, {29: 0}, {})
+    while work:
+        addr = work.pop()
+        regs, slots = states[addr]
+        w = read32(elf, addr)
+        if w is None or is_eret(w):
+            continue
+        if not is_control(w):
+            reach(addr + 4, *_frame_step(w, regs, slots))
+            continue
+        slot = read32(elf, addr + 4)
+        meet(slot_states, addr + 4, regs, slots)
+        after = _frame_step(slot, regs, slots) if slot is not None else (regs, slots)
+        op, fn = w >> 26, w & 0x3F
+        if op == 2:
+            reach(jump_target(addr, w), *after)
+        elif op == 3 or (op == 0 and fn == 9) or is_link(w):
+            kept = {k: v for k, v in after[0].items() if k in _CALL_SAVED_GPRS}
+            reach(addr + 8, kept, after[1])
+        elif op == 0 and fn == 8:
+            if rs(w) != 31:
+                released = released or after[0].get(29) == 0
+                for label in labels:
+                    reach(label, *after)
+        else:
+            reach(branch_target(addr, w), *after)
+            reach(addr + 8, *((regs, slots) if is_likely(w) else after))
+    return states, slot_states, released
+
+
+def guest_owns_entry_sp(elf, start, insns, labels):
+    """True when a body's returns must leave $sp as the guest set it.
 
     A callable body owes its caller the entry $sp, and its returns restore it (F3E). A body
     that loads $sp from memory is a longjmp or a context switch: it returns into the frame
     whose $sp it loaded, and restoring the entry $sp there would undo it. Its returns, its
     tail transfers and its fall-through end therefore leave $sp as the guest set it, as a
     resume body's do. A frame adjustment (`addiu sp, sp, imm`) or `move sp, fp` keeps the
-    callable contract, and so does freeing an alloca: `sw sp, n(fp)` then `lw sp, n(fp)`
-    reloads this frame's own $sp, and the function still returns to its caller. Its body
-    must record the entry $sp at its tail transfers, because the pieces of the function
-    that follow are entries entered at a lowered $sp, and the first restore of a chain is
-    the one that survives (#1892). A slot through any other base is not known to be the
-    frame's: `sw sp, 0(a0)` then `lw sp, 0(a0)` can be a context switch that changed a0.
+    callable contract.
+
+    So does freeing an alloca (#1892): the body binds $fp from $sp, saves $sp in its frame
+    and reloads it through $fp. It must record the entry $sp at its tail transfers, because
+    the pieces of the function that follow are entries entered at a lowered $sp, and the
+    first restore of a chain is the one that survives. On every path to the load, this body
+    must have bound $fp itself and saved the value in that slot, so a piece that uses a
+    frame someone else set up, or a switch that rebinds $fp, stays with the guest.
+
+    A body that frees its alloca, releases its frame and tail-calls is the guest's too. The
+    callee takes over the caller's $sp, and if it is a longjmp a recorded restore would undo
+    it.
     """
-    saved, loaded = set(), set()
-    for addr in insns:
+    loads = [addr for addr in sorted(insns)
+             if (read32(elf, addr) or 0) >> 26 == 0x23 and rt(read32(elf, addr)) == 29]
+    if not loads:
+        return False
+    states, slot_states, released = _frame_walk(elf, start, insns, labels)
+    if released:
+        return True
+    for addr in loads:
+        seen = [table[addr] for table in (states, slot_states) if addr in table]
         w = read32(elf, addr)
-        if w is None or ((w >> 16) & 0x1F) != 29:
-            continue
-        slot = (rs(w), w & 0xFFFF)
-        if (w >> 26) == 0x2B:
-            saved.add(slot)
-        elif (w >> 26) == 0x23:
-            loaded.add(slot)
-    return any(slot[0] != 30 or slot not in saved for slot in loaded)
+        if rs(w) != 30 or not seen:
+            return True
+        for regs, slots in seen:
+            if 30 not in regs or (regs[30] + s16(w)) & 0xFFFFFFFF not in slots:
+                return True
+    return False
 
 
 def emit_host_return(resumable, comment=None, stack_census=False):
@@ -3144,7 +3249,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             dispatch_boundaries=dispatch_boundaries)
     insns, labels, continuations = flow
     # A body that loads $sp leaves it to the guest at every exit, as a resume body does.
-    if not resumable and guest_owns_entry_sp(elf, insns):
+    if not resumable and guest_owns_entry_sp(elf, start, insns, labels):
         resumable = True
         GUEST_SP_ENTRIES.add(start)
     for label in labels:

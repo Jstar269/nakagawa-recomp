@@ -477,7 +477,9 @@ def _linked_branch_into_own_tail() -> tuple[int, ...]:
 _A1 = 5
 
 
-def _longjmp_into_live_frame(*, saves_through_its_base: bool = False) -> tuple[int, ...]:
+def _longjmp_into_live_frame(*, saves_through_its_base: bool = False,
+                             rebinds_fp: bool = False,
+                             tail_called_from_alloca: bool = False) -> tuple[int, ...]:
     """setjmp in F, longjmp from G called by F: F's setjmp returns again, v0 = 0x107.
 
     F saves $sp and $ra in a two-word jmp_buf on its frame, then calls G, which calls
@@ -486,10 +488,26 @@ def _longjmp_into_live_frame(*, saves_through_its_base: bool = False) -> tuple[i
     after `jal G` (v0 = 0xde0) runs only if G returns normally. With
     ``saves_through_its_base``, longjmp first stores $sp through a0 at the offset it loads
     from, with a0 pointing elsewhere: the same base and offset, but not the same memory.
+    With ``rebinds_fp``, longjmp binds $fp from $sp, saves $sp through it, then points $fp at
+    the jmp_buf and loads through it: the same base and offset again, in other memory. With
+    ``tail_called_from_alloca``, G calls H, which frees an alloca, releases its frame and
+    tail-calls longjmp.
     """
     t, g, setjmp, longjmp, done = 0x1020, 0x1044, 0x1060, 0x1070, 0x1034
     saves = ([_addu(_T8, _A0, 0), _addiu(_A0, _A0, 8), _sw(_SP, 0, _A0), _addu(_A0, _T8, 0)]
              if saves_through_its_base else [])
+    loads = [_lw(_SP, 0, _A0), _lw(_RA, 4, _A0)]
+    if rebinds_fp:
+        saves = [_addiu(_FP, _SP, -8), _sw(_SP, 0, _FP), _addu(_FP, _A0, 0)]
+        loads = [_lw(_SP, 0, _FP), _lw(_RA, 4, _FP)]
+    h = longjmp + 4 * (len(saves) + 4)
+    frees_alloca_then_tail_calls = [
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # H
+        _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),
+        _sw(_SP, 0x10, _FP), _addiu(_SP, _SP, -0x30),
+        _lw(_SP, 0x10, _FP), _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
+        _addiu(_SP, _SP, 0x20), _j(longjmp), _NOP,
+    ] if tail_called_from_alloca else []
     words = _probe_program([
         _addiu(_SP, _SP, -0x40), _sw(_RA, 0x3C, _SP),        # 0x1010 F
         _jal(setjmp), _addiu(_A0, _SP, 0x10),                # 0x1018 setjmp(&buf)
@@ -499,15 +517,18 @@ def _longjmp_into_live_frame(*, saves_through_its_base: bool = False) -> tuple[i
         _addiu(_V0, _V0, 0x100),                             # 0x1034 done
         _lw(_RA, 0x3C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x40),
         _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1044 G
-        _jal(longjmp), _addiu(_A1, 0, 7),                    # 0x104c longjmp(buf, 7)
+        _jal(h if tail_called_from_alloca else longjmp),     # 0x104c longjmp(buf, 7)
+        _addiu(_A1, 0, 7),
         _lw(_RA, 0x1C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x20),
         _sw(_SP, 0, _A0), _sw(_RA, 4, _A0),                  # 0x1060 setjmp
         _jr(_RA), _addu(_V0, 0, 0),
         *saves,                                              # 0x1070 longjmp
-        _lw(_SP, 0, _A0), _lw(_RA, 4, _A0),
+        *loads,
         _jr(_RA), _addu(_V0, _A1, 0),
+        *frees_alloca_then_tail_calls,
     ])
-    assert len(words) == (0x1080 + 4 * len(saves) - _PROBE_BASE) // 4, "the fixture's labels moved"
+    assert len(words) == (h + 4 * len(frees_alloca_then_tail_calls) - _PROBE_BASE) // 4, (
+        "the fixture's labels moved")
     return words
 
 
@@ -549,26 +570,100 @@ def _alloca_switch_chain(*, reach: str) -> tuple[int, ...]:
     return words
 
 
-def _alloca_tail_end() -> tuple[int, ...]:
+def _alloca_tail_end(*, saved_through_a_copy: bool = False) -> tuple[int, ...]:
     """A function that frees an alloca in the delay slot of a `j` to its own epilogue.
 
     TAIL is an entry of its own and does not load $sp. It sets $sp from $fp, entered at a
     $sp that is not its caller's, so only F's record can give F's caller its $sp back.
     """
-    tail = 0x1034
+    save = ([_addu(_T8, _SP, 0), _sw(_T8, 0x10, _FP)] if saved_through_a_copy
+            else [_sw(_SP, 0x10, _FP)])
+    tail = 0x1030 + 4 * len(save)
     words = _probe_program([
         _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
         _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),             # 0x1018
-        _sw(_SP, 0x10, _FP),                                 # 0x1020 save $sp
-        _addiu(_SP, _SP, -0x30),                             # 0x1024 alloca
-        _addiu(_V0, 0, 0x57),                                # 0x1028
-        _j(tail), _lw(_SP, 0x10, _FP),                       # 0x102C free it in the slot
-        _addu(_SP, _FP, 0),                                  # 0x1034 TAIL
+        *save,                                               # 0x1020 save $sp
+        _addiu(_SP, _SP, -0x30),                             # alloca
+        _addiu(_V0, 0, 0x57),
+        _j(tail), _lw(_SP, 0x10, _FP),                       # free it in the slot
+        _addu(_SP, _FP, 0),                                  # TAIL
         _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
         _jr(_RA), _addiu(_SP, _SP, 0x20),
-        _jal(tail), _NOP,                                    # 0x1048 TAIL is an entry
+        _jal(tail), _NOP,                                    # TAIL is an entry
     ])
-    assert len(words) == (0x1050 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    assert len(words) == (tail + 0x1C - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+def _scoped_arrays_function() -> tuple[int, ...]:
+    """The shape a compiler gives a function with variable-length arrays in an inner scope.
+
+    F keeps its frame through $fp, calls a helper and leaves early through its shared
+    epilogue if a0 is zero. Otherwise it saves $sp for the scope, carves three arrays below
+    it, the last by a run-time size, keeps their addresses in frame slots, fills them in a
+    loop, calls again and frees them all with one load in the delay slot of the `j` to the
+    epilogue. The epilogue is an entry of its own, entered at a $sp that is not F's caller's.
+    A VFPU word stands where such code keeps its prefix setup: it writes no GPR.
+    """
+    tail, helper, loop = 0x1090, 0x10A8, 0x1060
+    s0, t1 = 16, 9
+    subu_sp_t0 = (_SP << 21) | (_T0 << 16) | (_SP << 11) | 0x23
+    vpfxs_identity = 0xDC00E4E4
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x80), _sw(_FP, 0x50, _SP),        # 0x1010 F
+        _addu(_FP, _SP, 0), _sw(_RA, 0x54, _SP),             # 0x1018
+        _sw(s0, 0x30, _SP),                                  # 0x1020
+        _jal(helper), _sw(_A0, 0x10, _FP),                   # 0x1024
+        _lw(_A0, 0x10, _FP),                                 # 0x102C
+        _i(0x04, _A0, 0, (tail - 0x1034) >> 2),              # 0x1030 beq a0, zero, TAIL
+        _addiu(_V0, 0, 0x59),                                # 0x1034
+        _sw(_SP, 0x0C, _FP), _addiu(_SP, _SP, -0x20),        # 0x1038 the scope
+        _sw(_SP, 0x14, _FP), _addiu(_SP, _SP, -0x20),        # 0x1040
+        _sw(_SP, 0x18, _FP), _addiu(_T0, 0, 0x20),           # 0x1048
+        subu_sp_t0, vpfxs_identity,                          # 0x1050
+        _addu(s0, _SP, 0), _addu(t1, 0, 0),                  # 0x1058
+        _lw(_A1, 0x14, _FP), _sw(0, 0, _A1),                 # 0x1060 loop
+        _lw(_A1, 0x18, _FP), _sw(0, 0, _A1),                 # 0x1068
+        _sw(s0, 0, _FP), _addiu(t1, t1, 1),                  # 0x1070 a slot beside the save
+        _i(0x05, t1, _A0, (loop - 0x107C) >> 2), _NOP,       # 0x1078 bne t1, a0, loop
+        _jal(helper), _addiu(_V0, 0, 0x58),                  # 0x1080
+        _j(tail), _lw(_SP, 0x0C, _FP),                       # 0x1088 free them all
+        _addu(_SP, _FP, 0), _lw(_RA, 0x54, _SP),             # 0x1090 TAIL
+        _lw(_FP, 0x50, _SP), _lw(s0, 0x30, _SP),             # 0x1098
+        _jr(_RA), _addiu(_SP, _SP, 0x80),                    # 0x10A0
+        _jr(_RA), _NOP,                                      # 0x10A8 helper
+        _jal(tail), _NOP,                                    # 0x10B0 TAIL is an entry
+    ])
+    assert len(words) == (0x10B8 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+def _piece_on_a_frame_it_did_not_bind(*, head: str) -> tuple[int, ...]:
+    """P frees an alloca and releases a frame that F allocated and bound $fp to.
+
+    P is an entry of its own, entered at F's lowered $sp, and it never binds $fp. ``head``
+    is how F reaches it: "direct" by `j`, "computed" by `jr`, "foreign" by `jr` in a body
+    with a `lw sp, 0(a1)` on another path, so that F records no restore of its own.
+    """
+    p = {"direct": 0x1028, "computed": 0x1030, "foreign": 0x1044}[head]
+    to_p = [_lui(_T9, 0), _ori(_T9, _T9, p), _jr(_T9), _NOP]
+    reach = {
+        "direct": [_j(p), _NOP],
+        "computed": to_p,
+        "foreign": [_i(0x05, _A0, 0, (0x1038 - 0x1024) >> 2), _NOP, *to_p,
+                    _lw(_SP, 0, _A1), _jr(_RA), _NOP],
+    }[head]
+    words = _probe_program([
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
+        _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),             # 0x1018
+        *reach,
+        _sw(_SP, 0x10, _FP), _addiu(_SP, _SP, -0x30),        # P
+        _addiu(_V0, 0, 0x56), _lw(_SP, 0x10, _FP),
+        _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
+        _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _jal(p), _NOP,                                       # P is an entry
+    ])
+    assert len(words) == (p + 0x28 - _PROBE_BASE) // 4, "the fixture's labels moved"
     return words
 
 
@@ -1382,7 +1477,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # frame, so the run stops or F's code runs on G's frame.
         self._assert_mutant_fails(
             "J1-longjmp-restores-its-entry-sp", _longjmp_into_live_frame(), (0,),
-            {"codegen.py": ("    return any(slot[0] != 30 or slot not in saved for slot in loaded)",
+            {"codegen.py": ("    states, slot_states, released = _frame_walk(elf, start, insns, labels)",
                             "    return False")},
             lambda r: r[0][0] != 0 or r[0][2].get("v0") != 0x107
             or r[0][2].get("v1") != _PROBE_SP,
@@ -1396,18 +1491,105 @@ class GeneratedCallDepthTests(unittest.TestCase):
 
     def test_own_slot_mutant_fails_for_its_semantic(self):
         # S1: reloading the frame's own slot counts as a longjmp again: F records no restore.
-        loads_are_foreign = {"codegen.py": (
-            "    return any(slot[0] != 30 or slot not in saved for slot in loaded)",
-            "    return bool(loaded)")}
-        for name, fixture in (
-                ("S1-own-slot-is-foreign-switch", _alloca_switch_chain(reach="j")),
-                ("S1-own-slot-is-foreign-continuation", _alloca_switch_chain(reach="fall")),
-                ("S1-own-slot-is-foreign-computed", _alloca_switch_chain(reach="computed")),
-                ("S1-own-slot-is-foreign-tail-end", _alloca_tail_end())):
+        loads_are_foreign = {"codegen.py": ("    if released:", "    if True:")}
+        for name, fixture, iteration in (
+                ("S1-own-slot-is-foreign-switch", _alloca_switch_chain(reach="j"), 0),
+                ("S1-own-slot-is-foreign-continuation", _alloca_switch_chain(reach="fall"), 0),
+                ("S1-own-slot-is-foreign-computed", _alloca_switch_chain(reach="computed"), 0),
+                ("S1-own-slot-is-foreign-tail-end", _alloca_tail_end(), 0),
+                ("S1-own-slot-is-foreign-scoped-arrays", _scoped_arrays_function(), 2)):
             self._assert_mutant_fails(
-                name, fixture, (0,), loads_are_foreign,
+                name, fixture, (iteration,), loads_are_foreign,
                 lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
             )
+
+    def test_scoped_arrays_keep_the_callers_sp_on_both_ways_out(self):
+        # The shape of real code: one load frees three arrays, on the way to a shared epilogue
+        # that is an entry of its own. Leaving early and leaving through the scope both end
+        # at F's caller's $sp.
+        _generated, results = self._probe(_scoped_arrays_function(), (0, 2))
+        for (rc, output, fields), v0 in zip(results, (0x59, 0x58)):
+            self.assertEqual(rc, 0, output)
+            self.assertEqual(fields.get("v0"), v0, output)
+            self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        # F1: a VFPU word is taken to clobber the registers: the walk loses $fp, F records no
+        # restore and the epilogue's own entry $sp reaches the caller.
+        # F6: a store below the saved slot is taken to reach it, as a vector store would.
+        self._assert_mutant_fails(
+            "F6-a-word-store-reaches-the-next-slot", _scoped_arrays_function(), (2,),
+            {"codegen.py": ("width = 16 if op in (0x3D, 0x3E) else 4", "width = 16")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+        )
+        self._assert_mutant_fails(
+            "F1-vfpu-word-clobbers-the-frame", _scoped_arrays_function(), (2,),
+            {"codegen.py": ("frozenset() if op in _VFPU_OPCODES else frozenset(range(32))",
+                            "frozenset(range(32))")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+        )
+
+    def test_a_save_through_a_register_copy_is_the_frames_own(self):
+        # `move t8, sp; sw t8, n(fp)` saves the same value as `sw sp, n(fp)`.
+        _generated, results = self._probe(_alloca_tail_end(saved_through_a_copy=True), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 0x57, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self._assert_mutant_fails(
+            "F2-copy-is-not-followed", _alloca_tail_end(saved_through_a_copy=True), (0,),
+            {"codegen.py": ("if op == 0x2B and rt(w) in regs:",
+                            "if op == 0x2B and rt(w) == 29 and rt(w) in regs:")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+        )
+
+    def test_a_switch_that_rebinds_fp_stays_with_the_guest(self):
+        # The saved slot and the load match by base and offset, but $fp names the jmp_buf at
+        # the load. The return must leave the $sp longjmp loaded.
+        words = _longjmp_into_live_frame(rebinds_fp=True)
+        _generated, results = self._probe(words, (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 0x107, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self._assert_mutant_fails(
+            "F3-a-rebound-fp-stays-known", words, (0,),
+            {"codegen.py": ("    for reg in written:", "    for reg in written - {30}:")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+        )
+
+    def test_a_piece_on_another_bodys_frame_stays_with_the_guest(self):
+        # P releases F's frame. Its own entry $sp is F's lowered one, so a restore of it is
+        # wrong whenever nothing before P recorded a restore: both tiers must agree.
+        for name, words, codegen_args in (
+                ("interpreted head", _piece_on_a_frame_it_did_not_bind(head="direct"),
+                 ("--omit-aot=0x00001010",)),
+                ("foreign head", _piece_on_a_frame_it_did_not_bind(head="foreign"), ()),
+                ("callable head", _piece_on_a_frame_it_did_not_bind(head="computed"), ())):
+            with self.subTest(name):
+                _generated, results = self._probe(words, (0,), codegen_args=codegen_args)
+                rc, output, fields = results[0]
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), 0x56, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self._assert_mutant_fails(
+            "F4-fp-is-known-at-entry", _piece_on_a_frame_it_did_not_bind(head="foreign"), (0,),
+            {"codegen.py": ("    reach(start, {29: 0}, {})", "    reach(start, {29: 0, 30: 0}, {})")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+        )
+
+    def test_a_tail_call_into_longjmp_from_a_released_frame_keeps_the_longjmp(self):
+        # H frees its alloca, releases its frame and tail-calls longjmp. A recorded restore
+        # would run after longjmp loaded its $sp.
+        words = _longjmp_into_live_frame(tail_called_from_alloca=True)
+        _generated, results = self._probe(words, (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 0x107, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        self._assert_mutant_fails(
+            "F5-released-tail-still-records", words, (0,),
+            {"codegen.py": ("    if released:", "    if False:")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+        )
 
     def test_a_slot_through_another_base_is_not_the_frames(self):
         # longjmp stores $sp through a0 at the offset it loads from, with a0 elsewhere. The
@@ -1417,12 +1599,6 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(rc, 0, output)
         self.assertEqual(fields.get("v0"), 0x107, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
-        self._assert_mutant_fails(
-            "S2-any-base-is-the-frame", _longjmp_into_live_frame(saves_through_its_base=True), (0,),
-            {"codegen.py": ("    return any(slot[0] != 30 or slot not in saved for slot in loaded)",
-                            "    return any(slot not in saved for slot in loaded)")},
-            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
-        )
 
     def test_tail_protocol_mutants_fail_for_their_semantic(self):
         # The last recorded restore wins instead of the first: the caller sees C2's SP.

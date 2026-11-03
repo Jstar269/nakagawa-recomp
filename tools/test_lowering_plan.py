@@ -181,13 +181,16 @@ def _plan_and_c(words, start=0x1000, known=None):
 
 
 class EntrySpTests(unittest.TestCase):
+    BIND_FP = 29 << 21 | 30 << 11 | 0x21
+    LOWER_SP = 0x09 << 26 | 29 << 21 | 29 << 16 | 0xFFE0
     SW_SP_FP = 0x2B << 26 | 30 << 21 | 29 << 16 | 0x10
     LW_SP_FP = 0x23 << 26 | 30 << 21 | 29 << 16 | 0x10
     LW_SP_A0 = 0x23 << 26 | 4 << 21 | 29 << 16
 
     def test_a_body_that_frees_an_alloca_is_lowered_and_restores_its_entry_sp(self):
-        plan, c_text = _plan_and_c({0x1000: self.SW_SP_FP, 0x1004: self.LW_SP_FP,
-                                    0x1008: JR_RA, 0x100C: NOP})
+        plan, c_text = _plan_and_c({0x1000: self.BIND_FP, 0x1004: self.SW_SP_FP,
+                                    0x1008: self.LOWER_SP, 0x100C: self.LW_SP_FP,
+                                    0x1010: JR_RA, 0x1014: NOP})
         self.assertIsNotNone(plan)
         self.assertIn("s->r[29] = _sp_entry; return;", c_text)
 
