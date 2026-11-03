@@ -214,6 +214,14 @@
     X("SR_VBLANK_Q_US", "number", "16000", "sched.c", "Vblank pacing quantum in microseconds.") \
     X("SR_VBLOG", "flag-presence", "off", "debug.h,sched.c", "Enables per-VBLANK scheduler logging.") \
     X("SR_VDUMP", "flag-presence", "off", "ge.c", "Dumps GE vertex data for each vertex type seen.") \
+    X("SR_VERIFY", "number", "unset (verify build off)", "verify.c", "Verify build only: checks the first N calls of each translated function against the reference interpreter, then power-of-two counts.") \
+    X("SR_VERIFY_CAPTURE", "path", "unset (no captures)", "verify.c", "Verify build only: directory that receives a replayable .nksnap capture of each mismatching call.") \
+    X("SR_VERIFY_CAPTURE_MAX", "number", "4", "verify.c", "Verify build only: most captures written per run.") \
+    X("SR_VERIFY_EVERY", "number", "unset", "verify.c", "Verify build only: checks every Nth call of each translated function instead of the power-of-two sampler.") \
+    X("SR_VERIFY_RANGE", "string", "unset (all functions)", "verify.c", "Verify build only: LO-HI hex address range of function entries that are checked.") \
+    X("SR_VERIFY_RATE", "number", "unset (no budget)", "verify.c", "Verify build only: checks per second budget; calls over it are skipped and counted.") \
+    X("SR_VERIFY_REPORT", "path", "unset (no report written)", "verify.c", "Verify build only: path of the per-function calls and checks report.") \
+    X("SR_VERIFY_STEPS", "number", "1000000", "verify.c", "Verify build only: reference-interpreter step limit for one checked call.") \
     X("SR_VIDEO", "string", "unset: the Vulkan presenter is used", "gui.c,osk_text_entry.c,sched.c", "Selects the presenter: gdi for the Win32 window, offscreen for headless, otherwise Vulkan.") \
     X("SR_VRAMDUMP", "string", "unset (off)", "hle_display.c", "Selection of VRAM dumps to write; requires SR_VRAMDUMP_DIR to name an output directory.") \
     X("SR_VRAMDUMP_DIR", "path", "unset (VRAM dump refused)", "hle_display.c", "Existing output directory required when SR_VRAMDUMP selects VRAM dumps.") \

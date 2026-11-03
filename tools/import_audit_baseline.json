@@ -55,6 +55,12 @@
     "name": "sceKernelGetVTimerTime",
     "status": "partial"
   },
+  "0x03b6807d": {
+    "classification": "dedicated",
+    "handler": "h_VaudioChReserve",
+    "name": "sceVaudioChReserve",
+    "status": "partial"
+  },
   "0x03d9526f": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -1748,6 +1754,12 @@
     "name": "sceMpegAvcInitYCbCr",
     "status": "partial"
   },
+  "0x67585dfd": {
+    "classification": "dedicated",
+    "handler": "h_VaudioChRelease",
+    "name": "sceVaudioChRelease",
+    "status": "partial"
+  },
   "0x67af3428": {
     "classification": "dedicated",
     "handler": "h_MsgDialogShutdown",
@@ -2012,11 +2024,10 @@
     "status": "partial"
   },
   "0x77ed8b3a": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_DisplayWaitVblankStartMultiCB",
     "name": "sceDisplayWaitVblankStartMultiCB",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x780f88d1": {
     "classification": "dedicated",
@@ -2299,6 +2310,12 @@
     "classification": "dedicated",
     "handler": "h_NetEtherNtostr",
     "name": "sceNetEtherNtostr",
+    "status": "partial"
+  },
+  "0x8986295e": {
+    "classification": "dedicated",
+    "handler": "h_VaudioOutputBlocking",
+    "name": "sceVaudioOutputBlocking",
     "status": "partial"
   },
   "0x89aa9906": {

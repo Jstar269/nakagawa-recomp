@@ -46,13 +46,13 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **681** (dedicated **574**, fake_success **4**, controlled_unsupported **103**).
-Semantic handler census: **552** handlers across **26** API families, covering **581** handler-associated NID registrations.
+Registered NIDs: **684** (dedicated **578**, fake_success **4**, controlled_unsupported **102**).
+Semantic handler census: **556** handlers across **27** API families, covering **585** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 14 | 23 |
-| `partial` | 252 | 260 |
+| `partial` | 256 | 264 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 3 | 7 |
 | `unreviewed` | 282 | 290 |
@@ -64,7 +64,7 @@ Semantic handler census: **552** handlers across **26** API families, covering *
 | `sceAtrac` | 0 | 0 | 0 | 0 | 32 | 32 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 10 | 0 | 0 | 2 | 12 | 12 |
-| `sceDisplay` | 1 | 6 | 0 | 0 | 8 | 15 | 15 |
+| `sceDisplay` | 1 | 7 | 0 | 0 | 8 | 16 | 16 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 7 | 0 | 0 | 11 | 18 | 18 |
 | `sceGe` | 2 | 10 | 0 | 0 | 2 | 14 | 14 |
@@ -84,8 +84,9 @@ Semantic handler census: **552** handlers across **26** API families, covering *
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 6 | 1 | 0 | 7 | 14 | 14 |
 | `sceUtility` | 0 | 10 | 0 | 0 | 27 | 37 | 37 |
+| `sceVaudio` | 0 | 3 | 0 | 0 | 0 | 3 | 3 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **14** | **252** | **1** | **3** | **282** | **552** | **581** |
+| **Total** | **14** | **256** | **1** | **3** | **282** | **556** | **585** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -271,6 +272,9 @@ Semantic handler census: **552** handlers across **26** API families, covering *
   - Evidence: tools/test_sched_invariants.py:test_the_two_display_nids_have_separate_handlers
 - **`h_DisplayWaitVblankStartMulti`** (`sceDisplay`): `sceDisplayWaitVblankStartMulti` (0x40f1469c)
   - Limitation: waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured
+- **`h_DisplayWaitVblankStartMultiCB`** (`sceDisplay`): `sceDisplayWaitVblankStartMultiCB` (0x77ed8b3a)
+  - Limitation: the requested positive count of scheduler VBLANK periods, servicing the caller's callbacks in each; the zero-count and wait-context refusals follow the non-CB form; hardware timing is not measured
+  - Evidence: tests/native/hle_thread_selftest.c:test_display_multi_cb_wait
 - **`h_DmacMemcpy`** (`sceDmac`): `sceDmacMemcpy` (0x617f3fe6)
   - Limitation: active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
@@ -1056,6 +1060,15 @@ Semantic handler census: **552** handlers across **26** API families, covering *
   - Limitation: maps net-module numbers 1..7 onto utility IDs 0x100..0x106; the status codes for a bad number or a module that is not loaded are the generic module ones, unmeasured on a PSP
   - Evidence: tests/native/hle_thread_selftest.c:test_utility_av_module_state
   - Evidence: tests/native/hle_thread_selftest.c:test_utility_module_table
+- **`h_VaudioChRelease`** (`sceVaudio`): `sceVaudioChRelease` (0x67585dfd)
+  - Limitation: releases only a Vaudio reservation (0x80260008 otherwise, so an SRC reservation stays); whether a release waits for queued samples, and whether it frees an SRC reservation as the public reference does, are unmeasured
+  - Evidence: tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot
+- **`h_VaudioChReserve`** (`sceVaudio`): `sceVaudioChReserve` (0x03b6807d)
+  - Limitation: reserves the SRC slot with the SRC reserve's exclusion (0x80268002) and rates (44100 and 48000 Hz; a rate of 0 is taken as 44100 Hz); the sample counts 256, 576, 1024, 1152 and 2048 (others 0x80000104), stereo format 2 only (others 0x80000108) and the second-reserve word 0x80000021 follow the public reference and are unmeasured on a PSP
+  - Evidence: tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot
+- **`h_VaudioOutputBlocking`** (`sceVaudio`): `sceVaudioOutputBlocking` (0x8986295e)
+  - Limitation: the SRC blocking output for a Vaudio reservation: returns the reserved sample count, 0x80260008 with no Vaudio reservation, and 0x8026000b above volume 0x8000 (the Output2 bound, reused); unmeasured on a PSP
+  - Evidence: tests/native/hle_thread_selftest.c:test_vaudio_plays_through_the_src_slot
 
 #### Compatibility Handlers (Named Limitations)
 
@@ -1088,7 +1101,6 @@ Dispatch Hooks & Walkers (src/rt/recomp.c):
 Title Configuration Overrides (src/rt/title_config.c):
   - Hardcoded Entry Points & Addresses:              0 (generated header/manifest bindings)
   - Dispatch Aliases:                                generated X-macro list (0 in generic build)
-  - Callback Terminators:                            generated X-macro list (0 in generic build)
   - Runtime Sync Wrappers:                           generated X-macro list (0 in generic build)
 ================================================================================
 ```
@@ -1170,7 +1182,7 @@ caller PC are preserved and the request is rejected (which the public
 `tests/native/dispatch_isolation_selftest.c` carries the source-owned hostile matrix
 (one target from each former range, every retained magic value, null,
 unresolved PLT, module-table and data-looking shapes, plus legitimate
-configured-alias and terminator controls) and is built for the generic and both
+configured-alias controls) and is built for the generic and both
 public fixture configurations, so a title cannot inherit any of these shapes and
 a broad pattern reintroduced into `recomp.c` fails the build immediately.
 
@@ -1217,7 +1229,7 @@ The current registration classes and semantic statuses are in the generated cens
 | `IoFileMgrForUser` | `sceIoDevctl` (`0x54f5fb11`) | Partial Memory Stick support for `ms0:` and `fatms0:`: capacity/free-cluster geometry comes from the unified Memory Stick root shared with ordinary `sceIo*` and savedata (`SR_MEMSTICK`, default `memstick/`); inserted and ready queries write 1 and 4; registering a live callback for insert/eject events adds it to a 32-entry list and queues one notification with argument 1 (inserted), delivered on the owning thread at its next callback point; unregister removes one matching entry, an unknown UID returns `0x80010016`, and deleting a callback drops its registrations. No later insert or eject event exists ([#1378](https://github.com/Jstar269/nakagawa-recomp/issues/1378)). Other device/command pairs return `0x80010086`, log once per pair, and appear in the #281 exit summary. |
 | `sceAtrac3plus` | `sceAtracGetOutputChannel` (`0xb3b5d042`) | Compatibility exception: existing acceptance is retained while output-channel mapping is tracked by #286. |
 | `sceKernelVolatileMemUnlock` | `sceKernelVolatileMemUnlock` (`0xa569e425`) | Compatibility exception at the migration: the documented asset-loading route uses this call around the shared volatile-memory scratch buffer (#281). It now returns the PSP-measured states (#1135) and hands the lock to the oldest `sceKernelVolatileMemLock` caller blocked on it (#1383). |
-| `sceUtility` | `sceUtilityOskUpdate` (`0x4b85c861`) | Partial: returns the PSP-3000 measured results for each keyboard state (#363). It does not drive the keyboard: the current route collects text from `sceUtilityOskGetStatus` (#281), and Update in FINISHED returns 0, which is not measured. |
+| `sceUtility` | `sceUtilityOskUpdate` (`0x4b85c861`) | Compatibility exception: the current route collects text and advances the OSK state from `sceUtilityOskGetStatus`; update keeps its no-op success while that dialog contract is unfinished (#281). |
 
 ---
 

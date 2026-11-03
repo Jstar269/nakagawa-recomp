@@ -1931,6 +1931,7 @@ uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...) {
         sr_trace_close();
         sr_compat_report();
         sr_perf_shutdown();
+        SR_VERIFY_REPORT_NOW();
         fflush(stderr);
         _Exit(7);
     }
@@ -4372,6 +4373,9 @@ static void hle_nidlog_note(uint32_t nid) {
 }
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
+#ifdef SR_VERIFY
+    sr_verify_at_stop(s, SR_VERIFY_STOP_IMPORT, nid, 0u);
+#endif
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -4436,7 +4440,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_hit_hle = 1;
         /* Under the fiber scheduler, longjmp across fibers is invalid; stop the process cleanly
          * after flushing the trace. The plain driver (no scheduler) keeps the longjmp boundary. */
-        if (sr_sched_on) { sr_trace_close(); sr_compat_report(); sr_perf_shutdown(); fflush(stderr); _Exit(7); }
+        if (sr_sched_on) { sr_trace_close(); sr_compat_report(); sr_perf_shutdown(); SR_VERIFY_REPORT_NOW(); fflush(stderr); _Exit(7); }
         longjmp(g_hle_jmp, 1);
     }
     if (hle_syslog_on()) {
