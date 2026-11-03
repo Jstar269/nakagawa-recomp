@@ -35,7 +35,7 @@ extern "C" {
 /* Keep equal to tools/nk_core/package_cache.py GENERATED_CODE_ABI_EPOCH and RUNTIME_ABI_EPOCH;
  * both follow the CpuState layout version (CPUSTATE_ABI_EPOCHS there, pinned by
  * tools/test_package_cache.py): epoch 2 = CpuState ABI v3. */
-#define NK_AOT_GENERATED_CODE_ABI_EPOCH 2
+#define NK_AOT_GENERATED_CODE_ABI_EPOCH 3
 #define NK_AOT_RUNTIME_ABI_EPOCH 2
 #define NK_AOT_COMPLETION_MANIFEST "completion-manifest.json"
 
