@@ -1904,6 +1904,10 @@ static int check_psp_measured_funnel(void) {
         {0xd0468088u, 0x010e4u, {0x41200000u, 0x3f800000u, 0u, 0u}, 0x3f800000u},  /* 0 + 1 */
         {0xd0478088u, 0x020e4u, {0x40400000u, 0x41100000u, 0u, 0u}, 0x3f800000u},  /* vavg.q of
                                                                                     * (3, 1, 0, 0) */
+        {0xd0460088u, 0x020ecu, {0x3f800000u, 0x41200000u, 0u, 0u}, 0x3fc00000u},  /* vfad.p: the
+                                                                                    * constant 0.5's
+                                                                                    * field 3 is past
+                                                                                    * the width: 1.5 */
     };
     for (unsigned r = 0; r < sizeof(read_stage) / sizeof(read_stage[0]); r++) {
         CpuState s;
