@@ -2586,6 +2586,11 @@ static const uint8_t *s_player_image;
 static uint32_t s_player_image_size;
 static const char s_player_path[] = "disc0:/media/av_timing.psmf";
 
+int iso_sector_extent_path(const char *guest_path, char *out, size_t out_size) {
+    (void)guest_path; (void)out; (void)out_size;
+    return 0;
+}
+
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     if (s_player_image && guest_path && strcmp(guest_path, s_player_path) == 0) {
         if (out_lba) *out_lba = 0u;

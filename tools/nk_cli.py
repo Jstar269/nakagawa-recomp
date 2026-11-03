@@ -82,6 +82,8 @@ from nk_core.iso_inspect import (  # noqa: E402
     IsoInspectionError,
     IsoDirectoryEntry,
     _elf32_mips_iso_violation,
+    _EXECUTABLE_FILENAMES,
+    _MODULE_SUFFIXES,
     _elf32_mips_usable,
     _lookup_iso_file,
     _read_iso_extent,
@@ -92,6 +94,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     encrypted_executable_message,
     inspect_compatibility_preflight,
     plan_guest_module_layout,
+    read_guest_module_interface,
     disc_module_host_names,
     walk_disc_module_entries,
     write_experimental_profile,
@@ -589,6 +592,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
             candidates.append(overlay)
             continue
         if Path(entry.name).suffix.casefold() not in {".prx", ".elf"}:
+            # Any other file is a candidate when it is a plain PRX by its header: the
+            # loader reads a module's header, never its name.
+            if _disc_file_may_hold_modules(directory, entry, selected_name):
+                renamed = _iso_renamed_module_candidate(
+                    iso_path, file_size, directory, entry, host_name
+                )
+                if renamed is not None:
+                    candidates.append(renamed)
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
@@ -661,6 +672,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                 "module sets are in the works."
             )
 
+    candidates.extend(_iso_embedded_module_candidates(iso_path, file_size, walked, selected_name))
+    if len(candidates) > MAX_GUEST_MODULES:
+        raise PackageBuildError(
+            f"DISC_MODULE_CANDIDATE_LIMIT: ISO contains more than "
+            f"{MAX_GUEST_MODULES} guest-module candidates; larger "
+            "module sets are in the works."
+        )
+
     names: dict[str, str] = {}
     for candidate in candidates:
         folded = candidate["name"].casefold()
@@ -682,6 +701,13 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
         raise PackageBuildError("Guest-module inputs exceed the supported aggregate size.")
     return candidates
 
+
+#: The ELF type of a relocatable PSP module.
+_PSP_PRX_ELF_TYPE = 0xFFA0
+_ISO_SECTOR_BYTES = 2048
+#: How much of a disc file one read of the sector scan takes.
+_SECTOR_SCAN_BYTES = 8 * 1024 * 1024
+_SECTOR_EXTENT_RE = re.compile(r"(?:disc0|umd0):/sce_lbn0x([0-9a-f]+)_size0x([0-9a-f]+)")
 
 #: Candidate kinds whose disc bytes are used as they are: a plain module or a code overlay.
 _PLAIN_CANDIDATE_KINDS = frozenset({"plain-elf", "code-overlay"})
@@ -727,6 +753,126 @@ def _iso_code_overlay_candidate(iso_path: Path, file_size: int, directory: tuple
             kind, reason = "unsupported", f"its code-overlay header is malformed ({exc})"
     return {"name": name, "directory": directory, "entry": entry,
             "kind": kind, "reason": reason}
+
+
+def _disc_file_may_hold_modules(directory: tuple[str, ...], entry: IsoDirectoryEntry,
+                                selected_name: str) -> bool:
+    """Whether a file with no module suffix can hold a game module: not an executable,
+    and not part of the firmware updater a disc carries, which is never opened."""
+    return entry.name.casefold() not in _EXECUTABLE_FILENAMES | {selected_name} and \
+        tuple(part.casefold() for part in directory[:3]) != ("psp_game", "sysdir", "update")
+
+
+def _found_prx_is_translatable(module_bytes: bytes) -> bool:
+    """Whether a PRX found by its bytes alone can be declared: anything else stays file
+    data, since nothing says the game loads it and a declared module's refusal stops
+    the build."""
+    try:
+        return not _has_cfw_or_kernel_only_imports(module_bytes) and \
+            not read_guest_module_interface("found module", module_bytes).requires_kernel
+    except IsoInspectionError:
+        return False
+
+
+def _iso_renamed_module_candidate(iso_path: Path, file_size: int, directory: tuple[str, ...],
+                                  entry: IsoDirectoryEntry, host_name: str) -> dict | None:
+    """The candidate for a plain PRX under any other file name, else None.
+
+    The kernel's module loader reads a file's header and never its name, so a game may
+    keep its code in plain PRXs named like data (a menu in ``menu.bin``). Only a usable
+    relocatable MIPS module counts: every other file was never a candidate, so it stays
+    unnamed here instead of stopping the build."""
+    if entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES or \
+            not _disc_module_name_ok(host_name) or not _disc_member_is_ascii(directory):
+        return None
+    with iso_path.open("rb") as stream:
+        header = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0,
+                                  min(entry.size, 0x14))
+        if len(header) < 0x14 or not header.startswith(b"\x7fELF") or \
+                struct.unpack_from("<H", header, 0x10)[0] != _PSP_PRX_ELF_TYPE or \
+                not _elf32_mips_usable(stream, file_size, entry.lba, entry.size, module=True):
+            return None
+        module_bytes = _read_iso_extent(stream, file_size, entry.lba, entry.size, 0, entry.size)
+    if not _found_prx_is_translatable(module_bytes):
+        return None
+    return {"name": host_name, "directory": directory, "entry": entry,
+            "kind": "plain-elf", "reason": None}
+
+
+def _sector_extent_guest_path(lba: int, size: int) -> str:
+    """The raw-extent spelling a game loads a sector range by (src/rt/iso_public.c)."""
+    return f"disc0:/sce_lbn0x{lba:x}_size0x{size:x}"
+
+
+def _guest_sector_extent(guest_path: object) -> tuple[int, int] | None:
+    """The (LBA, size) a raw-extent guest path names, else None."""
+    match = _SECTOR_EXTENT_RE.fullmatch(guest_path) if isinstance(guest_path, str) else None
+    return (int(match[1], 16), int(match[2], 16)) if match else None
+
+
+def _embedded_prx_size(stream, file_size: int, lba: int, room: int) -> int | None:
+    """The size of the plain PRX whose header starts at sector ``lba``, else None.
+
+    An ELF's section table is its last part, so where it ends is where the module ends;
+    that is the size a game passes when it loads the module by its extent. A range that
+    only looks like a PRX fails one of these checks and stays what it was: file data."""
+    if room < 0x34:
+        return None
+    header = _read_iso_extent(stream, file_size, lba, room, 0, 0x34)
+    if struct.unpack_from("<H", header, 0x10)[0] != _PSP_PRX_ELF_TYPE:
+        return None
+    section_table = struct.unpack_from("<I", header, 0x20)[0]
+    entry_size, count = struct.unpack_from("<HH", header, 0x2E)
+    size = section_table + entry_size * count
+    if not count or size > min(room, MAX_GUEST_MODULE_BYTES):
+        return None
+    if not _elf32_mips_usable(stream, file_size, lba, size, module=True):
+        return None
+    module_bytes = _read_iso_extent(stream, file_size, lba, size, 0, size)
+    return size if _found_prx_is_translatable(module_bytes) else None
+
+
+def _iso_embedded_module_candidates(
+    iso_path: Path, file_size: int,
+    walked: list[tuple[tuple[str, ...], IsoDirectoryEntry]], selected_name: str,
+) -> list[dict]:
+    """Plain PRXs packed inside a larger disc file, found by scanning its sectors.
+
+    A game can keep its code in one archive and load each module by the disc sectors it
+    occupies (``disc0:/sce_lbn0x<LBN>_size0x<SIZE>``), so no file name leads to it. The
+    runtime has only what the build translated, and such a load is by extent, which is
+    what a module is declared under here. A file's first sector is left out: there it
+    is the file itself, which _iso_renamed_module_candidate decides."""
+    candidates: list[dict] = []
+    seen: set[int] = set()
+    with iso_path.open("rb") as stream:
+        for directory, entry in walked:
+            if Path(entry.name).suffix.casefold() in _MODULE_SUFFIXES or entry.multi_extent or \
+                    entry.size < 2 * _ISO_SECTOR_BYTES or \
+                    not _disc_file_may_hold_modules(directory, entry, selected_name):
+                continue
+            for offset in range(0, entry.size, _SECTOR_SCAN_BYTES):
+                # Each read overlaps the next by the magic, so none is cut in two.
+                block = _read_iso_extent(
+                    stream, file_size, entry.lba, entry.size, offset,
+                    min(_SECTOR_SCAN_BYTES + 4, entry.size - offset),
+                )
+                position = block.find(b"\x7fELF")
+                while 0 <= position < _SECTOR_SCAN_BYTES:
+                    start = offset + position
+                    lba = entry.lba + start // _ISO_SECTOR_BYTES
+                    if start and not start % _ISO_SECTOR_BYTES and lba not in seen:
+                        seen.add(lba)
+                        size = _embedded_prx_size(stream, file_size, lba, entry.size - start)
+                        if size is not None:
+                            extent = _sector_extent_guest_path(lba, size).split("/", 1)[1]
+                            candidates.append({
+                                "name": f"{extent}.prx", "directory": (),
+                                "entry": IsoDirectoryEntry(extent, lba, size, False, False),
+                                "kind": "plain-elf", "reason": None,
+                            })
+                    position = block.find(b"\x7fELF", position + 1)
+    return candidates
 
 
 def _encrypted_prx_header_supported(header: bytes) -> bool:
@@ -1320,11 +1466,14 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             _require_plain_guest_module(destination, name, disc_name)
             continue
         extracted = False
-        members = []
+        members: list[tuple[str, ...]] = []
+        sector_extent = _guest_sector_extent(module.get("guest_path"))
         guest_components = _source_iso_guest_components(module.get("guest_path"))
-        if guest_components:
+        if sector_extent is not None:
+            members.append((module["guest_path"],))
+        elif guest_components:
             members.append(guest_components)
-        if members:
+        if members and sector_extent is None:
             file_size = iso_path.stat().st_size
             with iso_path.open("rb") as stream:
                 if _lookup_iso_file(stream, file_size, members[0]) is None:
@@ -1350,7 +1499,7 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
             try:
                 file_size = iso_path.stat().st_size
                 with iso_path.open("rb") as stream:
-                    extent = _lookup_iso_file(stream, file_size, member)
+                    extent = sector_extent or _lookup_iso_file(stream, file_size, member)
                     if extent is None:
                         continue
                     lba, size = extent

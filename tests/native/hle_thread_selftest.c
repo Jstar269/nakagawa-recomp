@@ -757,6 +757,11 @@ static const char *const s_identity_disc_files[] = {
 };
 static int s_identity_disc_files_enabled;
 
+int iso_sector_extent_path(const char *guest_path, char *out, size_t out_size) {
+    (void)guest_path; (void)out; (void)out_size;
+    return 0;
+}
+
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     if (s_identity_disc_files_enabled && guest_path) {
         for (uint32_t i = 0; i < sizeof(s_identity_disc_files) / sizeof(s_identity_disc_files[0]); i++) {
@@ -1708,6 +1713,7 @@ enum {
 #define RT_PATH_ADDR 0x08906000u
 #define RT_ARG_ADDR 0x08906080u
 #define RT_STATUS_ADDR 0x089060C0u
+#define RT_STOP_OPTION_ADDR 0x089060D0u
 #define RT_OPTION_ADDR 0x08906100u
 
 static void fd_host_path(char *out, size_t capacity, const char *guest);
@@ -1726,8 +1732,10 @@ static void rt_alpha_start(CpuState *s) {
     s->r[2] = 0u;
 }
 
+static int s_rt_stop_priority;
 static void rt_alpha_stop(CpuState *s) {
     s_rt_stop_calls++;
+    s_rt_stop_priority = sched_current_priority();
     s->r[2] = RT_STOP_STATUS;
 }
 
@@ -2062,6 +2070,26 @@ static uint32_t rt_lifecycle(uint32_t (*handler)(CpuState *), uint32_t uid,
     return handler(&cpu);
 }
 
+/* A SceKernelSMOption of size bytes: {size, mpIdStack, stackSize, priority, attribute}. */
+static void rt_write_stop_option(uint32_t size, uint32_t mpid, uint32_t priority, uint32_t attr) {
+    MEM_W32(RT_STOP_OPTION_ADDR, size);
+    MEM_W32(RT_STOP_OPTION_ADDR + 4u, mpid);
+    MEM_W32(RT_STOP_OPTION_ADDR + 8u, 0u);
+    MEM_W32(RT_STOP_OPTION_ADDR + 12u, priority);
+    MEM_W32(RT_STOP_OPTION_ADDR + 16u, attr);
+}
+
+extern void sr_hle_test_set_compiled_sdk_version(uint32_t version);
+
+static uint32_t rt_stop_with_option(uint32_t uid, uint32_t option) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    cpu.r[7] = RT_STATUS_ADDR;
+    cpu.r[8] = option;
+    return sr_hle_test_stop_module(&cpu);
+}
+
 /* A started module that exports a NID host HLE also serves takes that NID over, and only
  * while it is started (#286). scePsmfPlayerGetAudioOutSize is the shadowed NID: the host
  * handler answers a handle it does not know with its status error, and the guest body
@@ -2381,11 +2409,34 @@ static void test_runtime_placed_modules(void) {
                "runtime placement: a linked guest export does not clear the caller's LLbit");
     }
 
+    /* A SceKernelSMOption the module manager refuses leaves the module started. The size
+     * check applies from SDK 2.08 on. */
+    sr_hle_test_set_compiled_sdk_version(0x02080000u);
+    rt_write_stop_option(16u, 2u, 0u, 0u);
+    expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == SCE_KERNEL_ERROR_ILLEGAL_SIZE &&
+               s_rt_stop_calls == 0u,
+           "runtime placement: from SDK 2.08 a stop option of the wrong size is refused");
+    rt_write_stop_option(20u, 2u, 0u, 0x80000000u);
+    expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == 0x80020001u && s_rt_stop_calls == 0u,
+           "runtime placement: a stop option with an illegal attribute is refused");
+    rt_write_stop_option(20u, 5u, 0u, 0u);
+    expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == 0x80020002u &&
+               s_rt_stop_calls == 0u,
+           "runtime placement: a stop thread stack outside the user partition is refused");
+    /* The option block's 20 bytes would run past the end of guest memory. */
+    expect(rt_stop_with_option(uid, 0x0bfffff0u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR &&
+               s_rt_stop_calls == 0u,
+           "runtime placement: an unreadable stop option is refused");
+
     /* Stop, then unload: the image, its exports, its dispatch and its memory go. */
     MEM_W32(RT_STATUS_ADDR, 0u);
-    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, RT_STATUS_ADDR) == 0u &&
-               s_rt_stop_calls == 1u && MEM_R32(RT_STATUS_ADDR) == RT_STOP_STATUS,
-           "runtime placement: StopModule runs module_stop and reports its status");
+    rt_write_stop_option(20u, 2u, 0x30u, 0x00004000u);
+    expect(rt_stop_with_option(uid, RT_STOP_OPTION_ADDR) == 0u &&
+               s_rt_stop_calls == 1u && MEM_R32(RT_STATUS_ADDR) == RT_STOP_STATUS &&
+               s_rt_stop_priority == 0x30,
+           "runtime placement: StopModule runs module_stop at the option's priority and "
+           "reports its status");
+    sr_hle_test_set_compiled_sdk_version(0u);
     rt_capture_begin();
     uint32_t unloaded = rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u);
     out = rt_capture_end();
@@ -4974,6 +5025,37 @@ static void test_variable_import_linker(void) {
            "variable import: another module's load links nothing of this table");
     sr_hle_test_var_reset();
     sr_hle_test_var_fixed_reset();
+}
+
+static uint32_t s_main_export_calls;
+static void main_export_fn(CpuState *s) { s_main_export_calls++; s->r[2] = 0x5au; }
+
+/* A module calling a function the executable exports runs the executable's code, and needs no
+ * module to have started first: the executable is the module that is already running. */
+static void test_main_function_exports_link_from_boot(void) {
+    enum { EXPORT_ADDR = 0x08804000u };
+    static const SrMainFuncExport exports[] = {
+        {0x7a000010u, 0x08804100u}, {0x7a000020u, EXPORT_ADDR}, {0x7a000030u, 0x08804200u},
+    };
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    sr_main_func_exports_register(exports, 3u);
+    sr_test_register_guest_fn(EXPORT_ADDR, main_export_fn);
+
+    expect(sr_hle_test_started_image_count() == 0 &&
+               sr_hle_test_started_export(0x7a000020u) == EXPORT_ADDR,
+           "main export: linked with no module started");
+    expect(sr_hle_test_started_export(0x7a000025u) == 0u,
+           "main export: a NID the executable does not export is not linked");
+    memset(&cpu, 0, sizeof(cpu));
+    s_main_export_calls = 0u;
+    expect(sr_syscall(&cpu, 0x7a000020u) == 0x5au && s_main_export_calls == 1u,
+           "main export: an import of it runs the executable's translated code");
+    sr_hle_test_module_reset();
+    sr_test_guest_fn_reset();
 }
 
 static void test_umd_io_console_model(void) {
@@ -26867,12 +26949,143 @@ static void test_ge_block_transfer_span_atomicity(void) {
     expect(clut_unchanged,
            "LOADCLUT rejects an invalid full source span without partial palette state");
 
+    /* #1732: LOADCLUT and the GPU texture decode read a span in RAM or in an unswizzled
+     * VRAM view (0x040, 0x044) through one host pointer, and a swizzled view (0x042, 0x046)
+     * byte by byte. Each view must load what scalar loads through that view read. One
+     * 32-byte block stays inside one swizzle block of the 0x046 view, which a bulk read
+     * may not cross. */
+    {
+        const uint32_t clut_views[4] = { 0x04001000u, 0x04201f00u, 0x04403040u, 0x04603040u };
+        int clut_views_ok = 1;
+        for (int view = 0; view < 4; view++) {
+            for (uint32_t i = 0; i < 32u; i += 4u)
+                MEM_W32(clut_views[view] + i, 0x01020304u * (i + 1u) ^ ((uint32_t)view << 28));
+            memset(state->clutram, 0, sizeof(state->clutram));
+            const uint32_t clut_list = 0x08942000u;
+            MEM_W32(clut_list, (0xb0u << 24) | (clut_views[view] & 0x00ffffffu));
+            MEM_W32(clut_list + 4u, (0xb1u << 24) | ((clut_views[view] & 0xff000000u) >> 8));
+            MEM_W32(clut_list + 8u, (0xc4u << 24) | 1u);       /* LOADCLUT: 1 block */
+            MEM_W32(clut_list + 12u, 0x0c000000u);             /* END */
+            (void)ge_run_list(clut_list, 0);
+            for (uint32_t i = 0; i < 32u; i += 4u) {
+                uint32_t loaded;
+                memcpy(&loaded, &state->clutram[i], 4u);
+                if (loaded != MEM_R32(clut_views[view] + i)) clut_views_ok = 0;
+            }
+        }
+        expect(clut_views_ok, "LOADCLUT through each VRAM view loads the words that view reads");
+
+        /* A CLUT4/CLUT8 texture, swizzled or linear, under a plain and a shifted, masked and
+         * offset palette, decodes the same through RAM, the 0x040 and 0x044 views (host
+         * pointer, one palette expansion per decode) and the swizzled 0x042 view (the
+         * per-texel sampler with scalar loads). */
+        static uint32_t tex_ref[32u * 16u], tex_out[32u * 16u];
+        const uint32_t tex_views[4] = { 0x04202000u, 0x08310000u, 0x04004000u, 0x04406000u };
+        const uint32_t clut_fmts[2] = { 3u | (0xffu << 8), 3u | (1u << 2) | (0x7fu << 8) | (1u << 16) };
+        for (uint32_t i = 0; i < sizeof(state->clutram); i += 4u) {
+            const uint32_t entry = 0xff000000u | (i * 0x00010203u);
+            memcpy(&state->clutram[i], &entry, 4u);
+        }
+        int tex_views_ok = 1;
+        for (uint32_t combo = 0; combo < 8u; combo++) {
+            const uint32_t fmt = 4u + (combo & 1u);
+            state->tex_fmt = fmt;
+            state->tex_swizzle = (int)((combo >> 1) & 1u);
+            state->clut_fmt = clut_fmts[combo >> 2];
+            state->tex_bufw = 32u;
+            state->tex_w = 32;
+            state->tex_h = 16;
+            for (int view = 0; view < 4; view++) {
+                for (uint32_t i = 0; i < 512u; i++)
+                    MEM_W8(tex_views[view] + i, (uint8_t)(i * 7u + 3u + fmt));
+                state->tex_addr = tex_views[view];
+                memset(view ? tex_out : tex_ref, 0, sizeof(tex_ref));
+                ge_decode_tex_rgba(view ? tex_out : tex_ref);
+                if (view && memcmp(tex_out, tex_ref, sizeof(tex_ref)) != 0) tex_views_ok = 0;
+                /* The same texels as mip level 1 take the level decode. */
+                state->tex_mip_addr[0] = tex_views[view];
+                state->tex_mip_bufw[0] = 32u;
+                state->tex_mip_wlog2[0] = 5u;
+                state->tex_mip_hlog2[0] = 4u;
+                memset(tex_out, 0, sizeof(tex_out));
+                ge_decode_tex_level_rgba(1u, tex_out);
+                if (memcmp(tex_out, tex_ref, sizeof(tex_ref)) != 0) tex_views_ok = 0;
+            }
+            int nonzero = 0;
+            for (uint32_t i = 0; i < 32u * 16u; i++) nonzero |= tex_ref[i] != 0xff000000u;
+            if (!nonzero) tex_views_ok = 0;
+        }
+        state->tex_swizzle = 0;
+        expect(tex_views_ok,
+               "a CLUT texture decodes the same from RAM and from each VRAM view");
+
+        /* The linear 16-bit level-0 decode expands a row at a time; the per-texel sampler
+         * (here as mip level 1 over the same texels) is the reference, for every value. */
+        static uint32_t row_out[256u * 256u], row_ref[256u * 256u];
+        const uint32_t all16 = 0x08400000u;
+        for (uint32_t i = 0; i < 65536u; i++) MEM_W16(all16 + i * 2u, (uint16_t)i);
+        int rows_ok = 1;
+        for (uint32_t fmt = 0u; fmt <= 2u; fmt++) {
+            state->tex_fmt = fmt;
+            state->tex_addr = all16;
+            state->tex_bufw = 256u;
+            state->tex_w = 256;
+            state->tex_h = 256;
+            state->tex_mip_addr[0] = all16;
+            state->tex_mip_bufw[0] = 256u;
+            state->tex_mip_wlog2[0] = 8u;
+            state->tex_mip_hlog2[0] = 8u;
+            ge_decode_tex_rgba(row_out);
+            ge_decode_tex_level_rgba(1u, row_ref);
+            if (memcmp(row_out, row_ref, sizeof(row_out)) != 0) rows_ok = 0;
+        }
+        expect(rows_ok, "a linear 16-bit texture row decodes every texel value as the sampler does");
+    }
+
     ge_set_gpu_hooks(NULL);
     g_mem_base = saved_base;
     g_mem = saved_base + 0x08000000u;
     free(scratch);
 }
 
+
+/* #1732: a store to plain RAM is inline only while no store instrumentation is armed.
+ * Through every view a store must land where the full load reads it, and each armed
+ * instrument must send stores to the full body, which is where it is reported. */
+static void test_inline_stores_match_full_bodies(void) {
+    reset_fixture();
+    static const uint32_t addrs[] = {
+        0x08100000u, 0x0bfffffcu, 0x88104000u, 0xa8104010u, 0x48104020u,
+        0x04001000u, 0x04201f00u, 0x04403040u, 0x04603040u,
+    };
+    int stores_ok = 1;
+    for (uint32_t k = 0; k < sizeof addrs / sizeof addrs[0]; k++) {
+        const uint32_t a = addrs[k];
+        const uint32_t v = 0x9abc0000u | k;
+        sr_w32_pc(a, v, 0u);
+        if (sr_r32_slow(a) != v) stores_ok = 0;
+        sr_w16_pc(a, (uint16_t)(v >> 4), 0u);
+        if (sr_r16_slow(a) != (uint16_t)(v >> 4)) stores_ok = 0;
+        sr_w8_pc(a + 3u, (uint8_t)(k + 1u), 0u);
+        if (sr_r8_slow(a + 3u) != (uint8_t)(k + 1u)) stores_ok = 0;
+    }
+    expect(stores_ok, "inline stores land where the full loads read through every view");
+    int gating_ok = sr_store_plain();
+    g_sr_store_context_pc = 0x08801000u;
+    gating_ok &= !sr_store_plain();
+    g_sr_store_context_pc = 0u;
+    g_sr_last_writer_enabled = 1;
+    gating_ok &= !sr_store_plain();
+    g_sr_last_writer_enabled = 0;
+    g_sr_mem_watch_count = 1;
+    gating_ok &= !sr_store_plain();
+    g_sr_mem_watch_count = 0;
+    g_sr_heap_watch = 1;
+    gating_ok &= !sr_store_plain();
+    g_sr_heap_watch = 0;
+    gating_ok &= sr_store_plain();
+    expect(gating_ok, "each armed store instrument sends stores to the full body");
+}
 
 static void test_bulk_guest_span_atomicity(void) {
     reset_fixture();
@@ -45319,6 +45532,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_module_identity_is_its_export_table();
     test_variable_import_linker();
     test_fd_namespace();
+    test_main_function_exports_link_from_boot();
     test_umd_io_console_model();
     test_ms0_unified_namespace();
     test_utility_av_module_state();
@@ -45426,6 +45640,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_dcache_maintenance_notifies_renderer();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
+    test_inline_stores_match_full_bodies();
     test_sysclib_memory_imports();
     test_thread_stack_free_size_contract();
     test_check_thread_stack_contract();

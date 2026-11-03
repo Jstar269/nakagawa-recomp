@@ -1147,6 +1147,63 @@ static void decode_vtype(uint32_t vt, VFmt *v) {
     v->stride = v->one_stride * v->morph_n;
 }
 
+/* Vertex attribute loads. A vertex's fields, morph targets included, all lie in
+ * [addr, addr + stride). When that span is in main RAM (so outside the VRAM window) and no
+ * capture is recording reads, each field is loaded straight from its host bytes: the value
+ * the checked MEM_R* accessors return there, without a range and aperture test and a call
+ * per field. vtx_linear_begin decides it once per vertex and vtx_linear_end turns it off. */
+/* Host bytes of a guest span wholly inside main RAM, or NULL when the span leaves RAM or a
+ * capture must see each read: there MEM_R* has no side effect a plain load would skip. */
+static const uint8_t *ge_ram_span(uint32_t addr, uint32_t bytes) {
+#ifdef SR_GE_VRAM_DECODER_CLI
+    (void)addr; (void)bytes;
+    return NULL;
+#else
+    const uint32_t phys = SR_PHYS(addr);
+    if (g_ge_capture_active || phys < SR_RAM_BASE || phys >= 0x0c000000u || bytes > 0x0c000000u - phys)
+        return NULL;
+    return SR_HOST_LINEAR(addr);
+#endif
+}
+
+/* ge_ram_span, or else a span inside one unswizzled VRAM view (the 0x040 and 0x044 windows):
+ * pending GPU writes to it are materialized once here, as sr_r32 does for each word. A span
+ * holding the GE status word sr_r32 serves at 0x04084000 stays on the scalar path. */
+static const uint8_t *ge_read_span(uint32_t addr, uint32_t bytes) {
+    const uint8_t *ram = ge_ram_span(addr, bytes);
+    if (ram) return ram;
+#ifdef SR_GE_VRAM_DECODER_CLI
+    return NULL;
+#else
+    const uint32_t phys = SR_PHYS(addr);
+    if (g_ge_capture_active || bytes == 0u || !sr_vram_cpu_aperture(addr) || ((phys >> 21) & 1u) ||
+        (phys & 0x001FFFFFu) + (uint64_t)bytes > 0x00200000u)
+        return NULL;
+    if (addr <= 0x04084003u && (uint64_t)addr + bytes > 0x04084000u) return NULL;
+    sr_guest_vram_read_prepare_bytes(addr, bytes);
+    return SR_HOST(addr);
+#endif
+}
+
+static int s_vtx_linear;
+
+static void vtx_linear_begin(uint32_t addr, const VFmt *v) {
+    s_vtx_linear = ge_ram_span(addr, (uint32_t)v->stride) != NULL;
+}
+static void vtx_linear_end(void) { s_vtx_linear = 0; }
+
+static inline uint8_t vtx_r8(uint32_t a) {
+    return s_vtx_linear ? *SR_HOST_LINEAR(a) : MEM_R8(a);
+}
+static inline uint16_t vtx_r16(uint32_t a) {
+    if (s_vtx_linear) { uint16_t v; memcpy(&v, SR_HOST_LINEAR(a), sizeof v); return v; }
+    return MEM_R16(a);
+}
+static inline uint32_t vtx_r32(uint32_t a) {
+    if (s_vtx_linear) { uint32_t v; memcpy(&v, SR_HOST_LINEAR(a), sizeof v); return v; }
+    return MEM_R32(a);
+}
+
 /* Read position from a vertex. For transform-mode, all components are signed (model space).
  * For through-mode, x and y are screen pixels; z is a 16-bit unsigned depth (0..65535). */
 /* Transform-mode fixed-point positions are normalized like the hardware: s8/128, s16/32768
@@ -1156,27 +1213,27 @@ static void decode_vtype(uint32_t vt, VFmt *v) {
 static void read_pos_one(uint32_t addr, const VFmt *v, float *x, float *y, float *z) {
     uint32_t a = addr + (uint32_t)v->pos_off;
     if (v->pos_fmt == 3) {
-        uint32_t xi = MEM_R32(a), yi = MEM_R32(a+4), zi = MEM_R32(a+8);
+        uint32_t xi = vtx_r32(a), yi = vtx_r32(a+4), zi = vtx_r32(a+8);
         memcpy(x, &xi, 4); memcpy(y, &yi, 4); memcpy(z, &zi, 4);
     } else if (v->pos_fmt == 2) {
         if (v->through) {
-            *x = (float)(int16_t)MEM_R16(a);
-            *y = (float)(int16_t)MEM_R16(a+2);
-            *z = (float)(uint16_t)MEM_R16(a+4);
+            *x = (float)(int16_t)vtx_r16(a);
+            *y = (float)(int16_t)vtx_r16(a+2);
+            *z = (float)(uint16_t)vtx_r16(a+4);
         } else {
-            *x = (float)(int16_t)MEM_R16(a)   * (1.0f / 32768.0f);
-            *y = (float)(int16_t)MEM_R16(a+2) * (1.0f / 32768.0f);
-            *z = (float)(int16_t)MEM_R16(a+4) * (1.0f / 32768.0f);
+            *x = (float)(int16_t)vtx_r16(a)   * (1.0f / 32768.0f);
+            *y = (float)(int16_t)vtx_r16(a+2) * (1.0f / 32768.0f);
+            *z = (float)(int16_t)vtx_r16(a+4) * (1.0f / 32768.0f);
         }
     } else {
         if (v->through) {
-            *x = (float)(int8_t)MEM_R8(a);
-            *y = (float)(int8_t)MEM_R8(a+1);
-            *z = (float)(uint8_t)MEM_R8(a+2);
+            *x = (float)(int8_t)vtx_r8(a);
+            *y = (float)(int8_t)vtx_r8(a+1);
+            *z = (float)(uint8_t)vtx_r8(a+2);
         } else {
-            *x = (float)(int8_t)MEM_R8(a)   * (1.0f / 128.0f);
-            *y = (float)(int8_t)MEM_R8(a+1) * (1.0f / 128.0f);
-            *z = (float)(int8_t)MEM_R8(a+2) * (1.0f / 128.0f);
+            *x = (float)(int8_t)vtx_r8(a)   * (1.0f / 128.0f);
+            *y = (float)(int8_t)vtx_r8(a+1) * (1.0f / 128.0f);
+            *z = (float)(int8_t)vtx_r8(a+2) * (1.0f / 128.0f);
         }
     }
 }
@@ -1200,23 +1257,23 @@ static void read_tc_one(uint32_t addr, const VFmt *v, float *u, float *tv) {
     if (v->tc_off < 0) { *u = 0; *tv = 0; return; }
     uint32_t a = addr + (uint32_t)v->tc_off;
     if (v->tc_fmt == 3) {
-        uint32_t ui = MEM_R32(a), vi = MEM_R32(a+4);
+        uint32_t ui = vtx_r32(a), vi = vtx_r32(a+4);
         memcpy(u, &ui, 4); memcpy(tv, &vi, 4);
     } else if (v->tc_fmt == 2) {
         if (v->through) {
-            *u  = (float)(uint16_t)MEM_R16(a);
-            *tv = (float)(uint16_t)MEM_R16(a+2);
+            *u  = (float)(uint16_t)vtx_r16(a);
+            *tv = (float)(uint16_t)vtx_r16(a+2);
         } else {
-            *u  = (float)(uint16_t)MEM_R16(a)  * (1.0f / 32768.0f);
-            *tv = (float)(uint16_t)MEM_R16(a+2) * (1.0f / 32768.0f);
+            *u  = (float)(uint16_t)vtx_r16(a)  * (1.0f / 32768.0f);
+            *tv = (float)(uint16_t)vtx_r16(a+2) * (1.0f / 32768.0f);
         }
     } else {
         if (v->through) {
-            *u  = (float)MEM_R8(a);
-            *tv = (float)MEM_R8(a+1);
+            *u  = (float)vtx_r8(a);
+            *tv = (float)vtx_r8(a+1);
         } else {
-            *u  = (float)MEM_R8(a)  * (1.0f / 128.0f);
-            *tv = (float)MEM_R8(a+1) * (1.0f / 128.0f);
+            *u  = (float)vtx_r8(a)  * (1.0f / 128.0f);
+            *tv = (float)vtx_r8(a+1) * (1.0f / 128.0f);
         }
     }
 }
@@ -1238,16 +1295,16 @@ static void read_nrm_one(uint32_t addr, const VFmt *v, float *x, float *y, float
     if (v->nrm_off < 0) { *x = 0; *y = 0; *z = 1; return; }
     uint32_t a = addr + (uint32_t)v->nrm_off;
     if (v->nrm_fmt == 3) {
-        uint32_t xi = MEM_R32(a), yi = MEM_R32(a+4), zi = MEM_R32(a+8);
+        uint32_t xi = vtx_r32(a), yi = vtx_r32(a+4), zi = vtx_r32(a+8);
         memcpy(x, &xi, 4); memcpy(y, &yi, 4); memcpy(z, &zi, 4);
     } else if (v->nrm_fmt == 2) {
-        *x = (float)(int16_t)MEM_R16(a)   * (1.0f / 32768.0f);
-        *y = (float)(int16_t)MEM_R16(a+2) * (1.0f / 32768.0f);
-        *z = (float)(int16_t)MEM_R16(a+4) * (1.0f / 32768.0f);
+        *x = (float)(int16_t)vtx_r16(a)   * (1.0f / 32768.0f);
+        *y = (float)(int16_t)vtx_r16(a+2) * (1.0f / 32768.0f);
+        *z = (float)(int16_t)vtx_r16(a+4) * (1.0f / 32768.0f);
     } else {
-        *x = (float)(int8_t)MEM_R8(a)   * (1.0f / 128.0f);
-        *y = (float)(int8_t)MEM_R8(a+1) * (1.0f / 128.0f);
-        *z = (float)(int8_t)MEM_R8(a+2) * (1.0f / 128.0f);
+        *x = (float)(int8_t)vtx_r8(a)   * (1.0f / 128.0f);
+        *y = (float)(int8_t)vtx_r8(a+1) * (1.0f / 128.0f);
+        *z = (float)(int8_t)vtx_r8(a+2) * (1.0f / 128.0f);
     }
 }
 
@@ -1271,9 +1328,9 @@ static void read_nrm(uint32_t addr, const VFmt *v, float *x, float *y, float *z)
 static void read_weights(uint32_t addr, const VFmt *v, float *w) {
     uint32_t a = addr + (uint32_t)v->w_off;
     for (int i = 0; i < v->w_n; i++) {
-        if (v->w_fmt == 3) { uint32_t t = MEM_R32(a + 4u*(uint32_t)i); memcpy(&w[i], &t, 4); }
-        else if (v->w_fmt == 2) w[i] = (float)MEM_R16(a + 2u*(uint32_t)i) * (1.0f / 32768.0f);
-        else                    w[i] = (float)MEM_R8(a + (uint32_t)i)     * (1.0f / 128.0f);
+        if (v->w_fmt == 3) { uint32_t t = vtx_r32(a + 4u*(uint32_t)i); memcpy(&w[i], &t, 4); }
+        else if (v->w_fmt == 2) w[i] = (float)vtx_r16(a + 2u*(uint32_t)i) * (1.0f / 32768.0f);
+        else                    w[i] = (float)vtx_r8(a + (uint32_t)i)     * (1.0f / 128.0f);
     }
 }
 
@@ -1308,8 +1365,8 @@ static void read_color_one(uint32_t addr, const VFmt *v, int *r, int *g, int *b,
         return;
     }
     uint32_t ca = addr + (uint32_t)v->col_off;
-    if (v->col_fmt == 7) unpack_color(MEM_R32(ca), 3, r, g, b, a);
-    else unpack_color(MEM_R16(ca), v->col_fmt - 4, r, g, b, a);
+    if (v->col_fmt == 7) unpack_color(vtx_r32(ca), 3, r, g, b, a);
+    else unpack_color(vtx_r16(ca), v->col_fmt - 4, r, g, b, a);
 }
 
 static void read_color(uint32_t addr, const VFmt *v, int *r, int *g, int *b, int *a) {
@@ -1321,11 +1378,11 @@ static void read_color(uint32_t addr, const VFmt *v, int *r, int *g, int *b, int
         uint32_t ca=addr+(uint32_t)(i*v->one_stride+v->col_off);
         float w=ge.morph_weight[i], q[4];
         if (v->col_fmt==7) {
-            uint32_t x=MEM_R32(ca);
+            uint32_t x=vtx_r32(ca);
             q[0]=(float)(x&255); q[1]=(float)((x>>8)&255);
             q[2]=(float)((x>>16)&255); q[3]=(float)((x>>24)&255);
         } else {
-            uint32_t x=MEM_R16(ca);
+            uint32_t x=vtx_r16(ca);
             if (v->col_fmt==4) {
                 q[0]=(float)(x&31)*(255.0f/31.0f); q[1]=(float)((x>>5)&63)*(255.0f/63.0f);
                 q[2]=(float)((x>>11)&31)*(255.0f/31.0f); q[3]=255.0f;
@@ -1959,6 +2016,83 @@ static TexLevel tex_level(uint32_t level) {
     return t;
 }
 
+/* Host bytes of the level a GPU decode is reading (tex_decode_host_begin), else NULL. */
+static const uint8_t *s_tex_host;
+static uint32_t s_tex_host_addr;
+
+static inline uint32_t tex_r8(uint32_t a) {
+    return s_tex_host ? s_tex_host[a - s_tex_host_addr] : MEM_R8(a);
+}
+static inline uint32_t tex_r16(uint32_t a) {
+    if (s_tex_host) { uint16_t v; memcpy(&v, s_tex_host + (a - s_tex_host_addr), sizeof v); return v; }
+    return MEM_R16(a);
+}
+static inline uint32_t tex_r32(uint32_t a) {
+    if (s_tex_host) { uint32_t v; memcpy(&v, s_tex_host + (a - s_tex_host_addr), sizeof v); return v; }
+    return MEM_R32(a);
+}
+
+/* Read a whole decoded level through one host pointer when every byte texel_offset can
+ * address for it lies in one span ge_read_span accepts. Block-compressed formats keep the
+ * scalar path. */
+static void tex_decode_host_begin(const TexLevel *t) {
+    static const uint8_t bits_of[8] = {16, 16, 16, 32, 4, 8, 16, 32};
+    s_tex_host = NULL;
+    if (ge.tex_fmt > 7u || t->w <= 0 || t->h <= 0) return;
+    const uint32_t bits = bits_of[ge.tex_fmt];
+    const uint32_t pitch = t->bufw ? t->bufw : (uint32_t)t->w;
+    const uint32_t u = (uint32_t)t->w - 1u, v = (uint32_t)t->h - 1u;
+    uint64_t last;
+    if (!ge.tex_swizzle) {
+        last = (uint64_t)v * ge_tex_row_bytes(pitch, bits) + ((u * bits) >> 3);
+    } else {
+        /* texel_offset's tile index grows with each of its terms; take each at its maximum. */
+        const uint32_t tile_u = u / (32u / bits);
+        last = 4ull * (7u * 4u + (uint64_t)(v / 8u) * ((pitch * bits / 32u) * 8u) + (tile_u % 4u) +
+                       (uint64_t)(tile_u / 4u) * 32u) + 3u;
+    }
+    if (last + 4u > 0x00200000u) return;
+    const uint8_t *host = ge_read_span(t->addr, (uint32_t)last + 4u);
+    if (host) { s_tex_host = host; s_tex_host_addr = t->addr; }
+}
+static void tex_decode_host_end(void) { s_tex_host = NULL; }
+
+/* A CLUT4/CLUT8 level read through the host pointer: each palette entry is expanded once
+ * by clut_lookup, then every texel is its entry, at the address texel_offset gives the
+ * per-texel sampler. tex_coord leaves an in-range coordinate of a power-of-two level as it
+ * is, so the texels are the sampler's. Returns 0 when the per-texel path must run. */
+static int tex_decode_clut_fast(const TexLevel *t, uint32_t *out) {
+    if (!s_tex_host || (ge.tex_fmt != 4u && ge.tex_fmt != 5u) || s_stat_on > 0) return 0;
+    if (t->w <= 0 || t->h <= 0 || t->w > 512 || t->h > 512 ||
+        (t->w & (t->w - 1)) || (t->h & (t->h - 1)))
+        return 0;
+    const uint32_t entries = ge.tex_fmt == 5u ? 256u : 16u;
+    uint32_t pal[256];
+    uint8_t lit[256];
+    for (uint32_t i = 0; i < entries; i++) {
+        int r, g, b, a;
+        clut_lookup(i, &r, &g, &b, &a);
+        pal[i] = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
+                 ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(a & 0xFF) << 24);
+        lit[i] = (r | g | b) != 0;
+    }
+    const uint32_t stride = t->bufw ? t->bufw : (uint32_t)t->w;
+    const uint32_t bits = ge.tex_fmt == 5u ? 8u : 4u;
+    unsigned long nonzero = 0;
+    for (uint32_t v = 0; v < (uint32_t)t->h; v++) {
+        uint32_t *row = out + v * (uint32_t)t->w;
+        for (uint32_t u = 0; u < (uint32_t)t->w; u++) {
+            const uint8_t byte = s_tex_host[t->addr + texel_offset(stride, u, v, bits) - s_tex_host_addr];
+            const uint32_t idx = bits == 8u ? byte : ((u & 1u) ? (uint32_t)(byte >> 4) : (uint32_t)(byte & 0xFu));
+            row[u] = pal[idx];
+            nonzero += lit[idx];
+        }
+    }
+    g_tex_samples += (unsigned long)t->w * (unsigned long)t->h;
+    g_tex_nonzero += nonzero;
+    return 1;
+}
+
 static void sample_tex_level(const TexLevel *t, int tu, int tv, int *r, int *g, int *b, int *a) {
     g_tex_samples++;
     if (t->w > 0) {
@@ -1969,20 +2103,20 @@ static void sample_tex_level(const TexLevel *t, int tu, int tv, int *r, int *g, 
     uint32_t u = (uint32_t)tu, v = (uint32_t)tv;
     switch (ge.tex_fmt) {
         case 0: case 1: case 2:
-            unpack_color(MEM_R16(t->addr + texel_offset(stride, u, v, 16)), ge.tex_fmt, r, g, b, a); break;
+            unpack_color(tex_r16(t->addr + texel_offset(stride, u, v, 16)), ge.tex_fmt, r, g, b, a); break;
         case 3:
-            unpack_color(MEM_R32(t->addr + texel_offset(stride, u, v, 32)), 3, r, g, b, a); break;
+            unpack_color(tex_r32(t->addr + texel_offset(stride, u, v, 32)), 3, r, g, b, a); break;
         case 4: {
             uint32_t off = texel_offset(stride, u, v, 4);
-            uint8_t byte = MEM_R8(t->addr + off);
+            uint8_t byte = (uint8_t)tex_r8(t->addr + off);
             int ni = (u & 1) ? (byte >> 4) : (byte & 0xF);
             clut_lookup((uint32_t)ni, r, g, b, a); break;
         }
-        case 5: clut_lookup(MEM_R8(t->addr + texel_offset(stride, u, v, 8)), r, g, b, a); break;
+        case 5: clut_lookup(tex_r8(t->addr + texel_offset(stride, u, v, 8)), r, g, b, a); break;
         case 6:  /* CLUT16: 16-bit index through the same shift/mask/start transform */
-            clut_lookup(MEM_R16(t->addr + texel_offset(stride, u, v, 16)), r, g, b, a); break;
+            clut_lookup(tex_r16(t->addr + texel_offset(stride, u, v, 16)), r, g, b, a); break;
         case 7:  /* CLUT32 */
-            clut_lookup(MEM_R32(t->addr + texel_offset(stride, u, v, 32)), r, g, b, a); break;
+            clut_lookup(tex_r32(t->addr + texel_offset(stride, u, v, 32)), r, g, b, a); break;
         case 8: case 9: case 10:
             sample_dxt(t->addr, stride, u, v, r, g, b, a); break;
         default: *r=*g=*b=*a=255; break;
@@ -2146,6 +2280,39 @@ static uint32_t ge_direct_texel(const uint8_t *row, uint32_t x, uint32_t psm) {
     return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)a << 24);
 }
 
+/* ge_direct_texel for the first `w` texels of a row, with the format chosen once per row:
+ * the same expansion unpack_color does for each texel. */
+static void ge_direct_row(uint32_t *restrict dst, const uint8_t *restrict row, int w, uint32_t psm) {
+    if (psm == 3u) { memcpy(dst, row, (size_t)w * 4u); return; }
+    /* One branch-free loop per format, so the compiler can expand several texels at once. */
+    if (psm == 0u) {
+        for (int x = 0; x < w; x++) {
+            uint16_t t16;
+            memcpy(&t16, row + (size_t)x * 2u, 2u);
+            const uint32_t t = t16;
+            uint32_t r = t & 0x1Fu, g = (t >> 5) & 0x3Fu, b = (t >> 11) & 0x1Fu;
+            r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2);
+            dst[x] = r | (g << 8) | (b << 16) | 0xFF000000u;
+        }
+    } else if (psm == 1u) {
+        for (int x = 0; x < w; x++) {
+            uint16_t t16;
+            memcpy(&t16, row + (size_t)x * 2u, 2u);
+            const uint32_t t = t16;
+            uint32_t r = t & 0x1Fu, g = (t >> 5) & 0x1Fu, b = (t >> 10) & 0x1Fu;
+            r = (r << 3) | (r >> 2); g = (g << 3) | (g >> 2); b = (b << 3) | (b >> 2);
+            dst[x] = r | (g << 8) | (b << 16) | ((t >> 15) * 0xFF000000u);
+        }
+    } else {
+        for (int x = 0; x < w; x++) {
+            uint16_t t16;
+            memcpy(&t16, row + (size_t)x * 2u, 2u);
+            const uint32_t t = t16;
+            dst[x] = ((t & 0xFu) | ((t & 0xF0u) << 4) | ((t & 0xF00u) << 8) | ((t & 0xF000u) << 12)) * 17u;
+        }
+    }
+}
+
 /* A DEPTH16 value as the VRAMDUMP decoder shows it: its high byte as opaque grey. */
 static uint32_t ge_depth16_gray(uint16_t z) {
     uint32_t gray = (uint32_t)(z >> 8);
@@ -2206,12 +2373,7 @@ void ge_decode_tex_rgba(uint32_t *out) {
                 uint32_t *dst = out + (uint32_t)v * (uint32_t)ge.tex_w;
                 (void)sr_guest_copy_in(row, source.first + (uint32_t)v * source.row_pitch,
                                        source.row_bytes);
-                if (ge.tex_fmt == 3) {
-                    memcpy(dst, row, (size_t)ge.tex_w * 4);
-                } else {
-                    for (int u = 0; u < ge.tex_w; u++)
-                        dst[u] = ge_direct_texel(row, (uint32_t)u, ge.tex_fmt);
-                }
+                ge_direct_row(dst, row, ge.tex_w, ge.tex_fmt);
             }
             return;
         }
@@ -2226,19 +2388,14 @@ void ge_decode_tex_rgba(uint32_t *out) {
         }
         for (int v = 0; v < ge.tex_h; v++) {
             uint32_t *dst = out + (uint32_t)v * (uint32_t)ge.tex_w;
-            if (ge.tex_fmt == 3) {
-                const uint32_t *src = (const uint32_t *)SR_HOST(
-                    source.first + (uint32_t)v * source.row_pitch);
-                memcpy(dst, src, (size_t)ge.tex_w * 4);
-            } else {
-                const uint8_t *src = (const uint8_t *)SR_HOST(
-                    source.first + (uint32_t)v * source.row_pitch);
-                for (int u = 0; u < ge.tex_w; u++)
-                    dst[u] = ge_direct_texel(src, (uint32_t)u, ge.tex_fmt);
-            }
+            ge_direct_row(dst, (const uint8_t *)SR_HOST(source.first + (uint32_t)v * source.row_pitch),
+                          ge.tex_w, ge.tex_fmt);
         }
         return;
     }
+    TexLevel level0 = tex_level(0u);
+    tex_decode_host_begin(&level0);
+    if (tex_decode_clut_fast(&level0, out)) { tex_decode_host_end(); return; }
     for (int v = 0; v < ge.tex_h; v++)
         for (int u = 0; u < ge.tex_w; u++) {
             int r, g, b, a;
@@ -2246,12 +2403,15 @@ void ge_decode_tex_rgba(uint32_t *out) {
             out[v * ge.tex_w + u] = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
                                     ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(a & 0xFF) << 24);
         }
+    tex_decode_host_end();
 }
 
 /* GPU backend mip decode (#1373): one level through the per-level sampler path the
  * software rasterizer uses (sample_level_f), so format, swizzle and CLUT match level 0. */
 void ge_decode_tex_level_rgba(uint32_t level, uint32_t *out) {
     TexLevel t = tex_level(level);
+    tex_decode_host_begin(&t);
+    if (tex_decode_clut_fast(&t, out)) { tex_decode_host_end(); return; }
     for (int v = 0; v < t.h; v++)
         for (int u = 0; u < t.w; u++) {
             int r, g, b, a;
@@ -2259,6 +2419,7 @@ void ge_decode_tex_level_rgba(uint32_t level, uint32_t *out) {
             out[v * t.w + u] = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
                                ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(a & 0xFF) << 24);
         }
+    tex_decode_host_end();
 }
 
 static uint16_t pack565(int r, int g, int b)           { return (uint16_t)(((r>>3)&0x1F)|(((g>>2)&0x3F)<<5)|(((b>>3)&0x1F)<<11)); }
@@ -2584,10 +2745,12 @@ static void put_px_rgba_tested(int x, int y, uint16_t pz, int use_z,
 typedef GeVtx Vtx;
 
 static void load_vtx(uint32_t addr, const VFmt *vf, Vtx *o) {
+    vtx_linear_begin(addr, vf);
     float pz; read_pos(addr, vf, &o->x, &o->y, &pz);
     o->z = pz; o->rw = 1.0f; o->fog = 1.0f;
     read_tc(addr, vf, &o->u, &o->v);
     read_color(addr, vf, &o->r, &o->g, &o->b, &o->a);
+    vtx_linear_end();
     if (s_primitive_profile_counting) {
         s_cpu_profile_stats.primitive_profile_actual_decoded_vertices++;
         s_cpu_profile_stats.primitive_profile_actual_through_vertices++;
@@ -3541,13 +3704,16 @@ static int ge_env_nolight(void) {
 /* Decode morph targets first, then apply all active bone weights.  Patch tessellation consumes
  * these model-space values; doing either operation after tessellation changes the surface. */
 static void decode_model_vtx(uint32_t addr, const VFmt *vf, ModelVtx *m) {
+    vtx_linear_begin(addr, vf);
     read_pos(addr,vf,&m->x,&m->y,&m->z);
     read_nrm(addr,vf,&m->nx,&m->ny,&m->nz);
     read_tc(addr,vf,&m->u,&m->v);
     read_color(addr,vf,&m->r,&m->g,&m->b,&m->a);
+    float w[8];
+    if (!vf->through && vf->w_n) read_weights(addr,vf,w);
+    vtx_linear_end();
     if (!vf->through && vf->w_n) {
-        float w[8],px=0,py=0,pz=0,nx=0,ny=0,nz=0;
-        read_weights(addr,vf,w);
+        float px=0,py=0,pz=0,nx=0,ny=0,nz=0;
         for (int i=0;i<vf->w_n;i++) {
             if (w[i]==0.0f) continue;
             float tx,ty,tz;
@@ -4488,6 +4654,7 @@ static int ge_tnl_try_prim(int type, int count, const VFmt *vf, uint32_t vbase, 
         GeTnlVtx *o = &s_tnl_refs[i];
         memset(o, 0, sizeof(*o));
         int r, g, b, al;
+        vtx_linear_begin(a, vf);
         read_pos(a, vf, &o->x, &o->y, &o->z);
         read_nrm(a, vf, &o->nx, &o->ny, &o->nz);
         read_tc(a, vf, &o->u, &o->v);
@@ -4495,6 +4662,7 @@ static int ge_tnl_try_prim(int type, int count, const VFmt *vf, uint32_t vbase, 
         o->rgba = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
                   ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(al & 0xFF) << 24);
         if (vf->w_n) read_weights(a, vf, o->w);
+        vtx_linear_end();
         float pos[3] = { o->x, o->y, o->z }, nrm[3] = { o->nx, o->ny, o->nz };
         if (!tnl_nums_ok(pos, 3) || (lit && !tnl_nums_ok(nrm, 3)) || !tnl_nums_ok(o->w, vf->w_n) ||
             (ge.tex_enable && (!tnl_num_ok(o->u) || !tnl_num_ok(o->v)))) {
@@ -6024,9 +6192,14 @@ static int ge_cmd_texture(uint32_t cmd, uint32_t data) {
             /* CLUT sourced from VRAM may read pixels the GPU backend hasn't written back. */
             if (s_gpu && s_gpu->flush && (ge.clut_addr & 0x0F000000u) == 0x04000000u)
                 s_gpu->flush("loadclut");
-            for (uint32_t i = 0; i < bytes; i += 4) {
-                uint32_t w = MEM_R32(ge.clut_addr + i);
-                memcpy(&ge.clutram[i], &w, 4);
+            const uint8_t *clut_src = ge_read_span(ge.clut_addr, bytes);
+            if (clut_src) {
+                memcpy(ge.clutram, clut_src, bytes);
+            } else {
+                for (uint32_t i = 0; i < bytes; i += 4) {
+                    uint32_t w = MEM_R32(ge.clut_addr + i);
+                    memcpy(&ge.clutram[i], &w, 4);
+                }
             }
             if (s_ge_timing_model) ge_time_clut_load(bytes);
             ge.clut_gen++;
@@ -6205,6 +6378,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             if (s_gelog_stall) {
                 fprintf(stderr, "GE STALL reached: 0x%08" PRIx32 "\n", addr);
             }
+            /* A list streamed through stall updates reaches its END in a later run, which
+             * counts only its own primitives: count these toward the capture now. */
+            if (ge_capture_active()) s_capture_total_prims += prims;
             return addr;
         }
         /* An early stop is a stall the guest did not ask for, so nothing holds it apart from one:
