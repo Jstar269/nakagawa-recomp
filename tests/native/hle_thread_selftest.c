@@ -10055,6 +10055,149 @@ static void test_savedata_nested_outputs(void) {
 /* #1386 against PSPAutotests tests/utility/dialog/{status,sizes}.expected (hrydgard/pspautotests
  * master, recorded on a PSP): message dialog sizes and wrong-state results, a busy slot reported
  * before a bad size, and the message dialog's default button. */
+/* #1386: the keyboard's nested ranges. InitStart proves only the 0x40/0x44-byte block; the field
+ * array, each field's strings and each outtext buffer are the guest's. A range that is not whole
+ * guest memory is never partly read or written, and the keyboard ends CANCELLED rather than
+ * CHANGED. What a PSP does with such a block is not captured, so the CANCELLED answer is the
+ * fail-closed choice, not a measurement. */
+#define OSK_RAM_END         0x0c000000u
+#define OSK_CANARY          0xdeadbeefu
+static void osk_run_malformed(CpuState *cpu, const char *what) {
+    char msg[256];
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = OSK_PARAM_ADDR;
+    snprintf(msg, sizeof(msg), "%s: InitStart accepts the block, whose own size is whole", what);
+    expect(sr_syscall(cpu, NID_OSK_INIT) == 0u, msg);
+    snprintf(msg, sizeof(msg), "%s: the keyboard still reaches QUIT", what);
+    expect(osk_poll(cpu) == 1u && osk_poll(cpu) == 2u && osk_poll_past_visible(cpu) == 3u, msg);
+}
+
+static void osk_finish_malformed(CpuState *cpu, const char *what) {
+    char msg[256];
+    memset(cpu, 0, sizeof(*cpu));
+    snprintf(msg, sizeof(msg), "%s: ShutdownStart cancels the keyboard down to NONE", what);
+    expect(sr_syscall(cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(cpu) == 4u && osk_poll(cpu) == 0u,
+           msg);
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x2c4u);
+    snprintf(msg, sizeof(msg), "%s: the slot is free for a message dialog afterwards", what);
+    expect(msg_dialog_run_to_finished(cpu, UTILITY_MSG_PARAM_ADDR), msg);
+    sr_hle_test_osk_slot_reset();
+}
+
+static void test_osk_nested_ranges(void) {
+    CpuState cpu;
+    static const uint32_t field_arrays[] = {
+        OSK_RAM_END - 0x100u,   /* eight 0x34-byte fields run past the end of guest memory */
+        OSK_RAM_END,            /* wholly outside */
+        0xfffffff0u,            /* the span's end wraps the address space */
+    };
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", "NAME");
+
+    for (unsigned i = 0; i < sizeof(field_arrays) / sizeof(field_arrays[0]); i++) {
+        const char *what = "an OSK field array that is not a complete guest span";
+        osk_guest_build(1, 16u, 0u);
+        MEM_W32(OSK_PARAM_ADDR + 0x30u, 8u);
+        MEM_W32(OSK_PARAM_ADDR + 0x34u, field_arrays[i]);
+        MEM_W32(OSK_PARAM_ADDR + 0x1cu, OSK_CANARY);
+        MEM_W32(OSK_RAM_END - 0x100u + 0x2cu, OSK_CANARY);   /* where field 0's result would go */
+        MEM_W32(OSK_FIELDS_ADDR + 0x2cu, OSK_CANARY);
+        osk_run_malformed(&cpu, what);
+        expect(MEM_R32(OSK_PARAM_ADDR + 0x1cu) == 1u,
+               "an OSK field array that is not a complete guest span ends the keyboard CANCELLED");
+        expect(MEM_R32(OSK_RAM_END - 0x100u + 0x2cu) == OSK_CANARY &&
+                   MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == OSK_CANARY,
+               "an OSK field array that is not a complete guest span is read and written nowhere");
+        osk_finish_malformed(&cpu, what);
+    }
+
+    /* The outtext buffer: three UTF-16 units and a terminator do not fit in the last two bytes
+     * of guest memory, so none of them may land. */
+    {
+        const char *what = "an OSK outtext buffer that runs past the end of guest memory";
+        osk_guest_build(1, 16u, 0u);
+        MEM_W32(OSK_FIELDS_ADDR + 0x28u, OSK_RAM_END - 2u);
+        MEM_W16(OSK_RAM_END - 2u, 0xbeefu);
+        MEM_W32(OSK_PARAM_ADDR + 0x1cu, OSK_CANARY);
+        osk_run_malformed(&cpu, what);
+        expect(MEM_R16(OSK_RAM_END - 2u) == 0xbeefu,
+               "an OSK outtext buffer that runs past the end of guest memory gets no partial answer");
+        expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 1u,
+               "an OSK outtext buffer that runs past the end of guest memory reports CANCELLED");
+        osk_finish_malformed(&cpu, what);
+    }
+
+    /* The description and the initial text are read: a string that leaves guest memory is not
+     * read past its end, and the field is not answered. */
+    for (unsigned offset = 0x1cu; offset <= 0x20u; offset += 4u) {
+        const char *what = offset == 0x1cu ? "an OSK description outside guest memory"
+                                           : "an OSK initial text outside guest memory";
+        osk_guest_build(1, 16u, 0u);
+        MEM_W32(OSK_FIELDS_ADDR + offset, OSK_RAM_END);
+        osk_run_malformed(&cpu, what);
+        expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 1u && MEM_R16(osk_out_addr(0)) == 0u,
+               "an OSK string outside guest memory reports CANCELLED and writes no answer");
+        osk_finish_malformed(&cpu, what);
+    }
+
+    /* A whole block still gets its answer, so the checks refuse only what is malformed. */
+    osk_guest_build(1, 16u, 0u);
+    osk_run_malformed(&cpu, "a well-formed OSK block");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u &&
+               MEM_R16(osk_out_addr(0)) == (uint16_t)'N',
+           "a well-formed OSK block is still answered CHANGED");
+    osk_finish_malformed(&cpu, "a well-formed OSK block");
+    osk_env("SR_OSK_TEXT", NULL);
+    osk_person_reset();
+}
+
+/* #1386: wrong-state results for the dialogs the OSK measurements do not cover. Netconf, gamedata
+ * and sharing have no capture of their own (PSPAutotests utility/dialog measures message and
+ * savedata, #363 the OSK); each refuses Update and ShutdownStart at NONE and a repeated
+ * ShutdownStart, as every measured type does. Their results from INIT, RUNNING and FINISHED are
+ * unmeasured and not asserted here. */
+static void test_utility_dialog_wrong_states_unmeasured_types(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+    };
+    char what[256];
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    for (size_t i = 0; i < sizeof(dialogs) / sizeof(dialogs[0]); i++) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, utility_fixture_size(dialogs[i].init));
+        snprintf(what, sizeof(what), "%s runs to FINISHED", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
+                   utility_poll_to_finished(&cpu, dialogs[i].update, dialogs[i].status),
+               what);
+        snprintf(what, sizeof(what), "%s ShutdownStart from FINISHED is accepted", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u, what);
+        snprintf(what, sizeof(what), "%s ShutdownStart again during SHUTDOWN is INVALID_STATUS",
+                 dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110001u, what);
+        snprintf(what, sizeof(what), "%s reports SHUTDOWN, then NONE", dialogs[i].name);
+        expect(utility_status(&cpu, dialogs[i].status) == 4u &&
+                   utility_status(&cpu, dialogs[i].status) == 0u,
+               what);
+        snprintf(what, sizeof(what), "%s Update at NONE is INVALID_STATUS", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].update, 0u) == 0x80110001u, what);
+        snprintf(what, sizeof(what), "%s ShutdownStart at NONE is INVALID_STATUS", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110001u, what);
+        snprintf(what, sizeof(what), "%s stays NONE after its refused calls", dialogs[i].name);
+        expect(utility_status(&cpu, dialogs[i].status) == 0u, what);
+        sr_hle_test_osk_slot_reset();
+    }
+}
+
 static void test_utility_dialog_measured_states(void) {
     CpuState cpu;
     sr_hle_init();
@@ -45424,6 +45567,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_savedata_commit_faults();
     test_savedata_nested_outputs();
     test_utility_dialog_measured_states();
+    test_osk_nested_ranges();
+    test_utility_dialog_wrong_states_unmeasured_types();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
     test_explicit_exit_status_exact((int32_t)0x800201acu, 0x800200d2u);
