@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **435** (declared in `recomp.h`: 370)
-- reach class: emitter-reached 77, production-runtime-only 322, selftest-only 18, address-only 7, none 11
-- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 400
+- helpers: **443** (declared in `recomp.h`: 378)
+- reach class: emitter-reached 77, production-runtime-only 330, selftest-only 18, address-only 7, none 11
+- provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 408
 
 ## Helpers
 
@@ -394,8 +394,12 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_profile_test_lookup_drops` | `rt/recomp.c` | yes | selftest-only | `rt/recomp.c`: upstream_derived |
 | `sr_profile_test_reset` | `rt/recomp.c` | yes | selftest-only | `rt/recomp.c`: upstream_derived |
 | `sr_r16` | `rt/recomp.h` | yes | emitter-reached (via `MEM_R16`) | `rt/recomp.h`: upstream_derived |
+| `sr_r16_slow` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_r32` | `rt/recomp.h` | yes | emitter-reached (via `MEM_R32`) | `rt/recomp.h`: upstream_derived |
+| `sr_r32_slow` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_r8` | `rt/recomp.h` | yes | emitter-reached (via `MEM_R8`) | `rt/recomp.h`: upstream_derived |
+| `sr_r8_slow` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
+| `sr_ram_offset` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_raw_syscall` | `rt/recomp.c`, `rt/snapshot_runner.c`, `rt/verify_harness.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived; `rt/snapshot_runner.c`: project_authored_attested; `rt/verify_harness.c`: project_authored_attested |
 | `sr_rcp_approx` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_register` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
@@ -419,6 +423,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_stack_census_status` | `rt/recomp.c` | yes | none | `rt/recomp.c`: upstream_derived |
 | `sr_stack_census_status_locked` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_stack_census_unlock` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
+| `sr_store_plain` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_swl` | `rt/recomp.c` | yes | selftest-only | `rt/recomp.c`: upstream_derived |
 | `sr_swl_pc` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_swr` | `rt/recomp.c` | yes | selftest-only | `rt/recomp.c`: upstream_derived |
@@ -471,10 +476,13 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_vwrite` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_w16` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_w16_pc` | `rt/recomp.h` | yes | emitter-reached (via `MEM_W16_PC`) | `rt/recomp.h`: upstream_derived |
+| `sr_w16_pc_slow` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_w32` | `rt/recomp.h` | yes | emitter-reached (via `MEM_W32`) | `rt/recomp.h`: upstream_derived |
 | `sr_w32_pc` | `rt/recomp.h` | yes | emitter-reached (via `MEM_W32_PC`) | `rt/recomp.h`: upstream_derived |
+| `sr_w32_pc_slow` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_w8` | `rt/recomp.h` | yes | emitter-reached (via `MEM_W8`) | `rt/recomp.h`: upstream_derived |
 | `sr_w8_pc` | `rt/recomp.h` | yes | emitter-reached (via `MEM_W8_PC`) | `rt/recomp.h`: upstream_derived |
+| `sr_w8_pc_slow` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_window_title_format` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_window_title_sanitize` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_window_title_utf8_len` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
