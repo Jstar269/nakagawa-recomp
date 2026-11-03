@@ -167,10 +167,11 @@ class BuildWiringTests(unittest.TestCase):
         self.assertIn("$(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3", player_rule)
         link_objects = makefile.split("\nLINK_OBJECTS = ", 1)[1].split("\n", 1)[0].split()
         self.assertIn("$(TITLE_ICON_OBJ)", link_objects)
-        self.assertIn("%/nakagawa_icon.o: assets/brand/nakagawa.rc assets/brand/nakagawa.ico", makefile)
+        self.assertIn("%/nakagawa_icon.o: %/nakagawa_icon.rc assets/brand/nakagawa.rc assets/brand/nakagawa.ico", makefile)
 
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         self.assertIn("target_sources(nakagawa_player PRIVATE assets/brand/nakagawa.rc)", cmake)
+        self.assertIn("tools/win_version_resource.py --player", cmake)
 
     def test_other_systems_set_the_window_icon_at_run_time(self) -> None:
         # The icon is built in the player's host seam; main.c only asks for it.
