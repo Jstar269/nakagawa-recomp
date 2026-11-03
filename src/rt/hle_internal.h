@@ -562,7 +562,8 @@ enum {
 /* Lightweight utility services used during setup. Each service keeps its own state machine,
  * and the one slot above decides which of them a call reaches, so polling netconf cannot
  * consume a message/gamedata transition. Init captures the common parameter block and
- * completes it successfully; Update advances RUNNING->FINISHED. Update during INIT returns
+ * completes it successfully; the first Update after the dialog's work completes advances
+ * RUNNING->FINISHED. Update during INIT returns
  * INVALID_STATUS and changes nothing: measured for the message dialog (PSPAutotests
  * tests/utility/dialog/status.expected) and the OSK (#363), unmeasured for netconf,
  * gamedata-install and game-sharing, which fail closed the same way. */
@@ -571,7 +572,6 @@ typedef struct UtilityDialog {
     uint32_t result;
     uint32_t generation;
     int status;
-    unsigned ticks;
     unsigned kind;
     unsigned work_started : 1;
     unsigned work_done : 1;
@@ -592,9 +592,11 @@ typedef struct UtilityDialog {
  * SceUtilityOskState (INITING..FINISHED, 0..5) is a different enum: it describes the
  * parameter block's own state field, not the GetStatus return value.
  *
- * GetStatus reports the state it was in and advances at most one step, so every step is
- * observable however often the title polls: INIT -> VISIBLE, VISIBLE -> QUIT once every
- * field has its answer, QUIT stands until ShutdownStart, then FINISHED -> NONE.
+ * Each step follows the event that completes it, never a count of GetStatus calls (#1386):
+ * INIT -> VISIBLE on the first vblank delivered after InitStart (the keyboard's start-up),
+ * VISIBLE -> QUIT on the poll that finds every field answered, QUIT stands until
+ * ShutdownStart, and FINISHED -> NONE on the first vblank delivered after it. A title polling
+ * once per frame sees every state.
  * sceUtilityOskUpdate keeps its named no-dialog compatibility result (#281), so the runtime
  * owns the progression.
  *
@@ -1283,7 +1285,7 @@ void dialog_unlock(void);
 extern int s_utility_slot;
 uint64_t rtc_now_tick(void);
 int64_t psp_profile_local_offset_minutes(int32_t *zone_out, uint32_t *daylight_out);
-extern int s_dlg_status , s_dlg_tick;
+extern int s_dlg_status;
 extern uint32_t s_dlg_param , s_dlg_param_size , s_dlg_result , s_dlg_generation;
 extern unsigned s_dlg_work_started, s_dlg_work_done;
 extern UtilityDialog s_msg_dialog;
@@ -1291,6 +1293,7 @@ extern UtilityDialog s_net_dialog;
 extern UtilityDialog s_gamedata_dialog;
 extern UtilityDialog s_sharing_dialog;
 void utility_dialogs_reset_locked(void);
+void utility_slot_settle_locked(void);
 extern int s_osk_status;
 extern uint32_t s_osk_param;
 extern int s_osk_field;

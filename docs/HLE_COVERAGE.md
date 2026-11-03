@@ -26,8 +26,8 @@ Classes are listed strongest first. A path takes the first class whose source na
 | `hardware-measured` | 64 | 16 |
 | `ppsspp-derived` | 117 | 90 |
 | `game-route` | 0 | 0 |
-| `synthetic` | 343 | 226 |
-| `unverified` | 160 | 31 |
+| `synthetic` | 344 | 226 |
+| `unverified` | 159 | 31 |
 | total | 684 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
@@ -278,7 +278,7 @@ belongs to without the census's own grouping.
 | `0x4ac57943` | `sceKernelRegisterExitCallback` | kernel_module | `synthetic` | HLE selftest dispatch |
 | `0x4aecd179` | `sceUtilityGamedataInstallUpdate` | utility | `synthetic` | HLE selftest dispatch |
 | `0x4b1b5e82` | `sceRtcCheckValid` | rtc | `synthetic` | HLE selftest dispatch |
-| `0x4b85c861` | `sceUtilityOskUpdate` | utility | `unverified` | generic success handler; performs none of the API contract |
+| `0x4b85c861` | `sceUtilityOskUpdate` | utility | `synthetic` | HLE selftest dispatch |
 | `0x4c06e472` | `sceGeContinue` | ge | `hardware-measured` | PSP oracle PSP-GE-CONTROL-001 |
 | `0x4c145944` | `sceKernelReferLwMutexStatusByID` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0x4ca16893` | `sceRegRemoveCategory` | system | `synthetic` | HLE selftest dispatch |

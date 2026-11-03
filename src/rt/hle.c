@@ -2809,19 +2809,26 @@ void sr_hle_test_set_compiled_sdk_version(uint32_t version) {
  * captures (hrydgard/pspautotests e2d098fc, tests/utility/savedata/{initstatus,noupdate,
  * shutdownstatus}.expected and tests/utility/dialog/{status,priority}.expected):
  *  - INIT -> RUNNING is the dialog's own start-up. Every caller priority from 16 to 111 sees
- *    INIT on the GetStatus right after InitStart, and RUNNING follows with no Update call.
- *    Update does not move it: a message Update during INIT returns INVALID_STATUS, and
- *    savedata's (unmeasured) fails closed the same way. How long INIT lasts is unmeasured, so
- *    here start-up completes once a GetStatus has reported INIT.
+ *    INIT on the GetStatus right after InitStart, and RUNNING follows with no Update call once
+ *    the caller yields. Update does not move it: a message Update during INIT returns
+ *    INVALID_STATUS, and savedata's (unmeasured) fails closed the same way. How long INIT
+ *    lasts is unmeasured, so here start-up completes on the first vblank delivered after
+ *    InitStart, the first display frame the dialog can draw: a caller that polls within the
+ *    frame of its InitStart sees INIT, and one a frame later sees RUNNING, however many
+ *    GetStatus calls it made.
  *  - RUNNING -> FINISHED needs Update: a savedata dialog polled for two seconds without one
- *    stays RUNNING. The first Update does the work; FINISHED comes after the work and two more
- *    Updates, a count no capture measures.
+ *    stays RUNNING. The first Update does the dialog's work, and the first Update after that
+ *    work has completed moves to FINISHED, so FINISHED follows the work's completion rather
+ *    than a count of Updates.
  *  - SHUTDOWN -> NONE is the shutdown's own completion. A message dialog shows SHUTDOWN to
  *    every caller priority measured; a savedata shutdown ends at priority 0x20, so a caller
  *    at 0x20 sees SHUTDOWN and a worse one sees NONE at once (h_DlgShutdown). When NONE
- *    follows a reported SHUTDOWN is unmeasured: here on the next GetStatus.
+ *    follows a reported SHUTDOWN is unmeasured: here on the first vblank delivered after
+ *    ShutdownStart, as for start-up. Until then the dialog keeps the slot.
+ * Both frame-driven steps are applied by utility_slot_settle_locked, which every utility call
+ * runs first, so a call sees the state the dialog has reached whichever call comes first.
  * The OSK is a separate utility with its own state enum and is handled with the rest of it
- * below. */
+ * in hle_utility.c; its INIT -> VISIBLE and FINISHED -> NONE follow the same frames. */
 int guest_cstr(uint32_t addr, char *out, int max);
 static atomic_flag s_dialog_lock = ATOMIC_FLAG_INIT;
 void dialog_lock(void) {
@@ -2845,7 +2852,7 @@ int32_t sr_savedata_console_offset_minutes(void) {
     return (int32_t)psp_profile_local_offset_minutes(NULL, NULL);
 }
 
-int s_dlg_status = 0, s_dlg_tick = 0;
+int s_dlg_status = 0;
 int sr_savedata_pause_busy(void) {
     dialog_lock();
     const int busy = s_dlg_status >= 1 && s_dlg_status <= 3;
@@ -2859,7 +2866,6 @@ void utility_dialogs_reset_locked(void) {
     UtilityDialog *const dialogs[] = { &s_msg_dialog, &s_net_dialog, &s_gamedata_dialog,
                                        &s_sharing_dialog };
     s_dlg_status = 0;
-    s_dlg_tick = 0;
     s_dlg_param = 0u;
     s_dlg_result = 0u;
     s_dlg_work_started = s_dlg_work_done = 0u;
@@ -2870,7 +2876,6 @@ void utility_dialogs_reset_locked(void) {
         d->result = 0u;
         d->generation++;
         d->status = 0;
-        d->ticks = 0u;
         d->work_started = d->work_done = d->aborted = 0u;
     }
     s_utility_slot = UTILITY_SLOT_NONE;
