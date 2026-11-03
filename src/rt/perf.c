@@ -1702,7 +1702,7 @@ static void frames_row(uint32_t vcount, uint32_t vblanks, int work_valid, uint64
     uint64_t storage = 0;
     for (unsigned i = 0; i < SR_PERF_STORAGE_SOURCE_COUNT; i++)
         storage += t->storage_ns[i] - b->storage_ns[i];
-    fprintf(s_perf.frames, "%u,%u,", vcount, vblanks);
+    fprintf(s_perf.frames, "%u,%u,", (unsigned)vcount, (unsigned)vblanks);
     if (work_valid) fprintf(s_perf.frames, "%.3f", ms(work_ns));
     fprintf(s_perf.frames,
             ",%.3f,%.3f,%.3f,%.3f,%.3f,%llu,%.3f,%llu,%llu,%.3f,%.3f,%.3f,%.3f,%llu,%.3f,%llu,%.3f,%.3f,"
