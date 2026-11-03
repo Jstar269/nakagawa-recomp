@@ -12,67 +12,6 @@
 
 #include "hle_internal.h"
 
-#define PSMF_AV_CONTENT_MAX 8192u            /* one sceMpegAtracDecode block */
-#ifdef SR_MPEG_MEDIA_SELFTEST
-int s_psmf_av_test_queue;
-#endif
-
-extern int sr_audio_queued(int ch);
-int psmf_av_queue_frames(int ch) {
-#ifdef SR_MPEG_MEDIA_SELFTEST
-    if (s_psmf_av_test_queue_set) return s_psmf_av_test_queue;
-#endif
-    return sr_audio_queued(ch);
-}
-
-/* FNV-1a of [addr, +bytes), 0 when the bytes are all zero or cannot be read: a silent block is
- * not told apart from any other. */
-uint64_t psmf_av_content(uint32_t addr, uint32_t bytes) {
-    static uint8_t block[PSMF_AV_CONTENT_MAX];
-    if (!bytes || bytes > PSMF_AV_CONTENT_MAX || !sr_guest_copy_in(block, addr, bytes)) return 0;
-    uint64_t h = 1469598103934665603ull;
-    unsigned any = 0;
-    for (uint32_t i = 0; i < bytes; i++) {
-        any |= block[i];
-        h = (h ^ block[i]) * 1099511628211ull;
-    }
-    return any ? (h ? h : 1u) : 0;
-}
-
-/* A submitted buffer that holds no pending block where it was written may hold one the guest
- * copied there: each block-sized piece of it meets the oldest pending block with the same
- * bytes. */
-void psmf_av_audio_by_content(PsmfAvStream *st, int ch, uint32_t buf, uint32_t bytes,
-                                     uint32_t bytes_per_frame, uint32_t rate_hz) {
-    uint32_t size = 0;
-    for (unsigned i = 0; i < PSMF_AV_PENDING && !size; i++)
-        if (st->pend[i].live && st->pend[i].content) size = st->pend[i].content_bytes;
-    if (!size || bytes < size) return;
-    int ticked = 0, queued = -1;
-    int64_t now = 0, lead_us = 0;
-    for (uint32_t off = 0; bytes - off >= size; off += size) {
-        uint64_t h = psmf_av_content(buf + off, size);
-        if (!h) continue;
-        PsmfAvEntry *best = NULL;
-        for (unsigned i = 0; i < PSMF_AV_PENDING; i++) {
-            PsmfAvEntry *e = &st->pend[i];
-            if (e->live && e->content == h && e->content_bytes == size && (!best || e->seq < best->seq))
-                best = e;
-        }
-        if (!best) continue;
-        if (!ticked) {
-            queued = psmf_av_queue_frames(ch);      /* lead ahead of this buffer, read before the push */
-            now = psmf_av_now_us();
-            lead_us = queued >= 0 ? (int64_t)queued * 1000000 / 44100 : 0;
-            psmf_av_window_tick(now);
-            ticked = 1;
-        }
-        int64_t play = now + lead_us + (int64_t)(off / bytes_per_frame) * 1000000 / (int64_t)rate_hz;
-        st->content_matched++;
-        psmf_av_match(st, best, play, queued >= 0);
-    }
-    if (ticked) st->boundary_hits++;
-}
 /* SR_AUDIOSTAT aggregate counters (investigation telemetry). Declared here because
  * the ATRAC decode path and the vblank exit dump both precede the SAS definitions. */
 unsigned long g_sas_calls, g_sas_calls_add, g_sas_pre_nonzero, g_sas_post_nonzero;

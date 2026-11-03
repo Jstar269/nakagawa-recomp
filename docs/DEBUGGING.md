@@ -816,6 +816,7 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `PRESS_UNTIL_NID <import\|0xNID> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press (held `width`, released for the rest of `period`) until the guest calls that import; fail on timeout. Use it where a press may land without changing the screen, such as a message box or a Yes/No that waits on a savedata check, because the import is the event that says the press was taken |
 | `WIDTHS VBLANKS\|READS` | The unit the widths of `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` and `PRESS_UNTIL_NID` count in, for the whole file (default `VBLANKS`); must precede every step, and may appear once |
 | `READS <step>` / `VBLANKS <step>` | The unit of that one `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` or `PRESS_UNTIL_NID` line; overrides `WIDTHS` |
+| `STICK <lx> <ly> <step>` | Hold the left stick at `lx`, `ly` (decimal 0-255, 128 centred) while that `PRESS`, `PRESS_UNTIL`, `PRESS_WHILE` or `PRESS_UNTIL_NID` presses; comes before `READS` / `VBLANKS` ([below](#holding-the-left-stick)) |
 | `END` | Route complete |
 
 A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
@@ -926,6 +927,41 @@ Only these rules differ from the vblank widths above:
   line with either word, so an existing route parses and replays exactly as it did.
 - The legacy `frame hexmask width` table has no keyword lines, so it stays in vblanks. Write a
   route program to use reads.
+
+### Holding the left stick
+
+A route without `STICK` leaves the left stick centred (128, 128), so it can press buttons but
+cannot walk a character. `STICK <lx> <ly>` in front of a pressing step holds the stick at that
+position for as long as the step presses. Each axis is a decimal from 0 to 255, with 128
+centred: `lx` 0 is full left and 255 full right, `ly` 0 is full up and 255 full down. A press
+mask of `0` holds the stick with no button:
+
+```text
+STICK 255 128 PRESS 0 120            # right, no button, for 120 vblanks
+STICK 255 128 PRESS CROSS 8          # right with CROSS held
+DELAY 30                             # released, stick centred
+STICK 128 0 READS PRESS 0 4          # up for four guest reads
+STICK 128 255 PRESS_UNTIL_NID sceIoOpen 0 2 8 600
+END
+```
+
+- The stick is part of the pad state the step holds, so it is delivered by the rule above: it
+  is latched into the controller ring with the buttons and reaches the guest in
+  `SceCtrlData`'s `Lx` and `Ly` bytes through the same reads (`sceCtrlReadBuffer*`,
+  `sceCtrlPeekBuffer*`). A press that holds only the stick is still a press: it has the read
+  budget, and a guest that never reads it fails the run.
+- The released half of a `PRESS_UNTIL`, `PRESS_WHILE` or `PRESS_UNTIL_NID` period, `DELAY`,
+  and every other step centre the stick, as they release the buttons.
+- A PSP reports the stick only in analog sampling mode (`sceCtrlSetSamplingMode(1)`). A title
+  in digital mode reads 128, 128 whatever the route holds, and the route log says so once.
+- While a step holds the stick, the scripted position replaces the window's live stick for
+  those samples; before and after, the live stick is read as usual. Buttons are combined with
+  live input, but a stick cannot be, because a pad at rest does not sit at exactly 128, 128.
+- `STICK` applies to the four pressing steps only, comes first on the line, and is refused at
+  load with anything else, including a value outside 0-255 or one that is not a plain decimal.
+  No existing route starts a line with the word, so existing routes parse and replay exactly as
+  they did. The legacy `frame hexmask width` table has no stick column; write a route program to
+  hold the stick.
 
 ### Naming the buttons a route presses
 

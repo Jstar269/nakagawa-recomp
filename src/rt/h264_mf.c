@@ -236,7 +236,8 @@ static int feed_one(Dec *d) {
         IMFMediaBuffer_SetCurrentLength(mb, c->len);
         if (SUCCEEDED(MFCreateSample(&smp))) {
             IMFSample_AddBuffer(smp, mb);
-            /* Convert a producer-normalized 90 kHz PTS to 100 ns. When the AU has no PTS,
+            /* Convert a producer-normalized 90 kHz PTS to 100 ns (submit_au bounds it by
+             * SR_H264_PTS_ABS_MAX, so the product fits int64). When the AU has no PTS,
              * keep decoder-internal sample times monotonic; game pacing stays in the HLE. */
             LONGLONG t = c->has_pts ? (LONGLONG)c->pts * 1000 / 9 : d->fakeTime;
             d->fakeTime = t + 1;
@@ -517,7 +518,7 @@ int sr_h264_mf_submit_au(int id, const SrH264AccessUnit *au) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !au || !au->data || !au->size ||
         (au->has_pts != 0 && au->has_pts != 1)) return -1;
     Dec *d = &s_dec[id];
-    if (d->failed || d->drained ||
+    if (d->failed || d->drained || (au->has_pts && !sr_h264_pts_in_range(au->pts)) ||
         !((au->size >= 3u && au->data[0] == 0u && au->data[1] == 0u && au->data[2] == 1u) ||
                        (au->size >= 4u && au->data[0] == 0u && au->data[1] == 0u &&
                         au->data[2] == 0u && au->data[3] == 1u))) {

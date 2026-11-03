@@ -79,6 +79,18 @@ ALLOWLIST: tuple[Allowed, ...] = (
     Allowed("src/rt/hle.c", 0x08FFDF00, 1,
             "HLE_TEST_SCHED_CALL_ENTRY: synthetic guest entry inside #ifdef "
             "SR_HLE_THREAD_SELFTEST, compiled only into the thread self-test"),
+    Allowed("src/rt/ge.c", 0x09D517ED, 1,
+            "GE_POW_TH word: the high half of -log2 of a ge_powf reciprocal in Q63, a "
+            "number of the power function's log table, not an address"),
+    Allowed("src/rt/ge.c", 0x09E6809E, 1,
+            "GE_POW_EL word: the low half of 2^(j/64) in Q63, a number of ge_powf's "
+            "exponent table, not an address"),
+    Allowed("src/rt/gpu_sdl3vk/psp_tnl_vert.inc", 0x09D517ED, 1,
+            "the GE_POW_TH word above as a SPIR-V constant in the embedded T&L shader, "
+            "which carries the same ge_powf tables as ge.c"),
+    Allowed("src/rt/gpu_sdl3vk/psp_tnl_vert.inc", 0x09E6809E, 1,
+            "the GE_POW_EL word above as a SPIR-V constant in the embedded T&L shader, "
+            "which carries the same ge_powf tables as ge.c"),
 )
 
 _HEX = re.compile(r"\b0[xX]([0-9a-fA-F]+)[uUlL]*\b")
