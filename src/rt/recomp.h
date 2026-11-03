@@ -1132,12 +1132,20 @@ void sr_vwrite(CpuState *s, const uint8_t *idx, float *d, int n, uint32_t dprefi
  * generated code and sr_vfpu_interp, each compiled on its own, kept different NaNs when
  * two met (the alias-edge sweep in tests/native/vfpu_interp_selftest.c, built at -O1 or
  * -O2). Both lanes call these helpers for every lane operation of vadd, vsub, vmul, vdiv,
- * vscl, vdot, vhdp, vcrs, vcrsp, vqmul, vmmul, vtfm and vmscl. The rule is the one x86-64
- * SSE applies in source order, so -O0 results on x86-64 are unchanged: the first NaN
+ * vscl, vdot, vhdp, vcrs, vcrsp, vqmul, vmmul, vtfm and vmscl. The rule: the first NaN
  * operand, quieted, else the invalid-operation NaN 0xFFC00000 (Inf - Inf, 0 * Inf, 0 / 0,
- * Inf / Inf). It is project semantics, not PSP evidence: the PSP's NaN word for these
- * forms is unmeasured or contested (docs/HARDWARE_ORACLE.md, PSP-GE-001 and the issue #40
- * fixture fixtures/vfpu_nan_payload/vfpu_nan_cases.h disagree). */
+ * Inf / Inf). That is what x86-64 SSE returns for the operands in source order, but it is a
+ * change for default builds too: even at -O0 (RECOMP_OPT, the Makefile default) GCC may
+ * evaluate a plain + or * with its operands swapped, as MSYS2 GCC 16.2 does for the old
+ * vadd and vmul lane loops, so NaN-with-NaN lanes of vadd, vmul, vcrsp and vqmul now keep
+ * the first source where they used to keep the second. Results without a NaN are unchanged.
+ * It is project semantics, not PSP evidence: the PSP's NaN word for these forms is
+ * unmeasured or contested. docs/HARDWARE_ORACLE.md PSP-GE-001 and the issue #40 fixture
+ * fixtures/vfpu_nan_payload/vfpu_nan_cases.h disagree, and the dot-product adder measured
+ * as PSP-VFPU-FUNNEL-001 (vfpu_dot_bits in vfpu_interp.c, used by vfad and vavg) returns
+ * the fixed 0x7F800001 for any NaN operand, which this rule for vdot does not follow.
+ * At -O0 GCC does not inline these static inline helpers, so an ad-hoc build makes one
+ * call per lane operation; package builds (-O1, PACKAGE_RECOMP_OPT) inline them. */
 static inline float sr_vf_nan(float a, float b) {
     uint32_t u;
     float r;

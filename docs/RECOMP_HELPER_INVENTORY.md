@@ -37,7 +37,7 @@ does not make this file stale. `--details` prints them to stdout.
 ## Summary
 
 - helpers: **448** (declared in `recomp.h`: 383)
-- reach class: emitter-reached 80, production-runtime-only 332, selftest-only 18, address-only 7, none 11
+- reach class: emitter-reached 81, production-runtime-only 331, selftest-only 18, address-only 7, none 11
 - provenance class of the home definition: declared-only 1, project_authored_attested 34, upstream_derived 413
 
 ## Helpers
@@ -451,7 +451,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_verify_note_preempt` | `rt/verify.c` | yes | production-runtime-only | `rt/verify.c`: project_authored_attested |
 | `sr_verify_report_now` | `rt/verify.c` | yes | production-runtime-only | `rt/verify.c`: project_authored_attested |
 | `sr_vf_add` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
-| `sr_vf_div` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
+| `sr_vf_div` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
 | `sr_vf_mul` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
 | `sr_vf_nan` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vf_sub` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |

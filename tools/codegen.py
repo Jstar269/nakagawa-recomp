@@ -1858,8 +1858,9 @@ def _vf_chain(terms):
     sign, i, j = terms[0]
     acc = f"sr_vf_mul({'-' if sign < 0 else ''}_s[{i}],_t[{j}])"
     for sign, i, j in terms[1:]:
-        helper = "sr_vf_add" if sign > 0 else "sr_vf_sub"
-        acc = f"{helper}({acc},sr_vf_mul(_s[{i}],_t[{j}]))"
+        # Each helper is written as a call literal so tools/recomp_helper_inventory.py sees it.
+        call = "sr_vf_add(" if sign > 0 else "sr_vf_sub("
+        acc = f"{call}{acc},sr_vf_mul(_s[{i}],_t[{j}]))"
     return acc
 
 
@@ -2311,12 +2312,13 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         return "{ " + " ".join(lines) + " }", None, 0
     if (op == 0x18 and sub in (0, 1, 7)) or (op == 0x19 and sub == 0):
         ti = vreg_indices(vt, n)
-        oper = {(0x18, 0): "sr_vf_add", (0x18, 1): "sr_vf_sub", (0x18, 7): "sr_vf_div",
-                (0x19, 0): "sr_vf_mul"}[(op, sub)]
+        # Call literals, so tools/recomp_helper_inventory.py sees every helper the emitter writes.
+        call = {(0x18, 0): "sr_vf_add(", (0x18, 1): "sr_vf_sub(", (0x18, 7): "sr_vf_div(",
+                (0x19, 0): "sr_vf_mul("}[(op, sub)]
         body = (f"float _s[4],_t[4],_d[4]; "
                 f"sr_vread(_s,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                 f"sr_vread(_t,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                f"for(int _i=0;_i<{n};_i++) _d[_i]={oper}(_s[_i],_t[_i]); "
+                f"for(int _i=0;_i<{n};_i++) _d[_i]={call}_s[_i],_t[_i]); "
                 + _nanv(addr, _BINOP_NAME[(op, sub)], vd, "_d", n, "_s", n, "_t", n)
                 + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
         return "{ " + body + " }", None, 0
