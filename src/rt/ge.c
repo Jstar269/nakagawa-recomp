@@ -2057,6 +2057,42 @@ static void tex_decode_host_begin(const TexLevel *t) {
 }
 static void tex_decode_host_end(void) { s_tex_host = NULL; }
 
+/* A CLUT4/CLUT8 level read through the host pointer: each palette entry is expanded once
+ * by clut_lookup, then every texel is its entry, at the address texel_offset gives the
+ * per-texel sampler. tex_coord leaves an in-range coordinate of a power-of-two level as it
+ * is, so the texels are the sampler's. Returns 0 when the per-texel path must run. */
+static int tex_decode_clut_fast(const TexLevel *t, uint32_t *out) {
+    if (!s_tex_host || (ge.tex_fmt != 4u && ge.tex_fmt != 5u) || s_stat_on > 0) return 0;
+    if (t->w <= 0 || t->h <= 0 || t->w > 512 || t->h > 512 ||
+        (t->w & (t->w - 1)) || (t->h & (t->h - 1)))
+        return 0;
+    const uint32_t entries = ge.tex_fmt == 5u ? 256u : 16u;
+    uint32_t pal[256];
+    uint8_t lit[256];
+    for (uint32_t i = 0; i < entries; i++) {
+        int r, g, b, a;
+        clut_lookup(i, &r, &g, &b, &a);
+        pal[i] = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
+                 ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(a & 0xFF) << 24);
+        lit[i] = (r | g | b) != 0;
+    }
+    const uint32_t stride = t->bufw ? t->bufw : (uint32_t)t->w;
+    const uint32_t bits = ge.tex_fmt == 5u ? 8u : 4u;
+    unsigned long nonzero = 0;
+    for (uint32_t v = 0; v < (uint32_t)t->h; v++) {
+        uint32_t *row = out + v * (uint32_t)t->w;
+        for (uint32_t u = 0; u < (uint32_t)t->w; u++) {
+            const uint8_t byte = s_tex_host[t->addr + texel_offset(stride, u, v, bits) - s_tex_host_addr];
+            const uint32_t idx = bits == 8u ? byte : ((u & 1u) ? (uint32_t)(byte >> 4) : (uint32_t)(byte & 0xFu));
+            row[u] = pal[idx];
+            nonzero += lit[idx];
+        }
+    }
+    g_tex_samples += (unsigned long)t->w * (unsigned long)t->h;
+    g_tex_nonzero += nonzero;
+    return 1;
+}
+
 static void sample_tex_level(const TexLevel *t, int tu, int tv, int *r, int *g, int *b, int *a) {
     g_tex_samples++;
     if (t->w > 0) {
@@ -2350,6 +2386,7 @@ void ge_decode_tex_rgba(uint32_t *out) {
     }
     TexLevel level0 = tex_level(0u);
     tex_decode_host_begin(&level0);
+    if (tex_decode_clut_fast(&level0, out)) { tex_decode_host_end(); return; }
     for (int v = 0; v < ge.tex_h; v++)
         for (int u = 0; u < ge.tex_w; u++) {
             int r, g, b, a;
@@ -2365,6 +2402,7 @@ void ge_decode_tex_rgba(uint32_t *out) {
 void ge_decode_tex_level_rgba(uint32_t level, uint32_t *out) {
     TexLevel t = tex_level(level);
     tex_decode_host_begin(&t);
+    if (tex_decode_clut_fast(&t, out)) { tex_decode_host_end(); return; }
     for (int v = 0; v < t.h; v++)
         for (int u = 0; u < t.w; u++) {
             int r, g, b, a;

@@ -25812,19 +25812,23 @@ static void test_ge_block_transfer_span_atomicity(void) {
         }
         expect(clut_views_ok, "LOADCLUT through each VRAM view loads the words that view reads");
 
-        /* A swizzled CLUT4/CLUT8 texture decodes the same through RAM, the 0x040 and 0x044
-         * views (host pointer) and the swizzled 0x042 view (scalar loads). */
+        /* A CLUT4/CLUT8 texture, swizzled or linear, under a plain and a shifted, masked and
+         * offset palette, decodes the same through RAM, the 0x040 and 0x044 views (host
+         * pointer, one palette expansion per decode) and the swizzled 0x042 view (the
+         * per-texel sampler with scalar loads). */
         static uint32_t tex_ref[32u * 16u], tex_out[32u * 16u];
         const uint32_t tex_views[4] = { 0x04202000u, 0x08310000u, 0x04004000u, 0x04406000u };
+        const uint32_t clut_fmts[2] = { 3u | (0xffu << 8), 3u | (1u << 2) | (0x7fu << 8) | (1u << 16) };
         for (uint32_t i = 0; i < sizeof(state->clutram); i += 4u) {
             const uint32_t entry = 0xff000000u | (i * 0x00010203u);
             memcpy(&state->clutram[i], &entry, 4u);
         }
-        state->clut_fmt = 3u | (0xffu << 8);
         int tex_views_ok = 1;
-        for (uint32_t fmt = 4u; fmt <= 5u; fmt++) {
+        for (uint32_t combo = 0; combo < 8u; combo++) {
+            const uint32_t fmt = 4u + (combo & 1u);
             state->tex_fmt = fmt;
-            state->tex_swizzle = 1;
+            state->tex_swizzle = (int)((combo >> 1) & 1u);
+            state->clut_fmt = clut_fmts[combo >> 2];
             state->tex_bufw = 32u;
             state->tex_w = 32;
             state->tex_h = 16;
@@ -25835,6 +25839,14 @@ static void test_ge_block_transfer_span_atomicity(void) {
                 memset(view ? tex_out : tex_ref, 0, sizeof(tex_ref));
                 ge_decode_tex_rgba(view ? tex_out : tex_ref);
                 if (view && memcmp(tex_out, tex_ref, sizeof(tex_ref)) != 0) tex_views_ok = 0;
+                /* The same texels as mip level 1 take the level decode. */
+                state->tex_mip_addr[0] = tex_views[view];
+                state->tex_mip_bufw[0] = 32u;
+                state->tex_mip_wlog2[0] = 5u;
+                state->tex_mip_hlog2[0] = 4u;
+                memset(tex_out, 0, sizeof(tex_out));
+                ge_decode_tex_level_rgba(1u, tex_out);
+                if (memcmp(tex_out, tex_ref, sizeof(tex_ref)) != 0) tex_views_ok = 0;
             }
             int nonzero = 0;
             for (uint32_t i = 0; i < 32u * 16u; i++) nonzero |= tex_ref[i] != 0xff000000u;
@@ -25842,7 +25854,7 @@ static void test_ge_block_transfer_span_atomicity(void) {
         }
         state->tex_swizzle = 0;
         expect(tex_views_ok,
-               "a swizzled CLUT texture decodes the same from RAM and from each VRAM view");
+               "a CLUT texture decodes the same from RAM and from each VRAM view");
 
         /* The linear 16-bit level-0 decode expands a row at a time; the per-texel sampler
          * (here as mip level 1 over the same texels) is the reference, for every value. */
