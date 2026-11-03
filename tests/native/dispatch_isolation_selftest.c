@@ -323,22 +323,22 @@ static const SrModuleFunc k_module_b_funcs[] = {
 static const SrModuleSpan k_module_spans[] = { { 0x00u, 0x60u } };
 static const SrModuleCode k_module_a = {
     "overlay_a.prx", 0x200u, NULL, 0x00u, 0x100u, 0x10u, 1u, NULL, &g_module_a_base,
-    k_module_a_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u,
+    k_module_a_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 static const SrModuleCode k_module_b = {
     "overlay_b.prx", 0x300u, NULL, 0x00u, 0x200u, 0x10u, 1u, NULL, &g_module_b_base,
-    k_module_b_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u,
+    k_module_b_funcs, 2u, k_module_spans, 1u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 static const SrModuleFunc k_module_fixed_funcs[] = { { MODULE_FIXED_LINK, 2u, module_a_entry } };
 static const SrModuleSpan k_module_fixed_spans[] = { { MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x20u } };
 static const SrModuleCode k_module_fixed = {
     "fixed.prx", 0x80u, NULL, MODULE_FIXED_LINK, MODULE_FIXED_LINK + 0x40u, 0x4u, 0u, NULL,
-    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u, NULL, 0u,
+    &g_module_fixed_base, k_module_fixed_funcs, 1u, k_module_fixed_spans, 1u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 static const SrModuleCode k_module_unsupported = {
     "untranslatable.prx", 0x80u, NULL, 0x00u, 0x40u, 0x4u, 1u,
     "relocations cannot be translated: synthetic", &g_module_fixed_base,
-    NULL, 0u, NULL, 0u, 0u, 0u, NULL, 0u,
+    NULL, 0u, NULL, 0u, 0u, 0u, NULL, 0u, NULL, 0u,
 };
 
 /* Two code overlays translated for the same link range. Each is bound only while guest
@@ -361,11 +361,11 @@ static const SrModuleFunc k_overlay_b_funcs[] = { { OVERLAY_ENTRY, 4u, overlay_b
 static const SrModuleSpan k_overlay_spans[] = { { OVERLAY_ENTRY, OVERLAY_LINK + 0x70u } };
 static SrModuleCode k_overlay_a = {
     "A.ovl", OVERLAY_CHECK_BYTES, NULL, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
-    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u,
+    &g_overlay_a_base, k_overlay_a_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u, NULL, 0u,
 };
 static SrModuleCode k_overlay_b = {
     "B.ovl", OVERLAY_CHECK_BYTES, NULL, OVERLAY_LINK, OVERLAY_LINK + 0x80u, 0x4u, 0u, NULL,
-    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u,
+    &g_overlay_b_base, k_overlay_b_funcs, 1u, k_overlay_spans, 1u, OVERLAY_CHECK_BYTES, 0u, NULL, 0u, NULL, 0u,
 };
 
 static uint32_t overlay_word(uint32_t tag, uint32_t off) { return tag | off; }
@@ -437,6 +437,95 @@ static void test_code_overlays_follow_guest_memory(void) {
           "loading another overlay over the range swaps the binding");
     Probe b = probe(OVERLAY_ENTRY, PROBE_PC, PROBE_RA);
     CHECK(b.body_ran && b.v0 == 0x0bu, "the newly bound overlay's translation runs");
+
+    sr_module_code_reset();
+}
+
+/* A fixed-address ELF overlay mixes code and data in one segment, so its identity is a
+ * list of code ranges (overlay_check_spans) with data between them, not leading bytes. */
+#define MIXED_LINK      0x08B20000u
+#define MIXED_FIRST     MIXED_LINK
+#define MIXED_DATA      (MIXED_LINK + 0x10u)
+#define MIXED_SECOND    (MIXED_LINK + 0x20u)
+#define MIXED_CHECK_LEN 0x20u
+
+static uint32_t g_mixed_base;
+static void mixed_body(CpuState *s) { g_body_hits++; s->r[2] = 0x0cu; s->pc = s->r[31]; }
+static const SrModuleFunc k_mixed_funcs[] = {
+    { MIXED_FIRST, 4u, mixed_body }, { MIXED_SECOND, 4u, mixed_body },
+};
+/* Codegen gives the module its analysed code as spans and checks its translated words;
+ * here both are the two functions. */
+static const SrModuleSpan k_mixed_check_spans[] = {
+    { MIXED_FIRST, MIXED_FIRST + 0x10u }, { MIXED_SECOND, MIXED_SECOND + 0x10u },
+};
+static SrModuleCode k_mixed = {
+    "OVL_MIXED.ELF", 0x100u, NULL, MIXED_LINK, MIXED_LINK + 0x40u, 0x4u, 0u, NULL,
+    &g_mixed_base, k_mixed_funcs, 2u, k_mixed_check_spans, 2u, MIXED_CHECK_LEN, 0u, NULL, 0u,
+    k_mixed_check_spans, 2u,
+};
+
+static uint32_t mixed_word(uint32_t address) { return 0x27bd0000u | (address & 0xffffu); }
+
+static void write_mixed_image(void) {
+    for (uint32_t address = MIXED_LINK; address < MIXED_LINK + 0x40u; address += 4u)
+        MEM_W32(address, mixed_word(address));
+}
+
+static uint64_t mixed_digest(void) {
+    unsigned char bytes[MIXED_CHECK_LEN];
+    size_t n = 0;
+    for (unsigned i = 0; i < 2u; i++) {
+        for (uint32_t address = k_mixed_check_spans[i].start;
+             address < k_mixed_check_spans[i].end; address += 4u) {
+            uint32_t word = mixed_word(address);
+            for (unsigned b = 0; b < 4u; b++) bytes[n++] = (unsigned char)(word >> (8u * b));
+        }
+    }
+    return sr_module_code_fnv1a64(bytes, n);
+}
+
+static void test_mixed_overlay_is_identified_by_its_code_ranges(void) {
+    sr_module_code_reset();
+    sr_exec_span_reset();
+    k_mixed.overlay_check_fnv1a64 = mixed_digest();
+    sr_module_code_register(&k_mixed);
+
+    write_mixed_image();
+    MEM_W32(MIXED_SECOND + 4u, 0u);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
+              !sr_module_code_is_bound(&k_mixed, NULL),
+          "a mixed overlay whose second code range differs is not bound");
+
+    write_mixed_image();
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 1u &&
+              sr_module_code_is_bound(&k_mixed, NULL),
+          "a mixed overlay whose code ranges are all in memory is bound");
+    Probe bound = probe(MIXED_SECOND, PROBE_PC, PROBE_RA);
+    CHECK(bound.body_ran && bound.v0 == 0x0cu, "the bound mixed overlay's translation runs");
+
+    MEM_W32(MIXED_DATA, 0x24020077u);       /* data that decodes as addiu v0, zero, 0x77 */
+    MEM_W32(MIXED_DATA + 4u, 0x03e00008u);  /* jr ra */
+    MEM_W32(MIXED_DATA + 8u, 0x00000000u);  /* nop */
+    MEM_W32(MIXED_LINK + 0x30u, 0xfeedfaceu);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 0u &&
+              sr_module_code_is_bound(&k_mixed, NULL),
+          "writes to the data between and after its code ranges keep it bound");
+
+    /* Its spans are the analysed code only: a jump into the data is a miss, never an
+     * interpretation of the data words. */
+    own_synthetic_aot_word(PROBE_RA);
+    sr_register(PROBE_RA, interp_handoff_body);
+    g_interp_handoff_hits = 0;
+    Probe into_data = probe(MIXED_DATA, PROBE_PC, PROBE_RA);
+    CHECK(!into_data.body_ran && into_data.dispatch_result < 0 && g_interp_handoff_hits == 0,
+          "a jump into a bound mixed overlay's data misses instead of being interpreted "
+          "(result %d, handoffs %d)", into_data.dispatch_result, g_interp_handoff_hits);
+
+    MEM_W32(MIXED_FIRST + 8u, 0u);
+    CHECK(sr_module_code_sync_overlays(0u, 0xffffffffu) == 1u &&
+              !sr_module_code_is_bound(&k_mixed, NULL),
+          "a write to a code range unbinds it");
 
     sr_module_code_reset();
 }
@@ -2303,6 +2392,7 @@ int main(int argc, char **argv) {
     test_historical_call_target_fails_at_named_boundary();
     test_runtime_module_binding_is_the_authority_for_its_range();
     test_code_overlays_follow_guest_memory();
+    test_mixed_overlay_is_identified_by_its_code_ranges();
     test_late_import_retirement_is_visible_after_warm_dispatch();
     test_historical_target_shapes_fail_closed();
     test_diagnostic_exact_hooks_never_consume();

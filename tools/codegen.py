@@ -36,8 +36,9 @@ import build_profile
 from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans, span_index,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
-    code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
-    static_coverage, branch_kind, BRANCH_UNCOND, _gpr_writes,
+    check_code_overlay, code_overlay_elf, code_overlay_layout, data_section_words,
+    is_code_overlay, is_fixed_overlay, static_coverage, branch_kind, BRANCH_UNCOND,
+    _gpr_writes,
 )
 from codegen_hst_stubs import HST_CUSTOM_STUBS, HST_GAME_LOOP_ADDR, HST_GAME_LOOP_WRAPPER
 from host_stubs import HST_SIMPLE_STUBS
@@ -3853,6 +3854,12 @@ class RuntimeModuleTranslation:
     # A code overlay (analyze.code_overlay_layout) is bound when guest memory holds these
     # leading bytes of the file (its header and text), not when the game loads a module.
     overlay_check_len: int = 0
+    # Non-empty: the check covers these (start, end) link ranges, in order, instead of
+    # leading bytes; a fixed-address ELF overlay, whose check is its translated words.
+    overlay_check_spans: tuple = ()
+    # A fixed-address ELF overlay: the addresses its code materializes with no evidence that
+    # they are code, left outside the spans (analyze._seed_materialized_code).
+    code_candidates: tuple = ()
     # analyze.static_coverage of the module's own link space (None when untranslatable).
     coverage: dict | None = None
     overlay_check_fnv1a64: int = 0
@@ -3944,6 +3951,17 @@ def var_import_table_lines(name, imports):
     return lines
 
 
+def word_runs(addresses):
+    """The word addresses as merged (start, end) runs of contiguous words, in order."""
+    runs = []
+    for address in sorted(addresses):
+        if runs and runs[-1][1] == address:
+            runs[-1][1] = address + 4
+        else:
+            runs.append([address, address + 4])
+    return [(lo, hi) for lo, hi in runs]
+
+
 def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
                              entry_hints=None):
     """Translate one runtime-placed module in its own link space.
@@ -3964,16 +3982,20 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         texts=[], functions=[], spans=[], stubbed=[], shared=shared,
     )
     sys.stderr.write(f"Processing runtime-placed module: {name}\n")
-    if is_code_overlay(data):
+    overlay = is_code_overlay(data)
+    fixed_overlay = is_fixed_overlay(data)
+    if overlay:
         # The analysis reads a code overlay through its fixed-address ELF image; the
         # descriptor keeps the file's own identity and the bytes that identify it in memory.
         try:
-            layout = code_overlay_layout(data)
+            check_code_overlay(data)
         except ValueError as exc:
             module.unsupported_reason = f"code overlay cannot be translated: {exc}"
             return module
-        module.overlay_check_len = layout.check_bytes
-        module.overlay_check_fnv1a64 = fnv1a64(data[:layout.check_bytes])
+        if not fixed_overlay:
+            layout = code_overlay_layout(data)
+            module.overlay_check_len = layout.check_bytes
+            module.overlay_check_fnv1a64 = fnv1a64(data[:layout.check_bytes])
         data = code_overlay_elf(data)
     try:
         relocations = prx_reloc_model.model_relocations(data, name)
@@ -3995,10 +4017,12 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         module.unsupported_reason = f"module image cannot be laid out: {exc}"
         return module
     ranges = exec_ranges(elf)
+    discovery = {}
     try:
         # A code overlay's entry points are held by the executable (entry_hints).
         analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
-                              entry_hints=entry_hints if module.overlay_check_len else None)
+                              entry_hints=entry_hints if overlay else None,
+                              mixed_code_data=fixed_overlay, report=discovery)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1
@@ -4034,6 +4058,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     space = AddressSpace(base_symbol=module.base_symbol, prefix=module.prefix,
                          relocations=relocations, patched=var_sites)
     spans = span_index(ranges)
+    translated_words = set()
     previous_space = ADDRESS_SPACE
     ADDRESS_SPACE = space
     try:
@@ -4054,6 +4079,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
                     text = "\n".join(emit_function(elf, a, spans, known, profile=profile,
                                                    flow=flow))
                     nwords = len(head_run_words(elf, a, flow[0]))
+                    translated_words.update(flow[0])
                 except Unsupported as exc:
                     reason = str(exc).replace('"', "'")
                     text = (f"void {space.symbol(a)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
@@ -4066,6 +4092,29 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
     finally:
         ADDRESS_SPACE = previous_space
     module.spans = sorted(set((lo, hi) for lo, hi in ranges if hi > lo))
+    if fixed_overlay:
+        # Its file mixes code and data in one segment, so no leading run of bytes is code
+        # only. The identity is every word a translation was emitted for, in address order,
+        # so no translated body can run over words that differ from the file. Interpreter
+        # authority is the analysed code alone (the traced words, the stubbed functions'
+        # included, and the translated ones): a jump into the data is a named miss.
+        module.overlay_check_spans = tuple(word_runs(translated_words))
+        words = b"".join(elf.read_at_vaddr(lo, hi - lo) for lo, hi in module.overlay_check_spans)
+        module.overlay_check_len = len(words)
+        module.overlay_check_fnv1a64 = fnv1a64(words)
+        code = {a for a in set(discovery.get("covered", ())) | translated_words | known
+                if in_ranges(a, ranges)}
+        module.spans = word_runs(code)
+        # An address its traced code materializes but never calls or jumps to may be data
+        # (analyze._seed_materialized_code): it has no executable authority and is not part
+        # of the identity, so a call to it is a named miss. Name each one here.
+        module.code_candidates = tuple(sorted(
+            a for a in discovery.get("code_candidates", ()) if not in_ranges(a, module.spans)))
+        for a in module.code_candidates:
+            sys.stderr.write(f"codegen: {name}@0x{a:08x}: materialized address with no "
+                             "evidence it is code; outside the spans\n")
+        if not words:
+            module.unsupported_reason = "code overlay has no translated code to identify it"
     module_stubbed = {a for a, _ in module.stubbed}
     module.coverage = static_coverage(
         elf, ranges, known,
@@ -4436,6 +4485,13 @@ def runtime_module_descriptor_lines(module):
     if module.var_imports:
         var_imports = f"sr_m{k}_var_imports"
         lines.extend(var_import_table_lines(var_imports, module.var_imports))
+    check_spans = "NULL"
+    if module.overlay_check_spans:
+        check_spans = f"sr_m{k}_check_spans"
+        lines.append(f"static const SrModuleSpan sr_m{k}_check_spans[] = {{")
+        lines.extend(f"    {{ 0x{lo:08x}u, 0x{hi:08x}u }},"
+                     for lo, hi in module.overlay_check_spans)
+        lines.append("};")
     reason = c_string(module.unsupported_reason) if module.unsupported_reason else "NULL"
     lines += [
         f"static const SrModuleCode sr_m{k}_code = {{",
@@ -4445,7 +4501,8 @@ def runtime_module_descriptor_lines(module):
         f"    {reason}, &{module.base_symbol},",
         f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u,",
         f"    0x{module.overlay_check_len:08x}u, 0x{module.overlay_check_fnv1a64:016x}ull,",
-        f"    {var_imports}, {len(module.var_imports)}u",
+        f"    {var_imports}, {len(module.var_imports)}u, "
+        f"{check_spans}, {len(module.overlay_check_spans)}u",
         "};",
         "",
     ]
