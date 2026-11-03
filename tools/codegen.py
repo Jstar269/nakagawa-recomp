@@ -18,6 +18,7 @@ import argparse
 import bisect
 import contextlib
 import dataclasses
+import hashlib
 import struct
 import re
 import os
@@ -3696,6 +3697,9 @@ class RuntimeModuleTranslation:
     index: int
     name: str
     file_size: int
+    # The identity the loader checks. The FNV-1a digest only names shared units and symbols,
+    # where modules that agree on it are told apart by module_hashes.
+    file_sha256: str
     file_fnv1a64: int
     link_low: int = 0
     link_high: int = 0
@@ -3815,7 +3819,8 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         data = source.read()
     name = os.path.basename(module_path)
     module = RuntimeModuleTranslation(
-        index=index, name=name, file_size=len(data), file_fnv1a64=fnv1a64(data),
+        index=index, name=name, file_size=len(data),
+        file_sha256=hashlib.sha256(data).hexdigest(), file_fnv1a64=fnv1a64(data),
         texts=[], functions=[], spans=[], stubbed=[], shared=shared,
     )
     sys.stderr.write(f"Processing runtime-placed module: {name}\n")
@@ -4294,7 +4299,7 @@ def runtime_module_descriptor_lines(module):
     reason = c_string(module.unsupported_reason) if module.unsupported_reason else "NULL"
     lines += [
         f"static const SrModuleCode sr_m{k}_code = {{",
-        f"    {c_string(module.name)}, 0x{module.file_size:08x}u, 0x{module.file_fnv1a64:016x}ull,",
+        f"    {c_string(module.name)}, 0x{module.file_size:08x}u, \"{module.file_sha256}\",",
         f"    0x{module.link_low:08x}u, 0x{module.link_high:08x}u, 0x{module.alignment:x}u, "
         f"{1 if module.relocatable else 0}u,",
         f"    {reason}, &{module.base_symbol},",
