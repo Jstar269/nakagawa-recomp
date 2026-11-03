@@ -166,8 +166,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "an interpreted body called by a linked call hands its live frame to a native "
         "piece and owes its caller nothing (#1935)",
         [(
-            "            const int owes = boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&\n",
-            "            const int owes = 0 && boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&\n",
+            "            const int owes = boundary->owes_entry_sp && !loaded_sp &&\n",
+            "            const int owes = 0 && boundary->owes_entry_sp && !loaded_sp &&\n",
             1,
         )],
     ),
@@ -667,8 +667,8 @@ LLVM_MUTANTS: tuple[Mutant, ...] = (
         "llvm-wrong-call-resume",
         "LLVM BACKEND: a dispatched jalr CALL names the wrong resume PC",
         [(
-            '                self.call("dispatch_call", self.s, latched, link_value)\n',
-            '                self.call("dispatch_call", self.s, latched, self.c32((t.addr + 12) & 0xFFFFFFFF))\n',
+            '                self.checked_dispatch_call(latched, link_value)\n',
+            '                self.checked_dispatch_call(latched, self.c32((t.addr + 12) & 0xFFFFFFFF))\n',
             1,
         )],
         target="llvm-backend",
