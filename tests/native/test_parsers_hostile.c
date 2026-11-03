@@ -698,6 +698,41 @@ static void test_hostile_iso_parser(const char *test_dir) {
     /* MUST be rejected with NK_ERROR_INVALID_ISO */
     assert(nk_iso_inspect(fpath, &meta) == NK_ERROR_INVALID_ISO);
 
+    /* 6b. A record's fields and identifier lie inside the record (ECMA-119 9.1). The identifier
+     * below runs past its record's end, so read as a name it is bytes of the next record. */
+    printf("[HOSTILE_TEST] Subtest 6b: directory identifier past its record\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%cname_past_record.iso", test_dir, nk_platform_path_separator());
+    uint8_t short_iso[20 * 2048];
+    memset(short_iso, 0, sizeof(short_iso));
+    uint8_t *pvd_short = &short_iso[16 * 2048];
+    pvd_short[0] = 0x01;
+    memcpy(&pvd_short[1], "CD001", 5);
+    memcpy(&pvd_short[40], "SHORT_RECORD_VOL                ", 32);
+    write_dir_record(pvd_short, 156, "\0", 1, 17, 2048, true);
+    write_dir_record(&short_iso[17 * 2048], 0, "PSP_GAME", 8, 18, 2048, true);
+    short_iso[17 * 2048] = 34;
+    write_test_file(fpath, short_iso, sizeof(short_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath, &meta) == NK_ERROR_INVALID_ISO);
+    assert(!meta.has_psp_game_folder);
+    assert(nk_iso_extract_file(fpath, "PSP_GAME", out_file) == NK_ERROR_INVALID_ISO);
+
+    /* The same rule inside PSP_GAME, where PARAM.SFO is found. */
+    write_dir_record(&short_iso[17 * 2048], 0, "PSP_GAME", 8, 18, 2048, true);
+    write_dir_record(&short_iso[18 * 2048], 0, "PARAM.SFO;1", 11, 19, 100, false);
+    short_iso[18 * 2048] = 34;
+    write_test_file(fpath, short_iso, sizeof(short_iso));
+    memset(&meta, 0, sizeof(meta));
+    assert(nk_iso_inspect(fpath, &meta) == NK_ERROR_INVALID_ISO);
+
+    /* A one-byte record in the last byte of the directory: its fields would lie past the
+     * allocation, which the sanitizer legs of fuzz-parsers and this test see as an overread. */
+    memset(&short_iso[17 * 2048], 0, 2048);
+    fill_dir_chain(&short_iso[17 * 2048], 2047);
+    short_iso[17 * 2048 + 2047] = 1;
+    write_test_file(fpath, short_iso, sizeof(short_iso));
+    assert(nk_iso_inspect(fpath, &meta) == NK_ERROR_INVALID_ISO);
+
     /* 7. Both-endian disagreement (ECMA-119 7.3.3) */
     printf("[HOSTILE_TEST] Subtest 7: both-endian disagreement\n"); fflush(stdout);
     snprintf(fpath, sizeof(fpath), "%s%cendian_disagree.iso", test_dir, nk_platform_path_separator());
@@ -801,6 +836,7 @@ static void test_hostile_iso_parser(const char *test_dir) {
     pad_iso[17 * 2048 + 2000] = 0; /* padding */
     /* In sector 18 (offset 18*2048), put valid record */
     pad_iso[18 * 2048 + 0] = 34;
+    pad_iso[18 * 2048 + 32] = 1;
     write_test_file(fpath_pad, pad_iso, sizeof(pad_iso));
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath_pad, &meta) == NK_OK);
@@ -810,6 +846,7 @@ static void test_hostile_iso_parser(const char *test_dir) {
     snprintf(fpath_edge, sizeof(fpath_edge), "%s%csector_edge.iso", test_dir, nk_platform_path_separator());
     fill_dir_chain(&pad_iso[17 * 2048], 2000);
     pad_iso[17 * 2048 + 2000] = 48; /* 2000 + 48 = 2048 (exact edge) */
+    pad_iso[17 * 2048 + 2000 + 32] = 1;
     write_test_file(fpath_edge, pad_iso, sizeof(pad_iso));
     memset(&meta, 0, sizeof(meta));
     assert(nk_iso_inspect(fpath_edge, &meta) == NK_OK);

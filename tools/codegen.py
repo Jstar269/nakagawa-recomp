@@ -18,6 +18,7 @@ import argparse
 import bisect
 import contextlib
 import dataclasses
+import hashlib
 import struct
 import re
 import os
@@ -177,6 +178,18 @@ def _enhancement_rewrite(addr: int) -> dict | None:
     return site["rewrite"]
 
 
+def _refuse_argument_site_on_a_loop(entry: int) -> None:
+    """An argument_x2 site doubles once per call: a branch back to its entry would double again."""
+    if not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
+        return
+    site = ENHANCEMENT_SITES.get(entry)
+    if site is not None and site["rewrite"]["kind"] == "scale_int_args":
+        raise enhancement_package.EnhancementPackageError(
+            f"site {site['id']}: argument_x2 doubles once per call, and this function "
+            "branches back to its entry (fail-closed refusal)"
+        )
+
+
 def _enhancement_boundary(addr: int) -> bool:
     """Whether ``addr`` is the package's update boundary; the caller emits its count."""
     if ENHANCEMENT_UPDATE_BOUNDARY is None or ADDRESS_SPACE.runtime_module:
@@ -211,6 +224,8 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
         enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
     elif kind == "scale_int_reg":
         enh = f"{stock_line.strip()} s->r[{rw['reg']}] <<= 1;"
+    elif kind == "scale_int_args":
+        enh = " ".join([stock_line.strip()] + [f"s->r[{r}] <<= 1;" for r in rw["regs"]])
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
     elif kind == "scale_f_store":
@@ -3136,6 +3151,8 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     if not resumable and guest_owns_entry_sp(elf, insns):
         resumable = True
         GUEST_SP_ENTRIES.add(start)
+    if start in labels:
+        _refuse_argument_site_on_a_loop(start)
     for label in labels:
         # A label on the delay slot of a transfer that never falls through runs the slot
         # as an ordinary word; when that word goes on to the next one, the walk owns that
@@ -3558,6 +3575,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+            if target == start:
+                # A `j` to the entry is a tail edge, not a label, so the check on labels
+                # above misses it; it enters the entry again and would double again.
+                _refuse_argument_site_on_a_loop(start)
             if target == addr:
                 # Self-loop (a spin wait): the native call below would recurse on the host
                 # stack once per iteration. Keep it a backward goto with the preemption point.
@@ -3696,6 +3717,9 @@ class RuntimeModuleTranslation:
     index: int
     name: str
     file_size: int
+    # The identity the loader checks. The FNV-1a digest only names shared units and symbols,
+    # where modules that agree on it are told apart by module_hashes.
+    file_sha256: str
     file_fnv1a64: int
     link_low: int = 0
     link_high: int = 0
@@ -3815,7 +3839,8 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         data = source.read()
     name = os.path.basename(module_path)
     module = RuntimeModuleTranslation(
-        index=index, name=name, file_size=len(data), file_fnv1a64=fnv1a64(data),
+        index=index, name=name, file_size=len(data),
+        file_sha256=hashlib.sha256(data).hexdigest(), file_fnv1a64=fnv1a64(data),
         texts=[], functions=[], spans=[], stubbed=[], shared=shared,
     )
     sys.stderr.write(f"Processing runtime-placed module: {name}\n")
@@ -4294,7 +4319,7 @@ def runtime_module_descriptor_lines(module):
     reason = c_string(module.unsupported_reason) if module.unsupported_reason else "NULL"
     lines += [
         f"static const SrModuleCode sr_m{k}_code = {{",
-        f"    {c_string(module.name)}, 0x{module.file_size:08x}u, 0x{module.file_fnv1a64:016x}ull,",
+        f"    {c_string(module.name)}, 0x{module.file_size:08x}u, \"{module.file_sha256}\",",
         f"    0x{module.link_low:08x}u, 0x{module.link_high:08x}u, 0x{module.alignment:x}u, "
         f"{1 if module.relocatable else 0}u,",
         f"    {reason}, &{module.base_symbol},",

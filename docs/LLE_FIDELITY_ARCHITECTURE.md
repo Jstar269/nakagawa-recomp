@@ -102,7 +102,7 @@ ahead of time without a load address and laid out only when the game loads it
   link space: every guest address of its image is `sr_m<k>_base + link`, an
   immediate the loader relocates (LO16/HI16) is read from the loaded image, and the
   module's functions are reachable only through its `SrModuleCode` descriptor,
-  which records the identity (size and FNV-1a digest) of the translated file.
+  which records the identity (size and SHA-256 digest) of the translated file.
 - **Load.** `sceKernelLoadModule` (and `sceKernelLoadModuleByID`, through the path
   the descriptor was opened with) names its module by the full path: a relative
   path resolves against the calling thread's current directory, as the PSP module

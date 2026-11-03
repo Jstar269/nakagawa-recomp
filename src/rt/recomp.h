@@ -1262,7 +1262,7 @@ typedef struct SrVarImport {
 typedef struct SrModuleCode {
     const char *name;                 /* module file name, as the title manifest names it */
     uint32_t file_size;               /* identity of the exact bytes that were translated */
-    uint64_t file_fnv1a64;
+    const char *file_sha256;          /* lowercase hex SHA-256 of those bytes */
     uint32_t link_low;                /* image extent in link space: [link_low, link_high) */
     uint32_t link_high;
     uint32_t alignment;               /* largest PT_LOAD alignment */
@@ -1356,7 +1356,11 @@ void sr_fixed_var_imports_register(const char *module, const SrVarImport *import
 const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
 unsigned sr_module_code_count(void);
 const SrModuleCode *sr_module_code_at(unsigned index);
-/* Identity digest of a module file (FNV-1a, 64-bit), as tools/codegen.py records it. */
+/* Identity digest of a module file: lowercase hex SHA-256, as tools/codegen.py records it. */
+void sr_module_code_sha256(const void *bytes, size_t size, char out[65]);
+/* FNV-1a, 64-bit: the digest of an overlay's leading bytes in guest memory, which is checked
+ * on every instruction-cache invalidate that reaches it. It says whether the overlay is
+ * present, not whose file it is. */
 uint64_t sr_module_code_fnv1a64(const void *bytes, size_t size);
 const char *sr_module_bind_result_name(SrModuleBindResult result);
 /* Bind `code` with its image already laid out in guest memory at `base`. */
