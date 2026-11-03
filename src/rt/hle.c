@@ -4119,6 +4119,7 @@ void sr_hle_init(void) {
 #ifdef SR_MPEG_MEDIA_SELFTEST
     hle_register_mpeg_ycbcr_handlers();
     hle_register_mpeg_avc_decode_handler();
+    hle_register_mpeg_userdata_handlers();
     /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
      * so the guest getter and the A/V presentation boundaries are reachable from a
      * production-path test (issue #279). */

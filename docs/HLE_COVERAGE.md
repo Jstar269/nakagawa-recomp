@@ -24,11 +24,11 @@ Classes are listed strongest first. A path takes the first class whose source na
 | Class | HLE NIDs | VFPU forms |
 | --- | ---: | ---: |
 | `hardware-measured` | 64 | 16 |
-| `ppsspp-derived` | 111 | 90 |
+| `ppsspp-derived` | 113 | 90 |
 | `game-route` | 0 | 0 |
 | `synthetic` | 334 | 200 |
 | `unverified` | 152 | 57 |
-| total | 661 | 363 |
+| total | 663 | 363 |
 
 The VFPU census also lists 308 forms the runtime refuses at the
 issue #326 boundary (`unsupported-encoding` and `supported-opcode-form-unmodeled`). No path executes
@@ -61,6 +61,7 @@ belongs to without the census's own grouping.
 | `0x00061e74` | `newlibModuleStreamWrite` | kernel_utils | `unverified` | no recorded evidence |
 | `0x011f03c1` | `sceRtcGetAccumulativeTime` | rtc | `synthetic` | HLE selftest dispatch |
 | `0x01562ba3` | `sceAudioOutput2Reserve` | audio | `hardware-measured` | PSP oracle PSP-HLE-AUDIO-SRC-001 |
+| `0x01977054` | `sceMpegGetUserdataAu` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c |
 | `0x019b25eb` | `__sceSasSetADSR` | audio | `synthetic` | HLE selftest dispatch |
 | `0x0282a3bd` | `sceHttpGetContentLength` | network | `unverified` | no recorded evidence |
 | `0x02baad91` | `sceCtrlGetSamplingCycle` | input | `synthetic` | HLE selftest dispatch |
@@ -568,6 +569,7 @@ belongs to without the census's own grouping.
 | `0xc1734599` | `sceKernelReferLwMutexStatus` | kernel_sync | `synthetic` | HLE selftest dispatch |
 | `0xc2df770e` | `sceKernelIcacheInvalidateRange` | cache_dma | `unverified` | no recorded evidence |
 | `0xc41c2853` | `sceRtcGetTickResolution` | rtc | `synthetic` | HLE selftest dispatch |
+| `0xc45c99cc` | `sceMpegQueryUserdataEsSize` | mpeg | `ppsspp-derived` | sceMpeg banner: wrappers over the PPSSPP sceMpeg port in src/rt/mpeg.c; registry notes name PPSSPP |
 | `0xc492f751` | `sceUtilityGameSharingInitStart` | utility | `synthetic` | HLE selftest dispatch |
 | `0xc5768d02` | `sceRegGetKeyInfoByName` | system | `synthetic` | HLE selftest dispatch |
 | `0xc58bcd9e` | `sceNetAdhocMatchingGetMembers` | network | `unverified` | no recorded evidence |

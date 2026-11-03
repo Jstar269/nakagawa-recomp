@@ -61,6 +61,8 @@
 #define MPEG_ATRAC_ES_OUTPUT_SIZE 8192u   /* 2048 stereo s16 samples per sceMpegAtracDecode */
 #define MPEG_PCM_ES_SIZE   320
 #define MPEG_PCM_OUTPUT_SIZE 320
+#define MPEG_DATA_ES_SIZE 0xA0000
+#define MPEG_DATA_OUTPUT_SIZE 0xA0000
 
 /* Public MPEG constants and return families are recorded in PSPSDK's src/mpeg/pspmpeg.h.  The
  * mode-1 YCbCr buffer is measured (the YCbCr section below); the other modes remain a #302
@@ -1691,6 +1693,34 @@ uint32_t mpeg_get_pcm_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     MEM_W32(auAddr + 20u, MPEG_PCM_ES_SIZE);
     MEM_W32(attrAddr, 0u);
     return mpeg_contract_error("sceMpegGetPcmAu", "PCM decode is not implemented", SCE_MPEG_ERROR_NO_DATA);
+}
+
+/* sceMpegQueryUserdataEsSize(mpeg, esSizeAddr, outSizeAddr): 0xA0000 for both sizes (PPSSPP
+ * MPEG_DATA_ES_SIZE / MPEG_DATA_ES_OUTPUT_SIZE at c9e2afb6), not measured on a PSP. */
+uint32_t mpeg_query_userdata_es_size(uint32_t mpegAddr, uint32_t esSizeAddr, uint32_t outSizeAddr) {
+    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    if (!esSizeAddr || !outSizeAddr || (esSizeAddr & 3u) || (outSizeAddr & 3u) ||
+        !sr_guest_span_writable(esSizeAddr, 4u) || !sr_guest_span_writable(outSizeAddr, 4u))
+        return mpeg_contract_error("sceMpegQueryUserdataEsSize", "unaligned or truncated size pointer", (uint32_t)-1);
+    MEM_W32(esSizeAddr, MPEG_DATA_ES_SIZE);
+    MEM_W32(outSizeAddr, MPEG_DATA_OUTPUT_SIZE);
+    return 0;
+}
+
+/* sceMpegGetUserdataAu(mpeg, stream, au, result): the demuxer does not extract userdata, so every
+ * call is NO_DATA and the au is left alone. The two result words are cleared as PPSSPP clears them
+ * for Phantasy Star Portable 2 (c9e2afb6). A movie polls this every frame, so the gap is said once. */
+uint32_t mpeg_get_userdata_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint32_t resultAddr) {
+    static int reported;
+    (void)sid; (void)auAddr;
+    if (!mpeg_find(mpegAddr)) return (uint32_t)-1;
+    if (sr_guest_span_writable(resultAddr, 8u)) {
+        MEM_W32(resultAddr, 0u);
+        MEM_W32(resultAddr + 4u, 0u);
+    }
+    if (reported) return SCE_MPEG_ERROR_NO_DATA;
+    reported = 1;
+    return mpeg_contract_error("sceMpegGetUserdataAu", "userdata demux is not implemented", SCE_MPEG_ERROR_NO_DATA);
 }
 
 /* sceMpegChangeGetAuMode(mpeg, stream, mode): decode mode is retained; skip mode has no measured

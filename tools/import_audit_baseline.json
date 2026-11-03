@@ -18,6 +18,12 @@
     "name": "sceAudioOutput2Reserve",
     "status": "partial"
   },
+  "0x01977054": {
+    "classification": "controlled_unsupported",
+    "handler": "h_MpegGetUserdataAu",
+    "name": "sceMpegGetUserdataAu",
+    "status": "controlled_unsupported"
+  },
   "0x019b25eb": {
     "classification": "dedicated",
     "handler": "h_SasSetADSR",
@@ -3131,6 +3137,12 @@
     "handler": "h_RtcGetTickResolution",
     "name": "sceRtcGetTickResolution",
     "status": "complete"
+  },
+  "0xc45c99cc": {
+    "classification": "dedicated",
+    "handler": "h_MpegQueryUserdataEsSize",
+    "name": "sceMpegQueryUserdataEsSize",
+    "status": "partial"
   },
   "0xc492f751": {
     "classification": "dedicated",
