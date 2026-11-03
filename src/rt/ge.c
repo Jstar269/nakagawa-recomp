@@ -2282,25 +2282,34 @@ static uint32_t ge_direct_texel(const uint8_t *row, uint32_t x, uint32_t psm) {
 
 /* ge_direct_texel for the first `w` texels of a row, with the format chosen once per row:
  * the same expansion unpack_color does for each texel. */
-static void ge_direct_row(uint32_t *dst, const uint8_t *row, int w, uint32_t psm) {
+static void ge_direct_row(uint32_t *restrict dst, const uint8_t *restrict row, int w, uint32_t psm) {
     if (psm == 3u) { memcpy(dst, row, (size_t)w * 4u); return; }
-    for (int x = 0; x < w; x++) {
-        uint16_t t16;
-        memcpy(&t16, row + (size_t)x * 2u, 2u);
-        const uint32_t t = t16;
-        uint32_t r, g, b, a;
-        if (psm == 0u) {
-            r = t & 0x1Fu; g = (t >> 5) & 0x3Fu; b = (t >> 11) & 0x1Fu;
-            r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2); a = 255u;
-        } else if (psm == 1u) {
-            r = t & 0x1Fu; g = (t >> 5) & 0x1Fu; b = (t >> 10) & 0x1Fu;
-            r = (r << 3) | (r >> 2); g = (g << 3) | (g >> 2); b = (b << 3) | (b >> 2);
-            a = (t & 0x8000u) ? 255u : 0u;
-        } else {
-            r = (t & 0xFu) * 17u; g = ((t >> 4) & 0xFu) * 17u; b = ((t >> 8) & 0xFu) * 17u;
-            a = ((t >> 12) & 0xFu) * 17u;
+    /* One branch-free loop per format, so the compiler can expand several texels at once. */
+    if (psm == 0u) {
+        for (int x = 0; x < w; x++) {
+            uint16_t t16;
+            memcpy(&t16, row + (size_t)x * 2u, 2u);
+            const uint32_t t = t16;
+            uint32_t r = t & 0x1Fu, g = (t >> 5) & 0x3Fu, b = (t >> 11) & 0x1Fu;
+            r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2);
+            dst[x] = r | (g << 8) | (b << 16) | 0xFF000000u;
         }
-        dst[x] = r | (g << 8) | (b << 16) | (a << 24);
+    } else if (psm == 1u) {
+        for (int x = 0; x < w; x++) {
+            uint16_t t16;
+            memcpy(&t16, row + (size_t)x * 2u, 2u);
+            const uint32_t t = t16;
+            uint32_t r = t & 0x1Fu, g = (t >> 5) & 0x1Fu, b = (t >> 10) & 0x1Fu;
+            r = (r << 3) | (r >> 2); g = (g << 3) | (g >> 2); b = (b << 3) | (b >> 2);
+            dst[x] = r | (g << 8) | (b << 16) | ((t >> 15) * 0xFF000000u);
+        }
+    } else {
+        for (int x = 0; x < w; x++) {
+            uint16_t t16;
+            memcpy(&t16, row + (size_t)x * 2u, 2u);
+            const uint32_t t = t16;
+            dst[x] = ((t & 0xFu) | ((t & 0xF0u) << 4) | ((t & 0xF00u) << 8) | ((t & 0xF000u) << 12)) * 17u;
+        }
     }
 }
 
