@@ -878,53 +878,128 @@
     {
       "boundary": "Windows Media Foundation H.264 decoder queue",
       "entry": "src/rt/h264_mf.c:sr_h264_mf_submit_au; src/rt/h264_mf.c:feed_one",
-      "max_input": "64 MiB queued H.264 access-unit bytes, 1048576 AU chunks, 64 MiB decoded output, and four decoder instances.",
+      "max_input": "64 MiB queued H.264 access-unit bytes, 1048576 AU chunks, 64 MiB decoded output, four decoder instances, and a normalized PTS of at most 2^53 in magnitude (SR_H264_PTS_ABS_MAX).",
       "tables_nesting": "The backend AU chunk table is capped; program-stream and Annex-B parsing are owned by the common producer.",
       "arithmetic": {
         "safe": "SAFE",
         "evidence": [
           "src/rt/h264_mf.c:es_append_au",
+          "src/rt/h264_mf.c:buf_reserve",
+          "src/rt/h264_mf.c:ck_push",
           "src/rt/h264_mf.c:feed_one",
-          "src/rt/h264_mf.c:dec_release"
+          "src/rt/h264_mf.c:convert_frame",
+          "src/rt/h264_mf.c:dec_release",
+          "src/rt/sr_h264.h:sr_h264_pts_in_range"
         ]
       },
       "allocation_time": "Compressed input, output, and chunk storage are capped; decoder execution is delegated to the platform Media Foundation transform.",
-      "failure_atomicity": "Invalid AU or queue/decode failure poisons the decoder instance until reset or destruction; queue input is published only after the AU extent and chunk capacity are validated.",
-      "harness": "tests/native/psmf_media_selftest.c:test_legacy_feed_take_path; tests/native/psmf_media_selftest.c:test_real_decode_into_guest_buffer; tests/native/psmf_media_selftest.c:test_legacy_demux_mutations",
+      "failure_atomicity": "Invalid AU, out-of-range PTS or queue/decode failure poisons the decoder instance until reset or destruction; queue input is published only after the AU extent and chunk capacity are validated.",
+      "harness": "tests/native/psmf_media_selftest.c:test_legacy_feed_take_path; tests/native/psmf_media_selftest.c:test_real_decode_into_guest_buffer; tests/native/psmf_media_selftest.c:test_legacy_demux_mutations; tests/native/psmf_media_selftest.c:test_backend_pts_range",
       "gap": "The real decoder fixture and hostile legacy-feed campaign require Windows Media Foundation; the common PS parser has separate portable producer coverage.",
       "status": "PARTIAL",
       "id": "windows-mf-h264-backend",
       "source_paths": [
-        "src/rt/h264_mf.c"
+        "src/rt/h264_mf.c",
+        "src/rt/sr_h264.h"
       ],
       "test_paths": [
         "tests/native/psmf_media_selftest.c"
       ],
       "malformed_input_coverage": [
-        "Invalid/oversized common-demux input, non-Annex-B AU rejection, decoder failure poisoning, and output-extent refusal."
+        "Invalid/oversized common-demux input, non-Annex-B AU rejection, out-of-range PTS refusal, decoder failure poisoning, and output-extent refusal."
       ],
       "resource_gaps": [
         "Linux sanitizer runs cannot execute Windows Media Foundation; portable-decoder availability and licensing remain a separate issue boundary."
       ],
       "campaigns": {
         "deterministic_regression": {
-          "status": "NOT_IN_CI",
+          "status": "IN_CI",
           "tests": [
             "tests/native/psmf_media_selftest.c"
           ],
-          "runner": "mingw32-make --no-print-directory psmf-media-selftest"
+          "runner": "The Windows selftests part of .github/workflows/ci.yml runs mingw32-make psmf-media-selftest on the Media Foundation backend and fails on any SKIP line; the local command is mingw32-make --no-print-directory psmf-media-selftest."
         },
         "seeded_mutations": {
           "status": "NOT_IN_CI",
           "tests": [
             "tests/native/psmf_media_selftest.c"
           ],
-          "campaign": "The mutation loop enters through the common demux API and requires a Windows Media Foundation decoder; target is not in current CI."
+          "campaign": "The hostile legacy-feed mutation loop runs only when the selftest gets --fuzz-iters (MEDIA_FUZZ_ITERS, set by make fuzz-parsers); the hosted Windows step passes none, and the loop needs a Windows Media Foundation decoder."
         },
         "sanitizer": {
           "status": "BACKEND_NOT_COVERED",
           "target": "mingw32-make --no-print-directory fuzz-parsers",
           "instrumentation": "Linux ASan/UBSan cannot exercise Windows MF; Windows target has no sanitizer flags.",
+          "ci": false
+        },
+        "coverage_guided_fuzzer": "NOT_CONFIGURED",
+        "overflow_oob_mutation_kill": "NOT_RUN"
+      }
+    },
+    {
+      "boundary": "Portable FFmpeg H.264 decoder backend and its vendored libavcodec subset",
+      "id": "portable-ffmpeg-h264-backend",
+      "entry": "src/rt/h264_ffmpeg.c:ff_submit_au; src/rt/h264_ffmpeg.c:ff_frame; src/rt/h264_ffmpeg_sub/nk_h264_api.c:nk_h264_send; src/rt/h264_ffmpeg_sub/nk_h264_api.c:nk_h264_receive; the imported decoder src/rt/h264_ffmpeg_sub/libavcodec/h264dec.c",
+      "source_paths": [
+        "src/rt/h264_ffmpeg.c",
+        "src/rt/h264_ffmpeg_sub/nk_h264_api.c",
+        "src/rt/h264_ffmpeg_sub/nk_h264_api.h",
+        "src/rt/sr_h264.h",
+        "src/rt/h264_ffmpeg_sub/libavcodec/h264dec.c"
+      ],
+      "test_paths": [
+        "tests/native/psmf_media_selftest.c"
+      ],
+      "max_input": "64 MiB queued H.264 access-unit bytes and 1048576 AU chunks per decoder, four decoder instances, one AU per nk_h264_send call of at most INT32_MAX bytes, a normalized PTS of at most 2^53 in magnitude (SR_H264_PTS_ABS_MAX), and at most 272 output rows per picture. The glue sets no limit on the decoded picture dimensions.",
+      "tables_nesting": "Annex-B framing is owned by the common producer; the glue's AU table is capped and flat. SPS, PPS and slice syntax is parsed by the imported libavcodec decoder, whose limits this project does not add to.",
+      "arithmetic": {
+        "safe": "PARTIAL",
+        "evidence": [
+          "src/rt/h264_ffmpeg.c:ff_grow",
+          "src/rt/h264_ffmpeg.c:ff_append_au",
+          "src/rt/h264_ffmpeg.c:ff_es_compact",
+          "src/rt/h264_ffmpeg.c:ff_send_next",
+          "src/rt/h264_ffmpeg.c:ff_planes",
+          "src/rt/h264_ffmpeg.c:ff_to_guest",
+          "src/rt/h264_ffmpeg.c:ff_to_host",
+          "src/rt/h264_ffmpeg.c:ff_to_host_yuv",
+          "src/rt/h264_ffmpeg.c:ff_frame",
+          "src/rt/h264_ffmpeg_sub/nk_h264_api.c:nk_h264_send",
+          "src/rt/sr_h264.h:sr_h264_pts_in_range"
+        ]
+      },
+      "allocation_time": "Compressed input and AU-table storage are capped and grow by doubling up to the cap; decoded-picture storage is allocated by libavcodec from the picture dimensions the stream declares, and the glue sets no max_pixels limit (nk_h264_open). Decode runs single-threaded.",
+      "failure_atomicity": "A non-Annex-B unit, an out-of-range PTS, a queue overflow or a decoder error poisons the instance until reset or destruction. A unit the decoder rejects as invalid data is consumed and produces no picture. Every guest destination row is checked before the first write, so a refused conversion leaves guest memory intact and does not poison the decoder.",
+      "harness": "tests/native/psmf_media_selftest.c:test_backend_malformed_input; tests/native/psmf_media_selftest.c:test_backend_pts_range; tests/native/psmf_media_selftest.c:test_destination_refusal; tests/native/psmf_media_selftest.c:test_real_decode_into_guest_buffer",
+      "gap": "The glue's size and extent arithmetic is bounded and checked, but libavcodec's own parsing arithmetic is imported code that this inventory has not assessed, no seeded raw-bitstream mutation campaign runs in CI, and the decoder objects are built without sanitizer instrumentation.",
+      "status": "PARTIAL",
+      "malformed_input_coverage": [
+        "Non-Annex-B access units, out-of-range PTS values (INT64_MIN, INT64_MAX and one past the bound on each side), and a refused guest destination, run through the selected backend.",
+        "The real-decoder fixture feeds authored pictures through EOS drain, reset and restart; the optional legacy-feed mutation loop mutates a whole PSMF and decodes what the common demux accepts."
+      ],
+      "resource_gaps": [
+        "No cap on decoded picture dimensions in the glue or in nk_h264_open: a hostile SPS can make libavcodec allocate a large frame before any output clamp applies. The common mpeg.c layer caps declared stream size at 4096, but a direct submit_au caller is not capped.",
+        "libavcodec's internal arithmetic and memory use for hostile SPS, PPS and slice data are not assessed; the vendored files are byte-identical imports and are not edited by this project."
+      ],
+      "campaigns": {
+        "deterministic_regression": {
+          "status": "IN_CI",
+          "tests": [
+            "tests/native/psmf_media_selftest.c"
+          ],
+          "runner": "make CC=gcc H264_FFMPEG=1 BUILD_ROOT=\"$RUNNER_TEMP/ffmpeg-h264-build\" psmf-media-selftest (the vendored FFmpeg H.264 media selftest step in .github/workflows/ci.yml)"
+        },
+        "seeded_mutations": {
+          "status": "NOT_IN_CI",
+          "tests": [
+            "tests/native/psmf_media_selftest.c"
+          ],
+          "campaign": "The legacy-feed mutation loop runs only when the selftest gets --fuzz-iters (MEDIA_FUZZ_ITERS, set by make fuzz-parsers); the hosted step passes none."
+        },
+        "sanitizer": {
+          "status": "BACKEND_NOT_INSTRUMENTED",
+          "target": "make CC=gcc H264_FFMPEG=1 psmf-media-selftest",
+          "instrumentation": "FUZZ_SAN_FLAGS (ASan and UBSan, non-Windows) instrument only psmf_producer.c and the selftest, and the link brings in the ASan allocator; h264_ffmpeg.c, nk_h264_api.c and the vendored decoder objects are compiled with CFLAGS alone.",
           "ci": false
         },
         "coverage_guided_fuzzer": "NOT_CONFIGURED",
@@ -2242,7 +2317,8 @@
     "The Windows Media Foundation demux seam is not exercised by the Linux sanitizer route and has no current Windows sanitizer campaign.",
     "No overflow/out-of-bounds semantic mutation-kill result is recorded.",
     "The inventory does not establish universal failure atomicity or complete staging/import rollback for every product route.",
-    "The native font-cache manifest reader, the package-builder prerequisite and install-receipt readers, the sweep-report reader, and the publication profile loader have no direct test; their CI coverage is indirect or absent."
+    "The native font-cache manifest reader, the package-builder prerequisite and install-receipt readers, the sweep-report reader, and the publication profile loader have no direct test; their CI coverage is indirect or absent.",
+    "The vendored FFmpeg H.264 decoder objects are built without sanitizer instrumentation, no seeded raw-bitstream campaign runs in CI, and the decoder glue sets no cap on declared picture dimensions."
   ],
   "status_definition": {
     "COVERED": "Deterministic malformed/seeded regression evidence is present in the named CI path; this does not imply sanitizer, coverage-guided fuzz, or issue acceptance.",
