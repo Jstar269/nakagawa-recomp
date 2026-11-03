@@ -50,6 +50,13 @@ static uint32_t coherence_gbatch(uint32_t fmt) {
     return value[fmt & 3];
 }
 
+/* The fixture's image is newer than guest VRAM in every row, as if the GPU had drawn them all. */
+static void coherence_image_newer(Target *t) {
+    t->clean_gen = 0;
+    t->draw_y0 = 0;
+    t->draw_y1 = FB_H;
+}
+
 static int coherence_queue_g1_batch(uint32_t base, uint32_t stride, uint32_t fmt) {
     memset(s_ge, 0, sizeof(*s_ge));
     s_ge->fbp = base;
@@ -283,7 +290,7 @@ static int coherence_run_case(const CoherenceCase *tc) {
         free(expected); free(payload); return 0;
     }
     coherence_fill_raw(guest, pixels, bpp, coherence_g0(tc->fmt));
-    t->clean_gen = 0;
+    coherence_image_newer(t);
 
     if (tc->pending_batch) {
         if (!coherence_queue_g1_batch(base, tc->stride, tc->fmt)) {
@@ -436,7 +443,7 @@ static int coherence_run_cpu_write_coalesce(void) {
     if (!t || !t->gpu_valid) { free(expected); return 0; }
     memcpy(expected, guest, target_bytes);              /* the image: G1 */
     coherence_fill_raw(guest, pixels, bpp, coherence_g0(fmt));
-    t->clean_gen = 0;                                   /* the image is newer than VRAM */
+    coherence_image_newer(t);
 
     const unsigned long long notes0 = s_replay_stats.cpu_write_notes;
     const unsigned long long syncs0 = s_replay_stats.cpu_write_syncs;
@@ -496,7 +503,7 @@ static int coherence_run_full_cover_case(void) {
     Target *t = target_color_acquire(fba, stride, fmt, 1);
     if (!t || !t->gpu_valid) { free(expected); return 0; }
 
-    t->clean_gen = 0;
+    coherence_image_newer(t);
 
     for (uint32_t i = 0; i < target_bytes; i++) {
         guest[i] = (uint8_t)(0x77u + i * 13u);
@@ -540,7 +547,8 @@ static int coherence_run_overlap_case(void) {
     coherence_fill_raw(ga, (bytes + (fba_b - fba_a)) / bpp, bpp, g0);
     coherence_fill_raw(ea, stride * FB_H, bpp, g1a);
     coherence_fill_raw(eb, stride * FB_H, bpp, g1b);
-    a->clean_gen = b->clean_gen = 0;
+    coherence_image_newer(a);
+    coherence_image_newer(b);
     memcpy(SR_HOST(dirty_addr), payload, sizeof(payload));
     memcpy(ea + (dirty_addr - base_a), payload, sizeof(payload));
     memcpy(eb + (dirty_addr - base_b), payload, sizeof(payload));
@@ -554,6 +562,70 @@ static int coherence_run_overlap_case(void) {
                 "overlapping-targets", stride, s_scale);
     free(ea); free(eb);
     return ok;
+}
+
+/* The GE has no buffer height, and titles keep data in VRAM below a small render target: vertices
+ * read a word at a time, or another target. Only the rows the GPU drew are the GPU's. A read of any
+ * other row leaves the queued batches queued and needs no readback, and a readback leaves every
+ * other row of VRAM alone. */
+static int coherence_run_undrawn_rows(void) {
+    const char *name = "undrawn-rows";
+    const uint32_t stride = 256u, row = stride * 4u, fmt = 3u;
+    const uint32_t fba_a = 0x00100000u, base_a = 0x04000000u | fba_a;
+    const uint32_t fba_b = fba_a + 100u * row, base_b = 0x04000000u | fba_b;
+    const uint32_t data = base_a + 200u * row + 16u, data_word = 0x12345678u;
+    const uint32_t pixel = coherence_gbatch(fmt), offset = 15u * row + 15u * 4u;
+    coherence_reset_targets();
+    memset(SR_HOST(base_a), 0, 372u * row);
+    memcpy(SR_HOST(data), &data_word, sizeof data_word);
+    g_sr_vram_read_pending = 0;
+
+    /* Rows 10 to 19 of `a` drawn: a read of what lies below them is plain VRAM. */
+    int ok = coherence_queue_g1_batch(base_a, stride, fmt);
+    ok = submit_pending() && ok;
+    Target *a = target_find_by_fba(fba_a);
+    const unsigned long readbacks = s_cnt_readback;
+    ok = ok && a && a->clean_gen != a->render_gen && a->draw_y0 <= 10 && a->draw_y1 >= 20 &&
+         a->draw_y1 < 100;
+    uint32_t value = MEM_R32(data);
+    if (!ok || value != data_word || s_cnt_readback != readbacks || a->clean_gen == a->render_gen) {
+        fprintf(stderr, "gpu coherence selftest [%s]: read below the drawn rows read back the "
+                        "target (value=0x%08x readbacks=%lu rows=%d..%d gen=%llu clean=%llu)\n", name, value,
+                s_cnt_readback - readbacks, a ? a->draw_y0 : -1, a ? a->draw_y1 : -1,
+                a ? (unsigned long long)a->render_gen : 0ull, a ? (unsigned long long)a->clean_gen : 0ull);
+        coherence_reset_targets();
+        return 0;
+    }
+    /* Queued rows count too, and only they do. */
+    ok = coherence_queue_g1_batch(base_a, stride, fmt);
+    value = MEM_R32(data);
+    const int kept_queued = s_nbatch != 0;
+    uint32_t drawn = MEM_R32(base_a + offset);
+    if (!ok || value != data_word || !kept_queued || s_nbatch != 0 || drawn != pixel) {
+        fprintf(stderr, "gpu coherence selftest [%s]: queued rows: kept=%d pending=%u drawn=0x%08x\n",
+                name, kept_queued, (unsigned)s_nbatch, drawn);
+        coherence_reset_targets();
+        return 0;
+    }
+    /* `b` lies in rows of `a` the GPU never drew there: a readback of `a` keeps `b`'s pixels. */
+    ok = coherence_queue_g1_batch(base_b, stride, fmt);
+    ok = submit_pending() && ok;
+    ok = ok && MEM_R32(base_b + offset) == pixel;
+    ok = ok && coherence_queue_g1_batch(base_a, stride, fmt);
+    ok = submit_pending() && ok;
+    ok = ok && MEM_R32(base_a + offset) == pixel;
+    uint32_t kept = 0u;
+    memcpy(&kept, SR_HOST(base_b + offset), sizeof kept);
+    if (!ok || kept != pixel) {
+        fprintf(stderr, "gpu coherence selftest [%s]: the readback of a target overwrote the "
+                        "target below it (0x%08x, expected 0x%08x)\n", name, kept, pixel);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s fmt=%u stride=%u scale=%d\n",
+           name, fmt, stride, s_scale);
+    coherence_reset_targets();
+    return 1;
 }
 
 static int coherence_run_tflt_descriptor_capacity(void) {
@@ -4182,6 +4254,7 @@ static int coherence_run_readback_rows(void) {
             if (!ok) break;
             t->gpu_valid = 1;
             t->render_gen++;
+            coherence_image_newer(t);
             memset(SR_HOST(base), 0, (size_t)stride * FB_H * bpp);
             if (pass == 0) {
                 memset(s_xfer_map, poison, (size_t)SCL_W * SCL_H * 4u);
@@ -4270,6 +4343,7 @@ int gegpu_coherence_selftest(void) {
         if (strcmp(only, "scaled-upload") == 0) return coherence_run_scaled_upload();
         if (strcmp(only, "mip-lod") == 0) return coherence_run_mip_lod();
         if (strcmp(only, "readback-rows") == 0) return coherence_run_readback_rows();
+        if (strcmp(only, "undrawn-rows") == 0) return coherence_run_undrawn_rows();
         fprintf(stderr, "gpu coherence selftest: unknown SR_GPU_COHERENCE_CASE '%s'\n", only);
         return 0;
     }
@@ -4310,6 +4384,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_clut_format_same_palette()) ok = 0;
     if (!coherence_run_clut_format_list()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
+    if (!coherence_run_undrawn_rows()) ok = 0;
     if (!coherence_run_scalar_vram_read(0x04080000u)) ok = 0;
     /* zbp 0x0a2000: bit 13 set, so the absolute XOR differs from the within-buffer form (0x0a6854 vs
      * 0x0a2854 for pixel 10,10). The 0x0ce000 placement used by the software selftest would overlap the
@@ -4402,7 +4477,7 @@ int gegpu_snapshot_sync_selftest(void) {
 
     /* The image remains GPU G1, but guest VRAM is deliberately restored to stale G0. */
     coherence_fill_raw(guest, stride * FB_H, 4u, coherence_g0(fmt));
-    t->clean_gen = 0;
+    coherence_image_newer(t);
     if (!target_prepare_present(t)) {
         fprintf(stderr, "gpu snapshot sync selftest: present readback setup failed\n");
         coherence_reset_targets();
@@ -4543,7 +4618,8 @@ int gegpu_snapshot_sync_selftest(void) {
     }
     printf("gpu snapshot sync selftest: present_target_failure_reports_target_failed\n");
     if (gegpu_sync_guest_fb(&d) != GEGPU_SYNC_OK || t->clean_gen != t->render_gen ||
-        memcmp(guest, &(uint32_t){ coherence_g1(fmt) }, sizeof(uint32_t)) != 0) {
+        memcmp((const uint8_t *)guest + (15u * stride + 15u) * 4u, &(uint32_t){ coherence_gbatch(fmt) },
+               sizeof(uint32_t)) != 0) {
         fprintf(stderr, "gpu snapshot sync selftest: guest VRAM was not current after a target failure\n");
         coherence_reset_targets();
         return 0;
