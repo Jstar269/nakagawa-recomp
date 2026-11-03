@@ -1357,6 +1357,10 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
                 # sceNetTerm: the cleanup a title runs after sceNetInit refused (offline).
                 "0x281928a9": ("sceNetTerm", "0x80010086"),
+                # The net stack's thread and pool bookkeeping and adhoc discovery stop (offline).
+                "0x50647530": ("sceNetFreeThreadinfo", "0x80010086"),
+                "0xcc393e48": ("sceNetGetMallocStat", "0x80010086"),
+                "0xf7d13214": ("sceNetAdhocDiscoverStop", "0x80010086"),
                 "0x29681260": ("sceAudiocodecReleaseEDRAM", "0x80010086"),
                 "0x011f03c1": ("sceRtcGetAccumulativeTime", "0x80020002"),
                 "0x191cdeff": ("sceSslEnd", "0x80010086"),
@@ -2535,6 +2539,18 @@ class CensusTests(unittest.TestCase):
                 self.assertNotIn(handler, meta.PARTIAL_WITHOUT_EVIDENCE)
         # The profile-zero imports that moved off `unreviewed` leave the allowlist.
         for nid in (0x092968F4, 0x5F10D406, 0x237DBD4F, 0x1F803938):
+            self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+
+    def test_profile_zero_thread_memory_ge_batch_has_evidence_and_named_limits(self) -> None:
+        """The second #341 profile-zero batch: cited evidence, named limits, allowlist shrunk."""
+        batch = ("h_MaxFreeMemSize", "h_GeSetCallback", "h_GeUnsetCallback", "h_LockLwMutex")
+        for handler in batch:
+            with self.subTest(handler=handler):
+                self.assertEqual(meta.HANDLER_STATUS.get(handler), "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE.get(handler))
+                self.assertIn("#341", meta.HANDLER_LIMITATIONS.get(handler, ""))
+                self.assertNotIn(handler, meta.PARTIAL_WITHOUT_EVIDENCE)
+        for nid in (0xA291F107, 0xA4FC06A4, 0x05DB22CE, 0xBEA46419):
             self.assertNotIn(nid, meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
 
     def test_census_is_deterministic(self) -> None:

@@ -1196,7 +1196,8 @@ class TestCodegenStageReuse(unittest.TestCase):
         result, _output = self.build(stage, aot_stage=True)
         self.assertEqual(result["format"], "nakagawa-aot-stage")
         self.assertTrue((stage / package_cache.COMPLETION_MANIFEST).is_file())
-        return stage
+        returned: Path = stage
+        return returned
 
     def generated_code(self, directory: Path) -> dict[str, bytes]:
         if not directory.is_dir():

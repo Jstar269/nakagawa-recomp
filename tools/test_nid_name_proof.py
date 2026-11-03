@@ -17,6 +17,7 @@ import hashlib
 from pathlib import Path
 import sys
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -98,6 +99,8 @@ class ClassifierTest(unittest.TestCase):
 
 class ShippedTableTest(unittest.TestCase):
     """Locks the measurement the provenance ledger cites."""
+    entries: list[proof.Entry]
+    report: dict[str, Any]
 
     @classmethod
     def setUpClass(cls) -> None:

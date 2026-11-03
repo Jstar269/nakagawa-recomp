@@ -2493,12 +2493,18 @@ static uint32_t getsize_kb_round_up(uint64_t bytes) {
 /* GETSIZE (22): free space, and how much MORE space a save of the listed files
  * needs. On a PSP (pspautotests tests/utility/savedata/getsize.expected,
  * revision 2ed7c9c5), a zero-filled sizeInfo with no entries for a save that
- * does not exist changes only sectorSize, freeSectors, freeKB and freeString,
- * and the result is 0: neededKB and overwriteKB are a shortfall, 0 when the
- * data fits, never the size of the data. The entry arithmetic follows PPSSPP's
+ * exists changes only sectorSize, freeSectors, freeKB and freeString, and the
+ * result is 0: neededKB and overwriteKB are a shortfall, 0 when the data fits,
+ * never the size of the data. The entry arithmetic follows PPSSPP's
  * SavedataParam::GetSize as a behaviour reference: each secure file adds 16
  * bytes, files already in the save count as overwritable, and the needed and
- * overwrite strings are written only when there is a shortfall. */
+ * overwrite strings are written only when there is a shortfall.
+ *
+ * A save that does not exist fills in the same figures and then reports
+ * ERR_RW_NO_DATA (PPSSPP PSPSaveDialog::ExecuteNotVisibleIOAction, revision
+ * c9e2afb6; UNMEASURED on a PSP, whose recorded case has the save in place). A
+ * game reads that pair as "no save yet, and this much room to make one", and
+ * success as "there is a save to load". */
 static uint32_t do_getsize(uint32_t param, uint32_t size, const char *game, const char *save) {
     uint32_t si = savedata_optional_pointer(param, size, SDP_sizeInfo);
     if (!si) return 0;
@@ -2514,6 +2520,7 @@ static uint32_t do_getsize(uint32_t param, uint32_t size, const char *game, cons
     char dir[PATH_MAX];
     if (save_dir(dir, sizeof(dir), game, save) && !savedata_recover(dir))
         return ERR_RW_NO_MEMSTICK_UNMEASURED;
+    const uint32_t result = dir[0] && dir_exists(dir) ? 0u : ERR_RW_NO_DATA;
     uint64_t write_bytes = 0, overwrite_bytes = 0;
     if (!getsize_sum_entries(nSec, pSec, 0x10u, dir, &write_bytes, &overwrite_bytes) ||
         !getsize_sum_entries(nNorm, pNorm, 0u, dir, &write_bytes, &overwrite_bytes))
@@ -2527,7 +2534,7 @@ static uint32_t do_getsize(uint32_t param, uint32_t size, const char *game, cons
     if (overwrite_bytes >= write_bytes || write_bytes - overwrite_bytes < fr.bytes) {
         MEM_W32(si + 36, 0);                                /* neededKB */
         MEM_W32(si + 48, 0);                                /* overwriteKB */
-        return 0;
+        return result;
     }
     char text[24];
     uint64_t needed = write_bytes - fr.bytes;
@@ -2538,7 +2545,7 @@ static uint32_t do_getsize(uint32_t param, uint32_t size, const char *game, cons
     MEM_W32(si + 48, getsize_kb_round_up(overwrite));
     savedata_space_text(overwrite, 1, text, sizeof(text));
     wr_fixed(si + 52, text, 8);                             /* overwriteString */
-    return 0;
+    return result;
 }
 
 /* ---- list selection (#1387) ----------------------------------------------------------------

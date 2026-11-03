@@ -68,6 +68,9 @@ def _incident_tar() -> Path | None:
 @unittest.skipIf(_incident_tar() is None, f"{ENV_VAR} not set to a readable incident archive")
 class TestExactIncidentRejected(unittest.TestCase):
     """The real ee398561 tree must be rejected path-for-path."""
+    _tmp: tempfile.TemporaryDirectory[str]
+    candidate: Path
+    result: subprocess.CompletedProcess[str]
 
     @classmethod
     def setUpClass(cls) -> None:

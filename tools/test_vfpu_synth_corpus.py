@@ -754,9 +754,9 @@ class MemoryCop2CorpusTests(unittest.TestCase):
 
     def test_family_counts_are_explicit_and_deduplicated(self):
         counts = Counter(_op6(w) for w in self.corpus)
-        self.assertEqual(len(self.corpus), 544)
+        self.assertEqual(len(self.corpus), 550)
         self.assertEqual(len(self.corpus), len(set(self.corpus)))
-        self.assertEqual(counts, {0x12: 288, 0x32: 80, 0x36: 48, 0x3A: 80, 0x3E: 48})
+        self.assertEqual(counts, {0x12: 288, 0x32: 82, 0x36: 49, 0x3A: 82, 0x3E: 49})
 
     def test_each_word_has_an_emitter_or_an_explicit_quad_guard(self):
         import codegen
@@ -767,7 +767,7 @@ class MemoryCop2CorpusTests(unittest.TestCase):
         cases, unsupported, self_compare = generate_cases(
             words, allow_conditional_fallback_words=quad
         )
-        self.assertEqual((len(cases), unsupported, self_compare), (544, 0, 0))
+        self.assertEqual((len(cases), unsupported, self_compare), (550, 0, 0))
         for w, _, body in cases:
             if w in quad:
                 self.assertIn("sr_guest_span_", body)
