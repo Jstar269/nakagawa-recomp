@@ -664,16 +664,17 @@ class RuntimeModuleBoundaries(unittest.TestCase):
         self.assertFalse(in_ranges(OVERLAY_LINK + 0x24, module.spans))
         self.assertEqual(module.code_candidates, (OVERLAY_LINK + 0x24,))
 
-    def call_target_overlay(self, setup, name, pad_words=0):
+    def call_target_overlay(self, setup, name, pad_words=0, trailer=()):
         """A fixed overlay whose caller builds a0 with ``setup`` words and calls it with
         `jalr a0`, followed by a callback (`lw v0,0(a1); jr ra; nop`) ``pad_words`` words of
-        untraced zeros after the caller. Returns (module, callback address)."""
+        untraced zeros after the caller, then the untraced ``trailer`` words. Returns
+        (module, callback address)."""
         head = [0x27BDFFF0, 0xAFBF0000] + list(setup) + [
             0x0080F809, 0x00000000,                   # jalr a0; nop
             0x8FBF0000, 0x03E00008, 0x27BD0010]       # lw ra,0(sp); jr ra; addiu sp,16
         callback = OVERLAY_LINK + 4 * (len(head) + pad_words)
         tail = [0x8CA20000, 0x03E00008, 0x00000000]   # cb: lw v0,0(a1); jr ra; nop
-        words = head + [0] * pad_words + tail
+        words = head + [0] * pad_words + tail + list(trailer)
         module, _err = self.fixed_overlay_module(
             b"".join(struct.pack("<I", w) for w in words), name)
         return module, callback
@@ -711,6 +712,49 @@ class RuntimeModuleBoundaries(unittest.TestCase):
         ], "OVL_MERGE.ELF")
         self.assertNotIn(merge_cb, [a for a, _n in module.functions])
         self.assertEqual(module.code_candidates, (merge_cb,))
+
+    def assert_not_call_evidence(self, setup, name, cb, trailer=()):
+        module, _cb = self.call_target_overlay(setup, name, trailer=trailer)
+        self.assertNotIn(cb, [a for a, _n in module.functions])
+        self.assertFalse(in_ranges(cb, module.spans))
+        self.assertIn(cb, module.code_candidates)
+
+    def test_fixed_overlay_call_target_pair_is_not_in_a_delay_slot(self):
+        # The `lui` in a branch's delay slot is in another basic block than the `addiu` and
+        # the `jalr`. After `beql` it runs only when the branch is taken, so the fall-through
+        # path calls incoming a0 + lo; after `beq` the rule refuses it the same way.
+        cb = OVERLAY_LINK + 0x28
+        for case, branch in (("beql", 0x50C00004), ("beq", 0x10C00004)):
+            with self.subTest(case=case):
+                self.assert_not_call_evidence(
+                    [branch, 0x3C0408C0, 0x24840000 | (cb & 0xFFFF)], f"OVL_{case}.ELF", cb)
+
+    def test_fixed_overlay_call_target_pair_does_not_span_a_called_entry(self):
+        # A `jal` names the `addiu`, or the `jalr` itself: callers that enter there arrive
+        # with any a0, so the `lui` before the entry is not the value the `jalr` reads.
+        cb = OVERLAY_LINK + 0x2C
+        lui, addiu = 0x3C0408C0, 0x24840000 | (cb & 0xFFFF)
+        for case, entry in (("addiu", OVERLAY_LINK + 0x14), ("jalr", OVERLAY_LINK + 0x18)):
+            with self.subTest(case=case):
+                jal = 0x0C000000 | ((entry >> 2) & 0x03FFFFFF)
+                self.assert_not_call_evidence(
+                    [jal, 0x00000000, lui, addiu], f"OVL_JAL_{case}.ELF", cb)
+
+    def test_fixed_overlay_call_target_pair_does_not_span_an_address_taken_entry(self):
+        # A callback entry the code materializes (`la a1` naming the `nop` before the
+        # `jalr`), or an in-image word naming it (a jump-table pad), is another way in.
+        with self.subTest(case="materialized"):
+            cb = OVERLAY_LINK + 0x30
+            self.assert_not_call_evidence([
+                0x3C0408C0, 0x24840000 | (cb & 0xFFFF),
+                0x3C0508C0, 0x24A50018,               # la a1, 0x08c00018 (the nop below)
+                0x00000000,
+            ], "OVL_LA_PAD.ELF", cb)
+        with self.subTest(case="table word"):
+            cb = OVERLAY_LINK + 0x28
+            self.assert_not_call_evidence(
+                [0x3C0408C0, 0x24840000 | (cb & 0xFFFF), 0x00000000], "OVL_TABLE_PAD.ELF", cb,
+                trailer=[OVERLAY_LINK + 0x10])        # data word naming that nop
 
 
     def test_fixed_overlay_identity_covers_a_leaf_it_calls(self):

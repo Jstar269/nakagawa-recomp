@@ -2381,54 +2381,95 @@ def _keep_prologue_seeds(d):
     d.jtails = {a for a in d.jtails if is_prologue(a)}
 
 
-def _traced_merge_points(d):
-    """The addresses a traced direct branch or `j` lands on: where a second path joins the
-    straight-line run that reaches them. Read once per call of the caller's loop."""
-    merges = set()
-    for edges in (direct_branch_edges(d.elf, d.ranges), direct_j_edges(d.elf, d.ranges)):
-        for target, sources in edges.items():
-            if any((s[0] if isinstance(s, tuple) else s) in d.covered for s in sources):
-                merges.add(target)
-    return merges
+def _traced_word(d, addr):
+    """The word at ``addr`` when it is traced code, else ``None``."""
+    if addr not in d.covered:
+        return None
+    raw = d.elf.read_at_vaddr(addr, 4)
+    return None if raw is None or len(raw) < 4 else int.from_bytes(raw, "little")
 
 
-def _traced_definition(d, use_addr, reg, merges=frozenset()):
-    """The last traced word before ``use_addr`` that writes ``reg``, as ``(addr, word)``,
-    within the straight-line run of traced code that ends there; ``None`` when the run
-    leaves traced code, passes a function entry, a control transfer or a ``merges``
-    address (another path joins there, so the value differs), or meets an encoding
-    _gpr_writes does not classify before any write."""
-    addr = use_addr - 4
-    while addr in d.covered and addr + 4 not in merges:
-        raw = d.elf.read_at_vaddr(addr, 4)
-        if raw is None or len(raw) < 4:
-            return None
-        word = int.from_bytes(raw, "little")
-        writes = _gpr_writes(word)
-        if writes is None or writes == "unknown":
-            return None
-        if reg in writes:
-            return addr, word
-        if addr in d.functions:
-            return None
-        addr -= 4
-    return None
+def _in_traced_delay_slot(d, addr):
+    """Whether ``addr`` is the delay slot of a traced control transfer, likely or not."""
+    word = _traced_word(d, addr - 4)
+    return word is not None and _cfg_control_transfer(word)
 
 
-def _traced_call_target(d, site, reg, merges=frozenset()):
+class _BlockLeaderCensus:
+    """The basic-block leaders of an image's traced code (_seed_materialized_code).
+
+    A leader is an address another path can enter at: a function start or call target,
+    every seed and materialized address (callbacks and exception entries the code names),
+    every code pointer another image holds into this one, every word of the image (a jump
+    table, or a pad an in-image word names: in a mixed image the code section holds the
+    tables), the target of a traced direct branch or jump, and the word after each traced
+    control transfer's delay slot (and after an `eret`). The image's words and its branch
+    and jump edges are read once; the parts that depend on the traced code are read
+    again each time it grows."""
+
+    def __init__(self, d, entry_hints=()):
+        self.d = d
+        image_words = {word for _addr, word in _iter_code_words(d.elf, d.ranges)}
+        self.fixed = frozenset(image_words | data_section_words(d.elf)
+                               | set(entry_hints or ()) | {d.elf.entry})
+        self.edges = []
+        for edges in (direct_branch_edges(d.elf, d.ranges), direct_j_edges(d.elf, d.ranges)):
+            for target, sources in edges.items():
+                self.edges.append(
+                    (target, tuple(s[0] if isinstance(s, tuple) else s for s in sources)))
+
+    def leaders(self):
+        d = self.d
+        leaders = set(self.fixed)
+        leaders.update(d.functions, d.calls, d.hc, d.noisy, d.jtails, d.materialized)
+        leaders.update(target for target, sources in self.edges
+                       if any(s in d.covered for s in sources))
+        for addr in d.covered:
+            word = _traced_word(d, addr)
+            if word is None:
+                continue
+            if _cfg_control_transfer(word):
+                leaders.add(addr + 8)
+            elif _cfg_is_eret(word):
+                leaders.add(addr + 4)
+        return leaders
+
+
+def _traced_block_start(d, site, leaders):
+    """The first address of the basic block of traced code that ends at ``site``: the walk
+    back stops at a leader, at untraced bytes, and after a control transfer."""
+    start = site
+    while start not in leaders:
+        word = _traced_word(d, start - 4)
+        if word is None or _cfg_control_transfer(word):
+            break
+        start -= 4
+    return start
+
+
+def _traced_call_target(d, site, reg, leaders):
     """The address a `lui reg` / `addiu reg, reg` (or `ori`) pair builds in ``reg`` for the
-    `jr`/`jalr` at ``site``: both halves traced code, in that one register, the last writes
-    of it before the transfer. ``None`` for any other definition (a load, an `addu`, an
-    incoming argument)."""
-    low = _traced_definition(d, site, reg, merges)
+    `jr`/`jalr` at ``site``, or ``None``.
+
+    The rule, in basic-block terms: the `lui`, the low half and the jump lie in one basic
+    block of traced code (no leader after the block's first word, so no other path enters
+    between them); none of the three sits in a delay slot, likely or not (the jump's own
+    delay slot follows it and does not matter); the low half is the last write of ``reg``
+    before the jump and the `lui` the last write before the low half. Any other definition
+    (a load, an `addu`, an incoming argument, an encoding _gpr_writes does not classify)
+    gives ``None``."""
+    start = _traced_block_start(d, site, leaders)
+    low = _defining_word(d.elf, start, site, reg)
     if low is None:
         return None
     l_addr, l_word = low
     op = l_word >> 26
     if op not in (0x09, 0x0D) or (l_word >> 21) & 0x1F != reg:
         return None
-    high = _traced_definition(d, l_addr, reg, merges)
+    high = _defining_word(d.elf, start, l_addr, reg)
     if high is None or high[1] >> 26 != 0x0F:
+        return None
+    if any(_in_traced_delay_slot(d, a) for a in (high[0], l_addr, site)):
         return None
     upper = (high[1] & 0xFFFF) << 16
     if op == 0x09:
@@ -2442,7 +2483,7 @@ def _traced_call_target(d, site, reg, merges=frozenset()):
     return target
 
 
-def _seed_materialized_code(d):
+def _seed_materialized_code(d, entry_hints=()):
     """Make functions of the addresses traced code materializes and then calls or jumps to.
 
     In an image whose code section also holds its data, a materialized address that is
@@ -2452,15 +2493,16 @@ def _seed_materialized_code(d):
     does, so neither the pair nor the bytes say which is code. The evidence is the flow:
     the address becomes a function when traced code builds it with a `lui`/`addiu` (or
     `ori`) pair in one register and that register is the target of a traced `jr`/`jalr`
-    (_traced_call_target). Repeats until nothing new is found: each new function may call
-    further addresses.
+    (_traced_call_target), all three in one basic block (_BlockLeaderCensus). Repeats until
+    nothing new is found: each new function may call further addresses.
 
     Returns the materialized addresses with no such evidence whose `la` low half is traced:
     they stay outside the spans, with no executable authority, for the caller to name."""
+    census = _BlockLeaderCensus(d, entry_hints)
     changed = True
     while changed:
         changed = False
-        merges = _traced_merge_points(d)
+        leaders = census.leaders()
         for site in sorted(d.covered):
             raw = d.elf.read_at_vaddr(site, 4)
             if raw is None or len(raw) < 4:
@@ -2469,12 +2511,12 @@ def _seed_materialized_code(d):
             reg = (word >> 21) & 0x1F
             if word >> 26 != 0 or (word & 0x3F) not in (0x08, 0x09) or reg in (0, 31):
                 continue
-            target = _traced_call_target(d, site, reg, merges)
+            target = _traced_call_target(d, site, reg, leaders)
             if target is None or target in d.functions or target in d.covered:
                 continue
             d.functions.add(target)
             d.discover([target])
-            merges = _traced_merge_points(d)
+            leaders = census.leaders()
             changed = True
     return frozenset(
         target for target, sites in d.materialized.items()
@@ -2512,7 +2554,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     _fill_gaps(d, pending_tail_calls)
     code_candidates = frozenset()
     if mixed_code_data:
-        code_candidates = _seed_materialized_code(d)
+        code_candidates = _seed_materialized_code(d, entry_hints)
 
     # The late passes can reach start-up code that calls a pointer array (a function
     # entered only through a pointer or the gap fill); seed those arrays too.
