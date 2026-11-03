@@ -35,14 +35,14 @@ val bundledAssets: File = layout.buildDirectory.dir("generated/nk-assets").get()
 
 // SDL's android-project Java classes are compiled from the pinned checkout, so it must exist
 // before Java compiles; the native build reuses the same checkout.
-val fetchNativeDeps by tasks.registering(Exec::class) {
+val fetchNativeDeps = tasks.register<Exec>("fetchNativeDeps") {
     description = "Fetches the pinned SDL3 and SDL3_ttf sources"
     commandLine("cmake", "-DNK_ANDROID_DEPS_DIR=$depsDir", "-P", File(projectDir, "deps.cmake").path)
 }
 
 // The files the app unpacks on first start (LauncherActivity): the UI fonts, and for each bundled
 // title its flat image and package description.
-val stageBundledAssets by tasks.registering(Sync::class) {
+val stageBundledAssets = tasks.register<Sync>("stageBundledAssets") {
     into(bundledAssets)
     from(File(repoRoot, "assets/fonts/ui")) { into("app/assets/fonts/ui") }
     for ((id, dir) in titles) {
