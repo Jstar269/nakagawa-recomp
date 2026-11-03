@@ -586,12 +586,12 @@ if(BUILD_PLAYER)
     endif()
 
     if(NOT SDL3_FOUND AND NK_BOOTSTRAP_SDL3)
-        message(STATUS "System SDL3 not found; bootstrapping pinned official release SDL3 3.4.18")
+        message(STATUS "System SDL3 not found; bootstrapping pinned official release SDL3 3.4.20")
         include(FetchContent)
         FetchContent_Declare(
             SDL3
-            URL "https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz"
-            URL_HASH SHA256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+            URL "https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-3.4.20.tar.gz"
+            URL_HASH SHA256=f3bb06f55bed9557227a700af2ea62e49497ebdf58037732a731a5fb3ef8581f
         )
         set(SDL_TEST OFF CACHE BOOL "" FORCE)
         set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)

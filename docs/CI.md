@@ -311,7 +311,7 @@ fixture title configurations.
 Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
 translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
 archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). It builds
-SDL3 from its pinned 3.4.18 release commit with X11 and Vulkan enabled, and SDL3_ttf 3.2.2 from upstream commit
+SDL3 from its pinned 3.4.20 release commit with X11 and Vulkan enabled, and SDL3_ttf 3.2.2 from upstream commit
 `a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b`, with vendored FreeType and HarfBuzz enabled.
 The SDL3 and SDL3_ttf staged installs are cached under keys naming their pinned source versions
 and commits, the SDL3 pin where applicable, the gcc and cmake versions, and the workflow file

@@ -172,9 +172,9 @@ player and your own game.
 ## Linux headless showcase
 
 Linux can build and run the two source-owned showcase packages through the runtime.
-The route needs GCC, GNU Make, Python 3.15 (3.14 is also accepted), CMake, Ninja, `libvulkan-dev`, SDL3 3.4.18,
+The route needs GCC, GNU Make, Python 3.15 (3.14 is also accepted), CMake, Ninja, `libvulkan-dev`, SDL3 3.4.20,
 and PSPDEV v20261001 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
-3.4.18 release commit and verifies the PSPDEV archive against
+3.4.20 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
 Run the showcase from the repository root:
