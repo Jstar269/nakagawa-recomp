@@ -229,7 +229,8 @@ class TraceWindowProbeTests(unittest.TestCase):
         self.assertIn("sr_watch_match_count()", DISPATCH_SELFTEST)
         self.assertIn("test_ram_store_watch_every_width", DISPATCH_SELFTEST)
         self.assertIn("memory-watch-selftest", MAKEFILE)
-        self.assertIn("SR_WATCH=0x08801000:4", MAKEFILE)
+        self.assertIn("--watch 0x08801000:4", MAKEFILE)
+        self.assertIn('strcmp(argv[1], "--watch") == 0', DISPATCH_SELFTEST)
         self.assertIn("native-core-tests: memory-watch-selftest", MAKEFILE)
 
 

@@ -3193,7 +3193,7 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 memory-watch-selftest: export SR_WATCH = 0x00601000:4
 memory-watch-selftest: DISPATCH_ISO_CONFIG = generic
 memory-watch-selftest: dispatch-isolation-selftest-one
-	$(MAKE) --no-print-directory dispatch-isolation-selftest-one DISPATCH_ISO_CONFIG=generic SR_WATCH=0x08801000:4
+	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe --watch 0x08801000:4
 
 native-core-tests: memory-watch-selftest
 

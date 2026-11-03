@@ -2322,6 +2322,15 @@ static void test_host_entries_return_through_the_host_return_address(const char 
 
 int main(int argc, char **argv) {
     sr_mem_init();
+    /* `--watch ADDR:LEN` arms SR_WATCH for this run (and the children it starts), so
+     * memory-watch-selftest can run one binary under two ranges without a sub-make. */
+    if (argc == 3 && strcmp(argv[1], "--watch") == 0) {
+#ifdef _WIN32
+        _putenv_s("SR_WATCH", argv[2]);
+#else
+        setenv("SR_WATCH", argv[2], 1);
+#endif
+    }
     sr_watch_configure();
     sr_watch_note_vblank(7u);
     atomic_store(&sr_timeslice, 0);
