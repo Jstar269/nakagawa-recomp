@@ -5660,8 +5660,12 @@ class HleMeasureProbeTests(unittest.TestCase):
         """A complete synthetic stream: every cell PASS with zero fields unless overridden."""
         spec, counts = CAMPAIGN_PROBE_CASES[case]
         if overrides is None:
-            overrides = {"hle-ge-edram": self.GE_UNSET_OVERRIDES,
-                         "hle-savedata-getsize": self.GETSIZE_ABSENT_OVERRIDES}.get(case, {})
+            if case == "hle-ge-edram":
+                overrides = self.GE_UNSET_OVERRIDES
+            elif case == "hle-savedata-getsize":
+                overrides = self.GETSIZE_ABSENT_OVERRIDES
+            else:
+                overrides = {}
         lines = [
             "NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown "
             "binary_sha256=" + "0" * 64 + " source_commit=" + "b" * 40 + " fixture=hle-measure",
