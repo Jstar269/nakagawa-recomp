@@ -1,6 +1,6 @@
 {
   "compiler": {
-    "name": "glslc",
+    "name": "glslc.exe",
     "options": [
       "--target-env=vulkan1.1"
     ],
@@ -29,11 +29,11 @@
     },
     {
       "embedded": "psp_tnl_vert.inc",
-      "embedded_sha256": "f29bcd426c9f22c12f1f3792ae26e57964948b3979e653e95a2d01a33c3019ee",
+      "embedded_sha256": "d6d0a9568e3069ba4b71a59e5b593b70e346d5dc033aa7cbc780a34d37cc2785",
       "source": "shaders/psp_tnl.vert",
-      "source_sha256": "7d2b2e513b4533fc77c02cc725e5231e5df1c37e81877905c1078c8348a87627",
-      "spirv_bytes": 39004,
-      "spirv_sha256": "6c8ea42947aa89c5f6065a476b3b07f6fdabd483ba5b208745f727861a16a4fd",
+      "source_sha256": "a7efe6e7af2e2f221a4888f465e379ab0f58da9ce1ec36521a208a59e5671dcd",
+      "spirv_bytes": 74564,
+      "spirv_sha256": "9172d49d108606477ce141ec28c43f6dcbf4f1455951d43ba86c937a5f7f2ceb",
       "stage": "vert"
     }
   ]
