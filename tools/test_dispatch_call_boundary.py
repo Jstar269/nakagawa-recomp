@@ -585,14 +585,14 @@ def _switch_chain_with_another_way_out(*, other: str) -> tuple[int, ...]:
     the $sp F was called with.
     """
     other_at = 0x1050
-    other_words = {
+    shapes: dict[str, list[int | None]] = {
         "sibcall": [_lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP), _lui(_T9, 0), None,
                     _jr(_T9), _addiu(_SP, _SP, 0x20)],
         "foreign": [_lw(_SP, 0, _A1), _jr(_RA), _NOP],
-    }[other]
-    case = other_at + 4 * len(other_words)
+    }
+    case = other_at + 4 * len(shapes[other])
     exit_body = case + 24
-    other_words = [_ori(_T9, _T9, case) if word is None else word for word in other_words]
+    other_words = [_ori(_T9, _T9, case) if word is None else word for word in shapes[other]]
     words = _probe_program([
         _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # 0x1010 F
         _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),             # 0x1018
@@ -638,6 +638,38 @@ def _call_into_a_live_frame_tail() -> tuple[int, ...]:
         _jal(tail), _NOP,                                    # TAIL is an entry
     ])
     assert len(words) == (tail + 0x18 - _PROBE_BASE) // 4, "the fixture's labels moved"
+    return words
+
+
+def _native_head_into_an_alloca_tail_end(*, crossing: str) -> tuple[int, ...]:
+    """H reaches F of _alloca_tail_end by a sibcall ("tail") or a linked call ("call").
+
+    With F interpreted, F hands its live frame to TAIL, a native entry entered at F's
+    lowered $sp, whose own return writes that $sp back. A sibcall at H's entry $sp records
+    no restore of H's, so F's own entry $sp must come back from F, in either tier.
+    """
+    head = {
+        "tail": [_j(0), _NOP],
+        "call": [_addiu(_SP, _SP, -0x10), _sw(_RA, 0x0C, _SP), _jal(0), _NOP,
+                 _lw(_RA, 0x0C, _SP), _jr(_RA), _addiu(_SP, _SP, 0x10)],
+    }[crossing]
+    f = 0x1010 + 4 * len(head)
+    tail = f + 0x24
+    head = [(_jal(f) if crossing == "call" else _j(f)) if word in (_j(0), _jal(0)) else word
+            for word in head]
+    words = _probe_program([
+        *head,                                               # 0x1010 H
+        _addiu(_SP, _SP, -0x20), _sw(_RA, 0x1C, _SP),        # F
+        _sw(_FP, 0x18, _SP), _addu(_FP, _SP, 0),
+        _sw(_SP, 0x10, _FP), _addiu(_SP, _SP, -0x30),        # save $sp, alloca
+        _addiu(_V0, 0, 0x57),
+        _j(tail), _lw(_SP, 0x10, _FP),                       # free it in the slot
+        _addu(_SP, _FP, 0),                                  # TAIL
+        _lw(_RA, 0x1C, _SP), _lw(_FP, 0x18, _SP),
+        _jr(_RA), _addiu(_SP, _SP, 0x20),
+        _jal(tail), _NOP, _jal(f), _NOP,                     # both are entries
+    ])
+    assert len(words) == (tail + 0x24 - _PROBE_BASE) // 4, "the fixture's labels moved"
     return words
 
 
@@ -1470,6 +1502,31 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v0"), 3, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
 
+    def test_a_native_head_into_an_interpreted_body_keeps_its_callers_sp(self):
+        # Before: an interpreted body entered by a TAIL owed nothing, and H's sibcall at its
+        # entry $sp records nothing (sr_tail_record), so TAIL's lowered entry $sp reached H's
+        # caller. A linked call into the interpreter owed its entry $sp already.
+        for crossing in ("tail", "call"):
+            words = _native_head_into_an_alloca_tail_end(crossing=crossing)
+            f = 0x1010 + (8 if crossing == "tail" else 0x1C)
+            for codegen_args in ((), (f"--omit-aot=0x{f:08x}",)):
+                with self.subTest(crossing=crossing, interpreted=bool(codegen_args)):
+                    _generated, results = self._probe(words, (0,), codegen_args=codegen_args)
+                    rc, output, fields = results[0]
+                    self.assertEqual(rc, 0, output)
+                    self.assertEqual(fields.get("v0"), 0x57, output)
+                    self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+        # I3: a run entered by a TAIL owes nothing again.
+        self._assert_mutant_fails(
+            "I3-tail-entered-interpreter-owes-nothing",
+            _native_head_into_an_alloca_tail_end(crossing="tail"), (0,),
+            {"guest_interp.c": (
+                "    const int owes_entry_sp = boundary == NULL || boundary->owes_entry_sp;",
+                "    const int owes_entry_sp = boundary != NULL && boundary->owes_entry_sp;")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
+            codegen_args=("--omit-aot=0x00001018",),
+        )
+
     def test_a_call_site_drains_before_the_caller_goes_on(self):
         _generated, results = self._probe(_call_into_a_live_frame_tail(), (0,))
         rc, output, fields = results[0]
@@ -1749,7 +1806,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self._assert_mutant_fails(
             "I2-an-alloca-free-leaves-the-frame", _alloca_tail_end(), (0,),
             {"guest_interp.c": (
-                "    return boundary == NULL || after < before || after >= boundary->entry_sp;",
+                "    return after < before || after >= entry_sp;",
                 "    return 1;")},
             lambda r: r[0][0] != 0 or r[0][2].get("v1") != _PROBE_SP,
             codegen_args=interpreted_f,

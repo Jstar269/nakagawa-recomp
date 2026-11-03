@@ -167,6 +167,7 @@ T0, T1, T2, T3, T4, T5, T6, T7 = 8, 9, 10, 11, 12, 13, 14, 15
 S0, S1, S2, S3, S4, S5, S6, S7 = 16, 17, 18, 19, 20, 21, 22, 23
 T8, T9 = 24, 25
 SP, RA = 29, 31
+FP = 30
 
 NOP = 0
 JR_RA = _r(RA, 0, 0, 0, 0x08)
@@ -1238,6 +1239,73 @@ def _cell_xtail() -> list[int]:
     ]
 
 
+def _cell_xsibmid() -> list[int]:
+    """CROSS-TIER (#1935): an interpreted body with its own frame that sibcalls a native piece.
+
+    Omitted in lane MIXED, so the production interpreter runs it. It lowers
+    $sp, saves $fp, sets $fp to the live frame and then `j`-transfers to a
+    registered piece WITHOUT freeing the frame. The piece is entered at this
+    body's lowered $sp and returns at it, so this body owes its entry $sp once
+    the chain completes: entered by the `xsibtail` sibcall, which records no
+    restore at its own entry $sp, as much as by the `xsibcall` linked call.
+    """
+    return [
+        _i(0x09, SP, SP, -0x20),            # 0x00 addiu sp, sp, -0x20
+        _i(0x2B, SP, FP, 0x18),             # 0x04 sw    fp, 0x18(sp)
+        _r(SP, ZERO, FP, 0, 0x21),          # 0x08 addu  fp, sp, zero
+        _i(0x09, V0, V0, 0x40),             # 0x0c addiu v0, v0, 0x40
+        _j(0x02, 0x00),                     # 0x10 j     xsibpiece (patched + relocated)
+        NOP,                                # 0x14 slot
+    ]
+
+
+def _cell_xsibpiece() -> list[int]:
+    """CROSS-TIER (#1935): the REGISTERED piece entered at `xsibmid`'s lowered $sp.
+
+    It restores the caller's $fp and returns for `xsibmid` at the $sp it was
+    entered at, still inside `xsibmid`'s frame, so the piece itself is balanced.
+    The $sp `xsibmid` was entered at comes back only from the body that owes it:
+    the native tier's tail record, or the interpreter run that hands the frame on.
+    """
+    return [
+        _i(0x23, SP, FP, 0x18),             # 0x00 lw    fp, 0x18(sp)
+        JR_RA,                              # 0x04 jr    ra
+        NOP,                                # 0x08 slot
+    ]
+
+
+def _cell_xsibtail() -> list[int]:
+    """CROSS-TIER TAIL entry (#1935): a sibcall into `xsibmid` at its entry $sp.
+
+    It goes through a register, as `xtail` does: a `j` names its target's native
+    body in the tail record, so lane MIXED's runtime omission would not reach it.
+    At the entry $sp the record owes no restore either way.
+    """
+    return [
+        _i(0x09, ZERO, V0, 4),              # 0x00 addiu v0, zero, 4
+        _i(0x0F, 0, T0, 0),                 # 0x04 lui   t0, %hi(xsibmid) (patched)
+        _i(0x0D, T0, T0, 0),                # 0x08 ori   t0, t0, %lo(xsibmid)
+        _r(T0, 0, 0, 0, 0x08),              # 0x0c jr    t0  (tail)
+        NOP,                                # 0x10 slot
+    ]
+
+
+def _cell_xsibcall() -> list[int]:
+    """CROSS-TIER CALL entry (#1935): a linked call into the same interpreted body."""
+    return [
+        _i(0x09, SP, SP, -16),              # 0x00 addiu sp, sp, -16
+        _i(0x2B, SP, RA, 12),               # 0x04 sw    ra, 12(sp)
+        _i(0x0F, 0, T0, 0),                 # 0x08 lui   t0, %hi(xsibmid) (patched)
+        _i(0x0D, T0, T0, 0),                # 0x0c ori   t0, t0, %lo(xsibmid)
+        _r(T0, 0, RA, 0, 0x09),             # 0x10 jalr  ra, t0
+        NOP,                                # 0x14 slot
+        _i(0x09, V0, V0, 0x100),            # 0x18 addiu v0, v0, 256  continuation mark
+        _i(0x23, SP, RA, 12),               # 0x1c lw    ra, 12(sp)
+        JR_RA,                              # 0x20
+        _i(0x09, SP, SP, 16),               # 0x24 addiu sp, sp, 16 (return slot)
+    ]
+
+
 def _cell_xnestleaf() -> list[int]:
     """CROSS-TIER nested call destination: a REGISTERED leaf the interpreter calls."""
     return [
@@ -1622,6 +1690,14 @@ CELLS: tuple[tuple[str, str, object], ...] = (
      lambda: _cell_fpu_interp(0x7fc12345, 0x80000000, 0xfe800001)),
     ("fpu_aot", "AOT-only scalar FPU oracle cell", _cell_fpu_aot),
     ("spleak", "positive control: unbalanced $sp epilogue", _cell_spleak),
+    ("xsibmid", "cross-tier: the interpreted body that hands its live frame to a native piece",
+     _cell_xsibmid),
+    ("xsibpiece", "cross-tier: the registered piece entered at the lowered $sp",
+     _cell_xsibpiece),
+    ("xsibtail", "cross-tier: a sibcall into an interpreted body that hands its live frame to a native piece",
+     _cell_xsibtail),
+    ("xsibcall", "cross-tier: a linked call into the same interpreted body",
+     _cell_xsibcall),
     ("negpad", "fail-closed negative corpus scratch", _cell_negpad),
     ("ret", "cosim return trampoline", _cell_ret),
 )
@@ -1630,7 +1706,7 @@ CELLS: tuple[tuple[str, str, object], ...] = (
 # under test; the AOT/reference oracle enters its generated body directly.
 NON_ENTRY_CELLS = frozenset(
     {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread", "fpu_aot",
-     "xnestmid", "xnestleaf", "rarewrite_callee", "rarewrite_target", "nonlocal_mid",
+     "xsibmid", "xsibpiece", "xnestmid", "xnestleaf", "rarewrite_callee", "rarewrite_target", "nonlocal_mid",
      "nonlocal_exit", "lj_f", "lj_g", "lj_set", "lj_jmp"}
 )
 
@@ -1650,6 +1726,8 @@ CROSS_TIER_OMISSIONS: dict[str, str] = {
     "xcall": "xstore",
     "xtail": "xtailmid",
     "xnest": "xnestmid",
+    "xsibtail": "xsibmid",
+    "xsibcall": "xsibmid",
     "lj": "lj_set",
 }
 
@@ -1754,9 +1832,12 @@ def build_text_segment() -> bytes:
     xtailmid = BASE + layout["xtailmid"][0]
     xnestmid = BASE + layout["xnestmid"][0]
     xnestleaf = BASE + layout["xnestleaf"][0]
+    xsibmid = BASE + layout["xsibmid"][0]
     for cell, slot, address in (
         ("xcall", 0x0C, xstore),
         ("xtail", 0x04, xtailmid),
+        ("xsibtail", 0x04, xsibmid),
+        ("xsibcall", 0x08, xsibmid),
         ("xnest", 0x0C, xnestmid),
         ("xnestmid", 0x08, xnestleaf),
         ("lj_f", 0x08, BASE + layout["lj_set"][0]),
@@ -1839,6 +1920,9 @@ def build_text_segment() -> bytes:
     )
     struct.pack_into(
         "<I", text, layout["xtailmid"][0] + 0x08, _j(0x02, layout["xread"][0])
+    )
+    struct.pack_into(
+        "<I", text, layout["xsibmid"][0] + 0x10, _j(0x02, layout["xsibpiece"][0])
     )
     return bytes(text)
 
@@ -2298,6 +2382,8 @@ def verify(build_dir: Path) -> int:
     for entry, target, slot in (
         ("xcall", "xstore", 0x0C),
         ("xtail", "xtailmid", 0x04),
+        ("xsibtail", "xsibmid", 0x04),
+        ("xsibcall", "xsibmid", 0x08),
         ("xnest", "xnestmid", 0x0C),
         ("xnestmid", "xnestleaf", 0x08),
     ):
@@ -2317,6 +2403,16 @@ def verify(build_dir: Path) -> int:
             f"xtailmid tail decodes to 0x{xtail_target:08x}, expected xread at "
             f"0x{BASE + layout['xread'][0]:08x}"
         )
+    for source, at, destination in (
+        ("xsibmid", 0x10, "xsibpiece"),
+    ):
+        jump = struct.unpack_from("<I", image, layout[source][0] + at)[0]
+        jump_target = ((jump & 0x03FFFFFF) << 2) | (BASE & 0xF0000000)
+        if (jump >> 26) != 2 or jump_target != BASE + layout[destination][0]:
+            problems.append(
+                f"{source} tail decodes to 0x{jump_target:08x}, expected "
+                f"{destination} at 0x{BASE + layout[destination][0]:08x}"
+            )
 
     if problems:
         for problem in problems:

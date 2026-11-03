@@ -162,6 +162,16 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
     ),
     Mutant(
+        "entry-sp-owed-at-sibcall",
+        "an interpreted body that hands its live frame to a native piece is made to "
+        "restore the entry $sp first (#1935)",
+        [(
+            "    const int owes_entry_sp = boundary == NULL || boundary->owes_entry_sp;\n",
+            "    const int owes_entry_sp = boundary != NULL && boundary->owes_entry_sp;\n",
+            1,
+        )],
+    ),
+    Mutant(
         "wrong-branch-target",
         "incorrect branch target",
         [(
