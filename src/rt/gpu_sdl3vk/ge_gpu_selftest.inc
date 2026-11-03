@@ -3501,17 +3501,19 @@ static int coherence_run_fallback_reasons(void) {
     s_ge->stencil_enable = 1; s_ge->color_test_enable = 1;   /* stencil is tested first */
     if (gpu_state_unsupported_reason() != GEGPU_FALLBACK_STENCIL) ok = 0;
     /* The stencil states the GPU path takes: clear mode (ge.c ignores the test there), no
-     * depth test, or KEEP for the ops the depth test can leave to run. */
-    struct { const char *what; int clear, ztest; uint32_t test, op; int want; } st[] = {
-        {"stencil clear", 1, 1, 2u, 0x000004u, -1},
-        {"stencil no depth", 0, 0, 2u, 0x040404u, -1},
-        {"stencil always", 0, 1, 1u, 0x020004u, -1},
-        {"stencil keep", 0, 1, 2u, 0x050000u, -1},
-        {"stencil zfail op", 0, 1, 1u, 0x000100u, GEGPU_FALLBACK_STENCIL},
+     * depth test, or KEEP for the ops the depth test can leave to run. A depth test that
+     * always passes (func 1) never runs its fail op. */
+    struct { const char *what; int clear, ztest; uint32_t zfunc, test, op; int want; } st[] = {
+        {"stencil clear", 1, 1, 4u, 2u, 0x000004u, -1},
+        {"stencil no depth", 0, 0, 4u, 2u, 0x040404u, -1},
+        {"stencil always", 0, 1, 4u, 1u, 0x020004u, -1},
+        {"stencil keep", 0, 1, 4u, 2u, 0x050000u, -1},
+        {"stencil zfail op", 0, 1, 4u, 1u, 0x000100u, GEGPU_FALLBACK_STENCIL},
+        {"stencil zfail op, depth always", 0, 1, 1u, 1u, 0x010101u, -1},
     };
     s_ge->color_test_enable = 0;
     for (unsigned i = 0; i < sizeof(st) / sizeof(st[0]); i++) {
-        s_ge->clear = st[i].clear; s_ge->ztest_enable = st[i].ztest;
+        s_ge->clear = st[i].clear; s_ge->ztest_enable = st[i].ztest; s_ge->ztest = st[i].zfunc;
         s_ge->stencil_test = st[i].test; s_ge->stencil_op = st[i].op;
         const int got = gpu_state_unsupported_reason();
         if (got != st[i].want) {
@@ -3521,7 +3523,7 @@ static int coherence_run_fallback_reasons(void) {
         }
     }
     *s_ge = saved;
-    if (ok) printf("gpu coherence selftest: PASS %-22s 11 cells\n", "fallback-reasons");
+    if (ok) printf("gpu coherence selftest: PASS %-22s 12 cells\n", "fallback-reasons");
     return ok;
 }
 
