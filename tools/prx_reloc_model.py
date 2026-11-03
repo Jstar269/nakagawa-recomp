@@ -185,7 +185,8 @@ class _Image:
             offset = address - segment.vaddr
             if 0 <= offset and offset + 4 <= segment.memsz:
                 if offset + 4 <= len(segment.data):
-                    return struct.unpack_from("<I", segment.data, offset)[0]
+                    returned: int = struct.unpack_from("<I", segment.data, offset)[0]
+                    return returned
                 raw = segment.data[offset:offset + 4] if offset < len(segment.data) else b""
                 return int.from_bytes(raw + b"\0" * (4 - len(raw)), "little")
         raise RelocationModelError("relocation site lies outside the module image")

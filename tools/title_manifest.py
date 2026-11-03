@@ -240,7 +240,8 @@ def identifier(value: Any, path: str) -> str:
     value = text(value, path, 64)
     if not ID_RE.fullmatch(value):
         fail(path, "must match ^[a-z0-9][a-z0-9._-]{0,63}$")
-    return value
+    returned: str = value
+    return returned
 
 
 def portable_path(value: Any, path: str) -> str:
@@ -667,7 +668,8 @@ def guest_address(value: Any, path: str) -> int:
         fail(path, "must not be zero; omit the field to leave the binding unconfigured")
     if value % 4 != 0:
         fail(path, "must be 4-byte aligned")
-    return value
+    returned: int = value
+    return returned
 
 
 def validate_dispatch_aliases(value: Any, path: str) -> list[dict[str, int]]:

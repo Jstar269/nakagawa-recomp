@@ -142,7 +142,8 @@ def _public_policy() -> object | None:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import publication_policy
 
-        return publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
+        returned: object | None = publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
+        return returned
     except Exception:
         return None
 
@@ -159,7 +160,8 @@ def _is_public_surface(path: str) -> bool:
     if policy is None:
         return True
     try:
-        return policy.resolve(path).disposition == "included"
+        returned: bool = policy.resolve(path).disposition == "included"
+        return returned
     except Exception:
         return True
 
@@ -175,7 +177,8 @@ def _is_policy_included(path: str) -> bool:
     if policy is None:
         return False
     try:
-        return policy.resolve(path).disposition == "included"
+        returned: bool = policy.resolve(path).disposition == "included"
+        return returned
     except Exception:
         return False
 
@@ -1240,7 +1243,8 @@ def _read_event(path: str | None) -> dict[str, object]:
     if not path:
         return {}
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        returned: dict[str, object] = json.loads(Path(path).read_text(encoding="utf-8"))
+        return returned
     except (OSError, json.JSONDecodeError):
         return {}
 

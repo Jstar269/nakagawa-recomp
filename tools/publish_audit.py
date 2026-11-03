@@ -2049,7 +2049,8 @@ def _expected_audited_ledger(audited: bytes, trusted_raw: bytes, trusted_documen
     except (UnicodeDecodeError, json.JSONDecodeError):
         audited_document = None
     if is_claims_ledger(audited_document):
-        return claims_ledger_bytes(trusted_document)
+        returned: bytes = claims_ledger_bytes(trusted_document)
+        return returned
     return trusted_raw.replace(b"\r\n", b"\n")
 
 

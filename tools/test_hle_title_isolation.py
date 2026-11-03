@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 import sys
@@ -107,11 +108,13 @@ def synthetic_addresses(bindings: dict) -> set[int]:
 def synthetic_manifest_configured(shift: int = 0) -> dict:
     base = json.loads(FIXTURE_B.read_text(encoding="utf-8"))
     base["runtime_bindings"] = {"schema_version": 1, **synthetic_bindings(shift)}
-    return base
+    returned: dict[str, Any] = base
+    return returned
 
 
 def header_for(manifest: dict | None) -> str:
-    return title_runtime_config.render_header(title_runtime_config.bindings_from_manifest(manifest))
+    returned: str = title_runtime_config.render_header(title_runtime_config.bindings_from_manifest(manifest))
+    return returned
 
 
 class GenericIsolationTests(unittest.TestCase):

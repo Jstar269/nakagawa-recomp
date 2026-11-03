@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 import sys
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -142,11 +143,13 @@ def _build(sources=None, emitter=EMITTER_SAMPLE, ledger=None) -> dict:
 
 
 def _render(**kwargs) -> str:
-    return rhi.render_markdown(_build(**kwargs))
+    returned: str = rhi.render_markdown(_build(**kwargs))
+    return returned
 
 
 def _row(inv: dict, name: str) -> dict:
-    return {r["name"]: r for r in inv["helpers"]}[name]
+    returned: dict[str, Any] = {r["name"]: r for r in inv["helpers"]}[name]
+    return returned
 
 
 class StripTests(unittest.TestCase):
@@ -381,6 +384,8 @@ class DriftContractTests(unittest.TestCase):
 
 class RepositoryInventoryTests(unittest.TestCase):
     """Checks against the real sources. Names and classes only, never line numbers."""
+    inv: dict[str, Any]
+    text: str
 
     @classmethod
     def setUpClass(cls) -> None:

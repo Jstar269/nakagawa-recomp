@@ -76,6 +76,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -408,6 +409,14 @@ class PackagePair:
 
 class TestPlayerPackageDeterminism(unittest.TestCase):
     """Three builds, shared by every assertion in the class."""
+    before: str
+    binary_dir: Path
+    harness: Path
+    player: Path
+    validator: Path
+    roots: dict[str, Any]
+    temporary: scratch_dir.TemporaryDirectory
+    workspace: Path
 
     # -- repository and toolchain ---------------------------------------------
 
