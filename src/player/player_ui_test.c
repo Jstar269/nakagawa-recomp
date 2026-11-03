@@ -45,7 +45,7 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "psp_fonts", VIEW_PSP_FONTS }, { "updates", VIEW_UPDATES },
         { "confirm_factory_reset", VIEW_CONFIRM_FACTORY_RESET },
         { "accessibility_settings", VIEW_ACCESSIBILITY_SETTINGS },
-        { "ace_settings", VIEW_ACE_SETTINGS }
+        { "ace_settings", VIEW_ACE_SETTINGS }, { "problem_report", VIEW_PROBLEM_REPORT }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -233,6 +233,32 @@ int player_ui_test_next_event(const char *script, size_t *cursor,
         event->type = SDL_EVENT_USER;
         event->user.code = PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS;
         event->user.windowID = (Uint32)target;
+        event->user.timestamp = timeout;
+        return 1;
+    }
+    if (strncmp(token, "WAIT_REPORT=", 12) == 0) {
+        char *comma = strchr(token + 12, ',');
+        uint32_t mask = 0;
+        uint64_t timeout = 0;
+        char *cursor;
+        if (!comma) return -1;
+        *comma = '\0';
+        /* "2|6": any of these PlayerReportPhase numbers ends the wait. */
+        for (cursor = token + 12; *cursor != '\0';) {
+            char *end = cursor;
+            while (*end != '\0' && *end != '|') ++end;
+            if (*end == '|') *end++ = '\0';
+            uint64_t phase = 0;
+            if (!player_ui_test_parse_positive_u64(cursor, &phase) ||
+                phase > PLAYER_REPORT_NO_PYTHON) return -1;
+            mask |= UINT32_C(1) << (unsigned)phase;
+            cursor = end;
+        }
+        if (mask == 0 || !player_ui_test_parse_positive_u64(comma + 1, &timeout) ||
+            timeout > UINT32_MAX) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_REPORT;
+        event->user.windowID = mask;
         event->user.timestamp = timeout;
         return 1;
     }
@@ -482,6 +508,7 @@ const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_CONFIRM_FACTORY_RESET: return "confirm_factory_reset";
     case VIEW_ACCESSIBILITY_SETTINGS: return "accessibility_settings";
     case VIEW_ACE_SETTINGS: return "ace_settings";
+    case VIEW_PROBLEM_REPORT: return "problem_report";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
     }
@@ -1032,8 +1059,8 @@ void player_ui_test_report_startup(const PlayerUiTest *t, const PlayerUiNk *next
         player_ui_nk_test_report_compatibility();
     }
     if (t->mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
-        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_ACE_SETTINGS. */
-        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_ACE_SETTINGS; ++view) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_PROBLEM_REPORT. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_PROBLEM_REPORT; ++view) {
             printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
                    player_ui_test_view_name((PlayerView)view),
                    player_ui_nk_draws_view(view) ? 1 : 0);
@@ -1100,8 +1127,31 @@ static const char *player_update_phase_name(PlayerUpdatePhase phase) {
     }
 }
 
+const char *player_ui_test_report_data_root(void) {
+    const char *root = getenv("NK_UI_TEST_REPORT_DATA_ROOT");
+    return root != NULL && root[0] != '\0' ? root : NULL;
+}
+
+bool player_ui_test_fail_report_thread_create(void) {
+    const char *flag = getenv("NK_UI_TEST_FAIL_REPORT_THREAD_CREATE");
+    return flag != NULL && flag[0] == '1';
+}
+
 void player_ui_test_report_update_phase(const PlayerUiTest *t, const PlayerApp *app) {
     static PlayerUpdatePhase reported = PLAYER_UPDATE_IDLE;
+    static PlayerReportPhase reported_report = PLAYER_REPORT_IDLE;
+    if (t->mode && app->report.phase != reported_report) {
+        reported_report = app->report.phase;
+        printf("[PLAYER_UI_TEST] problem_report=%d files=%d path=%s\n", (int)app->report.phase,
+               app->report.file_count, app->report.path[0] ? app->report.path : "none");
+        if (app->report.message[0]) {
+            printf("[PLAYER_UI_TEST] problem_report_message=%s\n", app->report.message);
+        }
+        for (int i = 0; i < app->report.file_count; ++i) {
+            printf("[PLAYER_UI_TEST] problem_report_file=%s\n", app->report.file_names[i]);
+        }
+        fflush(stdout);
+    }
     if (t->mode && app->update.phase != reported) {
         reported = app->update.phase;
         printf("[PLAYER_UI_TEST] update=%s error=%s notice=%d newest=%s zip=%s "
@@ -1154,6 +1204,20 @@ void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app, SDL_Renderer *r
             fprintf(stderr,
                     "[PLAYER_UI_TEST] wait_package_status result=FAIL target=%d\n",
                     (int)t->wait_package_status_target);
+            t->failed = true;
+            t->quit_queued = true;
+            *running = false;
+        } else {
+            ui_test_block_script = true;
+        }
+    }
+    if (t->waiting_for_report) {
+        if ((t->wait_report_mask >> (unsigned)app->report.phase) & 1u) {
+            printf("[PLAYER_UI_TEST] wait_report phase=%d result=PASS\n", (int)app->report.phase);
+            t->waiting_for_report = false;
+        } else if (ui_test_now >= t->wait_deadline) {
+            fprintf(stderr, "[PLAYER_UI_TEST] wait_report result=FAIL mask=%u actual=%d\n",
+                    t->wait_report_mask, (int)app->report.phase);
             t->failed = true;
             t->quit_queued = true;
             *running = false;
@@ -1304,6 +1368,11 @@ void player_ui_test_step_script(PlayerUiTest *t, PlayerApp *app, SDL_Renderer *r
             t->waiting_for_package_status = true;
             printf("[PLAYER_UI_TEST] wait_package_status target=%u started\n",
                    scripted_event.user.windowID);
+        } else if (scripted_event.type == SDL_EVENT_USER &&
+                   scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_REPORT) {
+            t->wait_report_mask = scripted_event.user.windowID;
+            t->wait_deadline = ui_test_now + scripted_event.user.timestamp;
+            t->waiting_for_report = true;
         } else if (scripted_event.type == SDL_EVENT_USER &&
                    scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_CONSENT) {
             bool matches = app->active_view == VIEW_PREREQ_CONSENT &&

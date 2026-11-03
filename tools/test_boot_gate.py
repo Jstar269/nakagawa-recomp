@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -35,7 +36,8 @@ class BootGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "run.log"
             path.write_text("".join(lines), encoding="utf-8")
-            return boot_gate.parse_log(str(path), allow_present_only=allow_present_only)
+            returned: dict[str, Any] = boot_gate.parse_log(str(path), allow_present_only=allow_present_only)
+            return returned
 
     def ordered_prefix(self) -> list[str]:
         return [event(phase) for phase in ORDERED]

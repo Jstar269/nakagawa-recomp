@@ -505,8 +505,13 @@ static int check_overlap_diff(void) {
         s2 = s0;
         overlap_diff_run_codegen(&s1, c);
         int kind = sr_vfpu_interp(&s2, w);
-        CHECK(kind == SR_VFPU_COMPUTE, "overlap diff interp executes");
-        if (kind != SR_VFPU_COMPUTE) { case_bad = 1; }
+        /* vcmp is a STATE form (it writes the condition code); everything else computes. */
+        CHECK(kind == SR_VFPU_COMPUTE || kind == SR_VFPU_STATE, "overlap diff interp executes");
+        if (kind != SR_VFPU_COMPUTE && kind != SR_VFPU_STATE) {
+            fprintf(stderr, "overlap diff case=%s op=0x%08x: interpreter returned %d, not COMPUTE or STATE\n",
+                    name, w, kind);
+            case_bad = 1;
+        }
 
         for (int i = 0; i < 128 && !case_bad; i++) {
             if (s1.vi[i] != s2.vi[i]) {

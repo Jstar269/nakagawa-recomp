@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "tools"
@@ -64,7 +65,8 @@ def _pass_output(*, title: str = TITLE_ID, name: str = DISPLAY_NAME, backend: st
 
 
 def _public_manifest() -> dict:
-    return title_manifest.validate_manifest(title_manifest.load_manifest(DISPLAY_SMOKE))
+    returned: dict[str, Any] = title_manifest.validate_manifest(title_manifest.load_manifest(DISPLAY_SMOKE))
+    return returned
 
 
 class BuildEvidenceTests(unittest.TestCase):

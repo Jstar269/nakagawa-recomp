@@ -1159,6 +1159,7 @@ PUBLIC_TARGETS := \
 	fp-convert-selftest \
 	ge-float24-selftest \
 	ge-cpu-profile-validate-selftest \
+	ge-flight-overhead \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
 	ge-raster-ref-selftest \
@@ -1199,8 +1200,8 @@ PUBLIC_TARGETS := \
 	gpu-capture-selftest \
 	gpu-selftest-status
 
-PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
-INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-latin-small-font project-korean-font
+INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-latin-small-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1310,6 +1311,7 @@ HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
 HELP_DESCRIPTION_ge-cpu-profile-validate-selftest := run the GE CPU-profile validator selftest on the production GE object
+HELP_DESCRIPTION_ge-flight-overhead := measure the disarmed flight recorder cost on the GE draw path (recorder linked vs absent; no game data)
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
 HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
@@ -2477,9 +2479,10 @@ PROJECT_FONT_GENERATED_DIR_PY := $(subst \,/,$(PROJECT_FONT_GENERATED_DIR))
 # Keep every internal target visible to the static target inventory.
 project-japanese-font:
 project-latin-font:
+project-latin-small-font:
 project-korean-font:
 
-# All three project slots use this rule family. Each source pin, repertoire, and
+# The project fonts use this rule family. Each source pin, repertoire, and
 # project-owned PGF name is data; output staging is handled once by tools/copy_build_assets.ps1.
 define PROJECT_FONT_RULE
 project-$(1)-font: $(PROJECT_FONT_GENERATED_DIR)/$(2)
@@ -2490,8 +2493,15 @@ $(PROJECT_FONT_GENERATED_DIR)/$(2): $(3) $(4) $(5) tools/ttf2pgf.py tools/pgf_wr
 	"$(PYTHON)" -c "import shutil; shutil.copyfile('$(5)', '$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2))-OFL.txt')"
 endef
 
+# The console's two Latin sizes, 10.125 and 7 points at 128 dpi. Each strike is sized and weighted so
+# that its ink meets the console font of that size: x-height, cap height, stem width and spacing
+# (font/README.md). The header ascender and descender are the console fonts' design values.
+PROJECT_LATIN_FONT_ARGS := --ppem 19 --embolden-x 7 --embolden-advance 8 --nominal-size 648 --resolution 8192 --header-ascender 863 --header-descender -196 --baseline-ellipsis
+PROJECT_LATIN_SMALL_FONT_ARGS := --ppem 13 --embolden-x 3 --embolden-y 2 --embolden-advance 5 --nominal-size 448 --resolution 8192 --header-ascender 576 --header-descender -131 --baseline-ellipsis
+
 $(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese,--ppem 12))
-$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,--ppem 13 --embolden-x 6 --embolden-y 4 --embolden-advance 3))
+$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,$(PROJECT_LATIN_FONT_ARGS)))
+$(eval $(call PROJECT_FONT_RULE,latin-small,nkltns.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,$(PROJECT_LATIN_SMALL_FONT_ARGS)))
 $(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean,--ppem 12))
 
 project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
@@ -2824,6 +2834,24 @@ ge-cpu-profile-validate-selftest: $(RT_GE_O)
 	$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled
 
 native-core-tests: ge-cpu-profile-validate-selftest
+
+# ge-flight-overhead -- cost of the disarmed flight recorder on the GE paths (#320): the
+# ge-cpu-profile-validate-selftest harness's --bench mode on the production ge.c, built once
+# with the recorder linked (SR_FLIGHT unset) and once with -USR_FLIGHT_RECORDER_LINKED, run
+# in alternating pairs.  Not part of native-core-tests: it measures, it does not gate.
+# GE_FLIGHT_ROUNDS is the samples per workload and pair; GE_FLIGHT_PAIRS the pair count.
+GE_FLIGHT_DIR := $(BUILD_DIR)/ge-flight-overhead
+GE_FLIGHT_ROUNDS ?= 30
+GE_FLIGHT_PAIRS ?= 5
+GE_FLIGHT_SRCS := tests/native/ge_cpu_profile_validate_selftest.c src/rt/ge_capture.c src/rt/flight_recorder.c src/rt/perf.c
+
+ge-flight-overhead:
+	"$(PYTHON)" -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]" $(GE_FLIGHT_DIR)/linked $(GE_FLIGHT_DIR)/absent
+	$(CC) $(GE_CFLAGS) -c src/rt/ge.c -o $(GE_FLIGHT_DIR)/linked/ge.o
+	$(CC) $(GE_CFLAGS) -USR_FLIGHT_RECORDER_LINKED -c src/rt/ge.c -o $(GE_FLIGHT_DIR)/absent/ge.o
+	$(CC) $(CFLAGS) -O2 $(LDFLAGS) -o $(GE_FLIGHT_DIR)/linked/bench$(EXE_EXT) $(GE_FLIGHT_SRCS) $(GE_FLIGHT_DIR)/linked/ge.o -lm
+	$(CC) $(CFLAGS) -O2 -USR_FLIGHT_RECORDER_LINKED $(LDFLAGS) -o $(GE_FLIGHT_DIR)/absent/bench$(EXE_EXT) $(GE_FLIGHT_SRCS) $(GE_FLIGHT_DIR)/absent/ge.o -lm
+	"$(PYTHON)" tools/ge_flight_overhead.py --dir "$(GE_FLIGHT_DIR)" --rounds $(GE_FLIGHT_ROUNDS) --pairs $(GE_FLIGHT_PAIRS)
 
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
@@ -3175,7 +3203,8 @@ asset-index-selftest:
 # gpu-coherence-selftest — Vulkan-backed production-path regression for CPU writes that
 # overlap persistent GPU targets. The harness owns synthetic guest memory only; target
 # acquire, dirty notification, reacquire, and readback all execute ge_gpu.c's real path.
-# The scaled-upload case (#1296) and the per-fragment mip level case (#1373) run again alone
+# The scaled-upload case (#1296), the per-fragment mip level case (#1373) and the readback-rows
+# case (#323, also on its SR_GPU_READBACK_FULL reference path) run again alone
 # at render scales 2 and 4, selected by arguments: a VAR=value prefix needs a POSIX shell, and
 # cmd.exe does not take one.
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
@@ -3192,6 +3221,12 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 	$(GPU_COHERENCE_BIN) --scale 4 --case scaled-upload
 	$(GPU_COHERENCE_BIN) --scale 2 --case mip-lod
 	$(GPU_COHERENCE_BIN) --scale 4 --case mip-lod
+	$(GPU_COHERENCE_BIN) --scale 2 --case readback-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case readback-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case readback-rows --readback-full 1
+	$(GPU_COHERENCE_BIN) --scale 2 --case undrawn-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows
+	$(GPU_COHERENCE_BIN) --scale 4 --case undrawn-rows --readback-full 1
 
 # gpu-snapsync-selftest — production-path regression for the explicit guest-VRAM
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
