@@ -22,7 +22,6 @@ import hashlib
 import itertools
 from io import StringIO
 import json
-import math
 import os
 from pathlib import Path
 import random
@@ -78,7 +77,7 @@ def _f32_decay_reference(k: float) -> int:
     with decimal.localcontext() as ctx:
         ctx.prec = 60
         exact = 1 - (1 - decimal.Decimal(k)).sqrt()
-    return struct.unpack("<I", struct.pack("<f", float(exact)))[0]
+    return _bits_of(float(exact))
 
 
 
@@ -1388,13 +1387,12 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
         its stock bits and the site reports once."""
         lwc1 = 0xC4430010  # lwc1 $f3, 0x10($v0)
         rng = random.Random(1932)
-        f32 = lambda bits: struct.unpack("<f", struct.pack("<I", bits))[0]  # noqa: E731
-        ks = [2.0 ** -25, 1e-7, 1e-4, 0.2, 0.5, 0.75, 0.999, f32(0x3F7FFFFF),
-              1e-17, 1e-30, 2.0 ** -126, f32(0x00000001), f32(0x007FFFFF)]
+        ks = [2.0 ** -25, 1e-7, 1e-4, 0.2, 0.5, 0.75, 0.999, _f32_of(0x3F7FFFFF),
+              1e-17, 1e-30, 2.0 ** -126, _f32_of(0x00000001), _f32_of(0x007FFFFF)]
         ks += [rng.random() for _ in range(2000)]
         ks += [2.0 ** rng.uniform(-149, -20) for _ in range(500)]
         ks = [struct.unpack("<f", struct.pack("<f", k))[0] for k in ks]
-        outside = [0.0, 1.0, 1.5, -0.25, -0.0, f32(0x7FC00000)]  # the last is a quiet NaN
+        outside = [0.0, 1.0, 1.5, -0.25, -0.0, _f32_of(0x7FC00000)]  # the last is a quiet NaN
         lvs = 0xC844C410  # lv.s S100.s, -0x3bf0($v0)
         v4 = codegen.vreg_indices(4, 1)[0]
         forms = (("map_f_reg", {"reg": 3}, lwc1, "s->f[3]"), ("map_v_reg", {"vreg": 4}, lvs, f"s->v[{v4}]"))
