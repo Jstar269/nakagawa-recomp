@@ -2552,8 +2552,22 @@ def _seed_materialized_code(d, entry_hints=(), work=None):
     addresses. Once a round accepts nothing, every accepted target is checked against the
     final leaders. A target no traced site names any more is withdrawn and refused from
     then on: the discovery returns to its state before the pass, which drops the code
-    traced only through that target, and the pass runs again. Each withdrawal refuses one
-    more target for good, so the pass ends. A round costs one trace of the new targets
+    traced only through that target, and the pass runs again. Every target that fails
+    the same final check is withdrawn together, in one rerun. Each rerun refuses at least
+    one more target for good, so the pass ends.
+
+    A withdrawn target stays refused even when the final traced code would give it valid
+    evidence (the code that invalidated it may itself be withdrawn in a later rerun).
+    That is deliberate and fail-closed: the target never gets executable authority, and
+    it stays in the returned candidates and on stderr, so a later call into it is a named,
+    terminating dispatch miss. Re-admitting it could cycle, because the leaders come from
+    code that is reachable only through targets.
+
+    Worst case: the reruns are bounded by the cascade depth (withdrawing one target
+    enables evidence that withdraws the next), at most the number of targets, and each
+    rerun repeats the whole pass, so a cascade of n links costs O(n^2) site checks. A
+    test pins 200 links at 201 attempts and 140900 site checks. Without a cascade the
+    pass is one attempt. A round costs one trace of the new targets
     and one check of each changed site: the leaders the traced code makes are added as it
     is traced (_BlockLeaderCensus.trace), never recounted.
 

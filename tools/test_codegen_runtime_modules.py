@@ -796,6 +796,89 @@ class RuntimeModuleBoundaries(unittest.TestCase):
                 self.assertIn(f"0x{t1:08x}: materialized address with no evidence it is code",
                               err)
 
+    def test_fixed_overlay_withdrawn_target_stays_refused_for_good(self):
+        # Fail-closed by design: a target withdrawn once is never re-admitted, even when the
+        # code that invalidated it is itself withdrawn later and the final traced code would
+        # give it valid evidence. The leaders come from code reachable only through targets,
+        # so re-admitting could cycle. Here T (+0x44) is withdrawn in attempt 1 (U branches
+        # to its `addiu`), W (+0x6c) is accepted in attempt 2 and withdraws U, and the pass
+        # ends in attempt 3 with T still refused: never a function, no executable
+        # authority, a named candidate on stderr, so a call into it is a dispatch miss.
+        t, u, x, w = (OVERLAY_LINK + off for off in (0x44, 0x4C, 0x54, 0x6C))
+
+        def la_jalr(target):
+            return [0x3C0408C0, 0x24840000 | (target & 0xFFFF), 0x0080F809, 0]
+
+        def branch(source, target):                       # b target; nop
+            return [0x10000000 | ((target - source - 4) >> 2 & 0xFFFF), 0]
+
+        words = [0x27BDFFF0, 0xAFBF0000, *la_jalr(t), *la_jalr(u), *la_jalr(x),
+                 0x8FBF0000, 0x03E00008, 0x27BD0010]
+        words += branch(t, x + 4)                         # T: kills X's pair naming W
+        words += branch(u, OVERLAY_LINK + 0x0C)           # U: kills the caller's pair naming T
+        words += [*la_jalr(w), 0x03E00008, 0]             # X: calls W
+        words += branch(w, OVERLAY_LINK + 0x1C)           # W: kills the caller's pair naming U
+        self.assertEqual(OVERLAY_LINK + 4 * len(words) - 8, w)
+        data = basic_fixed_overlay(b"".join(struct.pack("<I", v) for v in words))[0]
+        report, err = {}, io.StringIO()
+        with contextlib.redirect_stderr(err):
+            functions, _ = analyze(Elf(data), mixed_code_data=True, report=report)
+        self.assertEqual(sorted(functions), [OVERLAY_LINK, x, w])
+        self.assertEqual(report["materialized_code_work"]["attempts"], 3)
+        self.assertEqual(report["code_candidates"], frozenset({t, u}))
+        self.assertNotIn(t, functions)
+
+    @staticmethod
+    def cascading_withdrawal_words(links):
+        # Link i: the caller calls A_i and X_i. A_i branches into X_{i+1}'s `addiu`, so X_{i+1}
+        # names B_{i+1} only once A_i is withdrawn. B_i branches into the caller's pair
+        # naming A_i. So every attempt withdraws exactly one A, whatever the batching.
+        def la_jalr(target):
+            return [0x3C0408C0, 0x24840000 | (target & 0xFFFF), 0x0080F809, 0]
+
+        def branch(source, target):
+            return [0x10000000 | ((target - source - 4) >> 2 & 0xFFFF), 0]
+
+        base = OVERLAY_LINK + 4 * (2 + 8 * links + 3)
+        a, x, b = {}, {}, {}
+        cursor = base
+        for kind, size in ((a, 2), (x, 6), (b, 2)):
+            for i in range(1, links + 1):
+                kind[i] = cursor
+                cursor += 4 * (size + (1 if kind is a and i == links else 0))
+        words = [0x27BDFFF0, 0xAFBF0000]
+        for i in range(1, links + 1):
+            words += la_jalr(a[i]) + la_jalr(x[i])
+        words += [0x8FBF0000, 0x03E00008, 0x27BD0010]
+        for i in range(1, links + 1):
+            words += (branch(a[i], x[i + 1] + 4) if i < links
+                      else [0x8CA20000, 0x03E00008, 0])
+        for i in range(1, links + 1):
+            words += [*la_jalr(b[i]), 0x03E00008, 0]
+        for i in range(1, links + 1):
+            words += branch(b[i], OVERLAY_LINK + 4 * (2 + 8 * (i - 1)) + 4)
+        return words, a
+
+    def test_fixed_overlay_cascading_withdrawals_pin_their_operation_count(self):
+        # Each failing target of one final check is withdrawn in the same rerun
+        # (lost = accepted - named). A cascade still costs one rerun per level, and each
+        # rerun re-checks every site, so the work is quadratic in the cascade depth: the
+        # counts for 200 links are pinned so a regression is caught.
+        links = 200
+        words, a = self.cascading_withdrawal_words(links)
+        data = basic_fixed_overlay(b"".join(struct.pack("<I", v) for v in words))[0]
+        report = {}
+        with contextlib.redirect_stderr(io.StringIO()):
+            functions, _ = analyze(Elf(data), mixed_code_data=True, report=report)
+        self.assertEqual(report["code_candidates"],
+                         frozenset(a.values()))
+        work = report["materialized_code_work"]
+        self.assertEqual(
+            {k: work[k] for k in ("attempts", "rounds", "traces", "site_checks", "block_words")},
+            {"attempts": 201, "rounds": 603, "traces": 402,
+             "site_checks": 140900, "block_words": 382902})
+        self.assertEqual(len(functions), 1 + 2 * links)
+
     def test_fixed_overlay_call_target_pass_is_linear_in_its_targets(self):
         # One caller forms and calls 1000 callbacks (`lw v0,0(a1); jr ra; nop`, not
         # entry-shaped), 7005 words in all. Each call site is checked once, its block
