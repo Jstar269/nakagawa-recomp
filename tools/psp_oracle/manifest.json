@@ -1976,6 +1976,60 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-GE-LIGHT-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware run of this probe exists yet. It is built to measure, at the 8-bit colour level, the GE's per-vertex specular term (light component 1) and powered-diffuse term (component 2) against the normal's z for ten specular coefficients, so candidate pow implementations in the software GE can be compared with the PSP.",
+        "group": "ge",
+        "source": "fixtures/psp_oracle/probe_ge_sample.c",
+        "prx": "ge_light.prx",
+        "apis": [
+          "sceGeListEnQueue",
+          "sceGeListSync",
+          "sceGeDrawSync",
+          "sceGeBreak",
+          "sceGeEdramGetAddr",
+          "sceKernelDcacheWritebackAll",
+          "sceKernelDelayThread",
+          "sceKernelGetSystemTimeLow",
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "PSP GE per-vertex lighting: directional light, specular and powered-diffuse terms"
+        ],
+        "diagnostic_case_ids": [
+          "ge-light"
+        ],
+        "case_ids": [
+          "k1-*",
+          "k2-*",
+          "k3p5-*",
+          "k8-*",
+          "k10-*",
+          "k16-*",
+          "k31-*",
+          "k64-*",
+          "k100-*",
+          "k128-*",
+          "s-*",
+          "d-*",
+          "ge-light-done"
+        ],
+        "invariant": "#1732: per specular coefficient k (1, 2, 3.5, 8, 10, 16, 31, 64, 100, 128), the float bits of 272 normals (0, y, z) computed on the PSP CPU (z = ((j + 0.5) / 256)^(1/k) for j 0..255, then 1 - m 2^-24 for m 0..15) and the raw 8888 pixels of a 16x17 window (x 16..31, y 8..24 of a 64x32 buffer at VRAM 0x100000) after one transform-mode draw of one flat-shaded quad per pixel lit by one directional light along (0, 0, 1), with light component 1 and white specular colours (family s) and with light component 2 and white diffuse colours (family d); every other colour source is 0 and texturing, fog, dither, blending and every test are off",
+        "issues": [
+          1732
+        ],
+        "risk": "low; raw display lists into an 8 KiB colour block at VRAM offset 0x100000 that the CPU clears first; depth test and writes are off; every GE wait is bounded and a list that does not finish resets the queues; no display, callback or device state is changed",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-TRACE-001",
         "status": "implemented",
         "hardware_evidence": "MEASURED",
