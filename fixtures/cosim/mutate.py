@@ -162,6 +162,16 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
     ),
     Mutant(
+        "entry-sp-not-owed-at-a-linked-call",
+        "an interpreted body called by a linked call hands its live frame to a native "
+        "piece and owes its caller nothing (#1935)",
+        [(
+            "            const int owes = boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&\n",
+            "            const int owes = 0 && boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&\n",
+            1,
+        )],
+    ),
+    Mutant(
         "wrong-branch-target",
         "incorrect branch target",
         [(
