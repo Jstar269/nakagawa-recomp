@@ -6,7 +6,7 @@
  *
  * Standalone: no runtime, scheduler, or HLE mocking required. Built and run by
  * tools/test_evf_c.py; can also be compiled directly:
- *   gcc -Wall -Wextra -Werror -Isrc/rt -o evf_selftest src/rt/evf_selftest.c
+ *   gcc -Wall -Wextra -Werror -Isrc/rt -o evf_selftest tests/native/evf_selftest.c
  * Exit code 0 = all invariants hold. */
 
 #include <stdio.h>
