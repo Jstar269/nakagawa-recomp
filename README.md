@@ -20,7 +20,7 @@
 
 Nakagawa Recomp is a static recompiler for the PlayStation Portable. It translates a game's code into C once, before
 you play, and compiles it into a Windows program. You supply the game from your own disc. The project is early: one
-game is playable, one plays a stage, and the rest are untested.
+game is playable, one plays a stage, a dozen more start and get part of the way in, and the rest are untested.
 
 [![A rally in Hot Shots Tennis: Get a Grip, running natively in Nakagawa Recomp; play the clip](docs/media/hst-rally-poster.png)](https://jstar269.github.io/nakagawa-recomp/media/hst-rally.mp4)
 
@@ -40,14 +40,16 @@ ZIP for Windows 11, 64-bit. It includes the build tools, so you don't need to in
 
 The ZIP isn't code-signed, so Windows may warn you the first time. The
 [release notes](docs/RELEASE_NOTES_v0.0.1.md) say what works, what doesn't yet, and how to check the download.
-From v0.0.2, Settings > Updates checks GitHub for a newer version when you ask, and can download and check it for you.
+v0.0.2, still in progress, adds Settings > Updates, which checks GitHub for a newer version when you ask and can
+download and check it for you.
 
 You need:
 
 - Windows 11, 64-bit, with a graphics card that supports Vulkan.
 - 8 GB of RAM (16 GB recommended) and 5 GB of free disk space, ideally on an SSD
   ([system requirements](docs/SETUP.md#system-requirements)).
-- Your own copy of the game as an uncompressed `.iso` disc image. Nothing here downloads games, firmware or fonts.
+- Your own copy of the game as an uncompressed `.iso` disc image, or the `EBOOT.PBP` of a PSN release of a UMD game.
+  Nothing here downloads games, firmware or fonts.
   [`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md) covers what to do if a file can't be decrypted.
 - Builds after v0.0.1 also take a compressed `.cso`, `.zso` or `.chd` image. The player expands it once, when you add
   it, into a plain `.iso` in its data folder, so you need free space for the full `.iso` as well
@@ -57,22 +59,24 @@ You need:
 
 | Game | Rating | Notes |
 | --- | --- | --- |
-| *Hot Shots Tennis: Get a Grip* | Playable | Full matches and Story Mode at the game's own 30 frames per second on the reference PC. Its title file ships with Nakagawa. Movies show black for now ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)). |
-| PAC-MAN Championship Edition | In-game | Reaches its menu and plays a stage, through general fixes with no game-specific code ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)). The rest of the game hasn't been tried. |
+| *Hot Shots Tennis: Get a Grip* | Playable | Full matches and Story Mode at the game's own 30 frames per second on the reference PC. Its title file ships with Nakagawa. Movies show black in v0.0.1; builds after it show them ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)). |
+| PAC-MAN Championship Edition | In-game | Reaches its menu, plays a stage and resumes from its own save, through general fixes with no game-specific code ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556), [#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126)). The rest of the game hasn't been tried. |
+| *Super Stardust Portable* | Title screen | Goes through its menus to difficulty select, then stops by name at a VFPU instruction Nakagawa doesn't support yet ([#326](https://github.com/Jstar269/nakagawa-recomp/issues/326)). |
+| Eleven more games, *LittleBigPlanet* among them | Not rated | Seen to start or run, in the project's testing or in user reports on v0.0.1, but not checked by the maintainer. Several reach menus or gameplay, most well below full speed. [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) says how far each one gets. |
 | Any other PSP game | Not rated | The player imports it, builds a package and names anything that isn't supported yet. Going straight from your disc to a running game for more titles is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). |
 | Two showcase demos | Playable | Small PSP programs the project wrote as tests. They ship with the release and need no game files. |
 
-These are the ratings the player shows on each game's page. [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) has
-the full detail for every game and every part of the PSP. To report how a game runs, post in
+Ratings use the player's words, and each comes from the game's status in
+[`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md#status-words), which has the full detail for every game and every
+part of the PSP. To report how a game runs, post in
 [Compatibility reports](https://github.com/Jstar269/nakagawa-recomp/discussions/categories/compatibility-reports).
 
 ## How it works
 
 Nakagawa translates the game's MIPS code into C ahead of time and compiles it together with a runtime that stands in
 for the PSP's system software, graphics and sound. The player is written in C with SDL3 and Vulkan. The same approach
-is behind [Zelda 64: Recompiled](https://github.com/Zelda64Recomp/Zelda64Recomp) (built with
-[N64Recomp](https://github.com/N64Recomp/N64Recomp)) and [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp)
-(built with [XenonRecomp](https://github.com/hedge-dev/XenonRecomp)).
+is behind [Unleashed Recompiled](https://github.com/hedge-dev/UnleashedRecomp) (built with
+[XenonRecomp](https://github.com/hedge-dev/XenonRecomp)).
 
 - When a game needs something that isn't supported yet, the player stops and names the missing piece.
 - No games, firmware or Sony system fonts ship here, and no game data is ever downloaded. Open replacement fonts

@@ -22,7 +22,7 @@ The release is a Windows public-source and reproducibility package built from th
 - **Platform ladder:** `mingw32-make platform-ladder` builds and runs the source-owned synthetic workload ladder, including relocation, scheduler, filesystem, FPU, title-2, and negative cases.
 - **Core runtime selftests:** `mingw32-make selftest sched-selftest hle-thread-selftest public-safe-verify` runs the native interpreter, scheduler, HLE/thread, and public-safe object gates.
 - **Native player application:** `mingw32-make player` builds `build/nakagawa_player.exe` from `src/player/`. The standalone SDL3 desktop application provides direct C ISO9660 PVD reading, `PARAM.SFO` metadata parsing (`DISC_ID`, `TITLE`), asset census staging, gamepad navigation, and structured error views.
-- **Display smoke & player launch:** `mingw32-make display-smoke` and `mingw32-make display-smoke-player` prove the two-phase pipeline, loader, NID imports, vblank delivery, display latch, and child runtime launch via the native player without proprietary inputs.
+- **Display smoke & player launch:** `mingw32-make display-smoke` proves the two-phase pipeline, loader, NID imports, vblank delivery and display latch without proprietary inputs. Its player-launch variant, `mingw32-make display-smoke-player`, doesn't pass in this release ([release notes](RELEASE_NOTES_v0.0.1.md)).
 - **Media subsystem:** PSMF MPEG-PS demuxing and H.264 video decoding pipelines for in-game cutscenes.
 - **User interface:** The native player is the only UI in the public repository.
 
@@ -468,7 +468,7 @@ Steps:
    .\prereqs\python\python.exe -c "import runpy, sys; sys.path.insert(0, 'source'); sys.argv = ['prereq_fetcher', '--manifest', 'source/assets/prereq_manifest.json', '--verify-bundle', 'prereqs']; runpy.run_module('tools.nk_core.prereq_fetcher', run_name='__main__')"
    ```
 
-6. Start `%USERPROFILE%\Nakagawa\bin\nakagawa_player.exe` from Explorer. Releases are not Authenticode-signed yet, so a SmartScreen or antivirus prompt is possible: record its exact text for [#1283](https://github.com/Jstar269/nakagawa-recomp/issues/1283) and [#1284](https://github.com/Jstar269/nakagawa-recomp/issues/1284), allow it, and continue. It is not a download prompt.
+6. Start `%USERPROFILE%\Nakagawa\bin\nakagawa_player.exe` from Explorer. Releases are not Authenticode-signed yet, so a SmartScreen or antivirus prompt is possible: record its exact text for [#1284](https://github.com/Jstar269/nakagawa-recomp/issues/1284), allow it, and continue. It is not a download prompt.
 7. Click **START SETUP WIZARD** and add your game image. If its game card names an encrypted executable, place your own unencrypted files in the folder the card names, as [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md#what-the-player-does-automatically) describes.
 8. Select **BUILD PACKAGE**. Pass: no consent card and no download prompt appear, and the build completes. A `PREREQUISITE_BUNDLE_INVALID` card names the damaged file: record the name, it is a failure. Any build-tool consent card is a failure.
 9. Select **Play**. Pass: the title reaches its first interactive screen and accepts input.
