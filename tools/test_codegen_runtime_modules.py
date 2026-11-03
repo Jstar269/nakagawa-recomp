@@ -588,6 +588,23 @@ class RuntimeModuleBoundaries(unittest.TestCase):
                       f"    {{ 0x{first:08x}u, 0x{first + 4 * counts[first]:08x}u }},",
                       "\n".join(codegen.runtime_module_descriptor_lines(module)))
 
+    def test_fixed_overlay_callback_its_code_materializes_is_code(self):
+        # `la a0, cb` in traced code names a callback that opens no frame and does not
+        # start with `jr ra`; it decodes as code, so it is a function inside the spans and
+        # the identity. `la a1, table` names data that does not decode ("DATA" is a
+        # reserved COP0 form), so the table stays outside both.
+        data, caller, callback, table = basic_fixed_overlay(FIXED_OVERLAY_CALLBACK_SEGMENT)
+        path = self.root / "OVL_CALLBACK.ELF"
+        path.write_bytes(data)
+        with contextlib.redirect_stderr(io.StringIO()):
+            module = codegen.translate_runtime_module(0, str(path))
+        self.assertIsNone(module.unsupported_reason)
+        self.assertEqual(module.functions, [(caller, 11), (callback, 3)])
+        self.assertEqual(module.spans, [(caller, table)])
+        self.assertEqual(module.overlay_check_spans, ((caller, table),))
+        for word in (table, table + 4):
+            self.assertFalse(in_ranges(word, module.spans), f"0x{word:08x} is data")
+
     def test_fixed_overlay_identity_covers_a_leaf_it_calls(self):
         # A leaf reached only by `jal` opens no stack frame, but its translation runs from
         # the bound overlay, so its words are part of the identity.
@@ -681,11 +698,24 @@ FIXED_OVERLAY_LEAF_SEGMENT = b"".join(struct.pack("<I", w) for w in [
     0x03E00008, 0x24020009,                           # leaf: jr ra; li v0,9
 ])
 
+# A function that materializes a callback (`la a0, cb`) and a data table (`la a1, table`)
+# and calls the callback through a register.
+FIXED_OVERLAY_CALLBACK_SEGMENT = b"".join(struct.pack("<I", w) for w in [
+    0x27BDFFF0, 0xAFBF0000,                           # addiu sp,-16; sw ra,0(sp)
+    0x3C0408C0, 0x2484002C,                           # lui a0,0x08c0; addiu a0,a0,0x2c (cb)
+    0x3C0508C0, 0x24A50038,                           # lui a1,0x08c0; addiu a1,a1,0x38 (table)
+    0x0080F809, 0x00000000,                           # jalr a0; nop
+    0x8FBF0000, 0x03E00008, 0x27BD0010,               # lw ra,0(sp); jr ra; addiu sp,16
+    0x8CA20000, 0x03E00008, 0x00000000,               # cb: lw v0,0(a1); jr ra; nop
+    0x41544144, 0x08C00000,                           # table: "DATA", a pointer
+])
+
 
 def basic_fixed_overlay(segment=FIXED_OVERLAY_SEGMENT):
     """An ELF type 0xFFA8 overlay of ``segment`` at OVERLAY_LINK, its one section named for
     the overlay. Returns (bytes, first function, second function, data word); the last
-    two for FIXED_OVERLAY_LEAF_SEGMENT are the caller and the leaf, with no data word."""
+    two for FIXED_OVERLAY_LEAF_SEGMENT are the caller and the leaf, with no data word, and
+    for FIXED_OVERLAY_CALLBACK_SEGMENT the caller, the callback and the table."""
     names = b"\0.ovl_stage\0.shstrtab\0"
     seg_off = 0x54
     names_off = seg_off + len(segment)
@@ -703,6 +733,8 @@ def basic_fixed_overlay(segment=FIXED_OVERLAY_SEGMENT):
     struct.pack_into("<10I", out, shoff + 80, 12, 3, 0, 0, names_off, len(names), 0, 0, 1, 0)
     if segment == FIXED_OVERLAY_LEAF_SEGMENT:
         return bytes(out), OVERLAY_LINK, OVERLAY_LINK + 0x1C, None
+    if segment == FIXED_OVERLAY_CALLBACK_SEGMENT:
+        return bytes(out), OVERLAY_LINK, OVERLAY_LINK + 0x2C, OVERLAY_LINK + 0x38
     return bytes(out), OVERLAY_LINK, OVERLAY_LINK + 0x18, OVERLAY_LINK + 0x10
 
 

@@ -3803,6 +3803,26 @@ def var_import_table_lines(name, imports):
     return lines
 
 
+def decodes_as_code(elf, ranges, space):
+    """The analysis's ``code_check`` for an image whose code section also holds its data:
+    whether the body from an address translates here, by the rules every translated body
+    follows (each word a known instruction, no control in a delay slot), with ``entries``
+    as the other functions. A data word refuses it as an untranslatable body would."""
+    spans = span_index(ranges)
+
+    def check(address, entries):
+        global ADDRESS_SPACE
+        previous, ADDRESS_SPACE = ADDRESS_SPACE, space
+        try:
+            emit_function(elf, address, spans, set(entries) | {address})
+        except Unsupported:
+            return False
+        finally:
+            ADDRESS_SPACE = previous
+        return True
+    return check
+
+
 def word_runs(addresses):
     """The word addresses as merged (start, end) runs of contiguous words, in order."""
     runs = []
@@ -3869,11 +3889,16 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         return module
     ranges = exec_ranges(elf)
     discovery = {}
+    code_check = None
+    if fixed_overlay:
+        code_check = decodes_as_code(elf, ranges, AddressSpace(
+            base_symbol=module.base_symbol, prefix=module.prefix, relocations=relocations))
     try:
         # A code overlay's entry points are held by the executable (entry_hints).
         analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
                               entry_hints=entry_hints if overlay else None,
-                              mixed_code_data=fixed_overlay, report=discovery)
+                              mixed_code_data=fixed_overlay, report=discovery,
+                              code_check=code_check)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1

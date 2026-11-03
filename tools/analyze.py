@@ -1851,6 +1851,9 @@ class _Discovery:
         self.hc = set()
         self.noisy = set()
         self.jtails = set()  # every in-range `j` target; candidates for tail-call promotion below
+        # In-range materialized addresses (`lui` + `addiu`/`ori`) that are not entry-shaped:
+        # {target: the low-half instruction addresses}. _seed_materialized_code reads it.
+        self.materialized = {}
         # `covered` ends up holding every instruction that belongs to some known function, so the
         # weak signals that land inside a function body (internal blocks) can be discarded.
         self.covered = set()
@@ -2127,6 +2130,7 @@ def _seed_address_materializations(d):
                 hc.add(val)
             else:
                 noisy.add(val)
+                d.materialized.setdefault(val, set()).add(low_half_addr)
         elif in_ranges(val, file_exec_ranges) and _is_address_taken_entry(elf, val):
             # Executable PT_LOAD bytes outside the named code sections (.init, .fini)
             # are already callable when a `jal` names them; a materialized pointer to
@@ -2377,13 +2381,41 @@ def _keep_prologue_seeds(d):
     d.jtails = {a for a in d.jtails if is_prologue(a)}
 
 
+def _seed_materialized_code(d, code_check):
+    """Make functions of the addresses traced code materializes that decode as code.
+
+    In an image whose code section also holds its data, a materialized address that is
+    neither a prologue nor `jr $ra` (a callback such as `lw v0, 0(a1); jr ra`) is no seed
+    of its own (_keep_prologue_seeds). It becomes a function when the `lui`/`addiu` (or
+    `ori`) pair that forms it lies in traced code, and ``code_check(address, entries)``
+    accepts the body from there as code. A pointer to data, `la a0, table`, forms the
+    same pair, so the check is what refuses it. Repeats until nothing new is found:
+    each new function may materialize further addresses."""
+    refused = set()
+    changed = True
+    while changed:
+        changed = False
+        for target in sorted(d.materialized):
+            if target in d.functions or target in d.covered or target in refused:
+                continue
+            if not any(site in d.covered for site in d.materialized[target]):
+                continue
+            if not code_check(target, frozenset(d.functions)):
+                refused.add(target)
+                continue
+            d.functions.add(target)
+            d.discover([target])
+            changed = True
+
+
 def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
-            entry_hints=None, mixed_code_data=False):
+            entry_hints=None, mixed_code_data=False, code_check=None):
     # trace_memo=False runs the uncached per-start walks; the output is the same either way
     # (tests pin the two against each other).
     # `entry_hints` are code pointers another image holds into this one (data_section_words).
     # `mixed_code_data` names an image whose code section also holds its data
-    # (_keep_prologue_seeds).
+    # (_keep_prologue_seeds); `code_check` then decides which addresses its traced code
+    # materializes are code (_seed_materialized_code).
     # `report`, when a dict, receives the discovery state the import-stub census reads:
     # covered (every traced instruction address), calls (every direct-call target seen),
     # and hc (the high-confidence seeds). The return value is unchanged.
@@ -2402,6 +2434,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None,
     d.discover(list(d.hc))
     pending_tail_calls = _promote_tail_calls(d)
     _fill_gaps(d, pending_tail_calls)
+    if mixed_code_data and code_check is not None:
+        _seed_materialized_code(d, code_check)
 
     # The late passes can reach start-up code that calls a pointer array (a function
     # entered only through a pointer or the gap fill); seed those arrays too.
