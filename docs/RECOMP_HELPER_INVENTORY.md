@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **421** (declared in `recomp.h`: 356)
-- reach class: emitter-reached 75, production-runtime-only 313, selftest-only 17, address-only 7, none 9
-- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 393
+- helpers: **422** (declared in `recomp.h`: 357)
+- reach class: emitter-reached 75, production-runtime-only 313, selftest-only 18, address-only 7, none 9
+- provenance class of the home definition: declared-only 1, project_authored_attested 27, upstream_derived 394
 
 ## Helpers
 
@@ -357,11 +357,12 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_module_code_count` | `rt/guest_interp.c` | yes | selftest-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_fetch_authority` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_find` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
-| `sr_module_code_fnv1a64` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
+| `sr_module_code_fnv1a64` | `rt/guest_interp.c` | yes | selftest-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_is_bound` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_lookup` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_register` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_reset` | `rt/guest_interp.c` | yes | selftest-only | `rt/guest_interp.c`: project_authored_attested |
+| `sr_module_code_sha256` | `rt/hle_kernel_module.c` | yes | production-runtime-only | `rt/hle_kernel_module.c`: upstream_derived |
 | `sr_module_code_sync_overlays` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_unbind` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_nan_trap_dump_context` | `rt/recomp.c` | no | address-only | `rt/recomp.c`: upstream_derived |

@@ -45,6 +45,7 @@
 #include "setup_staging.h"
 #include "player_ui_test.h"
 #include "nk_platform.h"
+#include "nk_portable.h"
 #include "nk_json.h"
 #include "player_host.h"
 
@@ -3496,6 +3497,25 @@ static int player_run_command_line_launch(PlayerApp *app, int game_index,
  * override). It must apply before anything resolves a per-user folder. */
 static bool player_apply_user_data_root(int argc, char *argv[]) {
     static const char prefix[] = "--user-data-root=";
+    bool explicit_root = false;
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], prefix, sizeof(prefix) - 1u) == 0) explicit_root = true;
+    }
+    /* Portable mode (#1850): a portable.txt beside the executable moves the root to
+       <executable folder>/data. An explicit --user-data-root is the more specific
+       request and wins; a marker whose folder cannot be written is refused, never
+       answered with the default root. */
+    if (!explicit_root) {
+        NkPortableResolution portable;
+        if (nk_portable_apply(&portable) == NK_PORTABLE_REFUSED) {
+            fprintf(stderr, "[PLAYER] %s\n", portable.message);
+            /* A double-clicked player has no console to print to. */
+            (void)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                                           "Nakagawa Recomp can't start portable",
+                                           portable.message, NULL);
+            return false;
+        }
+    }
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], prefix, sizeof(prefix) - 1u) != 0) continue;
         const char *requested = argv[i] + sizeof(prefix) - 1u;

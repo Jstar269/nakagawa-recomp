@@ -4355,6 +4355,33 @@ static void test_vblank_only_wait_is_not_deadlock(void) {
            "a VBLANK-only wait set is not classified as deadlocked");
 }
 
+/* D2) A blocking sceCtrlReadBuffer parks on CTRL_WAIT_OBJ with no deadline, and the sample
+ * taken at the next VBLANK wakes it. With every other thread in an untimed wait, that reader
+ * is still waiting on the display source, so the run goes on.
+ *
+ * MUTANT: count only VBLANK_WAIT_OBJ here -- this fails, and the run ends with "no runnable
+ *   threads left" and a clean exit while the title is polling its pad. */
+static void test_ctrl_read_wait_is_not_deadlock(void) {
+    reset_sched();
+    begin_clock_fixture(0, 0);
+    TCB *t = &s_tcb[mk(0x3380u, TH_WAIT_OBJ, 32)];
+    t->wait_obj = CTRL_WAIT_OBJ;
+    t->wake = SCHED_WAIT_FOREVER;
+
+    SchedIdleState st = sched_classify_idle();
+    expect(st.waiting_on_vblank, "the blocking pad read waits on the VBLANK sample");
+    expect(st.soonest == SCHED_WAIT_FOREVER, "the pad read has no finite deadline");
+    expect(st.vblank_can_wake, "the runtime can still produce the sample that wakes it");
+    expect(!st.unwakeable, "a blocking pad read is not classified as deadlocked");
+
+    /* With the source masked no sample is taken either, so it is reported like a VBLANK wait. */
+    s_interrupts_enabled = 0;
+    st = sched_classify_idle();
+    expect(!st.vblank_can_wake && st.unwakeable,
+           "a pad read with interrupts disabled is reported, not spun on");
+    s_interrupts_enabled = 1;
+}
+
 /* E) ...but only while the event is actually producible AND serviceable.
  *
  * MUTANT: restore 7a4fafc's `waiting_on_vblank` test, which asked only whether a
@@ -5644,6 +5671,7 @@ int main(int argc, char **argv) {
     test_display_wait_ignores_other_ready_threads();
     test_display_wait_hands_over_only_while_blocked();
     test_vblank_only_wait_is_not_deadlock();
+    test_ctrl_read_wait_is_not_deadlock();
     test_unwakeable_vblank_states_are_reported();
     test_turbo_vblank_latches_and_services();
     test_novbpace_value_semantics();

@@ -757,6 +757,8 @@ typedef struct {
     uint32_t lba, size, off;
     int64_t async_res;
     int writable;
+    uint8_t *truncated_bytes;    /* what PSP_O_TRUNC cut, for a later write past them */
+    uint32_t truncated_size;
     int flash0;                  /* 1 = served by the read-only flash0: font device */
     IoAsyncRequest async;
     FILE *host;
@@ -1337,6 +1339,7 @@ IoRawDevicePath io_raw_device_path(const char *path);
 int data_archive_guest_path_allowed(const char *guest_path);
 uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot);
 int io_host_seek(FILE *host, uint32_t offset);
+int io_restore_truncated_gap(Fd *f);
 uint32_t h_IoWrite(CpuState *s);
 uint32_t h_IoRead(CpuState *s);
 uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence, const char *api, uint32_t *position);
@@ -1634,6 +1637,7 @@ static inline void hle_fd_release(Fd *f, int preserve_std_kind) {
     FdKind kind = f->kind;
     uint8_t std_stream = f->std_stream;
     if (f->pgd) sr_pgd_free(f->pgd);
+    free(f->truncated_bytes);
     if (f->host) fclose(f->host);
     memset(f, 0, sizeof(*f));
     if (preserve_std_kind && kind == FD_KIND_STD) {

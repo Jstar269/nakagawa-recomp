@@ -2211,7 +2211,9 @@ static void scheduler_vtimer_service(void) {
  * of this decision shipped with no executable coverage at all. */
 typedef struct {
     uint64_t soonest;        /* earliest finite wake deadline, else SCHED_WAIT_FOREVER */
-    int waiting_on_vblank;   /* a live thread is parked on VBLANK_WAIT_OBJ */
+    int waiting_on_vblank;   /* a live thread waits for the next VBLANK: parked on
+                              * VBLANK_WAIT_OBJ, or on CTRL_WAIT_OBJ, which the sample
+                              * taken at each VBLANK wakes (sr_ctrl_sample) */
     int vblank_can_wake;     /* ...and the source can still fire AND be serviced */
     int unwakeable;          /* nothing the runtime can do will ready anyone */
 } SchedIdleState;
@@ -2226,7 +2228,7 @@ static SchedIdleState sched_classify_idle(void) {
         any_waiting = 1;
         if (s_tcb[i].wake < st.soonest) st.soonest = s_tcb[i].wake;
         if (!s_tcb[i].deleted && s_tcb[i].state == TH_WAIT_OBJ &&
-            s_tcb[i].wait_obj == VBLANK_WAIT_OBJ)
+            (s_tcb[i].wait_obj == VBLANK_WAIT_OBJ || s_tcb[i].wait_obj == CTRL_WAIT_OBJ))
             st.waiting_on_vblank = 1;
     }
     /* A pending alarm is a guest timer like any other deadline, but only while somebody is
