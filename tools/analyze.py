@@ -2381,13 +2381,25 @@ def _keep_prologue_seeds(d):
     d.jtails = {a for a in d.jtails if is_prologue(a)}
 
 
-def _traced_definition(d, use_addr, reg):
+def _traced_merge_points(d):
+    """The addresses a traced direct branch or `j` lands on: where a second path joins the
+    straight-line run that reaches them. Read once per call of the caller's loop."""
+    merges = set()
+    for edges in (direct_branch_edges(d.elf, d.ranges), direct_j_edges(d.elf, d.ranges)):
+        for target, sources in edges.items():
+            if any((s[0] if isinstance(s, tuple) else s) in d.covered for s in sources):
+                merges.add(target)
+    return merges
+
+
+def _traced_definition(d, use_addr, reg, merges=frozenset()):
     """The last traced word before ``use_addr`` that writes ``reg``, as ``(addr, word)``,
     within the straight-line run of traced code that ends there; ``None`` when the run
-    leaves traced code, passes a function entry or a control transfer, or meets an
-    encoding _gpr_writes does not classify before any write."""
+    leaves traced code, passes a function entry, a control transfer or a ``merges``
+    address (another path joins there, so the value differs), or meets an encoding
+    _gpr_writes does not classify before any write."""
     addr = use_addr - 4
-    while addr in d.covered:
+    while addr in d.covered and addr + 4 not in merges:
         raw = d.elf.read_at_vaddr(addr, 4)
         if raw is None or len(raw) < 4:
             return None
@@ -2403,19 +2415,19 @@ def _traced_definition(d, use_addr, reg):
     return None
 
 
-def _traced_call_target(d, site, reg):
+def _traced_call_target(d, site, reg, merges=frozenset()):
     """The address a `lui reg` / `addiu reg, reg` (or `ori`) pair builds in ``reg`` for the
     `jr`/`jalr` at ``site``: both halves traced code, in that one register, the last writes
     of it before the transfer. ``None`` for any other definition (a load, an `addu`, an
     incoming argument)."""
-    low = _traced_definition(d, site, reg)
+    low = _traced_definition(d, site, reg, merges)
     if low is None:
         return None
     l_addr, l_word = low
     op = l_word >> 26
     if op not in (0x09, 0x0D) or (l_word >> 21) & 0x1F != reg:
         return None
-    high = _traced_definition(d, l_addr, reg)
+    high = _traced_definition(d, l_addr, reg, merges)
     if high is None or high[1] >> 26 != 0x0F:
         return None
     upper = (high[1] & 0xFFFF) << 16
@@ -2448,6 +2460,7 @@ def _seed_materialized_code(d):
     changed = True
     while changed:
         changed = False
+        merges = _traced_merge_points(d)
         for site in sorted(d.covered):
             raw = d.elf.read_at_vaddr(site, 4)
             if raw is None or len(raw) < 4:
@@ -2456,11 +2469,12 @@ def _seed_materialized_code(d):
             reg = (word >> 21) & 0x1F
             if word >> 26 != 0 or (word & 0x3F) not in (0x08, 0x09) or reg in (0, 31):
                 continue
-            target = _traced_call_target(d, site, reg)
+            target = _traced_call_target(d, site, reg, merges)
             if target is None or target in d.functions or target in d.covered:
                 continue
             d.functions.add(target)
             d.discover([target])
+            merges = _traced_merge_points(d)
             changed = True
     return frozenset(
         target for target, sites in d.materialized.items()

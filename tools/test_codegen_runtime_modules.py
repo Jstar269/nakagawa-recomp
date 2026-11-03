@@ -663,6 +663,55 @@ class RuntimeModuleBoundaries(unittest.TestCase):
         self.assertFalse(in_ranges(OVERLAY_LINK + 0x24, module.spans))
         self.assertEqual(module.code_candidates, (OVERLAY_LINK + 0x24,))
 
+    def call_target_overlay(self, setup, name, pad_words=0):
+        """A fixed overlay whose caller builds a0 with ``setup`` words and calls it with
+        `jalr a0`, followed by a callback (`lw v0,0(a1); jr ra; nop`) ``pad_words`` words of
+        untraced zeros after the caller. Returns (module, callback address)."""
+        head = [0x27BDFFF0, 0xAFBF0000] + list(setup) + [
+            0x0080F809, 0x00000000,                   # jalr a0; nop
+            0x8FBF0000, 0x03E00008, 0x27BD0010]       # lw ra,0(sp); jr ra; addiu sp,16
+        callback = OVERLAY_LINK + 4 * (len(head) + pad_words)
+        tail = [0x8CA20000, 0x03E00008, 0x00000000]   # cb: lw v0,0(a1); jr ra; nop
+        words = head + [0] * pad_words + tail
+        module, _err = self.fixed_overlay_module(
+            b"".join(struct.pack("<I", w) for w in words), name)
+        return module, callback
+
+    def test_fixed_overlay_call_target_pair_forms(self):
+        # (c) `lui`/`ori` builds the target as `lui`/`addiu` does. (d) An `addiu` low half
+        # of 0xfff0 is -16: lui 0x08c1 with it names 0x08c0fff0, not 0x08c1fff0.
+        module, cb = self.call_target_overlay(
+            [0x3C0408C0, 0x34840000 | ((OVERLAY_LINK + 0x24) & 0xFFFF)], "OVL_ORI.ELF")
+        self.assertEqual(cb, OVERLAY_LINK + 0x24)
+        self.assertIn(cb, [a for a, _n in module.functions], "lui/ori")
+        self.assertEqual(module.code_candidates, ())
+        pad = (0xFFF0 - 0x24) // 4
+        module, cb = self.call_target_overlay([0x3C0408C1, 0x2484FFF0], "OVL_NEG.ELF", pad)
+        self.assertEqual(cb, 0x08C0FFF0)
+        self.assertIn(cb, [a for a, _n in module.functions], "negative low half")
+        self.assertEqual(module.code_candidates, ())
+
+    def test_fixed_overlay_call_target_pair_must_be_the_last_writes(self):
+        cb = OVERLAY_LINK + 0x28
+        lui, addiu = 0x3C0408C0, 0x24840000 | (cb & 0xFFFF)
+        # (b) A load or an `addu` into the register after the pair replaces the value.
+        for case, extra in (("lw", 0x8CA40000), ("addu", 0x00852021)):
+            with self.subTest(case=case):
+                module, _cb = self.call_target_overlay([lui, addiu, extra], f"OVL_{case}.ELF")
+                self.assertNotIn(cb, [a for a, _n in module.functions])
+                self.assertEqual(module.code_candidates, (cb,))
+        # (a) A branch from before the pair lands between the pair and the `jalr`: the
+        # register holds a different value on that path.
+        merge_cb = OVERLAY_LINK + 0x30
+        module, _cb = self.call_target_overlay([
+            0x14C00003, 0x24040000,                   # bne a2,zero,merge; li a0,0
+            lui, 0x24840000 | (merge_cb & 0xFFFF),
+            0x00000000,                               # merge: nop
+        ], "OVL_MERGE.ELF")
+        self.assertNotIn(merge_cb, [a for a, _n in module.functions])
+        self.assertEqual(module.code_candidates, (merge_cb,))
+
+
     def test_fixed_overlay_identity_covers_a_leaf_it_calls(self):
         # A leaf reached only by `jal` opens no stack frame, but its translation runs from
         # the bound overlay, so its words are part of the identity.
