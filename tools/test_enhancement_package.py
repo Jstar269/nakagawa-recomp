@@ -1497,6 +1497,8 @@ class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
         ("seh", 0x7C043E20),
         ("clz", 0x00803816),
         ("clo", 0x00803817),
+        ("mfv", 0x48670000),
+        ("mfvc", 0x48670080),
     )
 
     def test_gpr_written_table(self) -> None:
@@ -1506,6 +1508,8 @@ class TestEnhancementPhysicsAndOffsetTransforms(unittest.TestCase):
         for name, word in (
             ("sw", 0xAFA70000),
             ("mtc1", 0x44843800),
+            ("mtv", 0x48E70000),
+            ("mtvc", 0x48E70080),
             ("mthi", 0x00800011),
             ("mtlo", 0x00800013),
             ("mult", 0x00870018),

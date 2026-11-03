@@ -1582,6 +1582,8 @@ def _gpr_written(w: int) -> int | None:
         return (w >> 16) & 31
     if op == 0x11 and rs in (0x00, 0x02):  # mfc1, cfc1
         return (w >> 16) & 31
+    if op == 0x12 and rs == 0x03:  # mfv, mfvc (VFPU to GPR; mtv and mtvc are rs 7 and write no GPR)
+        return (w >> 16) & 31
     if op == 0x1F:
         funct = w & 0x3F
         if funct in (0x00, 0x04):  # ext, ins
@@ -1714,7 +1716,7 @@ def draft_timing_package(
     for counter in sorted(polls):
         if counter not in increments or counter not in clears:
             continue
-        incrementers = sorted({function_of(a) for a in increments[counter]} - {None})
+        incrementers = sorted({f for a in increments[counter] if (f := function_of(a)) is not None})
         for site in polls[counter]:
             fn = function_of(site)
             if fn is None:
@@ -1735,17 +1737,17 @@ def draft_timing_package(
             continue
         for call in calls.get(stub, ()):
             for site in [call + 4] + [call - 4 * k for k in range(1, _LOOKBACK)]:
-                w = words.get(site)
-                if w is None or (w >> 16) & 31 != 4 or (w >> 21) & 31 != 0:
+                word = words.get(site)
+                if word is None or (word >> 16) & 31 != 4 or (word >> 21) & 31 != 0:
                     continue
-                if w >> 26 in (0x09, 0x0D) and w & 0xFFFF == 2:
+                if word >> 26 in (0x09, 0x0D) and word & 0xFFFF == 2:
                     fn = function_of(site)
                     if fn is not None:
                         pacing.append({"kind": "wait_multi_2", "address": site, "function": fn,
                                        "insn_offset": site - fn, "api": VBLANK_WAIT_MULTI_NIDS[nid]})
                         explained_waits.add(call)
                     break
-                if _gpr_written(w) == 4:
+                if _gpr_written(word) == 4:
                     break
 
     unexplained = []
@@ -1757,8 +1759,8 @@ def draft_timing_package(
                                         "api": VBLANK_WAIT_NIDS.get(nid) or VBLANK_WAIT_MULTI_NIDS[nid]})
 
     boundary: dict[int, list[int]] = {}
-    for site in pacing:
-        for call in calls.get(site["function"], ()):
+    for entry in pacing:
+        for call in calls.get(entry["function"], ()):
             caller = function_of(call)
             if caller is not None:
                 boundary.setdefault(caller, []).append(call)
