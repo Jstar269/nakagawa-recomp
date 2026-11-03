@@ -1134,6 +1134,26 @@ pacing was added to fix). A faster route is worthless if it is not the same rout
 archive reset, completeness verdict); `tools/test_visual_oracle.py` exercises them against real
 processes and directories.
 
+#### Running on a disposable Memory Stick
+
+A soak or title route writes to whichever Memory Stick the session resolves.
+`tools/isolated_run.py` copies the stick (and optional settings files) into a new folder
+under a private work directory, points `SR_MEMSTICK` at the copy, runs your command, and
+re-hashes the originals. It prints `ORIGINALS_UNCHANGED`, or `ORIGINAL_CHANGED` naming the
+first differing path (exit status 3). It does not stop the guest writing; keep the work
+directory private, because the copy can hold save data.
+
+The copy is only used by a command that honours an inherited `SR_MEMSTICK`: the bare
+runtime and the launcher route (`nk_launch.c` keeps an explicit `SR_MEMSTICK` instead of
+resolving a stick) do. A command that sets its own stick bypasses the copy, and the wrapper
+then reports `ORIGINAL_CHANGED` after the fact, without restoring anything. `--settings-env`
+names a variable the wrapped command itself reads; no settings-path variable is registered in
+`env_registry.h`, so it redirects settings only for a command that reads the one you name.
+
+```powershell
+python tools/isolated_run.py --memstick <stick> --work-dir <private-dir> -- <soak or route command>
+```
+
 #### Judging a long run
 
 One run of any length is only evidence if something states what "healthy" meant.
