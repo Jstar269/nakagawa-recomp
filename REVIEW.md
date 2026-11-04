@@ -64,8 +64,8 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
 - Missing `Signed-off-by:` on any commit. A DCO sign-off is optional for every contributor
   (`docs/DCO_POLICY.md` section 4); an unticked template box is a question for the author, not a finding.
 - Merge commits from `main` into a PR branch; shared branches are not rebased or force-pushed.
-- Fail-closed public stubs such as `iso_unavailable.c` and `pgd_unavailable.c`. Do not infer behavior from a filename: `audio_sdl3.c` (formerly `audio_unavailable.c`) is
-  the active public-safe SDL3 host-audio backend.
+- Fail-closed public stubs such as `iso_unavailable.c` and `pgd_unavailable.c`. Do not infer behavior from a filename: `audio_sdl3.c` is the active public-safe SDL3
+  host-audio backend, and `audio_unavailable.c` is a byte-identical copy the build doesn't compile.
 - Formatting-only differences already enforced by `.clang-format`, Ruff, or markdownlint.
 - Edits to generated `build/<game>/*_recomp_*.c`; those files are never committed. Flag
   a PR only if it actually adds one.
@@ -114,6 +114,22 @@ Authors, human or agent, check these before requesting review; reviewers flag th
 - **New public paths.** The private admission and policy delta are on the private authority repository's `main`
   before the hosted attestation runs
   ([step by step](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
+
+### Professional finish
+
+Every change, from a person or an agent, reads like careful, deliberate work. Completeness still comes before
+brevity, but every line has to carry information. Reviewers flag:
+
+- **Code idiom.** New code that doesn't match the surrounding naming, structure and comment density, or comments that
+  restate what the code does instead of saying why.
+- **Prose.** Filler, hype, hedging or marketing tone in code comments, docs, commit messages or PR text, and emoji
+  anywhere in code, docs or UI strings.
+- **Leftovers.** Dead code, duplicate helpers, debug output, commented-out blocks, and stray or one-off files (scratch
+  scripts, notes, logs).
+- **Terms.** A new word for something the docs already name; use the existing term (see Repository terms above).
+- **UI text.** Labels and messages that aren't short and plain, or that say more than the user needs to act.
+- **Pull request text.** Anything beyond what changed, the evidence for it, and what is not done or not verified.
+  No repeated summaries or decorative formatting.
 
 ## Review style
 

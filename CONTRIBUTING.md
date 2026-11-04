@@ -12,7 +12,8 @@ The rules it links to decide whether a change can land, so read them once.
    self-contained, no PSP or retail game needed) or
    [`help wanted`](https://github.com/Jstar269/nakagawa-recomp/labels/help%20wanted) (a contributor can take
    it). Issues labelled `needs-psp-hardware` need a physical PSP run, and `needs-owner-decision` waits on a
-   maintainer. Search existing issues before you open a new one. Every issue carries at least one label and a
+   maintainer. Search existing issues before you open a new one. Title an issue `Area: summary`, for example
+   `VFPU: expand verified semantic coverage for second-title instruction forms`. Every issue carries at least one label and a
    milestone: `v0.0.1` (the release's own steps), `v0.0.2` (bugs, HLE and accuracy fixes, tooling), `v0.1.0` (a
    second title, the flight recorder, the hardware oracle), `v0.2.0` (product and distribution) or `v0.3.0`
    (enhancements, diagnostic views, performance, new platforms). If GitHub won't let you set them, say in the
@@ -41,7 +42,8 @@ The rules it links to decide whether a change can land, so read them once.
    have the right to submit it, under GPL-3.0-or-later. A DCO sign-off (`git commit -s`, which adds
    `Signed-off-by: Your Name <you@example.com>`) is welcome but optional, and only the person who wrote the
    change may add it. See [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
-9. **Open the pull request.** Use a draft if it is not finished, fill in the template, and say what is left.
+9. **Open the pull request.** Fill in the template. Use a draft only while the change is unfinished, and say what is
+   left; mark it **Ready for review** as soon as it is finished, with its tests and checks run.
    Ask questions in the [Help](https://github.com/Jstar269/nakagawa-recomp/discussions/categories/help) category
    of GitHub Discussions, or comment on the issue you are working on.
 
@@ -222,8 +224,7 @@ only the modules for the files you changed.
 What does need your own copy of a game: building or running a title (`nk_manager.ps1 -Action BuildFull` with a
 title manifest, the library sweep, `make verify` and the private-title routes) and matching work in a
 decompilation project. What needs a physical PSP is labelled `needs-psp-hardware` and you can skip it. Issues
-labelled [`no-disc-needed`](https://github.com/Jstar269/nakagawa-recomp/labels/no-disc-needed) are written to be done entirely with the commands above; [#1811](https://github.com/Jstar269/nakagawa-recomp/issues/1811)
-to [#1816](https://github.com/Jstar269/nakagawa-recomp/issues/1816) are the first six.
+labelled [`no-disc-needed`](https://github.com/Jstar269/nakagawa-recomp/labels/no-disc-needed) are written to be done entirely with the commands above.
 
 ## Make a focused change
 
@@ -352,8 +353,7 @@ a pass.
 
 A new file is a new public path, and only the maintainer can admit one: the provenance record that covers it is
 private. In your pull request, say who wrote each new file (and with which AI tool, if any) or, for code from
-another project, the project, exact revision and licence. Open the pull request as a draft anyway and list the new
-files there; do not edit `PUBLIC_EXPORT.json` or the ledger to make the check pass. The maintainer admits each new
+another project, the project, exact revision and licence. List the new files in the pull request; do not edit `PUBLIC_EXPORT.json` or the ledger to make the check pass. The maintainer admits each new
 file's origin: its class and, for imported code, the upstream project, revision and licence. Your later edits to
 a file you wrote need no new admission, as long as that claim still holds. The exception is a file imported
 byte-identical from another project: the admission binds its exact bytes. To change one, ask first. Its row in that
