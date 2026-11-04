@@ -49,7 +49,19 @@ typedef struct SrGuestInterpCallBoundary {
      * does (#1935); a live frame's continuation owes none. */
     uint32_t entry_sp;
     uint8_t owes_entry_sp;
+    /* The innermost AOT return boundary is this call's own, begun by a generated call site
+     * that honours its end check (dispatch_call_checked): native code run for the call
+     * returns into it, and a return elsewhere unwinds as a direct call's does. */
+    uint8_t site_boundary;
+    /* Native code an interpreted linked call handed its live frame to: the rest of that
+     * call, not a call of its own (dispatch_call_continue). */
+    uint8_t continuation;
 } SrGuestInterpCallBoundary;
+
+/* The interpreter hands the live frame of the linked call `call` to the native body at
+ * `target`, whose chain ends in that call's return (recomp.c). Returns 1 when that return
+ * went somewhere other than the call's resume PC, a longjmp: the guest's $sp stands. */
+int dispatch_call_continue(CpuState *s, uint32_t target, const SrGuestInterpCallBoundary *call);
 
 /* Execute from entry until an unlinked transfer reaches a registered AOT destination
  * or a fail-closed boundary. A linked transfer into a registered body is a CALL: the

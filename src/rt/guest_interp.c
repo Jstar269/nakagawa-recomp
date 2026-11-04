@@ -1589,16 +1589,21 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
                         "GUEST_INTERP_AOT_HANDOFF pc=0x%08" PRIx32 " instructions=%llu\n",
                         pc, instruction_count);
             }
+            if (boundary == NULL) {
+                dispatch(s, pc);
+                return SR_GUEST_INTERP_AOT_HANDOFF;
+            }
             /* A called body that hands its live frame on by a TAIL owes its caller the $sp
              * it was called with once the chain completes, as a native body records it
              * (sr_tail_record); the native body it hands to was entered at a lowered $sp and
              * owes nobody. One that loaded $sp out of that stack (sp_load_leaves_frame), a
-             * longjmp or a context switch, leaves it to the guest (#1935). */
-            const int owes = boundary != NULL && boundary->owes_entry_sp && !loaded_sp &&
+             * longjmp or a context switch, leaves it to the guest, and so does a chain whose
+             * return went elsewhere: a longjmp in native code (#1935). */
+            const int owes = boundary->owes_entry_sp && !loaded_sp &&
                              s->r[29] != boundary->entry_sp;
             const uint32_t entry_sp = owes ? boundary->entry_sp : 0u;
-            dispatch(s, pc);
-            if (owes) s->r[29] = entry_sp;
+            const int returned_elsewhere = dispatch_call_continue(s, pc, boundary);
+            if (owes && !returned_elsewhere) s->r[29] = entry_sp;
             return SR_GUEST_INTERP_AOT_HANDOFF;
         }
 

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-# The pinned native dependencies of the Android app, fetched from source: SDL3 3.4.18 and
+# The pinned native dependencies of the Android app, fetched from source: SDL3 3.4.20 and
 # SDL3_ttf 3.2.2 at the commits hosted CI builds for Linux (.github/workflows/ci.yml), SDL3_ttf
 # with its FreeType, HarfBuzz and PlutoSVG submodules. Included by android/app/CMakeLists.txt, and
 # run as a script (cmake -DNK_ANDROID_DEPS_DIR=<dir> -P deps.cmake) by Gradle before Java
@@ -9,7 +9,7 @@
 # checkout. A checkout already at the pinned commit is reused with no network access.
 
 set(NK_SDL3_URL https://github.com/libsdl-org/SDL.git)
-set(NK_SDL3_COMMIT 829a65d769d935c4852f8159e964312c0957260a)        # release-3.4.18
+set(NK_SDL3_COMMIT f00dc919ca35b9756316e86c4777392de442f9b2)        # release-3.4.20
 set(NK_SDL3_TTF_URL https://github.com/libsdl-org/SDL_ttf.git)
 set(NK_SDL3_TTF_COMMIT a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b)    # release-3.2.2
 

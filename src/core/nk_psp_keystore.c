@@ -3,7 +3,7 @@
  *
  * KeyStore loader/validator for the PSP decryption boundary (issue #295).
  * Project-authored.  Two sources fill it: the built-in game tables
- * (nk_psp_builtin_keys.c, owner decision 2026-10-27), and a JSON key file
+ * (nk_psp_builtin_keys.c), and a JSON key file
  * nk_decrypt can be given for synthetic tests, parsed with the project's own
  * bounded JSON reader (nk_json).  Both fail closed on any shape, name or
  * length violation.  No firmware (PSAR) entry name is accepted.

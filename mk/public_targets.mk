@@ -117,6 +117,7 @@ PUBLIC_TARGETS := \
 	dispatch-isolation-selftest \
 	dispatch-isolation-selftest-one \
 	memory-watch-selftest \
+	code-capture-selftest \
 	asset-index-selftest \
 	fp-convert-selftest \
 	ge-float24-selftest \
@@ -280,6 +281,7 @@ HELP_DESCRIPTION_cpu-lle-selftest := run the LLE COP0/exception interpreter self
 HELP_DESCRIPTION_domain-mode-selftest := run the LLE domain-mode and import-seam selftest
 HELP_DESCRIPTION_dispatch-isolation-selftest := run dispatch isolation selftests
 HELP_DESCRIPTION_dispatch-isolation-selftest-one := run one dispatch isolation selftest
+HELP_DESCRIPTION_code-capture-selftest := capture code installed at run time, translate it and bind it by its code
 HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest

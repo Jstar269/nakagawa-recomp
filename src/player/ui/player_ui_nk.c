@@ -70,8 +70,7 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
      "Shows a lit, rotating cube that answers the stick and buttons, with sound.", ""},
     {"showcase-breakout-v1", "Partially works", PLAYER_UI_TIER_PLAYABLE,
      "Plays a full game of Breakout with sound and keeps your high score.", ""},
-    /* Playable: the owner played full matches and Story Mode on 2026-10-24
-       (#1297). */
+    /* Playable: full matches and Story Mode were played through (#1297). */
     {"UCUS98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
      "Known issues: some sound effects can drop out while loading."},
@@ -179,6 +178,7 @@ struct PlayerUiNk {
     int remove_index;
     char remove_disc[NK_MAX_DISC_ID_LEN];
     bool remove_delete_saves;
+    bool remove_delete_disc_copy;
     bool remove_focus_pending;
     /* STOP GAME asks first: the title page the question was asked from. */
     int stop_index;
@@ -190,6 +190,7 @@ struct PlayerUiNk {
     bool rebuild_focus_pending;
     char rebuild_text[256];
     char rebuild_notice[96];
+    char library_notice[448];   /* the library file's notice and the drop summary together */
     char verify_notice[96];     /* the library's disc check line */
     /* A rebuilding card's status word with its progress ("Rebuilding 40%"). */
     char rebuild_word[PLAYER_UI_TITLE_CAP][32];
@@ -448,7 +449,6 @@ static bool player_ui_settings_view(PlayerView view) {
    the developer log. */
 static bool player_ui_nk_flow_view(PlayerView view) {
     return view == VIEW_SETUP_WIZARD || view == VIEW_BUILDING_PACKAGE ||
-           view == VIEW_PREPARING ||
            view == VIEW_PREREQ_CONSENT ||
            view == VIEW_PREREQ_PROGRESS || view == VIEW_ERROR ||
            player_ui_disc_view(view) || player_ui_settings_view(view) ||
@@ -1274,20 +1274,6 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         model.logical_height = scale.logical_h;
         return player_ui_screen_prereq(player->ui, &model);
     }
-    if (app->active_view == VIEW_PREPARING) {
-        /* No preparation pipeline is connected in this build: the card says
-           so plainly, with the way back, and shows no fake progress. */
-        PlayerUiErrorModel model;
-        memset(&model, 0, sizeof(model));
-        model.badge = "Not available";
-        model.title = "Preparation unavailable";
-        model.message = "No preparation pipeline is connected in this build, so no "
-                        "preparation work is running.";
-        model.recovery_label = "Back to library";
-        model.logical_width = scale.logical_w;
-        model.logical_height = scale.logical_h;
-        return player_ui_screen_error(player->ui, &model);
-    }
     if (app->active_view == VIEW_ERROR) {
         const ErrorState *error = &app->last_error;
         bool launch_readiness = player_error_leads_with_message(error);
@@ -1369,7 +1355,6 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
             case VIEW_PREREQ_CONSENT: focus = PLAYER_UI_ID_PREREQ_ACCEPT; break;
             case VIEW_PREREQ_PROGRESS: focus = PLAYER_UI_ID_PREREQ_CANCEL; break;
             case VIEW_ERROR:
-            case VIEW_PREPARING: focus = PLAYER_UI_ID_ERROR_RECOVER; break;
             case VIEW_INSPECTING:
             case VIEW_SUPPORTED_TITLE:
             case VIEW_EXPERIMENTAL_TITLE:
@@ -1516,6 +1501,7 @@ static bool player_ui_open_remove(PlayerUiNk *player, const PlayerApp *app, int 
     snprintf(player->remove_disc, sizeof(player->remove_disc), "%s",
              app->games[index].disc_id);
     player->remove_delete_saves = false;
+    player->remove_delete_disc_copy = false;
     player->remove_focus_pending = true;
     return true;
 }
@@ -2000,7 +1986,7 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->status_rgba = PLAYER_UI_READY;
         out->status_marker = "●";
     }
-    /* An older Nakagawa built this package (owner, 2026-10-29): it still
+    /* An older Nakagawa built this package: it still
        plays, and the cards say what a rebuild would do, that it is queued or
        running, or that its disc is missing. */
     PlayerRebuildCard rebuild;
@@ -2635,7 +2621,16 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                      "Version %.40s is out", app->update.check.newest.version);
             model.update_notice = player->update_notice;
         }
-        if (app->library_notice[0] != '\0') model.library_notice = app->library_notice;
+        if (app->library_notice[0] != '\0' && app->drop_notice[0] != '\0') {
+            snprintf(player->library_notice, sizeof(player->library_notice), "%s %s",
+                     app->library_notice, app->drop_notice);
+            model.library_notice = player->library_notice;
+        } else if (app->library_notice[0] != '\0') {
+            model.library_notice = app->library_notice;
+        } else if (app->drop_notice[0] != '\0') {
+            /* The one summary of files dropped together (#2007). */
+            model.library_notice = app->drop_notice;
+        }
         if (player_app_rebuild_banner_visible(app)) {
             (void)player_app_rebuild_banner_text(app, player->rebuild_notice,
                                                  sizeof(player->rebuild_notice),
@@ -2852,6 +2847,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             model.has_saves = player->remove_plan.has_saves;
             model.saves_bytes = player->remove_plan.saves_bytes;
             model.delete_saves = player->remove_delete_saves;
+            model.has_disc_copy = player->remove_plan.has_disc_copy;
+            model.disc_copy_bytes = player->remove_plan.disc_copy_bytes;
+            model.delete_disc_copy = player->remove_delete_disc_copy;
             model.files_shared = player->remove_plan.files_shared;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
@@ -2861,6 +2859,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES) {
                 player->remove_delete_saves = !player->remove_delete_saves;
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_DISC_COPY) {
+                player->remove_delete_disc_copy = !player->remove_delete_disc_copy;
                 action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM) {
                 /* The removal runs after this frame; the library then

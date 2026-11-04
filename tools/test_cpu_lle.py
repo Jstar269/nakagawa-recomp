@@ -504,9 +504,9 @@ class GeneratedLleFatalFlowTests(unittest.TestCase):
         self.assertEqual(source.count("sr_cpu_raise_exception(s, 8u"), 1)
         self.assertEqual(source.count("sr_cpu_raise_exception(s, 9u"), 1)
         self.assertIn(
-            "dispatch_call(s, 0x08810800u, 0x08810828u);", source)
+            "if (dispatch_call_checked(s, 0x08810800u, 0x08810828u)) return;", source)
         self.assertIn(
-            "dispatch_call(s, 0x08810840u, 0x08810868u);", source)
+            "if (dispatch_call_checked(s, 0x08810840u, 0x08810868u)) return;", source)
         self.assertEqual(source.count("s->r[8] = (0u + 0x00000001u);"), 2)
 
     def test_make_compiles_the_generated_fixture_into_the_runtime_selftest(self):
@@ -745,6 +745,7 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
         env = os.environ.copy()
         compiler = CC
         include_flags = []
+        link_flags = []
         # A host without SDL3 development headers (the hosted Python gate) gets a
         # test-only timer shim below; sched.c reaches SDL for its monotonic clock
         # and precise delay only, and the fixture runs with VBLANK pacing off.
@@ -759,6 +760,7 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
                     [str(msys_bin), str(msys_usr_bin), env.get("PATH", "")]
                 )
                 include_flags.append(f"-I{msys_bin.parent / 'include'}")
+                link_flags.extend((f"-L{msys_bin.parent / 'lib'}", "-lSDL3"))
         else:
             pkg_config = shutil.which("pkg-config")
             if pkg_config:
@@ -768,6 +770,11 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
                 if sdl_flags.returncode == 0:
                     include_flags.extend(sdl_flags.stdout.split())
                     sdl_available = True
+                    sdl_libs = subprocess.run(
+                        [pkg_config, "--libs", "sdl3"], capture_output=True, text=True,
+                    )
+                    if sdl_libs.returncode == 0:
+                        link_flags.extend(sdl_libs.stdout.split())
         env["SR_NOVBPACE"] = "1"
 
         with scratch_dir.TemporaryDirectory(prefix="lle_sched_eret_") as tmp:
@@ -824,7 +831,7 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
 
             run_checked([
                 compiler, *(str(obj) for obj in objects), "-Wl,--gc-sections",
-                "-lm", "-o", str(exe_path),
+                *link_flags, "-lm", "-o", str(exe_path),
             ])
             ran = subprocess.run(
                 [str(exe_path)], cwd=work, env=env,

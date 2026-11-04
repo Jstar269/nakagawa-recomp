@@ -204,11 +204,12 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_PROGRESS, FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE,
                FLOW_WIZ_BAD_DISC, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
-               FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
+               FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_OPTIONS_ON, FLOW_WIZ_BLOCKED,
                FLOW_WIZ_COPY_FAILED, FLOW_WIZ_GUIDED, FLOW_ERROR_STOP, FLOW_ERROR_CRASH,
                FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
-               FLOW_DISC_GUIDED, FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
+               FLOW_DISC_GUIDED, FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_ONLINE_ON,
+               FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
                FLOW_SETTINGS_UPDATES, FLOW_SETTINGS_UPDATE_FAILED,
                FLOW_SETTINGS_UPDATE_NO_KEY, FLOW_SETTINGS_UPDATE_REFUSED,
@@ -340,7 +341,8 @@ static const char *const k_settings_tools[] = {
 static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     PlayerUiSettingsModel settings;
     memset(&settings, 0, sizeof(settings));
-    settings.page = which == FLOW_SETTINGS_ONLINE ? PLAYER_UI_SETTINGS_PAGE_ONLINE
+    settings.page = which == FLOW_SETTINGS_ONLINE || which == FLOW_SETTINGS_ONLINE_ON
+        ? PLAYER_UI_SETTINGS_PAGE_ONLINE
         : which == FLOW_SETTINGS_NOTICES ? PLAYER_UI_SETTINGS_PAGE_NOTICES
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
@@ -368,7 +370,8 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.volume = 80;
     settings.controller_line = "keyboard and mouse";
     settings.saves_folder = "C:/synthetic/Nakagawa/saves";
-    settings.online_mode = true;
+    /* Off, the default; its own case has the stored setting On (#2007). */
+    settings.online_mode = which == FLOW_SETTINGS_ONLINE_ON;
     settings.developer_mode = true;
     settings.share_system_libraries = true;
     /* Accessibility: a size picked, high contrast following Windows (off), and
@@ -661,8 +664,9 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
                                   "Sound 80% \xC2\xB7 Package ready";
             break;
         case FLOW_WIZ_OPTIONS:
+        case FLOW_WIZ_OPTIONS_ON:
             wizard.step = 1;
-            wizard.online_mode = true;
+            wizard.online_mode = which == FLOW_WIZ_OPTIONS_ON;
             break;
         case FLOW_WIZ_BLOCKED:
             /* #1280: an experimental disc this version cannot use. */
@@ -789,6 +793,8 @@ static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
         remove.disc_id = "TEST00009";
         remove.has_saves = true;
         remove.saves_bytes = 2u * 1024u * 1024u;
+        remove.has_disc_copy = true;
+        remove.disc_copy_bytes = 700u * 1024u * 1024u;
         remove.items = items;
         remove.item_count = sizeof(items) / sizeof(items[0]);
         remove.logical_width = g_flow_width;
@@ -1930,8 +1936,6 @@ static void test_wizard_actions(void) {
          "Continue leaves the options step as they are"},
         {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_SKIP_OPTIONS,
          "Skip turns both options off"},
-        {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_ONLINE, PLAYER_UI_WIZARD_TOGGLE_ONLINE,
-         "the online switch toggles online mode"},
         {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_DEVELOPER, PLAYER_UI_WIZARD_TOGGLE_DEVELOPER,
          "the developer switch toggles developer mode"}
     };
@@ -2580,10 +2584,12 @@ static void test_settings_pages(void) {
          PLAYER_UI_SETTINGS_CYCLE_REDUCE_MOTION, "the reduce motion button steps its choice"},
         {FLOW_SETTINGS_ACCESSIBILITY, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
          "Back leaves Accessibility"},
-        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ACE, PLAYER_UI_SETTINGS_TOGGLE_ACE,
-         "the GAME card's Ace Mode button switches it"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_ACE_OPEN, PLAYER_UI_SETTINGS_OPEN_ACE,
-         "Ace Mode options opens its page"},
+         "the one Ace Mode row opens its page"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_OPEN_DATA_FOLDER,
+         PLAYER_UI_SETTINGS_OPEN_DATA_FOLDER, "Open data folder shows the data folder"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_OPEN_LOGS, PLAYER_UI_SETTINGS_OPEN_LOGS,
+         "Open logs shows the logs folder"},
         {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ACE,
          "the page's Ace Mode button switches it"},
         {FLOW_SETTINGS_ACE, PLAYER_UI_ID_SETTINGS_ACE_FILTERING,
@@ -2640,12 +2646,6 @@ static void test_settings_pages(void) {
          PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS, "Remove build tools asks first"},
         {FLOW_SETTINGS_BUILD_CACHE, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
          "Back returns to Settings from build tools and cache"},
-        {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ONLINE,
-         "the online switch toggles online mode"},
-        {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_NEWS, PLAYER_UI_SETTINGS_TOGGLE_NEWS,
-         "the news switch toggles it"},
-        {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_REPORTS, PLAYER_UI_SETTINGS_TOGGLE_REPORTS,
-         "the reports switch toggles it"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_DEVELOPER,
          PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER, "the developer switch toggles developer mode"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_DEVELOPER_LOG,
@@ -2740,6 +2740,44 @@ static void test_settings_pages(void) {
                   strstr(dump, "\"TEXTURE FILTERING: 16X\"") != NULL,
               "with Ace Mode off the features keep their values");
     }
+    /* #2007: Settings has one Ace Mode row, which opens its page; the switch and what Ace Mode
+       is live on that page. */
+    CHECK(dump_flow_case(FLOW_SETTINGS, dump, sizeof(dump)) &&
+              strstr(dump, "Ace Mode options") == NULL &&
+              strstr(dump, "\"ON: OPTIONS\"") != NULL &&
+              activate_flow_button(PLAYER_UI_ID_SETTINGS_ACE, FLOW_SETTINGS).kind ==
+                  PLAYER_UI_ACTION_NONE,
+          "Settings shows one Ace Mode row that opens its page, not a switch and an options row");
+    CHECK(dump_flow_case(FLOW_SETTINGS_ACE, dump, sizeof(dump)) &&
+              strstr(dump, "Ace Mode adds optional modern touches") != NULL,
+          "the Ace Mode page says what Ace Mode is");
+    /* #2007: "Online mode" has nothing to switch yet, so the options step and the Online and
+       developer page say so in one line and offer no switch, News or Reports button. */
+    CHECK(dump_flow_case(FLOW_SETTINGS_ONLINE, dump, sizeof(dump)) &&
+              strstr(dump, "Online features aren't built yet") != NULL &&
+              strstr(dump, "ONLINE MODE") == NULL && strstr(dump, "NEWS:") == NULL &&
+              strstr(dump, "REPORTS:") == NULL && strstr(dump, "\"DEVELOPER MODE: ") != NULL &&
+              activate_flow_button(PLAYER_UI_ID_SETTINGS_ONLINE_MODE, FLOW_SETTINGS_ONLINE).kind ==
+                  PLAYER_UI_ACTION_NONE,
+          "Online and developer shows one plain line instead of an inert online switch");
+    /* A stored online_mode of On still shows its switch, so it can be turned off. */
+    CHECK(flow_case_fits(FLOW_SETTINGS_ONLINE_ON, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Online mode is on in your settings") != NULL &&
+              settings_op_is(activate_flow_button(PLAYER_UI_ID_SETTINGS_ONLINE_MODE,
+                                                  FLOW_SETTINGS_ONLINE_ON),
+                             PLAYER_UI_SETTINGS_TOGGLE_ONLINE),
+          "Online and developer offers the switch while the stored online mode is On");
+    CHECK(flow_case_fits(FLOW_WIZ_OPTIONS_ON, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "Online mode is on in your settings") != NULL &&
+              wizard_op_is(activate_flow_button(PLAYER_UI_ID_WIZARD_ONLINE, FLOW_WIZ_OPTIONS_ON),
+                           PLAYER_UI_WIZARD_TOGGLE_ONLINE),
+          "the options step offers the switch while the stored online mode is On");
+    CHECK(dump_flow_case(FLOW_WIZ_OPTIONS, dump, sizeof(dump)) &&
+              strstr(dump, "Online features aren't built yet") != NULL &&
+              strstr(dump, "ONLINE MODE") == NULL &&
+              activate_flow_button(PLAYER_UI_ID_WIZARD_ONLINE, FLOW_WIZ_OPTIONS).kind ==
+                  PLAYER_UI_ACTION_NONE,
+          "the options step shows one plain line instead of an inert online switch");
     CHECK(flow_case_fits(FLOW_PAGE_TITLE_ACE, 960, 540, dump, sizeof(dump)) &&
               strstr(dump, "\"ACE MODE: ON (LIBRARY DEFAULT)\"") != NULL &&
               strstr(dump, "the game ran at 30 Hz.") != NULL &&
@@ -2820,6 +2858,8 @@ static void test_psp_fonts_page(void) {
     CHECK(dump_flow_case(FLOW_SETTINGS_FONTS, dump, sizeof(dump)) &&
               strstr(dump, "Optional.") != NULL && strstr(dump, "flash0:/font") != NULL &&
               strstr(dump, "Copying the fonts from your PSP") != NULL &&
+              /* #2005: what a player without the PSP's fonts sees, before they decide. */
+              strstr(dump, "Cyrillic") != NULL && strstr(dump, "narrower") != NULL &&
               strstr(dump, "Japanese: synthetic fallback") != NULL &&
               strstr(dump, "Korean: synthetic fallback") != NULL &&
               strstr(dump, "Latin 16: synthetic fallback") != NULL &&
@@ -3886,7 +3926,7 @@ static int capture_screens(const char *directory) {
             {FLOW_WIZ_GUIDED, "wizard-needs-files", PLAYER_UI_ID_WIZARD_PRIMARY},
             {FLOW_DISC_UNSUPPORTED, "disc-unsupported", PLAYER_UI_ID_DISC_PRIMARY},
             {FLOW_SETTINGS, "settings", PLAYER_UI_ID_SETTINGS_RESOLUTION},
-            {FLOW_SETTINGS_ONLINE, "settings-online", PLAYER_UI_ID_SETTINGS_ONLINE_MODE},
+            {FLOW_SETTINGS_ONLINE, "settings-online", PLAYER_UI_ID_SETTINGS_DEVELOPER},
             {FLOW_SETTINGS_NOTICES, "settings-notices", PLAYER_UI_ID_SETTINGS_BACK},
             {FLOW_SETTINGS_REMOVE, "settings-remove-tools", PLAYER_UI_ID_SETTINGS_BACK},
             {FLOW_SETTINGS_BUILD_CACHE, "settings-build-cache",
@@ -4443,6 +4483,8 @@ static void test_remove_from_library(void) {
     remove.item_count = sizeof(items) / sizeof(items[0]);
     remove.has_saves = true;
     remove.saves_bytes = 2048u;
+    remove.has_disc_copy = true;
+    remove.disc_copy_bytes = 5u * 1024u * 1024u;
     remove.logical_width = 1280.0f;
     remove.logical_height = 800.0f;
     nk_ui_begin(ui, 0.0);
@@ -4468,6 +4510,14 @@ static void test_remove_from_library(void) {
           "Remove without the box keeps the saves");
     action = activate_remove_button(PLAYER_UI_ID_REMOVE_SAVES, &remove);
     CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES, "the saves box toggles");
+    /* #2003: the decrypted files and disc copy have their own box, also unticked. */
+    /* Button labels draw in capitals; each wrapped line is its own text run. */
+    CHECK(strstr(dump, "ALSO DELETE THE DECRYPTED FILES AND DISC COPY") != NULL &&
+              strstr(dump, "5.0 MB") != NULL && strstr(dump, "They stay") != NULL,
+          "the disc copy box starts unticked with its size and says the files stay");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_DISC_COPY, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_DISC_COPY && action.title_index == 3u,
+          "the disc copy box toggles");
     action = activate_remove_button(PLAYER_UI_ID_REMOVE_CANCEL, &remove);
     CHECK(action.kind == PLAYER_UI_ACTION_BACK, "Cancel leaves the dialog");
     remove.delete_saves = true;
@@ -4478,8 +4528,37 @@ static void test_remove_from_library(void) {
     CHECK(strstr(dump, "Your saves for this game will be deleted too.") != NULL,
           "a ticked box says the saves go too");
     action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
-    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM && action.primary == 1,
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM &&
+              (unsigned)action.primary == PLAYER_UI_REMOVE_ALSO_SAVES,
           "Remove with the box ticked deletes the saves");
+    remove.delete_saves = false;
+    remove.delete_disc_copy = true;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "They go too, with any decrypted files you added yourself.") != NULL &&
+              strstr(dump, "Your disc image stays.") != NULL,
+          "a ticked disc copy box says what goes and that the disc image stays");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM &&
+              (unsigned)action.primary == PLAYER_UI_REMOVE_ALSO_DISC_COPY,
+          "Remove with the disc copy box ticked deletes the disc copy, not the saves");
+    remove.delete_saves = true;
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM &&
+              (unsigned)action.primary ==
+                  (PLAYER_UI_REMOVE_ALSO_SAVES | PLAYER_UI_REMOVE_ALSO_DISC_COPY),
+          "both boxes ticked delete both");
+    remove.files_shared = true;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "DISC COPY") == NULL, "files another image uses offer no disc copy box");
+    remove.files_shared = false;
+    remove.has_disc_copy = false;
+    remove.delete_disc_copy = false;
     remove.item_count = 0u;
     remove.has_saves = false;
     remove.delete_saves = false;

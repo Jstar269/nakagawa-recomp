@@ -102,7 +102,7 @@ inventory mechanisms.
 
 Deliberately out of scope: the scattered `s->pc == 0x...`/`entry == 0x...`
 diagnostic trace points across src/rt/sched.c are not mechanically extracted
-here (too many different call shapes for a robust regex, and they are
+here (too many different call shapes for one regex, and they are
 read-only/env-gated by construction -- see compat_overrides.DIAGNOSTIC_GROUPS
 for the manually-maintained list). The scheduler-level behavior-altering hooks
 in compat_overrides.SCHEDULER_HOOKS are likewise documented manually, not
