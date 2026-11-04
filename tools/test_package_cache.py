@@ -1396,7 +1396,7 @@ class PackageCacheTests(unittest.TestCase):
             target = Path(tmp) / "ABCD12345"
             real_replace = os.replace
             sharing_violation = OSError(13, "The process cannot access the file")
-            setattr(sharing_violation, "winerror", 32)
+            sharing_violation.winerror = 32  # type: ignore[attr-defined]
             failures = [sharing_violation]
 
             def flaky_replace(src, dst):
