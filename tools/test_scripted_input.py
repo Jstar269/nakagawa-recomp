@@ -57,7 +57,7 @@ static uint32_t latest_mask, latest_id, v;
 
 static void load(const uint32_t *f, const uint32_t *m, const uint32_t *w, int rows, uint32_t budget) {
     sr_input_reset(&P);
-    n = sr_input_from_rows(f, m, w, rows, budget, L, 64);
+    n = sr_input_from_rows(f, m, w, NULL, rows, budget, L, 64);
     pos = 0;
 }
 

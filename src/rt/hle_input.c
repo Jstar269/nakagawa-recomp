@@ -12,10 +12,14 @@
 #include "hle_internal.h"
 
 /* Read on every controller sample and every presented frame. */
+static int s_inlog_enabled = -1;
 int hle_inlog_on(void) {
-    static int enabled = -1;
-    return hle_env_switch(&enabled, "SR_INLOG");
+    return hle_env_switch(&s_inlog_enabled, "SR_INLOG");
 }
+#ifdef SR_HLE_THREAD_SELFTEST
+/* SR_INLOG is read once per process; a selftest case that checks the log switches it here. */
+void sr_hle_test_inlog(int on) { s_inlog_enabled = on; }
+#endif
 /* Retained controller sampling state (TD-24 batch 4): the Set calls store
  * their arguments and the getter below reports the stored pair. Public
  * behaviour reference: PSPSDK pspctrl.h (sceCtrlSetSamplingMode/Cycle/

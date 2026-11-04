@@ -289,7 +289,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         metadata = self._metadata()
         self.assertEqual(metadata["retrieved_utc"], "2026-09-25")
         ruff_source = next(s for s in metadata["sources"] if s["name"] == "ruff")
-        self.assertEqual(ruff_source["retrieved_utc"], "2026-10-23")
+        self.assertEqual(ruff_source["retrieved_utc"], "2026-11-03")
         # A source added after the document snapshot records its own retrieval date.
         coverage_source = next(s for s in metadata["sources"] if s["name"] == "coverage")
         self.assertEqual(coverage_source["retrieved_utc"], "2026-10-23")
@@ -300,7 +300,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
                 "https://pypi.org/pypi/click/8.5.0/json",
                 "https://pypi.org/pypi/compiledb/0.10.7/json",
                 "https://pypi.org/pypi/coverage/7.17.0/json",
-                "https://pypi.org/pypi/ruff/0.17.2/json",
+                "https://pypi.org/pypi/ruff/0.17.3/json",
             ],
         )
         # PyPI's canonical names differ in case from the lock's (Jinja2, MarkupSafe,
@@ -350,7 +350,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertIn("malformed SHA-256 hash", str(ctx.exception))
 
     def test_old_sequential_ruff_hash_fails_as_unmatched(self):
-        text = f"ruff==0.17.2 --hash=sha256:{self.OLD_RUFF_HASH}\n"
+        text = f"ruff==0.17.3 --hash=sha256:{self.OLD_RUFF_HASH}\n"
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             self._parse(text)
         self.assertIn("matches no trusted artifact", str(ctx.exception))
