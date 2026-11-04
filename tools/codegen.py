@@ -1322,6 +1322,15 @@ def emit_checked_body_call(symbol, call_pc):
     )
 
 
+def emit_checked_dispatch_call(target_expr, resume_expr):
+    """A guest CALL with no direct body, inside its own return boundary (#1935).
+
+    dispatch_call_checked returns 1 when the call returned elsewhere and the frames
+    between were abandoned, as emit_checked_body_call's end check does.
+    """
+    return f"if (dispatch_call_checked(s, {target_expr}, {resume_expr})) return;"
+
+
 def emit_host_stack_check(entry_expr):
     """The entry statement of a body that makes a direct CALL (#855): bound its host stack."""
     return f"    SR_HOST_STACK_CHECK({entry_expr});"
@@ -3755,7 +3764,7 @@ def _emit_unrelocated_jal(ctx, out, addr, w, ds, dsw):
     out.append(f"      sr_begin(s, {G(addr)}, {code_word_read(32, G(addr))}); s->r[31] = {resume}; sr_end(s, 0u, 0);")
     out.extend(delay_slot_lines(ds, dsw, addr, lle_cpu=lle_cpu,
                                 resumable=resumable, indent="      "))
-    out.append(f"      dispatch_call(s, _t, {resume}); }}")
+    out.append(f"      {emit_checked_dispatch_call('_t', resume)} }}")
     _emit_slot_exit(ctx, out, addr)
 
 
@@ -3772,10 +3781,8 @@ def _emit_jal(ctx, out, addr, w, ds, dsw):
         if lle_cpu:
             _call_stmt += f"\n    {_flow_return(resumable)}"
     else:
-        _call_stmt = (
-            f"    dispatch_call(s, {G(target)}, "
-            f"{G((addr + 8) & 0xFFFFFFFF)});"
-        )
+        _call_stmt = "    " + emit_checked_dispatch_call(
+            G(target), G((addr + 8) & 0xFFFFFFFF))
     if _jal_rw is not None:
         # gate_30hz on a call (the only rewrite a call site plans): the delay
         # slot above always runs; the call is gated while the toggle is on.
@@ -3807,7 +3814,7 @@ def _emit_jalr(ctx, out, addr, w, ds, dsw):
                                 indent="      "))
     if d != 0:
         out.append(
-            f"      dispatch_call(s, _t, {G((addr + 8) & 0xFFFFFFFF)}); }}"
+            f"      {emit_checked_dispatch_call('_t', G((addr + 8) & 0xFFFFFFFF))} }}"
         )
         _emit_slot_exit(ctx, out, addr)
     else:
@@ -3946,7 +3953,7 @@ def _emit_conditional_branch(ctx, out, addr, w, ds, dsw):
             if lle_cpu:
                 call += f" {_flow_return(resumable)}"
         else:
-            call = f"dispatch_call(s, {G(target)}, {G((addr + 8) & 0xFFFFFFFF)});"
+            call = emit_checked_dispatch_call(G(target), G((addr + 8) & 0xFFFFFFFF))
         out.extend("   " + line for line in _delay)
         out.append(f"      if (_c) {{ {call} }} }}")
         _emit_slot_exit(ctx, out, addr)

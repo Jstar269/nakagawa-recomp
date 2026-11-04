@@ -1571,6 +1571,10 @@ void sr_stack_census_report(void);
 void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume boundary */
 int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
 void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
+/* A generated linked call to a target with no direct body: dispatch_call inside the
+ * call's own return boundary, as a direct call has. Returns 1 when the caller must
+ * return without running its continuation (sr_aot_return_boundary_end). */
+int      dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc);
 
 /* A computed jr/jalr whose target register holds 0 is a null code pointer (#1375): report
  * it and stop the run. Generated code tests the latched target before the transfer's link

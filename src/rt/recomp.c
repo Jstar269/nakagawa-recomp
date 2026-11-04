@@ -2243,10 +2243,10 @@ int sr_aot_return_boundary_capture_resume(CpuState *s, uint32_t target) {
  * this: a branch-and-link into a block that restores the enclosing frame's $ra and $sp
  * and returns straight to that frame's caller, so the linked call never resumes. When
  * the target is the resume PC of a live enclosing linked call, the frames in between are
- * abandoned and that call continues normally, as the PSP does. Only direct body calls may
- * lie in between: their generated callers return when the end check says so, where a
- * dispatch_call caller would run its own continuation. Never crosses a callback or
- * interrupt floor. */
+ * abandoned and that call continues normally, as the PSP does. Only checked calls may lie
+ * in between, a direct body call or a generated dispatch_call_checked site: their generated
+ * callers return when the end check says so, where any other dispatch_call caller would run
+ * its own continuation. Never crosses a callback or interrupt floor. */
 #if defined(SR_STACK_CENSUS_ENABLED)
 /* True while a body returns other than structurally to its caller: its guest jr $ra
  * targeted something other than the live linked call's resume, or a guest return past
@@ -2290,8 +2290,8 @@ static int sr_aot_return_boundary_unwind_to(CpuState *s, uint32_t target) {
  * are abandoned as sr_aot_return_boundary_unwind_to abandons them, and that call's own end
  * runs the target as its continuation (sr_aot_return_boundary_end). The callee that
  * returned must have left its own frame: a jump within it is not a return. Never crosses a
- * callback or interrupt floor or a dispatch_call frame. A frame no linked call encloses (a
- * thread's or callback's own entry function, which no resume PC follows) has no
+ * callback or interrupt floor or an unchecked dispatch_call frame. A frame no linked call
+ * encloses (a thread's or callback's own entry function, which no resume PC follows) has no
  * continuation to run in, so a longjmp into it stays the named mismatch stop. */
 static int sr_aot_return_boundary_resume_live_frame(CpuState *s,
                                                     const SrAotReturnBoundary *returned,
@@ -2433,9 +2433,12 @@ int sr_aot_return_boundary_end(CpuState *s) {
 static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
                              const SrGuestInterpCallBoundary *call_boundary,
                              int drain) {
-    const int owns_return_boundary = call_boundary != NULL ||
-        !(drain == SR_DRAIN_SEGMENT && sr_aot_return_boundary_top != NULL &&
-          sr_aot_return_boundary_top->state == s);
+    /* A call begun at a checked generated site returns into the site's own boundary
+     * (dispatch_call_checked), whose caller honours a return elsewhere. */
+    const int owns_return_boundary = call_boundary != NULL
+        ? !call_boundary->site_boundary
+        : !(drain == SR_DRAIN_SEGMENT && sr_aot_return_boundary_top != NULL &&
+            sr_aot_return_boundary_top->state == s);
     if (owns_return_boundary) {
         const uint32_t call_pc = call_boundary != NULL
             ? call_boundary->resume_pc - 8u : s->pc;
@@ -2453,10 +2456,12 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
             return;
         }
         sr_aot_return_boundary_top->dispatch_owned = 1u;
-#ifdef SR_VERIFY
-        if (call_boundary != NULL) sr_verify_begin(s, target, call_pc, call_boundary->resume_pc);
-#endif
     }
+#ifdef SR_VERIFY
+    /* A continuation is the rest of a call already under way, not a call to sample. */
+    if (call_boundary != NULL && !call_boundary->continuation)
+        sr_verify_begin(s, target, call_boundary->resume_pc - 8u, call_boundary->resume_pc);
+#endif
     if (sr_perf_enabled) sr_perf_aot_begin(target);
 #ifdef SR_VERIFY
     sr_verify_note_entry(target);
@@ -2779,13 +2784,19 @@ void dispatch_tail_step(CpuState *s, uint32_t target) {
     }
 }
 
-int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
+static int dispatch_call_try_at(CpuState *s, uint32_t target, uint32_t resume_pc,
+                                uint8_t site_boundary) {
     if ((resume_pc & 3u) != 0u) {
         return SR_GUEST_INTERP_MISALIGNED_PC;
     }
     SrGuestInterpCallBoundary boundary = {
-        .resume_pc = resume_pc, .entry_sp = s->r[29], .owes_entry_sp = 1u };
+        .resume_pc = resume_pc, .entry_sp = s->r[29], .owes_entry_sp = 1u,
+        .site_boundary = site_boundary };
     return dispatch_try_with_boundary(s, target, &boundary, SR_DRAIN_CHAIN);
+}
+
+int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
+    return dispatch_call_try_at(s, target, resume_pc, 0u);
 }
 
 void dispatch(CpuState *s, uint32_t target) {
@@ -2802,6 +2813,54 @@ void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {
         fflush(stderr);
         exit(1);
     }
+}
+
+/* A dispatch_call frame is otherwise a wall to a guest return past it: its caller runs its
+ * own continuation whatever the callee did. A generated call site honours the end check
+ * instead, as at a direct call, so the call gets the same boundary. Under it, native code
+ * run for the call -- a native callee, or the native body an interpreted callee hands its
+ * frame to -- returns into this boundary, and a return elsewhere (a longjmp) unwinds the
+ * frames between as it does natively (#1034, #1935). */
+int dispatch_call_checked(CpuState *s, uint32_t target, uint32_t resume_pc) {
+#ifdef SR_VERIFY
+    sr_verify_suppress_direct = 1;   /* sampled with its target where the callee is native */
+#endif
+    const int refused = sr_aot_return_boundary_begin(s, resume_pc, resume_pc - 8u, 1u);
+#ifdef SR_VERIFY
+    sr_verify_suppress_direct = 0;
+#endif
+    if (refused) return 1;
+    if (dispatch_call_try_at(s, target, resume_pc, 1u) < 0) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, resume_pc, 0u);
+        fflush(stderr);
+        exit(1);
+    }
+    return sr_aot_return_boundary_end(s);
+}
+
+/* An interpreted linked call hands its live frame to a native body (the interpreter's AOT
+ * handoff). That body's chain ends in the call's return, so it is checked against the
+ * call's resume PC: under a checked site it returns into the site's boundary, which
+ * unwinds a return elsewhere; any other caller runs its own continuation, so the body gets
+ * a boundary of its own and a return elsewhere is the named #1034 stop. */
+int dispatch_call_continue(CpuState *s, uint32_t target, const SrGuestInterpCallBoundary *call) {
+    const SrGuestInterpCallBoundary rest = {
+        .resume_pc = call->resume_pc, .site_boundary = call->site_boundary,
+        .continuation = 1u };
+    if (dispatch_try_with_boundary(s, target, &rest, SR_DRAIN_CHAIN) < 0) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, call->resume_pc, 0u);
+        fflush(stderr);
+        exit(1);
+    }
+    if (!call->site_boundary) return 0;
+    const SrAotReturnBoundary *site = sr_aot_return_boundary_top;
+    if (sr_aot_return_boundary_depth <= sr_aot_return_boundary_floor || site == NULL ||
+        site->state != s || !site->has_resume_pc || site->resume_pc != call->resume_pc) {
+        return 0;
+    }
+    return site->unwinding != 0u ||
+           ((site->observed_target >> 32) != 0u &&
+            (uint32_t)site->observed_target != call->resume_pc);
 }
 
 /* A host entry is a linked call that returns to the host (#1375, recomp.h). The AOT tier

@@ -23,7 +23,7 @@ Modes
     still discovered by the analyzer, but the mode's build choice
     (``--omit-aot``) removes it from native emission/registration.  Region A's
     direct ``jal`` therefore compiles to the ordinary production
-    ``dispatch_call(s, 0x<HELPER>, 0x<RESUME>)`` statement, and at runtime the guest transfer
+    ``dispatch_call_checked(s, 0x<HELPER>, 0x<RESUME>)`` statement, and at runtime the guest transfer
     leaves the directly compiled destination set through the real dispatcher.
     The production interpreter executes the helper bytes only because generated
     registration explicitly owns their executable span.  Its tail transfers to
@@ -816,12 +816,12 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
 
     if mode == "aot-gap":
         seam = (
-            f"dispatch_call(s, 0x{HELPER:08x}u, "
+            f"dispatch_call_checked(s, 0x{HELPER:08x}u, "
             f"0x{ENTRY + 0x10:08x}u)"
         )
         # The same CALL as the LLVM IR backend spells it (codegen_llvm.call_target).
         llvm_seam = (
-            f"call void @dispatch_call(ptr %s, i32 {_signed32(HELPER)}, "
+            f"call i32 @dispatch_call_checked(ptr %s, i32 {_signed32(HELPER)}, "
             f"i32 {_signed32(ENTRY + 0x10)})"
         )
         if seam not in generated_text and llvm_seam not in generated_text:
