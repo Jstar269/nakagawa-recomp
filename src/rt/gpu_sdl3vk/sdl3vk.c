@@ -41,6 +41,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <shobjidl.h>  /* SetCurrentProcessExplicitAppUserModelID */
 #include <direct.h>
 #else
 #include <sys/stat.h>
@@ -578,8 +579,31 @@ static SDL_Window *sdl3vk_create_window(const char *title) {
     return win;
 }
 
+/* The launcher's identity (#2006), so the game's window joins the launcher's taskbar group on
+ * Windows and its application on Linux instead of showing as an unrelated program. These are
+ * NK_APP_USER_MODEL_ID, NK_APP_DESKTOP_ID and NK_APP_NAME in src/core/nk_launch.h, which the
+ * runtime does not include; tools/test_stage_install.py keeps the copies equal. */
+#define SDL3VK_APP_USER_MODEL_ID "Nakagawa.Recomp"
+#define SDL3VK_APP_DESKTOP_ID "nakagawa-recomp"
+#define SDL3VK_APP_NAME "Nakagawa Recomp"
+
+/* Before SDL_Init and before the window exists: Windows reads the process's ID when the
+ * window's taskbar button is made, and SDL reads its metadata at initialisation. A refusal
+ * only costs the grouping, so it is reported and the game goes on. */
+static void sdl3vk_set_app_identity(void) {
+#ifdef _WIN32
+    HRESULT hr = SetCurrentProcessExplicitAppUserModelID(L"" SDL3VK_APP_USER_MODEL_ID);
+    if (FAILED(hr))
+        fprintf(stderr, "sdl3vk: the taskbar app ID could not be set (HRESULT 0x%08lx)\n",
+                (unsigned long)hr);
+#endif
+    if (!SDL_SetAppMetadata(SDL3VK_APP_NAME, NULL, SDL3VK_APP_DESKTOP_ID))
+        fprintf(stderr, "sdl3vk: SDL app metadata could not be set: %s\n", SDL_GetError());
+}
+
 int sdl3vk_init(const char *title) {
     s_init_steps = 0;
+    sdl3vk_set_app_identity();
     INIT_OK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD), "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
     s_sdl_subsystems = 1;
     /* SR_WINDOW_HIDDEN=1: the same presenter (Vulkan swapchain, keyboard, frame capture) with
@@ -2284,6 +2308,29 @@ static int overlay_format_order(VkFormat fmt, int *rgba) {
 
 int sdl3vk_window_minimized(void) {
     return s_win && (SDL_GetWindowFlags(s_win) & SDL_WINDOW_MINIMIZED) != 0;
+}
+
+int sdl3vk_fullscreen(void) {
+#ifdef SDL_PLATFORM_ANDROID
+    return -1;
+#else
+    if (!s_win || s_window_hidden) return -1;
+    return (SDL_GetWindowFlags(s_win) & SDL_WINDOW_FULLSCREEN) != 0;
+#endif
+}
+
+int sdl3vk_set_fullscreen(int on) {
+    if (sdl3vk_fullscreen() < 0) return 0;
+    if (!SDL_SetWindowFullscreen(s_win, on != 0)) {
+        fprintf(stderr, "sdl3vk: fullscreen %s could not be applied: %s\n",
+                on ? "on" : "off", SDL_GetError());
+        return 0;
+    }
+    /* SDL applies the mode asynchronously; wait for it so the next overlay frame reads the
+     * state the person chose. A window manager that never confirms only costs SDL's timeout. */
+    (void)SDL_SyncWindow(s_win);
+    fprintf(stderr, "sdl3vk: fullscreen %s\n", on ? "on" : "off");
+    return 1;
 }
 
 void sdl3vk_wait_events(uint32_t timeout_ms) {
