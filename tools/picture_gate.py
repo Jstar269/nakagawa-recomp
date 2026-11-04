@@ -28,7 +28,7 @@ reads the screen.
 Usage:
   python tools/picture_gate.py compare REFERENCE FRAME [--threshold N] [--max-percent P]
   python tools/picture_gate.py accept FRAME REFERENCE [--commit SHA]
-  python tools/picture_gate.py check ROUTE.json [--runs N] [--strict]
+  python tools/picture_gate.py check ROUTE.json [--runs N] [--accept] [--strict]
   python tools/picture_gate.py display-smoke --build-dir DIR [--work-dir DIR]
 
 A route file is private JSON next to the title's other private inputs:
@@ -62,6 +62,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 PASS, FAIL, SKIP, NOT_RUN = "PASS", "FAIL", "SKIP", "NOT_RUN"
+ACCEPTED = "ACCEPTED"
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_NOT_PROVEN = 0, 1, 2, 3
 DEFAULT_WINDOW = 8
 DEFAULT_TIMEOUT_SECONDS = 600
@@ -329,8 +330,13 @@ def run_capture(command: list[str], env: dict, run_dir: Path,
     return frame, how
 
 
-def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None) -> tuple[str, Verdict]:
-    """Capture and compare one title route. Returns (title, verdict)."""
+def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None,
+              accept_frame: bool = False) -> tuple[str, Verdict]:
+    """Capture and compare one title route. Returns (title, verdict).
+
+    ``accept_frame`` stores the captured frame as the reference instead of comparing; it
+    still requires every run to agree, so a nondeterministic route is never accepted.
+    """
     route_path = Path(route_path)
     title = route_path.stem
     try:
@@ -396,6 +402,13 @@ def run_route(route_path: Path, runs: int = 1, work_root: Path | None = None) ->
                                 0.0)
                     return title, Verdict(FAIL, f"nondeterministic {pct.detail}", pct.percent,
                                           pct.over, pct.differing, pct.total, pct.max_delta)
+        if accept_frame:
+            try:
+                meta = accept(frames[0], reference)
+            except PictureError as exc:
+                return title, Verdict(NOT_RUN, f"accept-refused ({exc})")
+            return title, Verdict(ACCEPTED, f"{meta['width']}x{meta['height']} "
+                                            f"commit={meta['commit']} {how}")
         verdict = compare_files(reference, frames[0], threshold, max_percent)
         if verdict.status in (PASS, FAIL):
             verdict = Verdict(verdict.status, f"{verdict.detail} {how}", verdict.percent,
@@ -526,6 +539,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("route", type=Path)
     p.add_argument("--runs", type=int, default=1,
                    help="capture N times; runs that differ are a FAIL (nondeterministic)")
+    p.add_argument("--accept", action="store_true",
+                   help="store the captured frame as the title's reference (explicit step)")
     p.add_argument("--strict", action="store_true", help="SKIP and NOT_RUN exit 3")
     p = sub.add_parser("display-smoke", help="the public synthetic proof (no game needed)")
     p.add_argument("--build-dir", type=Path, required=True)
@@ -550,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "check":
         if args.runs < 1:
             ap.error("--runs must be >= 1")
-        title, verdict = run_route(args.route, args.runs)
+        title, verdict = run_route(args.route, args.runs, accept_frame=args.accept)
         print(verdict.line(title))
         return _exit_for(verdict, args.strict)
     return display_smoke(args.build_dir, args.work_dir)

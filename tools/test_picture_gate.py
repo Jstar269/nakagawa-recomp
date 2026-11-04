@@ -227,6 +227,25 @@ class RouteTests(Base):
         self.assertEqual(failed.status, pg.FAIL)
         self.assertGreater(failed.percent, 0)
 
+    def test_check_accept_stores_the_captured_frame(self):
+        route = self.route()
+        _, v = pg.run_route(route, 1, self.dir / "work", accept_frame=True)
+        self.assertEqual(v.status, pg.ACCEPTED)
+        self.assertIn("vblank=20", v.detail)
+        ref = self.dir / "priv" / "ref.ppm"
+        self.assertTrue(ref.is_file() and pg.sidecar_path(ref).is_file())
+        self.assertEqual(self.check(route).status, pg.PASS)
+
+    def test_check_accept_refuses_a_reference_inside_the_checkout(self):
+        route = self.route()
+        data = json.loads(route.read_text())
+        data["reference"] = str(pg.ROOT / "tools" / "never-written.ppm")
+        route.write_text(json.dumps(data))
+        _, v = pg.run_route(route, 1, self.dir / "work", accept_frame=True)
+        self.assertEqual(v.status, pg.NOT_RUN)
+        self.assertIn("accept-refused", v.detail)
+        self.assertFalse((pg.ROOT / "tools" / "never-written.ppm").exists())
+
     def test_first_frame_route_without_vblank(self):
         route = self.route(vblank=None)
         pg.accept(self.ppm("seed.ppm", frame(5)), self.dir / "priv" / "ref.ppm", commit="c")
