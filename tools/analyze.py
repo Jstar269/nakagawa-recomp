@@ -3054,9 +3054,9 @@ def _emitter_seed_check(elf):
 
 
 def main(argv):
-    # Unknown options and extra positionals have always been ignored here, so keep ignoring them.
+    # An unknown option or an extra positional is an error (exit status 2), never ignored.
     try:
-        ns, _ = _build_arg_parser().parse_known_args(argv[1:])
+        ns = _build_arg_parser().parse_args(argv[1:])
     except SystemExit as exc:
         return exc.code
     base = ns.base
